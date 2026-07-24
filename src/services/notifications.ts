@@ -1,4 +1,7 @@
-import type { GitHubNotification } from "../domain/notifications";
+import {
+  notificationsEqual,
+  type GitHubNotification
+} from "../domain/notifications";
 import {
   estimateJsonBytes,
   estimateTextBytes,
@@ -10,6 +13,8 @@ import { tracePerf } from "./perfTrace";
 export interface FetchNotificationsOptions {
   token: string;
   apiBaseUrl: string;
+  accountId?: string;
+  signal?: AbortSignal;
   all?: boolean;
   participating?: boolean;
   fetchImpl?: typeof fetch;
@@ -54,6 +59,7 @@ const consecutiveProbeNotModified = new Map<string, number>();
 function cacheKey(options: FetchNotificationsOptions): string {
   return [
     options.apiBaseUrl,
+    options.accountId ?? "legacy-unscoped",
     options.all !== false ? "all" : "unread",
     options.participating ? "participating" : "any"
   ].join("|");
@@ -113,21 +119,6 @@ export function fetchNotifications(
   return request;
 }
 
-function sameNotificationSnapshot(
-  left: GitHubNotification,
-  right: GitHubNotification
-): boolean {
-  return (
-    left.id === right.id &&
-    left.unread === right.unread &&
-    left.updated_at === right.updated_at &&
-    left.last_read_at === right.last_read_at &&
-    left.subject.title === right.subject.title &&
-    left.subject.type === right.subject.type &&
-    left.repository.full_name === right.repository.full_name
-  );
-}
-
 function firstPageMatchesCached(
   pageItems: GitHubNotification[],
   cached: GitHubNotification[]
@@ -143,7 +134,7 @@ function firstPageMatchesCached(
     return false;
   }
   return pageItems.every((item, index) =>
-    sameNotificationSnapshot(item, cached[index])
+    notificationsEqual(item, cached[index])
   );
 }
 
@@ -183,7 +174,8 @@ async function doFetchNotifications(
       // additional WebView HTTP cache adds no benefit and risks a stale proxy
       // 304 being surfaced as a fresh 200 body. Bypass it entirely.
       cache: "no-store",
-      headers: baseHeaders
+      headers: baseHeaders,
+      signal: options.signal
     });
 
     if (!response.ok) {
@@ -214,6 +206,8 @@ async function doFetchNotifications(
     const hasNext = link
       ? link.includes('rel="next"')
       : pageItems.length === PER_PAGE;
+    notifications.push(...pageItems);
+    options.onPartialResult?.([...notifications]);
     if (
       page === 1 &&
       cached &&
@@ -230,8 +224,6 @@ async function doFetchNotifications(
       invalidateCacheStats();
       return cached.notifications;
     }
-    notifications.push(...pageItems);
-    options.onPartialResult?.([...notifications]);
 
     if (!hasNext) {
       break;
@@ -285,7 +277,8 @@ async function fetchUnreadFirstPage(
   params.set("page", "1");
   return fetcher(`${base}/notifications?${params.toString()}`, {
     cache: "no-store",
-    headers
+    headers,
+    signal: options.signal
   });
 }
 
@@ -331,7 +324,8 @@ export async function fetchUnreadNotificationUpdates(
       headers: {
         ...baseHeaders,
         "If-Modified-Since": cached.lastModified
-      }
+      },
+      signal: options.signal
     });
     tracePerf("notifications_unread_probe_done", {
       status: probe.status,
@@ -377,7 +371,9 @@ export async function fetchUnreadNotificationUpdates(
 export async function markNotificationRead(options: {
   token: string;
   apiBaseUrl: string;
+  accountId?: string;
   threadId: string;
+  signal?: AbortSignal;
   fetchImpl?: typeof fetch;
 }): Promise<void> {
   const fetcher = options.fetchImpl ?? fetch;
@@ -387,6 +383,7 @@ export async function markNotificationRead(options: {
     {
       method: "PATCH",
       cache: "no-store",
+      signal: options.signal,
       headers: {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${options.token}`,

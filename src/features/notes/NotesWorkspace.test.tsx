@@ -5,7 +5,7 @@ import {
   render,
   screen,
   waitFor,
-  within
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
@@ -13,9 +13,20 @@ import { join } from "node:path";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
+import {
+  ExternalSourcesContext,
+  type ExternalSourcesBoundary,
+} from "../../ExternalSourcesContext";
+import {
+  GITHUB_EXTERNAL_KEY_PROVIDER,
+  GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+  GITHUB_NOTIFICATIONS_ROOT_ID,
+} from "../../services/githubNotificationsProvider";
+import type { ExternalBullet } from "../../domain/externalSources";
 import type {
   ApplyNotesBatchInput,
   CreateNoteNodeInput,
+  MaterializeGithubNotificationInput,
   MoveNoteNodeInput,
   NoteAttachment,
   NoteAttachmentsByNodeId,
@@ -26,7 +37,7 @@ import type {
   NotesHistoryContext,
   NotesHistoryState,
   NotesWorkspace,
-  UpdateNoteNodeInput
+  UpdateNoteNodeInput,
 } from "../../domain/notes";
 
 const notesStoreMock = vi.hoisted(() => ({
@@ -39,7 +50,14 @@ const notesStoreMock = vi.hoisted(() => ({
   redo: vi.fn(),
   loadWorkspace: vi.fn(),
   createNode: vi.fn(),
+  materializeGithubNotificationAndCreateSibling: vi.fn(),
+  materializeGithubNotificationAndReparent: vi.fn(),
+  refreshMaterializedGithubNotifications: vi.fn(),
+  markMaterializedGithubNotificationRead: vi.fn(),
+  setGithubGroupCollapsed: vi.fn(),
+  deleteNodes: vi.fn(),
   updateNode: vi.fn(),
+  setReadonly: vi.fn(),
   splitNode: vi.fn(),
   moveNode: vi.fn(),
   applyBatch: vi.fn(),
@@ -63,7 +81,7 @@ const notesStoreMock = vi.hoisted(() => ({
   searchStructured: vi.fn(),
   listTags: vi.fn(),
   listTagsWithCounts: vi.fn(),
-  deleteDatabase: vi.fn()
+  deleteDatabase: vi.fn(),
 }));
 
 vi.mock("../../services/notesStore", () => ({ notesStore: notesStoreMock }));
@@ -71,7 +89,7 @@ vi.mock("../../services/notesStore", () => ({ notesStore: notesStoreMock }));
 import { NotesFeatureProvider } from "./NotesFeature";
 import {
   NotesFeedbackProvider,
-  NotesStatusBarMessage
+  NotesStatusBarMessage,
 } from "./NotesFeedbackContext";
 import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
 import { NotesLibraryPane } from "./NotesLibraryPane";
@@ -84,16 +102,16 @@ import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
 import {
   isOutlineSelectionInteractiveTarget,
-  isOutlineSelectionTextSurface
+  isOutlineSelectionTextSurface,
 } from "./OutlineNodeRow";
 import {
   readImageAtomDomSelection,
-  writeImageAtomDomSelection
+  writeImageAtomDomSelection,
 } from "./imageAtomDomSelection";
 
 const notesStyles = readFileSync(
   join(process.cwd(), "src/features/notes/notes.css"),
-  "utf8"
+  "utf8",
 );
 const appStyles = readFileSync(join(process.cwd(), "src/styles.css"), "utf8");
 
@@ -108,8 +126,8 @@ function mockNarrowViewport(narrow: boolean): void {
       removeEventListener: vi.fn(),
       addListener: vi.fn(),
       removeListener: vi.fn(),
-      dispatchEvent: vi.fn(() => true)
-    }))
+      dispatchEvent: vi.fn(() => true),
+    })),
   );
 }
 
@@ -132,7 +150,7 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     imageOffsetUtf16: 0,
     ...overrides,
     markerKind: overrides.markerKind ?? "bullet",
-    markdownImageWidth: overrides.markdownImageWidth ?? null
+    markdownImageWidth: overrides.markdownImageWidth ?? null,
   };
 }
 
@@ -142,7 +160,7 @@ type KindAwareSearchResult = NoteSearchResult & {
 };
 
 function searchResult(
-  overrides: Partial<KindAwareSearchResult> & Pick<NoteSearchResult, "nodeId">
+  overrides: Partial<KindAwareSearchResult> & Pick<NoteSearchResult, "nodeId">,
 ): KindAwareSearchResult {
   const parentTrail = overrides.parentTrail ?? [];
   return {
@@ -154,7 +172,7 @@ function searchResult(
     parentTrail,
     parentTrailKinds: parentTrail.map(() => "text"),
     matchedField: "title",
-    ...overrides
+    ...overrides,
   };
 }
 
@@ -164,21 +182,21 @@ function initialNodes(): NoteNode[] {
       id: "project",
       sortKey: 1,
       title: "Project",
-      note: "Project note"
+      note: "Project note",
     }),
     node({
       id: "plan",
       parentId: "project",
       sortKey: 1,
-      title: "Plan"
+      title: "Plan",
     }),
     node({
       id: "milestone",
       parentId: "plan",
       sortKey: 1,
-      title: "Milestone"
+      title: "Milestone",
     }),
-    node({ id: "outside", sortKey: 2, title: "Outside branch" })
+    node({ id: "outside", sortKey: 2, title: "Outside branch" }),
   ];
 }
 
@@ -186,21 +204,21 @@ let confirmedAttachmentsByNodeId: NoteAttachmentsByNodeId = {};
 
 function workspace(
   nodes: NoteNode[],
-  attachmentsByNodeId: NoteAttachmentsByNodeId = confirmedAttachmentsByNodeId
+  attachmentsByNodeId: NoteAttachmentsByNodeId = confirmedAttachmentsByNodeId,
 ): NotesWorkspace {
   return {
     nodes: nodes.map((current) => ({ ...current })),
     attachmentsByNodeId: Object.fromEntries(
       Object.entries(attachmentsByNodeId).map(([nodeId, attachments]) => [
         nodeId,
-        attachments.map((attachment) => ({ ...attachment }))
-      ])
-    )
+        attachments.map((attachment) => ({ ...attachment })),
+      ]),
+    ),
   };
 }
 
 function historyState(
-  overrides: Partial<NotesHistoryState> = {}
+  overrides: Partial<NotesHistoryState> = {},
 ): NotesHistoryState {
   return {
     canUndo: false,
@@ -209,7 +227,7 @@ function historyState(
     nextUndoEntryId: null,
     nextRedoEntryId: null,
     prunedEntryIds: [],
-    ...overrides
+    ...overrides,
   };
 }
 
@@ -218,12 +236,12 @@ function historyContextMatcher() {
     sessionId: expect.stringMatching(/\S/),
     historyEpoch: expect.stringMatching(/\S/),
     entryId: expect.stringMatching(/\S/),
-    commandKind: expect.stringMatching(/\S/)
+    commandKind: expect.stringMatching(/\S/),
   });
 }
 
 function attachment(
-  overrides: Partial<NoteAttachment> & Pick<NoteAttachment, "id" | "nodeId">
+  overrides: Partial<NoteAttachment> & Pick<NoteAttachment, "id" | "nodeId">,
 ): NoteAttachment {
   const contentHash = overrides.contentHash ?? "a".repeat(64);
   return {
@@ -238,7 +256,7 @@ function attachment(
     displayWidth: 320,
     createdAt: "2026-07-12T00:00:00Z",
     updatedAt: "2026-07-12T00:00:00Z",
-    ...overrides
+    ...overrides,
   };
 }
 
@@ -271,7 +289,7 @@ function isHistoryContext(value: unknown): value is NotesHistoryContext {
 }
 
 function acknowledgedDefaultMutation<Args extends unknown[], Result>(
-  implementation: (...args: Args) => Promise<Result>
+  implementation: (...args: Args) => Promise<Result>,
 ): (...args: Args) => Promise<Result> {
   return async (...args) => {
     const result = await implementation(...args);
@@ -299,13 +317,13 @@ function fixtureHistoryState(sessionId: string): NotesHistoryState {
   const entryId = latestMutationEntryBySessionId.get(sessionId) ?? null;
   return historyState({
     canUndo: entryId !== null,
-    nextUndoEntryId: entryId
+    nextUndoEntryId: entryId,
   });
 }
 
 function configureRepository(
   nodes: NoteNode[] = initialNodes(),
-  attachmentsByNodeId: NoteAttachmentsByNodeId = {}
+  attachmentsByNodeId: NoteAttachmentsByNodeId = {},
 ): void {
   confirmedNodes = nodes;
   confirmedAttachmentsByNodeId = attachmentsByNodeId;
@@ -317,24 +335,24 @@ function configureRepository(
   notesStoreMock.initialize.mockResolvedValue(historyState());
   notesStoreMock.historyStatus.mockImplementation(
     async (_vaultRoot: string, sessionId: string) =>
-      fixtureHistoryState(sessionId)
+      fixtureHistoryState(sessionId),
   );
   notesStoreMock.prepareNavigation.mockImplementation(
     async (_vaultRoot: string, input: { sessionId: string }) =>
-      fixtureHistoryState(input.sessionId)
+      fixtureHistoryState(input.sessionId),
   );
   notesStoreMock.pruneHistoryEntries.mockResolvedValue(historyState());
   notesStoreMock.closeHistorySession.mockResolvedValue(undefined);
   notesStoreMock.undo.mockResolvedValue({
     kind: "entryMissing",
-    ...historyState()
+    ...historyState(),
   });
   notesStoreMock.redo.mockResolvedValue({
     kind: "entryMissing",
-    ...historyState()
+    ...historyState(),
   });
   notesStoreMock.loadWorkspace.mockImplementation(async () =>
-    workspace(confirmedNodes)
+    workspace(confirmedNodes),
   );
   notesStoreMock.createNode.mockImplementation(
     async (_vaultRoot: string, input: CreateNoteNodeInput) => {
@@ -347,31 +365,149 @@ function configureRepository(
             Math.max(0, ...confirmedNodes.map((current) => current.sortKey)) +
             1,
           title: input.title,
-          note: input.note
-        })
+          note: input.note,
+        }),
       ];
       return workspace(confirmedNodes);
-    }
+    },
   );
   notesStoreMock.updateNode.mockImplementation(
     async (_vaultRoot: string, input: UpdateNoteNodeInput) => {
       confirmedNodes = confirmedNodes.map((current) =>
         current.id === input.id
           ? { ...current, title: input.title, note: input.note }
-          : current
+          : current,
       );
       return workspace(confirmedNodes);
-    }
+    },
+  );
+  notesStoreMock.setReadonly.mockImplementation(
+    async (
+      _vaultRoot: string,
+      input: { nodeId: NoteId; isReadonly: boolean },
+    ) => {
+      confirmedNodes = confirmedNodes.map((current) =>
+        current.id === input.nodeId
+          ? { ...current, isReadonly: input.isReadonly }
+          : current,
+      );
+      return workspace(confirmedNodes);
+    },
+  );
+  notesStoreMock.materializeGithubNotificationAndCreateSibling.mockImplementation(
+    async (_vaultRoot: string, input: MaterializeGithubNotificationInput) => {
+      const date =
+        confirmedNodes.find(
+          (current) =>
+            current.pluginMeta?.kind === "date" &&
+            current.pluginMeta.dateKey === input.snapshot.dateKey,
+        ) ??
+        node({
+          id: `date-${input.snapshot.dateKey}`,
+          parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+          sortKey: 1,
+          title: input.snapshot.dateKey,
+          isReadonly: undefined,
+          pluginMeta: { kind: "date", dateKey: input.snapshot.dateKey },
+        });
+      const notification =
+        confirmedNodes.find(
+          (current) =>
+            current.pluginMeta?.kind === "notification" &&
+            current.pluginMeta.notificationKey ===
+              input.snapshot.notificationKey,
+        ) ??
+        node({
+          id: `notification-${input.snapshot.dateKey}`,
+          parentId: date.id,
+          sortKey: 1,
+          title: input.snapshot.title,
+          note: input.snapshot.note,
+          isReadonly: undefined,
+          pluginMeta: {
+            kind: "notification",
+            notificationKey: input.snapshot.notificationKey,
+            notificationType: input.snapshot.notificationType,
+            url: input.snapshot.url,
+            updatedAt: input.snapshot.updatedAt,
+            unread: input.snapshot.unread,
+          },
+        });
+      const byId = new Set(confirmedNodes.map((current) => current.id));
+      const newNodes: NoteNode[] =
+        input.target.kind === "sibling"
+          ? [
+              node({
+                id: input.target.siblingId,
+                parentId: date.id,
+                sortKey: notification.sortKey + 1,
+                title: "",
+              }),
+            ]
+          : input.target.nodes.map((imported, index) =>
+              node({
+                id: `imported-${index}`,
+                parentId: notification.id,
+                sortKey: index + 1,
+                title: imported.title,
+                note: imported.note ?? "",
+              }),
+            );
+      confirmedNodes = [
+        ...confirmedNodes,
+        ...(byId.has(date.id) ? [] : [date]),
+        ...(byId.has(notification.id) ? [] : [notification]),
+        ...newNodes,
+      ];
+      return input.target.kind === "children"
+        ? {
+            workspace: workspace(confirmedNodes),
+            ...historyState(),
+            historyEntryId: null,
+            importedRootIds: newNodes.map(({ id }) => id),
+          }
+        : workspace(confirmedNodes);
+    },
+  );
+  notesStoreMock.refreshMaterializedGithubNotifications.mockImplementation(
+    async () => workspace(confirmedNodes),
+  );
+  notesStoreMock.markMaterializedGithubNotificationRead.mockImplementation(
+    async (
+      _vaultRoot: string,
+      input: { notificationKey: string; updatedAt: string },
+    ) => {
+      confirmedNodes = confirmedNodes.map((current) =>
+        current.pluginMeta?.kind === "notification" &&
+        current.pluginMeta.notificationKey === input.notificationKey
+          ? {
+              ...current,
+              pluginMeta: { ...current.pluginMeta, unread: false },
+            }
+          : current,
+      );
+      return workspace(confirmedNodes);
+    },
+  );
+  notesStoreMock.setGithubGroupCollapsed.mockImplementation(async () =>
+    workspace(confirmedNodes),
+  );
+  notesStoreMock.deleteNodes.mockImplementation(
+    async (_vaultRoot: string, input: { nodeIds: readonly NoteId[] }) => {
+      const ids = new Set(input.nodeIds);
+      confirmedNodes = confirmedNodes.filter((current) => !ids.has(current.id));
+      return workspace(confirmedNodes);
+    },
   );
   notesStoreMock.toggleCollapsed.mockImplementation(
     async (_vaultRoot: string, nodeId: NoteId) => {
       confirmedNodes = confirmedNodes.map((current) =>
         current.id === nodeId
           ? { ...current, isCollapsed: !current.isCollapsed }
-          : current
+          : current,
       );
       return workspace(confirmedNodes);
-    }
+    },
   );
   notesStoreMock.toggleComplete.mockImplementation(
     async (_vaultRoot: string, nodeId: NoteId) => {
@@ -380,24 +516,22 @@ function configureRepository(
           ? {
               ...current,
               completedAt:
-                current.completedAt === null
-                  ? "2026-07-10T01:00:00Z"
-                  : null
+                current.completedAt === null ? "2026-07-10T01:00:00Z" : null,
             }
-          : current
+          : current,
       );
       return workspace(confirmedNodes);
-    }
+    },
   );
   notesStoreMock.toggleStar.mockImplementation(
     async (_vaultRoot: string, nodeId: NoteId) => {
       confirmedNodes = confirmedNodes.map((current) =>
         current.id === nodeId
           ? { ...current, isStarred: !current.isStarred }
-          : current
+          : current,
       );
       return workspace(confirmedNodes);
-    }
+    },
   );
   notesStoreMock.duplicateNode.mockImplementation(
     async (_vaultRoot: string, nodeId: NoteId) => {
@@ -409,54 +543,56 @@ function configureRepository(
             ...source,
             id: `${source.id}-copy`,
             sortKey: source.sortKey + 0.5,
-            title: `${source.title} copy`
-          }
+            title: `${source.title} copy`,
+          },
         ];
       }
       return workspace(confirmedNodes);
-    }
+    },
   );
   notesStoreMock.removeEmptyNode.mockImplementation(async () =>
-    workspace(confirmedNodes)
+    workspace(confirmedNodes),
   );
   notesStoreMock.softDeleteNode.mockImplementation(
     async (_vaultRoot: string, nodeId: NoteId) => {
-      confirmedNodes = confirmedNodes.filter((current) => current.id !== nodeId);
+      confirmedNodes = confirmedNodes.filter(
+        (current) => current.id !== nodeId,
+      );
       return workspace(confirmedNodes);
-    }
+    },
   );
   notesStoreMock.restoreNode.mockImplementation(async () =>
-    workspace(confirmedNodes)
+    workspace(confirmedNodes),
   );
   notesStoreMock.archiveNode.mockImplementation(async () =>
-    workspace(confirmedNodes)
+    workspace(confirmedNodes),
   );
   notesStoreMock.unarchiveNode.mockImplementation(async () =>
-    workspace(confirmedNodes)
+    workspace(confirmedNodes),
   );
   notesStoreMock.importAttachmentPaths.mockImplementation(async () =>
-    workspace(confirmedNodes)
+    workspace(confirmedNodes),
   );
   notesStoreMock.importImageNodePaths.mockImplementation(async () =>
-    workspace(confirmedNodes)
+    workspace(confirmedNodes),
   );
   notesStoreMock.importImageNodeBytes.mockImplementation(async () =>
-    workspace(confirmedNodes)
+    workspace(confirmedNodes),
   );
   notesStoreMock.readAttachmentBytes.mockRejectedValue(
-    new Error("Attachment bytes are unavailable")
+    new Error("Attachment bytes are unavailable"),
   );
   notesStoreMock.resizeAttachment.mockImplementation(async () =>
-    workspace(confirmedNodes)
+    workspace(confirmedNodes),
   );
   notesStoreMock.removeAttachment.mockImplementation(async () =>
-    workspace(confirmedNodes)
+    workspace(confirmedNodes),
   );
   notesStoreMock.splitNode.mockImplementation(async () =>
-    workspace(confirmedNodes)
+    workspace(confirmedNodes),
   );
   notesStoreMock.moveNode.mockImplementation(async () =>
-    workspace(confirmedNodes)
+    workspace(confirmedNodes),
   );
   notesStoreMock.applyBatch.mockImplementation(
     async (_vaultRoot: string, input: ApplyNotesBatchInput) => {
@@ -466,34 +602,39 @@ function configureRepository(
           ids.has(current.id)
             ? {
                 ...current,
-                completedAt: input.completed ? "2026-07-10T01:00:00Z" : null
+                completedAt: input.completed ? "2026-07-10T01:00:00Z" : null,
               }
-            : current
+            : current,
         );
       } else if (input.op === "delete") {
         confirmedNodes = confirmedNodes.filter(
-          (current) => !ids.has(current.id)
+          (current) => !ids.has(current.id),
         );
       }
       // indent/outdent/move batch semantics are covered by the keyboard
       // resolution tests; the integration harness only needs completion and
       // deletion to reflect in the rendered tree.
       return workspace(confirmedNodes);
-    }
+    },
   );
   notesStoreMock.emptyTrash.mockImplementation(async () =>
-    workspace(confirmedNodes)
+    workspace(confirmedNodes),
   );
   notesStoreMock.search.mockResolvedValue([]);
   notesStoreMock.searchStructured.mockResolvedValue([]);
   notesStoreMock.listTags.mockResolvedValue([]);
   notesStoreMock.listTagsWithCounts.mockResolvedValue([]);
   notesStoreMock.deleteDatabase.mockResolvedValue({
-    attachmentCleanupFailed: false
+    attachmentCleanupFailed: false,
   });
   const defaultMutationMethods = [
     "createNode",
+    "materializeGithubNotificationAndCreateSibling",
+    "materializeGithubNotificationAndReparent",
+    "setGithubGroupCollapsed",
+    "deleteNodes",
     "updateNode",
+    "setReadonly",
     "splitNode",
     "moveNode",
     "applyBatch",
@@ -510,7 +651,7 @@ function configureRepository(
     "importImageNodePaths",
     "importImageNodeBytes",
     "resizeAttachment",
-    "removeAttachment"
+    "removeAttachment",
   ] as const;
   for (const methodName of defaultMutationMethods) {
     const method = notesStoreMock[methodName];
@@ -521,9 +662,20 @@ function configureRepository(
   }
 }
 
+function enableReadonlyDeletePreflight(
+  readonlyDescendantIds: readonly NoteId[],
+) {
+  const deleteNodes = vi.fn().mockResolvedValue({
+    readonlyDescendantIds: [...readonlyDescendantIds],
+  });
+  Reflect.set(notesStoreMock, "deleteNodes", deleteNodes);
+  return deleteNodes;
+}
+
 function renderNotesWorkspace(
   attachmentUi?: NotesAttachmentUiBoundary,
-  today?: { year: number; month: number; day: number }
+  today?: { year: number; month: number; day: number },
+  externalSources?: ExternalSourcesBoundary,
 ) {
   const feature = (
     <NotesFeatureProvider attachmentUi={attachmentUi}>
@@ -531,24 +683,60 @@ function renderNotesWorkspace(
       <NotesOutlinePane />
     </NotesFeatureProvider>
   );
+  const featureWithSources = externalSources ? (
+    <ExternalSourcesContext.Provider value={externalSources}>
+      {feature}
+    </ExternalSourcesContext.Provider>
+  ) : (
+    feature
+  );
   return render(
     <StrictMode>
       <NotesFeedbackProvider active>
         <VaultRootContext.Provider value="/vault">
           {today ? (
-            <NotesDateTodayProvider today={today}>{feature}</NotesDateTodayProvider>
-          ) : feature}
+            <NotesDateTodayProvider today={today}>
+              {featureWithSources}
+            </NotesDateTodayProvider>
+          ) : (
+            featureWithSources
+          )}
         </VaultRootContext.Provider>
         <div className="statusbar-feedback" aria-label="Status bar feedback">
           <NotesStatusBarMessage />
         </div>
       </NotesFeedbackProvider>
-    </StrictMode>
+    </StrictMode>,
   );
 }
 
+function githubSources(
+  items: readonly ExternalBullet[],
+): ExternalSourcesBoundary {
+  return {
+    pages: [
+      {
+        providerId: "github-notifications",
+        connectionId: items[0]?.key.connectionId ?? null,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        availability: "online",
+        items,
+        loaded: true,
+        loading: false,
+        error: null,
+        syncedAt: "2026-07-22T12:00:00Z",
+        completingKeys: new Set(),
+        completionErrors: {},
+      },
+    ],
+    refresh: vi.fn().mockResolvedValue(undefined),
+    complete: vi.fn().mockResolvedValue(undefined),
+    openDetails: vi.fn(),
+  };
+}
+
 function rowReplayWorkspace(
-  keyboardInsertionInteractionEpoch?: number
+  keyboardInsertionInteractionEpoch?: number,
 ): UseNotesWorkspaceResult & {
   pendingPrimarySelection: {
     requestId: number;
@@ -558,20 +746,23 @@ function rowReplayWorkspace(
   };
 } {
   const state = normalizeWorkspace({
-    nodes: [node({ id: "row", title: "abcdef" })]
+    nodes: [node({ id: "row", title: "abcdef" })],
   });
   state.pendingFocusId = "row";
   state.pendingFocusField = "title";
   const noOp = vi.fn().mockResolvedValue(undefined);
   const acknowledgeFocus = vi.fn().mockResolvedValue(undefined);
-  const actions = new Proxy<Record<string, typeof noOp>>({}, {
-    get: (_target, property) =>
-      property === "pendingKeyboardInsertionInteractionEpoch"
-        ? () => keyboardInsertionInteractionEpoch
-        : property === "acknowledgeFocus"
-          ? acknowledgeFocus
-          : noOp
-  }) as unknown as UseNotesWorkspaceResult["actions"];
+  const actions = new Proxy<Record<string, typeof noOp>>(
+    {},
+    {
+      get: (_target, property) =>
+        property === "pendingKeyboardInsertionInteractionEpoch"
+          ? () => keyboardInsertionInteractionEpoch
+          : property === "acknowledgeFocus"
+            ? acknowledgeFocus
+            : noOp,
+    },
+  ) as unknown as UseNotesWorkspaceResult["actions"];
   return {
     state,
     actions,
@@ -589,23 +780,23 @@ function rowReplayWorkspace(
       requestId: 31,
       nodeId: "row",
       field: "title",
-      selection: { anchorUtf16: 5, focusUtf16: 1 }
-    }
+      selection: { anchorUtf16: 5, focusUtf16: 1 },
+    },
   } as unknown as UseNotesWorkspaceResult & {
-  pendingPrimarySelection: {
-    requestId: number;
-    nodeId: string;
-    field: "title";
-    selection: { anchorUtf16: number; focusUtf16: number };
+    pendingPrimarySelection: {
+      requestId: number;
+      nodeId: string;
+      field: "title";
+      selection: { anchorUtf16: number; focusUtf16: number };
     };
   };
 }
 
 function signatureMismatchInsertionWorkspace(
-  visibleSignature = "different-visible-projection"
+  visibleSignature = "different-visible-projection",
 ): UseNotesWorkspaceResult {
   const state = normalizeWorkspace({
-    nodes: [node({ id: "row", title: "inserted" })]
+    nodes: [node({ id: "row", title: "inserted" })],
   });
   state.pendingFocusId = "row";
   state.pendingFocusField = "title";
@@ -621,18 +812,21 @@ function signatureMismatchInsertionWorkspace(
           state.pendingFocusField = null;
         });
       }
-    }
+    },
   );
-  const actions = new Proxy<Record<string, typeof noOp>>({}, {
-    get: (_target, property) =>
-      property === "pendingKeyboardInsertionInteractionEpoch"
-        ? () => 0
-        : property === "acknowledgeFocus"
-          ? acknowledgeFocus
-          : property === "consumeInsertionMotion"
-            ? consumeInsertionMotion
-            : noOp
-  }) as unknown as UseNotesWorkspaceResult["actions"];
+  const actions = new Proxy<Record<string, typeof noOp>>(
+    {},
+    {
+      get: (_target, property) =>
+        property === "pendingKeyboardInsertionInteractionEpoch"
+          ? () => 0
+          : property === "acknowledgeFocus"
+            ? acknowledgeFocus
+            : property === "consumeInsertionMotion"
+              ? consumeInsertionMotion
+              : noOp,
+    },
+  ) as unknown as UseNotesWorkspaceResult["actions"];
   const projectionPublication = {
     projectionGeneration: 24,
     layoutGeneration: 13,
@@ -649,8 +843,8 @@ function signatureMismatchInsertionWorkspace(
           postcondition: {
             kind: "split",
             expectedSourceTitle: "before",
-            expectedInsertedTitle: "inserted"
-          }
+            expectedInsertedTitle: "inserted",
+          },
         },
         ownerSessionId: "session-a",
         ownerPaneId: "pane-a",
@@ -670,9 +864,9 @@ function signatureMismatchInsertionWorkspace(
           interactionEpoch: 0,
           visibleSignature: "before",
           geometryGeneration: 4,
-          activeDrag: false
+          activeDrag: false,
         },
-        dragGenerationAtDispatch: 0
+        dragGenerationAtDispatch: 0,
       },
       settlement: {
         intentToken: 7,
@@ -686,9 +880,9 @@ function signatureMismatchInsertionWorkspace(
         baseLayoutGeneration: 9,
         acceptedLayoutGeneration: 13,
         authorityOutcome: "postconditionAccepted",
-        focusEligible: true
-      }
-    }
+        focusEligible: true,
+      },
+    },
   } satisfies NotesProjectionPublication;
   return {
     state,
@@ -703,7 +897,7 @@ function signatureMismatchInsertionWorkspace(
     status: "ready",
     loading: false,
     error: null,
-    projectionPublication
+    projectionPublication,
   } as unknown as UseNotesWorkspaceResult;
 }
 
@@ -711,10 +905,10 @@ function queryTitleInput(value: string): HTMLTextAreaElement | null {
   return (
     Array.from(
       document.querySelectorAll<HTMLTextAreaElement>(
-        'textarea[aria-label="Edit node title"]'
-      )
+        'textarea[aria-label="Edit node title"]',
+      ),
     ).find(
-      (input) => input.value === value || input.value.trim() === value.trim()
+      (input) => input.value === value || input.value.trim() === value.trim(),
     ) ?? null
   );
 }
@@ -743,20 +937,19 @@ async function findTitleInput(value: string): Promise<HTMLTextAreaElement> {
 
 async function activatePageTitle(): Promise<HTMLTextAreaElement> {
   const activeTitle = screen.queryByRole<HTMLTextAreaElement>("textbox", {
-    name: "Edit page title"
+    name: "Edit page title",
   });
   if (activeTitle) return activeTitle;
-  fireEvent.pointerDown(
-    screen.getByRole("group", { name: "Edit page title" })
-  );
+  fireEvent.pointerDown(screen.getByRole("group", { name: "Edit page title" }));
   return screen.findByRole<HTMLTextAreaElement>("textbox", {
-    name: "Edit page title"
+    name: "Edit page title",
   });
 }
 
 function textareasByName(name: string): HTMLTextAreaElement[] {
-  return Array.from(document.querySelectorAll<HTMLTextAreaElement>("textarea"))
-    .filter((textarea) => textarea.getAttribute("aria-label") === name);
+  return Array.from(
+    document.querySelectorAll<HTMLTextAreaElement>("textarea"),
+  ).filter((textarea) => textarea.getAttribute("aria-label") === name);
 }
 
 function queryTextareaByName(name: string): HTMLTextAreaElement | null {
@@ -778,7 +971,7 @@ async function findTextareaByName(name: string): Promise<HTMLTextAreaElement> {
 
 async function openNodeMenu(label: string, user = userEvent.setup()) {
   await user.click(
-    await screen.findByRole("button", { name: `More actions for ${label}` })
+    await screen.findByRole("button", { name: `More actions for ${label}` }),
   );
   return screen.findByRole("menu");
 }
@@ -786,7 +979,7 @@ async function openNodeMenu(label: string, user = userEvent.setup()) {
 function dispatchClipboardEvent(
   kind: "copy" | "cut",
   target: Element,
-  order?: string[]
+  order?: string[],
 ) {
   const values = new Map<string, string>();
   const setData = vi.fn((type: string, value: string) => {
@@ -799,12 +992,12 @@ function dispatchClipboardEvent(
       ? createEvent.copy(target, {
           bubbles: true,
           cancelable: true,
-          clipboardData
+          clipboardData,
         })
       : createEvent.cut(target, {
           bubbles: true,
           cancelable: true,
-          clipboardData
+          clipboardData,
         });
   fireEvent(target, event);
   return { event, setData, values };
@@ -816,11 +1009,11 @@ function installNavigatorClipboard(clipboard: {
 }): () => void {
   const original = Object.getOwnPropertyDescriptor(
     window.navigator,
-    "clipboard"
+    "clipboard",
   );
   Object.defineProperty(window.navigator, "clipboard", {
     configurable: true,
-    value: clipboard
+    value: clipboard,
   });
   return () => {
     if (original) {
@@ -834,8 +1027,8 @@ function installNavigatorClipboard(clipboard: {
 function selectedOutlineIds(): string[] {
   return Array.from(
     document.querySelectorAll<HTMLElement>(
-      '[data-outline-id][data-range-selected="true"]'
-    )
+      '[data-outline-id][data-range-selected="true"]',
+    ),
   ).map((row) => row.dataset.outlineId ?? "");
 }
 
@@ -850,7 +1043,7 @@ function mockOutlineRowRects() {
       bottom: top + height,
       width,
       height,
-      toJSON: () => ({})
+      toJSON: () => ({}),
     }) as DOMRect;
 
   return vi
@@ -881,9 +1074,9 @@ function mockNotesContentWidth(width: number, viewportWidth = 900): void {
         left: 0,
         width: measuredWidth,
         height: 0,
-        toJSON: () => ({})
+        toJSON: () => ({}),
       } as DOMRect;
-    }
+    },
   );
 }
 
@@ -907,10 +1100,10 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.initialize).toHaveBeenCalledOnce();
     expect(notesStoreMock.initialize).toHaveBeenCalledWith(
       "/vault",
-      expect.objectContaining({ sessionId: expect.any(String) })
+      expect.objectContaining({ sessionId: expect.any(String) }),
     );
     expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
-      kind: "active"
+      kind: "active",
     });
     expect("__TAURI_INTERNALS__" in window).toBe(false);
   });
@@ -927,12 +1120,12 @@ describe("Notes workspace", () => {
     expect(presentation).toHaveTextContent("Read guide");
     expect(presentation).not.toHaveTextContent("> ");
     expect(
-      within(presentation).getByRole("button", { name: "Open link guide" })
+      within(presentation).getByRole("button", { name: "Open link guide" }),
     ).toBeInTheDocument();
 
     const textarea = getTitleInput(source);
     expect(presentation).toHaveTextContent(source, {
-      normalizeWhitespace: false
+      normalizeWhitespace: false,
     });
     expect(textarea).toHaveValue(source);
   });
@@ -950,10 +1143,10 @@ describe("Notes workspace", () => {
         right: 500,
         bottom: 0,
         left: 0,
-        toJSON: () => ({})
+        toJSON: () => ({}),
       });
     configureRepository([
-      node({ id: "markdown-image", title: source, markdownImageWidth: 360 })
+      node({ id: "markdown-image", title: source, markdownImageWidth: 360 }),
     ]);
 
     try {
@@ -966,14 +1159,14 @@ describe("Notes workspace", () => {
       });
       Object.defineProperties(loadingImage, {
         naturalWidth: { configurable: true, value: 720 },
-        naturalHeight: { configurable: true, value: 360 }
+        naturalHeight: { configurable: true, value: 360 },
       });
       fireEvent.load(loadingImage);
 
       const image = screen.getByRole("img", { name: "Quarterly chart" });
       expect(image).toBeVisible();
       const handle = screen.getByRole("separator", {
-        name: "Resize Quarterly chart"
+        name: "Resize Quarterly chart",
       });
       fireEvent.keyDown(handle, { key: "ArrowRight" });
       fireEvent.keyUp(handle, { key: "ArrowRight" });
@@ -982,14 +1175,14 @@ describe("Notes workspace", () => {
           "/vault",
           expect.objectContaining({
             id: "markdown-image",
-            markdownImageWidth: 376
+            markdownImageWidth: 376,
           }),
-          expect.objectContaining({ commandKind: "text" })
-        )
+          expect.objectContaining({ commandKind: "text" }),
+        ),
       );
 
       fireEvent.doubleClick(
-        screen.getByRole("img", { name: "Quarterly chart" })
+        screen.getByRole("img", { name: "Quarterly chart" }),
       );
       await waitFor(() => expect(queryTitleInput(source)).toHaveFocus());
       expect(queryTitleInput(source)).toHaveValue(source);
@@ -1001,7 +1194,7 @@ describe("Notes workspace", () => {
   it("clears persisted Markdown image width when its title becomes text", async () => {
     const source = "![Quarterly chart](https://example.com/chart.png)";
     configureRepository([
-      node({ id: "markdown-image", title: source, markdownImageWidth: 360 })
+      node({ id: "markdown-image", title: source, markdownImageWidth: 360 }),
     ]);
     renderNotesWorkspace();
 
@@ -1017,11 +1210,1370 @@ describe("Notes workspace", () => {
         expect.objectContaining({
           id: "markdown-image",
           title: "Quarterly chart",
-          markdownImageWidth: null
+          markdownImageWidth: null,
         }),
-        expect.objectContaining({ commandKind: "text" })
-      )
+        expect.objectContaining({ commandKind: "text" }),
+      ),
     );
+  });
+
+  it("keeps ordinary readonly bullets in the native editor while restoring temporary content", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({
+        id: "readonly",
+        title: "Protected title",
+        note: "Protected note",
+        isReadonly: true,
+      }),
+    ]);
+    notesStoreMock.setReadonly.mockImplementation(async (_vaultRoot, input) => {
+      confirmedNodes = confirmedNodes.map((current) =>
+        current.id === input.nodeId
+          ? { ...current, isReadonly: input.isReadonly }
+          : current,
+      );
+      return workspace(confirmedNodes);
+    });
+    renderNotesWorkspace();
+
+    const title = await findTitleInput("Protected title");
+    const row = title.closest<HTMLElement>("[data-outline-id='readonly']")!;
+    expect(row).not.toHaveClass("notes-node-readonly");
+    const lock = within(row).getByRole("img", { name: "읽기 전용" });
+    expect(lock).not.toHaveAttribute("tabindex");
+    expect(lock.closest(".notes-node-readonly-actions")).toBe(
+      row.querySelector(".notes-node-title-field")?.nextElementSibling,
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-content-line\[data-readonly="true"\]\s*{[^}]*display:\s*flex;[^}]*width:\s*fit-content;[^}]*max-width:\s*100%;/s,
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node\[data-readonly="true"\]\s+\.notes-node-readonly-actions\s*{[^}]*opacity:\s*0;/s,
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node\[data-readonly="true"\]:hover\s+\.notes-node-readonly-actions,[^}]*\.notes-node\[data-readonly="true"\]:focus-within\s+\.notes-node-readonly-actions\s*{[^}]*opacity:\s*1;/s,
+    );
+
+    fireEvent.change(title, { target: { value: "Temporary title" } });
+    expect(title).toHaveValue("Temporary title");
+    fireEvent.blur(title);
+    expect(title).toHaveValue("Protected title");
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+
+    const note = await findTextareaByName("Supporting note: Protected title");
+    fireEvent.change(note, { target: { value: "Temporary note" } });
+    fireEvent.keyDown(note, { key: "Escape" });
+    expect(note).toHaveValue("Protected note");
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+
+    const menu = await openNodeMenu("Protected title", user);
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Make editable" }),
+    );
+    await waitFor(() =>
+      expect(notesStoreMock.setReadonly).toHaveBeenCalledWith(
+        "/vault",
+        { nodeId: "readonly", isReadonly: false },
+        historyContextMatcher(),
+      ),
+    );
+  });
+
+  it("preserves a focused readonly row draft across lifecycle updates and clamps backing sync", async () => {
+    vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+    configureRepository([
+      node({
+        id: "readonly",
+        title: "Protected title",
+        isReadonly: true,
+      }),
+    ]);
+    renderNotesWorkspace();
+    const title = await findTitleInput("Protected title");
+    fireEvent.change(title, { target: { value: "Temporary title" } });
+    title.setSelectionRange(15, 15);
+
+    fireEvent.keyDown(title, { key: "Enter", metaKey: true });
+    await waitFor(() =>
+      expect(notesStoreMock.toggleComplete).toHaveBeenCalledOnce(),
+    );
+    expect(title).toHaveValue("Temporary title");
+    expect(title).toHaveFocus();
+
+    notesStoreMock.toggleComplete.mockImplementationOnce(async () => {
+      confirmedNodes = confirmedNodes.map((current) =>
+        current.id === "readonly"
+          ? { ...current, title: "Synced", completedAt: null }
+          : current,
+      );
+      return workspace(confirmedNodes);
+    });
+    fireEvent.keyDown(title, { key: "Enter", metaKey: true });
+    await waitFor(() => {
+      expect(title).toHaveValue("Synced");
+      expect(title).toHaveFocus();
+      expect(title.selectionStart).toBe("Synced".length);
+      expect(title.selectionEnd).toBe("Synced".length);
+    });
+  });
+
+  it("does not restore or navigate a readonly note during IME composition", async () => {
+    configureRepository([
+      node({
+        id: "readonly",
+        title: "Protected title",
+        note: "원본",
+        isReadonly: true,
+      }),
+    ]);
+    renderNotesWorkspace();
+    const note = await findTextareaByName("Supporting note: Protected title");
+
+    fireEvent.compositionStart(note);
+    fireEvent.change(note, { target: { value: "작성 중" } });
+    fireEvent.keyDown(note, { key: "Escape", isComposing: true });
+
+    expect(note).toHaveValue("작성 중");
+    expect(note).toHaveFocus();
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+  });
+
+  it("composes the stored GN root and hybrid rows in one outline without zoom-only editors", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({ id: "root-a", sortKey: 1, title: "Root A" }),
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 2,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+      node({ id: "root-b", sortKey: 3, title: "Root B" }),
+      node({
+        id: "date-node",
+        parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: "2026.07.22",
+        isReadonly: undefined,
+        pluginMeta: { kind: "date", dateKey: "2026.07.22" },
+      }),
+      node({
+        id: "saved-notification",
+        parentId: "date-node",
+        sortKey: 1,
+        title: "Saved notification",
+        isReadonly: undefined,
+        pluginMeta: {
+          kind: "notification",
+          notificationKey:
+            '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/42",
+          updatedAt: "2026-07-22T10:00:00Z",
+          unread: true,
+        },
+      }),
+      node({
+        id: "user-child",
+        parentId: "saved-notification",
+        sortKey: 1,
+        title: "User child",
+      }),
+    ]);
+    renderNotesWorkspace();
+
+    await findTitleInput("Root A");
+    const outline = screen.getByLabelText("Notes outline");
+    const list = outline.querySelector(".notes-outline-list");
+    const topLevelIds = Array.from(list?.children ?? [])
+      .map(
+        (item) =>
+          item.querySelector<HTMLElement>(":scope > .notes-node")?.dataset
+            .outlineId,
+      )
+      .filter((id): id is string => id !== undefined);
+    expect(topLevelIds).toEqual([
+      "root-a",
+      GITHUB_NOTIFICATIONS_ROOT_ID,
+      "root-b",
+    ]);
+    const githubRootRow = outline.querySelector<HTMLElement>(
+      `[data-outline-id="${GITHUB_NOTIFICATIONS_ROOT_ID}"]`,
+    );
+    expect(githubRootRow).not.toBeNull();
+    expect(githubRootRow?.querySelector("textarea")).toBeNull();
+    expect(githubRootRow).not.toHaveAttribute("data-notes-attachment-target");
+    expect(
+      githubRootRow &&
+        within(githubRootRow).queryByRole("button", {
+          name: `More actions for ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`,
+        }),
+    ).toBeNull();
+    const githubRootActivator = within(githubRootRow!).getByRole("button", {
+      name: `Zoom into ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`,
+    });
+    expect(githubRootActivator).toHaveAttribute(
+      "data-sortable-activator",
+      "true",
+    );
+    fireEvent.click(githubRootActivator, { shiftKey: true });
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "All notes" }),
+      ).not.toHaveAttribute("aria-current");
+    });
+    expect(
+      screen.queryByRole("toolbar", { name: /selected notes/ }),
+    ).toBeNull();
+    await user.click(screen.getByRole("button", { name: "All notes" }));
+    expect(outline.querySelector('[data-outline-id="date-node"]')).toBeNull();
+    const dateGroup = within(outline).getByRole("group", {
+      name: "Notifications for 07.22",
+    });
+    expect(dateGroup.querySelectorAll("[data-outline-id]")).toHaveLength(1);
+    const savedNotificationRow = queryTitleInput(
+      "Saved notification",
+    )?.closest<HTMLElement>("[data-external-bullet-key]");
+    expect(savedNotificationRow).not.toBeNull();
+    expect(savedNotificationRow).not.toHaveAttribute(
+      "data-notes-attachment-target",
+    );
+    expect(savedNotificationRow).not.toHaveAttribute("data-outline-id");
+    expect(
+      within(savedNotificationRow!).getByRole("img", {
+        name: "GitHub에서 관리됨",
+      }),
+    ).toBeVisible();
+    fireEvent.pointerDown(
+      within(savedNotificationRow!).getByRole("group", {
+        name: "Edit node title",
+      }),
+      { shiftKey: true },
+    );
+    expect(
+      screen.queryByRole("toolbar", { name: /selected notes/ }),
+    ).toBeNull();
+
+    fireEvent.pointerDown(queryTitleInput("Saved notification")!, {
+      button: 0,
+      metaKey: true,
+    });
+    const savedTitle = getTitleInput("Saved notification");
+    fireEvent.keyDown(savedTitle, {
+      key: "ArrowDown",
+      shiftKey: true,
+    });
+    expect(
+      screen.queryByRole("toolbar", { name: /selected notes/ }),
+    ).toBeNull();
+
+    fireEvent.pointerDown(
+      within(
+        outline.querySelector<HTMLElement>('[data-outline-id="user-child"]')!,
+      ).getByRole("group", { name: "Edit node title" }),
+      { button: 0, shiftKey: true },
+    );
+    expect(
+      await screen.findByRole("toolbar", {
+        name: "Actions for 1 selected notes",
+      }),
+    ).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Clear selection" }));
+    const userChildSelectionSurface = queryTitleInput("User child");
+    const savedNotificationSelectionSurface =
+      queryTitleInput("Saved notification");
+    expect(userChildSelectionSurface).not.toBeNull();
+    expect(savedNotificationSelectionSurface).not.toBeNull();
+    fireEvent.pointerDown(userChildSelectionSurface!, {
+      button: 0,
+      pointerId: 73,
+    });
+    fireEvent.pointerMove(savedNotificationSelectionSurface!, {
+      buttons: 1,
+      pointerId: 73,
+    });
+    fireEvent.pointerUp(savedNotificationSelectionSurface!, {
+      button: 0,
+      pointerId: 73,
+    });
+    expect(selectedOutlineIds()).toEqual([]);
+    expect(
+      screen.queryByRole("toolbar", { name: /selected notes/ }),
+    ).toBeNull();
+    expect(
+      within(outline).getByText("Connect GitHub to view notifications."),
+    ).not.toHaveAttribute("data-outline-id");
+
+    await user.click(
+      within(screen.getByLabelText("Notes library")).getByRole("button", {
+        name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "All notes" }),
+      ).not.toHaveAttribute("aria-current");
+    });
+    expect(screen.queryByRole("button", { name: "Export" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add child" })).toBeNull();
+    expect(
+      screen.queryByRole("textbox", { name: "Edit page title" }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Completed items" }),
+    ).toBeVisible();
+    expect(within(outline).getAllByText("Saved notification")[0]).toBeVisible();
+    expect(within(outline).getAllByText("User child")[0]).toBeVisible();
+  });
+
+  it("marks a stored GitHub notification read after provider completion and settles the workspace", async () => {
+    const user = userEvent.setup();
+    const notificationKey =
+      '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]';
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+      node({
+        id: "date-node",
+        parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: "2026.07.22",
+        isReadonly: undefined,
+        pluginMeta: { kind: "date", dateKey: "2026.07.22" },
+      }),
+      node({
+        id: "saved-notification",
+        parentId: "date-node",
+        sortKey: 1,
+        title: "Saved notification",
+        isReadonly: undefined,
+        pluginMeta: {
+          kind: "notification",
+          notificationKey,
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/42",
+          updatedAt: "2026-07-22T10:00:00Z",
+          unread: true,
+        },
+      }),
+    ]);
+    const sources = githubSources([]);
+    renderNotesWorkspace(undefined, undefined, sources);
+
+    const savedTitle = await findTitleInput("Saved notification");
+    savedTitle.focus();
+    await user.keyboard("{Meta>}{Enter}{/Meta}");
+
+    await waitFor(() => {
+      expect(sources.complete).toHaveBeenCalledWith({
+        providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
+        connectionId: '["https://api.github.com","account-7"]',
+        remoteId: "42",
+      });
+      expect(
+        notesStoreMock.markMaterializedGithubNotificationRead,
+      ).toHaveBeenCalledWith("/vault", {
+        rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        notificationKey,
+        updatedAt: "2026-07-22T10:00:00Z",
+      });
+    });
+    expect(
+      notesStoreMock.markMaterializedGithubNotificationRead,
+    ).toHaveBeenCalledOnce();
+    expect(
+      notesStoreMock.refreshMaterializedGithubNotifications,
+    ).not.toHaveBeenCalled();
+    expect(
+      queryTitleInput("Saved notification")?.closest(
+        "[data-external-bullet-key]",
+      ),
+    ).toHaveAttribute("data-completed", "true");
+  });
+
+  it("creates an unlocked sibling from a saved notification and lets normal Tab indent it", async () => {
+    const notificationKey =
+      '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]';
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+      node({
+        id: "date-node",
+        parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: "2026.07.22",
+        isReadonly: undefined,
+        pluginMeta: { kind: "date", dateKey: "2026.07.22" },
+      }),
+      node({
+        id: "saved-notification",
+        parentId: "date-node",
+        sortKey: 1,
+        title: "Saved notification",
+        note: "Repository: acme/yonalist",
+        isReadonly: undefined,
+        pluginMeta: {
+          kind: "notification",
+          notificationKey,
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/42",
+          updatedAt: "2026-07-22T10:00:00Z",
+          unread: true,
+        },
+      }),
+    ]);
+    notesStoreMock.moveNode.mockImplementation(
+      async (_vaultRoot: string, input: MoveNoteNodeInput) => {
+        confirmedNodes = confirmedNodes.map((current) =>
+          current.id === input.id
+            ? { ...current, parentId: input.parentId }
+            : current,
+        );
+        return workspace(confirmedNodes);
+      },
+    );
+    renderNotesWorkspace();
+
+    const savedTitle = await findTitleInput("Saved notification");
+    fireEvent.keyDown(savedTitle, { key: "Enter" });
+
+    await waitFor(() => {
+      expect(
+        notesStoreMock.materializeGithubNotificationAndCreateSibling,
+      ).toHaveBeenCalledOnce();
+    });
+    expect(
+      notesStoreMock.materializeGithubNotificationAndCreateSibling,
+    ).toHaveBeenCalledWith(
+      "/vault",
+      {
+        rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        snapshot: {
+          dateKey: "2026.07.22",
+          notificationKey,
+          title: "Saved notification",
+          note: "Repository: acme/yonalist",
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/42",
+          updatedAt: "2026-07-22T10:00:00Z",
+          unread: true,
+        },
+        target: {
+          kind: "sibling",
+          siblingId: expect.any(String),
+        },
+      },
+      historyContextMatcher(),
+    );
+
+    const siblingTitle = await findTitleInput("");
+    const siblingId =
+      siblingTitle.closest<HTMLElement>("[data-outline-id]")?.dataset.outlineId;
+    expect(siblingId).toBeTruthy();
+    expect(
+      confirmedNodes.find((current) => current.id === siblingId)?.parentId,
+    ).toBe("date-node");
+
+    fireEvent.keyDown(siblingTitle, { key: "Tab" });
+    await waitFor(() => {
+      expect(notesStoreMock.moveNode).toHaveBeenCalledWith(
+        "/vault",
+        expect.objectContaining({
+          id: siblingId,
+          parentId: "saved-notification",
+        }),
+        historyContextMatcher(),
+      );
+    });
+    expect(
+      confirmedNodes.find((current) => current.id === siblingId)?.parentId,
+    ).toBe("saved-notification");
+  });
+
+  it("atomically materializes a projected notification and imports a pasted child forest", async () => {
+    const connectionId = '["https://api.github.com","account-7"]';
+    const dateKey = {
+      providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
+      connectionId,
+      remoteId: "date:2026.07.22",
+    };
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+    ]);
+    const dateBullet: ExternalBullet = {
+      key: dateKey,
+      parentKey: null,
+      title: "2026.07.22",
+      note: "",
+      updatedAt: "2026-07-22T12:00:00Z",
+      completed: false,
+      capabilities: {
+        expand: true,
+        openDetails: false,
+        complete: false,
+        uncomplete: false,
+        edit: false,
+        move: false,
+        delete: false,
+        createChild: false,
+      },
+    };
+    const projectedBullet: ExternalBullet = {
+      key: { ...dateKey, remoteId: "43" },
+      parentKey: dateKey,
+      icon: "issue",
+      externalUrl: "https://github.com/acme/yonalist/issues/43",
+      title: "Projected notification",
+      note: "Repository: acme/yonalist",
+      updatedAt: "2026-07-22T11:00:00Z",
+      completed: false,
+      capabilities: {
+        expand: false,
+        openDetails: true,
+        complete: true,
+        uncomplete: false,
+        edit: false,
+        move: false,
+        delete: false,
+        createChild: false,
+      },
+    };
+    renderNotesWorkspace(
+      undefined,
+      undefined,
+      githubSources([dateBullet, projectedBullet]),
+    );
+
+    const projected = await findTitleInput("Projected notification");
+    fireEvent.paste(projected, {
+      clipboardData: {
+        items: [],
+        getData: () => "- first\n  - nested\n- second",
+      },
+    });
+
+    await waitFor(() => {
+      expect(
+        notesStoreMock.materializeGithubNotificationAndCreateSibling,
+      ).toHaveBeenCalledOnce();
+    });
+    expect(
+      notesStoreMock.materializeGithubNotificationAndCreateSibling,
+    ).toHaveBeenCalledWith(
+      "/vault",
+      {
+        rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        snapshot: {
+          dateKey: "2026.07.22",
+          notificationKey:
+            '["github","[\\"https://api.github.com\\",\\"account-7\\"]","43"]',
+          title: "Projected notification",
+          note: "Repository: acme/yonalist",
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/43",
+          updatedAt: "2026-07-22T11:00:00Z",
+          unread: true,
+        },
+        target: {
+          kind: "children",
+          nodes: [
+            {
+              title: "first",
+              children: [{ title: "nested", children: [] }],
+            },
+            { title: "second", children: [] },
+          ],
+        },
+      },
+      historyContextMatcher(),
+    );
+    expect(
+      notesStoreMock.materializeGithubNotificationAndCreateSibling.mock
+        .calls[0]?.[2],
+    ).toMatchObject({ commandKind: "import" });
+  });
+
+  it("drops one ordinary bullet onto a projected notification with one atomic reparent", async () => {
+    const user = userEvent.setup();
+    const connectionId = '["https://api.github.com","account-7"]';
+    const dateKey = {
+      providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
+      connectionId,
+      remoteId: "date:2026.07.22",
+    };
+    const projectedBullet: ExternalBullet = {
+      key: { ...dateKey, remoteId: "drop-target" },
+      parentKey: dateKey,
+      icon: "pull-request",
+      externalUrl: "https://github.com/acme/yonalist/pull/44",
+      title: "Drop target notification",
+      note: "Repository: acme/yonalist",
+      updatedAt: "2026-07-22T11:00:00Z",
+      completed: false,
+      capabilities: {
+        expand: false,
+        openDetails: true,
+        complete: true,
+        uncomplete: false,
+        edit: false,
+        move: false,
+        delete: false,
+        createChild: false,
+      },
+    };
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+      node({ id: "moving", sortKey: 2, title: "Moving bullet" }),
+    ]);
+    notesStoreMock.materializeGithubNotificationAndReparent.mockResolvedValue(
+      workspace(confirmedNodes),
+    );
+    renderNotesWorkspace(
+      undefined,
+      undefined,
+      githubSources([
+        {
+          ...projectedBullet,
+          key: dateKey,
+          parentKey: null,
+          title: "2026.07.22",
+          note: "",
+          externalUrl: undefined,
+          capabilities: {
+            ...projectedBullet.capabilities,
+            expand: true,
+            openDetails: false,
+            complete: false,
+          },
+        },
+        projectedBullet,
+      ]),
+    );
+
+    const moving = await screen.findByRole("button", {
+      name: "Zoom into Moving bullet",
+    });
+    const movingRow = moving.closest<HTMLElement>("[data-outline-id]")!;
+    const targetRow = document.querySelector<HTMLElement>(
+      "[data-github-notification-drop-target]",
+    )!;
+    movingRow.getBoundingClientRect = () =>
+      ({
+        x: 0,
+        y: 0,
+        left: 0,
+        top: 0,
+        right: 500,
+        bottom: 40,
+        width: 500,
+        height: 40,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    targetRow.getBoundingClientRect = () =>
+      ({
+        x: 0,
+        y: 80,
+        left: 0,
+        top: 80,
+        right: 500,
+        bottom: 120,
+        width: 500,
+        height: 40,
+        toJSON: () => ({}),
+      }) as DOMRect;
+
+    await user.pointer({
+      keys: "[MouseLeft>]",
+      target: moving,
+      coords: { clientX: 12, clientY: 20 },
+    });
+    await user.pointer({
+      target: targetRow,
+      coords: { clientX: 120, clientY: 100 },
+    });
+    await user.pointer({
+      target: targetRow,
+      coords: { clientX: 121, clientY: 101 },
+    });
+    expect(
+      screen.getByTestId("notes-selection-drag-preview"),
+    ).toBeInTheDocument();
+    expect(
+      notesStoreMock.materializeGithubNotificationAndReparent,
+    ).not.toHaveBeenCalled();
+    await user.pointer({
+      keys: "[/MouseLeft]",
+      target: targetRow,
+      coords: { clientX: 120, clientY: 100 },
+    });
+
+    await waitFor(() =>
+      expect(
+        notesStoreMock.materializeGithubNotificationAndReparent,
+      ).toHaveBeenCalledOnce(),
+    );
+    expect(
+      notesStoreMock.materializeGithubNotificationAndReparent,
+    ).toHaveBeenCalledWith(
+      "/vault",
+      {
+        rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        nodeId: "moving",
+        snapshot: {
+          dateKey: "2026.07.22",
+          notificationKey:
+            '["github","[\\"https://api.github.com\\",\\"account-7\\"]","drop-target"]',
+          title: "Drop target notification",
+          note: "Repository: acme/yonalist",
+          notificationType: "PullRequest",
+          url: "https://github.com/acme/yonalist/pull/44",
+          updatedAt: "2026-07-22T11:00:00Z",
+          unread: true,
+        },
+      },
+      historyContextMatcher(),
+    );
+    expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+  });
+
+  it("moves composite focus across saved notifications, user rows, and projected notifications", async () => {
+    const connectionId = '["https://api.github.com","account-7"]';
+    const dateKey = {
+      providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
+      connectionId,
+      remoteId: "date:2026.07.22",
+    };
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+      node({
+        id: "date-node",
+        parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: "2026.07.22",
+        isReadonly: undefined,
+        pluginMeta: { kind: "date", dateKey: "2026.07.22" },
+      }),
+      node({
+        id: "saved-notification",
+        parentId: "date-node",
+        sortKey: 1,
+        title: "Saved notification",
+        note: "Saved note",
+        isReadonly: undefined,
+        pluginMeta: {
+          kind: "notification",
+          notificationKey:
+            '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/42",
+          updatedAt: "2026-07-22T10:00:00Z",
+          unread: true,
+        },
+      }),
+      node({
+        id: "user-child",
+        parentId: "saved-notification",
+        sortKey: 1,
+        title: "User child",
+      }),
+    ]);
+    const dateBullet: ExternalBullet = {
+      key: dateKey,
+      parentKey: null,
+      title: "2026.07.22",
+      note: "",
+      updatedAt: "2026-07-22T12:00:00Z",
+      completed: false,
+      capabilities: {
+        expand: true,
+        openDetails: false,
+        complete: false,
+        uncomplete: false,
+        edit: false,
+        move: false,
+        delete: false,
+        createChild: false,
+      },
+    };
+    const projectedBullet: ExternalBullet = {
+      key: { ...dateKey, remoteId: "43" },
+      parentKey: dateKey,
+      icon: "issue",
+      externalUrl: "https://github.com/acme/yonalist/issues/43",
+      title: "Projected notification",
+      note: "",
+      updatedAt: "2026-07-22T11:00:00Z",
+      completed: false,
+      capabilities: {
+        expand: false,
+        openDetails: true,
+        complete: true,
+        uncomplete: false,
+        edit: false,
+        move: false,
+        delete: false,
+        createChild: false,
+      },
+    };
+    renderNotesWorkspace(
+      undefined,
+      undefined,
+      githubSources([dateBullet, projectedBullet]),
+    );
+
+    const saved = await findTitleInput("Saved notification");
+    const savedNote = getTextareaByName("Supporting note: Saved notification");
+    const user = await findTitleInput("User child");
+    const projected = await findTitleInput("Projected notification");
+    fireEvent.focus(saved);
+
+    fireEvent.keyDown(saved, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(savedNote);
+    savedNote.setSelectionRange(3, 3);
+    fireEvent.keyDown(savedNote, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(savedNote);
+    fireEvent.keyDown(savedNote, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(savedNote);
+    savedNote.setSelectionRange(savedNote.value.length, savedNote.value.length);
+    fireEvent.keyDown(savedNote, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(user);
+    fireEvent.keyDown(user, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(projected);
+    fireEvent.keyDown(projected, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(user);
+
+    user.setSelectionRange(user.value.length, user.value.length);
+    fireEvent.keyDown(user, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(projected);
+    expect(projected.selectionStart).toBe(0);
+    projected.setSelectionRange(0, 0);
+    fireEvent.keyDown(projected, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(user);
+    expect(user.selectionStart).toBe(user.value.length);
+  });
+
+  it("returns projected notification focus to the GN root when the root collapses", async () => {
+    const connectionId = '["https://api.github.com","account-7"]';
+    const dateKey = {
+      providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
+      connectionId,
+      remoteId: "date:2026.07.22",
+    };
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isCollapsed: false,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+    ]);
+    renderNotesWorkspace(
+      undefined,
+      undefined,
+      githubSources([
+        {
+          key: dateKey,
+          parentKey: null,
+          title: "2026.07.22",
+          note: "",
+          updatedAt: "2026-07-22T12:00:00Z",
+          completed: false,
+          capabilities: {
+            expand: true,
+            openDetails: false,
+            complete: false,
+            uncomplete: false,
+            edit: false,
+            move: false,
+            delete: false,
+            createChild: false,
+          },
+        },
+        {
+          key: { ...dateKey, remoteId: "43" },
+          parentKey: dateKey,
+          icon: "issue",
+          externalUrl: "https://github.com/acme/yonalist/issues/43",
+          title: "Projected notification",
+          note: "",
+          updatedAt: "2026-07-22T11:00:00Z",
+          completed: false,
+          capabilities: {
+            expand: false,
+            openDetails: true,
+            complete: true,
+            uncomplete: false,
+            edit: false,
+            move: false,
+            delete: false,
+            createChild: false,
+          },
+        },
+      ]),
+    );
+
+    const presentation = await waitFor(() =>
+      getTitlePresentation("Projected notification"),
+    );
+    presentation.focus();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: `Collapse ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`,
+      }),
+    );
+
+    await waitFor(() =>
+      expect(queryTitleInput("Projected notification")).toBeNull(),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: `Zoom into ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`,
+      }),
+    ).toHaveFocus();
+  });
+
+  it("returns a projected notification link focus to the GN root when the root collapses", async () => {
+    const connectionId = '["https://api.github.com","account-7"]';
+    const dateKey = {
+      providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
+      connectionId,
+      remoteId: "date:2026.07.22",
+    };
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isCollapsed: false,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+    ]);
+    renderNotesWorkspace(
+      undefined,
+      undefined,
+      githubSources([
+        {
+          key: dateKey,
+          parentKey: null,
+          title: "2026.07.22",
+          note: "",
+          updatedAt: "2026-07-22T12:00:00Z",
+          completed: false,
+          capabilities: {
+            expand: true,
+            openDetails: false,
+            complete: false,
+            uncomplete: false,
+            edit: false,
+            move: false,
+            delete: false,
+            createChild: false,
+          },
+        },
+        {
+          key: { ...dateKey, remoteId: "44" },
+          parentKey: dateKey,
+          icon: "issue",
+          externalUrl: "https://github.com/acme/yonalist/issues/44",
+          title: "Link-focused notification",
+          note: "",
+          updatedAt: "2026-07-22T10:00:00Z",
+          completed: false,
+          capabilities: {
+            expand: false,
+            openDetails: true,
+            complete: true,
+            uncomplete: false,
+            edit: false,
+            move: false,
+            delete: false,
+            createChild: false,
+          },
+        },
+      ]),
+    );
+
+    const link = await screen.findByRole("button", {
+      name: "웹에서 열기: Link-focused notification",
+    });
+    link.focus();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: `Collapse ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`,
+      }),
+    );
+
+    await waitFor(() =>
+      expect(queryTitleInput("Link-focused notification")).toBeNull(),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: `Zoom into ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`,
+      }),
+    ).toHaveFocus();
+  });
+
+  it.each(["title", "note"] as const)(
+    "returns an ordinary GN descendant %s focus to the GN root when the root collapses",
+    async (field) => {
+      configureRepository([
+        node({
+          id: GITHUB_NOTIFICATIONS_ROOT_ID,
+          title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+          isCollapsed: false,
+          isReadonly: undefined,
+          pluginState: { collapsedGroups: [] },
+        }),
+        node({
+          id: "date-node",
+          parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+          sortKey: 1,
+          title: "2026.07.22",
+          isReadonly: undefined,
+          pluginMeta: { kind: "date", dateKey: "2026.07.22" },
+        }),
+        node({
+          id: "saved-notification",
+          parentId: "date-node",
+          sortKey: 1,
+          title: "Saved notification",
+          isReadonly: undefined,
+          pluginMeta: {
+            kind: "notification",
+            notificationKey:
+              '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
+            notificationType: "Issue",
+            url: "https://github.com/acme/yonalist/issues/42",
+            updatedAt: "2026-07-22T10:00:00Z",
+            unread: true,
+          },
+        }),
+        node({
+          id: "user-child",
+          parentId: "saved-notification",
+          sortKey: 1,
+          title: "User child",
+          note: "User note",
+        }),
+      ]);
+      renderNotesWorkspace();
+
+      const editor =
+        field === "title"
+          ? await findTitleInput("User child")
+          : await findTextareaByName("Supporting note: User child");
+      fireEvent.focus(editor);
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: `Collapse ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`,
+        }),
+      );
+
+      await waitFor(() => expect(queryTitleInput("User child")).toBeNull());
+      expect(
+        screen.getByRole("button", {
+          name: `Zoom into ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`,
+        }),
+      ).toHaveFocus();
+    },
+  );
+
+  it("returns a hidden projected notification to the current GN breadcrumb in zoom", async () => {
+    const connectionId = '["https://api.github.com","account-7"]';
+    const dateKey = {
+      providerId: GITHUB_EXTERNAL_KEY_PROVIDER,
+      connectionId,
+      remoteId: "date:2026.07.22",
+    };
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+    ]);
+    renderNotesWorkspace(
+      undefined,
+      undefined,
+      githubSources([
+        {
+          key: dateKey,
+          parentKey: null,
+          title: "2026.07.22",
+          note: "",
+          updatedAt: "2026-07-22T12:00:00Z",
+          completed: false,
+          capabilities: {
+            expand: true,
+            openDetails: false,
+            complete: false,
+            uncomplete: false,
+            edit: false,
+            move: false,
+            delete: false,
+            createChild: false,
+          },
+        },
+        {
+          key: { ...dateKey, remoteId: "43" },
+          parentKey: dateKey,
+          icon: "issue",
+          externalUrl: "https://github.com/acme/yonalist/issues/43",
+          title: "Completed projected notification",
+          note: "",
+          updatedAt: "2026-07-22T11:00:00Z",
+          completed: true,
+          capabilities: {
+            expand: false,
+            openDetails: true,
+            complete: false,
+            uncomplete: false,
+            edit: false,
+            move: false,
+            delete: false,
+            createChild: false,
+          },
+        },
+      ]),
+    );
+    fireEvent.click(
+      await within(screen.getByLabelText("Notes library")).findByRole(
+        "button",
+        {
+          name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        },
+      ),
+    );
+    const projected = await findTitleInput("Completed projected notification");
+    projected.focus();
+
+    fireEvent.click(screen.getByRole("button", { name: "Completed items" }));
+
+    await waitFor(() =>
+      expect(queryTitleInput("Completed projected notification")).toBeNull(),
+    );
+    expect(
+      within(screen.getByLabelText("Notes breadcrumb")).getByRole("button", {
+        name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        current: "page",
+      }),
+    ).toHaveFocus();
+  });
+
+  it("blocks selected date-level Shift+Tab from reparenting user rows under the GN root", async () => {
+    const notificationKey =
+      '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]';
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+      node({
+        id: "date-node",
+        parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: "2026.07.22",
+        isReadonly: undefined,
+        pluginMeta: { kind: "date", dateKey: "2026.07.22" },
+      }),
+      node({
+        id: "saved-notification",
+        parentId: "date-node",
+        sortKey: 1,
+        title: "Saved notification",
+        isReadonly: undefined,
+        pluginMeta: {
+          kind: "notification",
+          notificationKey,
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/42",
+          updatedAt: "2026-07-22T10:00:00Z",
+          unread: true,
+        },
+      }),
+      node({
+        id: "date-user-a",
+        parentId: "date-node",
+        sortKey: 2,
+        title: "Date note A",
+      }),
+      node({
+        id: "date-user-b",
+        parentId: "date-node",
+        sortKey: 3,
+        title: "Date note B",
+      }),
+    ]);
+    renderNotesWorkspace();
+    const first = await findTitleInput("Date note A");
+    act(() => first.focus());
+    fireEvent.keyDown(first, { key: "ArrowDown", shiftKey: true });
+    await screen.findByRole("toolbar", {
+      name: "Actions for 2 selected notes",
+    });
+
+    expect(fireEvent.keyDown(first, { key: "Tab", shiftKey: true })).toBe(
+      false,
+    );
+
+    expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+    expect(
+      within(screen.getByLabelText("Status bar feedback")).getByRole("alert"),
+    ).toHaveTextContent(
+      "Outdent cannot move the selected roots outside the current zoom.",
+    );
+  });
+
+  it("outdents selected notification children once to the provider date row", async () => {
+    const notificationKey =
+      '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]';
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+      node({
+        id: "date-node",
+        parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: "2026.07.22",
+        isReadonly: undefined,
+        pluginMeta: { kind: "date", dateKey: "2026.07.22" },
+      }),
+      node({
+        id: "saved-notification",
+        parentId: "date-node",
+        sortKey: 1,
+        title: "Saved notification",
+        isReadonly: undefined,
+        pluginMeta: {
+          kind: "notification",
+          notificationKey,
+          notificationType: "Issue",
+          url: "https://github.com/acme/yonalist/issues/42",
+          updatedAt: "2026-07-22T10:00:00Z",
+          unread: true,
+        },
+      }),
+      node({
+        id: "notification-child-a",
+        parentId: "saved-notification",
+        sortKey: 1,
+        title: "Notification child A",
+      }),
+      node({
+        id: "notification-child-b",
+        parentId: "saved-notification",
+        sortKey: 2,
+        title: "Notification child B",
+      }),
+    ]);
+    renderNotesWorkspace();
+    const first = await findTitleInput("Notification child A");
+    act(() => first.focus());
+    fireEvent.keyDown(first, { key: "ArrowDown", shiftKey: true });
+    await screen.findByRole("toolbar", {
+      name: "Actions for 2 selected notes",
+    });
+
+    expect(fireEvent.keyDown(first, { key: "Tab", shiftKey: true })).toBe(
+      false,
+    );
+
+    await waitFor(() =>
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "outdent",
+          nodeIds: ["notification-child-a", "notification-child-b"],
+        },
+        historyContextMatcher(),
+      ),
+    );
+  });
+
+  it("keeps a projection-only GN root collapsible in All and expanded in zoom", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isCollapsed: true,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+    ]);
+    renderNotesWorkspace();
+
+    const outline = screen.getByLabelText("Notes outline");
+    expect(
+      await within(outline).findByRole("button", {
+        name: `Expand ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`,
+      }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      within(outline).queryByText("Connect GitHub to view notifications."),
+    ).toBeNull();
+
+    await user.click(
+      within(screen.getByLabelText("Notes library")).getByRole("button", {
+        name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+      }),
+    );
+    expect(
+      await within(outline).findByText("Connect GitHub to view notifications."),
+    ).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "All notes" }));
+    expect(
+      within(outline).queryByText("Connect GitHub to view notifications."),
+    ).toBeNull();
+    await user.click(
+      within(outline).getByRole("button", {
+        name: `Expand ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`,
+      }),
+    );
+    expect(
+      await within(outline).findByText("Connect GitHub to view notifications."),
+    ).toBeVisible();
   });
 
   it("restores a backward replay range in a row only after the authoritative title renders", async () => {
@@ -1035,12 +2587,12 @@ describe("Notes workspace", () => {
             </NotesWorkspaceContext.Provider>
           </NotesImageResidencyProvider>
         </VaultRootContext.Provider>
-      </NotesDateTodayProvider>
+      </NotesDateTodayProvider>,
     );
 
     const title = await waitFor(() => {
       const textarea = document.querySelector<HTMLTextAreaElement>(
-        'textarea[aria-label="Edit node title"]'
+        'textarea[aria-label="Edit node title"]',
       );
       expect(textarea).not.toBeNull();
       return textarea!;
@@ -1051,7 +2603,10 @@ describe("Notes workspace", () => {
       expect(title.selectionEnd).toBe(5);
       expect(title.selectionDirection).toBe("backward");
     });
-    expect(workspace.actions.acknowledgeFocus).toHaveBeenLastCalledWith("row", 31);
+    expect(workspace.actions.acknowledgeFocus).toHaveBeenLastCalledWith(
+      "row",
+      31,
+    );
   });
 
   it("does not focus an insertion target after its dispatch interaction epoch is stale", async () => {
@@ -1065,12 +2620,12 @@ describe("Notes workspace", () => {
             </NotesWorkspaceContext.Provider>
           </NotesImageResidencyProvider>
         </VaultRootContext.Provider>
-      </NotesDateTodayProvider>
+      </NotesDateTodayProvider>,
     );
 
     const title = await waitFor(() => {
       const textarea = document.querySelector<HTMLTextAreaElement>(
-        'textarea[aria-label="Edit node title"]'
+        'textarea[aria-label="Edit node title"]',
       );
       expect(textarea).not.toBeNull();
       return textarea!;
@@ -1092,7 +2647,7 @@ describe("Notes workspace", () => {
             </NotesWorkspaceContext.Provider>
           </NotesImageResidencyProvider>
         </VaultRootContext.Provider>
-      </NotesDateTodayProvider>
+      </NotesDateTodayProvider>,
     );
 
     const title = await waitFor(() => {
@@ -1105,7 +2660,7 @@ describe("Notes workspace", () => {
     expect(workspace.actions.consumeInsertionMotion).toHaveBeenCalledOnce();
     expect(workspace.actions.consumeInsertionMotion).toHaveBeenCalledWith(
       7,
-      "row"
+      "row",
     );
     expect(title).not.toHaveFocus();
     expect(workspace.actions.acknowledgeFocus).not.toHaveBeenCalled();
@@ -1121,7 +2676,7 @@ describe("Notes workspace", () => {
             </NotesWorkspaceContext.Provider>
           </NotesImageResidencyProvider>
         </VaultRootContext.Provider>
-      </NotesDateTodayProvider>
+      </NotesDateTodayProvider>,
     );
     await act(async () => undefined);
 
@@ -1131,7 +2686,7 @@ describe("Notes workspace", () => {
 
   it("focuses and acknowledges an insertion target whose visible signature still matches", async () => {
     const workspace = signatureMismatchInsertionWorkspace(
-      '[["row",null,0,false]]'
+      '[["row",null,0,false]]',
     );
     render(
       <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
@@ -1142,7 +2697,7 @@ describe("Notes workspace", () => {
             </NotesWorkspaceContext.Provider>
           </NotesImageResidencyProvider>
         </VaultRootContext.Provider>
-      </NotesDateTodayProvider>
+      </NotesDateTodayProvider>,
     );
 
     const title = await waitFor(() => {
@@ -1163,22 +2718,22 @@ describe("Notes workspace", () => {
       node({
         id: "alpha",
         title: "Alpha 😀 omega",
-        note: "Supporting detail"
-      })
+        note: "Supporting detail",
+      }),
     ]);
     renderNotesWorkspace();
 
     const originalCaretPositionFromPoint = Object.getOwnPropertyDescriptor(
       document,
-      "caretPositionFromPoint"
+      "caretPositionFromPoint",
     );
     try {
       const presentation = await screen.findByRole("group", {
-        name: "Edit node title"
+        name: "Edit node title",
       });
       const textNode = presentation.firstChild!;
       const notePresentation = screen.getByRole("group", {
-        name: "Supporting note: Alpha 😀 omega"
+        name: "Supporting note: Alpha 😀 omega",
       });
       const noteTextNode = notePresentation.firstChild!;
       document.caretPositionFromPoint = vi
@@ -1186,26 +2741,27 @@ describe("Notes workspace", () => {
         .mockReturnValueOnce({
           offsetNode: textNode,
           offset: 8,
-          getClientRect: vi.fn()
+          getClientRect: vi.fn(),
         } as CaretPosition)
         .mockReturnValueOnce({
           offsetNode: noteTextNode,
           offset: 4,
-          getClientRect: vi.fn()
+          getClientRect: vi.fn(),
         } as CaretPosition);
 
       fireEvent.pointerDown(presentation, { clientX: 80, clientY: 20 });
 
       const title = screen.getByRole<HTMLTextAreaElement>("textbox", {
-        name: "Edit node title"
+        name: "Edit node title",
       });
       expect(title).toHaveFocus();
       expect(title.selectionStart).toBe(8);
       expect(title.selectionEnd).toBe(8);
 
-      const note = notePresentation.parentElement?.querySelector<HTMLTextAreaElement>(
-        "textarea"
-      );
+      const note =
+        notePresentation.parentElement?.querySelector<HTMLTextAreaElement>(
+          "textarea",
+        );
       expect(note).not.toBeNull();
       if (!note) {
         throw new Error("Expected the note textarea to be rendered.");
@@ -1221,12 +2777,14 @@ describe("Notes workspace", () => {
         Object.defineProperty(
           document,
           "caretPositionFromPoint",
-          originalCaretPositionFromPoint
+          originalCaretPositionFromPoint,
         );
       } else {
-        delete (document as unknown as {
-          caretPositionFromPoint?: Document["caretPositionFromPoint"];
-        }).caretPositionFromPoint;
+        delete (
+          document as unknown as {
+            caretPositionFromPoint?: Document["caretPositionFromPoint"];
+          }
+        ).caretPositionFromPoint;
       }
     }
   });
@@ -1236,23 +2794,23 @@ describe("Notes workspace", () => {
     const root = node({
       id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306",
       title: "Project",
-      note: "Supporting detail"
+      note: "Supporting detail",
     });
     const first = attachment({
       id: "1c17ba74-a617-45e7-9e21-74068b63befe",
       nodeId: root.id,
       sortKey: 100,
-      originalName: "first.png"
+      originalName: "first.png",
     });
     const second = attachment({
       id: "8f257d31-d255-4fc8-89dc-4e3b30f24a6e",
       nodeId: root.id,
       sortKey: 200,
-      originalName: "second.png"
+      originalName: "second.png",
     });
     configureRepository([root], { [root.id]: [first, second] });
     notesStoreMock.readAttachmentBytes.mockResolvedValue(
-      new Uint8Array([137, 80, 78, 71])
+      new Uint8Array([137, 80, 78, 71]),
     );
     vi.stubGlobal(
       "ResizeObserver",
@@ -1260,15 +2818,15 @@ describe("Notes workspace", () => {
         observe() {}
         unobserve() {}
         disconnect() {}
-      }
+      },
     );
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
-      value: vi.fn((blob: Blob) => `blob:${blob.type}`)
+      value: vi.fn((blob: Blob) => `blob:${blob.type}`),
     });
     Object.defineProperty(URL, "revokeObjectURL", {
       configurable: true,
-      value: vi.fn()
+      value: vi.fn(),
     });
 
     renderNotesWorkspace();
@@ -1276,26 +2834,26 @@ describe("Notes workspace", () => {
     const groups = await screen.findAllByRole("group", { name: /^Image:/ });
     expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual([
       "Image: first.png",
-      "Image: second.png"
+      "Image: second.png",
     ]);
     const supportingNote = await waitFor(() =>
-      getTextareaByName("Supporting note: Project")
+      getTextareaByName("Supporting note: Project"),
     );
     expect(
       supportingNote.compareDocumentPosition(groups[0]) &
-        Node.DOCUMENT_POSITION_FOLLOWING
+        Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(notesStoreMock.readAttachmentBytes).not.toHaveBeenCalled();
     for (const group of groups) {
       await user.click(
-        within(group).getByRole("button", { name: /^Load image / })
+        within(group).getByRole("button", { name: /^Load image / }),
       );
     }
     await waitFor(() =>
-      expect(notesStoreMock.readAttachmentBytes).toHaveBeenCalledTimes(4)
+      expect(notesStoreMock.readAttachmentBytes).toHaveBeenCalledTimes(4),
     );
     expect(
-      notesStoreMock.readAttachmentBytes.mock.calls.map((call) => call[1])
+      notesStoreMock.readAttachmentBytes.mock.calls.map((call) => call[1]),
     ).toEqual([first.id, first.id, second.id, second.id]);
   });
 
@@ -1303,13 +2861,13 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     const root = node({
       id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306",
-      title: "Project"
+      title: "Project",
     });
     configureRepository([root]);
     const attachmentUi = {
       openImageFiles: vi.fn().mockResolvedValue(["/incoming/diagram.png"]),
       saveImageFile: vi.fn().mockResolvedValue(null),
-      subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
+      subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn()),
     };
     mockNotesContentWidth(700, 480);
     notesStoreMock.importImageNodePaths.mockImplementation(
@@ -1318,7 +2876,7 @@ describe("Notes workspace", () => {
         const imported = attachment({
           id: item.attachmentId,
           nodeId: item.nodeId,
-          originalName: "diagram.png"
+          originalName: "diagram.png",
         });
         confirmedNodes = [
           ...confirmedNodes,
@@ -1326,8 +2884,8 @@ describe("Notes workspace", () => {
             id: item.nodeId,
             nodeKind: "image",
             sortKey: 2,
-            title: "diagram.png"
-          })
+            title: "diagram.png",
+          }),
         ];
         confirmedAttachmentsByNodeId = { [item.nodeId]: [imported] };
         return {
@@ -1335,14 +2893,14 @@ describe("Notes workspace", () => {
           historyEntryId: context.entryId,
           ...historyState({
             canUndo: true,
-            nextUndoEntryId: context.entryId
+            nextUndoEntryId: context.entryId,
           }),
-          importedRootIds: [item.nodeId]
+          importedRootIds: [item.nodeId],
         };
-      }
+      },
     );
     notesStoreMock.readAttachmentBytes.mockResolvedValue(
-      new Uint8Array([137, 80, 78, 71])
+      new Uint8Array([137, 80, 78, 71]),
     );
     vi.stubGlobal(
       "ResizeObserver",
@@ -1350,26 +2908,28 @@ describe("Notes workspace", () => {
         observe() {}
         unobserve() {}
         disconnect() {}
-      }
+      },
     );
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
-      value: vi.fn(() => "blob:diagram")
+      value: vi.fn(() => "blob:diagram"),
     });
     Object.defineProperty(URL, "revokeObjectURL", {
       configurable: true,
-      value: vi.fn()
+      value: vi.fn(),
     });
     renderNotesWorkspace(attachmentUi);
 
     const menu = await openNodeMenu("Project", user);
     await user.click(
-      within(menu).getByRole("menuitem", { name: "Upload image" })
+      within(menu).getByRole("menuitem", { name: "Upload image" }),
     );
 
-    await waitFor(() => expect(attachmentUi.openImageFiles).toHaveBeenCalledOnce());
     await waitFor(() =>
-      expect(notesStoreMock.importImageNodePaths).toHaveBeenCalledOnce()
+      expect(attachmentUi.openImageFiles).toHaveBeenCalledOnce(),
+    );
+    await waitFor(() =>
+      expect(notesStoreMock.importImageNodePaths).toHaveBeenCalledOnce(),
     );
     expect(notesStoreMock.importImageNodePaths).toHaveBeenCalledWith(
       "/vault",
@@ -1380,16 +2940,16 @@ describe("Notes workspace", () => {
           {
             nodeId: expect.any(String),
             attachmentId: expect.any(String),
-            sourcePath: "/incoming/diagram.png"
-          }
+            sourcePath: "/incoming/diagram.png",
+          },
         ],
-        initialMaxDisplayWidth: 480
+        initialMaxDisplayWidth: 480,
       },
-      historyContextMatcher()
+      historyContextMatcher(),
     );
     expect(notesStoreMock.importAttachmentPaths).not.toHaveBeenCalled();
     expect(
-      await screen.findByRole("group", { name: "Image: diagram.png" })
+      await screen.findByRole("group", { name: "Image: diagram.png" }),
     ).toBeVisible();
   });
 
@@ -1399,16 +2959,18 @@ describe("Notes workspace", () => {
     const attachmentUi = {
       openImageFiles: vi.fn().mockResolvedValue(null),
       saveImageFile: vi.fn().mockResolvedValue(null),
-      subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
+      subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn()),
     };
     renderNotesWorkspace(attachmentUi);
 
     const menu = await openNodeMenu("Project", user);
     await user.click(
-      within(menu).getByRole("menuitem", { name: "Upload image" })
+      within(menu).getByRole("menuitem", { name: "Upload image" }),
     );
 
-    await waitFor(() => expect(attachmentUi.openImageFiles).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(attachmentUi.openImageFiles).toHaveBeenCalledOnce(),
+    );
     expect(notesStoreMock.importAttachmentPaths).not.toHaveBeenCalled();
     expect(screen.queryByText(/image upload failed/i)).toBeNull();
   });
@@ -1418,18 +2980,18 @@ describe("Notes workspace", () => {
     const root = node({
       id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306",
       nodeKind: "image",
-      title: "base.png"
+      title: "base.png",
     });
     const base = attachment({
       id: "77384bb1-f6cc-4848-a1b5-b8d3b9157307",
       nodeId: root.id,
-      originalName: "base.png"
+      originalName: "base.png",
     });
     configureRepository([root], { [root.id]: [base] });
     const attachmentUi = {
       openImageFiles: vi.fn().mockResolvedValue(["/incoming/diagram.png"]),
       saveImageFile: vi.fn().mockResolvedValue(null),
-      subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
+      subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn()),
     };
     mockNotesContentWidth(480);
     notesStoreMock.importImageNodePaths
@@ -1440,7 +3002,7 @@ describe("Notes workspace", () => {
           const imported = attachment({
             id: item.attachmentId,
             nodeId: item.nodeId,
-            originalName: "diagram.png"
+            originalName: "diagram.png",
           });
           confirmedNodes = [
             ...confirmedNodes,
@@ -1448,26 +3010,26 @@ describe("Notes workspace", () => {
               id: item.nodeId,
               nodeKind: "image",
               sortKey: 2,
-              title: "diagram.png"
-            })
+              title: "diagram.png",
+            }),
           ];
           confirmedAttachmentsByNodeId = {
             ...confirmedAttachmentsByNodeId,
-            [item.nodeId]: [imported]
+            [item.nodeId]: [imported],
           };
           return {
             workspace: workspace(confirmedNodes),
             historyEntryId: context.entryId,
             ...historyState({
               canUndo: true,
-              nextUndoEntryId: context.entryId
+              nextUndoEntryId: context.entryId,
             }),
-            importedRootIds: [item.nodeId]
+            importedRootIds: [item.nodeId],
           };
-        }
+        },
       );
     notesStoreMock.readAttachmentBytes.mockResolvedValue(
-      new Uint8Array([137, 80, 78, 71])
+      new Uint8Array([137, 80, 78, 71]),
     );
     vi.stubGlobal(
       "ResizeObserver",
@@ -1475,25 +3037,25 @@ describe("Notes workspace", () => {
         observe() {}
         unobserve() {}
         disconnect() {}
-      }
+      },
     );
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
-      value: vi.fn(() => "blob:diagram")
+      value: vi.fn(() => "blob:diagram"),
     });
     Object.defineProperty(URL, "revokeObjectURL", {
       configurable: true,
-      value: vi.fn()
+      value: vi.fn(),
     });
     renderNotesWorkspace(attachmentUi);
 
     const menu = await openNodeMenu("base.png", user);
     await user.click(
-      within(menu).getByRole("menuitem", { name: "Upload image" })
+      within(menu).getByRole("menuitem", { name: "Upload image" }),
     );
 
     const alert = await screen.findByRole("alert", {
-      name: "Image upload failed"
+      name: "Image upload failed",
     });
     const rootRow = screen
       .getByRole("group", { name: "Image: base.png" })
@@ -1501,25 +3063,26 @@ describe("Notes workspace", () => {
     expect(alert).toHaveTextContent("disk full");
     expect(rootRow).toContainElement(alert);
     expect(rootRow.querySelector(".notes-attachment-list")).toBeNull();
-    expect(screen.getAllByRole("group", { name: "Image: base.png" }))
-      .toHaveLength(1);
+    expect(
+      screen.getAllByRole("group", { name: "Image: base.png" }),
+    ).toHaveLength(1);
 
     await user.click(
-      within(alert).getByRole("button", { name: "Retry image upload" })
+      within(alert).getByRole("button", { name: "Retry image upload" }),
     );
 
     await waitFor(() =>
       expect(
         screen.getAllByRole("group", {
-          name: /^Image: (?:base|diagram)\.png$/
-        })
-      ).toHaveLength(2)
+          name: /^Image: (?:base|diagram)\.png$/,
+        }),
+      ).toHaveLength(2),
     );
     expect(attachmentUi.openImageFiles).toHaveBeenCalledOnce();
     expect(notesStoreMock.importImageNodePaths).toHaveBeenCalledTimes(2);
     expect(notesStoreMock.importAttachmentPaths).not.toHaveBeenCalled();
     expect(
-      screen.queryByRole("alert", { name: "Image upload failed" })
+      screen.queryByRole("alert", { name: "Image upload failed" }),
     ).toBeNull();
   });
 
@@ -1528,18 +3091,18 @@ describe("Notes workspace", () => {
     const root = node({
       id: "88384bb1-f6cc-4848-a1b5-b8d3b9157306",
       nodeKind: "image",
-      title: "base.png"
+      title: "base.png",
     });
     const base = attachment({
       id: "88384bb1-f6cc-4848-a1b5-b8d3b9157307",
       nodeId: root.id,
-      originalName: "base.png"
+      originalName: "base.png",
     });
     configureRepository([root], { [root.id]: [base] });
     const attachmentUi = {
       openImageFiles: vi.fn().mockResolvedValue(null),
       saveImageFile: vi.fn().mockResolvedValue(null),
-      subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
+      subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn()),
     };
     mockNotesContentWidth(480);
     notesStoreMock.importImageNodeBytes
@@ -1549,7 +3112,7 @@ describe("Notes workspace", () => {
         const imported = attachment({
           id: item.attachmentId,
           nodeId: item.nodeId,
-          originalName: item.originalName
+          originalName: item.originalName,
         });
         confirmedNodes = [
           ...confirmedNodes,
@@ -1558,34 +3121,34 @@ describe("Notes workspace", () => {
             nodeKind: "image",
             parentId: root.id,
             sortKey: 1,
-            title: item.originalName
-          })
+            title: item.originalName,
+          }),
         ];
         confirmedAttachmentsByNodeId = {
           ...confirmedAttachmentsByNodeId,
-          [item.nodeId]: [imported]
+          [item.nodeId]: [imported],
         };
         return {
           workspace: workspace(confirmedNodes),
           historyEntryId: context.entryId,
           ...historyState({
             canUndo: true,
-            nextUndoEntryId: context.entryId
+            nextUndoEntryId: context.entryId,
           }),
-          importedRootIds: [item.nodeId]
+          importedRootIds: [item.nodeId],
         };
       });
     renderNotesWorkspace(attachmentUi);
 
     await user.click(
-      await screen.findByRole("button", { name: "Zoom into base.png" })
+      await screen.findByRole("button", { name: "Zoom into base.png" }),
     );
     fireEvent.blur(document.activeElement as HTMLElement);
     const headerImage = await screen.findByRole("group", {
-      name: "Image: base.png"
+      name: "Image: base.png",
     });
     const file = new File(["clipboard-bytes"], "pasted.png", {
-      type: "image/png"
+      type: "image/png",
     });
     const clipboardItems = Object.assign(
       [
@@ -1594,20 +3157,20 @@ describe("Notes workspace", () => {
           type: "image/png",
           getAsFile: () => file,
           getAsString: vi.fn(),
-          webkitGetAsEntry: vi.fn()
-        }
+          webkitGetAsEntry: vi.fn(),
+        },
       ],
-      { add: vi.fn(), clear: vi.fn(), remove: vi.fn() }
+      { add: vi.fn(), clear: vi.fn(), remove: vi.fn() },
     ) as unknown as DataTransferItemList;
 
     expect(
       fireEvent.paste(headerImage, {
-        clipboardData: { items: clipboardItems, getData: () => "" }
-      })
+        clipboardData: { items: clipboardItems, getData: () => "" },
+      }),
     ).toBe(false);
 
     const alert = await screen.findByRole("alert", {
-      name: "Image upload failed"
+      name: "Image upload failed",
     });
     const header = headerImage.closest<HTMLElement>(".notes-page-header")!;
     expect(header).toContainElement(alert);
@@ -1616,28 +3179,28 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.importImageNodeBytes).toHaveBeenCalledTimes(1);
 
     await user.click(
-      within(alert).getByRole("button", { name: "Retry image upload" })
+      within(alert).getByRole("button", { name: "Retry image upload" }),
     );
 
     await waitFor(() =>
-      expect(notesStoreMock.importImageNodeBytes).toHaveBeenCalledTimes(2)
+      expect(notesStoreMock.importImageNodeBytes).toHaveBeenCalledTimes(2),
     );
     expect(notesStoreMock.importImageNodeBytes.mock.calls[1]?.[1]).toEqual(
-      notesStoreMock.importImageNodeBytes.mock.calls[0]?.[1]
+      notesStoreMock.importImageNodeBytes.mock.calls[0]?.[1],
     );
     expect(notesStoreMock.importImageNodeBytes.mock.calls[1]?.[2]).toBe(
-      notesStoreMock.importImageNodeBytes.mock.calls[0]?.[2]
+      notesStoreMock.importImageNodeBytes.mock.calls[0]?.[2],
     );
     expect(
-      notesStoreMock.importImageNodeBytes.mock.calls[1]?.[1].items[0].blob
+      notesStoreMock.importImageNodeBytes.mock.calls[1]?.[1].items[0].blob,
     ).toBe(file);
     expect(attachmentUi.openImageFiles).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(
         screen.getAllByRole("group", {
-          name: /^Image: (?:base|pasted)\.png$/
-        })
-      ).toHaveLength(2)
+          name: /^Image: (?:base|pasted)\.png$/,
+        }),
+      ).toHaveLength(2),
     );
   });
 
@@ -1645,12 +3208,12 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     const root = node({
       id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306",
-      title: "Project"
+      title: "Project",
     });
     const image = attachment({
       id: "1c17ba74-a617-45e7-9e21-74068b63befe",
       nodeId: root.id,
-      originalName: "diagram.png"
+      originalName: "diagram.png",
     });
     configureRepository([root], { [root.id]: [image] });
     notesStoreMock.removeAttachment.mockImplementation(async () => {
@@ -1663,53 +3226,53 @@ describe("Notes workspace", () => {
         observe() {}
         unobserve() {}
         disconnect() {}
-      }
+      },
     );
     renderNotesWorkspace();
 
     await user.click(
-      await screen.findByRole("button", { name: "Load image diagram.png" })
+      await screen.findByRole("button", { name: "Load image diagram.png" }),
     );
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Image actions for diagram.png"
-      })
+        name: "Image actions for diagram.png",
+      }),
     );
     await user.click(await screen.findByRole("menuitem", { name: "Delete" }));
     let dialog = await screen.findByRole("alertdialog", {
-      name: "Remove image?"
+      name: "Remove image?",
     });
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await waitFor(() =>
-      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument(),
     );
     expect(notesStoreMock.removeAttachment).not.toHaveBeenCalled();
     expect(
-      screen.getByRole("group", { name: "Image: diagram.png" })
+      screen.getByRole("group", { name: "Image: diagram.png" }),
     ).toBeVisible();
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: "Image actions for diagram.png"
-      })
+        name: "Image actions for diagram.png",
+      }),
     );
     await user.click(await screen.findByRole("menuitem", { name: "Delete" }));
     dialog = await screen.findByRole("alertdialog", { name: "Remove image?" });
     await user.click(
-      within(dialog).getByRole("button", { name: "Remove image" })
+      within(dialog).getByRole("button", { name: "Remove image" }),
     );
 
     await waitFor(() =>
       expect(notesStoreMock.removeAttachment).toHaveBeenCalledWith(
         "/vault",
         image.id,
-        historyContextMatcher()
-      )
+        historyContextMatcher(),
+      ),
     );
     await waitFor(() =>
       expect(
-        screen.queryByRole("group", { name: "Image: diagram.png" })
-      ).toBeNull()
+        screen.queryByRole("group", { name: "Image: diagram.png" }),
+      ).toBeNull(),
     );
   });
 
@@ -1720,14 +3283,13 @@ describe("Notes workspace", () => {
       const root = node({
         id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306",
         title: "Project",
-        archivedAt:
-          view === "Archive" ? "2026-07-12T00:00:00Z" : null,
-        deletedAt: view === "Trash" ? "2026-07-12T00:00:00Z" : null
+        archivedAt: view === "Archive" ? "2026-07-12T00:00:00Z" : null,
+        deletedAt: view === "Trash" ? "2026-07-12T00:00:00Z" : null,
       });
       const image = attachment({
         id: "1c17ba74-a617-45e7-9e21-74068b63befe",
         nodeId: root.id,
-        originalName: "diagram.png"
+        originalName: "diagram.png",
       });
       configureRepository([root], { [root.id]: [image] });
       vi.stubGlobal(
@@ -1736,39 +3298,41 @@ describe("Notes workspace", () => {
           observe() {}
           unobserve() {}
           disconnect() {}
-        }
+        },
       );
       Object.defineProperty(URL, "createObjectURL", {
         configurable: true,
-        value: vi.fn(() => "blob:diagram")
+        value: vi.fn(() => "blob:diagram"),
       });
       Object.defineProperty(URL, "revokeObjectURL", {
         configurable: true,
-        value: vi.fn()
+        value: vi.fn(),
       });
       renderNotesWorkspace();
 
       await user.click(await screen.findByRole("button", { name: view }));
 
       expect(
-        await screen.findByRole("group", { name: "Image: diagram.png" })
+        await screen.findByRole("group", { name: "Image: diagram.png" }),
       ).toBeVisible();
       expect(
-        screen.queryByRole("separator", { name: "Resize diagram.png" })
+        screen.queryByRole("separator", { name: "Resize diagram.png" }),
       ).toBeNull();
       expect(
-        screen.queryByRole("button", { name: "Remove diagram.png" })
+        screen.queryByRole("button", { name: "Remove diagram.png" }),
       ).toBeNull();
-      expect(screen.queryByRole("menuitem", { name: "Upload image" })).toBeNull();
+      expect(
+        screen.queryByRole("menuitem", { name: "Upload image" }),
+      ).toBeNull();
 
       const row = document.querySelector<HTMLElement>(
-        `[data-outline-id="${root.id}"]`
+        `[data-outline-id="${root.id}"]`,
       );
       expect(row).not.toHaveAttribute("data-notes-attachment-target");
       expect(notesStoreMock.importAttachmentPaths).not.toHaveBeenCalled();
       expect(notesStoreMock.resizeAttachment).not.toHaveBeenCalled();
       expect(notesStoreMock.removeAttachment).not.toHaveBeenCalled();
-    }
+    },
   );
 
   it("keeps native row and page textareas mounted behind interactive resting tags", async () => {
@@ -1778,14 +3342,14 @@ describe("Notes workspace", () => {
         id: "project",
         sortKey: 1,
         title: "Project #today",
-        note: "Owned by @Alice"
+        note: "Owned by @Alice",
       }),
-      node({ id: "child", parentId: "project", title: "Child" })
+      node({ id: "child", parentId: "project", title: "Child" }),
     ]);
     const { container } = renderNotesWorkspace();
 
     const rowTag = await screen.findByRole("button", {
-      name: "#today tag filter is inactive"
+      name: "#today tag filter is inactive",
     });
     const row = rowTag.closest(".notes-node");
     const rowTitle = row?.querySelector("textarea.notes-node-title");
@@ -1795,31 +3359,31 @@ describe("Notes workspace", () => {
     expect(rowNote).toHaveValue("Owned by @Alice");
     expect(
       within(row as HTMLElement).getByRole("button", {
-        name: "@Alice tag filter is inactive"
-      })
+        name: "@Alice tag filter is inactive",
+      }),
     ).toBeVisible();
 
-    await user.click(screen.getByRole("button", { name: "Zoom into Project #today" }));
-    fireEvent.blur(
-      screen.getByRole("textbox", { name: "Edit page title" })
+    await user.click(
+      screen.getByRole("button", { name: "Zoom into Project #today" }),
     );
+    fireEvent.blur(screen.getByRole("textbox", { name: "Edit page title" }));
 
     const pageHeader = container.querySelector(".notes-page-header");
     expect(pageHeader?.querySelector("textarea.notes-page-title")).toHaveValue(
-      "Project #today"
+      "Project #today",
     );
     expect(pageHeader?.querySelector("textarea.notes-page-note")).toHaveValue(
-      "Owned by @Alice"
+      "Owned by @Alice",
     );
     expect(
       within(pageHeader as HTMLElement).getByRole("button", {
-        name: "#today tag filter is inactive"
-      })
+        name: "#today tag filter is inactive",
+      }),
     ).toBeVisible();
     expect(
       within(pageHeader as HTMLElement).getByRole("button", {
-        name: "@Alice tag filter is inactive"
-      })
+        name: "@Alice tag filter is inactive",
+      }),
     ).toBeVisible();
   });
 
@@ -1830,30 +3394,30 @@ describe("Notes workspace", () => {
     expect(title.closest("li")).toHaveAttribute("aria-level", "1");
     expect(getTitleInput("Plan").closest("li")).toHaveAttribute(
       "aria-level",
-      "2"
+      "2",
     );
 
     const projectBullet = screen.getByRole("button", {
-      name: "Zoom into Project"
+      name: "Zoom into Project",
     });
     expect(projectBullet).toBeVisible();
     expect(projectBullet).toHaveClass("notes-node-bullet");
     expect(projectBullet).toHaveAttribute(
       "aria-roledescription",
-      "sortable note"
+      "sortable note",
     );
     expect(projectBullet).toHaveAttribute("aria-describedby");
     expect(
-      screen.getByRole("button", { name: "Collapse Project" })
+      screen.getByRole("button", { name: "Collapse Project" }),
     ).toBeVisible();
     expect(
-      screen.getByRole("button", { name: "More actions for Project" })
+      screen.getByRole("button", { name: "More actions for Project" }),
     ).toBeVisible();
     expect(
-      screen.queryByRole("checkbox", { name: /complete/i })
+      screen.queryByRole("checkbox", { name: /complete/i }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Move Project" })
+      screen.queryByRole("button", { name: "Move Project" }),
     ).not.toBeInTheDocument();
 
     const projectRow = projectBullet.closest(".notes-node-main");
@@ -1865,22 +3429,22 @@ describe("Notes workspace", () => {
             ? "arrow"
             : element.classList.contains("notes-node-bullet")
               ? "bullet"
-              : element.classList.contains("notes-node-title-field")
+              : element.classList.contains("notes-node-content-line")
                 ? "content"
-                : "other"
-      )
+                : "other",
+      ),
     ).toEqual(["menu", "arrow", "bullet", "content"]);
 
     const leafRow = getTitleInput("Outside branch").closest(".notes-node-main");
     expect(
-      leafRow?.querySelector(".notes-node-arrow-slot")
+      leafRow?.querySelector(".notes-node-arrow-slot"),
     ).toBeEmptyDOMElement();
   });
 
   it("renders an empty bullet without an Untitled placeholder", async () => {
     configureRepository([
       node({ id: "project", title: "Project" }),
-      node({ id: "empty", parentId: "project", sortKey: 1, title: "" })
+      node({ id: "empty", parentId: "project", sortKey: 1, title: "" }),
     ]);
     renderNotesWorkspace();
 
@@ -1903,7 +3467,7 @@ describe("Notes workspace", () => {
         parentId: "parent",
         sortKey: 1,
         title: "Open task",
-        markerKind: "todo"
+        markerKind: "todo",
       }),
       node({
         id: "done",
@@ -1911,14 +3475,14 @@ describe("Notes workspace", () => {
         sortKey: 2,
         title: "Done task",
         markerKind: "todo",
-        completedAt: "2026-07-23T00:00:00Z"
+        completedAt: "2026-07-23T00:00:00Z",
       }),
       node({
         id: "ordinary",
         parentId: "parent",
         sortKey: 3,
         title: "Completed bullet",
-        completedAt: "2026-07-23T00:00:00Z"
+        completedAt: "2026-07-23T00:00:00Z",
       }),
       node({
         id: "grandchild",
@@ -1926,41 +3490,40 @@ describe("Notes workspace", () => {
         sortKey: 1,
         title: "Nested task",
         markerKind: "todo",
-        completedAt: "2026-07-23T00:00:00Z"
-      })
+        completedAt: "2026-07-23T00:00:00Z",
+      }),
     ]);
     renderNotesWorkspace();
 
     const parent = (await findTitleInput("Parent")).closest<HTMLElement>(
-      ".notes-node"
+      ".notes-node",
     );
     expect(parent).not.toBeNull();
     expect(
       within(parent!).getByRole("progressbar", {
-        name: "1 of 2 To-dos complete"
-      })
+        name: "1 of 2 To-dos complete",
+      }),
     ).toHaveTextContent("(1/2)");
     expect(parent).not.toHaveTextContent("직계 작업의 완료 상태");
 
-    const openRow = getTitleInput("Open task").closest<HTMLElement>(
-      ".notes-node"
-    );
+    const openRow =
+      getTitleInput("Open task").closest<HTMLElement>(".notes-node");
     expect(openRow).toHaveAttribute("data-marker-kind", "todo");
     expect(
       within(openRow!).getByRole("checkbox", {
-        name: "Mark complete: Open task"
-      })
+        name: "Mark complete: Open task",
+      }),
     ).toHaveAttribute("aria-checked", "false");
     expect(
       Array.from(
-        openRow!.querySelector<HTMLElement>(".notes-node-main")?.children ?? []
-      ).map((element) => element.className)
+        openRow!.querySelector<HTMLElement>(".notes-node-main")?.children ?? [],
+      ).map((element) => element.className),
     ).toEqual([
       "notes-node-menu-slot",
       "notes-node-arrow-slot",
       "notes-node-bullet",
       "notes-todo-checkbox",
-      expect.stringContaining("notes-node-title-field")
+      "notes-node-content-line",
     ]);
   });
 
@@ -1968,17 +3531,17 @@ describe("Notes workspace", () => {
     const diagramAttachment = attachment({
       id: "diagram-primary",
       nodeId: "diagram-node",
-      originalName: "diagram.png"
+      originalName: "diagram.png",
     });
     const photoAttachment = attachment({
       id: "photo-primary",
       nodeId: "photo-node",
-      originalName: "photo.png"
+      originalName: "photo.png",
     });
     const legacyAttachment = attachment({
       id: "legacy-image",
       nodeId: "text-node",
-      originalName: "legacy.png"
+      originalName: "legacy.png",
     });
     configureRepository(
       [
@@ -1988,40 +3551,40 @@ describe("Notes workspace", () => {
           sortKey: 1,
           title: "diagram.png",
           note: "Architecture description",
-          isCollapsed: true
+          isCollapsed: true,
         }),
         node({
           id: "diagram-child",
           parentId: "diagram-node",
-          title: "Diagram child"
+          title: "Diagram child",
         }),
         node({
           id: "photo-node",
           nodeKind: "image",
           sortKey: 2,
           title: "photo.png",
-          note: "Photo description"
+          note: "Photo description",
         }),
         node({
           id: "photo-child",
           parentId: "photo-node",
-          title: "Photo child"
+          title: "Photo child",
         }),
-        node({ id: "text-node", sortKey: 3, title: "Legacy text" })
+        node({ id: "text-node", sortKey: 3, title: "Legacy text" }),
       ],
       {
         "diagram-node": [diagramAttachment],
         "photo-node": [photoAttachment],
-        "text-node": [legacyAttachment]
-      }
+        "text-node": [legacyAttachment],
+      },
     );
     renderNotesWorkspace();
 
     const diagramContent = await screen.findByRole("group", {
-      name: "Image: diagram.png"
+      name: "Image: diagram.png",
     });
     const photoContent = await screen.findByRole("group", {
-      name: "Image: photo.png"
+      name: "Image: photo.png",
     });
     const diagramRow = diagramContent.closest<HTMLElement>(".notes-node")!;
     const photoRow = photoContent.closest<HTMLElement>(".notes-node")!;
@@ -2029,34 +3592,38 @@ describe("Notes workspace", () => {
     expect(photoContent.closest(".notes-node-main")).not.toBeNull();
     expect(queryTitleInput("diagram.png")).toBeNull();
     expect(queryTitleInput("photo.png")).toBeNull();
-    expect(within(diagramRow).getByRole("textbox", { name: "Image note" })).toBeVisible();
-    expect(within(photoRow).getByRole("textbox", { name: "Image note" })).toBeVisible();
     expect(
-      within(diagramRow).getByRole("button", {
-        name: "Zoom into diagram.png"
-      })
+      within(diagramRow).getByRole("textbox", { name: "Image note" }),
     ).toBeVisible();
     expect(
-      within(photoRow).getByRole("button", { name: "Zoom into photo.png" })
+      within(photoRow).getByRole("textbox", { name: "Image note" }),
     ).toBeVisible();
     expect(
       within(diagramRow).getByRole("button", {
-        name: "More actions for diagram.png"
-      })
+        name: "Zoom into diagram.png",
+      }),
+    ).toBeVisible();
+    expect(
+      within(photoRow).getByRole("button", { name: "Zoom into photo.png" }),
+    ).toBeVisible();
+    expect(
+      within(diagramRow).getByRole("button", {
+        name: "More actions for diagram.png",
+      }),
     ).toBeVisible();
     expect(
       within(photoRow).getByRole("button", {
-        name: "More actions for photo.png"
-      })
+        name: "More actions for photo.png",
+      }),
     ).toBeVisible();
     expect(
-      within(diagramRow).getByRole("button", { name: "Expand diagram.png" })
+      within(diagramRow).getByRole("button", { name: "Expand diagram.png" }),
     ).toBeVisible();
     expect(
-      within(photoRow).getByRole("button", { name: "Collapse photo.png" })
+      within(photoRow).getByRole("button", { name: "Collapse photo.png" }),
     ).toBeVisible();
     const diagramDescription = getTextareaByName(
-      "Supporting note: diagram.png"
+      "Supporting note: diagram.png",
     );
     const photoDescription = getTextareaByName("Supporting note: photo.png");
     expect(diagramRow).toContainElement(diagramDescription);
@@ -2068,7 +3635,7 @@ describe("Notes workspace", () => {
 
     const textTitle = await findTitleInput("Legacy text");
     const legacyImage = screen.getByRole("group", {
-      name: "Image: legacy.png"
+      name: "Image: legacy.png",
     });
     expect(textTitle).toBeVisible();
     expect(legacyImage.closest(".notes-node-attachments")).not.toBeNull();
@@ -2081,25 +3648,25 @@ describe("Notes workspace", () => {
         id: "missing-image",
         nodeKind: "image",
         title: "missing.png",
-        note: "Recovery details"
-      })
+        note: "Recovery details",
+      }),
     ]);
     renderNotesWorkspace();
 
     const content = await screen.findByRole("group", {
-      name: "Image: missing.png"
+      name: "Image: missing.png",
     });
     const row = content.closest<HTMLElement>(".notes-node")!;
     expect(within(content).getByRole("alert")).toHaveTextContent(
-      "Image unavailable"
+      "Image unavailable",
     );
     expect(
       within(row).getByRole("button", {
-        name: "More actions for missing.png"
-      })
+        name: "More actions for missing.png",
+      }),
     ).toBeVisible();
     expect(
-      within(row).getByRole("button", { name: "Zoom into missing.png" })
+      within(row).getByRole("button", { name: "Zoom into missing.png" }),
     ).toBeVisible();
     expect(queryTitleInput("missing.png")).toBeNull();
     expect(row).not.toHaveTextContent("missing.png");
@@ -2111,27 +3678,26 @@ describe("Notes workspace", () => {
       id: "image-node",
       nodeKind: "image",
       title: "diagram.png",
-      note: ""
+      note: "",
     });
-    configureRepository(
-      [image],
-      {
-        "image-node": [
-          attachment({
-            id: "image-primary",
-            nodeId: "image-node",
-            originalName: "diagram.png"
-          })
-        ]
-      }
-    );
+    configureRepository([image], {
+      "image-node": [
+        attachment({
+          id: "image-primary",
+          nodeId: "image-node",
+          originalName: "diagram.png",
+        }),
+      ],
+    });
     renderNotesWorkspace();
     await screen.findByRole("group", {
-      name: "Image: diagram.png"
+      name: "Image: diagram.png",
     });
 
     const editor = screen.getByRole("textbox", { name: "Image note" });
-    expect(fireEvent.keyDown(editor, { key: "Enter", shiftKey: true })).toBe(false);
+    expect(fireEvent.keyDown(editor, { key: "Enter", shiftKey: true })).toBe(
+      false,
+    );
     expect(getTextareaByName("Supporting note: diagram.png")).toHaveFocus();
 
     expect(notesStoreMock.createNode).not.toHaveBeenCalled();
@@ -2146,59 +3712,79 @@ describe("Notes workspace", () => {
           id: "image-node",
           nodeKind: "image",
           sortKey: 2,
-          title: "diagram.png"
-        })
+          title: "diagram.png",
+        }),
       ],
       {
-        "image-node": [attachment({ id: "image-primary", nodeId: "image-node" })]
-      }
+        "image-node": [
+          attachment({ id: "image-primary", nodeId: "image-node" }),
+        ],
+      },
     );
     notesStoreMock.moveNode.mockImplementation(
       async (_vaultRoot: string, input: MoveNoteNodeInput) => {
         confirmedNodes = confirmedNodes.map((current) =>
           current.id === input.id
             ? { ...current, parentId: input.parentId }
-            : current
+            : current,
         );
         return workspace(confirmedNodes);
-      }
+      },
     );
     renderNotesWorkspace();
-    let imageEditor = await screen.findByRole("textbox", { name: "Image note" });
+    let imageEditor = await screen.findByRole("textbox", {
+      name: "Image note",
+    });
     act(() => imageEditor.focus());
     await act(async () => {
       fireEvent.keyDown(imageEditor, { key: "Tab" });
     });
     await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
-    expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
-      id: "image-node",
-      parentId: "previous",
-      afterId: null
-    }, historyContextMatcher());
+    expect(notesStoreMock.moveNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "image-node",
+        parentId: "previous",
+        afterId: null,
+      },
+      historyContextMatcher(),
+    );
 
     imageEditor = screen.getByRole("textbox", { name: "Image note" });
     act(() => imageEditor.focus());
     await act(async () => {
       fireEvent.keyDown(imageEditor, { key: "Tab", shiftKey: true });
     });
-    await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledTimes(2));
-    expect(notesStoreMock.moveNode).toHaveBeenLastCalledWith("/vault", {
-      id: "image-node",
-      parentId: null,
-      afterId: "previous"
-    }, historyContextMatcher());
+    await waitFor(() =>
+      expect(notesStoreMock.moveNode).toHaveBeenCalledTimes(2),
+    );
+    expect(notesStoreMock.moveNode).toHaveBeenLastCalledWith(
+      "/vault",
+      {
+        id: "image-node",
+        parentId: null,
+        afterId: "previous",
+      },
+      historyContextMatcher(),
+    );
 
     imageEditor = screen.getByRole("textbox", { name: "Image note" });
     act(() => imageEditor.focus());
     await act(async () => {
       fireEvent.keyDown(imageEditor, { key: "ArrowRight", altKey: true });
     });
-    await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledTimes(3));
-    expect(notesStoreMock.moveNode).toHaveBeenLastCalledWith("/vault", {
-      id: "image-node",
-      parentId: "previous",
-      afterId: null
-    }, historyContextMatcher());
+    await waitFor(() =>
+      expect(notesStoreMock.moveNode).toHaveBeenCalledTimes(3),
+    );
+    expect(notesStoreMock.moveNode).toHaveBeenLastCalledWith(
+      "/vault",
+      {
+        id: "image-node",
+        parentId: "previous",
+        afterId: null,
+      },
+      historyContextMatcher(),
+    );
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
   });
@@ -2212,18 +3798,18 @@ describe("Notes workspace", () => {
           nodeKind: "image",
           sortKey: 2,
           title: "beforeafter",
-          imageOffsetUtf16: 6
-        })
+          imageOffsetUtf16: 6,
+        }),
       ],
       {
         "image-node": [
           attachment({
             id: "image-primary",
             nodeId: "image-node",
-            originalName: "diagram.png"
-          })
-        ]
-      }
+            originalName: "diagram.png",
+          }),
+        ],
+      },
     );
     const user = userEvent.setup();
     renderNotesWorkspace();
@@ -2231,40 +3817,42 @@ describe("Notes workspace", () => {
     const editor = await screen.findByRole("textbox", { name: "Image note" });
     const imageRow = editor.closest<HTMLElement>(".notes-node")!;
     const [before, atom, after] = editor.querySelectorAll<HTMLElement>(
-      "[data-image-atom-region]"
+      "[data-image-atom-region]",
     );
     act(() =>
       writeImageAtomDomSelection(
         { host: editor, before: before!, atom: atom!, after: after! },
         { anchorUtf16: 7, focusUtf16: 6 },
-        document.getSelection()!
-      )
+        document.getSelection()!,
+      ),
     );
 
     const group = within(editor).getByRole("group", {
-      name: "Image: diagram.png"
+      name: "Image: diagram.png",
     });
     expect(fireEvent.keyDown(editor, { key: "F6" })).toBe(false);
     expect(group).toHaveFocus();
 
     await user.tab();
     const firstControl = within(group).getByRole("button", {
-      name: "Load image diagram.png"
+      name: "Load image diagram.png",
     });
     expect(firstControl).toHaveFocus();
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
     expect(imageRow).toHaveAttribute("data-outline-id", "image-node");
     expect(
-      confirmedNodes.find((current) => current.id === "image-node")
+      confirmedNodes.find((current) => current.id === "image-node"),
     ).toMatchObject({ parentId: null, isCollapsed: false });
     fireEvent.keyDown(firstControl, { key: "Escape" });
 
     expect(editor).toHaveFocus();
-    expect(readImageAtomDomSelection(
-      { host: editor, before: before!, atom: atom!, after: after! },
-      document.getSelection()!
-    )).toEqual({ anchorUtf16: 7, focusUtf16: 6 });
+    expect(
+      readImageAtomDomSelection(
+        { host: editor, before: before!, atom: atom!, after: after! },
+        document.getSelection()!,
+      ),
+    ).toEqual({ anchorUtf16: 7, focusUtf16: 6 });
     expect(document.querySelector("[data-range-selected=true]")).toBeNull();
   });
 
@@ -2272,21 +3860,34 @@ describe("Notes workspace", () => {
     configureRepository([
       node({ id: "leaf", sortKey: 1, title: "Leaf" }),
       node({ id: "expanded", sortKey: 2, title: "Expanded" }),
-      node({ id: "expanded-child", parentId: "expanded", title: "Expanded child" }),
-      node({ id: "collapsed", sortKey: 3, title: "Collapsed", isCollapsed: true }),
-      node({ id: "collapsed-child", parentId: "collapsed", title: "Collapsed child" }),
+      node({
+        id: "expanded-child",
+        parentId: "expanded",
+        title: "Expanded child",
+      }),
+      node({
+        id: "collapsed",
+        sortKey: 3,
+        title: "Collapsed",
+        isCollapsed: true,
+      }),
+      node({
+        id: "collapsed-child",
+        parentId: "collapsed",
+        title: "Collapsed child",
+      }),
       node({
         id: "completed-collapsed",
         sortKey: 4,
         title: "Completed collapsed",
         isCollapsed: true,
-        completedAt: "2026-07-10T01:00:00Z"
+        completedAt: "2026-07-10T01:00:00Z",
       }),
       node({
         id: "completed-child",
         parentId: "completed-collapsed",
-        title: "Completed child"
-      })
+        title: "Completed child",
+      }),
     ]);
     renderNotesWorkspace();
     await findTitleInput("Leaf");
@@ -2296,17 +3897,17 @@ describe("Notes workspace", () => {
         const row = getTitleInput(title).closest<HTMLElement>(".notes-node")!;
         const main = row.querySelector(".notes-node-main")!;
         const bullet = within(row).getByRole("button", {
-          name: `Zoom into ${title}`
+          name: `Zoom into ${title}`,
         });
         return {
           title,
           completed: row.dataset.completed ?? "false",
           collapsed: bullet.dataset.collapsed ?? "false",
-          controls: Array.from(main.children).map((element) =>
-            element.className
-          )
+          controls: Array.from(main.children).map(
+            (element) => element.className,
+          ),
         };
-      }
+      },
     );
 
     expect(states).toMatchInlineSnapshot(`
@@ -2318,7 +3919,7 @@ describe("Notes workspace", () => {
             "notes-node-menu-slot",
             "notes-node-arrow-slot",
             "notes-node-bullet",
-            "notes-text-field notes-node-title-field",
+            "notes-node-content-line",
           ],
           "title": "Leaf",
         },
@@ -2329,7 +3930,7 @@ describe("Notes workspace", () => {
             "notes-node-menu-slot",
             "notes-node-arrow-slot",
             "notes-node-bullet",
-            "notes-text-field notes-node-title-field",
+            "notes-node-content-line",
           ],
           "title": "Expanded",
         },
@@ -2340,7 +3941,7 @@ describe("Notes workspace", () => {
             "notes-node-menu-slot",
             "notes-node-arrow-slot",
             "notes-node-bullet",
-            "notes-text-field notes-node-title-field",
+            "notes-node-content-line",
           ],
           "title": "Collapsed",
         },
@@ -2351,7 +3952,7 @@ describe("Notes workspace", () => {
             "notes-node-menu-slot",
             "notes-node-arrow-slot",
             "notes-node-bullet",
-            "notes-text-field notes-node-title-field",
+            "notes-node-content-line",
           ],
           "title": "Completed collapsed",
         },
@@ -2368,13 +3969,13 @@ describe("Notes workspace", () => {
         sortKey: 2,
         title: "Completed collapsed",
         isCollapsed: true,
-        completedAt: "2026-07-10T01:00:00Z"
+        completedAt: "2026-07-10T01:00:00Z",
       }),
       node({
         id: "completed-child",
         parentId: "completed-collapsed",
-        title: "Completed child"
-      })
+        title: "Completed child",
+      }),
     ]);
     renderNotesWorkspace();
     await findTitleInput("Collapsed");
@@ -2386,7 +3987,7 @@ describe("Notes workspace", () => {
       expect(bullet).toHaveFocus();
     }
     expect(notesStyles).toMatch(
-      /\.notes-node-bullet\[data-collapsed="true"\]:focus-visible::before,[\s\S]*\.notes-node\[data-completed="true"\][\s\S]*\.notes-node-bullet\[data-collapsed="true"\]:focus-visible::before\s*{[^}]*box-shadow:\s*0 0 0 2px var\(--accent\),\s*inset 0 0 0 1px var\(--border-strong\);/s
+      /\.notes-node-bullet\[data-collapsed="true"\]:focus-visible::before,[\s\S]*\.notes-node\[data-completed="true"\][\s\S]*\.notes-node-bullet\[data-collapsed="true"\]:focus-visible::before\s*{[^}]*box-shadow:\s*0 0 0 2px var\(--accent\),\s*inset 0 0 0 1px var\(--border-strong\);/s,
     );
   });
 
@@ -2396,7 +3997,7 @@ describe("Notes workspace", () => {
 
     const title = await findTitleInput("Project");
     const projectBullet = screen.getByRole("button", {
-      name: "Zoom into Project"
+      name: "Zoom into Project",
     });
 
     projectBullet.focus();
@@ -2424,43 +4025,43 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledWith(
       "/vault",
       "project",
-      historyContextMatcher()
+      historyContextMatcher(),
     );
     expect(screen.getByRole("button", { name: "All notes" })).toHaveAttribute(
       "aria-current",
-      "page"
+      "page",
     );
     expect(getTitleInput("Outside branch")).toBeInTheDocument();
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Zoom into Project" })
-      ).toHaveAttribute("data-collapsed", "true")
+        screen.getByRole("button", { name: "Zoom into Project" }),
+      ).toHaveAttribute("data-collapsed", "true"),
     );
 
     await user.click(bullet);
 
     expect(
       within(screen.getByLabelText("Notes breadcrumb")).getByRole("button", {
-        name: "Project"
-      })
+        name: "Project",
+      }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: "Project", level: 1 })
+      screen.getByRole("heading", { name: "Project", level: 1 }),
     ).toBeVisible();
     const zoomedPlan = getTitleInput("Plan");
     const zoomedMilestone = getTitleInput("Milestone");
     expect(zoomedPlan.closest("li")).toHaveAttribute("aria-level", "1");
     expect(zoomedPlan.closest(".notes-node")).toHaveAttribute(
       "data-guide-end-id",
-      "milestone"
+      "milestone",
     );
     expect(
-      zoomedMilestone.closest(".notes-node")?.querySelectorAll(
-        ".notes-node-guide"
-      )
+      zoomedMilestone
+        .closest(".notes-node")
+        ?.querySelectorAll(".notes-node-guide"),
     ).toHaveLength(1);
     expect(
-      screen.getByRole("button", { name: "Zoom into Plan" })
+      screen.getByRole("button", { name: "Zoom into Plan" }),
     ).toHaveAttribute("data-sortable-activator", "true");
     expect(queryTitleInput("Outside branch")).not.toBeInTheDocument();
 
@@ -2468,14 +4069,14 @@ describe("Notes workspace", () => {
     const restoredTitle = await findTitleInput("Project");
     expect(queryTitleInput("Plan")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Expand Project" })
+      screen.getByRole("button", { name: "Expand Project" }),
     ).toHaveAttribute("aria-expanded", "false");
     expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledOnce();
     await user.dblClick(restoredTitle);
 
     expect(screen.getByRole("button", { name: "All notes" })).toHaveAttribute(
       "aria-current",
-      "page"
+      "page",
     );
     expect(getTitleInput("Outside branch")).toBeInTheDocument();
   });
@@ -2485,13 +4086,11 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
     await findTitleInput("Project");
 
-    await user.click(
-      screen.getByRole("button", { name: "Zoom into Project" })
-    );
+    await user.click(screen.getByRole("button", { name: "Zoom into Project" }));
     await user.click(screen.getByRole("button", { name: "Zoom into Plan" }));
 
     const title = await screen.findByRole<HTMLTextAreaElement>("textbox", {
-      name: "Edit page title"
+      name: "Edit page title",
     });
     await waitFor(() => expect(title).toHaveFocus());
     expect(title.selectionStart).toBe(title.value.length);
@@ -2503,25 +4102,25 @@ describe("Notes workspace", () => {
       sessionId: "fixture-session",
       historyEpoch: "history-epoch",
       entryId: "fixture-entry",
-      commandKind: "collapse"
+      commandKind: "collapse",
     };
     const rejectedMutation = acknowledgedDefaultMutation(
       async (_context: NotesHistoryContext): Promise<NotesWorkspace> => {
         throw new Error("mutation failed");
-      }
+      },
     );
     const noOpMutation = acknowledgedDefaultMutation(
       async (_context: NotesHistoryContext) => ({
         ...workspace(confirmedNodes),
-        historyEntryId: null
-      })
+        historyEntryId: null,
+      }),
     );
 
     await expect(rejectedMutation(context)).rejects.toThrow("mutation failed");
     await noOpMutation({ ...context, entryId: "no-op-entry" });
 
     await expect(
-      notesStoreMock.historyStatus("/vault", context.sessionId)
+      notesStoreMock.historyStatus("/vault", context.sessionId),
     ).resolves.toEqual(historyState());
   });
 
@@ -2530,17 +4129,17 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
     await findTitleInput("Project");
     notesStoreMock.historyStatus.mockRejectedValueOnce(
-      new Error("status unavailable")
+      new Error("status unavailable"),
     );
 
     await user.click(screen.getByRole("button", { name: "Zoom into Project" }));
 
     expect(
-      within(screen.getByLabelText("Status bar feedback")).getByRole("alert")
+      within(screen.getByLabelText("Status bar feedback")).getByRole("alert"),
     ).toHaveTextContent("Notes navigation history status is unavailable.");
     expect(document.querySelector(".notes-pane-error")).toBeNull();
     expect(
-      screen.queryByRole("heading", { name: "Project", level: 1 })
+      screen.queryByRole("heading", { name: "Project", level: 1 }),
     ).not.toBeInTheDocument();
   });
 
@@ -2555,35 +4154,35 @@ describe("Notes workspace", () => {
     bullet.focus();
     await user.tab({ shift: true });
     expect(
-      screen.getByRole("button", { name: "More actions for Project" })
+      screen.getByRole("button", { name: "More actions for Project" }),
     ).toHaveFocus();
     await user.keyboard("[Enter]");
     const keyboardMenu = await screen.findByRole("menu");
     expect(
-      within(keyboardMenu).getByRole("menuitem", { name: "Complete" })
+      within(keyboardMenu).getByRole("menuitem", { name: "Complete" }),
     ).toHaveFocus();
     await user.keyboard("[Enter]");
 
     expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith(
       "/vault",
       "project",
-      historyContextMatcher()
+      historyContextMatcher(),
     );
     const pointerMenu = await openNodeMenu("Project", user);
     const uncomplete = within(pointerMenu).getByRole("menuitem", {
-      name: "Uncomplete"
+      name: "Uncomplete",
     });
 
     fireEvent.pointerDown(title, { pointerType: "touch" });
     title.focus();
     expect(title.closest<HTMLElement>(".notes-node-main")).toContainElement(
-      document.activeElement as HTMLElement | null
+      document.activeElement as HTMLElement | null,
     );
     fireEvent.pointerDown(uncomplete, { pointerType: "touch" });
     fireEvent.click(uncomplete);
 
     await waitFor(() =>
-      expect(notesStoreMock.toggleComplete).toHaveBeenCalledTimes(2)
+      expect(notesStoreMock.toggleComplete).toHaveBeenCalledTimes(2),
     );
   });
 
@@ -2593,16 +4192,18 @@ describe("Notes workspace", () => {
     notesStoreMock.toggleComplete.mockReturnValue(completion.promise);
     renderNotesWorkspace();
     const projectBullet = await screen.findByRole("button", {
-      name: "Zoom into Project"
+      name: "Zoom into Project",
     });
     expect(projectBullet).toHaveAttribute("aria-describedby");
 
     const menu = await openNodeMenu("Project", user);
     await user.click(within(menu).getByRole("menuitem", { name: "Complete" }));
     await waitFor(() =>
-      expect(notesStoreMock.toggleComplete).toHaveBeenCalledOnce()
+      expect(notesStoreMock.toggleComplete).toHaveBeenCalledOnce(),
     );
-    for (const bullet of screen.getAllByRole("button", { name: /^Zoom into / })) {
+    for (const bullet of screen.getAllByRole("button", {
+      name: /^Zoom into /,
+    })) {
       expect(bullet).toBeEnabled();
       expect(bullet).not.toHaveAttribute("aria-describedby");
     }
@@ -2610,8 +4211,8 @@ describe("Notes workspace", () => {
     completion.resolve(workspace(confirmedNodes));
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Zoom into Project" })
-      ).toHaveAttribute("aria-describedby")
+        screen.getByRole("button", { name: "Zoom into Project" }),
+      ).toHaveAttribute("aria-describedby"),
     );
   });
 
@@ -2619,11 +4220,11 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     configureRepository([
       node({ id: "first", sortKey: 1, title: "First" }),
-      node({ id: "second", sortKey: 2, title: "Second" })
+      node({ id: "second", sortKey: 2, title: "Second" }),
     ]);
     renderNotesWorkspace();
     const bullet = await screen.findByRole("button", {
-      name: "Zoom into Second"
+      name: "Zoom into Second",
     });
     mockOutlineRowRects();
 
@@ -2631,7 +4232,7 @@ describe("Notes workspace", () => {
     await user.keyboard("[Space][Space]");
 
     await waitFor(() =>
-      expect(document.body).toHaveTextContent("No move was made for Second.")
+      expect(document.body).toHaveTextContent("No move was made for Second."),
     );
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
   });
@@ -2640,11 +4241,11 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     configureRepository([
       node({ id: "first", sortKey: 1, title: "First" }),
-      node({ id: "second", sortKey: 2, title: "Second" })
+      node({ id: "second", sortKey: 2, title: "Second" }),
     ]);
     renderNotesWorkspace();
     const first = await screen.findByRole("button", {
-      name: "Zoom into First"
+      name: "Zoom into First",
     });
     mockOutlineRowRects();
     const firstRect = first
@@ -2655,30 +4256,158 @@ describe("Notes workspace", () => {
     await user.pointer({
       keys: "[MouseLeft>]",
       target: first,
-      coords: { clientX: 9, clientY: firstY }
+      coords: { clientX: 9, clientY: firstY },
     });
     await user.pointer({
       target: first,
-      coords: { clientX: 9, clientY: firstY + 5 }
+      coords: { clientX: 9, clientY: firstY + 5 },
     });
     await user.pointer({
       target: first,
-      coords: { clientX: 9, clientY: firstY + 6 }
+      coords: { clientX: 9, clientY: firstY + 6 },
     });
 
-    expect(document.querySelector(".notes-outline-drop-preview")).toHaveAttribute(
-      "data-before-id",
-      "second"
-    );
+    expect(
+      document.querySelector(".notes-outline-drop-preview"),
+    ).toHaveAttribute("data-before-id", "second");
 
     await user.pointer({
       keys: "[/MouseLeft]",
       target: first,
-      coords: { clientX: 9, clientY: firstY + 6 }
+      coords: { clientX: 9, clientY: firstY + 6 },
     });
 
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+  });
+
+  it("blocks a GN root pointer drop that would reparent it", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 1,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+      node({ id: "destination", sortKey: 2, title: "Destination" }),
+      node({
+        id: "destination-child",
+        parentId: "destination",
+        sortKey: 1,
+        title: "Destination child",
+      }),
+      node({ id: "tail", sortKey: 3, title: "Tail" }),
+    ]);
+    renderNotesWorkspace();
+    const github = await screen.findByRole("button", {
+      name: `Zoom into ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`,
+    });
+    const destinationChild = screen.getByRole("button", {
+      name: "Zoom into Destination child",
+    });
+    mockOutlineRowRects();
+    const githubRect = github
+      .closest<HTMLElement>("[data-outline-id]")!
+      .getBoundingClientRect();
+    const destinationChildRect = destinationChild
+      .closest<HTMLElement>("[data-outline-id]")!
+      .getBoundingClientRect();
+
+    await user.pointer({
+      keys: "[MouseLeft>]",
+      target: github,
+      coords: { clientX: 9, clientY: githubRect.top + githubRect.height / 2 },
+    });
+    await user.pointer({
+      target: destinationChild,
+      coords: {
+        clientX: 45,
+        clientY: destinationChildRect.top + destinationChildRect.height * 0.75,
+      },
+    });
+    await user.pointer({
+      target: destinationChild,
+      coords: {
+        clientX: 81,
+        clientY: destinationChildRect.top + destinationChildRect.height * 0.75,
+      },
+    });
+
+    expect(document.querySelector(".notes-outline-drop-preview")).toBeNull();
+
+    await user.pointer({
+      keys: "[/MouseLeft]",
+      target: destinationChild,
+      coords: {
+        clientX: 81,
+        clientY: destinationChildRect.top + destinationChildRect.height * 0.75,
+      },
+    });
+
+    expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+  });
+
+  it("allows a GN root pointer reorder at the top level", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({ id: "before", sortKey: 1, title: "Before" }),
+      node({
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        sortKey: 2,
+        title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        isReadonly: undefined,
+        pluginState: { collapsedGroups: [] },
+      }),
+      node({ id: "after", sortKey: 3, title: "After" }),
+    ]);
+    renderNotesWorkspace();
+    const github = await screen.findByRole("button", {
+      name: `Zoom into ${GITHUB_NOTIFICATIONS_PROVIDER_TITLE}`,
+    });
+    const after = screen.getByRole("button", { name: "Zoom into After" });
+    mockOutlineRowRects();
+    const githubRect = github
+      .closest<HTMLElement>("[data-outline-id]")!
+      .getBoundingClientRect();
+    const afterRect = after
+      .closest<HTMLElement>("[data-outline-id]")!
+      .getBoundingClientRect();
+
+    await user.pointer({
+      keys: "[MouseLeft>]",
+      target: github,
+      coords: { clientX: 9, clientY: githubRect.top + githubRect.height / 2 },
+    });
+    await user.pointer({
+      target: after,
+      coords: {
+        clientX: 9,
+        clientY: afterRect.top + afterRect.height * 0.75 - 1,
+      },
+    });
+    await user.pointer({
+      target: after,
+      coords: { clientX: 9, clientY: afterRect.top + afterRect.height * 0.75 },
+    });
+    await user.pointer({
+      keys: "[/MouseLeft]",
+      target: after,
+      coords: { clientX: 9, clientY: afterRect.top + afterRect.height * 0.75 },
+    });
+
+    await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
+    expect(notesStoreMock.moveNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: GITHUB_NOTIFICATIONS_ROOT_ID,
+        parentId: null,
+        afterId: "after",
+      },
+      historyContextMatcher(),
+    );
   });
 
   it("keeps an ordinary parent forest fixed and counts a collapsed descendant", async () => {
@@ -2690,36 +4419,38 @@ describe("Notes workspace", () => {
         parentId: "parent",
         sortKey: 1,
         title: "Child",
-        isCollapsed: true
+        isCollapsed: true,
       }),
       node({ id: "hidden", parentId: "child", title: "Hidden" }),
-      node({ id: "target", sortKey: 2, title: "Target" })
+      node({ id: "target", sortKey: 2, title: "Target" }),
     ]);
     renderNotesWorkspace();
-    const parent = await screen.findByRole("button", { name: "Zoom into Parent" });
+    const parent = await screen.findByRole("button", {
+      name: "Zoom into Parent",
+    });
     const target = screen.getByRole("button", { name: "Zoom into Target" });
     mockOutlineRowRects();
 
     await user.pointer({
       keys: "[MouseLeft>]",
       target: parent,
-      coords: { clientX: 9, clientY: 14 }
+      coords: { clientX: 9, clientY: 14 },
     });
     await user.pointer({
       target,
-      coords: { clientX: 14, clientY: 70 }
+      coords: { clientX: 14, clientY: 70 },
     });
 
     const preview = screen.getByTestId("notes-selection-drag-preview");
     expect(preview).toHaveTextContent("Parent");
     expect(within(preview).getByText("3")).toHaveClass(
-      "notes-selection-drag-preview-count"
+      "notes-selection-drag-preview-count",
     );
     for (const nodeId of ["parent", "child"]) {
       expect(
         document
           .querySelector(`[data-outline-id="${nodeId}"]`)
-          ?.closest(".notes-outline-item")
+          ?.closest(".notes-outline-item"),
       ).toHaveAttribute("data-drag-source", "true");
     }
     expect(document.querySelector('[data-outline-id="hidden"]')).toBeNull();
@@ -2735,7 +4466,7 @@ describe("Notes workspace", () => {
     await user.pointer({
       keys: "[/MouseLeft]",
       target,
-      coords: { clientX: 14, clientY: 70 }
+      coords: { clientX: 14, clientY: 70 },
     });
   });
 
@@ -2743,12 +4474,12 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     configureRepository([
       node({ id: "source", sortKey: 1, title: "Original title" }),
-      node({ id: "target", sortKey: 2, title: "Target" })
+      node({ id: "target", sortKey: 2, title: "Target" }),
     ]);
     renderNotesWorkspace();
     const title = await findTitleInput("Original title");
     const source = screen.getByRole("button", {
-      name: "Zoom into Original title"
+      name: "Zoom into Original title",
     });
     const target = screen.getByRole("button", { name: "Zoom into Target" });
     mockOutlineRowRects();
@@ -2756,18 +4487,20 @@ describe("Notes workspace", () => {
     await user.pointer({
       keys: "[MouseLeft>]",
       target: source,
-      coords: { clientX: 9, clientY: 14 }
+      coords: { clientX: 9, clientY: 14 },
     });
     await user.pointer({
       target,
-      coords: { clientX: 14, clientY: 42 }
+      coords: { clientX: 14, clientY: 42 },
     });
     const preview = screen.getByTestId("notes-selection-drag-preview");
     expect(preview).toHaveTextContent("Original title");
 
     fireEvent.change(title, { target: { value: "Confirmed later" } });
     fireEvent.blur(title);
-    await waitFor(() => expect(queryTitleInput("Confirmed later")).not.toBeNull());
+    await waitFor(() =>
+      expect(queryTitleInput("Confirmed later")).not.toBeNull(),
+    );
 
     expect(preview).toHaveTextContent("Original title");
     expect(preview).not.toHaveTextContent("Confirmed later");
@@ -2776,7 +4509,7 @@ describe("Notes workspace", () => {
     await user.pointer({
       keys: "[/MouseLeft]",
       target,
-      coords: { clientX: 14, clientY: 42 }
+      coords: { clientX: 14, clientY: 42 },
     });
   });
 
@@ -2786,19 +4519,19 @@ describe("Notes workspace", () => {
       id: "diagram-image",
       nodeKind: "image",
       sortKey: 1,
-      title: "diagram.png"
+      title: "diagram.png",
     });
     const imageAttachment = attachment({
       id: "diagram-attachment",
       nodeId: imageNode.id,
-      originalName: "diagram.png"
+      originalName: "diagram.png",
     });
     configureRepository(
       [imageNode, node({ id: "target", sortKey: 2, title: "Target" })],
-      { [imageNode.id]: [imageAttachment] }
+      { [imageNode.id]: [imageAttachment] },
     );
     notesStoreMock.readAttachmentBytes.mockResolvedValue(
-      new Uint8Array([137, 80, 78, 71])
+      new Uint8Array([137, 80, 78, 71]),
     );
     vi.stubGlobal(
       "ResizeObserver",
@@ -2806,47 +4539,49 @@ describe("Notes workspace", () => {
         observe() {}
         unobserve() {}
         disconnect() {}
-      }
+      },
     );
     const createObjectURL = vi.fn(() => "blob:diagram");
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
-      value: createObjectURL
+      value: createObjectURL,
     });
     Object.defineProperty(URL, "revokeObjectURL", {
       configurable: true,
-      value: vi.fn()
+      value: vi.fn(),
     });
     renderNotesWorkspace();
 
     await user.click(
-      await screen.findByRole("button", { name: "Load image diagram.png" })
+      await screen.findByRole("button", { name: "Load image diagram.png" }),
     );
     await screen.findByRole("img", { name: "diagram.png" });
     const imageBullet = screen.getByRole("button", {
-      name: "Zoom into diagram.png"
+      name: "Zoom into diagram.png",
     });
-    const targetBullet = screen.getByRole("button", { name: "Zoom into Target" });
+    const targetBullet = screen.getByRole("button", {
+      name: "Zoom into Target",
+    });
     mockOutlineRowRects();
-    const readsBeforeDrag = notesStoreMock.readAttachmentBytes.mock.calls.length;
+    const readsBeforeDrag =
+      notesStoreMock.readAttachmentBytes.mock.calls.length;
     const urlsBeforeDrag = createObjectURL.mock.calls.length;
 
     await user.pointer({
       keys: "[MouseLeft>]",
       target: imageBullet,
-      coords: { clientX: 9, clientY: 14 }
+      coords: { clientX: 9, clientY: 14 },
     });
     await user.pointer({
       target: targetBullet,
-      coords: { clientX: 14, clientY: 42 }
+      coords: { clientX: 14, clientY: 42 },
     });
 
-    expect(screen.getByTestId("notes-selection-drag-thumbnail")).toHaveAttribute(
-      "src",
-      "blob:diagram"
-    );
+    expect(
+      screen.getByTestId("notes-selection-drag-thumbnail"),
+    ).toHaveAttribute("src", "blob:diagram");
     expect(notesStoreMock.readAttachmentBytes).toHaveBeenCalledTimes(
-      readsBeforeDrag
+      readsBeforeDrag,
     );
     expect(createObjectURL).toHaveBeenCalledTimes(urlsBeforeDrag);
 
@@ -2854,7 +4589,7 @@ describe("Notes workspace", () => {
     await user.pointer({
       keys: "[/MouseLeft]",
       target: targetBullet,
-      coords: { clientX: 14, clientY: 42 }
+      coords: { clientX: 14, clientY: 42 },
     });
   });
 
@@ -2864,19 +4599,19 @@ describe("Notes workspace", () => {
       id: "diagram-image",
       nodeKind: "image",
       sortKey: 1,
-      title: "diagram.png"
+      title: "diagram.png",
     });
     const imageAttachment = attachment({
       id: "diagram-attachment",
       nodeId: imageNode.id,
-      originalName: "diagram.png"
+      originalName: "diagram.png",
     });
     configureRepository(
       [imageNode, node({ id: "target", sortKey: 2, title: "Target" })],
-      { [imageNode.id]: [imageAttachment] }
+      { [imageNode.id]: [imageAttachment] },
     );
     notesStoreMock.readAttachmentBytes.mockResolvedValue(
-      new Uint8Array([137, 80, 78, 71])
+      new Uint8Array([137, 80, 78, 71]),
     );
     let intersectionCallback: IntersectionObserverCallback | undefined;
     let intersectionTarget: Element | undefined;
@@ -2891,7 +4626,7 @@ describe("Notes workspace", () => {
         }
         unobserve() {}
         disconnect() {}
-      }
+      },
     );
     vi.stubGlobal(
       "ResizeObserver",
@@ -2899,15 +4634,15 @@ describe("Notes workspace", () => {
         observe() {}
         unobserve() {}
         disconnect() {}
-      }
+      },
     );
     Object.defineProperty(URL, "createObjectURL", {
       configurable: true,
-      value: vi.fn(() => "blob:diagram")
+      value: vi.fn(() => "blob:diagram"),
     });
     Object.defineProperty(URL, "revokeObjectURL", {
       configurable: true,
-      value: vi.fn()
+      value: vi.fn(),
     });
     renderNotesWorkspace();
 
@@ -2922,19 +4657,20 @@ describe("Notes workspace", () => {
         [
           {
             target: visibleTarget,
-            isIntersecting: true
-          } as unknown as IntersectionObserverEntry
+            isIntersecting: true,
+          } as unknown as IntersectionObserverEntry,
         ],
-        {} as IntersectionObserver
+        {} as IntersectionObserver,
       );
     });
     await waitFor(() =>
-      expect(notesStoreMock.readAttachmentBytes).toHaveBeenCalled()
+      expect(notesStoreMock.readAttachmentBytes).toHaveBeenCalled(),
     );
-    const readsBeforeDrag = notesStoreMock.readAttachmentBytes.mock.calls.length;
+    const readsBeforeDrag =
+      notesStoreMock.readAttachmentBytes.mock.calls.length;
     const readyImage = await screen.findByRole("img", { name: "diagram.png" });
     const imageBullet = screen.getByRole("button", {
-      name: "Zoom into diagram.png"
+      name: "Zoom into diagram.png",
     });
     const rectangle = (top: number, height: number) =>
       ({
@@ -2946,7 +4682,7 @@ describe("Notes workspace", () => {
         bottom: top + height,
         width: 640,
         height,
-        toJSON: () => ({})
+        toJSON: () => ({}),
       }) as DOMRect;
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
       function (this: HTMLElement) {
@@ -2957,7 +4693,7 @@ describe("Notes workspace", () => {
         return row?.dataset.outlineId === imageNode.id
           ? rectangle(-56, 28)
           : rectangle(28, 28);
-      }
+      },
     );
 
     vi.useFakeTimers();
@@ -2971,10 +4707,10 @@ describe("Notes workspace", () => {
         [
           {
             target: hiddenTarget,
-            isIntersecting: false
-          } as unknown as IntersectionObserverEntry
+            isIntersecting: false,
+          } as unknown as IntersectionObserverEntry,
         ],
-        {} as IntersectionObserver
+        {} as IntersectionObserver,
       );
     });
     expect(readyImage).toBeInTheDocument();
@@ -2988,7 +4724,7 @@ describe("Notes workspace", () => {
     expect(screen.queryByTestId("notes-selection-drag-thumbnail")).toBeNull();
     expect(readyImage).toBeInTheDocument();
     expect(notesStoreMock.readAttachmentBytes).toHaveBeenCalledTimes(
-      readsBeforeDrag
+      readsBeforeDrag,
     );
 
     await user.keyboard("[Escape]");
@@ -3000,32 +4736,34 @@ describe("Notes workspace", () => {
       id: "diagram-image",
       nodeKind: "image",
       sortKey: 1,
-      title: "diagram.png"
+      title: "diagram.png",
     });
     const imageAttachment = attachment({
       id: "diagram-attachment",
       nodeId: imageNode.id,
-      originalName: "diagram.png"
+      originalName: "diagram.png",
     });
     configureRepository(
       [imageNode, node({ id: "target", sortKey: 2, title: "Target" })],
-      { [imageNode.id]: [imageAttachment] }
+      { [imageNode.id]: [imageAttachment] },
     );
     renderNotesWorkspace();
     const imageBullet = await screen.findByRole("button", {
-      name: "Zoom into diagram.png"
+      name: "Zoom into diagram.png",
     });
-    const targetBullet = screen.getByRole("button", { name: "Zoom into Target" });
+    const targetBullet = screen.getByRole("button", {
+      name: "Zoom into Target",
+    });
     mockOutlineRowRects();
 
     await user.pointer({
       keys: "[MouseLeft>]",
       target: imageBullet,
-      coords: { clientX: 9, clientY: 14 }
+      coords: { clientX: 9, clientY: 14 },
     });
     await user.pointer({
       target: targetBullet,
-      coords: { clientX: 14, clientY: 42 }
+      coords: { clientX: 14, clientY: 42 },
     });
 
     const preview = screen.getByTestId("notes-selection-drag-preview");
@@ -3037,7 +4775,7 @@ describe("Notes workspace", () => {
     await user.pointer({
       keys: "[/MouseLeft]",
       target: targetBullet,
-      coords: { clientX: 14, clientY: 42 }
+      coords: { clientX: 14, clientY: 42 },
     });
   });
 
@@ -3048,21 +4786,21 @@ describe("Notes workspace", () => {
         id: "diagram-image",
         nodeKind: "image",
         sortKey: 1,
-        title: "diagram.png"
+        title: "diagram.png",
       }),
       node({
         id: "photo-image",
         nodeKind: "image",
         sortKey: 2,
-        title: "photo.png"
-      })
+        title: "photo.png",
+      }),
     ]);
     renderNotesWorkspace();
     const diagramBullet = await screen.findByRole("button", {
-      name: "Zoom into diagram.png"
+      name: "Zoom into diagram.png",
     });
     const photoBullet = await screen.findByRole("button", {
-      name: "Zoom into photo.png"
+      name: "Zoom into photo.png",
     });
     mockOutlineRowRects();
 
@@ -3075,16 +4813,16 @@ describe("Notes workspace", () => {
 
     await waitFor(() =>
       expect(document.body).toHaveTextContent(
-        "No move was made for diagram.png."
-      )
+        "No move was made for diagram.png.",
+      ),
     );
     photoBullet.focus();
     await user.keyboard("[Space][Space]");
 
     await waitFor(() =>
       expect(document.body).toHaveTextContent(
-        "No move was made for photo.png."
-      )
+        "No move was made for photo.png.",
+      ),
     );
     for (const row of document.querySelectorAll(".notes-node")) {
       expect(row).not.toHaveTextContent(/diagram\.png|photo\.png/);
@@ -3097,12 +4835,12 @@ describe("Notes workspace", () => {
     const move = deferred<NotesWorkspace>();
     configureRepository([
       node({ id: "first", sortKey: 1, title: "First" }),
-      node({ id: "second", sortKey: 2, title: "Second" })
+      node({ id: "second", sortKey: 2, title: "Second" }),
     ]);
     notesStoreMock.moveNode.mockReturnValue(move.promise);
     renderNotesWorkspace();
     const bullet = await screen.findByRole("button", {
-      name: "Zoom into Second"
+      name: "Zoom into Second",
     });
     mockOutlineRowRects();
 
@@ -3110,28 +4848,30 @@ describe("Notes workspace", () => {
     await user.keyboard("[Space][ArrowUp][Space]");
 
     await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
-    expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
-      id: "second",
-      parentId: null,
-      afterId: null,
-      beforeId: "first"
-    }, historyContextMatcher());
+    expect(notesStoreMock.moveNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "second",
+        parentId: null,
+        afterId: null,
+        beforeId: "first",
+      },
+      historyContextMatcher(),
+    );
     expect(
-      textareasByName("Edit node title")
-        .map((input) => input.value)
+      textareasByName("Edit node title").map((input) => input.value),
     ).toEqual(["First", "Second"]);
 
     move.resolve(
       workspace([
         node({ id: "first", sortKey: 2, title: "First" }),
-        node({ id: "second", sortKey: 1, title: "Second" })
-      ])
+        node({ id: "second", sortKey: 1, title: "Second" }),
+      ]),
     );
     await waitFor(() =>
       expect(
-        textareasByName("Edit node title")
-          .map((input) => input.value)
-      ).toEqual(["Second", "First"])
+        textareasByName("Edit node title").map((input) => input.value),
+      ).toEqual(["Second", "First"]),
     );
   });
 
@@ -3140,48 +4880,46 @@ describe("Notes workspace", () => {
     configureRepository([
       node({ id: "active", sortKey: 1, title: "Active" }),
       node({ id: "parent", sortKey: 2, title: "Parent", isCollapsed: true }),
-      node({ id: "hidden", parentId: "parent", title: "Hidden" })
+      node({ id: "hidden", parentId: "parent", title: "Hidden" }),
     ]);
     renderNotesWorkspace();
     const activeBullet = await screen.findByRole("button", {
-      name: "Zoom into Active"
+      name: "Zoom into Active",
     });
     const parentBullet = screen.getByRole("button", {
-      name: "Zoom into Parent"
+      name: "Zoom into Parent",
     });
     mockOutlineRowRects();
 
     await user.pointer({
       keys: "[MouseLeft>]",
       target: activeBullet,
-      coords: { clientX: 9, clientY: 14 }
+      coords: { clientX: 9, clientY: 14 },
     });
     await user.pointer({
       target: parentBullet,
-      coords: { clientX: 14, clientY: 20 }
+      coords: { clientX: 14, clientY: 20 },
     });
     expect(activeBullet.closest(".notes-node")).not.toHaveAttribute(
-      "data-dragging"
+      "data-dragging",
     );
-    expect(activeBullet.closest<HTMLElement>(".notes-node")?.style.transform).toBe(
-      ""
-    );
-    expect(screen.getByTestId("notes-selection-drag-preview")).toHaveTextContent(
-      "Active"
-    );
+    expect(
+      activeBullet.closest<HTMLElement>(".notes-node")?.style.transform,
+    ).toBe("");
+    expect(
+      screen.getByTestId("notes-selection-drag-preview"),
+    ).toHaveTextContent("Active");
     await user.pointer({
       target: parentBullet,
-      coords: { clientX: 36, clientY: 42 }
+      coords: { clientX: 36, clientY: 42 },
     });
     expect(document.body).toHaveTextContent("Active is over Parent.");
-    const previews = document.querySelectorAll(
-      ".notes-outline-drop-preview"
-    );
+    const previews = document.querySelectorAll(".notes-outline-drop-preview");
     const movedBeforeDrop = notesStoreMock.moveNode.mock.calls.length > 0;
     await user.pointer({
       keys: "[/MouseLeft]",
       target: parentBullet,
-      coords: { clientX: 36, clientY: 42 }
+      coords: { clientX: 36, clientY: 42 },
     });
 
     expect(previews).toHaveLength(1);
@@ -3189,34 +4927,36 @@ describe("Notes workspace", () => {
     expect(previews[0]).toHaveAttribute("data-parent-id", "parent");
     expect(previews[0]).toHaveAttribute("data-depth", "1");
     expect(
-      (previews[0] as HTMLElement).style.getPropertyValue(
-        "--notes-drop-depth"
-      )
+      (previews[0] as HTMLElement).style.getPropertyValue("--notes-drop-depth"),
     ).toBe("1");
     expect(movedBeforeDrop).toBe(false);
 
     await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
     await waitFor(() =>
       expect(document.body).toHaveTextContent(
-        "Queued move for Active at Parent."
-      )
+        "Queued move for Active at Parent.",
+      ),
     );
     expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledWith(
       "/vault",
       "parent",
-      historyContextMatcher()
+      historyContextMatcher(),
     );
-    expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
-      id: "active",
-      parentId: "parent",
-      afterId: "hidden"
-    }, historyContextMatcher());
+    expect(notesStoreMock.moveNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "active",
+        parentId: "parent",
+        afterId: "hidden",
+      },
+      historyContextMatcher(),
+    );
     expect(
-      notesStoreMock.toggleCollapsed.mock.invocationCallOrder[0]
+      notesStoreMock.toggleCollapsed.mock.invocationCallOrder[0],
     ).toBeLessThan(notesStoreMock.moveNode.mock.invocationCallOrder[0]);
     expect(screen.getByRole("button", { name: "All notes" })).toHaveAttribute(
       "aria-current",
-      "page"
+      "page",
     );
   });
 
@@ -3225,40 +4965,48 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
 
     const library = screen.getByLabelText("Notes library");
-    expect(await within(library).findByRole("button", { name: "Project" })).toBeInTheDocument();
-    expect(within(library).getByRole("button", { name: "Outside branch" })).toBeInTheDocument();
-    expect(within(library).queryByRole("button", { name: "Plan" })).not.toBeInTheDocument();
+    expect(
+      await within(library).findByRole("button", { name: "Project" }),
+    ).toBeInTheDocument();
+    expect(
+      within(library).getByRole("button", { name: "Outside branch" }),
+    ).toBeInTheDocument();
+    expect(
+      within(library).queryByRole("button", { name: "Plan" }),
+    ).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Zoom into Project" }));
     const breadcrumb = screen.getByLabelText("Notes breadcrumb");
-    expect(within(breadcrumb).getByRole("button", { name: "Project" })).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: "Project", level: 1 })
+      within(breadcrumb).getByRole("button", { name: "Project" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Project", level: 1 }),
     ).toBeVisible();
     expect(
-      screen.queryByRole("button", { name: "Zoom into Project" })
+      screen.queryByRole("button", { name: "Zoom into Project" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Zoom into Plan" })
+      screen.getByRole("button", { name: "Zoom into Plan" }),
     ).toBeVisible();
     expect(getTitleInput("Plan").closest("li")).toHaveAttribute(
       "aria-level",
-      "1"
+      "1",
     );
     const projectNote = getTextareaByName("Supporting note: Project");
     expect(projectNote).toHaveValue("Project note");
     expect(projectNote.closest(".notes-page-header")).not.toBeNull();
     expect(projectNote.closest("ol")).toBeNull();
-    expect(
-      queryTitleInput("Outside branch")
-    ).not.toBeInTheDocument();
+    expect(queryTitleInput("Outside branch")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Zoom into Plan" }));
-    expect(within(breadcrumb).getByRole("button", { name: "Project" })).toBeInTheDocument();
-    expect(within(breadcrumb).getByRole("button", { name: "Plan" })).toBeInTheDocument();
     expect(
-      queryTitleInput("Project")
-    ).not.toBeInTheDocument();
+      within(breadcrumb).getByRole("button", { name: "Project" }),
+    ).toBeInTheDocument();
+    expect(
+      within(breadcrumb).getByRole("button", { name: "Plan" }),
+    ).toBeInTheDocument();
+    expect(queryTitleInput("Project")).not.toBeInTheDocument();
   });
 
   it("uses stable presentation for page fields and every row text field", async () => {
@@ -3269,27 +5017,27 @@ describe("Notes workspace", () => {
     const rowNote = getTextareaByName("Supporting note: Project");
     expect(rowTitle.closest(".notes-text-field")).toHaveAttribute(
       "data-stable-presentation",
-      "true"
+      "true",
     );
     expect(rowNote.closest(".notes-text-field")).toHaveAttribute(
       "data-stable-presentation",
-      "true"
+      "true",
     );
 
     await user.click(screen.getByRole("button", { name: "Zoom into Project" }));
     await screen.findByRole("heading", { name: "Project", level: 1 });
 
     const pageTitle = document.querySelector(
-      "textarea.notes-page-title"
+      "textarea.notes-page-title",
     ) as HTMLTextAreaElement;
     const pageNote = getTextareaByName("Supporting note: Project");
     expect(pageTitle.closest(".notes-text-field")).toHaveAttribute(
       "data-stable-presentation",
-      "true"
+      "true",
     );
     expect(pageNote.closest(".notes-text-field")).toHaveAttribute(
       "data-stable-presentation",
-      "true"
+      "true",
     );
   });
 
@@ -3301,35 +5049,35 @@ describe("Notes workspace", () => {
           id: "image-page",
           nodeKind: "image",
           title: "",
-          imageOffsetUtf16: 0
-        })
+          imageOffsetUtf16: 0,
+        }),
       ],
       {
         "image-page": [
           attachment({
             id: "image-attachment",
             nodeId: "image-page",
-            originalName: "private-filename.png"
-          })
-        ]
-      }
+            originalName: "private-filename.png",
+          }),
+        ],
+      },
     );
     renderNotesWorkspace();
 
     await user.click(
       await screen.findByRole("button", {
-        name: "Image: private-filename.png"
-      })
+        name: "Image: private-filename.png",
+      }),
     );
     const breadcrumb = screen.getByLabelText("Notes breadcrumb");
 
     expect(
-      within(breadcrumb).getByRole("button", { name: "private-filename.png" })
+      within(breadcrumb).getByRole("button", { name: "private-filename.png" }),
     ).toHaveAttribute("aria-current", "page");
     expect(
       within(breadcrumb).queryByRole("button", {
-        name: "Image"
-      })
+        name: "Image",
+      }),
     ).not.toBeInTheDocument();
   });
 
@@ -3339,24 +5087,24 @@ describe("Notes workspace", () => {
       id: "child",
       parentId: target.id,
       sortKey: 1,
-      title: "Child"
+      title: "Child",
     });
     const sibling = node({ id: "sibling", sortKey: 2, title: "Sibling" });
     configureRepository([target, child, sibling]);
     let dropListener:
-      | Parameters<NotesAttachmentUiBoundary["subscribeToImageDrop"]>[0]
-      | null = null;
+      Parameters<NotesAttachmentUiBoundary["subscribeToImageDrop"]>[0] | null =
+      null;
     const attachmentUi: NotesAttachmentUiBoundary = {
       openImageFiles: vi.fn().mockResolvedValue(null),
       saveImageFile: vi.fn().mockResolvedValue(null),
       subscribeToImageDrop: vi.fn().mockImplementation(async (listener) => {
         dropListener = listener;
         return vi.fn();
-      })
+      }),
     };
     const originalElementFromPoint = Object.getOwnPropertyDescriptor(
       document,
-      "elementFromPoint"
+      "elementFromPoint",
     );
     renderNotesWorkspace(attachmentUi);
     const targetRow = (await findTitleInput("Target")).closest(".notes-node");
@@ -3365,7 +5113,7 @@ describe("Notes workspace", () => {
     expect(childItem).not.toBeNull();
     Object.defineProperty(document, "elementFromPoint", {
       configurable: true,
-      value: vi.fn(() => targetRow)
+      value: vi.fn(() => targetRow),
     });
 
     try {
@@ -3374,8 +5122,8 @@ describe("Notes workspace", () => {
         dropListener?.({
           type: "enter",
           paths: ["/incoming/subtree.png"],
-          position: { x: 10, y: 10 }
-        })
+          position: { x: 10, y: 10 },
+        }),
       );
 
       const markers = await screen.findAllByTestId("notes-image-drop-position");
@@ -3388,7 +5136,7 @@ describe("Notes workspace", () => {
         Object.defineProperty(
           document,
           "elementFromPoint",
-          originalElementFromPoint
+          originalElementFromPoint,
         );
       } else {
         Reflect.deleteProperty(document, "elementFromPoint");
@@ -3407,29 +5155,21 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.createNode).toHaveBeenCalledWith(
       "/vault",
       expect.objectContaining({ parentId: null, title: "", note: "" }),
-      historyContextMatcher()
+      historyContextMatcher(),
     );
-    expect(
-      await findTitleInput("")
-    ).toHaveFocus();
+    expect(await findTitleInput("")).toHaveFocus();
     const blankTitleFocusCount = () =>
       focusSpy.mock.contexts.filter(
         (context) =>
-          context instanceof HTMLTextAreaElement && context.value === ""
+          context instanceof HTMLTextAreaElement && context.value === "",
       ).length;
     expect(blankTitleFocusCount()).toBe(1);
 
     await user.click(screen.getByRole("button", { name: "Project" }));
-    await waitFor(() =>
-      expect(
-        queryTitleInput("")
-      ).not.toBeInTheDocument()
-    );
+    await waitFor(() => expect(queryTitleInput("")).not.toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "All notes" }));
 
-    expect(
-      await findTitleInput("")
-    ).toBeInTheDocument();
+    expect(await findTitleInput("")).toBeInTheDocument();
     expect(blankTitleFocusCount()).toBe(1);
     expect(notesStoreMock.createNode).toHaveBeenCalledOnce();
   });
@@ -3441,13 +5181,13 @@ describe("Notes workspace", () => {
 
     await user.click(screen.getByRole("button", { name: "Zoom into Project" }));
     expect(
-      screen.getByRole("heading", { name: "Project", level: 1 })
+      screen.getByRole("heading", { name: "Project", level: 1 }),
     ).toBeVisible();
     await user.click(screen.getByRole("button", { name: "New page" }));
 
     expect(await findTitleInput("")).toHaveFocus();
     expect(
-      screen.queryByRole("heading", { name: "Project", level: 1 })
+      screen.queryByRole("heading", { name: "Project", level: 1 }),
     ).not.toBeInTheDocument();
   });
 
@@ -3455,15 +5195,15 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     configureRepository([
       node({ id: "starred", title: "Starred page", isStarred: true }),
-      node({ id: "outside", title: "Outside page" })
+      node({ id: "outside", title: "Outside page" }),
     ]);
     notesStoreMock.loadWorkspace.mockImplementation(
       async (_vaultRoot: string, scope: { kind: string }) =>
         workspace(
           scope.kind === "starred"
             ? confirmedNodes.filter((current) => current.isStarred)
-            : confirmedNodes
-        )
+            : confirmedNodes,
+        ),
     );
     renderNotesWorkspace();
     await findTitleInput("Starred page");
@@ -3471,20 +5211,20 @@ describe("Notes workspace", () => {
     await user.click(screen.getByRole("button", { name: "Starred" }));
     await waitFor(() => expect(queryTitleInput("Outside page")).toBeNull());
     await user.click(
-      screen.getByRole("button", { name: "Zoom into Starred page" })
+      screen.getByRole("button", { name: "Zoom into Starred page" }),
     );
     expect(
-      screen.getByRole("heading", { name: "Starred page", level: 1 })
+      screen.getByRole("heading", { name: "Starred page", level: 1 }),
     ).toBeVisible();
     await user.click(screen.getByRole("button", { name: "New page" }));
 
     expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
       "aria-pressed",
-      "true"
+      "true",
     );
     expect(await findTitleInput("")).toHaveFocus();
     expect(
-      screen.queryByRole("heading", { name: "Starred page", level: 1 })
+      screen.queryByRole("heading", { name: "Starred page", level: 1 }),
     ).not.toBeInTheDocument();
     expect(queryTitleInput("Outside page")).toBeInTheDocument();
     expect(notesStoreMock.createNode).toHaveBeenCalledOnce();
@@ -3496,7 +5236,7 @@ describe("Notes workspace", () => {
 
     const library = screen.getByLabelText("Notes library");
     const project = await within(library).findByRole("button", {
-      name: "Project"
+      name: "Project",
     });
 
     await user.click(project);
@@ -3514,22 +5254,19 @@ describe("Notes workspace", () => {
     expect(
       within(outline)
         .getAllByRole("listitem")
-        .map((item) => item.getAttribute("aria-level"))
+        .map((item) => item.getAttribute("aria-level")),
     ).toEqual(["1", "2", "3", "1"]);
     for (const item of within(outline).getAllByRole("listitem")) {
       expect(item).toHaveAttribute("role", "listitem");
     }
 
-    const projectRow = getTitleInput("Project").closest<HTMLElement>(
-      ".notes-node"
-    );
+    const projectRow =
+      getTitleInput("Project").closest<HTMLElement>(".notes-node");
     const planRow = getTitleInput("Plan").closest<HTMLElement>(".notes-node");
-    const milestoneRow = getTitleInput("Milestone").closest<HTMLElement>(
-      ".notes-node"
-    );
-    const outsideRow = getTitleInput("Outside branch").closest<HTMLElement>(
-      ".notes-node"
-    );
+    const milestoneRow =
+      getTitleInput("Milestone").closest<HTMLElement>(".notes-node");
+    const outsideRow =
+      getTitleInput("Outside branch").closest<HTMLElement>(".notes-node");
 
     expect(projectRow).toHaveAttribute("data-guide-end-id", "milestone");
     expect(planRow).toHaveAttribute("data-guide-end-id", "milestone");
@@ -3569,7 +5306,7 @@ describe("Notes workspace", () => {
 
     const heading = await screen.findByRole("heading", {
       name: "Project",
-      level: 1
+      level: 1,
     });
     const content = heading.closest<HTMLElement>(".notes-outline-content");
 
@@ -3586,9 +5323,9 @@ describe("Notes workspace", () => {
           id: `depth-${index + 1}`,
           parentId: index === 0 ? null : `depth-${index}`,
           sortKey: 1,
-          title: `Depth ${index + 1}`
-        })
-      )
+          title: `Depth ${index + 1}`,
+        }),
+      ),
     );
     renderNotesWorkspace();
 
@@ -3599,9 +5336,9 @@ describe("Notes workspace", () => {
     expect(deepestRow?.style.getPropertyValue("--notes-depth")).toBe("11");
     expect(deepestRow?.style.getPropertyValue("--notes-indent")).toBe("");
     expect(
-      screen.getByLabelText("Notes outline").style.getPropertyValue(
-        "--notes-outline-indent"
-      )
+      screen
+        .getByLabelText("Notes outline")
+        .style.getPropertyValue("--notes-outline-indent"),
     ).toBe("36px");
   });
 
@@ -3612,9 +5349,9 @@ describe("Notes workspace", () => {
     await findTitleInput("Project");
 
     expect(
-      screen.getByLabelText("Notes outline").style.getPropertyValue(
-        "--notes-outline-indent"
-      )
+      screen
+        .getByLabelText("Notes outline")
+        .style.getPropertyValue("--notes-outline-indent"),
     ).toBe("28px");
   });
 
@@ -3630,34 +5367,31 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledWith(
       "/vault",
       "project",
-      historyContextMatcher()
+      historyContextMatcher(),
     );
     await waitFor(() =>
-      expect(
-        queryTitleInput("Plan")
-      ).not.toBeInTheDocument()
-    );
-    expect(screen.getByRole("button", { name: "Expand Project" })).toHaveAttribute(
-      "aria-expanded",
-      "false"
+      expect(queryTitleInput("Plan")).not.toBeInTheDocument(),
     );
     expect(
-      screen.getByRole("button", { name: "Zoom into Project" })
+      screen.getByRole("button", { name: "Expand Project" }),
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.getByRole("button", { name: "Zoom into Project" }),
     ).toHaveAttribute("data-collapsed", "true");
 
     const menu = await openNodeMenu("Project", user);
-    await user.click(
-      within(menu).getByRole("menuitem", { name: "Complete" })
-    );
+    await user.click(within(menu).getByRole("menuitem", { name: "Complete" }));
     expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith(
       "/vault",
       "project",
-      historyContextMatcher()
+      historyContextMatcher(),
     );
-    await waitFor(() => expect(notesStoreMock.toggleComplete).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(notesStoreMock.toggleComplete).toHaveBeenCalledOnce(),
+    );
     const updatedMenu = await openNodeMenu("Project", user);
     expect(
-      within(updatedMenu).getByRole("menuitem", { name: "Uncomplete" })
+      within(updatedMenu).getByRole("menuitem", { name: "Uncomplete" }),
     ).toBeVisible();
   });
 
@@ -3668,10 +5402,10 @@ describe("Notes workspace", () => {
         id: "done",
         sortKey: 1,
         title: "Completed project",
-        completedAt: "2026-07-10T01:00:00Z"
+        completedAt: "2026-07-10T01:00:00Z",
       }),
       node({ id: "done-child", parentId: "done", title: "Hidden child" }),
-      node({ id: "active", sortKey: 2, title: "Active project" })
+      node({ id: "active", sortKey: 2, title: "Active project" }),
     ]);
     renderNotesWorkspace();
     await findTitleInput("Completed project");
@@ -3698,9 +5432,9 @@ describe("Notes workspace", () => {
       node({
         id: "done",
         title: "Completed project",
-        completedAt: "2026-07-10T01:00:00Z"
+        completedAt: "2026-07-10T01:00:00Z",
       }),
-      node({ id: "done-child", parentId: "done", title: "Hidden child" })
+      node({ id: "done-child", parentId: "done", title: "Hidden child" }),
     ]);
     renderNotesWorkspace();
     await findTitleInput("Completed project");
@@ -3724,27 +5458,27 @@ describe("Notes workspace", () => {
       node({
         id: "done",
         title: "Completed project",
-        completedAt: "2026-07-10T01:00:00Z"
+        completedAt: "2026-07-10T01:00:00Z",
       }),
-      node({ id: "done-child", parentId: "done", title: "Hidden child" })
+      node({ id: "done-child", parentId: "done", title: "Hidden child" }),
     ]);
     renderNotesWorkspace();
     await findTitleInput("Completed project");
     await user.click(
-      screen.getByRole("button", { name: "Zoom into Completed project" })
+      screen.getByRole("button", { name: "Zoom into Completed project" }),
     );
 
     const toggle = screen.getByRole("button", { name: "Completed items" });
     await user.click(toggle);
 
     expect(
-      screen.getByRole("heading", { name: "Completed project", level: 1 })
+      screen.getByRole("heading", { name: "Completed project", level: 1 }),
     ).toBeVisible();
     expect(queryTitleInput("Hidden child")).toBeNull();
     expect(screen.getByText("Completed items are hidden.")).toBeVisible();
     const menu = await openNodeMenu("Completed project", user);
     expect(
-      within(menu).getByRole("menuitem", { name: "Uncomplete" })
+      within(menu).getByRole("menuitem", { name: "Uncomplete" }),
     ).toBeVisible();
     await user.keyboard("{Escape}");
     await user.click(toggle);
@@ -3765,13 +5499,17 @@ describe("Notes workspace", () => {
     fireEvent.blur(title);
 
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
-        id: "project",
-        title: "Renamed project",
-        note: "Project note",
-        imageOffsetUtf16: 0,
-        markerKind: "bullet"
-      }, historyContextMatcher())
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        {
+          id: "project",
+          title: "Renamed project",
+          note: "Project note",
+          imageOffsetUtf16: 0,
+          markerKind: "bullet",
+        },
+        historyContextMatcher(),
+      ),
     );
   });
 
@@ -3794,10 +5532,10 @@ describe("Notes workspace", () => {
           title: "2026-07-11",
           note: "Project note",
           imageOffsetUtf16: 0,
-          markerKind: "bullet"
+          markerKind: "bullet",
         },
-        historyContextMatcher()
-      )
+        historyContextMatcher(),
+      ),
     );
   });
 
@@ -3822,10 +5560,10 @@ describe("Notes workspace", () => {
           title: "2026-07-11",
           note: "Project note",
           imageOffsetUtf16: 0,
-          markerKind: "bullet"
+          markerKind: "bullet",
         },
-        historyContextMatcher()
-      )
+        historyContextMatcher(),
+      ),
     );
   });
 
@@ -3842,13 +5580,17 @@ describe("Notes workspace", () => {
     await act(async () => vi.advanceTimersByTimeAsync(1));
 
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
-    expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
-      id: "project",
-      title: "Project latest",
-      note: "Project note",
-      imageOffsetUtf16: 0,
-      markerKind: "bullet"
-    }, historyContextMatcher());
+    expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "project",
+        title: "Project latest",
+        note: "Project note",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet",
+      },
+      historyContextMatcher(),
+    );
   });
 
   it("flushes a title on blur without a later duplicate timer write", async () => {
@@ -3873,9 +5615,9 @@ describe("Notes workspace", () => {
           initialNodes().map((current) =>
             current.id === "project"
               ? { ...current, title: "Project next" }
-              : current
-          )
-        )
+              : current,
+          ),
+        ),
       );
     renderNotesWorkspace();
     const title = await findTitleInput("Project");
@@ -3886,22 +5628,27 @@ describe("Notes workspace", () => {
     const failedMenu = await openNodeMenu("Project next", user);
     expect(title).toHaveValue("Project next");
     await user.click(
-      within(failedMenu).getByRole("menuitem", { name: "Retry save" })
+      within(failedMenu).getByRole("menuitem", { name: "Retry save" }),
     );
 
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2)
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2),
     );
-    expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(2, "/vault", {
-      id: "project",
-      title: "Project next",
-      note: "Project note",
-      imageOffsetUtf16: 0,
-      markerKind: "bullet"
-    }, historyContextMatcher());
+    expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(
+      2,
+      "/vault",
+      {
+        id: "project",
+        title: "Project next",
+        note: "Project note",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet",
+      },
+      historyContextMatcher(),
+    );
     const savedMenu = await openNodeMenu("Project next", user);
     expect(
-      within(savedMenu).queryByRole("menuitem", { name: "Retry save" })
+      within(savedMenu).queryByRole("menuitem", { name: "Retry save" }),
     ).toBeNull();
   });
 
@@ -3914,9 +5661,9 @@ describe("Notes workspace", () => {
           initialNodes().map((current) =>
             current.id === "project"
               ? { ...current, title: "Newest visible title" }
-              : current
-          )
-        )
+              : current,
+          ),
+        ),
       );
     renderNotesWorkspace();
     const title = await findTitleInput("Project");
@@ -3925,24 +5672,31 @@ describe("Notes workspace", () => {
     fireEvent.blur(title);
     const failedMenu = await openNodeMenu("Failed title", user);
     const retry = within(failedMenu).getByRole("menuitem", {
-      name: "Retry save"
+      name: "Retry save",
     });
     title.focus();
     fireEvent.change(title, { target: { value: "Newest visible title" } });
     fireEvent.click(retry);
 
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2)
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2),
     );
-    expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(2, "/vault", {
-      id: "project",
-      title: "Newest visible title",
-      note: "Project note",
-      imageOffsetUtf16: 0,
-      markerKind: "bullet"
-    }, historyContextMatcher());
+    expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(
+      2,
+      "/vault",
+      {
+        id: "project",
+        title: "Newest visible title",
+        note: "Project note",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet",
+      },
+      historyContextMatcher(),
+    );
     expect(title).toHaveValue("Newest visible title");
-    await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2),
+    );
   });
 
   it("renders and retries a failed unmount draft after a same-vault remount", async () => {
@@ -3961,22 +5715,27 @@ describe("Notes workspace", () => {
 
     const failedMenu = await openNodeMenu("Recovered project", user);
     await user.click(
-      within(failedMenu).getByRole("menuitem", { name: "Retry save" })
+      within(failedMenu).getByRole("menuitem", { name: "Retry save" }),
     );
 
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2)
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2),
     );
-    expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(2, "/vault", {
-      id: "project",
-      title: "Recovered project",
-      note: "Project note",
-      imageOffsetUtf16: 0,
-      markerKind: "bullet"
-    }, historyContextMatcher());
+    expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(
+      2,
+      "/vault",
+      {
+        id: "project",
+        title: "Recovered project",
+        note: "Project note",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet",
+      },
+      historyContextMatcher(),
+    );
     const savedMenu = await openNodeMenu("Recovered project", user);
     expect(
-      within(savedMenu).queryByRole("menuitem", { name: "Retry save" })
+      within(savedMenu).queryByRole("menuitem", { name: "Retry save" }),
     ).toBeNull();
   });
 
@@ -3990,40 +5749,45 @@ describe("Notes workspace", () => {
     const outsideTitle = getTitleInput("Outside branch");
 
     fireEvent.change(projectTitle, {
-      target: { value: "Failed project draft" }
+      target: { value: "Failed project draft" },
     });
     fireEvent.blur(projectTitle);
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(1)
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(1),
     );
 
     fireEvent.change(outsideTitle, {
-      target: { value: "Failed outside draft" }
+      target: { value: "Failed outside draft" },
     });
     fireEvent.blur(outsideTitle);
     const projectMenu = await openNodeMenu("Failed project draft", user);
     await user.click(
-      within(projectMenu).getByRole("menuitem", { name: "Retry save" })
+      within(projectMenu).getByRole("menuitem", { name: "Retry save" }),
     );
 
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(3)
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(3),
     );
-    expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(3, "/vault", {
-      id: "project",
-      title: "Failed project draft",
-      note: "Project note",
-      imageOffsetUtf16: 0,
-      markerKind: "bullet"
-    }, historyContextMatcher());
+    expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(
+      3,
+      "/vault",
+      {
+        id: "project",
+        title: "Failed project draft",
+        note: "Project note",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet",
+      },
+      historyContextMatcher(),
+    );
     const savedProjectMenu = await openNodeMenu("Failed project draft", user);
     expect(
-      within(savedProjectMenu).queryByRole("menuitem", { name: "Retry save" })
+      within(savedProjectMenu).queryByRole("menuitem", { name: "Retry save" }),
     ).toBeNull();
     await user.keyboard("{Escape}");
     const outsideMenu = await openNodeMenu("Failed outside draft", user);
     expect(
-      within(outsideMenu).getByRole("menuitem", { name: "Retry save" })
+      within(outsideMenu).getByRole("menuitem", { name: "Retry save" }),
     ).toBeVisible();
     expect(outsideTitle).toHaveValue("Failed outside draft");
   });
@@ -4042,13 +5806,17 @@ describe("Notes workspace", () => {
     fireEvent.blur(note);
 
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
-        id: "project",
-        title: "Project",
-        note: "Updated context",
-        imageOffsetUtf16: 0,
-        markerKind: "bullet"
-      }, historyContextMatcher())
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        {
+          id: "project",
+          title: "Project",
+          note: "Updated context",
+          imageOffsetUtf16: 0,
+          markerKind: "bullet",
+        },
+        historyContextMatcher(),
+      ),
     );
   });
 
@@ -4057,29 +5825,33 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
     await findTitleInput("Project");
     const trigger = screen.getByRole("button", {
-      name: "More actions for Project"
+      name: "More actions for Project",
     });
 
     const menu = await openNodeMenu("Project", user);
     await user.click(
-      within(menu).getByRole("menuitem", { name: "Remove note" })
+      within(menu).getByRole("menuitem", { name: "Remove note" }),
     );
 
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     await waitFor(() =>
       expect(
-        queryTextareaByName("Supporting note: Project")
-      ).not.toBeInTheDocument()
+        queryTextareaByName("Supporting note: Project"),
+      ).not.toBeInTheDocument(),
     );
     expect(trigger).toHaveFocus();
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
-        id: "project",
-        title: "Project",
-        note: "",
-        imageOffsetUtf16: 0,
-        markerKind: "bullet"
-      }, historyContextMatcher())
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        {
+          id: "project",
+          title: "Project",
+          note: "",
+          imageOffsetUtf16: 0,
+          markerKind: "bullet",
+        },
+        historyContextMatcher(),
+      ),
     );
     expect(getTitleInput("Project")).toBeInTheDocument();
     expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
@@ -4091,22 +5863,20 @@ describe("Notes workspace", () => {
     await findTitleInput("Outside branch");
 
     expect(
-      queryTextareaByName("Supporting note: Outside branch")
+      queryTextareaByName("Supporting note: Outside branch"),
     ).not.toBeInTheDocument();
 
     const menu = await openNodeMenu("Outside branch", user);
     const trigger = screen.getByRole("button", {
-      name: "More actions for Outside branch"
+      name: "More actions for Outside branch",
     });
-    await user.click(
-      within(menu).getByRole("menuitem", { name: "Add note" })
-    );
+    await user.click(within(menu).getByRole("menuitem", { name: "Add note" }));
 
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     await waitFor(() =>
       expect(
-        getTextareaByName("Supporting note: Outside branch")
-      ).toHaveFocus()
+        getTextareaByName("Supporting note: Outside branch"),
+      ).toHaveFocus(),
     );
     expect(trigger).not.toHaveFocus();
 
@@ -4114,8 +5884,8 @@ describe("Notes workspace", () => {
     fireEvent.blur(note);
     await waitFor(() =>
       expect(
-        queryTextareaByName("Supporting note: Outside branch")
-      ).not.toBeInTheDocument()
+        queryTextareaByName("Supporting note: Outside branch"),
+      ).not.toBeInTheDocument(),
     );
   });
 
@@ -4128,16 +5898,22 @@ describe("Notes workspace", () => {
     fireEvent.blur(note);
 
     await waitFor(() =>
-      expect(queryTextareaByName("Supporting note: Project")).not.toBeInTheDocument()
+      expect(
+        queryTextareaByName("Supporting note: Project"),
+      ).not.toBeInTheDocument(),
     );
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
-        id: "project",
-        title: "Project",
-        note: "",
-        imageOffsetUtf16: 0,
-        markerKind: "bullet"
-      }, historyContextMatcher())
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        {
+          id: "project",
+          title: "Project",
+          note: "",
+          imageOffsetUtf16: 0,
+          markerKind: "bullet",
+        },
+        historyContextMatcher(),
+      ),
     );
   });
 
@@ -4155,23 +5931,27 @@ describe("Notes workspace", () => {
     note.blur();
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     expect(
-      queryTextareaByName("Supporting note: Outside branch")
+      queryTextareaByName("Supporting note: Outside branch"),
     ).toBeInTheDocument();
 
     fireEvent.compositionEnd(note, { target: { value: "Committed IME note" } });
 
-    expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
-      id: "outside",
-      title: "Outside branch",
-      note: "Committed IME note",
-      imageOffsetUtf16: 0,
-      markerKind: "bullet"
-    }, historyContextMatcher());
+    expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "outside",
+        title: "Outside branch",
+        note: "Committed IME note",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet",
+      },
+      historyContextMatcher(),
+    );
     expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(1);
     await act(async () => vi.advanceTimersByTimeAsync(300));
     expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(1);
     expect(
-      queryTextareaByName("Supporting note: Outside branch")
+      queryTextareaByName("Supporting note: Outside branch"),
     ).toBeInTheDocument();
   });
 
@@ -4206,16 +5986,14 @@ describe("Notes workspace", () => {
           callbacksByTarget.delete(target);
         }
         disconnect = disconnect;
-      }
+      },
     );
     configureRepository([node({ id: "project", title: "Project" })]);
     const view = renderNotesWorkspace();
     await findTitleInput("Project");
 
     const menu = await openNodeMenu("Project", user);
-    await user.click(
-      within(menu).getByRole("menuitem", { name: "Add note" })
-    );
+    await user.click(within(menu).getByRole("menuitem", { name: "Add note" }));
     const note = await findTextareaByName("Supporting note: Project");
     const longNote =
       "긴 한국어 보조 메모도 데스크톱에서 모바일 너비로 줄어들면 모든 문장이 잘리지 않고 다시 줄바꿈되어야 합니다";
@@ -4231,11 +6009,11 @@ describe("Notes workspace", () => {
         [
           {
             target: note,
-            contentRect: { width: 620 }
-          } as unknown as ResizeObserverEntry
+            contentRect: { width: 620 },
+          } as unknown as ResizeObserverEntry,
         ],
-        {} as ResizeObserver
-      )
+        {} as ResizeObserver,
+      ),
     );
     noteScrollHeight = 80;
     act(() =>
@@ -4243,11 +6021,11 @@ describe("Notes workspace", () => {
         [
           {
             target: note,
-            contentRect: { width: 280 }
-          } as unknown as ResizeObserverEntry
+            contentRect: { width: 280 },
+          } as unknown as ResizeObserverEntry,
         ],
-        {} as ResizeObserver
-      )
+        {} as ResizeObserver,
+      ),
     );
     expect(note).toHaveStyle({ height: "80px" });
 
@@ -4257,11 +6035,11 @@ describe("Notes workspace", () => {
         [
           {
             target: note,
-            contentRect: { width: 280 }
-          } as unknown as ResizeObserverEntry
+            contentRect: { width: 280 },
+          } as unknown as ResizeObserverEntry,
         ],
-        {} as ResizeObserver
-      )
+        {} as ResizeObserver,
+      ),
     );
     expect(scrollHeight).toHaveBeenCalledTimes(measuredCalls);
 
@@ -4281,13 +6059,17 @@ describe("Notes workspace", () => {
     await act(async () => vi.advanceTimersByTimeAsync(300));
 
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
-    expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
-      id: "project",
-      title: "Project",
-      note: "Latest note",
-      imageOffsetUtf16: 0,
-      markerKind: "bullet"
-    }, historyContextMatcher());
+    expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "project",
+        title: "Project",
+        note: "Latest note",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet",
+      },
+      historyContextMatcher(),
+    );
   });
 
   it("preserves newer title and note drafts when an older blur save resolves", async () => {
@@ -4301,13 +6083,17 @@ describe("Notes workspace", () => {
     fireEvent.change(note, { target: { value: "Submitted note" } });
     fireEvent.blur(title);
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
-        id: "project",
-        title: "Submitted title",
-        note: "Project note",
-        imageOffsetUtf16: 0,
-        markerKind: "bullet"
-      }, historyContextMatcher())
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        {
+          id: "project",
+          title: "Submitted title",
+          note: "Project note",
+          imageOffsetUtf16: 0,
+          markerKind: "bullet",
+        },
+        historyContextMatcher(),
+      ),
     );
 
     fireEvent.change(title, { target: { value: "Newer title" } });
@@ -4320,12 +6106,12 @@ describe("Notes workspace", () => {
               ? {
                   ...current,
                   title: "Submitted title",
-                  note: "Submitted note"
+                  note: "Submitted note",
                 }
-              : current
-          )
-        )
-      )
+              : current,
+          ),
+        ),
+      ),
     );
 
     await waitFor(() => {
@@ -4340,7 +6126,7 @@ describe("Notes workspace", () => {
       id: "existing-child",
       parentId: "parent",
       sortKey: 2,
-      title: "Existing child"
+      title: "Existing child",
     });
     configureRepository([parent, existingChild]);
     const creation = deferred<NotesWorkspace>();
@@ -4359,7 +6145,9 @@ describe("Notes workspace", () => {
     const allocatedAtKeydown =
       randomUUID.mock.calls.length === idsBeforeCreate + 1;
 
-    await waitFor(() => expect(notesStoreMock.createNode).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(notesStoreMock.createNode).toHaveBeenCalledOnce(),
+    );
     expect(notesStoreMock.createNode).toHaveBeenCalledWith(
       "/vault",
       expect.objectContaining({
@@ -4368,13 +6156,13 @@ describe("Notes workspace", () => {
         afterId: null,
         beforeId: "existing-child",
         title: "",
-        note: ""
+        note: "",
       }),
-      historyContextMatcher()
+      historyContextMatcher(),
     );
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
     expect(
-      document.querySelectorAll('textarea[aria-label="Edit node title"]')
+      document.querySelectorAll('textarea[aria-label="Edit node title"]'),
     ).toHaveLength(2);
     expect(title).toHaveFocus();
 
@@ -4387,11 +6175,11 @@ describe("Notes workspace", () => {
             parentId: "parent",
             sortKey: 1,
             title: "",
-            note: ""
+            note: "",
           }),
-          existingChild
-        ])
-      )
+          existingChild,
+        ]),
+      ),
     );
     expect(allocatedAtKeydown).toBe(true);
     expect(await findTitleInput("")).toHaveFocus();
@@ -4405,8 +6193,8 @@ describe("Notes workspace", () => {
         id: "existing-child",
         parentId: "parent",
         sortKey: 2,
-        title: "Existing child"
-      })
+        title: "Existing child",
+      }),
     ]);
     renderNotesWorkspace();
     const title = await findTitleInput("Parent");
@@ -4433,19 +6221,23 @@ describe("Notes workspace", () => {
     fireEvent.blur(title);
 
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
-        id: "parent",
-        title: "Parent draft",
-        note: "",
-        imageOffsetUtf16: 0,
-        markerKind: "bullet"
-      }, historyContextMatcher())
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        {
+          id: "parent",
+          title: "Parent draft",
+          note: "",
+          imageOffsetUtf16: 0,
+          markerKind: "bullet",
+        },
+        historyContextMatcher(),
+      ),
     );
   });
 
   it("deduplicates repeated Enter and keeps the first target stale after the later keydown", async () => {
     configureRepository([
-      node({ id: "source", sortKey: 1, title: "alphaXYZomega" })
+      node({ id: "source", sortKey: 1, title: "alphaXYZomega" }),
     ]);
     const split = deferred<NotesWorkspace>();
     notesStoreMock.splitNode.mockReturnValue(split.promise);
@@ -4461,13 +6253,19 @@ describe("Notes workspace", () => {
     expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
     expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
     expect(randomUUID).toHaveBeenCalledTimes(idsBeforeSplit + 1);
-    await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
-    expect(notesStoreMock.splitNode).toHaveBeenCalledWith("/vault", {
-      id: "source",
-      newNodeId: "00000000-0000-4000-8000-000000000001",
-      prefix: "alpha",
-      suffix: "omega"
-    }, historyContextMatcher());
+    await waitFor(() =>
+      expect(notesStoreMock.splitNode).toHaveBeenCalledOnce(),
+    );
+    expect(notesStoreMock.splitNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "source",
+        newNodeId: "00000000-0000-4000-8000-000000000001",
+        prefix: "alpha",
+        suffix: "omega",
+      },
+      historyContextMatcher(),
+    );
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     expect(title).toHaveFocus();
 
@@ -4478,10 +6276,10 @@ describe("Notes workspace", () => {
           node({
             id: "00000000-0000-4000-8000-000000000001",
             sortKey: 2,
-            title: "omega"
-          })
-        ])
-      )
+            title: "omega",
+          }),
+        ]),
+      ),
     );
 
     expect(await findTitleInput("omega")).not.toHaveFocus();
@@ -4493,7 +6291,7 @@ describe("Notes workspace", () => {
 
   it("keeps a dirty title blur-saveable when split UUID generation fails", async () => {
     configureRepository([
-      node({ id: "source", sortKey: 1, title: "alphaomega" })
+      node({ id: "source", sortKey: 1, title: "alphaomega" }),
     ]);
     renderNotesWorkspace();
     const title = await findTitleInput("alphaomega");
@@ -4511,13 +6309,17 @@ describe("Notes workspace", () => {
     fireEvent.blur(title);
 
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
-        id: "source",
-        title: "alpha omega",
-        note: "",
-        imageOffsetUtf16: 0,
-        markerKind: "bullet"
-      }, historyContextMatcher())
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        {
+          id: "source",
+          title: "alpha omega",
+          note: "",
+          imageOffsetUtf16: 0,
+          markerKind: "bullet",
+        },
+        historyContextMatcher(),
+      ),
     );
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
   });
@@ -4528,8 +6330,8 @@ describe("Notes workspace", () => {
         id: "source",
         sortKey: 1,
         title: "alphaXYZomega",
-        note: "old note"
-      })
+        note: "old note",
+      }),
     ]);
     const save = deferred<NotesWorkspace>();
     notesStoreMock.updateNode.mockReturnValue(save.promise);
@@ -4539,14 +6341,14 @@ describe("Notes workspace", () => {
           id: "source",
           sortKey: 1,
           title: "alpha",
-          note: "draft note"
+          note: "draft note",
         }),
         node({
           id: "00000000-0000-4000-8000-000000000002",
           sortKey: 2,
-          title: "omega!"
-        })
-      ])
+          title: "omega!",
+        }),
+      ]),
     );
     const randomUUID = vi
       .spyOn(globalThis.crypto, "randomUUID")
@@ -4560,14 +6362,20 @@ describe("Notes workspace", () => {
     title.setSelectionRange(5, 8);
 
     expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
-    await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledOnce());
-    expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
-      id: "source",
-      title: "alphaXYZomega!",
-      note: "old note",
-      imageOffsetUtf16: 0,
-      markerKind: "bullet"
-    }, historyContextMatcher());
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledOnce(),
+    );
+    expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "source",
+        title: "alphaXYZomega!",
+        note: "old note",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet",
+      },
+      historyContextMatcher(),
+    );
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
 
     await act(async () =>
@@ -4577,31 +6385,33 @@ describe("Notes workspace", () => {
             id: "source",
             sortKey: 1,
             title: "alphaXYZomega!",
-            note: "draft note"
-          })
-        ])
-      )
+            note: "draft note",
+          }),
+        ]),
+      ),
     );
-    await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
-    expect(notesStoreMock.splitNode).toHaveBeenCalledWith("/vault", {
-      id: "source",
-      newNodeId: "00000000-0000-4000-8000-000000000002",
-      prefix: "alpha",
-      suffix: "omega!"
-    }, historyContextMatcher());
+    await waitFor(() =>
+      expect(notesStoreMock.splitNode).toHaveBeenCalledOnce(),
+    );
+    expect(notesStoreMock.splitNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "source",
+        newNodeId: "00000000-0000-4000-8000-000000000002",
+        prefix: "alpha",
+        suffix: "omega!",
+      },
+      historyContextMatcher(),
+    );
 
-    expect(
-      await findTitleInput("alpha")
-    ).toHaveValue("alpha");
-    expect(
-      getTitleInput("omega!")
-    ).toHaveFocus();
+    expect(await findTitleInput("alpha")).toHaveValue("alpha");
+    expect(getTitleInput("omega!")).toHaveFocus();
     randomUUID.mockRestore();
   });
 
   it("keeps a failed split prerequisite dirty and retries it before splitting", async () => {
     configureRepository([
-      node({ id: "source", sortKey: 1, title: "alphaXYZomega" })
+      node({ id: "source", sortKey: 1, title: "alphaXYZomega" }),
     ]);
     const retrySave = deferred<NotesWorkspace>();
     notesStoreMock.updateNode
@@ -4613,9 +6423,9 @@ describe("Notes workspace", () => {
         node({
           id: "00000000-0000-4000-8000-000000000003",
           title: "omega!",
-          sortKey: 2
-        })
-      ])
+          sortKey: 2,
+        }),
+      ]),
     );
     const randomUUID = vi
       .spyOn(globalThis.crypto, "randomUUID")
@@ -4627,33 +6437,37 @@ describe("Notes workspace", () => {
     title.setSelectionRange(5, 8);
 
     expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
-    await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledOnce());
     await waitFor(() =>
-      expect(screen.getAllByText("save failed")).toHaveLength(2)
+      expect(notesStoreMock.updateNode).toHaveBeenCalledOnce(),
+    );
+    await waitFor(() =>
+      expect(screen.getAllByText("save failed")).toHaveLength(2),
     );
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
 
     title.setSelectionRange(5, 8);
     expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2)
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2),
     );
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
 
     await act(async () =>
       retrySave.resolve(
         workspace([
-          node({ id: "source", title: "alphaXYZomega!", sortKey: 1 })
-        ])
-      )
+          node({ id: "source", title: "alphaXYZomega!", sortKey: 1 }),
+        ]),
+      ),
     );
-    await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(notesStoreMock.splitNode).toHaveBeenCalledOnce(),
+    );
     randomUUID.mockRestore();
   });
 
   it("restores focus and surfaces a notice when a skipped split drops Enter", async () => {
     configureRepository([
-      node({ id: "source", sortKey: 1, title: "alphaXYZomega" })
+      node({ id: "source", sortKey: 1, title: "alphaXYZomega" }),
     ]);
     // Every draft flush fails, so the split's draft-flush barrier drops the
     // structural command: the coordinator settles it as "skipped".
@@ -4666,7 +6480,7 @@ describe("Notes workspace", () => {
 
     expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledOnce()
+      expect(notesStoreMock.updateNode).toHaveBeenCalledOnce(),
     );
     // The split never reached the backend...
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
@@ -4686,7 +6500,7 @@ describe("Notes workspace", () => {
 
     it("renders and focuses the empty sibling only after the split resolves", async () => {
       configureRepository([
-        node({ id: "solo", sortKey: 1024, title: "Solo item" })
+        node({ id: "solo", sortKey: 1024, title: "Solo item" }),
       ]);
       const split = deferred<NotesWorkspace>();
       notesStoreMock.splitNode.mockReturnValue(split.promise);
@@ -4697,30 +6511,31 @@ describe("Notes workspace", () => {
 
       expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
 
-      await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(notesStoreMock.splitNode).toHaveBeenCalledOnce(),
+      );
       expect(notesStoreMock.splitNode).toHaveBeenCalledWith(
         "/vault",
         { id: "solo", newNodeId: FIRST, prefix: "Solo item", suffix: "" },
-        historyContextMatcher()
+        historyContextMatcher(),
       );
-      const rowCountBeforeSettlement =
-        document.querySelectorAll('textarea[aria-label="Edit node title"]')
-          .length;
+      const rowCountBeforeSettlement = document.querySelectorAll(
+        'textarea[aria-label="Edit node title"]',
+      ).length;
       const sourceFocusedBeforeSettlement = title.matches(":focus");
 
       await act(async () =>
         split.resolve(
           workspace([
             node({ id: "solo", sortKey: 1024, title: "Solo item" }),
-            node({ id: FIRST, sortKey: 2048, title: "" })
-          ])
-        )
+            node({ id: FIRST, sortKey: 2048, title: "" }),
+          ]),
+        ),
       );
       expect(rowCountBeforeSettlement).toBe(1);
       expect(sourceFocusedBeforeSettlement).toBe(true);
       expect(await findTitleInput("")).toHaveFocus();
     });
-
   });
 
   describe("multi-node batch operations (Phase 4.1c)", () => {
@@ -4728,14 +6543,14 @@ describe("Notes workspace", () => {
       return [
         node({ id: "a", sortKey: 1, title: "Alpha" }),
         node({ id: "b", sortKey: 2, title: "Bravo" }),
-        node({ id: "c", sortKey: 3, title: "Charlie" })
+        node({ id: "c", sortKey: 3, title: "Charlie" }),
       ];
     }
 
     function fourRoots(): NoteNode[] {
       return [
         ...threeRoots(),
-        node({ id: "d", sortKey: 4, title: "Delta #later" })
+        node({ id: "d", sortKey: 4, title: "Delta #later" }),
       ];
     }
 
@@ -4747,9 +6562,9 @@ describe("Notes workspace", () => {
           id: "grandchild",
           parentId: "child",
           sortKey: 1,
-          title: "Grandchild"
+          title: "Grandchild",
         }),
-        node({ id: "sibling", sortKey: 2, title: "Sibling" })
+        node({ id: "sibling", sortKey: 2, title: "Sibling" }),
       ];
     }
 
@@ -4764,15 +6579,11 @@ describe("Notes workspace", () => {
 
       fireEvent.keyDown(parent, { key: "ArrowDown", shiftKey: true });
 
-      expect(selectedOutlineIds()).toEqual([
-        "parent",
-        "child",
-        "grandchild"
-      ]);
+      expect(selectedOutlineIds()).toEqual(["parent", "child", "grandchild"]);
       expect(
         screen.getByRole("toolbar", {
-          name: "Actions for 3 selected notes"
-        })
+          name: "Actions for 3 selected notes",
+        }),
       ).toBeVisible();
     });
 
@@ -4786,16 +6597,12 @@ describe("Notes workspace", () => {
       fireEvent.pointerMove(child, { buttons: 1, pointerId: 31 });
       fireEvent.pointerUp(child, { button: 0, pointerId: 31 });
 
-      expect(selectedOutlineIds()).toEqual([
-        "parent",
-        "child",
-        "grandchild"
-      ]);
+      expect(selectedOutlineIds()).toEqual(["parent", "child", "grandchild"]);
     });
 
     it.each([
       { platform: "MacIntel", modifier: "Meta" },
-      { platform: "Win32", modifier: "Ctrl" }
+      { platform: "Win32", modifier: "Ctrl" },
     ])(
       "uses Shift click for a range and $modifier click to toggle a row on $platform",
       async ({ platform, modifier }) => {
@@ -4825,46 +6632,50 @@ describe("Notes workspace", () => {
         await user.pointer({ keys: "[MouseLeft]", target: bravo });
         await user.keyboard(modifier === "Meta" ? "{/Meta}" : "{/Control}");
         expect(selectedOutlineIds()).toEqual(["a", "c"]);
-      }
+      },
     );
 
     it.each([
       ["Control", { ctrlKey: true }],
-      ["Command", { metaKey: true }]
-    ] as const)("moves a mouse-selected range with %s while focus remains on a bullet", async (
-      _modifier,
-      modifierKey
-    ) => {
-      const user = userEvent.setup();
-      vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
-      configureRepository(fourRoots());
-      renderNotesWorkspace();
-      const bravo = await findTitleInput("Bravo");
-      const deltaBullet = screen.getByRole("button", {
-        name: "Zoom into Delta #later"
-      });
+      ["Command", { metaKey: true }],
+    ] as const)(
+      "moves a mouse-selected range with %s while focus remains on a bullet",
+      async (_modifier, modifierKey) => {
+        const user = userEvent.setup();
+        vi.spyOn(window.navigator, "platform", "get").mockReturnValue(
+          "MacIntel",
+        );
+        configureRepository(fourRoots());
+        renderNotesWorkspace();
+        const bravo = await findTitleInput("Bravo");
+        const deltaBullet = screen.getByRole("button", {
+          name: "Zoom into Delta #later",
+        });
 
-      bravo.focus();
-      await user.keyboard("{Shift>}");
-      await user.pointer({ keys: "[MouseLeft]", target: deltaBullet });
-      await user.keyboard("{/Shift}");
+        bravo.focus();
+        await user.keyboard("{Shift>}");
+        await user.pointer({ keys: "[MouseLeft]", target: deltaBullet });
+        await user.keyboard("{/Shift}");
 
-      expect(selectedOutlineIds()).toEqual(["b", "c", "d"]);
-      expect(deltaBullet).toHaveFocus();
+        expect(selectedOutlineIds()).toEqual(["b", "c", "d"]);
+        expect(deltaBullet).toHaveFocus();
 
-      fireEvent.keyDown(deltaBullet, {
-        key: "ArrowUp",
-        ...modifierKey,
-        shiftKey: true
-      });
+        fireEvent.keyDown(deltaBullet, {
+          key: "ArrowUp",
+          ...modifierKey,
+          shiftKey: true,
+        });
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
-        "/vault",
-        expect.objectContaining({ op: "move", nodeIds: ["b", "c", "d"] }),
-        historyContextMatcher()
-      );
-    });
+        await waitFor(() =>
+          expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+        );
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+          "/vault",
+          expect.objectContaining({ op: "move", nodeIds: ["b", "c", "d"] }),
+          historyContextMatcher(),
+        );
+      },
+    );
 
     it("clears a multi-selection on a plain row text click while preserving edit focus", async () => {
       configureRepository(threeRoots());
@@ -4882,7 +6693,7 @@ describe("Notes workspace", () => {
         throw new Error("Charlie row did not render");
       }
       const charliePresentation = within(charlieRow).getByRole("group", {
-        name: "Edit node title"
+        name: "Edit node title",
       });
       fireEvent.pointerDown(charliePresentation, { button: 0, pointerId: 4 });
       fireEvent.pointerUp(charliePresentation, { button: 0, pointerId: 4 });
@@ -4897,7 +6708,7 @@ describe("Notes workspace", () => {
       await findTitleInput("Alpha");
       const titles = screen.getAllByLabelText<HTMLTextAreaElement>(
         "Edit node title",
-        { selector: "textarea" }
+        { selector: "textarea" },
       );
       const bravo = titles[1];
       const delta = titles[3];
@@ -4920,11 +6731,13 @@ describe("Notes workspace", () => {
       configureRepository(fourRoots());
       renderNotesWorkspace();
       await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       const titles = screen.getAllByLabelText<HTMLTextAreaElement>(
         "Edit node title",
-        { selector: "textarea" }
+        { selector: "textarea" },
       );
       const bravo = titles[1];
       const delta = titles[3];
@@ -4945,9 +6758,9 @@ describe("Notes workspace", () => {
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       await act(async () => undefined);
       delta.setSelectionRange(0, 0);
@@ -4955,16 +6768,22 @@ describe("Notes workspace", () => {
       expect(copied.event.defaultPrevented).toBe(true);
       expect(copied.setData).toHaveBeenCalledWith(
         "text/plain",
-        "- Bravo\n- Charlie\n- Delta #later"
+        "- Bravo\n- Charlie\n- Delta #later",
       );
 
       // Keyboard block move reaches the focused row's keydown handler.
-      fireEvent.keyDown(delta, { key: "ArrowUp", altKey: true, shiftKey: true });
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      fireEvent.keyDown(delta, {
+        key: "ArrowUp",
+        altKey: true,
+        shiftKey: true,
+      });
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
       expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
         "/vault",
         expect.objectContaining({ op: "move", nodeIds: ["b", "c", "d"] }),
-        historyContextMatcher()
+        historyContextMatcher(),
       );
     });
 
@@ -4979,16 +6798,16 @@ describe("Notes workspace", () => {
       await user.pointer({
         keys: "[MouseLeft>]",
         target: bravo,
-        coords: { clientX: 80, clientY: 42 }
+        coords: { clientX: 80, clientY: 42 },
       });
       await user.pointer({
         target: delta,
-        coords: { clientX: 80, clientY: 98 }
+        coords: { clientX: 80, clientY: 98 },
       });
       await user.pointer({
         keys: "[/MouseLeft]",
         target: delta,
-        coords: { clientX: 80, clientY: 98 }
+        coords: { clientX: 80, clientY: 98 },
       });
 
       expect(selectedOutlineIds()).toEqual(["b", "c", "d"]);
@@ -5017,36 +6836,36 @@ describe("Notes workspace", () => {
         nodeKind: "image",
         sortKey: 1,
         title: "beforeafter",
-        imageOffsetUtf16: 6
+        imageOffsetUtf16: 6,
       });
       const targetNode = node({
         id: "target-b",
         sortKey: 2,
-        title: "Target"
+        title: "Target",
       });
       configureRepository([imageNode, targetNode], {
         [imageNode.id]: [
-          attachment({ id: "image-attachment", nodeId: imageNode.id })
-        ]
+          attachment({ id: "image-attachment", nodeId: imageNode.id }),
+        ],
       });
       renderNotesWorkspace();
       const editor = await screen.findByRole("textbox", { name: "Image note" });
       const atom = editor.querySelector<HTMLElement>(
-        "[data-image-atom-region=atom]"
+        "[data-image-atom-region=atom]",
       )!;
       const targetRow = (await findTitleInput("Target")).closest<HTMLElement>(
-        ".notes-node"
+        ".notes-node",
       )!;
       const setPointerCapture = vi.fn();
       const releasePointerCapture = vi.fn();
       Object.assign(atom, { setPointerCapture, releasePointerCapture });
       const originalElementFromPoint = Object.getOwnPropertyDescriptor(
         document,
-        "elementFromPoint"
+        "elementFromPoint",
       );
       Object.defineProperty(document, "elementFromPoint", {
         configurable: true,
-        value: vi.fn(() => targetRow)
+        value: vi.fn(() => targetRow),
       });
 
       try {
@@ -5054,7 +6873,7 @@ describe("Notes workspace", () => {
           button: 0,
           pointerId: 18,
           clientX: 20,
-          clientY: 20
+          clientY: 20,
         });
         const selection = document.getSelection()!;
         const removeAllRanges = vi.spyOn(selection, "removeAllRanges");
@@ -5062,7 +6881,7 @@ describe("Notes workspace", () => {
           buttons: 1,
           pointerId: 18,
           clientX: 20,
-          clientY: 80
+          clientY: 80,
         });
 
         expect(selectedOutlineIds()).toEqual(["image-a", "target-b"]);
@@ -5080,7 +6899,7 @@ describe("Notes workspace", () => {
           Object.defineProperty(
             document,
             "elementFromPoint",
-            originalElementFromPoint
+            originalElementFromPoint,
           );
         } else {
           Reflect.deleteProperty(document, "elementFromPoint");
@@ -5117,7 +6936,7 @@ describe("Notes workspace", () => {
       expect(selectedOutlineIds()).toEqual(["a", "b", "c"]);
 
       const tag = screen.getByRole("button", {
-        name: "#later tag filter is inactive"
+        name: "#later tag filter is inactive",
       });
       fireEvent.pointerDown(tag, { button: 0, pointerId: 9 });
       fireEvent.pointerMove(alpha, { buttons: 1, pointerId: 9 });
@@ -5130,20 +6949,20 @@ describe("Notes workspace", () => {
       renderNotesWorkspace();
       await findTitleInput("Alpha");
 
-      fireEvent.click(
-        screen.getByRole("button", { name: "Zoom into Alpha" }),
-        { shiftKey: true }
-      );
+      fireEvent.click(screen.getByRole("button", { name: "Zoom into Alpha" }), {
+        shiftKey: true,
+      });
 
       const toolbar = await screen.findByRole("toolbar", {
-        name: "Actions for 1 selected notes"
+        name: "Actions for 1 selected notes",
       });
       expect(within(toolbar).getByLabelText("1 notes selected")).toBeVisible();
+      expect(document.querySelector('[data-outline-id="a"]')).toHaveAttribute(
+        "data-range-selected",
+        "true",
+      );
       expect(
-        document.querySelector('[data-outline-id="a"]')
-      ).toHaveAttribute("data-range-selected", "true");
-      expect(
-        screen.queryByRole("navigation", { name: "Notes breadcrumb" })
+        screen.queryByRole("navigation", { name: "Notes breadcrumb" }),
       ).toBeNull();
     });
 
@@ -5153,18 +6972,18 @@ describe("Notes workspace", () => {
       const alpha = await findTitleInput("Alpha");
       fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
       const toolbar = await screen.findByRole("toolbar", {
-        name: "Actions for 2 selected notes"
+        name: "Actions for 2 selected notes",
       });
 
       expect(fireEvent.keyDown(alpha, { key: "F6" })).toBe(false);
       const clear = within(toolbar).getByRole("button", {
-        name: "Clear selection"
+        name: "Clear selection",
       });
       expect(clear).toHaveFocus();
 
-      expect(
-        fireEvent.keyDown(clear, { key: "F6", shiftKey: true })
-      ).toBe(false);
+      expect(fireEvent.keyDown(clear, { key: "F6", shiftKey: true })).toBe(
+        false,
+      );
       const bravo = getTitleInput("Bravo");
       expect(bravo).toHaveFocus();
 
@@ -5174,9 +6993,9 @@ describe("Notes workspace", () => {
       await waitFor(() =>
         expect(
           screen.queryByRole("toolbar", {
-            name: "Actions for 2 selected notes"
-          })
-        ).toBeNull()
+            name: "Actions for 2 selected notes",
+          }),
+        ).toBeNull(),
       );
       expect(bravo).toHaveFocus();
     });
@@ -5187,25 +7006,24 @@ describe("Notes workspace", () => {
       renderNotesWorkspace();
       await findTitleInput("Project");
       await user.click(
-        screen.getByRole("button", { name: "Zoom into Project" })
+        screen.getByRole("button", { name: "Zoom into Project" }),
       );
       await activatePageTitle();
 
-      fireEvent.click(
-        screen.getByRole("button", { name: "Zoom into Plan" }),
-        { shiftKey: true }
-      );
+      fireEvent.click(screen.getByRole("button", { name: "Zoom into Plan" }), {
+        shiftKey: true,
+      });
 
       expect(
         await screen.findByRole("toolbar", {
-          name: "Actions for 2 selected notes"
-        })
+          name: "Actions for 2 selected notes",
+        }),
       ).toBeVisible();
       expect(
-        document.querySelector('[data-outline-id="plan"]')
+        document.querySelector('[data-outline-id="plan"]'),
       ).toHaveAttribute("data-range-selected", "true");
       expect(
-        document.querySelector('[data-outline-id="milestone"]')
+        document.querySelector('[data-outline-id="milestone"]'),
       ).toHaveAttribute("data-range-selected", "true");
     });
 
@@ -5214,22 +7032,29 @@ describe("Notes workspace", () => {
       configureRepository(threeRoots());
       renderNotesWorkspace();
       await findTitleInput("Alpha");
-      fireEvent.click(
-        screen.getByRole("button", { name: "Zoom into Alpha" }),
-        { shiftKey: true }
-      );
+      fireEvent.click(screen.getByRole("button", { name: "Zoom into Alpha" }), {
+        shiftKey: true,
+      });
 
       const toolbar = await screen.findByRole("toolbar", {
-        name: "Actions for 1 selected notes"
+        name: "Actions for 1 selected notes",
       });
-      await user.click(within(toolbar).getByRole("button", { name: "Complete" }));
+      await user.click(
+        within(toolbar).getByRole("button", { name: "Complete" }),
+      );
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "complete",
-        nodeIds: ["a"],
-        completed: true
-      }, historyContextMatcher());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "complete",
+          nodeIds: ["a"],
+          completed: true,
+        },
+        historyContextMatcher(),
+      );
       expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
     });
 
@@ -5240,7 +7065,7 @@ describe("Notes workspace", () => {
         async (
           _vaultRoot: string,
           input: ApplyNotesBatchInput,
-          context: NotesHistoryContext
+          context: NotesHistoryContext,
         ) => {
           if (input.op !== "duplicate") {
             throw new Error("Expected a duplicate batch");
@@ -5248,43 +7073,49 @@ describe("Notes workspace", () => {
           confirmedNodes = [
             ...confirmedNodes,
             node({ id: "copy-a", sortKey: 4, title: "Alpha copy" }),
-            node({ id: "copy-b", sortKey: 5, title: "Bravo copy" })
+            node({ id: "copy-b", sortKey: 5, title: "Bravo copy" }),
           ];
           return {
             workspace: workspace(confirmedNodes),
             historyEntryId: context.entryId,
             ...historyState({
               canUndo: true,
-              nextUndoEntryId: context.entryId
+              nextUndoEntryId: context.entryId,
             }),
-            duplicatedRootIds: ["copy-a", "copy-b"]
+            duplicatedRootIds: ["copy-a", "copy-b"],
           };
-        }
+        },
       );
       renderNotesWorkspace();
       const alpha = await findTitleInput("Alpha");
       fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
       const toolbar = screen.getByRole("toolbar", {
-        name: "Actions for 2 selected notes"
+        name: "Actions for 2 selected notes",
       });
 
       await user.click(
-        within(toolbar).getByRole("button", { name: "Duplicate" })
+        within(toolbar).getByRole("button", { name: "Duplicate" }),
       );
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "duplicate",
-        nodeIds: ["a", "b"]
-      }, historyContextMatcher());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "duplicate",
+          nodeIds: ["a", "b"],
+        },
+        historyContextMatcher(),
+      );
       expect(notesStoreMock.duplicateNode).not.toHaveBeenCalled();
       await waitFor(() =>
-        expect(selectedOutlineIds()).toEqual(["copy-a", "copy-b"])
+        expect(selectedOutlineIds()).toEqual(["copy-a", "copy-b"]),
       );
       expect(
         screen.getByRole("toolbar", {
-          name: "Actions for 2 selected notes"
-        })
+          name: "Actions for 2 selected notes",
+        }),
       ).toBeVisible();
     });
 
@@ -5295,7 +7126,7 @@ describe("Notes workspace", () => {
         async (
           _vaultRoot: string,
           input: ApplyNotesBatchInput,
-          context: NotesHistoryContext
+          context: NotesHistoryContext,
         ) => {
           if (input.op !== "duplicate") {
             throw new Error("Expected a duplicate batch");
@@ -5303,18 +7134,18 @@ describe("Notes workspace", () => {
           confirmedNodes = [
             ...confirmedNodes,
             node({ id: "copy-a", sortKey: 4, title: "Alpha copy" }),
-            node({ id: "copy-b", sortKey: 5, title: "Bravo copy" })
+            node({ id: "copy-b", sortKey: 5, title: "Bravo copy" }),
           ];
           return {
             workspace: workspace(confirmedNodes),
             historyEntryId: context.entryId,
             ...historyState({
               canUndo: true,
-              nextUndoEntryId: context.entryId
+              nextUndoEntryId: context.entryId,
             }),
-            duplicatedRootIds: ["copy-a", "copy-b"]
+            duplicatedRootIds: ["copy-a", "copy-b"],
           };
-        }
+        },
       );
       renderNotesWorkspace();
       const alpha = await findTitleInput("Alpha");
@@ -5325,18 +7156,24 @@ describe("Notes workspace", () => {
         fireEvent.keyDown(alpha, {
           key: "D",
           metaKey: true,
-          shiftKey: true
-        })
+          shiftKey: true,
+        }),
       ).toBe(false);
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "duplicate",
-        nodeIds: ["a", "b"]
-      }, historyContextMatcher());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "duplicate",
+          nodeIds: ["a", "b"],
+        },
+        historyContextMatcher(),
+      );
       expect(notesStoreMock.duplicateNode).not.toHaveBeenCalled();
       await waitFor(() =>
-        expect(selectedOutlineIds()).toEqual(["copy-a", "copy-b"])
+        expect(selectedOutlineIds()).toEqual(["copy-a", "copy-b"]),
       );
     });
 
@@ -5344,7 +7181,7 @@ describe("Notes workspace", () => {
       const user = userEvent.setup();
       const activeNodes = [
         node({ id: "a", sortKey: 1, title: "Alpha", isStarred: true }),
-        node({ id: "b", sortKey: 2, title: "Hidden sibling" })
+        node({ id: "b", sortKey: 2, title: "Hidden sibling" }),
       ];
       configureRepository(activeNodes);
       const hydration = deferred<NotesWorkspace>();
@@ -5352,46 +7189,47 @@ describe("Notes workspace", () => {
       notesStoreMock.loadWorkspace.mockImplementation(
         async (_vaultRoot: string, scope: { kind: string }) => {
           if (scope.kind === "starred") {
-            return workspace(activeNodes.filter((current) => current.isStarred));
+            return workspace(
+              activeNodes.filter((current) => current.isStarred),
+            );
           }
           if (deferActiveAuthority && scope.kind === "active") {
             return hydration.promise;
           }
           return workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       await findTitleInput("Alpha");
       await user.click(screen.getByRole("button", { name: "Starred" }));
-      await waitFor(() =>
-        expect(queryTitleInput("Hidden sibling")).toBeNull()
-      );
+      await waitFor(() => expect(queryTitleInput("Hidden sibling")).toBeNull());
 
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       deferActiveAuthority = true;
-      fireEvent.click(
-        screen.getByRole("button", { name: "Zoom into Alpha" }),
-        { shiftKey: true }
-      );
+      fireEvent.click(screen.getByRole("button", { name: "Zoom into Alpha" }), {
+        shiftKey: true,
+      });
 
       const toolbar = await screen.findByRole("toolbar", {
-        name: "Actions for 1 selected notes"
+        name: "Actions for 1 selected notes",
       });
       const moveDown = within(toolbar).getByRole("button", {
-        name: "Move down"
+        name: "Move down",
       });
       expect(moveDown).toHaveAttribute("aria-disabled", "true");
       expect(moveDown).toHaveAttribute(
         "title",
-        "This action requires the complete active workspace."
+        "This action requires the complete active workspace.",
       );
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
 
       await act(async () => {
@@ -5399,7 +7237,7 @@ describe("Notes workspace", () => {
         deferActiveAuthority = false;
       });
       await waitFor(() =>
-        expect(moveDown).toHaveAttribute("aria-disabled", "false")
+        expect(moveDown).toHaveAttribute("aria-disabled", "false"),
       );
     });
 
@@ -5407,7 +7245,7 @@ describe("Notes workspace", () => {
       const user = userEvent.setup();
       const activeNodes = [
         node({ id: "a", sortKey: 1, title: "Alpha", isStarred: true }),
-        node({ id: "b", sortKey: 2, title: "Hidden sibling" })
+        node({ id: "b", sortKey: 2, title: "Hidden sibling" }),
       ];
       configureRepository(activeNodes);
       const hydration = deferred<NotesWorkspace>();
@@ -5415,41 +7253,44 @@ describe("Notes workspace", () => {
       notesStoreMock.loadWorkspace.mockImplementation(
         async (_vaultRoot: string, scope: { kind: string }) => {
           if (scope.kind === "starred") {
-            return workspace(activeNodes.filter((current) => current.isStarred));
+            return workspace(
+              activeNodes.filter((current) => current.isStarred),
+            );
           }
           if (deferActiveAuthority && scope.kind === "active") {
             return hydration.promise;
           }
           return workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       await findTitleInput("Alpha");
       await user.click(screen.getByRole("button", { name: "Starred" }));
       await waitFor(() => expect(queryTitleInput("Hidden sibling")).toBeNull());
 
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       deferActiveAuthority = true;
-      fireEvent.click(
-        screen.getByRole("button", { name: "Zoom into Alpha" }),
-        { shiftKey: true }
-      );
+      fireEvent.click(screen.getByRole("button", { name: "Zoom into Alpha" }), {
+        shiftKey: true,
+      });
       const title = getTitleInput("Alpha");
       title.setSelectionRange(0, 0);
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBe(activeLoadsBeforeSelection + 1)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBe(activeLoadsBeforeSelection + 1),
       );
 
       const provisional = dispatchClipboardEvent("copy", title);
       expect(provisional.event.defaultPrevented).toBe(true);
       expect(provisional.setData).not.toHaveBeenCalled();
       expect(
-        await screen.findByText(/still preparing for Copy\. Try again/i)
+        await screen.findByText(/still preparing for Copy\. Try again/i),
       ).toBeVisible();
 
       await act(async () => {
@@ -5459,8 +7300,8 @@ describe("Notes workspace", () => {
       await act(async () => undefined);
       expect(
         notesStoreMock.loadWorkspace.mock.calls.filter(
-          ([, scope]) => scope.kind === "active"
-        )
+          ([, scope]) => scope.kind === "active",
+        ),
       ).toHaveLength(activeLoadsBeforeSelection + 1);
 
       const authoritative = dispatchClipboardEvent("copy", title);
@@ -5468,8 +7309,8 @@ describe("Notes workspace", () => {
       expect(authoritative.values.get("text/plain")).toBe("- Alpha");
       await waitFor(() =>
         expect(
-          screen.queryByText(/still preparing for Copy\. Try again/i)
-        ).toBeNull()
+          screen.queryByText(/still preparing for Copy\. Try again/i),
+        ).toBeNull(),
       );
     });
 
@@ -5487,26 +7328,26 @@ describe("Notes workspace", () => {
         { key: "Tab", shiftKey: true },
         { key: "D", altKey: true, shiftKey: true },
         { key: "ArrowUp", altKey: true, shiftKey: true },
-        { key: "ArrowDown", altKey: true, shiftKey: true }
+        { key: "ArrowDown", altKey: true, shiftKey: true },
       ] as const;
 
       for (const shortcut of repeatedShortcuts) {
-        expect(
-          fireEvent.keyDown(title, { ...shortcut, repeat: true })
-        ).toBe(false);
+        expect(fireEvent.keyDown(title, { ...shortcut, repeat: true })).toBe(
+          false,
+        );
       }
       expect(
-        fireEvent.keyDown(title, { key: "c", ctrlKey: true, repeat: true })
+        fireEvent.keyDown(title, { key: "c", ctrlKey: true, repeat: true }),
       ).toBe(true);
       expect(
-        fireEvent.keyDown(title, { key: "x", ctrlKey: true, repeat: true })
+        fireEvent.keyDown(title, { key: "x", ctrlKey: true, repeat: true }),
       ).toBe(true);
       expect(
         fireEvent.keyDown(title, {
           key: "Enter",
           ctrlKey: true,
-          isComposing: true
-        })
+          isComposing: true,
+        }),
       ).toBe(true);
 
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
@@ -5517,9 +7358,9 @@ describe("Notes workspace", () => {
       expect(
         Array.from(
           document.querySelectorAll<HTMLElement>(
-            '[data-outline-id][data-range-selected="true"]'
-          )
-        ).map((row) => row.dataset.outlineId)
+            '[data-outline-id][data-range-selected="true"]',
+          ),
+        ).map((row) => row.dataset.outlineId),
       ).toEqual(["a", "b"]);
     });
 
@@ -5533,19 +7374,19 @@ describe("Notes workspace", () => {
 
       fireEvent.compositionStart(title);
       await user.click(
-        screen.getByRole("button", { name: "Zoom into Project" })
+        screen.getByRole("button", { name: "Zoom into Project" }),
       );
       await user.click(screen.getByRole("button", { name: "Zoom into Plan" }));
 
       expect(notesStoreMock.historyStatus).not.toHaveBeenCalled();
       expect(notesStoreMock.prepareNavigation).not.toHaveBeenCalled();
       expect(
-        screen.queryByRole("heading", { name: "Plan", level: 1 })
+        screen.queryByRole("heading", { name: "Plan", level: 1 }),
       ).not.toBeInTheDocument();
 
       fireEvent.compositionEnd(title);
       expect(
-        await screen.findByRole("heading", { name: "Plan", level: 1 })
+        await screen.findByRole("heading", { name: "Plan", level: 1 }),
       ).toBeVisible();
       expect(notesStoreMock.historyStatus).toHaveBeenCalledOnce();
       expect(notesStoreMock.prepareNavigation).toHaveBeenCalledOnce();
@@ -5559,23 +7400,23 @@ describe("Notes workspace", () => {
       await findTitleInput("Project");
 
       await user.click(
-        screen.getByRole("button", { name: "Zoom into Project" })
+        screen.getByRole("button", { name: "Zoom into Project" }),
       );
       await user.click(screen.getByRole("button", { name: "Zoom into Plan" }));
       await screen.findByRole("heading", { name: "Plan", level: 1 });
 
       fireEvent.keyDown(document.body, { key: "z", metaKey: true });
       expect(
-        await screen.findByRole("heading", { name: "Project", level: 1 })
+        await screen.findByRole("heading", { name: "Project", level: 1 }),
       ).toBeVisible();
 
       fireEvent.keyDown(document.body, {
         key: "z",
         metaKey: true,
-        shiftKey: true
+        shiftKey: true,
       });
       expect(
-        await screen.findByRole("heading", { name: "Plan", level: 1 })
+        await screen.findByRole("heading", { name: "Plan", level: 1 }),
       ).toBeVisible();
     });
 
@@ -5584,21 +7425,23 @@ describe("Notes workspace", () => {
       configureRepository(threeRoots());
       renderNotesWorkspace();
       const title = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       await act(async () => undefined);
       expect(
         notesStoreMock.loadWorkspace.mock.calls.filter(
-          ([, scope]) => scope.kind === "active"
-        )
+          ([, scope]) => scope.kind === "active",
+        ),
       ).toHaveLength(activeLoadsBeforeSelection + 1);
 
       title.focus();
@@ -5607,7 +7450,7 @@ describe("Notes workspace", () => {
       expect(committed.event.defaultPrevented).toBe(true);
       expect(committed.setData.mock.calls).toEqual([
         ["text/plain", "- Alpha\n- Bravo"],
-        ["text/markdown", "- Alpha\n- Bravo"]
+        ["text/markdown", "- Alpha\n- Bravo"],
       ]);
 
       title.setSelectionRange(0, 2);
@@ -5654,11 +7497,15 @@ describe("Notes workspace", () => {
       const title = await findTitleInput("Alpha");
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       const toolbar = await screen.findByRole("toolbar", {
-        name: "Actions for 2 selected notes"
+        name: "Actions for 2 selected notes",
       });
 
-      await user.click(within(toolbar).getByRole("button", { name: "Complete" }));
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      await user.click(
+        within(toolbar).getByRole("button", { name: "Complete" }),
+      );
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
 
       title.focus();
       title.setSelectionRange(0, 0);
@@ -5686,7 +7533,7 @@ describe("Notes workspace", () => {
         "ClipboardItem",
         class {
           constructor(_items: Record<string, Blob>) {}
-        }
+        },
       );
       try {
         configureRepository(threeRoots());
@@ -5694,15 +7541,13 @@ describe("Notes workspace", () => {
         const alpha = await findTitleInput("Alpha");
         fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
         const toolbar = screen.getByRole("toolbar", {
-          name: "Actions for 2 selected notes"
+          name: "Actions for 2 selected notes",
         });
 
         await user.click(
-          within(toolbar).getByRole("button", { name: "More actions" })
+          within(toolbar).getByRole("button", { name: "More actions" }),
         );
-        await user.click(
-          screen.getByRole("menuitem", { name: "Copy" })
-        );
+        await user.click(screen.getByRole("menuitem", { name: "Copy" }));
 
         await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
         expect(write).toHaveBeenCalledOnce();
@@ -5710,9 +7555,9 @@ describe("Notes workspace", () => {
         expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
         expect(selectedOutlineIds()).toEqual(["a", "b"]);
         expect(
-          await within(
-            screen.getByLabelText("Status bar feedback")
-          ).findByRole("status")
+          await within(screen.getByLabelText("Status bar feedback")).findByRole(
+            "status",
+          ),
         ).toHaveTextContent("Copied.");
       } finally {
         restoreClipboard();
@@ -5731,7 +7576,7 @@ describe("Notes workspace", () => {
         "ClipboardItem",
         class {
           constructor(_items: Record<string, Blob>) {}
-        }
+        },
       );
       try {
         configureRepository(threeRoots());
@@ -5739,11 +7584,11 @@ describe("Notes workspace", () => {
         const alpha = await findTitleInput("Alpha");
         fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
         const toolbar = screen.getByRole("toolbar", {
-          name: "Actions for 2 selected notes"
+          name: "Actions for 2 selected notes",
         });
 
         await user.click(
-          within(toolbar).getByRole("button", { name: "More actions" })
+          within(toolbar).getByRole("button", { name: "More actions" }),
         );
         await user.click(screen.getByRole("menuitem", { name: "Cut" }));
 
@@ -5751,19 +7596,22 @@ describe("Notes workspace", () => {
         expect(write).toHaveBeenCalledOnce();
         expect(writeText).toHaveBeenCalledWith("- Alpha\n- Bravo");
         expect(write.mock.invocationCallOrder[0]).toBeLessThan(
-          writeText.mock.invocationCallOrder[0]
+          writeText.mock.invocationCallOrder[0],
         );
         expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
         await act(async () => plainWrite.resolve());
         await waitFor(() =>
-          expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce()
+          expect(notesStoreMock.deleteNodes).toHaveBeenCalledOnce(),
         );
-        expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-          op: "delete",
-          nodeIds: ["a", "b"]
-        }, historyContextMatcher());
+        expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith(
+          "/vault",
+          {
+            nodeIds: ["a", "b"],
+          },
+          historyContextMatcher(),
+        );
         expect(writeText.mock.invocationCallOrder[0]).toBeLessThan(
-          notesStoreMock.applyBatch.mock.invocationCallOrder[0]
+          notesStoreMock.deleteNodes.mock.invocationCallOrder[0],
         );
         await waitFor(() => expect(getTitleInput("Charlie")).toHaveFocus());
       } finally {
@@ -5784,7 +7632,7 @@ describe("Notes workspace", () => {
         "ClipboardItem",
         class {
           constructor(_items: Record<string, Blob>) {}
-        }
+        },
       );
       try {
         configureRepository(threeRoots());
@@ -5792,18 +7640,18 @@ describe("Notes workspace", () => {
         const alpha = await findTitleInput("Alpha");
         fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
         const toolbar = screen.getByRole("toolbar", {
-          name: "Actions for 2 selected notes"
+          name: "Actions for 2 selected notes",
         });
 
         await user.click(
-          within(toolbar).getByRole("button", { name: "More actions" })
+          within(toolbar).getByRole("button", { name: "More actions" }),
         );
         await user.click(screen.getByRole("menuitem", { name: "Cut" }));
 
         expect(
-          await within(
-            screen.getByLabelText("Status bar feedback")
-          ).findByRole("alert")
+          await within(screen.getByLabelText("Status bar feedback")).findByRole(
+            "alert",
+          ),
         ).toHaveTextContent("The clipboard could not be written.");
         expect(write).toHaveBeenCalledOnce();
         expect(writeText).toHaveBeenCalledOnce();
@@ -5818,22 +7666,24 @@ describe("Notes workspace", () => {
       configureRepository(threeRoots());
       renderNotesWorkspace();
       const alpha = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       await act(async () => undefined);
       const preparedLoadCount = activeLoadsBeforeSelection + 1;
       expect(
         notesStoreMock.loadWorkspace.mock.calls.filter(
-          ([, scope]) => scope.kind === "active"
-        )
+          ([, scope]) => scope.kind === "active",
+        ),
       ).toHaveLength(preparedLoadCount);
 
       const bravo = getTitleInput("Bravo");
@@ -5841,19 +7691,19 @@ describe("Notes workspace", () => {
       await act(async () => undefined);
       expect(
         notesStoreMock.loadWorkspace.mock.calls.filter(
-          ([, scope]) => scope.kind === "active"
-        )
+          ([, scope]) => scope.kind === "active",
+        ),
       ).toHaveLength(preparedLoadCount);
-      expect(
-        dispatchClipboardEvent("copy", bravo).event.defaultPrevented
-      ).toBe(true);
+      expect(dispatchClipboardEvent("copy", bravo).event.defaultPrevented).toBe(
+        true,
+      );
 
       fireEvent.change(bravo, { target: { value: "Bravo!" } });
       await act(async () => undefined);
       expect(
         notesStoreMock.loadWorkspace.mock.calls.filter(
-          ([, scope]) => scope.kind === "active"
-        )
+          ([, scope]) => scope.kind === "active",
+        ),
       ).toHaveLength(preparedLoadCount);
       const afterDraftChange = dispatchClipboardEvent("copy", bravo);
       expect(afterDraftChange.event.defaultPrevented).toBe(false);
@@ -5864,33 +7714,35 @@ describe("Notes workspace", () => {
       useCtrlPlatform();
       const order: string[] = [];
       configureRepository(threeRoots());
-      notesStoreMock.applyBatch.mockImplementation(
-        async (_vaultRoot: string, input: ApplyNotesBatchInput) => {
-          order.push("batch");
+      notesStoreMock.deleteNodes.mockImplementation(
+        async (_vaultRoot: string, input: { nodeIds: readonly NoteId[] }) => {
+          order.push("delete");
           const ids = new Set(input.nodeIds);
           confirmedNodes = confirmedNodes.filter(
-            (current) => input.op !== "delete" || !ids.has(current.id)
+            (current) => !ids.has(current.id),
           );
           return workspace(confirmedNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       const title = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       await act(async () => undefined);
       expect(
         notesStoreMock.loadWorkspace.mock.calls.filter(
-          ([, scope]) => scope.kind === "active"
-        )
+          ([, scope]) => scope.kind === "active",
+        ),
       ).toHaveLength(activeLoadsBeforeSelection + 1);
 
       title.focus();
@@ -5899,7 +7751,7 @@ describe("Notes workspace", () => {
       expect(committed.event.defaultPrevented).toBe(true);
       expect(committed.setData.mock.calls).toEqual([
         ["text/plain", "- Alpha\n- Bravo"],
-        ["text/markdown", "- Alpha\n- Bravo"]
+        ["text/markdown", "- Alpha\n- Bravo"],
       ]);
       expect(order.slice(0, 2)).toEqual(["text/plain", "text/markdown"]);
 
@@ -5909,12 +7761,17 @@ describe("Notes workspace", () => {
       expect(repeated.setData).not.toHaveBeenCalled();
       fireEvent.keyUp(title, { key: "x" });
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(order).toEqual(["text/plain", "text/markdown", "batch"]);
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "delete",
-        nodeIds: ["a", "b"]
-      }, historyContextMatcher());
+      await waitFor(() =>
+        expect(notesStoreMock.deleteNodes).toHaveBeenCalledOnce(),
+      );
+      expect(order).toEqual(["text/plain", "text/markdown", "delete"]);
+      expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith(
+        "/vault",
+        {
+          nodeIds: ["a", "b"],
+        },
+        historyContextMatcher(),
+      );
       expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
     });
 
@@ -5923,24 +7780,25 @@ describe("Notes workspace", () => {
       configureRepository(threeRoots());
       renderNotesWorkspace();
       await findTitleInput("Bravo");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
-      fireEvent.click(
-        screen.getByRole("button", { name: "Zoom into Bravo" }),
-        { shiftKey: true }
-      );
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
+      fireEvent.click(screen.getByRole("button", { name: "Zoom into Bravo" }), {
+        shiftKey: true,
+      });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       await act(async () => undefined);
       expect(
         notesStoreMock.loadWorkspace.mock.calls.filter(
-          ([, scope]) => scope.kind === "active"
-        )
+          ([, scope]) => scope.kind === "active",
+        ),
       ).toHaveLength(activeLoadsBeforeSelection + 1);
       const bullet = screen.getByRole("button", { name: "Zoom into Bravo" });
       mockOutlineRowRects();
@@ -5948,14 +7806,20 @@ describe("Notes workspace", () => {
       bullet.focus();
       await user.keyboard("[Space][ArrowDown][Space]");
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "move",
-        nodeIds: ["b"],
-        parentId: null,
-        afterId: "c",
-        beforeId: null
-      }, historyContextMatcher());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "move",
+          nodeIds: ["b"],
+          parentId: null,
+          afterId: "c",
+          beforeId: null,
+        },
+        historyContextMatcher(),
+      );
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
@@ -5965,7 +7829,7 @@ describe("Notes workspace", () => {
         node({ id: "a", sortKey: 1, title: "Alpha" }),
         node({ id: "b", sortKey: 2, title: "Bravo" }),
         node({ id: "c", sortKey: 3, title: "Charlie" }),
-        node({ id: "d", sortKey: 4, title: "Delta" })
+        node({ id: "d", sortKey: 4, title: "Delta" }),
       ];
       const hydration = deferred<NotesWorkspace>();
       let deferAuthority = false;
@@ -5976,20 +7840,22 @@ describe("Notes workspace", () => {
             return hydration.promise;
           }
           return workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       const alphaTitle = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       deferAuthority = true;
       fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
       const charlie = screen.getByRole("button", { name: "Zoom into Charlie" });
@@ -6002,15 +7868,15 @@ describe("Notes workspace", () => {
       await user.pointer({
         keys: "[MouseLeft>]",
         target: alpha,
-        coords: { clientX: 9, clientY: 14 }
+        coords: { clientX: 9, clientY: 14 },
       });
       await user.pointer({
         target: charlie,
-        coords: { clientX: 9, clientY: charlieY - 1 }
+        coords: { clientX: 9, clientY: charlieY - 1 },
       });
       await user.pointer({
         target: charlie,
-        coords: { clientX: 9, clientY: charlieY }
+        coords: { clientX: 9, clientY: charlieY },
       });
 
       const dropLine = document.querySelector(".notes-outline-drop-preview");
@@ -6023,7 +7889,7 @@ describe("Notes workspace", () => {
       await user.pointer({
         keys: "[/MouseLeft]",
         target: charlie,
-        coords: { clientX: 9, clientY: charlieY }
+        coords: { clientX: 9, clientY: charlieY },
       });
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
 
@@ -6033,14 +7899,20 @@ describe("Notes workspace", () => {
         await hydration.promise;
       });
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "move",
-        nodeIds: ["a", "b"],
-        parentId: null,
-        afterId: "c",
-        beforeId: null
-      }, historyContextMatcher());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "move",
+          nodeIds: ["a", "b"],
+          parentId: null,
+          afterId: "c",
+          beforeId: null,
+        },
+        historyContextMatcher(),
+      );
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
@@ -6050,7 +7922,7 @@ describe("Notes workspace", () => {
         node({ id: "a", sortKey: 1, title: "Alpha" }),
         node({ id: "b", sortKey: 2, title: "Bravo" }),
         node({ id: "c", sortKey: 3, title: "Charlie" }),
-        node({ id: "d", sortKey: 4, title: "Delta" })
+        node({ id: "d", sortKey: 4, title: "Delta" }),
       ];
       const hydration = deferred<NotesWorkspace>();
       let deferAuthority = false;
@@ -6061,20 +7933,22 @@ describe("Notes workspace", () => {
             return hydration.promise;
           }
           return workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       const alphaTitle = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       deferAuthority = true;
       fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
       const bravo = screen.getByRole("button", { name: "Zoom into Bravo" });
@@ -6083,11 +7957,11 @@ describe("Notes workspace", () => {
       await user.pointer({
         keys: "[MouseLeft>]",
         target: alpha,
-        coords: { clientX: 9, clientY: 14 }
+        coords: { clientX: 9, clientY: 14 },
       });
       await user.pointer({
         target: bravo,
-        coords: { clientX: 9, clientY: 42 }
+        coords: { clientX: 9, clientY: 42 },
       });
 
       const dropLine = document.querySelector(".notes-outline-drop-preview");
@@ -6099,7 +7973,7 @@ describe("Notes workspace", () => {
       await user.pointer({
         keys: "[/MouseLeft]",
         target: bravo,
-        coords: { clientX: 9, clientY: 42 }
+        coords: { clientX: 9, clientY: 42 },
       });
 
       await act(async () => {
@@ -6120,19 +7994,21 @@ describe("Notes workspace", () => {
         node({ id: "a", parentId: "parent", sortKey: 1, title: "Alpha" }),
         node({ id: "b", parentId: "parent", sortKey: 2, title: "Bravo" }),
         node({ id: "c", parentId: "parent", sortKey: 3, title: "Charlie" }),
-        node({ id: "tail", sortKey: 2, title: "Tail" })
+        node({ id: "tail", sortKey: 2, title: "Tail" }),
       ]);
       renderNotesWorkspace();
       const alphaTitle = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       await act(async () => undefined);
       const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
@@ -6150,15 +8026,15 @@ describe("Notes workspace", () => {
       await user.pointer({
         keys: "[MouseLeft>]",
         target: alpha,
-        coords: { clientX: 9, clientY: alphaY }
+        coords: { clientX: 9, clientY: alphaY },
       });
       await user.pointer({
         target: charlie,
-        coords: { clientX: 9, clientY: charlieY - 1 }
+        coords: { clientX: 9, clientY: charlieY - 1 },
       });
       await user.pointer({
         target: charlie,
-        coords: { clientX: 9, clientY: charlieY }
+        coords: { clientX: 9, clientY: charlieY },
       });
 
       const dropLine = document.querySelector(".notes-outline-drop-preview");
@@ -6169,17 +8045,23 @@ describe("Notes workspace", () => {
       await user.pointer({
         keys: "[/MouseLeft]",
         target: charlie,
-        coords: { clientX: 9, clientY: charlieY }
+        coords: { clientX: 9, clientY: charlieY },
       });
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "move",
-        nodeIds: ["a", "b"],
-        parentId: "parent",
-        afterId: "c",
-        beforeId: null
-      }, historyContextMatcher());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "move",
+          nodeIds: ["a", "b"],
+          parentId: "parent",
+          afterId: "c",
+          beforeId: null,
+        },
+        historyContextMatcher(),
+      );
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
@@ -6189,7 +8071,7 @@ describe("Notes workspace", () => {
         node({ id: "a", sortKey: 1, title: "Alpha" }),
         node({ id: "b", sortKey: 2, title: "Bravo" }),
         node({ id: "c", sortKey: 3, title: "Charlie" }),
-        node({ id: "d", sortKey: 4, title: "Delta" })
+        node({ id: "d", sortKey: 4, title: "Delta" }),
       ];
       const hydration = deferred<NotesWorkspace>();
       let deferAuthority = false;
@@ -6200,20 +8082,22 @@ describe("Notes workspace", () => {
             return hydration.promise;
           }
           return workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       const alphaTitle = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       deferAuthority = true;
       fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
       const bravo = screen.getByRole("button", { name: "Zoom into Bravo" });
@@ -6222,47 +8106,51 @@ describe("Notes workspace", () => {
       await user.pointer({
         keys: "[MouseLeft>]",
         target: alpha,
-        coords: { clientX: 9, clientY: 14 }
+        coords: { clientX: 9, clientY: 14 },
       });
       await user.pointer({
         target: bravo,
-        coords: { clientX: 9, clientY: 42 }
+        coords: { clientX: 9, clientY: 42 },
       });
 
-      expect(document.querySelector(".notes-outline-drop-preview")).not.toBeNull();
       expect(
-        within(screen.getByTestId("notes-selection-drag-preview")).getByText("2")
+        document.querySelector(".notes-outline-drop-preview"),
+      ).not.toBeNull();
+      expect(
+        within(screen.getByTestId("notes-selection-drag-preview")).getByText(
+          "2",
+        ),
       ).toHaveClass("notes-selection-drag-preview-count");
       for (const nodeId of ["a", "b"]) {
         expect(
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
-            ?.closest(".notes-outline-item")
+            ?.closest(".notes-outline-item"),
         ).toHaveAttribute("data-drag-source", "true");
       }
 
       await act(async () =>
-        hydration.reject(new Error("authority unavailable"))
+        hydration.reject(new Error("authority unavailable")),
       );
 
       await waitFor(() =>
         expect(
           within(screen.getByLabelText("Status bar feedback")).getByRole(
-            "alert"
-          )
+            "alert",
+          ),
         ).toHaveTextContent(
-          "Can't move selection: the selected rows cannot be moved together."
-        )
+          "Can't move selection: the selected rows cannot be moved together.",
+        ),
       );
       expect(document.querySelector(".notes-outline-drop-preview")).toBeNull();
       expect(
-        screen.queryByTestId("notes-selection-drag-preview")
+        screen.queryByTestId("notes-selection-drag-preview"),
       ).not.toBeInTheDocument();
       for (const nodeId of ["a", "b"]) {
         expect(
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
-            ?.closest(".notes-outline-item")
+            ?.closest(".notes-outline-item"),
         ).not.toHaveAttribute("data-drag-source");
       }
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
@@ -6275,7 +8163,7 @@ describe("Notes workspace", () => {
         node({ id: "a", sortKey: 1, title: "Alpha" }),
         node({ id: "b", sortKey: 2, title: "Bravo" }),
         node({ id: "c", sortKey: 3, title: "Charlie" }),
-        node({ id: "d", sortKey: 4, title: "Delta" })
+        node({ id: "d", sortKey: 4, title: "Delta" }),
       ];
       const hydration = deferred<NotesWorkspace>();
       let deferAuthority = false;
@@ -6286,20 +8174,22 @@ describe("Notes workspace", () => {
             return hydration.promise;
           }
           return workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       const alphaTitle = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       deferAuthority = true;
       fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
       const bravo = screen.getByRole("button", { name: "Zoom into Bravo" });
@@ -6308,43 +8198,49 @@ describe("Notes workspace", () => {
       await user.pointer({
         keys: "[MouseLeft>]",
         target: alpha,
-        coords: { clientX: 9, clientY: 14 }
+        coords: { clientX: 9, clientY: 14 },
       });
       await user.pointer({
         target: bravo,
-        coords: { clientX: 9, clientY: 42 }
+        coords: { clientX: 9, clientY: 42 },
       });
 
-      expect(document.querySelector(".notes-outline-drop-preview")).not.toBeNull();
       expect(
-        within(screen.getByTestId("notes-selection-drag-preview")).getByText("2")
+        document.querySelector(".notes-outline-drop-preview"),
+      ).not.toBeNull();
+      expect(
+        within(screen.getByTestId("notes-selection-drag-preview")).getByText(
+          "2",
+        ),
       ).toHaveClass("notes-selection-drag-preview-count");
       fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
-      await waitFor(() => expect(selectedOutlineIds()).toEqual(["a", "b", "c"]));
+      await waitFor(() =>
+        expect(selectedOutlineIds()).toEqual(["a", "b", "c"]),
+      );
 
       await waitFor(() =>
         expect(
           within(screen.getByLabelText("Status bar feedback")).getByRole(
-            "alert"
-          )
+            "alert",
+          ),
         ).toHaveTextContent(
-          "Can't move selection: the selected rows cannot be moved together."
-        )
+          "Can't move selection: the selected rows cannot be moved together.",
+        ),
       );
       expect(document.querySelector(".notes-outline-drop-preview")).toBeNull();
       expect(
-        screen.queryByTestId("notes-selection-drag-preview")
+        screen.queryByTestId("notes-selection-drag-preview"),
       ).not.toBeInTheDocument();
       for (const nodeId of ["a", "b"]) {
         expect(
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
-            ?.closest(".notes-outline-item")
+            ?.closest(".notes-outline-item"),
         ).not.toHaveAttribute("data-drag-source");
       }
 
       await act(async () =>
-        hydration.reject(new Error("authority unavailable"))
+        hydration.reject(new Error("authority unavailable")),
       );
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
@@ -6356,7 +8252,7 @@ describe("Notes workspace", () => {
         node({ id: "a", sortKey: 1, title: "Alpha" }),
         node({ id: "b", sortKey: 2, title: "Bravo" }),
         node({ id: "c", sortKey: 3, title: "Charlie" }),
-        node({ id: "d", sortKey: 4, title: "Delta" })
+        node({ id: "d", sortKey: 4, title: "Delta" }),
       ];
       const hydration = deferred<NotesWorkspace>();
       let deferAuthority = false;
@@ -6367,20 +8263,22 @@ describe("Notes workspace", () => {
             return hydration.promise;
           }
           return workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       const alphaTitle = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       deferAuthority = true;
       fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
       const bravo = screen.getByRole("button", { name: "Zoom into Bravo" });
@@ -6389,16 +8287,20 @@ describe("Notes workspace", () => {
       await user.pointer({
         keys: "[MouseLeft>]",
         target: alpha,
-        coords: { clientX: 9, clientY: 14 }
+        coords: { clientX: 9, clientY: 14 },
       });
       await user.pointer({
         target: bravo,
-        coords: { clientX: 9, clientY: 42 }
+        coords: { clientX: 9, clientY: 42 },
       });
 
-      expect(document.querySelector(".notes-outline-drop-preview")).not.toBeNull();
       expect(
-        within(screen.getByTestId("notes-selection-drag-preview")).getByText("2")
+        document.querySelector(".notes-outline-drop-preview"),
+      ).not.toBeNull();
+      expect(
+        within(screen.getByTestId("notes-selection-drag-preview")).getByText(
+          "2",
+        ),
       ).toHaveClass("notes-selection-drag-preview-count");
       await act(async () => {
         deferAuthority = false;
@@ -6407,31 +8309,37 @@ describe("Notes workspace", () => {
       });
       await act(async () => undefined);
 
-      expect(document.querySelector(".notes-outline-drop-preview")).not.toBeNull();
       expect(
-        within(screen.getByTestId("notes-selection-drag-preview")).getByText("2")
+        document.querySelector(".notes-outline-drop-preview"),
+      ).not.toBeNull();
+      expect(
+        within(screen.getByTestId("notes-selection-drag-preview")).getByText(
+          "2",
+        ),
       ).toHaveClass("notes-selection-drag-preview-count");
       fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
-      await waitFor(() => expect(selectedOutlineIds()).toEqual(["a", "b", "c"]));
+      await waitFor(() =>
+        expect(selectedOutlineIds()).toEqual(["a", "b", "c"]),
+      );
 
       await waitFor(() =>
         expect(
           within(screen.getByLabelText("Status bar feedback")).getByRole(
-            "alert"
-          )
+            "alert",
+          ),
         ).toHaveTextContent(
-          "Can't move selection: the selected rows cannot be moved together."
-        )
+          "Can't move selection: the selected rows cannot be moved together.",
+        ),
       );
       expect(document.querySelector(".notes-outline-drop-preview")).toBeNull();
       expect(
-        screen.queryByTestId("notes-selection-drag-preview")
+        screen.queryByTestId("notes-selection-drag-preview"),
       ).not.toBeInTheDocument();
       for (const nodeId of ["a", "b"]) {
         expect(
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
-            ?.closest(".notes-outline-item")
+            ?.closest(".notes-outline-item"),
         ).not.toHaveAttribute("data-drag-source");
       }
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
@@ -6450,11 +8358,11 @@ describe("Notes workspace", () => {
               parentId: "parent",
               sortKey: index + 1,
               title,
-              isCollapsed: index === 2
-            })
+              isCollapsed: index === 2,
+            }),
         ),
         node({ id: "c-child", parentId: "c", title: "Charlie child" }),
-        node({ id: "destination", sortKey: 2, title: "Destination" })
+        node({ id: "destination", sortKey: 2, title: "Destination" }),
       ]);
       notesStoreMock.applyBatch.mockImplementationOnce(
         async (_vaultRoot: string, input: ApplyNotesBatchInput) => {
@@ -6466,17 +8374,19 @@ describe("Notes workspace", () => {
                 : {
                     ...current,
                     parentId: "destination",
-                    sortKey: movedIndex + 1
+                    sortKey: movedIndex + 1,
                   };
             });
           }
           return workspace(confirmedNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       const alpha = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       alpha.focus();
       for (let index = 0; index < 4; index += 1) {
         fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
@@ -6485,81 +8395,87 @@ describe("Notes workspace", () => {
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       await act(async () => undefined);
       const active = screen.getByRole("button", { name: "Zoom into Charlie" });
       const destination = screen.getByRole("button", {
-        name: "Zoom into Destination"
+        name: "Zoom into Destination",
       });
       mockOutlineRowRects();
 
       await user.pointer({
         keys: "[MouseLeft>]",
         target: active,
-        coords: { clientX: 9, clientY: 98 }
+        coords: { clientX: 9, clientY: 98 },
       });
       await user.pointer({
         target: destination,
-        coords: { clientX: 14, clientY: 210 }
+        coords: { clientX: 14, clientY: 210 },
       });
       await user.pointer({
         target: destination,
-        coords: { clientX: 50, clientY: 210 }
+        coords: { clientX: 50, clientY: 210 },
       });
 
       const selectionDragPreview = screen.getByTestId(
-        "notes-selection-drag-preview"
+        "notes-selection-drag-preview",
       );
       expect(selectionDragPreview).toHaveTextContent("Alpha");
       expect(selectionDragPreview).not.toHaveTextContent("Bravo");
       expect(selectionDragPreview).not.toHaveTextContent("Charlie");
       expect(selectionDragPreview).not.toHaveTextContent("Delta");
       expect(within(selectionDragPreview).getByText("6")).toHaveClass(
-        "notes-selection-drag-preview-count"
+        "notes-selection-drag-preview-count",
       );
       expect(selectionDragPreview).not.toHaveTextContent("5 selected");
       expect(document.body).toHaveTextContent(
-        "5 selected notes are over Destination."
+        "5 selected notes are over Destination.",
       );
       for (const nodeId of movingIds) {
         expect(
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
-            ?.closest(".notes-outline-item")
+            ?.closest(".notes-outline-item"),
         ).toHaveAttribute("data-drag-source", "true");
       }
       await user.pointer({
         keys: "[/MouseLeft]",
         target: destination,
-        coords: { clientX: 50, clientY: 210 }
+        coords: { clientX: 50, clientY: 210 },
       });
 
       expect(
-        screen.queryByTestId("notes-selection-drag-preview")
+        screen.queryByTestId("notes-selection-drag-preview"),
       ).not.toBeInTheDocument();
       for (const nodeId of movingIds) {
         expect(
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
-            ?.closest(".notes-outline-item")
+            ?.closest(".notes-outline-item"),
         ).not.toHaveAttribute("data-drag-source");
       }
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "move",
-        nodeIds: movingIds,
-        parentId: "destination",
-        afterId: null,
-        beforeId: null
-      }, historyContextMatcher());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "move",
+          nodeIds: movingIds,
+          parentId: "destination",
+          afterId: null,
+          beforeId: null,
+        },
+        historyContextMatcher(),
+      );
       await waitFor(() => expect(selectedOutlineIds()).toEqual(movingIds));
       await waitFor(() =>
         expect(
-          textareasByName("Edit node title").map((input) => input.value)
+          textareasByName("Edit node title").map((input) => input.value),
         ).toEqual([
           "Parent",
           "Foxtrot",
@@ -6568,11 +8484,11 @@ describe("Notes workspace", () => {
           "Bravo",
           "Charlie",
           "Delta",
-          "Echo"
-        ])
+          "Echo",
+        ]),
       );
       expect(confirmedNodes.find(({ id }) => id === "c-child")?.parentId).toBe(
-        "c"
+        "c",
       );
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
@@ -6589,20 +8505,22 @@ describe("Notes workspace", () => {
             return hydration.promise;
           }
           return workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       const alpha = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       deferAuthority = true;
       fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       const bullet = screen.getByRole("button", { name: "Zoom into Alpha" });
       mockOutlineRowRects();
@@ -6611,26 +8529,28 @@ describe("Notes workspace", () => {
       await user.keyboard("[Space]");
 
       expect(
-        within(screen.getByTestId("notes-selection-drag-preview")).getByText("2")
+        within(screen.getByTestId("notes-selection-drag-preview")).getByText(
+          "2",
+        ),
       ).toHaveClass("notes-selection-drag-preview-count");
       for (const nodeId of ["a", "b"]) {
         expect(
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
-            ?.closest(".notes-outline-item")
+            ?.closest(".notes-outline-item"),
         ).toHaveAttribute("data-drag-source", "true");
       }
 
       await user.keyboard("[Escape]");
 
       expect(
-        screen.queryByTestId("notes-selection-drag-preview")
+        screen.queryByTestId("notes-selection-drag-preview"),
       ).not.toBeInTheDocument();
       for (const nodeId of ["a", "b"]) {
         expect(
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
-            ?.closest(".notes-outline-item")
+            ?.closest(".notes-outline-item"),
         ).not.toHaveAttribute("data-drag-source");
       }
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
@@ -6642,7 +8562,7 @@ describe("Notes workspace", () => {
         await hydration.promise;
       });
       expect(
-        screen.queryByTestId("notes-selection-drag-preview")
+        screen.queryByTestId("notes-selection-drag-preview"),
       ).not.toBeInTheDocument();
       expect(document.querySelector("[data-drag-source]")).toBeNull();
     });
@@ -6659,20 +8579,22 @@ describe("Notes workspace", () => {
             return hydration.promise;
           }
           return workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       const alphaTitle = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       deferAuthority = true;
       fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       await act(async () => undefined);
       const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
@@ -6685,19 +8607,23 @@ describe("Notes workspace", () => {
       alpha.focus();
       await user.keyboard("[Space]");
       expect(
-        within(screen.getByTestId("notes-selection-drag-preview")).getByText("2")
+        within(screen.getByTestId("notes-selection-drag-preview")).getByText(
+          "2",
+        ),
       ).toHaveClass("notes-selection-drag-preview-count");
-      await act(async () => hydration.reject(new Error("authority unavailable")));
+      await act(async () =>
+        hydration.reject(new Error("authority unavailable")),
+      );
       await user.keyboard("[ArrowDown]");
 
       await waitFor(() =>
         expect(screen.getByLabelText("Status bar feedback")).toHaveTextContent(
-          "Can't move selection: the selected rows cannot be moved together."
-        )
+          "Can't move selection: the selected rows cannot be moved together.",
+        ),
       );
 
       expect(
-        screen.queryByTestId("notes-selection-drag-preview")
+        screen.queryByTestId("notes-selection-drag-preview"),
       ).not.toBeInTheDocument();
       expect(alphaRow).not.toHaveAttribute("data-dragging");
       expect(alphaRow.style.transform).toBe("");
@@ -6718,20 +8644,22 @@ describe("Notes workspace", () => {
             return hydration.promise;
           }
           return workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       const alphaTitle = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       deferAuthority = true;
       fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
       mockOutlineRowRects();
@@ -6740,26 +8668,28 @@ describe("Notes workspace", () => {
       await user.keyboard("[Space]");
 
       expect(
-        within(screen.getByTestId("notes-selection-drag-preview")).getByText("2")
+        within(screen.getByTestId("notes-selection-drag-preview")).getByText(
+          "2",
+        ),
       ).toHaveClass("notes-selection-drag-preview-count");
       for (const nodeId of ["a", "b"]) {
         expect(
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
-            ?.closest(".notes-outline-item")
+            ?.closest(".notes-outline-item"),
         ).toHaveAttribute("data-drag-source", "true");
       }
 
       await user.keyboard("[ArrowDown][Space]");
 
       expect(
-        screen.queryByTestId("notes-selection-drag-preview")
+        screen.queryByTestId("notes-selection-drag-preview"),
       ).not.toBeInTheDocument();
       for (const nodeId of ["a", "b"]) {
         expect(
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
-            ?.closest(".notes-outline-item")
+            ?.closest(".notes-outline-item"),
         ).not.toHaveAttribute("data-drag-source");
       }
 
@@ -6772,16 +8702,16 @@ describe("Notes workspace", () => {
       await waitFor(() =>
         expect(
           within(screen.getByLabelText("Status bar feedback")).getByRole(
-            "alert"
-          )
+            "alert",
+          ),
         ).toHaveTextContent(
-          "Can't move selection: the selected rows cannot be moved together."
-        )
+          "Can't move selection: the selected rows cannot be moved together.",
+        ),
       );
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
       expect(
-        screen.queryByTestId("notes-selection-drag-preview")
+        screen.queryByTestId("notes-selection-drag-preview"),
       ).not.toBeInTheDocument();
       expect(document.querySelector("[data-drag-source]")).toBeNull();
       await act(async () => undefined);
@@ -6799,20 +8729,22 @@ describe("Notes workspace", () => {
             return hydration.promise;
           }
           return workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       const alphaTitle = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       deferAuthority = true;
       fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
       mockOutlineRowRects();
@@ -6821,7 +8753,7 @@ describe("Notes workspace", () => {
       await user.keyboard("[Space][ArrowDown][Space]");
       fireEvent.click(
         screen.getByRole("button", { name: "Zoom into Charlie" }),
-        { shiftKey: true }
+        { shiftKey: true },
       );
       expect(selectedOutlineIds()).toEqual(["a", "b", "c"]);
 
@@ -6834,8 +8766,8 @@ describe("Notes workspace", () => {
 
       expect(
         within(screen.getByLabelText("Status bar feedback")).queryByRole(
-          "alert"
-        )
+          "alert",
+        ),
       ).toBeNull();
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
@@ -6853,59 +8785,60 @@ describe("Notes workspace", () => {
             return hydration.promise;
           }
           return workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       await findTitleInput("Bravo");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       deferAuthority = true;
-      fireEvent.click(
-        screen.getByRole("button", { name: "Zoom into Bravo" }),
-        { shiftKey: true }
-      );
+      fireEvent.click(screen.getByRole("button", { name: "Zoom into Bravo" }), {
+        shiftKey: true,
+      });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
-      const activeLoadsBeforeFirstDrag = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeFirstDrag =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
       const bravo = screen.getByRole("button", { name: "Zoom into Bravo" });
       const charlie = screen.getByRole("button", {
-        name: "Zoom into Charlie"
+        name: "Zoom into Charlie",
       });
       mockOutlineRowRects();
 
       await user.pointer({
         keys: "[MouseLeft>]",
         target: bravo,
-        coords: { clientX: 9, clientY: 42 }
+        coords: { clientX: 9, clientY: 42 },
       });
       await user.pointer({
         target: charlie,
-        coords: { clientX: 14, clientY: 70 }
+        coords: { clientX: 14, clientY: 70 },
       });
       expect(
         notesStoreMock.loadWorkspace.mock.calls.filter(
-          ([, scope]) => scope.kind === "active"
-        ).length
+          ([, scope]) => scope.kind === "active",
+        ).length,
       ).toBe(activeLoadsBeforeFirstDrag + 1);
-      expect(bravo.closest(".notes-node")).not.toHaveAttribute(
-        "data-dragging"
-      );
+      expect(bravo.closest(".notes-node")).not.toHaveAttribute("data-dragging");
 
       await user.pointer({
         target: charlie,
-        coords: { clientX: 14, clientY: 74 }
+        coords: { clientX: 14, clientY: 74 },
       });
       await user.pointer({
         keys: "[/MouseLeft]",
         target: charlie,
-        coords: { clientX: 14, clientY: 74 }
+        coords: { clientX: 14, clientY: 74 },
       });
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
       await act(async () => undefined);
@@ -6913,23 +8846,21 @@ describe("Notes workspace", () => {
       await user.pointer({
         keys: "[MouseLeft>]",
         target: bravo,
-        coords: { clientX: 9, clientY: 42 }
+        coords: { clientX: 9, clientY: 42 },
       });
       await user.pointer({
         target: alpha,
-        coords: { clientX: 14, clientY: 14 }
+        coords: { clientX: 14, clientY: 14 },
       });
-      expect(bravo.closest(".notes-node")).not.toHaveAttribute(
-        "data-dragging"
-      );
+      expect(bravo.closest(".notes-node")).not.toHaveAttribute("data-dragging");
       await user.pointer({
         target: alpha,
-        coords: { clientX: 14, clientY: 10 }
+        coords: { clientX: 14, clientY: 10 },
       });
       await user.pointer({
         keys: "[/MouseLeft]",
         target: alpha,
-        coords: { clientX: 14, clientY: 10 }
+        coords: { clientX: 14, clientY: 10 },
       });
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
 
@@ -6938,14 +8869,20 @@ describe("Notes workspace", () => {
         deferAuthority = false;
       });
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "move",
-        nodeIds: ["b"],
-        parentId: null,
-        afterId: null,
-        beforeId: "a"
-      }, historyContextMatcher());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "move",
+          nodeIds: ["b"],
+          parentId: null,
+          afterId: null,
+          beforeId: "a",
+        },
+        historyContextMatcher(),
+      );
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
@@ -6953,7 +8890,7 @@ describe("Notes workspace", () => {
       const user = userEvent.setup();
       const activeNodes = [
         node({ id: "moving", title: "Moving", isStarred: true }),
-        node({ id: "target", sortKey: 2, title: "Target", isStarred: true })
+        node({ id: "target", sortKey: 2, title: "Target", isStarred: true }),
       ];
       const staleAuthority = deferred<NotesWorkspace>();
       const failedAuthority = deferred<NotesWorkspace>();
@@ -6980,7 +8917,7 @@ describe("Notes workspace", () => {
             return workspace([]);
           }
           return workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       await findTitleInput("Moving");
@@ -6988,14 +8925,14 @@ describe("Notes workspace", () => {
       await waitFor(() =>
         expect(screen.getByRole("button", { name: "Starred" })).toHaveAttribute(
           "aria-pressed",
-          "true"
-        )
+          "true",
+        ),
       );
       let moving = await screen.findByRole("button", {
-        name: "Zoom into Moving"
+        name: "Zoom into Moving",
       });
       await waitFor(() =>
-        expect(moving).not.toHaveAttribute("data-sortable-activator")
+        expect(moving).not.toHaveAttribute("data-sortable-activator"),
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Trash" }));
@@ -7009,12 +8946,12 @@ describe("Notes workspace", () => {
       await waitFor(() =>
         expect(screen.getByRole("button", { name: "Starred" })).toHaveAttribute(
           "aria-pressed",
-          "true"
-        )
+          "true",
+        ),
       );
       moving = await screen.findByRole("button", { name: "Zoom into Moving" });
       await waitFor(() =>
-        expect(moving).not.toHaveAttribute("data-sortable-activator")
+        expect(moving).not.toHaveAttribute("data-sortable-activator"),
       );
       await act(async () => {
         failedAuthority.reject(new Error("authority unavailable"));
@@ -7022,39 +8959,39 @@ describe("Notes workspace", () => {
       await waitFor(() =>
         expect(moving).toHaveAttribute(
           "aria-description",
-          "Can't move notes: the full outline couldn't be prepared. Try again."
-        )
+          "Can't move notes: the full outline couldn't be prepared. Try again.",
+        ),
       );
       await user.pointer({
         keys: "[MouseLeft>]",
         target: moving,
-        coords: { clientX: 0, clientY: 0 }
+        coords: { clientX: 0, clientY: 0 },
       });
       await user.pointer({
         target: moving,
-        coords: { clientX: 5, clientY: 0 }
+        coords: { clientX: 5, clientY: 0 },
       });
       await user.pointer({
         keys: "[/MouseLeft]",
         target: moving,
-        coords: { clientX: 5, clientY: 0 }
+        coords: { clientX: 5, clientY: 0 },
       });
 
       expect(
-        screen.queryByRole("heading", { name: "Moving", level: 1 })
+        screen.queryByRole("heading", { name: "Moving", level: 1 }),
       ).not.toBeInTheDocument();
       await waitFor(() => expect(deferredActiveLoad).toBe(3));
       await waitFor(() =>
-        expect(moving).toHaveAttribute("data-sortable-activator", "true")
+        expect(moving).toHaveAttribute("data-sortable-activator", "true"),
       );
       moving.focus();
       await user.keyboard("[Space]");
-      expect(screen.getByTestId("notes-selection-drag-preview")).toHaveTextContent(
-        "Moving"
-      );
+      expect(
+        screen.getByTestId("notes-selection-drag-preview"),
+      ).toHaveTextContent("Moving");
       await user.keyboard("[Escape]");
       expect(
-        screen.queryByTestId("notes-selection-drag-preview")
+        screen.queryByTestId("notes-selection-drag-preview"),
       ).not.toBeInTheDocument();
     });
 
@@ -7065,19 +9002,19 @@ describe("Notes workspace", () => {
           id: "moving",
           sortKey: 1,
           title: "Moving",
-          isStarred: true
+          isStarred: true,
         }),
         node({
           id: "hidden-child",
           parentId: "moving",
-          title: "Hidden child"
+          title: "Hidden child",
         }),
         node({
           id: "target",
           sortKey: 2,
           title: "Target",
-          isStarred: true
-        })
+          isStarred: true,
+        }),
       ];
       const authority = deferred<NotesWorkspace>();
       let deferAuthority = false;
@@ -7090,7 +9027,7 @@ describe("Notes workspace", () => {
           return scope.kind === "starred"
             ? workspace(activeNodes.filter((current) => current.isStarred))
             : workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       await findTitleInput("Moving");
@@ -7100,46 +9037,46 @@ describe("Notes workspace", () => {
       let moving = screen.getByRole("button", { name: "Zoom into Moving" });
 
       await waitFor(() =>
-        expect(moving).not.toHaveAttribute("data-sortable-activator")
+        expect(moving).not.toHaveAttribute("data-sortable-activator"),
       );
       expect(moving).toHaveAttribute(
         "aria-description",
-        "Notes are still preparing for drag. Try again."
+        "Notes are still preparing for drag. Try again.",
       );
       await user.pointer({
         keys: "[MouseLeft>]",
         target: moving,
-        coords: { clientX: 0, clientY: 0 }
+        coords: { clientX: 0, clientY: 0 },
       });
       await user.pointer({
         target: moving,
-        coords: { clientX: 5, clientY: 0 }
+        coords: { clientX: 5, clientY: 0 },
       });
       await user.pointer({
         keys: "[/MouseLeft]",
         target: moving,
-        coords: { clientX: 5, clientY: 0 }
+        coords: { clientX: 5, clientY: 0 },
       });
       expect(
-        within(screen.getByLabelText("Status bar feedback")).getByRole("alert")
+        within(screen.getByLabelText("Status bar feedback")).getByRole("alert"),
       ).toHaveTextContent("Notes are still preparing for drag. Try again.");
       expect(
-        screen.queryByRole("heading", { name: "Moving", level: 1 })
+        screen.queryByRole("heading", { name: "Moving", level: 1 }),
       ).not.toBeInTheDocument();
       expect(
-        screen.queryByTestId("notes-selection-drag-preview")
+        screen.queryByTestId("notes-selection-drag-preview"),
       ).not.toBeInTheDocument();
 
       await user.click(moving);
       expect(
-        await screen.findByRole("heading", { name: "Moving", level: 1 })
+        await screen.findByRole("heading", { name: "Moving", level: 1 }),
       ).toBeVisible();
       await user.click(screen.getByRole("button", { name: "Starred" }));
       moving = await screen.findByRole("button", { name: "Zoom into Moving" });
       moving.focus();
       await user.keyboard("[Enter]");
       expect(
-        await screen.findByRole("heading", { name: "Moving", level: 1 })
+        await screen.findByRole("heading", { name: "Moving", level: 1 }),
       ).toBeVisible();
       await user.click(screen.getByRole("button", { name: "Starred" }));
       moving = await screen.findByRole("button", { name: "Zoom into Moving" });
@@ -7150,7 +9087,7 @@ describe("Notes workspace", () => {
         await authority.promise;
       });
       await waitFor(() =>
-        expect(moving).toHaveAttribute("data-sortable-activator", "true")
+        expect(moving).toHaveAttribute("data-sortable-activator", "true"),
       );
       moving.focus();
       await user.keyboard("[Space]");
@@ -7158,15 +9095,91 @@ describe("Notes workspace", () => {
       const preview = screen.getByTestId("notes-selection-drag-preview");
       expect(preview).toHaveTextContent("Moving");
       expect(within(preview).getByText("2")).toHaveClass(
-        "notes-selection-drag-preview-count"
+        "notes-selection-drag-preview-count",
       );
 
       await user.keyboard("[Escape]");
       await waitFor(() =>
         expect(
-          screen.queryByTestId("notes-selection-drag-preview")
-        ).not.toBeInTheDocument()
+          screen.queryByTestId("notes-selection-drag-preview"),
+        ).not.toBeInTheDocument(),
       );
+    });
+
+    it("blocks filtered movement when Active authority reveals a hidden readonly descendant", async () => {
+      const user = userEvent.setup();
+      const activeNodes = [
+        node({
+          id: "moving",
+          sortKey: 1,
+          title: "Moving",
+          isStarred: true,
+        }),
+        node({
+          id: "hidden-readonly",
+          parentId: "moving",
+          title: "Hidden protected child",
+          isReadonly: true,
+        }),
+        node({
+          id: "target",
+          sortKey: 2,
+          title: "Target",
+          isStarred: true,
+        }),
+      ];
+      configureRepository(activeNodes);
+      notesStoreMock.loadWorkspace.mockImplementation(
+        async (_vaultRoot: string, scope: { kind: string }) =>
+          scope.kind === "starred"
+            ? workspace(activeNodes.filter((current) => current.isStarred))
+            : workspace(activeNodes),
+      );
+      renderNotesWorkspace();
+      await findTitleInput("Moving");
+      await user.click(screen.getByRole("button", { name: "Starred" }));
+      await waitFor(() =>
+        expect(queryTitleInput("Hidden protected child")).toBeNull(),
+      );
+
+      const movingTitle = await findTitleInput("Moving");
+      const moving = screen.getByRole("button", { name: "Zoom into Moving" });
+      await waitFor(() =>
+        expect(moving).not.toHaveAttribute("data-sortable-activator"),
+      );
+
+      fireEvent.keyDown(movingTitle, { key: "Tab" });
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+
+      const menu = await openNodeMenu("Moving", user);
+      expect(
+        within(menu).getByRole("menuitem", { name: "Move To..." }),
+      ).toHaveAttribute("aria-disabled", "true");
+      expect(
+        within(menu).getByRole("menuitem", { name: "Sort A-Z" }),
+      ).toHaveAttribute("aria-disabled", "true");
+
+      await user.keyboard("[Escape]");
+      await user.pointer({
+        keys: "[MouseLeft>]",
+        target: moving,
+        coords: { clientX: 0, clientY: 0 },
+      });
+      await user.pointer({
+        target: moving,
+        coords: { clientX: 6, clientY: 0 },
+      });
+      await user.pointer({
+        keys: "[/MouseLeft]",
+        target: moving,
+        coords: { clientX: 6, clientY: 0 },
+      });
+      expect(
+        screen.queryByTestId("notes-selection-drag-preview"),
+      ).not.toBeInTheDocument();
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
     });
 
     it("clears disabled drag click suppression after an outside release", async () => {
@@ -7176,13 +9189,13 @@ describe("Notes workspace", () => {
           id: "moving",
           sortKey: 1,
           title: "Moving",
-          isStarred: true
+          isStarred: true,
         }),
         node({
           id: "hidden-child",
           parentId: "moving",
-          title: "Hidden child"
-        })
+          title: "Hidden child",
+        }),
       ];
       const authority = deferred<NotesWorkspace>();
       let deferAuthority = false;
@@ -7195,7 +9208,7 @@ describe("Notes workspace", () => {
           return scope.kind === "starred"
             ? workspace(activeNodes.filter((current) => current.isStarred))
             : workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       await findTitleInput("Moving");
@@ -7205,25 +9218,25 @@ describe("Notes workspace", () => {
       await waitFor(() => expect(queryTitleInput("Hidden child")).toBeNull());
       const moving = screen.getByRole("button", { name: "Zoom into Moving" });
       await waitFor(() =>
-        expect(moving).not.toHaveAttribute("data-sortable-activator")
+        expect(moving).not.toHaveAttribute("data-sortable-activator"),
       );
 
       await user.pointer({
         keys: "[MouseLeft>]",
         target: moving,
-        coords: { clientX: 0, clientY: 0 }
+        coords: { clientX: 0, clientY: 0 },
       });
       await user.pointer({
         target: starred,
-        coords: { clientX: 5, clientY: 0 }
+        coords: { clientX: 5, clientY: 0 },
       });
       await user.pointer({
         keys: "[/MouseLeft]",
         target: starred,
-        coords: { clientX: 5, clientY: 0 }
+        coords: { clientX: 5, clientY: 0 },
       });
       expect(
-        screen.queryByRole("heading", { name: "Moving", level: 1 })
+        screen.queryByRole("heading", { name: "Moving", level: 1 }),
       ).not.toBeInTheDocument();
 
       await act(async () => {
@@ -7232,12 +9245,12 @@ describe("Notes workspace", () => {
         await authority.promise;
       });
       await waitFor(() =>
-        expect(moving).toHaveAttribute("data-sortable-activator", "true")
+        expect(moving).toHaveAttribute("data-sortable-activator", "true"),
       );
 
       await user.click(moving);
       expect(
-        await screen.findByRole("heading", { name: "Moving", level: 1 })
+        await screen.findByRole("heading", { name: "Moving", level: 1 }),
       ).toBeVisible();
     });
 
@@ -7248,25 +9261,25 @@ describe("Notes workspace", () => {
           id: "moving",
           sortKey: 1,
           title: "Moving",
-          isStarred: true
+          isStarred: true,
         }),
         node({
           id: "hidden-child",
           parentId: "moving",
-          title: "Hidden child"
+          title: "Hidden child",
         }),
         node({
           id: "second",
           sortKey: 2,
           title: "Second",
-          isStarred: true
+          isStarred: true,
         }),
         node({
           id: "target",
           sortKey: 3,
           title: "Target",
-          isStarred: true
-        })
+          isStarred: true,
+        }),
       ];
       const authority = deferred<NotesWorkspace>();
       let deferAuthority = false;
@@ -7279,7 +9292,7 @@ describe("Notes workspace", () => {
           return scope.kind === "starred"
             ? workspace(activeNodes.filter((current) => current.isStarred))
             : workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       await findTitleInput("Moving");
@@ -7288,26 +9301,28 @@ describe("Notes workspace", () => {
       const movingTitle = await findTitleInput("Moving");
       const moving = screen.getByRole("button", { name: "Zoom into Moving" });
       await waitFor(() =>
-        expect(moving).toHaveAttribute("data-sortable-activator", "true")
+        expect(moving).toHaveAttribute("data-sortable-activator", "true"),
       );
       deferAuthority = true;
 
       fireEvent.keyDown(movingTitle, { key: "ArrowDown", shiftKey: true });
-      await waitFor(() => expect(selectedOutlineIds()).toEqual(["moving", "second"]));
       await waitFor(() =>
-        expect(moving).not.toHaveAttribute("data-sortable-activator")
+        expect(selectedOutlineIds()).toEqual(["moving", "second"]),
+      );
+      await waitFor(() =>
+        expect(moving).not.toHaveAttribute("data-sortable-activator"),
       );
       fireEvent.pointerDown(moving, { button: 0, pointerId: 42 });
       fireEvent.pointerMove(window, {
         clientX: 5,
-        pointerId: 42
+        pointerId: 42,
       });
       expect(
-        within(screen.getByLabelText("Status bar feedback")).getByRole("alert")
+        within(screen.getByLabelText("Status bar feedback")).getByRole("alert"),
       ).toHaveTextContent("Notes are still preparing for drag. Try again.");
       fireEvent.pointerUp(moving, { button: 0, pointerId: 42 });
       expect(
-        screen.queryByTestId("notes-selection-drag-preview")
+        screen.queryByTestId("notes-selection-drag-preview"),
       ).not.toBeInTheDocument();
 
       await act(async () => {
@@ -7316,7 +9331,7 @@ describe("Notes workspace", () => {
         await authority.promise;
       });
       await waitFor(() =>
-        expect(moving).toHaveAttribute("data-sortable-activator", "true")
+        expect(moving).toHaveAttribute("data-sortable-activator", "true"),
       );
       moving.focus();
       await user.keyboard("[Space]");
@@ -7324,14 +9339,14 @@ describe("Notes workspace", () => {
       const preview = screen.getByTestId("notes-selection-drag-preview");
       expect(preview).toHaveTextContent("Moving");
       expect(within(preview).getByText("3")).toHaveClass(
-        "notes-selection-drag-preview-count"
+        "notes-selection-drag-preview-count",
       );
 
       await user.keyboard("[Escape]");
       await waitFor(() =>
         expect(
-          screen.queryByTestId("notes-selection-drag-preview")
-        ).not.toBeInTheDocument()
+          screen.queryByTestId("notes-selection-drag-preview"),
+        ).not.toBeInTheDocument(),
       );
     });
 
@@ -7342,25 +9357,25 @@ describe("Notes workspace", () => {
           id: "parent",
           sortKey: 1,
           title: "Parent",
-          isStarred: true
+          isStarred: true,
         }),
         node({
           id: "child",
           parentId: "parent",
           title: "Child",
-          isStarred: true
+          isStarred: true,
         }),
         node({
           id: "hidden",
           parentId: "child",
-          title: "Hidden"
+          title: "Hidden",
         }),
         node({
           id: "target",
           sortKey: 2,
           title: "Target",
-          isStarred: true
-        })
+          isStarred: true,
+        }),
       ];
       let failSelectedContext = false;
       let allowSelectedContextRetry = false;
@@ -7370,17 +9385,14 @@ describe("Notes workspace", () => {
         async (_vaultRoot: string, scope: { kind: string }) => {
           if (failSelectedContext && scope.kind === "active") {
             activeLoadsAfterSelection += 1;
-            if (
-              activeLoadsAfterSelection >= 2 &&
-              !allowSelectedContextRetry
-            ) {
+            if (activeLoadsAfterSelection >= 2 && !allowSelectedContextRetry) {
               throw new Error("selection context unavailable");
             }
           }
           return scope.kind === "starred"
             ? workspace(activeNodes.filter((current) => current.isStarred))
             : workspace(activeNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       await findTitleInput("Parent");
@@ -7389,19 +9401,19 @@ describe("Notes workspace", () => {
       const parentTitle = await findTitleInput("Parent");
       const parent = screen.getByRole("button", { name: "Zoom into Parent" });
       await waitFor(() =>
-        expect(parent).toHaveAttribute("data-sortable-activator", "true")
+        expect(parent).toHaveAttribute("data-sortable-activator", "true"),
       );
       failSelectedContext = true;
 
       fireEvent.keyDown(parentTitle, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
-        expect(selectedOutlineIds()).toEqual(["parent", "child"])
+        expect(selectedOutlineIds()).toEqual(["parent", "child"]),
       );
       await waitFor(() =>
         expect(parent).toHaveAttribute(
           "aria-description",
-          "Can't move notes: the full outline couldn't be prepared. Try again."
-        )
+          "Can't move notes: the full outline couldn't be prepared. Try again.",
+        ),
       );
       const loadsBeforeRetry = activeLoadsAfterSelection;
       allowSelectedContextRetry = true;
@@ -7410,16 +9422,16 @@ describe("Notes workspace", () => {
       await user.keyboard("[Space]");
 
       expect(
-        screen.queryByRole("heading", { name: "Parent", level: 1 })
+        screen.queryByRole("heading", { name: "Parent", level: 1 }),
       ).not.toBeInTheDocument();
       expect(
-        within(screen.getByLabelText("Status bar feedback")).getByRole("alert")
+        within(screen.getByLabelText("Status bar feedback")).getByRole("alert"),
       ).toHaveTextContent("Notes are still preparing for drag. Try again.");
       await waitFor(() =>
-        expect(activeLoadsAfterSelection).toBe(loadsBeforeRetry + 1)
+        expect(activeLoadsAfterSelection).toBe(loadsBeforeRetry + 1),
       );
       await waitFor(() =>
-        expect(parent).toHaveAttribute("data-sortable-activator", "true")
+        expect(parent).toHaveAttribute("data-sortable-activator", "true"),
       );
 
       parent.focus();
@@ -7427,13 +9439,13 @@ describe("Notes workspace", () => {
       const preview = screen.getByTestId("notes-selection-drag-preview");
       expect(preview).toHaveTextContent("Parent");
       expect(within(preview).getByText("3")).toHaveClass(
-        "notes-selection-drag-preview-count"
+        "notes-selection-drag-preview-count",
       );
       await user.keyboard("[Escape]");
       await waitFor(() =>
         expect(
-          screen.queryByTestId("notes-selection-drag-preview")
-        ).not.toBeInTheDocument()
+          screen.queryByTestId("notes-selection-drag-preview"),
+        ).not.toBeInTheDocument(),
       );
     });
 
@@ -7444,46 +9456,46 @@ describe("Notes workspace", () => {
           id: "moving",
           sortKey: 1,
           title: "Moving",
-          isStarred: true
+          isStarred: true,
         }),
         node({
           id: "visible-child",
           parentId: "moving",
           sortKey: 1,
           title: "Visible child",
-          isStarred: true
+          isStarred: true,
         }),
         node({
           id: "moving-child",
           parentId: "visible-child",
-          title: "Moving child"
+          title: "Moving child",
         }),
         node({
           id: "second",
           sortKey: 2,
           title: "Second",
-          isStarred: true
+          isStarred: true,
         }),
         node({
           id: "parent",
           sortKey: 3,
           title: "Parent",
           isCollapsed: true,
-          isStarred: true
+          isStarred: true,
         }),
         node({
           id: "hidden",
           parentId: "parent",
           sortKey: 1,
-          title: "Hidden"
-        })
+          title: "Hidden",
+        }),
       ];
       configureRepository(activeNodes);
       notesStoreMock.loadWorkspace.mockImplementation(
         async (_vaultRoot: string, scope: { kind: string }) =>
           scope.kind === "starred"
             ? workspace(confirmedNodes.filter((current) => current.isStarred))
-            : workspace(confirmedNodes)
+            : workspace(confirmedNodes),
       );
       notesStoreMock.applyBatch.mockImplementation(
         async (_vaultRoot: string, input: ApplyNotesBatchInput) => {
@@ -7493,13 +9505,13 @@ describe("Notes workspace", () => {
                 ? {
                     ...current,
                     parentId: "parent",
-                    sortKey: current.id === "moving" ? 2 : 3
+                    sortKey: current.id === "moving" ? 2 : 3,
                   }
-                : current
+                : current,
             );
           }
           return workspace(confirmedNodes);
-        }
+        },
       );
       renderNotesWorkspace();
       await findTitleInput("Moving");
@@ -7513,26 +9525,26 @@ describe("Notes workspace", () => {
       await user.pointer({
         keys: "[MouseLeft>]",
         target: moving,
-        coords: { clientX: 9, clientY: 14 }
+        coords: { clientX: 9, clientY: 14 },
       });
       await user.pointer({
         target: parent,
-        coords: { clientX: 14, clientY: 98 }
+        coords: { clientX: 14, clientY: 98 },
       });
 
       const ordinaryPreview = await screen.findByTestId(
-        "notes-selection-drag-preview"
+        "notes-selection-drag-preview",
       );
       await waitFor(() =>
         expect(within(ordinaryPreview).getByText("3")).toHaveClass(
-          "notes-selection-drag-preview-count"
-        )
+          "notes-selection-drag-preview-count",
+        ),
       );
       for (const nodeId of ["moving", "visible-child"]) {
         expect(
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
-            ?.closest(".notes-outline-item")
+            ?.closest(".notes-outline-item"),
         ).toHaveAttribute("data-drag-source", "true");
       }
       for (const row of document.querySelectorAll<HTMLElement>(".notes-node")) {
@@ -7544,71 +9556,77 @@ describe("Notes workspace", () => {
       await user.pointer({
         keys: "[/MouseLeft]",
         target: parent,
-        coords: { clientX: 14, clientY: 98 }
+        coords: { clientX: 14, clientY: 98 },
       });
 
       const movingTitle = await findTitleInput("Moving");
       fireEvent.keyDown(movingTitle, { key: "ArrowDown", shiftKey: true });
       fireEvent.keyDown(movingTitle, { key: "ArrowDown", shiftKey: true });
       const toolbar = await screen.findByRole("toolbar", {
-        name: "Actions for 3 selected notes"
+        name: "Actions for 3 selected notes",
       });
       await waitFor(() =>
         expect(
-          within(toolbar).getByRole("button", { name: "Move To" })
-        ).toHaveAttribute("aria-disabled", "false")
+          within(toolbar).getByRole("button", { name: "Move To" }),
+        ).toHaveAttribute("aria-disabled", "false"),
       );
       await user.pointer({
         keys: "[MouseLeft>]",
         target: moving,
-        coords: { clientX: 9, clientY: 14 }
+        coords: { clientX: 9, clientY: 14 },
       });
       await user.pointer({
         target: parent,
-        coords: { clientX: 14, clientY: 98 }
+        coords: { clientX: 14, clientY: 98 },
       });
       await user.pointer({
         target: parent,
-        coords: { clientX: 36, clientY: 98 }
+        coords: { clientX: 36, clientY: 98 },
       });
 
       const preview = screen.getByTestId("notes-selection-drag-preview");
       expect(preview).toHaveTextContent("Moving");
       expect(preview).not.toHaveTextContent("Second");
       expect(within(preview).getByText("4")).toHaveClass(
-        "notes-selection-drag-preview-count"
+        "notes-selection-drag-preview-count",
       );
       for (const nodeId of ["moving", "visible-child", "second"]) {
         expect(
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
-            ?.closest(".notes-outline-item")
+            ?.closest(".notes-outline-item"),
         ).toHaveAttribute("data-drag-source", "true");
       }
 
       await user.pointer({
         keys: "[/MouseLeft]",
         target: parent,
-        coords: { clientX: 36, clientY: 98 }
+        coords: { clientX: 36, clientY: 98 },
       });
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "move",
-        nodeIds: ["moving", "second"],
-        parentId: "parent",
-        afterId: "hidden",
-        beforeId: null
-      }, historyContextMatcher());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "move",
+          nodeIds: ["moving", "second"],
+          parentId: "parent",
+          afterId: "hidden",
+          beforeId: null,
+        },
+        historyContextMatcher(),
+      );
       await waitFor(() =>
         expect(
-          document.querySelector('[data-outline-id="moving"]')
-        ).toHaveAttribute("data-range-selected", "true")
+          document.querySelector('[data-outline-id="moving"]'),
+        ).toHaveAttribute("data-range-selected", "true"),
       );
       expect(
         screen.getByRole("toolbar", {
-          name: "Actions for 3 selected notes"
-        })
+          name: "Actions for 3 selected notes",
+        }),
       ).toBeVisible();
     });
 
@@ -7617,21 +9635,23 @@ describe("Notes workspace", () => {
       configureRepository(threeRoots());
       renderNotesWorkspace();
       const title = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       await act(async () => undefined);
       expect(
         notesStoreMock.loadWorkspace.mock.calls.filter(
-          ([, scope]) => scope.kind === "active"
-        )
+          ([, scope]) => scope.kind === "active",
+        ),
       ).toHaveLength(activeLoadsBeforeSelection + 1);
       const bullet = screen.getByRole("button", { name: "Zoom into Alpha" });
       mockOutlineRowRects();
@@ -7641,20 +9661,20 @@ describe("Notes workspace", () => {
 
       await waitFor(() =>
         expect(document.body).toHaveTextContent(
-          "No move was made for 2 selected notes."
-        )
+          "No move was made for 2 selected notes.",
+        ),
       );
       expect(screen.getByLabelText("Status bar feedback")).toHaveTextContent(
-        "Can't move selection: the selected rows cannot be moved together."
+        "Can't move selection: the selected rows cannot be moved together.",
       );
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
       expect(
         Array.from(
           document.querySelectorAll<HTMLElement>(
-            '[data-outline-id][data-range-selected="true"]'
-          )
-        ).map((row) => row.dataset.outlineId)
+            '[data-outline-id][data-range-selected="true"]',
+          ),
+        ).map((row) => row.dataset.outlineId),
       ).toEqual(["a", "b"]);
     });
 
@@ -7663,19 +9683,21 @@ describe("Notes workspace", () => {
       configureRepository([
         node({ id: "parent", sortKey: 1, title: "Parent" }),
         node({ id: "child", parentId: "parent", title: "Child" }),
-        node({ id: "tail", sortKey: 2, title: "Tail" })
+        node({ id: "tail", sortKey: 2, title: "Tail" }),
       ]);
       renderNotesWorkspace();
       const title = await findTitleInput("Parent");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThanOrEqual(activeLoadsBeforeSelection + 3)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThanOrEqual(activeLoadsBeforeSelection + 3),
       );
       await act(async () => undefined);
       const bullet = screen.getByRole("button", { name: "Zoom into Child" });
@@ -7684,14 +9706,20 @@ describe("Notes workspace", () => {
       bullet.focus();
       await user.keyboard("[Space][ArrowDown][Space]");
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "move",
-        nodeIds: ["parent"],
-        parentId: null,
-        afterId: "tail",
-        beforeId: null
-      }, historyContextMatcher());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "move",
+          nodeIds: ["parent"],
+          parentId: null,
+          afterId: "tail",
+          beforeId: null,
+        },
+        historyContextMatcher(),
+      );
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
@@ -7705,15 +9733,21 @@ describe("Notes workspace", () => {
       const menu = await openNodeMenu("Bravo", user);
       expect(within(menu).queryByRole("menuitem", { name: "Star" })).toBeNull();
       await user.click(
-        within(menu).getByRole("menuitem", { name: "Complete" })
+        within(menu).getByRole("menuitem", { name: "Complete" }),
       );
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "complete",
-        nodeIds: ["a", "b"],
-        completed: true
-      }, historyContextMatcher());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "complete",
+          nodeIds: ["a", "b"],
+          completed: true,
+        },
+        historyContextMatcher(),
+      );
       expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
     });
 
@@ -7727,13 +9761,22 @@ describe("Notes workspace", () => {
       const menu = await openNodeMenu("Bravo", user);
       await user.click(within(menu).getByRole("menuitem", { name: "Delete" }));
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(notesStoreMock.deleteNodes).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith(
+        "/vault",
+        {
+          nodeIds: ["a", "b"],
+        },
+        historyContextMatcher(),
+      );
       await waitFor(() =>
         expect(
           screen.queryByRole("toolbar", {
-            name: "Actions for 2 selected notes"
-          })
-        ).toBeNull()
+            name: "Actions for 2 selected notes",
+          }),
+        ).toBeNull(),
       );
       expect(screen.queryByRole("menu")).toBeNull();
     });
@@ -7745,23 +9788,27 @@ describe("Notes workspace", () => {
       const title = await findTitleInput("Alpha");
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       expect(
-        screen.getByRole("toolbar", { name: "Actions for 2 selected notes" })
+        screen.getByRole("toolbar", { name: "Actions for 2 selected notes" }),
       ).toBeVisible();
 
       const menu = await openNodeMenu("Charlie", user);
       await waitFor(() =>
         expect(
           screen.queryByRole("toolbar", {
-            name: "Actions for 2 selected notes"
-          })
-        ).toBeNull()
+            name: "Actions for 2 selected notes",
+          }),
+        ).toBeNull(),
       );
       await user.click(
-        within(menu).getByRole("menuitem", { name: "Complete" })
+        within(menu).getByRole("menuitem", { name: "Complete" }),
       );
 
       await waitFor(() =>
-        expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith("/vault", "c", historyContextMatcher())
+        expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith(
+          "/vault",
+          "c",
+          historyContextMatcher(),
+        ),
       );
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
     });
@@ -7771,33 +9818,39 @@ describe("Notes workspace", () => {
       configureRepository([
         node({ id: "a", sortKey: 1, title: "Alpha" }),
         node({ id: "b", parentId: "a", sortKey: 1, title: "Bravo" }),
-        node({ id: "c", sortKey: 2, title: "Charlie" })
+        node({ id: "c", sortKey: 2, title: "Charlie" }),
       ]);
       renderNotesWorkspace();
       const title = await findTitleInput("Alpha");
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
 
       const menu = await openNodeMenu("Bravo", user);
-      await user.click(
-        within(menu).getByRole("menuitem", { name: "Move To" })
-      );
+      await user.click(within(menu).getByRole("menuitem", { name: "Move To" }));
       const dialog = await screen.findByRole("dialog", {
-        name: "Move selection"
+        name: "Move selection",
       });
-      expect(within(dialog).queryByRole("option", { name: "Alpha" })).toBeNull();
-      expect(within(dialog).queryByRole("option", { name: "Bravo" })).toBeNull();
-      await user.click(
-        within(dialog).getByRole("option", { name: "Charlie" })
-      );
+      expect(
+        within(dialog).queryByRole("option", { name: "Alpha" }),
+      ).toBeNull();
+      expect(
+        within(dialog).queryByRole("option", { name: "Bravo" }),
+      ).toBeNull();
+      await user.click(within(dialog).getByRole("option", { name: "Charlie" }));
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "move",
-        nodeIds: ["a"],
-        parentId: "c",
-        afterId: null,
-        beforeId: null
-      }, historyContextMatcher());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "move",
+          nodeIds: ["a"],
+          parentId: "c",
+          afterId: null,
+          beforeId: null,
+        },
+        historyContextMatcher(),
+      );
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
@@ -7806,28 +9859,38 @@ describe("Notes workspace", () => {
       configureRepository([
         node({ id: "a", sortKey: 1, title: "Alpha #One" }),
         node({ id: "b", sortKey: 2, title: "Bravo", note: "@Owner" }),
-        node({ id: "c", sortKey: 3, title: "Charlie" })
+        node({ id: "c", sortKey: 3, title: "Charlie" }),
       ]);
       renderNotesWorkspace();
       const title = await findTitleInput("Alpha #One");
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       const toolbar = screen.getByRole("toolbar", {
-        name: "Actions for 2 selected notes"
+        name: "Actions for 2 selected notes",
       });
 
       await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
       const dialog = await screen.findByRole("dialog", { name: "Edit tags" });
       await user.click(within(dialog).getByRole("tab", { name: "Remove" }));
-      expect(within(dialog).getByRole("option", { name: "#One" })).toBeVisible();
-      expect(within(dialog).getByRole("option", { name: "@Owner" })).toBeVisible();
+      expect(
+        within(dialog).getByRole("option", { name: "#One" }),
+      ).toBeVisible();
+      expect(
+        within(dialog).getByRole("option", { name: "@Owner" }),
+      ).toBeVisible();
       await user.click(within(dialog).getByRole("option", { name: "#One" }));
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "removeTag",
-        nodeIds: ["a", "b"],
-        tag: { prefix: "#", normalizedTag: "one" }
-      }, historyContextMatcher());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "removeTag",
+          nodeIds: ["a", "b"],
+          tag: { prefix: "#", normalizedTag: "one" },
+        },
+        historyContextMatcher(),
+      );
     });
 
     it("adds a canonical tag payload to every row selected from the toolbar", async () => {
@@ -7837,26 +9900,32 @@ describe("Notes workspace", () => {
       const alpha = await findTitleInput("Alpha");
       fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
       const toolbar = screen.getByRole("toolbar", {
-        name: "Actions for 2 selected notes"
+        name: "Actions for 2 selected notes",
       });
 
       await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
       const dialog = await screen.findByRole("dialog", { name: "Edit tags" });
       await user.type(
         within(dialog).getByRole("combobox", { name: "Tag to add" }),
-        "#Straße{Enter}"
+        "#Straße{Enter}",
       );
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "addTag",
-        nodeIds: ["a", "b"],
-        tag: {
-          prefix: "#",
-          normalizedTag: "strasse",
-          displayTag: "Straße"
-        }
-      }, historyContextMatcher());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "addTag",
+          nodeIds: ["a", "b"],
+          tag: {
+            prefix: "#",
+            normalizedTag: "strasse",
+            displayTag: "Straße",
+          },
+        },
+        historyContextMatcher(),
+      );
       expect(selectedOutlineIds()).toEqual(["a", "b"]);
     });
 
@@ -7871,20 +9940,22 @@ describe("Notes workspace", () => {
         fireEvent.keyDown(bravo, {
           key: "ArrowUp",
           altKey: true,
-          shiftKey: true
-        })
+          shiftKey: true,
+        }),
       ).toBe(false);
 
-      await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(notesStoreMock.moveNode).toHaveBeenCalledOnce(),
+      );
       expect(notesStoreMock.moveNode).toHaveBeenCalledWith(
         "/vault",
         {
           id: "b",
           parentId: null,
           afterId: null,
-          beforeId: "a"
+          beforeId: "a",
         },
-        historyContextMatcher()
+        historyContextMatcher(),
       );
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
     });
@@ -7896,18 +9967,20 @@ describe("Notes workspace", () => {
       const alpha = await findTitleInput("Alpha");
       fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
       await screen.findByRole("toolbar", {
-        name: "Actions for 2 selected notes"
+        name: "Actions for 2 selected notes",
       });
 
       expect(
         fireEvent.keyDown(alpha, {
           key: "ArrowDown",
           altKey: true,
-          shiftKey: true
-        })
+          shiftKey: true,
+        }),
       ).toBe(false);
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
       expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
         "/vault",
         {
@@ -7915,9 +9988,9 @@ describe("Notes workspace", () => {
           nodeIds: ["a", "b"],
           parentId: null,
           afterId: "c",
-          beforeId: null
+          beforeId: null,
         },
-        historyContextMatcher()
+        historyContextMatcher(),
       );
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
@@ -7927,41 +10000,43 @@ describe("Notes workspace", () => {
       configureRepository(threeRoots());
       renderNotesWorkspace();
       const title = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       const chooserAuthority = deferred<NotesWorkspace>();
       notesStoreMock.loadWorkspace.mockImplementationOnce(
-        () => chooserAuthority.promise
+        () => chooserAuthority.promise,
       );
 
       const openingMenu = await openNodeMenu("Bravo", user);
       await user.click(
-        within(openingMenu).getByRole("menuitem", { name: "Tags" })
+        within(openingMenu).getByRole("menuitem", { name: "Tags" }),
       );
       await waitFor(() =>
         expect(notesStoreMock.loadWorkspace).toHaveBeenLastCalledWith(
           "/vault",
-          { kind: "active" }
-        )
+          { kind: "active" },
+        ),
       );
 
       const busyMenu = await openNodeMenu("Alpha", user);
       expect(
         within(busyMenu)
           .getAllByRole("menuitem")
-          .every((item) => item.getAttribute("aria-disabled") === "true")
+          .every((item) => item.getAttribute("aria-disabled") === "true"),
       ).toBe(true);
       await act(async () => chooserAuthority.resolve(workspace(threeRoots())));
       expect(
-        await screen.findByRole("dialog", { name: "Edit tags" })
+        await screen.findByRole("dialog", { name: "Edit tags" }),
       ).toBeVisible();
     });
 
@@ -7970,29 +10045,31 @@ describe("Notes workspace", () => {
       configureRepository(threeRoots());
       renderNotesWorkspace();
       const title = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       notesStoreMock.loadWorkspace.mockRejectedValueOnce(
-        new Error("authority unavailable")
+        new Error("authority unavailable"),
       );
       const toolbar = screen.getByRole("toolbar", {
-        name: "Actions for 2 selected notes"
+        name: "Actions for 2 selected notes",
       });
 
       await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
 
       expect(
-        await within(
-          screen.getByLabelText("Status bar feedback")
-        ).findByRole("alert")
+        await within(screen.getByLabelText("Status bar feedback")).findByRole(
+          "alert",
+        ),
       ).toHaveTextContent(/couldn't open/i);
       expect(screen.queryByRole("dialog", { name: "Edit tags" })).toBeNull();
     });
@@ -8002,36 +10079,40 @@ describe("Notes workspace", () => {
       configureRepository(threeRoots());
       renderNotesWorkspace();
       const title = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       const toolbar = screen.getByRole("toolbar", {
-        name: "Actions for 2 selected notes"
+        name: "Actions for 2 selected notes",
       });
       const statusBar = screen.getByLabelText("Status bar feedback");
 
-      await user.click(within(toolbar).getByRole("button", { name: "Complete" }));
+      await user.click(
+        within(toolbar).getByRole("button", { name: "Complete" }),
+      );
       expect(await within(statusBar).findByRole("status")).toHaveTextContent(
-        "Completed selection."
+        "Completed selection.",
       );
 
       notesStoreMock.loadWorkspace.mockRejectedValueOnce(
-        new Error("authority unavailable")
+        new Error("authority unavailable"),
       );
       await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
       expect(await within(statusBar).findByRole("alert")).toHaveTextContent(
-        /couldn't open/i
+        /couldn't open/i,
       );
 
       await user.click(
-        within(toolbar).getByRole("button", { name: "Clear selection" })
+        within(toolbar).getByRole("button", { name: "Clear selection" }),
       );
       await waitFor(() => {
         expect(within(statusBar).queryByRole("status")).toBeNull();
@@ -8044,38 +10125,40 @@ describe("Notes workspace", () => {
       configureRepository(threeRoots());
       renderNotesWorkspace();
       const title = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       const toolbar = screen.getByRole("toolbar", {
-        name: "Actions for 2 selected notes"
+        name: "Actions for 2 selected notes",
       });
       const statusBar = screen.getByLabelText("Status bar feedback");
 
       fireEvent.keyDown(title, { key: "Tab" });
       expect(await within(statusBar).findByRole("alert")).toHaveTextContent(
-        "Can't indent selection"
+        "Can't indent selection",
       );
 
       notesStoreMock.loadWorkspace.mockRejectedValueOnce(
-        new Error("authority unavailable")
+        new Error("authority unavailable"),
       );
       await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
       await waitFor(() =>
         expect(within(statusBar).getByRole("alert")).toHaveTextContent(
-          /couldn't open/i
-        )
+          /couldn't open/i,
+        ),
       );
 
       await user.click(
-        within(toolbar).getByRole("button", { name: "Clear selection" })
+        within(toolbar).getByRole("button", { name: "Clear selection" }),
       );
       await waitFor(() => {
         expect(within(statusBar).queryByRole("status")).toBeNull();
@@ -8088,45 +10171,49 @@ describe("Notes workspace", () => {
       configureRepository(threeRoots());
       renderNotesWorkspace();
       const title = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       await act(async () => undefined);
       const chooserAuthority = deferred<NotesWorkspace>();
       notesStoreMock.loadWorkspace.mockImplementationOnce(
-        () => chooserAuthority.promise
+        () => chooserAuthority.promise,
       );
-      const activeLoadsBeforeChooser = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeChooser =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
 
       const menu = await openNodeMenu("Bravo", user);
       await user.click(within(menu).getByRole("menuitem", { name: "Tags" }));
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeChooser)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeChooser),
       );
 
       fireEvent.click(
         screen.getByRole("button", { name: "Zoom into Charlie" }),
-        { shiftKey: true }
+        { shiftKey: true },
       );
       const toolbar = await screen.findByRole("toolbar", {
-        name: "Actions for 3 selected notes"
+        name: "Actions for 3 selected notes",
       });
       await waitFor(() =>
         expect(
-          within(toolbar).getByRole("button", { name: "Tags" })
-        ).toHaveAttribute("aria-disabled", "false")
+          within(toolbar).getByRole("button", { name: "Tags" }),
+        ).toHaveAttribute("aria-disabled", "false"),
       );
       const charlie = queryTitleInput("Charlie");
       if (!charlie) {
@@ -8135,18 +10222,18 @@ describe("Notes workspace", () => {
       charlie.focus();
 
       await act(async () =>
-        chooserAuthority.reject(new Error("stale authority failure"))
+        chooserAuthority.reject(new Error("stale authority failure")),
       );
       expect(
         within(screen.getByLabelText("Status bar feedback")).queryByRole(
-          "alert"
-        )
+          "alert",
+        ),
       ).toBeNull();
       expect(charlie).toHaveFocus();
 
       await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
       expect(
-        await screen.findByRole("dialog", { name: "Edit tags" })
+        await screen.findByRole("dialog", { name: "Edit tags" }),
       ).toBeVisible();
     });
 
@@ -8155,19 +10242,21 @@ describe("Notes workspace", () => {
       configureRepository(threeRoots());
       renderNotesWorkspace();
       const title = await findTitleInput("Alpha");
-      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
-        .filter(([, scope]) => scope.kind === "active").length;
+      const activeLoadsBeforeSelection =
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active",
+        ).length;
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       await waitFor(() =>
         expect(
           notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThan(activeLoadsBeforeSelection)
+            ([, scope]) => scope.kind === "active",
+          ).length,
+        ).toBeGreaterThan(activeLoadsBeforeSelection),
       );
       await act(async () => undefined);
       notesStoreMock.loadWorkspace.mockRejectedValueOnce(
-        new Error("authority unavailable")
+        new Error("authority unavailable"),
       );
       const bravo = queryTitleInput("Bravo");
       if (!bravo) {
@@ -8178,12 +10267,12 @@ describe("Notes workspace", () => {
       await user.click(within(menu).getByRole("menuitem", { name: "Tags" }));
 
       screen.getByRole("toolbar", {
-        name: "Actions for 2 selected notes"
+        name: "Actions for 2 selected notes",
       });
       expect(
-        await within(
-          screen.getByLabelText("Status bar feedback")
-        ).findByRole("alert")
+        await within(screen.getByLabelText("Status bar feedback")).findByRole(
+          "alert",
+        ),
       ).toHaveTextContent(/couldn't open/i);
       await waitFor(() => expect(bravo).toHaveFocus());
     });
@@ -8192,27 +10281,26 @@ describe("Notes workspace", () => {
       const user = userEvent.setup();
       configureRepository([
         node({ id: "a", sortKey: 1, title: "Alpha", isStarred: true }),
-        node({ id: "b", sortKey: 2, title: "Bravo" })
+        node({ id: "b", sortKey: 2, title: "Bravo" }),
       ]);
       renderNotesWorkspace();
       await findTitleInput("Alpha");
       const starredView = screen.getByRole("button", { name: "Starred" });
-      fireEvent.click(
-        screen.getByRole("button", { name: "Zoom into Alpha" }),
-        { shiftKey: true }
-      );
+      fireEvent.click(screen.getByRole("button", { name: "Zoom into Alpha" }), {
+        shiftKey: true,
+      });
       const toolbar = await screen.findByRole("toolbar", {
-        name: "Actions for 1 selected notes"
+        name: "Actions for 1 selected notes",
       });
       await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
       expect(
-        await screen.findByRole("dialog", { name: "Edit tags" })
+        await screen.findByRole("dialog", { name: "Edit tags" }),
       ).toBeVisible();
 
       fireEvent.click(starredView);
 
       await waitFor(() =>
-        expect(screen.queryByRole("dialog", { name: "Edit tags" })).toBeNull()
+        expect(screen.queryByRole("dialog", { name: "Edit tags" })).toBeNull(),
       );
     });
 
@@ -8221,28 +10309,30 @@ describe("Notes workspace", () => {
       configureRepository([
         node({ id: "parent", sortKey: 1, title: "Parent" }),
         node({ id: "a", parentId: "parent", sortKey: 1, title: "Alpha" }),
-        node({ id: "b", parentId: "parent", sortKey: 2, title: "Bravo" })
+        node({ id: "b", parentId: "parent", sortKey: 2, title: "Bravo" }),
       ]);
       renderNotesWorkspace();
       const title = await findTitleInput("Alpha");
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       expect(
-        screen.getByRole("toolbar", { name: "Actions for 2 selected notes" })
+        screen.getByRole("toolbar", { name: "Actions for 2 selected notes" }),
       ).toBeVisible();
 
       await user.click(screen.getByRole("button", { name: "Collapse Parent" }));
       await waitFor(() =>
-        expect(screen.queryByRole("toolbar", { name: /Actions for/ })).toBeNull()
+        expect(
+          screen.queryByRole("toolbar", { name: /Actions for/ }),
+        ).toBeNull(),
       );
       await user.click(screen.getByRole("button", { name: "Expand Parent" }));
       await findTitleInput("Alpha");
 
       expect(screen.queryByRole("toolbar", { name: /Actions for/ })).toBeNull();
       expect(
-        document.querySelector('[data-outline-id="a"]')
+        document.querySelector('[data-outline-id="a"]'),
       ).not.toHaveAttribute("data-range-selected");
       expect(
-        document.querySelector('[data-outline-id="b"]')
+        document.querySelector('[data-outline-id="b"]'),
       ).not.toHaveAttribute("data-range-selected");
     });
 
@@ -8259,15 +10349,19 @@ describe("Notes workspace", () => {
       fireEvent.keyDown(title, { key: "Enter", ctrlKey: true });
 
       await waitFor(() =>
-        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce()
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
       );
       // History is not wired in this harness, so no history-context arg trails
       // the call (parity with the single-node commands here).
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "complete",
-        nodeIds: ["a", "b", "c"],
-        completed: true
-      }, historyContextMatcher());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "complete",
+          nodeIds: ["a", "b", "c"],
+          completed: true,
+        },
+        historyContextMatcher(),
+      );
       // The whole-selection path fully replaces the single-node command.
       expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
     });
@@ -8283,8 +10377,8 @@ describe("Notes workspace", () => {
           nodeIds: ["b", "c"],
           parentId: null,
           afterId: null,
-          beforeId: "a"
-        }
+          beforeId: "a",
+        },
       },
       {
         label: "Ctrl+Shift+ArrowUp",
@@ -8296,8 +10390,8 @@ describe("Notes workspace", () => {
           nodeIds: ["b", "c"],
           parentId: null,
           afterId: null,
-          beforeId: "a"
-        }
+          beforeId: "a",
+        },
       },
       {
         label: "Alt+Shift+ArrowDown",
@@ -8309,8 +10403,8 @@ describe("Notes workspace", () => {
           nodeIds: ["b", "c"],
           parentId: null,
           afterId: "d",
-          beforeId: null
-        }
+          beforeId: null,
+        },
       },
       {
         label: "Ctrl+Shift+ArrowDown",
@@ -8322,41 +10416,41 @@ describe("Notes workspace", () => {
           nodeIds: ["b", "c"],
           parentId: null,
           afterId: "d",
-          beforeId: null
-        }
-      }
-    ])("routes $label as one exact selection move", async ({
-      platform,
-      modifier,
-      key,
-      expected
-    }) => {
-      vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
-      configureRepository([
-        node({ id: "a", sortKey: 1, title: "Alpha" }),
-        node({ id: "b", sortKey: 2, title: "Bravo" }),
-        node({ id: "c", sortKey: 3, title: "Charlie" }),
-        node({ id: "d", sortKey: 4, title: "Delta" })
-      ]);
-      renderNotesWorkspace();
-      const bravo = await findTitleInput("Bravo");
-      bravo.focus();
-      fireEvent.keyDown(bravo, { key: "ArrowDown", shiftKey: true });
-      expect(selectedOutlineIds()).toEqual(["b", "c"]);
+          beforeId: null,
+        },
+      },
+    ])(
+      "routes $label as one exact selection move",
+      async ({ platform, modifier, key, expected }) => {
+        vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
+        configureRepository([
+          node({ id: "a", sortKey: 1, title: "Alpha" }),
+          node({ id: "b", sortKey: 2, title: "Bravo" }),
+          node({ id: "c", sortKey: 3, title: "Charlie" }),
+          node({ id: "d", sortKey: 4, title: "Delta" }),
+        ]);
+        renderNotesWorkspace();
+        const bravo = await findTitleInput("Bravo");
+        bravo.focus();
+        fireEvent.keyDown(bravo, { key: "ArrowDown", shiftKey: true });
+        expect(selectedOutlineIds()).toEqual(["b", "c"]);
 
-      expect(
-        fireEvent.keyDown(bravo, { key, ...modifier, shiftKey: true })
-      ).toBe(false);
+        expect(
+          fireEvent.keyDown(bravo, { key, ...modifier, shiftKey: true }),
+        ).toBe(false);
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
-        "/vault",
-        expected,
-        historyContextMatcher()
-      );
-      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
-      expect(selectedOutlineIds()).toEqual(["b", "c"]);
-    });
+        await waitFor(() =>
+          expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+        );
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+          "/vault",
+          expected,
+          historyContextMatcher(),
+        );
+        expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+        expect(selectedOutlineIds()).toEqual(["b", "c"]);
+      },
+    );
 
     it("soft-deletes a keyboard-selected range as one batch", async () => {
       useCtrlPlatform();
@@ -8368,22 +10462,25 @@ describe("Notes workspace", () => {
       fireEvent.keyDown(title, {
         key: "Backspace",
         ctrlKey: true,
-        shiftKey: true
+        shiftKey: true,
       });
 
       await waitFor(() =>
-        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce()
+        expect(notesStoreMock.deleteNodes).toHaveBeenCalledOnce(),
       );
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-        op: "delete",
-        nodeIds: ["a", "b"]
-      }, historyContextMatcher());
+      expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith(
+        "/vault",
+        {
+          nodeIds: ["a", "b"],
+        },
+        historyContextMatcher(),
+      );
       // The surviving neighbor takes focus.
       await waitFor(() => expect(getTitleInput("Charlie")).toHaveFocus());
       expect(
-        await within(
-          screen.getByLabelText("Status bar feedback")
-        ).findByRole("status")
+        await within(screen.getByLabelText("Status bar feedback")).findByRole(
+          "status",
+        ),
       ).toHaveTextContent("Deleted selection.");
       expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
     });
@@ -8398,13 +10495,13 @@ describe("Notes workspace", () => {
           id: "d",
           sortKey: 4,
           title: "Delta",
-          note: "Keep this caret"
-        })
+          note: "Keep this caret",
+        }),
       ];
       const after = before.slice(2);
       configureRepository(before);
-      const batch = deferred<NotesWorkspace>();
-      notesStoreMock.applyBatch.mockReturnValueOnce(batch.promise);
+      const deletion = deferred<NotesWorkspace>();
+      notesStoreMock.deleteNodes.mockReturnValueOnce(deletion.promise);
       renderNotesWorkspace();
       const alpha = await findTitleInput("Alpha");
       act(() => alpha.focus());
@@ -8412,19 +10509,28 @@ describe("Notes workspace", () => {
       fireEvent.keyDown(alpha, {
         key: "Backspace",
         ctrlKey: true,
-        shiftKey: true
+        shiftKey: true,
       });
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(notesStoreMock.deleteNodes).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith(
+        "/vault",
+        {
+          nodeIds: ["a", "b"],
+        },
+        historyContextMatcher(),
+      );
 
       const deltaNote = getTextareaByName("Supporting note: Delta");
       act(() => deltaNote.focus());
       expect(deltaNote).toHaveFocus();
 
       confirmedNodes = after;
-      await act(async () => batch.resolve(workspace(after)));
+      await act(async () => deletion.resolve(workspace(after)));
 
       await waitFor(() =>
-        expect(queryTextareaByName("Supporting note: Delta")).toHaveFocus()
+        expect(queryTextareaByName("Supporting note: Delta")).toHaveFocus(),
       );
       expect(queryTitleInput("Charlie")).not.toHaveFocus();
     });
@@ -8437,7 +10543,7 @@ describe("Notes workspace", () => {
         node({ id: "c", parentId: "parent", sortKey: 3, title: "Charlie" }),
         node({ id: "d", parentId: "parent", sortKey: 4, title: "Delta" }),
         node({ id: "e", parentId: "parent", sortKey: 5, title: "Echo" }),
-        node({ id: "f", parentId: "parent", sortKey: 6, title: "Foxtrot" })
+        node({ id: "f", parentId: "parent", sortKey: 6, title: "Foxtrot" }),
       ];
       configureRepository(before);
       renderNotesWorkspace();
@@ -8454,23 +10560,23 @@ describe("Notes workspace", () => {
       expect(selectedOutlineIds()).toEqual(["a", "b", "c", "d", "e"]);
       expect(alpha).toHaveFocus();
       const toolbar = screen.getByRole("toolbar", {
-        name: "Actions for 5 selected notes"
+        name: "Actions for 5 selected notes",
       });
       expect(within(toolbar).queryByRole("alert")).not.toBeInTheDocument();
       const status = within(
-        screen.getByLabelText("Status bar feedback")
+        screen.getByLabelText("Status bar feedback"),
       ).getByRole("alert");
       await waitFor(() =>
         expect(status).toHaveTextContent(
-          /^Can't indent selection: the first selected item has no preceding sibling outside the selection\.$/
-        )
+          /^Can't indent selection: the first selected item has no preceding sibling outside the selection\.$/,
+        ),
       );
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
       expect(status).toHaveAttribute("data-kind", "error");
 
       fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));
       await waitFor(() =>
-        expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument(),
       );
     });
 
@@ -8483,7 +10589,7 @@ describe("Notes workspace", () => {
         before: [
           node({ id: "parent", sortKey: 1, title: "Parent" }),
           node({ id: "a", sortKey: 2, title: "Alpha" }),
-          node({ id: "b", sortKey: 3, title: "Bravo" })
+          node({ id: "b", sortKey: 3, title: "Bravo" }),
         ],
         after: [
           node({ id: "parent", sortKey: 1, title: "Parent" }),
@@ -8491,15 +10597,15 @@ describe("Notes workspace", () => {
             id: "a",
             parentId: "parent",
             sortKey: 1,
-            title: "Alpha"
+            title: "Alpha",
           }),
           node({
             id: "b",
             parentId: "parent",
             sortKey: 2,
-            title: "Bravo"
-          })
-        ]
+            title: "Bravo",
+          }),
+        ],
       },
       {
         shortcut: "Shift+Tab",
@@ -8512,21 +10618,21 @@ describe("Notes workspace", () => {
             id: "a",
             parentId: "parent",
             sortKey: 1,
-            title: "Alpha"
+            title: "Alpha",
           }),
           node({
             id: "b",
             parentId: "parent",
             sortKey: 2,
-            title: "Bravo"
-          })
+            title: "Bravo",
+          }),
         ],
         after: [
           node({ id: "parent", sortKey: 1, title: "Parent" }),
           node({ id: "a", sortKey: 2, title: "Alpha" }),
-          node({ id: "b", sortKey: 3, title: "Bravo" })
-        ]
-      }
+          node({ id: "b", sortKey: 3, title: "Bravo" }),
+        ],
+      },
     ])(
       "keeps the selected rows selected after batch $shortcut",
       async ({ shiftKey, op, expectedDepth, before, after }) => {
@@ -8540,8 +10646,8 @@ describe("Notes workspace", () => {
         const selectedOutlineIds = () =>
           Array.from(
             document.querySelectorAll(
-              '[data-outline-id][data-range-selected="true"]'
-            )
+              '[data-outline-id][data-range-selected="true"]',
+            ),
           ).map((row) => row.getAttribute("data-outline-id"));
 
         fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
@@ -8550,23 +10656,25 @@ describe("Notes workspace", () => {
         fireEvent.keyDown(alpha, { key: "Tab", shiftKey });
 
         await waitFor(() =>
-          expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-            op,
-            nodeIds: ["a", "b"]
-          }, historyContextMatcher())
+          expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+            "/vault",
+            {
+              op,
+              nodeIds: ["a", "b"],
+            },
+            historyContextMatcher(),
+          ),
         );
         expect(selectedOutlineIds()).toEqual(["a", "b"]);
         await act(async () => batch.resolve(workspace(after)));
-        await waitFor(() =>
-          expect(selectedOutlineIds()).toEqual(["a", "b"])
-        );
+        await waitFor(() => expect(selectedOutlineIds()).toEqual(["a", "b"]));
         const alphaRow = document.querySelector<HTMLElement>(
-          '[data-outline-id="a"]'
+          '[data-outline-id="a"]',
         );
         await waitFor(() =>
           expect(alphaRow?.style.getPropertyValue("--notes-depth")).toBe(
-            expectedDepth
-          )
+            expectedDepth,
+          ),
         );
         const focusedAlpha = await findTitleInput("Alpha");
         expect(focusedAlpha).toHaveFocus();
@@ -8576,10 +10684,10 @@ describe("Notes workspace", () => {
         // upward collapses the range back to Alpha.
         fireEvent.keyDown(focusedAlpha, {
           key: "ArrowUp",
-          shiftKey: true
+          shiftKey: true,
         });
         expect(selectedOutlineIds()).toEqual(["a"]);
-      }
+      },
     );
 
     it("keeps the single-node completion path when no selection is active", async () => {
@@ -8591,7 +10699,11 @@ describe("Notes workspace", () => {
       fireEvent.keyDown(title, { key: "Enter", ctrlKey: true });
 
       await waitFor(() =>
-        expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith("/vault", "a", historyContextMatcher())
+        expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith(
+          "/vault",
+          "a",
+          historyContextMatcher(),
+        ),
       );
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
     });
@@ -8611,9 +10723,7 @@ describe("Notes workspace", () => {
       expect(selectedOutlineIds()).toEqual(["a", "b", "c"]);
       fireEvent.keyDown(title, { key: "Enter", ctrlKey: true });
 
-      await waitFor(() =>
-        expect(notesStoreMock.updateNode).toHaveBeenCalled()
-      );
+      await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalled());
       // The batch never reached the backend (Phase 3.5)...
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
       // ...and the shared semantic router explains the pause instead of
@@ -8630,28 +10740,28 @@ describe("Notes workspace", () => {
           confirmedNodes = confirmedNodes.map((current) =>
             current.id === input.id
               ? { ...current, title: input.title, note: input.note }
-              : current
+              : current,
           );
           return workspace(confirmedNodes);
-        }
+        },
       );
       fireEvent.click(screen.getByRole("button", { name: "Retry save" }));
       await waitFor(() =>
         expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(
-          callsBeforeRetry + 1
-        )
+          callsBeforeRetry + 1,
+        ),
       );
       await waitFor(() =>
-        expect(
-          screen.queryByText(/editing commands are paused/i)
-        ).toBeNull()
+        expect(screen.queryByText(/editing commands are paused/i)).toBeNull(),
       );
     });
 
     it("preserves selection and focus when applyBatch rejects", async () => {
       useCtrlPlatform();
       configureRepository(threeRoots());
-      notesStoreMock.applyBatch.mockRejectedValueOnce(new Error("batch failed"));
+      notesStoreMock.applyBatch.mockRejectedValueOnce(
+        new Error("batch failed"),
+      );
       renderNotesWorkspace();
       const title = await findTitleInput("Alpha");
       title.focus();
@@ -8660,7 +10770,9 @@ describe("Notes workspace", () => {
 
       fireEvent.keyDown(title, { key: "Enter", ctrlKey: true });
 
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
       expect(await screen.findByText(/couldn't be completed/i)).toBeVisible();
       expect(selectedOutlineIds()).toEqual(["a", "b"]);
       expect(title).toHaveFocus();
@@ -8673,7 +10785,7 @@ describe("Notes workspace", () => {
       node({ id: "project", sortKey: 1, title: "Project" }),
       node({ id: "first", parentId: "project", sortKey: 1, title: "First" }),
       node({ id: "leaf", parentId: "first", sortKey: 1, title: "Leaf" }),
-      node({ id: "second", parentId: "project", sortKey: 2, title: "Second" })
+      node({ id: "second", parentId: "project", sortKey: 2, title: "Second" }),
     ];
     configureRepository(before);
     const save = deferred<NotesWorkspace>();
@@ -8694,22 +10806,30 @@ describe("Notes workspace", () => {
 
     expect(fireEvent.keyDown(title, { key: "Tab" })).toBe(false);
     expect(fireEvent.keyDown(title, { key: "Tab" })).toBe(false);
-    await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledOnce(),
+    );
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     screen.getByRole("button", { name: "All notes" }).focus();
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
 
     const saved = before.map((current) =>
-      current.id === "second" ? { ...current, title: "Second edited" } : current
+      current.id === "second"
+        ? { ...current, title: "Second edited" }
+        : current,
     );
     await act(async () => save.resolve(workspace(saved)));
     await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
     expect(invocations).toEqual(["update", "move"]);
-    expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
-      id: "second",
-      parentId: "first",
-      afterId: "leaf"
-    }, historyContextMatcher());
+    expect(notesStoreMock.moveNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "second",
+        parentId: "first",
+        afterId: "leaf",
+      },
+      historyContextMatcher(),
+    );
     expect(screen.getByRole("button", { name: "All notes" })).toHaveFocus();
 
     await act(async () =>
@@ -8718,14 +10838,12 @@ describe("Notes workspace", () => {
           saved.map((current) =>
             current.id === "second"
               ? { ...current, parentId: "first", sortKey: 2 }
-              : current
-          )
-        )
-      )
+              : current,
+          ),
+        ),
+      ),
     );
-    expect(
-      await findTitleInput("Second edited")
-    ).toHaveFocus();
+    expect(await findTitleInput("Second edited")).toHaveFocus();
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
     expect(notesStoreMock.moveNode).toHaveBeenCalledOnce();
   });
@@ -8734,7 +10852,7 @@ describe("Notes workspace", () => {
     const before = [
       node({ id: "project", sortKey: 1, title: "Project" }),
       node({ id: "first", parentId: "project", sortKey: 1, title: "First" }),
-      node({ id: "second", parentId: "project", sortKey: 2, title: "Second" })
+      node({ id: "second", parentId: "project", sortKey: 2, title: "Second" }),
     ];
     const move = deferred<NotesWorkspace>();
     configureRepository(before);
@@ -8747,10 +10865,14 @@ describe("Notes workspace", () => {
 
     const library = screen.getByRole("region", { name: "Notes library" });
     expect(library).toHaveAttribute("data-transient-workspace-busy", "true");
-    expect(within(library).getByRole("button", { name: "New page" })).toBeDisabled();
-    expect(within(library).getByRole("button", { name: "Project" })).toBeDisabled();
     expect(
-      within(library).getByRole("button", { name: "Page actions for Project" })
+      within(library).getByRole("button", { name: "New page" }),
+    ).toBeDisabled();
+    expect(
+      within(library).getByRole("button", { name: "Project" }),
+    ).toBeDisabled();
+    expect(
+      within(library).getByRole("button", { name: "Page actions for Project" }),
     ).toBeDisabled();
 
     await act(async () =>
@@ -8759,48 +10881,55 @@ describe("Notes workspace", () => {
           before.map((current) =>
             current.id === "second"
               ? { ...current, parentId: "first", sortKey: 1 }
-              : current
-          )
-        )
-      )
+              : current,
+          ),
+        ),
+      ),
     );
 
     await waitFor(() =>
-      expect(library).not.toHaveAttribute("data-transient-workspace-busy")
+      expect(library).not.toHaveAttribute("data-transient-workspace-busy"),
     );
     expect(getTitleInput("Second").closest("li")).toHaveAttribute(
       "aria-level",
-      "3"
+      "3",
     );
-    expect(within(library).getByRole("button", { name: "New page" })).toBeEnabled();
-    expect(within(library).getByRole("button", { name: "Project" })).toBeEnabled();
     expect(
-      within(library).getByRole("button", { name: "Page actions for Project" })
+      within(library).getByRole("button", { name: "New page" }),
+    ).toBeEnabled();
+    expect(
+      within(library).getByRole("button", { name: "Project" }),
+    ).toBeEnabled();
+    expect(
+      within(library).getByRole("button", { name: "Page actions for Project" }),
     ).toBeEnabled();
   });
 
   it.each([
     ["Tab", false],
-    ["Shift+Tab", true]
-  ])("keeps title focus at a structural %s boundary", async (_label, shiftKey) => {
-    configureRepository([
-      node({ id: "first", sortKey: 1, title: "First" }),
-      node({ id: "second", sortKey: 2, title: "Second" })
-    ]);
-    renderNotesWorkspace();
-    const title = await findTitleInput("First");
-    act(() => title.focus());
+    ["Shift+Tab", true],
+  ])(
+    "keeps title focus at a structural %s boundary",
+    async (_label, shiftKey) => {
+      configureRepository([
+        node({ id: "first", sortKey: 1, title: "First" }),
+        node({ id: "second", sortKey: 2, title: "Second" }),
+      ]);
+      renderNotesWorkspace();
+      const title = await findTitleInput("First");
+      act(() => title.focus());
 
-    expect(fireEvent.keyDown(title, { key: "Tab", shiftKey })).toBe(false);
-    expect(title).toHaveFocus();
-    expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
-  });
+      expect(fireEvent.keyDown(title, { key: "Tab", shiftKey })).toBe(false);
+      expect(title).toHaveFocus();
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    },
+  );
 
   it("expands a collapsed previous sibling before indenting and focusing", async () => {
     const before = [
       node({ id: "first", sortKey: 1, title: "First", isCollapsed: true }),
       node({ id: "hidden", parentId: "first", sortKey: 1, title: "Hidden" }),
-      node({ id: "second", sortKey: 2, title: "Second" })
+      node({ id: "second", sortKey: 2, title: "Second" }),
     ];
     configureRepository(before);
     const expand = deferred<NotesWorkspace>();
@@ -8816,21 +10945,25 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledWith(
         "/vault",
         "first",
-        historyContextMatcher()
-      )
+        historyContextMatcher(),
+      ),
     );
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
 
     const expanded = before.map((current) =>
-      current.id === "first" ? { ...current, isCollapsed: false } : current
+      current.id === "first" ? { ...current, isCollapsed: false } : current,
     );
     await act(async () => expand.resolve(workspace(expanded)));
     await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
-    expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
-      id: "second",
-      parentId: "first",
-      afterId: "hidden"
-    }, historyContextMatcher());
+    expect(notesStoreMock.moveNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "second",
+        parentId: "first",
+        afterId: "hidden",
+      },
+      historyContextMatcher(),
+    );
 
     await act(async () =>
       move.resolve(
@@ -8838,14 +10971,12 @@ describe("Notes workspace", () => {
           expanded.map((current) =>
             current.id === "second"
               ? { ...current, parentId: "first", sortKey: 2 }
-              : current
-          )
-        )
-      )
+              : current,
+          ),
+        ),
+      ),
     );
-    expect(
-      await findTitleInput("Second")
-    ).toHaveFocus();
+    expect(await findTitleInput("Second")).toHaveFocus();
   });
 
   it("saves before Shift+Tab outdent and does not duplicate the handled blur", async () => {
@@ -8854,25 +10985,33 @@ describe("Notes workspace", () => {
     fireEvent.change(title, { target: { value: "Milestone edited" } });
     title.focus();
 
-    expect(
-      fireEvent.keyDown(title, { key: "Tab", shiftKey: true })
-    ).toBe(false);
+    expect(fireEvent.keyDown(title, { key: "Tab", shiftKey: true })).toBe(
+      false,
+    );
     await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
-    expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
-      id: "milestone",
-      title: "Milestone edited",
-      note: "",
-      imageOffsetUtf16: 0,
-      markerKind: "bullet"
-    }, historyContextMatcher());
-    expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
-      id: "milestone",
-      parentId: "project",
-      afterId: "plan"
-    }, historyContextMatcher());
-    expect(
-      notesStoreMock.updateNode.mock.invocationCallOrder[0]
-    ).toBeLessThan(notesStoreMock.moveNode.mock.invocationCallOrder[0]);
+    expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "milestone",
+        title: "Milestone edited",
+        note: "",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet",
+      },
+      historyContextMatcher(),
+    );
+    expect(notesStoreMock.moveNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "milestone",
+        parentId: "project",
+        afterId: "plan",
+      },
+      historyContextMatcher(),
+    );
+    expect(notesStoreMock.updateNode.mock.invocationCallOrder[0]).toBeLessThan(
+      notesStoreMock.moveNode.mock.invocationCallOrder[0],
+    );
 
     fireEvent.blur(title);
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
@@ -8885,17 +11024,17 @@ describe("Notes workspace", () => {
     fireEvent.change(title, { target: { value: "Milestone queued" } });
     title.focus();
 
-    expect(
-      fireEvent.keyDown(title, { key: "Tab", shiftKey: true })
-    ).toBe(false);
+    expect(fireEvent.keyDown(title, { key: "Tab", shiftKey: true })).toBe(
+      false,
+    );
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
 
     await act(async () => vi.advanceTimersByTimeAsync(300));
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
     expect(notesStoreMock.moveNode).toHaveBeenCalledOnce();
-    expect(
-      notesStoreMock.updateNode.mock.invocationCallOrder[0]
-    ).toBeLessThan(notesStoreMock.moveNode.mock.invocationCallOrder[0]);
+    expect(notesStoreMock.updateNode.mock.invocationCallOrder[0]).toBeLessThan(
+      notesStoreMock.moveNode.mock.invocationCallOrder[0],
+    );
   });
 
   it("saves before moving focus through visible rows without a native focus command", async () => {
@@ -8907,9 +11046,7 @@ describe("Notes workspace", () => {
     plan.focus();
 
     expect(fireEvent.keyDown(plan, { key: "ArrowDown" })).toBe(false);
-    expect(
-      await findTitleInput("Milestone")
-    ).toHaveFocus();
+    expect(await findTitleInput("Milestone")).toHaveFocus();
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
 
@@ -8919,17 +11056,15 @@ describe("Notes workspace", () => {
           initialNodes().map((current) =>
             current.id === "plan"
               ? { ...current, title: "Plan edited" }
-              : current
-          )
-        )
-      )
+              : current,
+          ),
+        ),
+      ),
     );
     const milestone = getTitleInput("Milestone");
     milestone.setSelectionRange(0, 0);
     expect(fireEvent.keyDown(milestone, { key: "ArrowUp" })).toBe(false);
-    expect(
-      await findTitleInput("Plan edited")
-    ).toHaveFocus();
+    expect(await findTitleInput("Plan edited")).toHaveFocus();
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
   });
 
@@ -8937,9 +11072,7 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
     await findTitleInput("Project");
-    await user.click(
-      screen.getByRole("button", { name: "Zoom into Project" })
-    );
+    await user.click(screen.getByRole("button", { name: "Zoom into Project" }));
     const pageTitle = await activatePageTitle();
     fireEvent.focus(pageTitle);
     fireEvent.change(pageTitle, { target: { value: "Project edited" } });
@@ -8953,19 +11086,23 @@ describe("Notes workspace", () => {
 
     expect(fireEvent.keyDown(pageTitle, { key: "ArrowDown" })).toBe(false);
     await waitFor(() => expect(queryTitleInput("Plan")).toHaveFocus());
-    expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
-      id: "project",
-      title: "Project edited",
-      note: "Project note",
-      imageOffsetUtf16: 0,
-      markerKind: "bullet"
-    }, historyContextMatcher());
+    expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "project",
+        title: "Project edited",
+        note: "Project note",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet",
+      },
+      historyContextMatcher(),
+    );
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     expect(planFocus).toHaveBeenCalledOnce();
-    expect(
-      notesStoreMock.updateNode.mock.invocationCallOrder[0]
-    ).toBeLessThan(planFocus.mock.invocationCallOrder[0]);
+    expect(notesStoreMock.updateNode.mock.invocationCallOrder[0]).toBeLessThan(
+      planFocus.mock.invocationCallOrder[0],
+    );
   });
 
   it("skips hidden completed children from the zoomed page title", async () => {
@@ -8977,31 +11114,25 @@ describe("Notes workspace", () => {
         parentId: "project",
         sortKey: 1,
         title: "Completed child",
-        completedAt: "2026-07-10T01:00:00Z"
+        completedAt: "2026-07-10T01:00:00Z",
       }),
       node({
         id: "visible",
         parentId: "project",
         sortKey: 2,
-        title: "Visible child"
-      })
+        title: "Visible child",
+      }),
     ]);
     renderNotesWorkspace();
     await findTitleInput("Project");
-    await user.click(
-      screen.getByRole("button", { name: "Completed items" })
-    );
+    await user.click(screen.getByRole("button", { name: "Completed items" }));
     expect(queryTitleInput("Completed child")).not.toBeInTheDocument();
-    await user.click(
-      screen.getByRole("button", { name: "Zoom into Project" })
-    );
+    await user.click(screen.getByRole("button", { name: "Zoom into Project" }));
     expect(queryTitleInput("Completed child")).not.toBeInTheDocument();
     const pageTitle = await activatePageTitle();
 
     expect(fireEvent.keyDown(pageTitle, { key: "ArrowDown" })).toBe(false);
-    await waitFor(() =>
-      expect(queryTitleInput("Visible child")).toHaveFocus()
-    );
+    await waitFor(() => expect(queryTitleInput("Visible child")).toHaveFocus());
   });
 
   it("treats a stored-collapsed zoomed page title as effectively expanded", async () => {
@@ -9011,18 +11142,14 @@ describe("Notes workspace", () => {
         id: "project",
         sortKey: 1,
         title: "Project",
-        isCollapsed: true
+        isCollapsed: true,
       }),
-      node({ id: "plan", parentId: "project", sortKey: 1, title: "Plan" })
+      node({ id: "plan", parentId: "project", sortKey: 1, title: "Plan" }),
     ]);
     renderNotesWorkspace();
     await findTitleInput("Project");
-    await user.click(
-      screen.getByRole("button", { name: "Zoom into Project" })
-    );
-    await waitFor(() =>
-      expect(queryTitleInput("Plan")).toBeInTheDocument()
-    );
+    await user.click(screen.getByRole("button", { name: "Zoom into Project" }));
+    await waitFor(() => expect(queryTitleInput("Plan")).toBeInTheDocument());
     const pageTitle = await activatePageTitle();
     pageTitle.setSelectionRange(pageTitle.value.length, pageTitle.value.length);
 
@@ -9034,7 +11161,7 @@ describe("Notes workspace", () => {
   it("moves Left from a bullet start to the previous visible title end", async () => {
     configureRepository([
       node({ id: "first", sortKey: 1, title: "First bullet" }),
-      node({ id: "second", sortKey: 2, title: "Second bullet" })
+      node({ id: "second", sortKey: 2, title: "Second bullet" }),
     ]);
     renderNotesWorkspace();
     const first = await findTitleInput("First bullet");
@@ -9052,7 +11179,7 @@ describe("Notes workspace", () => {
   it("moves Right from a bullet end to the next visible title start", async () => {
     configureRepository([
       node({ id: "first", sortKey: 1, title: "First bullet" }),
-      node({ id: "second", sortKey: 2, title: "Second bullet" })
+      node({ id: "second", sortKey: 2, title: "Second bullet" }),
     ]);
     renderNotesWorkspace();
     const first = await findTitleInput("First bullet");
@@ -9089,7 +11216,7 @@ describe("Notes workspace", () => {
   it("serializes rapid non-repeat collapse commands until the first settles", async () => {
     const before = [
       node({ id: "project", sortKey: 1, title: "Project" }),
-      node({ id: "plan", parentId: "project", sortKey: 1, title: "Plan" })
+      node({ id: "plan", parentId: "project", sortKey: 1, title: "Plan" }),
     ];
     configureRepository(before);
     const collapse = deferred<NotesWorkspace>();
@@ -9097,13 +11224,13 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
     await findTitleInput("Project");
     const collapseButton = screen.getByRole("button", {
-      name: "Collapse Project"
+      name: "Collapse Project",
     });
 
     fireEvent.click(collapseButton);
     fireEvent.click(collapseButton);
     await waitFor(() =>
-      expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledOnce()
+      expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledOnce(),
     );
 
     await act(async () =>
@@ -9112,12 +11239,14 @@ describe("Notes workspace", () => {
           before.map((current) =>
             current.id === "project"
               ? { ...current, isCollapsed: true }
-              : current
-          )
-        )
-      )
+              : current,
+          ),
+        ),
+      ),
     );
-    await waitFor(() => expect(queryTitleInput("Plan")).not.toBeInTheDocument());
+    await waitFor(() =>
+      expect(queryTitleInput("Plan")).not.toBeInTheDocument(),
+    );
     expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledOnce();
   });
 
@@ -9125,7 +11254,7 @@ describe("Notes workspace", () => {
     const before = [
       node({ id: "first", sortKey: 1, title: "First" }),
       node({ id: "empty", sortKey: 2, title: "", note: "" }),
-      node({ id: "last", sortKey: 3, title: "Last" })
+      node({ id: "last", sortKey: 3, title: "Last" }),
     ];
     configureRepository(before);
     const save = deferred<NotesWorkspace>();
@@ -9139,14 +11268,20 @@ describe("Notes workspace", () => {
 
     expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
     expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
-    await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledOnce());
-    expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
-      id: "empty",
-      title: "",
-      note: "",
-      imageOffsetUtf16: 0,
-      markerKind: "bullet"
-    }, historyContextMatcher());
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledOnce(),
+    );
+    expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "empty",
+        title: "",
+        note: "",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet",
+      },
+      historyContextMatcher(),
+    );
     expect(notesStoreMock.removeEmptyNode).not.toHaveBeenCalled();
     screen.getByRole("button", { name: "All notes" }).focus();
 
@@ -9155,17 +11290,17 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.removeEmptyNode).toHaveBeenCalledWith(
         "/vault",
         "empty",
-        historyContextMatcher()
-      )
+        historyContextMatcher(),
+      ),
     );
     expect(screen.getByRole("button", { name: "All notes" })).toHaveFocus();
 
     await act(async () =>
-      remove.resolve(workspace(before.filter((current) => current.id !== "empty")))
+      remove.resolve(
+        workspace(before.filter((current) => current.id !== "empty")),
+      ),
     );
-    expect(
-      await findTitleInput("First")
-    ).toHaveFocus();
+    expect(await findTitleInput("First")).toHaveFocus();
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
     expect(notesStoreMock.removeEmptyNode).toHaveBeenCalledOnce();
   });
@@ -9173,9 +11308,19 @@ describe("Notes workspace", () => {
   it("focuses the first lifted child after removing a collapsed empty parent", async () => {
     const before = [
       node({ id: "empty", sortKey: 1, title: "", isCollapsed: true }),
-      node({ id: "lifted-a", parentId: "empty", sortKey: 1, title: "Lifted A" }),
-      node({ id: "lifted-b", parentId: "empty", sortKey: 2, title: "Lifted B" }),
-      node({ id: "next", sortKey: 2, title: "Next" })
+      node({
+        id: "lifted-a",
+        parentId: "empty",
+        sortKey: 1,
+        title: "Lifted A",
+      }),
+      node({
+        id: "lifted-b",
+        parentId: "empty",
+        sortKey: 2,
+        title: "Lifted B",
+      }),
+      node({ id: "next", sortKey: 2, title: "Next" }),
     ];
     configureRepository(before);
     const remove = deferred<NotesWorkspace>();
@@ -9190,8 +11335,8 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.removeEmptyNode).toHaveBeenCalledWith(
         "/vault",
         "empty",
-        historyContextMatcher()
-      )
+        historyContextMatcher(),
+      ),
     );
 
     await act(async () =>
@@ -9199,26 +11344,23 @@ describe("Notes workspace", () => {
         workspace([
           node({ id: "lifted-a", sortKey: 1, title: "Lifted A" }),
           node({ id: "lifted-b", sortKey: 2, title: "Lifted B" }),
-          node({ id: "next", sortKey: 3, title: "Next" })
-        ])
-      )
+          node({ id: "next", sortKey: 3, title: "Next" }),
+        ]),
+      ),
     );
-    expect(
-      await findTitleInput("Lifted A")
-    ).toHaveFocus();
+    expect(await findTitleInput("Lifted A")).toHaveFocus();
   });
 
-  it("confirms before moving a note-only bullet subtree to Trash", async () => {
-    const user = userEvent.setup();
+  it("moves a note-only bullet subtree to Trash through the shared delete command", async () => {
     configureRepository([
       node({ id: "page", title: "Page" }),
       node({
         id: "note-only",
         parentId: "page",
         title: "",
-        note: "supporting context"
+        note: "supporting context",
       }),
-      node({ id: "child", parentId: "note-only", title: "Child" })
+      node({ id: "child", parentId: "note-only", title: "Child" }),
     ]);
     renderNotesWorkspace();
     const title = await findTitleInput("");
@@ -9226,25 +11368,187 @@ describe("Notes workspace", () => {
     title.setSelectionRange(0, 0);
 
     expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
+    await waitFor(() =>
+      expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith(
+        "/vault",
+        { nodeIds: ["note-only"] },
+        historyContextMatcher(),
+      ),
+    );
     expect(
-      screen.getByRole("alertdialog", { name: "Move bullet to Trash?" })
+      screen.queryByRole("alertdialog", { name: "Move bullet to Trash?" }),
+    ).toBeNull();
+  });
+
+  it("opens the shared readonly confirmation directly from a row Trash shortcut", async () => {
+    const rootId = "11111111-1111-4111-8111-111111111111";
+    const emptyId = "22222222-2222-4222-8222-222222222222";
+    const readonlyId = "33333333-3333-4333-8333-333333333333";
+    configureRepository([
+      node({ id: rootId, title: "Page" }),
+      node({
+        id: emptyId,
+        parentId: rootId,
+        title: "",
+        note: "Supporting context",
+      }),
+      node({
+        id: readonlyId,
+        parentId: emptyId,
+        title: "Protected",
+        isReadonly: true,
+      }),
+    ]);
+    const deleteNodes = enableReadonlyDeletePreflight([readonlyId]);
+    renderNotesWorkspace();
+    const empty = await findTitleInput("");
+    empty.focus();
+    empty.setSelectionRange(0, 0);
+
+    expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
+    expect(
+      screen.queryByRole("alertdialog", { name: "Move bullet to Trash?" }),
+    ).toBeNull();
+    expect(
+      await screen.findByRole("alertdialog", {
+        name: "읽기 전용 블릿이 포함되어 있습니다. 함께 삭제할까요?",
+      }),
     ).toBeVisible();
-    await user.keyboard("{Escape}");
-    expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
-    expect(title).toHaveFocus();
+    expect(deleteNodes).toHaveBeenCalledWith(
+      "/vault",
+      { nodeIds: [emptyId] },
+      historyContextMatcher(),
+    );
+  });
+
+  it("opens the shared readonly confirmation directly from a page Trash shortcut", async () => {
+    const user = userEvent.setup();
+    const rootId = "44444444-4444-4444-8444-444444444444";
+    const readonlyId = "55555555-5555-4555-8555-555555555555";
+    configureRepository([
+      node({ id: rootId, title: "", note: "Page context" }),
+      node({
+        id: readonlyId,
+        parentId: rootId,
+        title: "Protected",
+        isReadonly: true,
+      }),
+    ]);
+    const deleteNodes = enableReadonlyDeletePreflight([readonlyId]);
+    renderNotesWorkspace();
+    const library = screen.getByLabelText("Notes library");
+    await user.click(
+      await within(library).findByRole("button", { name: "Untitled page" }),
+    );
+    const title = (await screen.findByRole("textbox", {
+      name: "Edit page title",
+    })) as HTMLTextAreaElement;
+    title.focus();
+    title.setSelectionRange(0, 0);
 
     expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
-    await user.click(
-      within(
-        screen.getByRole("alertdialog", { name: "Move bullet to Trash?" })
-      ).getByRole("button", { name: "Move to Trash" })
+    expect(
+      screen.queryByRole("alertdialog", { name: "Move page to Trash?" }),
+    ).toBeNull();
+    expect(
+      await screen.findByRole("alertdialog", {
+        name: "읽기 전용 블릿이 포함되어 있습니다. 함께 삭제할까요?",
+      }),
+    ).toBeVisible();
+    expect(deleteNodes).toHaveBeenCalledWith(
+      "/vault",
+      { nodeIds: [rootId] },
+      historyContextMatcher(),
     );
-    await waitFor(() =>
-      expect(notesStoreMock.softDeleteNode).toHaveBeenCalledWith(
-        "/vault",
-        "note-only",
-        historyContextMatcher()
-      )
+  });
+
+  it("opens the shared readonly confirmation directly from the library Trash action", async () => {
+    const user = userEvent.setup();
+    const rootId = "66666666-6666-4666-8666-666666666666";
+    const readonlyId = "77777777-7777-4777-8777-777777777777";
+    configureRepository([
+      node({ id: rootId, title: "Page" }),
+      node({
+        id: readonlyId,
+        parentId: rootId,
+        title: "Protected",
+        isReadonly: true,
+      }),
+    ]);
+    const deleteNodes = enableReadonlyDeletePreflight([readonlyId]);
+    renderNotesWorkspace();
+    const library = screen.getByLabelText("Notes library");
+    await user.click(
+      await within(library).findByRole("button", {
+        name: "Page actions for Page",
+      }),
+    );
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Move to Trash",
+      }),
+    );
+
+    expect(
+      screen.queryByRole("alertdialog", { name: "Move page to Trash?" }),
+    ).toBeNull();
+    expect(
+      await screen.findByRole("alertdialog", {
+        name: "읽기 전용 블릿이 포함되어 있습니다. 함께 삭제할까요?",
+      }),
+    ).toBeVisible();
+    expect(deleteNodes).toHaveBeenCalledWith(
+      "/vault",
+      { nodeIds: [rootId] },
+      historyContextMatcher(),
+    );
+  });
+
+  it("does not put a generic confirmation before readonly confirmation when Starred hides the descendant", async () => {
+    const user = userEvent.setup();
+    const root = node({
+      id: "88888888-8888-4888-8888-888888888888",
+      title: "Starred page",
+      isStarred: true,
+    });
+    const readonly = node({
+      id: "99999999-9999-4999-8999-999999999999",
+      parentId: root.id,
+      title: "Hidden protected child",
+      isReadonly: true,
+    });
+    configureRepository([root, readonly]);
+    notesStoreMock.loadWorkspace.mockImplementation(
+      async (_vaultRoot: string, scope: { kind: string }) =>
+        workspace(scope.kind === "starred" ? [root] : [root, readonly]),
+    );
+    const deleteNodes = enableReadonlyDeletePreflight([readonly.id]);
+    renderNotesWorkspace();
+    const library = screen.getByLabelText("Notes library");
+    await user.click(within(library).getByRole("button", { name: "Starred" }));
+    await user.click(
+      await within(library).findByRole("button", {
+        name: "Page actions for Starred page",
+      }),
+    );
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Move to Trash",
+      }),
+    );
+
+    expect(
+      screen.queryByRole("alertdialog", { name: "Move page to Trash?" }),
+    ).toBeNull();
+    expect(
+      await screen.findByRole("alertdialog", {
+        name: "읽기 전용 블릿이 포함되어 있습니다. 함께 삭제할까요?",
+      }),
+    ).toBeVisible();
+    expect(deleteNodes).toHaveBeenCalledWith(
+      "/vault",
+      { nodeIds: [root.id] },
+      historyContextMatcher(),
     );
   });
 
@@ -9254,12 +11558,12 @@ describe("Notes workspace", () => {
     title.focus();
     title.setSelectionRange(0, 0);
 
-    expect(
-      fireEvent.keyDown(title, { key: "Enter", isComposing: true })
-    ).toBe(true);
-    expect(
-      fireEvent.keyDown(title, { key: "Enter", repeat: true })
-    ).toBe(false);
+    expect(fireEvent.keyDown(title, { key: "Enter", isComposing: true })).toBe(
+      true,
+    );
+    expect(fireEvent.keyDown(title, { key: "Enter", repeat: true })).toBe(
+      false,
+    );
     expect(fireEvent.keyDown(title, { key: "Process" })).toBe(true);
     const note = getTextareaByName("Supporting note: Project");
     expect(fireEvent.keyDown(note, { key: "Enter" })).toBe(true);
@@ -9277,11 +11581,12 @@ describe("Notes workspace", () => {
     const note = getTextareaByName("Supporting note: Project");
     expect(note).toHaveAttribute("rows", "1");
 
+    note.focus();
     note.setSelectionRange(0, 3);
-    expect(
-      fireEvent.keyDown(note, { key: "ArrowUp", isComposing: true })
-    ).toBe(false);
-    await waitFor(() => expect(queryTitleInput("Project")).toHaveFocus());
+    expect(fireEvent.keyDown(note, { key: "ArrowUp", isComposing: true })).toBe(
+      true,
+    );
+    expect(note).toHaveFocus();
 
     fireEvent.focus(note);
     fireEvent.change(note, { target: { value: "Project note revised" } });
@@ -9289,13 +11594,17 @@ describe("Notes workspace", () => {
     expect(fireEvent.keyDown(note, { key: "ArrowDown" })).toBe(false);
     await waitFor(() => expect(queryTitleInput("Plan")).toHaveFocus());
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
-        id: "project",
-        title: "Project",
-        note: "Project note revised",
-        imageOffsetUtf16: 0,
-        markerKind: "bullet"
-      }, historyContextMatcher())
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        {
+          id: "project",
+          title: "Project",
+          note: "Project note revised",
+          imageOffsetUtf16: 0,
+          markerKind: "bullet",
+        },
+        historyContextMatcher(),
+      ),
     );
   });
 
@@ -9307,9 +11616,9 @@ describe("Notes workspace", () => {
     note.setSelectionRange(note.value.length, note.value.length);
 
     expect(note).toHaveFocus();
-    expect(
-      fireEvent.keyDown(note, { key: "ArrowDown", ctrlKey: true })
-    ).toBe(true);
+    expect(fireEvent.keyDown(note, { key: "ArrowDown", ctrlKey: true })).toBe(
+      true,
+    );
     expect(note).toHaveFocus();
   });
 
@@ -9319,9 +11628,9 @@ describe("Notes workspace", () => {
     const note = getTextareaByName("Supporting note: Project");
     fireEvent.change(note, { target: { value: "Project note revised" } });
 
-    expect(
-      fireEvent.keyDown(note, { key: "Enter", shiftKey: true })
-    ).toBe(false);
+    expect(fireEvent.keyDown(note, { key: "Enter", shiftKey: true })).toBe(
+      false,
+    );
     await waitFor(() => expect(queryTitleInput("Plan")).toHaveFocus());
     expect(notesStoreMock.createNode).not.toHaveBeenCalled();
   });
@@ -9329,8 +11638,8 @@ describe("Notes workspace", () => {
   it("creates and focuses a sibling from Shift+Enter in the last bullet note", async () => {
     configureRepository(
       initialNodes().map((current) =>
-        current.id === "outside" ? { ...current, note: "Last note" } : current
-      )
+        current.id === "outside" ? { ...current, note: "Last note" } : current,
+      ),
     );
     const eventTrace: string[] = [];
     const updateNode = notesStoreMock.updateNode.getMockImplementation();
@@ -9350,9 +11659,9 @@ describe("Notes workspace", () => {
     const note = await findTextareaByName("Supporting note: Outside branch");
     fireEvent.change(note, { target: { value: "Last note revised" } });
 
-    expect(
-      fireEvent.keyDown(note, { key: "Enter", shiftKey: true })
-    ).toBe(false);
+    expect(fireEvent.keyDown(note, { key: "Enter", shiftKey: true })).toBe(
+      false,
+    );
     await waitFor(() => expect(queryTitleInput("")).toHaveFocus());
     expect(notesStoreMock.createNode).toHaveBeenCalledWith(
       "/vault",
@@ -9360,9 +11669,9 @@ describe("Notes workspace", () => {
         parentId: null,
         afterId: "outside",
         title: "",
-        note: ""
+        note: "",
       }),
-      historyContextMatcher()
+      historyContextMatcher(),
     );
     expect(eventTrace).toEqual(["updateNode", "createNode"]);
   });
@@ -9371,18 +11680,16 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
     const title = await findTitleInput("Outside branch");
 
-    expect(
-      fireEvent.keyDown(title, { key: "Enter", shiftKey: true })
-    ).toBe(false);
-    expect(
-      getTextareaByName("Supporting note: Outside branch")
-    ).toHaveFocus();
+    expect(fireEvent.keyDown(title, { key: "Enter", shiftKey: true })).toBe(
+      false,
+    );
+    expect(getTextareaByName("Supporting note: Outside branch")).toHaveFocus();
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
   });
 
   it.each([
     { platform: "Win32", modifier: { ctrlKey: true }, label: "Ctrl" },
-    { platform: "MacIntel", modifier: { metaKey: true }, label: "Cmd" }
+    { platform: "MacIntel", modifier: { metaKey: true }, label: "Cmd" },
   ])(
     "toggles completion with $label+Enter on $platform",
     async ({ platform, modifier }) => {
@@ -9390,48 +11697,53 @@ describe("Notes workspace", () => {
       renderNotesWorkspace();
       const title = await findTitleInput("Outside branch");
 
-      expect(fireEvent.keyDown(title, { key: "Enter", ...modifier })).toBe(false);
+      expect(fireEvent.keyDown(title, { key: "Enter", ...modifier })).toBe(
+        false,
+      );
       await waitFor(() =>
         expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith(
           "/vault",
           "outside",
-          historyContextMatcher()
-        )
+          historyContextMatcher(),
+        ),
       );
-    }
+    },
   );
 
   it.each([
     {
       platform: "Win32",
       modifier: { altKey: true },
-      label: "Alt"
+      label: "Alt",
     },
     {
       platform: "MacIntel",
       modifier: { metaKey: true },
-      label: "Cmd"
-    }
-  ])("duplicates with $label+Shift+D on $platform", async ({ platform, modifier }) => {
-    vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
-    renderNotesWorkspace();
-    const title = await findTitleInput("Outside branch");
+      label: "Cmd",
+    },
+  ])(
+    "duplicates with $label+Shift+D on $platform",
+    async ({ platform, modifier }) => {
+      vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
+      renderNotesWorkspace();
+      const title = await findTitleInput("Outside branch");
 
-    expect(
-      fireEvent.keyDown(title, { key: "D", shiftKey: true, ...modifier })
-    ).toBe(false);
-    await waitFor(() =>
-      expect(notesStoreMock.duplicateNode).toHaveBeenCalledWith(
-        "/vault",
-        "outside",
-        historyContextMatcher()
-      )
-    );
-  });
+      expect(
+        fireEvent.keyDown(title, { key: "D", shiftKey: true, ...modifier }),
+      ).toBe(false);
+      await waitFor(() =>
+        expect(notesStoreMock.duplicateNode).toHaveBeenCalledWith(
+          "/vault",
+          "outside",
+          historyContextMatcher(),
+        ),
+      );
+    },
+  );
 
   it.each([
     { platform: "Win32", modifier: { ctrlKey: true }, label: "Ctrl" },
-    { platform: "MacIntel", modifier: { metaKey: true }, label: "Cmd" }
+    { platform: "MacIntel", modifier: { metaKey: true }, label: "Cmd" },
   ])(
     "deletes with $label+Shift+Backspace on $platform",
     async ({ platform, modifier }) => {
@@ -9443,17 +11755,17 @@ describe("Notes workspace", () => {
         fireEvent.keyDown(title, {
           key: "Backspace",
           shiftKey: true,
-          ...modifier
-        })
+          ...modifier,
+        }),
       ).toBe(false);
       await waitFor(() =>
-        expect(notesStoreMock.softDeleteNode).toHaveBeenCalledWith(
+        expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith(
           "/vault",
-          "outside",
-          historyContextMatcher()
-        )
+          { nodeIds: ["outside"] },
+          historyContextMatcher(),
+        ),
       );
-    }
+    },
   );
 
   it("ignores composing, repeated, and textarea Workflowy shortcuts", async () => {
@@ -9465,19 +11777,28 @@ describe("Notes workspace", () => {
       fireEvent.keyDown(title, {
         key: "Enter",
         ctrlKey: true,
-        isComposing: true
-      })
+        isComposing: true,
+      }),
     ).toBe(true);
     expect(
-      fireEvent.keyDown(title, { key: "D", altKey: true, shiftKey: true, repeat: true })
+      fireEvent.keyDown(title, {
+        key: "D",
+        altKey: true,
+        shiftKey: true,
+        repeat: true,
+      }),
     ).toBe(true);
     expect(
-      fireEvent.keyDown(note, { key: "Backspace", metaKey: true, shiftKey: true })
+      fireEvent.keyDown(note, {
+        key: "Backspace",
+        metaKey: true,
+        shiftKey: true,
+      }),
     ).toBe(true);
 
     expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
     expect(notesStoreMock.duplicateNode).not.toHaveBeenCalled();
-    expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.deleteNodes).not.toHaveBeenCalled();
   });
 
   it("exposes duplicate and delete through the bullet menu", async () => {
@@ -9487,22 +11808,22 @@ describe("Notes workspace", () => {
 
     const duplicateMenu = await openNodeMenu("Outside branch", user);
     await user.click(
-      within(duplicateMenu).getByRole("menuitem", { name: "Duplicate" })
+      within(duplicateMenu).getByRole("menuitem", { name: "Duplicate" }),
     );
     expect(notesStoreMock.duplicateNode).toHaveBeenCalledWith(
       "/vault",
       "outside",
-      historyContextMatcher()
+      historyContextMatcher(),
     );
 
     const deleteMenu = await openNodeMenu("Outside branch", user);
     await user.click(
-      within(deleteMenu).getByRole("menuitem", { name: "Delete" })
+      within(deleteMenu).getByRole("menuitem", { name: "Delete" }),
     );
-    expect(notesStoreMock.softDeleteNode).toHaveBeenCalledWith(
+    expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith(
       "/vault",
-      "outside",
-      historyContextMatcher()
+      { nodeIds: ["outside"] },
+      historyContextMatcher(),
     );
   });
 
@@ -9513,14 +11834,14 @@ describe("Notes workspace", () => {
         prefix: "#",
         normalizedTag: "work",
         displayTag: "Work",
-        count: 2
+        count: 2,
       },
       {
         prefix: "@",
         normalizedTag: "work",
         displayTag: "Work",
-        count: 1
-      }
+        count: 1,
+      },
     ]);
     renderNotesWorkspace();
     await findTitleInput("Project");
@@ -9529,32 +11850,32 @@ describe("Notes workspace", () => {
     await user.click(within(views).getByRole("button", { name: "Starred" }));
     await waitFor(() =>
       expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
-        kind: "starred"
-      })
+        kind: "starred",
+      }),
     );
     await user.click(within(views).getByRole("button", { name: "Recent" }));
     await waitFor(() =>
       expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
-        kind: "recent"
-      })
+        kind: "recent",
+      }),
     );
     await user.click(within(views).getByRole("button", { name: "Tags" }));
     const hashTag = await screen.findByRole("button", {
-      name: "#Work, 2 notes"
+      name: "#Work, 2 notes",
     });
     const mentionTag = screen.getByRole("button", {
-      name: "@Work, 1 note"
+      name: "@Work, 1 note",
     });
     await user.click(hashTag);
     await waitFor(() =>
       expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
         kind: "tags",
-        tags: [{ prefix: "#", normalizedTag: "work" }]
-      })
+        tags: [{ prefix: "#", normalizedTag: "work" }],
+      }),
     );
     expect(hashTag).toHaveAttribute("aria-pressed", "true");
     expect(
-      screen.getByRole("button", { name: "Remove #Work filter" })
+      screen.getByRole("button", { name: "Remove #Work filter" }),
     ).toBeVisible();
 
     await user.click(mentionTag);
@@ -9563,39 +11884,43 @@ describe("Notes workspace", () => {
         kind: "tags",
         tags: [
           { prefix: "#", normalizedTag: "work" },
-          { prefix: "@", normalizedTag: "work" }
-        ]
-      })
+          { prefix: "@", normalizedTag: "work" },
+        ],
+      }),
     );
-    expect(screen.getByRole("button", { name: "Remove @Work filter" }))
-      .toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Remove @Work filter" }),
+    ).toBeVisible();
 
-    await user.click(screen.getByRole("button", { name: "Remove #Work filter" }));
+    await user.click(
+      screen.getByRole("button", { name: "Remove #Work filter" }),
+    );
     await waitFor(() =>
       expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
         kind: "tags",
-        tags: [{ prefix: "@", normalizedTag: "work" }]
-      })
+        tags: [{ prefix: "@", normalizedTag: "work" }],
+      }),
     );
-    expect(screen.queryByRole("button", { name: "Remove #Work filter" }))
-      .not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Remove #Work filter" }),
+    ).not.toBeInTheDocument();
     await user.click(within(views).getByRole("button", { name: "Archive" }));
     await waitFor(() =>
       expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
-        kind: "archive"
-      })
+        kind: "archive",
+      }),
     );
     await user.click(within(views).getByRole("button", { name: "Trash" }));
     await waitFor(() =>
       expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
-        kind: "trash"
-      })
+        kind: "trash",
+      }),
     );
     await user.click(within(views).getByRole("button", { name: "All" }));
     await waitFor(() =>
       expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
-        kind: "active"
-      })
+        kind: "active",
+      }),
     );
   });
 
@@ -9606,9 +11931,11 @@ describe("Notes workspace", () => {
       async (_vaultRoot: string, scope: { kind: string }) =>
         workspace(
           scope.kind === "tags"
-            ? confirmedNodes.filter((current) => current.title.includes("#Work"))
-            : confirmedNodes
-        )
+            ? confirmedNodes.filter((current) =>
+                current.title.includes("#Work"),
+              )
+            : confirmedNodes,
+        ),
     );
     notesStoreMock.listTagsWithCounts.mockImplementation(async () =>
       confirmedNodes.some((current) => current.title.includes("#Work"))
@@ -9617,16 +11944,16 @@ describe("Notes workspace", () => {
               prefix: "#",
               normalizedTag: "work",
               displayTag: "Work",
-              count: 1
-            }
+              count: 1,
+            },
           ]
-        : []
+        : [],
     );
     renderNotesWorkspace();
 
     await user.click(await screen.findByRole("button", { name: "Tags" }));
     await user.click(
-      await screen.findByRole("button", { name: "#Work, 1 note" })
+      await screen.findByRole("button", { name: "#Work, 1 note" }),
     );
     const title = await findTitleInput("#Work");
     fireEvent.change(title, { target: { value: "No tag" } });
@@ -9644,11 +11971,11 @@ describe("Notes workspace", () => {
     const second = deferred<KindAwareSearchResult[]>();
     notesStoreMock.search.mockImplementation(
       async (_vaultRoot: string, query: string) =>
-        query === "Old" ? first.promise : second.promise
+        query === "Old" ? first.promise : second.promise,
     );
     renderNotesWorkspace();
     const search = await screen.findByRole("searchbox", {
-      name: "Search notes"
+      name: "Search notes",
     });
 
     fireEvent.change(search, { target: { value: "Old" } });
@@ -9658,11 +11985,11 @@ describe("Notes workspace", () => {
         nodeId: "new",
         title: "New result",
         parentTrail: ["Project"],
-        matchedField: "title"
-      })
+        matchedField: "title",
+      }),
     ]);
     expect(
-      await screen.findByRole("option", { name: /New result/ })
+      await screen.findByRole("option", { name: /New result/ }),
     ).toBeInTheDocument();
 
     first.resolve([
@@ -9670,12 +11997,12 @@ describe("Notes workspace", () => {
         nodeId: "old",
         title: "Old result",
         parentTrail: ["Project"],
-        matchedField: "title"
-      })
+        matchedField: "title",
+      }),
     ]);
     await act(async () => first.promise);
     expect(
-      screen.queryByRole("option", { name: /Old result/ })
+      screen.queryByRole("option", { name: /Old result/ }),
     ).not.toBeInTheDocument();
   });
 
@@ -9685,37 +12012,37 @@ describe("Notes workspace", () => {
         nodeId: "plan",
         title: "Plan",
         parentTrail: ["Project", "Roadmap"],
-        matchedField: "note"
-      })
+        matchedField: "note",
+      }),
     ]);
     renderNotesWorkspace();
     const search = await screen.findByRole("searchbox", {
-      name: "Search notes"
+      name: "Search notes",
     });
 
     fireEvent.change(search, {
-      target: { value: "roadmap #Work -@Alice #Soon OR @Bob" }
+      target: { value: "roadmap #Work -@Alice #Soon OR @Bob" },
     });
 
     expect(
       await screen.findByRole("option", {
-        name: "Plan, in Project / Roadmap, note match"
-      })
+        name: "Plan, in Project / Roadmap, note match",
+      }),
     ).toHaveTextContent("Project / Roadmap");
     expect(notesStoreMock.searchStructured).toHaveBeenLastCalledWith("/vault", {
       text: "roadmap",
       requiredTags: [
-        { prefix: "#", normalizedTag: "work", displayTag: "Work" }
+        { prefix: "#", normalizedTag: "work", displayTag: "Work" },
       ],
       excludedTags: [
-        { prefix: "@", normalizedTag: "alice", displayTag: "Alice" }
+        { prefix: "@", normalizedTag: "alice", displayTag: "Alice" },
       ],
       orGroups: [
         [
           { prefix: "#", normalizedTag: "soon", displayTag: "Soon" },
-          { prefix: "@", normalizedTag: "bob", displayTag: "Bob" }
-        ]
-      ]
+          { prefix: "@", normalizedTag: "bob", displayTag: "Bob" },
+        ],
+      ],
     });
     expect(notesStoreMock.search).not.toHaveBeenCalled();
   });
@@ -9723,15 +12050,17 @@ describe("Notes workspace", () => {
   it("shows structured query validation errors without searching", async () => {
     renderNotesWorkspace();
     const search = await screen.findByRole("searchbox", {
-      name: "Search notes"
+      name: "Search notes",
     });
-    const invalid = Array.from({ length: 65 }, (_, index) => `#tag${index}`)
-      .join(" ");
+    const invalid = Array.from(
+      { length: 65 },
+      (_, index) => `#tag${index}`,
+    ).join(" ");
 
     fireEvent.change(search, { target: { value: invalid } });
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Structured Notes search has more than 64 unique tag alternatives."
+      "Structured Notes search has more than 64 unique tag alternatives.",
     );
     expect(notesStoreMock.search).not.toHaveBeenCalled();
     expect(notesStoreMock.searchStructured).not.toHaveBeenCalled();
@@ -9742,11 +12071,11 @@ describe("Notes workspace", () => {
     const newSearch = deferred<KindAwareSearchResult[]>();
     notesStoreMock.search.mockImplementation(
       async (_vaultRoot: string, query: string) =>
-        query === "Old" ? oldSearch.promise : newSearch.promise
+        query === "Old" ? oldSearch.promise : newSearch.promise,
     );
     renderNotesWorkspace();
     const search = await screen.findByRole("searchbox", {
-      name: "Search notes"
+      name: "Search notes",
     });
 
     fireEvent.change(search, { target: { value: "Old" } });
@@ -9755,30 +12084,32 @@ describe("Notes workspace", () => {
         nodeId: "project",
         title: "Old result",
         parentTrail: [],
-        matchedField: "title"
-      })
+        matchedField: "title",
+      }),
     ]);
     expect(
-      await screen.findByRole("option", { name: /Old result/ })
+      await screen.findByRole("option", { name: /Old result/ }),
     ).toBeInTheDocument();
 
     fireEvent.change(search, { target: { value: "New" } });
 
     expect(
-      screen.queryByRole("option", { name: /Old result/ })
+      screen.queryByRole("option", { name: /Old result/ }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByRole("listbox", { name: "Search results" })).toBeNull();
+    expect(
+      screen.queryByRole("listbox", { name: "Search results" }),
+    ).toBeNull();
 
     newSearch.resolve([
       searchResult({
         nodeId: "outside",
         title: "New result",
         parentTrail: [],
-        matchedField: "title"
-      })
+        matchedField: "title",
+      }),
     ]);
     expect(
-      await screen.findByRole("option", { name: /New result/ })
+      await screen.findByRole("option", { name: /New result/ }),
     ).toBeInTheDocument();
   });
 
@@ -9789,24 +12120,24 @@ describe("Notes workspace", () => {
         nodeId: "project",
         title: "Project",
         parentTrail: [],
-        matchedField: "title"
+        matchedField: "title",
       }),
       searchResult({
         nodeId: "plan",
         title: "Plan",
         parentTrail: ["Project"],
-        matchedField: "title"
+        matchedField: "title",
       }),
       searchResult({
         nodeId: "outside",
         title: "Outside branch",
         parentTrail: [],
-        matchedField: "title"
-      })
+        matchedField: "title",
+      }),
     ]);
     renderNotesWorkspace();
     const search = await screen.findByRole("searchbox", {
-      name: "Search notes"
+      name: "Search notes",
     });
 
     await user.type(search, "result");
@@ -9834,7 +12165,7 @@ describe("Notes workspace", () => {
 
     await user.keyboard("{Enter}");
     const pageTitle = await screen.findByRole<HTMLTextAreaElement>("textbox", {
-      name: "Edit page title"
+      name: "Edit page title",
     });
     expect(pageTitle).toHaveValue("Project");
     expect(pageTitle).toHaveFocus();
@@ -9847,11 +12178,11 @@ describe("Notes workspace", () => {
     await waitFor(() => {
       expect(
         screen.getByRole<HTMLTextAreaElement>("textbox", {
-          name: "Edit page title"
-        })
+          name: "Edit page title",
+        }),
       ).toHaveValue("Outside branch");
       expect(
-        screen.getByRole("textbox", { name: "Edit page title" })
+        screen.getByRole("textbox", { name: "Edit page title" }),
       ).toHaveFocus();
     });
   });
@@ -9864,33 +12195,31 @@ describe("Notes workspace", () => {
         id: "section",
         parentId: "page",
         title: "Section",
-        isCollapsed: true
+        isCollapsed: true,
       }),
-      node({ id: "target", parentId: "section", title: "Target" })
+      node({ id: "target", parentId: "section", title: "Target" }),
     ]);
     notesStoreMock.search.mockResolvedValue([
       searchResult({
         nodeId: "target",
         title: "Target",
         parentTrail: ["Page", "Section"],
-        matchedField: "title"
-      })
+        matchedField: "title",
+      }),
     ]);
     renderNotesWorkspace();
 
     await user.type(
       await screen.findByRole("searchbox", { name: "Search notes" }),
-      "Target"
+      "Target",
     );
-    await user.click(
-      await screen.findByRole("option", { name: /Target/ })
-    );
+    await user.click(await screen.findByRole("option", { name: /Target/ }));
 
     expect(screen.getByLabelText("Notes breadcrumb")).toHaveTextContent("Page");
     expect(await findTitleInput("Target")).toHaveFocus();
     expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
     expect(notesStoreMock.loadWorkspace).toHaveBeenLastCalledWith("/vault", {
-      kind: "active"
+      kind: "active",
     });
   });
 
@@ -9902,10 +12231,14 @@ describe("Notes workspace", () => {
     const menu = await openNodeMenu("Project", user);
     await user.click(within(menu).getByRole("menuitem", { name: "Star" }));
 
-    expect(notesStoreMock.toggleStar).toHaveBeenCalledWith("/vault", "project", historyContextMatcher());
+    expect(notesStoreMock.toggleStar).toHaveBeenCalledWith(
+      "/vault",
+      "project",
+      historyContextMatcher(),
+    );
     const updatedMenu = await openNodeMenu("Project", user);
     expect(
-      within(updatedMenu).getByRole("menuitem", { name: "Unstar" })
+      within(updatedMenu).getByRole("menuitem", { name: "Unstar" }),
     ).toBeVisible();
   });
 
@@ -9913,15 +12246,15 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     configureRepository([
       node({ id: "starred", title: "Starred page", isStarred: true }),
-      node({ id: "outside", title: "Outside page" })
+      node({ id: "outside", title: "Outside page" }),
     ]);
     notesStoreMock.loadWorkspace.mockImplementation(
       async (_vaultRoot: string, scope: { kind: string }) =>
         workspace(
           scope.kind === "starred"
             ? confirmedNodes.filter((current) => current.isStarred)
-            : confirmedNodes
-        )
+            : confirmedNodes,
+        ),
     );
     renderNotesWorkspace();
     await findTitleInput("Starred page");
@@ -9930,16 +12263,14 @@ describe("Notes workspace", () => {
     await waitFor(() => expect(queryTitleInput("Outside page")).toBeNull());
     const menu = await openNodeMenu("Starred page", user);
     const loadsBeforeMutation = notesStoreMock.loadWorkspace.mock.calls.length;
-    await user.click(
-      within(menu).getByRole("menuitem", { name: "Complete" })
-    );
+    await user.click(within(menu).getByRole("menuitem", { name: "Complete" }));
 
     await waitFor(() =>
       expect(
         notesStoreMock.loadWorkspace.mock.calls
           .slice(loadsBeforeMutation)
-          .some(([, scope]) => scope.kind === "starred")
-      ).toBe(true)
+          .some(([, scope]) => scope.kind === "starred"),
+      ).toBe(true),
     );
     expect(queryTitleInput("Outside page")).toBeNull();
   });
@@ -9949,7 +12280,7 @@ describe("Notes workspace", () => {
     let activeNodes = [
       node({ id: "project", sortKey: 1, title: "Project" }),
       node({ id: "child", parentId: "project", sortKey: 1, title: "Child" }),
-      node({ id: "outside", sortKey: 2, title: "Outside" })
+      node({ id: "outside", sortKey: 2, title: "Outside" }),
     ];
     let archivedNodes: NoteNode[] = [];
     let deletedNodes: NoteNode[] = [];
@@ -9963,40 +12294,47 @@ describe("Notes workspace", () => {
           return workspace(deletedNodes);
         }
         return workspace(activeNodes);
-      }
+      },
     );
     notesStoreMock.archiveNode.mockImplementation(
       acknowledgedDefaultMutation(async (_vault, rootId) => {
         const subtree = activeNodes.filter(
-          (current) => current.id === rootId || current.parentId === rootId
+          (current) => current.id === rootId || current.parentId === rootId,
         );
         activeNodes = activeNodes.filter(
-          (current) => !subtree.includes(current)
+          (current) => !subtree.includes(current),
         );
         archivedNodes = subtree.map((current) => ({
           ...current,
           archivedAt: "2026-07-11T01:00:00Z",
-          archiveRootId: rootId
+          archiveRootId: rootId,
         }));
         return workspace(activeNodes);
-      })
+      }),
     );
-    notesStoreMock.softDeleteNode.mockImplementation(
-      acknowledgedDefaultMutation(async (_vault, rootId) => {
-        const subtree = archivedNodes.filter(
-          (current) => current.archiveRootId === rootId
-        );
-        archivedNodes = archivedNodes.filter(
-          (current) => current.archiveRootId !== rootId
-        );
-        deletedNodes = subtree.map((current) => ({
-          ...current,
-          deletedAt: "2026-07-11T02:00:00Z",
-          archivedAt: null,
-          archiveRootId: null
-        }));
-        return workspace(activeNodes);
-      })
+    notesStoreMock.deleteNodes.mockImplementation(
+      acknowledgedDefaultMutation(
+        async (_vault, input: { nodeIds: readonly NoteId[] }) => {
+          const rootIds = new Set(input.nodeIds);
+          const subtree = archivedNodes.filter(
+            (current) =>
+              current.archiveRootId !== null &&
+              rootIds.has(current.archiveRootId),
+          );
+          archivedNodes = archivedNodes.filter(
+            (current) =>
+              current.archiveRootId === null ||
+              !rootIds.has(current.archiveRootId),
+          );
+          deletedNodes = subtree.map((current) => ({
+            ...current,
+            deletedAt: "2026-07-11T02:00:00Z",
+            archivedAt: null,
+            archiveRootId: null,
+          }));
+          return workspace(activeNodes);
+        },
+      ),
     );
     notesStoreMock.restoreNode.mockImplementation(
       acknowledgedDefaultMutation(async () => {
@@ -10004,27 +12342,31 @@ describe("Notes workspace", () => {
           ...activeNodes,
           ...deletedNodes.map((current) => ({
             ...current,
-            deletedAt: null
-          }))
+            deletedAt: null,
+          })),
         ];
         deletedNodes = [];
         return workspace(activeNodes);
-      })
+      }),
     );
     renderNotesWorkspace();
     await findTitleInput("Project");
     const library = screen.getByLabelText("Notes library");
 
+    await user.click(within(library).getByRole("button", { name: "Project" }));
     await user.click(
-      within(library).getByRole("button", { name: "Project" })
-    );
-    await user.click(
-      within(library).getByRole("button", { name: "Page actions for Project" })
+      within(library).getByRole("button", { name: "Page actions for Project" }),
     );
     const pageMenu = await screen.findByRole("menu");
-    await user.click(within(pageMenu).getByRole("menuitem", { name: "Archive" }));
+    await user.click(
+      within(pageMenu).getByRole("menuitem", { name: "Archive" }),
+    );
     await waitFor(() =>
-      expect(notesStoreMock.archiveNode).toHaveBeenCalledWith("/vault", "project", historyContextMatcher())
+      expect(notesStoreMock.archiveNode).toHaveBeenCalledWith(
+        "/vault",
+        "project",
+        historyContextMatcher(),
+      ),
     );
     const activeFallbackTitle = await findTextareaByName("Edit page title");
     expect(activeFallbackTitle).toHaveValue("Outside");
@@ -10032,82 +12374,70 @@ describe("Notes workspace", () => {
 
     await user.click(within(library).getByRole("button", { name: "Archive" }));
     await user.click(
-      await within(library).findByRole("button", { name: "Project" })
+      await within(library).findByRole("button", { name: "Project" }),
     );
-    expect(getTextareaByName("Edit page title")).toHaveAttribute(
-      "readonly"
-    );
+    expect(getTextareaByName("Edit page title")).toHaveAttribute("readonly");
     expect(screen.getByRole("button", { name: "Add child" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "New page" })).toBeNull();
     expect(
-      screen.queryByRole("button", { name: "More actions for Child" })
+      screen.queryByRole("button", { name: "More actions for Child" }),
     ).toBeNull();
 
     const rootActions = screen.getByRole("button", {
-      name: "More actions for Project"
+      name: "More actions for Project",
     });
     expect(rootActions).toBeEnabled();
     await user.click(rootActions);
     const archivedMenu = await screen.findByRole("menu");
     expect(
-      within(archivedMenu).getAllByRole("menuitem").map((item) => item.textContent)
+      within(archivedMenu)
+        .getAllByRole("menuitem")
+        .map((item) => item.textContent),
     ).toEqual(["Unarchive", "Move to Trash"]);
     await user.click(
-      within(archivedMenu).getByRole("menuitem", { name: "Move to Trash" })
-    );
-    const trashDialog = screen.getByRole("alertdialog", {
-      name: "Move page to Trash?"
-    });
-    expect(
-      within(trashDialog).getByText(
-        "Move Project and all of its descendants to Trash?"
-      )
-    ).toBeVisible();
-    expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
-    await user.click(
-      within(trashDialog).getByRole("button", { name: "Move to Trash" })
+      within(archivedMenu).getByRole("menuitem", { name: "Move to Trash" }),
     );
     await waitFor(() =>
-      expect(notesStoreMock.softDeleteNode).toHaveBeenCalledWith(
+      expect(notesStoreMock.deleteNodes).toHaveBeenCalledWith(
         "/vault",
-        "project",
-        historyContextMatcher()
-      )
+        { nodeIds: ["project"] },
+        historyContextMatcher(),
+      ),
     );
     expect(await within(library).findByText("Archive is empty.")).toBeVisible();
 
     await user.click(within(library).getByRole("button", { name: "Trash" }));
     await user.click(
-      await within(library).findByRole("button", { name: "Project" })
+      await within(library).findByRole("button", { name: "Project" }),
     );
     const trashTitle = getTextareaByName("Edit page title");
     expect(trashTitle).toHaveValue("Project");
     expect(trashTitle).toHaveAttribute("readonly");
     await user.click(
-      screen.getByRole("button", { name: "More actions for Project" })
+      screen.getByRole("button", { name: "More actions for Project" }),
     );
     const trashHeaderMenu = await screen.findByRole("menu");
     expect(
       within(trashHeaderMenu)
         .getAllByRole("menuitem")
-        .map((item) => item.textContent)
+        .map((item) => item.textContent),
     ).toEqual(["Restore"]);
     await user.click(
-      within(trashHeaderMenu).getByRole("menuitem", { name: "Restore" })
+      within(trashHeaderMenu).getByRole("menuitem", { name: "Restore" }),
     );
     await waitFor(() =>
       expect(notesStoreMock.restoreNode).toHaveBeenCalledWith(
         "/vault",
         "project",
-        historyContextMatcher()
-      )
+        historyContextMatcher(),
+      ),
     );
     const restoredTitle = await findTextareaByName("Edit page title");
     expect(restoredTitle).toHaveValue("Project");
     expect(restoredTitle).not.toHaveAttribute("readonly");
     await waitFor(() => expect(restoredTitle).toHaveFocus());
     expect(
-      within(library).getByRole("button", { name: "All" })
+      within(library).getByRole("button", { name: "All" }),
     ).toHaveAttribute("aria-pressed", "true");
   });
 
@@ -10120,20 +12450,20 @@ describe("Notes workspace", () => {
         sortKey: 1,
         title: "Archived first",
         archivedAt: "2026-07-11T01:00:00Z",
-        archiveRootId: "archived-first"
+        archiveRootId: "archived-first",
       }),
       node({
         id: "archived-second",
         sortKey: 2,
         title: "Archived second 07/12/2026",
         archivedAt: "2026-07-11T01:00:00Z",
-        archiveRootId: "archived-second"
-      })
+        archiveRootId: "archived-second",
+      }),
     ];
     configureRepository(activeNodes);
     notesStoreMock.loadWorkspace.mockImplementation(
       async (_vaultRoot: string, scope: { kind: string }) =>
-        workspace(scope.kind === "archive" ? archivedNodes : activeNodes)
+        workspace(scope.kind === "archive" ? archivedNodes : activeNodes),
     );
     notesStoreMock.unarchiveNode.mockImplementation(async (_vault, rootId) => {
       archivedNodes = archivedNodes.filter((current) => current.id !== rootId);
@@ -10144,35 +12474,33 @@ describe("Notes workspace", () => {
 
     await user.click(within(library).getByRole("button", { name: "Archive" }));
     await user.click(
-      await within(library).findByRole("button", { name: "Archived first" })
+      await within(library).findByRole("button", { name: "Archived first" }),
     );
     await user.click(
-      screen.getByRole("button", { name: "More actions for Archived first" })
+      screen.getByRole("button", { name: "More actions for Archived first" }),
     );
     const menu = await screen.findByRole("menu");
-    await user.click(
-      within(menu).getByRole("menuitem", { name: "Unarchive" })
-    );
+    await user.click(within(menu).getByRole("menuitem", { name: "Unarchive" }));
 
     const fallbackTitle = await screen.findByRole("group", {
-      name: "Page title"
+      name: "Page title",
     });
     expect(fallbackTitle).toHaveTextContent("Archived second 07/12/2026");
     expect(fallbackTitle).toHaveAttribute("aria-readonly", "true");
     expect(fallbackTitle).toHaveAttribute("tabindex", "-1");
     expect(fallbackTitle).not.toHaveFocus();
+    expect(fallbackTitle.querySelector(".notes-date-token")).toHaveTextContent(
+      "07/12/2026",
+    );
     expect(
-      fallbackTitle.querySelector(".notes-date-token")
-    ).toHaveTextContent("07/12/2026");
-    expect(
-      screen.queryByRole("button", { name: "Edit date 07/12/2026" })
+      screen.queryByRole("button", { name: "Edit date 07/12/2026" }),
     ).not.toBeInTheDocument();
 
     await user.click(fallbackTitle);
     fireEvent.keyDown(fallbackTitle, { key: "Enter" });
 
     expect(
-      screen.queryByRole("textbox", { name: "Edit page title" })
+      screen.queryByRole("textbox", { name: "Edit page title" }),
     ).not.toBeInTheDocument();
     const mountedTitle = queryTextareaByName("Edit page title");
     expect(mountedTitle).toHaveValue("Archived second 07/12/2026");
@@ -10189,19 +12517,19 @@ describe("Notes workspace", () => {
       node({
         id: "deleted",
         title: "Deleted note",
-        deletedAt: "2026-07-10T01:00:00Z"
-      })
+        deletedAt: "2026-07-10T01:00:00Z",
+      }),
     ];
     configureRepository(activeNodes);
     notesStoreMock.loadWorkspace.mockImplementation(
       async (_vaultRoot: string, scope: { kind: string }) =>
-        workspace(scope.kind === "trash" ? deletedNodes : activeNodes)
+        workspace(scope.kind === "trash" ? deletedNodes : activeNodes),
     );
     notesStoreMock.restoreNode.mockImplementation(
       acknowledgedDefaultMutation(async () => {
         deletedNodes = [];
         return workspace(activeNodes);
-      })
+      }),
     );
     renderNotesWorkspace();
     await findTitleInput("Project");
@@ -10209,46 +12537,56 @@ describe("Notes workspace", () => {
     await user.click(screen.getByRole("button", { name: "Trash" }));
     expect(
       await screen.findByRole("button", {
-        name: "More actions for Deleted note"
-      })
+        name: "More actions for Deleted note",
+      }),
     ).toBeInTheDocument();
     expect(queryTitleInput("Deleted note")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Move Deleted note" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Star Deleted note" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Duplicate Deleted note" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Delete Deleted note" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Move Deleted note" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Star Deleted note" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Duplicate Deleted note" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Delete Deleted note" }),
+    ).toBeNull();
     expect(screen.queryByRole("button", { name: "New page" })).toBeNull();
 
     const trashMenu = await openNodeMenu("Deleted note", user);
     expect(within(trashMenu).getAllByRole("menuitem")).toHaveLength(1);
     await user.click(
-      within(trashMenu).getByRole("menuitem", { name: "Restore" })
+      within(trashMenu).getByRole("menuitem", { name: "Restore" }),
     );
     expect(notesStoreMock.restoreNode).toHaveBeenCalledWith(
       "/vault",
       "deleted",
-      historyContextMatcher()
+      historyContextMatcher(),
     );
 
     deletedNodes = [
       node({
         id: "another-deleted",
         title: "Another deleted note",
-        deletedAt: "2026-07-10T01:00:00Z"
-      })
+        deletedAt: "2026-07-10T01:00:00Z",
+      }),
     ];
     await user.click(screen.getByRole("button", { name: "All" }));
     await user.click(screen.getByRole("button", { name: "Trash" }));
     await screen.findByRole("button", {
-      name: "More actions for Another deleted note"
+      name: "More actions for Another deleted note",
     });
     await user.click(screen.getByRole("button", { name: "Empty trash" }));
     expect(notesStoreMock.emptyTrash).not.toHaveBeenCalled();
     const confirm = screen.getByRole("alertdialog", { name: "Empty trash?" });
-    await user.click(within(confirm).getByRole("button", { name: "Empty trash" }));
+    await user.click(
+      within(confirm).getByRole("button", { name: "Empty trash" }),
+    );
     expect(notesStoreMock.emptyTrash).toHaveBeenCalledWith("/vault", {
       sessionId: expect.any(String),
-      historyEpoch: "history-epoch"
+      historyEpoch: "history-epoch",
     });
   });
 
@@ -10259,18 +12597,18 @@ describe("Notes workspace", () => {
       node({
         id: "deleted",
         title: "Deleted",
-        deletedAt: "2026-07-10T01:00:00Z"
-      })
+        deletedAt: "2026-07-10T01:00:00Z",
+      }),
     ];
     configureRepository(activeNodes);
     notesStoreMock.loadWorkspace.mockImplementation(
       async (_vaultRoot: string, scope: { kind: string }) =>
-        workspace(scope.kind === "trash" ? deletedNodes : activeNodes)
+        workspace(scope.kind === "trash" ? deletedNodes : activeNodes),
     );
     notesStoreMock.emptyTrash.mockResolvedValue({
       workspace: workspace([]),
       ...historyState({ historyEpoch: "rejected-epoch" }),
-      historyReset: false
+      historyReset: false,
     });
     renderNotesWorkspace();
     await findTitleInput("Active");
@@ -10279,12 +12617,14 @@ describe("Notes workspace", () => {
     await screen.findByRole("button", { name: "Empty trash" });
     await user.click(screen.getByRole("button", { name: "Empty trash" }));
     const confirm = screen.getByRole("alertdialog", { name: "Empty trash?" });
-    await user.click(within(confirm).getByRole("button", { name: "Empty trash" }));
+    await user.click(
+      within(confirm).getByRole("button", { name: "Empty trash" }),
+    );
 
     expect(
       await within(screen.getByLabelText("Status bar feedback")).findByRole(
-        "alert"
-      )
+        "alert",
+      ),
     ).toHaveTextContent("Empty Trash did not acknowledge the history reset.");
   });
 
@@ -10295,36 +12635,38 @@ describe("Notes workspace", () => {
       node({
         id: "deleted",
         title: "Deleted note",
-        deletedAt: "2026-07-10T01:00:00Z"
-      })
+        deletedAt: "2026-07-10T01:00:00Z",
+      }),
     ];
     configureRepository(activeNodes);
     notesStoreMock.loadWorkspace.mockImplementation(
       async (_vaultRoot: string, scope: { kind: string }) =>
-        workspace(scope.kind === "trash" ? deletedNodes : activeNodes)
+        workspace(scope.kind === "trash" ? deletedNodes : activeNodes),
     );
     notesStoreMock.listTagsWithCounts.mockResolvedValue([
       {
         prefix: "#",
         normalizedTag: "work",
         displayTag: "Work",
-        count: 1
-      }
+        count: 1,
+      },
     ]);
     renderNotesWorkspace();
     await findTitleInput("Project");
 
     await user.click(screen.getByRole("button", { name: "Trash" }));
     await screen.findByRole("button", {
-      name: "More actions for Deleted note"
+      name: "More actions for Deleted note",
     });
     await user.click(screen.getByRole("button", { name: "Tags" }));
 
     expect(
-      await screen.findByRole("button", { name: "#Work, 1 note" })
+      await screen.findByRole("button", { name: "#Work, 1 note" }),
     ).toBeInTheDocument();
     expect(queryTitleInput("Deleted note")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Move Deleted note" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Move Deleted note" }),
+    ).toBeNull();
   });
 
   it("flushes drafts before deleting only the Notes database", async () => {
@@ -10335,24 +12677,24 @@ describe("Notes workspace", () => {
     await user.type(title, "Unsaved project");
 
     await user.click(
-      screen.getByRole("button", { name: "Notes data settings" })
+      screen.getByRole("button", { name: "Notes data settings" }),
     );
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" })
+      screen.getByRole("button", { name: "Delete all Notes data" }),
     );
     const confirm = screen.getByRole("alertdialog", {
-      name: "Delete all Notes data?"
+      name: "Delete all Notes data?",
     });
     await user.click(
-      within(confirm).getByRole("button", { name: "Delete Notes data" })
+      within(confirm).getByRole("button", { name: "Delete Notes data" }),
     );
 
     await waitFor(() =>
-      expect(notesStoreMock.deleteDatabase).toHaveBeenCalledWith("/vault")
+      expect(notesStoreMock.deleteDatabase).toHaveBeenCalledWith("/vault"),
     );
     expect(notesStoreMock.updateNode).toHaveBeenCalled();
     expect(
-      notesStoreMock.updateNode.mock.invocationCallOrder.at(-1)
+      notesStoreMock.updateNode.mock.invocationCallOrder.at(-1),
     ).toBeLessThan(notesStoreMock.deleteDatabase.mock.invocationCallOrder[0]);
     expect(queryTextareaByName("Edit node title")).toBeNull();
     expect(screen.getByText("No outline yet.")).toBeInTheDocument();
@@ -10367,26 +12709,28 @@ describe("Notes workspace", () => {
     await findTitleInput("Project");
 
     await user.click(
-      screen.getByRole("button", { name: "Notes data settings" })
+      screen.getByRole("button", { name: "Notes data settings" }),
     );
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" })
+      screen.getByRole("button", { name: "Delete all Notes data" }),
     );
     await user.click(
       within(
-        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
-      ).getByRole("button", { name: "Delete Notes data" })
+        screen.getByRole("alertdialog", { name: "Delete all Notes data?" }),
+      ).getByRole("button", { name: "Delete Notes data" }),
     );
-    await waitFor(() => expect(notesStoreMock.deleteDatabase).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(notesStoreMock.deleteDatabase).toHaveBeenCalledOnce(),
+    );
 
     expect(
-      screen.getByRole("searchbox", { name: "Search notes", hidden: true })
+      screen.getByRole("searchbox", { name: "Search notes", hidden: true }),
     ).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: "New page", hidden: true })
+      screen.getByRole("button", { name: "New page", hidden: true }),
     ).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: "Starred", hidden: true })
+      screen.getByRole("button", { name: "Starred", hidden: true }),
     ).toBeDisabled();
     for (const titleInput of textareasByName("Edit node title")) {
       expect(titleInput).toBeDisabled();
@@ -10394,22 +12738,24 @@ describe("Notes workspace", () => {
     expect(
       screen.getByRole("button", {
         name: "More actions for Project",
-        hidden: true
-      })
+        hidden: true,
+      }),
     ).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: "Close Notes data settings" })
+      screen.getByRole("button", { name: "Close Notes data settings" }),
     ).toBeDisabled();
 
     await act(async () => deletion.resolve());
     await waitFor(() =>
-      expect(screen.queryByRole("dialog", { name: "Notes data" })).toBeNull()
+      expect(screen.queryByRole("dialog", { name: "Notes data" })).toBeNull(),
     );
   });
 
   it("renders loading, empty, and error states", async () => {
     configureRepository([]);
-    notesStoreMock.loadWorkspace.mockRejectedValueOnce(new Error("Load failed"));
+    notesStoreMock.loadWorkspace.mockRejectedValueOnce(
+      new Error("Load failed"),
+    );
     renderNotesWorkspace();
 
     expect(screen.getAllByText("Loading notes...")).toHaveLength(2);
@@ -10417,10 +12763,10 @@ describe("Notes workspace", () => {
     expect(await screen.findAllByText("Load failed")).toHaveLength(2);
     expect(screen.getAllByRole("alert")).toHaveLength(1);
     expect(
-      within(screen.getByLabelText("Notes outline")).getByRole("alert")
+      within(screen.getByLabelText("Notes outline")).getByRole("alert"),
     ).toHaveTextContent("Load failed");
     expect(
-      within(screen.getByLabelText("Notes library")).queryByRole("alert")
+      within(screen.getByLabelText("Notes library")).queryByRole("alert"),
     ).not.toBeInTheDocument();
   });
 
@@ -10438,12 +12784,12 @@ describe("Notes workspace", () => {
         observe() {}
         unobserve() {}
         disconnect() {}
-      }
+      },
     );
     vi.spyOn(
       HTMLTextAreaElement.prototype,
       "scrollHeight",
-      "get"
+      "get",
     ).mockImplementation(() => titleScrollHeight);
     configureRepository([node({ id: "project", title: longTitle })]);
     renderNotesWorkspace();
@@ -10464,22 +12810,24 @@ describe("Notes workspace", () => {
         [
           {
             target: title,
-            contentRect: { width: 320 }
-          } as unknown as ResizeObserverEntry
+            contentRect: { width: 320 },
+          } as unknown as ResizeObserverEntry,
         ],
-        {} as ResizeObserver
-      )
+        {} as ResizeObserver,
+      ),
     );
     expect(title).toHaveStyle({ height: "76px" });
-    expect(title.closest(".notes-text-field")?.parentElement).toBe(row);
+    expect(title.closest(".notes-node-content-line")?.parentElement).toBe(row);
     expect(menuSlot?.parentElement).toBe(row);
     expect(
       within(row!).getAllByRole("button", {
-        name: `More actions for ${longTitle}`
-      })
+        name: `More actions for ${longTitle}`,
+      }),
     ).toHaveLength(1);
     expect(within(row!).queryByRole("button", { name: /Complete/ })).toBeNull();
-    expect(within(row!).queryByRole("button", { name: /Duplicate/ })).toBeNull();
+    expect(
+      within(row!).queryByRole("button", { name: /Duplicate/ }),
+    ).toBeNull();
 
     title.focus();
     expect(row).toContainElement(document.activeElement as HTMLElement | null);
@@ -10489,202 +12837,200 @@ describe("Notes workspace", () => {
 
   it("aligns the Notes detail maximize control with the outline toolbar", () => {
     expect(appStyles).toMatch(
-      /\.app-shell\[data-active-feature="notes"\]\s+\.pane-toggle-group\[data-position="detail-end"\]\s*\{[^}]*top:\s*calc\(var\(--pane-top\) \+ var\(--content-titlebar-gap\) \+ 1px\);[^}]*height:\s*48px;/s
+      /\.app-shell\[data-active-feature="notes"\]\s+\.pane-toggle-group\[data-position="detail-end"\]\s*\{[^}]*top:\s*calc\(var\(--pane-top\) \+ var\(--content-titlebar-gap\) \+ 1px\);[^}]*height:\s*48px;/s,
     );
   });
 
   it("uses stable Workflowy row geometry without action overlap", () => {
     expect(notesStyles).toMatch(
-      /\.notes-text-field\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-text-edit-offset\)\);/s
+      /\.notes-text-field\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-text-edit-offset\)\);/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-title-field\s*>\s*textarea\s*{[^}]*transform:\s*none;/s
+      /\.notes-node-title-field\s*>\s*textarea\s*{[^}]*transform:\s*none;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-text-field\[data-stable-presentation="true"\]\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-stable-caret-offset,\s*0\)\);/s
+      /\.notes-text-field\[data-stable-presentation="true"\]\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-stable-caret-offset,\s*0\)\);/s,
     );
     expect(appStyles).toMatch(
-      /:root\s*{[^}]*--notes-text-edit-offset:\s*-1px;/s
+      /:root\s*{[^}]*--notes-text-edit-offset:\s*-1px;/s,
     );
     expect(appStyles).toMatch(
-      /:root\[data-theme="soft-paper"\]\s*{[^}]*--notes-text-edit-offset:\s*-1px;[^}]*font-family:/s
+      /:root\[data-theme="soft-paper"\]\s*{[^}]*--notes-text-edit-offset:\s*-1px;[^}]*font-family:/s,
     );
     const customFontThemes = appStyles.matchAll(
-      /:root\[data-theme="([^"]+)"\]\s*{([^}]*font-family:[^}]*)}/gs
+      /:root\[data-theme="([^"]+)"\]\s*{([^}]*font-family:[^}]*)}/gs,
     );
     for (const [, theme, declarations] of customFontThemes) {
       expect(declarations, `${theme} text editing offset`).toContain(
-        "--notes-text-edit-offset:"
+        "--notes-text-edit-offset:",
       );
       expect(declarations, `${theme} title editing offset`).not.toContain(
-        "--notes-node-title-edit-offset:"
+        "--notes-node-title-edit-offset:",
       );
     }
     expect(appStyles).not.toContain("--notes-node-title-edit-offset:");
     expect(notesStyles).toMatch(
-      /\.notes-outline\s*{[^}]*--notes-outline-indent:\s*36px;[^}]*--notes-menu-width:\s*24px;[^}]*--notes-bullet-center-offset:\s*61px;[^}]*--notes-content-offset:\s*74px;[^}]*--notes-page-child-offset:\s*24px;/s
+      /\.notes-outline\s*{[^}]*--notes-outline-indent:\s*36px;[^}]*--notes-menu-width:\s*24px;[^}]*--notes-bullet-center-offset:\s*61px;[^}]*--notes-content-offset:\s*74px;[^}]*--notes-page-child-offset:\s*24px;/s,
     );
     expect(notesStyles).not.toMatch(
-      /\.notes-node\s*{[^}]*--notes-bullet-center-offset:/s
+      /\.notes-node\s*{[^}]*--notes-bullet-center-offset:/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node\s*{[^}]*--notes-depth:\s*0;[^}]*--notes-indent:\s*calc\(var\(--notes-depth\) \* var\(--notes-outline-indent\)\);/s
+      /\.notes-node\s*{[^}]*--notes-depth:\s*0;[^}]*--notes-indent:\s*calc\(var\(--notes-depth\) \* var\(--notes-outline-indent\)\);/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-outline-content\s*{[^}]*width:\s*min\(100%, 700px\);[^}]*min-width:\s*0;[^}]*margin-inline:\s*auto;/s
+      /\.notes-outline-content\s*{[^}]*width:\s*min\(100%, 700px\);[^}]*min-width:\s*0;[^}]*margin-inline:\s*auto;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-outline-content\[data-zoomed-page="true"\]\s*>\s*\.notes-outline-list,\s*\.notes-outline-content\[data-zoomed-page="true"\]\s*>\s*\.notes-child-composer\s*{[^}]*margin-inline-start:\s*var\(--notes-page-child-offset\);/s
+      /\.notes-outline-content\[data-zoomed-page="true"\]\s*>\s*\.notes-outline-list,\s*\.notes-outline-content\[data-zoomed-page="true"\]\s*>\s*\.notes-child-composer\s*{[^}]*margin-inline-start:\s*var\(--notes-page-child-offset\);/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-outline-rows\s*{[^}]*overflow-x:\s*auto;/s
+      /\.notes-outline-rows\s*{[^}]*overflow-x:\s*auto;/s,
+    );
+    expect(notesStyles).toMatch(/\.notes-page-header\s*{[^}]*width:\s*100%;/s);
+    expect(notesStyles).toMatch(
+      /\.notes-page-title-row\s*{[^}]*grid-template-columns:\s*var\(--notes-content-offset\) minmax\(0, 1fr\);[^}]*align-items:\s*start;[^}]*gap:\s*0;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-page-header\s*{[^}]*width:\s*100%;/s
+      /\.notes-node-main\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 20px 18px minmax\(0, 1fr\);[^}]*align-items:\s*start;[^}]*gap:\s*4px;[^}]*min-height:\s*28px;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-page-title-row\s*{[^}]*grid-template-columns:\s*var\(--notes-content-offset\) minmax\(0, 1fr\);[^}]*align-items:\s*start;[^}]*gap:\s*0;/s
-    );
-    expect(notesStyles).toMatch(
-      /\.notes-node-main\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 20px 18px minmax\(0, 1fr\);[^}]*align-items:\s*start;[^}]*gap:\s*4px;[^}]*min-height:\s*28px;/s
-    );
-    expect(notesStyles).toMatch(
-      /\.notes-node\[data-marker-kind="todo"\]\s+\.notes-node-main\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 20px 18px 22px minmax\(0, 1fr\);/s
+      /\.notes-node\[data-marker-kind="todo"\]\s+\.notes-node-main\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 20px 18px 22px minmax\(0, 1fr\);/s,
     );
     expect(notesStyles).not.toMatch(
-      /\.notes-node\[data-marker-kind="todo"\]\s+\.notes-node-main\s*{[^}]*margin-inline-start:/s
+      /\.notes-node\[data-marker-kind="todo"\]\s+\.notes-node-main\s*{[^}]*margin-inline-start:/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-arrow-slot\s*{[^}]*width:\s*20px;[^}]*height:\s*28px;/s
+      /\.notes-node-arrow-slot\s*{[^}]*width:\s*20px;[^}]*height:\s*28px;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-bullet\s*{[^}]*width:\s*18px;[^}]*height:\s*28px;/s
+      /\.notes-node-bullet\s*{[^}]*width:\s*18px;[^}]*height:\s*28px;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-bullet-dot\s*{[^}]*width:\s*7px;[^}]*height:\s*7px;/s
+      /\.notes-node-bullet-dot\s*{[^}]*width:\s*7px;[^}]*height:\s*7px;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-todo-checkbox\s*{[^}]*grid-column:\s*4;[^}]*align-self:\s*start;[^}]*justify-self:\s*center;[^}]*width:\s*17px;[^}]*height:\s*17px;[^}]*margin:\s*5\.5px 0 0;/s
+      /\.notes-todo-checkbox\s*{[^}]*grid-column:\s*4;[^}]*align-self:\s*start;[^}]*justify-self:\s*center;[^}]*width:\s*17px;[^}]*height:\s*17px;[^}]*margin:\s*5\.5px 0 0;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node\[data-marker-kind="todo"\]\s+\.notes-node-note-field,[\s\S]*\.notes-node\[data-marker-kind="todo"\]\s+\.notes-node-todo-progress\s*{[^}]*width:\s*calc\([^}]*var\(--notes-content-offset\) - 26px[^}]*\);[^}]*margin-inline-start:\s*calc\([^}]*var\(--notes-content-offset\) \+ 26px[^}]*\);/s
+      /\.notes-node\[data-marker-kind="todo"\]\s+\.notes-node-note-field,[\s\S]*\.notes-node\[data-marker-kind="todo"\]\s+\.notes-node-todo-progress\s*{[^}]*width:\s*calc\([^}]*var\(--notes-content-offset\) - 26px[^}]*\);[^}]*margin-inline-start:\s*calc\([^}]*var\(--notes-content-offset\) \+ 26px[^}]*\);/s,
     );
     expect(notesStyles).not.toMatch(
-      /\.notes-node-bullet::before\s*{[^}]*transform:\s*translateY\(/s
+      /\.notes-node-bullet::before\s*{[^}]*transform:\s*translateY\(/s,
     );
     expect(notesStyles).not.toMatch(
-      /\.notes-node-bullet-dot\s*{[^}]*transform:\s*translateY\(/s
+      /\.notes-node-bullet-dot\s*{[^}]*transform:\s*translateY\(/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-title\s*{[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;[^}]*min-height:\s*28px;[^}]*padding:\s*1\.5px 0;[^}]*overflow:\s*hidden;[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*16px;[^}]*line-height:\s*25px;/s
+      /\.notes-node-title\s*{[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;[^}]*min-height:\s*28px;[^}]*padding:\s*1\.5px 0;[^}]*overflow:\s*hidden;[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*16px;[^}]*line-height:\s*25px;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-title-field\s*{[^}]*--notes-stable-caret-color:\s*var\(--text-1\);[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;[^}]*font-size:\s*16px;[^}]*line-height:\s*25px;/s
+      /\.notes-node-title-field\s*{[^}]*--notes-stable-caret-color:\s*var\(--text-1\);[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;[^}]*font-size:\s*16px;[^}]*line-height:\s*25px;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-menu-slot\s*{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;[^}]*width:\s*var\(--notes-menu-width\);[^}]*min-width:\s*var\(--notes-menu-width\);/s
+      /\.notes-node-menu-slot\s*{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;[^}]*width:\s*var\(--notes-menu-width\);[^}]*min-width:\s*var\(--notes-menu-width\);/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-main:has\(>\s*\.notes-node-arrow-slot:empty\)\s*>\s*\.notes-node-menu-slot\s*{[^}]*z-index:\s*1;[^}]*grid-column:\s*2;/s
+      /\.notes-node-main:has\(>\s*\.notes-node-arrow-slot:empty\)\s*>\s*\.notes-node-menu-slot\s*{[^}]*z-index:\s*1;[^}]*grid-column:\s*2;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-arrow-slot:empty\s*{[^}]*pointer-events:\s*none;/s
+      /\.notes-node-arrow-slot:empty\s*{[^}]*pointer-events:\s*none;/s,
     );
     expect(notesStyles).not.toContain(
-      '.notes-node[data-marker-kind="todo"] .notes-node-menu-slot'
+      '.notes-node[data-marker-kind="todo"] .notes-node-menu-slot',
     );
     expect(notesStyles).not.toContain(
-      '.notes-node[data-marker-kind="todo"] .notes-node-arrow-slot'
+      '.notes-node[data-marker-kind="todo"] .notes-node-arrow-slot',
     );
     expect(notesStyles).toMatch(
-      /\.notes-bullet-menu-trigger\s*{[^}]*width:\s*24px;[^}]*height:\s*28px;/s
+      /\.notes-bullet-menu-trigger\s*{[^}]*width:\s*24px;[^}]*height:\s*28px;/s,
     );
     expect(notesStyles).toMatch(
-      /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-node-main \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-title-row \.notes-bullet-menu-trigger\s*{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s
+      /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-node-main \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-title-row \.notes-bullet-menu-trigger\s*{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s,
     );
     expect(notesStyles).toMatch(
-      /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-node-main:hover\s*>\s*\.notes-node-menu-slot\s+\.notes-bullet-menu-trigger,[\s\S]*\.notes-node-main:focus-within\s*>\s*\.notes-node-menu-slot\s+\.notes-bullet-menu-trigger,[\s\S]*\.notes-page-title-row:hover\s*>\s*\.notes-page-menu-slot\s+\.notes-bullet-menu-trigger,[\s\S]*\.notes-page-title-row:focus-within\s*>\s*\.notes-page-menu-slot\s+\.notes-bullet-menu-trigger,[\s\S]*\.notes-bullet-menu-trigger:focus-visible,[\s\S]*\.notes-bullet-menu-trigger\[data-popup-open\]\s*{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s
+      /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-node-main:hover\s*>\s*\.notes-node-menu-slot\s+\.notes-bullet-menu-trigger,[\s\S]*\.notes-node-main:focus-within\s*>\s*\.notes-node-menu-slot\s+\.notes-bullet-menu-trigger,[\s\S]*\.notes-page-title-row:hover\s*>\s*\.notes-page-menu-slot\s+\.notes-bullet-menu-trigger,[\s\S]*\.notes-page-title-row:focus-within\s*>\s*\.notes-page-menu-slot\s+\.notes-bullet-menu-trigger,[\s\S]*\.notes-bullet-menu-trigger:focus-visible,[\s\S]*\.notes-bullet-menu-trigger\[data-popup-open\]\s*{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s,
     );
     expect(notesStyles).toMatch(
-      /@media \(hover:\s*none\), \(pointer:\s*coarse\)\s*{[\s\S]*\.notes-bullet-menu-trigger,[\s\S]*\.notes-child-composer-button\s*{[^}]*opacity:\s*0\.68;[^}]*pointer-events:\s*auto;[^}]*}[\s\S]*\.notes-bullet-menu-trigger:disabled,[\s\S]*\.notes-child-composer-button:disabled\s*{[^}]*opacity:\s*0\.34;/s
+      /@media \(hover:\s*none\), \(pointer:\s*coarse\)\s*{[\s\S]*\.notes-bullet-menu-trigger,[\s\S]*\.notes-child-composer-button\s*{[^}]*opacity:\s*0\.68;[^}]*pointer-events:\s*auto;[^}]*}[\s\S]*\.notes-bullet-menu-trigger:disabled,[\s\S]*\.notes-child-composer-button:disabled\s*{[^}]*opacity:\s*0\.34;/s,
     );
     expect(notesStyles).not.toContain("--notes-actions-width: 149px");
     expect(notesStyles).not.toContain(".notes-node-actions");
     expect(notesStyles).toMatch(
-      /\.notes-node-title:focus-visible\s*{[^}]*outline:\s*0;[^}]*box-shadow:\s*none;/s
+      /\.notes-node-title:focus-visible\s*{[^}]*outline:\s*0;[^}]*box-shadow:\s*none;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-note-field\s*{[^}]*width:\s*calc\(100% - var\(--notes-indent\) - var\(--notes-content-offset\)\);[^}]*margin:\s*0 0 8px calc\(var\(--notes-indent\) \+ var\(--notes-content-offset\)\);/s
+      /\.notes-node-note-field\s*{[^}]*width:\s*calc\(100% - var\(--notes-indent\) - var\(--notes-content-offset\)\);[^}]*margin:\s*0 0 8px calc\(var\(--notes-indent\) \+ var\(--notes-content-offset\)\);/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-page-title-field\s*{[^}]*font-size:\s*27px;[^}]*font-weight:\s*700;[^}]*line-height:\s*34px;/s
+      /\.notes-page-title-field\s*{[^}]*font-size:\s*27px;[^}]*font-weight:\s*700;[^}]*line-height:\s*34px;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-page-title\s*{[^}]*min-height:\s*34px;[^}]*overflow:\s*hidden;[^}]*resize:\s*none;[^}]*font-size:\s*27px;[^}]*font-weight:\s*700;[^}]*line-height:\s*34px;/s
+      /\.notes-page-title\s*{[^}]*min-height:\s*34px;[^}]*overflow:\s*hidden;[^}]*resize:\s*none;[^}]*font-size:\s*27px;[^}]*font-weight:\s*700;[^}]*line-height:\s*34px;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-page-note\s*{[^}]*width:\s*calc\(100% - var\(--notes-content-offset\)\);[^}]*margin:\s*4px 0 0 var\(--notes-content-offset\);[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s
+      /\.notes-page-note\s*{[^}]*width:\s*calc\(100% - var\(--notes-content-offset\)\);[^}]*margin:\s*4px 0 0 var\(--notes-content-offset\);[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-note\s*{[^}]*width:\s*100%;[^}]*margin:\s*0;[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s
+      /\.notes-node-note\s*{[^}]*width:\s*100%;[^}]*margin:\s*0;[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s,
     );
     expect(notesStyles).not.toContain(".notes-complete-checkbox");
     expect(notesStyles).toMatch(
-      /\.notes-node-bullet\[data-collapsed="true"\]::before[^}]*{[^}]*width:\s*26px;[^}]*height:\s*26px;[^}]*background:\s*var\(--bg-hover\);/s
+      /\.notes-node-bullet\[data-collapsed="true"\]::before[^}]*{[^}]*width:\s*26px;[^}]*height:\s*26px;[^}]*background:\s*var\(--bg-hover\);/s,
     );
     expect(notesStyles).not.toMatch(
-      /\.notes-node-main:(?:hover|focus-within)[^{]*{[^}]*background:/s
+      /\.notes-node-main:(?:hover|focus-within)[^{]*{[^}]*background:/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-guides\s*{[^}]*position:\s*absolute;[^}]*grid-template-columns:\s*repeat\([^}]*var\(--notes-outline-indent\)[^}]*\);/s
+      /\.notes-node-guides\s*{[^}]*position:\s*absolute;[^}]*grid-template-columns:\s*repeat\([^}]*var\(--notes-outline-indent\)[^}]*\);/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-guide\s*{[^}]*width:\s*1px;[^}]*margin-inline-start:\s*var\(--notes-bullet-center-offset\);/s
+      /\.notes-node-guide\s*{[^}]*width:\s*1px;[^}]*margin-inline-start:\s*var\(--notes-bullet-center-offset\);/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-outline-drop-preview\s*{[^}]*position:\s*absolute;[^}]*inset-inline-start:\s*calc\([^}]*var\(--notes-drop-depth\)[^}]*var\(--notes-outline-indent\)[^}]*var\(--notes-bullet-center-offset\)[^}]*\);[^}]*height:\s*2px;/s
+      /\.notes-outline-drop-preview\s*{[^}]*position:\s*absolute;[^}]*inset-inline-start:\s*calc\([^}]*var\(--notes-drop-depth\)[^}]*var\(--notes-outline-indent\)[^}]*var\(--notes-bullet-center-offset\)[^}]*\);[^}]*height:\s*2px;/s,
     );
     expect(notesStyles).toMatch(
-      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-outline\s*{[^}]*--notes-outline-indent:\s*28px;[^}]*--notes-menu-width:\s*28px;[^}]*--notes-bullet-center-offset:\s*70px;[^}]*--notes-content-offset:\s*84px;/s
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-outline\s*{[^}]*--notes-outline-indent:\s*28px;[^}]*--notes-menu-width:\s*28px;[^}]*--notes-bullet-center-offset:\s*70px;[^}]*--notes-content-offset:\s*84px;/s,
     );
     expect(notesStyles).toMatch(
-      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-outline-toolbar\s*{[^}]*padding-inline:\s*8px;[\s\S]*\.notes-outline-rows\s*{[^}]*padding-inline:\s*12px;/s
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-outline-toolbar\s*{[^}]*padding-inline:\s*8px;[\s\S]*\.notes-outline-rows\s*{[^}]*padding-inline:\s*12px;/s,
     );
     expect(notesStyles).toMatch(
-      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-breadcrumb\s*{[^}]*overflow:\s*hidden;[\s\S]*\.notes-breadcrumb-button\s*{[^}]*max-width:\s*112px;/s
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-breadcrumb\s*{[^}]*overflow:\s*hidden;[\s\S]*\.notes-breadcrumb-button\s*{[^}]*max-width:\s*112px;/s,
     );
     expect(notesStyles).toMatch(
-      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-node-main,[\s\S]*\.notes-child-composer\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 28px 28px minmax\(0, 1fr\);[^}]*gap:\s*0;[\s\S]*\.notes-node-arrow-slot,[\s\S]*\.notes-collapse-button,[\s\S]*\.notes-node-bullet,[\s\S]*\.notes-bullet-menu-trigger,[\s\S]*\.notes-child-composer-button\s*{[^}]*width:\s*28px;/s
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-node-main,[\s\S]*\.notes-child-composer\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 28px 28px minmax\(0, 1fr\);[^}]*gap:\s*0;[\s\S]*\.notes-node-arrow-slot,[\s\S]*\.notes-collapse-button,[\s\S]*\.notes-node-bullet,[\s\S]*\.notes-bullet-menu-trigger,[\s\S]*\.notes-child-composer-button\s*{[^}]*width:\s*28px;/s,
     );
     expect(notesStyles).toMatch(
-      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-node\[data-marker-kind="todo"\]\s+\.notes-node-main\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 28px 28px 24px minmax\(0, 1fr\);/s
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-node\[data-marker-kind="todo"\]\s+\.notes-node-main\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 28px 28px 24px minmax\(0, 1fr\);/s,
     );
     expect(notesStyles).toMatch(
-      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-node-main:has\(>\s*\.notes-node-arrow-slot:empty\)\s*>\s*\.notes-node-menu-slot\s*{[^}]*grid-column:\s*1;/s
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-node-main:has\(>\s*\.notes-node-arrow-slot:empty\)\s*>\s*\.notes-node-menu-slot\s*{[^}]*grid-column:\s*1;/s,
     );
     expect(notesStyles).toMatch(
-      /@media \(prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*\.notes-node\s*{[^}]*transition:\s*none !important;/s
+      /@media \(prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*\.notes-node\s*{[^}]*transition:\s*none !important;/s,
     );
   });
 
   it("shows only the highest-priority desktop note menu trigger", () => {
     expect(notesStyles).not.toContain(
-      '.notes-node[data-selected="true"] .notes-bullet-menu-trigger'
+      '.notes-node[data-selected="true"] .notes-bullet-menu-trigger',
     );
     expect(notesStyles).not.toContain(
-      '.notes-page-header[data-selected="true"] .notes-bullet-menu-trigger'
+      '.notes-page-header[data-selected="true"] .notes-bullet-menu-trigger',
     );
     expect(notesStyles).toMatch(
-      /\.notes-outline:has\(\.notes-bullet-menu-trigger\[data-popup-open\]\)\s+\.notes-bullet-menu-trigger:not\(\[data-popup-open\]\)\s*{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s
+      /\.notes-outline:has\(\.notes-bullet-menu-trigger\[data-popup-open\]\)\s+\.notes-bullet-menu-trigger:not\(\[data-popup-open\]\)\s*{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-outline:not\(\s*:has\(\.notes-bullet-menu-trigger\[data-popup-open\]\)\s*\):has\(\s*\.notes-node-main:hover,\s*\.notes-page-title-row:hover\s*\)\s+:is\(\.notes-node-main,\s*\.notes-page-title-row\):not\(:hover\)\s+\.notes-bullet-menu-trigger\s*{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s
+      /\.notes-outline:not\(\s*:has\(\.notes-bullet-menu-trigger\[data-popup-open\]\)\s*\):has\(\s*\.notes-node-main:hover,\s*\.notes-page-title-row:hover\s*\)\s+:is\(\.notes-node-main,\s*\.notes-page-title-row\):not\(:hover\)\s+\.notes-bullet-menu-trigger\s*{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s,
     );
   });
 
   it("renders image drop position as a non-layout-shifting thin slot", () => {
     const dropPositionRule = notesStyles.match(
-      /\.notes-image-drop-position\s*{([^}]*)}/s
+      /\.notes-image-drop-position\s*{([^}]*)}/s,
     )?.[1];
 
     expect(dropPositionRule).toBeDefined();
@@ -10692,13 +13038,9 @@ describe("Notes workspace", () => {
     expect(dropPositionRule).toMatch(/box-sizing:\s*border-box;/);
     expect(dropPositionRule).toMatch(/inset-block-end:\s*-3px;/);
     expect(dropPositionRule).toMatch(/height:\s*6px;/);
-    expect(dropPositionRule).toMatch(
-      /border:\s*1px solid var\(--accent\);/
-    );
+    expect(dropPositionRule).toMatch(/border:\s*1px solid var\(--accent\);/);
     expect(dropPositionRule).toMatch(/border-radius:\s*2px;/);
-    expect(dropPositionRule).toMatch(
-      /background:\s*var\(--accent-soft\);/
-    );
+    expect(dropPositionRule).toMatch(/background:\s*var\(--accent-soft\);/);
   });
 
   it("resolves collapsed halo tokens in light and dark themes", () => {
@@ -10708,33 +13050,25 @@ describe("Notes workspace", () => {
 
     document.documentElement.removeAttribute("data-theme");
     const lightStyle = getComputedStyle(document.documentElement);
-    const lightHalo = lightStyle
-      .getPropertyValue("--bg-hover")
-      .trim();
-    const lightHaloStrong = lightStyle
-      .getPropertyValue("--bg-active")
-      .trim();
+    const lightHalo = lightStyle.getPropertyValue("--bg-hover").trim();
+    const lightHaloStrong = lightStyle.getPropertyValue("--bg-active").trim();
     document.documentElement.dataset.theme = "dark";
     const darkStyle = getComputedStyle(document.documentElement);
-    const darkHalo = darkStyle
-      .getPropertyValue("--bg-hover")
-      .trim();
-    const darkHaloStrong = darkStyle
-      .getPropertyValue("--bg-active")
-      .trim();
+    const darkHalo = darkStyle.getPropertyValue("--bg-hover").trim();
+    const darkHaloStrong = darkStyle.getPropertyValue("--bg-active").trim();
 
-      const normalizeColor = (value: string) => value.replace(/\s*\/\s*/gu, "/");
-      expect(normalizeColor(lightHalo)).toBe("rgb(17 24 39/5%)");
-      expect(normalizeColor(lightHaloStrong)).toBe("rgb(17 24 39/8%)");
-      expect(normalizeColor(darkHalo)).toBe("rgb(255 255 255/6%)");
-      expect(normalizeColor(darkHaloStrong)).toBe("rgb(255 255 255/10%)");
+    const normalizeColor = (value: string) => value.replace(/\s*\/\s*/gu, "/");
+    expect(normalizeColor(lightHalo)).toBe("rgb(17 24 39/5%)");
+    expect(normalizeColor(lightHaloStrong)).toBe("rgb(17 24 39/8%)");
+    expect(normalizeColor(darkHalo)).toBe("rgb(255 255 255/6%)");
+    expect(normalizeColor(darkHaloStrong)).toBe("rgb(255 255 255/10%)");
     expect(darkHalo).not.toBe(lightHalo);
     expect(darkHaloStrong).not.toBe(lightHaloStrong);
     expect(notesStyles).toMatch(
-      /\.notes-node-bullet\[data-collapsed="true"\]::before[^}]*background:\s*var\(--bg-hover\);/s
+      /\.notes-node-bullet\[data-collapsed="true"\]::before[^}]*background:\s*var\(--bg-hover\);/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-bullet\[data-collapsed="true"\](?::hover|:focus-visible)::before[^}]*background:\s*var\(--bg-active\);/s
+      /\.notes-node-bullet\[data-collapsed="true"\](?::hover|:focus-visible)::before[^}]*background:\s*var\(--bg-active\);/s,
     );
 
     style.remove();
@@ -10743,16 +13077,16 @@ describe("Notes workspace", () => {
 
   it("keeps a disabled non-empty child composer subdued on hover and focus", () => {
     expect(notesStyles).toMatch(
-      /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-child-composer\[data-has-children="true"\]:hover[\s\S]*\.notes-child-composer-button:disabled,[\s\S]*\.notes-child-composer:focus-within \.notes-child-composer-button:disabled,[\s\S]*\.notes-child-composer-button:disabled:focus-visible\s*{[^}]*opacity:\s*0\.34;/s
+      /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-child-composer\[data-has-children="true"\]:hover[\s\S]*\.notes-child-composer-button:disabled,[\s\S]*\.notes-child-composer:focus-within \.notes-child-composer-button:disabled,[\s\S]*\.notes-child-composer-button:disabled:focus-visible\s*{[^}]*opacity:\s*0\.34;/s,
     );
   });
 
   it("keeps zoomed page title and description focus free of bottom lines", () => {
     const editorRule = notesStyles.match(
-      /\.notes-page-title:focus-visible,\s*\.notes-page-note:focus-visible\s*{([^}]*)}/s
+      /\.notes-page-title:focus-visible,\s*\.notes-page-note:focus-visible\s*{([^}]*)}/s,
     )?.[1];
     const presentationRule = notesStyles.match(
-      /\.notes-page-title-field > \.notes-token-text:focus-visible,\s*\.notes-page-note-field > \.notes-token-text:focus-visible\s*{([^}]*)}/s
+      /\.notes-page-title-field > \.notes-token-text:focus-visible,\s*\.notes-page-note-field > \.notes-token-text:focus-visible\s*{([^}]*)}/s,
     )?.[1];
 
     for (const rule of [editorRule, presentationRule]) {
@@ -10760,39 +13094,39 @@ describe("Notes workspace", () => {
       expect(rule).toMatch(/outline:\s*0;/);
       expect(rule).toMatch(/box-shadow:\s*none;/);
       expect(rule).not.toMatch(
-        /border-bottom|text-decoration|inset\s+0\s+-\d+px/
+        /border-bottom|text-decoration|inset\s+0\s+-\d+px/,
       );
     }
   });
 
   it("keeps supporting-note visuals stable and line-free across focus", () => {
     expect(notesStyles).toMatch(
-      /\.notes-text-field\[data-stable-presentation="true"\]\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-stable-caret-offset,\s*0\)\);/s
+      /\.notes-text-field\[data-stable-presentation="true"\]\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-stable-caret-offset,\s*0\)\);/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-page-note-field\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;[^}]*--notes-stable-caret-color:\s*var\(--text-3\);[^}]*--notes-stable-caret-offset:\s*3px;/s
+      /\.notes-page-note-field\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;[^}]*--notes-stable-caret-color:\s*var\(--text-3\);[^}]*--notes-stable-caret-offset:\s*3px;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-note-field\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;[^}]*--notes-stable-caret-color:\s*var\(--text-3\);[^}]*--notes-stable-caret-offset:\s*3px;/s
+      /\.notes-node-note-field\s*{[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;[^}]*--notes-stable-caret-color:\s*var\(--text-3\);[^}]*--notes-stable-caret-offset:\s*3px;/s,
     );
     const pageTitleRule = notesStyles.match(
-      /\.notes-page-title-field\s*{([^}]*)}/s
+      /\.notes-page-title-field\s*{([^}]*)}/s,
     )?.[1];
     expect(pageTitleRule).toBeDefined();
     expect(pageTitleRule).not.toMatch(/--notes-stable-caret-offset:\s*3px/);
 
     const editorRule = notesStyles.match(
-      /\.notes-node-note:focus-visible\s*{([^}]*)}/s
+      /\.notes-node-note:focus-visible\s*{([^}]*)}/s,
     )?.[1];
     const presentationRule = notesStyles.match(
-      /\.notes-node-note-field > \.notes-token-text:focus-visible\s*{([^}]*)}/s
+      /\.notes-node-note-field > \.notes-token-text:focus-visible\s*{([^}]*)}/s,
     )?.[1];
     for (const rule of [editorRule, presentationRule]) {
       expect(rule).toBeDefined();
       expect(rule).toMatch(/outline:\s*0;/);
       expect(rule).toMatch(/box-shadow:\s*none;/);
       expect(rule).not.toMatch(
-        /border-bottom|text-decoration|inset\s+0\s+-\d+px/
+        /border-bottom|text-decoration|inset\s+0\s+-\d+px/,
       );
     }
   });
@@ -10800,52 +13134,52 @@ describe("Notes workspace", () => {
   it("uses one accessible non-underline focus rule for the resting node title", () => {
     const titlePresentationFocusRules = Array.from(
       notesStyles.matchAll(
-        /\.notes-node-title-field > \.notes-token-text:focus-visible\s*{([^}]*)}/gs
-      )
+        /\.notes-node-title-field > \.notes-token-text:focus-visible\s*{([^}]*)}/gs,
+      ),
     ).map((match) => match[1] ?? "");
 
     expect(titlePresentationFocusRules).toHaveLength(1);
     const [titlePresentationFocusRule] = titlePresentationFocusRules;
     expect(titlePresentationFocusRule).toMatch(
-      /outline:\s*2px solid var\(--accent\);/
+      /outline:\s*2px solid var\(--accent\);/,
     );
     expect(titlePresentationFocusRule).toMatch(/outline-offset:\s*2px;/);
     expect(titlePresentationFocusRule).toMatch(/box-shadow:\s*none;/);
     expect(titlePresentationFocusRule).not.toMatch(
-      /border-bottom|text-decoration|inset\s+0\s+-\d+px/
+      /border-bottom|text-decoration|inset\s+0\s+-\d+px/,
     );
   });
 
   it("distinguishes row selection, atom selection, and nested-control focus without color alone", () => {
     expect(notesStyles).toMatch(
-      /\.notes-node\[data-range-selected="true"\]\s*>\s*\.notes-node-main\s*\{[^}]*background:/s
+      /\.notes-node\[data-range-selected="true"\]\s*>\s*\.notes-node-main\s*\{[^}]*background:/s,
     );
     expect(notesStyles).not.toMatch(
-      /\.notes-image-atom-editor\s+\[data-image-atom-region="atom"\]\[data-atom-selected="true"\]/
+      /\.notes-image-atom-editor\s+\[data-image-atom-region="atom"\]\[data-atom-selected="true"\]/,
     );
     expect(notesStyles).toMatch(
-      /\.notes-image-node-content:focus-visible\s*\{[^}]*outline:\s*0;/s
+      /\.notes-image-node-content:focus-visible\s*\{[^}]*outline:\s*0;/s,
     );
     expect(notesStyles).not.toMatch(
-      /\.notes-image-node-content:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);/s
+      /\.notes-image-node-content:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-image-menu-trigger:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);/s
+      /\.notes-image-menu-trigger:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);/s,
     );
   });
 
   it("suppresses the row focus ring on the focused image atom editor", () => {
     const genericNodeFocusRuleIndex = notesStyles.indexOf(
-      ".notes-node :focus-visible"
+      ".notes-node :focus-visible",
     );
     const imageAtomFocusRuleIndex = notesStyles.indexOf(
-      ".notes-image-atom-editor:focus-visible"
+      ".notes-image-atom-editor:focus-visible",
     );
 
     expect(genericNodeFocusRuleIndex).toBeGreaterThanOrEqual(0);
     expect(imageAtomFocusRuleIndex).toBeGreaterThan(genericNodeFocusRuleIndex);
     expect(notesStyles).toMatch(
-      /\.notes-image-atom-editor:focus-visible\s*\{[^}]*outline:\s*0;/s
+      /\.notes-image-atom-editor:focus-visible\s*\{[^}]*outline:\s*0;/s,
     );
   });
 
@@ -10854,7 +13188,7 @@ describe("Notes workspace", () => {
     expect(notesStyles).not.toMatch(/caret-color:\s*var\(--danger\)/);
     expect(notesStyles).toMatch(/inset-inline-start:\s*-2px/);
     expect(notesStyles).toMatch(
-      /inset-inline-start:\s*calc\(var\(--notes-image-atom-frame-inline-size\) \+ 2px\)/
+      /inset-inline-start:\s*calc\(var\(--notes-image-atom-frame-inline-size\) \+ 2px\)/,
     );
     expect(notesStyles).not.toMatch(/notes-image-attachment-frame::before/);
     expect(notesStyles).not.toMatch(/notes-image-attachment-frame::after/);
@@ -10862,9 +13196,7 @@ describe("Notes workspace", () => {
 
   it("keeps the editing title textarea free of a focus line", () => {
     const titleEditorFocusRules = Array.from(
-      notesStyles.matchAll(
-        /\.notes-node-title:focus-visible\s*{([^}]*)}/gs
-      )
+      notesStyles.matchAll(/\.notes-node-title:focus-visible\s*{([^}]*)}/gs),
     ).map((match) => match[1] ?? "");
 
     expect(titleEditorFocusRules).toHaveLength(1);
@@ -10872,25 +13204,25 @@ describe("Notes workspace", () => {
     expect(titleEditorFocusRule).toMatch(/outline:\s*0;/);
     expect(titleEditorFocusRule).toMatch(/box-shadow:\s*none;/);
     expect(titleEditorFocusRule).not.toMatch(
-      /border-bottom|text-decoration|inset\s+0\s+-\d+px/
+      /border-bottom|text-decoration|inset\s+0\s+-\d+px/,
     );
   });
 
   it("gives the library page menu trigger the standard visible focus ring", () => {
     expect(notesStyles).toMatch(
-      /\.notes-library-page-menu-trigger:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);[^}]*outline-offset:\s*-1px;/
+      /\.notes-library-page-menu-trigger:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);[^}]*outline-offset:\s*-1px;/,
     );
   });
 
   it("keeps library controls visually stable during transient workspace work", () => {
     expect(notesStyles).toMatch(
-      /\.notes-library-pane\[data-transient-workspace-busy="true"\][\s\S]*\.notes-new-page:disabled[^{]*\{[^}]*opacity:\s*1;/s
+      /\.notes-library-pane\[data-transient-workspace-busy="true"\][\s\S]*\.notes-new-page:disabled[^{]*\{[^}]*opacity:\s*1;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-library-pane\[data-transient-workspace-busy="true"\][\s\S]*\.notes-library-page:disabled[^{]*\{[^}]*opacity:\s*1;/s
+      /\.notes-library-pane\[data-transient-workspace-busy="true"\][\s\S]*\.notes-library-page:disabled[^{]*\{[^}]*opacity:\s*1;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-library-pane\[data-transient-workspace-busy="true"\][\s\S]*\.notes-library-page-menu-trigger:disabled[^{]*\{[^}]*opacity:\s*0\.68;/s
+      /\.notes-library-pane\[data-transient-workspace-busy="true"\][\s\S]*\.notes-library-page-menu-trigger:disabled[^{]*\{[^}]*opacity:\s*0\.68;/s,
     );
   });
 

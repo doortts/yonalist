@@ -32,6 +32,9 @@ pub(crate) enum NotesErrorCode {
     /// created by a previous export
     /// (see [`crate::notes::export::FOREIGN_EXPORT_ASSET_DIR_MESSAGE`]).
     ForeignExportAssetDir,
+    /// A readonly-descendant delete acknowledgement no longer matches the
+    /// repository's current tree.
+    ReadonlyConfirmationStale,
     /// Any failure without a more specific classification.
     Internal,
 }
@@ -72,6 +75,8 @@ fn classify_message(message: &str) -> NotesErrorCode {
         NotesErrorCode::VaultBusy
     } else if message.starts_with(UNSUPPORTED_SCHEMA_VERSION_PREFIX) {
         NotesErrorCode::UnsupportedSchemaVersion
+    } else if message == "Notes readonly delete confirmation is stale." {
+        NotesErrorCode::ReadonlyConfirmationStale
     } else {
         NotesErrorCode::Internal
     }

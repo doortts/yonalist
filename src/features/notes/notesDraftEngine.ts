@@ -1,25 +1,20 @@
-import {
-  isRetryableNotesErrorCode,
-  parseNotesError
-} from "../../domain/notes";
+import { isRetryableNotesErrorCode, parseNotesError } from "../../domain/notes";
 import type {
   NoteId,
   NoteNode,
   NotesHistoryContext,
   NotesStore,
-  NotesStoreError
+  NotesStoreError,
+  NotesWorkspace,
 } from "../../domain/notes";
 import type { NotesWriteQueue } from "../../services/notesWriteQueue";
 import type {
   NotesDraftEngineCoordinatorSession,
   NotesWorkspaceQueueContext,
-  NotesWorkspaceQueueResult
+  NotesWorkspaceQueueResult,
 } from "./notesWorkspaceCoordinator";
 import type { NotesProjectionPublicationOwner } from "./notesKeyboardInsertion";
-import type {
-  NotesHistoryFocus,
-  NotesHistoryFocusField
-} from "./notesHistory";
+import type { NotesHistoryFocus, NotesHistoryFocusField } from "./notesHistory";
 import type { NotesNodeDraft } from "./useNotesWorkspace";
 import type { NotesImageAtomFlushAdapter } from "./notesImageAtomEditorRegistry";
 
@@ -110,12 +105,12 @@ export interface NotesDraftEngineHost {
   beginTextEntry(
     record: NotesWorkspaceSessionRecord,
     nodeId: NoteId,
-    focus: NotesHistoryFocus
+    focus: NotesHistoryFocus,
   ): NotesHistoryContext | null;
   beginStandaloneTextEntry(
     record: NotesWorkspaceSessionRecord,
     nodeId: NoteId,
-    focus: NotesHistoryFocus
+    focus: NotesHistoryFocus,
   ): NotesHistoryContext | null;
   completeHistoryOwner(entryId: string): void;
   discardHistoryEntry(context: NotesHistoryContext | null | undefined): void;
@@ -127,12 +122,12 @@ export interface NotesDraftEngineHost {
    */
   persistDraftMutation(
     context: NotesWorkspaceQueueContext,
-    attempt: DraftWriteAttempt
+    attempt: DraftWriteAttempt,
   ): Promise<NotesWorkspaceQueueResult>;
   /** Mirrors the live-navigation edit made when a node's draft changes. */
   setDraftEditingNavigation(
     nodeId: NoteId,
-    field: NotesHistoryFocusField
+    field: NotesHistoryFocusField,
   ): void;
   /** The record the hook currently treats as active. */
   currentRecord(): NotesWorkspaceSessionRecord | null;
@@ -160,27 +155,25 @@ function writeError(cause: unknown): NotesStoreError {
   return Object.assign(new Error(message), {
     operation: "write" as const,
     code,
-    retryable: isRetryableNotesErrorCode(code)
+    retryable: isRetryableNotesErrorCode(code),
   });
 }
 
 function draftSnapshot(
-  drafts: Map<NoteId, NotesNodeDraft>
+  drafts: Map<NoteId, NotesNodeDraft>,
 ): Record<NoteId, NotesNodeDraft> {
   return Object.fromEntries(drafts) as Record<NoteId, NotesNodeDraft>;
 }
 
 function cloneDrafts(
-  drafts: Map<NoteId, NotesNodeDraft>
+  drafts: Map<NoteId, NotesNodeDraft>,
 ): Map<NoteId, NotesNodeDraft> {
-  return new Map(
-    [...drafts].map(([nodeId, draft]) => [nodeId, { ...draft }])
-  );
+  return new Map([...drafts].map(([nodeId, draft]) => [nodeId, { ...draft }]));
 }
 
 function cloneFailedWrites(
   failedWrites: Map<NoteId, FailedDraftWrite>,
-  drafts?: Map<NoteId, NotesNodeDraft>
+  drafts?: Map<NoteId, NotesNodeDraft>,
 ): Map<NoteId, FailedDraftWrite> {
   return new Map(
     [...failedWrites]
@@ -190,9 +183,9 @@ function cloneFailedWrites(
         {
           ...failed,
           patch: { ...failed.patch },
-          focus: { ...failed.focus }
-        }
-      ])
+          focus: { ...failed.focus },
+        },
+      ]),
   );
 }
 
@@ -202,7 +195,7 @@ function draftWriteAttempt(
   draft: NotesNodeDraft,
   focus: NotesHistoryFocus,
   historyContext: NotesHistoryContext | null,
-  standaloneHistoryEntry = false
+  standaloneHistoryEntry = false,
 ): DraftWriteAttempt {
   return {
     attemptId,
@@ -210,7 +203,7 @@ function draftWriteAttempt(
     draft: { ...draft },
     focus: { ...focus },
     historyContext,
-    standaloneHistoryEntry
+    standaloneHistoryEntry,
   };
 }
 
@@ -220,7 +213,7 @@ export function newDraftWriteAttempt(
   draft: NotesNodeDraft,
   focus: NotesHistoryFocus,
   historyContext: NotesHistoryContext | null,
-  standaloneHistoryEntry = false
+  standaloneHistoryEntry = false,
 ): DraftWriteAttempt {
   return draftWriteAttempt(
     `attempt-${record.nextDraftAttemptId++}`,
@@ -228,13 +221,13 @@ export function newDraftWriteAttempt(
     draft,
     focus,
     historyContext,
-    standaloneHistoryEntry
+    standaloneHistoryEntry,
   );
 }
 
 function failedDraftAttempt(
   nodeId: NoteId,
-  failed: FailedDraftWrite
+  failed: FailedDraftWrite,
 ): DraftWriteAttempt {
   return draftWriteAttempt(
     failed.attemptId,
@@ -242,11 +235,11 @@ function failedDraftAttempt(
     {
       ...failed.patch,
       revision: failed.revision,
-      status: "failed"
+      status: "failed",
     },
     failed.focus,
     null,
-    true
+    true,
   );
 }
 
@@ -257,7 +250,7 @@ function draftAttemptReservationKey(attempt: DraftWriteAttempt): string {
 function reserveDraftAttempt(
   record: NotesWorkspaceSessionRecord,
   attempt: DraftWriteAttempt,
-  enqueue: () => Promise<boolean>
+  enqueue: () => Promise<boolean>,
 ): Promise<boolean> {
   const key = draftAttemptReservationKey(attempt);
   const existing = record.draftAttemptReservations.get(key);
@@ -287,7 +280,7 @@ function reserveDraftAttempt(
   try {
     void enqueue().then(
       (value) => release(() => resolveCompletion(value)),
-      (cause) => release(() => rejectCompletion(cause))
+      (cause) => release(() => rejectCompletion(cause)),
     );
   } catch (cause) {
     release(() => rejectCompletion(cause));
@@ -298,7 +291,7 @@ function reserveDraftAttempt(
 function retryDraftAttempt(
   record: NotesWorkspaceSessionRecord,
   nodeId: NoteId,
-  cutoff = record.structuralIntents.at(0)?.cutoff
+  cutoff = record.structuralIntents.at(0)?.cutoff,
 ): DraftWriteAttempt | undefined {
   const failed = record.failedWritesByNodeId.get(nodeId);
   const current = record.retryWriteByNodeId.get(nodeId);
@@ -314,7 +307,7 @@ function retryDraftAttempt(
 }
 
 function latestWriteError(
-  failedWrites: Map<NoteId, FailedDraftWrite>
+  failedWrites: Map<NoteId, FailedDraftWrite>,
 ): NotesStoreError | null {
   return [...failedWrites.values()].at(-1)?.error ?? null;
 }
@@ -333,7 +326,7 @@ const recoveryRegistry = new WeakMap<
 
 function recoveryEntryFor(
   repository: NotesStore,
-  vaultRoot: string
+  vaultRoot: string,
 ): NotesWorkspaceRecoveryEntry | null {
   return recoveryRegistry.get(repository)?.get(vaultRoot) ?? null;
 }
@@ -341,7 +334,7 @@ function recoveryEntryFor(
 function setRecoveryEntry(
   repository: NotesStore,
   vaultRoot: string,
-  entry: NotesWorkspaceRecoveryEntry
+  entry: NotesWorkspaceRecoveryEntry,
 ): void {
   let entries = recoveryRegistry.get(repository);
   if (!entries) {
@@ -354,7 +347,7 @@ function setRecoveryEntry(
 function deleteRecoveryEntry(
   repository: NotesStore,
   vaultRoot: string,
-  entry: NotesWorkspaceRecoveryEntry
+  entry: NotesWorkspaceRecoveryEntry,
 ): void {
   const entries = recoveryRegistry.get(repository);
   if (entries?.get(vaultRoot) !== entry) {
@@ -369,7 +362,7 @@ function deleteRecoveryEntry(
 function subscribeToRecovery(
   repository: NotesStore,
   vaultRoot: string,
-  subscriber: (entry: NotesWorkspaceRecoveryEntry) => void
+  subscriber: (entry: NotesWorkspaceRecoveryEntry) => void,
 ): () => void {
   const entry = recoveryEntryFor(repository, vaultRoot);
   if (!entry) {
@@ -393,6 +386,7 @@ function subscribeToRecovery(
 export class NotesDraftEngine {
   readonly record: NotesWorkspaceSessionRecord;
   private readonly host: NotesDraftEngineHost;
+  private readonly retiredDraftRevisionByNodeId = new Map<NoteId, number>();
   private draftsSnapshotCache: Record<NoteId, NotesNodeDraft>;
   private writeErrorSnapshotCache: NotesStoreError | null;
   private readonly recoveryUnsubscribe: () => void;
@@ -423,14 +417,14 @@ export class NotesDraftEngine {
       authorityRecoveryPaused: false,
       manualRetryAttemptIds: new Set(),
       closing: false,
-      closeCompletion: null
+      closeCompletion: null,
     };
     this.draftsSnapshotCache = draftSnapshot(this.record.drafts);
     this.writeErrorSnapshotCache = this.record.writeError;
     this.recoveryUnsubscribe = subscribeToRecovery(
       repository,
       vaultRoot,
-      (entry) => this.handleRecoveryFailed(entry)
+      (entry) => this.handleRecoveryFailed(entry),
     );
   }
 
@@ -451,10 +445,7 @@ export class NotesDraftEngine {
    * notification only when the ledger's surfaced error actually changes.
    */
   private publish(): void {
-    if (
-      this.record.closing ||
-      this.host.currentRecord() !== this.record
-    ) {
+    if (this.record.closing || this.host.currentRecord() !== this.record) {
       return;
     }
     this.draftsSnapshotCache = draftSnapshot(this.record.drafts);
@@ -470,7 +461,9 @@ export class NotesDraftEngine {
     this.record.imageAtomFlushAdapters.clear();
   }
 
-  registerImageAtomFlushAdapter(adapter: NotesImageAtomFlushAdapter): () => void {
+  registerImageAtomFlushAdapter(
+    adapter: NotesImageAtomFlushAdapter,
+  ): () => void {
     const adapters = this.record.imageAtomFlushAdapters;
     const registration = Symbol("image-atom-flush-adapter");
     adapters.set(registration, adapter);
@@ -481,7 +474,7 @@ export class NotesDraftEngine {
 
   private flushImageAtomEditors(nodeId?: NoteId): true | Promise<boolean> {
     const adapters = [...this.record.imageAtomFlushAdapters.values()].filter(
-      (adapter) => nodeId === undefined || adapter.nodeId === nodeId
+      (adapter) => nodeId === undefined || adapter.nodeId === nodeId,
     );
     if (adapters.length === 0) return true;
     return (async () => {
@@ -519,11 +512,11 @@ export class NotesDraftEngine {
       record.drafts = cloneDrafts(entry.drafts);
       record.failedWritesByNodeId = cloneFailedWrites(
         entry.failedWritesByNodeId,
-        entry.drafts
+        entry.drafts,
       );
       record.nextDraftRevision = Math.max(
         record.nextDraftRevision,
-        ...[...record.drafts.values()].map((draft) => draft.revision + 1)
+        ...[...record.drafts.values()].map((draft) => draft.revision + 1),
       );
       record.writeError = latestWriteError(record.failedWritesByNodeId);
       record.recoveryEntry = entry;
@@ -537,8 +530,8 @@ export class NotesDraftEngine {
             draft,
             failed?.focus ?? { nodeId, field: "title" },
             null,
-            true
-          )
+            true,
+          ),
         );
       }
       this.publish();
@@ -552,7 +545,7 @@ export class NotesDraftEngine {
       status: "pending",
       drafts: cloneDrafts(record.drafts),
       failedWritesByNodeId: cloneFailedWrites(record.failedWritesByNodeId),
-      subscribers: existing?.subscribers ?? new Set()
+      subscribers: existing?.subscribers ?? new Set(),
     };
     setRecoveryEntry(record.repository, record.vaultRoot, entry);
     record.recoveryEntry = entry;
@@ -572,7 +565,7 @@ export class NotesDraftEngine {
     entry.drafts = cloneDrafts(record.drafts);
     entry.failedWritesByNodeId = cloneFailedWrites(
       record.failedWritesByNodeId,
-      record.drafts
+      record.drafts,
     );
     for (const subscriber of entry.subscribers) {
       subscriber(entry);
@@ -599,7 +592,7 @@ export class NotesDraftEngine {
       if (failed) {
         entry.failedWritesByNodeId.set(nodeId, {
           ...failed,
-          patch: { ...failed.patch }
+          patch: { ...failed.patch },
         });
       }
       return;
@@ -643,7 +636,7 @@ export class NotesDraftEngine {
   markDispatchedAttemptManualRetry(attemptId: string): void {
     const record = this.record;
     const attempt = [...record.retryWriteByNodeId.values()].find(
-      (candidate) => candidate.attemptId === attemptId
+      (candidate) => candidate.attemptId === attemptId,
     );
     if (!attempt) return;
     const current = record.drafts.get(attempt.nodeId);
@@ -662,20 +655,86 @@ export class NotesDraftEngine {
           : { markerKind: attempt.draft.markerKind }),
         ...(attempt.draft.markdownImageWidth === undefined
           ? {}
-          : { markdownImageWidth: attempt.draft.markdownImageWidth })
+          : { markdownImageWidth: attempt.draft.markdownImageWidth }),
       },
       revision: attempt.draft.revision,
       focus: { ...attempt.focus },
-      error
+      error,
     });
     record.writeError = error;
+    this.publish();
+  }
+
+  /**
+   * Retires local text buffers when a synchronized workspace makes their
+   * owning row content-protected. Queued debounce callbacks remain harmless:
+   * the retired revision fence below prevents them from reaching storage.
+   */
+  reconcileReadonlyAuthority(workspace: NotesWorkspace): void {
+    const record = this.record;
+    const protectedIds = new Set(
+      workspace.nodes
+        .filter(
+          (node) =>
+            node.isReadonly === true ||
+            node.pluginState !== undefined ||
+            node.pluginMeta !== undefined,
+        )
+        .map((node) => node.id),
+    );
+    let changed = false;
+    for (const nodeId of protectedIds) {
+      const draft = record.drafts.get(nodeId);
+      const failed = record.failedWritesByNodeId.get(nodeId);
+      const retry = record.retryWriteByNodeId.get(nodeId);
+      const historyContext = record.draftHistoryContextByNodeId.get(nodeId);
+      const retiredRevision = Math.max(
+        draft?.revision ?? 0,
+        failed?.revision ?? 0,
+        retry?.draft.revision ?? 0,
+      );
+      if (
+        retiredRevision === 0 &&
+        !historyContext &&
+        !record.pendingDebounceByNodeId.has(nodeId)
+      ) {
+        continue;
+      }
+      if (retiredRevision > 0) {
+        this.retiredDraftRevisionByNodeId.set(
+          nodeId,
+          Math.max(
+            retiredRevision,
+            this.retiredDraftRevisionByNodeId.get(nodeId) ?? 0,
+          ),
+        );
+      }
+      record.drafts.delete(nodeId);
+      record.pendingDebounceByNodeId.delete(nodeId);
+      record.retryWriteByNodeId.delete(nodeId);
+      record.failedWritesByNodeId.delete(nodeId);
+      record.draftHistoryContextByNodeId.delete(nodeId);
+      record.draftHistoryFocusByNodeId.delete(nodeId);
+      record.deferredFieldAttempts = record.deferredFieldAttempts.filter(
+        (attempt) => attempt.nodeId !== nodeId,
+      );
+      for (const intent of record.structuralIntents) {
+        if (historyContext) intent.historyContexts.delete(historyContext);
+      }
+      record.session.history.closeTextBurst(historyContext?.entryId);
+      if (historyContext) this.host.discardHistoryEntry(historyContext);
+      this.syncRecoveredDraft(nodeId);
+      changed = true;
+    }
+    if (!changed) return;
+    record.writeError = latestWriteError(record.failedWritesByNodeId);
     this.publish();
   }
 
   // --- Structural coordination hooks ---------------------------------------
 
   captureDraftCutoff(
-    publicationOwner: NotesProjectionPublicationOwner = { kind: "other" }
+    publicationOwner: NotesProjectionPublicationOwner = { kind: "other" },
   ): number {
     const record = this.record;
     const cutoff = record.nextDraftRevision - 1;
@@ -683,7 +742,7 @@ export class NotesDraftEngine {
       cutoff,
       initialCutoff: cutoff,
       historyContexts: new Set(record.draftHistoryContextByNodeId.values()),
-      publicationOwner
+      publicationOwner,
     });
     record.draftHistoryContextByNodeId.clear();
     record.session.history.closeTextBurst();
@@ -716,7 +775,8 @@ export class NotesDraftEngine {
       ? Math.max(cutoff, record.nextDraftRevision - 1)
       : cutoff;
     const intent = record.structuralIntents.find(
-      (candidate) => candidate.cutoff === cutoff || candidate.initialCutoff === cutoff
+      (candidate) =>
+        candidate.cutoff === cutoff || candidate.initialCutoff === cutoff,
     );
     if (intent) intent.cutoff = effectiveCutoff;
     const flushed = await this.flushDraftsThroughCutoff(effectiveCutoff);
@@ -739,7 +799,7 @@ export class NotesDraftEngine {
   releaseDraftBarrier(cutoff: number): void {
     const record = this.record;
     const index = record.structuralIntents.findIndex(
-      (intent) => intent.cutoff === cutoff || intent.initialCutoff === cutoff
+      (intent) => intent.cutoff === cutoff || intent.initialCutoff === cutoff,
     );
     if (index >= 0) {
       const [intent] = record.structuralIntents.splice(index, 1);
@@ -818,7 +878,7 @@ export class NotesDraftEngine {
           (cutoff === undefined || attempt.draft.revision <= cutoff)
         ) {
           void reserveDraftAttempt(record, attempt, () =>
-            record.writeQueue.enqueue(() => this.persistDraft(attempt))
+            record.writeQueue.enqueue(() => this.persistDraft(attempt)),
           ).catch(() => undefined);
         }
       }
@@ -839,7 +899,7 @@ export class NotesDraftEngine {
     // edit. Let its adapter settle before closing the draft record.
     record.closeCompletion = imageAtomFlush.then(
       closeAfterImageFlush,
-      closeAfterImageFlush
+      closeAfterImageFlush,
     );
     return record.closeCompletion;
   }
@@ -849,11 +909,22 @@ export class NotesDraftEngine {
   private settleDraftWrite(
     attempt: DraftWriteAttempt,
     result: NotesWorkspaceQueueResult,
-    writeSucceeded: boolean
+    writeSucceeded: boolean,
   ): boolean {
     const record = this.record;
     const { nodeId, draft, historyContext } = attempt;
     const latest = record.drafts.get(nodeId);
+    if (
+      (this.retiredDraftRevisionByNodeId.get(nodeId) ?? 0) >= draft.revision
+    ) {
+      if (attempt.standaloneHistoryEntry && historyContext) {
+        this.host.discardHistoryEntry(historyContext);
+      }
+      record.failedWritesByNodeId.delete(nodeId);
+      record.writeError = latestWriteError(record.failedWritesByNodeId);
+      this.publish();
+      return true;
+    }
     if (result.kind === "failure" && !writeSucceeded) {
       this.host.discardHistoryEntry(historyContext);
       if (
@@ -874,11 +945,11 @@ export class NotesDraftEngine {
           imageOffsetUtf16: draft.imageOffsetUtf16,
           ...(draft.markdownImageWidth === undefined
             ? {}
-            : { markdownImageWidth: draft.markdownImageWidth })
+            : { markdownImageWidth: draft.markdownImageWidth }),
         },
         revision: draft.revision,
         focus: { ...attempt.focus },
-        error: failure
+        error: failure,
       });
       record.writeError = failure;
       this.syncRecoveredDraft(nodeId);
@@ -913,8 +984,7 @@ export class NotesDraftEngine {
         this.host.discardHistoryEntry(historyContext);
       }
     }
-    const activeHistoryContext =
-      record.draftHistoryContextByNodeId.get(nodeId);
+    const activeHistoryContext = record.draftHistoryContextByNodeId.get(nodeId);
     if (
       writeSucceeded &&
       historyContext &&
@@ -940,12 +1010,14 @@ export class NotesDraftEngine {
   }
 
   private async persistDraft(
-    scheduledAttempt: DraftWriteAttempt
+    scheduledAttempt: DraftWriteAttempt,
   ): Promise<boolean> {
     const record = this.record;
     if (
       record.authorityRecoveryPaused ||
-      record.manualRetryAttemptIds.has(scheduledAttempt.attemptId)
+      record.manualRetryAttemptIds.has(scheduledAttempt.attemptId) ||
+      (this.retiredDraftRevisionByNodeId.get(scheduledAttempt.nodeId) ?? 0) >=
+        scheduledAttempt.draft.revision
     ) {
       return false;
     }
@@ -961,8 +1033,8 @@ export class NotesDraftEngine {
             historyContext: this.host.beginStandaloneTextEntry(
               record,
               scheduledAttempt.nodeId,
-              scheduledAttempt.focus
-            )
+              scheduledAttempt.focus,
+            ),
           }
         : scheduledAttempt;
     const { nodeId, draft } = attempt;
@@ -985,7 +1057,7 @@ export class NotesDraftEngine {
       {
         silent: true,
         publicationOwner: record.structuralIntents.find(
-          (intent) => draft.revision <= intent.cutoff
+          (intent) => draft.revision <= intent.cutoff,
         )?.publicationOwner,
         ...(attempt.historyContext
           ? {
@@ -1001,13 +1073,13 @@ export class NotesDraftEngine {
                     : { markerKind: draft.markerKind }),
                   ...(draft.markdownImageWidth === undefined
                     ? {}
-                    : { markdownImageWidth: draft.markdownImageWidth })
+                    : { markdownImageWidth: draft.markdownImageWidth }),
                 },
-                historyContext: attempt.historyContext
-              }
+                historyContext: attempt.historyContext,
+              },
             }
-          : {})
-      }
+          : {}),
+      },
     );
     if (record.inFlightDraftByNodeId.get(nodeId) === draft.revision) {
       record.inFlightDraftByNodeId.delete(nodeId);
@@ -1024,14 +1096,14 @@ export class NotesDraftEngine {
       attempt,
       result,
       result.kind === "authoritative" ||
-        (result.kind === "failure" && result.scopeAgnostic === true)
+        (result.kind === "failure" && result.scopeAgnostic === true),
     );
   }
 
   private enqueueDraftAttempt(attempt: DraftWriteAttempt): Promise<boolean> {
     const record = this.record;
     return reserveDraftAttempt(record, attempt, () =>
-      record.writeQueue.enqueue(() => this.persistDraft(attempt))
+      record.writeQueue.enqueue(() => this.persistDraft(attempt)),
     );
   }
 
@@ -1064,8 +1136,8 @@ export class NotesDraftEngine {
     record.pendingDebounceByNodeId.set(nodeId, draft.revision);
     void reserveDraftAttempt(record, attempt, () =>
       record.writeQueue.enqueueDebounced(nodeId, () =>
-        this.writeScheduledDraft(attempt)
-      )
+        this.writeScheduledDraft(attempt),
+      ),
     ).catch(() => undefined);
   }
 
@@ -1073,7 +1145,7 @@ export class NotesDraftEngine {
     nodeId: NoteId,
     patch: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16"> &
       Partial<Pick<NoteNode, "markerKind" | "markdownImageWidth">>,
-    field: NotesHistoryFocusField = "title"
+    field: NotesHistoryFocusField = "title",
   ): void {
     const record = this.record;
     if (
@@ -1083,6 +1155,7 @@ export class NotesDraftEngine {
     ) {
       return;
     }
+    this.retiredDraftRevisionByNodeId.delete(nodeId);
     const previous = record.drafts.get(nodeId);
     const focus = { nodeId, field } satisfies NotesHistoryFocus;
     const previousFocus = record.draftHistoryFocusByNodeId.get(nodeId);
@@ -1110,14 +1183,14 @@ export class NotesDraftEngine {
           if (cutoff !== undefined && previousAttempt.draft.revision > cutoff) {
             if (
               !record.deferredFieldAttempts.some(
-                (attempt) => attempt.attemptId === previousAttempt.attemptId
+                (attempt) => attempt.attemptId === previousAttempt.attemptId,
               )
             ) {
               record.deferredFieldAttempts.push(previousAttempt);
             }
           } else {
             void this.enqueueDraftAttempt(previousAttempt).catch(
-              () => undefined
+              () => undefined,
             );
           }
         }
@@ -1140,7 +1213,7 @@ export class NotesDraftEngine {
         ? { markerKind: previous.markerKind }
         : {}),
       revision: record.nextDraftRevision++,
-      status: previous?.status === "failed" ? "failed" : "pending"
+      status: previous?.status === "failed" ? "failed" : "pending",
     };
     record.drafts.set(nodeId, draft);
     const scheduledHistoryContext =
@@ -1150,7 +1223,7 @@ export class NotesDraftEngine {
       nodeId,
       draft,
       focus,
-      scheduledHistoryContext ?? null
+      scheduledHistoryContext ?? null,
     );
     record.retryWriteByNodeId.set(nodeId, attempt);
     this.syncRecoveredDraft(nodeId);
@@ -1345,7 +1418,7 @@ export class NotesDraftEngine {
       });
       if (remaining.length === 0) {
         const intent = record.structuralIntents.find(
-          (candidate) => candidate.cutoff === cutoff
+          (candidate) => candidate.cutoff === cutoff,
         );
         for (const context of intent?.historyContexts ?? []) {
           this.host.completeHistoryOwner(context.entryId);
@@ -1356,7 +1429,7 @@ export class NotesDraftEngine {
       const retryable = remaining.some(
         ([nodeId]) =>
           record.pendingDebounceByNodeId.has(nodeId) ||
-          record.inFlightDraftByNodeId.has(nodeId)
+          record.inFlightDraftByNodeId.has(nodeId),
       );
       if (!retryable) {
         return false;
@@ -1377,6 +1450,7 @@ export class NotesDraftEngine {
     record.draftHistoryFocusByNodeId.clear();
     record.failedWritesByNodeId.clear();
     record.manualRetryAttemptIds.clear();
+    this.retiredDraftRevisionByNodeId.clear();
     record.writeError = null;
   }
 

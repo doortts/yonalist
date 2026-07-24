@@ -1222,12 +1222,18 @@ mod tests {
             max_hlc: hlc.to_string(),
             root: TopicRoot {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                format_version: crate::notes::sync::topic_file::TOPIC_FORMAT_VERSION,
                 title: title.to_string(),
                 note: String::new(),
                 markdown_image_width: None,
                 starred: false,
                 completed_at: None,
                 archived_at: None,
+                root_collapsed: false,
+                root_readonly: Some(false),
+                plugin: None,
+                plugin_children: None,
+                collapsed_groups: Vec::new(),
                 hlc: hlc.to_string(),
             },
             nodes: Vec::new(),
@@ -1357,6 +1363,48 @@ mod tests {
     }
 
     #[test]
+    fn watcher_merges_an_exact_v3_document_and_records_its_topic() {
+        let vault = tempfile::tempdir().unwrap();
+        let vault_path = vault.path().to_str().unwrap().to_string();
+        reconcile_startup(&vault_path).unwrap();
+        let source = vault.path().join("incoming-v3.md");
+        let bytes = format!(
+            "---\nkind: yonalist-notes\nformat_version: 3\nid: {TOPIC_ID}\nsort_key: 1024\nmax_hlc: {HLC_2}\nroot_hlc: {HLC_2}\nroot_collapsed: false\nroot_readonly: false\n---\n# Watched v3\n"
+        );
+        fs::write(&source, bytes).unwrap();
+
+        let outcome = process_watch_paths(&vault_path, [&source]).unwrap();
+
+        assert_eq!(outcome.changed_topic_ids, vec![TOPIC_ID.to_string()]);
+        assert!(outcome.errors.is_empty(), "{outcome:?}");
+        let shared = acquire_notes_connection(&vault_path).unwrap();
+        let connection = lock_notes_connection(&shared).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT title FROM notes_nodes WHERE id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "Watched v3"
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT quarantined FROM sync_topics WHERE topic_id = ?1",
+                    [TOPIC_ID],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap(),
+            false
+        );
+        drop(connection);
+        drop(shared);
+        evict_notes_connection(&vault_path);
+    }
+
+    #[test]
     fn exported_topic_and_trash_hashes_are_reported_as_echo_skips() {
         let vault = tempfile::tempdir().unwrap();
         let vault_path = vault.path().to_str().unwrap().to_string();
@@ -1370,6 +1418,7 @@ mod tests {
         fs::write(
             &trash_source,
             render_trash_doc(&TrashDoc {
+                format_version: crate::notes::sync::topic_file::TOPIC_FORMAT_VERSION,
                 max_hlc: HLC_1.to_string(),
                 purged: Vec::new(),
                 nodes: Vec::new(),
@@ -1909,12 +1958,18 @@ mod tests {
                 max_hlc: HLC_1.to_string(),
                 root: TopicRoot {
                     marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                    format_version: crate::notes::sync::topic_file::TOPIC_FORMAT_VERSION,
                     title: "Second".to_string(),
                     note: String::new(),
                     markdown_image_width: None,
                     starred: false,
                     completed_at: None,
                     archived_at: None,
+                    root_collapsed: false,
+                    root_readonly: Some(false),
+                    plugin: None,
+                    plugin_children: None,
+                    collapsed_groups: Vec::new(),
                     hlc: HLC_1.to_string(),
                 },
                 nodes: Vec::new(),

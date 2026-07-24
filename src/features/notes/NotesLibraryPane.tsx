@@ -20,12 +20,14 @@ import {
 import type { NoteSearchResult } from "../../domain/notes";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { IconTooltip, TooltipProvider } from "../../components/ui/Tooltip";
+import { GITHUB_NOTIFICATIONS_ROOT_ID } from "../../services/githubNotificationsProvider";
 import { NotesDataSettingsDialog } from "./NotesDataSettingsDialog";
 import {
   NotesExportControllerProvider,
   useNotesExportController
 } from "./NotesExportController";
 import { NotesLibraryPageRow } from "./NotesLibraryPageRow";
+import { NotesExternalLibraryPageRow } from "./NotesExternalLibraryPageRow";
 import {
   noteNodePresentationLabel,
   noteSearchPresentation
@@ -165,6 +167,14 @@ function NotesLibraryPaneContent() {
     setQuery("");
     setResults([]);
     setActiveResultIndex(-1);
+  };
+
+  const openGithubNotifications = async () => {
+    if (!(await actions.flushAllDrafts())) {
+      return;
+    }
+    actions.clearSelection();
+    await actions.zoomTo(GITHUB_NOTIFICATIONS_ROOT_ID);
   };
 
   const focusResult = (index: number) => {
@@ -410,8 +420,20 @@ function NotesLibraryPaneContent() {
               if (!node) {
                 return null;
               }
+              if (nodeId === GITHUB_NOTIFICATIONS_ROOT_ID) {
+                return (
+                  <NotesExternalLibraryPageRow
+                    key={nodeId}
+                    node={node}
+                    active={state.zoomRootId === nodeId}
+                    disabled={deletingNotesData || state.status === "loading"}
+                    onOpen={() => void openGithubNotifications()}
+                  />
+                );
+              }
               const draft = draftsByNodeId[nodeId];
-              const displayTitle = draft?.title ?? node.title;
+              const displayTitle =
+                node.isReadonly === true ? node.title : draft?.title ?? node.title;
               const visibleNote = draft?.note ?? node.note;
               const attachments = state.attachmentsByNodeId[nodeId] ?? [];
               const imageAttachmentOriginalName =
@@ -438,6 +460,7 @@ function NotesLibraryPaneContent() {
                   }
                   active={state.zoomRootId === nodeId}
                   disabled={deletingNotesData || state.status === "loading"}
+                  skipTrashConfirmation
                   onOpen={() => void actions.zoomTo(nodeId)}
                   onToggleStar={() => void actions.toggleStar(nodeId)}
                   onArchive={() => void actions.archiveNode(nodeId)}
@@ -445,9 +468,12 @@ function NotesLibraryPaneContent() {
                   onRestore={() => void actions.restoreNode(nodeId)}
                   onMoveToTrash={() => void actions.deleteNode(nodeId)}
                   onDuplicate={() => void actions.duplicateNode(nodeId)}
-                  onExport={(format) =>
-                    exportController.startExport(nodeId, exportLabel, format)
+                  onToggleReadonly={() =>
+                    void actions.setReadonly(nodeId, node.isReadonly !== true)
                   }
+                  onExport={(format) => {
+                    exportController.startExport(nodeId, exportLabel, format);
+                  }}
                   onRename={async (title) => {
                     if (libraryView === "archive" || libraryView === "trash") {
                       return false;

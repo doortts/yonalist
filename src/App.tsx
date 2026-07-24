@@ -22,6 +22,7 @@ import {
 import {
   defaultSettings,
   loadSettings,
+  normalizeGithubNotificationsReadRetentionDays,
   normalizeSettings,
   persistSettings,
   settingsNeedNormalization,
@@ -32,6 +33,13 @@ import {
   type AppNavigation,
   type SettingsTarget
 } from "./AppNavigationContext";
+import {
+  ExternalSourcesContext,
+  rejectUnavailableExternalSource,
+  type ExternalSourcesBoundary,
+  type GithubMaterializedRefreshHandler,
+  type GithubMaterializedRefreshRequest
+} from "./ExternalSourcesContext";
 import { GithubConnectionContext } from "./GithubConnectionContext";
 import { MarkdownStyleContext } from "./MarkdownStyleContext";
 import { PaneLayoutContext } from "./PaneLayoutContext";
@@ -91,6 +99,11 @@ import {
   subjectNumber,
   type GitHubNotification
 } from "./domain/notifications";
+import {
+  isSafeExternalHttpUrl,
+  type ExternalBulletKey,
+  type ExternalSourcePageSnapshot
+} from "./domain/externalSources";
 import type { ConversationComment } from "./domain/conversation";
 import type {
   CommentDocument,
@@ -104,6 +117,7 @@ import { SAMPLE_VAULT_ROOT } from "./fixtures/sampleItems";
 import { useGithubAuth } from "./hooks/useGithubAuth";
 import { useAuthGate } from "./hooks/useAuthGate";
 import { useAppBadge } from "./hooks/useAppBadge";
+import { useExternalSource } from "./hooks/useExternalSource";
 import { useGithubServers } from "./hooks/useGithubServers";
 import { useDetailContentPaintReady } from "./hooks/useDetailContentPaintReady";
 import { useDetailRenderSnapshotCapture } from "./hooks/useDetailRenderSnapshotCapture";
@@ -171,6 +185,19 @@ import {
   getNotificationCacheStats
 } from "./services/notifications";
 import { tracePerf, tracePerfOnce } from "./services/perfTrace";
+import { createExternalSourceHost } from "./services/externalSourceHost";
+import {
+  createGithubMaterializedBridgePump,
+  githubMaterializedBridgeToken,
+  type GithubMaterializedBridgePump
+} from "./services/githubMaterializedBridge";
+import { githubSourceConnectionId } from "./services/githubAccountIdentity";
+import {
+  createGithubNotificationsProvider,
+  GITHUB_EXTERNAL_KEY_PROVIDER,
+  GITHUB_NOTIFICATIONS_PROVIDER_ID,
+  GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+} from "./services/githubNotificationsProvider";
 import { pickVaultFolder } from "./services/vaultFolder";
 import {
   loadItemDocumentBody,
@@ -185,6 +212,12 @@ import {
 // Notifications pane is not virtualized, so this caps the top-of-feed slice we
 // prefetch rather than a measured viewport window.
 const NOTIFICATION_PREFETCH_CAP = 30;
+const DEMO_NOTIFICATION_SOURCE_CONNECTION_ID = "demo";
+
+interface SelectedNotification {
+  readonly notification: GitHubNotification;
+  readonly sourceConnectionId: string;
+}
 
 const neutralStatusMetrics: StatusBarMetrics = {
   listFetchDurationMs: null,
@@ -272,6 +305,19 @@ function itemSortEquals(left: ItemSort, right: ItemSort): boolean {
   return left.field === right.field && left.direction === right.direction;
 }
 
+function useProjectionClock(active: boolean, intervalMs: number): number {
+  const [nowMs, setNowMs] = useState(Date.now);
+  useEffect(() => {
+    if (!active) {
+      return;
+    }
+    setNowMs(Date.now());
+    const timer = setInterval(() => setNowMs(Date.now()), intervalMs);
+    return () => clearInterval(timer);
+  }, [active, intervalMs]);
+  return nowMs;
+}
+
 function AuthRestorePage({ onOpenNotes }: { onOpenNotes: () => void }) {
   return (
     <main className="login-shell" aria-label="Restoring GitHub session">
@@ -306,8 +352,11 @@ export default function App({ initialOnline }: AppProps) {
     Record<string, ItemSort>
   >({});
   const [repositoryFilter, setRepositoryFilter] = useState<string | null>(null);
-  const [commentDraft, setCommentDraft] = useState("");
-  const [replyDraft, setReplyDraft] = useState<CommentReplyDraft | undefined>();
+  const [itemCommentDraft, setItemCommentDraft] = useState("");
+  const [notificationCommentDraft, setNotificationCommentDraft] = useState("");
+  const [itemReplyDraft, setItemReplyDraft] = useState<CommentReplyDraft | undefined>();
+  const [notificationReplyDraft, setNotificationReplyDraft] =
+    useState<CommentReplyDraft | undefined>();
   // Reconnect-sync offers are only valid once the current vault's queued
   // operations are actually loaded for the active Inbox; Notes must neither
   // consume nor discard a reconnect edge (see useOutboxSync.reconnectEligible).
@@ -315,6 +364,8 @@ export default function App({ initialOnline }: AppProps) {
   const [showNewIssue, setShowNewIssue] = useState(false);
   const [activeFeatureId, setActiveFeatureId] =
     useState<FeatureId>(loadActiveFeature);
+  const [githubProjectionRequested, setGithubProjectionRequested] =
+    useState(false);
   const featureActivationSequenceRef = useRef(0);
   const pendingFeatureActivationRef = useRef<FeatureActivationSample | null>(
     null
@@ -363,6 +414,287 @@ export default function App({ initialOnline }: AppProps) {
   const auth = useGithubAuth(servers);
   const vaultRoot = settings.vaultFolder.trim() || SAMPLE_VAULT_ROOT;
   const authGate = useAuthGate({ auth, servers, online });
+  const accountId = authGate.account?.id ?? null;
+  const accountLogin = authGate.account?.login ?? null;
+  const sourceConnectionId = accountId
+    ? githubSourceConnectionId(auth.connection.apiBaseUrl, accountId)
+    : null;
+  const githubProjectionActive =
+    activeFeatureId === "notes" && githubProjectionRequested;
+  const projectionNowMs = useProjectionClock(githubProjectionActive, 60_000);
+  const githubMaterializedRefreshRef =
+    useRef<GithubMaterializedRefreshHandler | null>(null);
+  const githubMaterializedBridgePumpRef = useRef<
+    GithubMaterializedBridgePump<GithubMaterializedRefreshRequest> | null
+  >(null);
+  if (githubMaterializedBridgePumpRef.current === null) {
+    githubMaterializedBridgePumpRef.current = createGithubMaterializedBridgePump(
+      (request) =>
+        githubMaterializedRefreshRef.current?.(request) ??
+        Promise.resolve("skipped")
+    );
+  }
+  const githubMaterializedBridgePump = githubMaterializedBridgePumpRef.current;
+  const [githubMaterializedRefreshVersion, setGithubMaterializedRefreshVersion] =
+    useState(0);
+  const detailScrollRef = useRef<HTMLDivElement>(null);
+  const githubWebBridgeRef = useRef<{
+    items: readonly GitHubNotification[];
+    openNotification(notification: GitHubNotification): void;
+    openNotificationUrl(url: string): void;
+  }>({
+    items: [],
+    openNotification: () => undefined,
+    openNotificationUrl: () => undefined
+  });
+  const openGithubDetails = useCallback((remoteId: string) => {
+    const bridge = githubWebBridgeRef.current;
+    const notification = bridge.items.find((item) => item.id === remoteId);
+    if (notification) {
+      bridge.openNotification(notification);
+    }
+  }, []);
+  const notificationProvider = useMemo(
+    () =>
+      accountId && accountLogin
+        ? createGithubNotificationsProvider({
+            connection: {
+              apiBaseUrl: auth.connection.apiBaseUrl,
+              webBaseUrl: auth.connection.webBaseUrl,
+              token: auth.connection.token
+            },
+            account: { id: accountId, login: accountLogin },
+            openDetails: openGithubDetails
+          })
+        : null,
+    [
+      accountId,
+      accountLogin,
+      auth.connection.apiBaseUrl,
+      auth.connection.webBaseUrl,
+      auth.connection.token,
+      openGithubDetails
+    ]
+  );
+  const notificationSourceHandle = useMemo(
+    () =>
+      notificationProvider && sourceConnectionId
+        ? createExternalSourceHost(notificationProvider, sourceConnectionId)
+        : null,
+    [notificationProvider, sourceConnectionId]
+  );
+  useEffect(
+    () => () => notificationSourceHandle?.dispose(),
+    [notificationSourceHandle]
+  );
+  const notificationSourceActive =
+    authGate.state === "passed" && (inboxActive || githubProjectionActive);
+  const notificationSourceState = useExternalSource(
+    notificationSourceHandle,
+    notificationSourceActive && online
+  );
+  const materializedGithubSourceIdentityRef = useRef({
+    handle: notificationSourceHandle,
+    webBaseUrl: auth.connection.webBaseUrl
+  });
+  useEffect(() => {
+    const previousIdentity = materializedGithubSourceIdentityRef.current;
+    if (
+      previousIdentity.handle === notificationSourceHandle &&
+      previousIdentity.webBaseUrl === auth.connection.webBaseUrl
+    ) {
+      return;
+    }
+    materializedGithubSourceIdentityRef.current = {
+      handle: notificationSourceHandle,
+      webBaseUrl: auth.connection.webBaseUrl
+    };
+    githubMaterializedBridgePump.invalidate();
+  }, [
+    auth.connection.webBaseUrl,
+    githubMaterializedBridgePump,
+    notificationSourceHandle
+  ]);
+  useEffect(
+    () => () => githubMaterializedBridgePump.dispose(),
+    [githubMaterializedBridgePump]
+  );
+  useEffect(() => {
+    if (!githubProjectionActive || !online || sourceConnectionId === null) {
+      return;
+    }
+    if (githubMaterializedRefreshRef.current === null) {
+      return;
+    }
+    const refreshKey = githubMaterializedBridgeToken(
+      sourceConnectionId,
+      notificationSourceState
+    );
+    if (refreshKey === null) return;
+    githubMaterializedBridgePump.submit({
+      token: refreshKey,
+      request: {
+        connectionId: sourceConnectionId,
+        webBaseUrl: auth.connection.webBaseUrl,
+        items: notificationSourceState.items,
+        syncedAt: notificationSourceState.syncedAt ?? new Date().toISOString()
+      }
+    });
+  }, [
+    auth.connection.webBaseUrl,
+    githubMaterializedBridgePump,
+    githubMaterializedRefreshVersion,
+    githubProjectionActive,
+    notificationSourceState,
+    online,
+    sourceConnectionId
+  ]);
+  const notificationSource = useMemo(
+    () =>
+      notificationSourceHandle
+        ? {
+            state: notificationSourceState,
+            refresh: notificationSourceHandle.refresh
+          }
+        : null,
+    [notificationSourceHandle, notificationSourceState]
+  );
+  const unfilteredNotifications = useNotifications(
+    auth.connection,
+    notificationSource
+  );
+  const githubPage = useMemo<ExternalSourcePageSnapshot>(
+    () => ({
+      providerId: GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      connectionId: sourceConnectionId,
+      title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+      availability:
+        authGate.state === "required" && Boolean(auth.connection.token)
+          ? "authentication-required"
+          : !auth.connection.token
+            ? "disconnected"
+            : !online
+              ? "offline"
+              : !authGate.account
+                ? "connecting"
+                : "online",
+      items:
+        sourceConnectionId && notificationProvider
+          ? notificationProvider.project({
+              items: notificationSourceState.items,
+              connectionId: sourceConnectionId,
+              settings: notificationProvider.normalizeSettings({
+                readRetentionDays:
+                  normalizeGithubNotificationsReadRetentionDays(
+                    settings.githubNotificationsReadRetentionDays
+                  ),
+                viewedAt: unfilteredNotifications.viewedAt
+              }),
+              now: new Date(projectionNowMs)
+            })
+          : [],
+      loaded: notificationSourceState.loaded,
+      loading: notificationSourceState.loading,
+      error: notificationSourceState.error,
+      syncedAt: notificationSourceState.syncedAt,
+      completingKeys: notificationSourceState.completingKeys,
+      completionErrors: notificationSourceState.completionErrors
+    }),
+    [
+      auth.connection.token,
+      authGate.account,
+      authGate.state,
+      notificationProvider,
+      notificationSourceState,
+      unfilteredNotifications.viewedAt,
+      online,
+      projectionNowMs,
+      settings.githubNotificationsReadRetentionDays,
+      sourceConnectionId
+    ]
+  );
+  const requestGithubProjection = useCallback((requested: boolean) => {
+    setGithubProjectionRequested((current) =>
+      current === requested ? current : requested
+    );
+  }, []);
+  const registerGithubMaterializedRefresh = useCallback(
+    (handler: GithubMaterializedRefreshHandler) => {
+      githubMaterializedRefreshRef.current = handler;
+      setGithubMaterializedRefreshVersion((version) => version + 1);
+      return () => {
+        if (githubMaterializedRefreshRef.current !== handler) return;
+        githubMaterializedRefreshRef.current = null;
+        githubMaterializedBridgePump.invalidate();
+        setGithubMaterializedRefreshVersion((version) => version + 1);
+      };
+    },
+    [githubMaterializedBridgePump]
+  );
+  const refreshExternalProvider = useCallback(
+    (providerId: string): Promise<void> =>
+      providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID &&
+      online &&
+      notificationSourceHandle
+        ? notificationSourceHandle.refresh()
+        : rejectUnavailableExternalSource(),
+    [notificationSourceHandle, online]
+  );
+  const completeExternalBullet = useCallback(
+    (key: ExternalBulletKey): Promise<void> =>
+      key.providerId === GITHUB_EXTERNAL_KEY_PROVIDER &&
+      key.connectionId === sourceConnectionId &&
+      online &&
+      notificationSourceHandle
+        ? notificationSourceHandle.complete(key)
+        : rejectUnavailableExternalSource(),
+    [notificationSourceHandle, online, sourceConnectionId]
+  );
+  const openExternalDetails = useCallback(
+    (key: ExternalBulletKey, fallbackUrl?: string) => {
+      if (
+        key.providerId !== GITHUB_EXTERNAL_KEY_PROVIDER
+      ) {
+        return;
+      }
+      const bridge = githubWebBridgeRef.current;
+      const notification =
+        key.connectionId === sourceConnectionId
+          ? bridge.items.find((item) => item.id === key.remoteId)
+          : undefined;
+      if (notification) {
+        bridge.openNotification(notification);
+      } else if (
+        fallbackUrl !== undefined &&
+        isSafeExternalHttpUrl(fallbackUrl)
+      ) {
+        bridge.openNotificationUrl(fallbackUrl);
+      }
+    },
+    [sourceConnectionId]
+  );
+  const externalSources = useMemo<ExternalSourcesBoundary>(
+    () => ({
+      pages: [githubPage],
+      projectionNowMs,
+      githubProjectionRequested,
+      requestGithubProjection,
+      registerGithubMaterializedRefresh,
+      refresh: refreshExternalProvider,
+      complete: completeExternalBullet,
+      openDetails: openExternalDetails
+    }),
+    [
+      completeExternalBullet,
+      githubPage,
+      projectionNowMs,
+      githubProjectionRequested,
+      openExternalDetails,
+      registerGithubMaterializedRefresh,
+      refreshExternalProvider,
+      requestGithubProjection
+    ]
+  );
 
   function changeActiveFeature(nextFeatureId: FeatureId) {
     if (nextFeatureId !== activeFeatureId) {
@@ -590,11 +922,6 @@ export default function App({ initialOnline }: AppProps) {
       ),
     [inboxItems, itemSort, items, projectWorkItems.loading, repositoryFilter]
   );
-  const unfilteredNotifications = useNotifications(
-    auth.connection,
-    online,
-    inboxActive && authGate.state === "passed"
-  );
   const repositoryGroups = useRepositories(
     auth.connection,
     online && inboxActive,
@@ -727,14 +1054,33 @@ export default function App({ initialOnline }: AppProps) {
     enabled:
       inboxActive &&
       settings.desktopNotifications &&
-      authGate.state === "passed",
+      authGate.state === "passed" &&
+      Boolean(authGate.account),
     demoMode: notifications.demoMode,
     isRepoVisible: notificationRepoFilter
   });
+  const notificationSelectionScope =
+    sourceConnectionId ??
+    (notifications.demoMode ? DEMO_NOTIFICATION_SOURCE_CONNECTION_ID : null);
   const [selectedNotification, setSelectedNotification] =
-    useState<GitHubNotification | null>(null);
+    useState<SelectedNotification | null>(null);
+  useEffect(() => {
+    if (
+      !selectedNotification ||
+      selectedNotification.sourceConnectionId === notificationSelectionScope
+    ) {
+      return;
+    }
+    setSelectedNotification(null);
+    setNotificationCommentDraft("");
+    setNotificationReplyDraft(undefined);
+  }, [notificationSelectionScope, selectedNotification]);
   const activeSelectedNotification =
-    activeFeatureId === "inbox" && showNotifications ? selectedNotification : null;
+    activeFeatureId === "inbox" &&
+    showNotifications &&
+    selectedNotification?.sourceConnectionId === notificationSelectionScope
+      ? selectedNotification.notification
+      : null;
   useEffect(() => {
     if (activeFeatureId !== "inbox" || !showNotifications) {
       return;
@@ -763,22 +1109,22 @@ export default function App({ initialOnline }: AppProps) {
     conversationRefreshKey
   );
   const selectedNotificationCommentTarget = useMemo<CommentTarget | null>(() => {
-    if (!selectedNotification) {
+    if (!activeSelectedNotification) {
       return null;
     }
-    const kind = notificationSubjectKind(selectedNotification);
-    const number = subjectNumber(selectedNotification.subject);
+    const kind = notificationSubjectKind(activeSelectedNotification);
+    const number = subjectNumber(activeSelectedNotification.subject);
     if (!kind || number === null) {
       return null;
     }
     return {
       host: hostFromWebBaseUrl(auth.connection.webBaseUrl),
-      owner: selectedNotification.repository.owner.login,
-      repo: selectedNotification.repository.name,
+      owner: activeSelectedNotification.repository.owner.login,
+      repo: activeSelectedNotification.repository.name,
       kind,
       number
     };
-  }, [selectedNotification, auth.connection.webBaseUrl]);
+  }, [activeSelectedNotification, auth.connection.webBaseUrl]);
   const {
     mode: themeMode,
     setMode: setThemeMode,
@@ -1041,8 +1387,8 @@ export default function App({ initialOnline }: AppProps) {
     activeFeatureId !== "inbox"
       ? null
       : showNotifications
-        ? selectedNotification
-          ? `notification:${selectedNotification.id}`
+        ? activeSelectedNotification
+          ? `notification:${notificationSelectionScope}:${activeSelectedNotification.id}`
           : null
         : detailVisible && selectedItem
           ? `item:${selectedItem.path}`
@@ -1060,9 +1406,8 @@ export default function App({ initialOnline }: AppProps) {
         : showNewIssue
           ? "new-issue"
           : showNotifications
-            ? `notification:${selectedNotification?.id ?? "none"}`
+            ? `notification:${notificationSelectionScope ?? "none"}:${activeSelectedNotification?.id ?? "none"}`
             : `item:${selectedItem?.path ?? "none"}`;
-  const detailScrollRef = useRef<HTMLDivElement>(null);
 
   // Snap the detail pane back to the top whenever it switches to a different
   // work item, notification, or content mode. Because the scroll container is
@@ -1090,7 +1435,9 @@ export default function App({ initialOnline }: AppProps) {
     activeFeatureId === "inbox" &&
     (showNotifications
       ? Boolean(
-          selectedNotification && notificationDetail.detail && !notificationDetail.loading
+          activeSelectedNotification &&
+            notificationDetail.detail &&
+            !notificationDetail.loading
         )
       : Boolean(selectedItem && selectedBodyReady && !itemThread.loading));
   const expectedDetailMarkdownBodies =
@@ -1123,14 +1470,14 @@ export default function App({ initialOnline }: AppProps) {
       return null;
     }
     if (showNotifications) {
-      return selectedNotification
+      return activeSelectedNotification
         ? {
             kind: "notification",
             key: activeDetailKey,
             token: auth.connection.token,
             apiBaseUrl: auth.connection.apiBaseUrl,
             webBaseUrl: auth.connection.webBaseUrl,
-            notification: selectedNotification
+            notification: activeSelectedNotification
           }
         : null;
     }
@@ -1153,7 +1500,7 @@ export default function App({ initialOnline }: AppProps) {
     auth.connection,
     detailVisible,
     selectedItem,
-    selectedNotification,
+    activeSelectedNotification,
     showNotifications
   ]);
   const refreshActiveDetailAfterRemoteChange = useCallback(() => {
@@ -1201,13 +1548,28 @@ export default function App({ initialOnline }: AppProps) {
   const markNotificationViewed = unfilteredNotifications.markNotificationViewed;
   const selectNotification = useCallback(
     (notification: GitHubNotification) => {
+      if (!notificationSelectionScope) {
+        return;
+      }
       startSelectionTransition(() => {
-        setSelectedNotification(notification);
+        setSelectedNotification({
+          notification,
+          sourceConnectionId: notificationSelectionScope
+        });
         markNotificationViewed(notification);
       });
     },
-    [markNotificationViewed, startSelectionTransition]
+    [
+      markNotificationViewed,
+      notificationSelectionScope,
+      startSelectionTransition
+    ]
   );
+  githubWebBridgeRef.current = {
+    items: notificationSourceState.items,
+    openNotification: unfilteredNotifications.openNotification,
+    openNotificationUrl: unfilteredNotifications.openNotificationUrl
+  };
 
   // Pull-based status metrics: the status bar polls this stable getter on its
   // own interval, so metric churn (prefetch progress, cache growth, paint
@@ -1336,16 +1698,16 @@ export default function App({ initialOnline }: AppProps) {
 
     openOutboxTarget(operation);
     if (target.parent_comment_id !== undefined || target.parent_comment_node_id) {
-      setCommentDraft("");
-      setReplyDraft({
+      setItemCommentDraft("");
+      setItemReplyDraft({
         parentId: target.parent_comment_id,
         parentNodeId: target.parent_comment_node_id,
         body: operation.body,
         version: Date.now()
       });
     } else {
-      setReplyDraft(undefined);
-      setCommentDraft(operation.body);
+      setItemReplyDraft(undefined);
+      setItemCommentDraft(operation.body);
     }
     outboxSync.discardOutboxOperation(operation);
   }
@@ -1364,7 +1726,7 @@ export default function App({ initialOnline }: AppProps) {
       body: draft?.body ?? "",
       repositoryKey
     });
-    setReplyDraft(undefined);
+    setItemReplyDraft(undefined);
     setSelectedPath(localFilePath);
     setRepositoryFilter(repositoryKey);
     setFilter("all");
@@ -1438,10 +1800,12 @@ export default function App({ initialOnline }: AppProps) {
   function queueCommentForTarget(
     target: CommentTarget | null,
     action: CommentSubmitAction,
+    draft: string,
+    clearDraft: () => void,
     bodyOverride?: string,
     parentComment?: ConversationComment
   ) {
-    const body = (bodyOverride ?? commentDraft).trim();
+    const body = (bodyOverride ?? draft).trim();
     const closeAfterComment =
       action.type === "comment-and-close" ? action.close : undefined;
     if (!target || (!body && !closeAfterComment)) {
@@ -1491,7 +1855,7 @@ export default function App({ initialOnline }: AppProps) {
 
     appendOutboxOperation(queuedOperation);
     if (bodyOverride === undefined) {
-      setCommentDraft("");
+      clearDraft();
     }
     const persistence = body
       ? Promise.all([
@@ -1517,7 +1881,9 @@ export default function App({ initialOnline }: AppProps) {
         kind: selectedItem.frontMatter.kind,
         number: selectedItem.frontMatter.number
       },
-      action
+      action,
+      itemCommentDraft,
+      () => setItemCommentDraft("")
     );
   }
 
@@ -1525,7 +1891,7 @@ export default function App({ initialOnline }: AppProps) {
     if (!selectedItem || selectedItem.frontMatter.kind !== "discussion") {
       return;
     }
-    setReplyDraft(undefined);
+    setItemReplyDraft(undefined);
     queueCommentForTarget(
       {
         host: selectedItem.frontMatter.host,
@@ -1535,23 +1901,32 @@ export default function App({ initialOnline }: AppProps) {
         number: selectedItem.frontMatter.number
       },
       { type: "comment" },
+      itemCommentDraft,
+      () => setItemCommentDraft(""),
       body,
       parent
     );
   }
 
   function queueNotificationComment(action: CommentSubmitAction) {
-    queueCommentForTarget(selectedNotificationCommentTarget, action);
+    queueCommentForTarget(
+      selectedNotificationCommentTarget,
+      action,
+      notificationCommentDraft,
+      () => setNotificationCommentDraft("")
+    );
   }
 
   function queueNotificationReply(parent: ConversationComment, body: string) {
-    if (selectedNotification?.subject.type !== "Discussion") {
+    if (activeSelectedNotification?.subject.type !== "Discussion") {
       return;
     }
-    setReplyDraft(undefined);
+    setNotificationReplyDraft(undefined);
     queueCommentForTarget(
       selectedNotificationCommentTarget,
       { type: "comment" },
+      notificationCommentDraft,
+      () => setNotificationCommentDraft(""),
       body,
       parent
     );
@@ -1595,7 +1970,8 @@ export default function App({ initialOnline }: AppProps) {
       setShowNewIssue(false);
       setShowNotifications(false);
       setDraftIssue({ title: "", body: "", repositoryKey: "" });
-      setCommentDraft("");
+      setItemCommentDraft("");
+      setNotificationCommentDraft("");
     },
     onStatus: setSettingsStatus
   });
@@ -1610,7 +1986,7 @@ export default function App({ initialOnline }: AppProps) {
           state={notifications}
           webBaseUrl={auth.connection.webBaseUrl}
           online={online}
-          selectedId={selectedNotification?.id ?? null}
+          selectedId={activeSelectedNotification?.id ?? null}
           onSelect={selectNotification}
           onVisibleNotificationsChange={setVisibleNotificationPrefetchItems}
         />
@@ -1646,16 +2022,16 @@ export default function App({ initialOnline }: AppProps) {
         />
       ) : showNotifications ? (
         <NotificationDetail
-          notification={selectedNotification}
+          notification={activeSelectedNotification}
           state={notificationDetail}
           online={online}
-          commentDraft={commentDraft}
-          replyDraft={replyDraft}
+          commentDraft={notificationCommentDraft}
+          replyDraft={notificationReplyDraft}
           detailMaximized={detailMaximized}
           onToggleMaximize={toggleDetailMaximized}
           onHeaderVisibilityChange={setDetailHeaderVisible}
           onOpenInBrowser={notifications.openNotification}
-          onCommentDraftChange={setCommentDraft}
+          onCommentDraftChange={setNotificationCommentDraft}
           onQueueComment={queueNotificationComment}
           onQueueReply={queueNotificationReply}
         />
@@ -1664,12 +2040,12 @@ export default function App({ initialOnline }: AppProps) {
           item={selectedItemWithBody}
           thread={itemThread}
           online={online}
-          commentDraft={commentDraft}
-          replyDraft={replyDraft}
+          commentDraft={itemCommentDraft}
+          replyDraft={itemReplyDraft}
           detailMaximized={detailMaximized}
           onToggleMaximize={toggleDetailMaximized}
           onHeaderVisibilityChange={setDetailHeaderVisible}
-          onCommentDraftChange={setCommentDraft}
+          onCommentDraftChange={setItemCommentDraft}
           onQueueComment={queueItemComment}
           onQueueReply={queueItemReply}
           onToggleFavorite={onToggleFavorite}
@@ -1795,6 +2171,7 @@ export default function App({ initialOnline }: AppProps) {
     <MarkdownStyleContext.Provider value={settings.markdownStyle}>
     <VaultRootContext.Provider value={vaultRoot}>
     <AppNavigationContext.Provider value={appNavigation}>
+    <ExternalSourcesContext.Provider value={externalSources}>
     <PaneLayoutContext.Provider value={paneLayoutControls}>
     <main
       className="app-shell"
@@ -1970,6 +2347,7 @@ export default function App({ initialOnline }: AppProps) {
       </Toast.Provider>
     </main>
     </PaneLayoutContext.Provider>
+    </ExternalSourcesContext.Provider>
     </AppNavigationContext.Provider>
     </VaultRootContext.Provider>
     </MarkdownStyleContext.Provider>

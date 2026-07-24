@@ -1507,16 +1507,17 @@ mod tests {
         let error =
             validate_notes_connection(&connection).expect_err("a swapped set must be reported");
         assert!(
-            error.starts_with(
-                "The Notes database identity changed during the database operation."
-            ),
+            error.starts_with("The Notes database identity changed during the database operation."),
             "the leading identity sentence must survive byte-for-byte: {error}"
         );
         assert!(
             error.contains("Swap detail:"),
             "swap forensics must be appended: {error}"
         );
-        assert_ne!(bound_inode, installed_inode, "the swap must change the inode");
+        assert_ne!(
+            bound_inode, installed_inode,
+            "the swap must change the inode"
+        );
         assert!(
             error.contains(&format!("file id {bound_inode}->{installed_inode}")),
             "the inode change must be reported: {error}"

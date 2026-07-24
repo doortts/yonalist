@@ -2,11 +2,20 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
+import {
+  ExternalSourcesContext,
+  type ExternalSourcesBoundary
+} from "../../ExternalSourcesContext";
+import type { ExternalSourcePageSnapshot } from "../../domain/externalSources";
 import type {
   NoteNode,
   NoteNodeKind,
   NoteSearchResult
 } from "../../domain/notes";
+import {
+  GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+  GITHUB_NOTIFICATIONS_ROOT_ID
+} from "../../services/githubNotificationsProvider";
 import { NotesLibraryPane } from "./NotesLibraryPane";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
@@ -45,6 +54,17 @@ function activeRoot(): NoteNode {
   };
 }
 
+function githubRoot(sortKey = 2): NoteNode {
+  return {
+    ...activeRoot(),
+    id: GITHUB_NOTIFICATIONS_ROOT_ID,
+    sortKey,
+    title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+    isReadonly: undefined,
+    pluginState: { collapsedGroups: [] }
+  };
+}
+
 function trashWorkspace(): UseNotesWorkspaceResult {
   const state = normalizeWorkspace({ nodes: [deletedRoot()] });
   state.zoomRootId = "deleted";
@@ -58,6 +78,11 @@ function trashWorkspace(): UseNotesWorkspaceResult {
     splitNode: resolved(),
     createChild: resolved(),
     updateNode: resolved(),
+    setReadonly: resolved(),
+    materializeGithubNotification: resolved(),
+    refreshMaterializedGithubNotifications: resolved(),
+    markMaterializedGithubNotificationRead: resolved(),
+    setGithubGroupCollapsed: resolved(),
     updateNodeDraft: vi.fn(),
     flushNodeDraft: vi.fn().mockResolvedValue(true),
     flushAllDrafts: vi.fn().mockResolvedValue(true),
@@ -76,6 +101,7 @@ function trashWorkspace(): UseNotesWorkspaceResult {
     duplicateNode: resolved(),
     removeEmptyNode: resolved(),
     deleteNode: resolved(),
+    deleteNodes: resolved(),
     restoreNode: resolved(),
     archiveNode: resolved(),
     unarchiveNode: resolved(),
@@ -122,9 +148,12 @@ function activeWorkspace(
 ): UseNotesWorkspaceResult {
   const root = activeRoot();
   const workspace = trashWorkspace();
-  workspace.state = normalizeWorkspace({ nodes: [root] });
+  const libraryView = options.libraryView ?? "all";
+  workspace.state = normalizeWorkspace({
+    nodes: libraryView === "all" ? [root, githubRoot()] : [root]
+  });
   workspace.state.zoomRootId = root.id;
-  workspace.libraryView = options.libraryView ?? "all";
+  workspace.libraryView = libraryView;
   workspace.draftsByNodeId = options.draft ? { [root.id]: options.draft } : {};
   vi.mocked(workspace.actions.flushNodeDraft).mockResolvedValue(
     options.flushResult ?? true
@@ -132,7 +161,243 @@ function activeWorkspace(
   return workspace;
 }
 
+function externalPage(): ExternalSourcePageSnapshot {
+  return {
+    providerId: "github-notifications",
+    connectionId: "github:user-7",
+    title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+    availability: "online",
+    items: [],
+    loaded: true,
+    loading: false,
+    error: null,
+    syncedAt: "2026-07-22T00:00:00Z",
+    completingKeys: new Set(),
+    completionErrors: {}
+  };
+}
+
+function externalBoundary(
+  overrides: Partial<ExternalSourcesBoundary> = {}
+): ExternalSourcesBoundary {
+  return {
+    pages: [externalPage()],
+    refresh: vi.fn().mockResolvedValue(undefined),
+    complete: vi.fn().mockResolvedValue(undefined),
+    openDetails: vi.fn(),
+    ...overrides
+  };
+}
+
+function renderLibraryWithExternal(
+  workspace: UseNotesWorkspaceResult,
+  boundary = externalBoundary()
+) {
+  const rendered = render(
+    <VaultRootContext.Provider value="/vault">
+      <ExternalSourcesContext.Provider value={boundary}>
+        <NotesWorkspaceContext.Provider value={workspace}>
+          <NotesLibraryPane />
+        </NotesWorkspaceContext.Provider>
+      </ExternalSourcesContext.Provider>
+    </VaultRootContext.Provider>
+  );
+  return { ...rendered, boundary };
+}
+
 describe("NotesLibraryPane", () => {
+  it("traverses stored roots once and keeps the action-free GN row in stored order", () => {
+    const workspace = activeWorkspace();
+    workspace.state = normalizeWorkspace({
+      nodes: [
+        activeRoot(),
+        githubRoot(),
+        { ...activeRoot(), id: "root-b", sortKey: 3, title: "Project B" }
+      ]
+    });
+    renderLibraryWithExternal(workspace);
+
+    const rows = document.querySelectorAll(
+      ".notes-library-list > .notes-library-page-row"
+    );
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toHaveTextContent("Project");
+    expect(rows[1]).toHaveAttribute(
+      "data-external-provider-id",
+      "github-notifications"
+    );
+    expect(rows[2]).toHaveTextContent("Project B");
+    expect(screen.queryByText("No pages yet.")).not.toBeInTheDocument();
+    const pluginRoot = rows[1] as HTMLElement;
+    expect(within(pluginRoot).queryByRole("textbox")).toBeNull();
+    expect(within(pluginRoot).queryByRole("button", { name: /actions/i })).toBeNull();
+    expect(within(pluginRoot).queryByText(/Star|Archive|Trash|Duplicate|Export/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Project" })).not.toHaveAttribute(
+      "aria-current"
+    );
+  });
+
+  it("does not synthesize GN outside the roots returned by the workspace", () => {
+    const workspace = activeWorkspace({ libraryView: "starred" });
+    renderLibraryWithExternal(workspace);
+
+    expect(
+      screen.queryByRole("button", {
+        name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE
+      })
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show the local empty state when the stored GN root exists", () => {
+    const workspace = activeWorkspace();
+    workspace.state = normalizeWorkspace({ nodes: [githubRoot()] });
+    renderLibraryWithExternal(workspace);
+
+    expect(
+      screen.getByRole("button", { name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE })
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No pages yet.")).toBeNull();
+  });
+
+  it("flushes drafts before zooming to the stored GN root and clears selection", async () => {
+    const user = userEvent.setup();
+    const workspace = activeWorkspace();
+    const boundary = externalBoundary();
+    const events: string[] = [];
+    vi.mocked(workspace.actions.flushAllDrafts).mockImplementation(async () => {
+      events.push("flush drafts");
+      return true;
+    });
+    vi.mocked(workspace.actions.clearSelection).mockImplementation(() => {
+      events.push("clear selection");
+    });
+    vi.mocked(workspace.actions.zoomTo).mockImplementation(async (nodeId) => {
+      events.push(`zoom ${nodeId}`);
+    });
+    renderLibraryWithExternal(workspace, boundary);
+
+    await user.click(
+      screen.getByRole("button", { name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE })
+    );
+
+    expect(workspace.actions.flushAllDrafts).toHaveBeenCalledTimes(1);
+    expect(workspace.actions.clearSelection).toHaveBeenCalledTimes(1);
+    expect(workspace.actions.zoomTo).toHaveBeenCalledWith(
+      GITHUB_NOTIFICATIONS_ROOT_ID
+    );
+    expect(events).toEqual([
+      "flush drafts",
+      "clear selection",
+      `zoom ${GITHUB_NOTIFICATIONS_ROOT_ID}`
+    ]);
+  });
+
+  it("keeps the stored GN root closed when draft flush fails", async () => {
+    const user = userEvent.setup();
+    const workspace = activeWorkspace();
+    vi.mocked(workspace.actions.flushAllDrafts).mockResolvedValue(false);
+    const boundary = externalBoundary();
+    renderLibraryWithExternal(workspace, boundary);
+
+    await user.click(
+      screen.getByRole("button", { name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE })
+    );
+
+    expect(workspace.actions.clearSelection).not.toHaveBeenCalled();
+    expect(workspace.actions.zoomTo).not.toHaveBeenCalled();
+  });
+
+  it("runs local navigation", async () => {
+    const user = userEvent.setup();
+    const workspace = activeWorkspace();
+    workspace.state.zoomRootId = null;
+    const boundary = externalBoundary();
+    const events: string[] = [];
+    vi.mocked(workspace.actions.createRoot).mockImplementation(async () => {
+      events.push("local action");
+      return "committed";
+    });
+    vi.mocked(workspace.actions.zoomTo).mockImplementation(async () => {
+      events.push("local action");
+    });
+    vi.mocked(workspace.actions.selectLibraryView).mockImplementation(async () => {
+      events.push("local action");
+    });
+    renderLibraryWithExternal(workspace, boundary);
+
+    await user.click(screen.getByRole("button", { name: "New page" }));
+    await user.click(screen.getByRole("button", { name: "Project" }));
+    await user.click(screen.getByRole("button", { name: "Starred" }));
+
+    expect(workspace.actions.createRoot).toHaveBeenCalledTimes(1);
+    expect(workspace.actions.zoomTo).toHaveBeenCalledWith("root");
+    expect(workspace.actions.selectLibraryView).toHaveBeenCalledWith("starred");
+    expect(events).toEqual(["local action", "local action", "local action"]);
+  });
+
+  it("opens a Notes search result", async () => {
+    const user = userEvent.setup();
+    const workspace = activeWorkspace();
+    vi.mocked(workspace.actions.searchNotes).mockResolvedValue([
+      {
+        nodeId: "root",
+        title: "Local result",
+        nodeKind: "text",
+        imageOffsetUtf16: 0,
+        attachmentName: null,
+        displayLabel: "Local result",
+        parentTrail: [],
+        parentTrailKinds: [],
+        matchedField: "title"
+      }
+    ]);
+    const boundary = externalBoundary();
+    const events: string[] = [];
+    vi.mocked(workspace.actions.openSearchResult).mockImplementation(async () => {
+      events.push("open search result");
+    });
+    renderLibraryWithExternal(workspace, boundary);
+
+    await user.type(screen.getByRole("searchbox", { name: "Search notes" }), "local");
+    await user.click(await screen.findByRole("option", { name: /Local result/ }));
+
+    expect(workspace.actions.openSearchResult).toHaveBeenCalledWith("root");
+    expect(events).toEqual(["open search result"]);
+  });
+
+  it("selects a local tag", async () => {
+    const user = userEvent.setup();
+    const workspace = activeWorkspace({ libraryView: "tags" });
+    workspace.tagSummaries = [
+      { prefix: "#", normalizedTag: "local", displayTag: "local", count: 1 }
+    ];
+    const boundary = externalBoundary();
+    renderLibraryWithExternal(workspace, boundary);
+
+    await user.click(screen.getByRole("button", { name: "#local, 1 note" }));
+
+    expect(workspace.actions.toggleTagFilter).toHaveBeenCalledWith(
+      workspace.tagSummaries[0]
+    );
+  });
+
+  it("keeps external titles out of Notes search results", async () => {
+    const user = userEvent.setup();
+    const workspace = activeWorkspace();
+    const boundary = externalBoundary();
+    renderLibraryWithExternal(workspace, boundary);
+
+    await user.type(
+      screen.getByRole("searchbox", { name: "Search notes" }),
+      "external thread title"
+    );
+
+    expect(await screen.findByText("No matches.")).toBeInTheDocument();
+    expect(workspace.actions.searchNotes).toHaveBeenCalledWith(
+      "external thread title"
+    );
+  });
+
   it("does not mark loading error state as transient workspace busy", () => {
     const workspace = activeWorkspace();
     workspace.state.status = "loading";

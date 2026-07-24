@@ -4,20 +4,12 @@ import type { NotificationDetailContent } from "./notificationDetail";
 
 const viewedStorageKey = "yonalist.notifications.viewedAt.v1";
 const hiddenStorageKey = "yonalist.notifications.hidden.v1";
-const notificationCacheStorageKey = "yonalist.notifications.cache.v1";
 const detailStorageKey = "yonalist.notifications.details.v1";
 
 /** How many notification detail conversations we keep on disk per host. */
 const MAX_PERSISTED_DETAILS = 30;
 
 export type ViewedAtMap = Record<string, string>;
-
-interface NotificationCacheEntry {
-  notifications: GitHubNotification[];
-  cachedAt: string;
-}
-
-type NotificationCache = Record<string, NotificationCacheEntry>;
 
 function hostKey(apiBaseUrl: string): string {
   return apiBaseUrl.replace(/\/+$/g, "");
@@ -83,30 +75,6 @@ export function persistHiddenIds(ids: Set<string>) {
   } catch {
     // Hiding still works for the session without persistence.
   }
-}
-
-export function loadCachedNotifications(
-  apiBaseUrl: string
-): GitHubNotification[] | null {
-  return (
-    readJson<NotificationCache>(notificationCacheStorageKey, {})[
-      hostKey(apiBaseUrl)
-    ]?.notifications ?? null
-  );
-}
-
-export function persistCachedNotifications(
-  apiBaseUrl: string,
-  notifications: GitHubNotification[]
-) {
-  const cache = readJson<NotificationCache>(notificationCacheStorageKey, {});
-  writeJson(notificationCacheStorageKey, {
-    ...cache,
-    [hostKey(apiBaseUrl)]: {
-      notifications,
-      cachedAt: new Date().toISOString()
-    }
-  });
 }
 
 interface PersistedDetailEntry {

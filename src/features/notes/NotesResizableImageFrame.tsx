@@ -198,6 +198,8 @@ export function NotesResizableImageFrame({
   const groupRef = useRef<HTMLDivElement>(null);
   const pointerResizeRef = useRef<PointerResize | null>(null);
   const keyboardResizeRef = useRef<KeyboardResize | null>(null);
+  const interactionUnavailableRef = useRef(readOnly || disabled);
+  interactionUnavailableRef.current = readOnly || disabled;
   const contentWidthRef = useRef<number | null>(null);
   const cancelActiveInteractionRef = useRef<() => void>(() => undefined);
   const [contentWidth, setContentWidth] = useState<number | null>(null);
@@ -245,6 +247,10 @@ export function NotesResizableImageFrame({
     );
     if (pointerResize) releaseCapturedPointer(pointerResize);
   };
+
+  useLayoutEffect(() => {
+    if (readOnly || disabled) cancelActiveInteractionRef.current();
+  }, [disabled, readOnly]);
 
   useLayoutEffect(() => {
     setProposedWidth(persistedTarget);
@@ -303,6 +309,7 @@ export function NotesResizableImageFrame({
 
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
     if (
+      interactionUnavailableRef.current ||
       event.button !== 0 ||
       !limits ||
       limits.maximum === 0 ||
@@ -348,6 +355,7 @@ export function NotesResizableImageFrame({
     if (releaseCapture) releaseCapturedPointer(resize);
     if (
       interactionMatches(resize, currentIdentity()) &&
+      !interactionUnavailableRef.current &&
       resize.proposedWidth !== resize.startWidth &&
       renderedWidthRef.current > 0 &&
       renderedWidthRef.current !== resize.startWidth
@@ -365,7 +373,14 @@ export function NotesResizableImageFrame({
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!limits || limits.maximum === 0 || !onDisplayWidthCommit) return;
+    if (
+      interactionUnavailableRef.current ||
+      !limits ||
+      limits.maximum === 0 ||
+      !onDisplayWidthCommit
+    ) {
+      return;
+    }
     let nextWidth: number | null = null;
     const step = event.shiftKey ? keyboardResizeStep * 2 : keyboardResizeStep;
     switch (event.key) {
@@ -412,6 +427,7 @@ export function NotesResizableImageFrame({
     keyboardResizeRef.current = null;
     if (
       interactionMatches(resize, currentIdentity()) &&
+      !interactionUnavailableRef.current &&
       resize.proposedWidth !== resize.startWidth &&
       renderedWidthRef.current > 0 &&
       renderedWidthRef.current !== resize.startWidth

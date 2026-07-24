@@ -5,11 +5,11 @@ import {
   type CollisionDetection,
   type DragEndEvent,
   type DragMoveEvent,
-  type DragStartEvent
+  type DragStartEvent,
 } from "@dnd-kit/core";
 import {
   SortableContext,
-  verticalListSortingStrategy
+  verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import {
   ChevronRight,
@@ -17,11 +17,13 @@ import {
   ListChecks,
   Maximize2,
   Minimize2,
-  Trash2
+  Trash2,
 } from "lucide-react";
 import {
+  Fragment,
   type CSSProperties,
   type ClipboardEvent,
+  type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
@@ -31,17 +33,32 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
-  useState
+  useState,
 } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { IconTooltip, TooltipProvider } from "../../components/ui/Tooltip";
 import type {
   NoteId,
+  NoteImportNode,
   NoteNode,
   NoteSearchTag,
-  NotesWorkspaceScope
+  NotesWorkspaceScope,
 } from "../../domain/notes";
+import {
+  serializeExternalBulletKey,
+  type ExternalBullet,
+} from "../../domain/externalSources";
+import {
+  useExternalSources,
+  type GithubMaterializedRefreshOutcome,
+  type GithubMaterializedRefreshRequest,
+} from "../../ExternalSourcesContext";
 import { PaneLayoutContext } from "../../PaneLayoutContext";
+import {
+  GITHUB_NOTIFICATIONS_PROVIDER_ID,
+  GITHUB_NOTIFICATIONS_ROOT_ID,
+  githubNotificationSnapshot,
+} from "../../services/githubNotificationsProvider";
 import { VaultRootContext } from "../../VaultRootContext";
 import { NotesChildComposer } from "./NotesChildComposer";
 import { NotesAttachmentDragPreview } from "./NotesAttachmentDragPreview";
@@ -55,51 +72,61 @@ import { useNotesAttachmentUi } from "./NotesAttachmentUiContext";
 import type { NotesNativeImageDropEvent } from "./notesAttachmentController";
 import {
   attachmentTargetFromPaste,
-  attachmentTargetFromPoint
+  attachmentTargetFromPoint,
 } from "./notesAttachmentTargets";
 import { extractClipboardImages } from "./notesClipboardImages";
 import { NotesPageHeader } from "./NotesPageHeader";
 import { useNotesPaneId } from "./NotesPaneScope";
 import {
   NotesPaneDndBoundary,
-  type NotesPaneDndAdapter
+  type NotesPaneDndAdapter,
 } from "./NotesSplitDndContext";
-import {
-  notesPaneDndId,
-  parseNotesPaneDndId
-} from "./notesPaneDndId";
+import { notesPaneDndId, parseNotesPaneDndId } from "./notesPaneDndId";
 import { projectCrossPaneOrdinaryDrop } from "./notesCrossPaneDrag";
+import { NotesExternalOutlinePane } from "./NotesExternalOutlinePane";
+import { NotesExternalBulletRow } from "./NotesExternalBulletRow";
+import {
+  githubNotificationSnapshotFromBullet,
+  projectGithubNotificationsOutline,
+  resolveGithubEditorFocusFallback,
+  storedGithubNotificationBullet,
+  type GithubEditorFocusKey,
+} from "./githubNotificationsOutline";
+import { githubProjectionLeaseRequested } from "./githubProjectionLease";
 import {
   noteNodeNavigationLabel,
-  noteNodePresentationLabel
+  noteNodePresentationLabel,
 } from "./notesPresentation";
 import { NotesQuickJump } from "./NotesQuickJump";
 import { NotesSyncStatusBadge } from "./NotesSyncStatusBadge";
 import type {
   NotesBulletMenuSelectionBridge,
-  NotesBulletMenuSelectionState
+  NotesBulletMenuSelectionState,
 } from "./NotesBulletMenu";
 import { NotesMoveChooser } from "./NotesMoveChooser";
 import { NotesTagChooser } from "./NotesTagChooser";
 import type { NotesFrozenSelectionSnapshot } from "./notesSelectionChooser";
 import {
   NotesSelectionActionBar,
-  type NotesSelectionActionBarAction
+  type NotesSelectionActionBarAction,
 } from "./NotesSelectionActionBar";
 import { NotesSelectionDragPreview } from "./NotesSelectionDragPreview";
 import {
   useNotesActions,
   useNotesDrafts,
-  useNotesState
+  useNotesState,
 } from "./NotesWorkspaceContext";
 import { writeNotesClipboardText } from "./notesClipboard";
 import { createNotesSelectionNativeClipboardController } from "./notesSelectionNativeClipboard";
 import { deriveNotesSelectionActionSnapshot } from "./notesSelectionActions";
 import {
   notesSelectionMutationDisabledReason as deriveSelectionMutationDisabledReason,
-  notesSelectionOperationDisabledReason
+  notesSelectionOperationDisabledReason,
 } from "./notesSelectionMutationAvailability";
-import { buildNotesMoveDestinations } from "./notesMoveTargets";
+import {
+  buildNotesMoveDestinations,
+  protectedNotesMoveRootIds,
+} from "./notesMoveTargets";
 import { tokenizeNoteText } from "./noteTokens";
 import { directTodoProgress } from "./notesTodoProgress";
 import {
@@ -118,45 +145,46 @@ import {
   type OutlineDropProjection,
   type OutlineDropPreview,
   type OutlineSelectionDropResult,
-  type PreparedOutlineSelectionDrag
+  type PreparedOutlineSelectionDrag,
 } from "./outlineDrag";
 import { NOTES_DRAG_OVERLAY_MODIFIERS } from "./notesDragOverlay";
 import {
   resolveOutlinePointerBoundary,
-  type OutlinePointerBoundary
+  type OutlinePointerBoundary,
 } from "./outlinePointerDrop";
 import {
   projectOutlineSelectionDragSession,
   startOutlineSelectionDragSession,
   type OutlineSelectionDragFrozenContext,
   type OutlineSelectionDragProjection,
-  type OutlineSelectionDragSession
+  type OutlineSelectionDragSession,
 } from "./outlineSelectionDragSession";
 import {
   selectionSubtreeIds,
-  type NormalizedNotesWorkspace
+  type NormalizedNotesWorkspace,
 } from "./notesWorkspaceReducer";
 import {
   deriveOutlineBodyRows,
   flattenVisibleOutlineRows,
   parentTrail,
-  type FlattenedOutlineRow
+  type FlattenedOutlineRow,
 } from "./outlineTree";
 import { retainOutlineRowProjection } from "./outlineRowProjection";
 import {
   createOutlineInteractionEpoch,
   shouldRecordOutlineBaselineActivity,
   type OutlineInteractionEpoch,
-  type OutlineInteractionReason
+  type OutlineInteractionReason,
 } from "./outlineInteractionEpoch";
 import {
   createOutlineVisibleSignature,
-  type KeyboardInsertionDisposition
+  type KeyboardInsertionDisposition,
 } from "./notesKeyboardInsertion";
 import {
   detectOutlineShortcutPlatform,
   resolveNotesHistoryShortcut,
-  resolveWorkflowySelectionMoveShortcut
+  resolveExternalEditorKey,
+  resolveWorkflowySelectionMoveShortcut,
 } from "./outlineKeyboard";
 import {
   isOutlineSelectionInteractiveTarget,
@@ -164,7 +192,7 @@ import {
   isOutlineSelectionToggleModifier,
   MemoizedOutlineNodeEditor,
   type OutlineEditorFocusRequest,
-  type OutlineNodeEditorProps
+  type OutlineNodeEditorProps,
 } from "./OutlineNodeRow";
 import {
   createOutlineSortableController,
@@ -175,18 +203,19 @@ import {
 import {
   useNotesSelectionCommandRouter,
   type NotesSelectionCommandOwnership,
-  type NotesSelectionCommandIntent
+  type NotesSelectionCommandIntent,
 } from "./useNotesSelectionCommandRouter";
 import {
   type OutlineLayoutMotionController,
-  useOutlineLayoutMotion
+  useOutlineLayoutMotion,
 } from "./useOutlineLayoutMotion";
 import { resumeOutlineIdleBaselineAfterInsertionFailure } from "./outlineIdleBaseline";
 import type {
   NotesPreparedSelectionAuthority,
-  UseNotesWorkspaceResult
+  UseNotesWorkspaceResult,
 } from "./useNotesWorkspace";
 
+const EMPTY_GITHUB_COLLAPSED_GROUPS: readonly string[] = [];
 const selectionDragRejectedMessage =
   "Can't move selection: the selected rows cannot be moved together.";
 const filteredDragPreparingMessage =
@@ -213,13 +242,11 @@ interface ImageDropPreview {
   >["position"];
 }
 
-type SelectionChooserOwnership = NotesSelectionCommandOwnership<
-  NotesPreparedSelectionAuthority
->;
+type SelectionChooserOwnership =
+  NotesSelectionCommandOwnership<NotesPreparedSelectionAuthority>;
 type SelectionChooserRequestOrigin = "menu" | "toolbar";
-type SelectionChooserSnapshot = NotesFrozenSelectionSnapshot<
-  SelectionChooserOwnership
->;
+type SelectionChooserSnapshot =
+  NotesFrozenSelectionSnapshot<SelectionChooserOwnership>;
 type SelectionChooserSession =
   | Readonly<{
       kind: "move";
@@ -266,6 +293,10 @@ type PaneDragSession =
   OutlineSelectionDragSession | PendingPaneSelectionDragSession;
 type PanePointerDropBoundary = OutlinePointerBoundary &
   Readonly<{ activeId: NoteId }>;
+type GithubProjectionDrop = Readonly<{
+  activeId: NoteId;
+  serializedKey: string;
+}>;
 
 interface NotesDragPresentationSnapshot {
   readonly forestNodeIds: readonly NoteId[];
@@ -281,10 +312,10 @@ interface CommittedOutlineRowProjection {
 
 function renderedDragImageSource(
   root: ParentNode | null,
-  nodeId: NoteId
+  nodeId: NoteId,
 ): string | undefined {
   const row = Array.from(
-    root?.querySelectorAll<HTMLElement>("[data-outline-id]") ?? []
+    root?.querySelectorAll<HTMLElement>("[data-outline-id]") ?? [],
   ).find((candidate) => candidate.dataset.outlineId === nodeId);
   const rowBounds = row?.getBoundingClientRect();
   const rootBounds =
@@ -300,7 +331,7 @@ function renderedDragImageSource(
     return undefined;
   }
   const image = row?.querySelector<HTMLImageElement>(
-    ".notes-image-node-content img"
+    ".notes-image-node-content img",
   );
   return image?.currentSrc || image?.src || undefined;
 }
@@ -309,7 +340,7 @@ function notesDragPresentationSnapshot(
   prepared: PreparedOutlineSelectionDrag,
   workspace: Pick<NormalizedNotesWorkspace, "nodesById">,
   representativeTitle?: string,
-  representativeThumbnailSrc?: string
+  representativeThumbnailSrc?: string,
 ): NotesDragPresentationSnapshot {
   const representativeNode = workspace.nodesById[prepared.nodeIds[0]];
   return Object.freeze({
@@ -318,22 +349,22 @@ function notesDragPresentationSnapshot(
       ? noteNodeNavigationLabel(
           representativeNode,
           representativeTitle ?? representativeNode.title,
-          "Untitled"
+          "Untitled",
         )
       : "Untitled",
     representativeThumbnailSrc:
       representativeNode?.nodeKind === "image"
         ? representativeThumbnailSrc
-        : undefined
+        : undefined,
   });
 }
 
 function trackPendingSelectionDragPreparation(
-  promise: Promise<OutlineSelectionDragFrozenContext | null>
+  promise: Promise<OutlineSelectionDragFrozenContext | null>,
 ): PendingPaneSelectionDragPreparation {
   const preparation: PendingPaneSelectionDragPreparation = {
     current: undefined,
-    promise: Promise.resolve(null)
+    promise: Promise.resolve(null),
   };
   preparation.promise = promise.then(
     (context) => {
@@ -343,14 +374,14 @@ function trackPendingSelectionDragPreparation(
     () => {
       preparation.current = null;
       return null;
-    }
+    },
   );
   return preparation;
 }
 
 function exactNoteIds(
   left: readonly NoteId[],
-  right: readonly NoteId[]
+  right: readonly NoteId[],
 ): boolean {
   return (
     left.length === right.length &&
@@ -360,7 +391,7 @@ function exactNoteIds(
 
 function selectedTagUnion(
   workspace: NormalizedNotesWorkspace,
-  nodeIds: readonly NoteId[]
+  nodeIds: readonly NoteId[],
 ): readonly NoteSearchTag[] {
   const tags = new Map<string, NoteSearchTag>();
   for (const nodeId of nodeIds) {
@@ -377,7 +408,7 @@ function selectedTagUnion(
         tags.set(key, {
           prefix: token.prefix,
           normalizedTag: token.normalized,
-          displayTag: token.display
+          displayTag: token.display,
         });
       }
     }
@@ -388,11 +419,11 @@ function selectedTagUnion(
 function frozenMoveTarget(
   workspace: NormalizedNotesWorkspace,
   rootIds: readonly NoteId[],
-  destinationId: NoteId | null
+  destinationId: NoteId | null,
 ): { parentId: NoteId | null; afterId: NoteId | null } | null {
   if (
     !buildNotesMoveDestinations(workspace.nodesById, rootIds).some(
-      (destination) => destination.id === destinationId
+      (destination) => destination.id === destinationId,
     )
   ) {
     return null;
@@ -405,7 +436,7 @@ function frozenMoveTarget(
   return {
     parentId: destinationId,
     afterId:
-      [...siblings].reverse().find((nodeId) => !selected.has(nodeId)) ?? null
+      [...siblings].reverse().find((nodeId) => !selected.has(nodeId)) ?? null,
   };
 }
 
@@ -430,7 +461,7 @@ interface ImageDropMarkerBoundary {
 
 function breadcrumbLabel(
   node: NoteNode,
-  attachments: readonly { originalName: string }[]
+  attachments: readonly { originalName: string }[],
 ): string {
   return noteNodeNavigationLabel(
     node,
@@ -438,14 +469,14 @@ function breadcrumbLabel(
     "Untitled page",
     node.nodeKind === "image" && attachments.length === 1
       ? attachments[0]?.originalName
-      : undefined
+      : undefined,
   );
 }
 
 function optionalNodeLabel(
   node: NoteNode | undefined,
   title: string | undefined,
-  emptyLabel = "Untitled node"
+  emptyLabel = "Untitled node",
 ): string | undefined {
   return node
     ? noteNodePresentationLabel(node, title ?? node.title, emptyLabel)
@@ -475,7 +506,7 @@ function OutlineEditorExportBridge(
 function NotesBreadcrumb({
   disabled,
   trashView,
-  onRequestEmptyTrash
+  onRequestEmptyTrash,
 }: NotesBreadcrumbProps) {
   const { actions } = useNotesActions();
   const { state } = useNotesState();
@@ -502,7 +533,7 @@ function NotesBreadcrumb({
         }
         const label = breadcrumbLabel(
           node,
-          state.attachmentsByNodeId[node.id] ?? []
+          state.attachmentsByNodeId[node.id] ?? [],
         );
         return (
           <span className="notes-breadcrumb-segment" key={nodeId}>
@@ -554,7 +585,7 @@ function DropPreviewLine({ preview }: { preview: OutlineDropPreview }) {
 function hideCompletedSubtrees<Row extends { depth: number; id: NoteId }>(
   rows: readonly Row[],
   nodesById: UseNotesWorkspaceResult["state"]["nodesById"],
-  zoomRootId: NoteId | null
+  zoomRootId: NoteId | null,
 ): Row[] {
   let hiddenDepth: number | null = null;
   return rows.filter((row) => {
@@ -577,7 +608,7 @@ function useOutlineIndentPx(): number {
   const [isNarrow, setIsNarrow] = useState(() =>
     typeof window.matchMedia === "function"
       ? window.matchMedia(OUTLINE_NARROW_MEDIA_QUERY).matches
-      : false
+      : false,
   );
 
   useEffect(() => {
@@ -614,7 +645,7 @@ function rowIdFromPointerTarget(target: EventTarget | null): NoteId | null {
 
 function rowIdFromPointerCoordinates(
   clientX: number,
-  clientY: number
+  clientY: number,
 ): NoteId | null {
   return typeof document.elementFromPoint === "function"
     ? rowIdFromPointerTarget(document.elementFromPoint(clientX, clientY))
@@ -622,7 +653,7 @@ function rowIdFromPointerCoordinates(
 }
 
 export function NotesOutlinePane({
-  toolbarTrailing
+  toolbarTrailing,
 }: {
   readonly toolbarTrailing?: ReactNode;
 } = {}) {
@@ -630,13 +661,14 @@ export function NotesOutlinePane({
   const attachmentUi = useNotesAttachmentUi();
   const paneLayout = useContext(PaneLayoutContext);
   const notesActionsSlice = useNotesActions();
+  const externalSources = useExternalSources();
   const {
     actions,
     applyPreparedSelectionBatch,
     claimActiveImageAtomPaste,
     isPreparedSelectionAuthorityCurrent,
     prepareSelectionAuthority,
-    retryLastFailedWrite
+    retryLastFailedWrite,
   } = notesActionsSlice;
   const vaultRoot = useContext(VaultRootContext);
   const outlineIdleBaselineRef = useRef<OutlineLayoutMotionController | null>(
@@ -664,30 +696,27 @@ export function NotesOutlinePane({
   const outlineLayoutGenerationRef = useRef(0);
   const noteOutlineActivity = useCallback(() => {
     outlineIdleBaselineRef.current?.noteActivity(
-      outlineLayoutGenerationRef.current
+      outlineLayoutGenerationRef.current,
     );
   }, []);
-  const interactionEpochRef = useRef(
-    createOutlineInteractionEpoch()
-  );
+  const interactionEpochRef = useRef(createOutlineInteractionEpoch());
   const keyboardInsertionTokenRef = useRef(0);
   const nextKeyboardInsertionToken = useCallback(
     () => ++keyboardInsertionTokenRef.current,
-    []
+    [],
   );
   const advanceInteractionEpoch = useCallback(
     (reason: OutlineInteractionReason): void => {
       if (shouldRecordOutlineBaselineActivity(reason)) {
         noteOutlineActivity();
       }
-      const interactionEpoch =
-        interactionEpochRef.current.advance(reason);
+      const interactionEpoch = interactionEpochRef.current.advance(reason);
       actions.publishOutlineInteractionEpoch?.({
         paneId,
-        interactionEpoch
+        interactionEpoch,
       });
     },
-    [actions, noteOutlineActivity, paneId]
+    [actions, noteOutlineActivity, paneId],
   );
   const interactionDisposeTokenRef = useRef<{
     cancelled: boolean;
@@ -710,7 +739,7 @@ export function NotesOutlinePane({
       cancelled: false,
       epoch: interactionEpochRef.current,
       vaultRoot,
-      unregister: actions.unregisterOutlinePane
+      unregister: actions.unregisterOutlinePane,
     };
     if (previous?.vaultRoot === token.vaultRoot) {
       previous.cancelled = true;
@@ -733,7 +762,7 @@ export function NotesOutlinePane({
   );
   const getActionsSnapshot = useCallback(
     () => notesActionsSliceRef.current,
-    []
+    [],
   );
   const {
     activeTagFilters,
@@ -745,7 +774,7 @@ export function NotesOutlinePane({
     projectionPublication,
     retryAuthorityRecovery,
     state,
-    tagSummaries
+    tagSummaries,
   } = notesStateSlice;
   const notesStateSliceRef = useRef(notesStateSlice);
   notesStateSliceRef.current = notesStateSlice;
@@ -758,7 +787,7 @@ export function NotesOutlinePane({
     draftsByNodeId,
     selection,
     selectionRevision = 0,
-    writeError
+    writeError,
   } = useNotesDrafts();
   const selectionChooserScopeKey = `${vaultRoot}\u0000${libraryView}\u0000${activeTagFilters
     .map((filter) => `${filter.prefix}\u0000${filter.normalizedTag}`)
@@ -771,21 +800,22 @@ export function NotesOutlinePane({
     useState<NotesDragPresentationSnapshot | null>(null);
   const dragSourceNodeIdSet = useMemo(
     () => new Set(dragPresentation?.forestNodeIds ?? []),
-    [dragPresentation]
+    [dragPresentation],
   );
   const draggedNodeLabels = useMemo(
     () =>
-      dragPresentation === null
-        ? []
-        : [dragPresentation.representativeLabel],
-    [dragPresentation]
+      dragPresentation === null ? [] : [dragPresentation.representativeLabel],
+    [dragPresentation],
   );
-  const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(null);
+  const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(
+    null,
+  );
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
   const [quickJumpOpen, setQuickJumpOpen] = useState(false);
   const [showCompleted, setShowCompleted] = useState(true);
-  const [imageDropTargetId, setImageDropTargetId] =
-    useState<NoteId | null>(null);
+  const [imageDropTargetId, setImageDropTargetId] = useState<NoteId | null>(
+    null,
+  );
   const [imageDropPreview, setImageDropPreview] =
     useState<ImageDropPreview | null>(null);
   const [imageIngestError, setImageIngestError] =
@@ -800,9 +830,9 @@ export function NotesOutlinePane({
     filteredDragAuthorityPreparation,
     setFilteredDragAuthorityPreparation,
   ] = useState<FilteredDragAuthorityPreparation>({
-      status: "idle",
-      authority: null
-    });
+    status: "idle",
+    authority: null,
+  });
   const [selectionDragContext, setSelectionDragContext] =
     useState<OutlineSelectionDragFrozenContext | null>(null);
   const [selectionDragContextFailureKey, setSelectionDragContextFailureKey] =
@@ -813,7 +843,7 @@ export function NotesOutlinePane({
     useState<SelectionChooserSession | null>(null);
   const [selectionChooserFeedback, setSelectionChooserFeedback] = useState({
     busy: false,
-    error: null as string | null
+    error: null as string | null,
   });
   const [selectionClipboardError, setSelectionClipboardError] = useState<
     string | null
@@ -836,8 +866,10 @@ export function NotesOutlinePane({
   const outlineDragAttemptEpochRef = useRef(0);
   const outlineDragSessionRef = useRef<PaneDragSession | null>(null);
   const pointerDropBoundaryRef = useRef<PanePointerDropBoundary | null>(null);
-  const committedOutlineRowsRef =
-    useRef<CommittedOutlineRowProjection | null>(null);
+  const committedOutlineRowsRef = useRef<CommittedOutlineRowProjection | null>(
+    null,
+  );
+  const githubProjectionDropRef = useRef<GithubProjectionDrop | null>(null);
   const structuralRowsRef = useRef<readonly FlattenedOutlineRow[]>([]);
   const selectedDragNodeIdsRef = useRef<readonly NoteId[] | null>(null);
   const selectionDragRejectionPublishedRef = useRef(false);
@@ -854,15 +886,15 @@ export function NotesOutlinePane({
       libraryView,
       status: state.status,
       deletingNotesData,
-      importClipboardImages: actions.importClipboardImages
+      importClipboardImages: actions.importClipboardImages,
     }),
     [
       actions.importClipboardImages,
       deletingNotesData,
       libraryView,
       state.status,
-      vaultRoot
-    ]
+      vaultRoot,
+    ],
   );
   const imagePasteExecutionScopeRef = useRef(imagePasteExecutionScope);
   imagePasteExecutionScopeRef.current = imagePasteExecutionScope;
@@ -871,24 +903,20 @@ export function NotesOutlinePane({
   const writeAuthorityLocked =
     authorityRecovery !== undefined && authorityRecovery.kind !== "known";
   const lifecycleMode =
-    libraryView === "archive"
-      ? "archive"
-      : trashView
-        ? "trash"
-        : "standard";
+    libraryView === "archive" ? "archive" : trashView ? "trash" : "standard";
   const hasVaultRoot = vaultRoot.trim().length > 0;
-  const selectionMutationDisabledReason =
-    deriveSelectionMutationDisabledReason({
+  const selectionMutationDisabledReason = deriveSelectionMutationDisabledReason(
+    {
       deletingNotesData,
       lifecycleReadOnly: lifecycleReadOnly || writeAuthorityLocked,
       loading: state.status === "loading",
-      writeError: writeError !== null
-    });
-  const selectionMutationDisabledReasonRef = useRef(
-    selectionMutationDisabledReason
+      writeError: writeError !== null,
+    },
   );
-  selectionMutationDisabledReasonRef.current =
-    selectionMutationDisabledReason;
+  const selectionMutationDisabledReasonRef = useRef(
+    selectionMutationDisabledReason,
+  );
+  selectionMutationDisabledReasonRef.current = selectionMutationDisabledReason;
   const imageDropAvailable =
     hasVaultRoot &&
     !deletingNotesData &&
@@ -1003,7 +1031,7 @@ export function NotesOutlinePane({
     const targetId = attachmentTargetFromPaste(
       event.currentTarget,
       event.target,
-      selectedId
+      selectedId,
     );
     if (targetId === null) {
       setCurrentPasteError("Select a note before pasting images.");
@@ -1014,7 +1042,7 @@ export function NotesOutlinePane({
     if (!importClipboardImages) return;
     try {
       void Promise.resolve(
-        importClipboardImages(targetId, extraction.items)
+        importClipboardImages(targetId, extraction.items),
       ).catch(reportCurrentPasteError);
     } catch (cause) {
       reportCurrentPasteError(cause);
@@ -1030,58 +1058,92 @@ export function NotesOutlinePane({
     (overlayNode: HTMLElement) => {
       const sourceNode = Array.from(
         dropSurfaceRef.current?.querySelectorAll<HTMLElement>(
-          "[data-outline-id]"
-        ) ?? []
+          "[data-outline-id]",
+        ) ?? [],
       ).find((node) => node.dataset.outlineId === activeDragId);
       return (sourceNode ?? overlayNode).getBoundingClientRect();
     },
-    [activeDragId]
+    [activeDragId],
   );
-  const detectOutlineCollisions = useCallback<CollisionDetection>((args) => {
-    if (args.pointerCoordinates === null) {
-      pointerDropBoundaryRef.current = null;
-      return closestCenter(args);
-    }
+  const detectOutlineCollisions = useCallback<CollisionDetection>(
+    (args) => {
+      if (args.pointerCoordinates === null) {
+        pointerDropBoundaryRef.current = null;
+        githubProjectionDropRef.current = null;
+        return closestCenter(args);
+      }
 
-    const activeId =
-      parseNotesPaneDndId(String(args.active.id))?.nodeId ??
-      String(args.active.id);
-    const session = outlineDragSessionRef.current;
-    const prepared =
-      session?.kind === "selected-ready"
-        ? session.prepared
-        : session?.kind === "selected-pending"
-          ? session.preview
-          : null;
-    const measuredRows = structuralRowsRef.current.flatMap((row) => {
-      const dragged =
-        prepared !== null
-          ? preparedOutlineSelectionDragContainsNode(prepared, row.id)
-          : row.id === activeId || row.ancestorIds.includes(activeId);
-      const rect = args.droppableRects.get(
-        notesPaneDndId(paneId, row.id, "row")
+      const activeId =
+        parseNotesPaneDndId(String(args.active.id))?.nodeId ??
+        String(args.active.id);
+      const session = outlineDragSessionRef.current;
+      const prepared =
+        session?.kind === "selected-ready"
+          ? session.prepared
+          : session?.kind === "selected-pending"
+            ? session.preview
+            : null;
+      const selectedCount = prepared?.nodeIds.length ?? 1;
+      const projectionTarget =
+        activeId === GITHUB_NOTIFICATIONS_ROOT_ID || selectedCount !== 1
+          ? undefined
+          : args.droppableContainers.find((container) => {
+              const data = container.data.current;
+              const rect = args.droppableRects.get(container.id);
+              return (
+                data?.kind === "github-notification-projection" &&
+                typeof data.serializedKey === "string" &&
+                rect !== undefined &&
+                args.pointerCoordinates!.x >= rect.left &&
+                args.pointerCoordinates!.x < rect.right &&
+                args.pointerCoordinates!.y >= rect.top &&
+                args.pointerCoordinates!.y < rect.bottom
+              );
+            });
+      if (projectionTarget) {
+        pointerDropBoundaryRef.current = null;
+        githubProjectionDropRef.current = {
+          activeId,
+          serializedKey: projectionTarget.data.current!.serializedKey as string,
+        };
+        return closestCenter({
+          ...args,
+          droppableContainers: args.droppableContainers.filter(
+            ({ id }) => id === projectionTarget.id,
+          ),
+        });
+      }
+      githubProjectionDropRef.current = null;
+      const measuredRows = structuralRowsRef.current.flatMap((row) => {
+        const dragged =
+          prepared !== null
+            ? preparedOutlineSelectionDragContainsNode(prepared, row.id)
+            : row.id === activeId || row.ancestorIds.includes(activeId);
+        const rect = args.droppableRects.get(
+          notesPaneDndId(paneId, row.id, "row"),
+        );
+        return dragged || !rect
+          ? []
+          : [{ id: row.id, top: rect.top, bottom: rect.bottom }];
+      });
+      const boundary = resolveOutlinePointerBoundary(
+        args.pointerCoordinates.y,
+        measuredRows,
       );
-      return dragged || !rect
-        ? []
-        : [{ id: row.id, top: rect.top, bottom: rect.bottom }];
-    });
-    const boundary = resolveOutlinePointerBoundary(
-      args.pointerCoordinates.y,
-      measuredRows
-    );
-    pointerDropBoundaryRef.current = { activeId, ...boundary };
-    if (boundary.overId === null) {
-      return [];
-    }
-    return closestCenter({
-      ...args,
-      droppableContainers: args.droppableContainers.filter(
-        ({ id }) =>
-          String(id) ===
-          notesPaneDndId(paneId, boundary.overId, "row")
-      )
-    });
-  }, [paneId]);
+      pointerDropBoundaryRef.current = { activeId, ...boundary };
+      if (boundary.overId === null) {
+        return [];
+      }
+      return closestCenter({
+        ...args,
+        droppableContainers: args.droppableContainers.filter(
+          ({ id }) =>
+            String(id) === notesPaneDndId(paneId, boundary.overId, "row"),
+        ),
+      });
+    },
+    [paneId],
+  );
 
   // Finder image drops stay on the Tauri boundary: browser DragEvents cannot
   // provide durable native paths or vault-backed storage for this import path.
@@ -1106,14 +1168,14 @@ export function NotesOutlinePane({
       setImageDropTargetId(targetId);
     };
     const targetFromEvent = (
-      event: Extract<NotesNativeImageDropEvent, { position: unknown }>
+      event: Extract<NotesNativeImageDropEvent, { position: unknown }>,
     ) => {
       const surface = dropSurfaceRef.current;
       return surface
         ? attachmentTargetFromPoint(
             surface,
             event.position,
-            imageDropFallbackTargetIdRef.current
+            imageDropFallbackTargetIdRef.current,
           )
         : null;
     };
@@ -1122,7 +1184,7 @@ export function NotesOutlinePane({
       const detail = cause instanceof Error ? cause.message : String(cause);
       setImageIngestError({
         label: "Image drop failed",
-        message: `Image drop failed: ${detail}`
+        message: `Image drop failed: ${detail}`,
       });
     };
     const listener = (event: NotesNativeImageDropEvent) => {
@@ -1146,10 +1208,10 @@ export function NotesOutlinePane({
         setImageDropPreview(
           event.paths.length > 0
             ? { paths: event.paths, position: event.position }
-            : null
+            : null,
         );
         updateDropTarget(
-          event.paths.length > 0 ? targetFromEvent(event) : null
+          event.paths.length > 0 ? targetFromEvent(event) : null,
         );
         return;
       }
@@ -1158,12 +1220,12 @@ export function NotesOutlinePane({
           imageDropPathsRef.current.length > 0
             ? {
                 paths: imageDropPathsRef.current,
-                position: event.position
+                position: event.position,
               }
-            : null
+            : null,
         );
         updateDropTarget(
-          imageDropPathsRef.current.length > 0 ? targetFromEvent(event) : null
+          imageDropPathsRef.current.length > 0 ? targetFromEvent(event) : null,
         );
         return;
       }
@@ -1177,7 +1239,9 @@ export function NotesOutlinePane({
       const importDroppedImagePaths = importDroppedImagePathsRef.current;
       if (!targetId || !importDroppedImagePaths) return;
       try {
-        void importDroppedImagePaths(targetId, event.paths).catch(reportDropError);
+        void importDroppedImagePaths(targetId, event.paths).catch(
+          reportDropError,
+        );
       } catch (cause) {
         reportDropError(cause);
       }
@@ -1195,7 +1259,7 @@ export function NotesOutlinePane({
         if (disposed) return;
         clearPreview();
         reportDropError(cause);
-      }
+      },
     );
 
     return () => {
@@ -1206,9 +1270,8 @@ export function NotesOutlinePane({
   }, [attachmentUi]);
 
   useEffect(() => {
-    const featureSlot = contentRef.current?.closest<HTMLElement>(
-      ".feature-pane-slot"
-    );
+    const featureSlot =
+      contentRef.current?.closest<HTMLElement>(".feature-pane-slot");
     if (!featureSlot || typeof MutationObserver === "undefined") return;
 
     const clearWhenHidden = () => {
@@ -1221,7 +1284,7 @@ export function NotesOutlinePane({
     const observer = new MutationObserver(clearWhenHidden);
     observer.observe(featureSlot, {
       attributes: true,
-      attributeFilter: ["hidden"]
+      attributeFilter: ["hidden"],
     });
     return () => observer.disconnect();
   }, []);
@@ -1258,7 +1321,7 @@ export function NotesOutlinePane({
           metaKey: event.metaKey,
           shiftKey: event.shiftKey,
           isComposing: event.isComposing,
-          platform: detectOutlineShortcutPlatform()
+          platform: detectOutlineShortcutPlatform(),
         });
         if (historyShortcut) {
           event.preventDefault();
@@ -1284,16 +1347,16 @@ export function NotesOutlinePane({
     if (!content) return;
 
     const publishWidth = (
-      measuredWidth = content.getBoundingClientRect().width
+      measuredWidth = content.getBoundingClientRect().width,
     ) => {
       const initialMaxDisplayWidth = Math.floor(
-        Math.min(measuredWidth, window.innerWidth)
+        Math.min(measuredWidth, window.innerWidth),
       );
       actions.setImageImportMaxDisplayWidth(
         Number.isSafeInteger(initialMaxDisplayWidth) &&
           initialMaxDisplayWidth > 0
           ? initialMaxDisplayWidth
-          : null
+          : null,
       );
     };
 
@@ -1328,10 +1391,10 @@ export function NotesOutlinePane({
         flattenVisibleOutlineRows(
           state,
           state.zoomRootId,
-          locallyExpandedNodeIds
-        )
+          locallyExpandedNodeIds,
+        ),
       ),
-    [locallyExpandedNodeIds, state, vaultRoot]
+    [locallyExpandedNodeIds, state, vaultRoot],
   );
   const structuralRows = useMemo(
     () =>
@@ -1340,20 +1403,19 @@ export function NotesOutlinePane({
         : hideCompletedSubtrees(
             allStructuralRows,
             state.nodesById,
-            state.zoomRootId
+            state.zoomRootId,
           ),
-    [allStructuralRows, showCompleted, state.nodesById, state.zoomRootId]
+    [allStructuralRows, showCompleted, state.nodesById, state.zoomRootId],
   );
   structuralRowsRef.current = structuralRows;
   const visibleSignature = useMemo(
     () => createOutlineVisibleSignature(structuralRows),
-    [structuralRows]
+    [structuralRows],
   );
   const insertionDisposition = useMemo<KeyboardInsertionDisposition>(() => {
-    const disposition =
-      projectionPublication?.keyboardInsertionDisposition ?? {
-        kind: "unrelated" as const
-      };
+    const disposition = projectionPublication?.keyboardInsertionDisposition ?? {
+      kind: "unrelated" as const,
+    };
     if (
       (disposition.kind !== "exact" && disposition.kind !== "mixed") ||
       projectionPublication?.visibleSignature === undefined ||
@@ -1366,8 +1428,8 @@ export function NotesOutlinePane({
       pending: disposition.pending,
       settlement: {
         ...disposition.settlement,
-        focusEligible: false
-      }
+        focusEligible: false,
+      },
     };
   }, [projectionPublication, visibleSignature]);
   const insertionFocusCancellation = useMemo(
@@ -1382,10 +1444,10 @@ export function NotesOutlinePane({
                 .intentToken,
             nodeId:
               projectionPublication.keyboardInsertionDisposition.pending.intent
-                .expectedNodeId
+                .expectedNodeId,
           }
         : null,
-    [projectionPublication, visibleSignature]
+    [projectionPublication, visibleSignature],
   );
   const bodyRows = useMemo(
     () =>
@@ -1393,15 +1455,15 @@ export function NotesOutlinePane({
         committedOutlineRowsRef.current?.vaultRoot === vaultRoot
           ? committedOutlineRowsRef.current.bodyRows
           : [],
-        deriveOutlineBodyRows(structuralRows, state.zoomRootId)
+        deriveOutlineBodyRows(structuralRows, state.zoomRootId),
       ),
-    [structuralRows, state.zoomRootId, vaultRoot]
+    [structuralRows, state.zoomRootId, vaultRoot],
   );
   useLayoutEffect(() => {
     committedOutlineRowsRef.current = {
       vaultRoot,
       allStructuralRows,
-      bodyRows
+      bodyRows,
     };
   }, [allStructuralRows, bodyRows, vaultRoot]);
   const paneScope = useMemo<NotesWorkspaceScope>(() => {
@@ -1422,17 +1484,15 @@ export function NotesOutlinePane({
       new Set(
         Object.values(state.nodesById)
           .filter((node) => node.isCollapsed)
-          .map((node) => node.id)
+          .map((node) => node.id),
       ),
-    [state.nodesById]
+    [state.nodesById],
   );
   const geometryGenerationRef = useRef(0);
-  const panePublicationRef = useRef<
-    Omit<
-      Parameters<NonNullable<typeof actions.publishOutlinePaneState>>[0],
-      "geometryGeneration"
-    > | null
-  >(null);
+  const panePublicationRef = useRef<Omit<
+    Parameters<NonNullable<typeof actions.publishOutlinePaneState>>[0],
+    "geometryGeneration"
+  > | null>(null);
   useLayoutEffect(() => {
     const descriptor = {
       paneId,
@@ -1443,12 +1503,12 @@ export function NotesOutlinePane({
       locallyExpandedNodeIds,
       interactionEpoch: interactionEpochRef.current.current(),
       visibleSignature,
-      activeDrag: activeDragId !== null
+      activeDrag: activeDragId !== null,
     };
     panePublicationRef.current = descriptor;
     actions.publishOutlinePaneState?.({
       ...descriptor,
-      geometryGeneration: geometryGenerationRef.current
+      geometryGeneration: geometryGenerationRef.current,
     });
   }, [
     actions,
@@ -1460,7 +1520,7 @@ export function NotesOutlinePane({
     showCompleted,
     state.zoomRootId,
     structuralRows,
-    visibleSignature
+    visibleSignature,
   ]);
   useLayoutEffect(() => {
     const root = motionListRef.current;
@@ -1470,20 +1530,300 @@ export function NotesOutlinePane({
       geometryGenerationRef.current += 1;
       actions.publishOutlinePaneState?.({
         ...panePublicationRef.current,
-        geometryGeneration: geometryGenerationRef.current
+        geometryGeneration: geometryGenerationRef.current,
       });
     });
     observer.observe(root);
     for (const row of root.children) observer.observe(row);
     return () => observer.disconnect();
   }, [actions, structuralRows]);
+  const githubPage = useMemo(
+    () =>
+      externalSources.pages.find(
+        (page) => page.providerId === GITHUB_NOTIFICATIONS_PROVIDER_ID,
+      ) ?? null,
+    [externalSources.pages],
+  );
+  const githubRoot = state.nodesById[GITHUB_NOTIFICATIONS_ROOT_ID];
+  const githubZoomed = state.zoomRootId === GITHUB_NOTIFICATIONS_ROOT_ID;
+  const persistedGithubCollapsedGroups =
+    githubRoot?.pluginState?.collapsedGroups ?? EMPTY_GITHUB_COLLAPSED_GROUPS;
+  const persistedGithubCollapsedGroupSet = useMemo(
+    () => new Set(persistedGithubCollapsedGroups),
+    [persistedGithubCollapsedGroups],
+  );
+  const [githubCollapsedGroupIntents, setGithubCollapsedGroupIntents] =
+    useState<
+      ReadonlyMap<
+        string,
+        { readonly generation: number; readonly collapsed: boolean }
+      >
+    >(() => new Map());
+  const githubCollapsedGroupGenerationRef = useRef(new Map<string, number>());
+  useEffect(() => {
+    setGithubCollapsedGroupIntents((current) => {
+      let next: Map<
+        string,
+        { readonly generation: number; readonly collapsed: boolean }
+      > | null = null;
+      for (const [dateKey, intent] of current) {
+        if (
+          persistedGithubCollapsedGroupSet.has(dateKey) === intent.collapsed
+        ) {
+          if (next === null) next = new Map(current);
+          next.delete(dateKey);
+        }
+      }
+      return next ?? current;
+    });
+  }, [persistedGithubCollapsedGroupSet]);
+  const githubCollapsedGroups = useMemo(() => {
+    const next = new Set(persistedGithubCollapsedGroupSet);
+    githubCollapsedGroupIntents.forEach(({ collapsed }, dateKey) => {
+      if (collapsed) next.add(dateKey);
+      else next.delete(dateKey);
+    });
+    return next;
+  }, [githubCollapsedGroupIntents, persistedGithubCollapsedGroupSet]);
+  const githubProjectionNow = useMemo(
+    () => new Date(externalSources.projectionNowMs ?? Date.now()),
+    [externalSources.projectionNowMs],
+  );
+  const githubProjection = useMemo(
+    () =>
+      projectGithubNotificationsOutline({
+        workspace: state,
+        page: githubPage,
+        showCompleted,
+        now: githubProjectionNow,
+        locallyExpandedNodeIds,
+        collapsedGroups: githubCollapsedGroups,
+      }),
+    [
+      githubPage,
+      githubProjectionNow,
+      githubCollapsedGroups,
+      locallyExpandedNodeIds,
+      showCompleted,
+      state,
+    ],
+  );
+  const githubProjectionRef = useRef(githubProjection);
+  githubProjectionRef.current = githubProjection;
+  const lastGithubEditorFocusRef = useRef<GithubEditorFocusKey | null>(null);
+  const previousGithubFocusOrderRef = useRef(githubProjection.editorFocusKeys);
+  const githubEditorElement = useCallback(
+    (key: GithubEditorFocusKey): HTMLTextAreaElement | undefined => {
+      const editors = Array.from(
+        contentRef.current?.querySelectorAll<HTMLTextAreaElement>(
+          ".notes-external-children textarea",
+        ) ?? [],
+      );
+      return key.kind === "stored"
+        ? editors.find(
+            (candidate) =>
+              candidate.dataset.githubEditorNodeId === key.nodeId &&
+              candidate.dataset.githubEditorField === key.field,
+          )
+        : editors.find(
+            (candidate) =>
+              candidate.dataset.githubEditorKey === key.key &&
+              candidate.dataset.githubEditorField === key.field,
+          );
+    },
+    [],
+  );
+  const focusGithubEditor = useCallback(
+    (key: GithubEditorFocusKey): boolean => {
+      const editor = githubEditorElement(key);
+      editor?.focus();
+      return editor !== undefined;
+    },
+    [githubEditorElement],
+  );
+  useLayoutEffect(() => {
+    const previous = previousGithubFocusOrderRef.current;
+    previousGithubFocusOrderRef.current = githubProjection.editorFocusKeys;
+    const focused = lastGithubEditorFocusRef.current;
+    if (focused === null) {
+      return;
+    }
+    const stillVisible = githubEditorElement(focused) !== undefined;
+    if (stillVisible) {
+      return;
+    }
+    if (
+      document.activeElement !== null &&
+      document.activeElement !== document.body
+    ) {
+      return;
+    }
+    const fallback = resolveGithubEditorFocusFallback(
+      previous,
+      githubProjection.editorFocusKeys,
+      focused,
+    );
+    if (fallback && focusGithubEditor(fallback)) {
+      lastGithubEditorFocusRef.current = fallback;
+      return;
+    }
+    const rootActivator =
+      contentRef.current?.querySelector<HTMLElement>(
+        `[data-outline-id="${GITHUB_NOTIFICATIONS_ROOT_ID}"] ` +
+          "[data-sortable-activator]",
+      ) ?? null;
+    if (rootActivator) {
+      rootActivator.focus();
+    } else {
+      contentRef.current
+        ?.closest(".notes-outline")
+        ?.querySelector<HTMLElement>(
+          ".notes-breadcrumb-button[aria-current='page']",
+        )
+        ?.focus();
+    }
+    lastGithubEditorFocusRef.current = null;
+  }, [
+    focusGithubEditor,
+    githubEditorElement,
+    githubProjection.editorFocusKeys,
+  ]);
+  const requestGithubProjection = externalSources.requestGithubProjection;
+  const githubProjectionRequested = githubProjectionLeaseRequested({
+    githubRootId: GITHUB_NOTIFICATIONS_ROOT_ID,
+    libraryView,
+    zoomRootId: state.zoomRootId,
+    githubRoot,
+  });
+  useEffect(() => {
+    if (requestGithubProjection === undefined) return;
+    requestGithubProjection(githubProjectionRequested);
+    return () => requestGithubProjection(false);
+  }, [githubProjectionRequested, requestGithubProjection]);
+  const refreshMaterializedGithubNotificationsAction =
+    actions.refreshMaterializedGithubNotifications;
+  const setGithubGroupCollapsedAction = actions.setGithubGroupCollapsed;
+  const refreshMaterializedGithubNotificationsActionRef = useRef(
+    refreshMaterializedGithubNotificationsAction,
+  );
+  refreshMaterializedGithubNotificationsActionRef.current =
+    refreshMaterializedGithubNotificationsAction;
+  const githubProjectionNowRef = useRef(githubProjectionNow);
+  githubProjectionNowRef.current = githubProjectionNow;
+  const refreshMaterializedGithubNotifications = useCallback(
+    async ({
+      connectionId,
+      webBaseUrl,
+      items,
+    }: GithubMaterializedRefreshRequest): Promise<GithubMaterializedRefreshOutcome> => {
+      return refreshMaterializedGithubNotificationsActionRef.current(
+        items.map((item) =>
+          githubNotificationSnapshot(
+            item,
+            connectionId,
+            webBaseUrl,
+            githubProjectionNowRef.current,
+          ),
+        ),
+      );
+    },
+    [],
+  );
+  const registerGithubMaterializedRefresh =
+    externalSources.registerGithubMaterializedRefresh;
+  useEffect(() => {
+    if (registerGithubMaterializedRefresh === undefined) {
+      return;
+    }
+    return registerGithubMaterializedRefresh(
+      refreshMaterializedGithubNotifications,
+    );
+  }, [
+    refreshMaterializedGithubNotifications,
+    registerGithubMaterializedRefresh,
+  ]);
+  const toggleGithubDateGroup = useCallback(
+    (dateKey: string, collapsed: boolean) => {
+      const generation =
+        (githubCollapsedGroupGenerationRef.current.get(dateKey) ?? 0) + 1;
+      githubCollapsedGroupGenerationRef.current.set(dateKey, generation);
+      setGithubCollapsedGroupIntents((current) => {
+        const next = new Map(current);
+        next.set(dateKey, { generation, collapsed });
+        return next;
+      });
+      const removeIntent = () => {
+        setGithubCollapsedGroupIntents((current) => {
+          if (current.get(dateKey)?.generation !== generation) return current;
+          const next = new Map(current);
+          next.delete(dateKey);
+          return next;
+        });
+      };
+      void setGithubGroupCollapsedAction(dateKey, collapsed).then((outcome) => {
+        if (outcome !== "committed") removeIntent();
+      }, removeIntent);
+    },
+    [setGithubGroupCollapsedAction],
+  );
+  const retryGithubNotifications = useCallback(() => {
+    void externalSources
+      .refresh(GITHUB_NOTIFICATIONS_PROVIDER_ID)
+      .catch(() => undefined);
+  }, [externalSources]);
+  const createGithubNotificationSibling = useCallback(
+    async (bullet: ExternalBullet) => {
+      const snapshot = githubNotificationSnapshotFromBullet(bullet);
+      if (snapshot === null) {
+        return;
+      }
+      actions.clearSelection();
+      await actions.materializeGithubNotification(snapshot, {
+        kind: "sibling",
+      });
+    },
+    [actions],
+  );
+  const importGithubNotificationChildren = useCallback(
+    async (bullet: ExternalBullet, nodes: readonly NoteImportNode[]) => {
+      const snapshot = githubNotificationSnapshotFromBullet(bullet);
+      if (snapshot === null) {
+        return;
+      }
+      actions.clearSelection();
+      await actions.materializeGithubNotification(snapshot, {
+        kind: "children",
+        nodes,
+      });
+    },
+    [actions],
+  );
+  const githubDescendantIds = useMemo(() => {
+    const descendants = new Set<NoteId>();
+    const pending = [
+      ...(state.childIdsByParent[GITHUB_NOTIFICATIONS_ROOT_ID] ?? []),
+    ];
+    while (pending.length > 0) {
+      const nodeId = pending.pop()!;
+      if (descendants.has(nodeId)) {
+        continue;
+      }
+      descendants.add(nodeId);
+      pending.push(...(state.childIdsByParent[nodeId] ?? []));
+    }
+    return descendants;
+  }, [state.childIdsByParent]);
+  const ordinaryBodyRows = useMemo(
+    () => bodyRows.filter((row) => !githubDescendantIds.has(row.id)),
+    [bodyRows, githubDescendantIds],
+  );
   const completedItemsHidden =
     !showCompleted &&
     allStructuralRows.length > structuralRows.length &&
     bodyRows.length === 0;
   const structuralVisibleIds = useMemo(
     () => structuralRows.map((row) => row.id),
-    [structuralRows]
+    [structuralRows],
   );
   // Rows resolve prev/next-row neighbours (keyboard nav) through this stable
   // accessor instead of receiving the visible-id array by value — passing the
@@ -1493,45 +1833,68 @@ export function NotesOutlinePane({
   structuralVisibleIdsRef.current = structuralVisibleIds;
   const getVisibleNodeIds = useCallback(
     () => structuralVisibleIdsRef.current,
-    []
+    [],
   );
   // Selection is a body-row concept. While zoomed, the page header remains in
   // the structural order for ordinary Arrow navigation and drag geometry, but
   // it must never become an invisible member of a selected range.
-  const bodyVisibleIds = useMemo(
-    () => bodyRows.map((row) => row.id),
-    [bodyRows]
-  );
+  const bodyVisibleIds = useMemo(() => {
+    if (githubZoomed) {
+      return [...githubProjection.selectableUserNodeIds];
+    }
+    const visibleIds: NoteId[] = [];
+    for (const row of ordinaryBodyRows) {
+      if (row.id === GITHUB_NOTIFICATIONS_ROOT_ID) {
+        if (!row.isCollapsed) {
+          visibleIds.push(...githubProjection.selectableUserNodeIds);
+        }
+      } else {
+        visibleIds.push(row.id);
+      }
+    }
+    return visibleIds;
+  }, [githubProjection.selectableUserNodeIds, githubZoomed, ordinaryBodyRows]);
+  const sortableVisibleIds = useMemo(() => {
+    if (githubZoomed) {
+      return [...githubProjection.sortableIds];
+    }
+    const visibleIds: NoteId[] = [];
+    for (const row of ordinaryBodyRows) {
+      visibleIds.push(row.id);
+      if (row.id === GITHUB_NOTIFICATIONS_ROOT_ID && !row.isCollapsed) {
+        visibleIds.push(...githubProjection.sortableIds);
+      }
+    }
+    return visibleIds;
+  }, [githubProjection.sortableIds, githubZoomed, ordinaryBodyRows]);
   useEffect(() => {
-    const liveIds = new Set(bodyVisibleIds);
+    const liveIds = new Set(ordinaryBodyRows.map((row) => row.id));
     for (const nodeId of sortableControllersRef.current.keys()) {
       if (!liveIds.has(nodeId)) {
         sortableControllersRef.current.delete(nodeId);
       }
     }
-  }, [bodyVisibleIds]);
+  }, [ordinaryBodyRows]);
   const bodySortableIds = useMemo(
     () =>
-      bodyVisibleIds.map((nodeId) =>
-        notesPaneDndId(paneId, nodeId, "row")
-      ),
-    [bodyVisibleIds, paneId]
+      sortableVisibleIds.map((nodeId) => notesPaneDndId(paneId, nodeId, "row")),
+    [paneId, sortableVisibleIds],
   );
   const bodyVisibleIdsRef = useRef(bodyVisibleIds);
   bodyVisibleIdsRef.current = bodyVisibleIds;
   const getSelectionVisibleNodeIds = useCallback(
     () => bodyVisibleIdsRef.current,
-    []
+    [],
   );
   const materializedSelectionIds = useMemo(
     () => selectionSubtreeIds(selection ?? null, bodyVisibleIds, state),
-    [bodyVisibleIds, selection, state]
+    [bodyVisibleIds, selection, state],
   );
   // Hand each memoized row only an atomic membership bit. Rows that stay in or
   // out of the range retain every prop identity across a selection update.
   const selectedIdSet = useMemo(
     () => new Set(materializedSelectionIds),
-    [materializedSelectionIds]
+    [materializedSelectionIds],
   );
   // Rows read the live selection at keydown time (to extend the head) through
   // this stable accessor, mirroring getVisibleNodeIds — the row never subscribes
@@ -1540,10 +1903,10 @@ export function NotesOutlinePane({
   selectionRef.current = selection ?? null;
   const getSelection = useCallback(
     () => getLiveSelectionSnapshot?.().selection ?? selectionRef.current,
-    [getLiveSelectionSnapshot]
+    [getLiveSelectionSnapshot],
   );
   const handleMouseSelectionPointerDownCapture = (
-    event: ReactPointerEvent<HTMLOListElement>
+    event: ReactPointerEvent<HTMLOListElement>,
   ): void => {
     mouseSelectionGestureRef.current = null;
     if (
@@ -1559,12 +1922,12 @@ export function NotesOutlinePane({
       mouseSelectionGestureRef.current = {
         pointerId: event.pointerId,
         anchorId,
-        promoted: false
+        promoted: false,
       };
     }
   };
   const handleMouseSelectionPointerMoveCapture = (
-    event: ReactPointerEvent<HTMLOListElement>
+    event: ReactPointerEvent<HTMLOListElement>,
   ): void => {
     const gesture = mouseSelectionGestureRef.current;
     if (
@@ -1583,6 +1946,7 @@ export function NotesOutlinePane({
         : targetRowId;
     if (
       !currentRowId ||
+      !bodyVisibleIdsRef.current.includes(currentRowId) ||
       (!gesture.promoted && currentRowId === gesture.anchorId)
     ) {
       return;
@@ -1609,15 +1973,15 @@ export function NotesOutlinePane({
         selection: selection ?? null,
         visibleNodeIds: bodyVisibleIds,
         workspace: state,
-        authoritativeWorkspace: libraryView === "all" ? state : undefined
+        authoritativeWorkspace: libraryView === "all" ? state : undefined,
       }),
-    [bodyVisibleIds, libraryView, selection, state]
+    [bodyVisibleIds, libraryView, selection, state],
   );
   const currentPreparedAuthority =
     preparedSelectionAuthority &&
     exactNoteIds(
       preparedSelectionAuthority.selectedNodeIds,
-      materializedSelectionIds
+      materializedSelectionIds,
     ) &&
     isPreparedSelectionAuthorityCurrent?.(preparedSelectionAuthority)
       ? preparedSelectionAuthority
@@ -1629,11 +1993,9 @@ export function NotesOutlinePane({
         visibleNodeIds: bodyVisibleIds,
         workspace: state,
         authoritativeWorkspace:
-          libraryView === "all"
-            ? state
-            : currentPreparedAuthority?.workspace
+          libraryView === "all" ? state : currentPreparedAuthority?.workspace,
       }),
-    [bodyVisibleIds, currentPreparedAuthority, libraryView, selection, state]
+    [bodyVisibleIds, currentPreparedAuthority, libraryView, selection, state],
   );
   const currentSelectionDragContext =
     selectionDragContext &&
@@ -1642,15 +2004,16 @@ export function NotesOutlinePane({
       selectionRevision &&
     exactNoteIds(
       selectionDragContext.ownership.actionSnapshot.selectedNodeIds,
-      selectionSnapshot.selectedNodeIds
+      selectionSnapshot.selectedNodeIds,
     ) &&
     exactNoteIds(
       selectionDragContext.nodeIds,
-      selectionSnapshot.structuralRootIds
+      selectionSnapshot.structuralRootIds,
     ) &&
     (isPreparedSelectionAuthorityCurrent?.(
-      selectionDragContext.ownership.authority
-    ) ?? false)
+      selectionDragContext.ownership.authority,
+    ) ??
+      false)
       ? selectionDragContext
       : null;
   selectionDragContextRef.current = currentSelectionDragContext;
@@ -1714,15 +2077,16 @@ export function NotesOutlinePane({
     prepareSelectionAuthority,
     provisionalSelectionSnapshot,
     selectionChooserLifecycleKey,
-    selectionRevision
+    selectionRevision,
   ]);
 
   const currentFilteredDragAuthority =
     libraryView !== "all" &&
     filteredDragAuthorityPreparation.authority &&
     (isPreparedSelectionAuthorityCurrent?.(
-      filteredDragAuthorityPreparation.authority
-    ) ?? false)
+      filteredDragAuthorityPreparation.authority,
+    ) ??
+      false)
       ? filteredDragAuthorityPreparation.authority
       : null;
   const filteredDragPreflightRequired =
@@ -1752,7 +2116,7 @@ export function NotesOutlinePane({
     if (currentPreparedAuthority) {
       setFilteredDragAuthorityPreparation({
         status: "ready",
-        authority: currentPreparedAuthority
+        authority: currentPreparedAuthority,
       });
       return;
     }
@@ -1762,14 +2126,14 @@ export function NotesOutlinePane({
           selectionAuthorityFailureKey === selectionChooserLifecycleKey
             ? "error"
             : "preparing",
-        authority: null
+        authority: null,
       });
       return;
     }
     const seedId = bodyVisibleIds[0];
     setFilteredDragAuthorityPreparation({
       status: "preparing",
-      authority: null
+      authority: null,
     });
     void prepareSelectionAuthority([seedId])
       .then((authority) => {
@@ -1785,7 +2149,7 @@ export function NotesOutlinePane({
         if (filteredDragAuthorityRequestRef.current === requestId) {
           setFilteredDragAuthorityPreparation({
             status: "error",
-            authority: null
+            authority: null,
           });
         }
       });
@@ -1800,7 +2164,7 @@ export function NotesOutlinePane({
     prepareSelectionAuthority,
     selectionAuthorityFailureKey,
     selectionChooserLifecycleKey,
-    state
+    state,
   ]);
 
   const selectionIdsRef = useRef(materializedSelectionIds);
@@ -1813,22 +2177,31 @@ export function NotesOutlinePane({
   libraryViewRef.current = libraryView;
   const currentPreparedAuthorityRef = useRef(currentPreparedAuthority);
   currentPreparedAuthorityRef.current = currentPreparedAuthority;
-  const currentFilteredDragAuthorityRef = useRef(
-    currentFilteredDragAuthority
-  );
+  const currentFilteredDragAuthorityRef = useRef(currentFilteredDragAuthority);
   currentFilteredDragAuthorityRef.current = currentFilteredDragAuthority;
+  const protectedMoveNodeIds = useMemo(
+    () =>
+      protectedNotesMoveRootIds(
+        currentFilteredDragAuthority?.workspace.nodesById ??
+          currentPreparedAuthority?.workspace.nodesById ??
+          state.nodesById,
+      ),
+    [currentFilteredDragAuthority, currentPreparedAuthority, state.nodesById],
+  );
   const projectionVisibilityRef = useRef({
     locallyExpandedNodeIds,
     showCompleted,
-    zoomRootId: state.zoomRootId
+    zoomRootId: state.zoomRootId,
   });
   projectionVisibilityRef.current = {
     locallyExpandedNodeIds,
     showCompleted,
-    zoomRootId: state.zoomRootId
+    zoomRootId: state.zoomRootId,
   };
   const getProjectedSelectionVisibleIds = useCallback(
-    (projectedWorkspace: UseNotesWorkspaceResult["state"]): readonly NoteId[] => {
+    (
+      projectedWorkspace: UseNotesWorkspaceResult["state"],
+    ): readonly NoteId[] => {
       const visibility = projectionVisibilityRef.current;
       const zoomRootId =
         visibility.zoomRootId !== null &&
@@ -1838,31 +2211,32 @@ export function NotesOutlinePane({
       const allRows = flattenVisibleOutlineRows(
         projectedWorkspace,
         zoomRootId,
-        visibility.locallyExpandedNodeIds
+        visibility.locallyExpandedNodeIds,
       );
       const rows = visibility.showCompleted
         ? allRows
         : hideCompletedSubtrees(
             allRows,
             projectedWorkspace.nodesById,
-            zoomRootId
+            zoomRootId,
           );
       return deriveOutlineBodyRows(rows, zoomRootId).map((row) => row.id);
     },
-    []
+    [],
   );
   const focusBodyTitle = useCallback(
     (nodeId: NoteId): void => {
       noteOutlineActivity();
       const row = Array.from(
-        contentRef.current?.querySelectorAll<HTMLElement>("[data-outline-id]") ??
-          []
+        contentRef.current?.querySelectorAll<HTMLElement>(
+          "[data-outline-id]",
+        ) ?? [],
       ).find((candidate) => candidate.dataset.outlineId === nodeId);
       row
         ?.querySelector<HTMLTextAreaElement>("textarea.notes-node-title")
         ?.focus();
     },
-    [noteOutlineActivity]
+    [noteOutlineActivity],
   );
   useEffect(() => {
     const retireMouseSelectionGesture = (event: globalThis.PointerEvent) => {
@@ -1899,7 +2273,7 @@ export function NotesOutlinePane({
       window.removeEventListener(
         "pointercancel",
         retireMouseSelectionGesture,
-        true
+        true,
       );
     };
   }, [focusBodyTitle]);
@@ -1909,20 +2283,20 @@ export function NotesOutlinePane({
         clipboard: navigator.clipboard,
         ClipboardItem:
           typeof ClipboardItem === "undefined" ? undefined : ClipboardItem,
-        Blob: typeof Blob === "undefined" ? undefined : Blob
+        Blob: typeof Blob === "undefined" ? undefined : Blob,
       }),
-    []
+    [],
   );
   const getLiveSelectionActionSnapshot = useCallback(() => {
     const live = getLiveSelectionSnapshot?.() ?? {
       selection: selectionRef.current,
-      revision: selectionRevisionRef.current
+      revision: selectionRevisionRef.current,
     };
     const visibleNodeIds = bodyVisibleIdsRef.current;
     const selectedNodeIds = selectionSubtreeIds(
       live.selection,
       visibleNodeIds,
-      stateRef.current
+      stateRef.current,
     );
     const prepared = currentPreparedAuthorityRef.current;
     const authoritativeWorkspace =
@@ -1938,7 +2312,7 @@ export function NotesOutlinePane({
       selection: live.selection,
       visibleNodeIds,
       workspace: stateRef.current,
-      authoritativeWorkspace
+      authoritativeWorkspace,
     });
   }, [getLiveSelectionSnapshot, isPreparedSelectionAuthorityCurrent]);
   const selectionRouter = useNotesSelectionCommandRouter({
@@ -1966,12 +2340,14 @@ export function NotesOutlinePane({
       isPreparedSelectionAuthorityCurrent?.(authority) ?? false,
     applyBatch: async (authority, op, options) => {
       if (!applyPreparedSelectionBatch) {
-        return Promise.reject(new Error("Selection batch actions are unavailable."));
+        return Promise.reject(
+          new Error("Selection batch actions are unavailable."),
+        );
       }
       const settlement = await applyPreparedSelectionBatch(
         authority,
         op,
-        options
+        options,
       );
       const expandNodeId = options?.expandNodeId;
       if (
@@ -1985,12 +2361,12 @@ export function NotesOutlinePane({
         const visibility = projectionVisibilityRef.current;
         if (!visibility.locallyExpandedNodeIds.has(expandNodeId)) {
           const locallyExpandedNodeIds = new Set(
-            visibility.locallyExpandedNodeIds
+            visibility.locallyExpandedNodeIds,
           );
           locallyExpandedNodeIds.add(expandNodeId);
           projectionVisibilityRef.current = {
             ...visibility,
-            locallyExpandedNodeIds
+            locallyExpandedNodeIds,
           };
         }
       }
@@ -1999,7 +2375,7 @@ export function NotesOutlinePane({
     replaceSelection: (nextSelection, expectedRevision) =>
       actions.replaceSelection?.(nextSelection, expectedRevision) ?? false,
     focusNode: focusBodyTitle,
-    writeClipboard: writeSelectionClipboard
+    writeClipboard: writeSelectionClipboard,
   });
   const executeSelectionCommand = selectionRouter.execute;
   const clearSelectionRouterFeedback = selectionRouter.clearFeedback;
@@ -2025,20 +2401,20 @@ export function NotesOutlinePane({
       setSelectionAuthorityFailureKey(null);
       setFilteredDragAuthorityPreparation({
         status: "preparing",
-        authority: null
+        authority: null,
       });
       setFilteredDragAuthorityRetryNonce((nonce) => nonce + 1);
     }
     publishNotesFeedback({
       kind: "error",
-      message: filteredDragPreparingMessage
+      message: filteredDragPreparingMessage,
     });
   }, [
     filteredDragAuthorityFailed,
     publishNotesFeedback,
     selectionAuthorityFailureKey,
     selectionChooserLifecycleKey,
-    selectionDragContextFailureKey
+    selectionDragContextFailureKey,
   ]);
   useEffect(() => {
     clearNotesFeedback();
@@ -2048,25 +2424,27 @@ export function NotesOutlinePane({
     if (selectionFeedbackError) {
       publishNotesFeedback({
         kind: "error",
-        message: selectionFeedbackError
+        message: selectionFeedbackError,
       });
     } else if (selectionRouter.status) {
       publishNotesFeedback({
         kind: "status",
-        message: selectionRouter.status
+        message: selectionRouter.status,
       });
     }
   }, [
     publishNotesFeedback,
     selectionFeedbackError,
     selectionRouter.feedbackRevision,
-    selectionRouter.status
+    selectionRouter.status,
   ]);
   const rejectDisabledSelectionOperation = useCallback(
-    (operation: Parameters<typeof notesSelectionOperationDisabledReason>[0]) => {
+    (
+      operation: Parameters<typeof notesSelectionOperationDisabledReason>[0],
+    ) => {
       const reason = notesSelectionOperationDisabledReason(
         operation,
-        selectionMutationDisabledReasonRef.current
+        selectionMutationDisabledReasonRef.current,
       );
       if (reason === null) {
         return false;
@@ -2075,27 +2453,28 @@ export function NotesOutlinePane({
       setSelectionChooserFeedback({ busy: false, error: reason });
       return true;
     },
-    []
+    [],
   );
   const executeGuardedSelectionCommand = useCallback(
     (...args: Parameters<typeof executeSelectionCommand>) => {
       if (rejectDisabledSelectionOperation(args[0].type)) {
         return Promise.resolve({
           outcome: "skipped" as const,
-          mutationCommitted: false
+          mutationCommitted: false,
         });
       }
       return executeSelectionCommand(...args);
     },
-    [executeSelectionCommand, rejectDisabledSelectionOperation]
+    [executeSelectionCommand, rejectDisabledSelectionOperation],
   );
   const invalidatePreparedSelectionClipboard =
     selectionRouter.invalidatePreparedClipboard;
   const selectionChooserAuthorityCurrent =
     selectionChooser === null ||
     (isPreparedSelectionAuthorityCurrent?.(
-      selectionChooser.snapshot.ownership.authority
-    ) ?? false);
+      selectionChooser.snapshot.ownership.authority,
+    ) ??
+      false);
   useLayoutEffect(() => {
     const lifecycleChanged =
       selectionChooserLifecycleRef.current !== selectionChooserLifecycleKey;
@@ -2109,24 +2488,22 @@ export function NotesOutlinePane({
     selectionChooserPreparingRef.current = false;
     setSelectionChooser((current) => (current === null ? current : null));
     setSelectionChooserFeedback((current) =>
-      current.busy || current.error
-        ? { busy: false, error: null }
-        : current
+      current.busy || current.error ? { busy: false, error: null } : current,
     );
     setSelectionClipboardError(null);
   }, [
     selectionChooser,
     selectionChooserAuthorityCurrent,
-    selectionChooserLifecycleKey
+    selectionChooserLifecycleKey,
   ]);
   const handleSelectionClipboardPreparationPending = useCallback(
     (intent: "copy" | "cut") => {
       const action = intent === "copy" ? "Copy" : "Cut";
       setSelectionClipboardError(
-        `The selected items are still preparing for ${action}. Try again.`
+        `The selected items are still preparing for ${action}. Try again.`,
       );
     },
-    []
+    [],
   );
   const selectionNativeClipboard = useMemo(
     () =>
@@ -2136,18 +2513,18 @@ export function NotesOutlinePane({
           commitPreparedClipboardEvent:
             selectionRouter.commitPreparedClipboardEvent,
           invalidatePreparedClipboard:
-            selectionRouter.invalidatePreparedClipboard
+            selectionRouter.invalidatePreparedClipboard,
         },
         {
-          onPreparationPending: handleSelectionClipboardPreparationPending
-        }
+          onPreparationPending: handleSelectionClipboardPreparationPending,
+        },
       ),
     [
       handleSelectionClipboardPreparationPending,
       selectionRouter.commitPreparedClipboardEvent,
       selectionRouter.invalidatePreparedClipboard,
-      selectionRouter.prepareClipboard
-    ]
+      selectionRouter.prepareClipboard,
+    ],
   );
   const selectionClipboardReady =
     materializedSelectionIds.length > 0 &&
@@ -2176,7 +2553,7 @@ export function NotesOutlinePane({
     selectionRevision,
     selectionRouter.busy,
     state,
-    vaultRoot
+    vaultRoot,
   ]);
   useEffect(() => {
     selectionClipboardLifecycleRef.current += 1;
@@ -2184,9 +2561,7 @@ export function NotesOutlinePane({
       const cleanupGeneration = selectionClipboardLifecycleRef.current + 1;
       selectionClipboardLifecycleRef.current = cleanupGeneration;
       queueMicrotask(() => {
-        if (
-          selectionClipboardLifecycleRef.current === cleanupGeneration
-        ) {
+        if (selectionClipboardLifecycleRef.current === cleanupGeneration) {
           selectionNativeClipboard.dispose();
         }
       });
@@ -2208,7 +2583,7 @@ export function NotesOutlinePane({
         selectionSubtreeIds(
           getSelection(),
           bodyVisibleIdsRef.current,
-          stateRef.current
+          stateRef.current,
         ).length > 0;
       const hasNativeTextSelection =
         textControlTarget &&
@@ -2229,7 +2604,7 @@ export function NotesOutlinePane({
       }
       const options = {
         allowNonTextTarget: !textControlTarget,
-        claimUnprepared: hasOutlineSelection
+        claimUnprepared: hasOutlineSelection,
       };
       const outcome =
         intent === "copy"
@@ -2249,21 +2624,146 @@ export function NotesOutlinePane({
       clearSelectionRouterFeedback,
       getSelection,
       rejectDisabledSelectionOperation,
-      selectionNativeClipboard
-    ]
+      selectionNativeClipboard,
+    ],
   );
   const handleSelectionCopyCapture = useCallback(
     (event: ClipboardEvent<HTMLDivElement>) =>
       handleSelectionClipboardEvent("copy", event),
-    [handleSelectionClipboardEvent]
+    [handleSelectionClipboardEvent],
   );
   const handleSelectionCutCapture = useCallback(
     (event: ClipboardEvent<HTMLDivElement>) =>
       handleSelectionClipboardEvent("cut", event),
-    [handleSelectionClipboardEvent]
+    [handleSelectionClipboardEvent],
+  );
+  const handleGithubEditorFocusCapture = useCallback(
+    (event: ReactFocusEvent<HTMLDivElement>): void => {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      const externalRow = target?.closest<HTMLElement>(
+        "[data-external-bullet-key]",
+      );
+      const storedRow = target?.closest<HTMLElement>("[data-outline-id]");
+      if (
+        target === null ||
+        target.closest(".notes-external-children") === null
+      ) {
+        return;
+      }
+      const field =
+        target instanceof HTMLTextAreaElement &&
+        target.dataset.githubEditorField === "note"
+          ? "note"
+          : target.closest(".notes-external-note-field")
+            ? "note"
+            : "title";
+      const nodeId =
+        target.dataset.githubEditorNodeId ??
+        externalRow?.dataset.githubEditorNodeId ??
+        storedRow?.dataset.outlineId;
+      const key =
+        target.dataset.githubEditorKey ?? externalRow?.dataset.githubEditorKey;
+      if (!nodeId && !key) {
+        return;
+      }
+      lastGithubEditorFocusRef.current = nodeId
+        ? { kind: "stored", nodeId, field }
+        : key
+          ? { kind: "provider", key, field }
+          : null;
+      if (externalRow !== null) {
+        actions.clearSelection();
+      }
+    },
+    [actions],
+  );
+  const handleGithubCompositeKeyDownCapture = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>): boolean => {
+      const target =
+        event.target instanceof HTMLTextAreaElement ? event.target : null;
+      if (
+        target === null ||
+        target.closest(".notes-external-children") === null ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        event.nativeEvent.isComposing ||
+        event.nativeEvent.key === "Process"
+      ) {
+        return false;
+      }
+      const field =
+        target.dataset.githubEditorField === "note" ? "note" : "title";
+      const resolution = resolveExternalEditorKey({
+        field,
+        key: event.key,
+        altKey: event.altKey,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        isComposing: event.nativeEvent.isComposing,
+        repeat: event.repeat,
+        selectionStart: target.selectionStart,
+        selectionEnd: target.selectionEnd,
+        value: target.value,
+      });
+      if (resolution?.type !== "focus") {
+        return false;
+      }
+      const nodeId = target.dataset.githubEditorNodeId;
+      const key = target.dataset.githubEditorKey;
+      const current: GithubEditorFocusKey | null = nodeId
+        ? { kind: "stored", nodeId, field }
+        : key
+          ? { kind: "provider", key, field }
+          : null;
+      const currentIndex =
+        current === null
+          ? -1
+          : githubProjection.editorFocusKeys.findIndex(
+              (candidate) =>
+                candidate.kind === current.kind &&
+                candidate.field === current.field &&
+                (candidate.kind === "stored"
+                  ? current.kind === "stored" &&
+                    candidate.nodeId === current.nodeId
+                  : current.kind === "provider" &&
+                    candidate.key === current.key),
+            );
+      if (currentIndex < 0) {
+        return false;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const direction = resolution.direction === "previous" ? -1 : 1;
+      for (
+        let index = currentIndex + direction;
+        index >= 0 && index < githubProjection.editorFocusKeys.length;
+        index += direction
+      ) {
+        const next = githubEditorElement(
+          githubProjection.editorFocusKeys[index]!,
+        );
+        if (next) {
+          next.focus();
+          if (resolution.edge === "end") {
+            next.setSelectionRange(next.value.length, next.value.length);
+          } else if (resolution.edge === "start") {
+            next.setSelectionRange(0, 0);
+          }
+          break;
+        }
+      }
+      return true;
+    },
+    [githubEditorElement, githubProjection.editorFocusKeys],
   );
   const handleSelectionKeyDownCapture = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+      if (handleGithubCompositeKeyDownCapture(event)) {
+        return;
+      }
       const editor =
         event.target instanceof HTMLTextAreaElement
           ? event.target.closest<HTMLElement>("[data-outline-id]")
@@ -2293,7 +2793,7 @@ export function NotesOutlinePane({
             shiftKey: event.shiftKey,
             isComposing: event.nativeEvent.isComposing,
             repeat: event.repeat,
-            platform: detectOutlineShortcutPlatform()
+            platform: detectOutlineShortcutPlatform(),
           })
         : null;
       if (selectionMoveShortcut !== null) {
@@ -2301,20 +2801,25 @@ export function NotesOutlinePane({
         event.stopPropagation();
         if (selectionMoveShortcut !== "consume") {
           void executeGuardedSelectionCommand({
-            type: selectionMoveShortcut
+            type: selectionMoveShortcut,
           });
         }
         return;
       }
       selectionNativeClipboard.handleKeyDown(event);
     },
-    [executeGuardedSelectionCommand, getSelection, selectionNativeClipboard]
+    [
+      executeGuardedSelectionCommand,
+      getSelection,
+      handleGithubCompositeKeyDownCapture,
+      selectionNativeClipboard,
+    ],
   );
   const handleSelectionClipboardKeyUpCapture = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>): void => {
       selectionNativeClipboard.handleKeyUp(event);
     },
-    [selectionNativeClipboard]
+    [selectionNativeClipboard],
   );
   const handleSelectionCompositionStartCapture = useCallback((): void => {
     selectionNativeClipboard.handleCompositionStart();
@@ -2353,16 +2858,16 @@ export function NotesOutlinePane({
       return;
     }
     const installContext = (
-      authority: NotesPreparedSelectionAuthority
+      authority: NotesPreparedSelectionAuthority,
     ): void => {
       const live = getLiveSelectionSnapshot?.() ?? {
         selection: selectionRef.current,
-        revision: selectionRevisionRef.current
+        revision: selectionRevisionRef.current,
       };
       const liveSelectedIds = selectionSubtreeIds(
         live.selection,
         bodyVisibleIdsRef.current,
-        stateRef.current
+        stateRef.current,
       );
       if (
         selectionDragContextRequestRef.current !== requestId ||
@@ -2378,7 +2883,7 @@ export function NotesOutlinePane({
         selection: live.selection,
         visibleNodeIds: bodyVisibleIdsRef.current,
         workspace: stateRef.current,
-        authoritativeWorkspace: authority.workspace
+        authoritativeWorkspace: authority.workspace,
       });
       if (
         !actionSnapshot ||
@@ -2387,10 +2892,12 @@ export function NotesOutlinePane({
       ) {
         return;
       }
-      setSelectionDragContext(Object.freeze({
-        nodeIds: Object.freeze([...expectedRootIds]),
-        ownership: Object.freeze({ actionSnapshot, authority })
-      }));
+      setSelectionDragContext(
+        Object.freeze({
+          nodeIds: Object.freeze([...expectedRootIds]),
+          ownership: Object.freeze({ actionSnapshot, authority }),
+        }),
+      );
       setSelectionDragContextFailureKey(null);
     };
 
@@ -2429,7 +2936,7 @@ export function NotesOutlinePane({
     selectionChooserLifecycleKey,
     selectionDragContextRetryNonce,
     selectionRevision,
-    selectionSnapshot
+    selectionSnapshot,
   ]);
   useEffect(() => {
     if (!selection || materializedSelectionIds.length > 0) {
@@ -2437,7 +2944,7 @@ export function NotesOutlinePane({
     }
     const live = getLiveSelectionSnapshot?.() ?? {
       selection: selectionRef.current,
-      revision: selectionRevisionRef.current
+      revision: selectionRevisionRef.current,
     };
     if (
       !live.selection ||
@@ -2460,12 +2967,12 @@ export function NotesOutlinePane({
     invalidatePreparedSelectionClipboard,
     materializedSelectionIds.length,
     selection,
-    selectionRevision
+    selectionRevision,
   ]);
   const requestSelectionChooser = useCallback(
     async (
       kind: "move" | "tags",
-      origin: SelectionChooserRequestOrigin
+      origin: SelectionChooserRequestOrigin,
     ): Promise<void> => {
       const operation = kind === "move" ? "moveTo" : "tags";
       if (rejectDisabledSelectionOperation(operation)) {
@@ -2483,9 +2990,7 @@ export function NotesOutlinePane({
           setSelectionChooserFeedback({ busy: true, error });
           if (origin === "menu") {
             queueMicrotask(() => {
-              if (
-                selectionChooserPreparationRequestRef.current === requestId
-              ) {
+              if (selectionChooserPreparationRequestRef.current === requestId) {
                 const headId = lastSelectionHeadRef.current;
                 if (headId !== null) {
                   focusBodyTitle(headId);
@@ -2499,7 +3004,7 @@ export function NotesOutlinePane({
         const openingSnapshot = getLiveSelectionActionSnapshot();
         const openingLive = getLiveSelectionSnapshot?.() ?? {
           selection: selectionRef.current,
-          revision: selectionRevisionRef.current
+          revision: selectionRevisionRef.current,
         };
         const targetIds =
           kind === "move"
@@ -2511,7 +3016,10 @@ export function NotesOutlinePane({
           failCurrent("The selected range is no longer available.");
           return;
         }
-        if (!prepareSelectionAuthority || !isPreparedSelectionAuthorityCurrent) {
+        if (
+          !prepareSelectionAuthority ||
+          !isPreparedSelectionAuthorityCurrent
+        ) {
           failCurrent("Couldn't open the selection chooser. Try again.");
           return;
         }
@@ -2524,7 +3032,7 @@ export function NotesOutlinePane({
         }
         const afterFlushLive = getLiveSelectionSnapshot?.() ?? {
           selection: selectionRef.current,
-          revision: selectionRevisionRef.current
+          revision: selectionRevisionRef.current,
         };
         if (afterFlushLive.revision !== openingLive.revision) {
           failCurrent("The selection changed. Try again.");
@@ -2536,7 +3044,7 @@ export function NotesOutlinePane({
         }
         const currentLive = getLiveSelectionSnapshot?.() ?? {
           selection: selectionRef.current,
-          revision: selectionRevisionRef.current
+          revision: selectionRevisionRef.current,
         };
         if (
           currentLive.revision !== openingLive.revision ||
@@ -2551,7 +3059,7 @@ export function NotesOutlinePane({
           selection: currentLive.selection,
           visibleNodeIds: bodyVisibleIdsRef.current,
           workspace: stateRef.current,
-          authoritativeWorkspace: authority.workspace
+          authoritativeWorkspace: authority.workspace,
         });
         if (
           !actionSnapshot ||
@@ -2559,7 +3067,7 @@ export function NotesOutlinePane({
             kind === "move"
               ? actionSnapshot.structuralRootIds
               : actionSnapshot.selectedNodeIds,
-            targetIds
+            targetIds,
           )
         ) {
           failCurrent("The selection changed. Try again.");
@@ -2570,7 +3078,7 @@ export function NotesOutlinePane({
         }
         const snapshot: SelectionChooserSnapshot = Object.freeze({
           nodeIds: Object.freeze([...targetIds]),
-          ownership: Object.freeze({ actionSnapshot, authority })
+          ownership: Object.freeze({ actionSnapshot, authority }),
         });
         setSelectionChooser(
           kind === "move"
@@ -2580,9 +3088,9 @@ export function NotesOutlinePane({
                 snapshot,
                 selectedTagUnion: selectedTagUnion(
                   authority.workspace,
-                  targetIds
-                )
-              })
+                  targetIds,
+                ),
+              }),
         );
       } catch {
         failCurrent("Couldn't open the selection chooser. Try again.");
@@ -2591,7 +3099,7 @@ export function NotesOutlinePane({
           selectionChooserPreparingRef.current = false;
           setSelectionChooserFeedback((current) => ({
             ...current,
-            busy: false
+            busy: false,
           }));
         }
       }
@@ -2603,8 +3111,8 @@ export function NotesOutlinePane({
       getLiveSelectionSnapshot,
       isPreparedSelectionAuthorityCurrent,
       prepareSelectionAuthority,
-      rejectDisabledSelectionOperation
-    ]
+      rejectDisabledSelectionOperation,
+    ],
   );
 
   const executeSelectionAction = useCallback(
@@ -2615,7 +3123,7 @@ export function NotesOutlinePane({
       }
       setSelectionClipboardError(null);
       setSelectionChooserFeedback((current) =>
-        current.error ? { ...current, error: null } : current
+        current.error ? { ...current, error: null } : current,
       );
       let intent: NotesSelectionCommandIntent | null = null;
       switch (action) {
@@ -2647,8 +3155,8 @@ export function NotesOutlinePane({
       executeGuardedSelectionCommand,
       noteOutlineActivity,
       rejectDisabledSelectionOperation,
-      requestSelectionChooser
-    ]
+      requestSelectionChooser,
+    ],
   );
   const executeSelectionActionRef = useRef(executeSelectionAction);
   executeSelectionActionRef.current = executeSelectionAction;
@@ -2670,18 +3178,18 @@ export function NotesOutlinePane({
         ? {
             snapshot: selectionSnapshot,
             busy: selectionRouter.busy || selectionChooserFeedback.busy,
-            mutationDisabledReason: selectionMutationDisabledReason
+            mutationDisabledReason: selectionMutationDisabledReason,
           }
         : null,
     [
       selectionMutationDisabledReason,
       selectionRouter.busy,
       selectionChooserFeedback.busy,
-      selectionSnapshot
-    ]
+      selectionSnapshot,
+    ],
   );
   const selectionMenuStateRef = useRef<NotesBulletMenuSelectionState | null>(
-    selectionMenuState
+    selectionMenuState,
   );
   // Preserve the last published non-null value through selected -> cleared
   // teardown. A portal subscriber can read once more before it unsubscribes.
@@ -2692,7 +3200,7 @@ export function NotesOutlinePane({
   const selectionMenuExecuteRef = useRef(executeSelectionAction);
   selectionMenuExecuteRef.current = executeSelectionAction;
   const selectionChooserHandoffRef = useRef<(chooser: "move" | "tags") => void>(
-    () => undefined
+    () => undefined,
   );
   selectionChooserHandoffRef.current = (chooser) => {
     void requestSelectionChooser(chooser, "menu");
@@ -2707,10 +3215,9 @@ export function NotesOutlinePane({
         return () => selectionMenuSubscribersRef.current.delete(onStoreChange);
       },
       execute: (action) => selectionMenuExecuteRef.current(action),
-      requestChooser: (chooser) =>
-        selectionChooserHandoffRef.current(chooser)
+      requestChooser: (chooser) => selectionChooserHandoffRef.current(chooser),
     }),
-    []
+    [],
   );
   useLayoutEffect(() => {
     if (!selectionMenuState) {
@@ -2725,46 +3232,51 @@ export function NotesOutlinePane({
       tagSummaries.map(({ prefix, normalizedTag, displayTag }) => ({
         prefix,
         normalizedTag,
-        displayTag
+        displayTag,
       })),
-    [tagSummaries]
+    [tagSummaries],
   );
-  const imageDropMarkerBoundary = useMemo<ImageDropMarkerBoundary | null>(() => {
-    if (imageDropTargetId === null || imageDropTargetId === state.zoomRootId) {
-      return null;
-    }
-    const targetRow = bodyRows.find((row) => row.id === imageDropTargetId);
-    if (!targetRow) {
-      return null;
-    }
-    return {
-      afterId: targetRow.visibleDescendantEndId ?? targetRow.id,
-      depth: targetRow.depth
-    };
-  }, [bodyRows, imageDropTargetId, state.zoomRootId]);
+  const imageDropMarkerBoundary =
+    useMemo<ImageDropMarkerBoundary | null>(() => {
+      if (
+        imageDropTargetId === null ||
+        imageDropTargetId === state.zoomRootId
+      ) {
+        return null;
+      }
+      const targetRow = bodyRows.find((row) => row.id === imageDropTargetId);
+      if (!targetRow) {
+        return null;
+      }
+      return {
+        afterId: targetRow.visibleDescendantEndId ?? targetRow.id,
+        depth: targetRow.depth,
+      };
+    }, [bodyRows, imageDropTargetId, state.zoomRootId]);
   const bodyDropPreview =
     dropPreview && state.zoomRootId !== null
       ? { ...dropPreview, depth: Math.max(0, dropPreview.depth - 1) }
       : dropPreview;
-  const initialLoading = state.status === "loading" && state.rootIds.length === 0;
+  const initialLoading =
+    state.status === "loading" && state.rootIds.length === 0;
   const consumeInsertionMotion = useCallback(
     (intentToken: number) => {
       if (insertionFocusCancellation?.intentToken === intentToken) {
         actions.consumeInsertionMotion?.(
           intentToken,
-          insertionFocusCancellation.nodeId
+          insertionFocusCancellation.nodeId,
         );
         return;
       }
       actions.consumeInsertionMotion?.(intentToken);
     },
-    [actions, insertionFocusCancellation]
+    [actions, insertionFocusCancellation],
   );
   const settledFirstPaintGenerationRef = useRef(0);
   const recordSettledFirstPaint = useCallback((generation: number) => {
     settledFirstPaintGenerationRef.current = Math.max(
       settledFirstPaintGenerationRef.current,
-      generation
+      generation,
     );
   }, []);
   const outlineIdleBaseline = useOutlineLayoutMotion({
@@ -2776,17 +3288,17 @@ export function NotesOutlinePane({
     publication: projectionPublication ?? null,
     insertionDisposition,
     onInsertionMotionConsumed: consumeInsertionMotion,
-    onSettledFirstPaint: recordSettledFirstPaint
+    onSettledFirstPaint: recordSettledFirstPaint,
   });
   outlineIdleBaselineRef.current = outlineIdleBaseline;
   const suspendOutlineBaselineForInsertion = useCallback(
     (intentToken: number, layoutGeneration: number) => {
       outlineIdleBaselineRef.current?.suspendForPendingInsertion(
         intentToken,
-        layoutGeneration
+        layoutGeneration,
       );
     },
-    []
+    [],
   );
   const resumeOutlineBaselineAfterInsertionFailure = useCallback(
     (intentToken: number, preparedLayoutGeneration: number) => {
@@ -2796,10 +3308,10 @@ export function NotesOutlinePane({
         scheduler,
         intentToken,
         preparedLayoutGeneration,
-        outlineLayoutGenerationRef.current
+        outlineLayoutGenerationRef.current,
       );
     },
-    []
+    [],
   );
   const dragUnavailable =
     deletingNotesData ||
@@ -2814,12 +3326,12 @@ export function NotesOutlinePane({
       }
       const live = getLiveSelectionSnapshot?.() ?? {
         selection: selectionRef.current,
-        revision: selectionRevisionRef.current
+        revision: selectionRevisionRef.current,
       };
       const selectedNodeIds = selectionSubtreeIds(
         live.selection,
         bodyVisibleIdsRef.current,
-        stateRef.current
+        stateRef.current,
       );
       if (
         live.revision !== session.selectionRevision ||
@@ -2828,7 +3340,7 @@ export function NotesOutlinePane({
       ) {
         return Object.freeze({
           kind: "selected-invalid",
-          reason: "selection-authority-mismatch"
+          reason: "selection-authority-mismatch",
         });
       }
       const frozenContext = session.preparation.current;
@@ -2841,15 +3353,17 @@ export function NotesOutlinePane({
           session.selectionRevision ||
         !exactNoteIds(
           frozenContext.ownership.actionSnapshot.selectedNodeIds,
-          session.selectedNodeIds
+          session.selectedNodeIds,
         ) ||
-        !(isPreparedSelectionAuthorityCurrent?.(
-          frozenContext.ownership.authority
-        ) ?? false)
+        !(
+          isPreparedSelectionAuthorityCurrent?.(
+            frozenContext.ownership.authority,
+          ) ?? false
+        )
       ) {
         return Object.freeze({
           kind: "selected-invalid",
-          reason: "selection-authority-mismatch"
+          reason: "selection-authority-mismatch",
         });
       }
       return startOutlineSelectionDragSession({
@@ -2860,16 +3374,16 @@ export function NotesOutlinePane({
           rootIds: frozenContext.ownership.authority.workspace.rootIds,
           childIdsByParent:
             frozenContext.ownership.authority.workspace.childIdsByParent,
-          zoomRootId: session.zoomRootId
+          zoomRootId: session.zoomRootId,
         },
-        frozenContext
+        frozenContext,
       });
     },
     [getLiveSelectionSnapshot, isPreparedSelectionAuthorityCurrent],
   );
   const projectDrag = useCallback(
     (
-      event: Pick<DragMoveEvent, "active" | "delta" | "over">
+      event: Pick<DragMoveEvent, "active" | "delta" | "over">,
     ): PaneDragProjection | null => {
       const activeId = String(event.active.id);
       const pointerBoundary =
@@ -2897,18 +3411,18 @@ export function NotesOutlinePane({
                 session.preview,
                 String(event.over!.id),
                 event.delta.x,
-                outlineIndentPx
+                outlineIndentPx,
               )
             : projectPreparedOutlineSelectionDropAtBoundary(
                 session.preview,
                 pointerBoundary.beforeId,
                 event.delta.x,
-                outlineIndentPx
+                outlineIndentPx,
               );
         return Object.freeze({
           kind: "selected-preview",
           prepared: session.preview,
-          result
+          result,
         });
       }
       if (session.kind === "selected-invalid") {
@@ -2920,19 +3434,19 @@ export function NotesOutlinePane({
             session.prepared,
             pointerBoundary.beforeId,
             event.delta.x,
-            outlineIndentPx
+            outlineIndentPx,
           );
           if (result.kind === "invalid") {
             return Object.freeze({
               kind: "selected-invalid",
-              reason: result.reason
+              reason: result.reason,
             });
           }
           if (result.noOp) {
             return Object.freeze({
               kind: "selected-preview",
               prepared: session.prepared,
-              result
+              result,
             });
           }
           const { expandNodeId, ...target } = result.projection;
@@ -2940,14 +3454,14 @@ export function NotesOutlinePane({
             kind: "selected-move",
             target: Object.freeze(target),
             ...(expandNodeId === undefined ? {} : { expandNodeId }),
-            frozenContext: session.frozenContext
+            frozenContext: session.frozenContext,
           });
         }
         return projectOutlineSelectionDragSession(
           session,
           String(event.over!.id),
           event.delta.x,
-          outlineIndentPx
+          outlineIndentPx,
         );
       }
       if (session.activeId !== activeId) {
@@ -2956,7 +3470,7 @@ export function NotesOutlinePane({
       const order = {
         rootIds: state.rootIds,
         childIdsByParent: state.childIdsByParent,
-        zoomRootId: state.zoomRootId
+        zoomRootId: state.zoomRootId,
       };
       if (pointerBoundary !== null) {
         const result = projectOutlineDropAtBoundary(
@@ -2965,12 +3479,19 @@ export function NotesOutlinePane({
           event.delta.x,
           structuralRows,
           order,
-          outlineIndentPx
+          outlineIndentPx,
         );
+        if (
+          result &&
+          activeId === GITHUB_NOTIFICATIONS_ROOT_ID &&
+          result.projection.parentId !== null
+        ) {
+          return null;
+        }
         return result
           ? Object.freeze({
               kind: result.noOp ? "ordinary-preview" : "ordinary-move",
-              projection: result.projection
+              projection: result.projection,
             })
           : null;
       }
@@ -2980,8 +3501,15 @@ export function NotesOutlinePane({
         event.delta.x,
         structuralRows,
         order,
-        outlineIndentPx
+        outlineIndentPx,
       );
+      if (
+        projection &&
+        activeId === GITHUB_NOTIFICATIONS_ROOT_ID &&
+        projection.parentId !== null
+      ) {
+        return null;
+      }
       return projection
         ? Object.freeze({ kind: "ordinary-move", projection })
         : null;
@@ -2994,13 +3522,12 @@ export function NotesOutlinePane({
       structuralRows,
       state.childIdsByParent,
       state.rootIds,
-      state.zoomRootId
-    ]
+      state.zoomRootId,
+    ],
   );
   const announcements = useMemo<Announcements>(() => {
     const labelFor = (id: string | number) => {
-      const rawId =
-        parseNotesPaneDndId(String(id))?.nodeId ?? String(id);
+      const rawId = parseNotesPaneDndId(String(id))?.nodeId ?? String(id);
       const node = rawId ? state.nodesById[rawId] : undefined;
       return node
         ? noteNodeNavigationLabel(node, node.title, "Untitled node")
@@ -3011,7 +3538,7 @@ export function NotesOutlinePane({
       return selectedNodeIds
         ? {
             label: `${selectedNodeIds.length} selected ${selectedNodeIds.length === 1 ? "note" : "notes"}`,
-            plural: selectedNodeIds.length !== 1
+            plural: selectedNodeIds.length !== 1,
           }
         : { label: labelFor(id), plural: false };
     };
@@ -3027,10 +3554,9 @@ export function NotesOutlinePane({
       onDragEnd: ({ active, over }) => {
         const result = dragEndProjection.current;
         const activeId =
-          parseNotesPaneDndId(String(active.id))?.nodeId ??
-          String(active.id);
+          parseNotesPaneDndId(String(active.id))?.nodeId ?? String(active.id);
         const overId = over
-          ? parseNotesPaneDndId(String(over.id))?.nodeId ?? String(over.id)
+          ? (parseNotesPaneDndId(String(over.id))?.nodeId ?? String(over.id))
           : null;
         const subject = subjectFor(active.id).label;
         const projectedMove =
@@ -3047,7 +3573,7 @@ export function NotesOutlinePane({
         return `No move was made for ${subject}.`;
       },
       onDragCancel: ({ active }) =>
-        `Cancelled moving ${subjectFor(active.id).label}.`
+        `Cancelled moving ${subjectFor(active.id).label}.`,
     };
   }, [state.nodesById]);
 
@@ -3059,7 +3585,7 @@ export function NotesOutlinePane({
       selectionDragRejectionPublishedRef.current = true;
       publishNotesFeedback({
         kind: "error",
-        message: selectionDragRejectedMessage
+        message: selectionDragRejectedMessage,
       });
     }
   }, [publishNotesFeedback]);
@@ -3087,7 +3613,7 @@ export function NotesOutlinePane({
     }
     outlineDragSessionRef.current = Object.freeze({
       kind: "selected-invalid",
-      reason: "selection-authority-mismatch"
+      reason: "selection-authority-mismatch",
     });
     rejectSelectedDrag();
   });
@@ -3096,6 +3622,7 @@ export function NotesOutlinePane({
     const attemptEpoch = ++outlineDragAttemptEpochRef.current;
     const id = String(event.active.id);
     pointerDropBoundaryRef.current = null;
+    githubProjectionDropRef.current = null;
     selectedDragNodeIdsRef.current = null;
     selectionDragRejectionPublishedRef.current = false;
     dragEndProjection.current = null;
@@ -3119,12 +3646,12 @@ export function NotesOutlinePane({
     }
     const live = getLiveSelectionSnapshot?.() ?? {
       selection: selectionRef.current,
-      revision: selectionRevisionRef.current
+      revision: selectionRevisionRef.current,
     };
     const selectedIds = selectionSubtreeIds(
       live.selection,
       bodyVisibleIdsRef.current,
-      stateRef.current
+      stateRef.current,
     );
     if (selectedIds.includes(id)) {
       const visibleNodeIds = Object.freeze([...bodyVisibleIdsRef.current]);
@@ -3137,28 +3664,32 @@ export function NotesOutlinePane({
         visibleNodeIds,
         workspace: projectedWorkspace,
         authoritativeWorkspace:
-          filteredAuthority?.workspace ??
-          currentPreparedAuthorityRef.current?.workspace
+          libraryViewRef.current === "all"
+            ? projectedWorkspace
+            : (filteredAuthority?.workspace ??
+              currentPreparedAuthorityRef.current?.workspace),
       });
       const selectedNodeIds = Object.freeze([...selectedIds]);
       const existingContext = selectionDragContextRef.current;
       const existingContextCurrent =
         openedSnapshot !== null &&
+        openedSnapshot.eligibility.movement.eligible &&
         exactNoteIds(openedSnapshot.selectedNodeIds, selectedNodeIds) &&
         existingContext !== null &&
         exactNoteIds(
           existingContext.ownership.actionSnapshot.selectedNodeIds,
-          selectedNodeIds
+          selectedNodeIds,
         ) &&
         exactNoteIds(
           existingContext.nodeIds,
-          existingContext.ownership.actionSnapshot.structuralRootIds
+          existingContext.ownership.actionSnapshot.structuralRootIds,
         ) &&
         existingContext.ownership.authority.selectionRevision ===
           live.revision &&
         (isPreparedSelectionAuthorityCurrent?.(
-          existingContext.ownership.authority
-        ) ?? false);
+          existingContext.ownership.authority,
+        ) ??
+          false);
       if (filteredDragPreflightRequired && !existingContextCurrent) {
         outlineDragSessionRef.current = null;
         setActiveDragId(null);
@@ -3176,20 +3707,20 @@ export function NotesOutlinePane({
         {
           rootIds: presentationWorkspace.rootIds,
           childIdsByParent: presentationWorkspace.childIdsByParent,
-          zoomRootId: state.zoomRootId
-        }
+          zoomRootId: state.zoomRootId,
+        },
       );
       const representativeThumbnailSrc =
         visualPreparation.kind === "ready"
           ? renderedDragImageSource(
               dropSurfaceRef.current,
-              visualPreparation.nodeIds[0]
+              visualPreparation.nodeIds[0],
             )
           : undefined;
       if (visualPreparation.kind === "invalid") {
         outlineDragSessionRef.current = Object.freeze({
           kind: "selected-invalid",
-          reason: visualPreparation.reason
+          reason: visualPreparation.reason,
         });
       } else if (existingContextCurrent) {
         outlineDragSessionRef.current = startOutlineSelectionDragSession({
@@ -3200,19 +3731,20 @@ export function NotesOutlinePane({
             rootIds: existingContext.ownership.authority.workspace.rootIds,
             childIdsByParent:
               existingContext.ownership.authority.workspace.childIdsByParent,
-            zoomRootId: state.zoomRootId
+            zoomRootId: state.zoomRootId,
           },
-          frozenContext: existingContext
+          frozenContext: existingContext,
         });
       } else if (
         openedSnapshot === null ||
+        !openedSnapshot.eligibility.movement.eligible ||
         !exactNoteIds(openedSnapshot.selectedNodeIds, selectedNodeIds) ||
         !prepareSelectionAuthority ||
         !isPreparedSelectionAuthorityCurrent
       ) {
         outlineDragSessionRef.current = Object.freeze({
           kind: "selected-invalid",
-          reason: "selection-authority-mismatch"
+          reason: "selection-authority-mismatch",
         });
       } else {
         // Calling preparation now captures the workspace/session generation
@@ -3226,7 +3758,7 @@ export function NotesOutlinePane({
               selectionAuthority.selectionRevision !== live.revision ||
               !exactNoteIds(
                 selectionAuthority.selectedNodeIds,
-                selectedNodeIds
+                selectedNodeIds,
               ) ||
               !isPreparedSelectionAuthorityCurrent(selectionAuthority)
             ) {
@@ -3236,16 +3768,17 @@ export function NotesOutlinePane({
               selection: live.selection,
               visibleNodeIds,
               workspace: projectedWorkspace,
-              authoritativeWorkspace: selectionAuthority.workspace
+              authoritativeWorkspace: selectionAuthority.workspace,
             });
             const structuralRootIds = selectionSnapshot
               ? Object.freeze([...selectionSnapshot.structuralRootIds])
               : Object.freeze([] as NoteId[]);
             if (
               selectionSnapshot === null ||
+              !selectionSnapshot.eligibility.movement.eligible ||
               !exactNoteIds(
                 selectionSnapshot.selectedNodeIds,
-                selectedNodeIds
+                selectedNodeIds,
               ) ||
               structuralRootIds.length === 0
             ) {
@@ -3253,18 +3786,18 @@ export function NotesOutlinePane({
             }
             const authority = exactNoteIds(
               selectionAuthority.selectedNodeIds,
-              structuralRootIds
+              structuralRootIds,
             )
               ? selectionAuthority
               : await prepareSelectionAuthority(structuralRootIds);
             const current = getLiveSelectionSnapshot?.() ?? {
               selection: selectionRef.current,
-              revision: selectionRevisionRef.current
+              revision: selectionRevisionRef.current,
             };
             const currentSelectedIds = selectionSubtreeIds(
               current.selection,
               bodyVisibleIdsRef.current,
-              stateRef.current
+              stateRef.current,
             );
             if (
               current.revision !== live.revision ||
@@ -3279,10 +3812,11 @@ export function NotesOutlinePane({
               selection: live.selection,
               visibleNodeIds,
               workspace: projectedWorkspace,
-              authoritativeWorkspace: authority.workspace
+              authoritativeWorkspace: authority.workspace,
             });
             if (
               actionSnapshot === null ||
+              !actionSnapshot.eligibility.movement.eligible ||
               !exactNoteIds(actionSnapshot.selectedNodeIds, selectedNodeIds) ||
               !exactNoteIds(actionSnapshot.structuralRootIds, structuralRootIds)
             ) {
@@ -3290,9 +3824,9 @@ export function NotesOutlinePane({
             }
             return Object.freeze({
               nodeIds: structuralRootIds,
-              ownership: Object.freeze({ actionSnapshot, authority })
+              ownership: Object.freeze({ actionSnapshot, authority }),
             });
-          })
+          }),
         );
         const pendingSession = Object.freeze({
           kind: "selected-pending",
@@ -3303,13 +3837,14 @@ export function NotesOutlinePane({
           rows: Object.freeze([...structuralRows]),
           zoomRootId: state.zoomRootId,
           preview: visualPreparation,
-          preparation
+          preparation,
         });
         outlineDragSessionRef.current = pendingSession;
         void pendingSession.preparation.promise.then(() => {
           if (
             outlineDragSessionRef.current !== pendingSession ||
-            outlineDragAttemptEpochRef.current !== pendingSession.attemptEpoch ||
+            outlineDragAttemptEpochRef.current !==
+              pendingSession.attemptEpoch ||
             selectionRevisionRef.current !== pendingSession.selectionRevision
           ) {
             return;
@@ -3324,8 +3859,8 @@ export function NotesOutlinePane({
                 promotedSession.prepared,
                 promotedSession.frozenContext.ownership.authority.workspace,
                 presentationTitleFor(promotedSession.prepared.nodeIds[0]),
-                representativeThumbnailSrc
-              )
+                representativeThumbnailSrc,
+              ),
             );
           }
         });
@@ -3340,8 +3875,8 @@ export function NotesOutlinePane({
             startedSession.prepared,
             startedSession.frozenContext.ownership.authority.workspace,
             presentationTitleFor(startedSession.prepared.nodeIds[0]),
-            representativeThumbnailSrc
-          )
+            representativeThumbnailSrc,
+          ),
         );
       } else if (visualPreparation.kind === "ready") {
         // All-view presentation is already the complete Active forest while
@@ -3351,8 +3886,8 @@ export function NotesOutlinePane({
             visualPreparation,
             presentationWorkspace,
             presentationTitleFor(visualPreparation.nodeIds[0]),
-            representativeThumbnailSrc
-          )
+            representativeThumbnailSrc,
+          ),
         );
       }
     } else {
@@ -3364,8 +3899,8 @@ export function NotesOutlinePane({
         {
           rootIds: presentationWorkspace.rootIds,
           childIdsByParent: presentationWorkspace.childIdsByParent,
-          zoomRootId: state.zoomRootId
-        }
+          zoomRootId: state.zoomRootId,
+        },
       );
       if (visualPreparation.kind === "invalid") {
         outlineDragSessionRef.current = null;
@@ -3374,11 +3909,11 @@ export function NotesOutlinePane({
       }
       const representativeThumbnailSrc = renderedDragImageSource(
         dropSurfaceRef.current,
-        visualPreparation.nodeIds[0]
+        visualPreparation.nodeIds[0],
       );
       const ordinarySession = Object.freeze({
         kind: "ordinary",
-        activeId: id
+        activeId: id,
       });
       outlineDragSessionRef.current = ordinarySession;
       const representativeTitle =
@@ -3388,8 +3923,8 @@ export function NotesOutlinePane({
           visualPreparation,
           presentationWorkspace,
           representativeTitle,
-          representativeThumbnailSrc
-        )
+          representativeThumbnailSrc,
+        ),
       );
     }
     actions.publishOutlineDragState?.({ paneId, activeDrag: true });
@@ -3406,8 +3941,8 @@ export function NotesOutlinePane({
       setDropPreview(
         derivePreparedOutlineSelectionDropPreview(
           projection.prepared,
-          projection.result
-        )
+          projection.result,
+        ),
       );
       return;
     }
@@ -3427,8 +3962,8 @@ export function NotesOutlinePane({
         deriveOutlineDropPreview(
           String(event.active.id),
           structuralRows,
-          projection.projection
-        )
+          projection.projection,
+        ),
       );
       return;
     }
@@ -3442,16 +3977,20 @@ export function NotesOutlinePane({
               ...projection.target,
               ...(projection.expandNodeId === undefined
                 ? {}
-                : { expandNodeId: projection.expandNodeId })
-            }
+                : { expandNodeId: projection.expandNodeId }),
+            },
           })
-        : null
+        : null,
     );
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
     const activeId = String(event.active.id);
     const droppedSession = outlineDragSessionRef.current;
+    const githubProjectionDrop =
+      githubProjectionDropRef.current?.activeId === activeId
+        ? githubProjectionDropRef.current
+        : null;
     const droppedPointerBoundary =
       pointerDropBoundaryRef.current?.activeId === activeId
         ? pointerDropBoundaryRef.current
@@ -3462,14 +4001,53 @@ export function NotesOutlinePane({
       overId:
         droppedPointerBoundary?.overId ??
         (event.over ? String(event.over.id) : null),
-      projection
+      projection,
     };
     outlineDragSessionRef.current = null;
     pointerDropBoundaryRef.current = null;
     actions.publishOutlineDragState?.({ paneId, activeDrag: false });
+    githubProjectionDropRef.current = null;
     setActiveDragId(null);
     setDragPresentation(null);
     setDropPreview(null);
+    if (githubProjectionDrop !== null) {
+      const commitProjectionDrop = async () => {
+        let session = droppedSession;
+        if (session?.kind === "selected-pending") {
+          await session.preparation.promise;
+          session = promotePendingSelectionDrag(session);
+        }
+        const oneMovableNode =
+          session?.kind === "ordinary" ||
+          (session?.kind === "selected-ready" &&
+            session.frozenContext.ownership.actionSnapshot.structuralRootIds
+              .length === 1 &&
+            session.frozenContext.ownership.actionSnapshot
+              .structuralRootIds[0] === activeId);
+        if (!oneMovableNode || activeId === GITHUB_NOTIFICATIONS_ROOT_ID) {
+          return;
+        }
+        const projectedRow = githubProjectionRef.current.rows.find(
+          (row) =>
+            row.kind === "projected" &&
+            serializeExternalBulletKey(row.bullet.key) ===
+              githubProjectionDrop.serializedKey,
+        );
+        if (projectedRow?.kind !== "projected") {
+          return;
+        }
+        const snapshot = githubNotificationSnapshotFromBullet(
+          projectedRow.bullet,
+        );
+        if (snapshot === null) return;
+        await actions.materializeGithubNotification(snapshot, {
+          kind: "reparent",
+          nodeId: activeId,
+        });
+      };
+      void commitProjectionDrop();
+      return;
+    }
     if (
       droppedSession?.kind === "selected-pending" &&
       (droppedPointerBoundary !== null || event.over !== null) &&
@@ -3479,12 +4057,14 @@ export function NotesOutlinePane({
       const overId = event.over === null ? null : String(event.over.id);
       const horizontalOffset = event.delta.x;
       void droppedSession.preparation.promise.then(() => {
-        if (droppedSession.attemptEpoch !== outlineDragAttemptEpochRef.current) {
+        if (
+          droppedSession.attemptEpoch !== outlineDragAttemptEpochRef.current
+        ) {
           return;
         }
         const live = getLiveSelectionSnapshot?.() ?? {
           selection: selectionRef.current,
-          revision: selectionRevisionRef.current
+          revision: selectionRevisionRef.current,
         };
         if (live.revision !== droppedSession.selectionRevision) {
           return;
@@ -3495,13 +4075,12 @@ export function NotesOutlinePane({
           return;
         }
         if (droppedPointerBoundary !== null) {
-          const boundaryResult =
-            projectPreparedOutlineSelectionDropAtBoundary(
-              readySession.prepared,
-              droppedPointerBoundary.beforeId,
-              horizontalOffset,
-              outlineIndentPx
-            );
+          const boundaryResult = projectPreparedOutlineSelectionDropAtBoundary(
+            readySession.prepared,
+            droppedPointerBoundary.beforeId,
+            horizontalOffset,
+            outlineIndentPx,
+          );
           if (boundaryResult.kind === "invalid") {
             rejectSelectedDrag();
             return;
@@ -3519,9 +4098,9 @@ export function NotesOutlinePane({
             {
               type: "reorder",
               target,
-              ...(expandNodeId === undefined ? {} : { expandNodeId })
+              ...(expandNodeId === undefined ? {} : { expandNodeId }),
             },
-            readySession.frozenContext
+            readySession.frozenContext,
           );
           return;
         }
@@ -3532,13 +4111,15 @@ export function NotesOutlinePane({
           readySession,
           overId,
           horizontalOffset,
-          outlineIndentPx
+          outlineIndentPx,
         );
         if (lateProjection.kind !== "selected-move") {
           rejectSelectedDrag();
           return;
         }
-        if (droppedSession.attemptEpoch !== outlineDragAttemptEpochRef.current) {
+        if (
+          droppedSession.attemptEpoch !== outlineDragAttemptEpochRef.current
+        ) {
           return;
         }
         void executeGuardedSelectionCommand(
@@ -3547,9 +4128,9 @@ export function NotesOutlinePane({
             target: lateProjection.target,
             ...(lateProjection.expandNodeId === undefined
               ? {}
-              : { expandNodeId: lateProjection.expandNodeId })
+              : { expandNodeId: lateProjection.expandNodeId }),
           },
-          lateProjection.frozenContext
+          lateProjection.frozenContext,
         );
       });
       return;
@@ -3574,9 +4155,9 @@ export function NotesOutlinePane({
           target: projection.target,
           ...(projection.expandNodeId === undefined
             ? {}
-            : { expandNodeId: projection.expandNodeId })
+            : { expandNodeId: projection.expandNodeId }),
         },
-        projection.frozenContext
+        projection.frozenContext,
       );
       return;
     }
@@ -3584,13 +4165,14 @@ export function NotesOutlinePane({
     void actions.moveNode(
       { id: activeId, ...input },
       undefined,
-      expandNodeId === undefined ? undefined : { expandNodeId }
+      expandNodeId === undefined ? undefined : { expandNodeId },
     );
   };
   const handleDragCancel = () => {
     outlineDragAttemptEpochRef.current += 1;
     outlineDragSessionRef.current = null;
     pointerDropBoundaryRef.current = null;
+    githubProjectionDropRef.current = null;
     setActiveDragId(null);
     setDragPresentation(null);
     setDropPreview(null);
@@ -3608,7 +4190,7 @@ export function NotesOutlinePane({
   };
   const projectExternal = (
     event: DragMoveEvent,
-    sourceRootIds: readonly NoteId[]
+    sourceRootIds: readonly NoteId[],
   ) => {
     const activeId = String(event.active.id);
     const pointerBoundary =
@@ -3629,14 +4211,14 @@ export function NotesOutlinePane({
       rows: structuralRowsRef.current,
       workspace: stateRef.current,
       zoomRootId: stateRef.current.zoomRootId,
-      indentPx: outlineIndentPx
+      indentPx: outlineIndentPx,
     });
     setDropPreview(result?.preview ?? null);
     return result;
   };
   const commitCrossPane: NotesPaneDndAdapter["commitCrossPane"] = (
     destinationPaneId,
-    projection
+    projection,
   ) => {
     const session = outlineDragSessionRef.current;
     outlineDragSessionRef.current = null;
@@ -3652,26 +4234,26 @@ export function NotesOutlinePane({
         overId: null,
         projection: {
           kind: "ordinary-move",
-          projection: projection.input
-        }
+          projection: projection.input,
+        },
       };
       void actions.moveNodeAcrossPanes?.(
         { id: session.activeId, ...target },
         paneId,
         destinationPaneId,
-        expandNodeId
+        expandNodeId,
       );
       return;
     }
     const commitSelection = (
-      ready: Extract<PaneDragSession, { kind: "selected-ready" }>
+      ready: Extract<PaneDragSession, { kind: "selected-ready" }>,
     ) => {
       void actions.applyPreparedSelectionBatchAcrossPanes?.(
         ready.frozenContext.ownership.authority,
         { type: "move", ...target },
         paneId,
         destinationPaneId,
-        expandNodeId
+        expandNodeId,
       );
     };
     if (session.kind === "selected-ready") {
@@ -3682,8 +4264,8 @@ export function NotesOutlinePane({
           kind: "selected-move",
           target,
           ...(expandNodeId === undefined ? {} : { expandNodeId }),
-          frozenContext: session.frozenContext
-        }
+          frozenContext: session.frozenContext,
+        },
       };
       commitSelection(session);
     } else if (session.kind === "selected-pending") {
@@ -3708,7 +4290,7 @@ export function NotesOutlinePane({
         x >= rect.left &&
         x <= rect.right &&
         y >= rect.top &&
-        y <= rect.bottom
+        y <= rect.bottom,
       );
     },
     draggedRootIds,
@@ -3718,7 +4300,250 @@ export function NotesOutlinePane({
     onDragStart: handleDragStart,
     onDragMove: handleDragMove,
     onDragCancel: handleDragCancel,
-    onDragEnd: handleDragEnd
+    onDragEnd: handleDragEnd,
+  };
+
+  const bodyRowById = useMemo(
+    () => new Map(bodyRows.map((row) => [row.id, row])),
+    [bodyRows],
+  );
+  const githubStoredRowById = useMemo(() => {
+    const adapted = new Map<NoteId, FlattenedOutlineRow>();
+    for (const projectedRow of githubProjection.rows) {
+      if (projectedRow.kind !== "stored") {
+        continue;
+      }
+      const row = bodyRowById.get(projectedRow.nodeId);
+      if (!row) {
+        continue;
+      }
+      adapted.set(projectedRow.nodeId, {
+        ...row,
+        depth: projectedRow.depth,
+        ancestorGuideDepths: Array.from(
+          { length: projectedRow.depth },
+          (_, guideDepth) => guideDepth,
+        ),
+      });
+    }
+    return adapted;
+  }, [bodyRowById, githubProjection.rows]);
+  const renderOutlineNodeItem = (
+    row: FlattenedOutlineRow,
+    depth = row.depth,
+  ) => {
+    const node = state.nodesById[row.id];
+    if (!node) return null;
+    const pluginOwned = node.pluginMeta !== undefined;
+    const pluginRoot = row.id === GITHUB_NOTIFICATIONS_ROOT_ID;
+    const selectionDisabled = pluginOwned || pluginRoot;
+    const movementProtected = pluginOwned || protectedMoveNodeIds.has(row.id);
+    const attachments =
+      state.attachmentsByNodeId[row.id] ?? EMPTY_NOTE_ATTACHMENTS;
+    const childCount = state.childIdsByParent[row.id]?.length ?? 0;
+    const todoProgress = directTodoProgress(
+      row.id,
+      state.nodesById,
+      state.childIdsByParent,
+    );
+    const draft = draftsByNodeId[row.id];
+    const markerKind = draft?.markerKind ?? node.markerKind;
+    const selected = state.selectedId === row.id;
+    const rangeSelected = selectedIdSet.has(row.id);
+    const disabled = deletingNotesData || writeAuthorityLocked;
+    const readOnlyMode = lifecycleReadOnly
+      ? lifecycleMode === "archive"
+        ? "archive"
+        : "trash"
+      : undefined;
+    const dragDisabled =
+      dragUnavailable ||
+      movementProtected ||
+      row.id === state.zoomRootId ||
+      (filteredDragPreflightRequired &&
+        (!filteredDragAuthorityReady ||
+          (rangeSelected && currentSelectionDragContext === null)));
+    const focusSelection =
+      pendingPrimarySelection?.nodeId === row.id
+        ? pendingPrimarySelection
+        : null;
+    const focusRequest: OutlineEditorFocusRequest | null =
+      state.pendingFocusId === row.id &&
+      insertionFocusCancellation?.nodeId !== row.id
+        ? {
+            requestId: focusSelection?.requestId ?? 0,
+            field: focusSelection?.field ?? state.pendingFocusField ?? "title",
+            selection: focusSelection?.selection,
+          }
+        : null;
+    const titleValue = draft?.title ?? node.title;
+    const noteValue = draft?.note ?? node.note;
+    const imageIngestEnabled =
+      !disabled &&
+      readOnlyMode === undefined &&
+      !node.isReadonly &&
+      !selectionDisabled &&
+      state.status !== "loading";
+    const attachmentTargetId =
+      imageIngestEnabled &&
+      (actions.importDroppedImagePaths !== undefined ||
+        actions.importClipboardImages !== undefined)
+        ? row.id
+        : null;
+    const imageDropEnabled =
+      imageIngestEnabled && actions.importDroppedImagePaths !== undefined;
+    const sortableController = getSortableController(row.id);
+    const editor = (
+      <OutlineEditorExportBridge
+        key={row.id}
+        paneId={paneId}
+        interactionEpoch={interactionEpochRef.current}
+        nextKeyboardInsertionToken={nextKeyboardInsertionToken}
+        onKeyboardInsertionPrepared={suspendOutlineBaselineForInsertion}
+        onKeyboardInsertionTerminated={
+          resumeOutlineBaselineAfterInsertionFailure
+        }
+        onCommandFocusActivity={noteOutlineActivity}
+        node={node}
+        attachments={attachments}
+        childCount={childCount}
+        todoCompleted={todoProgress?.completed ?? null}
+        todoTotal={todoProgress?.total ?? null}
+        selected={selected}
+        rangeSelected={rangeSelected}
+        focusRequest={focusRequest}
+        getStateSnapshot={getStateSnapshot}
+        getActionsSnapshot={getActionsSnapshot}
+        ancestorGuideDepths={row.ancestorGuideDepths}
+        getVisibleNodeIds={getVisibleNodeIds}
+        getSelectionVisibleNodeIds={getSelectionVisibleNodeIds}
+        getSelection={getSelection}
+        onSelectionAction={stableExecuteSelectionAction}
+        selectionBridge={rangeSelected ? selectionMenuBridge : undefined}
+        draft={draft}
+        attachmentUploadError={attachmentUploadErrorsByNodeId?.[row.id]}
+        attachmentUploadRetryAttemptId={
+          attachmentUploadRetryAttemptIdsByNodeId?.[row.id]
+        }
+        readOnlyMode={readOnlyMode}
+        disabled={disabled}
+        locallyExpanded={locallyExpandedNodeIds.has(row.id)}
+        movementProtected={movementProtected}
+        dragDisabledReason={
+          filteredDragPreflightRequired &&
+          (!filteredDragAuthorityReady ||
+            (rangeSelected && currentSelectionDragContext === null))
+            ? filteredDragAuthorityFailed ||
+              selectionDragContextFailureKey === selectionChooserLifecycleKey
+              ? filteredDragUnavailableMessage
+              : filteredDragPreparingMessage
+            : undefined
+        }
+        onDragDisabledAttempt={
+          !dragUnavailable &&
+          !movementProtected &&
+          row.id !== state.zoomRootId &&
+          filteredDragPreflightRequired &&
+          (!filteredDragAuthorityReady ||
+            (rangeSelected && currentSelectionDragContext === null))
+            ? publishFilteredDragPreflightFeedback
+            : undefined
+        }
+        pluginRoot={pluginRoot}
+        selectionDisabled={selectionDisabled}
+        showDropPlaceholder={false}
+      />
+    );
+    return (
+      <li
+        className="notes-outline-item"
+        key={row.id}
+        data-outline-motion-id={row.id}
+        aria-level={depth + 1}
+        data-drag-source={dragSourceNodeIdSet.has(row.id) ? "true" : undefined}
+        role="listitem"
+      >
+        {bodyDropPreview?.beforeId === row.id && (
+          <DropPreviewLine preview={bodyDropPreview} />
+        )}
+        <OutlineSortableRuntime
+          controller={sortableController}
+          nodeId={row.id}
+          sortableId={notesPaneDndId(paneId, row.id, "row")}
+          disabled={disabled || dragDisabled || readOnlyMode !== undefined}
+          suppressDragPresentation={activeDragId !== null}
+        />
+        <OutlineSortableShell
+          controller={sortableController}
+          nodeId={row.id}
+          disabled={disabled || dragDisabled || readOnlyMode !== undefined}
+          depth={depth}
+          suppressDragPresentation={activeDragId !== null}
+          className={
+            readOnlyMode ? "notes-node notes-node-readonly" : "notes-node"
+          }
+          completed={node.completedAt !== null}
+          markerKind={markerKind}
+          emptyBullet={
+            markerKind !== "todo" &&
+            node.nodeKind === "text" &&
+            titleValue.trim().length === 0 &&
+            noteValue.trim().length === 0 &&
+            attachments.length === 0 &&
+            childCount === 0
+          }
+          guideEndId={row.visibleDescendantEndId}
+          selected={selected}
+          rangeSelected={rangeSelected}
+          contentProtected={node.isReadonly === true}
+          attachmentTargetId={attachmentTargetId}
+          imageDropActive={imageDropEnabled && imageDropTargetId === row.id}
+          editor={editor}
+        />
+        {imageDropMarkerBoundary?.afterId === row.id && (
+          <span
+            className="notes-image-drop-position"
+            data-testid="notes-image-drop-position"
+            aria-hidden="true"
+            style={{
+              insetInlineStart: `calc(${imageDropMarkerBoundary.depth} * var(--notes-outline-indent) + var(--notes-content-offset))`,
+            }}
+          />
+        )}
+      </li>
+    );
+  };
+  const renderGithubStoredRow = (nodeId: NoteId) => {
+    const row = githubStoredRowById.get(nodeId);
+    const node = state.nodesById[nodeId];
+    const date = node?.parentId
+      ? state.nodesById[node.parentId]?.pluginMeta
+      : undefined;
+    const bullet =
+      node && date?.kind === "date"
+        ? storedGithubNotificationBullet(node, date.dateKey)
+        : null;
+    if (bullet) {
+      const key = serializeExternalBulletKey(bullet.key);
+      return (
+        <NotesExternalBulletRow
+          key={nodeId}
+          bullet={bullet}
+          storedNodeId={nodeId}
+          completing={githubPage?.completingKeys.has(key) ?? false}
+          completionError={githubPage?.completionErrors[key] ?? null}
+          onCompleted={async (completedBullet) => {
+            await actions.markMaterializedGithubNotificationRead(
+              serializeExternalBulletKey(completedBullet.key),
+              completedBullet.updatedAt,
+            );
+          }}
+          onCreateSibling={createGithubNotificationSibling}
+          onStructuralPaste={importGithubNotificationChildren}
+        />
+      );
+    }
+    return row ? renderOutlineNodeItem(row) : null;
   };
 
   return (
@@ -3745,527 +4570,376 @@ export function NotesOutlinePane({
         onPointerDownCapture={() => advanceInteractionEpoch("pointerdown")}
         style={
           {
-            "--notes-outline-indent": `${outlineIndentPx}px`
+            "--notes-outline-indent": `${outlineIndentPx}px`,
           } as CSSProperties
         }
       >
         <TooltipProvider>
-        {selectionSnapshot ? (
-          <NotesSelectionActionBar
-            ref={selectionToolbarRef}
-            snapshot={selectionSnapshot}
-            busy={selectionRouter.busy || selectionChooserFeedback.busy}
-            mutationDisabledReason={selectionMutationDisabledReason}
-            onAction={executeSelectionAction}
-            onClearSelection={actions.clearSelection}
-            onReturnFocus={returnFocusToSelectionHead}
-          />
-        ) : (
-          <div className="notes-outline-toolbar">
-            <NotesBreadcrumb
-              disabled={deletingNotesData}
-              trashView={trashView}
-              onRequestEmptyTrash={() => setEmptyTrashConfirmOpen(true)}
+          {selectionSnapshot ? (
+            <NotesSelectionActionBar
+              ref={selectionToolbarRef}
+              snapshot={selectionSnapshot}
+              busy={selectionRouter.busy || selectionChooserFeedback.busy}
+              mutationDisabledReason={selectionMutationDisabledReason}
+              onAction={executeSelectionAction}
+              onClearSelection={actions.clearSelection}
+              onReturnFocus={returnFocusToSelectionHead}
             />
-            <IconTooltip
-              label={showCompleted ? "Hide completed" : "Show completed"}
-              side="bottom"
-            >
-              <button
-                className="notes-completed-toggle"
-                type="button"
-                aria-label="Completed items"
-                aria-pressed={showCompleted}
-                disabled={deletingNotesData || lifecycleReadOnly}
-                onClick={() => setShowCompleted((visible) => !visible)}
-              >
-                <ListChecks size={16} aria-hidden="true" />
-              </button>
-            </IconTooltip>
-            <NotesExportMenu
-              selectedNodeId={state.selectedId}
-              selectedNodeTitle={
-                state.selectedId === null
-                  ? undefined
-                  : optionalNodeLabel(
-                      state.nodesById[state.selectedId],
-                      draftsByNodeId[state.selectedId]?.title
-                    )
-              }
-              zoomRootId={state.zoomRootId}
-              zoomRootTitle={
-                state.zoomRootId === null
-                  ? undefined
-                  : optionalNodeLabel(
-                      state.nodesById[state.zoomRootId],
-                      draftsByNodeId[state.zoomRootId]?.title,
-                      "Untitled page"
-                    )
-              }
-                onFlushDrafts={flushAllDrafts}
-              disabled={deletingNotesData || lifecycleReadOnly}
-              loading={state.status === "loading"}
-            />
-            {toolbarTrailing}
-            {paneLayout && (
+          ) : (
+            <div className="notes-outline-toolbar">
+              <NotesBreadcrumb
+                disabled={deletingNotesData}
+                trashView={trashView}
+                onRequestEmptyTrash={() => setEmptyTrashConfirmOpen(true)}
+              />
               <IconTooltip
-                label={
-                  paneLayout.detailMaximized
-                    ? "상세 최대화 해제"
-                    : "상세 최대화"
-                }
+                label={showCompleted ? "Hide completed" : "Show completed"}
                 side="bottom"
               >
                 <button
-                  className="notes-export-trigger notes-maximize-toggle"
+                  className="notes-completed-toggle"
                   type="button"
-                  aria-label="상세 최대화"
-                  aria-pressed={paneLayout.detailMaximized}
-                  onClick={paneLayout.toggleDetailMaximized}
+                  aria-label="Completed items"
+                  aria-pressed={showCompleted}
+                  disabled={deletingNotesData || lifecycleReadOnly}
+                  onClick={() => setShowCompleted((visible) => !visible)}
                 >
-                  {paneLayout.detailMaximized ? (
-                    <Minimize2 size={16} aria-hidden="true" />
-                  ) : (
-                    <Maximize2 size={16} aria-hidden="true" />
-                  )}
+                  <ListChecks size={16} aria-hidden="true" />
                 </button>
               </IconTooltip>
-            )}
-          </div>
-        )}
-        <NotesSyncStatusBadge />
-        {writeAuthorityLocked && (
-          <div className="notes-inline-error" role="alert">
-            <span>
-              {authorityRecovery.kind === "recovering"
-                ? "Rechecking Notes write authority…"
-                : "Notes write authority is unknown. Editing is paused."}
-            </span>
-            {authorityRecovery.kind === "unknown" &&
-              retryAuthorityRecovery && (
-                <button
-                  type="button"
-                  className="notes-write-error-retry"
-                  onClick={() => void retryAuthorityRecovery()}
-                >
-                  Retry recovery
-                </button>
+              {!githubZoomed && (
+                <NotesExportMenu
+                  selectedNodeId={state.selectedId}
+                  selectedNodeTitle={
+                    state.selectedId === null
+                      ? undefined
+                      : optionalNodeLabel(
+                          state.nodesById[state.selectedId],
+                          draftsByNodeId[state.selectedId]?.title,
+                        )
+                  }
+                  zoomRootId={state.zoomRootId}
+                  zoomRootTitle={
+                    state.zoomRootId === null
+                      ? undefined
+                      : optionalNodeLabel(
+                          state.nodesById[state.zoomRootId],
+                          draftsByNodeId[state.zoomRootId]?.title,
+                          "Untitled page",
+                        )
+                  }
+                  onFlushDrafts={flushAllDrafts}
+                  disabled={deletingNotesData || lifecycleReadOnly}
+                  loading={state.status === "loading"}
+                />
               )}
-          </div>
-        )}
-        {writeError && (
-          <div
-            className="notes-inline-error notes-write-error-banner"
-            role="alert"
-          >
-            <span>
-              A note could not be saved, so editing commands are paused.
-              Retry the save to continue.
-            </span>
-            <button
-              type="button"
-              className="notes-write-error-retry"
-              onClick={() => void retryLastFailedWrite()}
-            >
-              Retry save
-            </button>
-          </div>
-        )}
-        <div className="notes-outline-rows" ref={dropSurfaceRef}>
-          <div
-            className="notes-outline-content"
-            data-zoomed-page={
-              state.zoomRootId !== null && state.nodesById[state.zoomRootId]
-                ? "true"
-                : undefined
-            }
-            ref={contentRef}
-            onCompositionEndCapture={handleSelectionCompositionEndCapture}
-            onCompositionStartCapture={handleSelectionCompositionStartCapture}
-            onCopyCapture={handleSelectionCopyCapture}
-            onCutCapture={handleSelectionCutCapture}
-            onKeyDownCapture={handleSelectionKeyDownCapture}
-            onKeyUpCapture={handleSelectionClipboardKeyUpCapture}
-            onPasteCapture={handlePasteCapture}
-          >
-          {initialLoading && (
-            <p className="notes-pane-state">Loading notes...</p>
-          )}
-          {state.status === "error" && state.rootIds.length === 0 && (
-            <p className="notes-pane-state notes-pane-error" role="alert">
-              {state.error}
-            </p>
-          )}
-          {!initialLoading &&
-            state.status !== "error" &&
-            completedItemsHidden && (
-              <p className="notes-pane-state">Completed items are hidden.</p>
-            )}
-          {!initialLoading &&
-            state.status !== "error" &&
-            allStructuralRows.length === 0 && (
-              <p className="notes-pane-state">No outline yet.</p>
-            )}
-          {state.status === "error" && state.rootIds.length > 0 && (
-            <p className="notes-inline-error" role="alert">
-              {state.error}
-            </p>
-          )}
-          {imageIngestError && (
-            <p
-              className="notes-inline-error"
-              role="alert"
-              aria-label={imageIngestError.label}
-            >
-              {imageIngestError.message}
-            </p>
-          )}
-          {state.zoomRootId !== null && state.nodesById[state.zoomRootId] && (
-            <NotesPageHeader
-              key={state.zoomRootId}
-              nodeId={state.zoomRootId}
-              getVisibleNodeIds={getVisibleNodeIds}
-              disabled={deletingNotesData || writeAuthorityLocked}
-              mode={lifecycleMode}
-              imageDropActive={imageDropTargetId === state.zoomRootId}
-              showDropPlaceholder={imageDropTargetId === state.zoomRootId}
-            />
-          )}
-          <NotesPaneDndBoundary
-            adapter={dndAdapter}
-            overlay={
-              dragPresentation !== null ? (
-                <DragOverlay
-                  dropAnimation={null}
-                  modifiers={NOTES_DRAG_OVERLAY_MODIFIERS}
+              {toolbarTrailing}
+              {paneLayout && (
+                <IconTooltip
+                  label={
+                    paneLayout.detailMaximized
+                      ? "상세 최대화 해제"
+                      : "상세 최대화"
+                  }
+                  side="bottom"
                 >
-                  <NotesSelectionDragPreview
-                    labels={draggedNodeLabels}
-                    total={dragPresentation.forestNodeIds.length}
-                    thumbnailSrc={
-                      dragPresentation.representativeThumbnailSrc
+                  <button
+                    className="notes-export-trigger notes-maximize-toggle"
+                    type="button"
+                    aria-label="상세 최대화"
+                    aria-pressed={paneLayout.detailMaximized}
+                    onClick={paneLayout.toggleDetailMaximized}
+                  >
+                    {paneLayout.detailMaximized ? (
+                      <Minimize2 size={16} aria-hidden="true" />
+                    ) : (
+                      <Maximize2 size={16} aria-hidden="true" />
+                    )}
+                  </button>
+                </IconTooltip>
+              )}
+            </div>
+          )}
+          <NotesSyncStatusBadge />
+          {writeAuthorityLocked && (
+            <div className="notes-inline-error" role="alert">
+              <span>
+                {authorityRecovery.kind === "recovering"
+                  ? "Rechecking Notes write authority…"
+                  : "Notes write authority is unknown. Editing is paused."}
+              </span>
+              {authorityRecovery.kind === "unknown" &&
+                retryAuthorityRecovery && (
+                  <button
+                    type="button"
+                    className="notes-write-error-retry"
+                    onClick={() => void retryAuthorityRecovery()}
+                  >
+                    Retry recovery
+                  </button>
+                )}
+            </div>
+          )}
+          {writeError && (
+            <div
+              className="notes-inline-error notes-write-error-banner"
+              role="alert"
+            >
+              <span>
+                A note could not be saved, so editing commands are paused. Retry
+                the save to continue.
+              </span>
+              <button
+                type="button"
+                className="notes-write-error-retry"
+                onClick={() => void retryLastFailedWrite()}
+              >
+                Retry save
+              </button>
+            </div>
+          )}
+          <div className="notes-outline-rows" ref={dropSurfaceRef}>
+            <div
+              className="notes-outline-content"
+              data-zoomed-page={
+                state.zoomRootId !== null && state.nodesById[state.zoomRootId]
+                  ? "true"
+                  : undefined
+              }
+              ref={contentRef}
+              onCompositionEndCapture={handleSelectionCompositionEndCapture}
+              onCompositionStartCapture={handleSelectionCompositionStartCapture}
+              onFocusCapture={handleGithubEditorFocusCapture}
+              onCopyCapture={handleSelectionCopyCapture}
+              onCutCapture={handleSelectionCutCapture}
+              onKeyDownCapture={handleSelectionKeyDownCapture}
+              onKeyUpCapture={handleSelectionClipboardKeyUpCapture}
+              onPasteCapture={handlePasteCapture}
+            >
+              {initialLoading && (
+                <p className="notes-pane-state">Loading notes...</p>
+              )}
+              {state.status === "error" && state.rootIds.length === 0 && (
+                <p className="notes-pane-state notes-pane-error" role="alert">
+                  {state.error}
+                </p>
+              )}
+              {!initialLoading &&
+                state.status !== "error" &&
+                completedItemsHidden && (
+                  <p className="notes-pane-state">
+                    Completed items are hidden.
+                  </p>
+                )}
+              {!initialLoading &&
+                state.status !== "error" &&
+                allStructuralRows.length === 0 && (
+                  <p className="notes-pane-state">No outline yet.</p>
+                )}
+              {state.status === "error" && state.rootIds.length > 0 && (
+                <p className="notes-inline-error" role="alert">
+                  {state.error}
+                </p>
+              )}
+              {imageIngestError && (
+                <p
+                  className="notes-inline-error"
+                  role="alert"
+                  aria-label={imageIngestError.label}
+                >
+                  {imageIngestError.message}
+                </p>
+              )}
+              {!githubZoomed &&
+                state.zoomRootId !== null &&
+                state.nodesById[state.zoomRootId] && (
+                  <NotesPageHeader
+                    key={state.zoomRootId}
+                    nodeId={state.zoomRootId}
+                    getVisibleNodeIds={getVisibleNodeIds}
+                    disabled={deletingNotesData || writeAuthorityLocked}
+                    movementProtected={protectedMoveNodeIds.has(
+                      state.zoomRootId,
+                    )}
+                    mode={lifecycleMode}
+                    imageDropActive={imageDropTargetId === state.zoomRootId}
+                    showDropPlaceholder={imageDropTargetId === state.zoomRootId}
+                  />
+                )}
+              <NotesPaneDndBoundary
+                adapter={dndAdapter}
+                overlay={
+                  dragPresentation !== null ? (
+                    <DragOverlay
+                      dropAnimation={null}
+                      modifiers={NOTES_DRAG_OVERLAY_MODIFIERS}
+                    >
+                      <NotesSelectionDragPreview
+                        labels={draggedNodeLabels}
+                        total={dragPresentation.forestNodeIds.length}
+                        thumbnailSrc={
+                          dragPresentation.representativeThumbnailSrc
+                        }
+                      />
+                    </DragOverlay>
+                  ) : undefined
+                }
+              >
+                <SortableContext
+                  items={bodySortableIds}
+                  strategy={verticalListSortingStrategy}
+                >
+                  <ol
+                    className="notes-outline-list"
+                    ref={motionListRef}
+                    data-drag-active={
+                      activeDragId === null ? undefined : "true"
+                    }
+                    onPointerDownCapture={
+                      handleMouseSelectionPointerDownCapture
+                    }
+                    onPointerMoveCapture={
+                      handleMouseSelectionPointerMoveCapture
+                    }
+                    role="list"
+                  >
+                    {ordinaryBodyRows.map((row) => (
+                      <Fragment key={row.id}>
+                        {renderOutlineNodeItem(row)}
+                        {row.id === GITHUB_NOTIFICATIONS_ROOT_ID &&
+                          !row.isCollapsed && (
+                            <NotesExternalOutlinePane
+                              onRetry={retryGithubNotifications}
+                              onCreateSibling={createGithubNotificationSibling}
+                              onStructuralPaste={
+                                importGithubNotificationChildren
+                              }
+                              onToggleDateGroup={toggleGithubDateGroup}
+                              page={githubPage}
+                              projection={githubProjection}
+                              renderStoredRow={renderGithubStoredRow}
+                            />
+                          )}
+                      </Fragment>
+                    ))}
+                    {githubZoomed && (
+                      <NotesExternalOutlinePane
+                        onRetry={retryGithubNotifications}
+                        onCreateSibling={createGithubNotificationSibling}
+                        onStructuralPaste={importGithubNotificationChildren}
+                        onToggleDateGroup={toggleGithubDateGroup}
+                        page={githubPage}
+                        projection={githubProjection}
+                        renderStoredRow={renderGithubStoredRow}
+                      />
+                    )}
+                    {bodyDropPreview?.beforeId === null && (
+                      <li
+                        className="notes-outline-drop-preview-tail"
+                        aria-hidden="true"
+                        role="presentation"
+                      >
+                        <DropPreviewLine preview={bodyDropPreview} />
+                      </li>
+                    )}
+                  </ol>
+                </SortableContext>
+              </NotesPaneDndBoundary>
+              {!githubZoomed &&
+                state.zoomRootId !== null &&
+                state.nodesById[state.zoomRootId] && (
+                  <NotesChildComposer
+                    parentId={state.zoomRootId}
+                    disabled={
+                      deletingNotesData ||
+                      lifecycleReadOnly ||
+                      writeAuthorityLocked
+                    }
+                    hasChildren={
+                      (state.childIdsByParent[state.zoomRootId]?.length ?? 0) >
+                      0
                     }
                   />
-                </DragOverlay>
-              ) : undefined
-            }
-          >
-            <SortableContext
-              items={bodySortableIds}
-              strategy={verticalListSortingStrategy}
-            >
-              <ol
-                className="notes-outline-list"
-                ref={motionListRef}
-                data-drag-active={activeDragId === null ? undefined : "true"}
-                onPointerDownCapture={handleMouseSelectionPointerDownCapture}
-                onPointerMoveCapture={handleMouseSelectionPointerMoveCapture}
-                role="list"
-              >
-                {bodyRows.map((row) => {
-                  const node = state.nodesById[row.id];
-                  if (!node) return null;
-                  const attachments =
-                    state.attachmentsByNodeId[row.id] ??
-                    EMPTY_NOTE_ATTACHMENTS;
-                  const childCount =
-                    state.childIdsByParent[row.id]?.length ?? 0;
-                  const todoProgress = directTodoProgress(
-                    row.id,
-                    state.nodesById,
-                    state.childIdsByParent
-                  );
-                  const draft = draftsByNodeId[row.id];
-                  const markerKind = draft?.markerKind ?? node.markerKind;
-                  const selected = state.selectedId === row.id;
-                  const rangeSelected = selectedIdSet.has(row.id);
-                  const disabled =
-                    deletingNotesData || writeAuthorityLocked;
-                  const readOnlyMode = lifecycleReadOnly
-                    ? lifecycleMode === "archive"
-                      ? "archive"
-                      : "trash"
-                    : undefined;
-                  const dragDisabled =
-                    dragUnavailable ||
-                    row.id === state.zoomRootId ||
-                    (filteredDragPreflightRequired &&
-                      (!filteredDragAuthorityReady ||
-                        (rangeSelected &&
-                          currentSelectionDragContext === null)));
-                  const focusSelection =
-                    pendingPrimarySelection?.nodeId === row.id
-                      ? pendingPrimarySelection
-                      : null;
-                  const focusRequest: OutlineEditorFocusRequest | null =
-                    state.pendingFocusId === row.id &&
-                    insertionFocusCancellation?.nodeId !== row.id
-                      ? {
-                          requestId: focusSelection?.requestId ?? 0,
-                          field:
-                            focusSelection?.field ??
-                            state.pendingFocusField ??
-                            "title",
-                          selection: focusSelection?.selection
-                        }
-                      : null;
-                  const titleValue = draft?.title ?? node.title ?? "";
-                  const noteValue = draft?.note ?? node.note ?? "";
-                  const imageIngestEnabled =
-                    !disabled &&
-                    readOnlyMode === undefined &&
-                    state.status !== "loading";
-                  const attachmentTargetId =
-                    imageIngestEnabled &&
-                    (actions.importDroppedImagePaths !== undefined ||
-                      actions.importClipboardImages !== undefined)
-                      ? row.id
-                      : null;
-                  const imageDropEnabled =
-                    imageIngestEnabled &&
-                    actions.importDroppedImagePaths !== undefined;
-                      const sortableController = getSortableController(row.id);
-                  const editor = (
-                    <OutlineEditorExportBridge
-                      key={row.id}
-                      paneId={paneId}
-                      interactionEpoch={interactionEpochRef.current}
-                      nextKeyboardInsertionToken={nextKeyboardInsertionToken}
-                      onKeyboardInsertionPrepared={
-                        suspendOutlineBaselineForInsertion
-                      }
-                      onKeyboardInsertionTerminated={
-                        resumeOutlineBaselineAfterInsertionFailure
-                      }
-                      onCommandFocusActivity={noteOutlineActivity}
-                      node={node}
-                      attachments={attachments}
-                      childCount={childCount}
-                      todoCompleted={todoProgress?.completed ?? null}
-                      todoTotal={todoProgress?.total ?? null}
-                      selected={selected}
-                      rangeSelected={rangeSelected}
-                      focusRequest={focusRequest}
-                      getStateSnapshot={getStateSnapshot}
-                      getActionsSnapshot={getActionsSnapshot}
-                      ancestorGuideDepths={row.ancestorGuideDepths}
-                      getVisibleNodeIds={getVisibleNodeIds}
-                      getSelectionVisibleNodeIds={getSelectionVisibleNodeIds}
-                      getSelection={getSelection}
-                          onSelectionAction={stableExecuteSelectionAction}
-                      selectionBridge={
-                        rangeSelected ? selectionMenuBridge : undefined
-                      }
-                      draft={draft}
-                      attachmentUploadError={
-                        attachmentUploadErrorsByNodeId?.[row.id]
-                      }
-                      attachmentUploadRetryAttemptId={
-                        attachmentUploadRetryAttemptIdsByNodeId?.[row.id]
-                      }
-                      readOnlyMode={readOnlyMode}
-                      disabled={disabled}
-                      locallyExpanded={locallyExpandedNodeIds.has(row.id)}
-                      dragDisabledReason={
-                        filteredDragPreflightRequired &&
-                        (!filteredDragAuthorityReady ||
-                          (rangeSelected &&
-                            currentSelectionDragContext === null))
-                          ? filteredDragAuthorityFailed ||
-                            selectionDragContextFailureKey ===
-                              selectionChooserLifecycleKey
-                            ? filteredDragUnavailableMessage
-                            : filteredDragPreparingMessage
-                          : undefined
-                      }
-                      onDragDisabledAttempt={
-                        !dragUnavailable &&
-                        row.id !== state.zoomRootId &&
-                        filteredDragPreflightRequired &&
-                        (!filteredDragAuthorityReady ||
-                          (rangeSelected &&
-                            currentSelectionDragContext === null))
-                          ? publishFilteredDragPreflightFeedback
-                          : undefined
-                      }
-                      showDropPlaceholder={false}
-                    />
-                  );
-                  return (
-                    <li
-                      className="notes-outline-item"
-                      key={row.id}
-                      data-outline-motion-id={row.id}
-                      aria-level={row.depth + 1}
-                      data-drag-source={
-                        dragSourceNodeIdSet.has(row.id) ? "true" : undefined
-                      }
-                      role="listitem"
-                    >
-                      {bodyDropPreview?.beforeId === row.id && (
-                        <DropPreviewLine preview={bodyDropPreview} />
-                      )}
-                      <OutlineSortableRuntime
-                        controller={sortableController}
-                        nodeId={row.id}
-                        sortableId={notesPaneDndId(paneId, row.id, "row")}
-                        disabled={
-                          disabled ||
-                          dragDisabled ||
-                          readOnlyMode !== undefined
-                        }
-                        suppressDragPresentation={activeDragId !== null}
-                      />
-                      <OutlineSortableShell
-                        controller={sortableController}
-                        nodeId={row.id}
-                        disabled={
-                          disabled ||
-                          dragDisabled ||
-                          readOnlyMode !== undefined
-                        }
-                        depth={row.depth}
-                        suppressDragPresentation={activeDragId !== null}
-                        className={
-                          readOnlyMode
-                            ? "notes-node notes-node-readonly"
-                            : "notes-node"
-                        }
-                        completed={node.completedAt !== null}
-                        markerKind={markerKind}
-                        emptyBullet={
-                          markerKind !== "todo" &&
-                          node.nodeKind === "text" &&
-                          titleValue.trim().length === 0 &&
-                          noteValue.trim().length === 0 &&
-                          attachments.length === 0 &&
-                          childCount === 0
-                        }
-                        guideEndId={row.visibleDescendantEndId}
-                        selected={selected}
-                        rangeSelected={rangeSelected}
-                        attachmentTargetId={attachmentTargetId}
-                        imageDropActive={
-                          imageDropEnabled && imageDropTargetId === row.id
-                        }
-                        editor={editor}
-                      />
-                      {imageDropMarkerBoundary?.afterId === row.id && (
-                        <span
-                          className="notes-image-drop-position"
-                          data-testid="notes-image-drop-position"
-                          aria-hidden="true"
-                          style={{
-                            insetInlineStart: `calc(${imageDropMarkerBoundary.depth} * var(--notes-outline-indent) + var(--notes-content-offset))`
-                          }}
-                        />
-                      )}
-                    </li>
-                  );
-                })}
-                {bodyDropPreview?.beforeId === null && (
-                  <li
-                    className="notes-outline-drop-preview-tail"
-                    aria-hidden="true"
-                    role="presentation"
-                  >
-                    <DropPreviewLine preview={bodyDropPreview} />
-                  </li>
                 )}
-              </ol>
-            </SortableContext>
-          </NotesPaneDndBoundary>
-          {state.zoomRootId !== null && state.nodesById[state.zoomRootId] && (
-            <NotesChildComposer
-              parentId={state.zoomRootId}
-              disabled={
-                deletingNotesData ||
-                lifecycleReadOnly ||
-                writeAuthorityLocked
-              }
-              hasChildren={
-                (state.childIdsByParent[state.zoomRootId]?.length ?? 0) > 0
+            </div>
+          </div>
+          {imageDropPreview && (
+            <NotesAttachmentDragPreview
+              paths={imageDropPreview.paths}
+              position={imageDropPreview.position}
+              portalContainer={
+                contentRef.current?.closest(".feature-pane-slot") ?? undefined
               }
             />
           )}
-          </div>
-        </div>
-        {imageDropPreview && (
-          <NotesAttachmentDragPreview
-            paths={imageDropPreview.paths}
-            position={imageDropPreview.position}
-            portalContainer={
-              contentRef.current?.closest(".feature-pane-slot") ?? undefined
-            }
+          <ConfirmDialog
+            open={emptyTrashConfirmOpen}
+            onOpenChange={setEmptyTrashConfirmOpen}
+            title="Empty trash?"
+            description="Permanently delete every note currently in Trash? This cannot be undone."
+            confirmLabel="Empty trash"
+            cancelLabel="Cancel"
+            danger
+            onConfirm={() => void actions.emptyTrash()}
           />
-        )}
-        <ConfirmDialog
-          open={emptyTrashConfirmOpen}
-          onOpenChange={setEmptyTrashConfirmOpen}
-          title="Empty trash?"
-          description="Permanently delete every note currently in Trash? This cannot be undone."
-          confirmLabel="Empty trash"
-          cancelLabel="Cancel"
-          danger
-          onConfirm={() => void actions.emptyTrash()}
-        />
-        <NotesQuickJump
-          open={quickJumpOpen}
-          onOpenChange={setQuickJumpOpen}
-          onSearch={actions.searchNotes}
-          onJump={actions.openSearchResult}
-          nodesById={state.nodesById}
-        />
-        {selectionChooser?.kind === "move" && (
-          <NotesMoveChooser
-            open
-            snapshot={selectionChooser.snapshot}
-            nodesById={
-              selectionChooser.snapshot.ownership.authority.workspace.nodesById
-            }
-            onOpenChange={(open) => {
-              if (!open) {
-                setSelectionChooser(null);
+          <NotesQuickJump
+            open={quickJumpOpen}
+            onOpenChange={setQuickJumpOpen}
+            onSearch={actions.searchNotes}
+            onJump={actions.openSearchResult}
+            nodesById={state.nodesById}
+          />
+          {selectionChooser?.kind === "move" && (
+            <NotesMoveChooser
+              open
+              snapshot={selectionChooser.snapshot}
+              nodesById={
+                selectionChooser.snapshot.ownership.authority.workspace
+                  .nodesById
               }
-            }}
-            onChoose={({ destinationId, snapshot }) => {
-              const target = frozenMoveTarget(
-                snapshot.ownership.authority.workspace,
-                snapshot.nodeIds,
-                destinationId
-              );
-              if (target) {
-                void executeGuardedSelectionCommand(
-                  { type: "moveTo", target },
-                  snapshot
+              onOpenChange={(open) => {
+                if (!open) {
+                  setSelectionChooser(null);
+                }
+              }}
+              onChoose={({ destinationId, snapshot }) => {
+                const target = frozenMoveTarget(
+                  snapshot.ownership.authority.workspace,
+                  snapshot.nodeIds,
+                  destinationId,
                 );
-              }
-            }}
-            onRequestFocusReturn={returnFocusToSelectionHead}
-          />
-        )}
-        {selectionChooser?.kind === "tags" && (
-          <NotesTagChooser
-            open
-            snapshot={selectionChooser.snapshot}
-            suggestions={tagSuggestions}
-            selectedTagUnion={selectionChooser.selectedTagUnion}
-            onOpenChange={(open) => {
-              if (!open) {
-                setSelectionChooser(null);
-              }
-            }}
-            onCommit={(commit) => {
-              void executeGuardedSelectionCommand(
-                commit.mode === "add"
-                  ? { type: "addTag", tag: commit.tag }
-                  : { type: "removeTag", tag: commit.tag },
-                commit.snapshot
-              );
-            }}
-            onRequestFocusReturn={returnFocusToSelectionHead}
-          />
-        )}
+                if (target) {
+                  void executeGuardedSelectionCommand(
+                    { type: "moveTo", target },
+                    snapshot,
+                  );
+                }
+              }}
+              onRequestFocusReturn={returnFocusToSelectionHead}
+            />
+          )}
+          {selectionChooser?.kind === "tags" && (
+            <NotesTagChooser
+              open
+              snapshot={selectionChooser.snapshot}
+              suggestions={tagSuggestions}
+              selectedTagUnion={selectionChooser.selectedTagUnion}
+              onOpenChange={(open) => {
+                if (!open) {
+                  setSelectionChooser(null);
+                }
+              }}
+              onCommit={(commit) => {
+                void executeGuardedSelectionCommand(
+                  commit.mode === "add"
+                    ? { type: "addTag", tag: commit.tag }
+                    : { type: "removeTag", tag: commit.tag },
+                  commit.snapshot,
+                );
+              }}
+              onRequestFocusReturn={returnFocusToSelectionHead}
+            />
+          )}
         </TooltipProvider>
       </section>
     </NotesExportControllerProvider>

@@ -102,4 +102,24 @@ describe("resetApplicationData", () => {
       "notes_delete_database"
     );
   });
+
+  it("removes external snapshots while preserving vault documents", async () => {
+    const vaultDocuments = JSON.stringify({
+      "~/Yonalist": { "notes/kept.md": "kept" }
+    });
+    window.localStorage.setItem(
+      "yonalist.externalSources.snapshots.v1",
+      JSON.stringify({ cached: "external" })
+    );
+    window.localStorage.setItem("yonalist.vaultDocuments.v1", vaultDocuments);
+
+    await resetApplicationData({ vaultRoot: "~/Yonalist" });
+
+    expect(
+      window.localStorage.getItem("yonalist.externalSources.snapshots.v1")
+    ).toBeNull();
+    expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).toBe(
+      vaultDocuments
+    );
+  });
 });

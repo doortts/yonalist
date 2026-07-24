@@ -39,16 +39,164 @@ export type SupportingNoteKeyResolution =
   | "nextTitle"
   | "nextTitleOrCreate";
 
+export interface ResolveExternalEditorKeyInput {
+  field: "title" | "note";
+  key: string;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+  isComposing: boolean;
+  repeat: boolean;
+  selectionStart: number | null;
+  selectionEnd: number | null;
+  value: string;
+}
+
+export type ExternalEditorKeyResolution =
+  | { type: "complete" }
+  | { type: "createSibling" }
+  | { type: "focusNote" }
+  | { type: "restore" }
+  | { type: "focusTitle"; restore: boolean }
+  | {
+      type: "focus";
+      direction: "previous" | "next";
+      edge: "start" | "end" | null;
+    }
+  | { type: "consume" };
+
+export function resolveExternalEditorKey(
+  input: ResolveExternalEditorKeyInput
+): ExternalEditorKeyResolution | null {
+  if (input.isComposing || input.key === "Process") {
+    return null;
+  }
+  const plain =
+    !input.altKey && !input.ctrlKey && !input.metaKey && !input.shiftKey;
+  const primary = !input.altKey && (input.ctrlKey !== input.metaKey);
+  const collapsed =
+    input.selectionStart !== null &&
+    input.selectionStart === input.selectionEnd;
+
+  if (input.field === "title") {
+    if (
+      input.key === "Enter" &&
+      primary &&
+      !input.shiftKey &&
+      !input.repeat
+    ) {
+      return { type: "complete" };
+    }
+    if (
+      input.key === "Enter" &&
+      input.shiftKey &&
+      !input.altKey &&
+      !input.ctrlKey &&
+      !input.metaKey &&
+      !input.repeat
+    ) {
+      return { type: "focusNote" };
+    }
+    if (input.key === "Enter" && plain && !input.repeat) {
+      return { type: "createSibling" };
+    }
+    if (input.key === "Escape" && plain) {
+      return { type: "restore" };
+    }
+    if (
+      plain &&
+      (input.key === "ArrowUp" || input.key === "ArrowDown")
+    ) {
+      return {
+        type: "focus",
+        direction: input.key === "ArrowUp" ? "previous" : "next",
+        edge: null
+      };
+    }
+    if (
+      plain &&
+      collapsed &&
+      input.key === "ArrowLeft" &&
+      input.selectionStart === 0
+    ) {
+      return { type: "focus", direction: "previous", edge: "end" };
+    }
+    if (
+      plain &&
+      collapsed &&
+      input.key === "ArrowRight" &&
+      input.selectionEnd === input.value.length
+    ) {
+      return { type: "focus", direction: "next", edge: "start" };
+    }
+  } else {
+    if (
+      input.key === "Enter" &&
+      input.shiftKey &&
+      !input.altKey &&
+      !input.ctrlKey &&
+      !input.metaKey &&
+      !input.repeat
+    ) {
+      return { type: "createSibling" };
+    }
+    if (input.key === "Escape" && plain) {
+      return { type: "focusTitle", restore: true };
+    }
+    if (
+      input.key === "ArrowUp" &&
+      plain &&
+      input.selectionStart === 0
+    ) {
+      return { type: "focusTitle", restore: false };
+    }
+    if (
+      input.key === "ArrowDown" &&
+      plain &&
+      input.selectionEnd === input.value.length
+    ) {
+      return { type: "focus", direction: "next", edge: "start" };
+    }
+  }
+
+  if (input.key === "Tab") {
+    return { type: "consume" };
+  }
+  if (
+    input.key === "Backspace" &&
+    collapsed &&
+    input.selectionStart === 0
+  ) {
+    return { type: "consume" };
+  }
+  const key = input.key.toLowerCase();
+  if (
+    (key === "backspace" && primary && input.shiftKey) ||
+    (key === "d" &&
+      input.shiftKey &&
+      (input.metaKey || input.altKey)) ||
+    ((input.key === "ArrowUp" || input.key === "ArrowDown") &&
+      input.shiftKey &&
+      (input.ctrlKey || input.altKey))
+  ) {
+    return { type: "consume" };
+  }
+  return null;
+}
+
 export function resolveSupportingNoteKey(
   input: ResolveSupportingNoteKeyInput
 ): SupportingNoteKeyResolution | null {
+  if (input.isComposing || input.key === "Process") {
+    return null;
+  }
   if (
     input.key === "Enter" &&
     input.shiftKey &&
     !input.altKey &&
     !input.ctrlKey &&
     !input.metaKey &&
-    !input.isComposing &&
     !input.repeat
   ) {
     return "nextTitleOrCreate";
@@ -130,6 +278,8 @@ export interface ResolveOutlineKeyInput {
   /** @deprecated Selection eligibility now belongs to the shared command router. */
   authoritativeWorkspace?: NormalizedNotesWorkspace;
   visibleNodeIds?: readonly NoteId[];
+  /** Prevent an outdent from placing an ordinary row directly under this root. */
+  outdentBoundaryRootId?: NoteId;
   /** Rows that may participate in a selection, excluding a zoom page header. */
   selectionVisibleNodeIds?: readonly NoteId[];
   // The live multi-node selection, if any. Shift+Arrow extends the head from
@@ -509,6 +659,9 @@ export function resolveOutlineKey(
       }
       const parent = input.workspace.nodesById[node.parentId];
       if (!parent) {
+        return unavailableMove;
+      }
+      if (parent.parentId === input.outdentBoundaryRootId) {
         return unavailableMove;
       }
       return {

@@ -387,10 +387,12 @@ mod tests {
     use crate::notes::connection::{
         acquire_notes_connection, evict_notes_connection, lock_notes_connection,
     };
+    use crate::notes::github_notifications::GITHUB_NOTIFICATIONS_ROOT_ID;
     use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
     use crate::notes::repository::{
         inject_delete_database_before_file_mutation_once, notes_db_path,
     };
+    use crate::notes::schema::CURRENT_NOTES_SCHEMA_VERSION;
     use crate::notes::sync::asset_gc::inject_before_owned_file_remove_once;
     use crate::notes::sync::bootstrap::{
         flush_pending, inject_startup_after_entry_inspect_hook,
@@ -426,6 +428,7 @@ mod tests {
             max_hlc: HLC_2.to_string(),
             root: TopicRoot {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                format_version: crate::notes::sync::topic_file::TOPIC_FORMAT_VERSION,
                 title: title.to_string(),
                 note: String::new(),
                 markdown_image_width: None,
@@ -433,6 +436,11 @@ mod tests {
                 starred: false,
                 completed_at: None,
                 archived_at: None,
+                root_collapsed: false,
+                root_readonly: Some(false),
+                plugin: None,
+                plugin_children: None,
+                collapsed_groups: Vec::new(),
             },
             nodes: vec![TopicNode {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
@@ -444,6 +452,9 @@ mod tests {
                 note: String::new(),
                 markdown_image_width: None,
                 from: None,
+                collapsed: false,
+                readonly: None,
+                plugin_meta: None,
                 sibling_ordinal: 1,
                 sort_key: 1024,
                 children: Vec::new(),
@@ -468,13 +479,21 @@ mod tests {
     }
 
     fn assert_one_onboarding_set(vault_path: &str) {
-        assert_eq!(node_count(vault_path, "1 = 1"), 7);
+        assert_eq!(node_count(vault_path, "1 = 1"), 8);
         assert_eq!(
             node_count(
                 vault_path,
                 &format!("parent_id IS NULL AND title = '{ONBOARDING_TITLE}'"),
             ),
             1
+        );
+        assert_eq!(
+            node_count(
+                vault_path,
+                &format!("id = '{GITHUB_NOTIFICATIONS_ROOT_ID}'")
+            ),
+            1,
+            "a reset must seed the canonical GitHub Notifications root"
         );
     }
 
@@ -544,6 +563,7 @@ mod tests {
         fs::write(
             &trash_path,
             render_trash_doc(&TrashDoc {
+                format_version: crate::notes::sync::topic_file::TOPIC_FORMAT_VERSION,
                 max_hlc: HLC_2.to_string(),
                 purged: Vec::new(),
                 nodes: Vec::new(),
@@ -629,16 +649,10 @@ mod tests {
                 .expect("mark legacy database");
             drop(legacy);
             for suffix in ["-wal", "-shm", "-journal"] {
-                fs::write(
-                    format!("{}{suffix}", current_path.to_string_lossy()),
-                    format!("old current {suffix}"),
-                )
-                .expect("seed current companion");
-                fs::write(
-                    format!("{}{suffix}", legacy_path.to_string_lossy()),
-                    format!("old legacy {suffix}"),
-                )
-                .expect("seed legacy companion");
+                fs::write(format!("{}{suffix}", current_path.to_string_lossy()), [])
+                    .expect("seed current companion");
+                fs::write(format!("{}{suffix}", legacy_path.to_string_lossy()), [])
+                    .expect("seed legacy companion");
             }
 
             rebuild_notes_storage(&vault_path, NotesMaintenanceMode::DeleteAll)
@@ -660,10 +674,12 @@ mod tests {
             for suffix in ["-wal", "-shm", "-journal"] {
                 let path = PathBuf::from(format!("{}{suffix}", current_path.to_string_lossy()));
                 if path.exists() {
-                    assert_ne!(
-                        fs::read(&path).expect("read rebuilt current companion"),
-                        format!("old current {suffix}").as_bytes(),
-                        "the stale current SQLite member {suffix:?} must be removed"
+                    assert!(
+                        fs::metadata(&path)
+                            .expect("inspect rebuilt current companion")
+                            .len()
+                            > 0,
+                        "the stale empty current SQLite member {suffix:?} must be removed"
                     );
                 }
             }
@@ -1194,6 +1210,7 @@ mod tests {
             max_hlc: HLC_3.to_string(),
             root: TopicRoot {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                format_version: crate::notes::sync::topic_file::TOPIC_FORMAT_VERSION,
                 title: "Destination".to_string(),
                 note: String::new(),
                 markdown_image_width: None,
@@ -1201,6 +1218,11 @@ mod tests {
                 starred: false,
                 completed_at: None,
                 archived_at: None,
+                root_collapsed: false,
+                root_readonly: Some(false),
+                plugin: None,
+                plugin_children: None,
+                collapsed_groups: Vec::new(),
             },
             nodes: vec![TopicNode {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
@@ -1212,6 +1234,9 @@ mod tests {
                 note: String::new(),
                 markdown_image_width: None,
                 from: None,
+                collapsed: false,
+                readonly: None,
+                plugin_meta: None,
                 sibling_ordinal: 1,
                 sort_key: 1024,
                 children: Vec::new(),
@@ -1276,6 +1301,7 @@ mod tests {
             max_hlc: HLC_3.to_string(),
             root: TopicRoot {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                format_version: crate::notes::sync::topic_file::TOPIC_FORMAT_VERSION,
                 title: "Destination".to_string(),
                 note: String::new(),
                 markdown_image_width: None,
@@ -1283,6 +1309,11 @@ mod tests {
                 starred: false,
                 completed_at: None,
                 archived_at: None,
+                root_collapsed: false,
+                root_readonly: Some(false),
+                plugin: None,
+                plugin_children: None,
+                collapsed_groups: Vec::new(),
             },
             nodes: vec![TopicNode {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
@@ -1294,6 +1325,9 @@ mod tests {
                 note: String::new(),
                 markdown_image_width: None,
                 from: None,
+                collapsed: false,
+                readonly: None,
+                plugin_meta: None,
                 sibling_ordinal: 1,
                 sort_key: 1024,
                 children: Vec::new(),
@@ -1614,7 +1648,7 @@ mod tests {
                 connection
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .expect("read app-local schema version"),
-                crate::notes::schema::CURRENT_NOTES_SCHEMA_VERSION
+                CURRENT_NOTES_SCHEMA_VERSION
             );
             drop(connection);
             assert_one_onboarding_set(&vault_path);

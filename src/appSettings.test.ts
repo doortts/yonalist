@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   defaultSettings,
   loadSettings,
+  normalizeGithubNotificationsReadRetentionDays,
   normalizeSettings,
   persistSettings,
   settingsNeedNormalization
@@ -83,5 +84,30 @@ describe("app settings", () => {
       ...defaultSettings,
       assetTrashRetentionDays: 3.5
     })).toBe(true);
+  });
+
+  it.each([
+    [undefined, 30],
+    [0, 1],
+    [366, 365],
+    [30.6, 31],
+    [Number.NaN, 30]
+  ])("normalizes GitHub read retention %s to %s", (value, expected) => {
+    expect(normalizeGithubNotificationsReadRetentionDays(value)).toBe(expected);
+    expect(
+      normalizeSettings({ githubNotificationsReadRetentionDays: value as number })
+        .githubNotificationsReadRetentionDays
+    ).toBe(expected);
+  });
+
+  it("includes GitHub read retention in settings schema normalization", () => {
+    expect(defaultSettings.githubNotificationsReadRetentionDays).toBe(30);
+    expect(settingsNeedNormalization({ ...defaultSettings })).toBe(false);
+    expect(
+      settingsNeedNormalization({
+        ...defaultSettings,
+        githubNotificationsReadRetentionDays: 30.5
+      })
+    ).toBe(true);
   });
 });

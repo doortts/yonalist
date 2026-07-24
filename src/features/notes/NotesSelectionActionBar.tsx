@@ -226,7 +226,11 @@ export const NotesSelectionActionBar = forwardRef<
       mutationAvailability,
       fromEligibility(snapshot.eligibility.duplicate)
     ),
-    tags: combineAvailability(busyAvailability, mutationAvailability),
+    tags: combineAvailability(
+      busyAvailability,
+      mutationAvailability,
+      fromEligibility(snapshot.eligibility.tags)
+    ),
     copy: combineAvailability(
       busyAvailability,
       fromEligibility(snapshot.eligibility.copy)

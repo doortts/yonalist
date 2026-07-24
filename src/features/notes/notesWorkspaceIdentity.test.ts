@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { NoteAttachment, NoteNode } from "../../domain/notes";
 import {
   normalizeWorkspace,
-  type NormalizedNotesWorkspace
+  type NormalizedNotesWorkspace,
 } from "./notesWorkspaceReducer";
 import { retainNormalizedWorkspaceIdentity } from "./notesWorkspaceIdentity";
 
@@ -24,7 +24,10 @@ const NOTE_NODE_FIELDS = [
   "updatedAt",
   "deletedAt",
   "archivedAt",
-  "archiveRootId"
+  "archiveRootId",
+  "isReadonly",
+  "pluginState",
+  "pluginMeta",
 ] as const satisfies readonly (keyof NoteNode)[];
 const NOTE_ATTACHMENT_FIELDS = [
   "id",
@@ -39,7 +42,7 @@ const NOTE_ATTACHMENT_FIELDS = [
   "intrinsicHeight",
   "displayWidth",
   "createdAt",
-  "updatedAt"
+  "updatedAt",
 ] as const satisfies readonly (keyof NoteAttachment)[];
 const ALL_NODE_FIELDS_LISTED: Exclude<
   keyof NoteNode,
@@ -56,9 +59,7 @@ const ALL_ATTACHMENT_FIELDS_LISTED: Exclude<
 void ALL_NODE_FIELDS_LISTED;
 void ALL_ATTACHMENT_FIELDS_LISTED;
 
-function node(
-  overrides: Partial<NoteNode> & Pick<NoteNode, "id">
-): NoteNode {
+function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
     nodeKind: "text",
     markerKind: "bullet",
@@ -77,12 +78,12 @@ function node(
     deletedAt: null,
     archivedAt: null,
     archiveRootId: null,
-    ...overrides
+    ...overrides,
   };
 }
 
 function attachment(
-  overrides: Partial<NoteAttachment> & Pick<NoteAttachment, "id" | "nodeId">
+  overrides: Partial<NoteAttachment> & Pick<NoteAttachment, "id" | "nodeId">,
 ): NoteAttachment {
   return {
     sortKey: 1024,
@@ -96,13 +97,13 @@ function attachment(
     displayWidth: 320,
     createdAt: "2026-07-12T00:00:00Z",
     updatedAt: "2026-07-12T00:00:00Z",
-    ...overrides
+    ...overrides,
   };
 }
 
 function withUi(
   workspace: NormalizedNotesWorkspace,
-  overrides: Partial<NormalizedNotesWorkspace>
+  overrides: Partial<NormalizedNotesWorkspace>,
 ): NormalizedNotesWorkspace {
   return { ...workspace, ...overrides };
 }
@@ -110,13 +111,11 @@ function withUi(
 describe("retainNormalizedWorkspaceIdentity", () => {
   it("retains 49 equal nodes while leaving the changed source and new node fresh", () => {
     const previousNodes = Array.from({ length: 50 }, (_, index) =>
-      node({ id: `node-${index}`, sortKey: index + 1 })
+      node({ id: `node-${index}`, sortKey: index + 1 }),
     );
     const previous = normalizeWorkspace({ nodes: previousNodes });
     const nextNodes = previousNodes.map((item, index) =>
-      index === 0
-        ? { ...item, title: "changed source" }
-        : { ...item }
+      index === 0 ? { ...item, title: "changed source" } : { ...item },
     );
     const created = node({ id: "expected", sortKey: 51 });
     const next = normalizeWorkspace({ nodes: [...nextNodes, created] });
@@ -125,13 +124,11 @@ describe("retainNormalizedWorkspaceIdentity", () => {
 
     for (let index = 1; index < 50; index += 1) {
       expect(retained.nodesById[`node-${index}`]).toBe(
-        previous.nodesById[`node-${index}`]
+        previous.nodesById[`node-${index}`],
       );
     }
     expect(retained.nodesById["node-0"]).toBe(next.nodesById["node-0"]);
-    expect(retained.nodesById["node-0"]).not.toBe(
-      previous.nodesById["node-0"]
-    );
+    expect(retained.nodesById["node-0"]).not.toBe(previous.nodesById["node-0"]);
     expect(retained.nodesById.expected).toBe(created);
   });
 
@@ -156,7 +153,7 @@ describe("retainNormalizedWorkspaceIdentity", () => {
       ["updatedAt", "2026-07-13T00:00:00Z"],
       ["deletedAt", "2026-07-13T00:00:00Z"],
       ["archivedAt", "2026-07-13T00:00:00Z"],
-      ["archiveRootId", "archive-root"]
+      ["archiveRootId", "archive-root"],
     ];
     const previous = normalizeWorkspace({ nodes: [base] });
 
@@ -165,7 +162,7 @@ describe("retainNormalizedWorkspaceIdentity", () => {
       const next = normalizeWorkspace({ nodes: [changed] });
       expect(
         retainNormalizedWorkspaceIdentity(previous, next).nodesById.node,
-        field
+        field,
       ).toBe(changed);
     }
 
@@ -173,7 +170,7 @@ describe("retainNormalizedWorkspaceIdentity", () => {
     const renamedWorkspace = normalizeWorkspace({ nodes: [renamed] });
     expect(
       retainNormalizedWorkspaceIdentity(previous, renamedWorkspace).nodesById
-        .renamed
+        .renamed,
     ).toBe(renamed);
   });
 
@@ -184,45 +181,36 @@ describe("retainNormalizedWorkspaceIdentity", () => {
     const otherChild = node({
       id: "other-child",
       parentId: otherRoot.id,
-      sortKey: 1
+      sortKey: 1,
     });
     const first = attachment({ id: "first", nodeId: child.id, sortKey: 1 });
     const second = attachment({ id: "second", nodeId: child.id, sortKey: 2 });
     const previous = normalizeWorkspace({
       nodes: [root, child, otherRoot, otherChild],
-      attachmentsByNodeId: { [child.id]: [first, second] }
+      attachmentsByNodeId: { [child.id]: [first, second] },
     });
     const next = normalizeWorkspace({
-      nodes: [
-        { ...root },
-        { ...child },
-        { ...otherRoot },
-        { ...otherChild }
-      ],
+      nodes: [{ ...root }, { ...child }, { ...otherRoot }, { ...otherChild }],
       attachmentsByNodeId: {
-        [child.id]: [{ ...first }, { ...second }]
-      }
+        [child.id]: [{ ...first }, { ...second }],
+      },
     });
 
     const retained = retainNormalizedWorkspaceIdentity(previous, next);
 
     expect(retained.rootIds).toBe(previous.rootIds);
-    expect(retained.childIdsByParent.root).toBe(
-      previous.childIdsByParent.root
-    );
+    expect(retained.childIdsByParent.root).toBe(previous.childIdsByParent.root);
     expect(retained.childIdsByParent["other-root"]).toBe(
-      previous.childIdsByParent["other-root"]
+      previous.childIdsByParent["other-root"],
     );
     expect(retained.attachmentsByNodeId.child).toBe(
-      previous.attachmentsByNodeId.child
+      previous.attachmentsByNodeId.child,
     );
     expect(retained.attachmentsByNodeId.child[0]).toBe(first);
     expect(retained.attachmentsByNodeId.child[1]).toBe(second);
     expect(retained.nodesById).toBe(previous.nodesById);
     expect(retained.childIdsByParent).toBe(previous.childIdsByParent);
-    expect(retained.attachmentsByNodeId).toBe(
-      previous.attachmentsByNodeId
-    );
+    expect(retained.attachmentsByNodeId).toBe(previous.attachmentsByNodeId);
   });
 
   it("creates new arrays when ids, order, or attachment values differ", () => {
@@ -234,35 +222,28 @@ describe("retainNormalizedWorkspaceIdentity", () => {
     const second = attachment({ id: "second", nodeId: childA.id, sortKey: 2 });
     const previous = normalizeWorkspace({
       nodes: [root, otherRoot, childA, childB],
-      attachmentsByNodeId: { [childA.id]: [first, second] }
+      attachmentsByNodeId: { [childA.id]: [first, second] },
     });
     const reorderedRoot = { ...otherRoot, sortKey: 0 };
     const reorderedChildB = { ...childB, sortKey: 0 };
     const changedSecond = { ...second, displayWidth: 480 };
     const next = normalizeWorkspace({
-      nodes: [
-        { ...root },
-        reorderedRoot,
-        { ...childA },
-        reorderedChildB
-      ],
+      nodes: [{ ...root }, reorderedRoot, { ...childA }, reorderedChildB],
       attachmentsByNodeId: {
-        [childA.id]: [{ ...first }, changedSecond]
-      }
+        [childA.id]: [{ ...first }, changedSecond],
+      },
     });
 
     const retained = retainNormalizedWorkspaceIdentity(previous, next);
 
     expect(retained.rootIds).toBe(next.rootIds);
     expect(retained.rootIds).not.toBe(previous.rootIds);
-    expect(retained.childIdsByParent.root).toBe(
-      next.childIdsByParent.root
-    );
+    expect(retained.childIdsByParent.root).toBe(next.childIdsByParent.root);
     expect(retained.childIdsByParent.root).not.toBe(
-      previous.childIdsByParent.root
+      previous.childIdsByParent.root,
     );
     expect(retained.attachmentsByNodeId.a).not.toBe(
-      previous.attachmentsByNodeId.a
+      previous.attachmentsByNodeId.a,
     );
     expect(retained.attachmentsByNodeId.a[0]).toBe(first);
     expect(retained.attachmentsByNodeId.a[1]).toBe(changedSecond);
@@ -274,7 +255,7 @@ describe("retainNormalizedWorkspaceIdentity", () => {
     const changes: ReadonlyArray<
       readonly [
         Exclude<keyof NoteAttachment, "id">,
-        NoteAttachment[keyof NoteAttachment]
+        NoteAttachment[keyof NoteAttachment],
       ]
     > = [
       ["nodeId", "other-node"],
@@ -288,34 +269,34 @@ describe("retainNormalizedWorkspaceIdentity", () => {
       ["intrinsicHeight", 600],
       ["displayWidth", 480],
       ["createdAt", "2026-07-11T00:00:00Z"],
-      ["updatedAt", "2026-07-13T00:00:00Z"]
+      ["updatedAt", "2026-07-13T00:00:00Z"],
     ];
     const previous = normalizeWorkspace({
       nodes: [root],
-      attachmentsByNodeId: { [root.id]: [base] }
+      attachmentsByNodeId: { [root.id]: [base] },
     });
 
     for (const [field, value] of changes) {
       const changed = { ...base, [field]: value } as NoteAttachment;
       const next = normalizeWorkspace({
         nodes: [{ ...root }],
-        attachmentsByNodeId: { [root.id]: [changed] }
+        attachmentsByNodeId: { [root.id]: [changed] },
       });
       expect(
-        retainNormalizedWorkspaceIdentity(previous, next)
-          .attachmentsByNodeId.root[0],
-        field
+        retainNormalizedWorkspaceIdentity(previous, next).attachmentsByNodeId
+          .root[0],
+        field,
       ).toBe(changed);
     }
 
     const renamed = { ...base, id: "renamed" };
     const renamedWorkspace = normalizeWorkspace({
       nodes: [{ ...root }],
-      attachmentsByNodeId: { [root.id]: [renamed] }
+      attachmentsByNodeId: { [root.id]: [renamed] },
     });
     expect(
       retainNormalizedWorkspaceIdentity(previous, renamedWorkspace)
-        .attachmentsByNodeId.root[0]
+        .attachmentsByNodeId.root[0],
     ).toBe(renamed);
   });
 
@@ -324,12 +305,12 @@ describe("retainNormalizedWorkspaceIdentity", () => {
     const previous = withUi(base, {
       selectedId: "root",
       status: "loading",
-      error: "old"
+      error: "old",
     });
     const next = withUi(normalizeWorkspace({ nodes: [node({ id: "root" })] }), {
       selectedId: null,
       status: "ready",
-      error: null
+      error: null,
     });
 
     const retained = retainNormalizedWorkspaceIdentity(previous, next);
@@ -339,7 +320,7 @@ describe("retainNormalizedWorkspaceIdentity", () => {
     expect(retained.status).toBe("ready");
     expect(retained.error).toBeNull();
     expect(retainNormalizedWorkspaceIdentity(retained, { ...retained })).toBe(
-      retained
+      retained,
     );
   });
 });

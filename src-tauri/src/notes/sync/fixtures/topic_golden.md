@@ -6,6 +6,8 @@ sort_key: 1024
 max_hlc: 0swkd7qz6-00-a3f2
 root_hlc: 0swkd7qz2-00-a3f2
 root_marker_kind: bullet
+root_collapsed: false
+root_readonly: false
 root_starred: true
 root_completed_at: 2026-07-21T00:00:00Z
 root_archived_at: null

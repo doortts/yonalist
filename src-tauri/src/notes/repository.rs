@@ -3,6 +3,12 @@ use crate::notes::date_index::{
     SystemLocalTodayProvider, WeekStartsOn,
 };
 use crate::notes::error::UNSUPPORTED_SCHEMA_VERSION_PREFIX;
+use crate::notes::github_notifications::{
+    compare_github_notification_timestamps, github_date_node_id, github_notification_node_id,
+    parse_github_plugin_meta_storage, serialize_github_plugin_meta_storage,
+    GithubNotificationsPluginMeta, GithubNotificationsPluginState, GITHUB_NOTIFICATIONS_ROOT_ID,
+    GITHUB_NOTIFICATIONS_TITLE,
+};
 use crate::notes::history;
 use crate::notes::image_atom::{ImageAtomAttachmentMutation, ImageAtomEditPlan};
 use crate::notes::schema::CURRENT_NOTES_SCHEMA_VERSION;
@@ -11,15 +17,18 @@ use crate::notes::tags::{
     remove_exact_tag_tokens, tokenize_note_text,
 };
 use crate::notes::types::{
-    validate_note_id, ApplyBatchInput, ApplyImageAtomPasteInput, BatchOp, CreateNodeInput,
-    ExportAttachment, ExportDateSpan, ExportNode, ImageAtomFocusResult, ImageAtomPasteFragmentItem,
+    validate_import_nodes, validate_note_id, ApplyBatchInput, ApplyImageAtomPasteInput, BatchOp,
+    CreateNodeInput, DeleteNodesInput, DeleteNodesOutcome, ExportAttachment, ExportDateSpan,
+    ExportNode, GithubNotificationSnapshotInput, ImageAtomFocusResult, ImageAtomPasteFragmentItem,
     ImageAtomPasteTargetAuthority, ImageTargetAuthority, ImportNode, ImportSubtreeInput,
-    MoveNodeInput, NoteAttachment, NoteId, NoteLayoutMode, NoteMarkerKind, NoteNode, NoteNodeKind,
-    NoteSearchMatchedField, NoteSearchResult, NoteSearchScope, NoteSearchTag,
-    NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportSnapshot,
-    NotesHistoryResetInput, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
-    MAX_IMAGE_NODE_IMPORT_ITEMS, MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE,
-    MAX_NOTE_ATTACHMENTS_PER_VAULT,
+    MarkGithubNotificationReadInput, MaterializeGithubNotificationReparentInput,
+    MaterializeGithubNotificationSiblingInput, MoveNodeInput, NoteAttachment, NoteId,
+    NoteLayoutMode, NoteMarkerKind, NoteNode, NoteNodeKind, NoteSearchMatchedField,
+    NoteSearchResult, NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter,
+    NoteTagPrefix, NoteTagSummary, NotesExportSnapshot, NotesHistoryResetInput,
+    NotesMutationResult, NotesWorkspace, NotesWorkspaceScope, RefreshGithubNotificationsInput,
+    SetGithubGroupCollapsedInput, SplitNodeInput, UpdateNodeInput, MAX_IMAGE_NODE_IMPORT_ITEMS,
+    MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt as CapMetadataExt, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
@@ -45,6 +54,7 @@ use std::sync::mpsc::Sender;
 const NOTES_ONBOARDING_TITLE: &str = "Yonalist Notes 시작하기";
 const NOTES_DEVELOPMENT_SCHEMA_REJECTION: &str =
     "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행";
+const EXCLUDE_PLUGIN_OWNED_SQL: &str = "(plugin_meta IS NULL AND id <> ?1)";
 const NOTES_ONBOARDING_NOTE: &str = "이 노트는 자유롭게 수정하거나 삭제할 수 있어요.";
 const NOTES_ONBOARDING_CHILDREN: [&str; 6] = [
     "Enter — 새 항목 만들기",
@@ -83,6 +93,13 @@ thread_local! {
         const { RefCell::new(None) };
     static NODE_BY_ID_LOOKUP_COUNT: Cell<usize> = const { Cell::new(0) };
     static ANCESTOR_CLOSURE_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
+    static READONLY_DESCENDANT_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
+    static READONLY_DESCENDANT_VISITED_ROW_COUNT: Cell<usize> = const { Cell::new(0) };
+    static SEARCH_PARENT_TRAIL_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
+    static GITHUB_NOTIFICATION_LOOKUP_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
+    static GITHUB_NOTIFICATION_VISITED_ROW_COUNT: Cell<usize> = const { Cell::new(0) };
+    static SIBLING_ORDER_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
+    static SIBLING_ORDER_VISITED_ROW_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -204,6 +221,34 @@ fn node_by_id_lookup_count() -> usize {
 }
 
 #[cfg(test)]
+fn reset_github_notification_lookup_stats() {
+    GITHUB_NOTIFICATION_LOOKUP_QUERY_COUNT.with(|count| count.set(0));
+    GITHUB_NOTIFICATION_VISITED_ROW_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn github_notification_lookup_stats() -> (usize, usize) {
+    (
+        GITHUB_NOTIFICATION_LOOKUP_QUERY_COUNT.with(Cell::get),
+        GITHUB_NOTIFICATION_VISITED_ROW_COUNT.with(Cell::get),
+    )
+}
+
+#[cfg(test)]
+fn reset_sibling_order_stats() {
+    SIBLING_ORDER_QUERY_COUNT.with(|count| count.set(0));
+    SIBLING_ORDER_VISITED_ROW_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn sibling_order_stats() -> (usize, usize) {
+    (
+        SIBLING_ORDER_QUERY_COUNT.with(Cell::get),
+        SIBLING_ORDER_VISITED_ROW_COUNT.with(Cell::get),
+    )
+}
+
+#[cfg(test)]
 fn reset_ancestor_closure_query_count() {
     ANCESTOR_CLOSURE_QUERY_COUNT.with(|count| count.set(0));
 }
@@ -211,6 +256,30 @@ fn reset_ancestor_closure_query_count() {
 #[cfg(test)]
 fn ancestor_closure_query_count() -> usize {
     ANCESTOR_CLOSURE_QUERY_COUNT.with(Cell::get)
+}
+
+#[cfg(test)]
+fn reset_readonly_descendant_scan_stats() {
+    READONLY_DESCENDANT_QUERY_COUNT.with(|count| count.set(0));
+    READONLY_DESCENDANT_VISITED_ROW_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn readonly_descendant_scan_stats() -> (usize, usize) {
+    (
+        READONLY_DESCENDANT_QUERY_COUNT.with(Cell::get),
+        READONLY_DESCENDANT_VISITED_ROW_COUNT.with(Cell::get),
+    )
+}
+
+#[cfg(test)]
+fn reset_search_parent_trail_query_count() {
+    SEARCH_PARENT_TRAIL_QUERY_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn search_parent_trail_query_count() -> usize {
+    SEARCH_PARENT_TRAIL_QUERY_COUNT.with(Cell::get)
 }
 
 #[cfg(test)]
@@ -239,6 +308,62 @@ pub(crate) fn notes_db_path(vault_path: &str) -> PathBuf {
         // the process-wide production OnceLock cannot leak storage across cases.
         None => crate::metadata_dir(vault_path).join("notes.sqlite"),
     }
+}
+
+/// Rejects an existing unsupported Notes database before callers create any
+/// attachment-storage or application-lock artifacts. This deliberately uses
+/// only pathname metadata and SQLite's read-only open mode: it is the early,
+/// side-effect-free guard, while the held-file preflights below revalidate the
+/// same database after the vault lock is held.
+pub(crate) fn preflight_notes_schema_before_attachment_storage(
+    vault_path: &str,
+) -> Result<(), String> {
+    validate_vault_path(vault_path)?;
+
+    let active_database_path = notes_db_path(vault_path);
+    if preflight_existing_notes_database_path(&active_database_path, "Notes database")? {
+        return Ok(());
+    }
+
+    if crate::NOTES_DATA_ROOT.get().is_some() {
+        let legacy_database_path = crate::metadata_dir(vault_path).join("notes.sqlite");
+        preflight_existing_notes_database_path(&legacy_database_path, "legacy Notes database")?;
+    }
+
+    Ok(())
+}
+
+fn preflight_existing_notes_database_path(
+    database_path: &Path,
+    description: &str,
+) -> Result<bool, String> {
+    let metadata = match fs::symlink_metadata(database_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "Could not inspect the {description} before attachment storage: {error}"
+            ))
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "The {description} must be a regular file before attachment storage."
+        ));
+    }
+
+    let connection = Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| {
+        format!("Could not open the {description} before attachment storage: {error}")
+    })?;
+    let user_version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|error| {
+            format!("Could not read the {description} schema version before attachment storage: {error}")
+        })?;
+    drop(connection);
+    reject_existing_notes_schema_version(user_version)?;
+    Ok(true)
 }
 
 pub(crate) fn vault_key(vault_path: &str) -> String {
@@ -1109,7 +1234,7 @@ pub(crate) fn preflight_app_local_notes_storage_before_creation(
     app_lock.revalidate_metadata_path()?;
     drop(connection);
 
-    reject_development_schema(user_version)
+    reject_existing_notes_schema_version(user_version)
 }
 
 fn preflight_existing_notes_schema_with_holds(
@@ -1122,22 +1247,22 @@ fn preflight_existing_notes_schema_with_holds(
     preflight_notes_schema_header(database)?;
     verify_notes_companion_set_stable(metadata, database_path, companions)?;
 
+    let snapshot = HeldNotesSnapshot::capture(database, companions)?;
     let connection =
-        Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        Connection::open_with_flags(&snapshot.database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|error| format!("Could not open Notes storage for inspection: {error}"))?;
-    database.verify_sqlite_connection(&connection, metadata)?;
     verify_held_notes_files(metadata, database, companions)?;
+    snapshot.verify_source_contents(database, companions)?;
     let user_version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
-    reject_development_schema(user_version)?;
-    if user_version > CURRENT_NOTES_SCHEMA_VERSION {
-        return Err(format!(
-            "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {user_version}."
-        ));
-    }
-    database.verify_sqlite_connection(&connection, metadata)?;
-    verify_held_notes_files(metadata, database, companions)
+    verify_held_notes_files(metadata, database, companions)?;
+    snapshot.verify_source_contents(database, companions)?;
+    verify_notes_companion_set_stable(metadata, database_path, companions)?;
+    drop(connection);
+    reject_existing_notes_schema_version(user_version)?;
+    verify_held_notes_files(metadata, database, companions)?;
+    snapshot.verify_source_contents(database, companions)
 }
 
 fn preflight_notes_schema_header(database: &HeldNotesFile) -> Result<(), String> {
@@ -1147,11 +1272,8 @@ fn preflight_notes_schema_header(database: &HeldNotesFile) -> Result<(), String>
     }
 
     let user_version = u32::from_be_bytes([header[60], header[61], header[62], header[63]]);
-    reject_development_schema(i64::from(user_version))?;
-    if i64::from(user_version) > CURRENT_NOTES_SCHEMA_VERSION {
-        return Err(format!(
-            "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {user_version}."
-        ));
+    if user_version != 0 {
+        reject_existing_notes_schema_version(i64::from(user_version))?;
     }
     Ok(())
 }
@@ -1197,12 +1319,7 @@ pub(crate) fn open_notes_export_db(vault_path: &str) -> Result<Connection, Strin
     let user_version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
-    reject_development_schema(user_version)?;
-    if user_version != CURRENT_NOTES_SCHEMA_VERSION {
-        return Err(format!(
-            "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {user_version}."
-        ));
-    }
+    reject_existing_notes_schema_version(user_version)?;
     app_lock.revalidate_metadata_path()?;
     storage.revalidate_path()?;
     database.verify_sqlite_connection(&connection, metadata)?;
@@ -1215,8 +1332,16 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
     let preflight_version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
-    reject_development_schema(preflight_version)?;
-    if !(0..=CURRENT_NOTES_SCHEMA_VERSION).contains(&preflight_version) {
+    let has_notes_schema: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'notes_nodes')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect the Notes schema: {error}"))?;
+    if preflight_version != 0 {
+        reject_existing_notes_schema_version(preflight_version)?;
+    } else if has_notes_schema {
         return Err(format!(
             "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {preflight_version}."
         ));
@@ -1245,11 +1370,7 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
     let stored_schema_version = transaction
         .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
         .map_err(|error| format!("Could not inspect the Notes schema version: {error}"))?;
-    reject_development_schema(stored_schema_version)?;
-    if !created && stored_schema_version < CURRENT_NOTES_SCHEMA_VERSION {
-        return Err(NOTES_DEVELOPMENT_SCHEMA_REJECTION.to_string());
-    }
-    if stored_schema_version > CURRENT_NOTES_SCHEMA_VERSION {
+    if stored_schema_version != CURRENT_NOTES_SCHEMA_VERSION {
         return Err(format!(
             "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {stored_schema_version}."
         ));
@@ -1289,6 +1410,16 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
 fn reject_development_schema(schema_version: i64) -> Result<(), String> {
     if (1..CURRENT_NOTES_SCHEMA_VERSION).contains(&schema_version) {
         return Err(NOTES_DEVELOPMENT_SCHEMA_REJECTION.to_string());
+    }
+    Ok(())
+}
+
+fn reject_existing_notes_schema_version(schema_version: i64) -> Result<(), String> {
+    reject_development_schema(schema_version)?;
+    if schema_version != CURRENT_NOTES_SCHEMA_VERSION {
+        return Err(format!(
+            "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {schema_version}."
+        ));
     }
     Ok(())
 }
@@ -1435,11 +1566,22 @@ struct StoredNode {
     archive_root_id: Option<String>,
     node_kind: NoteNodeKind,
     marker_kind: NoteMarkerKind,
+    #[allow(dead_code)]
+    is_readonly: Option<bool>,
+    #[allow(dead_code)]
+    plugin_state: Option<GithubNotificationsPluginState>,
+    #[allow(dead_code)]
+    plugin_meta: Option<GithubNotificationsPluginMeta>,
 }
 
 fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
+    let id = row.get::<_, String>(0)?;
+    let is_readonly = readonly_from_row(row, 17)?;
+    let plugin_state = plugin_state_from_row(row, 18)?;
+    let plugin_meta = plugin_meta_from_row(row, 19)?;
+    validate_plugin_storage(&id, is_readonly, &plugin_state, &plugin_meta, 17)?;
     Ok(StoredNode {
-        id: row.get(0)?,
+        id,
         parent_id: row.get(1)?,
         sort_key: row.get(2)?,
         title: row.get(3)?,
@@ -1456,6 +1598,9 @@ fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
         archive_root_id: row.get(12)?,
         node_kind: note_node_kind_from_row(row, 13)?,
         marker_kind: note_marker_kind_from_row(row, 15)?,
+        is_readonly,
+        plugin_state,
+        plugin_meta,
     })
 }
 
@@ -1491,24 +1636,121 @@ fn note_marker_kind_from_row(row: &Row<'_>, index: usize) -> rusqlite::Result<No
     }
 }
 
+fn invalid_row(index: usize, message: impl Into<String>) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        index,
+        rusqlite::types::Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            message.into(),
+        )),
+    )
+}
+
+fn readonly_from_row(row: &Row<'_>, index: usize) -> rusqlite::Result<Option<bool>> {
+    match row.get::<_, Option<i64>>(index)? {
+        None => Ok(None),
+        Some(0) => Ok(Some(false)),
+        Some(1) => Ok(Some(true)),
+        Some(value) => Err(invalid_row(
+            index,
+            format!("Unsupported Notes readonly value: {value}"),
+        )),
+    }
+}
+
+fn plugin_state_from_json(
+    value: Option<String>,
+    index: usize,
+) -> rusqlite::Result<Option<GithubNotificationsPluginState>> {
+    value
+        .map(|value| {
+            serde_json::from_str::<Vec<String>>(&value)
+                .and_then(|collapsed_groups| {
+                    let state = GithubNotificationsPluginState { collapsed_groups };
+                    state.is_valid().then_some(state).ok_or_else(|| {
+                        serde_json::Error::io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "plugin groups must be sorted unique calendar dates",
+                        ))
+                    })
+                })
+                .map_err(|error| invalid_row(index, format!("Invalid Notes plugin state: {error}")))
+        })
+        .transpose()
+}
+
+fn plugin_state_from_row(
+    row: &Row<'_>,
+    index: usize,
+) -> rusqlite::Result<Option<GithubNotificationsPluginState>> {
+    plugin_state_from_json(row.get(index)?, index)
+}
+
+fn plugin_meta_from_json(
+    value: Option<String>,
+    index: usize,
+) -> rusqlite::Result<Option<GithubNotificationsPluginMeta>> {
+    value
+        .map(|value| {
+            parse_github_plugin_meta_storage(&value)
+                .and_then(|metadata| {
+                    metadata.is_valid().then_some(metadata).ok_or_else(|| {
+                        serde_json::Error::io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "plugin metadata is not canonical",
+                        ))
+                    })
+                })
+                .map_err(|error| {
+                    invalid_row(index, format!("Invalid Notes plugin metadata: {error}"))
+                })
+        })
+        .transpose()
+}
+
+fn plugin_meta_from_row(
+    row: &Row<'_>,
+    index: usize,
+) -> rusqlite::Result<Option<GithubNotificationsPluginMeta>> {
+    plugin_meta_from_json(row.get(index)?, index)
+}
+
+fn validate_plugin_storage(
+    id: &str,
+    is_readonly: Option<bool>,
+    plugin_state: &Option<GithubNotificationsPluginState>,
+    plugin_meta: &Option<GithubNotificationsPluginMeta>,
+    index: usize,
+) -> rusqlite::Result<()> {
+    let plugin_owned = id == GITHUB_NOTIFICATIONS_ROOT_ID || plugin_meta.is_some();
+    if plugin_owned == is_readonly.is_some()
+        || (id == GITHUB_NOTIFICATIONS_ROOT_ID) != plugin_state.is_some()
+        || (plugin_state.is_some() && plugin_meta.is_some())
+    {
+        return Err(invalid_row(index, "Invalid Notes plugin/readonly storage."));
+    }
+    Ok(())
+}
+
 fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
     let layout_mode: String = row.get(5)?;
     let layout_mode = match layout_mode.as_str() {
         "bullets" => NoteLayoutMode::Bullets,
         value => {
-            return Err(rusqlite::Error::FromSqlConversionFailure(
+            return Err(invalid_row(
                 5,
-                rusqlite::types::Type::Text,
-                Box::new(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("Unsupported Notes layout mode: {value}"),
-                )),
+                format!("Unsupported Notes layout mode: {value}"),
             ))
         }
     };
-
+    let id: String = row.get(0)?;
+    let is_readonly = readonly_from_row(row, 18)?;
+    let plugin_state = plugin_state_from_row(row, 19)?;
+    let plugin_meta = plugin_meta_from_row(row, 20)?;
+    validate_plugin_storage(&id, is_readonly, &plugin_state, &plugin_meta, 18)?;
     Ok(NoteNode {
-        id: row.get(0)?,
+        id,
         node_kind: note_node_kind_from_row(row, 14)?,
         marker_kind: note_marker_kind_from_row(row, 16)?,
         parent_id: row.get(1)?,
@@ -1526,12 +1768,23 @@ fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
         deleted_at: row.get(11)?,
         archived_at: row.get(12)?,
         archive_root_id: row.get(13)?,
+        is_readonly,
+        plugin_state,
+        plugin_meta,
     })
 }
 
 /// Column projection of a `notes_nodes` row as it is captured in the history
 /// audit `after_json`/`before_json` payloads (storage-shaped keys plus the
 /// `nodeKind` wire discriminator, with integer booleans).
+fn deserialize_required_audit_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
 #[derive(Deserialize)]
 struct AuditNodeRow {
     id: String,
@@ -1554,6 +1807,12 @@ struct AuditNodeRow {
     deleted_at: Option<String>,
     archived_at: Option<String>,
     archive_root_id: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_audit_option")]
+    is_readonly: Option<i64>,
+    #[serde(deserialize_with = "deserialize_required_audit_option")]
+    plugin_state: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_audit_option")]
+    plugin_meta: Option<String>,
 }
 
 /// Decode a history-audit node payload (see `history::NODE_JSON_NEW`) into a
@@ -1566,6 +1825,18 @@ pub(crate) fn note_node_from_audit_json(after_json: &str) -> Result<NoteNode, St
         "bullets" => NoteLayoutMode::Bullets,
         value => return Err(format!("Unsupported Notes layout mode: {value}")),
     };
+    let is_readonly = match row.is_readonly {
+        None => None,
+        Some(0) => Some(false),
+        Some(1) => Some(true),
+        Some(value) => return Err(format!("Unsupported Notes readonly value: {value}")),
+    };
+    let plugin_state = plugin_state_from_json(row.plugin_state, 0)
+        .map_err(|error| format!("Could not decode an audited Notes plugin state: {error}"))?;
+    let plugin_meta = plugin_meta_from_json(row.plugin_meta, 0)
+        .map_err(|error| format!("Could not decode audited Notes plugin metadata: {error}"))?;
+    validate_plugin_storage(&row.id, is_readonly, &plugin_state, &plugin_meta, 0)
+        .map_err(|error| format!("Could not decode audited Notes plugin storage: {error}"))?;
     Ok(NoteNode {
         id: row.id,
         node_kind: row.node_kind,
@@ -1585,6 +1856,9 @@ pub(crate) fn note_node_from_audit_json(after_json: &str) -> Result<NoteNode, St
         deleted_at: row.deleted_at,
         archived_at: row.archived_at,
         archive_root_id: row.archive_root_id,
+        is_readonly,
+        plugin_state,
+        plugin_meta,
     })
 }
 
@@ -2126,106 +2400,106 @@ pub(crate) fn load_workspace(
     connection: &Connection,
     scope: NotesWorkspaceScope,
 ) -> Result<NotesWorkspace, String> {
+    const COLUMNS: &str = "node.id, CASE WHEN node.parent_id IS NULL OR EXISTS (\
+           SELECT 1 FROM included parent WHERE parent.id = node.parent_id\
+         ) THEN node.parent_id ELSE NULL END, \
+         node.sort_key, node.title, node.note, node.layout_mode, node.is_collapsed, \
+         node.is_starred, node.completed_at, node.created_at, node.updated_at, \
+         node.deleted_at, node.archived_at, node.archive_root_id, node.node_kind, \
+         node.image_offset_utf16, node.marker_kind, node.markdown_image_width, \
+         node.is_readonly, node.plugin_state, node.plugin_meta";
     const ACTIVE_SQL: &str =
         "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
                 is_starred, completed_at, created_at, updated_at, deleted_at, \
-                archived_at, archive_root_id, node_kind, image_offset_utf16, marker_kind, markdown_image_width \
+                archived_at, archive_root_id, node_kind, image_offset_utf16, \
+                marker_kind, markdown_image_width, \
+                is_readonly, plugin_state, plugin_meta \
          FROM notes_nodes WHERE deleted_at IS NULL AND archived_at IS NULL \
          ORDER BY CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END, parent_id, sort_key, id";
-    const STARRED_SQL: &str = "WITH RECURSIVE included(id, parent_id) AS (\
-           SELECT id, parent_id FROM notes_nodes \
-           WHERE deleted_at IS NULL AND archived_at IS NULL AND is_starred = 1 \
-           UNION \
-           SELECT parent.id, parent.parent_id FROM notes_nodes parent \
-           JOIN included child ON child.parent_id = parent.id \
-           WHERE parent.deleted_at IS NULL AND parent.archived_at IS NULL\
-         ) \
-         SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
-                node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
-                node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
-                node.node_kind, node.image_offset_utf16, node.marker_kind, node.markdown_image_width \
-         FROM notes_nodes node JOIN included ON included.id = node.id \
-         ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
-                  node.parent_id, node.sort_key, node.id";
-    const RECENT_SQL: &str = "WITH RECURSIVE \
-         matched(id, parent_id) AS (\
-           SELECT id, parent_id FROM notes_nodes \
-           WHERE deleted_at IS NULL AND archived_at IS NULL \
-           ORDER BY updated_at DESC, id LIMIT 100\
-         ), \
-         included(id, parent_id) AS (\
-           SELECT id, parent_id FROM matched \
-           UNION \
-           SELECT parent.id, parent.parent_id FROM notes_nodes parent \
-           JOIN included child ON child.parent_id = parent.id \
-           WHERE parent.deleted_at IS NULL AND parent.archived_at IS NULL\
-         ) \
-         SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
-                node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
-                node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
-                node.node_kind, node.image_offset_utf16, node.marker_kind, node.markdown_image_width \
-         FROM notes_nodes node JOIN included ON included.id = node.id \
-         ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
-                  node.parent_id, node.sort_key, node.id";
-    const TAG_SQL: &str = "WITH RECURSIVE included(id, parent_id) AS (\
-           SELECT node.id, node.parent_id FROM notes_nodes node \
-           JOIN notes_tags tag ON tag.node_id = node.id \
-           WHERE node.deleted_at IS NULL AND node.archived_at IS NULL \
-             AND tag.prefix = '#' AND tag.normalized_tag = ?1 \
-           UNION \
-           SELECT parent.id, parent.parent_id FROM notes_nodes parent \
-           JOIN included child ON child.parent_id = parent.id \
-           WHERE parent.deleted_at IS NULL AND parent.archived_at IS NULL\
-         ) \
-         SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
-                node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
-                node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
-                node.node_kind, node.image_offset_utf16, node.marker_kind, node.markdown_image_width \
-         FROM notes_nodes node JOIN included ON included.id = node.id \
-         ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
-                  node.parent_id, node.sort_key, node.id";
-    const TRASH_SQL: &str = "SELECT node.id, \
-                CASE WHEN node.parent_id IS NULL OR EXISTS (\
-                  SELECT 1 FROM notes_nodes parent \
-                  WHERE parent.id = node.parent_id AND parent.deleted_at IS NOT NULL\
-                ) THEN node.parent_id ELSE NULL END, \
-                node.sort_key, node.title, node.note, node.layout_mode, node.is_collapsed, \
-                node.is_starred, node.completed_at, node.created_at, node.updated_at, \
-                node.deleted_at, node.archived_at, node.archive_root_id, node.node_kind, \
-                node.image_offset_utf16, node.marker_kind, node.markdown_image_width \
-         FROM notes_nodes node WHERE node.deleted_at IS NOT NULL \
-         ORDER BY CASE WHEN node.parent_id IS NULL OR NOT EXISTS (\
-                    SELECT 1 FROM notes_nodes parent \
-                    WHERE parent.id = node.parent_id AND parent.deleted_at IS NOT NULL\
-                  ) THEN 0 ELSE 1 END, node.parent_id, node.sort_key, node.id";
-    const ARCHIVE_SQL: &str = "SELECT node.id, node.parent_id, node.sort_key, node.title, \
-                node.note, node.layout_mode, node.is_collapsed, node.is_starred, \
-                node.completed_at, node.created_at, node.updated_at, node.deleted_at, \
-                node.archived_at, node.archive_root_id, node.node_kind, node.image_offset_utf16, node.marker_kind, node.markdown_image_width \
-         FROM notes_nodes node \
-         WHERE node.deleted_at IS NULL AND node.archived_at IS NOT NULL \
-           AND node.archive_root_id IS NOT NULL \
-         ORDER BY CASE WHEN node.id = node.archive_root_id THEN 0 ELSE 1 END, \
-                  node.archive_root_id, node.parent_id, node.sort_key, node.id";
+    let empty = || NotesWorkspace {
+        nodes: Vec::new(),
+        attachments_by_node_id: BTreeMap::new(),
+    };
+    if matches!(&scope, NotesWorkspaceScope::Tags { tags } if tags.is_empty()) {
+        return Ok(empty());
+    }
 
-    match scope {
-        NotesWorkspaceScope::Active => query_workspace(connection, ACTIVE_SQL, []),
-        NotesWorkspaceScope::Starred => query_workspace(connection, STARRED_SQL, []),
-        NotesWorkspaceScope::Recent => query_workspace(connection, RECENT_SQL, []),
+    let ancestor_predicate = match &scope {
+        NotesWorkspaceScope::Archive => {
+            "parent.deleted_at IS NULL AND parent.archived_at IS NOT NULL"
+        }
+        NotesWorkspaceScope::Trash => "parent.deleted_at IS NOT NULL",
+        NotesWorkspaceScope::Active
+        | NotesWorkspaceScope::Starred
+        | NotesWorkspaceScope::Recent
+        | NotesWorkspaceScope::Tag { .. }
+        | NotesWorkspaceScope::Tags { .. } => {
+            "parent.deleted_at IS NULL AND parent.archived_at IS NULL"
+        }
+    };
+    let (match_sql, parameters): (String, Vec<String>) = match scope {
+        NotesWorkspaceScope::Active => {
+            return query_workspace(connection, ACTIVE_SQL, []);
+        }
+        NotesWorkspaceScope::Starred => (
+            "SELECT id, parent_id FROM user_nodes \
+             WHERE deleted_at IS NULL AND archived_at IS NULL AND is_starred = 1"
+                .to_string(),
+            vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string()],
+        ),
+        NotesWorkspaceScope::Recent => (
+            "SELECT id, parent_id FROM user_nodes \
+             WHERE deleted_at IS NULL AND archived_at IS NULL \
+             ORDER BY updated_at DESC, id LIMIT 100"
+                .to_string(),
+            vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string()],
+        ),
         NotesWorkspaceScope::Tag { tag } => {
             let normalized_tag = normalize_tag_identity(tag.trim().trim_start_matches('#'));
             if normalized_tag.is_empty() {
-                return Ok(NotesWorkspace {
-                    nodes: Vec::new(),
-                    attachments_by_node_id: BTreeMap::new(),
-                });
+                return Ok(empty());
             }
-            query_workspace(connection, TAG_SQL, [normalized_tag])
+            (
+                "SELECT node.id, node.parent_id FROM user_nodes node \
+                 JOIN notes_tags tag ON tag.node_id = node.id \
+                 WHERE node.deleted_at IS NULL AND node.archived_at IS NULL \
+                   AND tag.prefix = '#' AND tag.normalized_tag = ?2"
+                    .to_string(),
+                vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string(), normalized_tag],
+            )
         }
-        NotesWorkspaceScope::Tags { tags } => load_tag_workspace(connection, tags),
-        NotesWorkspaceScope::Archive => query_workspace(connection, ARCHIVE_SQL, []),
-        NotesWorkspaceScope::Trash => query_workspace(connection, TRASH_SQL, []),
-    }
+        NotesWorkspaceScope::Tags { tags } => {
+            return load_tag_workspace(connection, tags);
+        }
+        NotesWorkspaceScope::Archive => (
+            "SELECT id, parent_id FROM user_nodes \
+             WHERE deleted_at IS NULL AND archived_at IS NOT NULL \
+               AND archive_root_id IS NOT NULL"
+                .to_string(),
+            vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string()],
+        ),
+        NotesWorkspaceScope::Trash => (
+            "SELECT id, parent_id FROM user_nodes WHERE deleted_at IS NOT NULL".to_string(),
+            vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string()],
+        ),
+    };
+    let sql = format!(
+        "WITH RECURSIVE user_nodes AS (\
+           SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+         ), matched(id, parent_id) AS ({match_sql}), included(id, parent_id) AS (\
+           SELECT id, parent_id FROM matched \
+           UNION \
+           SELECT parent.id, parent.parent_id FROM user_nodes parent \
+           JOIN included child ON child.parent_id = parent.id \
+           WHERE {ancestor_predicate}\
+         ) \
+         SELECT {COLUMNS} \
+         FROM user_nodes node JOIN included ON included.id = node.id \
+         ORDER BY CASE WHEN node.parent_id IS NULL OR NOT EXISTS (\
+                    SELECT 1 FROM included parent WHERE parent.id = node.parent_id\
+                  ) THEN 0 ELSE 1 END, node.parent_id, node.sort_key, node.id"
+    );
+    query_workspace(connection, &sql, params_from_iter(parameters.iter()))
 }
 
 fn load_tag_workspace(
@@ -2243,38 +2517,44 @@ fn load_tag_workspace(
             attachments_by_node_id: BTreeMap::new(),
         });
     }
-
-    let mut parameters = Vec::with_capacity(tags.len() * 2);
+    let mut parameters = vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string()];
     let mut required = Vec::with_capacity(tags.len());
-    for (index, (prefix, normalized_tag)) in tags.into_iter().enumerate() {
-        let prefix_parameter = index * 2 + 1;
-        let tag_parameter = prefix_parameter + 1;
+    for (prefix, normalized_tag) in tags {
+        parameters.push(prefix.as_str().to_string());
+        let prefix_parameter = parameters.len();
+        parameters.push(normalized_tag);
+        let tag_parameter = parameters.len();
         required.push(format!(
             "EXISTS (SELECT 1 FROM notes_tags tag \
              WHERE tag.node_id = node.id AND tag.prefix = ?{prefix_parameter} \
                AND tag.normalized_tag = ?{tag_parameter})"
         ));
-        parameters.push(prefix.as_str().to_string());
-        parameters.push(normalized_tag);
     }
     let sql = format!(
-        "WITH RECURSIVE matched(id, parent_id) AS (\
-           SELECT node.id, node.parent_id FROM notes_nodes node \
+        "WITH RECURSIVE user_nodes AS (\
+           SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+         ), matched(id, parent_id) AS (\
+           SELECT node.id, node.parent_id FROM user_nodes node \
            WHERE node.deleted_at IS NULL AND node.archived_at IS NULL AND {}\
          ), included(id, parent_id) AS (\
            SELECT id, parent_id FROM matched \
            UNION \
-           SELECT parent.id, parent.parent_id FROM notes_nodes parent \
+           SELECT parent.id, parent.parent_id FROM user_nodes parent \
            JOIN included child ON child.parent_id = parent.id \
            WHERE parent.deleted_at IS NULL AND parent.archived_at IS NULL\
          ) \
-         SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
-                node.layout_mode, node.is_collapsed, node.is_starred, node.completed_at, \
-                node.created_at, node.updated_at, node.deleted_at, node.archived_at, \
-                node.archive_root_id, node.node_kind, node.image_offset_utf16, node.marker_kind, node.markdown_image_width \
-         FROM notes_nodes node JOIN included ON included.id = node.id \
-         ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
-                  node.parent_id, node.sort_key, node.id",
+         SELECT node.id, CASE WHEN node.parent_id IS NULL OR EXISTS (\
+                  SELECT 1 FROM included parent WHERE parent.id = node.parent_id\
+                ) THEN node.parent_id ELSE NULL END, \
+                node.sort_key, node.title, node.note, node.layout_mode, node.is_collapsed, \
+                node.is_starred, node.completed_at, node.created_at, node.updated_at, \
+                node.deleted_at, node.archived_at, node.archive_root_id, node.node_kind, \
+                node.image_offset_utf16, node.marker_kind, node.markdown_image_width, \
+                node.is_readonly, node.plugin_state, node.plugin_meta \
+         FROM user_nodes node JOIN included ON included.id = node.id \
+         ORDER BY CASE WHEN node.parent_id IS NULL OR NOT EXISTS (\
+                    SELECT 1 FROM included parent WHERE parent.id = node.parent_id\
+                  ) THEN 0 ELSE 1 END, node.parent_id, node.sort_key, node.id",
         required.join(" AND ")
     );
     query_workspace(connection, &sql, params_from_iter(parameters.iter()))
@@ -2293,73 +2573,70 @@ pub(crate) fn validate_note_tag_filters(tags: &[NoteTagFilter]) -> Result<(), St
 }
 
 pub(crate) fn list_tags(connection: &Connection) -> Result<Vec<String>, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT DISTINCT tag.normalized_tag FROM notes_tags tag \
-             JOIN notes_nodes node ON node.id = tag.node_id \
-             WHERE node.deleted_at IS NULL AND node.archived_at IS NULL \
-               AND tag.prefix = '#' \
-             ORDER BY tag.normalized_tag",
-        )
-        .map_err(|error| format!("Could not prepare the Notes tag list: {error}"))?;
-    let tags = statement
-        .query_map([], |row| row.get(0))
-        .map_err(|error| format!("Could not load the Notes tag list: {error}"))?
+    let sql = format!(
+        "WITH user_nodes AS (\
+           SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+         ) \
+         SELECT DISTINCT tag.normalized_tag FROM notes_tags tag \
+         JOIN user_nodes node ON node.id = tag.node_id \
+         WHERE node.deleted_at IS NULL AND node.archived_at IS NULL \
+           AND tag.prefix = '#' \
+         ORDER BY tag.normalized_tag"
+    );
+    connection
+        .prepare(&sql)
+        .map_err(|error| format!("Could not prepare the v3 Notes tag list: {error}"))?
+        .query_map([GITHUB_NOTIFICATIONS_ROOT_ID], |row| row.get(0))
+        .map_err(|error| format!("Could not load the v3 Notes tag list: {error}"))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read the Notes tag list: {error}"))?;
-    Ok(tags)
+        .map_err(|error| format!("Could not read the v3 Notes tag list: {error}"))
+}
+
+fn note_tag_prefix_from_row(row: &Row<'_>, index: usize) -> rusqlite::Result<NoteTagPrefix> {
+    let prefix: String = row.get(index)?;
+    match prefix.as_str() {
+        "#" => Ok(NoteTagPrefix::Hash),
+        "@" => Ok(NoteTagPrefix::Mention),
+        value => Err(invalid_row(
+            index,
+            format!("Unsupported Notes tag prefix: {value}"),
+        )),
+    }
 }
 
 pub(crate) fn list_tags_with_counts(
     connection: &Connection,
 ) -> Result<Vec<NoteTagSummary>, String> {
-    let mut statement = connection
-        .prepare(
-            "WITH live_tags AS (\
-               SELECT tag.prefix, tag.normalized_tag, tag.tag, \
-                      row_number() OVER (\
-                        PARTITION BY tag.prefix, tag.normalized_tag \
-                        ORDER BY node.created_at, node.id\
-                      ) AS display_rank \
-               FROM notes_tags tag \
-               JOIN notes_nodes node ON node.id = tag.node_id \
-               WHERE node.deleted_at IS NULL AND node.archived_at IS NULL\
-             ) \
-             SELECT prefix, normalized_tag, \
-                    max(CASE WHEN display_rank = 1 THEN tag END), count(*) \
-             FROM live_tags \
-             GROUP BY prefix, normalized_tag \
-             ORDER BY prefix, normalized_tag",
-        )
-        .map_err(|error| format!("Could not prepare the counted Notes tag list: {error}"))?;
-    let summaries = statement
-        .query_map([], |row| {
-            let prefix: String = row.get(0)?;
-            let prefix = match prefix.as_str() {
-                "#" => NoteTagPrefix::Hash,
-                "@" => NoteTagPrefix::Mention,
-                value => {
-                    return Err(rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
-                            format!("Unsupported Notes tag prefix: {value}"),
-                        )),
-                    ))
-                }
-            };
+    let sql = format!(
+        "WITH user_nodes AS (\
+           SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+         ), live_tags AS (\
+           SELECT tag.prefix, tag.normalized_tag, tag.tag, \
+                  row_number() OVER (\
+                    PARTITION BY tag.prefix, tag.normalized_tag \
+                    ORDER BY node.created_at, node.id\
+                  ) AS display_rank \
+           FROM notes_tags tag JOIN user_nodes node ON node.id = tag.node_id \
+           WHERE node.deleted_at IS NULL AND node.archived_at IS NULL\
+         ) \
+         SELECT prefix, normalized_tag, \
+                max(CASE WHEN display_rank = 1 THEN tag END), count(*) \
+         FROM live_tags GROUP BY prefix, normalized_tag ORDER BY prefix, normalized_tag"
+    );
+    connection
+        .prepare(&sql)
+        .map_err(|error| format!("Could not prepare counted v3 Notes tags: {error}"))?
+        .query_map([GITHUB_NOTIFICATIONS_ROOT_ID], |row| {
             Ok(NoteTagSummary {
-                prefix,
+                prefix: note_tag_prefix_from_row(row, 0)?,
                 normalized_tag: row.get(1)?,
                 display_tag: row.get(2)?,
                 count: row.get(3)?,
             })
         })
-        .map_err(|error| format!("Could not load the counted Notes tag list: {error}"))?
+        .map_err(|error| format!("Could not load counted v3 Notes tags: {error}"))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read the counted Notes tag list: {error}"))?;
-    Ok(summaries)
+        .map_err(|error| format!("Could not read counted v3 Notes tags: {error}"))
 }
 
 fn fts_match_expression(query: &str) -> Option<String> {
@@ -2497,7 +2774,7 @@ struct SearchParentTrail {
     kinds: Vec<NoteNodeKind>,
 }
 
-fn search_parent_trails(
+fn search_parent_trails_impl(
     connection: &Connection,
     scope: NoteSearchScope,
     node_ids: &[&str],
@@ -2514,24 +2791,31 @@ fn search_parent_trails(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect::<Vec<_>>();
-    for chunk in unique_ids.chunks(500) {
+    for chunk in unique_ids.chunks(ANCESTOR_CLOSURE_CHUNK_SIZE) {
+        #[cfg(test)]
+        SEARCH_PARENT_TRAIL_QUERY_COUNT.with(|count| count.set(count.get() + 1));
         let placeholders = std::iter::repeat("?")
             .take(chunk.len())
             .collect::<Vec<_>>()
             .join(", ");
         let attachment_name = exact_image_attachment_name_sql("ancestor_trail");
+        let visible_nodes = format!(
+            "visible_nodes AS (\
+               SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+             ), "
+        );
         let sql = format!(
-            "WITH RECURSIVE ancestor_trail(match_id, id, parent_id, title, node_kind, image_offset_utf16, depth) AS (\
+            "WITH RECURSIVE {visible_nodes}ancestor_trail(match_id, id, parent_id, title, node_kind, image_offset_utf16, depth) AS (\
                SELECT child.id, node.id, node.parent_id, node.title, node.node_kind, \
                       node.image_offset_utf16, 0 \
-               FROM notes_nodes child \
-               JOIN notes_nodes node ON node.id = child.parent_id \
+               FROM visible_nodes child \
+               JOIN visible_nodes node ON node.id = child.parent_id \
                WHERE child.id IN ({placeholders}) AND {scope_predicate} \
                UNION ALL \
                SELECT ancestor_trail.match_id, node.id, node.parent_id, node.title, node.node_kind, \
                       node.image_offset_utf16, ancestor_trail.depth + 1 \
                FROM ancestor_trail \
-               JOIN notes_nodes node ON node.id = ancestor_trail.parent_id \
+               JOIN visible_nodes node ON node.id = ancestor_trail.parent_id \
                WHERE ancestor_trail.depth < {MAX_TRAIL_DEPTH} AND {scope_predicate}\
              ) \
              SELECT match_id, title, node_kind, image_offset_utf16, {attachment_name}, depth \
@@ -2541,8 +2825,11 @@ fn search_parent_trails(
         let mut statement = connection
             .prepare(&sql)
             .map_err(|error| format!("Could not prepare Notes search ancestors: {error}"))?;
+        let mut parameters = Vec::with_capacity(chunk.len() + 1);
+        parameters.push(GITHUB_NOTIFICATIONS_ROOT_ID);
+        parameters.extend_from_slice(chunk);
         let rows = statement
-            .query_map(params_from_iter(chunk.iter().copied()), |row| {
+            .query_map(params_from_iter(parameters), |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
@@ -2585,100 +2872,78 @@ fn search_scope_predicate(scope: NoteSearchScope) -> &'static str {
     }
 }
 
-fn search_nodes_by_date(
+fn search_parent_trails(
     connection: &Connection,
-    range: crate::notes::date_index::NoteDateRange,
     scope: NoteSearchScope,
-) -> Result<Vec<NoteSearchResult>, String> {
-    let attachment_name = exact_image_attachment_name_sql("node");
-    let sql = format!(
-        "SELECT DISTINCT node.id, node.title, node.node_kind, node.image_offset_utf16, \
-                {attachment_name} \
-         FROM notes_dates date INDEXED BY notes_dates_range \
-         JOIN notes_nodes node ON node.id = date.node_id \
-         WHERE date.normalized_start <= ?1 AND date.normalized_end >= ?2 \
-           AND {} \
-         ORDER BY node.updated_at DESC, node.id LIMIT 100",
-        search_scope_predicate(scope)
-    );
-    let matches = connection
-        .prepare(&sql)
-        .map_err(|error| format!("Could not prepare the Notes date search: {error}"))?
-        .query_map(params![range.end.to_iso(), range.start.to_iso()], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                note_node_kind_from_row(row, 2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, Option<String>>(4)?,
-            ))
-        })
-        .map_err(|error| format!("Could not search Note dates: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read the Notes date search results: {error}"))?;
-    let node_ids = matches
-        .iter()
-        .map(|(id, _, _, _, _)| id.as_str())
-        .collect::<Vec<_>>();
-    let trails = search_parent_trails(connection, scope, &node_ids)?;
-    Ok(matches
-        .into_iter()
-        .map(|(node_id, title, node_kind, image_offset_utf16, attachment_name)| -> Result<_, String> {
-            let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
-            Ok(NoteSearchResult {
-                parent_trail: parent_trail.titles,
-                parent_trail_kinds: parent_trail.kinds,
-                node_id,
-                node_kind,
-                display_label: note_display_label(
-                    node_kind,
-                    &title,
-                    image_offset_utf16,
-                    attachment_name.as_deref(),
-                )?,
-                title,
-                image_offset_utf16,
-                attachment_name,
-                matched_field: NoteSearchMatchedField::Date,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?)
+    node_ids: &[&str],
+) -> Result<HashMap<String, SearchParentTrail>, String> {
+    search_parent_trails_impl(connection, scope, node_ids)
 }
 
-fn search_nodes_fts(
+pub(crate) fn search_nodes_at(
     connection: &Connection,
     query: &str,
     scope: NoteSearchScope,
+    today: LocalDate,
 ) -> Result<Vec<NoteSearchResult>, String> {
-    let Some(match_expression) = fts_match_expression(query) else {
-        return Ok(Vec::new());
-    };
-    let search_table = match scope {
-        NoteSearchScope::Active => "notes_search",
-        NoteSearchScope::Archive | NoteSearchScope::Trash => "notes_search_lifecycle",
-    };
     let attachment_name = exact_image_attachment_name_sql("node");
-    let sql = format!(
-        "SELECT {search_table}.node_id, node.title, node.node_kind, node.image_offset_utf16, \
-                {attachment_name}, \
-                highlight({search_table}, 1, '<notes-match>', '</notes-match>') \
-                  <> {search_table}.title, \
-                highlight({search_table}, 2, '<notes-match>', '</notes-match>') \
-                  <> {search_table}.note, \
-                highlight({search_table}, 3, '<notes-match>', '</notes-match>') \
-                  <> {search_table}.attachment_name \
-         FROM {search_table} \
-         JOIN notes_nodes node ON node.id = {search_table}.node_id \
-         WHERE {search_table} MATCH ?1 AND {} \
-         ORDER BY bm25({search_table}, 0.0, 10.0, 1.0, 0.1), node.updated_at DESC, node.id \
-         LIMIT 100",
-        search_scope_predicate(scope)
-    );
-    let mut statement = connection
+    let (sql, parameters, matched_field) =
+        if let Some(range) = parse_note_date_expression(query, today, WeekStartsOn::Monday) {
+            (
+                format!(
+                    "WITH user_nodes AS (\
+                       SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+                     ) \
+                     SELECT DISTINCT node.id, node.title, node.node_kind, \
+                            node.image_offset_utf16, {attachment_name}, 0, 0 \
+                     FROM notes_dates date INDEXED BY notes_dates_range \
+                     JOIN user_nodes node ON node.id = date.node_id \
+                     WHERE date.normalized_start <= ?2 AND date.normalized_end >= ?3 \
+                       AND {} \
+                     ORDER BY node.updated_at DESC, node.id LIMIT 100",
+                    search_scope_predicate(scope)
+                ),
+                vec![
+                    GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                    range.end.to_iso(),
+                    range.start.to_iso(),
+                ],
+                Some(NoteSearchMatchedField::Date),
+            )
+        } else {
+            let Some(expression) = fts_match_expression(query) else {
+                return Ok(Vec::new());
+            };
+            let search_table = match scope {
+                NoteSearchScope::Active => "notes_search",
+                NoteSearchScope::Archive | NoteSearchScope::Trash => "notes_search_lifecycle",
+            };
+            (
+                format!(
+                    "WITH user_nodes AS (\
+                       SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+                     ) \
+                     SELECT {search_table}.node_id, node.title, node.node_kind, \
+                            node.image_offset_utf16, {attachment_name}, \
+                            highlight({search_table}, 1, '<notes-match>', '</notes-match>') \
+                              <> {search_table}.title, \
+                            highlight({search_table}, 2, '<notes-match>', '</notes-match>') \
+                              <> {search_table}.note \
+                     FROM {search_table} \
+                     JOIN user_nodes node ON node.id = {search_table}.node_id \
+                     WHERE {search_table} MATCH ?2 AND {} \
+                     ORDER BY bm25({search_table}, 0.0, 10.0, 1.0, 0.1), \
+                              node.updated_at DESC, node.id LIMIT 100",
+                    search_scope_predicate(scope)
+                ),
+                vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string(), expression],
+                None,
+            )
+        };
+    let matches = connection
         .prepare(&sql)
-        .map_err(|error| format!("Could not prepare the Notes search: {error}"))?;
-    let matches = statement
-        .query_map([match_expression], |row| {
+        .map_err(|error| format!("Could not prepare the v3 Notes search: {error}"))?
+        .query_map(params_from_iter(parameters.iter()), |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -2687,19 +2952,17 @@ fn search_nodes_fts(
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, bool>(5)?,
                 row.get::<_, bool>(6)?,
-                row.get::<_, bool>(7)?,
             ))
         })
-        .map_err(|error| format!("Could not search Notes: {error}"))?
+        .map_err(|error| format!("Could not search v3 Notes: {error}"))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read the Notes search results: {error}"))?;
+        .map_err(|error| format!("Could not read v3 Notes search results: {error}"))?;
     let node_ids = matches
         .iter()
-        .map(|(id, _, _, _, _, _, _, _)| id.as_str())
+        .map(|(id, _, _, _, _, _, _)| id.as_str())
         .collect::<Vec<_>>();
     let trails = search_parent_trails(connection, scope, &node_ids)?;
-
-    Ok(matches
+    matches
         .into_iter()
         .map(
             |(
@@ -2710,13 +2973,11 @@ fn search_nodes_fts(
                 attachment_name,
                 matched_title,
                 matched_note,
-                _matched_attachment,
-            )|
-             -> Result<_, String> {
-                let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
+            )| {
+                let trail = trails.get(&node_id).cloned().unwrap_or_default();
                 Ok(NoteSearchResult {
-                    parent_trail: parent_trail.titles,
-                    parent_trail_kinds: parent_trail.kinds,
+                    parent_trail: trail.titles,
+                    parent_trail_kinds: trail.kinds,
                     node_id,
                     node_kind,
                     display_label: note_display_label(
@@ -2728,30 +2989,19 @@ fn search_nodes_fts(
                     title,
                     image_offset_utf16,
                     attachment_name,
-                    matched_field: if matched_title {
-                        NoteSearchMatchedField::Title
-                    } else if matched_note {
-                        NoteSearchMatchedField::Note
-                    } else {
-                        NoteSearchMatchedField::Attachment
-                    },
+                    matched_field: matched_field.unwrap_or_else(|| {
+                        if matched_title {
+                            NoteSearchMatchedField::Title
+                        } else if matched_note {
+                            NoteSearchMatchedField::Note
+                        } else {
+                            NoteSearchMatchedField::Attachment
+                        }
+                    }),
                 })
             },
         )
-        .collect::<Result<Vec<_>, String>>()?)
-}
-
-pub(crate) fn search_nodes_at(
-    connection: &Connection,
-    query: &str,
-    scope: NoteSearchScope,
-    today: LocalDate,
-) -> Result<Vec<NoteSearchResult>, String> {
-    if let Some(range) = parse_note_date_expression(query, today, WeekStartsOn::Monday) {
-        search_nodes_by_date(connection, range, scope)
-    } else {
-        search_nodes_fts(connection, query, scope)
-    }
+        .collect()
 }
 
 fn canonical_search_tag(tag: &NoteSearchTag) -> (NoteTagPrefix, String) {
@@ -2877,13 +3127,12 @@ pub(crate) fn search_nodes_structured(
     {
         return Ok(Vec::new());
     }
-
     let positive_tags = required
         .iter()
         .cloned()
         .chain(or_groups.iter().flatten().cloned())
         .collect::<BTreeSet<_>>();
-    let mut parameters = Vec::new();
+    let mut parameters = vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string()];
     let mut predicates = Vec::new();
     if let Some(expression) = &match_expression {
         parameters.push(expression.clone());
@@ -2923,77 +3172,71 @@ pub(crate) fn search_nodes_structured(
             alternatives.join(" OR ")
         ));
     }
-
-    let tag_predicates = if predicates.is_empty() {
-        String::new()
-    } else {
-        format!(" AND {}", predicates.join(" AND "))
-    };
+    let predicates = predicates.join(" AND ");
     let attachment_name = exact_image_attachment_name_sql("node");
     let sql = if match_expression.is_some() {
         format!(
-            "SELECT notes_search.node_id, node.title, node.note, node.node_kind, \
+            "WITH user_nodes AS (\
+               SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+             ) \
+             SELECT notes_search.node_id, node.title, node.node_kind, \
                     node.image_offset_utf16, {attachment_name}, \
                     highlight(notes_search, 1, '<notes-match>', '</notes-match>') \
                       <> notes_search.title, \
                     highlight(notes_search, 2, '<notes-match>', '</notes-match>') \
-                      <> notes_search.note, \
-                    highlight(notes_search, 3, '<notes-match>', '</notes-match>') \
-                      <> notes_search.attachment_name \
-             FROM notes_search \
-             JOIN notes_nodes node ON node.id = notes_search.node_id \
-             WHERE node.deleted_at IS NULL AND node.archived_at IS NULL{tag_predicates} \
-             ORDER BY bm25(notes_search, 0.0, 10.0, 1.0, 0.1), node.updated_at DESC, node.id \
-             LIMIT 100"
+                      <> notes_search.note \
+             FROM notes_search JOIN user_nodes node ON node.id = notes_search.node_id \
+             WHERE node.deleted_at IS NULL AND node.archived_at IS NULL \
+               AND {predicates} \
+             ORDER BY bm25(notes_search, 0.0, 10.0, 1.0, 0.1), \
+                      node.updated_at DESC, node.id LIMIT 100"
         )
     } else {
         format!(
-            "SELECT node.id, node.title, node.note, node.node_kind, \
-                    node.image_offset_utf16, {attachment_name}, 0, 0, 0 \
-             FROM notes_nodes node \
-             WHERE node.deleted_at IS NULL AND node.archived_at IS NULL{tag_predicates} \
+            "WITH user_nodes AS (\
+               SELECT * FROM notes_nodes WHERE {EXCLUDE_PLUGIN_OWNED_SQL}\
+             ) \
+             SELECT node.id, node.title, node.node_kind, node.image_offset_utf16, \
+                    {attachment_name}, 1, 0 \
+             FROM user_nodes node \
+             WHERE node.deleted_at IS NULL AND node.archived_at IS NULL \
+               AND {predicates} \
              ORDER BY node.updated_at DESC, node.id LIMIT 100"
         )
     };
-    let mut statement = connection
+    let matches = connection
         .prepare(&sql)
-        .map_err(|error| format!("Could not prepare the structured Notes search: {error}"))?;
-    let matches = statement
+        .map_err(|error| format!("Could not prepare structured v3 Notes search: {error}"))?
         .query_map(params_from_iter(parameters.iter()), |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                note_node_kind_from_row(row, 3)?,
-                row.get::<_, i64>(4)?,
-                row.get::<_, Option<String>>(5)?,
+                note_node_kind_from_row(row, 2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, bool>(5)?,
                 row.get::<_, bool>(6)?,
-                row.get::<_, bool>(7)?,
-                row.get::<_, bool>(8)?,
             ))
         })
-        .map_err(|error| format!("Could not search Notes with tag filters: {error}"))?
+        .map_err(|error| format!("Could not search structured v3 Notes: {error}"))?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read structured Notes search results: {error}"))?;
+        .map_err(|error| format!("Could not read structured v3 Notes search: {error}"))?;
     let node_ids = matches
         .iter()
-        .map(|(id, _, _, _, _, _, _, _, _)| id.as_str())
+        .map(|(id, _, _, _, _, _, _)| id.as_str())
         .collect::<Vec<_>>();
     let trails = search_parent_trails(connection, NoteSearchScope::Active, &node_ids)?;
-
-    Ok(matches
+    matches
         .into_iter()
         .map(
             |(
                 node_id,
                 title,
-                _note,
                 node_kind,
                 image_offset_utf16,
                 attachment_name,
                 matched_title,
                 matched_note,
-                _matched_attachment,
             )|
              -> Result<_, String> {
                 let matched_field = if match_expression.is_some() {
@@ -3016,10 +3259,10 @@ pub(crate) fn search_nodes_structured(
                 } else {
                     NoteSearchMatchedField::Note
                 };
-                let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
+                let trail = trails.get(&node_id).cloned().unwrap_or_default();
                 Ok(NoteSearchResult {
-                    parent_trail: parent_trail.titles,
-                    parent_trail_kinds: parent_trail.kinds,
+                    parent_trail: trail.titles,
+                    parent_trail_kinds: trail.kinds,
                     node_id,
                     node_kind,
                     display_label: note_display_label(
@@ -3035,7 +3278,7 @@ pub(crate) fn search_nodes_structured(
                 })
             },
         )
-        .collect::<Result<Vec<_>, String>>()?)
+        .collect()
 }
 
 fn with_workspace_transaction(
@@ -3069,7 +3312,9 @@ fn node_by_id(transaction: &Transaction<'_>, node_id: &str) -> Result<Option<Sto
         .query_row(
             "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
                     is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
-                    archive_root_id, node_kind, image_offset_utf16, marker_kind, markdown_image_width \
+                    archive_root_id, node_kind, image_offset_utf16, marker_kind, \
+                    markdown_image_width, is_readonly, \
+                    plugin_state, plugin_meta \
              FROM notes_nodes WHERE id = ?1",
             [node_id],
             stored_node_from_row,
@@ -3091,6 +3336,165 @@ fn require_active_node(transaction: &Transaction<'_>, node_id: &str) -> Result<S
         node if node.archived_at.is_none() => Ok(node),
         _ => Err(format!("Note node {node_id} is archived.")),
     }
+}
+
+fn plugin_owned(node: &StoredNode) -> bool {
+    node.id == GITHUB_NOTIFICATIONS_ROOT_ID
+        || node.plugin_state.is_some()
+        || node.plugin_meta.is_some()
+}
+
+/// Content protection is intentionally centralized at the repository boundary.
+fn require_content_mutable(node: &StoredNode) -> Result<(), String> {
+    if plugin_owned(node) {
+        return Err("This Note node is managed by a plugin and cannot be modified.".to_string());
+    }
+    if node.is_readonly == Some(true) {
+        return Err("This Note node is read-only and cannot be modified.".to_string());
+    }
+    Ok(())
+}
+
+fn require_provider_mutable(node: &StoredNode) -> Result<(), String> {
+    if plugin_owned(node) {
+        return Err("This Note node is managed by a plugin and cannot be modified.".to_string());
+    }
+    Ok(())
+}
+
+fn require_sortable_node(node: &StoredNode) -> Result<(), String> {
+    if node.is_readonly == Some(true) || plugin_owned(node) {
+        return Err("A read-only or plugin-managed Note subtree cannot be reordered.".to_string());
+    }
+    Ok(())
+}
+
+fn require_collapse_target(transaction: &Transaction<'_>, node_id: &str) -> Result<bool, String> {
+    if node_id == GITHUB_NOTIFICATIONS_ROOT_ID {
+        return Ok(true);
+    }
+    let plugin_owned = transaction
+        .query_row(
+            "WITH RECURSIVE subtree(id) AS (\
+               SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_at IS NULL \
+                 AND archived_at IS NULL \
+               UNION \
+               SELECT child.id FROM notes_nodes child \
+               JOIN subtree parent ON child.parent_id = parent.id \
+               WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
+             ) \
+             SELECT EXISTS(\
+               SELECT 1 FROM notes_nodes \
+               WHERE id IN subtree \
+                 AND (id = ?2 OR plugin_state IS NOT NULL OR plugin_meta IS NOT NULL)\
+             )",
+            params![node_id, GITHUB_NOTIFICATIONS_ROOT_ID],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("Could not inspect the collapsible Note subtree: {error}"))?;
+    if plugin_owned {
+        return Err("A plugin-managed Note subtree cannot be collapsed.".to_string());
+    }
+    Ok(false)
+}
+
+/// User structure changes cannot carry a readonly node in the moving subtree.
+/// Plugin roots are provider-owned and are handled by their own reorder path;
+/// provider children still reject generic user moves.
+fn require_subtree_movable(transaction: &Transaction<'_>, node_id: &str) -> Result<(), String> {
+    if node_id == GITHUB_NOTIFICATIONS_ROOT_ID {
+        // The provider owns the GN descendants, but the ordinary outline
+        // reorder of its top-level root remains an allowed user operation.
+        return Ok(());
+    }
+    let subtree = active_subtree(transaction, node_id)?;
+    for node in subtree {
+        if node.is_readonly == Some(true) {
+            return Err("A read-only Note subtree cannot be moved.".to_string());
+        }
+        if plugin_owned(&node) && node.id != GITHUB_NOTIFICATIONS_ROOT_ID {
+            return Err("A plugin-managed Note subtree cannot be moved.".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn normalize_delete_roots(
+    transaction: &Transaction<'_>,
+    node_ids: &[String],
+) -> Result<Vec<String>, String> {
+    for node_id in node_ids {
+        require_live_node(transaction, node_id)?;
+    }
+    let selected = node_ids.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    selection_roots(transaction, node_ids, &selected)
+}
+
+/// Returns the exact, sorted set of ordinary readonly descendants for a
+/// deletion forest. Roots themselves are deliberately excluded so direct
+/// readonly deletion remains an unconditional rejection.
+fn readonly_descendants(
+    transaction: &Transaction<'_>,
+    roots: &[NoteId],
+) -> Result<Vec<NoteId>, String> {
+    if roots.is_empty() {
+        return Ok(Vec::new());
+    }
+    let root_set = roots.iter().collect::<BTreeSet<_>>();
+    let mut ids = BTreeSet::new();
+    for chunk in roots.chunks(ANCESTOR_CLOSURE_CHUNK_SIZE) {
+        #[cfg(test)]
+        READONLY_DESCENDANT_QUERY_COUNT.with(|count| count.set(count.get() + 1));
+        let placeholders = (1..=chunk.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            r#"WITH RECURSIVE subtree(id, root_id, archived_context) AS (
+                 SELECT id, id, CASE WHEN archived_at IS NULL THEN 0 ELSE 1 END
+                 FROM notes_nodes WHERE id IN ({placeholders}) AND deleted_at IS NULL
+                 UNION
+                 SELECT child.id, subtree.root_id, subtree.archived_context
+                 FROM notes_nodes child JOIN subtree ON child.parent_id = subtree.id
+                 WHERE child.deleted_at IS NULL AND (
+                   (subtree.archived_context = 1 AND child.archive_root_id = subtree.root_id)
+                   OR (subtree.archived_context = 0 AND child.archived_at IS NULL)
+                 )
+               )
+               SELECT subtree.id, node.is_readonly FROM subtree
+               JOIN notes_nodes node ON node.id = subtree.id"#
+        );
+        let mut statement = transaction
+            .prepare(&sql)
+            .map_err(|error| format!("Could not prepare readonly descendant scan: {error}"))?;
+        let rows = statement
+            .query_map(params_from_iter(chunk.iter()), |row| {
+                Ok((row.get::<_, NoteId>(0)?, row.get::<_, Option<i64>>(1)?))
+            })
+            .map_err(|error| format!("Could not read readonly descendants: {error}"))?;
+        for row in rows {
+            let (id, is_readonly) =
+                row.map_err(|error| format!("Could not decode readonly descendant: {error}"))?;
+            #[cfg(test)]
+            READONLY_DESCENDANT_VISITED_ROW_COUNT.with(|count| count.set(count.get() + 1));
+            if is_readonly == Some(1) && !root_set.contains(&id) {
+                ids.insert(id);
+            }
+        }
+    }
+    Ok(ids.into_iter().collect())
+}
+
+fn mark_topic_dirty(transaction: &Transaction<'_>, node_id: &str) -> Result<(), String> {
+    let topic_id = resolve_active_topic_id(transaction, node_id)?;
+    transaction
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) \
+             ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+            [topic_id],
+        )
+        .map_err(|error| format!("Could not mark the Notes topic dirty: {error}"))?;
+    Ok(())
 }
 
 fn require_deleted_node(
@@ -3129,10 +3533,21 @@ fn ensure_fresh_id(transaction: &Transaction<'_>, node_id: &str) -> Result<(), S
     }
 }
 
+fn ensure_generic_parent_allowed(parent_id: Option<&str>) -> Result<(), String> {
+    if parent_id == Some(GITHUB_NOTIFICATIONS_ROOT_ID) {
+        return Err(
+            "Generic Notes placement under the Github Notifications root is provider-owned."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn ensure_live_parent(
     transaction: &Transaction<'_>,
     parent_id: Option<&str>,
 ) -> Result<(), String> {
+    ensure_generic_parent_allowed(parent_id)?;
     if let Some(parent_id) = parent_id {
         require_active_node(transaction, parent_id)?;
         ensure_child_within_depth(transaction, parent_id)?;
@@ -3222,6 +3637,7 @@ fn ensure_reparent_target(
     node_id: &str,
     parent_id: Option<&str>,
 ) -> Result<(), String> {
+    ensure_generic_parent_allowed(parent_id)?;
     if let Some(parent_id) = parent_id {
         require_active_node(transaction, parent_id)?;
     }
@@ -3237,6 +3653,8 @@ fn sibling_keys(
     parent_id: Option<&str>,
     excluded_id: Option<&str>,
 ) -> Result<Vec<(String, i64)>, String> {
+    #[cfg(test)]
+    SIBLING_ORDER_QUERY_COUNT.with(|count| count.set(count.get() + 1));
     let mut statement = transaction
         .prepare(
             "SELECT id, sort_key FROM notes_nodes \
@@ -3252,6 +3670,8 @@ fn sibling_keys(
         .map_err(|error| format!("Could not read sibling ordering: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not collect sibling ordering: {error}"))?;
+    #[cfg(test)]
+    SIBLING_ORDER_VISITED_ROW_COUNT.with(|count| count.set(count.get() + siblings.len()));
     Ok(siblings)
 }
 
@@ -3284,6 +3704,10 @@ fn next_sort_key(
     after_id: Option<&str>,
 ) -> Result<i64, String> {
     next_sort_key_excluding(transaction, parent_id, after_id, None, None)
+}
+
+pub(crate) fn next_root_sort_key(transaction: &Transaction<'_>) -> Result<i64, String> {
+    next_sort_key(transaction, None, None)
 }
 
 fn next_sort_key_excluding(
@@ -3509,6 +3933,1139 @@ pub(crate) fn rebuild_derived_for_nodes_at(
     Ok(())
 }
 
+#[derive(Clone)]
+struct GithubStoredRow {
+    node: StoredNode,
+    has_attachments: bool,
+}
+
+#[derive(Default)]
+struct GithubCandidateRows {
+    by_id: BTreeMap<String, GithubStoredRow>,
+    by_key: BTreeMap<String, String>,
+}
+
+fn github_stored_row_from_row(row: &Row<'_>) -> rusqlite::Result<GithubStoredRow> {
+    Ok(GithubStoredRow {
+        node: stored_node_from_row(row)?,
+        has_attachments: row.get(20)?,
+    })
+}
+
+fn github_metadata_key<'a>(
+    metadata: &'a GithubNotificationsPluginMeta,
+    kind: &str,
+) -> Option<&'a str> {
+    match (kind, metadata) {
+        ("date", GithubNotificationsPluginMeta::Date { date_key }) => Some(date_key),
+        (
+            "notification",
+            GithubNotificationsPluginMeta::Notification {
+                notification_key, ..
+            },
+        ) => Some(notification_key),
+        _ => None,
+    }
+}
+
+fn load_github_candidate_rows(
+    transaction: &Transaction<'_>,
+    expected: &[(String, String)],
+    kind: &str,
+    key_field: &str,
+    observe_notification_work: bool,
+) -> Result<GithubCandidateRows, String> {
+    let mut loaded = GithubCandidateRows::default();
+    for chunk in expected.chunks(ANCESTOR_CLOSURE_CHUNK_SIZE) {
+        if observe_notification_work {
+            #[cfg(test)]
+            GITHUB_NOTIFICATION_LOOKUP_QUERY_COUNT.with(|count| count.set(count.get() + 1));
+        }
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT n.id, n.parent_id, n.sort_key, n.title, n.note, n.layout_mode, \
+                    n.is_collapsed, n.is_starred, n.completed_at, n.deleted_at, \
+                    n.deleted_batch_id, n.archived_at, n.archive_root_id, n.node_kind, \
+                    n.image_offset_utf16, n.marker_kind, n.markdown_image_width, \
+                    n.is_readonly, n.plugin_state, n.plugin_meta, \
+                    EXISTS(SELECT 1 FROM notes_attachments a WHERE a.node_id = n.id) \
+             FROM notes_nodes n \
+             WHERE n.id IN ({placeholders}) \
+                OR (n.plugin_meta IS NOT NULL \
+                    AND CASE WHEN json_valid(n.plugin_meta) THEN \
+                      CASE WHEN json_extract(n.plugin_meta, '$.kind') = '{kind}' \
+                        THEN json_extract(n.plugin_meta, '$.{key_field}') \
+                      END \
+                    END IN ({placeholders})) \
+             ORDER BY n.id"
+        );
+        let mut parameters = chunk.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>();
+        parameters.extend(chunk.iter().map(|(_, key)| key.as_str()));
+        let mut statement = transaction
+            .prepare(&sql)
+            .map_err(|error| format!("Could not prepare GitHub provider rows: {error}"))?;
+        let rows = statement
+            .query_map(params_from_iter(parameters), github_stored_row_from_row)
+            .map_err(|error| format!("Could not query GitHub provider rows: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not decode GitHub provider rows: {error}"))?;
+        if observe_notification_work {
+            #[cfg(test)]
+            GITHUB_NOTIFICATION_VISITED_ROW_COUNT.with(|count| count.set(count.get() + rows.len()));
+        }
+        for row in rows {
+            if let Some(key) = row
+                .node
+                .plugin_meta
+                .as_ref()
+                .and_then(|metadata| github_metadata_key(metadata, kind))
+            {
+                if loaded
+                    .by_key
+                    .insert(key.to_string(), row.node.id.clone())
+                    .is_some()
+                {
+                    return Err("A GitHub metadata key has conflicting ownership.".to_string());
+                }
+            }
+            if loaded.by_id.insert(row.node.id.clone(), row).is_some() {
+                return Err("A GitHub provider row was loaded more than once.".to_string());
+            }
+        }
+    }
+    Ok(loaded)
+}
+
+fn load_github_rows_by_id(
+    transaction: &Transaction<'_>,
+    node_ids: &BTreeSet<String>,
+) -> Result<BTreeMap<String, GithubStoredRow>, String> {
+    let mut rows = BTreeMap::new();
+    for chunk in node_ids
+        .iter()
+        .collect::<Vec<_>>()
+        .chunks(ANCESTOR_CLOSURE_CHUNK_SIZE)
+    {
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT n.id, n.parent_id, n.sort_key, n.title, n.note, n.layout_mode, \
+                    n.is_collapsed, n.is_starred, n.completed_at, n.deleted_at, \
+                    n.deleted_batch_id, n.archived_at, n.archive_root_id, n.node_kind, \
+                    n.image_offset_utf16, n.marker_kind, n.markdown_image_width, \
+                    n.is_readonly, n.plugin_state, n.plugin_meta, \
+                    EXISTS(SELECT 1 FROM notes_attachments a WHERE a.node_id = n.id) \
+             FROM notes_nodes n WHERE n.id IN ({placeholders}) ORDER BY n.id"
+        );
+        let mut statement = transaction
+            .prepare(&sql)
+            .map_err(|error| format!("Could not prepare GitHub parent rows: {error}"))?;
+        let loaded = statement
+            .query_map(
+                params_from_iter(chunk.iter().map(|node_id| node_id.as_str())),
+                github_stored_row_from_row,
+            )
+            .map_err(|error| format!("Could not query GitHub parent rows: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not decode GitHub parent rows: {error}"))?;
+        for row in loaded {
+            rows.insert(row.node.id.clone(), row);
+        }
+    }
+    Ok(rows)
+}
+
+fn validate_github_common_row(row: &GithubStoredRow) -> bool {
+    let node = &row.node;
+    node.node_kind == NoteNodeKind::Text
+        && node.image_offset_utf16 == 0
+        && node.layout_mode == "bullets"
+        && !node.is_starred
+        && node.completed_at.is_none()
+        && node.deleted_at.is_none()
+        && node.deleted_batch_id.is_none()
+        && node.archived_at.is_none()
+        && node.archive_root_id.is_none()
+        && node.is_readonly.is_none()
+        && !row.has_attachments
+}
+
+fn validate_loaded_github_date(row: &GithubStoredRow, date_key: &str) -> Result<(), String> {
+    let node = &row.node;
+    if node.id != github_date_node_id(date_key)?
+        || !validate_github_common_row(row)
+        || node.parent_id.as_deref() != Some(GITHUB_NOTIFICATIONS_ROOT_ID)
+        || node.title != date_key
+        || !node.note.is_empty()
+        || node.is_collapsed
+        || node.plugin_state.is_some()
+        || node.plugin_meta
+            != Some(GithubNotificationsPluginMeta::Date {
+                date_key: date_key.to_string(),
+            })
+    {
+        return Err("A GitHub date anchor has invalid ownership.".to_string());
+    }
+    Ok(())
+}
+
+fn validate_loaded_github_notification(
+    row: &GithubStoredRow,
+    notification_key: &str,
+) -> Result<(), String> {
+    let node = &row.node;
+    if node.id != github_notification_node_id(notification_key)?
+        || !validate_github_common_row(row)
+        || node.is_collapsed
+        || node.plugin_state.is_some()
+        || !matches!(
+            node.plugin_meta.as_ref(),
+            Some(GithubNotificationsPluginMeta::Notification {
+                notification_key: stored_key,
+                ..
+            }) if stored_key == notification_key
+        )
+    {
+        return Err("A GitHub notification has invalid ownership.".to_string());
+    }
+    Ok(())
+}
+
+fn exact_github_candidate<'a>(
+    candidates: &'a GithubCandidateRows,
+    expected_id: &str,
+    expected_key: &str,
+) -> Result<Option<&'a GithubStoredRow>, String> {
+    let by_id = candidates.by_id.get(expected_id);
+    let by_key = candidates.by_key.get(expected_key);
+    match (by_id, by_key) {
+        (None, None) => Ok(None),
+        (Some(row), Some(owner_id)) if owner_id == expected_id => Ok(Some(row)),
+        _ => Err("A GitHub metadata key has conflicting ownership.".to_string()),
+    }
+}
+
+fn require_github_notifications_root(
+    transaction: &Transaction<'_>,
+    root_id: &str,
+) -> Result<StoredNode, String> {
+    if root_id != GITHUB_NOTIFICATIONS_ROOT_ID {
+        return Err("The GitHub notification root ID is invalid.".to_string());
+    }
+    let root = require_active_node(transaction, root_id)?;
+    if !github_provider_row_has_canonical_common_shape(transaction, &root)?
+        || root.parent_id.is_some()
+        || root.title != GITHUB_NOTIFICATIONS_TITLE
+        || !root.note.is_empty()
+        || root.is_readonly.is_some()
+        || root
+            .plugin_state
+            .as_ref()
+            .is_none_or(|state| !state.is_valid())
+        || root.plugin_meta.is_some()
+    {
+        return Err("The GitHub Notifications root ownership is invalid.".to_string());
+    }
+    Ok(root)
+}
+
+fn github_provider_row_has_canonical_common_shape(
+    transaction: &Transaction<'_>,
+    node: &StoredNode,
+) -> Result<bool, String> {
+    let has_attachments = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE node_id = ?1)",
+            [&node.id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("Could not inspect GitHub row attachments: {error}"))?;
+    Ok(node.node_kind == NoteNodeKind::Text
+        && node.image_offset_utf16 == 0
+        && node.layout_mode == "bullets"
+        && !node.is_starred
+        && node.completed_at.is_none()
+        && node.deleted_at.is_none()
+        && node.deleted_batch_id.is_none()
+        && node.archived_at.is_none()
+        && node.archive_root_id.is_none()
+        && node.is_readonly.is_none()
+        && !has_attachments)
+}
+
+fn ensure_unique_github_metadata_key(
+    transaction: &Transaction<'_>,
+    kind: &str,
+    key_field: &str,
+    key: &str,
+    expected_id: &str,
+) -> Result<(), String> {
+    let sql = format!(
+        "SELECT id FROM notes_nodes \
+         WHERE plugin_meta IS NOT NULL \
+           AND CASE WHEN json_valid(plugin_meta) THEN \
+             CASE WHEN json_extract(plugin_meta, '$.kind') = '{kind}' \
+               THEN json_extract(plugin_meta, '$.{key_field}') \
+             END \
+           END = ?1 \
+         ORDER BY id"
+    );
+    let mut statement = transaction
+        .prepare(&sql)
+        .map_err(|error| format!("Could not prepare GitHub metadata ownership: {error}"))?;
+    let owners = statement
+        .query_map([key], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Could not inspect GitHub metadata ownership: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not collect GitHub metadata ownership: {error}"))?;
+    if owners
+        .iter()
+        .any(|owner_id| owner_id.as_str() != expected_id)
+        || owners.len() > 1
+    {
+        return Err("A GitHub metadata key has conflicting ownership.".to_string());
+    }
+    Ok(())
+}
+
+fn validate_github_date_row(
+    transaction: &Transaction<'_>,
+    node: &StoredNode,
+    date_key: &str,
+) -> Result<(), String> {
+    if node.id != github_date_node_id(date_key)?
+        || !github_provider_row_has_canonical_common_shape(transaction, node)?
+        || node.parent_id.as_deref() != Some(GITHUB_NOTIFICATIONS_ROOT_ID)
+        || node.title != date_key
+        || !node.note.is_empty()
+        || node.is_collapsed
+        || node.plugin_state.is_some()
+        || node.plugin_meta
+            != Some(GithubNotificationsPluginMeta::Date {
+                date_key: date_key.to_string(),
+            })
+    {
+        return Err("A GitHub date anchor has invalid ownership.".to_string());
+    }
+    ensure_unique_github_metadata_key(transaction, "date", "date_key", date_key, &node.id)
+}
+
+fn validate_github_notification_chain(
+    transaction: &Transaction<'_>,
+    node: &StoredNode,
+    notification_key: &str,
+    expected_date_key: Option<&str>,
+) -> Result<String, String> {
+    if node.id != github_notification_node_id(notification_key)?
+        || !github_provider_row_has_canonical_common_shape(transaction, node)?
+        || node.is_collapsed
+        || node.plugin_state.is_some()
+        || !matches!(
+            node.plugin_meta.as_ref(),
+            Some(GithubNotificationsPluginMeta::Notification {
+                notification_key: stored_key,
+                ..
+            }) if stored_key == notification_key
+        )
+    {
+        return Err("A GitHub notification has invalid ownership.".to_string());
+    }
+    ensure_unique_github_metadata_key(
+        transaction,
+        "notification",
+        "notification_key",
+        notification_key,
+        &node.id,
+    )?;
+    let date_id = node
+        .parent_id
+        .as_deref()
+        .ok_or_else(|| "A GitHub notification has no date anchor.".to_string())?;
+    let date = require_active_node(transaction, date_id)?;
+    let date_key = match date.plugin_meta.as_ref() {
+        Some(GithubNotificationsPluginMeta::Date { date_key }) => date_key.as_str(),
+        _ => return Err("A GitHub notification has an invalid date anchor.".to_string()),
+    };
+    if expected_date_key.is_some_and(|expected| expected != date_key) {
+        return Err("A GitHub notification has an unexpected date anchor.".to_string());
+    }
+    validate_github_date_row(transaction, &date, date_key)?;
+    Ok(date_key.to_string())
+}
+
+fn preflight_github_snapshot_chain(
+    transaction: &Transaction<'_>,
+    snapshot: &GithubNotificationSnapshotInput,
+) -> Result<(), String> {
+    let date_id = github_date_node_id(&snapshot.date_key)?;
+    let date_candidates = load_github_candidate_rows(
+        transaction,
+        &[(date_id.clone(), snapshot.date_key.clone())],
+        "date",
+        "date_key",
+        false,
+    )?;
+    let date = exact_github_candidate(&date_candidates, &date_id, &snapshot.date_key)?;
+    if let Some(date) = date {
+        validate_loaded_github_date(date, &snapshot.date_key)?;
+    }
+
+    let notification_id = github_notification_node_id(&snapshot.notification_key)?;
+    let notification_candidates = load_github_candidate_rows(
+        transaction,
+        &[(notification_id.clone(), snapshot.notification_key.clone())],
+        "notification",
+        "notification_key",
+        false,
+    )?;
+    if let Some(notification) = exact_github_candidate(
+        &notification_candidates,
+        &notification_id,
+        &snapshot.notification_key,
+    )? {
+        validate_loaded_github_notification(notification, &snapshot.notification_key)?;
+        if notification.node.parent_id.as_deref() != Some(&date_id) || date.is_none() {
+            return Err("A GitHub notification has an invalid date anchor.".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn insert_github_date_anchor_if_missing(
+    transaction: &Transaction<'_>,
+    date_key: &str,
+) -> Result<String, String> {
+    let date_id = github_date_node_id(date_key)?;
+    if transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes_nodes WHERE id = ?1)",
+            [&date_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("Could not inspect a preflighted GitHub date anchor: {error}"))?
+    {
+        return Ok(date_id);
+    }
+    let sort_key = next_sort_key(transaction, Some(GITHUB_NOTIFICATIONS_ROOT_ID), None)?;
+    let metadata = serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
+        date_key: date_key.to_string(),
+    })
+    .expect("GitHub date metadata serializes");
+    transaction
+        .execute(
+            "INSERT INTO notes_nodes(\
+               id, parent_id, sort_key, title, note, is_readonly, plugin_state, plugin_meta, \
+               created_at, updated_at\
+             ) VALUES (?1, ?2, ?3, ?4, '', NULL, NULL, ?5, \
+                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![
+                date_id,
+                GITHUB_NOTIFICATIONS_ROOT_ID,
+                sort_key,
+                date_key,
+                metadata
+            ],
+        )
+        .map_err(|error| format!("Could not materialize a GitHub date anchor: {error}"))?;
+    Ok(date_id)
+}
+
+fn next_github_notification_sort_key(
+    transaction: &Transaction<'_>,
+    date_id: &str,
+) -> Result<i64, String> {
+    next_sort_key(transaction, Some(date_id), None)
+}
+
+fn insert_github_notification_if_missing(
+    transaction: &Transaction<'_>,
+    date_id: &str,
+    snapshot: &GithubNotificationSnapshotInput,
+) -> Result<String, String> {
+    let notification_id = github_notification_node_id(&snapshot.notification_key)?;
+    if transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes_nodes WHERE id = ?1)",
+            [&notification_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("Could not inspect a preflighted GitHub notification: {error}"))?
+    {
+        return Ok(notification_id);
+    }
+    let sort_key = next_github_notification_sort_key(transaction, date_id)?;
+    let metadata =
+        serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Notification {
+            notification_key: snapshot.notification_key.clone(),
+            notification_type: snapshot.notification_type.clone(),
+            url: snapshot.url.clone(),
+            updated_at: snapshot.updated_at.clone(),
+            unread: snapshot.unread,
+        })
+        .expect("GitHub notification metadata serializes");
+    transaction
+        .execute(
+            "INSERT INTO notes_nodes(\
+               id, parent_id, sort_key, title, note, is_readonly, plugin_state, plugin_meta, \
+               created_at, updated_at\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, \
+                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![
+                notification_id,
+                date_id,
+                sort_key,
+                snapshot.title,
+                snapshot.note,
+                metadata
+            ],
+        )
+        .map_err(|error| format!("Could not materialize a GitHub notification: {error}"))?;
+    Ok(notification_id)
+}
+
+pub(crate) fn materialize_github_notification_and_create_sibling(
+    connection: &mut Connection,
+    input: MaterializeGithubNotificationSiblingInput,
+) -> Result<NotesWorkspace, String> {
+    input.validate()?;
+    with_workspace_transaction(connection, |transaction| {
+        require_github_notifications_root(transaction, &input.root_id)?;
+        preflight_github_snapshot_chain(transaction, &input.snapshot)?;
+        let existing_sibling = if let Some(existing) = node_by_id(transaction, &input.sibling_id)? {
+            let date_id = github_date_node_id(&input.snapshot.date_key)?;
+            if existing.parent_id.as_deref() != Some(&date_id)
+                || !existing.title.is_empty()
+                || !existing.note.is_empty()
+                || existing.is_readonly != Some(false)
+                || existing.plugin_state.is_some()
+                || existing.plugin_meta.is_some()
+                || existing.deleted_at.is_some()
+                || existing.archived_at.is_some()
+            {
+                return Err(
+                    "The requested GitHub notification sibling ID is already in use.".to_string(),
+                );
+            }
+            true
+        } else {
+            ensure_fresh_id(transaction, &input.sibling_id)?;
+            false
+        };
+        let date_id = insert_github_date_anchor_if_missing(transaction, &input.snapshot.date_key)?;
+        let notification_id =
+            insert_github_notification_if_missing(transaction, &date_id, &input.snapshot)?;
+        if existing_sibling {
+            return Ok(());
+        }
+        let sort_key = next_sort_key(transaction, Some(&date_id), Some(&notification_id))?;
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, note, is_readonly, plugin_state, plugin_meta, \
+                   created_at, updated_at\
+                 ) VALUES (?1, ?2, ?3, '', '', 0, NULL, NULL, \
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                params![input.sibling_id, date_id, sort_key],
+            )
+            .map_err(|error| format!("Could not create a GitHub notification sibling: {error}"))?;
+        Ok(())
+    })
+}
+
+pub(crate) fn materialize_github_notification_and_import_children(
+    connection: &mut Connection,
+    root_id: NoteId,
+    snapshot: GithubNotificationSnapshotInput,
+    nodes: Vec<ImportNode>,
+    today: LocalDate,
+) -> Result<(NotesWorkspace, Vec<NoteId>), String> {
+    validate_note_id(&root_id)?;
+    if root_id != GITHUB_NOTIFICATIONS_ROOT_ID {
+        return Err("The GitHub notification root ID is invalid.".to_string());
+    }
+    snapshot.validate()?;
+    validate_import_nodes(&nodes)?;
+    let mut imported_root_ids = Vec::new();
+    let workspace = with_workspace_transaction(connection, |transaction| {
+        require_github_notifications_root(transaction, &root_id)?;
+        preflight_github_snapshot_chain(transaction, &snapshot)?;
+        let date_id = insert_github_date_anchor_if_missing(transaction, &snapshot.date_key)?;
+        let notification_id =
+            insert_github_notification_if_missing(transaction, &date_id, &snapshot)?;
+        imported_root_ids =
+            insert_import_forest(transaction, Some(&notification_id), None, &nodes, today)?;
+        Ok(())
+    })?;
+    Ok((workspace, imported_root_ids))
+}
+
+pub(crate) fn materialize_github_notification_and_reparent(
+    connection: &mut Connection,
+    input: MaterializeGithubNotificationReparentInput,
+) -> Result<NotesWorkspace, String> {
+    input.validate()?;
+    with_workspace_transaction(connection, |transaction| {
+        require_github_notifications_root(transaction, &input.root_id)?;
+        require_subtree_movable(transaction, &input.node_id)?;
+        preflight_github_snapshot_chain(transaction, &input.snapshot)?;
+        let date_id = insert_github_date_anchor_if_missing(transaction, &input.snapshot.date_key)?;
+        let notification_id =
+            insert_github_notification_if_missing(transaction, &date_id, &input.snapshot)?;
+        let source = require_active_node(transaction, &input.node_id)?;
+        if source.parent_id.as_deref() == Some(&notification_id) {
+            return Ok(());
+        }
+        move_node_within_transaction(
+            transaction,
+            &input.node_id,
+            Some(&notification_id),
+            None,
+            None,
+        )
+    })
+}
+
+fn checked_github_sort_block(base: i64, count: usize) -> Option<Vec<i64>> {
+    let count = i64::try_from(count).ok()?;
+    base.checked_add(count.checked_mul(SORT_KEY_STEP)?)?;
+    (1..=count)
+        .map(|offset| base.checked_add(offset.checked_mul(SORT_KEY_STEP)?))
+        .collect()
+}
+
+fn reserve_github_sort_block(
+    transaction: &Transaction<'_>,
+    parent_id: &str,
+    initial_base: i64,
+    count: usize,
+) -> Result<Vec<i64>, String> {
+    if let Some(keys) = checked_github_sort_block(initial_base, count) {
+        return Ok(keys);
+    }
+    rebalance_siblings(transaction, Some(parent_id), None)?;
+    let rebalanced_base = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(sort_key), 0) FROM notes_nodes \
+             WHERE parent_id = ?1 AND deleted_at IS NULL AND archived_at IS NULL",
+            [parent_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("Could not inspect rebalanced GitHub ordering: {error}"))?;
+    checked_github_sort_block(rebalanced_base, count).ok_or_else(|| {
+        "Could not allocate a GitHub provider sort block after rebalancing.".to_string()
+    })
+}
+
+pub(crate) fn refresh_materialized_github_notifications(
+    connection: &mut Connection,
+    mut input: RefreshGithubNotificationsInput,
+) -> Result<NotesWorkspace, String> {
+    input.validate()?;
+    input
+        .notifications
+        .sort_by(|left, right| left.notification_key.cmp(&right.notification_key));
+    with_workspace_transaction(connection, |transaction| {
+        require_github_notifications_root(transaction, &input.root_id)?;
+
+        let expected_notifications = input
+            .notifications
+            .iter()
+            .map(|snapshot| {
+                Ok((
+                    github_notification_node_id(&snapshot.notification_key)?,
+                    snapshot.notification_key.clone(),
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let notification_candidates = load_github_candidate_rows(
+            transaction,
+            &expected_notifications,
+            "notification",
+            "notification_key",
+            true,
+        )?;
+        let mut materialized = BTreeMap::<String, GithubStoredRow>::new();
+        let mut old_date_ids = BTreeSet::new();
+        for (notification_id, notification_key) in &expected_notifications {
+            let Some(row) = exact_github_candidate(
+                &notification_candidates,
+                notification_id,
+                notification_key,
+            )?
+            else {
+                continue;
+            };
+            validate_loaded_github_notification(row, notification_key)?;
+            let parent_id = row
+                .node
+                .parent_id
+                .as_ref()
+                .ok_or_else(|| "A GitHub notification has no date anchor.".to_string())?;
+            old_date_ids.insert(parent_id.clone());
+            materialized.insert(notification_key.clone(), row.clone());
+        }
+
+        let old_dates_by_id = load_github_rows_by_id(transaction, &old_date_ids)?;
+        let mut expected_old_dates = BTreeMap::<String, String>::new();
+        for old_date_id in &old_date_ids {
+            let date = old_dates_by_id
+                .get(old_date_id)
+                .ok_or_else(|| "A GitHub notification has a missing date anchor.".to_string())?;
+            let date_key = match date.node.plugin_meta.as_ref() {
+                Some(GithubNotificationsPluginMeta::Date { date_key }) => date_key,
+                _ => return Err("A GitHub notification has an invalid date anchor.".to_string()),
+            };
+            expected_old_dates.insert(old_date_id.clone(), date_key.clone());
+        }
+        let expected_old_date_rows = expected_old_dates
+            .iter()
+            .map(|(date_id, date_key)| (date_id.clone(), date_key.clone()))
+            .collect::<Vec<_>>();
+        let old_date_candidates = load_github_candidate_rows(
+            transaction,
+            &expected_old_date_rows,
+            "date",
+            "date_key",
+            false,
+        )?;
+        for (notification_key, notification) in &materialized {
+            let parent_id = notification
+                .node
+                .parent_id
+                .as_ref()
+                .expect("materialized notification parent was collected");
+            let date_key = expected_old_dates
+                .get(parent_id)
+                .expect("old GitHub date key was collected");
+            let date = exact_github_candidate(&old_date_candidates, parent_id, date_key)?
+                .ok_or_else(|| "A GitHub notification has a missing date anchor.".to_string())?;
+            validate_loaded_github_date(date, date_key)?;
+            if notification.node.id != github_notification_node_id(notification_key)? {
+                return Err(
+                    "A materialized GitHub notification key does not match its ID.".to_string(),
+                );
+            }
+        }
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum ChangeKind {
+            MarkRead,
+            Newer,
+        }
+        struct Change {
+            snapshot_index: usize,
+            notification_id: String,
+            old_date_id: String,
+            destination_date_id: String,
+            kind: ChangeKind,
+        }
+
+        let mut changes = Vec::new();
+        let mut destination_dates = BTreeMap::<String, String>::new();
+        for (snapshot_index, snapshot) in input.notifications.iter().enumerate() {
+            let Some(notification) = materialized.get(&snapshot.notification_key) else {
+                continue;
+            };
+            let Some(GithubNotificationsPluginMeta::Notification {
+                updated_at, unread, ..
+            }) = notification.node.plugin_meta.as_ref()
+            else {
+                return Err("A materialized GitHub notification has invalid metadata.".to_string());
+            };
+            let Some(order) =
+                compare_github_notification_timestamps(&snapshot.updated_at, updated_at)
+            else {
+                return Err("A GitHub notification timestamp is invalid.".to_string());
+            };
+            if order == std::cmp::Ordering::Less
+                || (order == std::cmp::Ordering::Equal && (!*unread || snapshot.unread))
+            {
+                continue;
+            }
+            if order == std::cmp::Ordering::Equal {
+                changes.push(Change {
+                    snapshot_index,
+                    notification_id: notification.node.id.clone(),
+                    old_date_id: notification
+                        .node
+                        .parent_id
+                        .clone()
+                        .expect("validated notification parent"),
+                    destination_date_id: notification
+                        .node
+                        .parent_id
+                        .clone()
+                        .expect("validated notification parent"),
+                    kind: ChangeKind::MarkRead,
+                });
+                continue;
+            }
+            let old_date_id = notification.node.parent_id.clone().ok_or_else(|| {
+                "A materialized GitHub notification has no date anchor.".to_string()
+            })?;
+            let destination_date_id = github_date_node_id(&snapshot.date_key)?;
+            if old_date_id != destination_date_id {
+                destination_dates.insert(snapshot.date_key.clone(), destination_date_id.clone());
+            }
+            changes.push(Change {
+                snapshot_index,
+                notification_id: notification.node.id.clone(),
+                old_date_id,
+                destination_date_id,
+                kind: ChangeKind::Newer,
+            });
+        }
+
+        let expected_dates = destination_dates
+            .iter()
+            .map(|(date_key, date_id)| (date_id.clone(), date_key.clone()))
+            .collect::<Vec<_>>();
+        let destination_candidates =
+            load_github_candidate_rows(transaction, &expected_dates, "date", "date_key", false)?;
+        let mut missing_dates = Vec::<(String, String)>::new();
+        for (date_id, date_key) in &expected_dates {
+            if let Some(row) = exact_github_candidate(&destination_candidates, date_id, date_key)? {
+                validate_loaded_github_date(row, date_key)?;
+            } else {
+                missing_dates.push((date_key.clone(), date_id.clone()));
+            }
+        }
+
+        let root_sort_keys = if missing_dates.is_empty() {
+            Vec::new()
+        } else {
+            let root_base = transaction
+                .query_row(
+                    "SELECT COALESCE(MAX(sort_key), 0) FROM notes_nodes \
+                     WHERE parent_id = ?1 AND deleted_at IS NULL AND archived_at IS NULL",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| format!("Could not inspect GitHub date order: {error}"))?;
+            reserve_github_sort_block(
+                transaction,
+                GITHUB_NOTIFICATIONS_ROOT_ID,
+                root_base,
+                missing_dates.len(),
+            )?
+        };
+        for ((date_key, date_id), sort_key) in missing_dates.iter().zip(root_sort_keys) {
+            let metadata =
+                serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
+                    date_key: date_key.clone(),
+                })
+                .expect("GitHub date metadata serializes");
+            transaction
+                .execute(
+                    "INSERT INTO notes_nodes(\
+                       id, parent_id, sort_key, title, note, is_readonly, plugin_state, plugin_meta, \
+                       created_at, updated_at\
+                     ) VALUES (?1, ?2, ?3, ?4, '', NULL, NULL, ?5, \
+                               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                    params![
+                        date_id,
+                        GITHUB_NOTIFICATIONS_ROOT_ID,
+                        sort_key,
+                        date_key,
+                        metadata
+                    ],
+                )
+                .map_err(|error| format!("Could not create a GitHub date anchor: {error}"))?;
+        }
+
+        let mut moves_by_destination = BTreeMap::<String, Vec<String>>::new();
+        for change in &changes {
+            if change.kind == ChangeKind::Newer && change.old_date_id != change.destination_date_id
+            {
+                moves_by_destination
+                    .entry(change.destination_date_id.clone())
+                    .or_default()
+                    .push(change.notification_id.clone());
+            }
+        }
+        let destination_ids = moves_by_destination.keys().collect::<Vec<_>>();
+        let mut destination_maximums = BTreeMap::<String, i64>::new();
+        for chunk in destination_ids.chunks(ANCESTOR_CLOSURE_CHUNK_SIZE) {
+            let placeholders = std::iter::repeat("?")
+                .take(chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT parent_id, COALESCE(MAX(sort_key), 0) FROM notes_nodes \
+                 WHERE parent_id IN ({placeholders}) \
+                   AND deleted_at IS NULL AND archived_at IS NULL \
+                 GROUP BY parent_id ORDER BY parent_id"
+            );
+            let mut statement = transaction
+                .prepare(&sql)
+                .map_err(|error| format!("Could not prepare GitHub destination order: {error}"))?;
+            let rows = statement
+                .query_map(
+                    params_from_iter(chunk.iter().map(|node_id| node_id.as_str())),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )
+                .map_err(|error| format!("Could not inspect GitHub destination order: {error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("Could not collect GitHub destination order: {error}"))?;
+            destination_maximums.extend(rows);
+        }
+        let mut move_sort_keys = BTreeMap::<String, i64>::new();
+        for (destination_id, notification_ids) in &moves_by_destination {
+            let base = destination_maximums
+                .get(destination_id)
+                .copied()
+                .unwrap_or(0);
+            let sort_keys = reserve_github_sort_block(
+                transaction,
+                destination_id,
+                base,
+                notification_ids.len(),
+            )?;
+            for (notification_id, sort_key) in notification_ids.iter().zip(sort_keys) {
+                move_sort_keys.insert(notification_id.clone(), sort_key);
+            }
+        }
+
+        let mut cleanup_candidates = BTreeSet::new();
+        for change in &changes {
+            let snapshot = &input.notifications[change.snapshot_index];
+            let notification = materialized
+                .get(&snapshot.notification_key)
+                .expect("planned materialized notification");
+            let Some(GithubNotificationsPluginMeta::Notification {
+                notification_key,
+                notification_type,
+                url,
+                updated_at,
+                ..
+            }) = notification.node.plugin_meta.as_ref()
+            else {
+                return Err("A materialized GitHub notification has invalid metadata.".to_string());
+            };
+            if change.kind == ChangeKind::MarkRead {
+                let metadata = serialize_github_plugin_meta_storage(
+                    &GithubNotificationsPluginMeta::Notification {
+                        notification_key: notification_key.clone(),
+                        notification_type: notification_type.clone(),
+                        url: url.clone(),
+                        updated_at: updated_at.clone(),
+                        unread: false,
+                    },
+                )
+                .expect("GitHub notification metadata serializes");
+                transaction
+                    .execute(
+                        "UPDATE notes_nodes SET plugin_meta = ?1, \
+                            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                         WHERE id = ?2",
+                        params![metadata, change.notification_id],
+                    )
+                    .map_err(|error| {
+                        format!("Could not preserve GitHub notification read state: {error}")
+                    })?;
+                continue;
+            }
+            let sort_key = if change.old_date_id == change.destination_date_id {
+                notification.node.sort_key
+            } else {
+                cleanup_candidates.insert(change.old_date_id.clone());
+                *move_sort_keys
+                    .get(&change.notification_id)
+                    .expect("planned GitHub move order")
+            };
+            let metadata = serialize_github_plugin_meta_storage(
+                &GithubNotificationsPluginMeta::Notification {
+                    notification_key: snapshot.notification_key.clone(),
+                    notification_type: snapshot.notification_type.clone(),
+                    url: snapshot.url.clone(),
+                    updated_at: snapshot.updated_at.clone(),
+                    unread: snapshot.unread,
+                },
+            )
+            .expect("GitHub notification metadata serializes");
+            transaction
+                .execute(
+                    "UPDATE notes_nodes SET parent_id = ?1, sort_key = ?2, title = ?3, note = ?4, \
+                        plugin_meta = ?5, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                     WHERE id = ?6 AND deleted_at IS NULL AND archived_at IS NULL",
+                    params![
+                        change.destination_date_id,
+                        sort_key,
+                        snapshot.title,
+                        snapshot.note,
+                        metadata,
+                        change.notification_id
+                    ],
+                )
+                .map_err(|error| {
+                    format!("Could not refresh a materialized GitHub notification: {error}")
+                })?;
+        }
+
+        let mut removed_anchor = false;
+        for chunk in cleanup_candidates
+            .iter()
+            .collect::<Vec<_>>()
+            .chunks(ANCESTOR_CLOSURE_CHUNK_SIZE)
+        {
+            let placeholders = std::iter::repeat("?")
+                .take(chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let inspect_sql = format!(
+                "SELECT candidate.id FROM notes_nodes candidate \
+                 WHERE candidate.id IN ({placeholders}) \
+                   AND NOT EXISTS(SELECT 1 FROM notes_nodes child \
+                                  WHERE child.parent_id = candidate.id) \
+                 ORDER BY candidate.id"
+            );
+            let mut statement = transaction
+                .prepare(&inspect_sql)
+                .map_err(|error| format!("Could not prepare GitHub anchor cleanup: {error}"))?;
+            let empty = statement
+                .query_map(
+                    params_from_iter(chunk.iter().map(|node_id| node_id.as_str())),
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|error| format!("Could not inspect GitHub anchor cleanup: {error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("Could not collect GitHub anchor cleanup: {error}"))?;
+            if empty.is_empty() {
+                continue;
+            }
+            let empty_placeholders = std::iter::repeat("?")
+                .take(empty.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            transaction
+                .execute(
+                    &format!("DELETE FROM notes_nodes WHERE id IN ({empty_placeholders})"),
+                    params_from_iter(empty.iter()),
+                )
+                .map_err(|error| format!("Could not remove empty GitHub date anchors: {error}"))?;
+            transaction
+                .execute(
+                    &format!(
+                        "DELETE FROM sync_dirty_nodes WHERE node_id IN ({empty_placeholders})"
+                    ),
+                    params_from_iter(empty.iter()),
+                )
+                .map_err(|error| {
+                    format!("Could not clear removed GitHub date dirtiness: {error}")
+                })?;
+            removed_anchor = true;
+        }
+        if removed_anchor {
+            transaction
+                .execute(
+                    "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) \
+                     ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                )
+                .map_err(|error| {
+                    format!("Could not dirty the GitHub Notifications root: {error}")
+                })?;
+        }
+        Ok(())
+    })
+}
+
+pub(crate) fn mark_materialized_github_notification_read(
+    connection: &mut Connection,
+    input: MarkGithubNotificationReadInput,
+) -> Result<NotesWorkspace, String> {
+    input.validate()?;
+    with_workspace_transaction(connection, |transaction| {
+        require_github_notifications_root(transaction, &input.root_id)?;
+        let notification_id = github_notification_node_id(&input.notification_key)?;
+        let notification = require_active_node(transaction, &notification_id)?;
+        validate_github_notification_chain(
+            transaction,
+            &notification,
+            &input.notification_key,
+            None,
+        )?;
+        let Some(GithubNotificationsPluginMeta::Notification {
+            notification_key,
+            notification_type,
+            url,
+            updated_at,
+            unread,
+        }) = notification.plugin_meta
+        else {
+            return Err("The GitHub notification read target is not provider-owned.".to_string());
+        };
+        if notification_key != input.notification_key
+            || compare_github_notification_timestamps(&input.updated_at, &updated_at)
+                != Some(std::cmp::Ordering::Equal)
+        {
+            return Err("The GitHub notification read target is stale.".to_string());
+        }
+        if !unread {
+            return Ok(());
+        }
+        let metadata =
+            serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Notification {
+                notification_key,
+                notification_type,
+                url,
+                updated_at,
+                unread: false,
+            })
+            .expect("GitHub notification metadata serializes");
+        transaction
+            .execute(
+                "UPDATE notes_nodes SET plugin_meta = ?1, \
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?2",
+                params![metadata, notification_id],
+            )
+            .map_err(|error| format!("Could not mark a GitHub notification read: {error}"))?;
+        Ok(())
+    })
+}
+
+pub(crate) fn set_github_group_collapsed(
+    connection: &mut Connection,
+    input: SetGithubGroupCollapsedInput,
+) -> Result<NotesWorkspace, String> {
+    input.validate()?;
+    with_workspace_transaction(connection, |transaction| {
+        let root = require_github_notifications_root(transaction, &input.root_id)?;
+        let state = root
+            .plugin_state
+            .ok_or_else(|| "The GitHub Notifications root has no plugin state.".to_string())?;
+        let mut groups = state.collapsed_groups.into_iter().collect::<BTreeSet<_>>();
+        let changed = if input.collapsed {
+            groups.insert(input.group_key.clone())
+        } else {
+            groups.remove(&input.group_key)
+        };
+        if !changed {
+            return Ok(());
+        }
+        let groups = groups.into_iter().collect::<Vec<_>>();
+        let plugin_state =
+            serde_json::to_string(&groups).expect("GitHub collapsed groups serialize");
+        transaction
+            .execute(
+                "UPDATE notes_nodes SET plugin_state = ?1, \
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?2",
+                params![plugin_state, input.root_id],
+            )
+            .map_err(|error| format!("Could not update GitHub group collapse: {error}"))?;
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 pub(crate) fn create_node(
     connection: &mut Connection,
@@ -3601,6 +5158,7 @@ pub(crate) fn update_node_at(
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_active_node(transaction, &input.id)?;
+        require_content_mutable(&source)?;
         crate::notes::schema::validate_image_offset_utf16(
             &input.title,
             source.node_kind,
@@ -3633,6 +5191,184 @@ pub(crate) fn update_node_at(
     })
 }
 
+pub(crate) fn set_readonly_at(
+    connection: &mut Connection,
+    node_id: NoteId,
+    is_readonly: bool,
+    _today: LocalDate,
+) -> Result<NotesWorkspace, String> {
+    validate_note_id(&node_id)?;
+    with_workspace_transaction(connection, |transaction| {
+        let source = require_active_node(transaction, &node_id)?;
+        if plugin_owned(&source) {
+            return Err(
+                "This Note node is managed by a plugin and cannot be modified.".to_string(),
+            );
+        }
+        let current = source.is_readonly.unwrap_or(false);
+        if current == is_readonly {
+            return Ok(());
+        }
+        transaction
+            .execute(
+                "UPDATE notes_nodes SET is_readonly = ?1, \
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                 WHERE id = ?2 AND deleted_at IS NULL AND archived_at IS NULL",
+                rusqlite::params![i64::from(is_readonly), node_id],
+            )
+            .map_err(|error| format!("Could not update the Note readonly state: {error}"))?;
+        mark_topic_dirty(transaction, &node_id)
+    })
+}
+
+fn batch_soft_delete_unchecked(
+    transaction: &Transaction<'_>,
+    node_ids: &[String],
+) -> Result<(), String> {
+    let deletion_batch_id = fresh_deletion_batch_id(transaction)?;
+    // Snapshot every selected root's archive context before the first update.
+    // An ancestor+descendant selection is legal; after the ancestor is moved,
+    // querying the descendant would otherwise see a deleted row and abort the
+    // whole transaction.
+    let archive_root_ids = node_ids
+        .iter()
+        .map(|node_id| {
+            transaction
+                .query_row(
+                    "SELECT archive_root_id FROM notes_nodes WHERE id = ?1 AND deleted_at IS NULL",
+                    [node_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .map_err(|error| format!("Could not inspect the Note archive state: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for (node_id, archive_root_id) in node_ids.iter().zip(archive_root_ids) {
+        transaction
+            .execute(
+                "WITH RECURSIVE subtree(id) AS (\
+                   SELECT id FROM notes_nodes \
+                   WHERE id = ?1 AND deleted_at IS NULL AND archive_root_id IS ?3 \
+                   UNION ALL \
+                   SELECT child.id FROM notes_nodes child \
+                   JOIN subtree parent ON child.parent_id = parent.id \
+                   WHERE child.deleted_at IS NULL AND child.archive_root_id IS ?3\
+                 ) \
+                 UPDATE notes_nodes SET \
+                   deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                   deleted_batch_id = ?2, \
+                   archived_at = NULL, \
+                   archive_root_id = NULL, \
+                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                 WHERE id IN subtree",
+                rusqlite::params![node_id, deletion_batch_id, archive_root_id],
+            )
+            .map_err(|error| format!("Could not move the Note selection to trash: {error}"))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn delete_nodes(
+    connection: &mut Connection,
+    mut input: DeleteNodesInput,
+) -> Result<DeleteNodesOutcome, String> {
+    input.validate()?;
+    let journaled = history::has_active_context(connection)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start the Notes delete transaction: {error}"))?;
+    validate_delete_authority(&transaction, &input.node_ids)?;
+    input.node_ids = normalize_delete_roots(&transaction, &input.node_ids)?;
+    validate_delete_targets(&transaction, &input)?;
+    let readonly_ids = readonly_descendants(&transaction, &input.node_ids)?;
+    match input.expected_readonly_descendant_ids {
+        None if !readonly_ids.is_empty() => {
+            transaction
+                .rollback()
+                .map_err(|error| format!("Could not finish the Notes delete preflight: {error}"))?;
+            return Ok(DeleteNodesOutcome::NeedsReadonlyConfirmation {
+                readonly_descendant_ids: readonly_ids,
+            });
+        }
+        Some(mut expected) => {
+            expected.sort();
+            if expected != readonly_ids {
+                return Err("Notes readonly delete confirmation is stale.".to_string());
+            }
+        }
+        None => {}
+    }
+    batch_soft_delete_unchecked(&transaction, &input.node_ids)?;
+    let workspace = load_workspace(&transaction, NotesWorkspaceScope::Active)?;
+    if journaled {
+        history::finalize_transaction(&transaction)?;
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit the Notes delete transaction: {error}"))?;
+    Ok(DeleteNodesOutcome::Deleted(NotesMutationResult {
+        workspace,
+        history_entry_id: None,
+        state: crate::notes::types::NotesHistoryState::default(),
+        changed_nodes: None,
+        removed_node_ids: None,
+        changed_attachments: None,
+        imported_root_ids: None,
+        duplicated_root_ids: None,
+    }))
+}
+
+fn validate_delete_targets(
+    transaction: &Transaction<'_>,
+    input: &DeleteNodesInput,
+) -> Result<(), String> {
+    for node_id in &input.node_ids {
+        let node = require_live_node(transaction, node_id)?;
+        if input.expected_readonly_descendant_ids.is_some() && node.is_readonly == Some(true) {
+            return Err("Notes readonly delete confirmation is stale.".to_string());
+        }
+        if node.archived_at.is_some() && node.archive_root_id.as_deref() != Some(node_id) {
+            return Err("Only an archive root can be moved to trash.".to_string());
+        }
+        require_content_mutable(&node)?;
+    }
+    Ok(())
+}
+
+fn validate_delete_authority(
+    transaction: &Transaction<'_>,
+    node_ids: &[String],
+) -> Result<(), String> {
+    for node_id in node_ids {
+        let node = require_live_node(transaction, node_id)?;
+        require_content_mutable(&node)?;
+    }
+    Ok(())
+}
+
+/// Performs the delete authorization scan without creating a history context
+/// or changing any row. A confirmed empty set is handled by `delete_nodes` in
+/// the normal history wrapper after this read-only pass.
+pub(crate) fn delete_nodes_preflight(
+    connection: &mut Connection,
+    input: &DeleteNodesInput,
+) -> Result<Vec<NoteId>, String> {
+    input.validate()?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start the Notes delete preflight: {error}"))?;
+    validate_delete_authority(&transaction, &input.node_ids)?;
+    let normalized_input = DeleteNodesInput {
+        node_ids: normalize_delete_roots(&transaction, &input.node_ids)?,
+        expected_readonly_descendant_ids: input.expected_readonly_descendant_ids.clone(),
+    };
+    validate_delete_targets(&transaction, &normalized_input)?;
+    let readonly_ids = readonly_descendants(&transaction, &normalized_input.node_ids)?;
+    transaction
+        .rollback()
+        .map_err(|error| format!("Could not finish the Notes delete preflight: {error}"))?;
+    Ok(readonly_ids)
+}
+
 #[cfg(test)]
 pub(crate) fn split_node(
     connection: &mut Connection,
@@ -3650,6 +5386,8 @@ pub(crate) fn split_node_at(
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_active_node(transaction, &input.id)?;
+        require_content_mutable(&source)?;
+        ensure_generic_parent_allowed(source.parent_id.as_deref())?;
         if source.node_kind == NoteNodeKind::Image {
             return Err("An image node cannot be split.".to_string());
         }
@@ -3790,6 +5528,8 @@ pub(crate) fn apply_image_atom_edit_plan(
         .map_err(|error| format!("Could not start the Notes image atom transaction: {error}"))?;
     reject_existing_image_atom_history_entry(&transaction, operation_id)?;
     let source = revalidate_image_atom_target(&transaction, target)?;
+    require_content_mutable(&source)?;
+    ensure_generic_parent_allowed(source.parent_id.as_deref())?;
     if let Some(sibling) = &plan.sibling {
         ensure_fresh_id(&transaction, &sibling.id)?;
     }
@@ -4092,6 +5832,8 @@ fn plan_image_atom_paste(
     let (selection_start, selection_end) = paste_selection(&input.target, &input.selection)?;
     let (source, existing_attachment_ids) =
         revalidate_image_atom_paste_target(transaction, &input.target)?;
+    require_content_mutable(&source)?;
+    ensure_generic_parent_allowed(source.parent_id.as_deref())?;
     let atom_selected = source.node_kind == NoteNodeKind::Image
         && selection_start <= source.image_offset_utf16
         && selection_end > source.image_offset_utf16;
@@ -4390,6 +6132,12 @@ pub(crate) fn move_node(
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
         let node = require_active_node(transaction, &input.id)?;
+        require_subtree_movable(transaction, &input.id)?;
+        if input.id == GITHUB_NOTIFICATIONS_ROOT_ID && input.parent_id.is_some() {
+            return Err(
+                "The Github Notifications root can only be reordered at the top level.".to_string(),
+            );
+        }
         // A topic root is always a Text node (spec §4.3, remediation A3); refuse
         // to promote an image node to a root, which would leave the merger unable
         // to preserve its kind/attachment.
@@ -4429,7 +6177,8 @@ pub(crate) fn toggle_complete(
 ) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
-        require_active_node(transaction, node_id)?;
+        let node = require_active_node(transaction, node_id)?;
+        require_provider_mutable(&node)?;
         transaction
             .execute(
                 "UPDATE notes_nodes SET \
@@ -4451,6 +6200,7 @@ pub(crate) fn toggle_collapsed(
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
         require_active_node(transaction, node_id)?;
+        require_collapse_target(transaction, node_id)?;
         transaction
             .execute(
                 "UPDATE notes_nodes SET is_collapsed = CASE is_collapsed WHEN 0 THEN 1 ELSE 0 END, \
@@ -4508,6 +6258,19 @@ fn set_subtree_collapsed(
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
         require_active_node(transaction, node_id)?;
+        let is_plugin_root = require_collapse_target(transaction, node_id)?;
+        if is_plugin_root {
+            transaction
+                .execute(
+                    "UPDATE notes_nodes SET is_collapsed = ?2, \
+                       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                     WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL \
+                       AND is_collapsed <> ?2",
+                    params![node_id, is_collapsed],
+                )
+                .map_err(|error| format!("Could not update the Note collapse state: {error}"))?;
+            return Ok(());
+        }
         ensure_active_subtree_is_acyclic(transaction, node_id)?;
         transaction
             .execute(
@@ -4569,21 +6332,26 @@ fn sort_subtree(
 ) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
-        require_active_node(transaction, node_id)?;
+        let root = require_active_node(transaction, node_id)?;
+        require_sortable_node(&root)?;
         let mut statement = transaction
             .prepare(
-                "SELECT id, parent_id, sort_key, title FROM notes_nodes \
+                "SELECT id, parent_id, sort_key, title, \
+                        COALESCE(is_readonly, 0) = 1 OR id = ?1 \
+                          OR plugin_state IS NOT NULL OR plugin_meta IS NOT NULL \
+                 FROM notes_nodes \
                  WHERE deleted_at IS NULL AND archived_at IS NULL \
                  ORDER BY parent_id, sort_key, id",
             )
             .map_err(|error| format!("Could not prepare the Note subtree sort: {error}"))?;
         let rows = statement
-            .query_map([], |row| {
+            .query_map([GITHUB_NOTIFICATIONS_ROOT_ID], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, bool>(4)?,
                 ))
             })
             .map_err(|error| format!("Could not read the Note subtree sort: {error}"))?
@@ -4591,13 +6359,14 @@ fn sort_subtree(
             .map_err(|error| format!("Could not collect the Note subtree sort: {error}"))?;
         drop(statement);
 
-        let mut children: HashMap<String, Vec<(String, i64, String)>> = HashMap::new();
-        for (id, parent_id, sort_key, title) in rows {
+        let mut children: HashMap<String, Vec<(String, i64, String, bool)>> = HashMap::new();
+        for (id, parent_id, sort_key, title, is_protected) in rows {
             if let Some(parent_id) = parent_id {
                 children.entry(parent_id).or_default().push((
                     id,
                     sort_key,
                     normalized_display_title(&title),
+                    is_protected,
                 ));
             }
         }
@@ -4609,7 +6378,13 @@ fn sort_subtree(
                 return Err("The Notes tree contains a cycle and cannot be sorted.".to_string());
             }
             if let Some(siblings) = children.remove(&parent_id) {
-                pending.extend(siblings.iter().map(|(id, _, _)| id.clone()));
+                if siblings.iter().any(|(_, _, _, is_protected)| *is_protected) {
+                    return Err(
+                        "A read-only or plugin-managed Note subtree cannot be reordered."
+                            .to_string(),
+                    );
+                }
+                pending.extend(siblings.iter().map(|(id, _, _, _)| id.clone()));
                 groups.push(siblings);
             }
         }
@@ -4617,16 +6392,20 @@ fn sort_subtree(
         for siblings in &mut groups {
             let original_ids = siblings
                 .iter()
-                .map(|(id, _, _)| id.clone())
+                .map(|(id, _, _, _)| id.clone())
                 .collect::<Vec<_>>();
             siblings.sort_by(|left, right| match direction {
                 SubtreeSortDirection::Ascending => left.2.cmp(&right.2),
                 SubtreeSortDirection::Descending => right.2.cmp(&left.2),
             });
-            if siblings.iter().map(|(id, _, _)| id).eq(original_ids.iter()) {
+            if siblings
+                .iter()
+                .map(|(id, _, _, _)| id)
+                .eq(original_ids.iter())
+            {
                 continue;
             }
-            for (index, (id, current_sort_key, _)) in siblings.iter().enumerate() {
+            for (index, (id, current_sort_key, _, _)) in siblings.iter().enumerate() {
                 let sort_key = i64::try_from(index + 1)
                     .ok()
                     .and_then(|position| position.checked_mul(SORT_KEY_STEP))
@@ -4705,7 +6484,8 @@ pub(crate) fn toggle_star(
 ) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
-        require_active_node(transaction, node_id)?;
+        let node = require_active_node(transaction, node_id)?;
+        require_provider_mutable(&node)?;
         transaction
             .execute(
                 "UPDATE notes_nodes SET is_starred = CASE is_starred WHEN 0 THEN 1 ELSE 0 END, \
@@ -4719,21 +6499,22 @@ pub(crate) fn toggle_star(
 }
 
 fn active_subtree(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<StoredNode>, String> {
+    let query = "WITH RECURSIVE subtree(id) AS (\
+       SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_at IS NULL \
+         AND archived_at IS NULL \
+       UNION \
+       SELECT child.id FROM notes_nodes child \
+       JOIN subtree parent ON child.parent_id = parent.id \
+       WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
+     ) \
+     SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
+            is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
+            archive_root_id, node_kind, image_offset_utf16, marker_kind, \
+            markdown_image_width, is_readonly, \
+            plugin_state, plugin_meta \
+     FROM notes_nodes WHERE id IN subtree";
     let mut statement = transaction
-        .prepare(
-            "WITH RECURSIVE subtree(id) AS (\
-               SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_at IS NULL \
-                 AND archived_at IS NULL \
-               UNION \
-               SELECT child.id FROM notes_nodes child \
-               JOIN subtree parent ON child.parent_id = parent.id \
-               WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
-             ) \
-             SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
-                    is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
-                    archive_root_id, node_kind, image_offset_utf16, marker_kind, markdown_image_width \
-             FROM notes_nodes WHERE id IN subtree",
-        )
+        .prepare(query)
         .map_err(|error| format!("Could not prepare the Note subtree: {error}"))?;
     let nodes = statement
         .query_map([root_id], stored_node_from_row)
@@ -4882,6 +6663,7 @@ fn duplicate_forest_in_transaction(
         .first()
         .ok_or_else(|| "Could not identify any active duplicate roots.".to_string())?;
     let common_parent_id = require_active_node(transaction, first_root)?.parent_id;
+    ensure_generic_parent_allowed(common_parent_id.as_deref())?;
     for root_id in &normalized_roots[1..] {
         if require_active_node(transaction, root_id)?.parent_id != common_parent_id {
             return Err("Batch duplicate roots must share the same parent.".to_string());
@@ -4906,6 +6688,9 @@ fn duplicate_forest_in_transaction(
     for root_id in &ordered_root_ids {
         let mut forest = Vec::new();
         for original in active_subtree(transaction, root_id)? {
+            if plugin_owned(&original) {
+                return Err("A plugin-managed Note subtree cannot be duplicated.".to_string());
+            }
             if !original_ids.insert(original.id.clone()) {
                 return Err("Duplicate source subtrees must not overlap.".to_string());
             }
@@ -4997,13 +6782,26 @@ fn duplicate_forest_in_transaction(
             } else {
                 original.sort_key
             };
+            let plugin_state = original
+                .plugin_state
+                .as_ref()
+                .map(|state| serde_json::to_string(&state.collapsed_groups))
+                .transpose()
+                .map_err(|error| format!("Could not encode duplicated plugin state: {error}"))?;
+            let plugin_meta = original
+                .plugin_meta
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|error| format!("Could not encode duplicated plugin metadata: {error}"))?;
             transaction
                 .execute(
                     "INSERT INTO notes_nodes (\
                        id, parent_id, sort_key, title, note, image_offset_utf16, markdown_image_width, layout_mode, is_collapsed, \
-                       is_starred, completed_at, node_kind, marker_kind, created_at, updated_at\
+                       is_starred, completed_at, node_kind, marker_kind, is_readonly, plugin_state, plugin_meta, created_at, updated_at\
                      ) VALUES (\
                        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, \
+                       ?14, ?15, ?16, \
                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
                      )",
@@ -5020,7 +6818,10 @@ fn duplicate_forest_in_transaction(
                         original.is_starred,
                         original.completed_at,
                         original.node_kind.as_str(),
-                        original.marker_kind.as_str()
+                        original.marker_kind.as_str(),
+                        original.is_readonly.map(i64::from),
+                        plugin_state,
+                        plugin_meta,
                     ],
                 )
                 .map_err(|error| format!("Could not duplicate the Note subtree: {error}"))?;
@@ -5129,74 +6930,121 @@ fn insert_import_node(
     )
 }
 
+fn reserve_import_append_sort_block(
+    transaction: &Transaction<'_>,
+    parent_id: Option<&str>,
+    count: usize,
+) -> Result<Vec<i64>, String> {
+    let maximum = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(sort_key), 0) FROM notes_nodes \
+             WHERE parent_id IS ?1 AND deleted_at IS NULL AND archived_at IS NULL",
+            [parent_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("Could not inspect imported Note ordering: {error}"))?;
+    if let Some(keys) = checked_github_sort_block(maximum, count) {
+        return Ok(keys);
+    }
+    rebalance_siblings(transaction, parent_id, None)?;
+    let rebalanced_maximum = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(sort_key), 0) FROM notes_nodes \
+             WHERE parent_id IS ?1 AND deleted_at IS NULL AND archived_at IS NULL",
+            [parent_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("Could not inspect rebalanced imported Note ordering: {error}"))?;
+    checked_github_sort_block(rebalanced_maximum, count).ok_or_else(|| {
+        "Could not allocate a sparse imported Note sort block after rebalancing.".to_string()
+    })
+}
+
+fn insert_import_forest(
+    transaction: &Transaction<'_>,
+    parent_id: Option<&str>,
+    after_id: Option<&str>,
+    nodes: &[ImportNode],
+    today: LocalDate,
+) -> Result<Vec<NoteId>, String> {
+    let mut imported_root_ids: Vec<NoteId> = Vec::with_capacity(nodes.len());
+    // Reserving generated ids guards against the (astronomically unlikely)
+    // case of drawing the same UUID twice before it is queryable, matching
+    // `duplicate_node_at`.
+    let mut reserved: HashSet<String> = HashSet::new();
+    // Each root is placed right after the previous imported root (the first
+    // after `afterId`), so `next_sort_key` keeps the whole block contiguous
+    // between `afterId` and its former next sibling under `parentId`.
+    let mut previous_root = after_id.map(str::to_string);
+    let append_sort_keys = if after_id.is_none() {
+        Some(reserve_import_append_sort_block(
+            transaction,
+            parent_id,
+            nodes.len(),
+        )?)
+    } else {
+        None
+    };
+
+    for (root_index, root) in nodes.iter().enumerate() {
+        let root_id = fresh_uuid_v4(transaction, &reserved)?;
+        reserved.insert(root_id.clone());
+        let root_sort_key = match &append_sort_keys {
+            Some(keys) => keys[root_index],
+            None => next_sort_key(transaction, parent_id, previous_root.as_deref())?,
+        };
+        insert_import_node(transaction, &root_id, parent_id, root_sort_key, root, today)?;
+
+        // Insert descendants iteratively. Each freshly-created parent starts
+        // empty, so children get sparse sort keys by their position — no
+        // existing siblings to reconcile against.
+        let mut stack: Vec<(String, &Vec<ImportNode>)> = vec![(root_id.clone(), &root.children)];
+        while let Some((nested_parent_id, children)) = stack.pop() {
+            for (index, child) in children.iter().enumerate() {
+                let child_id = fresh_uuid_v4(transaction, &reserved)?;
+                reserved.insert(child_id.clone());
+                let child_sort_key = i64::try_from(index + 1)
+                    .ok()
+                    .and_then(|position| position.checked_mul(SORT_KEY_STEP))
+                    .ok_or_else(|| {
+                        "The imported subtree has too many siblings to order.".to_string()
+                    })?;
+                insert_import_node(
+                    transaction,
+                    &child_id,
+                    Some(&nested_parent_id),
+                    child_sort_key,
+                    child,
+                    today,
+                )?;
+                if !child.children.is_empty() {
+                    stack.push((child_id, &child.children));
+                }
+            }
+        }
+
+        imported_root_ids.push(root_id.clone());
+        previous_root = Some(root_id);
+    }
+    Ok(imported_root_ids)
+}
+
 pub(crate) fn import_subtree_at(
     connection: &mut Connection,
     input: ImportSubtreeInput,
     today: LocalDate,
 ) -> Result<(NotesWorkspace, Vec<NoteId>), String> {
     input.validate()?;
-    let mut imported_root_ids: Vec<NoteId> = Vec::with_capacity(input.nodes.len());
+    let mut imported_root_ids = Vec::new();
     let workspace = with_workspace_transaction(connection, |transaction| {
         ensure_live_parent(transaction, input.parent_id.as_deref())?;
-
-        // Reserving generated ids guards against the (astronomically unlikely)
-        // case of drawing the same UUID twice before it is queryable, matching
-        // `duplicate_node_at`.
-        let mut reserved: HashSet<String> = HashSet::new();
-        // Each root is placed right after the previous imported root (the first
-        // after `afterId`), so `next_sort_key` keeps the whole block contiguous
-        // between `afterId` and its former next sibling under `parentId`.
-        let mut previous_root: Option<String> = input.after_id.clone();
-
-        for root in &input.nodes {
-            let root_id = fresh_uuid_v4(transaction, &reserved)?;
-            reserved.insert(root_id.clone());
-            let root_sort_key = next_sort_key(
-                transaction,
-                input.parent_id.as_deref(),
-                previous_root.as_deref(),
-            )?;
-            insert_import_node(
-                transaction,
-                &root_id,
-                input.parent_id.as_deref(),
-                root_sort_key,
-                root,
-                today,
-            )?;
-
-            // Insert descendants iteratively. Each freshly-created parent starts
-            // empty, so children get sparse sort keys by their position — no
-            // existing siblings to reconcile against.
-            let mut stack: Vec<(String, &Vec<ImportNode>)> =
-                vec![(root_id.clone(), &root.children)];
-            while let Some((parent_id, children)) = stack.pop() {
-                for (index, child) in children.iter().enumerate() {
-                    let child_id = fresh_uuid_v4(transaction, &reserved)?;
-                    reserved.insert(child_id.clone());
-                    let child_sort_key = i64::try_from(index + 1)
-                        .ok()
-                        .and_then(|position| position.checked_mul(SORT_KEY_STEP))
-                        .ok_or_else(|| {
-                            "The imported subtree has too many siblings to order.".to_string()
-                        })?;
-                    insert_import_node(
-                        transaction,
-                        &child_id,
-                        Some(&parent_id),
-                        child_sort_key,
-                        child,
-                        today,
-                    )?;
-                    if !child.children.is_empty() {
-                        stack.push((child_id, &child.children));
-                    }
-                }
-            }
-
-            imported_root_ids.push(root_id.clone());
-            previous_root = Some(root_id);
-        }
+        imported_root_ids = insert_import_forest(
+            transaction,
+            input.parent_id.as_deref(),
+            input.after_id.as_deref(),
+            &input.nodes,
+            today,
+        )?;
         Ok(())
     })?;
     Ok((workspace, imported_root_ids))
@@ -5209,6 +7057,15 @@ pub(crate) fn remove_empty_node(
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_active_node(transaction, node_id)?;
+        require_provider_mutable(&source)?;
+        require_content_mutable(&source)?;
+        ensure_generic_parent_allowed(source.parent_id.as_deref())?;
+        if !readonly_descendants(transaction, &[node_id.to_string()])?.is_empty() {
+            return Err(
+                "Deleting a Note subtree containing readonly nodes requires explicit confirmation."
+                    .to_string(),
+            );
+        }
         let has_attachments: bool = transaction
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE node_id = ?1)",
@@ -5294,6 +7151,7 @@ pub(crate) fn archive_node(
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_active_node(transaction, node_id)?;
+        require_provider_mutable(&source)?;
         if source.parent_id.is_some() {
             return Err("Only a root Note node can be archived.".to_string());
         }
@@ -5331,6 +7189,7 @@ pub(crate) fn unarchive_node(
     with_workspace_transaction(connection, |transaction| {
         let source = node_by_id(transaction, node_id)?
             .ok_or_else(|| format!("Note node {node_id} does not exist."))?;
+        require_provider_mutable(&source)?;
         if source.deleted_at.is_some() {
             return Err(format!("Note node {node_id} is in the trash."));
         }
@@ -5364,6 +7223,14 @@ pub(crate) fn soft_delete_node(
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_live_node(transaction, node_id)?;
+        require_content_mutable(&source)?;
+        let readonly = readonly_descendants(transaction, &[node_id.to_string()])?;
+        if !readonly.is_empty() {
+            return Err(
+                "Deleting a Note subtree containing readonly nodes requires explicit confirmation."
+                    .to_string(),
+            );
+        }
         if source.archived_at.is_some()
             && (source.parent_id.is_some() || source.archive_root_id.as_deref() != Some(node_id))
         {
@@ -5449,6 +7316,7 @@ pub(crate) fn restore_node_at(
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_deleted_node(transaction, node_id)?;
+        require_provider_mutable(&source)?;
         let deletion_batch_id = source
             .deleted_batch_id
             .as_deref()
@@ -5583,6 +7451,8 @@ fn apply_batch_content_updates(
     today: LocalDate,
 ) -> Result<(), String> {
     for (node_id, title, note, node_kind, image_offset_utf16) in updates {
+        let node = require_active_node(transaction, &node_id)?;
+        require_content_mutable(&node)?;
         transaction
             .execute(
                 "UPDATE notes_nodes SET title = ?1, note = ?2, image_offset_utf16 = ?3, \
@@ -5613,6 +7483,7 @@ fn batch_add_tag(
     let mut updates = Vec::new();
     for node_id in node_ids {
         let node = require_active_node(transaction, node_id)?;
+        require_content_mutable(&node)?;
         if node.node_kind == NoteNodeKind::Image {
             let identity = BTreeSet::from([(tag.prefix, tag.normalized_tag.clone())]);
             let contains_tag = primary_title_contains_tag(
@@ -5652,6 +7523,7 @@ fn batch_remove_tag(
     let mut updates = Vec::new();
     for node_id in node_ids {
         let node = require_active_node(transaction, node_id)?;
+        require_content_mutable(&node)?;
         if node.node_kind == NoteNodeKind::Image {
             let (before, after) = image_primary_segments(&node.title, node.image_offset_utf16)?;
             let before = remove_exact_tag_tokens(before, tag).unwrap_or_else(|| before.to_string());
@@ -5705,7 +7577,8 @@ fn batch_set_completed(
            AND deleted_at IS NULL AND archived_at IS NULL"
     };
     for node_id in node_ids {
-        require_active_node(transaction, node_id)?;
+        let node = require_active_node(transaction, node_id)?;
+        require_provider_mutable(&node)?;
         transaction
             .execute(statement, [node_id])
             .map_err(|error| format!("Could not set Note completion in batch: {error}"))?;
@@ -5715,36 +7588,25 @@ fn batch_set_completed(
 
 /// Soft-deletes every selected node as ONE trash batch: they all receive the
 /// same fresh `deleted_batch_id`, so the trash view groups them and a single
-/// undo restores the whole batch. Every selected node is required active up
-/// front (a snapshot before any mutation) so nested selections are legal —
-/// once an ancestor's subtree is trashed, re-running for a descendant is a
-/// no-op via the `deleted_at IS NULL` anchor.
+/// undo restores the whole batch. Every selected node is required live up
+/// front (a snapshot before any mutation); archived selections must be archive
+/// roots. Nested selections are normalized before mutation, so once an
+/// ancestor's subtree is trashed there is no descendant re-query to fail.
 fn batch_soft_delete(transaction: &Transaction<'_>, node_ids: &[String]) -> Result<(), String> {
-    for node_id in node_ids {
-        require_active_node(transaction, node_id)?;
+    validate_delete_authority(transaction, node_ids)?;
+    let roots = normalize_delete_roots(transaction, node_ids)?;
+    let normalized_input = DeleteNodesInput {
+        node_ids: roots.clone(),
+        expected_readonly_descendant_ids: None,
+    };
+    validate_delete_targets(transaction, &normalized_input)?;
+    if !readonly_descendants(transaction, &roots)?.is_empty() {
+        return Err(
+            "Deleting a Note tree with read-only descendants requires explicit confirmation."
+                .to_string(),
+        );
     }
-    let deletion_batch_id = fresh_deletion_batch_id(transaction)?;
-    for node_id in node_ids {
-        transaction
-            .execute(
-                "WITH RECURSIVE subtree(id) AS (\
-                   SELECT id FROM notes_nodes \
-                   WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL \
-                   UNION ALL \
-                   SELECT child.id FROM notes_nodes child \
-                   JOIN subtree parent ON child.parent_id = parent.id \
-                   WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
-                 ) \
-                 UPDATE notes_nodes SET \
-                   deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
-                   deleted_batch_id = ?2, \
-                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id IN subtree",
-                params![node_id, deletion_batch_id],
-            )
-            .map_err(|error| format!("Could not move the Note selection to trash: {error}"))?;
-    }
-    Ok(())
+    batch_soft_delete_unchecked(transaction, &roots)
 }
 
 /// Loads the union of every submitted node's parent chain with a bounded number
@@ -5852,6 +7714,12 @@ fn move_node_within_transaction(
     after_id: Option<&str>,
     before_id: Option<&str>,
 ) -> Result<(), String> {
+    require_subtree_movable(transaction, node_id)?;
+    if node_id == GITHUB_NOTIFICATIONS_ROOT_ID && parent_id.is_some() {
+        return Err(
+            "The Github Notifications root can only be reordered at the top level.".to_string(),
+        );
+    }
     // R4: a topic root is always Text (spec §4.3); refuse to promote an image
     // node to a root through batch outdent/move, matching move_node's guard.
     if parent_id.is_none() {
@@ -6288,6 +8156,7 @@ fn validate_attachment_capacity(
     node_id: &str,
 ) -> Result<(), String> {
     let owner = require_active_node(transaction, node_id)?;
+    require_content_mutable(&owner)?;
     if owner.node_kind == NoteNodeKind::Image {
         return Err("A generic Notes attachment cannot be added to an image node.".to_string());
     }
@@ -6319,6 +8188,7 @@ fn validate_attachment_batch_capacity(
     batch_len: usize,
 ) -> Result<(), String> {
     let owner = require_active_node(transaction, node_id)?;
+    require_content_mutable(&owner)?;
     if owner.node_kind == NoteNodeKind::Image {
         return Err("A generic Notes attachment cannot be added to an image node.".to_string());
     }
@@ -6936,7 +8806,8 @@ pub(crate) fn resize_attachment(
     with_workspace_transaction(connection, |transaction| {
         let attachment = attachment_by_id(transaction, attachment_id)?
             .ok_or_else(|| format!("Notes attachment {attachment_id} does not exist."))?;
-        require_active_node(transaction, &attachment.node_id)?;
+        let owner = require_active_node(transaction, &attachment.node_id)?;
+        require_content_mutable(&owner)?;
         validate_attachment_display_width(display_width, attachment.intrinsic_width)?;
         transaction
             .execute(
@@ -6959,6 +8830,7 @@ pub(crate) fn remove_attachment(
         let attachment = attachment_by_id(transaction, attachment_id)?
             .ok_or_else(|| format!("Notes attachment {attachment_id} does not exist."))?;
         let owner = require_active_node(transaction, &attachment.node_id)?;
+        require_content_mutable(&owner)?;
         if owner.node_kind == NoteNodeKind::Image {
             return Err(
                 "An image node's owned attachment cannot be removed independently.".to_string(),
@@ -7013,7 +8885,8 @@ pub(crate) fn restore_attachment(
         attachment.intrinsic_width,
     )?;
     with_workspace_transaction(connection, |transaction| {
-        require_active_node(transaction, &attachment.node_id)?;
+        let owner = require_active_node(transaction, &attachment.node_id)?;
+        require_content_mutable(&owner)?;
         let exists: bool = transaction
             .query_row(
                 "SELECT EXISTS(\
@@ -7061,9 +8934,26 @@ pub(crate) fn restore_attachment(
     })
 }
 
+fn reject_plugin_rows_in_trash(transaction: &Transaction<'_>) -> Result<(), String> {
+    let has_plugin_rows: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes_nodes \
+             WHERE deleted_at IS NOT NULL AND (id = ?1 OR plugin_state IS NOT NULL OR plugin_meta IS NOT NULL))",
+            [GITHUB_NOTIFICATIONS_ROOT_ID],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect plugin rows in Notes trash: {error}"))?;
+    if has_plugin_rows {
+        Err("Plugin-managed Note rows must be purged by their provider.".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn empty_trash(connection: &mut Connection) -> Result<NotesWorkspace, String> {
     with_workspace_transaction(connection, |transaction| {
+        reject_plugin_rows_in_trash(transaction)?;
         record_local_purge_evidence(transaction)?;
         transaction
             .execute("DELETE FROM notes_nodes WHERE deleted_at IS NOT NULL", [])
@@ -7080,6 +8970,7 @@ pub(crate) fn empty_trash_with_history_reset(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start emptying Notes trash: {error}"))?;
+    reject_plugin_rows_in_trash(&transaction)?;
     let history = history::reset_history_in_transaction(&transaction, input)?;
     record_local_purge_evidence(&transaction)?;
     transaction
@@ -7116,33 +9007,54 @@ mod tests {
     use super::{
         ancestor_closure_query_count, apply_batch, apply_batch_at, archive_node, collapse_all,
         connect_notes_db, create_attachment, create_attachments_coordinated_for_node,
-        create_image_nodes_coordinated, create_node, create_node_at, create_node_before_at,
-        delete_database, duplicate_node, duplicate_node_at, empty_trash, expand_all,
-        import_subtree_at, initialize_notes_db, inject_delete_database_after_hold_once,
-        inject_notes_database_after_hold_once, inject_notes_database_after_sqlite_open_once,
-        list_tags, list_tags_with_counts, load_workspace, move_node, node_attachments,
-        node_by_id_lookup_count, notes_db_path, notes_db_path_with_root,
+        create_image_nodes_coordinated, create_markdown_import_coordinated, create_node,
+        create_node_at, create_node_before_at, delete_database, delete_nodes,
+        delete_nodes_preflight, duplicate_node, duplicate_node_at, empty_trash, expand_all,
+        github_notification_lookup_stats, import_subtree_at, initialize_notes_db,
+        inject_delete_database_after_hold_once, inject_notes_database_after_hold_once,
+        inject_notes_database_after_sqlite_open_once, list_tags, list_tags_with_counts,
+        load_workspace, mark_materialized_github_notification_read,
+        materialize_github_notification_and_create_sibling,
+        materialize_github_notification_and_import_children,
+        materialize_github_notification_and_reparent, move_node, node_attachments,
+        node_by_id_lookup_count, note_node_from_audit_json, notes_db_path, notes_db_path_with_root,
         observe_next_initialization_busy, open_local_notes_storage_directory, open_notes_export_db,
+        readonly_descendant_scan_stats, refresh_materialized_github_notifications,
         remove_attachment, remove_empty_node, reset_ancestor_closure_query_count,
-        reset_node_by_id_lookup_count, resize_attachment, restore_attachment, restore_node,
+        reset_github_notification_lookup_stats, reset_node_by_id_lookup_count,
+        reset_readonly_descendant_scan_stats, reset_search_parent_trail_query_count,
+        reset_sibling_order_stats, resize_attachment, restore_attachment, restore_node,
         restore_node_at, search_nodes, search_nodes_at, search_nodes_structured,
-        seed_notes_onboarding, selection_roots, soft_delete_node, sort_subtree_ascending,
-        sort_subtree_descending, split_node, split_node_at, sqlite_companion_path,
-        toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node,
-        update_node_at, vault_key, windows_notes_database_share_mode, NewAttachment, NewImageNode,
-        NoteAttachment, ANCESTOR_CLOSURE_CHUNK_SIZE, NOTES_DEVELOPMENT_SCHEMA_REJECTION,
-        SORT_KEY_STEP,
+        search_parent_trail_query_count, seed_notes_onboarding, selection_roots,
+        set_github_group_collapsed, set_readonly_at, sibling_order_stats, soft_delete_node,
+        sort_subtree_ascending, sort_subtree_descending, split_node, split_node_at,
+        sqlite_companion_path, toggle_collapsed, toggle_complete, toggle_star, unarchive_node,
+        update_node, update_node_at, vault_key, windows_notes_database_share_mode,
+        MarkdownImportNode, NewAttachment, NewImageNode, NoteAttachment,
+        ANCESTOR_CLOSURE_CHUNK_SIZE, CURRENT_NOTES_SCHEMA_VERSION,
+        NOTES_DEVELOPMENT_SCHEMA_REJECTION, SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
+    use crate::notes::github_notifications::{
+        github_date_node_id, github_notification_node_id, serialize_github_plugin_meta_storage,
+        GithubNotificationsPluginMeta, GITHUB_NOTIFICATIONS_FILENAME, GITHUB_NOTIFICATIONS_ROOT_ID,
+    };
     use crate::notes::history::{
         history_epoch, install_session_history, redo, undo, with_history_transaction_and_prunes,
     };
+    use crate::notes::schema::{
+        install_notes_sql_functions, NOTES_SCHEMA_VERSION_V3, V3_SCHEMA_SQL,
+    };
     use crate::notes::types::{
-        validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, ImportNode,
-        ImportSubtreeInput, MoveNodeInput, NoteNodeKind, NoteSearchMatchedField, NoteSearchScope,
-        NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
-        NotesHistoryContext, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
-        MAX_IMPORT_SUBTREE_NODES, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
+        validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, DeleteNodesInput,
+        DeleteNodesOutcome, GithubNotificationSnapshotInput, ImportNode, ImportSubtreeInput,
+        MarkGithubNotificationReadInput, MaterializeGithubNotificationReparentInput,
+        MaterializeGithubNotificationSiblingInput, MoveNodeInput, NoteNodeKind,
+        NoteSearchMatchedField, NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery,
+        NoteTagFilter, NoteTagPrefix, NotesHistoryContext, NotesWorkspaceScope,
+        RefreshGithubNotificationsInput, SetGithubGroupCollapsedInput, SplitNodeInput,
+        UpdateNodeInput, MAX_IMPORT_SUBTREE_DEPTH, MAX_IMPORT_SUBTREE_NODES,
+        MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::{params, Connection};
     use std::collections::{BTreeSet, HashMap};
@@ -7161,6 +9073,4242 @@ mod tests {
 
     fn fixed_today() -> LocalDate {
         LocalDate::new(2026, 7, 11).expect("fixed date")
+    }
+
+    fn sqlite_total_changes(connection: &Connection) -> i64 {
+        connection
+            .query_row("SELECT total_changes()", [], |row| row.get(0))
+            .expect("total SQLite changes")
+    }
+
+    fn vault_file_listing(root: &std::path::Path) -> BTreeSet<String> {
+        fn collect(
+            root: &std::path::Path,
+            directory: &std::path::Path,
+            files: &mut BTreeSet<String>,
+        ) {
+            for entry in std::fs::read_dir(directory).expect("read vault directory") {
+                let entry = entry.expect("read vault entry");
+                let path = entry.path();
+                if entry.file_type().expect("inspect vault entry").is_dir() {
+                    collect(root, &path, files);
+                } else {
+                    files.insert(
+                        path.strip_prefix(root)
+                            .expect("vault-relative path")
+                            .to_string_lossy()
+                            .into_owned(),
+                    );
+                }
+            }
+        }
+
+        let mut files = BTreeSet::new();
+        collect(root, root, &mut files);
+        files
+    }
+
+    fn v3_test_connection() -> Connection {
+        let connection = Connection::open_in_memory().expect("in-memory v3 database");
+        install_notes_sql_functions(&connection).expect("install Notes SQL functions");
+        connection
+            .execute_batch(V3_SCHEMA_SQL)
+            .expect("create explicit v3 schema");
+        install_session_history(&connection).expect("install v3 session history");
+        connection
+    }
+
+    #[test]
+    fn explicit_v3_schema_has_plugin_and_nullable_readonly_columns() {
+        let connection = v3_test_connection();
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .expect("v3 schema version"),
+            NOTES_SCHEMA_VERSION_V3
+        );
+        for column in ["plugin_state", "plugin_meta", "is_readonly"] {
+            assert!(column_exists(&connection, "notes_nodes", column));
+        }
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'index' \
+                     AND name IN ('notes_nodes_github_date_key', \
+                                  'notes_nodes_github_notification_key')",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("v3 GitHub ownership indexes"),
+            2
+        );
+        assert_eq!(
+            table_column_metadata(&connection, "notes_nodes", "is_readonly"),
+            Some(("INTEGER".to_string(), 0, Some("0".to_string())))
+        );
+        let guarded_fts_triggers: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema \
+                 WHERE type = 'trigger' \
+                   AND name IN (\
+                     'notes_nodes_search_insert', 'notes_nodes_search_update', \
+                     'notes_nodes_search_delete', 'notes_nodes_lifecycle_search_insert', \
+                     'notes_nodes_lifecycle_search_update', 'notes_nodes_lifecycle_search_delete', \
+                     'notes_attachments_search_insert', 'notes_attachments_search_update', \
+                     'notes_attachments_search_delete'\
+                   ) \
+                   AND sql LIKE '%plugin_meta%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("guarded v3 FTS triggers");
+        assert_eq!(guarded_fts_triggers, 9);
+        let guarded_root_fts_triggers: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema \
+                 WHERE type = 'trigger' AND name LIKE 'notes_%search_%' \
+                   AND sql LIKE '%6983f947-c134-44fc-bf46-db19f68125bf%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("root-guarded v3 FTS triggers");
+        assert_eq!(guarded_root_fts_triggers, 9);
+    }
+
+    #[test]
+    fn generic_placement_rejects_fixed_github_root_but_allows_provider_children() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            "#roadmap",
+            "2026-07-11T00:00:01Z",
+            None,
+            None,
+            Some(r#"{"kind":"date","date_key":"2026.07.11"}"#),
+        );
+        for (id, sort_key) in [(NODE_ID, 2048_i64), (FOURTH_ID, 3072), (SIXTH_ID, 4096)] {
+            insert_v3_node(
+                &connection,
+                id,
+                None,
+                "ordinary root",
+                "2026-07-11T00:00:02Z",
+                Some(0),
+                None,
+                None,
+            );
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET sort_key = ?1 WHERE id = ?2",
+                    params![sort_key, id],
+                )
+                .expect("order generic placement fixture roots");
+        }
+
+        let before = sqlite_total_changes(&connection);
+        let error = create_node_at(
+            &mut connection,
+            CreateNodeInput {
+                id: SEVENTH_ID.to_string(),
+                parent_id: Some(GITHUB_NOTIFICATIONS_ROOT_ID.to_string()),
+                after_id: None,
+                title: "ordinary child".to_string(),
+                note: String::new(),
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+            },
+            fixed_today(),
+        )
+        .expect_err("generic create below the GN root must be rejected");
+        assert!(error.contains("provider-owned"), "{error}");
+        assert_eq!(sqlite_total_changes(&connection), before);
+
+        let before = sqlite_total_changes(&connection);
+        let error = import_subtree_at(
+            &mut connection,
+            ImportSubtreeInput {
+                parent_id: Some(GITHUB_NOTIFICATIONS_ROOT_ID.to_string()),
+                after_id: None,
+                nodes: vec![import_leaf("ordinary import")],
+            },
+            fixed_today(),
+        )
+        .expect_err("generic subtree import below the GN root must be rejected");
+        assert!(error.contains("provider-owned"), "{error}");
+        assert_eq!(sqlite_total_changes(&connection), before);
+
+        let before = sqlite_total_changes(&connection);
+        let error = create_markdown_import_coordinated(
+            &mut connection,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            None,
+            vec![MarkdownImportNode {
+                id: "99999999-9999-4999-8999-999999999999".to_string(),
+                title: "ordinary markdown import".to_string(),
+                note: String::new(),
+                image_offset_utf16: 0,
+                completed: false,
+                attachment: None,
+                children: Vec::new(),
+            }],
+            fixed_today(),
+            || Ok(()),
+        )
+        .expect_err("generic Markdown import below the GN root must be rejected");
+        assert!(error.contains("provider-owned"), "{error}");
+        assert_eq!(sqlite_total_changes(&connection), before);
+
+        let before = sqlite_total_changes(&connection);
+        let error = move_node(
+            &mut connection,
+            MoveNodeInput {
+                id: NODE_ID.to_string(),
+                parent_id: Some(GITHUB_NOTIFICATIONS_ROOT_ID.to_string()),
+                after_id: None,
+                before_id: None,
+            },
+        )
+        .expect_err("direct move below the GN root must be rejected");
+        assert!(error.contains("provider-owned"), "{error}");
+        assert_eq!(sqlite_total_changes(&connection), before);
+
+        let before = sqlite_total_changes(&connection);
+        let error = apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![FOURTH_ID.to_string()],
+                op: BatchOp::Move {
+                    parent_id: Some(GITHUB_NOTIFICATIONS_ROOT_ID.to_string()),
+                    after_id: None,
+                    before_id: None,
+                },
+            },
+        )
+        .expect_err("batch move below the GN root must be rejected");
+        assert!(error.contains("provider-owned"), "{error}");
+        assert_eq!(sqlite_total_changes(&connection), before);
+
+        let before = sqlite_total_changes(&connection);
+        let error = apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![
+                    NODE_ID.to_string(),
+                    FOURTH_ID.to_string(),
+                    SIXTH_ID.to_string(),
+                ],
+                op: BatchOp::Indent,
+            },
+        )
+        .expect_err("batch indent below the GN root must be rejected");
+        assert!(error.contains("provider-owned"), "{error}");
+        assert_eq!(sqlite_total_changes(&connection), before);
+
+        insert_v3_node(
+            &connection,
+            EIGHTH_ID,
+            Some(CHILD_ID),
+            "ordinary child",
+            "2026-07-11T00:00:03Z",
+            Some(0),
+            None,
+            None,
+        );
+        let before = sqlite_total_changes(&connection);
+        let error = apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![EIGHTH_ID.to_string()],
+                op: BatchOp::Outdent,
+            },
+        )
+        .expect_err("batch outdent into the GN root must be rejected");
+        assert!(error.contains("provider-owned"), "{error}");
+        assert_eq!(sqlite_total_changes(&connection), before);
+
+        create_node_at(
+            &mut connection,
+            CreateNodeInput {
+                id: SEVENTH_ID.to_string(),
+                parent_id: Some(CHILD_ID.to_string()),
+                after_id: None,
+                title: "ordinary child under date".to_string(),
+                note: String::new(),
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+            },
+            fixed_today(),
+        )
+        .expect("ordinary user children under provider date rows remain allowed");
+        assert_eq!(
+            node_shape(&connection, SEVENTH_ID).0,
+            Some(CHILD_ID.to_string())
+        );
+    }
+
+    fn insert_v3_node(
+        connection: &Connection,
+        id: &str,
+        parent_id: Option<&str>,
+        title: &str,
+        updated_at: &str,
+        is_readonly: Option<i64>,
+        plugin_state: Option<&str>,
+        plugin_meta: Option<&str>,
+    ) {
+        let note = if id == GITHUB_NOTIFICATIONS_ROOT_ID
+            || plugin_meta.is_some_and(|metadata| metadata.contains(r#""kind":"date""#))
+        {
+            ""
+        } else {
+            title
+        };
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (\
+                   id, parent_id, sort_key, title, note, created_at, updated_at, \
+                   is_readonly, plugin_state, plugin_meta\
+                 ) VALUES (?1, ?2, 1024, ?3, ?4, ?5, ?5, ?6, ?7, ?8)",
+                params![
+                    id,
+                    parent_id,
+                    title,
+                    note,
+                    updated_at,
+                    is_readonly,
+                    plugin_state,
+                    plugin_meta
+                ],
+            )
+            .expect("insert v3 node");
+    }
+
+    fn github_snapshot(date_key: &str, updated_at: &str) -> GithubNotificationSnapshotInput {
+        GithubNotificationSnapshotInput {
+            date_key: date_key.to_string(),
+            notification_key:
+                "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"42\"]"
+                    .to_string(),
+            title: "Fix inline caret #42".to_string(),
+            note: "acme/yonalist, 9h ago, seen 6h ago".to_string(),
+            notification_type: "Issue".to_string(),
+            url: "https://github.com/acme/yonalist/issues/42".to_string(),
+            updated_at: updated_at.to_string(),
+            unread: true,
+        }
+    }
+
+    fn github_snapshot_for(index: usize) -> GithubNotificationSnapshotInput {
+        let notification_key =
+            format!(r#"["github","[\"https://api.github.com\",\"account-7\"]","{index}"]"#);
+        GithubNotificationSnapshotInput {
+            date_key: "2026.07.21".to_string(),
+            notification_key,
+            title: format!("Notification {index}"),
+            note: "acme/yonalist, 9h ago".to_string(),
+            notification_type: "Issue".to_string(),
+            url: format!("https://github.com/acme/yonalist/issues/{index}"),
+            updated_at: "2026-07-21T10:00:00.000Z".to_string(),
+            unread: true,
+        }
+    }
+
+    #[test]
+    fn github_refresh_notification_lookup_work_is_chunk_bounded() {
+        for expected_count in [1usize, 400, 401, 1_000, 10_000] {
+            let mut connection = v3_test_connection();
+            insert_v3_node(
+                &connection,
+                GITHUB_NOTIFICATIONS_ROOT_ID,
+                None,
+                "Github Notifications",
+                "2026-07-11T00:00:00Z",
+                None,
+                Some("[]"),
+                None,
+            );
+            let date_key = "2026.07.21";
+            let date_id = github_date_node_id(date_key).unwrap();
+            let date_metadata =
+                serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
+                    date_key: date_key.to_string(),
+                })
+                .unwrap();
+            insert_v3_node(
+                &connection,
+                &date_id,
+                Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+                date_key,
+                "2026-07-11T00:00:01Z",
+                None,
+                None,
+                Some(&date_metadata),
+            );
+            let mut snapshots = Vec::with_capacity(expected_count);
+            for index in 0..expected_count {
+                let snapshot = github_snapshot_for(index);
+                let notification_id =
+                    github_notification_node_id(&snapshot.notification_key).unwrap();
+                let metadata = serialize_github_plugin_meta_storage(
+                    &GithubNotificationsPluginMeta::Notification {
+                        notification_key: snapshot.notification_key.clone(),
+                        notification_type: snapshot.notification_type.clone(),
+                        url: snapshot.url.clone(),
+                        updated_at: snapshot.updated_at.clone(),
+                        unread: true,
+                    },
+                )
+                .unwrap();
+                insert_v3_node(
+                    &connection,
+                    &notification_id,
+                    Some(&date_id),
+                    &snapshot.title,
+                    "2026-07-11T00:00:02Z",
+                    None,
+                    None,
+                    Some(&metadata),
+                );
+                snapshots.push(snapshot);
+            }
+            reset_github_notification_lookup_stats();
+
+            refresh_materialized_github_notifications(
+                &mut connection,
+                RefreshGithubNotificationsInput {
+                    root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                    notifications: snapshots,
+                },
+            )
+            .expect("refresh a bounded provider batch");
+
+            let (queries, visited) = github_notification_lookup_stats();
+            assert_eq!(
+                queries,
+                expected_count.div_ceil(ANCESTOR_CLOSURE_CHUNK_SIZE)
+            );
+            assert_eq!(visited, expected_count);
+        }
+    }
+
+    #[test]
+    fn github_refresh_is_independent_of_caller_batch_order() {
+        fn setup() -> (Connection, Vec<GithubNotificationSnapshotInput>) {
+            let connection = v3_test_connection();
+            insert_v3_node(
+                &connection,
+                GITHUB_NOTIFICATIONS_ROOT_ID,
+                None,
+                "Github Notifications",
+                "2026-07-11T00:00:00Z",
+                None,
+                Some("[]"),
+                None,
+            );
+            let mut incoming = Vec::new();
+            for (index, old_date_key) in [(1usize, "2026.07.20"), (2, "2026.07.21")] {
+                let old_date_id = github_date_node_id(old_date_key).unwrap();
+                let date_metadata =
+                    serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
+                        date_key: old_date_key.to_string(),
+                    })
+                    .unwrap();
+                insert_v3_node(
+                    &connection,
+                    &old_date_id,
+                    Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+                    old_date_key,
+                    "2026-07-11T00:00:01Z",
+                    None,
+                    None,
+                    Some(&date_metadata),
+                );
+                let mut snapshot = github_snapshot_for(index);
+                snapshot.date_key = old_date_key.to_string();
+                let metadata = serialize_github_plugin_meta_storage(
+                    &GithubNotificationsPluginMeta::Notification {
+                        notification_key: snapshot.notification_key.clone(),
+                        notification_type: snapshot.notification_type.clone(),
+                        url: snapshot.url.clone(),
+                        updated_at: snapshot.updated_at.clone(),
+                        unread: true,
+                    },
+                )
+                .unwrap();
+                insert_v3_node(
+                    &connection,
+                    &github_notification_node_id(&snapshot.notification_key).unwrap(),
+                    Some(&old_date_id),
+                    &snapshot.title,
+                    "2026-07-11T00:00:02Z",
+                    None,
+                    None,
+                    Some(&metadata),
+                );
+                snapshot.date_key = "2026.07.22".to_string();
+                snapshot.updated_at = "2026-07-21T11:00:00.000Z".to_string();
+                snapshot.title = format!("Newer {index}");
+                incoming.push(snapshot);
+            }
+            let destination_id = github_date_node_id("2026.07.22").unwrap();
+            let destination_metadata =
+                serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
+                    date_key: "2026.07.22".to_string(),
+                })
+                .unwrap();
+            insert_v3_node(
+                &connection,
+                &destination_id,
+                Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+                "2026.07.22",
+                "2026-07-11T00:00:03Z",
+                None,
+                None,
+                Some(&destination_metadata),
+            );
+            insert_v3_node(
+                &connection,
+                FOURTH_ID,
+                Some(&destination_id),
+                "saved destination sibling",
+                "2026-07-11T00:00:04Z",
+                Some(0),
+                None,
+                None,
+            );
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET sort_key = ?1 WHERE id = ?2",
+                    params![i64::MAX, FOURTH_ID],
+                )
+                .unwrap();
+            connection
+                .execute("DELETE FROM sync_dirty_nodes", [])
+                .unwrap();
+            (connection, incoming)
+        }
+
+        fn provider_fingerprint(
+            connection: &Connection,
+        ) -> (
+            Vec<(String, Option<String>, i64, String, String, String)>,
+            Vec<String>,
+            Vec<String>,
+        ) {
+            let mut rows = connection
+                .prepare(
+                    "SELECT id, parent_id, sort_key, title, note, plugin_meta \
+                     FROM notes_nodes WHERE plugin_meta IS NOT NULL ORDER BY id",
+                )
+                .unwrap();
+            let provider_rows = rows
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            let mut dirty = connection
+                .prepare("SELECT node_id FROM sync_dirty_nodes ORDER BY node_id")
+                .unwrap();
+            let dirty = dirty
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            let mut hlc_order = connection
+                .prepare(
+                    "SELECT id FROM notes_nodes \
+                     WHERE json_extract(plugin_meta, '$.kind') = 'notification' \
+                     ORDER BY hlc, id",
+                )
+                .unwrap();
+            let hlc_order = hlc_order
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            (provider_rows, dirty, hlc_order)
+        }
+
+        let (mut forward, snapshots) = setup();
+        let mut reversed_snapshots = snapshots.clone();
+        reversed_snapshots.reverse();
+        let (mut reversed, _) = setup();
+
+        refresh_materialized_github_notifications(
+            &mut forward,
+            RefreshGithubNotificationsInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                notifications: snapshots,
+            },
+        )
+        .unwrap();
+        refresh_materialized_github_notifications(
+            &mut reversed,
+            RefreshGithubNotificationsInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                notifications: reversed_snapshots,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            provider_fingerprint(&forward),
+            provider_fingerprint(&reversed)
+        );
+    }
+
+    #[test]
+    fn github_materialize_creates_authoritative_rows_and_an_unlocked_sibling() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+
+        materialize_github_notification_and_create_sibling(
+            &mut connection,
+            MaterializeGithubNotificationSiblingInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                sibling_id: FOURTH_ID.to_string(),
+                snapshot: snapshot.clone(),
+            },
+        )
+        .expect("materialize GitHub notification and sibling");
+
+        let date_id = github_date_node_id(&snapshot.date_key).unwrap();
+        let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT parent_id, title, note, is_readonly, plugin_meta \
+                     FROM notes_nodes WHERE id = ?1",
+                    [&date_id],
+                    |row| Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    )),
+                )
+                .unwrap(),
+            (
+                Some(GITHUB_NOTIFICATIONS_ROOT_ID.to_string()),
+                "2026.07.21".to_string(),
+                String::new(),
+                None,
+                Some(r#"{"kind":"date","date_key":"2026.07.21"}"#.to_string()),
+            )
+        );
+        let notification = connection
+            .query_row(
+                "SELECT parent_id, title, note, is_readonly, plugin_meta, sort_key \
+                 FROM notes_nodes WHERE id = ?1",
+                [&notification_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(notification.0, Some(date_id.clone()));
+        assert_eq!(notification.1, snapshot.title);
+        assert_eq!(notification.2, snapshot.note);
+        assert_eq!(notification.3, None);
+        assert_eq!(
+            crate::notes::github_notifications::parse_github_plugin_meta_storage(
+                notification.4.as_deref().unwrap(),
+            )
+            .unwrap(),
+            crate::notes::github_notifications::GithubNotificationsPluginMeta::Notification {
+                notification_key: snapshot.notification_key.clone(),
+                notification_type: snapshot.notification_type.clone(),
+                url: snapshot.url.clone(),
+                updated_at: snapshot.updated_at.clone(),
+                unread: true,
+            }
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT parent_id, title, note, is_readonly, plugin_meta, sort_key \
+                     FROM notes_nodes WHERE id = ?1",
+                    [FOURTH_ID],
+                    |row| Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<i64>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, i64>(5)?,
+                    )),
+                )
+                .unwrap(),
+            (
+                Some(date_id),
+                String::new(),
+                String::new(),
+                Some(0),
+                None,
+                notification.5 + SORT_KEY_STEP,
+            )
+        );
+    }
+
+    #[test]
+    fn github_materialize_imports_nested_children_without_a_blank_sibling() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+
+        materialize_github_notification_and_import_children(
+            &mut connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            snapshot.clone(),
+            vec![
+                ImportNode {
+                    title: "first".to_string(),
+                    note: None,
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                    children: vec![ImportNode {
+                        title: "nested".to_string(),
+                        note: None,
+                        marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                        children: vec![],
+                    }],
+                },
+                ImportNode {
+                    title: "second".to_string(),
+                    note: None,
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                    children: vec![],
+                },
+            ],
+            fixed_today(),
+        )
+        .expect("materialize notification and imported children");
+
+        let date_id = github_date_node_id(&snapshot.date_key).unwrap();
+        let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
+        let date_children = connection
+            .prepare(
+                "SELECT title FROM notes_nodes WHERE parent_id = ?1 \
+                 ORDER BY sort_key, id",
+            )
+            .unwrap()
+            .query_map([&date_id], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(date_children, vec![snapshot.title]);
+        let imported = connection
+            .prepare(
+                "SELECT id, title FROM notes_nodes WHERE parent_id = ?1 \
+                 ORDER BY sort_key, id",
+            )
+            .unwrap()
+            .query_map([&notification_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            imported.iter().map(|(_, title)| title).collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT title FROM notes_nodes WHERE parent_id = ?1",
+                    [&imported[0].0],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "nested"
+        );
+    }
+
+    #[test]
+    fn github_materialize_appends_imported_children_and_returns_only_new_roots() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+
+        let (_, first_roots) = materialize_github_notification_and_import_children(
+            &mut connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            snapshot.clone(),
+            vec![import_leaf("existing child")],
+            fixed_today(),
+        )
+        .expect("first imported child");
+        let (_, appended_roots) = materialize_github_notification_and_import_children(
+            &mut connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            snapshot.clone(),
+            vec![ImportNode {
+                title: "appended child".to_string(),
+                note: Some("supporting note".to_string()),
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                children: vec![],
+            }],
+            fixed_today(),
+        )
+        .expect("appended imported child");
+
+        let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
+        let children = connection
+            .prepare(
+                "SELECT id, title, note, is_readonly, plugin_state, plugin_meta \
+                 FROM notes_nodes WHERE parent_id = ?1 ORDER BY sort_key, id",
+            )
+            .unwrap()
+            .query_map([&notification_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            children
+                .iter()
+                .map(|row| row.1.as_str())
+                .collect::<Vec<_>>(),
+            vec!["existing child", "appended child"]
+        );
+        assert_eq!(appended_roots, vec![children[1].0.clone()]);
+        assert_ne!(first_roots, appended_roots);
+        assert_eq!(children[1].2, "supporting note");
+        assert_eq!(children[1].3, Some(0));
+        assert_eq!(children[1].4, None);
+        assert_eq!(children[1].5, None);
+    }
+
+    #[test]
+    fn github_materialize_flat_import_ordering_work_is_linear_at_the_node_cap() {
+        for node_count in [1usize, 400, MAX_IMPORT_SUBTREE_NODES] {
+            let mut connection = v3_test_connection();
+            insert_v3_node(
+                &connection,
+                GITHUB_NOTIFICATIONS_ROOT_ID,
+                None,
+                "Github Notifications",
+                "2026-07-11T00:00:00Z",
+                None,
+                Some("[]"),
+                None,
+            );
+            let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+            let nodes = (0..node_count)
+                .map(|index| import_leaf(&format!("child {index}")))
+                .collect::<Vec<_>>();
+            reset_sibling_order_stats();
+
+            let (_, imported_root_ids) = materialize_github_notification_and_import_children(
+                &mut connection,
+                GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                snapshot,
+                nodes,
+                fixed_today(),
+            )
+            .expect("bounded flat materialize import");
+
+            let (queries, visited_rows) = sibling_order_stats();
+            assert_eq!(imported_root_ids.len(), node_count);
+            assert!(
+                queries <= 2,
+                "{node_count} imported roots performed {queries} sibling-order queries"
+            );
+            assert!(
+                visited_rows <= 2,
+                "{node_count} imported roots revisited {visited_rows} sibling rows"
+            );
+        }
+    }
+
+    #[test]
+    fn github_materialize_enforces_import_depth_and_count_caps_before_writes() {
+        fn chain(depth: usize) -> ImportNode {
+            let mut node = import_leaf(&format!("level {depth}"));
+            for level in (1..depth).rev() {
+                node = ImportNode {
+                    title: format!("level {level}"),
+                    note: None,
+                    marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                    children: vec![node],
+                };
+            }
+            node
+        }
+
+        let mut accepted = v3_test_connection();
+        insert_v3_node(
+            &accepted,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        materialize_github_notification_and_import_children(
+            &mut accepted,
+            GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z"),
+            vec![chain(MAX_IMPORT_SUBTREE_DEPTH)],
+            fixed_today(),
+        )
+        .expect("the exact depth cap is accepted");
+        assert_eq!(
+            accepted
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE id != ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            (MAX_IMPORT_SUBTREE_DEPTH + 2) as i64,
+        );
+
+        for invalid_nodes in [
+            vec![chain(MAX_IMPORT_SUBTREE_DEPTH + 1)],
+            (0..=MAX_IMPORT_SUBTREE_NODES)
+                .map(|index| import_leaf(&format!("child {index}")))
+                .collect(),
+        ] {
+            let mut rejected = v3_test_connection();
+            insert_v3_node(
+                &rejected,
+                GITHUB_NOTIFICATIONS_ROOT_ID,
+                None,
+                "Github Notifications",
+                "2026-07-11T00:00:00Z",
+                None,
+                Some("[]"),
+                None,
+            );
+            rejected
+                .execute("DELETE FROM sync_dirty_nodes", [])
+                .unwrap();
+
+            materialize_github_notification_and_import_children(
+                &mut rejected,
+                GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z"),
+                invalid_nodes,
+                fixed_today(),
+            )
+            .expect_err("an import beyond a hard cap must be rejected");
+
+            assert_eq!(
+                rejected
+                    .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
+                        .get::<_, i64>(0),)
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                rejected
+                    .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| row
+                        .get::<_, i64>(0),)
+                    .unwrap(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn github_materialize_import_is_one_history_entry_with_undo_redo() {
+        let mut connection = v3_test_connection();
+        connection
+            .execute(
+                "INSERT INTO sync_meta(id, device_id, vault_uuid) VALUES (1, ?1, ?2)",
+                params![NODE_ID, CHILD_ID],
+            )
+            .unwrap();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+        let context = import_context("import");
+        let mut imported_root_ids = Vec::new();
+
+        let result =
+            with_history_transaction_and_prunes(&mut connection, Some(&context), |connection| {
+                let (workspace, root_ids) = materialize_github_notification_and_import_children(
+                    connection,
+                    GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                    snapshot.clone(),
+                    vec![
+                        import_leaf("first"),
+                        ImportNode {
+                            title: "second".to_string(),
+                            note: None,
+                            marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                            children: vec![import_leaf("nested")],
+                        },
+                    ],
+                    fixed_today(),
+                )?;
+                imported_root_ids = root_ids;
+                Ok(workspace)
+            })
+            .expect("tracked materialize import");
+
+        assert_eq!(
+            result.history_entry_id.as_deref(),
+            Some(context.entry_id.as_str())
+        );
+        assert_eq!(history_entry_count(&connection), 1);
+        assert_eq!(imported_root_ids.len(), 2);
+        let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE parent_id = ?1",
+                    [&notification_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+
+        undo(
+            &mut connection,
+            &context.session_id,
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo materialize import");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE id != ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+
+        redo(
+            &mut connection,
+            &context.session_id,
+            NotesWorkspaceScope::Active,
+        )
+        .expect("redo materialize import");
+        for id in &imported_root_ids {
+            assert!(connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM notes_nodes WHERE id = ?1)",
+                    [id],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap());
+        }
+        assert_eq!(history_entry_count(&connection), 1);
+    }
+
+    #[test]
+    fn github_materialize_import_failure_rolls_back_provider_rows_children_dirty_and_history() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        connection
+            .execute_batch(
+                "CREATE TEMP TRIGGER fail_second_github_import \
+                 BEFORE INSERT ON notes_nodes \
+                 WHEN NEW.title = 'explode' \
+                 BEGIN SELECT RAISE(ABORT, 'injected GitHub import failure'); END;",
+            )
+            .unwrap();
+        let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+        let context = import_context("import");
+
+        let error =
+            with_history_transaction_and_prunes(&mut connection, Some(&context), |connection| {
+                materialize_github_notification_and_import_children(
+                    connection,
+                    GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                    snapshot.clone(),
+                    vec![import_leaf("first"), import_leaf("explode")],
+                    fixed_today(),
+                )
+                .map(|(workspace, _)| workspace)
+            })
+            .err()
+            .expect("injected failure must roll back");
+
+        assert!(error.contains("injected GitHub import failure"), "{error}");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE id != ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+        assert_eq!(history_entry_count(&connection), 0);
+    }
+
+    #[test]
+    fn github_first_materialization_appends_after_existing_saved_user_siblings() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+        let date_id = github_date_node_id(&snapshot.date_key).unwrap();
+        let date_metadata =
+            serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
+                date_key: snapshot.date_key.clone(),
+            })
+            .unwrap();
+        insert_v3_node(
+            &connection,
+            &date_id,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            &snapshot.date_key,
+            "2026-07-11T00:00:01Z",
+            None,
+            None,
+            Some(&date_metadata),
+        );
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            Some(&date_id),
+            "saved user sibling",
+            "2026-07-11T00:00:02Z",
+            Some(0),
+            None,
+            None,
+        );
+
+        materialize_github_notification_and_create_sibling(
+            &mut connection,
+            MaterializeGithubNotificationSiblingInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                sibling_id: FOURTH_ID.to_string(),
+                snapshot: snapshot.clone(),
+            },
+        )
+        .unwrap();
+
+        let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
+        let ordered = connection
+            .prepare(
+                "SELECT id FROM notes_nodes WHERE parent_id = ?1 \
+                 AND deleted_at IS NULL AND archived_at IS NULL ORDER BY sort_key, id",
+            )
+            .unwrap()
+            .query_map([&date_id], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            ordered,
+            vec![NODE_ID.to_string(), notification_id, FOURTH_ID.to_string()]
+        );
+    }
+
+    #[test]
+    fn github_provider_commands_reject_a_notification_outside_its_canonical_chain() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "ordinary root",
+            "2026-07-11T00:00:01Z",
+            Some(0),
+            None,
+            None,
+        );
+        let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+        materialize_github_notification_and_create_sibling(
+            &mut connection,
+            MaterializeGithubNotificationSiblingInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                sibling_id: FOURTH_ID.to_string(),
+                snapshot: snapshot.clone(),
+            },
+        )
+        .expect("materialize canonical notification");
+        let notification_id =
+            github_notification_node_id(&snapshot.notification_key).expect("notification ID");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET parent_id = ?1 WHERE id = ?2",
+                params![NODE_ID, notification_id],
+            )
+            .expect("detach notification from its date");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear corruption dirtiness");
+        let before: String = connection
+            .query_row(
+                "SELECT plugin_meta FROM notes_nodes WHERE id = ?1",
+                [&notification_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert!(mark_materialized_github_notification_read(
+            &mut connection,
+            MarkGithubNotificationReadInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                notification_key: snapshot.notification_key,
+                updated_at: snapshot.updated_at,
+            },
+        )
+        .is_err());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT plugin_meta FROM notes_nodes WHERE id = ?1",
+                    [&notification_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn github_materialize_rejects_key_ownership_at_the_wrong_id_before_dml() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+        let metadata =
+            serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Notification {
+                notification_key: snapshot.notification_key.clone(),
+                notification_type: snapshot.notification_type.clone(),
+                url: snapshot.url.clone(),
+                updated_at: snapshot.updated_at.clone(),
+                unread: true,
+            })
+            .unwrap();
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            &snapshot.title,
+            "2026-07-11T00:00:01Z",
+            None,
+            None,
+            Some(&metadata),
+        );
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let before = sqlite_total_changes(&connection);
+
+        let error = materialize_github_notification_and_create_sibling(
+            &mut connection,
+            MaterializeGithubNotificationSiblingInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                sibling_id: FOURTH_ID.to_string(),
+                snapshot: snapshot.clone(),
+            },
+        )
+        .expect_err("a canonical key at another ID must reject");
+
+        assert!(error.contains("conflicting ownership"), "{error}");
+        assert_eq!(sqlite_total_changes(&connection), before);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE id = ?1 OR id = ?2",
+                    params![
+                        github_date_node_id(&snapshot.date_key).unwrap(),
+                        github_notification_node_id(&snapshot.notification_key).unwrap()
+                    ],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn github_materialize_retry_deduplicates_with_one_history_entry() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let input = MaterializeGithubNotificationSiblingInput {
+            root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            sibling_id: FOURTH_ID.to_string(),
+            snapshot: github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z"),
+        };
+        let context = import_context("materializeGithubNotification");
+
+        let result =
+            with_history_transaction_and_prunes(&mut connection, Some(&context), |connection| {
+                materialize_github_notification_and_create_sibling(connection, input.clone())
+            })
+            .expect("track materialization");
+        assert_eq!(
+            result.history_entry_id.as_deref(),
+            Some(context.entry_id.as_str())
+        );
+        assert_eq!(history_entry_count(&connection), 1);
+        let notification_id =
+            github_notification_node_id(&input.snapshot.notification_key).unwrap();
+        let fingerprint = connection
+            .query_row(
+                "SELECT hlc, parent_id, sort_key FROM notes_nodes WHERE id = ?1",
+                [&notification_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        let retry_context = NotesHistoryContext {
+            entry_id: "99999999-9999-4999-8999-999999999999".to_string(),
+            command_kind: "materializeGithubNotificationRetry".to_string(),
+            ..context
+        };
+        let retry = with_history_transaction_and_prunes(
+            &mut connection,
+            Some(&retry_context),
+            |connection| {
+                materialize_github_notification_and_create_sibling(connection, input.clone())
+            },
+        )
+        .expect("retry materialization");
+        assert_eq!(retry.history_entry_id, None);
+        assert_eq!(history_entry_count(&connection), 1);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT hlc, parent_id, sort_key FROM notes_nodes WHERE id = ?1",
+                    [&notification_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .unwrap(),
+            fingerprint
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE plugin_meta IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn github_materialize_reparents_one_ordinary_subtree_atomically() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "ordinary root",
+            "2026-07-11T00:00:01Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            "ordinary child",
+            "2026-07-11T00:00:02Z",
+            Some(0),
+            None,
+            None,
+        );
+        let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+
+        materialize_github_notification_and_reparent(
+            &mut connection,
+            MaterializeGithubNotificationReparentInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                node_id: NODE_ID.to_string(),
+                snapshot: snapshot.clone(),
+            },
+        )
+        .expect("materialize and reparent ordinary subtree");
+
+        let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
+        assert_eq!(
+            node_shape(&connection, NODE_ID).0,
+            Some(notification_id.clone())
+        );
+        assert_eq!(
+            node_shape(&connection, CHILD_ID).0,
+            Some(NODE_ID.to_string())
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE id = ?1 OR id = ?2",
+                    params![
+                        github_date_node_id(&snapshot.date_key).unwrap(),
+                        notification_id
+                    ],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn github_refresh_moves_newer_snapshot_with_readonly_descendants_and_cleans_empty_anchor() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "ordinary root",
+            "2026-07-11T00:00:01Z",
+            Some(0),
+            None,
+            None,
+        );
+        let original = github_snapshot("2026.07.21", "2026-07-21T10:00:00.0001Z");
+        materialize_github_notification_and_reparent(
+            &mut connection,
+            MaterializeGithubNotificationReparentInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                node_id: NODE_ID.to_string(),
+                snapshot: original.clone(),
+            },
+        )
+        .unwrap();
+        let notification_id = github_notification_node_id(&original.notification_key).unwrap();
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(&notification_id),
+            "readonly context",
+            "2026-07-11T00:00:02Z",
+            Some(1),
+            None,
+            None,
+        );
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let old_date_id = github_date_node_id(&original.date_key).unwrap();
+        let mut newer = original.clone();
+        newer.date_key = "2026.07.22".to_string();
+        newer.updated_at = "2026-07-21T10:00:00.0009Z".to_string();
+        newer.title = "Newer provider title #42".to_string();
+        newer.note = "newer provider note".to_string();
+        newer.notification_type = "PullRequest".to_string();
+        newer.url = "https://github.com/acme/yonalist/pull/42".to_string();
+        newer.unread = false;
+
+        refresh_materialized_github_notifications(
+            &mut connection,
+            RefreshGithubNotificationsInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                notifications: vec![newer.clone()],
+            },
+        )
+        .expect("refresh newer materialized notification");
+
+        let new_date_id = github_date_node_id(&newer.date_key).unwrap();
+        assert_eq!(
+            node_shape(&connection, &notification_id).0,
+            Some(new_date_id)
+        );
+        assert_eq!(
+            node_shape(&connection, CHILD_ID).0,
+            Some(notification_id.clone())
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT is_readonly FROM notes_nodes WHERE id = ?1",
+                    [CHILD_ID],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .unwrap(),
+            Some(1)
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE id = ?1",
+                    [&old_date_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+                    [&old_date_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        let (title, note, metadata) = connection
+            .query_row(
+                "SELECT title, note, plugin_meta FROM notes_nodes WHERE id = ?1",
+                [&notification_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(title, newer.title);
+        assert_eq!(note, newer.note);
+        assert_eq!(
+            crate::notes::github_notifications::parse_github_plugin_meta_storage(&metadata)
+                .unwrap(),
+            crate::notes::github_notifications::GithubNotificationsPluginMeta::Notification {
+                notification_key: newer.notification_key,
+                notification_type: newer.notification_type,
+                url: newer.url,
+                updated_at: newer.updated_at,
+                unread: false,
+            }
+        );
+    }
+
+    #[test]
+    fn github_refresh_keeps_an_old_anchor_pinned_by_an_inactive_child() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "ordinary root",
+            "2026-07-11T00:00:01Z",
+            Some(0),
+            None,
+            None,
+        );
+        let original = github_snapshot("2026.07.21", "2026-07-21T10:00:00.0001Z");
+        materialize_github_notification_and_reparent(
+            &mut connection,
+            MaterializeGithubNotificationReparentInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                node_id: NODE_ID.to_string(),
+                snapshot: original.clone(),
+            },
+        )
+        .unwrap();
+        let old_date_id = github_date_node_id(&original.date_key).unwrap();
+        insert_v3_node(
+            &connection,
+            FOURTH_ID,
+            Some(&old_date_id),
+            "inactive context",
+            "2026-07-11T00:00:02Z",
+            Some(0),
+            None,
+            None,
+        );
+        connection
+            .execute(
+                "UPDATE notes_nodes SET archived_at = '2026-07-11T00:00:03Z' WHERE id = ?1",
+                [FOURTH_ID],
+            )
+            .unwrap();
+        let mut newer = original;
+        newer.date_key = "2026.07.22".to_string();
+        newer.updated_at = "2026-07-21T11:00:00.000Z".to_string();
+
+        refresh_materialized_github_notifications(
+            &mut connection,
+            RefreshGithubNotificationsInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                notifications: vec![newer],
+            },
+        )
+        .expect("move notification while preserving inactive child parentage");
+
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE id = ?1",
+                    [&old_date_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT parent_id FROM notes_nodes WHERE id = ?1",
+                    [FOURTH_ID],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .unwrap(),
+            Some(old_date_id)
+        );
+    }
+
+    #[test]
+    fn github_refresh_rebalances_root_once_when_a_new_date_block_overflows() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "ordinary root",
+            "2026-07-11T00:00:01Z",
+            Some(0),
+            None,
+            None,
+        );
+        let original = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+        materialize_github_notification_and_reparent(
+            &mut connection,
+            MaterializeGithubNotificationReparentInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                node_id: NODE_ID.to_string(),
+                snapshot: original.clone(),
+            },
+        )
+        .unwrap();
+        let old_date_id = github_date_node_id(&original.date_key).unwrap();
+        connection
+            .execute(
+                "UPDATE notes_nodes SET sort_key = ?1 WHERE id = ?2",
+                params![i64::MAX, old_date_id],
+            )
+            .unwrap();
+        let mut newer = original;
+        newer.date_key = "2026.07.22".to_string();
+        newer.updated_at = "2026-07-21T11:00:00.000Z".to_string();
+
+        refresh_materialized_github_notifications(
+            &mut connection,
+            RefreshGithubNotificationsInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                notifications: vec![newer.clone()],
+            },
+        )
+        .expect("one root rebalance should recover date allocation");
+
+        let new_date_id = github_date_node_id(&newer.date_key).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT sort_key FROM notes_nodes WHERE id = ?1",
+                    [&new_date_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            SORT_KEY_STEP * 2
+        );
+    }
+
+    #[test]
+    fn github_refresh_rebalances_destination_once_when_a_move_block_overflows() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "ordinary root",
+            "2026-07-11T00:00:01Z",
+            Some(0),
+            None,
+            None,
+        );
+        let original = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+        materialize_github_notification_and_reparent(
+            &mut connection,
+            MaterializeGithubNotificationReparentInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                node_id: NODE_ID.to_string(),
+                snapshot: original.clone(),
+            },
+        )
+        .unwrap();
+        let destination_key = "2026.07.22";
+        let destination_id = github_date_node_id(destination_key).unwrap();
+        let destination_metadata =
+            serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
+                date_key: destination_key.to_string(),
+            })
+            .unwrap();
+        insert_v3_node(
+            &connection,
+            &destination_id,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            destination_key,
+            "2026-07-11T00:00:02Z",
+            None,
+            None,
+            Some(&destination_metadata),
+        );
+        insert_v3_node(
+            &connection,
+            FOURTH_ID,
+            Some(&destination_id),
+            "saved destination sibling",
+            "2026-07-11T00:00:03Z",
+            Some(0),
+            None,
+            None,
+        );
+        connection
+            .execute(
+                "UPDATE notes_nodes SET sort_key = ?1 WHERE id = ?2",
+                params![i64::MAX, FOURTH_ID],
+            )
+            .unwrap();
+        let mut newer = original;
+        newer.date_key = destination_key.to_string();
+        newer.updated_at = "2026-07-21T11:00:00.000Z".to_string();
+
+        refresh_materialized_github_notifications(
+            &mut connection,
+            RefreshGithubNotificationsInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                notifications: vec![newer.clone()],
+            },
+        )
+        .expect("one destination rebalance should recover move allocation");
+
+        let notification_id = github_notification_node_id(&newer.notification_key).unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT sort_key FROM notes_nodes WHERE id = ?1",
+                    [FOURTH_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            SORT_KEY_STEP
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT parent_id, sort_key FROM notes_nodes WHERE id = ?1",
+                    [&notification_id],
+                    |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?,)),
+                )
+                .unwrap(),
+            (Some(destination_id), SORT_KEY_STEP * 2)
+        );
+    }
+
+    #[test]
+    fn github_refresh_failure_rolls_back_snapshot_anchor_subtree_dirty_and_history() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "ordinary root",
+            "2026-07-11T00:00:01Z",
+            Some(0),
+            None,
+            None,
+        );
+        let original = github_snapshot("2026.07.21", "2026-07-21T10:00:00.0001Z");
+        materialize_github_notification_and_reparent(
+            &mut connection,
+            MaterializeGithubNotificationReparentInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                node_id: NODE_ID.to_string(),
+                snapshot: original.clone(),
+            },
+        )
+        .unwrap();
+        let notification_id = github_notification_node_id(&original.notification_key).unwrap();
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let before_notification = connection
+            .query_row(
+                "SELECT parent_id, sort_key, title, note, hlc, plugin_meta \
+                 FROM notes_nodes WHERE id = ?1",
+                [&notification_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let mut newer = original.clone();
+        newer.date_key = "2026.07.22".to_string();
+        newer.updated_at = "2026-07-21T10:00:00.0009Z".to_string();
+        newer.title = "must roll back".to_string();
+        connection
+            .execute_batch(&format!(
+                "CREATE TEMP TRIGGER fail_github_refresh \
+                 BEFORE UPDATE OF parent_id ON notes_nodes \
+                 WHEN OLD.id = '{notification_id}' \
+                 BEGIN SELECT RAISE(ABORT, 'injected GitHub refresh failure'); END;"
+            ))
+            .unwrap();
+
+        assert!(refresh_materialized_github_notifications(
+            &mut connection,
+            RefreshGithubNotificationsInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                notifications: vec![newer.clone()],
+            },
+        )
+        .is_err());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT parent_id, sort_key, title, note, hlc, plugin_meta \
+                     FROM notes_nodes WHERE id = ?1",
+                    [&notification_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, String>(5)?,
+                        ))
+                    },
+                )
+                .unwrap(),
+            before_notification
+        );
+        assert_eq!(node_shape(&connection, NODE_ID).0, Some(notification_id));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE id = ?1",
+                    [github_date_node_id(&newer.date_key).unwrap()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+        assert_eq!(history_entry_count(&connection), 0);
+    }
+
+    #[test]
+    fn github_refresh_validates_the_whole_batch_before_updating_any_row() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        let date_key = "2026.07.21";
+        let date_id = github_date_node_id(date_key).unwrap();
+        let date_metadata =
+            serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
+                date_key: date_key.to_string(),
+            })
+            .unwrap();
+        insert_v3_node(
+            &connection,
+            &date_id,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            date_key,
+            "2026-07-11T00:00:01Z",
+            None,
+            None,
+            Some(&date_metadata),
+        );
+        let mut snapshots = [github_snapshot_for(1), github_snapshot_for(2)];
+        for snapshot in &snapshots {
+            let metadata = serialize_github_plugin_meta_storage(
+                &GithubNotificationsPluginMeta::Notification {
+                    notification_key: snapshot.notification_key.clone(),
+                    notification_type: snapshot.notification_type.clone(),
+                    url: snapshot.url.clone(),
+                    updated_at: snapshot.updated_at.clone(),
+                    unread: true,
+                },
+            )
+            .unwrap();
+            insert_v3_node(
+                &connection,
+                &github_notification_node_id(&snapshot.notification_key).unwrap(),
+                Some(&date_id),
+                &snapshot.title,
+                "2026-07-11T00:00:02Z",
+                None,
+                None,
+                Some(&metadata),
+            );
+        }
+        let first_id = github_notification_node_id(&snapshots[0].notification_key).unwrap();
+        let second_id = github_notification_node_id(&snapshots[1].notification_key).unwrap();
+        connection
+            .execute(
+                "UPDATE notes_nodes SET parent_id = ?1 WHERE id = ?2",
+                params![GITHUB_NOTIFICATIONS_ROOT_ID, second_id],
+            )
+            .unwrap();
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let first_before = connection
+            .query_row(
+                "SELECT title, plugin_meta, hlc FROM notes_nodes WHERE id = ?1",
+                [&first_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        snapshots[0].updated_at = "2026-07-21T11:00:00.000Z".to_string();
+        snapshots[0].title = "must not be written".to_string();
+
+        assert!(refresh_materialized_github_notifications(
+            &mut connection,
+            RefreshGithubNotificationsInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                notifications: snapshots.into_iter().collect(),
+            },
+        )
+        .is_err());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT title, plugin_meta, hlc FROM notes_nodes WHERE id = ?1",
+                    [&first_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .unwrap(),
+            first_before
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn github_refresh_rejects_duplicate_old_date_key_ownership_before_dml() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        let original = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+        materialize_github_notification_and_create_sibling(
+            &mut connection,
+            MaterializeGithubNotificationSiblingInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                sibling_id: FOURTH_ID.to_string(),
+                snapshot: original.clone(),
+            },
+        )
+        .unwrap();
+        connection
+            .execute("DROP INDEX notes_nodes_github_date_key", [])
+            .unwrap();
+        let duplicate_metadata =
+            serialize_github_plugin_meta_storage(&GithubNotificationsPluginMeta::Date {
+                date_key: original.date_key.clone(),
+            })
+            .unwrap();
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            &original.date_key,
+            "2026-07-11T00:00:03Z",
+            None,
+            None,
+            Some(&duplicate_metadata),
+        );
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let notification_id = github_notification_node_id(&original.notification_key).unwrap();
+        let before = connection
+            .query_row(
+                "SELECT title, plugin_meta, hlc FROM notes_nodes WHERE id = ?1",
+                [&notification_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let total_changes = sqlite_total_changes(&connection);
+        let mut newer = original;
+        newer.updated_at = "2026-07-21T11:00:00.000Z".to_string();
+        newer.title = "must not be written".to_string();
+
+        let error = refresh_materialized_github_notifications(
+            &mut connection,
+            RefreshGithubNotificationsInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                notifications: vec![newer],
+            },
+        )
+        .expect_err("duplicate old date ownership must reject");
+
+        assert!(error.contains("conflicting ownership"), "{error}");
+        assert_eq!(sqlite_total_changes(&connection), total_changes);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT title, plugin_meta, hlc FROM notes_nodes WHERE id = ?1",
+                    [&notification_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn github_mark_read_is_monotonic_and_retry_is_a_noop() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        let snapshot = github_snapshot("2026.07.21", "2026-07-21T10:00:00.000Z");
+        materialize_github_notification_and_create_sibling(
+            &mut connection,
+            MaterializeGithubNotificationSiblingInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                sibling_id: FOURTH_ID.to_string(),
+                snapshot: snapshot.clone(),
+            },
+        )
+        .unwrap();
+        let notification_id = github_notification_node_id(&snapshot.notification_key).unwrap();
+        let before_hlc = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [&notification_id],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+
+        mark_materialized_github_notification_read(
+            &mut connection,
+            MarkGithubNotificationReadInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                notification_key: snapshot.notification_key.clone(),
+                updated_at: "2026-07-21T10:00:00Z".to_string(),
+            },
+        )
+        .expect("mark materialized notification read");
+        let (after_hlc, metadata, completed_at) = connection
+            .query_row(
+                "SELECT hlc, plugin_meta, completed_at FROM notes_nodes WHERE id = ?1",
+                [&notification_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_ne!(after_hlc, before_hlc);
+        assert_eq!(completed_at, None);
+        assert!(matches!(
+            crate::notes::github_notifications::parse_github_plugin_meta_storage(&metadata)
+                .unwrap(),
+            crate::notes::github_notifications::GithubNotificationsPluginMeta::Notification {
+                unread: false,
+                ..
+            }
+        ));
+
+        mark_materialized_github_notification_read(
+            &mut connection,
+            MarkGithubNotificationReadInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                notification_key: snapshot.notification_key.clone(),
+                updated_at: snapshot.updated_at.clone(),
+            },
+        )
+        .expect("retry mark read");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                    [&notification_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            after_hlc
+        );
+
+        let mut stale = snapshot.clone();
+        stale.title = "stale title must not win".to_string();
+        refresh_materialized_github_notifications(
+            &mut connection,
+            RefreshGithubNotificationsInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                notifications: vec![stale],
+            },
+        )
+        .unwrap();
+        let (title, metadata) = connection
+            .query_row(
+                "SELECT title, plugin_meta FROM notes_nodes WHERE id = ?1",
+                [&notification_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(title, snapshot.title);
+        assert!(metadata.contains(r#""unread":false"#));
+    }
+
+    #[test]
+    fn github_group_collapse_is_an_explicit_sorted_idempotent_set() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+
+        for group_key in ["2026.07.22", "2026.07.21"] {
+            set_github_group_collapsed(
+                &mut connection,
+                SetGithubGroupCollapsedInput {
+                    root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                    group_key: group_key.to_string(),
+                    collapsed: true,
+                },
+            )
+            .unwrap();
+        }
+        let (hlc, state) = connection
+            .query_row(
+                "SELECT hlc, plugin_state FROM notes_nodes WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state, r#"["2026.07.21","2026.07.22"]"#);
+
+        set_github_group_collapsed(
+            &mut connection,
+            SetGithubGroupCollapsedInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                group_key: "2026.07.21".to_string(),
+                collapsed: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            hlc
+        );
+
+        set_github_group_collapsed(
+            &mut connection,
+            SetGithubGroupCollapsedInput {
+                root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                group_key: "2026.07.21".to_string(),
+                collapsed: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT plugin_state FROM notes_nodes WHERE id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            r#"["2026.07.22"]"#
+        );
+    }
+
+    #[test]
+    fn github_group_collapse_uses_one_history_entry_and_undo_redo() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let before_hlc = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        let context = import_context("setGithubGroupCollapsed");
+
+        let result =
+            with_history_transaction_and_prunes(&mut connection, Some(&context), |connection| {
+                set_github_group_collapsed(
+                    connection,
+                    SetGithubGroupCollapsedInput {
+                        root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                        group_key: "2026.07.21".to_string(),
+                        collapsed: true,
+                    },
+                )
+            })
+            .expect("track GitHub group collapse");
+        assert_eq!(
+            result.history_entry_id.as_deref(),
+            Some(context.entry_id.as_str())
+        );
+        assert_eq!(history_entry_count(&connection), 1);
+        let after_hlc = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        assert!(after_hlc > before_hlc);
+        assert!(connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_dirty_nodes WHERE node_id = ?1)",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap());
+
+        undo(
+            &mut connection,
+            &context.session_id,
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo GitHub group collapse");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT plugin_state FROM notes_nodes WHERE id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            "[]"
+        );
+        redo(
+            &mut connection,
+            &context.session_id,
+            NotesWorkspaceScope::Active,
+        )
+        .expect("redo GitHub group collapse");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT plugin_state FROM notes_nodes WHERE id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+            r#"["2026.07.21"]"#
+        );
+
+        let retry_context = NotesHistoryContext {
+            entry_id: "99999999-9999-4999-8999-999999999999".to_string(),
+            command_kind: "setGithubGroupCollapsedRetry".to_string(),
+            ..context
+        };
+        let retry = with_history_transaction_and_prunes(
+            &mut connection,
+            Some(&retry_context),
+            |connection| {
+                set_github_group_collapsed(
+                    connection,
+                    SetGithubGroupCollapsedInput {
+                        root_id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                        group_key: "2026.07.21".to_string(),
+                        collapsed: true,
+                    },
+                )
+            },
+        )
+        .expect("same GitHub group state is a tracked no-op");
+        assert_eq!(retry.history_entry_id, None);
+        assert_eq!(history_entry_count(&connection), 1);
+    }
+
+    #[test]
+    fn readonly_content_and_structure_guards_are_repository_authoritative() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "root",
+            "2026-07-11T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            "locked",
+            "2026-07-11T00:00:01Z",
+            Some(1),
+            None,
+            None,
+        );
+
+        let update = update_node_at(
+            &mut connection,
+            UpdateNodeInput {
+                id: CHILD_ID.to_string(),
+                title: "changed".to_string(),
+                note: String::new(),
+                image_offset_utf16: 0,
+                markdown_image_width: None,
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+            },
+            fixed_today(),
+        );
+        assert!(update.is_err(), "readonly content must be blocked");
+
+        let move_result = move_node(
+            &mut connection,
+            MoveNodeInput {
+                id: CHILD_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                before_id: None,
+            },
+        );
+        assert!(
+            move_result.is_err(),
+            "readonly subtree move must be blocked"
+        );
+
+        assert!(toggle_complete(&mut connection, CHILD_ID).is_ok());
+        assert!(toggle_star(&mut connection, CHILD_ID).is_ok());
+        assert!(toggle_collapsed(&mut connection, CHILD_ID).is_ok());
+
+        let duplicate = duplicate_node_at(&mut connection, CHILD_ID, fixed_today());
+        assert!(duplicate.is_ok(), "readonly duplication preserves the flag");
+        let duplicate_workspace = duplicate.expect("duplicate workspace");
+        let duplicate = duplicate_workspace
+            .nodes
+            .iter()
+            .find(|node| node.id != CHILD_ID && node.title == "locked")
+            .expect("duplicated readonly node");
+        assert_ne!(duplicate.id, CHILD_ID);
+        assert_eq!(duplicate.is_readonly, Some(true));
+    }
+
+    #[test]
+    fn readonly_mutations_reject_attachment_and_delete_paths_without_writes() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "root",
+            "2026-07-11T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            "locked",
+            "2026-07-11T00:00:01Z",
+            Some(1),
+            None,
+            None,
+        );
+        assert!(delete_nodes(
+            &mut connection,
+            DeleteNodesInput {
+                node_ids: vec![CHILD_ID.to_string()],
+                expected_readonly_descendant_ids: None,
+            },
+        )
+        .is_err());
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert!(remove_empty_node(&mut connection, CHILD_ID).is_err());
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert!(apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![CHILD_ID.to_string()],
+                op: BatchOp::Delete,
+            },
+        )
+        .is_err());
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+
+        assert!(create_attachments_coordinated_for_node(
+            &mut connection,
+            CHILD_ID,
+            vec![test_new_attachment(701, CHILD_ID)],
+            || Ok(()),
+            || Ok(()),
+        )
+        .is_err());
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+
+        let attachment_id = insert_test_attachment(&connection, 702, CHILD_ID);
+        assert!(resize_attachment(&mut connection, &attachment_id, 120).is_err());
+        assert!(remove_attachment(&mut connection, &attachment_id).is_err());
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn nested_selection_delete_preloads_archive_context_for_direct_and_batch_delete() {
+        let mut direct = v3_test_connection();
+        insert_v3_node(
+            &direct,
+            NODE_ID,
+            None,
+            "root",
+            "2026-07-11T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &direct,
+            CHILD_ID,
+            Some(NODE_ID),
+            "child",
+            "2026-07-11T00:00:01Z",
+            Some(0),
+            None,
+            None,
+        );
+        assert!(matches!(
+            delete_nodes(
+                &mut direct,
+                DeleteNodesInput {
+                    node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                    expected_readonly_descendant_ids: Some(Vec::new()),
+                },
+            )
+            .expect("nested direct delete"),
+            DeleteNodesOutcome::Deleted(_)
+        ));
+        assert_eq!(
+            direct
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            direct
+                .query_row(
+                    "SELECT COUNT(DISTINCT deleted_batch_id) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+
+        let mut batch = v3_test_connection();
+        insert_v3_node(
+            &batch,
+            NODE_ID,
+            None,
+            "root",
+            "2026-07-11T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &batch,
+            CHILD_ID,
+            Some(NODE_ID),
+            "child",
+            "2026-07-11T00:00:01Z",
+            Some(0),
+            None,
+            None,
+        );
+        apply_batch(
+            &mut batch,
+            ApplyBatchInput {
+                node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                op: BatchOp::Delete,
+            },
+        )
+        .expect("nested batch delete");
+        assert_eq!(
+            batch
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            batch
+                .query_row(
+                    "SELECT COUNT(DISTINCT deleted_batch_id) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+
+        let mut archived = v3_test_connection();
+        insert_v3_node(
+            &archived,
+            NODE_ID,
+            None,
+            "archived root",
+            "2026-07-11T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &archived,
+            CHILD_ID,
+            Some(NODE_ID),
+            "archived child",
+            "2026-07-11T00:00:01Z",
+            Some(0),
+            None,
+            None,
+        );
+        archive_node(&mut archived, NODE_ID).expect("archive nested tree");
+        assert!(matches!(
+            delete_nodes(
+                &mut archived,
+                DeleteNodesInput {
+                    node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                    expected_readonly_descendant_ids: Some(Vec::new()),
+                },
+            )
+            .expect("nested archived direct delete"),
+            DeleteNodesOutcome::Deleted(_)
+        ));
+        assert_eq!(
+            archived
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            archived
+                .query_row(
+                    "SELECT COUNT(DISTINCT deleted_batch_id) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+
+        let mut archived_batch = v3_test_connection();
+        insert_v3_node(
+            &archived_batch,
+            NODE_ID,
+            None,
+            "archived root",
+            "2026-07-11T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &archived_batch,
+            CHILD_ID,
+            Some(NODE_ID),
+            "archived child",
+            "2026-07-11T00:00:01Z",
+            Some(0),
+            None,
+            None,
+        );
+        archive_node(&mut archived_batch, NODE_ID).expect("archive batch tree");
+        assert!(delete_nodes(
+            &mut archived_batch,
+            DeleteNodesInput {
+                node_ids: vec![CHILD_ID.to_string()],
+                expected_readonly_descendant_ids: Some(Vec::new()),
+            },
+        )
+        .is_err());
+        apply_batch(
+            &mut archived_batch,
+            ApplyBatchInput {
+                node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                op: BatchOp::Delete,
+            },
+        )
+        .expect("nested archived batch delete");
+        assert_eq!(
+            archived_batch
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            archived_batch
+                .query_row(
+                    "SELECT COUNT(DISTINCT deleted_batch_id) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn explicit_readonly_delete_selection_is_rejected_before_forest_normalization() {
+        for archived in [false, true] {
+            let mut connection = v3_test_connection();
+            insert_v3_node(
+                &connection,
+                NODE_ID,
+                None,
+                "root",
+                "2026-07-11T00:00:00Z",
+                Some(0),
+                None,
+                None,
+            );
+            insert_v3_node(
+                &connection,
+                CHILD_ID,
+                Some(NODE_ID),
+                "readonly child",
+                "2026-07-11T00:00:01Z",
+                Some(1),
+                None,
+                None,
+            );
+            if archived {
+                archive_node(&mut connection, NODE_ID).expect("archive readonly tree");
+            }
+
+            let snapshot = |connection: &Connection| {
+                let hlc = connection
+                    .prepare("SELECT id, hlc FROM notes_nodes WHERE id IN (?1, ?2) ORDER BY id")
+                    .expect("prepare delete HLC snapshot")
+                    .query_map(params![NODE_ID, CHILD_ID], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .expect("query delete HLC snapshot")
+                    .collect::<Result<Vec<_>, _>>()
+                    .expect("collect delete HLC snapshot");
+                let dirty: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                        row.get(0)
+                    })
+                    .expect("dirty snapshot");
+                let trash: i64 = connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .expect("trash snapshot");
+                let history: i64 = connection
+                    .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                        row.get(0)
+                    })
+                    .expect("history snapshot");
+                (hlc, dirty, trash, history)
+            };
+
+            let expected = snapshot(&connection);
+            let before_changes = sqlite_total_changes(&connection);
+            let input = DeleteNodesInput {
+                node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                expected_readonly_descendant_ids: None,
+            };
+            let error = delete_nodes_preflight(&mut connection, &input)
+                .expect_err("readonly selection must fail preflight authorization");
+            assert!(error.contains("read-only"), "{error}");
+            assert_eq!(sqlite_total_changes(&connection), before_changes);
+            assert_eq!(snapshot(&connection), expected);
+
+            let before_changes = sqlite_total_changes(&connection);
+            let error = delete_nodes(
+                &mut connection,
+                DeleteNodesInput {
+                    node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                    expected_readonly_descendant_ids: Some(vec![CHILD_ID.to_string()]),
+                },
+            )
+            .expect_err("readonly selection must fail confirmed deletion authorization");
+            assert!(error.contains("read-only"), "{error}");
+            assert_eq!(sqlite_total_changes(&connection), before_changes);
+            assert_eq!(snapshot(&connection), expected);
+
+            let before_changes = sqlite_total_changes(&connection);
+            let error = apply_batch(
+                &mut connection,
+                ApplyBatchInput {
+                    node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                    op: BatchOp::Delete,
+                },
+            )
+            .expect_err("readonly selection must fail batch deletion authorization");
+            assert!(error.contains("read-only"), "{error}");
+            assert_eq!(sqlite_total_changes(&connection), before_changes);
+            assert_eq!(snapshot(&connection), expected);
+        }
+    }
+
+    #[test]
+    fn readonly_preflight_scales_with_union_tree_after_selection_normalization() {
+        for selected_count in [1_usize, 400, 401, 10_000] {
+            let mut connection = v3_test_connection();
+            let root_id = format!("10000000-0000-4000-8000-{selected_count:012x}");
+            insert_v3_node(
+                &connection,
+                &root_id,
+                None,
+                "root",
+                "2026-07-11T00:00:00Z",
+                Some(0),
+                None,
+                None,
+            );
+            let mut selected_ids = vec![root_id.clone()];
+            for index in 1..selected_count {
+                let child_id = format!("20000000-0000-4000-8000-{index:012x}");
+                insert_v3_node(
+                    &connection,
+                    &child_id,
+                    Some(&root_id),
+                    "selected",
+                    "2026-07-11T00:00:01Z",
+                    Some(0),
+                    None,
+                    None,
+                );
+                selected_ids.push(child_id);
+            }
+            let readonly_id = format!("20000000-0000-4000-8000-{:012x}", selected_count);
+            insert_v3_node(
+                &connection,
+                &readonly_id,
+                Some(&root_id),
+                "readonly",
+                "2026-07-11T00:00:02Z",
+                Some(1),
+                None,
+                None,
+            );
+
+            reset_readonly_descendant_scan_stats();
+            let readonly_ids = delete_nodes_preflight(
+                &mut connection,
+                &DeleteNodesInput {
+                    node_ids: selected_ids,
+                    expected_readonly_descendant_ids: None,
+                },
+            )
+            .expect("readonly preflight");
+            assert_eq!(readonly_ids, vec![readonly_id]);
+            assert_eq!(
+                readonly_descendant_scan_stats(),
+                (1, selected_count + 1),
+                "overlapping selection of {selected_count} rows must scan the normalized union once"
+            );
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn readonly_setter_and_delete_confirmation_are_atomic() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "root",
+            "2026-07-11T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            "child",
+            "2026-07-11T00:00:01Z",
+            Some(0),
+            None,
+            None,
+        );
+
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear dirty markers before readonly setter");
+        let before_hlc: String = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [CHILD_ID],
+                |row| row.get(0),
+            )
+            .expect("readonly HLC before setter");
+        let context = import_context("setReadonly");
+        let set_result =
+            with_history_transaction_and_prunes(&mut connection, Some(&context), |connection| {
+                set_readonly_at(connection, CHILD_ID.to_string(), true, fixed_today())
+            })
+            .expect("set readonly with history");
+        assert_eq!(
+            set_result.history_entry_id.as_deref(),
+            Some(context.entry_id.as_str())
+        );
+        let after_hlc: String = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [CHILD_ID],
+                |row| row.get(0),
+            )
+            .expect("readonly HLC after setter");
+        assert!(after_hlc > before_hlc);
+        assert!(connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_dirty_nodes WHERE node_id = ?1)",
+                [NODE_ID],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("owning topic dirty marker"));
+        assert_eq!(history_entry_count(&connection), 1);
+        let readonly: Option<i64> = connection
+            .query_row(
+                "SELECT is_readonly FROM notes_nodes WHERE id = ?1",
+                [CHILD_ID],
+                |row| row.get(0),
+            )
+            .expect("readonly value");
+        assert_eq!(readonly, Some(1));
+
+        let before_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get(0))
+            .expect("node count");
+        let first = delete_nodes(
+            &mut connection,
+            DeleteNodesInput {
+                node_ids: vec![NODE_ID.to_string()],
+                expected_readonly_descendant_ids: None,
+            },
+        )
+        .expect("delete preflight");
+        let DeleteNodesOutcome::NeedsReadonlyConfirmation {
+            readonly_descendant_ids,
+        } = first
+        else {
+            panic!("expected readonly confirmation");
+        };
+        assert_eq!(readonly_descendant_ids, vec![CHILD_ID.to_string()]);
+        let after_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get(0))
+            .expect("node count");
+        assert_eq!(before_count, after_count);
+
+        let deleted = delete_nodes(
+            &mut connection,
+            DeleteNodesInput {
+                node_ids: vec![NODE_ID.to_string()],
+                expected_readonly_descendant_ids: Some(vec![CHILD_ID.to_string()]),
+            },
+        )
+        .expect("confirmed delete");
+        assert!(matches!(deleted, DeleteNodesOutcome::Deleted(_)));
+        let restored = restore_node(&mut connection, NODE_ID).expect("restore readonly tree");
+        assert_eq!(
+            restored
+                .nodes
+                .iter()
+                .find(|node| node.id == CHILD_ID)
+                .expect("restored readonly child")
+                .is_readonly,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn readonly_setter_matrix_covers_ordinary_root_child_and_plugin_rows() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "ordinary root",
+            "2026-07-11T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            "ordinary child",
+            "2026-07-11T00:00:01Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:02Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            THIRD_ID,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            "2026.07.11",
+            "2026-07-11T00:00:03Z",
+            None,
+            None,
+            Some(r#"{"kind":"date","date_key":"2026.07.11"}"#),
+        );
+
+        let root_hlc_before: String = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("ordinary root HLC before setter");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear root dirty markers");
+        let root_context = NotesHistoryContext {
+            session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+            history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
+            entry_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc".to_string(),
+            command_kind: "setReadonlyRoot".to_string(),
+        };
+        with_history_transaction_and_prunes(&mut connection, Some(&root_context), |connection| {
+            set_readonly_at(connection, NODE_ID.to_string(), true, fixed_today())
+        })
+        .expect("set ordinary root readonly");
+        let root_hlc_after: String = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("ordinary root HLC after setter");
+        assert!(root_hlc_after > root_hlc_before);
+        assert!(connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_dirty_nodes WHERE node_id = ?1)",
+                [NODE_ID],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("ordinary root dirty marker"));
+        assert_eq!(history_entry_count(&connection), 1);
+
+        let child_hlc_before: String = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [CHILD_ID],
+                |row| row.get(0),
+            )
+            .expect("ordinary child HLC before setter");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear child dirty markers");
+        let child_context = NotesHistoryContext {
+            session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+            history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
+            entry_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd".to_string(),
+            command_kind: "setReadonlyChild".to_string(),
+        };
+        with_history_transaction_and_prunes(&mut connection, Some(&child_context), |connection| {
+            set_readonly_at(connection, CHILD_ID.to_string(), true, fixed_today())
+        })
+        .expect("set ordinary child readonly");
+        let child_hlc_after: String = connection
+            .query_row(
+                "SELECT hlc FROM notes_nodes WHERE id = ?1",
+                [CHILD_ID],
+                |row| row.get(0),
+            )
+            .expect("ordinary child HLC after setter");
+        assert!(child_hlc_after > child_hlc_before);
+        assert!(connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_dirty_nodes WHERE node_id = ?1)",
+                [NODE_ID],
+                |row| row.get::<_, bool>(0),
+            )
+            .expect("ordinary child owning topic dirty marker"));
+        assert_eq!(history_entry_count(&connection), 2);
+
+        assert!(set_readonly_at(
+            &mut connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            true,
+            fixed_today()
+        )
+        .is_err());
+        assert!(
+            set_readonly_at(&mut connection, THIRD_ID.to_string(), true, fixed_today()).is_err()
+        );
+        assert_eq!(history_entry_count(&connection), 2);
+    }
+
+    #[test]
+    fn readonly_delete_preflight_serializes_as_the_untagged_wire_shape() {
+        let value = serde_json::to_value(DeleteNodesOutcome::NeedsReadonlyConfirmation {
+            readonly_descendant_ids: vec![CHILD_ID.to_string()],
+        })
+        .expect("serialize readonly preflight");
+        assert_eq!(
+            value,
+            serde_json::json!({"readonlyDescendantIds": [CHILD_ID]})
+        );
+    }
+
+    #[test]
+    fn confirmed_readonly_delete_rolls_back_rows_trash_and_history_on_failure() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "root",
+            "2026-07-11T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            "locked",
+            "2026-07-11T00:00:01Z",
+            Some(1),
+            None,
+            None,
+        );
+        connection
+            .execute_batch(&format!(
+                "CREATE TRIGGER reject_confirmed_delete \
+                 BEFORE UPDATE OF deleted_at ON notes_nodes \
+                 WHEN OLD.id = '{CHILD_ID}' \
+                 BEGIN SELECT RAISE(ABORT, 'confirmed delete rejected'); END;"
+            ))
+            .expect("install delete failure");
+        let context = import_context("deleteNodes");
+        let error = match with_history_transaction_and_prunes(
+            &mut connection,
+            Some(&context),
+            |connection| {
+                let outcome = delete_nodes(
+                    connection,
+                    DeleteNodesInput {
+                        node_ids: vec![NODE_ID.to_string()],
+                        expected_readonly_descendant_ids: Some(vec![CHILD_ID.to_string()]),
+                    },
+                )?;
+                match outcome {
+                    DeleteNodesOutcome::Deleted(result) => Ok(result.workspace),
+                    DeleteNodesOutcome::NeedsReadonlyConfirmation { .. } => {
+                        Err("unexpected delete preflight".to_string())
+                    }
+                }
+            },
+        ) {
+            Ok(_) => panic!("injected confirmed delete failure must fail"),
+            Err(error) => error,
+        };
+        assert!(error.contains("confirmed delete rejected"), "{error}");
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(history_entry_count(&connection), 0);
+    }
+
+    #[test]
+    fn generic_commands_reject_plugin_rows_but_github_root_collapse_stays_allowed() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-11T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            "2026.07.11",
+            "2026-07-11T00:00:01Z",
+            None,
+            None,
+            Some(r#"{"kind":"date","date_key":"2026.07.11"}"#),
+        );
+
+        assert!(toggle_complete(&mut connection, GITHUB_NOTIFICATIONS_ROOT_ID).is_err());
+        assert!(toggle_star(&mut connection, CHILD_ID).is_err());
+        assert!(archive_node(&mut connection, GITHUB_NOTIFICATIONS_ROOT_ID).is_err());
+        assert!(unarchive_node(&mut connection, CHILD_ID).is_err());
+        assert!(toggle_collapsed(&mut connection, CHILD_ID).is_err());
+        assert!(sort_subtree_ascending(&mut connection, GITHUB_NOTIFICATIONS_ROOT_ID).is_err());
+        assert!(
+            set_readonly_at(&mut connection, CHILD_ID.to_string(), true, fixed_today()).is_err()
+        );
+
+        let before = sqlite_total_changes(&connection);
+        assert!(apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![CHILD_ID.to_string()],
+                op: BatchOp::AddTag {
+                    tag: NoteSearchTag {
+                        prefix: NoteTagPrefix::Hash,
+                        normalized_tag: "roadmap".to_string(),
+                        display_tag: "#roadmap".to_string(),
+                    },
+                },
+            },
+        )
+        .is_err());
+        assert!(apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![CHILD_ID.to_string()],
+                op: BatchOp::RemoveTag {
+                    tag: NoteTagFilter {
+                        prefix: NoteTagPrefix::Hash,
+                        normalized_tag: "missing".to_string(),
+                    },
+                },
+            },
+        )
+        .is_err());
+        assert_eq!(sqlite_total_changes(&connection), before);
+
+        collapse_all(&mut connection, GITHUB_NOTIFICATIONS_ROOT_ID).expect("collapse GN root");
+        let root_collapsed: i64 = connection
+            .query_row(
+                "SELECT is_collapsed FROM notes_nodes WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+                |row| row.get(0),
+            )
+            .expect("read collapsed root");
+        assert_eq!(root_collapsed, 1);
+        let child_collapsed: i64 = connection
+            .query_row(
+                "SELECT is_collapsed FROM notes_nodes WHERE id = ?1",
+                [CHILD_ID],
+                |row| row.get(0),
+            )
+            .expect("read collapsed child");
+        assert_eq!(child_collapsed, 0);
+
+        assert!(move_node(
+            &mut connection,
+            MoveNodeInput {
+                id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+                parent_id: Some(CHILD_ID.to_string()),
+                after_id: None,
+                before_id: None,
+            }
+        )
+        .is_err());
+        assert!(apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string()],
+                op: BatchOp::Complete { completed: true },
+            }
+        )
+        .is_err());
+        assert!(apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![GITHUB_NOTIFICATIONS_ROOT_ID.to_string()],
+                op: BatchOp::Move {
+                    parent_id: Some(CHILD_ID.to_string()),
+                    after_id: None,
+                    before_id: None,
+                },
+            }
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn readonly_delete_preflight_includes_archived_root_subtrees_and_confirmed_trash() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "archived root",
+            "2026-07-11T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            "locked child",
+            "2026-07-11T00:00:01Z",
+            Some(1),
+            None,
+            None,
+        );
+        archive_node(&mut connection, NODE_ID).expect("archive root");
+
+        let first = delete_nodes_preflight(
+            &mut connection,
+            &DeleteNodesInput {
+                node_ids: vec![NODE_ID.to_string()],
+                expected_readonly_descendant_ids: None,
+            },
+        )
+        .expect("archived preflight");
+        assert_eq!(first, vec![CHILD_ID.to_string()]);
+        let deleted_before: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count trash before confirmation");
+        assert_eq!(deleted_before, 0);
+
+        delete_nodes(
+            &mut connection,
+            DeleteNodesInput {
+                node_ids: vec![NODE_ID.to_string()],
+                expected_readonly_descendant_ids: Some(first),
+            },
+        )
+        .expect("confirmed archived delete");
+        let deleted_after: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_nodes WHERE deleted_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count trash after confirmation");
+        assert_eq!(deleted_after, 2);
+    }
+
+    #[test]
+    fn readonly_delete_confirmation_rechecks_added_removed_and_direct_targets() {
+        let mut connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "root",
+            "2026-07-11T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            "locked",
+            "2026-07-11T00:00:01Z",
+            Some(1),
+            None,
+            None,
+        );
+        let input = DeleteNodesInput {
+            node_ids: vec![NODE_ID.to_string()],
+            expected_readonly_descendant_ids: None,
+        };
+        let expected = delete_nodes_preflight(&mut connection, &input).expect("preflight");
+        assert_eq!(expected, vec![CHILD_ID.to_string()]);
+
+        insert_v3_node(
+            &connection,
+            THIRD_ID,
+            Some(CHILD_ID),
+            "new locked",
+            "2026-07-11T00:00:02Z",
+            Some(1),
+            None,
+            None,
+        );
+        let stale_added = delete_nodes(
+            &mut connection,
+            DeleteNodesInput {
+                node_ids: vec![NODE_ID.to_string()],
+                expected_readonly_descendant_ids: Some(expected.clone()),
+            },
+        )
+        .expect_err("new readonly descendant must stale the confirmation");
+        assert_eq!(stale_added, "Notes readonly delete confirmation is stale.");
+
+        connection
+            .execute(
+                "UPDATE notes_nodes SET is_readonly = 0 WHERE id = ?1",
+                [CHILD_ID],
+            )
+            .expect("remove readonly child");
+        let stale_removed = delete_nodes(
+            &mut connection,
+            DeleteNodesInput {
+                node_ids: vec![NODE_ID.to_string()],
+                expected_readonly_descendant_ids: Some(expected),
+            },
+        )
+        .expect_err("removed readonly descendant must stale the confirmation");
+        assert_eq!(
+            stale_removed,
+            "Notes readonly delete confirmation is stale."
+        );
+
+        let direct_target = delete_nodes(
+            &mut connection,
+            DeleteNodesInput {
+                node_ids: vec![THIRD_ID.to_string()],
+                expected_readonly_descendant_ids: Some(Vec::new()),
+            },
+        )
+        .expect_err("readonly target cannot be confirmed away");
+        assert_eq!(
+            direct_target,
+            "This Note node is read-only and cannot be modified."
+        );
+    }
+
+    #[test]
+    fn v3_rows_decode_strict_plugin_json_and_nullable_readonly() {
+        let connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            None,
+            "ordinary",
+            "2026-07-10T00:00:00Z",
+            Some(0),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            None,
+            "locked",
+            "2026-07-10T00:00:01Z",
+            Some(1),
+            None,
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-10T00:00:02Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            THIRD_ID,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            "2026.07.10",
+            "2026-07-10T00:00:03Z",
+            None,
+            None,
+            Some(r#"{"kind":"date","date_key":"2026.07.10"}"#),
+        );
+
+        let workspace =
+            load_workspace(&connection, NotesWorkspaceScope::Active).expect("load v3 workspace");
+        assert_eq!(
+            workspace
+                .nodes
+                .iter()
+                .find(|node| node.id == NODE_ID)
+                .expect("ordinary row")
+                .is_readonly,
+            Some(false)
+        );
+        assert_eq!(
+            workspace
+                .nodes
+                .iter()
+                .find(|node| node.id == CHILD_ID)
+                .expect("locked row")
+                .is_readonly,
+            Some(true)
+        );
+        let plugin = workspace
+            .nodes
+            .iter()
+            .find(|node| node.id == THIRD_ID)
+            .expect("plugin row");
+        assert_eq!(plugin.is_readonly, None);
+        assert!(plugin.plugin_meta.is_some());
+
+        connection
+            .execute(
+                "UPDATE notes_nodes SET plugin_state = '[\"2026.07.10\",\"2026.07.10\"]' \
+                 WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+            )
+            .expect("corrupt plugin state");
+        assert!(load_workspace(&connection, NotesWorkspaceScope::Active).is_err());
+        connection
+            .execute(
+                "UPDATE notes_nodes SET plugin_state = '[]' WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+            )
+            .expect("restore plugin state");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET plugin_meta = '{\"kind\":\"unknown\"}' WHERE id = ?1",
+                [THIRD_ID],
+            )
+            .expect("corrupt plugin metadata");
+        assert!(load_workspace(&connection, NotesWorkspaceScope::Active).is_err());
+    }
+
+    #[test]
+    fn v3_rows_reject_semantically_invalid_plugin_metadata() {
+        let connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications",
+            "2026-07-10T00:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            "plugin row",
+            "2026-07-10T00:00:01Z",
+            None,
+            None,
+            Some(r#"{"kind":"date","date_key":"2026.07.10"}"#),
+        );
+
+        connection
+            .execute(
+                "UPDATE notes_nodes SET plugin_state = '[\"2026.02.30\"]' WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+            )
+            .expect("set impossible collapsed date");
+        assert!(load_workspace(&connection, NotesWorkspaceScope::Active).is_err());
+        connection
+            .execute(
+                "UPDATE notes_nodes SET plugin_state = '[]' WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+            )
+            .expect("restore plugin state");
+
+        let invalid_metadata = [
+            serde_json::json!({
+                "kind": "date",
+                "date_key": "2026.02.30"
+            }),
+            serde_json::json!({
+                "kind": "date",
+                "date_key": "0000.01.01"
+            }),
+            serde_json::json!({
+                "kind": "notification",
+                "notification_key": "[\"github\",\"https://api.github.com/1\",\"42\"]",
+                "type": "Issue",
+                "url": "https://github.com/example/repo/issues/42",
+                "updated_at": "2026-07-21T00:00:00Z",
+                "unread": true
+            }),
+            serde_json::json!({
+                "kind": "notification",
+                "notification_key":
+                    "[\"github\",\"[\\\"https://api.github.com/\\\",\\\"account-7\\\"]\",\"42\"]",
+                "type": "Issue",
+                "url": "https://github.com/example/repo/issues/42",
+                "updated_at": "2026-07-21T00:00:00Z",
+                "unread": true
+            }),
+            serde_json::json!({
+                "kind": "notification",
+                "notification_key":
+                    "[\"github\",\"[\\\"https://api.github.com\\\",\\\"\\\"]\",\"42\"]",
+                "type": "Issue",
+                "url": "https://github.com/example/repo/issues/42",
+                "updated_at": "2026-07-21T00:00:00Z",
+                "unread": true
+            }),
+            serde_json::json!({
+                "kind": "notification",
+                "notification_key":
+                    "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"42\"]",
+                "type": "Issue Type",
+                "url": "https://github.com/example/repo/issues/42",
+                "updated_at": "2026-07-21T00:00:00Z",
+                "unread": true
+            }),
+            serde_json::json!({
+                "kind": "notification",
+                "notification_key":
+                    "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"42\"]",
+                "type": "",
+                "url": "https://github.com/example/repo/issues/42",
+                "updated_at": "2026-07-21T00:00:00Z",
+                "unread": true
+            }),
+            serde_json::json!({
+                "kind": "notification",
+                "notification_key":
+                    "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"42\"]",
+                "type": "Issue",
+                "url": "https:///issues/42",
+                "updated_at": "2026-07-21T00:00:00Z",
+                "unread": true
+            }),
+            serde_json::json!({
+                "kind": "notification",
+                "notification_key":
+                    "[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"42\"]",
+                "type": "Issue",
+                "url": "https://github.com/example/repo/issues/42",
+                "updated_at": "2026-02-30T00:00:00Z",
+                "unread": true
+            }),
+        ];
+        for metadata in invalid_metadata {
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET plugin_meta = ?1 WHERE id = ?2",
+                    params![metadata.to_string(), NODE_ID],
+                )
+                .expect("set invalid plugin metadata");
+            assert!(
+                load_workspace(&connection, NotesWorkspaceScope::Active).is_err(),
+                "accepted invalid plugin metadata shape"
+            );
+        }
+    }
+
+    #[test]
+    fn audited_v3_nodes_distinguish_missing_fields_from_explicit_null() {
+        let legacy = serde_json::json!({
+            "id": NODE_ID,
+            "nodeKind": "text",
+            "parent_id": null,
+            "sort_key": 1024,
+            "title": "ordinary",
+            "note": "",
+            "image_offset_utf16": 0,
+            "markerKind": "bullet",
+            "markdown_image_width": null,
+            "layout_mode": "bullets",
+            "is_collapsed": 0,
+            "is_starred": 0,
+            "completed_at": null,
+            "created_at": "2026-07-10T00:00:00Z",
+            "updated_at": "2026-07-10T00:00:00Z",
+            "deleted_at": null,
+            "archived_at": null,
+            "archive_root_id": null
+        });
+        assert!(
+            note_node_from_audit_json(&legacy.to_string()).is_err(),
+            "v2 audit rows must be rejected because every v3 storage field is required"
+        );
+
+        let mut explicit_null = legacy.clone();
+        let object = explicit_null.as_object_mut().expect("audit object");
+        object.insert("is_readonly".to_string(), serde_json::Value::Null);
+        object.insert("plugin_state".to_string(), serde_json::Value::Null);
+        object.insert("plugin_meta".to_string(), serde_json::Value::Null);
+        assert!(
+            note_node_from_audit_json(&explicit_null.to_string()).is_err(),
+            "ordinary v3 rows must not decode an explicit NULL readonly field"
+        );
+
+        let mut ordinary_v3 = explicit_null;
+        ordinary_v3
+            .as_object_mut()
+            .expect("audit object")
+            .insert("is_readonly".to_string(), serde_json::json!(0));
+        assert_eq!(
+            note_node_from_audit_json(&ordinary_v3.to_string())
+                .expect("decode ordinary v3 audit")
+                .is_readonly,
+            Some(false)
+        );
+
+        let mut partial_v3 = legacy;
+        partial_v3
+            .as_object_mut()
+            .expect("audit object")
+            .insert("is_readonly".to_string(), serde_json::json!(0));
+        assert!(
+            note_node_from_audit_json(&partial_v3.to_string()).is_err(),
+            "v3 audit storage fields must be present as one projection"
+        );
+    }
+
+    #[test]
+    fn v3_user_scopes_hide_plugin_rows_but_project_user_descendants_as_roots() {
+        let connection = v3_test_connection();
+        insert_v3_node(
+            &connection,
+            GITHUB_NOTIFICATIONS_ROOT_ID,
+            None,
+            "Github Notifications searchable",
+            "2026-07-11T10:00:00Z",
+            None,
+            Some("[]"),
+            None,
+        );
+        insert_v3_node(
+            &connection,
+            NODE_ID,
+            Some(GITHUB_NOTIFICATIONS_ROOT_ID),
+            "2026.07.11 searchable",
+            "2026-07-11T10:00:01Z",
+            None,
+            None,
+            Some(r#"{"kind":"date","date_key":"2026.07.11"}"#),
+        );
+        insert_v3_node(
+            &connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            "notification searchable",
+            "2026-07-11T10:00:02Z",
+            None,
+            None,
+            Some(
+                r#"{"kind":"notification","notification_key":"[\"github\",\"[\\\"https://api.github.com\\\",\\\"account-7\\\"]\",\"42\"]","type":"Issue","url":"https://github.com/example/repo/issues/42","updated_at":"2026-07-11T10:00:02Z","unread":true}"#,
+            ),
+        );
+        insert_v3_node(
+            &connection,
+            THIRD_ID,
+            Some(CHILD_ID),
+            "searchable user",
+            "2026-07-11T10:00:03Z",
+            Some(0),
+            None,
+            None,
+        );
+        connection
+            .execute(
+                "UPDATE notes_nodes SET is_starred = 1 WHERE id IN (?1, ?2)",
+                params![CHILD_ID, THIRD_ID],
+            )
+            .expect("star fixture rows");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET note = '#roadmap searchable note' WHERE id = ?1",
+                [THIRD_ID],
+            )
+            .expect("set user note tag");
+        connection
+            .execute(
+                "INSERT INTO notes_tags(node_id, prefix, tag, normalized_tag) \
+                 VALUES (?1, '#', 'roadmap', 'roadmap'), (?2, '#', 'roadmap', 'roadmap')",
+                params![CHILD_ID, THIRD_ID],
+            )
+            .expect("tag fixture rows");
+        connection
+            .execute(
+                "INSERT INTO notes_dates(\
+                   node_id, field, start_utf16, end_utf16, normalized_start, \
+                   normalized_end, token_text\
+                 ) VALUES \
+                   (?1, 'title', 0, 10, '2026-07-11', '2026-07-11', '07/11/2026'), \
+                   (?2, 'title', 0, 10, '2026-07-11', '2026-07-11', '07/11/2026')",
+                params![CHILD_ID, THIRD_ID],
+            )
+            .expect("date fixture rows");
+
+        let active =
+            load_workspace(&connection, NotesWorkspaceScope::Active).expect("load active v3");
+        assert_eq!(active.nodes.len(), 4);
+        for scope in [
+            NotesWorkspaceScope::Recent,
+            NotesWorkspaceScope::Starred,
+            NotesWorkspaceScope::Tag {
+                tag: "roadmap".to_string(),
+            },
+        ] {
+            let workspace = load_workspace(&connection, scope).expect("load user-only v3");
+            assert_eq!(workspace.nodes.len(), 1);
+            assert_eq!(workspace.nodes[0].id, THIRD_ID);
+            assert_eq!(workspace.nodes[0].parent_id, None);
+        }
+        let search = search_nodes_at(
+            &connection,
+            "searchable",
+            NoteSearchScope::Active,
+            fixed_today(),
+        )
+        .expect("search v3");
+        assert_eq!(
+            search
+                .iter()
+                .map(|result| result.node_id.as_str())
+                .collect::<Vec<_>>(),
+            [THIRD_ID]
+        );
+        let date_search = search_nodes_at(
+            &connection,
+            "07/11/2026",
+            NoteSearchScope::Active,
+            fixed_today(),
+        )
+        .expect("date search v3");
+        assert_eq!(date_search.len(), 1);
+        assert_eq!(date_search[0].node_id, THIRD_ID);
+        let structured = search_nodes_structured(
+            &connection,
+            &NoteStructuredSearchQuery {
+                text: String::new(),
+                required_tags: vec![NoteSearchTag {
+                    prefix: NoteTagPrefix::Hash,
+                    normalized_tag: "roadmap".to_string(),
+                    display_tag: "roadmap".to_string(),
+                }],
+                excluded_tags: Vec::new(),
+                or_groups: Vec::new(),
+            },
+        )
+        .expect("structured v3 search");
+        assert_eq!(structured.len(), 1);
+        assert_eq!(structured[0].node_id, THIRD_ID);
+        assert_eq!(structured[0].matched_field, NoteSearchMatchedField::Note);
+        assert_eq!(list_tags(&connection).expect("v3 tags"), ["roadmap"]);
+        let tag_counts = list_tags_with_counts(&connection).expect("v3 tag counts");
+        assert_eq!(tag_counts.len(), 1);
+        assert_eq!(tag_counts[0].count, 1);
+    }
+
+    #[test]
+    fn v3_archive_and_trash_hide_plugin_rows_and_reroot_user_children() {
+        let connection = v3_test_connection();
+        for (plugin_id, user_id, date_key, deleted_at, archived_at) in [
+            (
+                FOURTH_ID,
+                FIFTH_ID,
+                "2026.07.11",
+                None,
+                Some("2026-07-11T11:00:00Z"),
+            ),
+            (
+                SIXTH_ID,
+                SEVENTH_ID,
+                "2026.07.12",
+                Some("2026-07-11T12:00:00Z"),
+                None,
+            ),
+        ] {
+            let plugin_meta = format!(r#"{{"kind":"date","date_key":"{date_key}"}}"#);
+            insert_v3_node(
+                &connection,
+                plugin_id,
+                None,
+                "plugin lifecycle searchable",
+                "2026-07-11T10:00:00Z",
+                None,
+                None,
+                Some(&plugin_meta),
+            );
+            insert_v3_node(
+                &connection,
+                user_id,
+                Some(plugin_id),
+                "user lifecycle searchable",
+                "2026-07-11T10:00:01Z",
+                Some(0),
+                None,
+                None,
+            );
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET deleted_at = ?2, archived_at = ?3, \
+                       archive_root_id = CASE WHEN ?3 IS NULL THEN NULL ELSE ?1 END \
+                     WHERE id IN (?1, ?4)",
+                    params![plugin_id, deleted_at, archived_at, user_id],
+                )
+                .expect("set lifecycle fixture");
+        }
+
+        for (scope, expected_id) in [
+            (NotesWorkspaceScope::Archive, FIFTH_ID),
+            (NotesWorkspaceScope::Trash, SEVENTH_ID),
+        ] {
+            let workspace = load_workspace(&connection, scope).expect("load v3 lifecycle");
+            assert_eq!(workspace.nodes.len(), 1);
+            assert_eq!(workspace.nodes[0].id, expected_id);
+            assert_eq!(workspace.nodes[0].parent_id, None);
+        }
+
+        for (parent_id, child_id, deleted_at, archived_at) in [
+            (NODE_ID, CHILD_ID, None, Some("2026-07-11T13:00:00Z")),
+            (THIRD_ID, EIGHTH_ID, Some("2026-07-11T14:00:00Z"), None),
+        ] {
+            insert_v3_node(
+                &connection,
+                parent_id,
+                None,
+                "live user parent",
+                "2026-07-11T10:00:02Z",
+                Some(0),
+                None,
+                None,
+            );
+            insert_v3_node(
+                &connection,
+                child_id,
+                Some(parent_id),
+                "boundary searchable",
+                "2026-07-11T10:00:03Z",
+                Some(0),
+                None,
+                None,
+            );
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET deleted_at = ?2, archived_at = ?3, \
+                       archive_root_id = CASE WHEN ?3 IS NULL THEN NULL ELSE ?1 END \
+                     WHERE id = ?1",
+                    params![child_id, deleted_at, archived_at],
+                )
+                .expect("set out-of-scope parent boundary");
+        }
+
+        for (scope, expected_ids) in [
+            (NoteSearchScope::Archive, [CHILD_ID, FIFTH_ID]),
+            (NoteSearchScope::Trash, [EIGHTH_ID, SEVENTH_ID]),
+        ] {
+            reset_search_parent_trail_query_count();
+            let results = search_nodes_at(&connection, "searchable", scope, fixed_today())
+                .expect("search v3 lifecycle");
+            assert_eq!(
+                results
+                    .iter()
+                    .map(|result| result.node_id.as_str())
+                    .collect::<BTreeSet<_>>(),
+                expected_ids.into_iter().collect()
+            );
+            assert!(results.iter().all(|result| result.parent_trail.is_empty()));
+            assert_eq!(
+                search_parent_trail_query_count(),
+                1,
+                "v3 parent trails must load one chunk, not one query per hit"
+            );
+        }
     }
 
     #[test]
@@ -7191,7 +13339,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_schema_v4_defines_markdown_width_sync_storage_and_stable_identity_metadata() {
+    fn fresh_schema_v5_defines_note_sync_storage_and_stable_identity_metadata() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
         let connection = connect_notes_db(&vault_path).expect("initialize database");
@@ -7200,12 +13348,22 @@ mod tests {
             connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .expect("schema version"),
-            4
+            CURRENT_NOTES_SCHEMA_VERSION
         );
         let node_columns = table_columns(&connection, "notes_nodes");
-        assert!(node_columns.contains(&"hlc".to_string()));
-        assert!(node_columns.contains(&"marker_kind".to_string()));
-        assert!(node_columns.contains(&"markdown_image_width".to_string()));
+        for column in [
+            "hlc",
+            "marker_kind",
+            "markdown_image_width",
+            "plugin_state",
+            "plugin_meta",
+            "is_readonly",
+        ] {
+            assert!(
+                node_columns.contains(&column.to_string()),
+                "missing {column}"
+            );
+        }
         for table in [
             "sync_meta",
             "sync_topics",
@@ -7237,6 +13395,114 @@ mod tests {
             .expect("stable sync identity metadata");
 
         assert_eq!(second, first);
+    }
+
+    #[test]
+    fn initialization_rejects_existing_v2_before_running_schema_sql() {
+        let mut connection = Connection::open_in_memory().expect("in-memory v2 database");
+        connection
+            .execute_batch(
+                "CREATE TABLE notes_nodes(id TEXT PRIMARY KEY); PRAGMA user_version = 2;",
+            )
+            .expect("seed v2 schema");
+
+        let error = initialize_notes_db(&mut connection).expect_err("v2 must be rejected");
+
+        assert_eq!(error, NOTES_DEVELOPMENT_SCHEMA_REJECTION);
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .expect("unchanged v2 schema version"),
+            2
+        );
+        assert_eq!(table_columns(&connection, "notes_nodes"), ["id"]);
+    }
+
+    #[test]
+    fn existing_v2_wal_database_is_rejected_before_writable_initialization() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        drop(
+            crate::notes::connection::acquire_vault_app_lock(&vault_path)
+                .expect("create normal Notes app lock"),
+        );
+        let database_path = notes_db_path(&vault_path);
+        std::fs::create_dir_all(database_path.parent().expect("metadata directory"))
+            .expect("create metadata directory");
+        let fixture = Connection::open(&database_path).expect("create v2 fixture");
+        fixture
+            .execute_batch(
+                "PRAGMA journal_mode = WAL; \
+                 PRAGMA wal_autocheckpoint = 0; \
+                 CREATE TABLE notes_nodes(id TEXT PRIMARY KEY); \
+                 CREATE TABLE sync_topics(topic_id TEXT PRIMARY KEY, file_name TEXT NOT NULL); \
+                 CREATE TABLE sync_dirty_nodes(node_id TEXT PRIMARY KEY); \
+                 INSERT INTO sync_topics(topic_id, file_name) VALUES ('root', 'Root.md'); \
+                 INSERT INTO sync_dirty_nodes(node_id) VALUES ('root'); \
+                 PRAGMA user_version = 2;",
+            )
+            .expect("seed v2 WAL fixture");
+
+        let wal_path = sqlite_companion_path(&database_path, "-wal");
+        let shm_path = sqlite_companion_path(&database_path, "-shm");
+        let user_version_before: i64 = fixture
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("read v2 schema version");
+        let sync_rows_before: Vec<(String, String)> = fixture
+            .prepare("SELECT topic_id, file_name FROM sync_topics ORDER BY topic_id")
+            .expect("prepare sync rows")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query sync rows")
+            .collect::<Result<_, _>>()
+            .expect("collect sync rows");
+        let main_before = std::fs::read(&database_path).expect("read v2 database");
+        let wal_before = std::fs::read(&wal_path).expect("read v2 WAL");
+        let shm_before = std::fs::read(&shm_path).expect("read v2 SHM");
+        let files_before = vault_file_listing(temp_dir.path());
+        assert!(
+            !files_before
+                .iter()
+                .any(|path| path.ends_with(GITHUB_NOTIFICATIONS_FILENAME)),
+            "v2 fixture must not have a GitHub Notifications topic file"
+        );
+
+        let error = connect_notes_db(&vault_path).expect_err("v2 database must be rejected");
+
+        assert_eq!(error, NOTES_DEVELOPMENT_SCHEMA_REJECTION);
+        assert_eq!(
+            std::fs::read(&database_path).expect("read unchanged v2 database"),
+            main_before
+        );
+        assert_eq!(
+            std::fs::read(&wal_path).expect("read unchanged v2 WAL"),
+            wal_before
+        );
+        assert_eq!(
+            std::fs::read(&shm_path).expect("read unchanged v2 SHM"),
+            shm_before
+        );
+        let files_after = vault_file_listing(temp_dir.path());
+        assert_eq!(files_after, files_before);
+        assert!(
+            !files_after
+                .iter()
+                .any(|path| path.ends_with(GITHUB_NOTIFICATIONS_FILENAME)),
+            "v2 rejection must not create a GitHub Notifications topic file"
+        );
+        assert_eq!(
+            fixture
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .expect("read unchanged v2 schema version"),
+            user_version_before
+        );
+        let sync_rows_after: Vec<(String, String)> = fixture
+            .prepare("SELECT topic_id, file_name FROM sync_topics ORDER BY topic_id")
+            .expect("prepare unchanged sync rows")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query unchanged sync rows")
+            .collect::<Result<_, _>>()
+            .expect("collect unchanged sync rows");
+        assert_eq!(sync_rows_after, sync_rows_before);
     }
 
     #[test]
@@ -7307,10 +13573,10 @@ mod tests {
     }
 
     #[test]
-    fn first_app_local_open_rejects_effective_legacy_wal_v1_without_mutation_but_existing_local_wins(
+    fn first_app_local_open_rejects_effective_legacy_wal_v2_without_mutation_but_existing_local_wins(
     ) {
-        const CHILD_ENV: &str = "YONALIST_APP_LOCAL_LEGACY_V1_CHILD";
-        const TEST_NAME: &str = "notes::repository::tests::first_app_local_open_rejects_effective_legacy_wal_v1_without_mutation_but_existing_local_wins";
+        const CHILD_ENV: &str = "YONALIST_APP_LOCAL_LEGACY_V2_CHILD";
+        const TEST_NAME: &str = "notes::repository::tests::first_app_local_open_rejects_effective_legacy_wal_v2_without_mutation_but_existing_local_wins";
 
         if std::env::var_os(CHILD_ENV).is_some() {
             let sandbox = std::env::current_dir().expect("isolated child cwd");
@@ -7318,6 +13584,10 @@ mod tests {
             crate::NOTES_DATA_ROOT
                 .set(notes_root.clone())
                 .expect("set isolated production Notes root");
+            assert!(
+                !notes_root.exists(),
+                "app-local v2 rejection fixture must start without a Notes root"
+            );
 
             let legacy_only = sandbox.join("legacy-only");
             let legacy_metadata = legacy_only.join(".yonalist");
@@ -7334,13 +13604,14 @@ mod tests {
                 .execute_batch(
                     "BEGIN IMMEDIATE; \
                      CREATE TABLE legacy_probe(id INTEGER PRIMARY KEY); \
-                     PRAGMA user_version = 1; \
+                     PRAGMA user_version = 2; \
                      COMMIT;",
                 )
-                .expect("record effective schema v1 only in WAL");
+                .expect("record effective schema v2 only in WAL");
             std::fs::write(legacy_metadata.join("sentinel"), b"keep")
                 .expect("write unrelated metadata sentinel");
             let legacy_wal_path = sqlite_companion_path(&legacy_path, "-wal");
+            let legacy_shm_path = sqlite_companion_path(&legacy_path, "-shm");
             let main_before = std::fs::read(&legacy_path).expect("read legacy main before probe");
             let wal_before = std::fs::read(&legacy_wal_path).expect("read legacy WAL before probe");
             assert_eq!(
@@ -7351,24 +13622,22 @@ mod tests {
                     main_before[63],
                 ]),
                 0,
-                "fixture must keep schema v1 out of the main header"
+                "fixture must keep schema v2 out of the main header"
             );
             assert_eq!(
                 legacy
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .expect("read effective legacy schema"),
-                1
+                2
             );
+            let shm_before = std::fs::read(&legacy_shm_path).expect("read legacy SHM before probe");
             let legacy_only = legacy_only.to_string_lossy().into_owned();
             let app_local_path = notes_db_path(&legacy_only);
 
             let error = connect_notes_db(&legacy_only)
-                .expect_err("legacy schema v1 must block first app-local creation");
+                .expect_err("legacy schema v2 must block first app-local creation");
 
-            assert_eq!(
-                error,
-                "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행"
-            );
+            assert_eq!(error, NOTES_DEVELOPMENT_SCHEMA_REJECTION);
             assert!(!app_local_path.exists(), "a new v3 database was created");
             assert!(
                 !notes_root.exists(),
@@ -7378,13 +13647,10 @@ mod tests {
             assert!(!legacy_metadata.join("notes-assets").exists());
             let lease_error =
                 match crate::notes::attachments::AttachmentStorageLease::acquire(&legacy_only) {
-                    Ok(_) => panic!("attachment storage must reject the effective legacy v1"),
+                    Ok(_) => panic!("attachment storage must reject the effective legacy v2"),
                     Err(error) => error,
                 };
-            assert_eq!(
-                lease_error,
-                "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행"
-            );
+            assert_eq!(lease_error, NOTES_DEVELOPMENT_SCHEMA_REJECTION);
             assert!(
                 !notes_root.exists(),
                 "attachment preflight created the app-local Notes root"
@@ -7395,7 +13661,7 @@ mod tests {
                 legacy
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                     .expect("read unchanged legacy schema"),
-                1
+                2
             );
             assert_eq!(
                 std::fs::read(&legacy_path).expect("read legacy main after probe"),
@@ -7404,6 +13670,10 @@ mod tests {
             assert_eq!(
                 std::fs::read(&legacy_wal_path).expect("read legacy WAL after probe"),
                 wal_before
+            );
+            assert_eq!(
+                std::fs::read(&legacy_shm_path).expect("read legacy SHM after probe"),
+                shm_before
             );
             assert_eq!(
                 std::fs::read(legacy_metadata.join("sentinel")).expect("read sentinel"),
@@ -7432,11 +13702,11 @@ mod tests {
                 .pragma_update(None, "wal_autocheckpoint", 0_i64)
                 .expect("disable ignored legacy autocheckpoint");
             second_legacy
-                .execute_batch("BEGIN IMMEDIATE; PRAGMA user_version = 1; COMMIT;")
-                .expect("set ignored effective legacy schema v1");
+                .execute_batch("BEGIN IMMEDIATE; PRAGMA user_version = 2; COMMIT;")
+                .expect("set ignored effective legacy schema v2");
 
             let reopened = connect_notes_db(&local_first)
-                .expect("existing app-local database must take precedence over legacy v1");
+                .expect("existing app-local database must take precedence over legacy v2");
             assert_eq!(
                 reopened
                     .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
@@ -8647,7 +14917,10 @@ mod tests {
         let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
         std::fs::create_dir_all(database_path.parent().expect("metadata path"))
             .expect("create metadata directory");
-        std::fs::write(&database_path, b"").expect("create original empty database");
+        let mut seed = Connection::open(&database_path).expect("create original database");
+        initialize_notes_db(&mut seed).expect("initialize original database");
+        drop(seed);
+        let original_bytes = std::fs::read(&database_path).expect("read original database");
         let moved_database = temp_dir.path().join("held-original.sqlite");
         let outside = temp_dir.path().join("outside.sqlite");
         std::fs::write(&outside, b"").expect("create outside target");
@@ -8669,7 +14942,7 @@ mod tests {
         assert_eq!(std::fs::read(outside).expect("read outside target"), b"");
         assert_eq!(
             std::fs::read(moved_database).expect("read safely held original"),
-            b""
+            original_bytes
         );
     }
 
@@ -8683,7 +14956,10 @@ mod tests {
         let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
         let metadata_path = database_path.parent().expect("metadata path").to_path_buf();
         std::fs::create_dir_all(&metadata_path).expect("create metadata directory");
-        std::fs::write(&database_path, b"").expect("create original empty database");
+        let mut seed = Connection::open(&database_path).expect("create original database");
+        initialize_notes_db(&mut seed).expect("initialize original database");
+        drop(seed);
+        let original_bytes = std::fs::read(&database_path).expect("read original database");
         let held_metadata = vault_path.join("held-metadata");
         let attacker_metadata = vault_path.join("attacker-metadata");
         std::fs::create_dir(&attacker_metadata).expect("create attacker metadata");
@@ -8710,7 +14986,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::read(held_metadata.join("notes.sqlite")).expect("read safely held database"),
-            b""
+            original_bytes
         );
     }
 
@@ -10640,6 +16916,93 @@ mod tests {
     }
 
     #[test]
+    fn sorting_an_ordinary_subtree_rejects_readonly_and_plugin_owned_descendants() {
+        for (label, is_readonly, plugin_state, plugin_meta) in [
+            ("readonly", Some(1), None, None),
+            ("plugin state", None, Some("[]"), None),
+            (
+                "plugin metadata",
+                None,
+                None,
+                Some(r#"{"kind":"date","date_key":"2026.07.11"}"#),
+            ),
+        ] {
+            let mut connection = v3_test_connection();
+            insert_v3_node(
+                &connection,
+                NODE_ID,
+                None,
+                "ordinary root",
+                "2026-07-11T00:00:00Z",
+                Some(0),
+                None,
+                None,
+            );
+            insert_v3_node(
+                &connection,
+                CHILD_ID,
+                Some(NODE_ID),
+                "Zulu",
+                "2026-07-11T00:00:01Z",
+                is_readonly,
+                plugin_state,
+                plugin_meta,
+            );
+            insert_v3_node(
+                &connection,
+                THIRD_ID,
+                Some(NODE_ID),
+                "Alpha",
+                "2026-07-11T00:00:02Z",
+                Some(0),
+                None,
+                None,
+            );
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET sort_key = 2048 WHERE id = ?1",
+                    [THIRD_ID],
+                )
+                .expect("separate ordinary sibling sort keys");
+            let expected = active_children(&connection, Some(NODE_ID));
+            let changes_before = sqlite_total_changes(&connection);
+
+            let error = sort_subtree_ascending(&mut connection, NODE_ID)
+                .expect_err(&format!("{label} descendant must block sorting"));
+
+            assert_eq!(
+                error,
+                "A read-only or plugin-managed Note subtree cannot be reordered."
+            );
+            assert_eq!(active_children(&connection, Some(NODE_ID)), expected);
+            assert_eq!(sqlite_total_changes(&connection), changes_before);
+        }
+    }
+
+    #[test]
+    fn sorting_rejects_an_active_cycle_without_mutation() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "child");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET parent_id = ?1 WHERE id = ?2",
+                params![CHILD_ID, NODE_ID],
+            )
+            .expect("create sortable cycle");
+        let expected = persistent_state(&connection);
+
+        let error =
+            sort_subtree_ascending(&mut connection, NODE_ID).expect_err("cyclic subtree sort");
+
+        assert_eq!(
+            error,
+            "The Notes tree contains a cycle and cannot be sorted."
+        );
+        assert_eq!(persistent_state(&connection), expected);
+    }
+
+    #[test]
     fn collapse_all_handles_a_two_thousand_level_tree_without_rust_recursion() {
         let mut connection = test_connection();
         insert_node(&connection, NODE_ID, None, 1024, "root");
@@ -11217,11 +17580,11 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_first_initialization_waits_for_locks_and_creates_one_valid_schema() {
+    fn concurrent_current_schema_open_waits_for_initialization_locks() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
         let path = notes_db_path(&vault_path);
-        std::fs::create_dir_all(path.parent().expect("metadata dir")).expect("metadata dir");
+        drop(connect_notes_db(&vault_path).expect("initialize current schema"));
         let blocker = Connection::open(&path).expect("open initialization blocker");
         blocker
             .execute_batch("PRAGMA journal_mode = WAL; BEGIN IMMEDIATE")

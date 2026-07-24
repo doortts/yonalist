@@ -123,6 +123,8 @@ function selectionSnapshot(
     completion: "none",
     deleteFocusNodeId: "tail",
     eligibility: {
+      movement: eligible(nodeIds),
+      tags: eligible(nodeIds),
       copy: eligible(nodeIds),
       cut: eligible(nodeIds),
       delete: eligible(nodeIds),
@@ -1042,5 +1044,82 @@ describe("NotesBulletMenu", () => {
 
     expect(selection.execute).toHaveBeenCalledOnce();
     resolveAction();
+  });
+
+  it.each([
+    { isReadonly: false, label: "Make read-only" },
+    { isReadonly: true, label: "Make editable" }
+  ])("toggles the ordinary readonly state with $label", async ({
+    isReadonly,
+    label
+  }) => {
+    const user = userEvent.setup();
+    const onToggleReadonly = vi.fn();
+    render(
+      <NotesBulletMenu
+        {...standardProps({
+          isReadonly,
+          onToggleReadonly
+        })}
+      />
+    );
+
+    const { menu } = await openMenu(user);
+    await user.click(within(menu).getByRole("menuitem", { name: label }));
+
+    expect(onToggleReadonly).toHaveBeenCalledOnce();
+  });
+
+  it("keeps lifecycle and duplicate actions but hides protected mutations for readonly bullets", async () => {
+    render(
+      <NotesBulletMenu
+        {...standardProps({
+          isReadonly: true,
+          hasNote: true,
+          onToggleReadonly: vi.fn()
+        })}
+      />
+    );
+
+    const { menu } = await openMenu();
+    expect(
+      ["Complete", "Star", "Edit note", "Expand all", "Collapse all", "Duplicate", "Make editable"]
+        .every((label) =>
+          within(menu).queryByRole("menuitem", { name: label }) !== null
+        )
+    ).toBe(true);
+    for (const label of [
+      "Add date",
+      "Upload image",
+      "Move To...",
+      "Sort A-Z",
+      "Sort Z-A",
+      "Remove note",
+      "Delete"
+    ]) {
+      expect(
+        within(menu).queryByRole("menuitem", { name: label })
+      ).toBeNull();
+    }
+  });
+
+  it("shows only the one-way Complete command in provider mode", async () => {
+    const user = userEvent.setup();
+    const onToggleComplete = vi.fn();
+    render(
+      <NotesBulletMenu
+        mode="provider"
+        label="Project"
+        completed={false}
+        onToggleComplete={onToggleComplete}
+      />
+    );
+
+    const { menu } = await openMenu(user);
+    expect(menuItemLabels(menu)).toEqual(["Complete"]);
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Complete" })
+    );
+    expect(onToggleComplete).toHaveBeenCalledOnce();
   });
 });

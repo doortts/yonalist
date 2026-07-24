@@ -5,8 +5,13 @@ use crate::file_io::{
 use crate::notes::connection::{
     acquire_notes_connection, lock_notes_connection, validate_notes_connection,
 };
+use crate::notes::github_notifications::{
+    GithubNotificationsPluginState, GITHUB_NOTIFICATIONS_FILENAME, GITHUB_NOTIFICATIONS_ROOT_ID,
+    GITHUB_NOTIFICATIONS_TITLE, SEED_HLC,
+};
+use crate::notes::hlc::Hlc;
 use crate::notes::markdown_import::MAX_MARKDOWN_BYTES;
-use crate::notes::repository::notes_db_path;
+use crate::notes::repository::{next_root_sort_key, notes_db_path};
 use crate::notes::sync::exporter::{
     ensure_trash_metadata, load_all_exports, load_pending_exports, publish_pending_exports,
     publish_pending_exports_in_guarded_vault, render_canonical_sync_bytes, sha256_hex,
@@ -15,7 +20,7 @@ use crate::notes::sync::exporter::{
 use crate::notes::sync::merger::{
     merge_topic_doc_with_cleanup, merge_trash_doc, merge_trash_doc_with_hash, MergeCleanupIntent,
 };
-use crate::notes::sync::topic_file::{TopicFile, TopicNode};
+use crate::notes::sync::topic_file::{is_app_timestamp, TopicFile, TopicNode};
 use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
 use crate::notes::sync::watcher::schedule_missing_topic_recreation;
 use crate::notes::sync::{
@@ -356,6 +361,7 @@ fn reconcile_startup_with_connection(
     }
     reconcile_pending_cleanup_intents(connection, vault_root, &mut report)?;
     recreate_missing_exported_files(connection, vault_root, &mut report)?;
+    seed_github_notifications_root(connection)?;
 
     maybe_inject_startup_before_flush();
     let pending = load_pending_exports(connection)?
@@ -396,12 +402,18 @@ fn recreate_missing_exported_files(
         let mut statement = connection
             .prepare(
                 "SELECT file_name FROM sync_topics \
-                 WHERE exported_hash <> '' AND topic_id NOT LIKE '__yonalist_cleanup__:%' \
+                 WHERE quarantined = 0 \
+                   AND topic_id NOT LIKE '__yonalist_cleanup__:%' \
+                   AND (exported_hash <> '' \
+                     OR (topic_id = ?1 AND file_name = ?2 AND exported_hash = '')) \
                  ORDER BY file_name",
             )
             .map_err(|error| format!("Could not prepare missing Notes file recovery: {error}"))?;
         let rows = statement
-            .query_map([], |row| row.get::<_, String>(0))
+            .query_map(
+                params![GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_FILENAME],
+                |row| row.get::<_, String>(0),
+            )
             .map_err(|error| format!("Could not scan missing Notes files: {error}"))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| format!("Could not read missing Notes files: {error}"))?
@@ -410,8 +422,14 @@ fn recreate_missing_exported_files(
         // Check the file's actual presence on disk, not the startup listing: a
         // file exported earlier in this same reconcile is not in that listing
         // but is present, and must not be spuriously re-marked.
-        if vault_root.join(&file_name).try_exists().unwrap_or(false) {
-            continue;
+        match fs::symlink_metadata(vault_root.join(&file_name)) {
+            Ok(_) => continue,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not inspect missing Notes file recovery for {file_name}: {error}"
+                ))
+            }
         }
         if schedule_missing_topic_recreation(connection, &file_name)? {
             report.status_changed = true;
@@ -1357,23 +1375,190 @@ fn current_timestamp(connection: &Connection) -> Result<String, String> {
         .map_err(|error| format!("Could not record Notes sync time: {error}"))
 }
 
+pub(crate) fn seed_github_notifications_root(connection: &mut Connection) -> Result<bool, String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start the GitHub Notifications seed: {error}"))?;
+    let canonical_quarantined = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_topics WHERE file_name = ?1 AND quarantined = 1)",
+            [GITHUB_NOTIFICATIONS_FILENAME],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("Could not inspect GitHub Notifications quarantine: {error}"))?;
+    if canonical_quarantined {
+        transaction
+            .commit()
+            .map_err(|error| format!("Could not finish the blocked GitHub seed check: {error}"))?;
+        return Ok(false);
+    }
+
+    let topic_owners = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT topic_id, file_name, quarantined FROM sync_topics \
+                 WHERE topic_id = ?1 OR file_name = ?2 ORDER BY topic_id, file_name",
+            )
+            .map_err(|error| {
+                format!("Could not prepare GitHub Notifications topic ownership: {error}")
+            })?;
+        let owners = statement
+            .query_map(
+                params![GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_FILENAME],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .map_err(|error| {
+                format!("Could not inspect GitHub Notifications topic ownership: {error}")
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                format!("Could not collect GitHub Notifications topic ownership: {error}")
+            })?;
+        owners
+    };
+    let topic_registered = match topic_owners.as_slice() {
+        [] => false,
+        [(topic_id, file_name, 0)]
+            if topic_id == GITHUB_NOTIFICATIONS_ROOT_ID
+                && file_name == GITHUB_NOTIFICATIONS_FILENAME =>
+        {
+            true
+        }
+        _ => {
+            return Err(
+                "The canonical GitHub Notifications topic has conflicting ownership.".to_string(),
+            )
+        }
+    };
+
+    let existing = transaction
+        .query_row(
+            "SELECT \
+               parent_id IS NULL AND title = ?2 AND note = '' \
+                 AND image_offset_utf16 = 0 AND layout_mode = 'bullets' \
+                 AND is_collapsed IN (0, 1) AND is_starred = 0 \
+                 AND completed_at IS NULL AND deleted_at IS NULL \
+                 AND deleted_batch_id IS NULL AND archived_at IS NULL \
+                 AND archive_root_id IS NULL AND node_kind = 'text' \
+                 AND is_readonly IS NULL AND plugin_meta IS NULL \
+                 AND NOT EXISTS(\
+                   SELECT 1 FROM notes_attachments WHERE node_id = notes_nodes.id\
+                 ), \
+               plugin_state, hlc, created_at, updated_at \
+             FROM notes_nodes WHERE id = ?1",
+            params![GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_TITLE],
+            |row| {
+                Ok((
+                    row.get::<_, bool>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("Could not inspect the GitHub Notifications root: {error}"))?;
+    let mut created = false;
+    if let Some((static_shape_is_valid, plugin_state, hlc, created_at, updated_at)) = existing {
+        let state_is_valid = plugin_state.as_deref().is_some_and(|raw| {
+            serde_json::from_str::<Vec<String>>(raw).is_ok_and(|collapsed_groups| {
+                let state = GithubNotificationsPluginState { collapsed_groups };
+                state.is_valid()
+                    && serde_json::to_string(&state.collapsed_groups)
+                        .is_ok_and(|canonical| canonical == raw)
+            })
+        });
+        if !static_shape_is_valid
+            || !state_is_valid
+            || Hlc::decode(&hlc).is_err()
+            || !is_app_timestamp(&created_at)
+            || !is_app_timestamp(&updated_at)
+        {
+            return Err(
+                "The fixed GitHub Notifications ID is occupied by an invalid root.".to_string(),
+            );
+        }
+    } else {
+        let sort_key = next_root_sort_key(&transaction)?;
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, parent_id, sort_key, title, note, is_collapsed, is_starred, \
+                   completed_at, archived_at, deleted_at, is_readonly, plugin_state, \
+                   plugin_meta, created_at, updated_at, hlc\
+                 ) VALUES (?1, NULL, ?2, ?3, '', 0, 0, NULL, NULL, NULL, NULL, '[]', NULL, \
+                           '1970-01-01T00:00:00.000Z', '1970-01-01T00:00:00.000Z', ?4)",
+                params![
+                    GITHUB_NOTIFICATIONS_ROOT_ID,
+                    sort_key,
+                    GITHUB_NOTIFICATIONS_TITLE,
+                    SEED_HLC
+                ],
+            )
+            .map_err(|error| format!("Could not seed the GitHub Notifications root: {error}"))?;
+        created = true;
+    }
+
+    if !topic_registered {
+        transaction
+            .execute(
+                "INSERT INTO sync_topics(topic_id, file_name) VALUES (?1, ?2)",
+                params![GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_FILENAME],
+            )
+            .map_err(|error| {
+                format!("Could not register the GitHub Notifications topic: {error}")
+            })?;
+    }
+    if created || !topic_registered {
+        transaction
+            .execute(
+                "INSERT INTO sync_dirty_nodes(node_id) VALUES (?1) \
+                 ON CONFLICT(node_id) DO NOTHING",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+            )
+            .map_err(|error| {
+                format!("Could not schedule the GitHub Notifications export: {error}")
+            })?;
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not finish the GitHub Notifications seed: {error}"))?;
+    Ok(created)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         flush_pending, inject_startup_after_entry_inspect_hook, inject_startup_before_rank_hook,
         inject_truncated_recovery_after_isolation_hook,
         inject_truncated_recovery_before_publication_hook, prune_consumed_cleanup_since,
-        reconcile_startup,
+        reconcile_file_bytes, reconcile_startup, record_quarantine,
+        recreate_missing_exported_files, seed_github_notifications_root, BootstrapReport,
+        ReconcileFileOutcome,
     };
     use crate::notes::connection::{
         acquire_notes_connection, evict_notes_connection, lock_notes_connection,
     };
+    use crate::notes::github_notifications::{
+        GITHUB_NOTIFICATIONS_FILENAME, GITHUB_NOTIFICATIONS_ROOT_ID, GITHUB_NOTIFICATIONS_TITLE,
+        SEED_HLC,
+    };
+    use crate::notes::history::install_session_history;
+    use crate::notes::schema::{install_notes_sql_functions, V3_SCHEMA_SQL};
     use crate::notes::sync::exporter::{sha256_hex, TRASH_FILE_NAME, TRASH_TOPIC_ID};
+    use crate::notes::sync::merger::merge_topic_doc;
     use crate::notes::sync::topic_file::{
         render_topic_doc, TopicContent, TopicDoc, TopicFile, TopicNode, TopicRoot,
     };
     use crate::notes::sync::topic_parser::{parse_topic_file, TopicParseOutcome};
-    use rusqlite::params;
+    use rusqlite::{params, Connection};
     use std::fs;
 
     const TOPIC_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -1383,6 +1568,23 @@ mod tests {
     const HLC_1: &str = "000000001-00-a3f2";
     const HLC_2: &str = "000000002-00-a3f2";
 
+    #[derive(Debug, PartialEq, Eq)]
+    struct SeedRow {
+        parent_id: Option<String>,
+        sort_key: i64,
+        title: String,
+        note: String,
+        is_collapsed: i64,
+        is_starred: i64,
+        completed_at: Option<String>,
+        archived_at: Option<String>,
+        deleted_at: Option<String>,
+        is_readonly: Option<i64>,
+        plugin_state: Option<String>,
+        plugin_meta: Option<String>,
+        hlc: String,
+    }
+
     fn topic(title: &str, root_hlc: &str) -> TopicDoc {
         TopicDoc {
             id: TOPIC_ID.to_string(),
@@ -1390,6 +1592,7 @@ mod tests {
             max_hlc: HLC_2.to_string(),
             root: TopicRoot {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                format_version: crate::notes::sync::topic_file::TOPIC_FORMAT_VERSION,
                 title: title.to_string(),
                 note: String::new(),
                 markdown_image_width: None,
@@ -1397,6 +1600,11 @@ mod tests {
                 starred: false,
                 completed_at: None,
                 archived_at: None,
+                root_collapsed: false,
+                root_readonly: Some(false),
+                plugin: None,
+                plugin_children: None,
+                collapsed_groups: Vec::new(),
             },
             nodes: vec![TopicNode {
                 marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
@@ -1408,6 +1616,9 @@ mod tests {
                 note: String::new(),
                 markdown_image_width: None,
                 from: None,
+                collapsed: false,
+                readonly: None,
+                plugin_meta: None,
                 sibling_ordinal: 1,
                 sort_key: 1024,
                 children: Vec::new(),
@@ -1417,6 +1628,526 @@ mod tests {
 
     fn vault_string(vault: &tempfile::TempDir) -> String {
         vault.path().to_str().expect("utf-8 vault").to_string()
+    }
+
+    fn v3_bootstrap_connection() -> Connection {
+        let connection = Connection::open_in_memory().expect("open v3 bootstrap database");
+        install_notes_sql_functions(&connection).expect("install Notes SQL functions");
+        connection
+            .execute_batch(V3_SCHEMA_SQL)
+            .expect("create v3 bootstrap schema");
+        install_session_history(&connection).expect("install v3 history");
+        connection
+    }
+
+    #[test]
+    fn github_missing_root_file_recovery_covers_empty_hash_and_respects_precedence() {
+        let vault = tempfile::tempdir().expect("create recovery vault");
+        let mut connection = v3_bootstrap_connection();
+        seed_github_notifications_root(&mut connection).expect("seed GN root");
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear seed dirtiness");
+
+        let mut report = BootstrapReport::default();
+        recreate_missing_exported_files(&connection, vault.path(), &mut report)
+            .expect("recover empty-hash fixed topic");
+        assert!(report.status_changed);
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .expect("clear recovery dirtiness");
+        connection
+            .execute(
+                "UPDATE sync_topics SET quarantined = 1 WHERE topic_id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+            )
+            .expect("quarantine fixed topic");
+        let mut report = BootstrapReport::default();
+        recreate_missing_exported_files(&connection, vault.path(), &mut report)
+            .expect("quarantine blocks missing-file recovery");
+        assert!(!report.status_changed);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+
+        connection
+            .execute(
+                "UPDATE sync_topics SET quarantined = 0 WHERE topic_id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+            )
+            .expect("release fixed topic quarantine");
+        fs::write(
+            vault.path().join(GITHUB_NOTIFICATIONS_FILENAME),
+            b"existing canonical entry",
+        )
+        .expect("create existing canonical entry");
+        let mut report = BootstrapReport::default();
+        recreate_missing_exported_files(&connection, vault.path(), &mut report)
+            .expect("existing canonical entry wins");
+        assert!(!report.status_changed);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn production_startup_reconciles_before_github_seed_and_flush() {
+        let vault = tempfile::tempdir().expect("create production startup vault");
+        let vault_path = vault_string(&vault);
+
+        reconcile_startup(&vault_path).expect("run production startup");
+
+        let shared = acquire_notes_connection(&vault_path).expect("open startup database");
+        let connection = lock_notes_connection(&shared).expect("lock startup database");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("count seeded GN roots"),
+            1
+        );
+        drop(connection);
+        drop(shared);
+        evict_notes_connection(&vault_path);
+        assert!(vault.path().join(GITHUB_NOTIFICATIONS_FILENAME).is_file());
+    }
+
+    #[test]
+    fn github_seed_is_an_epoch_singleton_and_respects_canonical_quarantine() {
+        let mut connection = v3_bootstrap_connection();
+
+        assert!(seed_github_notifications_root(&mut connection).expect("seed GN root"));
+        let row = connection
+            .query_row(
+                "SELECT parent_id, sort_key, title, note, is_collapsed, is_starred, \
+                        completed_at, archived_at, deleted_at, is_readonly, plugin_state, \
+                        plugin_meta, hlc \
+                 FROM notes_nodes WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+                |row| {
+                    Ok(SeedRow {
+                        parent_id: row.get(0)?,
+                        sort_key: row.get(1)?,
+                        title: row.get(2)?,
+                        note: row.get(3)?,
+                        is_collapsed: row.get(4)?,
+                        is_starred: row.get(5)?,
+                        completed_at: row.get(6)?,
+                        archived_at: row.get(7)?,
+                        deleted_at: row.get(8)?,
+                        is_readonly: row.get(9)?,
+                        plugin_state: row.get(10)?,
+                        plugin_meta: row.get(11)?,
+                        hlc: row.get(12)?,
+                    })
+                },
+            )
+            .expect("read seeded GN root");
+        assert_eq!(
+            row,
+            SeedRow {
+                parent_id: None,
+                sort_key: 1024,
+                title: GITHUB_NOTIFICATIONS_TITLE.to_string(),
+                note: String::new(),
+                is_collapsed: 0,
+                is_starred: 0,
+                completed_at: None,
+                archived_at: None,
+                deleted_at: None,
+                is_readonly: None,
+                plugin_state: Some("[]".to_string()),
+                plugin_meta: None,
+                hlc: SEED_HLC.to_string(),
+            }
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT file_name, exported_hash, quarantined FROM sync_topics \
+                     WHERE topic_id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?
+                    )),
+                )
+                .unwrap(),
+            (GITHUB_NOTIFICATIONS_FILENAME.to_string(), String::new(), 0)
+        );
+        let before_retry = connection
+            .query_row(
+                "SELECT node.hlc, dirty.marked_at, \
+                        (SELECT COUNT(*) FROM notes_history_entries) \
+                 FROM notes_nodes node JOIN sync_dirty_nodes dirty ON dirty.node_id = node.id \
+                 WHERE node.id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .expect("read seed retry fingerprint");
+
+        assert!(!seed_github_notifications_root(&mut connection).expect("retry GN seed"));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT node.hlc, dirty.marked_at, \
+                            (SELECT COUNT(*) FROM notes_history_entries) \
+                     FROM notes_nodes node JOIN sync_dirty_nodes dirty ON dirty.node_id = node.id \
+                     WHERE node.id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .unwrap(),
+            before_retry
+        );
+
+        let mut quarantined = v3_bootstrap_connection();
+        record_quarantine(&quarantined, GITHUB_NOTIFICATIONS_FILENAME)
+            .expect("record canonical GN quarantine");
+        assert!(!seed_github_notifications_root(&mut quarantined)
+            .expect("canonical quarantine blocks seed"));
+        assert_eq!(
+            quarantined
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_nodes WHERE id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            quarantined
+                .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            quarantined
+                .query_row(
+                    "SELECT quarantined FROM sync_topics WHERE file_name = ?1",
+                    [GITHUB_NOTIFICATIONS_FILENAME],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn github_seed_rejects_a_mutated_fixed_root_without_writes() {
+        let mut connection = v3_bootstrap_connection();
+        assert!(seed_github_notifications_root(&mut connection).unwrap());
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE notes_nodes SET note = 'impostor', plugin_state = '[\"2026.07.21\"]' \
+                 WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+            )
+            .unwrap();
+        connection
+            .execute("DELETE FROM sync_dirty_nodes", [])
+            .unwrap();
+        let before = connection
+            .query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0))
+            .unwrap();
+
+        let error = seed_github_notifications_root(&mut connection)
+            .expect_err("a mutated fixed root must reject");
+
+        assert!(error.contains("invalid root"), "{error}");
+        assert_eq!(
+            connection
+                .query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT note, plugin_state FROM notes_nodes WHERE id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .unwrap(),
+            ("impostor".to_string(), "[\"2026.07.21\"]".to_string())
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn github_seed_rejects_topic_id_or_filename_impostors_before_node_dml() {
+        for (topic_id, file_name) in [
+            (GITHUB_NOTIFICATIONS_ROOT_ID, "Other.6983f947.md"),
+            (
+                "11111111-1111-4111-8111-111111111111",
+                GITHUB_NOTIFICATIONS_FILENAME,
+            ),
+        ] {
+            let mut connection = v3_bootstrap_connection();
+            connection
+                .execute(
+                    "INSERT INTO sync_topics(topic_id, file_name) VALUES (?1, ?2)",
+                    params![topic_id, file_name],
+                )
+                .unwrap();
+            let before = connection
+                .query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0))
+                .unwrap();
+
+            let error = seed_github_notifications_root(&mut connection)
+                .expect_err("conflicting topic ownership must reject");
+
+            assert!(error.contains("conflicting ownership"), "{error}");
+            assert_eq!(
+                connection
+                    .query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0))
+                    .unwrap(),
+                before
+            );
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM notes_nodes WHERE id = ?1",
+                        [GITHUB_NOTIFICATIONS_ROOT_ID],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                0
+            );
+            assert_eq!(
+                connection
+                    .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn github_seed_loses_to_any_real_remote_root_and_never_clobbers_it() {
+        let mut connection = v3_bootstrap_connection();
+        assert!(seed_github_notifications_root(&mut connection).unwrap());
+        let remote = TopicDoc {
+            id: GITHUB_NOTIFICATIONS_ROOT_ID.to_string(),
+            sort_key: 4096,
+            max_hlc: HLC_1.to_string(),
+            root: TopicRoot {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                format_version: crate::notes::sync::topic_file::TOPIC_FORMAT_VERSION,
+                title: GITHUB_NOTIFICATIONS_TITLE.to_string(),
+                note: String::new(),
+                markdown_image_width: None,
+                hlc: HLC_1.to_string(),
+                starred: false,
+                completed_at: None,
+                archived_at: None,
+                root_collapsed: true,
+                root_readonly: None,
+                plugin: Some(
+                    crate::notes::github_notifications::GITHUB_NOTIFICATIONS_PLUGIN_ID.to_string(),
+                ),
+                plugin_children: Some("hybrid".to_string()),
+                collapsed_groups: vec!["2026.07.21".to_string()],
+            },
+            nodes: Vec::new(),
+        };
+
+        merge_topic_doc(&mut connection, &remote).expect("merge real remote GN root");
+        let before_retry = connection
+            .query_row(
+                "SELECT sort_key, is_collapsed, plugin_state, hlc \
+                 FROM notes_nodes WHERE id = ?1",
+                [GITHUB_NOTIFICATIONS_ROOT_ID],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            before_retry,
+            (4096, 1, r#"["2026.07.21"]"#.to_string(), HLC_1.to_string())
+        );
+
+        assert!(!seed_github_notifications_root(&mut connection).unwrap());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT sort_key, is_collapsed, plugin_state, hlc \
+                     FROM notes_nodes WHERE id = ?1",
+                    [GITHUB_NOTIFICATIONS_ROOT_ID],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    },
+                )
+                .unwrap(),
+            before_retry
+        );
+    }
+
+    #[test]
+    fn production_reconcile_quarantines_explicit_v2_before_claiming_or_mutating_rows() {
+        let ordinary = format!(
+            "---\nkind: yonalist-notes\nformat_version: 2\nid: {TOPIC_ID}\nsort_key: 1024\nmax_hlc: {HLC_2}\nroot_hlc: {HLC_1}\n---\n# Ordinary v2\n\n- [ ] Child <!-- yid: {CHILD_ID} t: {HLC_2} -->\n"
+        )
+        .into_bytes();
+        let trash = format!(
+            "---\nkind: yonalist-trash\nformat_version: 2\nmax_hlc: {HLC_2}\n---\n- [ ] Deleted <!-- yid: {CHILD_ID} t: {HLC_2} readonly -->\n"
+        )
+        .into_bytes();
+
+        for (file_name, claimed_topic_id, bytes) in [
+            ("ordinary-v2.md", TOPIC_ID, ordinary),
+            (TRASH_FILE_NAME, TRASH_TOPIC_ID, trash),
+        ] {
+            let vault = tempfile::tempdir().expect("create v2 rejection vault");
+            let vault_path = vault_string(&vault);
+            let shared = acquire_notes_connection(&vault_path).expect("initialize v3 database");
+            let mut connection = lock_notes_connection(&shared).expect("lock v3 database");
+            let before = (
+                connection
+                    .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                connection
+                    .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+                connection
+                    .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+            );
+            let before_claimed_topic_rows = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sync_topics WHERE topic_id = ?1",
+                    [claimed_topic_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap();
+            let mut report = BootstrapReport::default();
+            let source = vault.path().join(file_name);
+            fs::write(&source, &bytes).expect("write v2 rejection fixture");
+
+            let outcome = reconcile_file_bytes(&mut connection, &source, &bytes, &mut report)
+                .expect("unsupported v2 is quarantined without partial reconciliation");
+
+            assert_eq!(outcome, ReconcileFileOutcome::default());
+            assert_eq!(
+                (
+                    connection
+                        .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .unwrap(),
+                    connection
+                        .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .unwrap(),
+                    connection
+                        .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .unwrap(),
+                ),
+                before
+            );
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM sync_topics WHERE topic_id = ?1",
+                        [claimed_topic_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                if file_name == TRASH_FILE_NAME {
+                    1
+                } else {
+                    before_claimed_topic_rows
+                },
+                "{file_name}"
+            );
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM sync_topics WHERE file_name = ?1 AND quarantined = 1",
+                        [file_name],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                1
+            );
+            assert_eq!(report.merged_files, 0);
+            assert!(!report.errors.is_empty());
+            drop(connection);
+            drop(shared);
+            evict_notes_connection(&vault_path);
+        }
     }
 
     #[test]
@@ -1436,7 +2167,7 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            2
+            3
         );
         assert_eq!(
             connection
@@ -1479,7 +2210,7 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row
                     .get::<_, i64>(0))
                 .unwrap(),
-            7
+            8
         );
         assert_eq!(
             fs::read(vault.path().join("ordinary.md")).unwrap(),
@@ -1499,7 +2230,7 @@ mod tests {
     }
 
     #[test]
-    fn existing_database_with_empty_vault_exports_all_topics_using_title_filename() {
+    fn existing_database_with_empty_vault_exports_local_topics_and_github_seed() {
         let vault = tempfile::tempdir().expect("create vault");
         let vault_path = vault_string(&vault);
         let shared = acquire_notes_connection(&vault_path).expect("initialize database");
@@ -1526,7 +2257,7 @@ mod tests {
         }
 
         let report = reconcile_startup(&vault_path).expect("export initial vault");
-        assert_eq!(report.exported_files, 1);
+        assert_eq!(report.exported_files, 2);
         assert!(vault.path().join("Local-topic.11111111.md").is_file());
         let connection = lock_notes_connection(&shared).unwrap();
         assert_eq!(
@@ -1561,14 +2292,14 @@ mod tests {
         .unwrap();
         fs::write(
             vault.path().join(TRASH_FILE_NAME),
-            b"---\nkind: yonalist-trash\nformat_version: 2\nmax_hlc: \n---\n",
+            b"---\nkind: yonalist-trash\nformat_version: 3\nmax_hlc: \n---\n",
         )
         .unwrap();
 
         let first = reconcile_startup(&vault_path).expect("merge changed files");
         assert_eq!(first.merged_files, 2);
         let second = reconcile_startup(&vault_path).expect("skip unchanged files");
-        assert_eq!(second.skipped_files, 2);
+        assert_eq!(second.skipped_files, 3);
         let connection = lock_notes_connection(&shared).unwrap();
         assert!(connection
             .query_row(
@@ -1650,7 +2381,7 @@ mod tests {
                 .unwrap();
         }
         let trash = format!(
-            "---\nkind: yonalist-trash\nformat_version: 2\nmax_hlc: {HLC_2}\n---\n- [ ] Remote deleted <!-- yid: {CHILD_ID} t: {HLC_2} -->\n"
+            "---\nkind: yonalist-trash\nformat_version: 3\nmax_hlc: {HLC_2}\n---\n- [ ] Remote deleted <!-- yid: {CHILD_ID} t: {HLC_2} -->\n"
         );
         fs::write(vault.path().join(TRASH_FILE_NAME), trash).unwrap();
 

@@ -2,7 +2,7 @@ import type {
   NoteAttachment,
   NoteAttachmentsByNodeId,
   NoteId,
-  NoteNode
+  NoteNode,
 } from "../../domain/notes";
 import type { NormalizedNotesWorkspace } from "./notesWorkspaceReducer";
 
@@ -24,7 +24,10 @@ const NOTE_NODE_FIELDS = [
   "updatedAt",
   "deletedAt",
   "archivedAt",
-  "archiveRootId"
+  "archiveRootId",
+  "isReadonly",
+  "pluginState",
+  "pluginMeta",
 ] as const satisfies readonly (keyof NoteNode)[];
 const NOTE_ATTACHMENT_FIELDS = [
   "id",
@@ -39,7 +42,7 @@ const NOTE_ATTACHMENT_FIELDS = [
   "intrinsicHeight",
   "displayWidth",
   "createdAt",
-  "updatedAt"
+  "updatedAt",
 ] as const satisfies readonly (keyof NoteAttachment)[];
 const ALL_NODE_FIELDS_LISTED: Exclude<
   keyof NoteNode,
@@ -58,7 +61,7 @@ void ALL_ATTACHMENT_FIELDS_LISTED;
 
 function equalIds(
   previous: readonly NoteId[],
-  next: readonly NoteId[]
+  next: readonly NoteId[],
 ): boolean {
   return (
     previous.length === next.length &&
@@ -85,13 +88,53 @@ function equalNoteNode(previous: NoteNode, next: NoteNode): boolean {
     previous.updatedAt === next.updatedAt &&
     previous.deletedAt === next.deletedAt &&
     previous.archivedAt === next.archivedAt &&
-    previous.archiveRootId === next.archiveRootId
+    previous.archiveRootId === next.archiveRootId &&
+    previous.isReadonly === next.isReadonly &&
+    equalPluginState(previous.pluginState, next.pluginState) &&
+    equalPluginMeta(previous.pluginMeta, next.pluginMeta)
+  );
+}
+
+function equalPluginState(
+  previous: NoteNode["pluginState"],
+  next: NoteNode["pluginState"],
+): boolean {
+  return (
+    previous === next ||
+    (previous !== undefined &&
+      next !== undefined &&
+      previous.collapsedGroups.length === next.collapsedGroups.length &&
+      previous.collapsedGroups.every(
+        (group, index) => group === next.collapsedGroups[index],
+      ))
+  );
+}
+
+function equalPluginMeta(
+  previous: NoteNode["pluginMeta"],
+  next: NoteNode["pluginMeta"],
+): boolean {
+  if (previous === next) return true;
+  if (previous === undefined || next === undefined) return false;
+  if (previous.kind === "date" || next.kind === "date") {
+    return (
+      previous.kind === "date" &&
+      next.kind === "date" &&
+      previous.dateKey === next.dateKey
+    );
+  }
+  return (
+    previous.notificationKey === next.notificationKey &&
+    previous.notificationType === next.notificationType &&
+    previous.url === next.url &&
+    previous.updatedAt === next.updatedAt &&
+    previous.unread === next.unread
   );
 }
 
 function equalAttachment(
   previous: NoteAttachment,
-  next: NoteAttachment
+  next: NoteAttachment,
 ): boolean {
   return (
     previous.id === next.id &&
@@ -112,7 +155,7 @@ function equalAttachment(
 
 function retainNodes(
   previous: Record<NoteId, NoteNode>,
-  next: Record<NoteId, NoteNode>
+  next: Record<NoteId, NoteNode>,
 ): Record<NoteId, NoteNode> {
   const previousIds = Object.keys(previous);
   const nextIds = Object.keys(next);
@@ -135,7 +178,7 @@ function retainNodes(
 
 function retainChildIdsByParent(
   previous: Record<string, NoteId[]>,
-  next: Record<string, NoteId[]>
+  next: Record<string, NoteId[]>,
 ): Record<string, NoteId[]> {
   const previousParentIds = Object.keys(previous);
   const nextParentIds = Object.keys(next);
@@ -156,18 +199,17 @@ function retainChildIdsByParent(
 
 function retainAttachmentList(
   previous: NoteAttachment[] | undefined,
-  next: NoteAttachment[]
+  next: NoteAttachment[],
 ): NoteAttachment[] {
   if (!previous) {
     return next;
   }
   const previousById = new Map(
-    previous.map((attachment) => [attachment.id, attachment])
+    previous.map((attachment) => [attachment.id, attachment]),
   );
   const retained = next.map((attachment) => {
     const previousAttachment = previousById.get(attachment.id);
-    return previousAttachment &&
-      equalAttachment(previousAttachment, attachment)
+    return previousAttachment && equalAttachment(previousAttachment, attachment)
       ? previousAttachment
       : attachment;
   });
@@ -179,7 +221,7 @@ function retainAttachmentList(
 
 function retainAttachmentsByNodeId(
   previous: NoteAttachmentsByNodeId,
-  next: NoteAttachmentsByNodeId
+  next: NoteAttachmentsByNodeId,
 ): NoteAttachmentsByNodeId {
   const previousNodeIds = Object.keys(previous);
   const nextNodeIds = Object.keys(next);
@@ -190,7 +232,7 @@ function retainAttachmentsByNodeId(
     const previousAttachments = previous[nodeId];
     const retainedAttachments = retainAttachmentList(
       previousAttachments,
-      next[nodeId]
+      next[nodeId],
     );
     retained[nodeId] = retainedAttachments;
     canReuseRecord &&= retainedAttachments === previousAttachments;
@@ -201,19 +243,19 @@ function retainAttachmentsByNodeId(
 
 export function retainNormalizedWorkspaceIdentity(
   previous: NormalizedNotesWorkspace,
-  next: NormalizedNotesWorkspace
+  next: NormalizedNotesWorkspace,
 ): NormalizedNotesWorkspace {
   const nodesById = retainNodes(previous.nodesById, next.nodesById);
   const childIdsByParent = retainChildIdsByParent(
     previous.childIdsByParent,
-    next.childIdsByParent
+    next.childIdsByParent,
   );
   const rootIds = equalIds(previous.rootIds, next.rootIds)
     ? previous.rootIds
     : next.rootIds;
   const attachmentsByNodeId = retainAttachmentsByNodeId(
     previous.attachmentsByNodeId,
-    next.attachmentsByNodeId
+    next.attachmentsByNodeId,
   );
 
   if (
@@ -237,6 +279,6 @@ export function retainNormalizedWorkspaceIdentity(
     nodesById,
     childIdsByParent,
     rootIds,
-    attachmentsByNodeId
+    attachmentsByNodeId,
   };
 }

@@ -46,6 +46,8 @@ function snapshot(
     completion: "mixed",
     deleteFocusNodeId: "three",
     eligibility: {
+      movement: eligible(),
+      tags: eligible(),
       copy: eligible(),
       cut: eligible(),
       delete: eligible(),

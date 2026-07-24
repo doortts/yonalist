@@ -849,8 +849,13 @@ describe("notes attachment UI boundary", () => {
       subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
     };
     let providedAttachmentUi: unknown;
+    const actions = { flushAllDrafts: vi.fn().mockResolvedValue(true) };
     useNotesWorkspace.mockReturnValue({
-      actions: { flushAllDrafts: vi.fn().mockResolvedValue(true) }
+      actions,
+      actionsSlice: {
+        actions,
+        applyPreparedSelectionBatch: undefined
+      }
     });
 
     function AttachmentUiProbe() {

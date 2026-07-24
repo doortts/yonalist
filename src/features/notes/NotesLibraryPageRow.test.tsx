@@ -51,12 +51,53 @@ function callbacks() {
     onRestore: vi.fn(),
     onMoveToTrash: vi.fn(),
     onDuplicate: vi.fn(),
+    onToggleReadonly: vi.fn(),
     onExport: vi.fn(),
     onRename: vi.fn().mockResolvedValue(true)
   };
 }
 
 describe("NotesLibraryPageRow", () => {
+  it("opens a readonly page without rename and exposes only allowed lifecycle actions", async () => {
+    const user = userEvent.setup();
+    const handlers = callbacks();
+    render(
+      <NotesLibraryPageRow
+        node={node({ title: "Protected", isReadonly: true })}
+        mode="active"
+        active
+        {...handlers}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Protected" }));
+    expect(handlers.onOpen).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("textbox")).toBeNull();
+
+    await user.click(
+      screen.getByRole("button", { name: "Page actions for Protected" })
+    );
+    const menu = await screen.findByRole("menu");
+    for (const label of [
+      "Open",
+      "Star",
+      "Archive",
+      "Duplicate",
+      "Export",
+      "Make editable"
+    ]) {
+      expect(within(menu).getByRole("menuitem", { name: label })).toBeVisible();
+    }
+    expect(
+      within(menu).queryByRole("menuitem", { name: "Move to Trash" })
+    ).toBeNull();
+
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Make editable" })
+    );
+    expect(handlers.onToggleReadonly).toHaveBeenCalledOnce();
+  });
+
   it("uses square corners for the selected row and keeps the straight inset accent", () => {
     expect(notesStyles).toMatch(
       /\.notes-library-page-row\[data-active="true"\]\s*\{[^}]*border-radius:\s*0;[^}]*background:\s*var\(--list-selected-bg\);[^}]*box-shadow:\s*var\(--list-selected-shadow\);/s
@@ -537,6 +578,7 @@ describe("NotesLibraryPageRow", () => {
       "Archive",
       "Move to Trash",
       "Duplicate",
+      "Make read-only",
       "Export"
     ]);
   });

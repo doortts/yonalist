@@ -484,6 +484,56 @@ describe("fetchNotifications", () => {
     expect(String(fetchMock.mock.calls[2][0])).toContain("page=3");
   });
 
+  it("forwards the caller signal to every notification page", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi
+      .fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>()
+      .mockResolvedValueOnce(
+        jsonResponse([notification("first")], {
+          Link: '<https://api.github.com/notifications?page=2>; rel="next"'
+        })
+      )
+      .mockResolvedValueOnce(jsonResponse([notification("second")]));
+
+    await fetchNotifications({
+      token: "token",
+      apiBaseUrl: "https://api.github.com",
+      accountId: "account-a",
+      signal: controller.signal,
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+
+    expect(fetchMock.mock.calls).toHaveLength(2);
+    expect(fetchMock.mock.calls.every(([, init]) => init?.signal === controller.signal))
+      .toBe(true);
+  });
+
+  it("isolates the full-list memory cache by account", async () => {
+    const accountA = notification("shared");
+    const accountB = {
+      ...accountA,
+      subject: {
+        ...accountA.subject,
+        url: "https://api.github.com/repos/other/app/issues/17"
+      }
+    };
+    await fetchNotifications({
+      token: "token-a",
+      apiBaseUrl: "https://api.github.com",
+      accountId: "account-a",
+      fetchImpl: vi.fn(async () => jsonResponse([accountA])) as unknown as typeof fetch
+    });
+
+    const result = await fetchNotifications({
+      token: "token-b",
+      apiBaseUrl: "https://api.github.com",
+      accountId: "account-b",
+      fetchImpl: vi.fn(async () => jsonResponse([accountB])) as unknown as typeof fetch
+    });
+
+    expect(result[0].subject.url).toBe(accountB.subject.url);
+  });
+
   it("emits the first page before later notification pages finish", async () => {
     const partials: string[][] = [];
     let resolveSecondPage: (response: Response) => void = () => {};
@@ -597,6 +647,28 @@ describe("markNotificationRead", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.github.com/notifications/threads/123",
       expect.objectContaining({ method: "PATCH", cache: "no-store" })
+    );
+  });
+
+  it("forwards the caller signal to PATCH", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        new Response(null, { status: 205 })
+    );
+
+    await markNotificationRead({
+      token: "token",
+      apiBaseUrl: "https://api.github.com",
+      accountId: "account-a",
+      threadId: "123",
+      signal: controller.signal,
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.github.com/notifications/threads/123",
+      expect.objectContaining({ signal: controller.signal })
     );
   });
 });

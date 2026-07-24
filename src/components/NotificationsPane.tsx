@@ -19,13 +19,13 @@ import "./NotificationsPane.css";
 import {
   groupNotificationsByDate,
   isReadAndQuiet,
+  notificationSubtitle,
   notificationWebUrl,
   subjectNumber,
   type GitHubNotification,
   type NotificationReason
 } from "../domain/notifications";
 import type { UseNotificationsResult } from "../hooks/useNotifications";
-import { timeAgo } from "../timeFormat";
 import { IconTooltip } from "./ui/Tooltip";
 
 interface NotificationsPaneProps {
@@ -62,22 +62,6 @@ function reasonPresentation(reason: NotificationReason) {
       label: reason.replace(/_/g, " ")
     }
   );
-}
-
-function subtitle(
-  notification: GitHubNotification,
-  viewedAt: string | undefined
-): string {
-  const parts = [notification.repository.name];
-  const updated = timeAgo(notification.updated_at);
-  if (updated) {
-    parts.push(updated);
-  }
-  const seen = viewedAt ?? notification.last_read_at;
-  if (seen) {
-    parts.push(`seen ${timeAgo(seen)}`);
-  }
-  return parts.join(", ");
 }
 
 interface NotificationRowProps {
@@ -141,7 +125,7 @@ const NotificationRow = memo(function NotificationRow({
           )}
         </span>
         <span className="notification-subtitle">
-          {subtitle(notification, viewedAtValue)}
+          {notificationSubtitle(notification, viewedAtValue)}
         </span>
       </button>
       {!quiet && <span className="notification-unread-dot" aria-label="Unread" />}
@@ -255,9 +239,9 @@ export const NotificationsPane = memo(function NotificationsPane({
       {state.error && <p className="notifications-error">{state.error}</p>}
 
       <div className="notifications-list">
-        {groups.length === 0 && (
+        {groups.length === 0 && (state.loaded || state.loading) && (
           <p className="empty-copy list-empty">
-            No notifications.
+            {state.loaded ? "No notifications." : "Loading notifications..."}
           </p>
         )}
         {groups.map((group) => (

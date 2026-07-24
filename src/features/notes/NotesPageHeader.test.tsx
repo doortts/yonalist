@@ -5,7 +5,7 @@ import {
   render,
   screen,
   waitFor,
-  within
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +13,7 @@ import { VaultRootContext } from "../../VaultRootContext";
 import type {
   NoteAttachment,
   NoteNode,
-  NotesWorkspaceScope
+  NotesWorkspaceScope,
 } from "../../domain/notes";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesDateTodayProvider } from "./NotesDatePickerIntegration";
@@ -21,11 +21,11 @@ import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import {
   createNotesImageAtomEditorRegistry,
   type ImageAtomEditorSelectionAuthority,
-  type NotesImageAtomEditorAuthority
+  type NotesImageAtomEditorAuthority,
 } from "./notesImageAtomEditorRegistry";
 import {
   readImageAtomDomSelection,
-  writeImageAtomDomSelection
+  writeImageAtomDomSelection,
 } from "./imageAtomDomSelection";
 import { NOTES_IMAGE_ATOM_CLIPBOARD_MIME } from "./notesImageAtomClipboard";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
@@ -36,17 +36,18 @@ import type {
   NotesImageAtomPasteAuthority,
   NotesNodeDraft,
   NotesPreparedMove,
-  UseNotesWorkspaceResult
+  UseNotesWorkspaceResult,
 } from "./useNotesWorkspace";
 
 const capturedImageAtomEditorProps = vi.hoisted(
-  () => new Map<string, import("./ImageAtomEditor").ImageAtomEditorProps>()
+  () => new Map<string, import("./ImageAtomEditor").ImageAtomEditorProps>(),
 );
 
 vi.mock("./ImageAtomEditor", async () => {
-  const actual = await vi.importActual<typeof import("./ImageAtomEditor")>(
-    "./ImageAtomEditor"
-  );
+  const actual =
+    await vi.importActual<typeof import("./ImageAtomEditor")>(
+      "./ImageAtomEditor",
+    );
   const react = await vi.importActual<typeof import("react")>("react");
   return {
     ...actual,
@@ -56,7 +57,7 @@ vi.mock("./ImageAtomEditor", async () => {
     >((props, ref) => {
       capturedImageAtomEditorProps.set(props.nodeId, props);
       return react.createElement(actual.ImageAtomEditor, { ...props, ref });
-    })
+    }),
   };
 });
 
@@ -79,12 +80,12 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     imageOffsetUtf16: 0,
     ...overrides,
     markerKind: overrides.markerKind ?? "bullet",
-    markdownImageWidth: overrides.markdownImageWidth ?? null
+    markdownImageWidth: overrides.markdownImageWidth ?? null,
   };
 }
 
 function attachment(
-  overrides: Partial<NoteAttachment> & Pick<NoteAttachment, "id" | "nodeId">
+  overrides: Partial<NoteAttachment> & Pick<NoteAttachment, "id" | "nodeId">,
 ): NoteAttachment {
   const contentHash = overrides.contentHash ?? "a".repeat(64);
   return {
@@ -99,7 +100,7 @@ function attachment(
     displayWidth: 320,
     createdAt: "2026-07-12T00:00:00Z",
     updatedAt: "2026-07-12T00:00:00Z",
-    ...overrides
+    ...overrides,
   };
 }
 
@@ -112,19 +113,15 @@ function deferred<T>() {
 }
 
 async function deferredInternalImagePaste(editor: HTMLElement) {
-  const bytes = new Uint8Array([
-    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0
-  ]);
-  const digest = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", bytes)
-  );
+  const bytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   const contentHash = Array.from(digest, (byte) =>
-    byte.toString(16).padStart(2, "0")
+    byte.toString(16).padStart(2, "0"),
   ).join("");
   const bytesGate = deferred<ArrayBuffer>();
   const file = new File([bytes], "internal.png", { type: "image/png" });
   Object.defineProperty(file, "arrayBuffer", {
-    value: () => bytesGate.promise
+    value: () => bytesGate.promise,
   });
   const custom = JSON.stringify({
     version: 1,
@@ -135,8 +132,8 @@ async function deferredInternalImagePaste(editor: HTMLElement) {
       originalName: "internal.png",
       mimeType: "image/png",
       byteSize: bytes.byteLength,
-      contentHash
-    }
+      contentHash,
+    },
   });
   const event = createEvent.paste(editor, {
     bubbles: true,
@@ -147,49 +144,53 @@ async function deferredInternalImagePaste(editor: HTMLElement) {
         0: {
           kind: "file",
           type: "image/png",
-          getAsFile: () => file
+          getAsFile: () => file,
         },
-        length: 1
+        length: 1,
       },
       getData: (type: string) =>
-        type === NOTES_IMAGE_ATOM_CLIPBOARD_MIME ? custom : ""
-    }
+        type === NOTES_IMAGE_ATOM_CLIPBOARD_MIME ? custom : "",
+    },
   });
   return {
     event,
-    settle: () => bytesGate.resolve(bytes.slice().buffer)
+    settle: () => bytesGate.resolve(bytes.slice().buffer),
   };
 }
 
-function workspaceValue(options: {
-  nodeKind?: NoteNode["nodeKind"];
-  title?: string;
-  note?: string;
-  markdownImageWidth?: number | null;
-  imageOffsetUtf16?: number;
-  childTitle?: string;
-  childNote?: string;
-  childNodeKind?: NoteNode["nodeKind"];
-  childImageOffsetUtf16?: number;
-  includeChild?: boolean;
-  draft?: NotesNodeDraft;
-  deletingNotesData?: boolean;
-  libraryView?: UseNotesWorkspaceResult["libraryView"];
-  pendingFocus?: { nodeId: string; field: "title" | "note" };
-  pendingPrimarySelection?: {
-    requestId: number;
-    nodeId: string;
-    field: "title";
-    selection: { anchorUtf16: number; focusUtf16: number };
-  };
-  attachments?: NoteAttachment[];
-  childAttachments?: NoteAttachment[];
-  attachmentUploadError?: string;
-  attachmentUploadRetryAttemptId?: string;
-  includeOtherRoot?: boolean;
-  writeError?: UseNotesWorkspaceResult["writeError"];
-  retryLastFailedWrite?: UseNotesWorkspaceResult["retryLastFailedWrite"];
-} = {}): UseNotesWorkspaceResult {
+function workspaceValue(
+  options: {
+    isReadonly?: boolean;
+    updatedAt?: string;
+    nodeKind?: NoteNode["nodeKind"];
+    title?: string;
+    note?: string;
+    markdownImageWidth?: number | null;
+    imageOffsetUtf16?: number;
+    childTitle?: string;
+    childNote?: string;
+    childNodeKind?: NoteNode["nodeKind"];
+    childImageOffsetUtf16?: number;
+    includeChild?: boolean;
+    draft?: NotesNodeDraft;
+    deletingNotesData?: boolean;
+    libraryView?: UseNotesWorkspaceResult["libraryView"];
+    pendingFocus?: { nodeId: string; field: "title" | "note" };
+    pendingPrimarySelection?: {
+      requestId: number;
+      nodeId: string;
+      field: "title";
+      selection: { anchorUtf16: number; focusUtf16: number };
+    };
+    attachments?: NoteAttachment[];
+    childAttachments?: NoteAttachment[];
+    attachmentUploadError?: string;
+    attachmentUploadRetryAttemptId?: string;
+    includeOtherRoot?: boolean;
+    writeError?: UseNotesWorkspaceResult["writeError"];
+    retryLastFailedWrite?: UseNotesWorkspaceResult["retryLastFailedWrite"];
+  } = {},
+): UseNotesWorkspaceResult {
   const state = normalizeWorkspace({
     nodes: [
       node({
@@ -198,7 +199,9 @@ function workspaceValue(options: {
         title: options.title ?? "Project",
         note: options.note ?? "Project context",
         imageOffsetUtf16: options.imageOffsetUtf16 ?? 0,
-        markdownImageWidth: options.markdownImageWidth ?? null
+        markdownImageWidth: options.markdownImageWidth ?? null,
+        isReadonly: options.isReadonly,
+        updatedAt: options.updatedAt ?? "2026-07-10T00:00:00Z",
       }),
       ...(options.includeChild === false
         ? []
@@ -209,24 +212,33 @@ function workspaceValue(options: {
               nodeKind: options.childNodeKind ?? "text",
               title: options.childTitle ?? "First child",
               note: options.childNote ?? "",
-              imageOffsetUtf16: options.childImageOffsetUtf16 ?? 0
+              imageOffsetUtf16: options.childImageOffsetUtf16 ?? 0,
             }),
-            node({ id: "detail", parentId: "child", title: "Detail" })
+            node({ id: "detail", parentId: "child", title: "Detail" }),
           ]),
       ...(options.includeOtherRoot
         ? [node({ id: "inbox", sortKey: 2048, title: "Inbox" })]
-        : [])
+        : []),
     ],
     attachmentsByNodeId: {
       ...(options.attachments ? { project: options.attachments } : {}),
-      ...(options.childAttachments ? { child: options.childAttachments } : {})
-    }
+      ...(options.childAttachments ? { child: options.childAttachments } : {}),
+    },
   });
   state.zoomRootId = "project";
   state.pendingFocusId = options.pendingFocus?.nodeId ?? null;
   state.pendingFocusField = options.pendingFocus?.field ?? null;
 
   const resolved = () => vi.fn().mockResolvedValue(undefined);
+  const deleteNodes = vi.fn().mockResolvedValue({
+    kind: "settled" as const,
+    outcome: "committed" as const,
+    mutationCommitted: true,
+  });
+  const deleteNode = vi.fn(async (nodeId: string) => {
+    const result = await deleteNodes([nodeId]);
+    return result.kind === "settled" ? result.outcome : "skipped";
+  });
   const actions = {
     acknowledgeFocus: resolved(),
     focusNode: resolved(),
@@ -235,6 +247,11 @@ function workspaceValue(options: {
     splitNode: resolved(),
     createChild: resolved(),
     updateNode: resolved(),
+    setReadonly: resolved(),
+    materializeGithubNotification: resolved(),
+    refreshMaterializedGithubNotifications: resolved(),
+    markMaterializedGithubNotificationRead: resolved(),
+    setGithubGroupCollapsed: resolved(),
     updateNodeDraft: vi.fn(),
     flushNodeDraft: vi.fn().mockResolvedValue(true),
     flushAllDrafts: vi.fn().mockResolvedValue(true),
@@ -252,7 +269,8 @@ function workspaceValue(options: {
     toggleStar: resolved(),
     duplicateNode: resolved(),
     removeEmptyNode: resolved(),
-    deleteNode: resolved(),
+    deleteNode,
+    deleteNodes,
     restoreNode: resolved(),
     archiveNode: resolved(),
     unarchiveNode: resolved(),
@@ -275,7 +293,7 @@ function workspaceValue(options: {
     setSelectionAnchor: vi.fn(),
     extendSelectionTo: vi.fn(),
     toggleSelectionNode: vi.fn(),
-    clearSelection: vi.fn()
+    clearSelection: vi.fn(),
   } as UseNotesWorkspaceResult["actions"];
   const imagePasteAuthority = {} as NotesImageAtomPasteAuthority;
   const imageCutAuthority = {} as NotesImageAtomCutAuthority;
@@ -302,22 +320,21 @@ function workspaceValue(options: {
     retryLastFailedWrite: options.retryLastFailedWrite ?? resolved(),
     captureActiveImageAtomEditorAuthority: vi.fn(() => imageEditorAuthority),
     captureImageAtomCutAuthority: vi.fn(() => imageCutAuthority),
-    applyImageAtomCutWithAuthority: vi.fn(
-      (_authority, nodeId, selection) =>
-        actions.applyImageAtomEdit(nodeId, selection, {
-          kind: "remove",
-          replacementText: ""
-        })
+    applyImageAtomCutWithAuthority: vi.fn((_authority, nodeId, selection) =>
+      actions.applyImageAtomEdit(nodeId, selection, {
+        kind: "remove",
+        replacementText: "",
+      }),
     ),
     captureImageAtomPasteAuthority: vi.fn(() => imagePasteAuthority),
     isImageAtomPasteAuthorityCurrent: vi.fn(() => true),
     applyImageAtomPasteWithAuthority: vi.fn(
       (_authority, nodeId, selection, fragment) =>
-        actions.applyImageAtomPaste(nodeId, selection, fragment)
+        actions.applyImageAtomPaste(nodeId, selection, fragment),
     ),
     status: "ready",
     loading: false,
-    error: null
+    error: null,
   } as UseNotesWorkspaceResult;
   if (options.pendingPrimarySelection) {
     (
@@ -331,20 +348,20 @@ function workspaceValue(options: {
 
 function connectImagePasteAuthority(
   workspace: UseNotesWorkspaceResult,
-  registry: ReturnType<typeof createNotesImageAtomEditorRegistry>
+  registry: ReturnType<typeof createNotesImageAtomEditorRegistry>,
 ) {
   workspace.captureActiveImageAtomEditorAuthority = vi.fn(
     (nodeId, selectionAuthority) =>
-      registry.capturePasteAuthority(nodeId, selectionAuthority)
+      registry.capturePasteAuthority(nodeId, selectionAuthority),
   );
   workspace.captureImageAtomPasteAuthority = vi.fn(
     (_nodeId, editorAuthority) =>
-      editorAuthority as unknown as NotesImageAtomPasteAuthority
+      editorAuthority as unknown as NotesImageAtomPasteAuthority,
   );
   workspace.isImageAtomPasteAuthorityCurrent = vi.fn((authority) =>
     registry.isPasteAuthorityCurrent(
-      authority as unknown as NotesImageAtomEditorAuthority
-    )
+      authority as unknown as NotesImageAtomEditorAuthority,
+    ),
   );
 }
 
@@ -369,7 +386,7 @@ function renderZoomedOutline(workspace = workspaceValue()) {
 
 function preparedMove(
   sourceId: string,
-  scope: NotesWorkspaceScope
+  scope: NotesWorkspaceScope,
 ): NotesPreparedMove {
   return {
     token: 1,
@@ -381,13 +398,13 @@ function preparedMove(
       node({ id: "project", title: "Project" }),
       node({ id: "child", parentId: "project", title: "First child" }),
       node({ id: "detail", parentId: "child", title: "Detail" }),
-      node({ id: "inbox", sortKey: 2048, title: "Inbox" })
-    ]
+      node({ id: "inbox", sortKey: 2048, title: "Inbox" }),
+    ],
   };
 }
 
 function moveScopeForView(
-  libraryView: "starred" | "recent" | "tags"
+  libraryView: "starred" | "recent" | "tags",
 ): NotesWorkspaceScope {
   return libraryView === "tags"
     ? { kind: "tags", tags: [] }
@@ -395,8 +412,9 @@ function moveScopeForView(
 }
 
 function textareasByName(name: string): HTMLTextAreaElement[] {
-  return Array.from(document.querySelectorAll<HTMLTextAreaElement>("textarea"))
-    .filter((textarea) => textarea.getAttribute("aria-label") === name);
+  return Array.from(
+    document.querySelectorAll<HTMLTextAreaElement>("textarea"),
+  ).filter((textarea) => textarea.getAttribute("aria-label") === name);
 }
 
 function queryTextareaByName(name: string): HTMLTextAreaElement | null {
@@ -414,13 +432,13 @@ function getTextareaByName(name: string): HTMLTextAreaElement {
 function expectImageAtomEmptyRegions(
   editor: HTMLElement,
   beforeEmpty: boolean,
-  afterEmpty: boolean
+  afterEmpty: boolean,
 ): void {
   const before = editor.querySelector<HTMLElement>(
-    '[data-image-atom-region="before"]'
+    '[data-image-atom-region="before"]',
   );
   const after = editor.querySelector<HTMLElement>(
-    '[data-image-atom-region="after"]'
+    '[data-image-atom-region="after"]',
   );
   if (beforeEmpty) {
     expect(before).toHaveAttribute("data-image-atom-empty", "true");
@@ -450,7 +468,7 @@ describe("NotesPageHeader", () => {
     renderZoomedOutline(workspaceValue({ title: source }));
 
     const presentation = screen.getByRole("group", {
-      name: "Edit page title"
+      name: "Edit page title",
     });
     const field = presentation.closest(".notes-page-title-field");
     expect(field).toHaveAttribute("data-markdown-block", "heading");
@@ -463,7 +481,7 @@ describe("NotesPageHeader", () => {
     fireEvent.focus(textarea);
     expect(field).toHaveAttribute("data-markdown-level", "2");
     expect(presentation).toHaveTextContent(source, {
-      normalizeWhitespace: false
+      normalizeWhitespace: false,
     });
     expect(textarea).toHaveValue(source);
   });
@@ -480,11 +498,11 @@ describe("NotesPageHeader", () => {
         right: 500,
         bottom: 0,
         left: 0,
-        toJSON: () => ({})
+        toJSON: () => ({}),
       });
     const workspace = workspaceValue({
       title: "![Quarterly chart](https://example.com/chart.png)",
-      markdownImageWidth: 360
+      markdownImageWidth: 360,
     });
 
     try {
@@ -492,54 +510,167 @@ describe("NotesPageHeader", () => {
       const image = document.querySelector("img")!;
       Object.defineProperties(image, {
         naturalWidth: { configurable: true, value: 720 },
-        naturalHeight: { configurable: true, value: 360 }
+        naturalHeight: { configurable: true, value: 360 },
       });
       fireEvent.load(image);
 
       expect(
-        screen.getByRole("img", { name: "Quarterly chart" })
+        screen.getByRole("img", { name: "Quarterly chart" }),
       ).toBeVisible();
       const handle = screen.getByRole("separator", {
-        name: "Resize Quarterly chart"
+        name: "Resize Quarterly chart",
       });
       fireEvent.keyDown(handle, { key: "ArrowRight" });
       fireEvent.keyUp(handle, { key: "ArrowRight" });
       expect(workspace.actions.updateNodeDraft).toHaveBeenLastCalledWith(
         "project",
         expect.objectContaining({ markdownImageWidth: 376 }),
-        "title"
+        "title",
       );
       expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
 
       fireEvent.doubleClick(image);
       await waitFor(() =>
-        expect(getTextareaByName("Edit page title")).toHaveFocus()
+        expect(getTextareaByName("Edit page title")).toHaveFocus(),
       );
       expect(getTextareaByName("Edit page title")).toHaveValue(
-        "![Quarterly chart](https://example.com/chart.png)"
+        "![Quarterly chart](https://example.com/chart.png)",
       );
     } finally {
       getBoundingClientRect.mockRestore();
     }
   });
 
+  it("keeps a readonly page in the native editor and restores temporary content", async () => {
+    const user = userEvent.setup();
+    const workspace = renderZoomedOutline(
+      workspaceValue({
+        isReadonly: true,
+        title: "Protected page",
+        note: "Protected context",
+      }),
+    );
+
+    const title = editTextareaByName("Edit page title");
+    expect(title).not.toHaveAttribute("readonly");
+    const header = title.closest<HTMLElement>(".notes-page-header")!;
+    expect(
+      within(header).getByRole("img", { name: "읽기 전용" }),
+    ).not.toHaveAttribute("tabindex");
+
+    fireEvent.change(title, { target: { value: "Temporary page" } });
+    expect(title).toHaveValue("Temporary page");
+    fireEvent.blur(title);
+    expect(title).toHaveValue("Protected page");
+    expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalled();
+    expect(workspace.actions.flushNodeDraft).not.toHaveBeenCalled();
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "More actions for Protected page",
+      }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Make editable" }));
+    expect(workspace.actions.setReadonly).toHaveBeenCalledWith(
+      "project",
+      false,
+    );
+  });
+
+  it("creates an unlocked next sibling from readonly title Enter and note Shift+Enter", async () => {
+    const workspace = renderZoomedOutline(
+      workspaceValue({
+        isReadonly: true,
+        title: "Protected page",
+        note: "Protected context",
+      }),
+    );
+
+    const title = editTextareaByName("Edit page title");
+    fireEvent.change(title, { target: { value: "Temporary page" } });
+    fireEvent.keyDown(title, { key: "Enter" });
+    await waitFor(() =>
+      expect(workspace.actions.createNextTextSibling).toHaveBeenCalledOnce(),
+    );
+
+    const note = editTextareaByName("Supporting note: Protected page");
+    fireEvent.change(note, { target: { value: "Temporary context" } });
+    note.setSelectionRange(
+      "Temporary context".length,
+      "Temporary context".length,
+    );
+    fireEvent.keyDown(note, { key: "Enter", shiftKey: true });
+
+    await waitFor(() =>
+      expect(workspace.actions.createNextTextSibling).toHaveBeenCalledTimes(2),
+    );
+    expect(workspace.actions.createNextTextSibling).toHaveBeenCalledWith(
+      "project",
+    );
+    expect(workspace.actions.createChild).not.toHaveBeenCalled();
+    expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalled();
+  });
+
+  it("preserves a readonly draft across lifecycle updates but replaces it on backing content sync", async () => {
+    const view = render(
+      zoomedOutline(
+        workspaceValue({
+          isReadonly: true,
+          title: "Protected page",
+          updatedAt: "2026-07-10T00:00:00Z",
+        }),
+      ),
+    );
+    const title = editTextareaByName("Edit page title");
+    fireEvent.change(title, { target: { value: "Temporary draft" } });
+    title.setSelectionRange(14, 14);
+
+    view.rerender(
+      zoomedOutline(
+        workspaceValue({
+          isReadonly: true,
+          title: "Protected page",
+          updatedAt: "2026-07-10T01:00:00Z",
+        }),
+      ),
+    );
+    expect(title).toHaveValue("Temporary draft");
+    expect(title).toHaveFocus();
+
+    view.rerender(
+      zoomedOutline(
+        workspaceValue({
+          isReadonly: true,
+          title: "Synced",
+          updatedAt: "2026-07-10T02:00:00Z",
+        }),
+      ),
+    );
+    await waitFor(() => {
+      expect(title).toHaveValue("Synced");
+      expect(title).toHaveFocus();
+      expect(title.selectionStart).toBe("Synced".length);
+      expect(title.selectionEnd).toBe("Synced".length);
+    });
+  });
+
   it("places the page-title caret at the clicked text position", () => {
     renderZoomedOutline(workspaceValue({ title: "Project title" }));
     const presentation = screen.getByRole("group", {
-      name: "Edit page title"
+      name: "Edit page title",
     });
     const textNode = presentation.firstChild!;
     const textarea = getTextareaByName("Edit page title");
     textarea.setSelectionRange(9, 9);
     const originalCaretPosition = Object.getOwnPropertyDescriptor(
       document,
-      "caretPositionFromPoint"
+      "caretPositionFromPoint",
     );
 
     try {
       Object.defineProperty(document, "caretPositionFromPoint", {
         configurable: true,
-        value: vi.fn(() => ({ offsetNode: textNode, offset: 3 }))
+        value: vi.fn(() => ({ offsetNode: textNode, offset: 3 })),
       });
 
       fireEvent.pointerDown(presentation, { clientX: 32, clientY: 12 });
@@ -552,7 +683,7 @@ describe("NotesPageHeader", () => {
         Object.defineProperty(
           document,
           "caretPositionFromPoint",
-          originalCaretPosition
+          originalCaretPosition,
         );
       } else {
         Reflect.deleteProperty(document, "caretPositionFromPoint");
@@ -562,23 +693,23 @@ describe("NotesPageHeader", () => {
 
   it("places the page supporting-note caret at the clicked text position", () => {
     renderZoomedOutline(
-      workspaceValue({ title: "Project", note: "Supporting detail" })
+      workspaceValue({ title: "Project", note: "Supporting detail" }),
     );
     const presentation = screen.getByRole("group", {
-      name: "Supporting note: Project"
+      name: "Supporting note: Project",
     });
     const textNode = presentation.firstChild!;
     const textarea = getTextareaByName("Supporting note: Project");
     textarea.setSelectionRange(12, 12);
     const originalCaretPosition = Object.getOwnPropertyDescriptor(
       document,
-      "caretPositionFromPoint"
+      "caretPositionFromPoint",
     );
 
     try {
       Object.defineProperty(document, "caretPositionFromPoint", {
         configurable: true,
-        value: vi.fn(() => ({ offsetNode: textNode, offset: 4 }))
+        value: vi.fn(() => ({ offsetNode: textNode, offset: 4 })),
       });
 
       fireEvent.pointerDown(presentation, { clientX: 40, clientY: 12 });
@@ -591,7 +722,7 @@ describe("NotesPageHeader", () => {
         Object.defineProperty(
           document,
           "caretPositionFromPoint",
-          originalCaretPosition
+          originalCaretPosition,
         );
       } else {
         Reflect.deleteProperty(document, "caretPositionFromPoint");
@@ -607,13 +738,13 @@ describe("NotesPageHeader", () => {
         requestId: 41,
         nodeId: "project",
         field: "title",
-        selection: { anchorUtf16: 5, focusUtf16: 1 }
-      }
+        selection: { anchorUtf16: 5, focusUtf16: 1 },
+      },
     });
     renderZoomedOutline(workspace);
 
     const title = await screen.findByRole<HTMLTextAreaElement>("textbox", {
-      name: "Edit page title"
+      name: "Edit page title",
     });
     await waitFor(() => {
       expect(title).toHaveFocus();
@@ -623,7 +754,7 @@ describe("NotesPageHeader", () => {
     });
     expect(workspace.actions.acknowledgeFocus).toHaveBeenLastCalledWith(
       "project",
-      41
+      41,
     );
   });
 
@@ -638,24 +769,26 @@ describe("NotesPageHeader", () => {
         requestId: 42,
         nodeId: "project",
         field: "title",
-        selection: { anchorUtf16: 6, focusUtf16: 7 }
-      }
+        selection: { anchorUtf16: 6, focusUtf16: 7 },
+      },
     });
     renderZoomedOutline(workspace);
 
     const editor = await screen.findByRole("textbox", { name: "Image note" });
     await waitFor(() => {
       const [before, atom, after] = editor.querySelectorAll<HTMLElement>(
-        "[data-image-atom-region]"
+        "[data-image-atom-region]",
       );
-      expect(readImageAtomDomSelection(
-        { host: editor, before: before!, atom: atom!, after: after! },
-        document.getSelection()!
-      )).toEqual({ anchorUtf16: 6, focusUtf16: 7 });
+      expect(
+        readImageAtomDomSelection(
+          { host: editor, before: before!, atom: atom!, after: after! },
+          document.getSelection()!,
+        ),
+      ).toEqual({ anchorUtf16: 6, focusUtf16: 7 });
     });
     expect(workspace.actions.acknowledgeFocus).toHaveBeenLastCalledWith(
       "project",
-      42
+      42,
     );
   });
 
@@ -665,9 +798,11 @@ describe("NotesPageHeader", () => {
   });
 
   it("renders the zoom root as a page header outside the rebased child list", () => {
-    vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockReturnValue(
-      64
-    );
+    vi.spyOn(
+      HTMLTextAreaElement.prototype,
+      "scrollHeight",
+      "get",
+    ).mockReturnValue(64);
     renderZoomedOutline();
 
     const heading = screen.getByRole("heading", { name: "Project", level: 1 });
@@ -680,15 +815,15 @@ describe("NotesPageHeader", () => {
     expect(note.closest(".notes-page-header")).not.toBeNull();
     expect(note.closest("ol")).toBeNull();
     expect(
-      screen.queryByRole("button", { name: "Zoom into Project" })
+      screen.queryByRole("button", { name: "Zoom into Project" }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Zoom into First child" })
+      screen.getByRole("button", { name: "Zoom into First child" }),
     ).toBeVisible();
     expect(
       within(list)
         .getAllByRole("listitem")
-        .map((item) => item.getAttribute("aria-level"))
+        .map((item) => item.getAttribute("aria-level")),
     ).toEqual(["1", "2"]);
   });
 
@@ -699,17 +834,17 @@ describe("NotesPageHeader", () => {
         nodeKind: "image",
         title: "diagram.png",
         note: "Architecture description",
-        attachments: [image]
-      })
+        attachments: [image],
+      }),
     );
 
     const heading = screen.getByRole("heading", {
       name: "diagram.png",
-      level: 1
+      level: 1,
     });
     const editor = screen.getByRole("textbox", { name: "Image note" });
     const content = within(editor).getByRole("group", {
-      name: "Image: diagram.png"
+      name: "Image: diagram.png",
     });
     const description = getTextareaByName("Supporting note: Image");
 
@@ -720,21 +855,21 @@ describe("NotesPageHeader", () => {
     expect(heading.parentElement).toBe(editor.parentElement);
     expect(heading.parentElement).toHaveClass("notes-page-primary");
     expect(
-      heading.querySelector("button, input, textarea, [tabindex]")
+      heading.querySelector("button, input, textarea, [tabindex]"),
     ).toBeNull();
     expect(heading.querySelector("textarea.notes-page-title")).toBeNull();
     expect(heading).not.toHaveTextContent("diagram.png");
     expect(
       content.compareDocumentPosition(description) &
-        Node.DOCUMENT_POSITION_FOLLOWING
+        Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(description).toHaveValue("Architecture description");
     expect(
-      screen.getByRole("button", { name: "More actions for Image" })
+      screen.getByRole("button", { name: "More actions for Image" }),
     ).toBeVisible();
     expect(heading.closest(".notes-page-header")).toContainElement(editor);
     expect(
-      screen.getByRole("button", { name: "Zoom into First child" })
+      screen.getByRole("button", { name: "Zoom into First child" }),
     ).toBeVisible();
   });
 
@@ -743,7 +878,7 @@ describe("NotesPageHeader", () => {
       nodeKind: "image",
       title: "beforeafter",
       imageOffsetUtf16: 6,
-      attachments: [attachment({ id: "page-image", nodeId: "project" })]
+      attachments: [attachment({ id: "page-image", nodeId: "project" })],
     });
     const applyImageAtomEdit = vi.fn().mockResolvedValue("committed");
     workspace.actions.applyImageAtomEdit = applyImageAtomEdit;
@@ -752,34 +887,35 @@ describe("NotesPageHeader", () => {
     expect(
       screen
         .getByRole("textbox", { name: "Image note" })
-        .querySelectorAll("[data-image-atom-region]")
+        .querySelectorAll("[data-image-atom-region]"),
     ).toHaveLength(3);
     const props = capturedImageAtomEditorProps.get("project")!;
     const selection = { anchorUtf16: 10, focusUtf16: 3 };
     const selectionAuthority = {} as ImageAtomEditorSelectionAuthority;
 
-    expect(props.loadAttachmentBytes).toBe(workspace.actions.loadAttachmentBytes);
+    expect(props.loadAttachmentBytes).toBe(
+      workspace.actions.loadAttachmentBytes,
+    );
     await expect(
-      props.onAtomCut!({ selection, selectionAuthority })
+      props.onAtomCut!({ selection, selectionAuthority }),
     ).resolves.toBe(true);
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
-    expect(workspace.captureActiveImageAtomEditorAuthority).toHaveBeenCalledWith(
-      "project",
-      selectionAuthority
-    );
+    expect(
+      workspace.captureActiveImageAtomEditorAuthority,
+    ).toHaveBeenCalledWith("project", selectionAuthority);
     expect(workspace.captureImageAtomCutAuthority).toHaveBeenCalledWith(
       "project",
-      expect.any(Object)
+      expect.any(Object),
     );
     expect(workspace.applyImageAtomCutWithAuthority).toHaveBeenCalledWith(
       expect.any(Object),
       "project",
-      selection
+      selection,
     );
     expect(applyImageAtomEdit).toHaveBeenCalledOnce();
     expect(applyImageAtomEdit).toHaveBeenCalledWith("project", selection, {
       kind: "remove",
-      replacementText: ""
+      replacementText: "",
     });
   });
 
@@ -790,7 +926,7 @@ describe("NotesPageHeader", () => {
         nodeKind: "image",
         title: "beforeafter",
         imageOffsetUtf16: 6,
-        attachments: [attachment({ id: "page-image", nodeId: "project" })]
+        attachments: [attachment({ id: "page-image", nodeId: "project" })],
       });
       const applyImageAtomEdit = vi.fn().mockResolvedValue(outcome);
       workspace.actions.applyImageAtomEdit = applyImageAtomEdit;
@@ -800,14 +936,14 @@ describe("NotesPageHeader", () => {
       const selectionAuthority = {} as ImageAtomEditorSelectionAuthority;
 
       await expect(
-        props.onAtomCut!({ selection, selectionAuthority })
+        props.onAtomCut!({ selection, selectionAuthority }),
       ).resolves.toBe(false);
       expect(applyImageAtomEdit).toHaveBeenCalledOnce();
       expect(applyImageAtomEdit).toHaveBeenCalledWith("project", selection, {
         kind: "remove",
-        replacementText: ""
+        replacementText: "",
       });
-    }
+    },
   );
 
   it("returns false without applying a page-header cut when the real editor flush is cancelled", async () => {
@@ -817,7 +953,7 @@ describe("NotesPageHeader", () => {
         nodeKind: "image",
         title: "beforeafter",
         imageOffsetUtf16: 6,
-        attachments: [attachment({ id: "page-image", nodeId: "project" })]
+        attachments: [attachment({ id: "page-image", nodeId: "project" })],
       });
       const applyImageAtomEdit = vi.fn().mockResolvedValue("committed");
       workspace.actions.applyImageAtomEdit = applyImageAtomEdit;
@@ -828,7 +964,7 @@ describe("NotesPageHeader", () => {
       fireEvent.compositionStart(editor);
       const cutting = props.onAtomCut!({
         selection: { anchorUtf16: 3, focusUtf16: 10 },
-        selectionAuthority: {} as ImageAtomEditorSelectionAuthority
+        selectionAuthority: {} as ImageAtomEditorSelectionAuthority,
       });
       await act(async () => vi.advanceTimersByTimeAsync(1_000));
 
@@ -843,7 +979,7 @@ describe("NotesPageHeader", () => {
     ["image only", "", 0, true, true],
     ["text before", "before", 6, false, true],
     ["text after", "after", 0, true, false],
-    ["text on both sides", "beforeafter", 6, false, false]
+    ["text on both sides", "beforeafter", 6, false, false],
   ])(
     "marks only empty zoomed image rows for %s",
     (_label, title, imageOffsetUtf16, beforeEmpty, afterEmpty) => {
@@ -852,16 +988,16 @@ describe("NotesPageHeader", () => {
           nodeKind: "image",
           title,
           imageOffsetUtf16,
-          attachments: [attachment({ id: "page-image", nodeId: "project" })]
-        })
+          attachments: [attachment({ id: "page-image", nodeId: "project" })],
+        }),
       );
 
       expectImageAtomEmptyRegions(
         screen.getByRole("textbox", { name: "Image note" }),
         beforeEmpty,
-        afterEmpty
+        afterEmpty,
       );
-    }
+    },
   );
 
   it("preserves selected-atom F6 and Escape semantics in the page-header editor", async () => {
@@ -871,68 +1007,73 @@ describe("NotesPageHeader", () => {
         nodeKind: "image",
         title: "beforeafter",
         imageOffsetUtf16: 6,
-        attachments: [attachment({ id: "page-image", nodeId: "project" })]
-      })
+        attachments: [attachment({ id: "page-image", nodeId: "project" })],
+      }),
     );
 
     const editor = await screen.findByRole("textbox", { name: "Image note" });
     const [before, atom, after] = editor.querySelectorAll<HTMLElement>(
-      "[data-image-atom-region]"
+      "[data-image-atom-region]",
     );
     act(() =>
       writeImageAtomDomSelection(
         { host: editor, before: before!, atom: atom!, after: after! },
         { anchorUtf16: 7, focusUtf16: 6 },
-        document.getSelection()!
-      )
+        document.getSelection()!,
+      ),
     );
 
     const group = within(editor).getByRole("group", {
-      name: "Image: diagram.png"
+      name: "Image: diagram.png",
     });
     expect(fireEvent.keyDown(editor, { key: "F6" })).toBe(false);
     expect(group).toHaveFocus();
 
     await user.tab();
     const firstControl = within(group).getByRole("button", {
-      name: "Load image diagram.png"
+      name: "Load image diagram.png",
     });
     expect(firstControl).toHaveFocus();
     fireEvent.keyDown(firstControl, { key: "Escape" });
 
     expect(editor).toHaveFocus();
-    expect(readImageAtomDomSelection(
-      { host: editor, before: before!, atom: atom!, after: after! },
-      document.getSelection()!
-    )).toEqual({ anchorUtf16: 7, focusUtf16: 6 });
+    expect(
+      readImageAtomDomSelection(
+        { host: editor, before: before!, atom: atom!, after: after! },
+        document.getSelection()!,
+      ),
+    ).toEqual({ anchorUtf16: 7, focusUtf16: 6 });
   });
 
   it.each([
     ["read-only", { libraryView: "archive" as const }],
-    ["disabled", { deletingNotesData: true }]
-  ])("does not expose editable image-atom entry while the page header is %s", async (_label, mode) => {
-    renderZoomedOutline(
-      workspaceValue({
-        ...mode,
-        nodeKind: "image",
-        title: "beforeafter",
-        imageOffsetUtf16: 6,
-        attachments: [attachment({ id: "page-image", nodeId: "project" })]
-      })
-    );
+    ["disabled", { deletingNotesData: true }],
+  ])(
+    "does not expose editable image-atom entry while the page header is %s",
+    async (_label, mode) => {
+      renderZoomedOutline(
+        workspaceValue({
+          ...mode,
+          nodeKind: "image",
+          title: "beforeafter",
+          imageOffsetUtf16: 6,
+          attachments: [attachment({ id: "page-image", nodeId: "project" })],
+        }),
+      );
 
-    const editor = await screen.findByRole("textbox", { name: "Image note" });
-    const group = within(editor).getByRole("group", {
-      name: "Image: diagram.png"
-    });
-    expect(editor).toHaveAttribute("aria-readonly", "true");
-    expect(editor).toHaveAttribute("contenteditable", "false");
-    expect(fireEvent.keyDown(editor, { key: "F6" })).toBe(true);
-    expect(group).not.toHaveFocus();
-    const props = capturedImageAtomEditorProps.get("project")!;
-    expect(props.loadAttachmentBytes).toBeUndefined();
-    expect(props.onAtomCut).toBeUndefined();
-  });
+      const editor = await screen.findByRole("textbox", { name: "Image note" });
+      const group = within(editor).getByRole("group", {
+        name: "Image: diagram.png",
+      });
+      expect(editor).toHaveAttribute("aria-readonly", "true");
+      expect(editor).toHaveAttribute("contenteditable", "false");
+      expect(fireEvent.keyDown(editor, { key: "F6" })).toBe(true);
+      expect(group).not.toHaveFocus();
+      const props = capturedImageAtomEditorProps.get("project")!;
+      expect(props.loadAttachmentBytes).toBeUndefined();
+      expect(props.onAtomCut).toBeUndefined();
+    },
+  );
 
   it("opens an existing-date picker from the page image atom", async () => {
     const user = userEvent.setup();
@@ -940,34 +1081,34 @@ describe("NotesPageHeader", () => {
       workspaceValue({
         nodeKind: "image",
         title: "Before 07/12/2026 after",
-        attachments: [attachment({ id: "image-1", nodeId: "project" })]
-      })
+        attachments: [attachment({ id: "image-1", nodeId: "project" })],
+      }),
     );
 
     await user.click(
-      screen.getByRole("button", { name: "Edit date 07/12/2026" })
+      screen.getByRole("button", { name: "Edit date 07/12/2026" }),
     );
 
     expect(
-      await screen.findByRole("dialog", { name: "Choose date" })
+      await screen.findByRole("dialog", { name: "Choose date" }),
     ).toBeVisible();
   });
 
   it.each([
     ["archive", { libraryView: "archive" as const }],
     ["trash", { libraryView: "trash" as const }],
-    ["disabled", { deletingNotesData: true }]
+    ["disabled", { deletingNotesData: true }],
   ])("does not activate image dates while %s", async (_label, mode) => {
     const workspace = workspaceValue({
       ...mode,
       nodeKind: "image",
       title: "Before 07/12/2026 after",
-      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      attachments: [attachment({ id: "image-1", nodeId: "project" })],
     });
     renderZoomedOutline(workspace);
 
     expect(
-      screen.queryByRole("button", { name: "Edit date 07/12/2026" })
+      screen.queryByRole("button", { name: "Edit date 07/12/2026" }),
     ).toBeNull();
     expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalled();
     expect(workspace.actions.flushNodeDraft).not.toHaveBeenCalled();
@@ -979,12 +1120,12 @@ describe("NotesPageHeader", () => {
       childNodeKind: "image",
       childTitle: "Before 07/12/2026 after",
       childImageOffsetUtf16: 6,
-      childAttachments: [attachment({ id: "image-child", nodeId: "child" })]
+      childAttachments: [attachment({ id: "image-child", nodeId: "child" })],
     });
     renderZoomedOutline(workspace);
 
     expect(
-      screen.queryByRole("button", { name: "Edit date 07/12/2026" })
+      screen.queryByRole("button", { name: "Edit date 07/12/2026" }),
     ).toBeNull();
     expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalled();
     expect(workspace.actions.flushNodeDraft).not.toHaveBeenCalled();
@@ -996,7 +1137,7 @@ describe("NotesPageHeader", () => {
       nodeKind: "image",
       title: "today after",
       imageOffsetUtf16: 5,
-      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      attachments: [attachment({ id: "image-1", nodeId: "project" })],
     });
     renderZoomedOutline(workspace);
 
@@ -1010,9 +1151,9 @@ describe("NotesPageHeader", () => {
       {
         title: "07/11/2026 after",
         note: "Project context",
-        imageOffsetUtf16: 10
+        imageOffsetUtf16: 10,
       },
-      "title"
+      "title",
     );
   });
 
@@ -1022,7 +1163,7 @@ describe("NotesPageHeader", () => {
       nodeKind: "image",
       title: "before today",
       imageOffsetUtf16: 0,
-      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      attachments: [attachment({ id: "image-1", nodeId: "project" })],
     });
     renderZoomedOutline(workspace);
 
@@ -1036,9 +1177,9 @@ describe("NotesPageHeader", () => {
       {
         title: "before 07/11/2026",
         note: "Project context",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
       },
-      "title"
+      "title",
     );
   });
 
@@ -1048,12 +1189,12 @@ describe("NotesPageHeader", () => {
       nodeKind: "image",
       title: "before!after",
       imageOffsetUtf16: 6,
-      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      attachments: [attachment({ id: "image-1", nodeId: "project" })],
     });
     renderZoomedOutline(workspace);
     const editor = screen.getByRole("textbox", { name: "Image note" });
     const afterText = editor.querySelector<HTMLElement>(
-      '[data-image-atom-region="after"] [data-image-atom-raw]'
+      '[data-image-atom-region="after"] [data-image-atom-raw]',
     )!.firstChild!;
     const selection = document.getSelection()!;
     const range = document.createRange();
@@ -1068,8 +1209,8 @@ describe("NotesPageHeader", () => {
         bubbles: true,
         cancelable: true,
         inputType: "insertText",
-        data: "!"
-      })
+        data: "!",
+      }),
     );
     const picker = await screen.findByRole("dialog", { name: "Choose date" });
     await user.click(within(picker).getByRole("button", { name: "Today" }));
@@ -1080,9 +1221,9 @@ describe("NotesPageHeader", () => {
       {
         title: "before 07/11/2026 after",
         note: "Project context",
-        imageOffsetUtf16: 6
+        imageOffsetUtf16: 6,
       },
-      "title"
+      "title",
     );
   });
 
@@ -1091,27 +1232,27 @@ describe("NotesPageHeader", () => {
       workspaceValue({
         nodeKind: "image",
         title: "missing.png",
-        note: "Recovery details"
-      })
+        note: "Recovery details",
+      }),
     );
 
     const heading = screen.getByRole("heading", {
       name: "missing.png",
-      level: 1
+      level: 1,
     });
     const content = screen.getByRole("group", { name: "Image: missing.png" });
     expect(heading).not.toContainElement(content);
     expect(within(content).getByRole("alert")).toHaveTextContent(
-      "Image unavailable"
+      "Image unavailable",
     );
     expect(
-      screen.getByRole("button", { name: "More actions for Image" })
+      screen.getByRole("button", { name: "More actions for Image" }),
     ).toBeVisible();
     expect(getTextareaByName("Supporting note: Image")).toHaveValue(
-      "Recovery details"
+      "Recovery details",
     );
     expect(heading.closest(".notes-page-header")).not.toHaveTextContent(
-      "missing.png"
+      "missing.png",
     );
   });
 
@@ -1120,27 +1261,29 @@ describe("NotesPageHeader", () => {
       nodeKind: "image",
       title: "diagram.png",
       note: "",
-      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      attachments: [attachment({ id: "image-1", nodeId: "project" })],
     });
     const applyImageAtomEdit = vi.fn().mockResolvedValue("committed");
     workspace.actions.applyImageAtomEdit = applyImageAtomEdit;
     renderZoomedOutline(workspace);
     const editor = screen.getByRole("textbox", { name: "Image note" });
-    expect(fireEvent.keyDown(editor, { key: "Enter", shiftKey: true })).toBe(false);
+    expect(fireEvent.keyDown(editor, { key: "Enter", shiftKey: true })).toBe(
+      false,
+    );
     expect(getTextareaByName("Supporting note: Image")).toHaveFocus();
 
     const refreshedEditor = screen.getByRole("textbox", { name: "Image note" });
     fireEvent.click(
       refreshedEditor.querySelector<HTMLElement>(
-        '[data-image-atom-region="atom"]'
-      )!
+        '[data-image-atom-region="atom"]',
+      )!,
     );
     expect(fireEvent.keyDown(refreshedEditor, { key: "Enter" })).toBe(false);
     await waitFor(() => expect(applyImageAtomEdit).toHaveBeenCalledOnce());
     expect(applyImageAtomEdit).toHaveBeenCalledWith(
       "project",
       expect.objectContaining({ anchorUtf16: 0, focusUtf16: 1 }),
-      expect.objectContaining({ kind: "enter" })
+      expect.objectContaining({ kind: "enter" }),
     );
     expect(workspace.actions.splitNode).not.toHaveBeenCalled();
   });
@@ -1149,11 +1292,12 @@ describe("NotesPageHeader", () => {
     const workspace = workspaceValue({
       nodeKind: "image",
       title: "diagram.png",
-      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      attachments: [attachment({ id: "image-1", nodeId: "project" })],
     });
     const registry = createNotesImageAtomEditorRegistry();
     const importClipboardImages = vi.fn().mockResolvedValue(undefined);
-    workspace.registerActiveImageAtomEditor = (editor) => registry.register(editor);
+    workspace.registerActiveImageAtomEditor = (editor) =>
+      registry.register(editor);
     workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
     workspace.actions.importClipboardImages = importClipboardImages;
     renderZoomedOutline(workspace);
@@ -1161,10 +1305,10 @@ describe("NotesPageHeader", () => {
     const editor = screen.getByRole("textbox", { name: "Image note" });
     editor.focus();
     fireEvent.click(
-      editor.querySelector<HTMLElement>("[data-image-atom-region=\"atom\"]")!
+      editor.querySelector<HTMLElement>('[data-image-atom-region="atom"]')!,
     );
     const file = new File([new Uint8Array([137, 80, 78, 71])], "external.png", {
-      type: "image/png"
+      type: "image/png",
     });
     const event = createEvent.paste(editor, {
       bubbles: true,
@@ -1175,19 +1319,19 @@ describe("NotesPageHeader", () => {
           0: {
             kind: "file",
             type: "image/png",
-            getAsFile: () => file
+            getAsFile: () => file,
           },
-          length: 1
+          length: 1,
         },
-        getData: () => ""
-      }
+        getData: () => "",
+      },
     });
 
     fireEvent(editor, event);
 
     expect(event.defaultPrevented).toBe(true);
     await waitFor(() =>
-      expect(workspace.actions.applyImageAtomPaste).toHaveBeenCalledOnce()
+      expect(workspace.actions.applyImageAtomPaste).toHaveBeenCalledOnce(),
     );
     expect(importClipboardImages).not.toHaveBeenCalled();
   });
@@ -1196,7 +1340,7 @@ describe("NotesPageHeader", () => {
     const workspace = workspaceValue({
       nodeKind: "image",
       title: "diagram.png",
-      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      attachments: [attachment({ id: "image-1", nodeId: "project" })],
     });
     const registry = createNotesImageAtomEditorRegistry();
     let persisted = false;
@@ -1206,31 +1350,34 @@ describe("NotesPageHeader", () => {
       return true;
     });
     workspace.captureImageAtomPasteAuthority = vi.fn(() =>
-      persisted ? authority ?? null : null
+      persisted ? (authority ?? null) : null,
     );
-    workspace.registerActiveImageAtomEditor = (editor) => registry.register(editor);
+    workspace.registerActiveImageAtomEditor = (editor) =>
+      registry.register(editor);
     workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
     renderZoomedOutline(workspace);
 
     const editor = screen.getByRole("textbox", { name: "Image note" });
     editor.focus();
-    fireEvent.click(editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!);
+    fireEvent.click(
+      editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!,
+    );
     const file = new File([new Uint8Array([137, 80, 78, 71])], "external.png", {
-      type: "image/png"
+      type: "image/png",
     });
     fireEvent.paste(editor, {
       clipboardData: {
         types: ["Files"],
         items: {
           0: { kind: "file", type: "image/png", getAsFile: () => file },
-          length: 1
+          length: 1,
         },
-        getData: () => ""
-      }
+        getData: () => "",
+      },
     });
 
     await waitFor(() =>
-      expect(workspace.actions.applyImageAtomPaste).toHaveBeenCalledOnce()
+      expect(workspace.actions.applyImageAtomPaste).toHaveBeenCalledOnce(),
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
   });
@@ -1242,9 +1389,9 @@ describe("NotesPageHeader", () => {
         nodeKind: "image" as const,
         title: "beforeafter",
         imageOffsetUtf16: 6,
-        attachments: [attachment({ id: "image-1", nodeId: "project" })]
+        attachments: [attachment({ id: "image-1", nodeId: "project" })],
       },
-      "project"
+      "project",
     ],
     [
       "outline row",
@@ -1252,44 +1399,51 @@ describe("NotesPageHeader", () => {
         childNodeKind: "image" as const,
         childTitle: "beforeafter",
         childImageOffsetUtf16: 6,
-        childAttachments: [attachment({ id: "image-child", nodeId: "child" })]
+        childAttachments: [attachment({ id: "image-child", nodeId: "child" })],
       },
-      "child"
-    ]
+      "child",
+    ],
   ])(
     "drops a %s image paste when the same host blurs and refocuses during draft flush",
     async (_label, options, nodeId) => {
       const workspace = workspaceValue(options);
       const registry = createNotesImageAtomEditorRegistry();
       const flush = deferred<boolean>();
-      vi.mocked(workspace.actions.flushNodeDraft).mockReturnValue(flush.promise);
+      vi.mocked(workspace.actions.flushNodeDraft).mockReturnValue(
+        flush.promise,
+      );
       workspace.registerActiveImageAtomEditor = (editor) =>
         registry.register(editor);
-      workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
+      workspace.claimActiveImageAtomPaste = (event) =>
+        registry.claimPaste(event);
       connectImagePasteAuthority(workspace, registry);
       renderZoomedOutline(workspace);
 
       const editor = screen.getByRole("textbox", { name: "Image note" });
       const atom = editor.querySelector<HTMLElement>(
-        "[data-image-atom-region=atom]"
+        "[data-image-atom-region=atom]",
       )!;
       editor.focus();
       fireEvent.click(atom);
-      const file = new File([new Uint8Array([137, 80, 78, 71])], "external.png", {
-        type: "image/png"
-      });
+      const file = new File(
+        [new Uint8Array([137, 80, 78, 71])],
+        "external.png",
+        {
+          type: "image/png",
+        },
+      );
       fireEvent.paste(editor, {
         clipboardData: {
           types: ["Files"],
           items: {
             0: { kind: "file", type: "image/png", getAsFile: () => file },
-            length: 1
+            length: 1,
           },
-          getData: () => ""
-        }
+          getData: () => "",
+        },
       });
       await waitFor(() =>
-        expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith(nodeId)
+        expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith(nodeId),
       );
 
       await act(async () => {
@@ -1304,7 +1458,7 @@ describe("NotesPageHeader", () => {
 
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(workspace.actions.applyImageAtomPaste).not.toHaveBeenCalled();
-    }
+    },
   );
 
   it.each([
@@ -1314,8 +1468,8 @@ describe("NotesPageHeader", () => {
         nodeKind: "image" as const,
         title: "beforeafter",
         imageOffsetUtf16: 6,
-        attachments: [attachment({ id: "image-1", nodeId: "project" })]
-      }
+        attachments: [attachment({ id: "image-1", nodeId: "project" })],
+      },
     ],
     [
       "outline row",
@@ -1323,42 +1477,49 @@ describe("NotesPageHeader", () => {
         childNodeKind: "image" as const,
         childTitle: "beforeafter",
         childImageOffsetUtf16: 6,
-        childAttachments: [attachment({ id: "image-child", nodeId: "child" })]
-      }
-    ]
+        childAttachments: [attachment({ id: "image-child", nodeId: "child" })],
+      },
+    ],
   ])(
     "commits a %s image paste when ownership stays unchanged during draft flush",
     async (_label, options) => {
       const workspace = workspaceValue(options);
       const registry = createNotesImageAtomEditorRegistry();
       const flush = deferred<boolean>();
-      vi.mocked(workspace.actions.flushNodeDraft).mockReturnValue(flush.promise);
+      vi.mocked(workspace.actions.flushNodeDraft).mockReturnValue(
+        flush.promise,
+      );
       workspace.registerActiveImageAtomEditor = (editor) =>
         registry.register(editor);
-      workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
+      workspace.claimActiveImageAtomPaste = (event) =>
+        registry.claimPaste(event);
       connectImagePasteAuthority(workspace, registry);
       renderZoomedOutline(workspace);
 
       const editor = screen.getByRole("textbox", { name: "Image note" });
       editor.focus();
       fireEvent.click(
-        editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!
+        editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!,
       );
-      const file = new File([new Uint8Array([137, 80, 78, 71])], "external.png", {
-        type: "image/png"
-      });
+      const file = new File(
+        [new Uint8Array([137, 80, 78, 71])],
+        "external.png",
+        {
+          type: "image/png",
+        },
+      );
       fireEvent.paste(editor, {
         clipboardData: {
           types: ["Files"],
           items: {
             0: { kind: "file", type: "image/png", getAsFile: () => file },
-            length: 1
+            length: 1,
           },
-          getData: () => ""
-        }
+          getData: () => "",
+        },
       });
       await waitFor(() =>
-        expect(workspace.actions.flushNodeDraft).toHaveBeenCalledOnce()
+        expect(workspace.actions.flushNodeDraft).toHaveBeenCalledOnce(),
       );
 
       await act(async () => {
@@ -1367,30 +1528,33 @@ describe("NotesPageHeader", () => {
       });
 
       await waitFor(() =>
-        expect(workspace.actions.applyImageAtomPaste).toHaveBeenCalledOnce()
+        expect(workspace.actions.applyImageAtomPaste).toHaveBeenCalledOnce(),
       );
-    }
+    },
   );
 
   it("silently consumes a claimed image paste when its explicit draft save fails", async () => {
     const workspace = workspaceValue({
       nodeKind: "image",
       title: "diagram.png",
-      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      attachments: [attachment({ id: "image-1", nodeId: "project" })],
     });
     const registry = createNotesImageAtomEditorRegistry();
     const importClipboardImages = vi.fn().mockResolvedValue(undefined);
     vi.mocked(workspace.actions.flushNodeDraft).mockResolvedValue(false);
     workspace.actions.importClipboardImages = importClipboardImages;
-    workspace.registerActiveImageAtomEditor = (editor) => registry.register(editor);
+    workspace.registerActiveImageAtomEditor = (editor) =>
+      registry.register(editor);
     workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
     renderZoomedOutline(workspace);
 
     const editor = screen.getByRole("textbox", { name: "Image note" });
     editor.focus();
-    fireEvent.click(editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!);
+    fireEvent.click(
+      editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!,
+    );
     const file = new File([new Uint8Array([137, 80, 78, 71])], "external.png", {
-      type: "image/png"
+      type: "image/png",
     });
     const event = createEvent.paste(editor, {
       bubbles: true,
@@ -1399,14 +1563,16 @@ describe("NotesPageHeader", () => {
         types: ["Files"],
         items: {
           0: { kind: "file", type: "image/png", getAsFile: () => file },
-          length: 1
+          length: 1,
         },
-        getData: () => ""
-      }
+        getData: () => "",
+      },
     });
     fireEvent(editor, event);
 
-    await waitFor(() => expect(workspace.actions.flushNodeDraft).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(workspace.actions.flushNodeDraft).toHaveBeenCalled(),
+    );
     expect(event.defaultPrevented).toBe(true);
     expect(workspace.actions.applyImageAtomPaste).not.toHaveBeenCalled();
     expect(importClipboardImages).not.toHaveBeenCalled();
@@ -1417,11 +1583,12 @@ describe("NotesPageHeader", () => {
       nodeKind: "image",
       title: "beforeafter",
       imageOffsetUtf16: 6,
-      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      attachments: [attachment({ id: "image-1", nodeId: "project" })],
     });
     const registry = createNotesImageAtomEditorRegistry();
     const importClipboardImages = vi.fn().mockResolvedValue(undefined);
-    workspace.registerActiveImageAtomEditor = (editor) => registry.register(editor);
+    workspace.registerActiveImageAtomEditor = (editor) =>
+      registry.register(editor);
     workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
     workspace.actions.importClipboardImages = importClipboardImages;
     renderZoomedOutline(workspace);
@@ -1429,7 +1596,7 @@ describe("NotesPageHeader", () => {
     const editor = screen.getByRole("textbox", { name: "Image note" });
     editor.focus();
     fireEvent.click(
-      editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!
+      editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!,
     );
     const paste = await deferredInternalImagePaste(editor);
     fireEvent(editor, paste.event);
@@ -1439,7 +1606,7 @@ describe("NotesPageHeader", () => {
     });
 
     const afterText = editor.querySelector<HTMLElement>(
-      "[data-image-atom-region=after] [data-image-atom-raw]"
+      "[data-image-atom-region=after] [data-image-atom-raw]",
     )!.firstChild!;
     const range = document.createRange();
     range.setStart(afterText, 2);
@@ -1452,7 +1619,7 @@ describe("NotesPageHeader", () => {
       await Promise.resolve();
     });
     await waitFor(() =>
-      expect(workspace.isImageAtomPasteAuthorityCurrent).toHaveBeenCalled()
+      expect(workspace.isImageAtomPasteAuthorityCurrent).toHaveBeenCalled(),
     );
     expect(paste.event.defaultPrevented).toBe(true);
     expect(workspace.actions.applyImageAtomPaste).not.toHaveBeenCalled();
@@ -1464,21 +1631,24 @@ describe("NotesPageHeader", () => {
       nodeKind: "image",
       title: "beforeafter",
       imageOffsetUtf16: 6,
-      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      attachments: [attachment({ id: "image-1", nodeId: "project" })],
     });
     const registry = createNotesImageAtomEditorRegistry();
-    workspace.registerActiveImageAtomEditor = (editor) => registry.register(editor);
+    workspace.registerActiveImageAtomEditor = (editor) =>
+      registry.register(editor);
     workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
     connectImagePasteAuthority(workspace, registry);
     renderZoomedOutline(workspace);
     const editor = screen.getByRole("textbox", { name: "Image note" });
     editor.focus();
-    const atom = editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!;
+    const atom = editor.querySelector<HTMLElement>(
+      "[data-image-atom-region=atom]",
+    )!;
     fireEvent.click(atom);
     const paste = await deferredInternalImagePaste(editor);
     fireEvent(editor, paste.event);
     await waitFor(() =>
-      expect(workspace.captureImageAtomPasteAuthority).toHaveBeenCalled()
+      expect(workspace.captureImageAtomPasteAuthority).toHaveBeenCalled(),
     );
     editor.blur();
     editor.focus();
@@ -1494,24 +1664,27 @@ describe("NotesPageHeader", () => {
       nodeKind: "image",
       title: "beforeafter",
       imageOffsetUtf16: 6,
-      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      attachments: [attachment({ id: "image-1", nodeId: "project" })],
     });
     const registry = createNotesImageAtomEditorRegistry();
-    workspace.registerActiveImageAtomEditor = (editor) => registry.register(editor);
+    workspace.registerActiveImageAtomEditor = (editor) =>
+      registry.register(editor);
     workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
     connectImagePasteAuthority(workspace, registry);
     renderZoomedOutline(workspace);
     const editor = screen.getByRole("textbox", { name: "Image note" });
     editor.focus();
-    const atom = editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!;
+    const atom = editor.querySelector<HTMLElement>(
+      "[data-image-atom-region=atom]",
+    )!;
     fireEvent.click(atom);
     const paste = await deferredInternalImagePaste(editor);
     fireEvent(editor, paste.event);
     await waitFor(() =>
-      expect(workspace.captureImageAtomPasteAuthority).toHaveBeenCalled()
+      expect(workspace.captureImageAtomPasteAuthority).toHaveBeenCalled(),
     );
     const afterText = editor.querySelector<HTMLElement>(
-      "[data-image-atom-region=after] [data-image-atom-raw]"
+      "[data-image-atom-region=after] [data-image-atom-raw]",
     )!.firstChild!;
     const selection = document.getSelection()!;
     selection.setBaseAndExtent(afterText, 1, afterText, 1);
@@ -1529,21 +1702,24 @@ describe("NotesPageHeader", () => {
       nodeKind: "image",
       title: "beforeafter",
       imageOffsetUtf16: 6,
-      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      attachments: [attachment({ id: "image-1", nodeId: "project" })],
     });
     const registry = createNotesImageAtomEditorRegistry();
-    workspace.registerActiveImageAtomEditor = (editor) => registry.register(editor);
+    workspace.registerActiveImageAtomEditor = (editor) =>
+      registry.register(editor);
     workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
     connectImagePasteAuthority(workspace, registry);
     renderZoomedOutline(workspace);
     const editor = screen.getByRole("textbox", { name: "Image note" });
     editor.focus();
-    const atom = editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!;
+    const atom = editor.querySelector<HTMLElement>(
+      "[data-image-atom-region=atom]",
+    )!;
     fireEvent.click(atom);
     const paste = await deferredInternalImagePaste(editor);
     fireEvent(editor, paste.event);
     await waitFor(() =>
-      expect(workspace.captureImageAtomPasteAuthority).toHaveBeenCalled()
+      expect(workspace.captureImageAtomPasteAuthority).toHaveBeenCalled(),
     );
     fireEvent.click(atom);
     fireEvent(document, new Event("selectionchange"));
@@ -1551,7 +1727,7 @@ describe("NotesPageHeader", () => {
     await act(async () => paste.settle());
 
     await waitFor(() =>
-      expect(workspace.actions.applyImageAtomPaste).toHaveBeenCalledOnce()
+      expect(workspace.actions.applyImageAtomPaste).toHaveBeenCalledOnce(),
     );
   });
 
@@ -1562,28 +1738,30 @@ describe("NotesPageHeader", () => {
         nodeKind: "image",
         title: "beforeafter",
         imageOffsetUtf16: 6,
-        attachments: [attachment({ id: "image-1", nodeId: "project" })]
+        attachments: [attachment({ id: "image-1", nodeId: "project" })],
       });
       const registry = createNotesImageAtomEditorRegistry();
       let generation = 1;
       const capture = vi.fn(() => ({ generation }));
       const isCurrent = vi.fn(
-        (authority: { generation: number }) => authority.generation === generation
+        (authority: { generation: number }) =>
+          authority.generation === generation,
       );
       Object.assign(workspace, {
-        registerActiveImageAtomEditor: (editor: Parameters<typeof registry.register>[0]) =>
-          registry.register(editor),
+        registerActiveImageAtomEditor: (
+          editor: Parameters<typeof registry.register>[0],
+        ) => registry.register(editor),
         claimActiveImageAtomPaste: (event: ClipboardEvent) =>
           registry.claimPaste(event),
         captureImageAtomPasteAuthority: capture,
-        isImageAtomPasteAuthorityCurrent: isCurrent
+        isImageAtomPasteAuthorityCurrent: isCurrent,
       });
       renderZoomedOutline(workspace);
 
       const editor = screen.getByRole("textbox", { name: "Image note" });
       editor.focus();
       fireEvent.click(
-        editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!
+        editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!,
       );
       const paste = await deferredInternalImagePaste(editor);
       fireEvent(editor, paste.event);
@@ -1601,7 +1779,7 @@ describe("NotesPageHeader", () => {
       expect(paste.event.defaultPrevented).toBe(true);
       expect(workspace.actions.applyImageAtomPaste).not.toHaveBeenCalled();
       expect(capture).toHaveBeenCalledOnce();
-    }
+    },
   );
 
   it("exposes an attachment target only for a writable page header", () => {
@@ -1611,16 +1789,18 @@ describe("NotesPageHeader", () => {
       .closest("header");
     expect(header).toHaveAttribute("data-notes-attachment-target", "project");
 
-    view.rerender(
-      zoomedOutline(workspaceValue({ deletingNotesData: true }))
-    );
+    view.rerender(zoomedOutline(workspaceValue({ deletingNotesData: true })));
     expect(
-      screen.getByRole("heading", { name: "Project", level: 1 }).closest("header")
+      screen
+        .getByRole("heading", { name: "Project", level: 1 })
+        .closest("header"),
     ).not.toHaveAttribute("data-notes-attachment-target");
 
     view.rerender(zoomedOutline(workspaceValue({ libraryView: "archive" })));
     expect(
-      screen.getByRole("heading", { name: "Project", level: 1 }).closest("header")
+      screen
+        .getByRole("heading", { name: "Project", level: 1 })
+        .closest("header"),
     ).not.toHaveAttribute("data-notes-attachment-target");
   });
 
@@ -1630,14 +1810,14 @@ describe("NotesPageHeader", () => {
     const workspace = workspaceValue({
       attachments: [image],
       attachmentUploadError: "Image upload failed: disk full",
-      attachmentUploadRetryAttemptId: "attempt-1"
+      attachmentUploadRetryAttemptId: "attempt-1",
     });
 
     renderZoomedOutline(workspace);
 
     const group = screen.getByRole("group", { name: "Image: diagram.png" });
     const manualLoad = within(group).getByRole("button", {
-      name: "Load image diagram.png"
+      name: "Load image diagram.png",
     });
     const alert = screen.getByRole("alert", { name: "Image upload failed" });
     const note = getTextareaByName("Supporting note: Project");
@@ -1645,18 +1825,19 @@ describe("NotesPageHeader", () => {
 
     expect(attachments).not.toBeNull();
     expect(
-      note.compareDocumentPosition(attachments!) & Node.DOCUMENT_POSITION_FOLLOWING
+      note.compareDocumentPosition(attachments!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(manualLoad).toBeVisible();
     expect(alert).toHaveTextContent("disk full");
     expect(workspace.actions.loadAttachmentBytes).not.toHaveBeenCalled();
 
     await user.click(
-      within(alert).getByRole("button", { name: "Retry image upload" })
+      within(alert).getByRole("button", { name: "Retry image upload" }),
     );
     expect(workspace.actions.retryImageUpload).toHaveBeenCalledWith(
       "project",
-      "attempt-1"
+      "attempt-1",
     );
   });
 
@@ -1667,7 +1848,7 @@ describe("NotesPageHeader", () => {
       title: "diagram.png",
       attachments: [attachment({ id: "image-1", nodeId: "project" })],
       attachmentUploadError: "Image upload failed: disk full",
-      attachmentUploadRetryAttemptId: "image-attempt-1"
+      attachmentUploadRetryAttemptId: "image-attempt-1",
     });
     renderZoomedOutline(workspace);
 
@@ -1675,26 +1856,26 @@ describe("NotesPageHeader", () => {
       .getByRole("heading", { name: "diagram.png", level: 1 })
       .closest<HTMLElement>(".notes-page-header")!;
     const alert = within(header).getByRole("alert", {
-      name: "Image upload failed"
+      name: "Image upload failed",
     });
     expect(alert).toHaveTextContent("disk full");
     expect(header.querySelector(".notes-attachment-list")).toBeNull();
     expect(
-      within(header).getAllByRole("group", { name: "Image: diagram.png" })
+      within(header).getAllByRole("group", { name: "Image: diagram.png" }),
     ).toHaveLength(1);
 
     await user.click(
-      within(alert).getByRole("button", { name: "Retry image upload" })
+      within(alert).getByRole("button", { name: "Retry image upload" }),
     );
     expect(workspace.actions.retryImageUpload).toHaveBeenCalledWith(
       "project",
-      "image-attempt-1"
+      "image-attempt-1",
     );
   });
 
   it.each([
     ["read-only", { libraryView: "archive" as const }],
-    ["disabled", { deletingNotesData: true }]
+    ["disabled", { deletingNotesData: true }],
   ])("does not offer image-header retry while %s", (_label, mode) => {
     renderZoomedOutline(
       workspaceValue({
@@ -1703,14 +1884,14 @@ describe("NotesPageHeader", () => {
         attachments: [attachment({ id: "image-1", nodeId: "project" })],
         attachmentUploadError: "Image upload failed: disk full",
         attachmentUploadRetryAttemptId: "image-attempt-1",
-        ...mode
-      })
+        ...mode,
+      }),
     );
 
     const alert = screen.getByRole("alert", { name: "Image upload failed" });
     expect(alert).toHaveTextContent("disk full");
     expect(
-      within(alert).queryByRole("button", { name: "Retry image upload" })
+      within(alert).queryByRole("button", { name: "Retry image upload" }),
     ).toBeNull();
   });
 
@@ -1725,11 +1906,11 @@ describe("NotesPageHeader", () => {
       fireEvent.keyDown(note, {
         key: "z",
         ctrlKey: true,
-        shiftKey: true
-      })
+        shiftKey: true,
+      }),
     ).toBe(false);
     expect(fireEvent.keyDown(childTitle, { key: "y", ctrlKey: true })).toBe(
-      false
+      false,
     );
 
     expect(workspace.actions.undo).toHaveBeenCalledOnce();
@@ -1746,7 +1927,7 @@ describe("NotesPageHeader", () => {
     expect(workspace.actions.createChild).toHaveBeenCalledOnce();
     expect(workspace.actions.createChild).toHaveBeenCalledWith(
       "project",
-      "first"
+      "first",
     );
     expect(workspace.actions.splitNode).not.toHaveBeenCalled();
   });
@@ -1755,37 +1936,28 @@ describe("NotesPageHeader", () => {
     const workspace = renderZoomedOutline();
     const title = editTextareaByName("Edit page title");
 
-    expect(
-      fireEvent.keyDown(title, { key: "Enter", isComposing: true })
-    ).toBe(true);
+    expect(fireEvent.keyDown(title, { key: "Enter", isComposing: true })).toBe(
+      true,
+    );
     expect(workspace.actions.createChild).not.toHaveBeenCalled();
   });
 
-  it("opens the page Trash confirmation for a note-only page title", async () => {
-    const user = userEvent.setup();
+  it("routes a note-only page title through the shared readonly delete preflight", async () => {
     const workspace = renderZoomedOutline(
-      workspaceValue({ title: "", note: "Project context" })
+      workspaceValue({ title: "", note: "Project context" }),
     );
     const title = editTextareaByName("Edit page title");
     title.setSelectionRange(0, 0);
 
     expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
-    let dialog = screen.getByRole("alertdialog", {
-      name: "Move page to Trash?"
-    });
-    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    expect(workspace.actions.deleteNode).not.toHaveBeenCalled();
-    await waitFor(() => expect(title).toHaveFocus());
-
-    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(false);
-    dialog = screen.getByRole("alertdialog", {
-      name: "Move page to Trash?"
-    });
-    await user.click(
-      within(dialog).getByRole("button", { name: "Move to Trash" })
+    await waitFor(() =>
+      expect(workspace.actions.deleteNodes).toHaveBeenCalledWith(["project"]),
     );
     expect(workspace.actions.deleteNode).toHaveBeenCalledOnce();
     expect(workspace.actions.deleteNode).toHaveBeenCalledWith("project");
+    expect(
+      screen.queryByRole("alertdialog", { name: "Move page to Trash?" }),
+    ).toBeNull();
   });
 
   it("exits the page note to the next visible title with its live value", () => {
@@ -1794,7 +1966,7 @@ describe("NotesPageHeader", () => {
     expect(note).toHaveAttribute("rows", "1");
     Object.getOwnPropertyDescriptor(
       HTMLTextAreaElement.prototype,
-      "value"
+      "value",
     )?.set?.call(note, "Revised context");
     note.setSelectionRange(note.value.length, note.value.length);
 
@@ -1803,7 +1975,7 @@ describe("NotesPageHeader", () => {
     expect(workspace.actions.updateNodeDraft).toHaveBeenLastCalledWith(
       "project",
       { title: "Project", note: "Revised context", imageOffsetUtf16: 0 },
-      "note"
+      "note",
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
     expect(workspace.actions.focusNode).toHaveBeenCalledWith("child");
@@ -1814,16 +1986,16 @@ describe("NotesPageHeader", () => {
     const note = editTextareaByName("Supporting note: Project");
     Object.getOwnPropertyDescriptor(
       HTMLTextAreaElement.prototype,
-      "value"
+      "value",
     )?.set?.call(note, "Revised context");
 
-    expect(
-      fireEvent.keyDown(note, { key: "Enter", shiftKey: true })
-    ).toBe(false);
+    expect(fireEvent.keyDown(note, { key: "Enter", shiftKey: true })).toBe(
+      false,
+    );
     expect(workspace.actions.updateNodeDraft).toHaveBeenLastCalledWith(
       "project",
       { title: "Project", note: "Revised context", imageOffsetUtf16: 0 },
-      "note"
+      "note",
     );
     expect(workspace.actions.focusNode).toHaveBeenCalledWith("child");
     expect(workspace.actions.createChild).not.toHaveBeenCalled();
@@ -1848,12 +2020,12 @@ describe("NotesPageHeader", () => {
     renderZoomedOutline(workspace);
     const note = editTextareaByName("Supporting note: Project");
 
-    expect(
-      fireEvent.keyDown(note, { key: "Enter", shiftKey: true })
-    ).toBe(false);
+    expect(fireEvent.keyDown(note, { key: "Enter", shiftKey: true })).toBe(
+      false,
+    );
     expect(workspace.actions.createChild).toHaveBeenCalledWith(
       "project",
-      "first"
+      "first",
     );
     expect(eventTrace).toEqual(["updateNodeDraft", "createChild"]);
   });
@@ -1876,14 +2048,14 @@ describe("NotesPageHeader", () => {
       fireEvent.keyDown(title, {
         key: "z",
         ctrlKey: true,
-        isComposing: true
-      })
+        isComposing: true,
+      }),
     ).toBe(true);
     expect(
       fireEvent.keyDown(title, {
         key: "Process",
-        ctrlKey: true
-      })
+        ctrlKey: true,
+      }),
     ).toBe(true);
     expect(workspace.actions.undo).not.toHaveBeenCalled();
     expect(workspace.actions.redo).not.toHaveBeenCalled();
@@ -1891,7 +2063,7 @@ describe("NotesPageHeader", () => {
 
   it("restores pending history focus to the supporting-note field", async () => {
     const workspace = renderZoomedOutline(
-      workspaceValue({ pendingFocus: { nodeId: "project", field: "note" } })
+      workspaceValue({ pendingFocus: { nodeId: "project", field: "note" } }),
     );
     const note = getTextareaByName("Supporting note: Project");
 
@@ -1902,16 +2074,18 @@ describe("NotesPageHeader", () => {
   it("auto-grows a long Korean page title beside a stable left menu rail", () => {
     const longTitle =
       "길고 자세한 한국어 페이지 제목도 메뉴 버튼 아래로 숨지 않고 필요한 만큼 여러 줄로 줄바꿈됩니다";
-    vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockReturnValue(
-      102
-    );
+    vi.spyOn(
+      HTMLTextAreaElement.prototype,
+      "scrollHeight",
+      "get",
+    ).mockReturnValue(102);
     renderZoomedOutline(workspaceValue({ title: longTitle, note: "" }));
 
     const title = getTextareaByName("Edit page title");
     const titleRow = title.closest(".notes-page-title-row");
     const heading = title.closest(".notes-page-heading");
     const menu = screen.getByRole("button", {
-      name: `More actions for ${longTitle}`
+      name: `More actions for ${longTitle}`,
     });
 
     expect(title).toBeInstanceOf(HTMLTextAreaElement);
@@ -1921,7 +2095,7 @@ describe("NotesPageHeader", () => {
     expect(menu.closest(".notes-page-menu-slot")).not.toBeNull();
     expect(Array.from(titleRow?.children ?? [])).toEqual([
       menu.closest(".notes-page-menu-slot"),
-      heading
+      heading,
     ]);
   });
 
@@ -1935,13 +2109,13 @@ describe("NotesPageHeader", () => {
     expect(header).not.toBeNull();
     expect(header?.querySelector(".notes-page-note")).toBeNull();
     expect(
-      queryTextareaByName("Supporting note: Project")
+      queryTextareaByName("Supporting note: Project"),
     ).not.toBeInTheDocument();
     fireEvent.change(title, { target: { value: "Renamed project" } });
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
       "project",
       { title: "Renamed project", note: "", imageOffsetUtf16: 0 },
-      "title"
+      "title",
     );
     fireEvent.blur(title);
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
@@ -1951,17 +2125,15 @@ describe("NotesPageHeader", () => {
     renderZoomedOutline(workspaceValue({ note: "" }));
     const title = editTextareaByName("Edit page title");
 
-    expect(
-      fireEvent.keyDown(title, { key: "Enter", shiftKey: true })
-    ).toBe(false);
-    expect(
-      getTextareaByName("Supporting note: Project")
-    ).toHaveFocus();
+    expect(fireEvent.keyDown(title, { key: "Enter", shiftKey: true })).toBe(
+      false,
+    );
+    expect(getTextareaByName("Supporting note: Project")).toHaveFocus();
   });
 
   it.each([
     ["Tab", false],
-    ["Shift+Tab", true]
+    ["Shift+Tab", true],
   ])("keeps page-title focus at the %s boundary", (_label, shiftKey) => {
     const workspace = renderZoomedOutline();
     const title = getTextareaByName("Edit page title");
@@ -1977,13 +2149,13 @@ describe("NotesPageHeader", () => {
     const workspace = renderZoomedOutline();
 
     await user.click(
-      screen.getByRole("button", { name: "More actions for Project" })
+      screen.getByRole("button", { name: "More actions for Project" }),
     );
     const menu = await screen.findByRole("menu");
     expect(
-      within(menu).getAllByRole("menuitem").map((item) =>
-        item.querySelector(":scope > span")?.textContent
-      )
+      within(menu)
+        .getAllByRole("menuitem")
+        .map((item) => item.querySelector(":scope > span")?.textContent),
     ).toEqual([
       "Complete",
       "To-do",
@@ -1998,20 +2170,21 @@ describe("NotesPageHeader", () => {
       "Sort Z-A",
       "Remove note",
       "Duplicate",
+      "Make read-only",
       "Export subtree",
-      "Delete"
+      "Delete",
     ]);
 
     await user.click(within(menu).getByRole("menuitem", { name: "Complete" }));
     expect(workspace.actions.toggleComplete).toHaveBeenCalledWith("project");
 
     await user.click(
-      screen.getByRole("button", { name: "More actions for Project" })
+      screen.getByRole("button", { name: "More actions for Project" }),
     );
     await user.click(
       within(await screen.findByRole("menu")).getByRole("menuitem", {
-        name: "Upload image"
-      })
+        name: "Upload image",
+      }),
     );
     expect(workspace.actions.uploadImage).toHaveBeenCalledWith("project");
   });
@@ -2019,28 +2192,30 @@ describe("NotesPageHeader", () => {
   it("moves a normal row to an active destination while excluding its subtree", async () => {
     const user = userEvent.setup();
     const workspace = renderZoomedOutline(
-      workspaceValue({ includeOtherRoot: true })
+      workspaceValue({ includeOtherRoot: true }),
     );
 
     await user.click(
-      screen.getByRole("button", { name: "More actions for First child" })
+      screen.getByRole("button", { name: "More actions for First child" }),
     );
     await user.click(
       within(await screen.findByRole("menu")).getByRole("menuitem", {
-        name: "Move To..."
-      })
+        name: "Move To...",
+      }),
     );
 
     expect(screen.getByRole("option", { name: "Top level" })).toBeVisible();
     expect(screen.getByRole("option", { name: "Project" })).toBeVisible();
     expect(screen.getByRole("option", { name: "Inbox" })).toBeVisible();
-    expect(screen.queryByRole("option", { name: "First child" }))
-      .not.toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: "Detail" }))
-      .not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("option", { name: "First child" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("option", { name: "Detail" }),
+    ).not.toBeInTheDocument();
 
     const search = screen.getByRole("searchbox", {
-      name: "Search move destinations"
+      name: "Search move destinations",
     });
     await user.type(search, "Inbox");
     await user.keyboard("{ArrowDown}{Enter}");
@@ -2048,7 +2223,7 @@ describe("NotesPageHeader", () => {
     expect(workspace.actions.moveNode).toHaveBeenCalledOnce();
     expect(workspace.actions.moveNode).toHaveBeenCalledWith(
       { id: "child", parentId: "inbox", afterId: null },
-      "child"
+      "child",
     );
   });
 
@@ -2057,31 +2232,28 @@ describe("NotesPageHeader", () => {
     async (libraryView) => {
       const user = userEvent.setup();
       const workspace = workspaceValue({ libraryView });
-      const prepared = preparedMove(
-        "child",
-        moveScopeForView(libraryView)
-      );
+      const prepared = preparedMove("child", moveScopeForView(libraryView));
       workspace.prepareMoveNode = vi.fn().mockResolvedValue(prepared);
       workspace.commitPreparedMove = vi.fn().mockResolvedValue({ ok: true });
       renderZoomedOutline(workspace);
 
       await user.click(
-        screen.getByRole("button", { name: "More actions for First child" })
+        screen.getByRole("button", { name: "More actions for First child" }),
       );
       await user.click(
         within(await screen.findByRole("menu")).getByRole("menuitem", {
-          name: "Move To..."
-        })
+          name: "Move To...",
+        }),
       );
       await user.click(await screen.findByRole("option", { name: "Inbox" }));
 
       expect(workspace.prepareMoveNode).toHaveBeenCalledWith("child");
       expect(workspace.commitPreparedMove).toHaveBeenCalledWith(
         prepared,
-        "inbox"
+        "inbox",
       );
       expect(workspace.actions.moveNode).not.toHaveBeenCalled();
-    }
+    },
   );
 
   it.each(["starred", "recent", "tags"] as const)(
@@ -2089,31 +2261,28 @@ describe("NotesPageHeader", () => {
     async (libraryView) => {
       const user = userEvent.setup();
       const workspace = workspaceValue({ libraryView });
-      const prepared = preparedMove(
-        "project",
-        moveScopeForView(libraryView)
-      );
+      const prepared = preparedMove("project", moveScopeForView(libraryView));
       workspace.prepareMoveNode = vi.fn().mockResolvedValue(prepared);
       workspace.commitPreparedMove = vi.fn().mockResolvedValue({ ok: true });
       renderZoomedOutline(workspace);
 
       await user.click(
-        screen.getByRole("button", { name: "More actions for Project" })
+        screen.getByRole("button", { name: "More actions for Project" }),
       );
       await user.click(
         within(await screen.findByRole("menu")).getByRole("menuitem", {
-          name: "Move To..."
-        })
+          name: "Move To...",
+        }),
       );
       await user.click(await screen.findByRole("option", { name: "Inbox" }));
 
       expect(workspace.prepareMoveNode).toHaveBeenCalledWith("project");
       expect(workspace.commitPreparedMove).toHaveBeenCalledWith(
         prepared,
-        "inbox"
+        "inbox",
       );
       expect(workspace.actions.moveNode).not.toHaveBeenCalled();
-    }
+    },
   );
 
   it("commits the root destination from the row snapshot", async () => {
@@ -2125,16 +2294,14 @@ describe("NotesPageHeader", () => {
     renderZoomedOutline(workspace);
 
     await user.click(
-      screen.getByRole("button", { name: "More actions for First child" })
+      screen.getByRole("button", { name: "More actions for First child" }),
     );
     await user.click(
       within(await screen.findByRole("menu")).getByRole("menuitem", {
-        name: "Move To..."
-      })
+        name: "Move To...",
+      }),
     );
-    await user.click(
-      await screen.findByRole("option", { name: "Top level" })
-    );
+    await user.click(await screen.findByRole("option", { name: "Top level" }));
 
     expect(workspace.commitPreparedMove).toHaveBeenCalledWith(prepared, null);
   });
@@ -2146,22 +2313,22 @@ describe("NotesPageHeader", () => {
     workspace.prepareMoveNode = vi.fn().mockResolvedValue(prepared);
     workspace.commitPreparedMove = vi.fn().mockResolvedValue({
       ok: false,
-      error: "That destination is no longer active. Refresh Move To."
+      error: "That destination is no longer active. Refresh Move To.",
     });
     renderZoomedOutline(workspace);
 
     await user.click(
-      screen.getByRole("button", { name: "More actions for Project" })
+      screen.getByRole("button", { name: "More actions for Project" }),
     );
     await user.click(
       within(await screen.findByRole("menu")).getByRole("menuitem", {
-        name: "Move To..."
-      })
+        name: "Move To...",
+      }),
     );
     await user.click(await screen.findByRole("option", { name: "Inbox" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "destination is no longer active"
+      "destination is no longer active",
     );
     expect(screen.getByRole("menu")).toBeVisible();
   });
@@ -2171,17 +2338,15 @@ describe("NotesPageHeader", () => {
     const workspace = renderZoomedOutline();
 
     await user.click(
-      screen.getByRole("button", { name: "More actions for Project" })
+      screen.getByRole("button", { name: "More actions for Project" }),
     );
     const menu = await screen.findByRole("menu");
     expect(within(menu).getByText(/^Created /)).toBeVisible();
     expect(within(menu).getByText(/^Changed /)).toBeVisible();
-    await user.click(
-      within(menu).getByRole("menuitem", { name: "Sort A-Z" })
-    );
+    await user.click(within(menu).getByRole("menuitem", { name: "Sort A-Z" }));
 
     expect(workspace.actions.sortSubtreeAscending).toHaveBeenCalledWith(
-      "project"
+      "project",
     );
   });
 
@@ -2192,26 +2357,26 @@ describe("NotesPageHeader", () => {
       () =>
         new Promise<NotesWorkspaceCommandOutcome>((resolve) => {
           resolveExpand = resolve;
-        })
+        }),
     );
     const user = userEvent.setup();
     renderZoomedOutline(workspace);
     const trigger = screen.getByRole("button", {
-      name: "More actions for Project"
+      name: "More actions for Project",
     });
 
     await user.click(trigger);
     await user.click(
       within(await screen.findByRole("menu")).getByRole("menuitem", {
-        name: "Expand all"
-      })
+        name: "Expand all",
+      }),
     );
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
 
     await user.click(trigger);
     const pendingCommand = within(await screen.findByRole("menu")).getByRole(
       "menuitem",
-      { name: "Expand all" }
+      { name: "Expand all" },
     );
     expect(pendingCommand).toHaveAttribute("data-disabled");
     await user.dblClick(pendingCommand);
@@ -2233,10 +2398,10 @@ describe("NotesPageHeader", () => {
       target: {
         value: "Plan !!",
         selectionStart: 7,
-        selectionEnd: 7
+        selectionEnd: 7,
       },
       inputType: "insertText",
-      data: "!"
+      data: "!",
     });
 
     const picker = await screen.findByRole("dialog", { name: "Choose date" });
@@ -2247,7 +2412,7 @@ describe("NotesPageHeader", () => {
     expect(workspace.actions.updateNodeDraft).toHaveBeenLastCalledWith(
       "project",
       { title: "Plan 07/11/2026", note: "Context", imageOffsetUtf16: 0 },
-      "title"
+      "title",
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledTimes(1);
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
@@ -2258,8 +2423,9 @@ describe("NotesPageHeader", () => {
         title: "Plan 07/11/2026",
         note: "Context",
         revision: 1,
-        status: "pending"
-      , imageOffsetUtf16: 0}
+        status: "pending",
+        imageOffsetUtf16: 0,
+      },
     });
     rendered.rerender(zoomedOutline(committedWorkspace));
     await waitFor(() => expect(title).toHaveFocus());
@@ -2279,15 +2445,15 @@ describe("NotesPageHeader", () => {
       target: {
         value: "Plan !!",
         selectionStart: 7,
-        selectionEnd: 7
+        selectionEnd: 7,
       },
       inputType: "insertCompositionText",
       data: "!",
-      isComposing: true
+      isComposing: true,
     });
 
     expect(
-      screen.queryByRole("dialog", { name: "Choose date" })
+      screen.queryByRole("dialog", { name: "Choose date" }),
     ).not.toBeInTheDocument();
   });
 
@@ -2297,12 +2463,12 @@ describe("NotesPageHeader", () => {
     const rendered = render(zoomedOutline(workspace));
 
     await user.click(
-      screen.getByRole("button", { name: "More actions for Plan" })
+      screen.getByRole("button", { name: "More actions for Plan" }),
     );
     await user.click(
       within(await screen.findByRole("menu")).getByRole("menuitem", {
-        name: "Add date"
-      })
+        name: "Add date",
+      }),
     );
     const picker = await screen.findByRole("dialog", { name: "Choose date" });
     await user.click(within(picker).getByRole("button", { name: "Tomorrow" }));
@@ -2311,7 +2477,7 @@ describe("NotesPageHeader", () => {
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
       "project",
       { title: "Plan 07/12/2026", note: "Context", imageOffsetUtf16: 0 },
-      "title"
+      "title",
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledOnce();
     expect(getTextareaByName("Edit page title")).not.toHaveFocus();
@@ -2321,8 +2487,9 @@ describe("NotesPageHeader", () => {
         title: "Plan 07/12/2026",
         note: "Context",
         revision: 1,
-        status: "pending"
-      , imageOffsetUtf16: 0}
+        status: "pending",
+        imageOffsetUtf16: 0,
+      },
     });
     rendered.rerender(zoomedOutline(committedWorkspace));
     const title = getTextareaByName("Edit page title");
@@ -2330,8 +2497,8 @@ describe("NotesPageHeader", () => {
     fireEvent.blur(title);
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Edit date 07/12/2026" })
-      ).toBeVisible()
+        screen.getByRole("button", { name: "Edit date 07/12/2026" }),
+      ).toBeVisible(),
     );
     fireEvent.focus(title);
     fireEvent.keyDown(title, { key: "z", ctrlKey: true });
@@ -2344,17 +2511,17 @@ describe("NotesPageHeader", () => {
       nodeKind: "image",
       title: "diagram.png",
       note: "Context",
-      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      attachments: [attachment({ id: "image-1", nodeId: "project" })],
     });
     render(zoomedOutline(workspace));
 
     await user.click(
-      screen.getByRole("button", { name: "More actions for Image" })
+      screen.getByRole("button", { name: "More actions for Image" }),
     );
     await user.click(
       within(await screen.findByRole("menu")).getByRole("menuitem", {
-        name: "Add date"
-      })
+        name: "Add date",
+      }),
     );
     const picker = await screen.findByRole("dialog", { name: "Choose date" });
     await user.click(within(picker).getByRole("button", { name: "Tomorrow" }));
@@ -2365,14 +2532,14 @@ describe("NotesPageHeader", () => {
       {
         title: "diagram.png",
         note: "Context 07/12/2026",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
       },
-      "note"
+      "note",
     );
     expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalledWith(
       "project",
       expect.objectContaining({ title: expect.stringContaining("07/12/2026") }),
-      "title"
+      "title",
     );
   });
 
@@ -2380,7 +2547,7 @@ describe("NotesPageHeader", () => {
     const user = userEvent.setup();
     const workspace = workspaceValue({
       title: "Plan replace next",
-      note: "Context"
+      note: "Context",
     });
     render(zoomedOutline(workspace));
     const title = editTextareaByName("Edit page title");
@@ -2389,14 +2556,14 @@ describe("NotesPageHeader", () => {
 
     await user.click(
       screen.getByRole("button", {
-        name: "More actions for Plan replace next"
-      })
+        name: "More actions for Plan replace next",
+      }),
     );
     vi.mocked(workspace.actions.flushNodeDraft).mockClear();
     await user.click(
       within(await screen.findByRole("menu")).getByRole("menuitem", {
-        name: "Add date"
-      })
+        name: "Add date",
+      }),
     );
     const picker = await screen.findByRole("dialog", { name: "Choose date" });
     await user.click(within(picker).getByRole("button", { name: "Tomorrow" }));
@@ -2407,85 +2574,84 @@ describe("NotesPageHeader", () => {
       {
         title: "Plan 07/12/2026 next",
         note: "Context",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
       },
-      "title"
+      "title",
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledOnce();
   });
 
   it.each([
     ["disabled", { deletingNotesData: true }, "aria-disabled"],
-    ["read-only", { libraryView: "archive" as const }, "aria-readonly"]
-  ])("keeps %s title and note presentations noneditable", async (
-    _label,
-    mode,
-    stateAttribute
-  ) => {
-    const user = userEvent.setup();
-    const workspace = workspaceValue({
-      ...mode,
-      title: "Project 07/12/2026",
-      note: "Page note 07/13/2026",
-      childTitle: "Child 07/14/2026",
-      childNote: "Child note 07/15/2026"
-    });
-    const { container } = render(zoomedOutline(workspace));
+    ["read-only", { libraryView: "archive" as const }, "aria-readonly"],
+  ])(
+    "keeps %s title and note presentations noneditable",
+    async (_label, mode, stateAttribute) => {
+      const user = userEvent.setup();
+      const workspace = workspaceValue({
+        ...mode,
+        title: "Project 07/12/2026",
+        note: "Page note 07/13/2026",
+        childTitle: "Child 07/14/2026",
+        childNote: "Child note 07/15/2026",
+      });
+      const { container } = render(zoomedOutline(workspace));
 
-    const titlePresentation = screen.getByRole("group", {
-      name: "Page title"
-    });
-    const notePresentation = screen.getByRole("group", {
-      name: "Supporting note: Project 07/12/2026"
-    });
-    expect(titlePresentation).toHaveAttribute("tabindex", "-1");
-    expect(notePresentation).toHaveAttribute("tabindex", "-1");
-    expect(titlePresentation).toHaveAttribute(stateAttribute, "true");
-    expect(notePresentation).toHaveAttribute(stateAttribute, "true");
-    expect(
-      screen.queryByRole("group", { name: "Edit page title" })
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("textbox", { name: "Page title" })
-    ).not.toBeInTheDocument();
-    expect(getTextareaByName("Edit page title")).toHaveAttribute(
-      "aria-hidden",
-      "true"
-    );
+      const titlePresentation = screen.getByRole("group", {
+        name: "Page title",
+      });
+      const notePresentation = screen.getByRole("group", {
+        name: "Supporting note: Project 07/12/2026",
+      });
+      expect(titlePresentation).toHaveAttribute("tabindex", "-1");
+      expect(notePresentation).toHaveAttribute("tabindex", "-1");
+      expect(titlePresentation).toHaveAttribute(stateAttribute, "true");
+      expect(notePresentation).toHaveAttribute(stateAttribute, "true");
+      expect(
+        screen.queryByRole("group", { name: "Edit page title" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("textbox", { name: "Page title" }),
+      ).not.toBeInTheDocument();
+      expect(getTextareaByName("Edit page title")).toHaveAttribute(
+        "aria-hidden",
+        "true",
+      );
 
-    expect(
-      screen.queryByRole("button", { name: /^Edit date / })
-    ).not.toBeInTheDocument();
-    const pills = container.querySelectorAll(".notes-date-token");
-    expect(pills.length).toBeGreaterThanOrEqual(2);
-    await user.click(pills[0] as HTMLElement);
-    fireEvent.pointerDown(titlePresentation);
-    fireEvent.keyDown(titlePresentation, { key: "Enter" });
-    expect(
-      screen.queryByRole("dialog", { name: "Choose date" })
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("textbox", { name: "Page title" })
-    ).not.toBeInTheDocument();
-    expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalled();
-  });
+      expect(
+        screen.queryByRole("button", { name: /^Edit date / }),
+      ).not.toBeInTheDocument();
+      const pills = container.querySelectorAll(".notes-date-token");
+      expect(pills.length).toBeGreaterThanOrEqual(2);
+      await user.click(pills[0] as HTMLElement);
+      fireEvent.pointerDown(titlePresentation);
+      fireEvent.keyDown(titlePresentation, { key: "Enter" });
+      expect(
+        screen.queryByRole("dialog", { name: "Choose date" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("textbox", { name: "Page title" }),
+      ).not.toBeInTheDocument();
+      expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalled();
+    },
+  );
 
   it("edits and removes one page-title pill without changing a tag or second date", async () => {
     const user = userEvent.setup();
     const workspace = workspaceValue({
       title: "🚀 #today today and 07/13/2026",
-      note: "Context"
+      note: "Context",
     });
     const rendered = render(zoomedOutline(workspace));
 
     expect(
-      screen.getByRole("button", { name: "#today tag filter is inactive" })
+      screen.getByRole("button", { name: "#today tag filter is inactive" }),
     ).toBeVisible();
     expect(
-      screen.getByRole("button", { name: "Edit date today" })
+      screen.getByRole("button", { name: "Edit date today" }),
     ).toBeVisible();
     await user.click(
-      screen.getByRole("button", { name: "Edit date 07/13/2026" })
+      screen.getByRole("button", { name: "Edit date 07/13/2026" }),
     );
     await user.click(screen.getByRole("button", { name: "Remove date" }));
 
@@ -2494,9 +2660,9 @@ describe("NotesPageHeader", () => {
       {
         title: "🚀 #today today and ",
         note: "Context",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
       },
-      "title"
+      "title",
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledOnce();
     expect(getTextareaByName("Edit page title")).not.toHaveFocus();
@@ -2508,13 +2674,14 @@ describe("NotesPageHeader", () => {
             title: "🚀 #today today and ",
             note: "Context",
             revision: 1,
-            status: "pending"
-          , imageOffsetUtf16: 0}
-        })
-      )
+            status: "pending",
+            imageOffsetUtf16: 0,
+          },
+        }),
+      ),
     );
     await waitFor(() =>
-      expect(getTextareaByName("Edit page title")).toHaveFocus()
+      expect(getTextareaByName("Edit page title")).toHaveFocus(),
     );
   });
 
@@ -2522,28 +2689,28 @@ describe("NotesPageHeader", () => {
     const user = userEvent.setup();
     const workspace = workspaceValue({
       title: "Plan #tag",
-      note: "Window 07/12/2026 only"
+      note: "Window 07/12/2026 only",
     });
     const rendered = render(zoomedOutline(workspace));
 
     await user.click(
-      screen.getByRole("button", { name: "Edit date 07/12/2026" })
+      screen.getByRole("button", { name: "Edit date 07/12/2026" }),
     );
     const picker = screen.getByRole("dialog", { name: "Choose date" });
     await user.click(within(picker).getByRole("checkbox", { name: "Range" }));
     await user.click(
       within(picker).getByRole("button", {
-        name: "Tuesday, July 14, 2026"
-      })
+        name: "Tuesday, July 14, 2026",
+      }),
     );
     await user.click(
       within(picker).getByRole("button", {
-        name: "Thursday, July 16, 2026"
-      })
+        name: "Thursday, July 16, 2026",
+      }),
     );
     await user.selectOptions(
       within(picker).getByRole("combobox", { name: "Format" }),
-      "MM-DD-YY"
+      "MM-DD-YY",
     );
     within(picker).getByRole("textbox", { name: "Date" }).focus();
     await user.keyboard("{Enter}");
@@ -2553,14 +2720,12 @@ describe("NotesPageHeader", () => {
       {
         title: "Plan #tag",
         note: "Window 07-14-26 - 07-16-26 only",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
       },
-      "note"
+      "note",
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledOnce();
-    expect(
-      getTextareaByName("Supporting note: Plan #tag")
-    ).not.toHaveFocus();
+    expect(getTextareaByName("Supporting note: Plan #tag")).not.toHaveFocus();
 
     rendered.rerender(
       zoomedOutline(
@@ -2569,13 +2734,14 @@ describe("NotesPageHeader", () => {
             title: "Plan #tag",
             note: "Window 07-14-26 - 07-16-26 only",
             revision: 1,
-            status: "pending"
-          , imageOffsetUtf16: 0}
-        })
-      )
+            status: "pending",
+            imageOffsetUtf16: 0,
+          },
+        }),
+      ),
     );
     await waitFor(() =>
-      expect(getTextareaByName("Supporting note: Plan #tag")).toHaveFocus()
+      expect(getTextareaByName("Supporting note: Plan #tag")).toHaveFocus(),
     );
   });
 
@@ -2584,15 +2750,15 @@ describe("NotesPageHeader", () => {
     const workspace = renderZoomedOutline(
       workspaceValue({
         childTitle: "Child 07/14/2026",
-        childNote: "Follow up tomorrow"
-      })
+        childNote: "Follow up tomorrow",
+      }),
     );
 
     expect(
-      screen.getByRole("button", { name: "Edit date 07/14/2026" })
+      screen.getByRole("button", { name: "Edit date 07/14/2026" }),
     ).toBeVisible();
     await user.click(
-      screen.getByRole("button", { name: "Edit date tomorrow" })
+      screen.getByRole("button", { name: "Edit date tomorrow" }),
     );
     await user.click(screen.getByRole("button", { name: "Remove date" }));
 
@@ -2601,9 +2767,9 @@ describe("NotesPageHeader", () => {
       {
         title: "Child 07/14/2026",
         note: "Follow up ",
-        imageOffsetUtf16: 0
+        imageOffsetUtf16: 0,
       },
-      "note"
+      "note",
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("child");
   });
@@ -2611,7 +2777,7 @@ describe("NotesPageHeader", () => {
   it("dismisses a pill picker with Escape and returns focus without writing", async () => {
     const user = userEvent.setup();
     const workspace = renderZoomedOutline(
-      workspaceValue({ title: "Plan today", note: "Context" })
+      workspaceValue({ title: "Plan today", note: "Context" }),
     );
 
     await user.click(screen.getByRole("button", { name: "Edit date today" }));
@@ -2619,8 +2785,8 @@ describe("NotesPageHeader", () => {
 
     await waitFor(() =>
       expect(
-        screen.queryByRole("dialog", { name: "Choose date" })
-      ).not.toBeInTheDocument()
+        screen.queryByRole("dialog", { name: "Choose date" }),
+      ).not.toBeInTheDocument(),
     );
     expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalled();
     expect(workspace.actions.flushNodeDraft).not.toHaveBeenCalled();
@@ -2632,20 +2798,20 @@ describe("NotesPageHeader", () => {
     const workspace = workspaceValue();
     const rendered = render(zoomedOutline(workspace));
     const trigger = screen.getByRole("button", {
-      name: "More actions for Project"
+      name: "More actions for Project",
     });
 
     await user.click(trigger);
     await user.click(
       within(await screen.findByRole("menu")).getByRole("menuitem", {
-        name: "Remove note"
-      })
+        name: "Remove note",
+      }),
     );
 
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
       "project",
       { title: "Project", note: "", imageOffsetUtf16: 0 },
-      "note"
+      "note",
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
@@ -2658,38 +2824,35 @@ describe("NotesPageHeader", () => {
             title: "Project",
             note: "",
             revision: 1,
-            status: "pending"
-          , imageOffsetUtf16: 0}
-        })
-      )
+            status: "pending",
+            imageOffsetUtf16: 0,
+          },
+        }),
+      ),
     );
     expect(
-      queryTextareaByName("Supporting note: Project")
+      queryTextareaByName("Supporting note: Project"),
     ).not.toBeInTheDocument();
-    expect(getTextareaByName("Edit page title")).toHaveValue(
-      "Project"
-    );
+    expect(getTextareaByName("Edit page title")).toHaveValue("Project");
   });
 
   it("closes the page menu before focusing a newly revealed note", async () => {
     const user = userEvent.setup();
     renderZoomedOutline(workspaceValue({ note: "" }));
     const trigger = screen.getByRole("button", {
-      name: "More actions for Project"
+      name: "More actions for Project",
     });
 
     await user.click(trigger);
     await user.click(
       within(await screen.findByRole("menu")).getByRole("menuitem", {
-        name: "Add note"
-      })
+        name: "Add note",
+      }),
     );
 
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     await waitFor(() =>
-      expect(
-        getTextareaByName("Supporting note: Project")
-      ).toHaveFocus()
+      expect(getTextareaByName("Supporting note: Project")).toHaveFocus(),
     );
     expect(trigger).not.toHaveFocus();
   });
@@ -2717,31 +2880,33 @@ describe("NotesPageHeader", () => {
           callbacksByTarget.delete(target);
         }
         disconnect() {}
-      }
+      },
     );
     vi.spyOn(
       HTMLTextAreaElement.prototype,
       "scrollHeight",
-      "get"
+      "get",
     ).mockImplementation(function (this: HTMLTextAreaElement) {
       return this.classList.contains("notes-page-note") ? noteScrollHeight : 34;
     });
     const view = render(zoomedOutline(workspaceValue({ note: "" })));
 
     await user.click(
-      screen.getByRole("button", { name: "More actions for Project" })
+      screen.getByRole("button", { name: "More actions for Project" }),
     );
     await user.click(
       within(await screen.findByRole("menu")).getByRole("menuitem", {
-        name: "Add note"
-      })
+        name: "Add note",
+      }),
     );
-    const note = await waitFor(() => getTextareaByName("Supporting note: Project"));
+    const note = await waitFor(() =>
+      getTextareaByName("Supporting note: Project"),
+    );
     fireEvent.change(note, {
       target: {
         value:
-          "페이지의 긴 한국어 보조 메모도 화면 너비가 줄어들 때 전체 내용이 보이도록 높이를 다시 계산해야 합니다"
-      }
+          "페이지의 긴 한국어 보조 메모도 화면 너비가 줄어들 때 전체 내용이 보이도록 높이를 다시 계산해야 합니다",
+      },
     });
 
     expect(note).toHaveFocus();
@@ -2754,11 +2919,11 @@ describe("NotesPageHeader", () => {
         [
           {
             target: note,
-            contentRect: { width: 620 }
-          } as unknown as ResizeObserverEntry
+            contentRect: { width: 620 },
+          } as unknown as ResizeObserverEntry,
         ],
-        {} as ResizeObserver
-      )
+        {} as ResizeObserver,
+      ),
     );
     noteScrollHeight = 80;
     act(() =>
@@ -2766,11 +2931,11 @@ describe("NotesPageHeader", () => {
         [
           {
             target: note,
-            contentRect: { width: 280 }
-          } as unknown as ResizeObserverEntry
+            contentRect: { width: 280 },
+          } as unknown as ResizeObserverEntry,
         ],
-        {} as ResizeObserver
-      )
+        {} as ResizeObserver,
+      ),
     );
 
     expect(note).toHaveStyle({ height: "80px" });
@@ -2789,8 +2954,9 @@ describe("NotesPageHeader", () => {
         title: "Project",
         note: "",
         revision: 1,
-        status: "pending"
-      , imageOffsetUtf16: 0}
+        status: "pending",
+        imageOffsetUtf16: 0,
+      },
     });
     view.rerender(zoomedOutline(clearedWorkspace));
 
@@ -2799,11 +2965,11 @@ describe("NotesPageHeader", () => {
     fireEvent.blur(clearedNote);
     await waitFor(() =>
       expect(
-        queryTextareaByName("Supporting note: Project")
-      ).not.toBeInTheDocument()
+        queryTextareaByName("Supporting note: Project"),
+      ).not.toBeInTheDocument(),
     );
     expect(clearedWorkspace.actions.flushNodeDraft).toHaveBeenCalledWith(
-      "project"
+      "project",
     );
   });
 
@@ -2813,8 +2979,9 @@ describe("NotesPageHeader", () => {
         title: "Project",
         note: " \t ",
         revision: 1,
-        status: "pending"
-      , imageOffsetUtf16: 0}
+        status: "pending",
+        imageOffsetUtf16: 0,
+      },
     });
     const view = render(zoomedOutline(workspace));
     const note = editTextareaByName("Supporting note: Project");
@@ -2824,7 +2991,7 @@ describe("NotesPageHeader", () => {
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
       "project",
       { title: "Project", note: "", imageOffsetUtf16: 0 },
-      "note"
+      "note",
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
     view.rerender(
@@ -2834,13 +3001,16 @@ describe("NotesPageHeader", () => {
             title: "Project",
             note: "",
             revision: 2,
-            status: "pending"
-          , imageOffsetUtf16: 0}
-        })
-      )
+            status: "pending",
+            imageOffsetUtf16: 0,
+          },
+        }),
+      ),
     );
     await waitFor(() =>
-      expect(queryTextareaByName("Supporting note: Project")).not.toBeInTheDocument()
+      expect(
+        queryTextareaByName("Supporting note: Project"),
+      ).not.toBeInTheDocument(),
     );
   });
 
@@ -2849,11 +3019,13 @@ describe("NotesPageHeader", () => {
     const workspace = workspaceValue({ nodeKind: "image", note: "" });
     render(zoomedOutline(workspace));
 
-    await user.click(screen.getByRole("button", { name: "More actions for Image" }));
+    await user.click(
+      screen.getByRole("button", { name: "More actions for Image" }),
+    );
     await user.click(
       within(await screen.findByRole("menu")).getByRole("menuitem", {
-        name: "Add date"
-      })
+        name: "Add date",
+      }),
     );
     await screen.findByRole("dialog", { name: "Choose date" });
     const note = getTextareaByName("Supporting note: Image");
@@ -2884,17 +3056,20 @@ describe("NotesPageHeader", () => {
         {
           title: "Project",
           note: "Committed IME note",
-          imageOffsetUtf16: 0
+          imageOffsetUtf16: 0,
         },
-        "note"
-      )
+        "note",
+      ),
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledTimes(1);
     expect(
-      vi.mocked(workspace.actions.updateNodeDraft).mock.invocationCallOrder.at(-1)
+      vi
+        .mocked(workspace.actions.updateNodeDraft)
+        .mock.invocationCallOrder.at(-1),
     ).toBeLessThan(
-      vi.mocked(workspace.actions.flushNodeDraft).mock.invocationCallOrder.at(-1) ??
-        Number.POSITIVE_INFINITY
+      vi
+        .mocked(workspace.actions.flushNodeDraft)
+        .mock.invocationCallOrder.at(-1) ?? Number.POSITIVE_INFINITY,
     );
     expect(queryTextareaByName("Supporting note: Project")).toBeInTheDocument();
   });
@@ -2909,31 +3084,31 @@ describe("NotesPageHeader", () => {
     fireEvent.compositionEnd(emptyNote, { target: { value: "" } });
 
     await waitFor(() =>
-      expect(queryTextareaByName("Supporting note: Project")).not.toBeInTheDocument()
+      expect(
+        queryTextareaByName("Supporting note: Project"),
+      ).not.toBeInTheDocument(),
     );
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
       "project",
       { title: "Project", note: "", imageOffsetUtf16: 0 },
-      "note"
+      "note",
     );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledTimes(1);
   });
 
   it("does not carry page-note reveal state to a different zoom root", () => {
     const view = render(zoomedOutline(workspaceValue()));
-    fireEvent.focus(
-      getTextareaByName("Supporting note: Project")
-    );
+    fireEvent.focus(getTextareaByName("Supporting note: Project"));
     const childWorkspace = workspaceValue();
     childWorkspace.state.zoomRootId = "child";
 
     view.rerender(zoomedOutline(childWorkspace));
 
     expect(
-      screen.getByRole("heading", { name: "First child", level: 1 })
+      screen.getByRole("heading", { name: "First child", level: 1 }),
     ).toBeVisible();
     expect(
-      queryTextareaByName("Supporting note: First child")
+      queryTextareaByName("Supporting note: First child"),
     ).not.toBeInTheDocument();
   });
 
@@ -2945,25 +3120,26 @@ describe("NotesPageHeader", () => {
           title: "Unsaved project",
           note: "Unsaved context",
           revision: 2,
-          status: "failed"
-        , imageOffsetUtf16: 0}
-      })
+          status: "failed",
+          imageOffsetUtf16: 0,
+        },
+      }),
     );
 
     expect(
-      screen.getByRole("heading", { name: "Unsaved project", level: 1 })
+      screen.getByRole("heading", { name: "Unsaved project", level: 1 }),
     ).toBeVisible();
-    expect(
-      getTextareaByName("Supporting note: Unsaved project")
-    ).toHaveValue("Unsaved context");
+    expect(getTextareaByName("Supporting note: Unsaved project")).toHaveValue(
+      "Unsaved context",
+    );
 
     await user.click(
-      screen.getByRole("button", { name: "More actions for Unsaved project" })
+      screen.getByRole("button", { name: "More actions for Unsaved project" }),
     );
     await user.click(
       within(await screen.findByRole("menu")).getByRole("menuitem", {
-        name: "Retry save"
-      })
+        name: "Retry save",
+      }),
     );
     expect(workspace.retryFailedDraft).toHaveBeenCalledWith("project");
   });
@@ -2974,16 +3150,14 @@ describe("NotesPageHeader", () => {
     const writeError = Object.assign(new Error("Draft save failed"), {
       operation: "write" as const,
       code: "internal" as const,
-      retryable: true
+      retryable: true,
     });
-    renderZoomedOutline(
-      workspaceValue({ writeError, retryLastFailedWrite })
-    );
+    renderZoomedOutline(workspaceValue({ writeError, retryLastFailedWrite }));
 
     const banner = screen.getByRole("alert");
     expect(banner).toHaveTextContent("editing commands are paused");
     await user.click(
-      within(banner).getByRole("button", { name: "Retry save" })
+      within(banner).getByRole("button", { name: "Retry save" }),
     );
     expect(retryLastFailedWrite).toHaveBeenCalledTimes(1);
   });
@@ -2991,7 +3165,7 @@ describe("NotesPageHeader", () => {
   it("hides the write-failure banner when there is no write error", () => {
     renderZoomedOutline(workspaceValue());
     expect(
-      screen.queryByRole("button", { name: "Retry save" })
+      screen.queryByRole("button", { name: "Retry save" }),
     ).not.toBeInTheDocument();
   });
 
@@ -3000,11 +3174,13 @@ describe("NotesPageHeader", () => {
       workspaceValue({
         nodeKind: "image",
         title: "missing.png",
-        attachments: []
-      })
+        attachments: [],
+      }),
     );
 
     expect(screen.queryByRole("textbox", { name: "Image note" })).toBeNull();
-    expect(screen.getByRole("alert", { name: "Image unavailable" })).toBeVisible();
+    expect(
+      screen.getByRole("alert", { name: "Image unavailable" }),
+    ).toBeVisible();
   });
 });

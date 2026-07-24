@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-materialize-github-notification-and-reparent"
+description = "Enables the notes_materialize_github_notification_and_reparent command without any pre-configured scope."
+commands.allow = ["notes_materialize_github_notification_and_reparent"]
+
+[[permission]]
+identifier = "deny-notes-materialize-github-notification-and-reparent"
+description = "Denies the notes_materialize_github_notification_and_reparent command without any pre-configured scope."
+commands.deny = ["notes_materialize_github_notification_and_reparent"]

@@ -3,29 +3,29 @@ import {
   useEffect,
   useLayoutEffect,
   useRef,
-  useState
+  useState,
 } from "react";
-import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
+import { Lock } from "lucide-react";
 import { createNoteId, type NoteId } from "../../domain/notes";
 import {
   NoteTextField,
-  restoreTextareaPrimarySelection
+  restoreTextareaPrimarySelection,
 } from "./NoteTextField";
 import { useNotesDatePickerIntegration } from "./NotesDatePickerIntegration";
 import {
   buildNotesMoveDestinations,
   buildNotesMoveNodeInput,
-  NotesBulletMenu
+  NotesBulletMenu,
 } from "./NotesBulletMenu";
 import { NotesAttachmentList } from "./NotesAttachmentList";
 import {
   isValidNotesImageAttachmentMetadata,
-  NotesImageNodeContent
+  NotesImageNodeContent,
 } from "./NotesImageAttachment";
 import {
   ImageAtomEditor,
   type ImageAtomEditorCutRequest,
-  type ImageAtomEditorHandle
+  type ImageAtomEditorHandle,
 } from "./ImageAtomEditor";
 import { NotesImageUploadStatus } from "./NotesImageUploadStatus";
 import { NotesRemoteMarkdownImage } from "./NotesRemoteMarkdownImage";
@@ -34,18 +34,18 @@ import { NotesTodoProgress } from "./TodoProgressIndicator";
 import { directTodoProgress } from "./notesTodoProgress";
 import {
   noteNodeNavigationLabel,
-  noteNodePresentationLabel
+  noteNodePresentationLabel,
 } from "./notesPresentation";
 import { useNotesExportController } from "./NotesExportController";
 import {
   parseNotesImageAtomPaste,
-  readNotesImageAtomPasteCandidate
+  readNotesImageAtomPasteCandidate,
 } from "./notesImageAtomClipboard";
 import { parseNoteMarkdown } from "./noteMarkdown";
 import {
   useNotesActions,
   useNotesDrafts,
-  useNotesState
+  useNotesState,
 } from "./NotesWorkspaceContext";
 import type { NotesPreparedMove } from "./useNotesWorkspace";
 import { resizeTextarea, useAutoGrowTextarea } from "./autoGrowTextarea";
@@ -54,13 +54,14 @@ import {
   resolveNotesHistoryShortcut,
   resolveOutlineKey,
   resolveSupportingNoteKey,
-  supportingNoteFocusTarget
+  supportingNoteFocusTarget,
 } from "./outlineKeyboard";
 
 interface NotesPageHeaderProps {
   nodeId: NoteId;
   getVisibleNodeIds(): readonly NoteId[];
   disabled?: boolean;
+  movementProtected?: boolean;
   mode?: "standard" | "archive" | "trash";
   imageDropActive?: boolean;
   showDropPlaceholder?: boolean;
@@ -70,9 +71,10 @@ export function NotesPageHeader({
   nodeId,
   getVisibleNodeIds,
   disabled = false,
+  movementProtected = false,
   mode = "standard",
   imageDropActive = false,
-  showDropPlaceholder = false
+  showDropPlaceholder = false,
 }: NotesPageHeaderProps) {
   const {
     actions,
@@ -86,17 +88,18 @@ export function NotesPageHeader({
     applyImageAtomCutWithAuthority,
     captureImageAtomPasteAuthority,
     isImageAtomPasteAuthorityCurrent,
-    applyImageAtomPasteWithAuthority
+    applyImageAtomPasteWithAuthority,
   } = useNotesActions();
   const { activeTagFilters, pendingPrimarySelection, state } = useNotesState();
   const {
     attachmentUploadErrorsByNodeId,
     attachmentUploadRetryAttemptIdsByNodeId,
-    draftsByNodeId
+    draftsByNodeId,
   } = useNotesDrafts();
   const exportController = useNotesExportController();
   const node = state.nodesById[nodeId];
   const draft = draftsByNodeId[nodeId];
+  const contentProtected = node?.isReadonly === true;
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const imageRef = useRef<HTMLDivElement>(null);
@@ -104,7 +107,7 @@ export function NotesPageHeader({
   const todoProgress = directTodoProgress(
     nodeId,
     state.nodesById,
-    state.childIdsByParent
+    state.childIdsByParent,
   );
   const focusedPrimarySelectionRequestIdRef = useRef<number | null>(null);
   const titleSelectionRef = useRef<{
@@ -117,42 +120,49 @@ export function NotesPageHeader({
   const noteBlurredDuringCompositionRef = useRef(false);
   const preparedMoveRef = useRef<NotesPreparedMove | null>(null);
   const commandInFlightRef = useRef(false);
-  const [revealedNoteNodeId, setRevealedNoteNodeId] =
-    useState<NoteId | null>(null);
-  const [trashConfirmOpen, setTrashConfirmOpen] = useState(false);
-  const [trashConfirmReturnsToTitle, setTrashConfirmReturnsToTitle] =
-    useState(false);
+  const [revealedNoteNodeId, setRevealedNoteNodeId] = useState<NoteId | null>(
+    null,
+  );
   const [commandBusy, setCommandBusy] = useState(false);
-  const titleValue = draft?.title ?? node?.title ?? "";
-  const noteValue = draft?.note ?? node?.note ?? "";
-  const imageOffsetUtf16 =
-    draft?.imageOffsetUtf16 ?? node?.imageOffsetUtf16 ?? 0;
+  const [protectedDraft, setProtectedDraft] = useState(() => ({
+    title: node?.title ?? "",
+    note: node?.note ?? "",
+    imageOffsetUtf16: node?.imageOffsetUtf16 ?? 0,
+  }));
+  const protectedSelectionRef = useRef<{
+    field: "title" | "note";
+    startUtf16: number;
+    endUtf16: number;
+  } | null>(null);
+  const protectedFocusRef = useRef<{
+    field: "title" | "note";
+    startUtf16: number;
+    endUtf16: number;
+  } | null>(null);
+  const titleValue = contentProtected
+    ? protectedDraft.title
+    : (draft?.title ?? node?.title ?? "");
+  const noteValue = contentProtected
+    ? protectedDraft.note
+    : (draft?.note ?? node?.note ?? "");
+  const imageOffsetUtf16 = contentProtected
+    ? protectedDraft.imageOffsetUtf16
+    : (draft?.imageOffsetUtf16 ?? node?.imageOffsetUtf16 ?? 0);
   const markdownImageWidth =
     draft?.markdownImageWidth ?? node?.markdownImageWidth ?? null;
   const parsedTitleMarkdown = parseNoteMarkdown(titleValue);
   const remoteMarkdownImage =
     parsedTitleMarkdown.kind === "remoteImage" ? parsedTitleMarkdown : null;
   const label = node
-    ? noteNodePresentationLabel(
-        node,
-        titleValue || node.title,
-        "Untitled page"
-      )
+    ? noteNodePresentationLabel(node, titleValue || node.title, "Untitled page")
     : "Untitled page";
   const headingLabel = node
-    ? noteNodeNavigationLabel(
-        node,
-        titleValue || node.title,
-        "Untitled page"
-      )
+    ? noteNodeNavigationLabel(node, titleValue || node.title, "Untitled page")
     : "Untitled page";
-  const noteVisible =
-    noteValue.length > 0 || revealedNoteNodeId === nodeId;
+  const noteVisible = noteValue.length > 0 || revealedNoteNodeId === nodeId;
   const readOnly = mode !== "standard";
   const imageIngestEnabled =
-    !disabled &&
-    !readOnly &&
-    state.status !== "loading";
+    !disabled && !readOnly && !contentProtected && state.status !== "loading";
   const imageIngestEnabledRef = useRef(imageIngestEnabled);
   imageIngestEnabledRef.current = imageIngestEnabled;
   const imageAttachmentTargetEnabled =
@@ -182,19 +192,91 @@ export function NotesPageHeader({
             replacement.text.length -
             (replacement.endUtf16 - replacement.startUtf16)
           : imageOffsetUtf16;
+      if (contentProtected) {
+        setProtectedDraft((current) => ({
+          title: field === "title" ? value : current.title,
+          note: field === "note" ? value : current.note,
+          imageOffsetUtf16: nextImageOffsetUtf16,
+        }));
+        return;
+      }
       actions.updateNodeDraft(
         nodeId,
         field === "title"
-          ? { title: value, note: noteValue, imageOffsetUtf16: nextImageOffsetUtf16 }
-          : { title: titleValue, note: value, imageOffsetUtf16: nextImageOffsetUtf16 },
-        field
+          ? {
+              title: value,
+              note: noteValue,
+              imageOffsetUtf16: nextImageOffsetUtf16,
+            }
+          : {
+              title: titleValue,
+              note: value,
+              imageOffsetUtf16: nextImageOffsetUtf16,
+            },
+        field,
       );
       void actions.flushNodeDraft(nodeId);
-    }
+    },
   });
 
   useAutoGrowTextarea(titleRef, titleValue);
   useAutoGrowTextarea(noteRef, noteValue, noteVisible);
+
+  useLayoutEffect(() => {
+    const next = {
+      title: node?.title ?? "",
+      note: node?.note ?? "",
+      imageOffsetUtf16: node?.imageOffsetUtf16 ?? 0,
+    };
+    if (contentProtected) {
+      const active = document.activeElement;
+      if (active === titleRef.current || active === noteRef.current) {
+        const target = active as HTMLTextAreaElement;
+        protectedSelectionRef.current = {
+          field: active === titleRef.current ? "title" : "note",
+          startUtf16: target.selectionStart,
+          endUtf16: target.selectionEnd,
+        };
+      }
+    }
+    setProtectedDraft(next);
+  }, [contentProtected, node?.imageOffsetUtf16, node?.note, node?.title]);
+
+  useLayoutEffect(() => {
+    const selection = protectedSelectionRef.current;
+    if (!contentProtected || !selection) {
+      return;
+    }
+    protectedSelectionRef.current = null;
+    const target =
+      selection.field === "title" ? titleRef.current : noteRef.current;
+    if (!target) {
+      return;
+    }
+    target.focus();
+    const end = target.value.length;
+    target.setSelectionRange(
+      Math.min(selection.startUtf16, end),
+      Math.min(selection.endUtf16, end),
+    );
+  }, [contentProtected, protectedDraft]);
+
+  useLayoutEffect(() => {
+    const focus = protectedFocusRef.current;
+    if (!contentProtected || !focus) {
+      return;
+    }
+    const target = focus.field === "title" ? titleRef.current : noteRef.current;
+    if (!target || document.activeElement === target) {
+      return;
+    }
+    target.focus();
+    const end = target.value.length;
+    target.setSelectionRange(
+      Math.min(focus.startUtf16, end),
+      Math.min(focus.endUtf16, end),
+    );
+  });
 
   useLayoutEffect(() => {
     if (!noteVisible || !noteRef.current) {
@@ -206,7 +288,7 @@ export function NotesPageHeader({
       datePicker.openTypedDate(
         "note",
         { startUtf16: caret, endUtf16: caret },
-        noteRef.current
+        noteRef.current,
       );
       return;
     }
@@ -251,12 +333,16 @@ export function NotesPageHeader({
           : titleRef.current;
     let focused = false;
     if (replaySelection && node?.nodeKind === "image") {
-      focused = imageEditorRef.current?.focus(replaySelection.selection) ?? false;
+      focused =
+        imageEditorRef.current?.focus(replaySelection.selection) ?? false;
     } else if (target) {
       target.focus();
       focused = document.activeElement === target;
       if (focused && replaySelection && target instanceof HTMLTextAreaElement) {
-        focused = restoreTextareaPrimarySelection(target, replaySelection.selection);
+        focused = restoreTextareaPrimarySelection(
+          target,
+          replaySelection.selection,
+        );
       }
     }
     if (focused) {
@@ -275,13 +361,21 @@ export function NotesPageHeader({
     pendingPrimarySelection,
     readOnly,
     state.pendingFocusField,
-    state.pendingFocusId
+    state.pendingFocusId,
   ]);
 
   if (!node) {
     return null;
   }
   const markerKind = draft?.markerKind ?? node.markerKind;
+
+  const restoreProtectedDraft = () => {
+    setProtectedDraft({
+      title: node.title,
+      note: node.note,
+      imageOffsetUtf16: node.imageOffsetUtf16,
+    });
+  };
 
   const runCommand = (command: () => Promise<unknown>) => {
     if (commandInFlightRef.current) {
@@ -313,13 +407,25 @@ export function NotesPageHeader({
   };
 
   const settleNoteBlur = (value: string, includeLiveValue = false) => {
+    if (contentProtected) {
+      restoreProtectedDraft();
+      return;
+    }
     if (includeLiveValue) {
-      actions.updateNodeDraft(nodeId, { title: titleValue, note: value, imageOffsetUtf16 }, "note");
+      actions.updateNodeDraft(
+        nodeId,
+        { title: titleValue, note: value, imageOffsetUtf16 },
+        "note",
+      );
     }
     if (value.trim().length === 0) {
       setRevealedNoteNodeId(null);
       if (value.length > 0) {
-        actions.updateNodeDraft(nodeId, { title: titleValue, note: "", imageOffsetUtf16 }, "note");
+        actions.updateNodeDraft(
+          nodeId,
+          { title: titleValue, note: "", imageOffsetUtf16 },
+          "note",
+        );
       }
     }
     void actions.flushNodeDraft(nodeId);
@@ -335,13 +441,21 @@ export function NotesPageHeader({
     datePicker.openTypedDate(
       "note",
       { startUtf16: caret, endUtf16: caret },
-      noteRef.current
+      noteRef.current,
     );
   };
 
   const removeNote = () => {
+    if (contentProtected) {
+      restoreProtectedDraft();
+      return;
+    }
     setRevealedNoteNodeId(null);
-    actions.updateNodeDraft(nodeId, { title: titleValue, note: "", imageOffsetUtf16 }, "note");
+    actions.updateNodeDraft(
+      nodeId,
+      { title: titleValue, note: "", imageOffsetUtf16 },
+      "note",
+    );
     void actions.flushNodeDraft(nodeId);
   };
 
@@ -353,11 +467,24 @@ export function NotesPageHeader({
       metaKey: event.metaKey,
       shiftKey: event.shiftKey,
       isComposing: event.nativeEvent.isComposing,
-      platform: detectOutlineShortcutPlatform()
+      platform: detectOutlineShortcutPlatform(),
     });
     if (historyShortcut) {
       event.preventDefault();
       void actions[historyShortcut]?.();
+      return;
+    }
+    if (
+      contentProtected &&
+      event.key === "Escape" &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      !event.nativeEvent.isComposing
+    ) {
+      event.preventDefault();
+      restoreProtectedDraft();
       return;
     }
     const resolution = resolveOutlineKey({
@@ -376,7 +503,7 @@ export function NotesPageHeader({
       nodeId,
       platform: detectOutlineShortcutPlatform(),
       workspace: state,
-      visibleNodeIds: getVisibleNodeIds()
+      visibleNodeIds: getVisibleNodeIds(),
     });
     if (!resolution) {
       if (event.key === "Enter" && !event.nativeEvent.isComposing) {
@@ -393,7 +520,7 @@ export function NotesPageHeader({
         "toggleComplete",
         "duplicate",
         "delete",
-        "confirmDelete"
+        "confirmDelete",
       ].includes(resolution.type)
     ) {
       if (event.key === "Enter" && !event.nativeEvent.isComposing) {
@@ -402,6 +529,21 @@ export function NotesPageHeader({
       return;
     }
     event.preventDefault();
+    if (contentProtected) {
+      if (resolution.type === "split") {
+        restoreProtectedDraft();
+        runCommand(() => actions.createNextTextSibling(nodeId));
+        return;
+      }
+      if (
+        resolution.type === "delete" ||
+        resolution.type === "confirmDelete" ||
+        resolution.type === "consumeTabShortcut"
+      ) {
+        restoreProtectedDraft();
+        return;
+      }
+    }
     switch (resolution.type) {
       case "consumeTabShortcut":
         return;
@@ -427,8 +569,7 @@ export function NotesPageHeader({
         runCommand(() => actions.deleteNode(nodeId));
         return;
       case "confirmDelete":
-        setTrashConfirmReturnsToTitle(true);
-        setTrashConfirmOpen(true);
+        runCommand(() => actions.deleteNode(nodeId));
         return;
     }
   };
@@ -441,7 +582,7 @@ export function NotesPageHeader({
       metaKey: event.metaKey,
       shiftKey: event.shiftKey,
       isComposing: event.nativeEvent.isComposing,
-      platform: detectOutlineShortcutPlatform()
+      platform: detectOutlineShortcutPlatform(),
     });
     if (historyShortcut) {
       event.preventDefault();
@@ -463,11 +604,35 @@ export function NotesPageHeader({
       note: noteValue,
       nodeId,
       platform: detectOutlineShortcutPlatform(),
-      workspace: state
+      workspace: state,
     });
     if (!resolution) return;
 
     event.preventDefault();
+    if (contentProtected || movementProtected) {
+      if (
+        resolution.type === "move" ||
+        resolution.type === "consumeTabShortcut"
+      ) {
+        if (contentProtected) restoreProtectedDraft();
+        return;
+      }
+      if (
+        contentProtected &&
+        (resolution.type === "delete" || resolution.type === "remove")
+      ) {
+        restoreProtectedDraft();
+        return;
+      }
+      if (resolution.type === "createNextTextSibling") {
+        restoreProtectedDraft();
+        runCommand(() => actions.createNextTextSibling(nodeId));
+        return;
+      }
+      if (resolution.type === "focus" || resolution.type === "focusNote") {
+        restoreProtectedDraft();
+      }
+    }
     switch (resolution.type) {
       case "createNextTextSibling":
         runCommand(() => actions.createNextTextSibling(nodeId));
@@ -478,8 +643,8 @@ export function NotesPageHeader({
       case "move":
         runCommand(() =>
           actions.moveNode(resolution.input, resolution.focusNodeId, {
-            expandNodeId: resolution.expandNodeId
-          })
+            expandNodeId: resolution.expandNodeId,
+          }),
         );
         return;
       case "toggleComplete":
@@ -517,6 +682,10 @@ export function NotesPageHeader({
     readonly note: string;
     readonly imageOffsetUtf16: number;
   }) => {
+    if (contentProtected) {
+      setProtectedDraft({ ...nextDraft });
+      return;
+    }
     actions.updateNodeDraft(nodeId, nextDraft, "title");
   };
 
@@ -527,14 +696,19 @@ export function NotesPageHeader({
         title: titleValue,
         note: noteValue,
         imageOffsetUtf16,
-        markdownImageWidth: width
+        markdownImageWidth: width,
       },
-      "title"
+      "title",
     );
     void actions.flushNodeDraft(nodeId);
   };
 
   const runImageAtomEnter = () => {
+    if (contentProtected) {
+      restoreProtectedDraft();
+      runCommand(() => actions.createNextTextSibling(nodeId));
+      return;
+    }
     runCommand(async () => {
       const selection = await imageEditorRef.current?.flushAndGetSelection();
       if (!selection) return "skipped";
@@ -546,7 +720,7 @@ export function NotesPageHeader({
       }
       return actions.applyImageAtomEdit(nodeId, selection, {
         kind: "enter",
-        siblingId
+        siblingId,
       });
     });
   };
@@ -557,7 +731,7 @@ export function NotesPageHeader({
       return selection
         ? actions.applyImageAtomEdit(nodeId, selection, {
             kind: "remove",
-            replacementText: ""
+            replacementText: "",
           })
         : "skipped";
     });
@@ -565,7 +739,7 @@ export function NotesPageHeader({
 
   const runImageAtomCut = async ({
     selection,
-    selectionAuthority
+    selectionAuthority,
   }: ImageAtomEditorCutRequest) => {
     const editor = imageEditorRef.current;
     if (
@@ -578,7 +752,7 @@ export function NotesPageHeader({
     }
     const editorAuthority = captureActiveImageAtomEditorAuthority(
       nodeId,
-      selectionAuthority
+      selectionAuthority,
     );
     if (!editorAuthority || (await editor.flush()) !== "flushed") return false;
     if (imageEditorRef.current !== editor) return false;
@@ -591,11 +765,11 @@ export function NotesPageHeader({
     if (!persisted || imageEditorRef.current !== editor) return false;
     const cutAuthority = captureImageAtomCutAuthority(nodeId, editorAuthority);
     if (!cutAuthority) return false;
-    return await applyImageAtomCutWithAuthority(
-      cutAuthority,
-      nodeId,
-      { ...selection }
-    ) === "committed";
+    return (
+      (await applyImageAtomCutWithAuthority(cutAuthority, nodeId, {
+        ...selection,
+      })) === "committed"
+    );
   };
 
   const runImageAtomMenuRemove = () => {
@@ -606,9 +780,9 @@ export function NotesPageHeader({
         nodeId,
         {
           anchorUtf16: imageOffsetUtf16,
-          focusUtf16: imageOffsetUtf16 + 1
+          focusUtf16: imageOffsetUtf16 + 1,
         },
-        { kind: "remove", replacementText: "" }
+        { kind: "remove", replacementText: "" },
       );
     });
   };
@@ -620,16 +794,16 @@ export function NotesPageHeader({
     if (!candidate.claimed) return false;
 
     event.preventDefault();
-    const parse = parseNotesImageAtomPaste(candidate).catch(
-      () => ({ kind: "none" as const })
-    );
+    const parse = parseNotesImageAtomPaste(candidate).catch(() => ({
+      kind: "none" as const,
+    }));
     const editor = imageEditorRef.current;
     void (async () => {
       const initial = await editor?.flushAndGetSelectionSnapshot();
       if (!editor || !initial || imageEditorRef.current !== editor) return;
       const editorAuthority = captureActiveImageAtomEditorAuthority?.(
         nodeId,
-        initial.authority
+        initial.authority,
       );
       if (!editorAuthority) return;
       let persisted = false;
@@ -657,7 +831,7 @@ export function NotesPageHeader({
       }
       const authority = captureImageAtomPasteAuthority?.(
         nodeId,
-        editorAuthority
+        editorAuthority,
       );
       if (!authority || !applyImageAtomPasteWithAuthority) return;
       const exactSelection = { ...admitted.selection };
@@ -689,8 +863,8 @@ export function NotesPageHeader({
           authority,
           nodeId,
           exactSelection,
-          parsed.value
-        )
+          parsed.value,
+        ),
       );
     })().catch(() => undefined);
     return true;
@@ -702,6 +876,7 @@ export function NotesPageHeader({
         className="notes-page-header"
         data-completed={node.completedAt !== null ? "true" : undefined}
         data-selected={state.selectedId === nodeId ? "true" : undefined}
+        data-readonly={contentProtected ? "true" : undefined}
         data-notes-attachment-target={
           imageAttachmentTargetEnabled ? nodeId : undefined
         }
@@ -709,10 +884,7 @@ export function NotesPageHeader({
           imageDropEnabled && imageDropActive ? "true" : undefined
         }
       >
-        <div
-          className="notes-page-title-row"
-          data-marker-kind={markerKind}
-        >
+        <div className="notes-page-title-row" data-marker-kind={markerKind}>
           <div className="notes-page-menu-slot">
             <NotesBulletMenu
               mode={mode}
@@ -720,6 +892,7 @@ export function NotesPageHeader({
               completed={node.completedAt !== null}
               markerKind={markerKind}
               starred={node.isStarred}
+              isReadonly={contentProtected}
               hasNote={Boolean(noteValue.trim())}
               saveFailed={draft?.status === "failed"}
               disabled={disabled}
@@ -733,9 +906,9 @@ export function NotesPageHeader({
                     preparedMoveRef.current = prepared;
                     return buildNotesMoveDestinations(
                       Object.fromEntries(
-                        prepared.nodes.map((item) => [item.id, item])
+                        prepared.nodes.map((item) => [item.id, item]),
                       ),
-                      nodeId
+                      nodeId,
                     );
                   });
                 }
@@ -745,14 +918,12 @@ export function NotesPageHeader({
                 return loadActiveNodesForMove()
                   .then((nodes) =>
                     buildNotesMoveDestinations(
-                      Object.fromEntries(
-                        nodes.map((item) => [item.id, item])
-                      ),
-                      nodeId
-                    )
+                      Object.fromEntries(nodes.map((item) => [item.id, item])),
+                      nodeId,
+                    ),
                   )
                   .catch(() =>
-                    buildNotesMoveDestinations(state.nodesById, nodeId)
+                    buildNotesMoveDestinations(state.nodesById, nodeId),
                   );
               }}
               exportDisabled={
@@ -766,12 +937,18 @@ export function NotesPageHeader({
                   actions.updateNode(nodeId, {
                     title: titleValue,
                     note: noteValue,
-                    markerKind
-                  })
+                    markerKind,
+                  }),
                 )
               }
-              onToggleStar={() =>
-                runCommand(() => actions.toggleStar(nodeId))
+              onToggleStar={() => runCommand(() => actions.toggleStar(nodeId))}
+              onToggleReadonly={
+                actions.setReadonly
+                  ? () =>
+                      runCommand(() =>
+                        actions.setReadonly!(nodeId, !contentProtected),
+                      )
+                  : undefined
               }
               onOpenNote={openAndFocusNote}
               onAddDate={() => {
@@ -779,7 +956,9 @@ export function NotesPageHeader({
                   openNoteDate();
                   return;
                 }
-                datePicker.openTitleDate(titleSelectionRef.current ?? undefined);
+                datePicker.openTitleDate(
+                  titleSelectionRef.current ?? undefined,
+                );
                 titleSelectionRef.current = null;
               }}
               onUploadImage={
@@ -787,36 +966,46 @@ export function NotesPageHeader({
                   ? () => void actions.uploadImage?.(nodeId)
                   : undefined
               }
-              onMoveTo={(destinationId) => {
-                if (preparedMoveRef.current && commitPreparedMove) {
-                  return commitPreparedMove(
-                    preparedMoveRef.current,
-                    destinationId
-                  );
-                }
-                const input = buildNotesMoveNodeInput(
-                  state.nodesById,
-                  nodeId,
-                  destinationId
-                );
-                if (input) {
-                  runCommand(() => actions.moveNode(input, nodeId));
-                  return { ok: true } as const;
-                }
-                return {
-                  ok: false,
-                  error: "That destination is no longer valid. Refresh Move To."
-                } as const;
-              }}
+              onMoveTo={
+                movementProtected
+                  ? undefined
+                  : (destinationId) => {
+                      if (preparedMoveRef.current && commitPreparedMove) {
+                        return commitPreparedMove(
+                          preparedMoveRef.current,
+                          destinationId,
+                        );
+                      }
+                      const input = buildNotesMoveNodeInput(
+                        state.nodesById,
+                        nodeId,
+                        destinationId,
+                      );
+                      if (input) {
+                        runCommand(() => actions.moveNode(input, nodeId));
+                        return { ok: true } as const;
+                      }
+                      return {
+                        ok: false,
+                        error:
+                          "That destination is no longer valid. Refresh Move To.",
+                      } as const;
+                    }
+              }
               onExpandAll={() => runCommand(() => actions.expandAll(nodeId))}
               onCollapseAll={() =>
                 runCommand(() => actions.collapseAll(nodeId))
               }
-              onSortAscending={() =>
-                runCommand(() => actions.sortSubtreeAscending(nodeId))
+              onSortAscending={
+                movementProtected
+                  ? undefined
+                  : () => runCommand(() => actions.sortSubtreeAscending(nodeId))
               }
-              onSortDescending={() =>
-                runCommand(() => actions.sortSubtreeDescending(nodeId))
+              onSortDescending={
+                movementProtected
+                  ? undefined
+                  : () =>
+                      runCommand(() => actions.sortSubtreeDescending(nodeId))
               }
               onRemoveNote={removeNote}
               onDuplicate={() =>
@@ -826,13 +1015,12 @@ export function NotesPageHeader({
                 exportController.startExport(
                   nodeId,
                   node.nodeKind === "image" ? label : titleValue,
-                  format
+                  format,
                 )
               }
               onDelete={() => {
                 if (mode === "archive") {
-                  setTrashConfirmReturnsToTitle(false);
-                  setTrashConfirmOpen(true);
+                  runCommand(() => actions.deleteNode(nodeId));
                   return;
                 }
                 runCommand(() => actions.deleteNode(nodeId));
@@ -853,89 +1041,150 @@ export function NotesPageHeader({
               onToggle={() => runCommand(() => actions.toggleComplete(nodeId))}
             />
           )}
-          {node.nodeKind === "image" ? primaryImageAttachment ? (
-            <div className="notes-page-primary">
-              <h1
-                className="notes-page-heading"
-                aria-label={headingLabel}
-              />
-              <ImageAtomEditor
-                ref={imageEditorRef}
-                nodeId={nodeId}
-                draft={{ title: titleValue, note: noteValue, imageOffsetUtf16 }}
-                attachment={primaryImageAttachment}
-                onDraftChange={updateImageDraft}
-                registerFlushAdapter={actions.registerImageAtomFlushAdapter}
-                registerActiveEditor={registerActiveImageAtomEditor}
-                onEnter={readOnly ? undefined : runImageAtomEnter}
-                onAtomDelete={readOnly ? undefined : runImageAtomKeyboardRemove}
-                onUnhandledKeyDown={readOnly ? undefined : handleImageKeyDown}
-                onSupportingNote={readOnly ? undefined : openAndFocusNote}
-                onUndo={readOnly ? undefined : () => void actions.undo?.()}
-                onRedo={readOnly ? undefined : () => void actions.redo?.()}
-                onImageAtomPaste={readOnly ? undefined : handleImageAtomPaste}
-                loadAttachmentBytes={
-                  readOnly || disabled ? undefined : actions.loadAttachmentBytes
-                }
-                onAtomCut={readOnly || disabled ? undefined : runImageAtomCut}
-                onTagClick={(token) =>
-                  void actions.toggleTagFilter({
-                    prefix: token.prefix,
-                    normalizedTag: token.normalized
-                  })
-                }
-                onDateClick={readOnly || disabled ? undefined : (token, anchor) =>
-                  datePicker.openExistingDate(
-                    "title",
-                    token,
-                    anchor,
-                    imageRef.current ?? undefined
-                  )
-                }
-                onDateTrigger={readOnly || disabled ? undefined : (range, anchor, source) =>
-                  datePicker.openTypedDate("title", range, anchor, source)
-                }
-                isTagActive={(token) =>
-                  activeTagFilters.some(
-                    (filter) =>
-                      filter.prefix === token.prefix &&
-                      filter.normalizedTag === token.normalized
-                  )
-                }
-                today={datePicker.today}
-                getToday={datePicker.getToday}
-                slashCommands={!readOnly}
-                onSlashMarkerCommand={readOnly ? undefined : (markerKind, nextDraft) =>
-                  actions.updateNodeDraft(
-                    nodeId,
-                    { ...nextDraft, markerKind },
-                    "title"
-                  )
-                }
-                className="notes-page-primary-image"
-                contentRef={imageRef}
-                readOnly={readOnly}
-                disabled={disabled}
-                onRemoveImage={readOnly ? undefined : runImageAtomMenuRemove}
-              />
-            </div>
+          {node.nodeKind === "image" ? (
+            primaryImageAttachment ? (
+              <div className="notes-page-primary">
+                <h1 className="notes-page-heading" aria-label={headingLabel} />
+                <ImageAtomEditor
+                  ref={imageEditorRef}
+                  nodeId={nodeId}
+                  draft={{
+                    title: titleValue,
+                    note: noteValue,
+                    imageOffsetUtf16,
+                  }}
+                  attachment={primaryImageAttachment}
+                  onDraftChange={updateImageDraft}
+                  registerFlushAdapter={actions.registerImageAtomFlushAdapter}
+                  registerActiveEditor={registerActiveImageAtomEditor}
+                  onFocusLeave={
+                    contentProtected ? restoreProtectedDraft : undefined
+                  }
+                  onEnter={readOnly ? undefined : runImageAtomEnter}
+                  onAtomDelete={
+                    readOnly || contentProtected
+                      ? undefined
+                      : runImageAtomKeyboardRemove
+                  }
+                  onUnhandledKeyDown={readOnly ? undefined : handleImageKeyDown}
+                  onSupportingNote={
+                    readOnly
+                      ? undefined
+                      : contentProtected
+                        ? () => {
+                            restoreProtectedDraft();
+                            openAndFocusNote();
+                          }
+                        : openAndFocusNote
+                  }
+                  onUndo={readOnly ? undefined : () => void actions.undo?.()}
+                  onRedo={readOnly ? undefined : () => void actions.redo?.()}
+                  onImageAtomPaste={
+                    readOnly
+                      ? undefined
+                      : contentProtected
+                        ? (event) =>
+                            event.clipboardData !== null &&
+                            readNotesImageAtomPasteCandidate(
+                              event.clipboardData,
+                            ).claimed
+                        : handleImageAtomPaste
+                  }
+                  loadAttachmentBytes={
+                    readOnly || disabled
+                      ? undefined
+                      : actions.loadAttachmentBytes
+                  }
+                  onAtomCut={
+                    readOnly || contentProtected || disabled
+                      ? undefined
+                      : runImageAtomCut
+                  }
+                  onTagClick={(token) =>
+                    void actions.toggleTagFilter({
+                      prefix: token.prefix,
+                      normalizedTag: token.normalized,
+                    })
+                  }
+                  onDateClick={
+                    readOnly || disabled
+                      ? undefined
+                      : (token, anchor) =>
+                          datePicker.openExistingDate(
+                            "title",
+                            token,
+                            anchor,
+                            imageRef.current ?? undefined,
+                          )
+                  }
+                  onDateTrigger={
+                    readOnly || disabled
+                      ? undefined
+                      : (range, anchor, source) =>
+                          datePicker.openTypedDate(
+                            "title",
+                            range,
+                            anchor,
+                            source,
+                          )
+                  }
+                  isTagActive={(token) =>
+                    activeTagFilters.some(
+                      (filter) =>
+                        filter.prefix === token.prefix &&
+                        filter.normalizedTag === token.normalized,
+                    )
+                  }
+                  today={datePicker.today}
+                  getToday={datePicker.getToday}
+                  slashCommands={!readOnly}
+                  onSlashMarkerCommand={
+                    readOnly
+                      ? undefined
+                      : (markerKind, nextDraft) =>
+                          actions.updateNodeDraft(
+                            nodeId,
+                            { ...nextDraft, markerKind },
+                            "title",
+                          )
+                  }
+                  className="notes-page-primary-image"
+                  contentRef={imageRef}
+                  readOnly={readOnly}
+                  atomReadOnly={contentProtected}
+                  disabled={disabled}
+                  onRemoveImage={
+                    readOnly || contentProtected
+                      ? undefined
+                      : runImageAtomMenuRemove
+                  }
+                />
+              </div>
+            ) : (
+              <div className="notes-page-primary">
+                <h1 className="notes-page-heading" aria-label={headingLabel} />
+                <NotesImageNodeContent
+                  nodeId={nodeId}
+                  attachment={attachments[0]}
+                  originalName={titleValue || node.title}
+                  className="notes-page-primary-image"
+                  style={{ minWidth: 0 }}
+                  contentRef={imageRef}
+                  onKeyDown={readOnly ? undefined : handleImageKeyDown}
+                  readOnly={readOnly}
+                  disabled={disabled}
+                />
+              </div>
+            )
           ) : (
-            <div className="notes-page-primary">
-              <h1 className="notes-page-heading" aria-label={headingLabel} />
-              <NotesImageNodeContent
-                nodeId={nodeId}
-                attachment={attachments[0]}
-                originalName={titleValue || node.title}
-                className="notes-page-primary-image"
-                style={{ minWidth: 0 }}
-                contentRef={imageRef}
-                onKeyDown={readOnly ? undefined : handleImageKeyDown}
-                readOnly={readOnly}
-                disabled={disabled}
-              />
-            </div>
-          ) : (
-            <h1 className="notes-page-heading" aria-label={label}>
+            <h1
+              className={
+                contentProtected
+                  ? "notes-page-heading notes-page-readonly-title-line"
+                  : "notes-page-heading"
+              }
+              aria-label={label}
+            >
               <NoteTextField
                 markdown
                 restingPresentation={
@@ -961,9 +1210,9 @@ export function NotesPageHeader({
                       title: value,
                       note: noteValue,
                       imageOffsetUtf16,
-                      markerKind
+                      markerKind,
                     },
-                    "title"
+                    "title",
                   )
                 }
                 ref={titleRef}
@@ -996,45 +1245,86 @@ export function NotesPageHeader({
                 onTagClick={(token) =>
                   void actions.toggleTagFilter({
                     prefix: token.prefix,
-                    normalizedTag: token.normalized
+                    normalizedTag: token.normalized,
                   })
                 }
                 isTagActive={(token) =>
                   activeTagFilters.some(
                     (filter) =>
                       filter.prefix === token.prefix &&
-                      filter.normalizedTag === token.normalized
+                      filter.normalizedTag === token.normalized,
                   )
                 }
                 onKeyDown={readOnly ? undefined : handleTitleKeyDown}
                 onSelect={(event) => {
                   titleSelectionRef.current = {
                     startUtf16: event.currentTarget.selectionStart,
-                    endUtf16: event.currentTarget.selectionEnd
+                    endUtf16: event.currentTarget.selectionEnd,
                   };
+                  if (contentProtected) {
+                    protectedFocusRef.current = {
+                      field: "title",
+                      startUtf16: event.currentTarget.selectionStart,
+                      endUtf16: event.currentTarget.selectionEnd,
+                    };
+                  }
                 }}
+                onFocus={
+                  contentProtected
+                    ? (event) => {
+                        protectedFocusRef.current = {
+                          field: "title",
+                          startUtf16: event.currentTarget.selectionStart,
+                          endUtf16: event.currentTarget.selectionEnd,
+                        };
+                      }
+                    : undefined
+                }
                 onChange={(event) => {
                   resizeTextarea(event.currentTarget);
+                  if (contentProtected) {
+                    setProtectedDraft((current) => ({
+                      ...current,
+                      title: event.target.value,
+                    }));
+                    return;
+                  }
                   actions.updateNodeDraft(
                     nodeId,
                     {
                       title: event.target.value,
                       note: noteValue,
-                      imageOffsetUtf16
+                      imageOffsetUtf16,
                     },
-                    "title"
+                    "title",
                   );
                 }}
                 onBlur={(event) => {
+                  protectedFocusRef.current = null;
                   titleSelectionRef.current = {
                     startUtf16: event.currentTarget.selectionStart,
-                    endUtf16: event.currentTarget.selectionEnd
+                    endUtf16: event.currentTarget.selectionEnd,
                   };
                   if (!datePicker.shouldSuppressBlur()) {
-                    void actions.flushNodeDraft(nodeId);
+                    if (contentProtected) {
+                      restoreProtectedDraft();
+                    } else {
+                      void actions.flushNodeDraft(nodeId);
+                    }
                   }
                 }}
               />
+              {contentProtected && (
+                <span className="notes-node-inline-actions notes-page-readonly-actions">
+                  <span
+                    className="notes-node-lock"
+                    role="img"
+                    aria-label="읽기 전용"
+                  >
+                    <Lock size={12} aria-hidden="true" />
+                  </span>
+                </span>
+              )}
             </h1>
           )}
         </div>
@@ -1067,20 +1357,27 @@ export function NotesPageHeader({
             onTagClick={(token) =>
               void actions.toggleTagFilter({
                 prefix: token.prefix,
-                normalizedTag: token.normalized
+                normalizedTag: token.normalized,
               })
             }
             isTagActive={(token) =>
               activeTagFilters.some(
                 (filter) =>
                   filter.prefix === token.prefix &&
-                  filter.normalizedTag === token.normalized
+                  filter.normalizedTag === token.normalized,
               )
             }
             onKeyDown={
               readOnly
                 ? undefined
                 : (event) => {
+                    if (
+                      contentProtected &&
+                      (event.nativeEvent.isComposing ||
+                        event.nativeEvent.key === "Process")
+                    ) {
+                      return;
+                    }
                     const historyShortcut = resolveNotesHistoryShortcut({
                       key: event.key,
                       altKey: event.altKey,
@@ -1088,11 +1385,24 @@ export function NotesPageHeader({
                       metaKey: event.metaKey,
                       shiftKey: event.shiftKey,
                       isComposing: event.nativeEvent.isComposing,
-                      platform: detectOutlineShortcutPlatform()
+                      platform: detectOutlineShortcutPlatform(),
                     });
                     if (historyShortcut) {
                       event.preventDefault();
                       void actions[historyShortcut]?.();
+                      return;
+                    }
+                    if (
+                      contentProtected &&
+                      event.key === "Escape" &&
+                      !event.altKey &&
+                      !event.ctrlKey &&
+                      !event.metaKey &&
+                      !event.shiftKey &&
+                      !event.nativeEvent.isComposing
+                    ) {
+                      event.preventDefault();
+                      restoreProtectedDraft();
                       return;
                     }
                     const resolution = resolveSupportingNoteKey({
@@ -1105,7 +1415,7 @@ export function NotesPageHeader({
                       repeat: event.repeat,
                       selectionStart: event.currentTarget.selectionStart,
                       selectionEnd: event.currentTarget.selectionEnd,
-                      value: event.currentTarget.value
+                      value: event.currentTarget.value,
                     });
                     if (!resolution) {
                       return;
@@ -1114,12 +1424,25 @@ export function NotesPageHeader({
                     const focusTarget = supportingNoteFocusTarget(
                       resolution,
                       nodeId,
-                      getVisibleNodeIds()
+                      getVisibleNodeIds(),
                     );
+                    if (contentProtected) {
+                      restoreProtectedDraft();
+                      if (resolution === "nextTitleOrCreate") {
+                        runCommand(() => actions.createNextTextSibling(nodeId));
+                        return;
+                      }
+                      void actions.focusNode(focusTarget);
+                      return;
+                    }
                     actions.updateNodeDraft(
                       nodeId,
-                      { title: titleValue, note: event.currentTarget.value, imageOffsetUtf16 },
-                      "note"
+                      {
+                        title: titleValue,
+                        note: event.currentTarget.value,
+                        imageOffsetUtf16,
+                      },
+                      "note",
                     );
                     if (
                       resolution === "nextTitleOrCreate" &&
@@ -1135,17 +1458,45 @@ export function NotesPageHeader({
             onFocus={() => {
               noteBlurredDuringCompositionRef.current = false;
               setRevealedNoteNodeId(nodeId);
+              if (contentProtected && noteRef.current) {
+                protectedFocusRef.current = {
+                  field: "note",
+                  startUtf16: noteRef.current.selectionStart,
+                  endUtf16: noteRef.current.selectionEnd,
+                };
+              }
+            }}
+            onSelect={(event) => {
+              if (contentProtected) {
+                protectedFocusRef.current = {
+                  field: "note",
+                  startUtf16: event.currentTarget.selectionStart,
+                  endUtf16: event.currentTarget.selectionEnd,
+                };
+              }
             }}
             onChange={(event) => {
               setRevealedNoteNodeId(nodeId);
               resizeTextarea(event.currentTarget);
-              actions.updateNodeDraft(nodeId, {
-                title: titleValue,
-                note: event.target.value,
-                imageOffsetUtf16
-              }, "note");
+              if (contentProtected) {
+                setProtectedDraft((current) => ({
+                  ...current,
+                  note: event.target.value,
+                }));
+                return;
+              }
+              actions.updateNodeDraft(
+                nodeId,
+                {
+                  title: titleValue,
+                  note: event.target.value,
+                  imageOffsetUtf16,
+                },
+                "note",
+              );
             }}
             onBlur={(event) => {
+              protectedFocusRef.current = null;
               if (datePicker.shouldSuppressBlur()) {
                 return;
               }
@@ -1184,7 +1535,7 @@ export function NotesPageHeader({
               attachmentUploadRetryAttemptIdsByNodeId?.[nodeId]
             }
             className="notes-page-attachments"
-            readOnly={readOnly || disabled}
+            readOnly={readOnly || contentProtected || disabled}
           />
         ) : (
           <NotesImageUploadStatus
@@ -1193,7 +1544,7 @@ export function NotesPageHeader({
             uploadRetryAttemptId={
               attachmentUploadRetryAttemptIdsByNodeId?.[nodeId]
             }
-            readOnly={readOnly || disabled}
+            readOnly={readOnly || contentProtected || disabled}
           />
         )}
         {imageDropEnabled && showDropPlaceholder && (
@@ -1205,17 +1556,6 @@ export function NotesPageHeader({
         )}
       </header>
       {datePicker.picker}
-      <ConfirmDialog
-        open={trashConfirmOpen}
-        onOpenChange={setTrashConfirmOpen}
-        title="Move page to Trash?"
-        description={`Move ${label} and all of its descendants to Trash?`}
-        confirmLabel="Move to Trash"
-        cancelLabel="Cancel"
-        danger
-        finalFocus={trashConfirmReturnsToTitle ? titleRef : undefined}
-        onConfirm={() => void actions.deleteNode(nodeId)}
-      />
     </>
   );
 }

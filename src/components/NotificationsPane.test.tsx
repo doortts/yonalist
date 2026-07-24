@@ -42,6 +42,7 @@ function makeState(
     viewedAt: {},
     refresh: vi.fn(),
     markNotificationViewed: vi.fn(),
+    openNotificationUrl: vi.fn(),
     openNotification: vi.fn(),
     ...overrides
   };
@@ -54,8 +55,74 @@ function cssRule(selector: string): string {
 }
 
 describe("NotificationsPane", () => {
-  it("renders notification rows grouped and selects on click", () => {
-    const onSelect = vi.fn();
+  it("does not flash a false empty state while account identity is pending", () => {
+    render(
+      <NotificationsPane
+        state={makeState({
+          notifications: [],
+          loaded: false,
+          loading: true
+        })}
+        webBaseUrl="https://github.com"
+        online
+        selectedId={null}
+        onSelect={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Loading notifications...")).toBeInTheDocument();
+    expect(screen.queryByText("No notifications.")).not.toBeInTheDocument();
+  });
+
+  it("shows a settled cacheless error without false loading copy", () => {
+    render(
+      <NotificationsPane
+        state={makeState({
+          notifications: [],
+          loaded: false,
+          loading: false,
+          error: "Unable to refresh external source."
+        })}
+        webBaseUrl="https://github.com"
+        online
+        selectedId={null}
+        onSelect={vi.fn()}
+      />
+    );
+
+    expect(
+      screen.getByText("Unable to refresh external source.")
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Loading notifications...")
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("No notifications.")).not.toBeInTheDocument();
+  });
+
+  it("keeps the loaded empty state during a background refresh", () => {
+    render(
+      <NotificationsPane
+        state={makeState({
+          notifications: [],
+          loaded: true,
+          loading: true
+        })}
+        webBaseUrl="https://github.com"
+        online
+        selectedId={null}
+        onSelect={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("No notifications.")).toBeInTheDocument();
+    expect(screen.queryByText("Loading notifications...")).not.toBeInTheDocument();
+  });
+
+  it("passes the selected notification unchanged to the detail callback", () => {
+    let selected: GitHubNotification | null = null;
+    const onSelect = vi.fn((notification: GitHubNotification) => {
+      selected = notification;
+    });
     const notification = makeNotification();
     render(
       <NotificationsPane
@@ -69,7 +136,8 @@ describe("NotificationsPane", () => {
 
     const button = screen.getByRole("button", { name: /Fix the prefetch/ });
     fireEvent.click(button);
-    expect(onSelect).toHaveBeenCalledWith(notification);
+    expect(onSelect).toHaveBeenCalledOnce();
+    expect(selected).toBe(notification);
     // Unread notifications show the unread dot.
     expect(screen.getByLabelText("Unread")).toBeTruthy();
     // The subject number is surfaced.
@@ -129,7 +197,7 @@ describe("NotificationsPane", () => {
     expect(rowRule).toContain("padding: 5px 10px");
   });
 
-  it("filters rows by the search query", () => {
+  it("filters rows by title or repository", () => {
     render(
       <NotificationsPane
         state={makeState({
@@ -139,11 +207,19 @@ describe("NotificationsPane", () => {
               url: "https://api.github.com/repos/acme/widgets/issues/1",
               type: "Issue"
             } }),
-            makeNotification({ id: "2", subject: {
-              title: "Beta issue",
-              url: "https://api.github.com/repos/acme/widgets/issues/2",
-              type: "Issue"
-            } })
+            makeNotification({
+              id: "2",
+              subject: {
+                title: "Beta issue",
+                url: "https://api.github.com/repos/moon/rockets/issues/2",
+                type: "Issue"
+              },
+              repository: {
+                full_name: "moon/rockets",
+                name: "rockets",
+                owner: { login: "moon" }
+              }
+            })
           ]
         })}
         webBaseUrl="https://github.com"
@@ -159,6 +235,46 @@ describe("NotificationsPane", () => {
 
     expect(screen.getByText("Alpha issue")).toBeTruthy();
     expect(screen.queryByText("Beta issue")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Search notifications"), {
+      target: { value: "moon/rockets" }
+    });
+
+    expect(screen.queryByText("Alpha issue")).toBeNull();
+    expect(screen.getByText("Beta issue")).toBeTruthy();
+  });
+
+  it("keeps Only new based on GitHub read state or a current local viewedAt", async () => {
+    const user = userEvent.setup();
+    const locallyViewed = makeNotification({ id: "viewed" });
+    const stillNew = makeNotification({
+      id: "new",
+      subject: {
+        title: "Still new",
+        url: "https://api.github.com/repos/acme/widgets/issues/43",
+        type: "Issue"
+      }
+    });
+    const viewedUrl = "https://github.com/acme/widgets/issues/42";
+    render(
+      <NotificationsPane
+        state={makeState({
+          notifications: [locallyViewed, stillNew],
+          viewedAt: { [viewedUrl]: "2026-07-07T10:00:00Z" }
+        })}
+        webBaseUrl="https://github.com"
+        online
+        selectedId={null}
+        onSelect={vi.fn()}
+      />
+    );
+
+    await user.click(
+      screen.getByRole("checkbox", { name: "Only new notifications" })
+    );
+
+    expect(screen.queryByText("Fix the prefetch")).toBeNull();
+    expect(screen.getByText("Still new")).toBeTruthy();
   });
 
   it("reports the search-filtered notifications for prefetch", () => {
