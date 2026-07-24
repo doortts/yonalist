@@ -68,6 +68,7 @@ interface BackspaceDraftLeaseState {
   readonly touchedNodeIds: Set<NoteId>;
   readonly startingDrafts: Map<NoteId, NotesNodeDraft | null>;
   readonly baselineFlushes: Promise<boolean>[];
+  readonly baselineHistoryContexts: Map<NoteId, NotesHistoryContext>;
   active: boolean;
   frozen: boolean;
 }
@@ -712,6 +713,10 @@ export class NotesDraftEngine {
         protectedIds.has(nodeId),
       )
     ) {
+      this.discardBackspaceBaselineHistoryContexts(
+        backspaceLease,
+        protectedIds,
+      );
       this.settleBackspaceDraft(backspaceLease, "cancelled");
     }
     let changed = false;
@@ -957,6 +962,7 @@ export class NotesDraftEngine {
     if (attempt.generation !== record.draftGeneration) {
       return false;
     }
+    this.releaseBackspaceBaselineHistoryContext(attempt);
     const { nodeId, draft, historyContext } = attempt;
     const latest = record.drafts.get(nodeId);
     const failed = record.failedWritesByNodeId.get(nodeId);
@@ -1195,6 +1201,33 @@ export class NotesDraftEngine {
     return lease?.active === true && lease.touchedNodeIds.has(nodeId);
   }
 
+  private releaseBackspaceBaselineHistoryContext(
+    attempt: DraftWriteAttempt,
+  ): void {
+    const historyContext = attempt.historyContext;
+    if (!historyContext) {
+      return;
+    }
+    const lease = this.record.backspaceDraftLease;
+    const ownedContext = lease?.baselineHistoryContexts.get(attempt.nodeId);
+    if (ownedContext?.entryId === historyContext.entryId) {
+      lease?.baselineHistoryContexts.delete(attempt.nodeId);
+    }
+  }
+
+  private discardBackspaceBaselineHistoryContexts(
+    state: BackspaceDraftLeaseState,
+    nodeIds?: ReadonlySet<NoteId>,
+  ): void {
+    for (const [nodeId, historyContext] of state.baselineHistoryContexts) {
+      if (nodeIds && !nodeIds.has(nodeId)) {
+        continue;
+      }
+      this.host.discardHistoryEntry(historyContext);
+      state.baselineHistoryContexts.delete(nodeId);
+    }
+  }
+
   private touchBackspaceDraft(
     state: BackspaceDraftLeaseState,
     nodeId: NoteId,
@@ -1227,6 +1260,9 @@ export class NotesDraftEngine {
       record.draftHistoryContextByNodeId.get(nodeId) ??
       attempt?.historyContext ??
       null;
+    if (historyContext) {
+      state.baselineHistoryContexts.set(nodeId, historyContext);
+    }
     record.session.history.closeTextBurst(historyContext?.entryId);
     record.draftHistoryContextByNodeId.delete(nodeId);
 
@@ -1419,6 +1455,7 @@ export class NotesDraftEngine {
       touchedNodeIds: new Set(),
       startingDrafts: new Map(),
       baselineFlushes: [],
+      baselineHistoryContexts: new Map(),
       active: true,
       frozen: false,
     };
@@ -1774,13 +1811,14 @@ export class NotesDraftEngine {
 
   private clearDraftBookkeeping(): void {
     const record = this.record;
-    record.draftGeneration += 1;
     const backspaceLease = record.backspaceDraftLease;
     if (backspaceLease) {
+      this.discardBackspaceBaselineHistoryContexts(backspaceLease);
       backspaceLease.active = false;
       backspaceLease.frozen = true;
       record.backspaceDraftLease = null;
     }
+    record.draftGeneration += 1;
     record.drafts.clear();
     record.pendingDebounceByNodeId.clear();
     record.inFlightDraftByNodeId.clear();

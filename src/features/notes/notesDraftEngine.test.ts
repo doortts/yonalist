@@ -568,12 +568,14 @@ describe("NotesDraftEngine", () => {
       const store = repository({
         updateNode: vi.fn().mockRejectedValue(new Error("disk full")),
       });
-      const { engine } = createHarness({ store });
+      const { engine, host } = createHarness({ store });
       engine.updateNodeDraft("root", {
         title: "before",
         note: "",
         imageOffsetUtf16: 0,
       });
+      const baselineHistory =
+        engine.record.draftHistoryContextByNodeId.get("root");
       const lease = engine.beginBackspaceGesture(14, "root")!;
       engine.updateNodeDraft("root", {
         title: "after",
@@ -586,6 +588,9 @@ describe("NotesDraftEngine", () => {
         titleUpdate: null,
       });
       expect(store.updateNode).toHaveBeenCalledOnce();
+      engine.discardPendingDrafts();
+      expect(host.discardHistoryEntry).toHaveBeenCalledOnce();
+      expect(host.discardHistoryEntry).toHaveBeenCalledWith(baselineHistory);
     });
 
     it("persists the exact starting draft beyond an older structural cutoff", async () => {
@@ -849,6 +854,8 @@ describe("NotesDraftEngine", () => {
         note: "old note",
         imageOffsetUtf16: 2,
       });
+      const oldHistory =
+        engine.record.draftHistoryContextByNodeId.get("root");
       const lease = engine.beginBackspaceGesture(25, "root")!;
       await flushMicrotasks();
       expect(store.updateNode).toHaveBeenCalledOnce();
@@ -877,7 +884,9 @@ describe("NotesDraftEngine", () => {
       expect(engine.record.draftHistoryContextByNodeId.get("root")).toBe(
         futureHistory,
       );
-      expect(host.discardHistoryEntry).not.toHaveBeenCalled();
+      expect(host.discardHistoryEntry).toHaveBeenCalledOnce();
+      expect(host.discardHistoryEntry).toHaveBeenCalledWith(oldHistory);
+      expect(host.discardHistoryEntry).not.toHaveBeenCalledWith(futureHistory);
       await expect(lease.prepare([])).resolves.toMatchObject({
         baselineFlushed: false,
       });
@@ -895,6 +904,8 @@ describe("NotesDraftEngine", () => {
         note: "old note",
         imageOffsetUtf16: 3,
       });
+      const oldHistory =
+        engine.record.draftHistoryContextByNodeId.get("root");
       const lease = engine.beginBackspaceGesture(26, "root")!;
       await flushMicrotasks();
       expect(store.updateNode).toHaveBeenCalledOnce();
@@ -923,7 +934,9 @@ describe("NotesDraftEngine", () => {
       expect(engine.record.draftHistoryContextByNodeId.get("root")).toBe(
         futureHistory,
       );
-      expect(host.discardHistoryEntry).not.toHaveBeenCalled();
+      expect(host.discardHistoryEntry).toHaveBeenCalledOnce();
+      expect(host.discardHistoryEntry).toHaveBeenCalledWith(oldHistory);
+      expect(host.discardHistoryEntry).not.toHaveBeenCalledWith(futureHistory);
       await expect(lease.prepare([])).resolves.toMatchObject({
         baselineFlushed: false,
       });
@@ -935,12 +948,14 @@ describe("NotesDraftEngine", () => {
       const store = repository({
         updateNode: vi.fn().mockReturnValue(baselineWrite.promise),
       });
-      const { engine } = createHarness({ store });
+      const { engine, host } = createHarness({ store });
       engine.updateNodeDraft("root", {
         title: "before",
         note: "",
         imageOffsetUtf16: 0,
       });
+      const baselineHistory =
+        engine.record.draftHistoryContextByNodeId.get("root");
       const lease = engine.beginBackspaceGesture(20, "root")!;
       engine.updateNodeDraft("root", {
         title: "held",
@@ -959,6 +974,8 @@ describe("NotesDraftEngine", () => {
       await flushMicrotasks();
 
       expect(engine.getDraftsSnapshot()).toEqual({});
+      expect(host.discardHistoryEntry).toHaveBeenCalledOnce();
+      expect(host.discardHistoryEntry).toHaveBeenCalledWith(baselineHistory);
       await expect(lease.prepare([])).resolves.toMatchObject({
         baselineFlushed: false,
       });
