@@ -69,7 +69,7 @@
 - Produces: `run_vault_blocking<T, F>(operation: F) -> Result<T, String>` 및 같은 command 이름의 async wrapper
 - Preserves: 프런트엔드 IPC 이름, camelCase 인자 매핑, 동기 본체의 오류 문자열
 
-- [ ] **Step 1: main/IPC thread 회귀를 잡는 실패 테스트를 작성한다**
+- [x] **Step 1: main/IPC thread 회귀를 잡는 실패 테스트를 작성한다**
 
 `src-tauri/src/lib.rs`의 기존 source-contract 테스트 모듈에 다음 테스트와 helper를 추가한다.
 
@@ -116,7 +116,7 @@ fn github_vault_commands_run_on_the_blocking_pool() {
 }
 ```
 
-- [ ] **Step 2: 테스트가 현재 동기 명령에서 실패하는지 확인한다**
+- [x] **Step 2: 테스트가 현재 동기 명령에서 실패하는지 확인한다**
 
 Run:
 
@@ -126,7 +126,7 @@ cargo test --manifest-path src-tauri/Cargo.toml github_vault_commands_run_on_the
 
 Expected: `ensure_vault must be async`에서 FAIL.
 
-- [ ] **Step 3: 공용 blocking helper와 동기 본체/async wrapper 경계를 구현한다**
+- [x] **Step 3: 공용 blocking helper와 동기 본체/async wrapper 경계를 구현한다**
 
 `src-tauri/src/lib.rs`에 다음 helper를 추가한다.
 
@@ -203,7 +203,7 @@ async fn move_text_file(
 
 나머지 wrapper의 반환형은 기존 command 반환형을 그대로 사용한다. 기존 Rust 단위 테스트의 직접 호출은 async wrapper가 아니라 해당 `_inner` 함수를 호출하게 바꾼다.
 
-- [ ] **Step 4: 집중 Rust 테스트와 formatting을 실행한다**
+- [x] **Step 4: 집중 Rust 테스트와 formatting을 실행한다**
 
 Run:
 
@@ -216,7 +216,7 @@ cargo test --manifest-path src-tauri/Cargo.toml persist_vault_documents_writes_o
 
 Expected: 네 명령 모두 exit 0, 새 source-contract test 1개 PASS.
 
-- [ ] **Step 5: async Vault command 경계를 커밋한다**
+- [x] **Step 5: async Vault command 경계를 커밋한다**
 
 ```bash
 git add src-tauri/src/lib.rs
@@ -241,7 +241,7 @@ git commit -m "refactor(tauri): move Vault IO off the IPC thread"
 - Produces: 기존 `item_index.relative_path`와 일치하는 legacy manifest candidate backfill
 - Preserves: 기존 `content_hash`가 TypeScript FNV-1a UTF-16 hash와 호환
 
-- [ ] **Step 1: schema migration과 write invalidation 실패 테스트를 작성한다**
+- [x] **Step 1: schema migration과 write invalidation 실패 테스트를 작성한다**
 
 ```rust
 #[test]
@@ -281,7 +281,7 @@ fn document_write_invalidates_the_reconcile_fingerprint() {
 }
 ```
 
-- [ ] **Step 2: 새 테스트가 column 부재로 실패하는지 확인한다**
+- [x] **Step 2: 새 테스트가 column 부재로 실패하는지 확인한다**
 
 Run:
 
@@ -292,7 +292,7 @@ cargo test --manifest-path src-tauri/Cargo.toml document_write_invalidates_the_r
 
 Expected: 첫 테스트는 `modified_ns` assertion, 두 번째 테스트는 SQL column 조회에서 FAIL.
 
-- [ ] **Step 3: additive migration과 fingerprint helper를 구현한다**
+- [x] **Step 3: additive migration과 fingerprint helper를 구현한다**
 
 `initialize_index_db`의 기존 migration loop에 다음 두 statement를 추가한다.
 
@@ -317,7 +317,7 @@ fn file_modified_ns(metadata: &fs::Metadata) -> Result<i64, String> {
 
 migration statement 뒤 `backfill_legacy_item_candidates(&Connection)`를 호출한다. 이 함수는 `item_candidate_json IS NULL`인 `document_hashes` 행과 같은 `relative_path`의 `item_index` record만 기존 `VaultItemIndexRecord`로 읽어 JSON을 채운다. 이미 candidate가 있거나 경로가 일치하지 않는 행은 바꾸지 않는다.
 
-- [ ] **Step 4: 모든 document hash 쓰기가 fingerprint를 무효화하도록 SQL을 바꾼다**
+- [x] **Step 4: 모든 document hash 쓰기가 fingerprint를 무효화하도록 SQL을 바꾼다**
 
 `upsert_vault_document_hash_inner`, `persist_vault_documents_inner`, `move_vault_document_hash_inner`, 배포 중 아직 존재하는 `replace_vault_document_hashes_inner`의 INSERT/UPDATE에 아래 규칙을 적용한다.
 
@@ -337,7 +337,7 @@ ON CONFLICT(vault_root, relative_path) DO UPDATE SET
 
 기존 candidate가 있는 정상 item write에서는 candidate를 지우지 않도록 UPDATE clause에는 `item_candidate_json = NULL`을 넣지 않는다. 신규 hash 행만 `NULL`로 시작한다.
 
-- [ ] **Step 5: item index upsert가 candidate와 실제 metadata를 함께 확정하도록 구현한다**
+- [x] **Step 5: item index upsert가 candidate와 실제 metadata를 함께 확정하도록 구현한다**
 
 transaction을 열기 전에 각 record를 JSON으로 serialize하고 실제 파일 metadata를 읽는다.
 
@@ -375,7 +375,7 @@ WHERE vault_root = ?1 AND relative_path = ?2
 
 파일 metadata 준비가 하나라도 실패하면 transaction을 열지 않고 기존 index/candidate를 유지한다. UPDATE affected row가 1이 아니어도 transaction을 rollback해 index만 있고 candidate가 없는 상태를 만들지 않는다.
 
-- [ ] **Step 6: candidate 확정과 write invalidation 테스트를 통과시킨다**
+- [x] **Step 6: candidate 확정과 write invalidation 테스트를 통과시킨다**
 
 추가 테스트는 item 파일과 hash를 만든 뒤 `upsert_vault_item_index_inner`를 호출하고 `item_candidate_json`이 원 record로 deserialize되며 `modified_ns > 0`인지 확인한다. 그 파일을 다시 `persist_vault_documents_inner`로 쓰면 `modified_ns = -1`이 되는지 확인한다. 별도 legacy 테스트는 candidate가 `NULL`인 manifest와 기존 item index를 seed한 뒤 DB 재연결 시 candidate가 backfill되는지 확인한다.
 
@@ -391,7 +391,7 @@ cargo test --manifest-path src-tauri/Cargo.toml legacy_item_index_is_backfilled_
 
 Expected: migration, invalidation, candidate 테스트 모두 PASS.
 
-- [ ] **Step 7: manifest 변경을 커밋한다**
+- [x] **Step 7: manifest 변경을 커밋한다**
 
 ```bash
 git add src-tauri/src/lib.rs
@@ -417,7 +417,7 @@ git commit -m "feat(index): track Vault file fingerprints"
 - Produces: `scan_vault_item_index_changes(vault_path: String, force: bool) -> Result<VaultIndexScan, String>`
 - Produces: scan payload types serialized with snake_case fields
 
-- [ ] **Step 1: scan payload와 증분 read 실패 테스트를 작성한다**
+- [x] **Step 1: scan payload와 증분 read 실패 테스트를 작성한다**
 
 `src-tauri/src/vault_index_reconcile.rs`에 먼저 아래 public wire types와 테스트를 작성한다.
 
@@ -584,7 +584,7 @@ fn unchanged_scan_reads_zero_bodies_and_force_reads_frontmatter_only() {
 }
 ```
 
-- [ ] **Step 2: scan 테스트가 함수 부재로 실패하는지 확인한다**
+- [x] **Step 2: scan 테스트가 함수 부재로 실패하는지 확인한다**
 
 Run:
 
@@ -594,7 +594,7 @@ cargo test --manifest-path src-tauri/Cargo.toml unchanged_scan_reads_zero_bodies
 
 Expected: `scan_vault_item_index_changes_inner` 미정의 compile FAIL.
 
-- [ ] **Step 3: metadata 열거와 frontmatter-only 추출을 구현한다**
+- [x] **Step 3: metadata 열거와 frontmatter-only 추출을 구현한다**
 
 module은 symlink를 따라가지 않고 일반 `.md` 파일만 재귀 열거한다. metadata가 manifest의 `(size, modified_ns)`와 같고 `force == false`이면 파일을 열지 않는다.
 
@@ -614,7 +614,7 @@ fn frontmatter_only(contents: &str) -> (Option<String>, bool) {
 
 실제 구현에서는 closing fence가 EOF인 경우의 index를 별도 branch로 계산해 위 helper가 body를 포함하지 않게 한다. 각 변경 파일은 read 전후 metadata를 비교하며 달라지면 payload에 넣지 않고 `deferred += 1` 한다. 모든 vector는 `relative_path`로 정렬해 테스트와 dedupe 순서를 결정적으로 만든다.
 
-- [ ] **Step 4: 변경·rename·삭제·불안정 read 테스트를 추가해 통과시킨다**
+- [x] **Step 4: 변경·rename·삭제·불안정 read 테스트를 추가해 통과시킨다**
 
 다음 독립 테스트를 추가한다.
 
@@ -635,7 +635,7 @@ cargo test --manifest-path src-tauri/Cargo.toml scan_
 
 Expected: 신규/변경/rename/삭제, deferred, symlink, fence 테스트 모두 PASS.
 
-- [ ] **Step 5: async Tauri command와 debug 지연 fixture를 연결한다**
+- [x] **Step 5: async Tauri command와 debug 지연 fixture를 연결한다**
 
 ```rust
 #[tauri::command]
@@ -657,7 +657,7 @@ pub(crate) async fn scan_vault_item_index_changes(
 
 `mod vault_index_reconcile;`, root import, `generate_handler!`, `APP_COMMANDS`, `main-window.toml`에 `scan_vault_item_index_changes`를 추가한다.
 
-- [ ] **Step 6: Rust formatting, scan suite, command permission parity를 검증한다**
+- [x] **Step 6: Rust formatting, scan suite, command permission parity를 검증한다**
 
 Run:
 
@@ -670,7 +670,7 @@ cargo test --manifest-path src-tauri/Cargo.toml application_commands_are_granted
 
 Expected: 모든 명령 exit 0.
 
-- [ ] **Step 7: incremental scan을 커밋한다**
+- [x] **Step 7: incremental scan을 커밋한다**
 
 ```bash
 git add src-tauri/src/vault_index_reconcile.rs src-tauri/src/lib.rs src-tauri/build.rs src-tauri/permissions src-tauri/gen/schemas
@@ -695,7 +695,7 @@ git commit -m "feat(index): scan changed Vault frontmatter off-thread"
 - Produces: `commit_vault_item_index_changes(vault_path, changes, removed_paths) -> VaultIndexCommitReport`
 - Guarantees: metadata 재검증, manifest CAS, candidate/index 단일 transaction, deterministic dedupe
 
-- [ ] **Step 1: commit wire type과 atomicity 실패 테스트를 작성한다**
+- [x] **Step 1: commit wire type과 atomicity 실패 테스트를 작성한다**
 
 ```rust
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -752,7 +752,7 @@ fn commit_updates_manifest_candidate_and_index_atomically() {
 }
 ```
 
-- [ ] **Step 2: commit 함수 부재로 테스트가 실패하는지 확인한다**
+- [x] **Step 2: commit 함수 부재로 테스트가 실패하는지 확인한다**
 
 Run:
 
@@ -762,7 +762,7 @@ cargo test --manifest-path src-tauri/Cargo.toml commit_updates_manifest_candidat
 
 Expected: `commit_vault_item_index_changes_inner` 미정의 compile FAIL.
 
-- [ ] **Step 3: candidate 입력 검증과 deterministic dedupe를 구현한다**
+- [x] **Step 3: candidate 입력 검증과 deterministic dedupe를 구현한다**
 
 모든 candidate를 transaction 전에 검증한다.
 
@@ -787,7 +787,7 @@ fn validate_candidate(record: &VaultItemIndexRecord) -> Result<(), String> {
 
 candidate는 `relative_path` 순서로 읽고 identity key `(host.lowercase, owner.lowercase, repo.lowercase, kind, number)`로 합친다. `updated_at`이 더 큰 candidate가 winner이며 tie에서는 먼저 읽은 경로를 유지한다. winner의 `comment_count`가 `None`이면 fallback 값을 쓰고 `favorite`는 OR 한다.
 
-- [ ] **Step 4: metadata/CAS 검증과 짧은 IMMEDIATE transaction을 구현한다**
+- [x] **Step 4: metadata/CAS 검증과 짧은 IMMEDIATE transaction을 구현한다**
 
 transaction 전에 변경 경로가 scan의 `(size, modified_ns)`와 같은지, removed path가 여전히 없는지 확인한다. transaction을 연 뒤 `document_hashes` 현재 행이 `expected`와 정확히 같은 경로만 적용한다.
 
@@ -819,7 +819,7 @@ COMMIT;
 
 CAS가 실패한 경로는 적용하지 않고 `deferred`만 증가시킨다. 유효 upsert/delete가 0이면 transaction과 item projection을 생략한다.
 
-- [ ] **Step 5: dedupe, 삭제 복구, stale scan, rollback 테스트를 추가한다**
+- [x] **Step 5: dedupe, 삭제 복구, stale scan, rollback 테스트를 추가한다**
 
 ```text
 commit_promotes_the_saved_duplicate_after_winner_deletion
@@ -832,7 +832,7 @@ commit_skips_projection_when_nothing_is_applicable
 
 각 실패 테스트는 commit 전후 `document_hashes`와 `item_index`를 모두 비교한다. stale manifest 테스트는 scan 뒤 `upsert_vault_item_index_inner`로 더 최신 record를 저장하고 commit 결과가 이를 덮어쓰지 않는지 확인한다.
 
-- [ ] **Step 6: async commit command와 Tauri permission을 연결한다**
+- [x] **Step 6: async commit command와 Tauri permission을 연결한다**
 
 ```rust
 #[tauri::command]
@@ -850,7 +850,7 @@ pub(crate) async fn commit_vault_item_index_changes(
 
 `generate_handler!`, `APP_COMMANDS`, `main-window.toml`에 `commit_vault_item_index_changes`를 추가한다.
 
-- [ ] **Step 7: Rust commit suite를 검증하고 커밋한다**
+- [x] **Step 7: Rust commit suite를 검증하고 커밋한다**
 
 Run:
 
@@ -886,7 +886,7 @@ git commit -m "feat(index): commit reconciled candidates atomically"
 - Produces: `reconcileVaultItemIndex(vaultRoot: string, force?: boolean) -> Promise<VaultReconcileReport>`
 - Produces: `itemIndexRecord`와 `itemFromIndexRecord`를 `vaultIndex.ts`에서 공유
 
-- [ ] **Step 1: pure candidate parser의 실패 테스트를 작성한다**
+- [x] **Step 1: pure candidate parser의 실패 테스트를 작성한다**
 
 ```typescript
 import { describe, expect, it } from "vitest";
@@ -914,7 +914,7 @@ describe("Vault index candidates", () => {
 
 `scanChange`와 `itemFrontMatter`는 테스트 파일 안에서 완전한 fixture를 반환하며, `frontmatter_error: true`도 invalidCount에 포함하는 별도 assertion을 둔다.
 
-- [ ] **Step 2: parser 모듈 부재로 테스트가 실패하는지 확인한다**
+- [x] **Step 2: parser 모듈 부재로 테스트가 실패하는지 확인한다**
 
 Run:
 
@@ -924,7 +924,7 @@ npm test -- src/services/vaultIndex.test.ts
 
 Expected: `./vaultIndex` module not found로 FAIL.
 
-- [ ] **Step 3: wire types와 순수 candidate 변환을 구현한다**
+- [x] **Step 3: wire types와 순수 candidate 변환을 구현한다**
 
 `src/services/vaultIndex.ts`에 Rust field 이름과 정확히 일치하는 types를 정의한다.
 
@@ -1004,7 +1004,7 @@ function scanChange(
 }
 ```
 
-- [ ] **Step 4: module worker adapter를 구현하고 production build로 wire를 검증한다**
+- [x] **Step 4: module worker adapter를 구현하고 production build로 wire를 검증한다**
 
 ```typescript
 import { parseVaultIndexScanChanges } from "./vaultIndex";
@@ -1036,7 +1036,7 @@ npm run build
 
 Expected: TypeScript/Vite build PASS이며 worker chunk가 별도 asset으로 생성됨.
 
-- [ ] **Step 5: reconcile orchestration 실패 테스트를 작성한다**
+- [x] **Step 5: reconcile orchestration 실패 테스트를 작성한다**
 
 `src/services/vaultIndexReconcile.test.ts`에서 `@tauri-apps/api/core`와 global `Worker`를 mock한다.
 
@@ -1150,7 +1150,7 @@ it("scans, parses in a worker, commits once, and combines counts", async () => {
 
 추가 테스트는 no-change scan에서 worker/commit 0회, deletion-only scan에서 worker 0회/commit 1회, worker failure에서 commit 0회와 terminate 1회, invalidCount가 report deferred에 합산됨을 검증한다.
 
-- [ ] **Step 6: worker lifecycle과 reconcile service를 구현한다**
+- [x] **Step 6: worker lifecycle과 reconcile service를 구현한다**
 
 ```typescript
 function parseInWorker(
@@ -1178,7 +1178,7 @@ function parseInWorker(
 
 `reconcileVaultItemIndex`는 scan의 changes와 removed_paths가 모두 비면 worker와 commit을 건너뛴다. changes가 비어 있고 removed_paths만 있으면 worker를 만들지 않고 빈 changes로 commit한다. worker가 반환한 valid changes와 scan removed_paths를 commit에 한 번 전달하고 세 단계의 count만 합친다.
 
-- [ ] **Step 7: frontend 집중 테스트와 build를 실행하고 커밋한다**
+- [x] **Step 7: frontend 집중 테스트와 build를 실행하고 커밋한다**
 
 Run:
 
@@ -1220,7 +1220,7 @@ git commit -m "feat(index): parse Vault candidates in a worker"
 - Produces: cached item Promise와 outbox Promise가 독립적인 App effects
 - Removes: 단일 `loadVaultState`, `rebuildVaultStateFromMarkdown`, 세 legacy Tauri commands
 
-- [ ] **Step 1: cache가 outbox보다 먼저 표시되는 실패 테스트를 작성한다**
+- [x] **Step 1: cache가 outbox보다 먼저 표시되는 실패 테스트를 작성한다**
 
 `src/App.test.tsx`의 vaultStore mock을 `loadVaultItemsOverride`, `loadVaultOutboxOverride`로 분리하고 다음 테스트를 추가한다.
 
@@ -1281,7 +1281,7 @@ it("shows cached items before the outbox promise settles", async () => {
 
 테스트 helper `deferred`에는 read-only `settled` getter를 추가한다. reconnect 테스트 두 개는 outbox Promise가 resolve된 뒤에만 `reconnectEligible`이 true가 되는 계약으로 바꾼다.
 
-- [ ] **Step 2: 기존 단일 `loadVaultState` 효과에서 테스트가 실패하는지 확인한다**
+- [x] **Step 2: 기존 단일 `loadVaultState` 효과에서 테스트가 실패하는지 확인한다**
 
 Run:
 
@@ -1291,7 +1291,7 @@ npm test -- src/App.test.tsx -t "shows cached items before the outbox promise se
 
 Expected: cached title을 찾지 못해 FAIL.
 
-- [ ] **Step 3: vaultStore API를 cached items와 outbox로 분리한다**
+- [x] **Step 3: vaultStore API를 cached items와 outbox로 분리한다**
 
 ```typescript
 export async function loadVaultItems(vaultRoot: string): Promise<ItemDocument[]> {
@@ -1314,7 +1314,7 @@ export async function loadVaultOutbox(
 
 Tauri outbox read는 memory hash만 갱신하며 `replace_vault_document_hashes`를 호출하지 않는다. preview/localStorage 경로는 기존 전체 parse 동작을 유지한다.
 
-- [ ] **Step 4: App load/reconcile effects를 분리한다**
+- [x] **Step 4: App load/reconcile effects를 분리한다**
 
 첫 effect는 `loadVaultItems`를 시작해 resolve 즉시 `setDrafts`하고 `tracePerf("vault_cache_load_done", { items: items.length, durationMs })`를 기록한다. 둘째 effect는 `loadVaultOutbox`를 독립 실행하고 resolve 뒤 `setOutbox`, `setInboxVaultReady(true)`, `tracePerf("vault_outbox_load_done", { outbox: outbox.length, durationMs })`를 호출한다.
 
@@ -1362,7 +1362,7 @@ useEffect(() => {
 
 report trace에는 duration과 scanned/read/unchanged/upserted/removed/deferred 수만 기록한다.
 
-- [ ] **Step 5: no-change, Vault 전환, UI 상태 보존 테스트를 추가한다**
+- [x] **Step 5: no-change, Vault 전환, UI 상태 보존 테스트를 추가한다**
 
 ```text
 does_not_reload_the_index_when_reconcile_commits_no_changes
@@ -1374,7 +1374,7 @@ retries_a_failed_or_deferred_reconcile_on_the_next_inbox_activation
 
 Vitest fake timers로 2.5초 idle fallback을 진행한다. deferred reconcile Promise가 pending인 동안 기존 cached row, 선택된 filter와 list scrollTop이 그대로인지 확인한다.
 
-- [ ] **Step 6: legacy 전체 scan과 replace command를 제거한다**
+- [x] **Step 6: legacy 전체 scan과 replace command를 제거한다**
 
 TypeScript에서 다음을 제거한다.
 
@@ -1395,7 +1395,7 @@ Task 1의 `github_vault_commands_run_on_the_blocking_pool` command 배열에서�
 
 `src/services/vaultStore.test.ts`의 preview/localStorage 테스트는 `loadVaultItems`와 `loadVaultOutbox`를 각각 호출하도록 바꿔 browser preview 동작을 보존한다.
 
-- [ ] **Step 7: legacy command 부재와 native load 계약을 검증한다**
+- [x] **Step 7: legacy command 부재와 native load 계약을 검증한다**
 
 `src/services/vaultStore.tauri.test.ts`는 다음을 명시적으로 assertion한다.
 
@@ -1425,7 +1425,7 @@ rg -n "list_markdown_files|rebuildVaultStateFromMarkdown|replace_vault_document_
 
 Expected: test PASS, 마지막 `rg`는 source/permission에서 결과 0개.
 
-- [ ] **Step 8: cache-first 통합을 커밋한다**
+- [x] **Step 8: cache-first 통합을 커밋한다**
 
 ```bash
 git add src/App.tsx src/App.test.tsx src/services/vaultStore.ts src/services/vaultStore.test.ts src/services/vaultStore.tauri.test.ts src-tauri/src/lib.rs src-tauri/build.rs src-tauri/permissions src-tauri/gen/schemas
@@ -1448,7 +1448,7 @@ git commit -m "fix(inbox): show cached index before reconciliation"
 - Consumes: Task 1-6의 최종 command graph와 performance trace
 - Produces: 재생성된 Tauri schema, 수치 기반 검증 결과
 
-- [ ] **Step 1: Tauri schema를 재생성하고 stale permission이 없는지 확인한다**
+- [x] **Step 1: Tauri schema를 재생성하고 stale permission이 없는지 확인한다**
 
 Run:
 
@@ -1588,7 +1588,7 @@ Web Inspector console에서 `window.__yonalistLongTasks.length`가 `0`인지 확
 
 각 run의 `scanned/read/unchanged/upserted/removed/deferred` count도 함께 저장하되 파일 경로와 본문은 저장하지 않는다. 신규/변경/rename/삭제 fixture를 각각 한 번 적용해 최종 index 누락 0건과 duplicate winner 불일치 0건을 확인한다.
 
-- [ ] **Step 5: 최종 상태가 clean인지 확인한다**
+- [x] **Step 5: 최종 상태가 clean인지 확인한다**
 
 ```bash
 git status --short
