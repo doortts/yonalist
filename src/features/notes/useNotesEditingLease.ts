@@ -93,6 +93,20 @@ export function useNotesEditingLease(): NotesEditingLeaseController {
     },
     []
   );
+  const canEdit = useCallback((request: NotesEditingLease): boolean => {
+    const current = leaseRef.current;
+    return (
+      current === null ||
+      (current.paneId === request.paneId &&
+        current.nodeId === request.nodeId &&
+        current.field === request.field)
+    );
+  }, []);
+  const structuralCommandsAllowed = useCallback(
+    (): boolean =>
+      !composingRef.current.primary && !composingRef.current.secondary,
+    []
+  );
 
   return useMemo(
     () => ({
@@ -101,18 +115,17 @@ export function useNotesEditingLease(): NotesEditingLeaseController {
       setCompositionActive,
       claim,
       release,
-      canEdit: (request: NotesEditingLease) => {
-        const current = leaseRef.current;
-        return (
-          current === null ||
-          (current.paneId === request.paneId &&
-            current.nodeId === request.nodeId &&
-            current.field === request.field)
-        );
-      },
-      structuralCommandsAllowed: () =>
-        !composingRef.current.primary && !composingRef.current.secondary
+      canEdit,
+      structuralCommandsAllowed
     }),
-    [claim, composing, lease, release, setCompositionActive]
+    [
+      canEdit,
+      claim,
+      composing,
+      lease,
+      release,
+      setCompositionActive,
+      structuralCommandsAllowed
+    ]
   );
 }

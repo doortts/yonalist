@@ -178,6 +178,7 @@ import {
 } from "./outlineInteractionEpoch";
 import {
   createOutlineVisibleSignature,
+  projectOptimisticKeyboardInsertions,
   type KeyboardInsertionDisposition,
 } from "./notesKeyboardInsertion";
 import {
@@ -839,6 +840,8 @@ export function NotesOutlinePane({
     attachmentUploadErrorsByNodeId,
     attachmentUploadRetryAttemptIdsByNodeId,
     draftsByNodeId,
+    optimisticInsertionFailure,
+    optimisticKeyboardInsertions = [],
     selection,
     selectionRevision = 0,
     writeError,
@@ -1516,23 +1519,33 @@ export function NotesOutlinePane({
         : null,
     [projectionPublication, visibleSignature],
   );
-  const bodyRows = useMemo(
+  const authoritativeBodyRows = useMemo(
     () =>
       retainOutlineRowProjection(
         committedOutlineRowsRef.current?.vaultRoot === vaultRoot
           ? committedOutlineRowsRef.current.bodyRows
           : [],
         deriveOutlineBodyRows(structuralRows, state.zoomRootId),
-      ),
+    ),
     [structuralRows, state.zoomRootId, vaultRoot],
   );
+  const optimisticProjection = useMemo(
+    () =>
+      projectOptimisticKeyboardInsertions(
+        authoritativeBodyRows,
+        state.nodesById,
+        optimisticKeyboardInsertions,
+      ),
+    [authoritativeBodyRows, optimisticKeyboardInsertions, state.nodesById],
+  );
+  const bodyRows = optimisticProjection.rows;
   useLayoutEffect(() => {
     committedOutlineRowsRef.current = {
       vaultRoot,
       allStructuralRows,
-      bodyRows,
+      bodyRows: authoritativeBodyRows,
     };
-  }, [allStructuralRows, bodyRows, vaultRoot]);
+  }, [allStructuralRows, authoritativeBodyRows, vaultRoot]);
   const paneScope = useMemo<NotesWorkspaceScope>(() => {
     switch (libraryView) {
       case "starred":
@@ -1926,6 +1939,13 @@ export function NotesOutlinePane({
   );
   const bodyVisibleIdsRef = useRef(bodyVisibleIds);
   bodyVisibleIdsRef.current = bodyVisibleIds;
+  const bodyRowsRef = useRef(bodyRows);
+  bodyRowsRef.current = bodyRows;
+  const getOutlineRow = useCallback(
+    (nodeId: NoteId) =>
+      bodyRowsRef.current.find((row) => row.id === nodeId),
+    [],
+  );
   const getSelectionVisibleNodeIds = useCallback(
     () => bodyVisibleIdsRef.current,
     [],
@@ -4410,8 +4430,13 @@ export function NotesOutlinePane({
     row: FlattenedOutlineRow,
     depth = row.depth,
   ) => {
-    const node = state.nodesById[row.id];
+    const node =
+      optimisticProjection.nodeOverrides.get(row.id) ??
+      state.nodesById[row.id];
     if (!node) return null;
+    const optimisticInsertion = optimisticKeyboardInsertions.find(
+      (insertion) => insertion.pending.intent.expectedNodeId === row.id,
+    );
     const pluginOwned = node.pluginMeta !== undefined;
     const pluginRoot = row.id === GITHUB_NOTIFICATIONS_ROOT_ID;
     const selectionDisabled = pluginOwned || pluginRoot;
@@ -4424,7 +4449,9 @@ export function NotesOutlinePane({
       state.nodesById,
       state.childIdsByParent,
     );
-    const draft = draftsByNodeId[row.id];
+    const draft = optimisticProjection.nodeOverrides.has(row.id)
+      ? undefined
+      : draftsByNodeId[row.id];
     const markerKind = draft?.markerKind ?? node.markerKind;
     const selected = state.selectedId === row.id;
     const rangeSelected = selectedIdSet.has(row.id);
@@ -4493,12 +4520,14 @@ export function NotesOutlinePane({
         getStateSnapshot={getStateSnapshot}
         getActionsSnapshot={getActionsSnapshot}
         ancestorGuideDepths={row.ancestorGuideDepths}
+        getOutlineRow={getOutlineRow}
         getVisibleNodeIds={getVisibleNodeIds}
         getSelectionVisibleNodeIds={getSelectionVisibleNodeIds}
         getSelection={getSelection}
         onSelectionAction={stableExecuteSelectionAction}
         selectionBridge={rangeSelected ? selectionMenuBridge : undefined}
         draft={draft}
+        optimisticInsertion={optimisticInsertion}
         attachmentUploadError={attachmentUploadErrorsByNodeId?.[row.id]}
         attachmentUploadRetryAttemptId={
           attachmentUploadRetryAttemptIdsByNodeId?.[row.id]
@@ -4755,7 +4784,35 @@ export function NotesOutlinePane({
                   >
                     Retry recovery
                   </button>
-                )}
+              )}
+            </div>
+          )}
+          {optimisticInsertionFailure && (
+            <div
+              className="notes-inline-error notes-write-error-banner"
+              role="alert"
+            >
+              <span>{optimisticInsertionFailure.message}</span>
+              <button
+                type="button"
+                className="notes-write-error-retry"
+                onClick={() =>
+                  void writeSelectionClipboard(
+                    optimisticInsertionFailure.recoveryText,
+                  )
+                }
+              >
+                Copy text
+              </button>
+              <button
+                type="button"
+                className="notes-write-error-retry"
+                onClick={() =>
+                  actions.dismissOptimisticInsertionFailure?.()
+                }
+              >
+                Dismiss
+              </button>
             </div>
           )}
           {writeError && (

@@ -9,6 +9,7 @@ import {
   useNotesActions,
   useNotesDrafts
 } from "./NotesWorkspaceContext";
+import { createOutlineVisibleSignature } from "./notesKeyboardInsertion";
 import {
   useNotesWorkspace,
   type UseNotesWorkspaceResult
@@ -278,6 +279,231 @@ describe("notes workspace context split", () => {
     expect(panes().primary.stateSlice.state.nodesById).toBe(
       panes().secondary.stateSlice.state.nodesById
     );
+  });
+
+  it("routes a secondary split focus only to the secondary pane", async () => {
+    const initial = workspace([
+      node({ id: "root", title: "Root", sortKey: 1024 }),
+      node({ id: "other", title: "Other", sortKey: 2048 })
+    ]);
+    const settled = workspace([
+      node({ id: "root", title: "Ro", sortKey: 1024 }),
+      node({ id: "split", title: "ot", sortKey: 1536 }),
+      node({ id: "other", title: "Other", sortKey: 2048 })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      splitNode: vi.fn().mockResolvedValue(settled)
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/secondary-insertion-routing",
+        repository: store
+      })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const panes = () => result.current.paneRegistrySlice.panes;
+
+    await act(async () => panes().primary.actionsSlice.actions.zoomTo("other"));
+    await act(async () => {
+      await panes().primary.actionsSlice.actions.acknowledgeFocus("other");
+    });
+    expect(panes().primary.stateSlice.state).toMatchObject({
+      selectedId: "other",
+      pendingFocusId: null
+    });
+    result.current.actions.publishOutlinePaneState?.({
+      paneId: "primary",
+      scope: { kind: "active" },
+      zoomedNodeId: "other",
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 0,
+      visibleSignature: createOutlineVisibleSignature([]),
+      geometryGeneration: 0,
+      activeDrag: false
+    });
+    result.current.actions.publishOutlinePaneState?.({
+      paneId: "secondary",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 0,
+      visibleSignature: createOutlineVisibleSignature([
+        {
+          id: "root",
+          parentId: null,
+          depth: 0,
+          isCollapsed: false,
+          ancestorIds: [],
+          ancestorGuideDepths: [],
+          visibleDescendantEndId: null
+        },
+        {
+          id: "other",
+          parentId: null,
+          depth: 0,
+          isCollapsed: false,
+          ancestorIds: [],
+          ancestorGuideDepths: [],
+          visibleDescendantEndId: null
+        }
+      ]),
+      geometryGeneration: 0,
+      activeDrag: false
+    });
+    let preparation: ReturnType<
+      NonNullable<
+        typeof result.current.actions.prepareKeyboardInsertion
+      >
+    > = null;
+    act(() => {
+      preparation =
+        panes().secondary.actionsSlice.actions.prepareKeyboardInsertion?.({
+        ownerPaneId: "secondary",
+        interactionEpochAtDispatch: 0,
+        intent: {
+          token: 41,
+          sourceId: "root",
+          expectedNodeId: "split",
+          postcondition: {
+            kind: "split",
+            expectedSourceTitle: "Ro",
+            expectedInsertedTitle: "ot"
+          }
+        },
+        optimistic: {
+          checkpoint: {
+            sourceNode: initial.nodes[0]!,
+            sourceRow: {
+              id: "root",
+              parentId: null,
+              depth: 0,
+              isCollapsed: false,
+              ancestorIds: [],
+              ancestorGuideDepths: [],
+              visibleDescendantEndId: null
+            },
+            sourceSelection: { anchorUtf16: 2, focusUtf16: 2 }
+          },
+          sourceTitle: "Ro",
+          insertedTitle: "ot"
+        }
+      }) ?? null;
+    });
+    expect(preparation).not.toBeNull();
+    expect(
+      panes().primary.draftsSlice.optimisticKeyboardInsertions
+    ).toEqual([]);
+    expect(
+      panes().secondary.draftsSlice.optimisticKeyboardInsertions?.[0]
+        .pending.intent.expectedNodeId
+    ).toBe("split");
+    expect(
+      panes().primary.stateSlice.state.nodesById.split
+    ).toBeUndefined();
+    expect(
+      panes().secondary.stateSlice.state.nodesById.split
+    ).toBeUndefined();
+
+    await act(async () => {
+      await panes().secondary.actionsSlice.actions.splitNode(
+        "root",
+        "split",
+        "Ro",
+        "ot",
+        { keyboardInsertion: preparation! }
+      );
+    });
+
+    expect(panes().primary.stateSlice.state).toMatchObject({
+      selectedId: "other",
+      pendingFocusId: null
+    });
+    expect(panes().secondary.stateSlice.state).toMatchObject({
+      selectedId: "split",
+      editingNoteId: "split",
+      pendingFocusId: "split",
+      pendingFocusField: "title"
+    });
+    expect(
+      panes().secondary.actionsSlice.actions
+        .pendingKeyboardInsertionInteractionEpoch?.("split")
+    ).toBe(0);
+
+    await act(async () => {
+      await panes().secondary.actionsSlice.actions.acknowledgeFocus("split");
+    });
+    expect(panes().secondary.stateSlice.state.pendingFocusId).toBeNull();
+    expect(
+      panes().secondary.actionsSlice.actions
+        .pendingKeyboardInsertionInteractionEpoch?.("split")
+    ).toBeUndefined();
+  });
+
+  it("keeps the inactive pane slice stable across 50 opposite-pane focus moves", async () => {
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(
+        workspace([
+          node({ id: "root", sortKey: 1024 }),
+          node({ id: "other", sortKey: 2048 })
+        ])
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/pane-identity", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    const secondaryBefore = result.current.paneRegistrySlice.panes.secondary;
+    for (let index = 0; index < 50; index += 1) {
+      await act(async () => {
+        await result.current.paneRegistrySlice.panes.primary.actionsSlice.actions
+          .focusNode(index % 2 === 0 ? "other" : "root");
+      });
+    }
+    expect(result.current.paneRegistrySlice.panes.secondary).toBe(
+      secondaryBefore
+    );
+
+    const primaryBefore = result.current.paneRegistrySlice.panes.primary;
+    for (let index = 0; index < 50; index += 1) {
+      await act(async () => {
+        await result.current.paneRegistrySlice.panes.secondary.actionsSlice.actions
+          .focusNode(index % 2 === 0 ? "other" : "root");
+      });
+    }
+    expect(result.current.paneRegistrySlice.panes.primary).toBe(primaryBefore);
+  });
+
+  it("keeps a retained inactive primary facade live after its actions change", async () => {
+    createNoteIdMock.mockReturnValue("created-after-reload");
+    const firstStore = repository();
+    const secondStore = repository();
+    const { result, rerender } = renderHook(
+      ({ vaultRoot, repository: currentRepository }) =>
+        useNotesWorkspace({ vaultRoot, repository: currentRepository }),
+      { initialProps: { vaultRoot: "/first", repository: firstStore } }
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    const retainedPrimary = result.current.paneRegistrySlice.panes.primary;
+    await act(async () => {
+      await result.current.paneRegistrySlice.panes.secondary.actionsSlice.actions
+        .focusNode("root");
+    });
+    rerender({ vaultRoot: "/second", repository: secondStore });
+    await waitFor(() => expect(secondStore.loadWorkspace).toHaveBeenCalled());
+
+    await act(async () => {
+      await retainedPrimary.actionsSlice.actions.createRoot();
+    });
+
+    expect(secondStore.createNode).toHaveBeenCalledOnce();
+    expect(firstStore.createNode).not.toHaveBeenCalled();
   });
 
   it("moves a node across panes with one mutation and focuses the destination", async () => {

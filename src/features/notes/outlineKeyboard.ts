@@ -315,6 +315,9 @@ export interface ResolveOutlineKeyInput {
   outdentBoundaryRootId?: NoteId;
   /** Rows that may participate in a selection, excluding a zoom page header. */
   selectionVisibleNodeIds?: readonly NoteId[];
+  readonly optimisticEnter?: {
+    readonly hasChildren: boolean;
+  };
   // The live multi-node selection, if any. Shift+Arrow extends the head from
   // here; Escape clears only when a selection exists (so a bare Escape keeps its
   // default behaviour).
@@ -432,6 +435,18 @@ export function resolveOutlineKey(
     input.target === "textarea" ||
     input.isComposing ||
     input.key === "Process"
+  ) {
+    return null;
+  }
+  if (
+    input.optimisticEnter &&
+    !input.workspace.nodesById[input.nodeId] &&
+    (input.key !== "Enter" ||
+      input.altKey ||
+      input.ctrlKey ||
+      input.metaKey ||
+      input.shiftKey ||
+      input.repeat)
   ) {
     return null;
   }
@@ -644,7 +659,9 @@ export function resolveOutlineKey(
   }
 
   const node = input.workspace.nodesById[input.nodeId];
-  if (!node) {
+  const optimisticEnter =
+    !node && input.key === "Enter" ? input.optimisticEnter : undefined;
+  if (!node && !optimisticEnter) {
     return null;
   }
 
@@ -659,6 +676,7 @@ export function resolveOutlineKey(
     const terminalCollapsedCaret =
       selectionStart === selectionEnd && selectionEnd === input.title.length;
     const hasChildren =
+      optimisticEnter?.hasChildren ??
       (input.workspace.childIdsByParent[input.nodeId]?.length ?? 0) > 0;
     const outlineRow = input.nodeId !== input.workspace.zoomRootId;
     if (outlineRow && terminalCollapsedCaret && hasChildren) {
@@ -670,6 +688,8 @@ export function resolveOutlineKey(
       suffix: input.title.slice(selectionEnd!)
     };
   }
+
+  if (!node) return null;
 
   if (input.key === "Tab" || imageAltStructuralKey) {
     const unavailableMove =

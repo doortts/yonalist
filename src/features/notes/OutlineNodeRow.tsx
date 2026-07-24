@@ -76,6 +76,8 @@ import type {
   NotesHistoryFocusField,
   NotesHistoryPrimarySelection,
 } from "./notesHistory";
+import type { OptimisticKeyboardInsertion } from "./notesKeyboardInsertion";
+import type { FlattenedOutlineRow } from "./outlineTree";
 import { resizeTextarea, useAutoGrowTextarea } from "./autoGrowTextarea";
 import {
   detectOutlineShortcutPlatform,
@@ -122,6 +124,7 @@ export interface OutlineNodeEditorProps {
     readonly unavailable: boolean;
   };
   ancestorGuideDepths: readonly number[];
+  getOutlineRow(nodeId: NoteId): FlattenedOutlineRow | undefined;
   // A stable accessor for the current visible-id list, rather than the array by
   // value — passing the array as a prop would churn its identity every render
   // and defeat this component's memo.
@@ -145,6 +148,7 @@ export interface OutlineNodeEditorProps {
   // the high-volatility drafts context. A keystroke in another row therefore
   // leaves these props referentially unchanged and the memo bails out.
   draft?: NotesNodeDraft;
+  optimisticInsertion?: OptimisticKeyboardInsertion;
   attachmentUploadError?: string;
   attachmentUploadRetryAttemptId?: string;
   movementProtected?: boolean;
@@ -235,12 +239,14 @@ function OutlineNodeEditorComponent({
   subscribeExportState,
   getExportSnapshot,
   ancestorGuideDepths,
+  getOutlineRow,
   getVisibleNodeIds,
   getSelectionVisibleNodeIds,
   getSelection,
   onSelectionAction,
   selectionBridge,
   draft,
+  optimisticInsertion,
   attachmentUploadError,
   attachmentUploadRetryAttemptId,
   movementProtected = false,
@@ -328,6 +334,7 @@ function OutlineNodeEditorComponent({
     endUtf16: number;
   } | null>(null);
   const focusedPendingIdRef = useRef<number | null>(null);
+  const focusedOptimisticTokenRef = useRef<number | null>(null);
   const pendingFocusInProgressRef = useRef(false);
   const focusNoteOnOpenRef = useRef(false);
   const dateNoteOnOpenRef = useRef(false);
@@ -582,7 +589,45 @@ function OutlineNodeEditorComponent({
     );
   });
 
+  useLayoutEffect(() => {
+    if (!optimisticInsertion || readOnly) return;
+    const token = optimisticInsertion.pending.intent.token;
+    if (focusedOptimisticTokenRef.current === token) return;
+    const target = titleRef.current;
+    const focusEpoch =
+      optimisticInsertion.pending.interactionEpochAtDispatch;
+    if (!target || !interactionEpoch.isCurrent(focusEpoch)) return;
+    pendingFocusInProgressRef.current = true;
+    try {
+      onCommandFocusActivity?.();
+      interactionEpoch.runCommandFocus(() => {
+        if (!interactionEpoch.isCurrent(focusEpoch)) return;
+        target.focus();
+        target.setSelectionRange(target.value.length, target.value.length);
+      });
+    } finally {
+      pendingFocusInProgressRef.current = false;
+    }
+    if (
+      document.activeElement !== target ||
+      !interactionEpoch.isCurrent(focusEpoch)
+    ) {
+      return;
+    }
+    focusedOptimisticTokenRef.current = token;
+    markSplitPhase(nodeId, "provisional-caret");
+    actions.acknowledgeOptimisticKeyboardInsertionFocus?.(nodeId, token);
+  }, [
+    actions,
+    interactionEpoch,
+    nodeId,
+    onCommandFocusActivity,
+    optimisticInsertion,
+    readOnly,
+  ]);
+
   useEffect(() => {
+    if (optimisticInsertion) return;
     if (!focusRequest) {
       focusedPendingIdRef.current = null;
       return;
@@ -685,6 +730,7 @@ function OutlineNodeEditorComponent({
     getStateSnapshot,
     node.nodeKind,
     noteOpen,
+    optimisticInsertion,
     readOnly,
   ]);
 
@@ -1175,6 +1221,10 @@ function OutlineNodeEditorComponent({
       outdentBoundaryRootId: GITHUB_NOTIFICATIONS_ROOT_ID,
       selectionVisibleNodeIds: getSelectionVisibleNodeIds(),
       selection: getSelection(),
+      optimisticEnter:
+        optimisticInsertion && event.key === "Enter"
+          ? { hasChildren: false }
+          : undefined,
     });
     if (!resolution) {
       if (event.key === "Enter" && !event.nativeEvent.isComposing) {
@@ -1225,6 +1275,14 @@ function OutlineNodeEditorComponent({
         } catch {
           return;
         }
+        const sourceRow = getOutlineRow(nodeId);
+        const sourceDraft = draftToSave();
+        if (!sourceRow) {
+          runStructuralCommand(() =>
+            actions.createChild(nodeId, "first", { newNodeId })
+          );
+          return;
+        }
         const keyboardInsertion = actions.prepareKeyboardInsertion?.({
           ownerPaneId: paneId,
           interactionEpochAtDispatch: interactionEpoch.current(),
@@ -1239,8 +1297,26 @@ function OutlineNodeEditorComponent({
               expectedInsertedTitle: "",
             },
           },
+          optimistic: {
+            checkpoint: {
+              sourceNode: {
+                ...node,
+                ...(sourceDraft ?? draftPatch()),
+              },
+              sourceRow,
+              sourceSelection: {
+                anchorUtf16: event.currentTarget.selectionStart,
+                focusUtf16: event.currentTarget.selectionEnd,
+              },
+            },
+            sourceTitle: titleValue,
+            insertedTitle: "",
+            dependencyId:
+              optimisticInsertion?.pending.intent.expectedNodeId,
+          },
         });
         if (!keyboardInsertion) return;
+        markSplitPhase(newNodeId, "keydown");
         onKeyboardInsertionPrepared?.(
           keyboardInsertion.pending.intent.token,
           keyboardInsertion.pending.layoutGenerationAtDispatch,
@@ -1266,6 +1342,22 @@ function OutlineNodeEditorComponent({
         } catch {
           return;
         }
+        const sourceRow = getOutlineRow(nodeId);
+        const sourceDraft = draftToSave();
+        if (!sourceRow) {
+          markSplitPhase(newNodeId, "keydown");
+          runStructuralCommand(() => {
+            suppressHandledBlur();
+            return actions.splitNode(
+              nodeId,
+              newNodeId,
+              resolution.prefix,
+              resolution.suffix,
+              { draft: sourceDraft }
+            );
+          });
+          return;
+        }
         const keyboardInsertion = actions.prepareKeyboardInsertion?.({
           ownerPaneId: paneId,
           interactionEpochAtDispatch: interactionEpoch.current(),
@@ -1279,6 +1371,23 @@ function OutlineNodeEditorComponent({
               expectedInsertedTitle: resolution.suffix,
             },
           },
+          optimistic: {
+            checkpoint: {
+              sourceNode: {
+                ...node,
+                ...(sourceDraft ?? draftPatch()),
+              },
+              sourceRow,
+              sourceSelection: {
+                anchorUtf16: event.currentTarget.selectionStart,
+                focusUtf16: event.currentTarget.selectionEnd,
+              },
+            },
+            sourceTitle: resolution.prefix,
+            insertedTitle: resolution.suffix,
+            dependencyId:
+              optimisticInsertion?.pending.intent.expectedNodeId,
+          },
         });
         if (!keyboardInsertion) return;
         onKeyboardInsertionPrepared?.(
@@ -1288,14 +1397,13 @@ function OutlineNodeEditorComponent({
         markSplitPhase(newNodeId, "keydown");
         runStructuralCommand(
           () => {
-            const patch = draftToSave();
             suppressHandledBlur();
             return actions.splitNode(
               nodeId,
               newNodeId,
               resolution.prefix,
               resolution.suffix,
-              { draft: patch, keyboardInsertion },
+              { draft: sourceDraft, keyboardInsertion },
             );
           },
           () =>
@@ -2238,6 +2346,13 @@ function OutlineNodeEditorComponent({
                   }));
                   return;
                 }
+                if (optimisticInsertion) {
+                  actions.updateOptimisticKeyboardInsertion?.(
+                    nodeId,
+                    event.target.value,
+                  );
+                  return;
+                }
                 actions.updateNodeDraft(
                   nodeId,
                   {
@@ -2256,7 +2371,10 @@ function OutlineNodeEditorComponent({
                     endUtf16: event.currentTarget.selectionEnd,
                   };
                 }
-                if (!pendingFocusInProgressRef.current) {
+                if (
+                  !optimisticInsertion &&
+                  !pendingFocusInProgressRef.current
+                ) {
                   claimEditingFocus("title", event.currentTarget);
                 }
               }}

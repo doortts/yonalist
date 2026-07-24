@@ -69,6 +69,7 @@ import {
 } from "./notesImageAtomAuthority";
 import type { NotesCommandContext } from "./notesCommands";
 import { emptyHistoryState } from "./notesWorkspaceCommandSupport";
+import type { OptimisticInsertionSnapshot } from "./notesKeyboardInsertion";
 import * as settlementRuntime from "./notesWorkspaceSettlementRuntime";
 import type {
   LiveNotesNavigation,
@@ -232,6 +233,14 @@ export function useNotesWorkspace({
     useState<NotesWriteAuthority>({ kind: "known" });
   const [projectionPublication, setProjectionPublication] =
     useState<NotesProjectionPublication | null>(null);
+  const [optimisticInsertionSnapshot, setOptimisticInsertionSnapshot] =
+    useState<OptimisticInsertionSnapshot>({
+      insertions: [],
+      failure: null,
+    });
+  const optimisticInsertionSnapshotRef =
+    useRef<OptimisticInsertionSnapshot>(optimisticInsertionSnapshot);
+  const pendingOptimisticTitleFlushesRef = useRef(new Map<NoteId, string>());
   // Backend status validates the mixed cursor; the session timeline owns availability.
   const [historyTimelineVersion, setHistoryTimelineVersion] = useState(0);
   const historyStatusRef = useRef(historyStatus);
@@ -603,6 +612,10 @@ export function useNotesWorkspace({
     setHistoryStatus(resetHistoryStatus);
     setAuthorityRecovery({ kind: "known" });
     setProjectionPublication(null);
+    const emptyOptimisticSnapshot = { insertions: [], failure: null };
+    optimisticInsertionSnapshotRef.current = emptyOptimisticSnapshot;
+    pendingOptimisticTitleFlushesRef.current.clear();
+    setOptimisticInsertionSnapshot(emptyOptimisticSnapshot);
     activeScopeRef.current = { kind: "active" };
     activeWorkspaceGenerationRef.current += 1;
     movePreparationTokenRef.current += 1;
@@ -673,6 +686,54 @@ export function useNotesWorkspace({
           );
           return;
         }
+        if (event.type === "optimisticInsertion") {
+          settlementRuntime.recordPendingOptimisticTitles(
+            optimisticInsertionSnapshotRef.current,
+            event,
+            pendingOptimisticTitleFlushesRef.current
+          );
+          optimisticInsertionSnapshotRef.current = event.snapshot;
+          setOptimisticInsertionSnapshot(event.snapshot);
+          if (event.rollback) {
+            const request = {
+              requestId: ++nextPrimarySelectionRequestIdRef.current,
+              nodeId: event.rollback.sourceId,
+              field: "title" as const,
+              selection: { ...event.rollback.selection }
+            };
+            if (event.rollback.ownerPaneId === "secondary") {
+              paneSessions.dispatchPane("secondary", {
+                type: "setPendingPrimarySelection",
+                request
+              });
+              paneSessions.dispatchPane("secondary", {
+                type: "setNavigation",
+                patch: {
+                  selectedId: event.rollback.sourceId,
+                  editingNoteId: event.rollback.sourceId,
+                  pendingFocusId: event.rollback.sourceId,
+                  pendingFocusField: "title"
+                }
+              });
+            } else {
+              pendingPrimarySelectionRef.current = request;
+              applyAction({
+                type: "focusNode",
+                nodeId: event.rollback.sourceId
+              });
+            }
+          }
+          return;
+        }
+        const routed =
+          settlementRuntime.routeKeyboardInsertionNavigation(event.result);
+        if (routed.secondaryNavigation) {
+          paneSessions.dispatchPane("secondary", {
+            type: "setNavigation",
+            patch: routed.secondaryNavigation
+          });
+        }
+        const settledResult = routed.primaryResult;
         if (
           event.result.kind === "authoritative" ||
           (event.result.kind === "failure" && event.result.workspace)
@@ -684,34 +745,37 @@ export function useNotesWorkspace({
         // queue order, so the hook just adopts whatever the latest event
         // carries. No hook-side version comparison — settled/synchronized
         // events already arrive in the coordinator's monotonic order.
-        if (event.result.kind !== "skipped" && event.result.historyStatus) {
-          historyStatusRef.current = event.result.historyStatus;
-          setHistoryStatus(event.result.historyStatus);
+        if (
+          settledResult.kind !== "skipped" &&
+          settledResult.historyStatus
+        ) {
+          historyStatusRef.current = settledResult.historyStatus;
+          setHistoryStatus(settledResult.historyStatus);
         }
-        if (event.result.kind !== "skipped") {
+        if (settledResult.kind !== "skipped") {
           setHistoryTimelineVersion((version) => version + 1);
         }
         if (
-          event.result.kind === "authoritative" &&
-          event.result.tagSummaries !== undefined
+          settledResult.kind === "authoritative" &&
+          settledResult.tagSummaries !== undefined
         ) {
-          setTagSummaries(event.result.tagSummaries);
+          setTagSummaries(settledResult.tagSummaries);
         }
         if (
-          event.result.kind !== "skipped" &&
-          event.result.invalidatesTagSummaries
+          settledResult.kind !== "skipped" &&
+          settledResult.invalidatesTagSummaries
         ) {
           void requestTagSummaryRefresh();
         }
         pendingKeyboardInsertionFocusRef.current =
           settlementRuntime.settledKeyboardInsertionFocus(
             pendingKeyboardInsertionFocusRef.current,
-            event.result,
+            settledResult,
             vaultRoot,
           );
         const nextExpansions = settlementRuntime.settledLocalExpansions(
           locallyExpandedNodeIdsRef.current,
-          event.result,
+          settledResult,
         );
         if (nextExpansions !== locallyExpandedNodeIdsRef.current) {
           locallyExpandedNodeIdsRef.current = nextExpansions;
@@ -726,27 +790,34 @@ export function useNotesWorkspace({
           return;
         }
         setProjectionPublication(
-          event.result.kind === "skipped"
+          settledResult.kind === "skipped"
             ? null
-            : (event.result.projectionPublication ?? null),
+            : (settledResult.projectionPublication ?? null),
         );
         // The reducer settles navigation from this same result via its one
         // reconciler; a stale editing caret is naturally ignored once the
         // reducer moves the editing node (see currentNavigation's guard), so
         const settledWorkspace =
-          event.result.kind === "authoritative"
-            ? event.result.workspace
-            : event.result.kind === "failure"
-              ? event.result.workspace
+          settledResult.kind === "authoritative"
+            ? settledResult.workspace
+            : settledResult.kind === "failure"
+              ? settledResult.workspace
               : undefined;
         if (settledWorkspace) {
           engine.reconcileReadonlyAuthority(settledWorkspace);
         }
         applyAction({
           type: "settleQueueWork",
-          result: event.result,
+          result: settledResult,
           hasPendingWork: event.hasPendingWork,
         });
+        for (const update of settlementRuntime.confirmedOptimisticTitleUpdates(
+          settledResult,
+          pendingOptimisticTitleFlushesRef.current
+        )) {
+          updateNodeDraft(update.nodeId, update, "title");
+          void flushNodeDraft(update.nodeId);
+        }
       },
       captureDraftCutoff: (publicationOwner) =>
         engine.captureDraftCutoff(publicationOwner),
@@ -1175,6 +1246,15 @@ export function useNotesWorkspace({
       getNavigationVersion,
       prepareKeyboardInsertion: (input) =>
         deletionInProgress() ? null : prepareKeyboardInsertion(input),
+      updateOptimisticKeyboardInsertion: (nodeId, title) =>
+        sessionRef.current?.updateOptimisticKeyboardInsertion(nodeId, title),
+      acknowledgeOptimisticKeyboardInsertionFocus: (nodeId, intentToken) =>
+        sessionRef.current?.acknowledgeOptimisticKeyboardInsertionFocus(
+          nodeId,
+          intentToken
+        ),
+      dismissOptimisticInsertionFailure: () =>
+        sessionRef.current?.dismissOptimisticInsertionFailure(),
       pendingKeyboardInsertionInteractionEpoch: (nodeId) =>
         settlementRuntime.pendingKeyboardInsertionEpoch(
           pendingKeyboardInsertionFocusRef.current,
@@ -1402,6 +1482,8 @@ export function useNotesWorkspace({
     () => ({
       draftsByNodeId,
       writeError: currentWriteError,
+      optimisticKeyboardInsertions: optimisticInsertionSnapshot.insertions,
+      optimisticInsertionFailure: optimisticInsertionSnapshot.failure,
       attachmentUploadErrorsByNodeId,
       attachmentUploadRetryAttemptIdsByNodeId,
       selection,
@@ -1410,6 +1492,7 @@ export function useNotesWorkspace({
     [
       draftsByNodeId,
       currentWriteError,
+      optimisticInsertionSnapshot,
       attachmentUploadErrorsByNodeId,
       attachmentUploadRetryAttemptIdsByNodeId,
       selection,

@@ -47,6 +47,9 @@ import type {
   KeyboardInsertionDisposition,
   KeyboardInsertionIntent,
   NotesProjectionPublicationOwner,
+  OptimisticInsertionFailure,
+  OptimisticKeyboardInsertion,
+  OptimisticKeyboardInsertionCheckpoint,
   OutlinePanePublicationSnapshot,
   PendingKeyboardInsertion
 } from "./notesKeyboardInsertion";
@@ -122,6 +125,12 @@ export interface NotesKeyboardInsertionRequest {
   readonly ownerPaneId: string;
   readonly interactionEpochAtDispatch: number;
   readonly intent: Omit<KeyboardInsertionIntent, "ownerSessionGeneration">;
+  readonly optimistic?: {
+    readonly checkpoint: OptimisticKeyboardInsertionCheckpoint;
+    readonly sourceTitle: string;
+    readonly insertedTitle: string;
+    readonly dependencyId?: NoteId;
+  };
 }
 
 export interface NotesKeyboardInsertionPreparation {
@@ -198,6 +207,8 @@ export interface NotesNodeDraft
 export interface NotesDraftsSlice {
   draftsByNodeId: Readonly<Record<NoteId, NotesNodeDraft>>;
   writeError: NotesStoreError | null;
+  optimisticKeyboardInsertions?: readonly OptimisticKeyboardInsertion[];
+  optimisticInsertionFailure?: OptimisticInsertionFailure | null;
   attachmentUploadErrorsByNodeId?: Readonly<Record<NoteId, string>>;
   attachmentUploadRetryAttemptIdsByNodeId?: Readonly<Record<NoteId, string>>;
   selection?: NotesSelection | null;
@@ -240,6 +251,12 @@ export interface NotesWorkspaceActions {
   prepareKeyboardInsertion?(
     input: NotesKeyboardInsertionRequest
   ): NotesKeyboardInsertionPreparation | null;
+  updateOptimisticKeyboardInsertion?(nodeId: NoteId, title: string): void;
+  acknowledgeOptimisticKeyboardInsertionFocus?(
+    nodeId: NoteId,
+    intentToken: number
+  ): void;
+  dismissOptimisticInsertionFailure?(): void;
   pendingKeyboardInsertionInteractionEpoch?(nodeId: NoteId): number | undefined;
   publishOutlinePaneState?(
     input: Omit<OutlinePanePublicationSnapshot, "sessionId">

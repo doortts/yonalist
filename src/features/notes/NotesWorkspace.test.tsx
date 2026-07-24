@@ -6364,8 +6364,8 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
     expect(
       document.querySelectorAll('textarea[aria-label="Edit node title"]'),
-    ).toHaveLength(2);
-    expect(title).toHaveFocus();
+    ).toHaveLength(3);
+    expect(await findTitleInput("")).toHaveFocus();
 
     await act(async () =>
       creation.resolve(
@@ -6436,7 +6436,7 @@ describe("Notes workspace", () => {
     );
   });
 
-  it("deduplicates repeated Enter and keeps the first target stale after the later keydown", async () => {
+  it("deduplicates repeated Enter and keeps the first provisional target", async () => {
     configureRepository([
       node({ id: "source", sortKey: 1, title: "alphaXYZomega" }),
     ]);
@@ -6468,7 +6468,7 @@ describe("Notes workspace", () => {
       historyContextMatcher(),
     );
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
-    expect(title).toHaveFocus();
+    expect(getTitleInput("omega")).toHaveFocus();
 
     await act(async () =>
       split.resolve(
@@ -6483,8 +6483,8 @@ describe("Notes workspace", () => {
       ),
     );
 
-    expect(await findTitleInput("omega")).not.toHaveFocus();
-    expect(title).toHaveFocus();
+    expect(await findTitleInput("omega")).toHaveFocus();
+    expect(title).not.toHaveFocus();
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     expect(notesStoreMock.splitNode).toHaveBeenCalledOnce();
     randomUUID.mockRestore();
@@ -6563,6 +6563,8 @@ describe("Notes workspace", () => {
     title.setSelectionRange(5, 8);
 
     expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+    expect(await findTitleInput("omega!")).toHaveFocus();
+    expect(getTitleInput("alpha")).toHaveValue("alpha");
     await waitFor(() =>
       expect(notesStoreMock.updateNode).toHaveBeenCalledOnce(),
     );
@@ -6699,12 +6701,23 @@ describe("Notes workspace", () => {
       input.setSelectionRange(input.value.length, input.value.length);
     }
 
-    it("renders and focuses the empty sibling only after the split resolves", async () => {
+    it("renders and focuses the empty sibling before the split resolves", async () => {
       configureRepository([
         node({ id: "solo", sortKey: 1024, title: "Solo item" }),
       ]);
       const split = deferred<NotesWorkspace>();
       notesStoreMock.splitNode.mockReturnValue(split.promise);
+      notesStoreMock.updateNode.mockImplementation(
+        async (_vaultRoot, input) =>
+          workspace([
+            node({ id: "solo", sortKey: 1024, title: "Solo item" }),
+            node({
+              id: FIRST,
+              sortKey: 2048,
+              title: input.title ?? ""
+            })
+          ])
+      );
       vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(FIRST);
       renderNotesWorkspace();
       const title = await findTitleInput("Solo item");
@@ -6724,6 +6737,13 @@ describe("Notes workspace", () => {
         'textarea[aria-label="Edit node title"]',
       ).length;
       const sourceFocusedBeforeSettlement = title.matches(":focus");
+      const provisionalTitle = getTitleInput("");
+      expect(provisionalTitle).toHaveFocus();
+      fireEvent.change(provisionalTitle, {
+        target: { value: "typed before save" }
+      });
+      expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+      expect(getTitleInput("typed before save")).toHaveFocus();
 
       await act(async () =>
         split.resolve(
@@ -6733,9 +6753,111 @@ describe("Notes workspace", () => {
           ]),
         ),
       );
-      expect(rowCountBeforeSettlement).toBe(1);
-      expect(sourceFocusedBeforeSettlement).toBe(true);
-      expect(await findTitleInput("")).toHaveFocus();
+      expect(rowCountBeforeSettlement).toBe(2);
+      expect(sourceFocusedBeforeSettlement).toBe(false);
+      await waitFor(() =>
+        expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+          "/vault",
+          expect.objectContaining({
+            id: FIRST,
+            title: "typed before save"
+          }),
+          historyContextMatcher()
+        )
+      );
+      expect(await findTitleInput("typed before save")).toHaveFocus();
+    });
+
+    it("queues rapid Enter splits in provisional order", async () => {
+      configureRepository([
+        node({ id: "solo", sortKey: 1024, title: "alpha" })
+      ]);
+      const firstSplit = deferred<NotesWorkspace>();
+      const secondSplit = deferred<NotesWorkspace>();
+      notesStoreMock.splitNode
+        .mockReturnValueOnce(firstSplit.promise)
+        .mockReturnValueOnce(secondSplit.promise);
+      renderNotesWorkspace();
+      const source = await findTitleInput("alpha");
+      source.focus();
+      source.setSelectionRange(2, 2);
+
+      fireEvent.keyDown(source, { key: "Enter" });
+      await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+      const firstId = notesStoreMock.splitNode.mock.lastCall![1].newNodeId;
+      const firstProvisional = await findTitleInput("pha");
+      fireEvent.change(firstProvisional, { target: { value: "beta" } });
+      firstProvisional.setSelectionRange(2, 2);
+      fireEvent.keyDown(firstProvisional, { key: "Enter" });
+
+      expect(getTitleInput("be")).toBeInTheDocument();
+      expect(getTitleInput("ta")).toHaveFocus();
+      expect(notesStoreMock.splitNode).toHaveBeenCalledOnce();
+
+      await act(async () =>
+        firstSplit.resolve(
+          workspace([
+            node({ id: "solo", sortKey: 1024, title: "al" }),
+            node({ id: firstId, sortKey: 2048, title: "pha" })
+          ])
+        )
+      );
+      await waitFor(() =>
+        expect(notesStoreMock.splitNode).toHaveBeenCalledTimes(2)
+      );
+      expect(notesStoreMock.splitNode).toHaveBeenLastCalledWith(
+        "/vault",
+        {
+          id: firstId,
+          newNodeId: expect.any(String),
+          prefix: "be",
+          suffix: "ta"
+        },
+        historyContextMatcher()
+      );
+      const secondId = notesStoreMock.splitNode.mock.lastCall![1].newNodeId;
+      expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+
+      await act(async () =>
+        secondSplit.resolve(
+          workspace([
+            node({ id: "solo", sortKey: 1024, title: "al" }),
+            node({ id: firstId, sortKey: 2048, title: "be" }),
+            node({ id: secondId, sortKey: 3072, title: "ta" })
+          ])
+        )
+      );
+      expect(await findTitleInput("ta")).toHaveFocus();
+      expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+    });
+
+    it("restores the source selection and explains a failed save", async () => {
+      configureRepository([
+        node({ id: "solo", sortKey: 1024, title: "Solo item" })
+      ]);
+      const split = deferred<NotesWorkspace>();
+      notesStoreMock.splitNode.mockReturnValue(split.promise);
+      vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(FIRST);
+      renderNotesWorkspace();
+      const title = await findTitleInput("Solo item");
+      title.focus();
+      title.setSelectionRange(4, 4);
+
+      fireEvent.keyDown(title, { key: "Enter" });
+      expect(await findTitleInput(" item")).toHaveFocus();
+
+      await act(async () => split.reject(new Error("disk full")));
+      expect(
+        await screen.findByText(
+          /The new bullet could not be saved: disk full.*reverted/i
+        )
+      ).toBeInTheDocument();
+      expect(getTitleInput("Solo item")).toHaveFocus();
+      expect(getTitleInput("Solo item").selectionStart).toBe(4);
+      expect(getTitleInput("Solo item").selectionEnd).toBe(4);
+      expect(
+        screen.getByRole("button", { name: "Copy text" })
+      ).toBeInTheDocument();
     });
   });
 
@@ -11761,9 +11883,6 @@ describe("Notes workspace", () => {
 
     expect(fireEvent.keyDown(title, { key: "Enter", isComposing: true })).toBe(
       true,
-    );
-    expect(fireEvent.keyDown(title, { key: "Enter", repeat: true })).toBe(
-      false,
     );
     expect(fireEvent.keyDown(title, { key: "Process" })).toBe(true);
     const note = getTextareaByName("Supporting note: Project");

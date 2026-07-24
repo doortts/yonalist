@@ -423,6 +423,16 @@ function holdFocusAcknowledgement(
     ...slice,
     actions: {
       ...slice.actions,
+      acknowledgeOptimisticKeyboardInsertionFocus: (nodeId, intentToken) => {
+        slice.actions.acknowledgeOptimisticKeyboardInsertionFocus?.(
+          nodeId,
+          intentToken
+        );
+        if (!observed) {
+          observed = true;
+          started.resolve(undefined);
+        }
+      },
       acknowledgeFocus: async (nodeId, requestId) => {
         await slice.actions.acknowledgeFocus(nodeId, requestId);
         if (!observed) {
@@ -798,7 +808,9 @@ describe("outline row memoization", () => {
       await focusAcknowledgementStarted.promise;
       await waitForNextPaint();
       expect(titleInput(insertedId)).toHaveFocus();
-      expect(captured?.state.pendingFocusId).toBeNull();
+      await waitFor(() =>
+        expect(captured?.state.pendingFocusId).toBeNull()
+      );
       expectIsolatedInsertionCommits(
         existingIds,
         sourceId,
@@ -899,7 +911,9 @@ describe("outline row memoization", () => {
     await focusAcknowledgementStarted.promise;
     await waitForNextPaint();
     expect(titleInput(insertedId)).toHaveFocus();
-    expect(captured?.state.pendingFocusId).toBeNull();
+    await waitFor(() =>
+      expect(captured?.state.pendingFocusId).toBeNull()
+    );
     expectIsolatedInsertionCommits(
       existingIds,
       sourceId,

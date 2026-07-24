@@ -14,15 +14,21 @@
 export type SplitLatencyPhase =
   | "keydown"
   | "barrier"
+  | "provisional-caret"
   | "ipc-done"
   | "settled"
+  | "rollback"
+  | "recovered"
   | "caret";
 
 const PHASE_ORDER: readonly SplitLatencyPhase[] = [
   "keydown",
   "barrier",
+  "provisional-caret",
   "ipc-done",
   "settled",
+  "rollback",
+  "recovered",
   "caret"
 ];
 
@@ -72,6 +78,34 @@ export function markSplitPhase(
     marks.set(splitId, byPhase);
   }
   byPhase.set(phase, performance.now());
+  if (phase === "provisional-caret") {
+    const start = byPhase.get("keydown");
+    const end = byPhase.get("provisional-caret");
+    if (start !== undefined && end !== undefined) {
+      console.log(
+        `notes split-latency ${splitId.slice(0, 8)} ui=${(end - start).toFixed(1)}ms`
+      );
+    }
+    return;
+  }
+  if (
+    phase === "settled" &&
+    byPhase.has("provisional-caret")
+  ) {
+    const start = byPhase.get("keydown")!;
+    const provisional = byPhase.get("provisional-caret")!;
+    const end = byPhase.get("settled")!;
+    console.log(
+      `notes split-latency ${splitId.slice(0, 8)} persistence=${(end - provisional).toFixed(1)}ms total=${(end - start).toFixed(1)}ms`
+    );
+    marks.delete(splitId);
+    return;
+  }
+  if (phase === "rollback" || phase === "recovered") {
+    logSummary(splitId, byPhase, phase);
+    marks.delete(splitId);
+    return;
+  }
   if (phase === "caret") {
     logSummary(splitId, byPhase);
     marks.delete(splitId);
@@ -80,10 +114,11 @@ export function markSplitPhase(
 
 function logSummary(
   splitId: string,
-  byPhase: Map<SplitLatencyPhase, number>
+  byPhase: Map<SplitLatencyPhase, number>,
+  terminalPhase: SplitLatencyPhase = "caret"
 ): void {
   const start = byPhase.get("keydown");
-  const end = byPhase.get("caret");
+  const end = byPhase.get(terminalPhase);
   if (start === undefined || end === undefined) {
     return;
   }

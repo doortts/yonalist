@@ -1,12 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
-import type { NoteId } from "../../domain/notes";
+import type { NoteId, NoteNode } from "../../domain/notes";
 import type { FlattenedOutlineRow } from "./outlineTree";
 import {
   classifyKeyboardInsertionPublication,
   createKeyboardInsertionRegistry,
   createOutlineVisibleSignature,
+  dependentOptimisticInsertionIds,
+  optimisticInsertionRecoveryText,
+  projectOptimisticKeyboardInsertions,
   type KeyboardInsertionSettlement,
   type NotesProjectionPublicationOwner,
+  type OptimisticKeyboardInsertion,
   type OutlinePanePublicationSnapshot,
   type PendingKeyboardInsertion
 } from "./notesKeyboardInsertion";
@@ -55,6 +59,94 @@ function pending(
   };
 }
 
+function note(
+  id: NoteId,
+  title: string,
+  overrides: Partial<NoteNode> = {}
+): NoteNode {
+  return {
+    id,
+    nodeKind: "text",
+    markerKind: "bullet",
+    parentId: null,
+    sortKey: 1024,
+    title,
+    note: "",
+    imageOffsetUtf16: 0,
+    markdownImageWidth: null,
+    layoutMode: "bullets",
+    isCollapsed: false,
+    isStarred: false,
+    completedAt: null,
+    createdAt: "2026-07-24T00:00:00.000Z",
+    updatedAt: "2026-07-24T00:00:00.000Z",
+    deletedAt: null,
+    archivedAt: null,
+    archiveRootId: null,
+    ...overrides
+  };
+}
+
+function optimistic(
+  expectedNodeId: NoteId,
+  overrides: {
+    sourceId?: NoteId;
+    sourceRow?: FlattenedOutlineRow;
+    sourceTitle?: string;
+    insertedTitle?: string;
+    dependencyId?: NoteId | null;
+    kind?: "split" | "first-child";
+  } = {}
+): OptimisticKeyboardInsertion {
+  const sourceId = overrides.sourceId ?? "source";
+  const sourceRow = overrides.sourceRow ?? row(sourceId);
+  const kind = overrides.kind ?? "split";
+  const sourceTitle = overrides.sourceTitle ?? "before";
+  const insertedTitle = overrides.insertedTitle ?? "after";
+  return {
+    pending: pending({
+      intent: {
+        ...pending().intent,
+        sourceId,
+        expectedNodeId,
+        postcondition:
+          kind === "split"
+            ? {
+                kind,
+                expectedSourceTitle: sourceTitle,
+                expectedInsertedTitle: insertedTitle
+              }
+            : {
+                kind,
+                expectedParentId: sourceId,
+                expectedIndex: 0,
+                expectedInsertedTitle: ""
+              }
+      }
+    }),
+    historyContext: {
+      sessionId: "history-session",
+      historyEpoch: "history-epoch",
+      entryId: `history-${expectedNodeId}`,
+      commandKind: kind === "split" ? "split" : "create"
+    },
+    dependencyId: overrides.dependencyId ?? null,
+    checkpoint: {
+      sourceNode: note(sourceId, "before", {
+        parentId: sourceRow.parentId,
+        isCollapsed: sourceRow.isCollapsed
+      }),
+      sourceRow,
+      sourceSelection: { anchorUtf16: 3, focusUtf16: 3 }
+    },
+    sourceTitle,
+    insertedTitle,
+    status: "prepared",
+    focusAcknowledged: false,
+    undoRequested: false
+  };
+}
+
 function settlement(
   overrides: Partial<KeyboardInsertionSettlement> = {}
 ): KeyboardInsertionSettlement {
@@ -99,6 +191,146 @@ const insertionOwner: NotesProjectionPublicationOwner = {
   kind: "keyboard-insertion",
   intentToken: 7
 };
+
+describe("optimistic keyboard insertion projection", () => {
+  it("projects a split without cloning unaffected rows", () => {
+    const source = row("source");
+    const sibling = row("sibling");
+    const nodesById = {
+      source: note("source", "beforeafter"),
+      sibling: note("sibling", "Sibling")
+    };
+
+    const projection = projectOptimisticKeyboardInsertions(
+      [source, sibling],
+      nodesById,
+      [
+        optimistic("inserted", {
+          sourceRow: source,
+          sourceTitle: "before",
+          insertedTitle: "after"
+        })
+      ]
+    );
+
+    expect(projection.rows.map((entry) => entry.id)).toEqual([
+      "source",
+      "inserted",
+      "sibling"
+    ]);
+    expect(projection.nodeOverrides.get("source")?.title).toBe("before");
+    expect(projection.nodeOverrides.get("inserted")?.title).toBe("after");
+    expect(projection.rows[2]).toBe(sibling);
+    expect(nodesById).not.toHaveProperty("inserted");
+  });
+
+  it("expands a collapsed source and projects its first child", () => {
+    const source = row("source", { isCollapsed: true });
+    const projection = projectOptimisticKeyboardInsertions(
+      [source, row("next")],
+      {
+        source: note("source", "Parent", { isCollapsed: true }),
+        next: note("next", "Next")
+      },
+      [
+        optimistic("inserted", {
+          kind: "first-child",
+          sourceRow: source,
+          sourceTitle: "Parent",
+          insertedTitle: ""
+        })
+      ]
+    );
+
+    expect(projection.rows[0]).toMatchObject({
+      id: "source",
+      isCollapsed: false,
+      visibleDescendantEndId: "inserted"
+    });
+    expect(projection.rows[1]).toMatchObject({
+      id: "inserted",
+      parentId: "source",
+      depth: 1,
+      ancestorIds: ["source"]
+    });
+    expect(projection.nodeOverrides.get("source")?.isCollapsed).toBe(false);
+  });
+
+  it("applies dependent insertions in order and skips adopted nodes", () => {
+    const source = row("source");
+    const first = optimistic("first", {
+      sourceRow: source,
+      sourceTitle: "a",
+      insertedTitle: "bc"
+    });
+    const firstRow = row("first");
+    const second = optimistic("second", {
+      sourceId: "first",
+      sourceRow: firstRow,
+      sourceTitle: "b",
+      insertedTitle: "c",
+      dependencyId: "first"
+    });
+
+    const projection = projectOptimisticKeyboardInsertions(
+      [source],
+      { source: note("source", "abc") },
+      [first, second]
+    );
+    expect(projection.rows.map((entry) => entry.id)).toEqual([
+      "source",
+      "first",
+      "second"
+    ]);
+    expect(projection.nodeOverrides.get("first")?.title).toBe("b");
+    expect(projection.nodeOverrides.get("second")?.title).toBe("c");
+
+    const adopted = projectOptimisticKeyboardInsertions(
+      [source, row("first")],
+      {
+        source: note("source", "a"),
+        first: note("first", "bc")
+      },
+      [first]
+    );
+    expect(adopted.rows.map((entry) => entry.id)).toEqual([
+      "source",
+      "first"
+    ]);
+    expect(adopted.nodeOverrides.size).toBe(0);
+  });
+
+  it("finds only the failed insertion and its transitive dependents", () => {
+    const first = optimistic("first");
+    const second = optimistic("second", {
+      sourceId: "first",
+      dependencyId: "first"
+    });
+    const third = optimistic("third", {
+      sourceId: "second",
+      dependencyId: "second"
+    });
+    const independent = optimistic("independent");
+
+    expect(
+      dependentOptimisticInsertionIds(
+        [first, second, third, independent],
+        "first"
+      )
+    ).toEqual(["first", "second", "third"]);
+  });
+
+  it("formats both provisional titles for recovery", () => {
+    expect(
+      optimisticInsertionRecoveryText(
+        optimistic("inserted", {
+          sourceTitle: "source text",
+          insertedTitle: "inserted text"
+        })
+      )
+    ).toBe("source text\ninserted text");
+  });
+});
 
 function classify(input: {
   pending?: PendingKeyboardInsertion;
