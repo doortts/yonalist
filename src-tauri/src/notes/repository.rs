@@ -1523,6 +1523,123 @@ fn seed_notes_onboarding(transaction: &Transaction<'_>) -> Result<(), String> {
     Ok(())
 }
 
+/// Builds a benchmark node's title/note. Titles are `"Bench <path index>"`;
+/// every 10th node carries a `#bench` tag and every 5th node gets a one-line
+/// note, so the derived tag/date indexes see realistic-but-sparse content.
+#[cfg(debug_assertions)]
+fn bench_node_content(path_index: u32) -> (String, String) {
+    let title = if path_index % 10 == 0 {
+        format!("Bench {path_index} #bench")
+    } else {
+        format!("Bench {path_index}")
+    };
+    let note = if path_index % 5 == 0 {
+        format!("bench note {path_index}")
+    } else {
+        String::new()
+    };
+    (title, note)
+}
+
+/// Dev-only fixture: seeds a three-level bullet tree of `roots ×
+/// (1 + children_per_root × (1 + grandchildren_per_child))` nodes in a single
+/// transaction, for outliner latency benchmarking. Nodes are inserted with an
+/// empty `hlc`, so the `notes_nodes_hlc_ai` trigger issues each HLC and marks
+/// the row dirty; the derived tag/date indexes are rebuilt inside the same
+/// transaction. The total is capped at [`MAX_NOTES_EXPORT_NODES`].
+#[cfg(debug_assertions)]
+pub(crate) fn seed_bench_nodes(
+    connection: &mut Connection,
+    roots: u32,
+    children_per_root: u32,
+    grandchildren_per_child: u32,
+) -> Result<u32, String> {
+    let total = u128::from(roots)
+        * (1 + u128::from(children_per_root) * (1 + u128::from(grandchildren_per_child)));
+    if total > MAX_NOTES_EXPORT_NODES as u128 {
+        return Err(format!(
+            "Could not seed benchmark Notes: {total} nodes exceeds the \
+             {MAX_NOTES_EXPORT_NODES}-node limit."
+        ));
+    }
+
+    let today = SystemLocalTodayProvider.local_today(connection)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start benchmark Notes seeding: {error}"))?;
+
+    let mut ids: BTreeSet<String> = BTreeSet::new();
+    let mut path_index: u32 = 0;
+    {
+        let mut insert = transaction
+            .prepare(
+                "INSERT INTO notes_nodes (\
+                   id, parent_id, sort_key, title, note, hlc, created_at, updated_at\
+                 ) VALUES (\
+                   ?1, ?2, ?3, ?4, ?5, '', \
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
+                 )",
+            )
+            .map_err(|error| format!("Could not prepare benchmark Notes seeding: {error}"))?;
+
+        for root_index in 0..roots {
+            let root_id = Uuid::new_v4().to_string();
+            let (title, note) = bench_node_content(path_index);
+            insert
+                .execute(params![
+                    &root_id,
+                    Option::<&str>::None,
+                    (root_index as i64 + 1) * SORT_KEY_STEP,
+                    title,
+                    note
+                ])
+                .map_err(|error| format!("Could not seed benchmark Notes: {error}"))?;
+            path_index += 1;
+
+            for child_index in 0..children_per_root {
+                let child_id = Uuid::new_v4().to_string();
+                let (title, note) = bench_node_content(path_index);
+                insert
+                    .execute(params![
+                        &child_id,
+                        Some(&root_id),
+                        (child_index as i64 + 1) * SORT_KEY_STEP,
+                        title,
+                        note
+                    ])
+                    .map_err(|error| format!("Could not seed benchmark Notes: {error}"))?;
+                path_index += 1;
+
+                for grandchild_index in 0..grandchildren_per_child {
+                    let grandchild_id = Uuid::new_v4().to_string();
+                    let (title, note) = bench_node_content(path_index);
+                    insert
+                        .execute(params![
+                            &grandchild_id,
+                            Some(&child_id),
+                            (grandchild_index as i64 + 1) * SORT_KEY_STEP,
+                            title,
+                            note
+                        ])
+                        .map_err(|error| format!("Could not seed benchmark Notes: {error}"))?;
+                    path_index += 1;
+                    ids.insert(grandchild_id);
+                }
+                ids.insert(child_id);
+            }
+            ids.insert(root_id);
+        }
+    }
+
+    rebuild_derived_for_nodes_at(&transaction, &ids, today)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not finish benchmark Notes seeding: {error}"))?;
+
+    Ok(path_index)
+}
+
 fn enable_wal_with_busy_retry(connection: &Connection) -> Result<(), String> {
     let deadline = Instant::now() + NOTES_BUSY_TIMEOUT;
     loop {

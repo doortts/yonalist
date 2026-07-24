@@ -99,4 +99,5 @@ permissions = [
   "allow-notes-reset-database",
   "allow-notes-export-markdown",
   "allow-notes-export-pdf",
+  "allow-notes-seed-bench-nodes",
 ]

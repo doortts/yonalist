@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-seed-bench-nodes"
+description = "Enables the notes_seed_bench_nodes command without any pre-configured scope."
+commands.allow = ["notes_seed_bench_nodes"]
+
+[[permission]]
+identifier = "deny-notes-seed-bench-nodes"
+description = "Denies the notes_seed_bench_nodes command without any pre-configured scope."
+commands.deny = ["notes_seed_bench_nodes"]

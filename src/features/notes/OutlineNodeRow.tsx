@@ -38,7 +38,7 @@ import {
   noteNodePresentationLabel,
 } from "./notesPresentation";
 import type { NotesSelectionActionIntent } from "./notesSelectionActions";
-import { markSplitPhase } from "./notesSplitLatencyProbe";
+import { markCaretPhase, markSplitPhase } from "./notesSplitLatencyProbe";
 import type { NotesSelection } from "./notesWorkspaceReducer";
 import {
   buildNotesMoveDestinations,
@@ -660,6 +660,7 @@ function OutlineNodeEditorComponent({
     // this node's id opened a record at a split keydown, so ordinary focus
     // moves never log.
     markSplitPhase(nodeId, "caret");
+    markCaretPhase(nodeId, "dom-focus");
     focusedPendingIdRef.current = focusRequestId;
     if (!interactionEpoch.isCurrent(focusEpoch)) return;
     try {
@@ -667,6 +668,12 @@ function OutlineNodeEditorComponent({
         ? actions.acknowledgeFocus(nodeId, focusRequestId)
         : actions.acknowledgeFocus(nodeId);
       void Promise.resolve(acknowledgement).finally(() => {
+        markCaretPhase(nodeId, "sync");
+        if (typeof requestAnimationFrame === "function") {
+          requestAnimationFrame(() => markCaretPhase(nodeId, "paint"));
+        } else {
+          markCaretPhase(nodeId, "paint");
+        }
         if (focusTargetMarker) {
           releaseAuthoritativeFocusTarget(focusTargetMarker);
         }
@@ -1318,6 +1325,9 @@ function OutlineNodeEditorComponent({
         return;
       }
       case "focus":
+        markCaretPhase(resolution.nodeId, "keydown", {
+          visibleRows: getVisibleNodeIds().length,
+        });
         saveDrafts();
         suppressHandledBlur();
         void (resolution.selection

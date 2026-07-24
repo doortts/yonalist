@@ -96,6 +96,7 @@ const APP_COMMANDS: &[&str] = &[
     "notes_reset_database",
     "notes_export_markdown",
     "notes_export_pdf",
+    "notes_seed_bench_nodes",
 ];
 
 fn main() {

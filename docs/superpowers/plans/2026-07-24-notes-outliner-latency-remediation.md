@@ -15,9 +15,22 @@
 
 ## L0 — 측정 인프라 확장 (모든 트랙의 선행)
 
-- `notesSplitLatencyProbe`를 일반화: caret-move 프로브 추가 — `keydown → dom-focus → selection-sync` 스팬, 노드 수 태그.
-- 벤치 fixture: 1k/5k/10k 블릿 vault 생성 스크립트(개발 전용 커맨드 또는 테스트 헬퍼).
+- `notesSplitLatencyProbe`를 일반화: caret-move 프로브 추가 — `keydown → dom-focus → sync → paint` 스팬, 가시 행 수 태그. 계측 지점: `OutlineNodeRow`의 `case "focus"`(keydown), focusRequest effect의 기존 split `caret` 마크 옆(dom-focus), `acknowledgeFocus` resolve(sync)와 그 직후 rAF(paint).
+- 벤치 fixture: dev 전용 Tauri 커맨드 `notes_seed_bench_nodes`(roots × children × grandchildren 계층, 상한 20,000, HLC는 기존 INSERT 트리거에 위임) — devtools 콘솔에서 호출.
 - 수용 기준 판정은 전부 이 프로브/벤치 수치로 한다. 트랙 착수 전 현재 수치를 기록해 개선 폭을 남긴다.
+
+### 베이스라인 캡처 절차 (수동, 각 트랙 전후 반복)
+
+1. `npm run tauri:dev` (dev 빌드 — 프로브 자동 활성. 프로덕션 빌드에서 보려면 webview 콘솔에서 `localStorage["notes:splitLatency"]="1"`).
+2. devtools 콘솔에서 시딩: `window.__TAURI_INTERNALS__.invoke("notes_seed_bench_nodes", { vaultPath: "<vault>", roots: 50, childrenPerRoot: 20, grandchildrenPerChild: 4 })` → 약 5k. 1k/10k는 인자 조정.
+3. `All` 화면에서 ①Enter 5회(split 체인 로그), ②화살표 단발 10회, ③화살표 2초 홀드 후 keyup(잔여 이동 관찰), ④split view 열고 ②③ 반복.
+4. 콘솔의 `notes split-latency`/`notes caret-latency` 라인을 수집해 본 문서 부록 표에 기록 (중앙값·p95, keyup 후 잔여 caret 로그 개수).
+
+### 부록 — 측정 기록
+
+| 날짜 | 조건(노드/뷰) | Enter total p50/p95 | caret total p50/p95 | keyup 후 잔여 이동 | 비고 |
+| --- | --- | --- | --- | --- | --- |
+| (T0 이전 베이스라인 기록 예정) | | | | | |
 
 ## Track T1 — 화살표 이동을 직접 DOM focus로 (효과 최대, 규모 중)
 
