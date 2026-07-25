@@ -12,11 +12,14 @@ function isTauriRuntime(): boolean {
 export function useFlushDraftsOnWindowClose(
   drainVault: () => Promise<boolean>,
   flushSyncExports?: () => Promise<void>,
+  releaseVault?: () => Promise<void>,
 ): void {
   const drainRef = useRef(drainVault);
   drainRef.current = drainVault;
   const flushSyncRef = useRef(flushSyncExports);
   flushSyncRef.current = flushSyncExports;
+  const releaseRef = useRef(releaseVault);
+  releaseRef.current = releaseVault;
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -24,6 +27,14 @@ export function useFlushDraftsOnWindowClose(
     let disposed = false;
     let unlisten: (() => void) | undefined;
     let closeRequest: Promise<void> | null = null;
+
+    const releaseDrain = async (): Promise<void> => {
+      try {
+        await releaseRef.current?.();
+      } catch (cause) {
+        console.error("Notes could not release the close drain", cause);
+      }
+    };
 
     const runStrictDrain = async (): Promise<boolean> => {
       let drained: boolean;
@@ -46,12 +57,17 @@ export function useFlushDraftsOnWindowClose(
         return true;
       } catch (cause) {
         console.error("Notes sync export flush before close failed", cause);
+        await releaseDrain();
         return false;
       }
     };
 
     const handleBeforeUnload = () => {
-      void runStrictDrain().catch(() => undefined);
+      void runStrictDrain()
+        .then((drained) => {
+          if (drained) return releaseDrain();
+        })
+        .catch(() => undefined);
     };
     window.addEventListener("beforeunload", handleBeforeUnload);
 
@@ -80,6 +96,7 @@ export function useFlushDraftsOnWindowClose(
               "Notes could not destroy the window after flushing drafts",
               cause,
             );
+            await releaseDrain();
           }
         })();
         closeRequest = attempt;

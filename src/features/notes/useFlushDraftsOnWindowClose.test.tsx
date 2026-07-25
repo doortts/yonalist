@@ -13,12 +13,14 @@ import { useFlushDraftsOnWindowClose } from "./useFlushDraftsOnWindowClose";
 
 function Harness({
   flush,
-  syncFlush
+  syncFlush,
+  release
 }: {
   flush: () => Promise<boolean>;
   syncFlush?: () => Promise<void>;
+  release?: () => Promise<void>;
 }) {
-  useFlushDraftsOnWindowClose(flush, syncFlush);
+  useFlushDraftsOnWindowClose(flush, syncFlush, release);
   return null;
 }
 
@@ -151,6 +153,64 @@ describe("useFlushDraftsOnWindowClose", () => {
       "Notes sync export flush before close failed",
       expect.any(Error)
     );
+    error.mockRestore();
+  });
+
+  it("releases a successful drain after sync failure and drains again on retry", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const flush = vi.fn().mockResolvedValue(true);
+    const syncFlush = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("exporter unavailable"))
+      .mockResolvedValueOnce(undefined);
+    const release = vi.fn().mockResolvedValue(undefined);
+    await act(async () => {
+      render(
+        <Harness flush={flush} syncFlush={syncFlush} release={release} />
+      );
+      await flushMicrotasks();
+    });
+    const handler = onCloseRequested.mock.lastCall?.[0] as (event: {
+      preventDefault: () => void;
+    }) => Promise<void>;
+
+    await act(async () => {
+      await handler({ preventDefault: vi.fn() });
+    });
+    expect(release).toHaveBeenCalledOnce();
+    expect(destroy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await handler({ preventDefault: vi.fn() });
+    });
+    expect(flush).toHaveBeenCalledTimes(2);
+    expect(syncFlush).toHaveBeenCalledTimes(2);
+    expect(destroy).toHaveBeenCalledOnce();
+    error.mockRestore();
+  });
+
+  it("releases a successful drain when destroying the window fails", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const release = vi.fn().mockResolvedValue(undefined);
+    destroy.mockRejectedValueOnce(new Error("window stayed open"));
+    await act(async () => {
+      render(
+        <Harness
+          flush={vi.fn().mockResolvedValue(true)}
+          release={release}
+        />
+      );
+      await flushMicrotasks();
+    });
+    const handler = onCloseRequested.mock.lastCall?.[0] as (event: {
+      preventDefault: () => void;
+    }) => Promise<void>;
+
+    await act(async () => {
+      await handler({ preventDefault: vi.fn() });
+    });
+
+    expect(release).toHaveBeenCalledOnce();
     error.mockRestore();
   });
 

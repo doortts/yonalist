@@ -40,6 +40,7 @@ import {
 import { useFlushDraftsOnWindowClose } from "./useFlushDraftsOnWindowClose";
 import {
   drainNotesVault,
+  releaseNotesVaultDrain,
   registerNotesVaultDrain,
 } from "./notesVaultDrain";
 import { useNotesWorkspace } from "./useNotesWorkspace";
@@ -192,16 +193,19 @@ export function NotesWorkspaceProvider({
   }, [actionsSlice, requestDeleteNodes, sharedActions]);
 
   const notesWorkspaceDrain = actions.drain;
+  const notesWorkspaceReleaseDrain = actions.releaseDrain;
   useEffect(() => {
     if (!vaultRoot) return;
     return registerNotesVaultDrain(vaultRoot, {
       drain: () => notesWorkspaceDrain?.() ?? Promise.resolve(false),
+      releaseDrain: () => notesWorkspaceReleaseDrain?.(),
     });
-  }, [notesWorkspaceDrain, vaultRoot]);
+  }, [notesWorkspaceDrain, notesWorkspaceReleaseDrain, vaultRoot]);
 
   useFlushDraftsOnWindowClose(
     () => (vaultRoot ? drainNotesVault(vaultRoot) : Promise.resolve(true)),
     vaultRoot ? () => notesSyncFlush(vaultRoot) : undefined,
+    vaultRoot ? () => releaseNotesVaultDrain(vaultRoot) : undefined,
   );
 
   return (

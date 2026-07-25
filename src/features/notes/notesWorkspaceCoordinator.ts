@@ -231,6 +231,7 @@ export interface NotesWorkspaceCoordinatorSession {
   readonly activation: Promise<void>;
   readonly history: NotesHistorySession;
   drain(): Promise<boolean>;
+  releaseDrain(): void;
   isLifecycleDraining(): boolean;
   reserveImageImportInsertion?(
     anchor: ImageNodeInsertionAnchor
@@ -249,6 +250,7 @@ export interface NotesWorkspaceCoordinatorSession {
     options?: {
       selectionPolicy?: NotesPendingSelectionPolicy;
       retainAfterClose?: boolean;
+      lifecycleDrainWork?: boolean;
       requireAllBarriers?: boolean;
       settleFailure?: (error: string) => void;
       keyboardInsertion?: NotesKeyboardInsertionPreparation;
@@ -483,6 +485,66 @@ interface SessionState {
     NotesKeyboardInsertionPreparation
   >;
   coordinatorSession: NotesWorkspaceCoordinatorSession | null;
+}
+
+interface CapturedDraftBarrierParticipant {
+  readonly participant: SessionState;
+  readonly cutoff: number;
+  readonly beforeStructural:
+    | ((cutoff: number) => Promise<boolean>)
+    | null;
+  readonly isCurrent: (() => boolean) | null;
+  finalize(): void;
+}
+
+function captureDraftBarrierParticipants(
+  entry: CoordinatorEntry,
+  publicationOwner: (
+    participant: SessionState
+  ) => NotesProjectionPublicationOwner
+): CapturedDraftBarrierParticipant[] {
+  return [...entry.sessions]
+    .filter((participant) => participant.active)
+    .map((participant) => {
+      const cutoff =
+        participant.captureDraftCutoff?.(publicationOwner(participant)) ?? 0;
+      const beforeStructural = participant.beforeStructural;
+      const afterStructural = participant.afterStructural;
+      let finalized = false;
+      return {
+        participant,
+        cutoff,
+        beforeStructural,
+        isCurrent: participant.isCurrent,
+        finalize(): void {
+          if (finalized) return;
+          finalized = true;
+          try {
+            afterStructural?.(cutoff);
+          } catch {
+            // Finalization cannot strand a structural queue or lifecycle drain.
+          }
+        }
+      };
+    });
+}
+
+function finalizeDraftBarrierParticipants(
+  participants: readonly CapturedDraftBarrierParticipant[]
+): void {
+  for (const participant of participants) participant.finalize();
+}
+
+interface EnqueueCommandOptions {
+  readonly silent?: boolean;
+  readonly selectionPolicy?: NotesPendingSelectionPolicy;
+  readonly retainAfterOwnerClose?: boolean;
+  readonly observer?: boolean;
+  readonly settleFailure?: ((error: string) => void) | null;
+  readonly keyboardInsertion?: NotesKeyboardInsertionPreparation | null;
+  readonly publicationOwner?: NotesProjectionPublicationOwner;
+  readonly unknownOutcomeExpectation?: NotesUnknownOutcomeExpectation | null;
+  readonly lifecycleAdmitted?: boolean;
 }
 
 interface QueueItemBase {
@@ -2525,16 +2587,19 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       const activationCompletion = activation.completion.then(() => undefined);
       const enqueueCommand = (
         work: NotesWorkspaceQueueWork,
-        silent = false,
-        selectionPolicy: NotesPendingSelectionPolicy = "clear",
-        retainAfterOwnerClose = false,
-        observer = false,
-        settleFailure: ((error: string) => void) | null = null,
-        keyboardInsertion: NotesKeyboardInsertionPreparation | null = null,
-        publicationOwner: NotesProjectionPublicationOwner = { kind: "other" },
-        unknownOutcomeExpectation: NotesUnknownOutcomeExpectation | null = null,
-        lifecycleAdmitted = false
+        options: EnqueueCommandOptions = {}
       ): Promise<NotesWorkspaceCommandOutcome> => {
+        const {
+          silent = false,
+          selectionPolicy = "clear",
+          retainAfterOwnerClose = false,
+          observer = false,
+          settleFailure = null,
+          keyboardInsertion = null,
+          publicationOwner = { kind: "other" },
+          unknownOutcomeExpectation = null,
+          lifecycleAdmitted = false
+        } = options;
         if (!session.active && !retainAfterOwnerClose) {
           return Promise.resolve("skipped");
         }
@@ -2649,28 +2714,10 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           return false;
         }
 
-        const participants = [...entry.sessions]
-          .filter((participant) => participant.active)
-          .map((participant) => {
-            const cutoff =
-              participant.captureDraftCutoff?.({ kind: "other" }) ?? 0;
-            const beforeStructural = participant.beforeStructural;
-            const afterStructural = participant.afterStructural;
-            let finalized = false;
-            return {
-              cutoff,
-              beforeStructural,
-              finalize(): void {
-                if (finalized) return;
-                finalized = true;
-                try {
-                  afterStructural?.(cutoff);
-                } catch {
-                  // Lifecycle release cannot strand the strict drain.
-                }
-              }
-            };
-          });
+        const participants = captureDraftBarrierParticipants(
+          entry,
+          () => ({ kind: "other" })
+        );
         try {
           for (const participant of participants) {
             if (
@@ -2681,24 +2728,21 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             }
           }
         } finally {
-          for (const participant of participants) participant.finalize();
+          finalizeDraftBarrierParticipants(participants);
         }
 
         let observerRan = false;
-        await enqueueCommand(
-          () => {
+        await enqueueCommand(() => {
             observerRan = true;
             return { kind: "skipped" };
           },
-          true,
-          "preserve",
-          true,
-          true,
-          null,
-          null,
-          { kind: "other" },
-          null,
-          true
+          {
+            silent: true,
+            selectionPolicy: "preserve",
+            retainAfterOwnerClose: true,
+            observer: true,
+            lifecycleAdmitted: true
+          }
         );
         if (
           !observerRan ||
@@ -2743,6 +2787,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             }
           );
           return terminal.completion;
+        },
+        releaseDrain(): void {
+          const lifecycle = entry.lifecycleDrain;
+          if (lifecycle?.owner === session && lifecycle.settled) {
+            entry.lifecycleDrain = null;
+            maybeDeleteEntry(entry);
+          }
         },
         isLifecycleDraining(): boolean {
           return entry.lifecycleDrain !== null;
@@ -3183,6 +3234,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               },
               {
                 retainAfterClose: reason === "drain",
+                lifecycleDrainWork: reason === "drain",
                 requireAllBarriers: true,
                 unknownOutcomeExpectation: {
                   kind: "unclassified",
@@ -3363,23 +3415,20 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             unknownOutcomeExpectation?: NotesUnknownOutcomeExpectation;
           }
         ): Promise<NotesWorkspaceCommandOutcome> {
-          return enqueueCommand(
-            work,
-            options?.silent ?? false,
-            "clear",
-            false,
-            options?.observer ?? false,
-            null,
-            null,
-            options?.publicationOwner,
-            options?.unknownOutcomeExpectation ?? null
-          );
+          return enqueueCommand(work, {
+            silent: options?.silent ?? false,
+            observer: options?.observer ?? false,
+            publicationOwner: options?.publicationOwner,
+            unknownOutcomeExpectation:
+              options?.unknownOutcomeExpectation ?? null
+          });
         },
         enqueueStructural(
           work: NotesWorkspaceQueueWork,
           options?: {
             selectionPolicy?: NotesPendingSelectionPolicy;
             retainAfterClose?: boolean;
+            lifecycleDrainWork?: boolean;
             requireAllBarriers?: boolean;
             settleFailure?: (error: string) => void;
             keyboardInsertion?: NotesKeyboardInsertionPreparation;
@@ -3393,7 +3442,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           const requireAllBarriers = options?.requireAllBarriers === true;
           const keyboardInsertion = options?.keyboardInsertion ?? null;
           const lifecycleAdmitted =
-            entry.lifecycleDrain === null || retainAfterClose;
+            entry.lifecycleDrain === null ||
+            (
+              options?.lifecycleDrainWork === true &&
+              entry.lifecycleDrain.owner === session
+            );
           if (!lifecycleAdmitted) {
             return Promise.resolve("skipped");
           }
@@ -3418,9 +3471,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               "queued"
             );
           }
-          const participants = [...entry.sessions]
-            .filter((participant) => participant.active)
-            .map((participant) => {
+          const participants = captureDraftBarrierParticipants(
+            entry,
+            (participant) => {
               const publicationOwner: NotesProjectionPublicationOwner =
                 participant === session && keyboardInsertion
                   ? {
@@ -3428,34 +3481,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                       intentToken: keyboardInsertion.pending.intent.token
                     }
                   : { kind: "other" };
-              const cutoff =
-                participant.captureDraftCutoff?.(publicationOwner) ?? 0;
-              const capturedBarrier = participant.beforeStructural;
-              const capturedFinalizer = participant.afterStructural;
-              const capturedIsCurrent = participant.isCurrent;
-              let finalized = false;
-              return {
-                participant,
-                cutoff,
-                beforeStructural: capturedBarrier,
-                isCurrent: capturedIsCurrent,
-                finalize(): void {
-                  if (finalized) {
-                    return;
-                  }
-                  finalized = true;
-                  try {
-                    capturedFinalizer?.(cutoff);
-                  } catch {
-                    // Finalization cannot be allowed to strand the structural queue.
-                  }
-                }
-              };
-            });
-          const finalizeParticipants = (): void => {
-            for (const intent of participants) {
-              intent.finalize();
+              return publicationOwner;
             }
+          );
+          const finalizeParticipants = (): void => {
+            finalizeDraftBarrierParticipants(participants);
           };
           entry.pendingStructuralBarriers += 1;
           const runStructuralIntent =
@@ -3492,18 +3522,15 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                   cancelKeyboardInsertion(entry, keyboardInsertion);
                   return "skipped";
                 }
-                const structural = enqueueCommand(
-                  work,
-                  false,
-                  options?.selectionPolicy ?? "clear",
-                  retainAfterClose,
-                  false,
-                  options?.settleFailure ?? null,
+                const structural = enqueueCommand(work, {
+                  selectionPolicy: options?.selectionPolicy ?? "clear",
+                  retainAfterOwnerClose: retainAfterClose,
+                  settleFailure: options?.settleFailure ?? null,
                   keyboardInsertion,
-                  { kind: "other" },
-                  options?.unknownOutcomeExpectation ?? null,
+                  unknownOutcomeExpectation:
+                    options?.unknownOutcomeExpectation ?? null,
                   lifecycleAdmitted
-                );
+                });
                 finalizeParticipants();
                 return await structural;
               } catch (cause) {

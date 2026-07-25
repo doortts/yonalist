@@ -1118,6 +1118,9 @@ export function useNotesWorkspace({
     return {
       drain: () =>
         sessionRef.current?.drain() ?? Promise.resolve(false),
+      releaseDrain: () => {
+        sessionRef.current?.releaseDrain();
+      },
       setOutlineCompositionActive,
       acknowledgeFocus: gate(acknowledgeFocus),
       focusNode: gate(focusNode),
@@ -1129,8 +1132,11 @@ export function useNotesWorkspace({
       getNavigationVersion,
       prepareKeyboardInsertion: (input) =>
         writesUnavailable() ? null : prepareKeyboardInsertion(input),
-      updateOptimisticKeyboardInsertion: (nodeId, title) =>
-        sessionRef.current?.updateOptimisticKeyboardInsertion(nodeId, title),
+      updateOptimisticKeyboardInsertion: (nodeId, title) => {
+        if (!writesUnavailable()) {
+          sessionRef.current?.updateOptimisticKeyboardInsertion(nodeId, title);
+        }
+      },
       acknowledgeOptimisticKeyboardInsertionFocus: (nodeId, intentToken) =>
         sessionRef.current?.acknowledgeOptimisticKeyboardInsertionFocus(
           nodeId,
@@ -1224,7 +1230,10 @@ export function useNotesWorkspace({
       searchNotes: (query) =>
         writesUnavailable() ? Promise.resolve([]) : searchNotes(query),
       openSearchResult: gate(openSearchResult),
-      deleteAllNotesData,
+      deleteAllNotesData: (options) =>
+        writesUnavailable()
+          ? Promise.reject(new Error("The Notes workspace is unavailable."))
+          : deleteAllNotesData(options),
       zoomTo: gate(zoomTo),
       uploadImage: gate(uploadImage),
       importDroppedImagePaths: gate(importDroppedImagePaths),

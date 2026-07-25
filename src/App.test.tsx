@@ -8,10 +8,13 @@ const loadVaultItemsOverride = vi.hoisted(() => vi.fn());
 const loadVaultOutboxOverride = vi.hoisted(() => vi.fn());
 const githubAuthOverride = vi.hoisted(() => vi.fn());
 const drainNotesVaultOverride = vi.hoisted(() => vi.fn());
+const releaseNotesVaultOverride = vi.hoisted(() => vi.fn());
 const registerNotesVaultDrain = vi.hoisted(() => vi.fn(() => vi.fn()));
 
 vi.mock("./features/notes/notesVaultDrain", () => ({
   drainNotesVault: (...args: unknown[]) => drainNotesVaultOverride(...args),
+  releaseNotesVaultDrain: (...args: unknown[]) =>
+    releaseNotesVaultOverride(...args),
   registerNotesVaultDrain,
 }));
 
@@ -275,6 +278,8 @@ describe("Yonalist app shell", () => {
     vi.restoreAllMocks();
     drainNotesVaultOverride.mockReset();
     drainNotesVaultOverride.mockResolvedValue(true);
+    releaseNotesVaultOverride.mockReset();
+    releaseNotesVaultOverride.mockResolvedValue(undefined);
     registerNotesVaultDrain.mockClear();
     githubAuthOverride.mockReset();
     Reflect.deleteProperty(notesStore, "refreshMaterializedGithubNotifications");
@@ -4929,7 +4934,7 @@ describe("Yonalist app shell", () => {
         name: /Vault and sync/
       })
     );
-    const input = screen.getByLabelText("Vault folder");
+    const input = await screen.findByLabelText("Vault folder");
 
     fireEvent.change(input, { target: { value: "/vault-unsaved" } });
     fireEvent.blur(input);
@@ -4956,6 +4961,229 @@ describe("Yonalist app shell", () => {
         ([vaultPath]) => vaultPath === "/vault-still-unsaved"
       )
     ).toBe(false);
+  });
+
+  it("retries the same requested Vault folder after a failed drain", async () => {
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ vaultFolder: "/vault-old" })
+    );
+    drainNotesVaultOverride
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByLabelText("Notes library");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
+        name: /Vault and sync/
+      })
+    );
+    const input = await screen.findByLabelText("Vault folder");
+
+    fireEvent.change(input, { target: { value: "/vault-retry" } });
+    fireEvent.blur(input);
+    expect(
+      await screen.findByText("Could not save the current Vault. Try again.")
+    ).toBeInTheDocument();
+
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(drainNotesVaultOverride).toHaveBeenCalledTimes(2)
+    );
+    await waitFor(() =>
+      expect(
+        vi.mocked(notesStore.initialize).mock.calls.some(
+          ([vaultPath]) => vaultPath === "/vault-retry"
+        )
+      ).toBe(true)
+    );
+  });
+
+  it("releases a superseded drain when the latest request returns to the active Vault", async () => {
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ vaultFolder: "/vault-old" })
+    );
+    const drain = deferred<boolean>();
+    drainNotesVaultOverride.mockReturnValue(drain.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByLabelText("Notes library");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
+        name: /Vault and sync/
+      })
+    );
+    const input = screen.getByLabelText("Vault folder");
+
+    fireEvent.change(input, { target: { value: "/vault-new" } });
+    fireEvent.blur(input);
+    fireEvent.change(input, { target: { value: "/vault-old" } });
+    fireEvent.blur(input);
+
+    await act(async () => {
+      drain.resolve(true);
+      await drain.promise;
+    });
+    await waitFor(() =>
+      expect(releaseNotesVaultOverride).toHaveBeenCalledWith("/vault-old")
+    );
+    expect(
+      vi.mocked(notesStore.initialize).mock.calls.some(
+        ([vaultPath]) => vaultPath === "/vault-new"
+      )
+    ).toBe(false);
+  });
+
+  it("keeps the successful drain locked when the latest request switches to another Vault", async () => {
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ vaultFolder: "/vault-old" })
+    );
+    const drain = deferred<boolean>();
+    drainNotesVaultOverride.mockReturnValue(drain.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByLabelText("Notes library");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
+        name: /Vault and sync/
+      })
+    );
+    const input = screen.getByLabelText("Vault folder");
+
+    fireEvent.change(input, { target: { value: "/vault-first" } });
+    fireEvent.blur(input);
+    fireEvent.change(input, { target: { value: "/vault-latest" } });
+    fireEvent.blur(input);
+    await act(async () => {
+      drain.resolve(true);
+      await drain.promise;
+    });
+
+    await waitFor(() =>
+      expect(
+        vi.mocked(notesStore.initialize).mock.calls.some(
+          ([vaultPath]) => vaultPath === "/vault-latest"
+        )
+      ).toBe(true)
+    );
+    expect(
+      vi.mocked(notesStore.initialize).mock.calls.some(
+        ([vaultPath]) => vaultPath === "/vault-first"
+      )
+    ).toBe(false);
+    expect(releaseNotesVaultOverride).not.toHaveBeenCalled();
+  });
+
+  it("does not release when a return-to-active request is superseded by another Vault", async () => {
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ vaultFolder: "/vault-old" })
+    );
+    const drain = deferred<boolean>();
+    drainNotesVaultOverride.mockReturnValue(drain.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByLabelText("Notes library");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
+        name: /Vault and sync/
+      })
+    );
+    const input = await screen.findByLabelText("Vault folder");
+
+    for (const folder of ["/vault-first", "/vault-old", "/vault-latest"]) {
+      fireEvent.change(input, { target: { value: folder } });
+      fireEvent.blur(input);
+    }
+    await act(async () => {
+      drain.resolve(true);
+      await drain.promise;
+    });
+
+    await waitFor(() =>
+      expect(
+        vi.mocked(notesStore.initialize).mock.calls.some(
+          ([vaultPath]) => vaultPath === "/vault-latest"
+        )
+      ).toBe(true)
+    );
+    expect(releaseNotesVaultOverride).not.toHaveBeenCalled();
+  });
+
+  it("does not save the old Vault folder while the requested folder is still draining", async () => {
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ vaultFolder: "/vault-old" })
+    );
+    const drain = deferred<boolean>();
+    drainNotesVaultOverride.mockReturnValue(drain.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByLabelText("Notes library");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
+        name: /Vault and sync/
+      })
+    );
+    const input = await screen.findByLabelText("Vault folder");
+    fireEvent.change(input, { target: { value: "/vault-save" } });
+
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(screen.queryByText("Settings saved")).not.toBeInTheDocument();
+    expect(window.localStorage.getItem("yonalist.settings.v1")).toContain(
+      "/vault-old"
+    );
+    await act(async () => {
+      drain.resolve(true);
+      await drain.promise;
+    });
+    expect(await screen.findByText("Settings saved")).toBeInTheDocument();
+    expect(window.localStorage.getItem("yonalist.settings.v1")).toContain(
+      "/vault-save"
+    );
+  });
+
+  it("keeps the drain failure visible when Save cannot switch Vaults", async () => {
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ vaultFolder: "/vault-old" })
+    );
+    drainNotesVaultOverride.mockResolvedValue(false);
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
+        name: /Vault and sync/
+      })
+    );
+    fireEvent.change(screen.getByLabelText("Vault folder"), {
+      target: { value: "/vault-failed-save" }
+    });
+
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(
+      await screen.findByText("Could not save the current Vault. Try again.")
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Settings saved")).not.toBeInTheDocument();
+    expect(window.localStorage.getItem("yonalist.settings.v1")).toContain(
+      "/vault-old"
+    );
   });
 
   it("ignores a stale folder picker result after a newer request wins", async () => {

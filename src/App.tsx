@@ -166,7 +166,10 @@ import {
   NotesFeedbackProvider,
   NotesStatusBarMessage
 } from "./features/notes/NotesFeedbackContext";
-import { drainNotesVault } from "./features/notes/notesVaultDrain";
+import {
+  drainNotesVault,
+  releaseNotesVaultDrain
+} from "./features/notes/notesVaultDrain";
 import { clearImageProxyCache } from "./services/imageProxy";
 import { scheduleIdleTask } from "./services/idleQueue";
 import {
@@ -2057,15 +2060,31 @@ export default function App({ initialOnline }: AppProps) {
     );
   }
 
-  async function requestVaultFolderChange(nextFolder: string): Promise<void> {
+  async function requestVaultFolderChange(nextFolder: string): Promise<boolean> {
     const requestToken = ++vaultFolderRequestTokenRef.current;
     vaultFolderPickerTokenRef.current += 1;
+    const previousRequestedFolder = vaultFolderDraft;
     setVaultFolderDraft(nextFolder);
     const nextRoot = nextFolder.trim() || SAMPLE_VAULT_ROOT;
     if (nextRoot === vaultRoot) {
+      if (previousRequestedFolder !== settings.vaultFolder) {
+        setSettingsStatus("Saving current Vault…");
+        let drained = false;
+        try {
+          drained = await drainNotesVault(vaultRoot);
+        } catch {
+          drained = false;
+        }
+        if (requestToken !== vaultFolderRequestTokenRef.current) return false;
+        if (!drained) {
+          setSettingsStatus("Could not save the current Vault. Try again.");
+          return false;
+        }
+        await releaseNotesVaultDrain(vaultRoot);
+      }
       setSettings((current) => ({ ...current, vaultFolder: nextFolder }));
       setSettingsStatus("");
-      return;
+      return true;
     }
 
     setSettingsStatus("Saving current Vault…");
@@ -2075,13 +2094,14 @@ export default function App({ initialOnline }: AppProps) {
     } catch {
       drained = false;
     }
-    if (requestToken !== vaultFolderRequestTokenRef.current) return;
+    if (requestToken !== vaultFolderRequestTokenRef.current) return false;
     if (!drained) {
       setSettingsStatus("Could not save the current Vault. Try again.");
-      return;
+      return false;
     }
     setSettings((current) => ({ ...current, vaultFolder: nextFolder }));
     setSettingsStatus("");
+    return true;
   }
 
   async function browseVaultFolder(current: string): Promise<string | null> {
@@ -2108,9 +2128,19 @@ export default function App({ initialOnline }: AppProps) {
     setSettingsStatus("");
   }
 
-  function saveSettings(event: FormEvent) {
+  async function saveSettings(event: FormEvent, requestedFolder: string) {
     event.preventDefault();
-    persistSettings(settings);
+    if (
+      requestedFolder !== settings.vaultFolder &&
+      !(await requestVaultFolderChange(requestedFolder))
+    ) {
+      return;
+    }
+    persistSettings(
+      requestedFolder === settings.vaultFolder
+        ? settings
+        : { ...settings, vaultFolder: requestedFolder }
+    );
     setSettingsStatus("Settings saved");
   }
 

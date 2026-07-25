@@ -56,7 +56,7 @@ interface SettingsPageProps {
   projectVisibility: UseProjectVisibilityResult;
   onUpdate: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
   onBrowseVaultFolder: (current: string) => Promise<string | null>;
-  onSave: (event: FormEvent) => void;
+  onSave: (event: FormEvent, vaultFolder: string) => void;
   onResetAll: () => void;
   onClose: () => void;
 }
@@ -234,7 +234,11 @@ export function SettingsPage({
   );
 
   return (
-    <form className="settings-page" aria-label="Settings page" onSubmit={onSave}>
+    <form
+      className="settings-page"
+      aria-label="Settings page"
+      onSubmit={(event) => onSave(event, vaultFolderInput)}
+    >
       <header className="settings-header">
         <div>
           <p className="eyebrow">Settings</p>
@@ -368,11 +372,7 @@ export function SettingsPage({
                   aria-label="Vault folder"
                   value={vaultFolderInput}
                   onChange={(event) => setVaultFolderInput(event.target.value)}
-                  onBlur={() => {
-                    if (vaultFolderInput !== settings.vaultFolder) {
-                      onUpdate("vaultFolder", vaultFolderInput);
-                    }
-                  }}
+                  onBlur={() => onUpdate("vaultFolder", vaultFolderInput)}
                 />
                 <button
                   type="button"

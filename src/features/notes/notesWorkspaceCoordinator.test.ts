@@ -2420,6 +2420,40 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(admittedWork).toHaveBeenCalledOnce();
     expect(captureDraftCutoff).toHaveBeenCalledTimes(2);
     expect(finalizedCutoffs).toEqual([7, 8]);
+    const resumedWork = vi.fn(() => ({ kind: "skipped" as const }));
+    session.releaseDrain();
+    await expect(session.enqueue(resumedWork)).resolves.toBe("skipped");
+    expect(resumedWork).toHaveBeenCalledOnce();
+    session.close();
+  });
+
+  it("does not let retain-after-close admit new structural work during a strict drain", async () => {
+    const barrier = deferred<boolean>();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession(writableOptions(pool, {
+      repository: repository(),
+      vaultRoot: "/strict-retained-work",
+      onEvent: vi.fn(),
+      captureDraftCutoff: () => 1,
+      beforeStructural: () => barrier.promise
+    }));
+    await session.activation;
+    const drain = session.drain();
+    await Promise.resolve();
+    const retainedWork = vi.fn(() => ({ kind: "skipped" as const }));
+
+    const retained = session.enqueueStructural(retainedWork, {
+      retainAfterClose: true
+    });
+    const settled = vi.fn();
+    void retained.then(settled);
+    await Promise.resolve();
+
+    expect(settled).toHaveBeenCalledWith("skipped");
+    expect(retainedWork).not.toHaveBeenCalled();
+    barrier.resolve(true);
+    await expect(drain).resolves.toBe(true);
     session.close();
   });
 

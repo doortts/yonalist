@@ -5,6 +5,7 @@ import { isNotesMutationResult, MAX_NOTE_ATTACHMENT_BATCH_BYTES, MAX_NOTE_ATTACH
 import { isNotesDraftsFlushFailedError, NOTES_DRAFTS_FLUSH_FAILED_CODE, resetImageImportRecoveryForTests, useNotesWorkspace, type NotesDeleteAllResult } from "./useNotesWorkspace";
 import { notesWorkspaceCoordinatorRegistry, type NotesWorkspaceCoordinatorSession } from "./notesWorkspaceCoordinator";
 import { type NotesHistorySession } from "./notesHistory";
+import { createOutlineVisibleSignature } from "./notesKeyboardInsertion";
 import { journalNotesRepository } from "./testing/notesWorkspaceTestHarness";
 
 const createNoteIdMock = vi.hoisted(() => vi.fn());
@@ -521,6 +522,71 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
     act(() => {
+      result.current.actions.publishOutlinePaneState?.({
+        paneId: "pane-a",
+        scope: { kind: "active" },
+        zoomedNodeId: null,
+        showCompleted: true,
+        collapsedNodeIds: new Set(),
+        locallyExpandedNodeIds: new Set(),
+        interactionEpoch: 1,
+        visibleSignature: createOutlineVisibleSignature([{
+          id: "root",
+          parentId: null,
+          depth: 0,
+          isCollapsed: false,
+          ancestorIds: [],
+          ancestorGuideDepths: [],
+          visibleDescendantEndId: null
+        }]),
+        geometryGeneration: 0,
+        activeDrag: false
+      });
+    });
+    let preparation: ReturnType<
+      NonNullable<typeof result.current.actions.prepareKeyboardInsertion>
+    > = null;
+    act(() => {
+      preparation = result.current.actions.prepareKeyboardInsertion?.({
+        ownerPaneId: "pane-a",
+        interactionEpochAtDispatch: 1,
+        intent: {
+          token: 1,
+          sourceId: "root",
+          expectedNodeId: "split",
+          postcondition: {
+            kind: "split",
+            expectedSourceTitle: "Root",
+            expectedInsertedTitle: ""
+          }
+        },
+        optimistic: {
+          checkpoint: {
+            sourceNode: node({ id: "root", title: "Root" }),
+            sourceRow: {
+              id: "root",
+              parentId: null,
+              depth: 0,
+              isCollapsed: false,
+              ancestorIds: [],
+              ancestorGuideDepths: [],
+              visibleDescendantEndId: null
+            },
+            sourceSelection: { anchorUtf16: 4, focusUtf16: 4 }
+          },
+          sourceTitle: "Root",
+          insertedTitle: ""
+        }
+      }) ?? null;
+    });
+    expect(preparation).not.toBeNull();
+    await waitFor(() =>
+      expect(
+        result.current.draftsSlice.optimisticKeyboardInsertions?.[0]
+          ?.insertedTitle
+      ).toBe("")
+    );
+    act(() => {
       result.current.actions.updateNodeDraft("root", {
         title: "Admitted",
         note: "",
@@ -536,9 +602,21 @@ describe("useNotesWorkspace", () => {
         note: "",
         imageOffsetUtf16: 0
       });
+      result.current.actions.updateOptimisticKeyboardInsertion?.(
+        "split",
+        "Too late"
+      );
     });
 
     expect(result.current.draftsByNodeId.root?.title).toBe("Admitted");
+    expect(
+      result.current.draftsSlice.optimisticKeyboardInsertions?.[0]
+        ?.insertedTitle
+    ).toBe("");
+    await expect(
+      result.current.actions.deleteAllNotesData()
+    ).rejects.toThrow("The Notes workspace is unavailable.");
+    expect(store.deleteDatabase).not.toHaveBeenCalled();
     await act(async () => {
       write.resolve(workspace([node({ id: "root", title: "Admitted" })]));
       await expect(drain).resolves.toBe(true);
