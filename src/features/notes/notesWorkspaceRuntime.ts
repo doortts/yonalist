@@ -17,6 +17,7 @@ import {
   notesWorkspaceCoordinatorRegistry,
   type NotesWorkspaceCommandOutcome,
   type NotesWorkspaceCoordinatorSession,
+  type NotesWorkspaceDrainEnqueue,
   type NotesWorkspaceQueueContext,
   type NotesWorkspaceQueueResult,
 } from "./notesWorkspaceCoordinator";
@@ -687,7 +688,10 @@ export function useNotesWorkspace({
       },
       captureDraftCutoff: (publicationOwner) =>
         engine.captureDraftCutoff(publicationOwner),
-      beforeStructural: (cutoff) => engine.flushDraftBarrier(cutoff),
+      beforeStructural: (
+        cutoff,
+        drainEnqueue?: NotesWorkspaceDrainEnqueue,
+      ) => engine.flushDraftBarrier(cutoff, drainEnqueue),
       afterStructural: (cutoff) => {
         engine.releaseDraftBarrier(cutoff);
         releaseFinalizedDetachedAttachmentUploadAttempts(engine.record);

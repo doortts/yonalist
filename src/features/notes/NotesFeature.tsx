@@ -39,8 +39,7 @@ import {
 } from "./notesAttachmentController";
 import { useFlushDraftsOnWindowClose } from "./useFlushDraftsOnWindowClose";
 import {
-  drainNotesVault,
-  releaseNotesVaultDrain,
+  acquireNotesVaultDrain,
   registerNotesVaultDrain,
 } from "./notesVaultDrain";
 import { useNotesWorkspace } from "./useNotesWorkspace";
@@ -203,9 +202,9 @@ export function NotesWorkspaceProvider({
   }, [notesWorkspaceDrain, notesWorkspaceReleaseDrain, vaultRoot]);
 
   useFlushDraftsOnWindowClose(
-    () => (vaultRoot ? drainNotesVault(vaultRoot) : Promise.resolve(true)),
-    vaultRoot ? () => notesSyncFlush(vaultRoot) : undefined,
-    vaultRoot ? () => releaseNotesVaultDrain(vaultRoot) : undefined,
+    vaultRoot || null,
+    acquireNotesVaultDrain,
+    notesSyncFlush,
   );
 
   return (

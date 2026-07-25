@@ -153,6 +153,18 @@ export type NotesWorkspaceQueueWork = (
 
 export type NotesPendingSelectionPolicy = "clear" | "preserve";
 
+export interface NotesWorkspaceEnqueueOptions {
+  silent?: boolean;
+  observer?: boolean;
+  publicationOwner?: NotesProjectionPublicationOwner;
+  unknownOutcomeExpectation?: NotesUnknownOutcomeExpectation;
+}
+
+export type NotesWorkspaceDrainEnqueue = (
+  work: NotesWorkspaceQueueWork,
+  options?: NotesWorkspaceEnqueueOptions
+) => Promise<NotesWorkspaceCommandOutcome>;
+
 export interface NotesBackspaceGestureCommitInput {
   readonly gesture: OptimisticBackspaceGesture;
   readonly historyContext: NotesHistoryContext;
@@ -201,7 +213,10 @@ export interface OpenNotesWorkspaceSessionOptions {
   repository: NotesStore;
   vaultRoot: string;
   onEvent(event: NotesWorkspaceCoordinatorEvent): void;
-  beforeStructural?: (cutoff: number) => Promise<boolean>;
+  beforeStructural?: (
+    cutoff: number,
+    drainEnqueue?: NotesWorkspaceDrainEnqueue
+  ) => Promise<boolean>;
   captureDraftCutoff?: (
     publicationOwner: NotesProjectionPublicationOwner
   ) => number;
@@ -238,19 +253,13 @@ export interface NotesWorkspaceCoordinatorSession {
   ): NotesWorkspaceImageImportReservation;
   enqueue(
     work: NotesWorkspaceQueueWork,
-    options?: {
-      silent?: boolean;
-      observer?: boolean;
-      publicationOwner?: NotesProjectionPublicationOwner;
-      unknownOutcomeExpectation?: NotesUnknownOutcomeExpectation;
-    }
+    options?: NotesWorkspaceEnqueueOptions
   ): Promise<NotesWorkspaceCommandOutcome>;
   enqueueStructural(
     work: NotesWorkspaceQueueWork,
     options?: {
       selectionPolicy?: NotesPendingSelectionPolicy;
       retainAfterClose?: boolean;
-      lifecycleDrainWork?: boolean;
       requireAllBarriers?: boolean;
       settleFailure?: (error: string) => void;
       keyboardInsertion?: NotesKeyboardInsertionPreparation;
@@ -409,8 +418,11 @@ interface CoordinatorEntry {
   unknownOutcomeExpectation: NotesUnknownOutcomeExpectation | null;
   nextBackspaceGestureToken: number;
   backspaceGesture: BackspaceGestureState | null;
+  nextLifecycleDrainGeneration: number;
   lifecycleDrain: {
     readonly owner: SessionState;
+    readonly authority: object;
+    readonly generation: number;
     readonly completion: Promise<boolean>;
     settled: boolean;
   } | null;
@@ -459,7 +471,12 @@ interface SessionState {
   pendingWork: number;
   activationItem: ActivationItem | null;
   onEvent: ((event: NotesWorkspaceCoordinatorEvent) => void) | null;
-  beforeStructural: ((cutoff: number) => Promise<boolean>) | null;
+  beforeStructural:
+    | ((
+        cutoff: number,
+        drainEnqueue?: NotesWorkspaceDrainEnqueue
+      ) => Promise<boolean>)
+    | null;
   captureDraftCutoff:
     | ((publicationOwner: NotesProjectionPublicationOwner) => number)
     | null;
@@ -484,6 +501,7 @@ interface SessionState {
     NoteId,
     NotesKeyboardInsertionPreparation
   >;
+  lifecycleBackspaceAuthority: object | null;
   coordinatorSession: NotesWorkspaceCoordinatorSession | null;
 }
 
@@ -491,7 +509,10 @@ interface CapturedDraftBarrierParticipant {
   readonly participant: SessionState;
   readonly cutoff: number;
   readonly beforeStructural:
-    | ((cutoff: number) => Promise<boolean>)
+    | ((
+        cutoff: number,
+        drainEnqueue?: NotesWorkspaceDrainEnqueue
+      ) => Promise<boolean>)
     | null;
   readonly isCurrent: (() => boolean) | null;
   finalize(): void;
@@ -544,7 +565,27 @@ interface EnqueueCommandOptions {
   readonly keyboardInsertion?: NotesKeyboardInsertionPreparation | null;
   readonly publicationOwner?: NotesProjectionPublicationOwner;
   readonly unknownOutcomeExpectation?: NotesUnknownOutcomeExpectation | null;
-  readonly lifecycleAdmitted?: boolean;
+  readonly lifecycleAuthority?: object | null;
+  readonly structuralAdmission?: LifecycleStructuralAdmission | null;
+}
+
+const LIFECYCLE_DRAIN_AUTHORITY = Symbol("notes-lifecycle-drain-authority");
+const LIFECYCLE_DRAIN_ENQUEUE = Symbol("notes-lifecycle-drain-enqueue");
+
+interface InternalStructuralOptions {
+  readonly [LIFECYCLE_DRAIN_AUTHORITY]?: object;
+}
+
+interface InternalCoordinatorSession {
+  [LIFECYCLE_DRAIN_ENQUEUE](
+    authority: object
+  ): NotesWorkspaceDrainEnqueue;
+}
+
+interface LifecycleStructuralAdmission {
+  readonly entry: CoordinatorEntry;
+  readonly owner: SessionState;
+  readonly generation: number;
 }
 
 interface QueueItemBase {
@@ -2388,6 +2429,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       unknownOutcomeExpectation: null,
       nextBackspaceGestureToken: 0,
       backspaceGesture: null,
+      nextLifecycleDrainGeneration: 0,
       lifecycleDrain: null
     };
   };
@@ -2562,6 +2604,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         frontendSessionGeneration,
         outlinePanes: new Map(),
         preparedKeyboardInsertions: new Map(),
+        lifecycleBackspaceAuthority: null,
         coordinatorSession: null
       };
       entry.sessions.add(session);
@@ -2598,7 +2641,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           keyboardInsertion = null,
           publicationOwner = { kind: "other" },
           unknownOutcomeExpectation = null,
-          lifecycleAdmitted = false
+          lifecycleAuthority = null,
+          structuralAdmission = null
         } = options;
         if (!session.active && !retainAfterOwnerClose) {
           return Promise.resolve("skipped");
@@ -2606,11 +2650,22 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         if (session.presentation === "background") {
           return Promise.resolve("skipped");
         }
+        const lifecycleDrain = entry.lifecycleDrain;
+        const admittedBeforeDrain =
+          lifecycleDrain !== null &&
+          structuralAdmission?.entry === entry &&
+          structuralAdmission.owner === session &&
+          structuralAdmission.generation === lifecycleDrain.generation;
         if (
-          entry.lifecycleDrain !== null &&
-          !lifecycleAdmitted &&
-          !silent &&
-          !observer
+          lifecycleAuthority !== null &&
+          lifecycleDrain?.authority !== lifecycleAuthority
+        ) {
+          return Promise.resolve("skipped");
+        }
+        if (
+          lifecycleDrain !== null &&
+          lifecycleDrain.authority !== lifecycleAuthority &&
+          !admittedBeforeDrain
         ) {
           return Promise.resolve("skipped");
         }
@@ -2687,8 +2742,12 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         pump(entry);
         return item.completion;
       };
-      let coordinatorSession!: NotesWorkspaceCoordinatorSession;
-      const executeLifecycleDrain = async (): Promise<boolean> => {
+      let coordinatorSession!:
+        & NotesWorkspaceCoordinatorSession
+        & InternalCoordinatorSession;
+      const executeLifecycleDrain = async (
+        lifecycle: NonNullable<CoordinatorEntry["lifecycleDrain"]>
+      ): Promise<boolean> => {
         await activationCompletion;
         if (
           !session.active ||
@@ -2702,7 +2761,18 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         if (backspace) {
           const backspaceOwner = backspace.owner.coordinatorSession;
           if (!backspaceOwner) return false;
-          const outcome = await backspaceOwner.finishBackspaceGesture("drain");
+          backspace.owner.lifecycleBackspaceAuthority = lifecycle.authority;
+          let outcome: NotesWorkspaceCommandOutcome;
+          try {
+            outcome = await backspaceOwner.finishBackspaceGesture("drain");
+          } finally {
+            if (
+              backspace.owner.lifecycleBackspaceAuthority ===
+              lifecycle.authority
+            ) {
+              backspace.owner.lifecycleBackspaceAuthority = null;
+            }
+          }
           if (outcome === "failed" || entry.backspaceGesture !== null) {
             return false;
           }
@@ -2720,9 +2790,19 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         );
         try {
           for (const participant of participants) {
+            const drainEnqueue = (
+              participant.participant
+                .coordinatorSession as
+                  | (NotesWorkspaceCoordinatorSession &
+                      InternalCoordinatorSession)
+                  | null
+            )?.[LIFECYCLE_DRAIN_ENQUEUE](lifecycle.authority);
             if (
               participant.beforeStructural &&
-              !(await participant.beforeStructural(participant.cutoff))
+              !(await participant.beforeStructural(
+                participant.cutoff,
+                drainEnqueue
+              ))
             ) {
               return false;
             }
@@ -2741,7 +2821,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             selectionPolicy: "preserve",
             retainAfterOwnerClose: true,
             observer: true,
-            lifecycleAdmitted: true
+            lifecycleAuthority: lifecycle.authority
           }
         );
         if (
@@ -2756,6 +2836,19 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         return entry.pendingHistoryCleanupIds.size === 0;
       };
       coordinatorSession = {
+        [LIFECYCLE_DRAIN_ENQUEUE](
+          authority: object
+        ): NotesWorkspaceDrainEnqueue {
+          return (work, options) =>
+            enqueueCommand(work, {
+              silent: options?.silent ?? false,
+              observer: options?.observer ?? false,
+              publicationOwner: options?.publicationOwner,
+              unknownOutcomeExpectation:
+                options?.unknownOutcomeExpectation ?? null,
+              lifecycleAuthority: authority
+            });
+        },
         activation: activationCompletion,
         history: entry.history,
         drain(): Promise<boolean> {
@@ -2764,11 +2857,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           const terminal = completionParts<boolean>();
           const lifecycle = {
             owner: session,
+            authority: Object.freeze({}),
+            generation: ++entry.nextLifecycleDrainGeneration,
             completion: terminal.completion,
             settled: false
           };
           entry.lifecycleDrain = lifecycle;
-          void executeLifecycleDrain().then(
+          void executeLifecycleDrain(lifecycle).then(
             (succeeded) => {
               lifecycle.settled = true;
               if (!succeeded && entry.lifecycleDrain === lifecycle) {
@@ -3081,6 +3176,15 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           return true;
         },
         finishBackspaceGesture(reason): Promise<NotesWorkspaceCommandOutcome> {
+          const requestedLifecycleAuthority =
+            reason === "drain"
+              ? session.lifecycleBackspaceAuthority
+              : null;
+          const lifecycleAuthority =
+            requestedLifecycleAuthority !== null &&
+            entry.lifecycleDrain?.authority === requestedLifecycleAuthority
+              ? requestedLifecycleAuthority
+              : null;
           const state = entry.backspaceGesture;
           if (!state || state.owner !== session) {
             return Promise.resolve("skipped");
@@ -3234,13 +3338,19 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               },
               {
                 retainAfterClose: reason === "drain",
-                lifecycleDrainWork: reason === "drain",
                 requireAllBarriers: true,
                 unknownOutcomeExpectation: {
                   kind: "unclassified",
                   historyContext: state.historyContext
-                }
-              }
+                },
+                ...(lifecycleAuthority
+                  ? { [LIFECYCLE_DRAIN_AUTHORITY]: lifecycleAuthority }
+                  : {})
+              } as NonNullable<
+                Parameters<
+                  NotesWorkspaceCoordinatorSession["enqueueStructural"]
+                >[1]
+              >
             );
             if (outcome === "committed") {
               const recoveredAfter = state.afterSnapshot;
@@ -3428,7 +3538,6 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           options?: {
             selectionPolicy?: NotesPendingSelectionPolicy;
             retainAfterClose?: boolean;
-            lifecycleDrainWork?: boolean;
             requireAllBarriers?: boolean;
             settleFailure?: (error: string) => void;
             keyboardInsertion?: NotesKeyboardInsertionPreparation;
@@ -3441,11 +3550,23 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           const retainAfterClose = options?.retainAfterClose === true;
           const requireAllBarriers = options?.requireAllBarriers === true;
           const keyboardInsertion = options?.keyboardInsertion ?? null;
+          const lifecycleAuthority = (
+            options as (typeof options & InternalStructuralOptions) | undefined
+          )?.[LIFECYCLE_DRAIN_AUTHORITY];
+          const structuralAdmission: LifecycleStructuralAdmission | null =
+            entry.lifecycleDrain === null
+              ? Object.freeze({
+                  entry,
+                  owner: session,
+                  generation: entry.nextLifecycleDrainGeneration + 1
+                })
+              : null;
           const lifecycleAdmitted =
             entry.lifecycleDrain === null ||
             (
-              options?.lifecycleDrainWork === true &&
-              entry.lifecycleDrain.owner === session
+              lifecycleAuthority !== undefined &&
+              entry.lifecycleDrain.owner === session &&
+              entry.lifecycleDrain.authority === lifecycleAuthority
             );
           if (!lifecycleAdmitted) {
             return Promise.resolve("skipped");
@@ -3529,7 +3650,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                   keyboardInsertion,
                   unknownOutcomeExpectation:
                     options?.unknownOutcomeExpectation ?? null,
-                  lifecycleAdmitted
+                  lifecycleAuthority,
+                  structuralAdmission
                 });
                 finalizeParticipants();
                 return await structural;

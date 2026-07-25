@@ -1,25 +1,51 @@
 import { useEffect, useRef } from "react";
+import type { NotesVaultDrainLease } from "./notesVaultDrain";
 
 function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+interface CloseAttemptSnapshot {
+  readonly vaultRoot: string | null;
+  readonly acquireVault: (
+    vaultRoot: string,
+  ) => Promise<NotesVaultDrainLease | null>;
+  readonly flushSyncExports:
+    | ((vaultRoot: string) => Promise<void>)
+    | undefined;
+}
+
+interface CloseDrainResult {
+  readonly complete: boolean;
+  readonly lease: NotesVaultDrainLease | null;
+}
+
+function releaseLease(lease: NotesVaultDrainLease): void {
+  try {
+    lease.release();
+  } catch (cause) {
+    console.error("Notes could not release the close drain", cause);
+  }
+}
+
 /**
  * Registers a strict Tauri close barrier. Every close request is prevented
- * until the shared Notes drain and file exporter both succeed; failed or
+ * until the captured Vault drain and file exporter both succeed; failed or
  * incomplete attempts leave the window open so the user can retry.
  */
 export function useFlushDraftsOnWindowClose(
-  drainVault: () => Promise<boolean>,
-  flushSyncExports?: () => Promise<void>,
-  releaseVault?: () => Promise<void>,
+  vaultRoot: string | null,
+  acquireVault: (
+    vaultRoot: string,
+  ) => Promise<NotesVaultDrainLease | null>,
+  flushSyncExports?: (vaultRoot: string) => Promise<void>,
 ): void {
-  const drainRef = useRef(drainVault);
-  drainRef.current = drainVault;
+  const vaultRootRef = useRef(vaultRoot);
+  vaultRootRef.current = vaultRoot;
+  const acquireRef = useRef(acquireVault);
+  acquireRef.current = acquireVault;
   const flushSyncRef = useRef(flushSyncExports);
   flushSyncRef.current = flushSyncExports;
-  const releaseRef = useRef(releaseVault);
-  releaseRef.current = releaseVault;
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -28,44 +54,49 @@ export function useFlushDraftsOnWindowClose(
     let unlisten: (() => void) | undefined;
     let closeRequest: Promise<void> | null = null;
 
-    const releaseDrain = async (): Promise<void> => {
-      try {
-        await releaseRef.current?.();
-      } catch (cause) {
-        console.error("Notes could not release the close drain", cause);
-      }
-    };
+    const snapshotAttempt = (): CloseAttemptSnapshot => ({
+      vaultRoot: vaultRootRef.current,
+      acquireVault: acquireRef.current,
+      flushSyncExports: flushSyncRef.current,
+    });
 
-    const runStrictDrain = async (): Promise<boolean> => {
-      let drained: boolean;
+    const runStrictDrain = async (
+      snapshot: CloseAttemptSnapshot,
+    ): Promise<CloseDrainResult> => {
+      if (!snapshot.vaultRoot) {
+        return { complete: true, lease: null };
+      }
+      let lease: NotesVaultDrainLease | null;
       try {
-        drained = await drainRef.current();
+        lease = await snapshot.acquireVault(snapshot.vaultRoot);
       } catch (cause) {
         console.error("Notes draft flush before close failed", cause);
-        return false;
+        return { complete: false, lease: null };
       }
-      if (!drained) {
+      if (!lease) {
         console.warn(
           "Notes draft flush before close could not persist every pending change",
         );
-        return false;
+        return { complete: false, lease: null };
       }
-      const flushSyncExports = flushSyncRef.current;
-      if (!flushSyncExports) return true;
+      if (!snapshot.flushSyncExports) {
+        return { complete: true, lease };
+      }
       try {
-        await flushSyncExports();
-        return true;
+        await snapshot.flushSyncExports(snapshot.vaultRoot);
+        return { complete: true, lease };
       } catch (cause) {
         console.error("Notes sync export flush before close failed", cause);
-        await releaseDrain();
-        return false;
+        releaseLease(lease);
+        return { complete: false, lease: null };
       }
     };
 
     const handleBeforeUnload = () => {
-      void runStrictDrain()
-        .then((drained) => {
-          if (drained) return releaseDrain();
+      const snapshot = snapshotAttempt();
+      void runStrictDrain(snapshot)
+        .then((result) => {
+          if (result.complete) result.lease?.commit();
         })
         .catch(() => undefined);
     };
@@ -87,16 +118,19 @@ export function useFlushDraftsOnWindowClose(
         event.preventDefault();
         if (closeRequest) return closeRequest;
 
+        const snapshot = snapshotAttempt();
         const attempt = (async (): Promise<void> => {
-          if (!(await runStrictDrain())) return;
+          const result = await runStrictDrain(snapshot);
+          if (!result.complete) return;
           try {
             await appWindow.destroy();
+            result.lease?.commit();
           } catch (cause) {
             console.error(
               "Notes could not destroy the window after flushing drafts",
               cause,
             );
-            await releaseDrain();
+            if (result.lease) releaseLease(result.lease);
           }
         })();
         closeRequest = attempt;

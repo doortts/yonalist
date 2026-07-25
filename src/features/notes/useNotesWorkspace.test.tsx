@@ -613,6 +613,13 @@ describe("useNotesWorkspace", () => {
       result.current.draftsSlice.optimisticKeyboardInsertions?.[0]
         ?.insertedTitle
     ).toBe("");
+    expect(
+      result.current.actions.beginBackspaceGesture?.(
+        "primary",
+        "root",
+        { anchorUtf16: 0, focusUtf16: 0 }
+      )
+    ).toBeNull();
     await expect(
       result.current.actions.deleteAllNotesData()
     ).rejects.toThrow("The Notes workspace is unavailable.");

@@ -9,12 +9,21 @@ const loadVaultOutboxOverride = vi.hoisted(() => vi.fn());
 const githubAuthOverride = vi.hoisted(() => vi.fn());
 const drainNotesVaultOverride = vi.hoisted(() => vi.fn());
 const releaseNotesVaultOverride = vi.hoisted(() => vi.fn());
+const commitNotesVaultOverride = vi.hoisted(() => vi.fn());
 const registerNotesVaultDrain = vi.hoisted(() => vi.fn(() => vi.fn()));
 
 vi.mock("./features/notes/notesVaultDrain", () => ({
-  drainNotesVault: (...args: unknown[]) => drainNotesVaultOverride(...args),
-  releaseNotesVaultDrain: (...args: unknown[]) =>
-    releaseNotesVaultOverride(...args),
+  acquireNotesVaultDrain: async (...args: unknown[]) => {
+    const result = await drainNotesVaultOverride(...args);
+    if (result === false || result === null) return null;
+    if (result !== true) return result;
+    return {
+      vaultRoot: String(args[0]),
+      generation: 1,
+      release: () => releaseNotesVaultOverride(...args),
+      commit: () => commitNotesVaultOverride(...args),
+    };
+  },
   registerNotesVaultDrain,
 }));
 
@@ -280,6 +289,7 @@ describe("Yonalist app shell", () => {
     drainNotesVaultOverride.mockResolvedValue(true);
     releaseNotesVaultOverride.mockReset();
     releaseNotesVaultOverride.mockResolvedValue(undefined);
+    commitNotesVaultOverride.mockReset();
     registerNotesVaultDrain.mockClear();
     githubAuthOverride.mockReset();
     Reflect.deleteProperty(notesStore, "refreshMaterializedGithubNotifications");
@@ -5033,6 +5043,8 @@ describe("Yonalist app shell", () => {
     await waitFor(() =>
       expect(releaseNotesVaultOverride).toHaveBeenCalledWith("/vault-old")
     );
+    expect(releaseNotesVaultOverride).toHaveBeenCalledTimes(2);
+    expect(commitNotesVaultOverride).not.toHaveBeenCalled();
     expect(
       vi.mocked(notesStore.initialize).mock.calls.some(
         ([vaultPath]) => vaultPath === "/vault-new"
@@ -5080,7 +5092,8 @@ describe("Yonalist app shell", () => {
         ([vaultPath]) => vaultPath === "/vault-first"
       )
     ).toBe(false);
-    expect(releaseNotesVaultOverride).not.toHaveBeenCalled();
+    expect(releaseNotesVaultOverride).toHaveBeenCalledOnce();
+    expect(commitNotesVaultOverride).toHaveBeenCalledWith("/vault-old");
   });
 
   it("does not release when a return-to-active request is superseded by another Vault", async () => {
@@ -5118,7 +5131,8 @@ describe("Yonalist app shell", () => {
         )
       ).toBe(true)
     );
-    expect(releaseNotesVaultOverride).not.toHaveBeenCalled();
+    expect(releaseNotesVaultOverride).toHaveBeenCalledTimes(2);
+    expect(commitNotesVaultOverride).toHaveBeenCalledWith("/vault-old");
   });
 
   it("does not save the old Vault folder while the requested folder is still draining", async () => {

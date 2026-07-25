@@ -167,8 +167,7 @@ import {
   NotesStatusBarMessage
 } from "./features/notes/NotesFeedbackContext";
 import {
-  drainNotesVault,
-  releaseNotesVaultDrain
+  acquireNotesVaultDrain
 } from "./features/notes/notesVaultDrain";
 import { clearImageProxyCache } from "./services/imageProxy";
 import { scheduleIdleTask } from "./services/idleQueue";
@@ -2069,18 +2068,21 @@ export default function App({ initialOnline }: AppProps) {
     if (nextRoot === vaultRoot) {
       if (previousRequestedFolder !== settings.vaultFolder) {
         setSettingsStatus("Saving current Vault…");
-        let drained = false;
+        let lease = null;
         try {
-          drained = await drainNotesVault(vaultRoot);
+          lease = await acquireNotesVaultDrain(vaultRoot);
         } catch {
-          drained = false;
+          lease = null;
         }
-        if (requestToken !== vaultFolderRequestTokenRef.current) return false;
-        if (!drained) {
+        if (requestToken !== vaultFolderRequestTokenRef.current) {
+          lease?.release();
+          return false;
+        }
+        if (!lease) {
           setSettingsStatus("Could not save the current Vault. Try again.");
           return false;
         }
-        await releaseNotesVaultDrain(vaultRoot);
+        lease.release();
       }
       setSettings((current) => ({ ...current, vaultFolder: nextFolder }));
       setSettingsStatus("");
@@ -2088,18 +2090,22 @@ export default function App({ initialOnline }: AppProps) {
     }
 
     setSettingsStatus("Saving current Vault…");
-    let drained = false;
+    let lease = null;
     try {
-      drained = await drainNotesVault(vaultRoot);
+      lease = await acquireNotesVaultDrain(vaultRoot);
     } catch {
-      drained = false;
+      lease = null;
     }
-    if (requestToken !== vaultFolderRequestTokenRef.current) return false;
-    if (!drained) {
+    if (requestToken !== vaultFolderRequestTokenRef.current) {
+      lease?.release();
+      return false;
+    }
+    if (!lease) {
       setSettingsStatus("Could not save the current Vault. Try again.");
       return false;
     }
     setSettings((current) => ({ ...current, vaultFolder: nextFolder }));
+    lease.commit();
     setSettingsStatus("");
     return true;
   }

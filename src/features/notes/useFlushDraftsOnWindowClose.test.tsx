@@ -1,5 +1,6 @@
 import { act, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { NoteNode, NotesStore, NotesWorkspace } from "../../domain/notes";
 
 const onCloseRequested = vi.hoisted(() => vi.fn());
 const destroy = vi.hoisted(() => vi.fn());
@@ -10,18 +11,38 @@ vi.mock("@tauri-apps/api/window", () => ({
 }));
 
 import { useFlushDraftsOnWindowClose } from "./useFlushDraftsOnWindowClose";
+import {
+  acquireNotesVaultDrain,
+  registerNotesVaultDrain,
+  resetNotesVaultDrainRegistryForTests,
+  type NotesVaultDrainLease,
+} from "./notesVaultDrain";
+import { createNotesExpansionSnapshotPool } from "./notesHistory";
+import { createNotesWorkspaceCoordinatorRegistry } from "./notesWorkspaceCoordinator";
 
 function Harness({
-  flush,
+  vaultRoot = "/vault",
+  acquire,
   syncFlush,
-  release
 }: {
-  flush: () => Promise<boolean>;
-  syncFlush?: () => Promise<void>;
-  release?: () => Promise<void>;
+  vaultRoot?: string | null;
+  acquire: (vaultRoot: string) => Promise<NotesVaultDrainLease | null>;
+  syncFlush?: (vaultRoot: string) => Promise<void>;
 }) {
-  useFlushDraftsOnWindowClose(flush, syncFlush, release);
+  useFlushDraftsOnWindowClose(vaultRoot, acquire, syncFlush);
   return null;
+}
+
+function lease(
+  vaultRoot = "/vault",
+  generation = 1,
+) {
+  return {
+    vaultRoot,
+    generation,
+    commit: vi.fn(() => {}),
+    release: vi.fn(() => {}),
+  };
 }
 
 async function flushMicrotasks(): Promise<void> {
@@ -38,6 +59,44 @@ function deferred<T>() {
     reject = nextReject;
   });
   return { promise, resolve, reject };
+}
+
+function workspaceNode(): NoteNode {
+  return {
+    id: "root",
+    nodeKind: "text",
+    parentId: null,
+    sortKey: 1024,
+    title: "Root",
+    note: "",
+    layoutMode: "bullets",
+    isCollapsed: false,
+    isStarred: false,
+    completedAt: null,
+    createdAt: "2026-07-25T00:00:00Z",
+    updatedAt: "2026-07-25T00:00:00Z",
+    deletedAt: null,
+    archivedAt: null,
+    archiveRootId: null,
+    imageOffsetUtf16: 0,
+    markerKind: "bullet",
+    markdownImageWidth: null,
+  };
+}
+
+function coordinatorStore(): NotesStore {
+  const loaded: NotesWorkspace = { nodes: [workspaceNode()] };
+  return {
+    initialize: vi.fn().mockResolvedValue({
+      canUndo: false,
+      canRedo: false,
+      historyEpoch: "epoch-a",
+      nextUndoEntryId: null,
+      nextRedoEntryId: null,
+      prunedEntryIds: [],
+    }),
+    loadWorkspace: vi.fn().mockResolvedValue(loaded),
+  } as unknown as NotesStore;
 }
 
 function setTauriRuntime(present: boolean): void {
@@ -63,12 +122,14 @@ describe("useFlushDraftsOnWindowClose", () => {
   afterEach(() => {
     vi.useRealTimers();
     setTauriRuntime(false);
+    resetNotesVaultDrainRegistryForTests();
   });
 
   it("prevents the default close, flushes drafts, then destroys the window", async () => {
-    const flush = vi.fn().mockResolvedValue(true);
+    const acquired = lease();
+    const acquire = vi.fn().mockResolvedValue(acquired);
     await act(async () => {
-      render(<Harness flush={flush} />);
+      render(<Harness acquire={acquire} />);
       await flushMicrotasks();
     });
 
@@ -83,11 +144,10 @@ describe("useFlushDraftsOnWindowClose", () => {
     });
 
     expect(event.preventDefault).toHaveBeenCalledTimes(1);
-    expect(flush).toHaveBeenCalledTimes(1);
+    expect(acquire).toHaveBeenCalledWith("/vault");
     expect(destroy).toHaveBeenCalledTimes(1);
-    expect(
-      flush.mock.invocationCallOrder[0]
-    ).toBeLessThan(destroy.mock.invocationCallOrder[0]);
+    expect(acquired.commit).toHaveBeenCalledOnce();
+    expect(acquired.release).not.toHaveBeenCalled();
   });
 
   it("flushes the sync exporter after draining drafts, before destroying", async () => {
@@ -104,15 +164,16 @@ describe("useFlushDraftsOnWindowClose", () => {
     destroy.mockImplementation(async () => {
       order.push("destroy");
     });
-    const flush = vi.fn(async () => {
+    const acquired = lease();
+    const acquire = vi.fn(async () => {
       order.push("flush");
-      return true;
+      return acquired;
     });
     const syncFlush = vi.fn(async () => {
       order.push("sync");
     });
     await act(async () => {
-      render(<Harness flush={flush} syncFlush={syncFlush} />);
+      render(<Harness acquire={acquire} syncFlush={syncFlush} />);
       await flushMicrotasks();
     });
 
@@ -120,7 +181,7 @@ describe("useFlushDraftsOnWindowClose", () => {
       await handler!({ preventDefault: vi.fn() });
     });
 
-    expect(flush).toHaveBeenCalledTimes(1);
+    expect(acquire).toHaveBeenCalledTimes(1);
     expect(syncFlush).toHaveBeenCalledTimes(1);
     expect(order).toEqual(["flush", "sync", "destroy"]);
   });
@@ -134,12 +195,13 @@ describe("useFlushDraftsOnWindowClose", () => {
       handler = cb;
       return Promise.resolve(unlisten);
     });
-    const flush = vi.fn().mockResolvedValue(true);
+    const acquired = lease();
+    const acquire = vi.fn().mockResolvedValue(acquired);
     const syncFlush = vi
       .fn()
       .mockRejectedValue(new Error("exporter unavailable"));
     await act(async () => {
-      render(<Harness flush={flush} syncFlush={syncFlush} />);
+      render(<Harness acquire={acquire} syncFlush={syncFlush} />);
       await flushMicrotasks();
     });
 
@@ -149,6 +211,7 @@ describe("useFlushDraftsOnWindowClose", () => {
 
     expect(syncFlush).toHaveBeenCalledTimes(1);
     expect(destroy).not.toHaveBeenCalled();
+    expect(acquired.release).toHaveBeenCalledOnce();
     expect(error).toHaveBeenCalledWith(
       "Notes sync export flush before close failed",
       expect.any(Error)
@@ -158,16 +221,17 @@ describe("useFlushDraftsOnWindowClose", () => {
 
   it("releases a successful drain after sync failure and drains again on retry", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    const flush = vi.fn().mockResolvedValue(true);
+    const firstLease = lease("/vault", 1);
+    const secondLease = lease("/vault", 2);
+    const acquire = vi.fn()
+      .mockResolvedValueOnce(firstLease)
+      .mockResolvedValueOnce(secondLease);
     const syncFlush = vi
       .fn()
       .mockRejectedValueOnce(new Error("exporter unavailable"))
       .mockResolvedValueOnce(undefined);
-    const release = vi.fn().mockResolvedValue(undefined);
     await act(async () => {
-      render(
-        <Harness flush={flush} syncFlush={syncFlush} release={release} />
-      );
+      render(<Harness acquire={acquire} syncFlush={syncFlush} />);
       await flushMicrotasks();
     });
     const handler = onCloseRequested.mock.lastCall?.[0] as (event: {
@@ -177,29 +241,25 @@ describe("useFlushDraftsOnWindowClose", () => {
     await act(async () => {
       await handler({ preventDefault: vi.fn() });
     });
-    expect(release).toHaveBeenCalledOnce();
+    expect(firstLease.release).toHaveBeenCalledOnce();
     expect(destroy).not.toHaveBeenCalled();
 
     await act(async () => {
       await handler({ preventDefault: vi.fn() });
     });
-    expect(flush).toHaveBeenCalledTimes(2);
+    expect(acquire).toHaveBeenCalledTimes(2);
     expect(syncFlush).toHaveBeenCalledTimes(2);
     expect(destroy).toHaveBeenCalledOnce();
+    expect(secondLease.commit).toHaveBeenCalledOnce();
     error.mockRestore();
   });
 
   it("releases a successful drain when destroying the window fails", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    const release = vi.fn().mockResolvedValue(undefined);
+    const acquired = lease();
     destroy.mockRejectedValueOnce(new Error("window stayed open"));
     await act(async () => {
-      render(
-        <Harness
-          flush={vi.fn().mockResolvedValue(true)}
-          release={release}
-        />
-      );
+      render(<Harness acquire={vi.fn().mockResolvedValue(acquired)} />);
       await flushMicrotasks();
     });
     const handler = onCloseRequested.mock.lastCall?.[0] as (event: {
@@ -210,15 +270,17 @@ describe("useFlushDraftsOnWindowClose", () => {
       await handler({ preventDefault: vi.fn() });
     });
 
-    expect(release).toHaveBeenCalledOnce();
+    expect(acquired.release).toHaveBeenCalledOnce();
     error.mockRestore();
   });
 
   it("keeps the window open after ten seconds while a drain is pending", async () => {
     vi.useFakeTimers();
-    const flush = vi.fn().mockReturnValue(new Promise<boolean>(() => {}));
+    const acquire = vi
+      .fn()
+      .mockReturnValue(new Promise<NotesVaultDrainLease | null>(() => {}));
     await act(async () => {
-      render(<Harness flush={flush} />);
+      render(<Harness acquire={acquire} />);
       await flushMicrotasks();
     });
 
@@ -229,7 +291,7 @@ describe("useFlushDraftsOnWindowClose", () => {
     const settled = handler(event);
 
     await flushMicrotasks();
-    expect(flush).toHaveBeenCalledTimes(1);
+    expect(acquire).toHaveBeenCalledTimes(1);
     expect(destroy).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(10_000);
@@ -242,9 +304,9 @@ describe("useFlushDraftsOnWindowClose", () => {
 
   it("keeps the window open when the drain reports incomplete", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const flush = vi.fn().mockResolvedValue(false);
+    const acquire = vi.fn().mockResolvedValue(null);
     await act(async () => {
-      render(<Harness flush={flush} />);
+      render(<Harness acquire={acquire} />);
       await flushMicrotasks();
     });
 
@@ -256,7 +318,7 @@ describe("useFlushDraftsOnWindowClose", () => {
       await handler({ preventDefault: vi.fn() });
     });
 
-    expect(flush).toHaveBeenCalledTimes(1);
+    expect(acquire).toHaveBeenCalledTimes(1);
     expect(destroy).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining("could not persist")
@@ -267,9 +329,9 @@ describe("useFlushDraftsOnWindowClose", () => {
   it("keeps the window open when the drain rejects", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const failure = new Error("write queue exploded");
-    const flush = vi.fn().mockRejectedValue(failure);
+    const acquire = vi.fn().mockRejectedValue(failure);
     await act(async () => {
-      render(<Harness flush={flush} />);
+      render(<Harness acquire={acquire} />);
       await flushMicrotasks();
     });
 
@@ -281,7 +343,7 @@ describe("useFlushDraftsOnWindowClose", () => {
       await handler({ preventDefault: vi.fn() });
     });
 
-    expect(flush).toHaveBeenCalledTimes(1);
+    expect(acquire).toHaveBeenCalledTimes(1);
     expect(destroy).not.toHaveBeenCalled();
     expect(error).toHaveBeenCalledWith(
       "Notes draft flush before close failed",
@@ -290,11 +352,135 @@ describe("useFlushDraftsOnWindowClose", () => {
     error.mockRestore();
   });
 
-  it("prevents every simultaneous request and shares one drain", async () => {
-    const pending = deferred<boolean>();
-    const flush = vi.fn(() => pending.promise);
+  it("snapshots the Vault root and callbacks before the first close await", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const pending = deferred<NotesVaultDrainLease | null>();
+    const oldLease = lease("/vault-a", 1);
+    const acquireOld = vi.fn(() => pending.promise);
+    const acquireNew = vi.fn().mockResolvedValue(lease("/vault-b", 1));
+    const syncOld = vi.fn().mockResolvedValue(undefined);
+    const syncNew = vi.fn().mockResolvedValue(undefined);
+    destroy.mockRejectedValueOnce(new Error("window stayed open"));
+    let rerender!: ReturnType<typeof render>["rerender"];
     await act(async () => {
-      render(<Harness flush={flush} />);
+      ({ rerender } = render(
+        <Harness
+          vaultRoot="/vault-a"
+          acquire={acquireOld}
+          syncFlush={syncOld}
+        />,
+      ));
+      await flushMicrotasks();
+    });
+    const handler = onCloseRequested.mock.lastCall?.[0] as (event: {
+      preventDefault: () => void;
+    }) => Promise<void>;
+
+    const closing = handler({ preventDefault: vi.fn() });
+    rerender(
+      <Harness
+        vaultRoot="/vault-b"
+        acquire={acquireNew}
+        syncFlush={syncNew}
+      />,
+    );
+    pending.resolve(oldLease);
+    await act(async () => {
+      await closing;
+    });
+
+    expect(acquireOld).toHaveBeenCalledWith("/vault-a");
+    expect(syncOld).toHaveBeenCalledWith("/vault-a");
+    expect(acquireNew).not.toHaveBeenCalled();
+    expect(syncNew).not.toHaveBeenCalled();
+    expect(oldLease.release).toHaveBeenCalledOnce();
+    error.mockRestore();
+  });
+
+  it("keeps the coordinator locked through sync and destroy when a concurrent B→A cancellation releases only its leases", async () => {
+    const vaultRoot = "/composed-close";
+    const draftBarrier = deferred<boolean>();
+    const sync = deferred<void>();
+    const destroying = deferred<void>();
+    destroy.mockReturnValue(destroying.promise);
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession({
+      repository: coordinatorStore(),
+      vaultRoot,
+      onEvent: vi.fn(),
+      presentation: "writable",
+      captureDraftCutoff: () => 1,
+      beforeStructural: () => draftBarrier.promise,
+      captureHistoryLocation: () => ({
+        scope: { kind: "active" },
+        libraryView: "all",
+        activeTagFilters: [],
+        selectedId: "root",
+        zoomRootId: "root",
+        expansion: pool.acquire(["root"]),
+        focus: { nodeId: "root", field: "title" },
+      }),
+      applyHistoryLocation: () => true,
+    });
+    await session.activation;
+    const physicalDrain = vi.fn(() => session.drain());
+    const unregister = registerNotesVaultDrain(vaultRoot, {
+      drain: physicalDrain,
+      releaseDrain: () => session.releaseDrain(),
+    });
+    const syncFlush = vi.fn(() => sync.promise);
+    await act(async () => {
+      render(
+        <Harness
+          vaultRoot={vaultRoot}
+          acquire={acquireNotesVaultDrain}
+          syncFlush={syncFlush}
+        />,
+      );
+      await flushMicrotasks();
+    });
+    const handler = onCloseRequested.mock.lastCall?.[0] as (event: {
+      preventDefault: () => void;
+    }) => Promise<void>;
+
+    const switchToB = acquireNotesVaultDrain(vaultRoot);
+    const closing = handler({ preventDefault: vi.fn() });
+    const returnToA = acquireNotesVaultDrain(vaultRoot);
+    expect(physicalDrain).toHaveBeenCalledOnce();
+    draftBarrier.resolve(true);
+    const [switchLease, cancellationLease] = await Promise.all([
+      switchToB,
+      returnToA,
+    ]);
+    await vi.waitFor(() => expect(syncFlush).toHaveBeenCalledWith(vaultRoot));
+
+    switchLease!.release();
+    cancellationLease!.release();
+    expect(session.isLifecycleDraining()).toBe(true);
+    const duringSync = vi.fn(() => ({ kind: "skipped" as const }));
+    await expect(session.enqueue(duringSync)).resolves.toBe("skipped");
+    expect(duringSync).not.toHaveBeenCalled();
+
+    sync.resolve();
+    await vi.waitFor(() => expect(destroy).toHaveBeenCalledOnce());
+    expect(session.isLifecycleDraining()).toBe(true);
+    destroying.resolve();
+    await act(async () => {
+      await closing;
+    });
+    expect(session.isLifecycleDraining()).toBe(true);
+
+    unregister();
+    session.close();
+    expect(session.isLifecycleDraining()).toBe(false);
+  });
+
+  it("prevents every simultaneous request and shares one drain", async () => {
+    const pending = deferred<NotesVaultDrainLease | null>();
+    const acquire = vi.fn(() => pending.promise);
+    await act(async () => {
+      render(<Harness acquire={acquire} />);
       await flushMicrotasks();
     });
     const handler = onCloseRequested.mock.calls[0][0] as (event: {
@@ -310,8 +496,8 @@ describe("useFlushDraftsOnWindowClose", () => {
     expect(first).toBe(second);
     expect(firstEvent.preventDefault).toHaveBeenCalledOnce();
     expect(secondEvent.preventDefault).toHaveBeenCalledOnce();
-    expect(flush).toHaveBeenCalledOnce();
-    pending.resolve(true);
+    expect(acquire).toHaveBeenCalledOnce();
+    pending.resolve(lease());
     await act(async () => {
       await first;
     });
@@ -320,23 +506,23 @@ describe("useFlushDraftsOnWindowClose", () => {
 
   it("does nothing outside a Tauri runtime", async () => {
     setTauriRuntime(false);
-    const flush = vi.fn().mockResolvedValue(true);
+    const acquire = vi.fn().mockResolvedValue(lease());
 
     await act(async () => {
-      render(<Harness flush={flush} />);
+      render(<Harness acquire={acquire} />);
       await flushMicrotasks();
     });
 
     expect(onCloseRequested).not.toHaveBeenCalled();
-    expect(flush).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
     expect(destroy).not.toHaveBeenCalled();
   });
 
   it("unlistens the close handler on unmount", async () => {
-    const flush = vi.fn().mockResolvedValue(true);
+    const acquire = vi.fn().mockResolvedValue(lease());
     let unmount!: () => void;
     await act(async () => {
-      ({ unmount } = render(<Harness flush={flush} />));
+      ({ unmount } = render(<Harness acquire={acquire} />));
       await flushMicrotasks();
     });
     expect(onCloseRequested).toHaveBeenCalledTimes(1);

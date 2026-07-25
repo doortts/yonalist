@@ -10,6 +10,7 @@ import type {
 import type { NotesWriteQueue } from "../../services/notesWriteQueue";
 import type {
   NotesDraftEngineCoordinatorSession,
+  NotesWorkspaceDrainEnqueue,
   NotesWorkspaceQueueContext,
   NotesWorkspaceQueueResult,
 } from "./notesWorkspaceCoordinator";
@@ -418,6 +419,7 @@ export class NotesDraftEngine {
   readonly record: NotesWorkspaceSessionRecord;
   private readonly host: NotesDraftEngineHost;
   private readonly retiredDraftRevisionByNodeId = new Map<NoteId, number>();
+  private lifecycleDrainEnqueue: NotesWorkspaceDrainEnqueue | null = null;
   private draftsSnapshotCache: Record<NoteId, NotesNodeDraft>;
   private writeErrorSnapshotCache: NotesStoreError | null;
   private readonly recoveryUnsubscribe: () => void;
@@ -792,7 +794,10 @@ export class NotesDraftEngine {
     return cutoff;
   }
 
-  async flushDraftBarrier(cutoff: number): Promise<boolean> {
+  async flushDraftBarrier(
+    cutoff: number,
+    drainEnqueue?: NotesWorkspaceDrainEnqueue,
+  ): Promise<boolean> {
     const record = this.record;
     if (record.authorityRecoveryPaused) return false;
     if (record.closing) {
@@ -805,38 +810,44 @@ export class NotesDraftEngine {
     ) {
       return record.drafts.size === 0;
     }
-    const hasImageAtomEditors = record.imageAtomFlushAdapters.size > 0;
-    const imageAtomFlush = this.flushImageAtomEditors();
-    if (imageAtomFlush !== true) {
-      if (!(await imageAtomFlush)) return false;
+    const previousDrainEnqueue = this.lifecycleDrainEnqueue;
+    this.lifecycleDrainEnqueue = drainEnqueue ?? previousDrainEnqueue;
+    try {
+      const hasImageAtomEditors = record.imageAtomFlushAdapters.size > 0;
+      const imageAtomFlush = this.flushImageAtomEditors();
+      if (imageAtomFlush !== true) {
+        if (!(await imageAtomFlush)) return false;
+      }
+      // A composition-end callback can create its final draft after the
+      // structural command captured a cutoff. Only active image editors can do
+      // that during this barrier; ordinary post-command typing remains outside
+      // the structural history boundary.
+      const effectiveCutoff = hasImageAtomEditors
+        ? Math.max(cutoff, record.nextDraftRevision - 1)
+        : cutoff;
+      const intent = record.structuralIntents.find(
+        (candidate) =>
+          candidate.cutoff === cutoff || candidate.initialCutoff === cutoff,
+      );
+      if (intent) intent.cutoff = effectiveCutoff;
+      const flushed = await this.flushDraftsThroughCutoff(effectiveCutoff);
+      if (flushed) {
+        return true;
+      }
+      if (record.closing) {
+        await (record.closeCompletion ?? Promise.resolve());
+      }
+      if (
+        record.closing ||
+        this.host.currentRecord() !== record ||
+        this.host.currentSession() !== record.session
+      ) {
+        return record.drafts.size === 0;
+      }
+      return false;
+    } finally {
+      this.lifecycleDrainEnqueue = previousDrainEnqueue;
     }
-    // A composition-end callback can create its final draft after the
-    // structural command captured a cutoff. Only active image editors can do
-    // that during this barrier; ordinary post-command typing remains outside
-    // the structural history boundary.
-    const effectiveCutoff = hasImageAtomEditors
-      ? Math.max(cutoff, record.nextDraftRevision - 1)
-      : cutoff;
-    const intent = record.structuralIntents.find(
-      (candidate) =>
-        candidate.cutoff === cutoff || candidate.initialCutoff === cutoff,
-    );
-    if (intent) intent.cutoff = effectiveCutoff;
-    const flushed = await this.flushDraftsThroughCutoff(effectiveCutoff);
-    if (flushed) {
-      return true;
-    }
-    if (record.closing) {
-      await (record.closeCompletion ?? Promise.resolve());
-    }
-    if (
-      record.closing ||
-      this.host.currentRecord() !== record ||
-      this.host.currentSession() !== record.session
-    ) {
-      return record.drafts.size === 0;
-    }
-    return false;
   }
 
   releaseDraftBarrier(cutoff: number): void {
@@ -1148,7 +1159,10 @@ export class NotesDraftEngine {
     // Draft autosave is enqueued silently so it settles through the drafts
     // slice without toggling the global loading/aria-busy state. The settled
     // event still commits the authoritative workspace via settleQueueWork.
-    const outcome = await record.session.enqueue(
+    const enqueue =
+      this.lifecycleDrainEnqueue ??
+      ((work, options) => record.session.enqueue(work, options));
+    const outcome = await enqueue(
       async (context) => {
         result = await this.host.persistDraftMutation(context, attempt);
         return result;

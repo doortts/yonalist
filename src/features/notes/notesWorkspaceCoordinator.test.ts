@@ -13,6 +13,7 @@ import {
 } from "./notesHistory";
 import {
   createNotesWorkspaceCoordinatorRegistry,
+  type NotesWorkspaceDrainEnqueue,
   type OpenNotesWorkspaceSessionOptions
 } from "./notesWorkspaceCoordinator";
 import { applyBackspaceGestureCommand } from "./notesCommands";
@@ -2454,6 +2455,87 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(retainedWork).not.toHaveBeenCalled();
     barrier.resolve(true);
     await expect(drain).resolves.toBe(true);
+    session.close();
+  });
+
+  it("admits only the exact drain capability, not public silent, observer, retain, or forged flags", async () => {
+    const barrier = deferred<boolean>();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession(writableOptions(pool, {
+      repository: repository(),
+      vaultRoot: "/strict-capability",
+      onEvent: vi.fn(),
+      captureDraftCutoff: () => 1,
+      beforeStructural: () => barrier.promise
+    }));
+    await session.activation;
+    const drain = session.drain();
+    await Promise.resolve();
+    const silentWork = vi.fn(() => ({ kind: "skipped" as const }));
+    const observerWork = vi.fn(() => ({ kind: "skipped" as const }));
+    const retainedWork = vi.fn(() => ({ kind: "skipped" as const }));
+    const forgedWork = vi.fn(() => ({ kind: "skipped" as const }));
+    const forgedOptions = {
+      lifecycleDrainWork: true,
+      retainAfterClose: true
+    } as unknown as NonNullable<
+      Parameters<typeof session.enqueueStructural>[1]
+    >;
+
+    await expect(
+      Promise.all([
+        session.enqueue(silentWork, { silent: true }),
+        session.enqueue(observerWork, { observer: true }),
+        session.enqueueStructural(retainedWork, { retainAfterClose: true }),
+        session.enqueueStructural(forgedWork, forgedOptions)
+      ])
+    ).resolves.toEqual(["skipped", "skipped", "skipped", "skipped"]);
+    expect(silentWork).not.toHaveBeenCalled();
+    expect(observerWork).not.toHaveBeenCalled();
+    expect(retainedWork).not.toHaveBeenCalled();
+    expect(forgedWork).not.toHaveBeenCalled();
+
+    barrier.resolve(true);
+    await expect(drain).resolves.toBe(true);
+    session.close();
+  });
+
+  it("invalidates a drain enqueue capability after release and across generations", async () => {
+    const secondBarrier = deferred<boolean>();
+    const drainEnqueues: NotesWorkspaceDrainEnqueue[] = [];
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession(writableOptions(pool, {
+      repository: repository(),
+      vaultRoot: "/strict-capability-generation",
+      onEvent: vi.fn(),
+      captureDraftCutoff: () => drainEnqueues.length + 1,
+      beforeStructural: async (_cutoff, drainEnqueue) => {
+        drainEnqueues.push(drainEnqueue!);
+        if (drainEnqueues.length === 2) return secondBarrier.promise;
+        return true;
+      }
+    }));
+    await session.activation;
+
+    await expect(session.drain()).resolves.toBe(true);
+    session.releaseDrain();
+    const staleWork = vi.fn(() => ({ kind: "skipped" as const }));
+    await expect(
+      drainEnqueues[0]!(staleWork, { silent: true })
+    ).resolves.toBe("skipped");
+    expect(staleWork).not.toHaveBeenCalled();
+
+    const secondDrain = session.drain();
+    await vi.waitFor(() => expect(drainEnqueues).toHaveLength(2));
+    await expect(
+      drainEnqueues[0]!(staleWork, { observer: true })
+    ).resolves.toBe("skipped");
+    expect(staleWork).not.toHaveBeenCalled();
+    secondBarrier.resolve(true);
+    await expect(secondDrain).resolves.toBe(true);
+    session.releaseDrain();
     session.close();
   });
 

@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  drainNotesVault,
+  acquireNotesVaultDrain,
   registerNotesVaultDrain,
-  releaseNotesVaultDrain,
   resetNotesVaultDrainRegistryForTests,
 } from "./notesVaultDrain";
 
@@ -29,11 +28,13 @@ describe("notesVaultDrain", () => {
     registerNotesVaultDrain("/vault-a", { drain: second, releaseDrain: vi.fn() });
     registerNotesVaultDrain("/vault-b", { drain: other, releaseDrain: vi.fn() });
 
-    await expect(drainNotesVault("/vault-a")).resolves.toBe(true);
+    const lease = await acquireNotesVaultDrain("/vault-a");
+    expect(lease).not.toBeNull();
 
     expect(first).toHaveBeenCalledOnce();
     expect(second).toHaveBeenCalledOnce();
     expect(other).not.toHaveBeenCalled();
+    lease!.release();
   });
 
   it("reports an incomplete participant and propagates participant rejection", async () => {
@@ -41,7 +42,7 @@ describe("notesVaultDrain", () => {
       drain: vi.fn().mockResolvedValue(false),
       releaseDrain: vi.fn(),
     });
-    await expect(drainNotesVault("/vault")).resolves.toBe(false);
+    await expect(acquireNotesVaultDrain("/vault")).resolves.toBeNull();
 
     resetNotesVaultDrainRegistryForTests();
     const failure = new Error("draft queue failed");
@@ -49,10 +50,10 @@ describe("notesVaultDrain", () => {
       drain: vi.fn().mockRejectedValue(failure),
       releaseDrain: vi.fn(),
     });
-    await expect(drainNotesVault("/vault")).rejects.toBe(failure);
+    await expect(acquireNotesVaultDrain("/vault")).rejects.toBe(failure);
   });
 
-  it("shares one in-flight pass per Vault and unregisters by identity", async () => {
+  it("shares one physical in-flight pass per Vault and unregisters by identity", async () => {
     const pending = deferred<boolean>();
     const participant = {
       drain: vi.fn(() => pending.promise),
@@ -60,16 +61,19 @@ describe("notesVaultDrain", () => {
     };
     const unregister = registerNotesVaultDrain("/vault", participant);
 
-    const first = drainNotesVault("/vault");
-    const second = drainNotesVault("/vault");
+    const first = acquireNotesVaultDrain("/vault");
+    const second = acquireNotesVaultDrain("/vault");
 
-    expect(second).toBe(first);
     expect(participant.drain).toHaveBeenCalledOnce();
     pending.resolve(true);
-    await expect(first).resolves.toBe(true);
+    const [firstLease, secondLease] = await Promise.all([first, second]);
+    expect(firstLease).not.toBe(secondLease);
+    firstLease!.release();
+    secondLease!.release();
 
     unregister();
-    await expect(drainNotesVault("/vault")).resolves.toBe(true);
+    const emptyLease = await acquireNotesVaultDrain("/vault");
+    expect(emptyLease).toMatchObject({ generation: 0 });
     expect(participant.drain).toHaveBeenCalledOnce();
   });
 
@@ -85,7 +89,7 @@ describe("notesVaultDrain", () => {
       releaseDrain: failedRelease,
     });
 
-    await expect(drainNotesVault("/vault")).resolves.toBe(false);
+    await expect(acquireNotesVaultDrain("/vault")).resolves.toBeNull();
     expect(successfulRelease).toHaveBeenCalledOnce();
     expect(failedRelease).toHaveBeenCalledOnce();
 
@@ -102,12 +106,12 @@ describe("notesVaultDrain", () => {
       releaseDrain: siblingRelease,
     });
 
-    await expect(drainNotesVault("/vault")).rejects.toBe(failure);
+    await expect(acquireNotesVaultDrain("/vault")).rejects.toBe(failure);
     expect(rejectionRelease).toHaveBeenCalledOnce();
     expect(siblingRelease).toHaveBeenCalledOnce();
   });
 
-  it("waits for an in-flight drain before explicitly releasing its participants", async () => {
+  it("waits for an in-flight drain before returning its caller-owned lease", async () => {
     const pending = deferred<boolean>();
     const releaseDrain = vi.fn();
     registerNotesVaultDrain("/vault", {
@@ -115,14 +119,79 @@ describe("notesVaultDrain", () => {
       releaseDrain,
     });
 
-    const drain = drainNotesVault("/vault");
-    const release = releaseNotesVaultDrain("/vault");
+    const acquiring = acquireNotesVaultDrain("/vault");
+    const settled = vi.fn();
+    void acquiring.then(settled);
     await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
     expect(releaseDrain).not.toHaveBeenCalled();
 
     pending.resolve(true);
-    await expect(drain).resolves.toBe(true);
-    await release;
+    const lease = await acquiring;
+    expect(lease).not.toBeNull();
+    lease!.release();
     expect(releaseDrain).toHaveBeenCalledOnce();
+  });
+
+  it("gives concurrent owners distinct leases and releases the physical lock only after both release", async () => {
+    const pending = deferred<boolean>();
+    const releaseDrain = vi.fn();
+    const drain = vi.fn(() => pending.promise);
+    registerNotesVaultDrain("/vault", { drain, releaseDrain });
+
+    const firstLease = acquireNotesVaultDrain("/vault");
+    const secondLease = acquireNotesVaultDrain("/vault");
+
+    expect(drain).toHaveBeenCalledOnce();
+    pending.resolve(true);
+    const [first, second] = await Promise.all([firstLease, secondLease]);
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    expect(first).not.toBe(second);
+    expect(first).toMatchObject({ vaultRoot: "/vault", generation: 1 });
+    expect(second).toMatchObject({ vaultRoot: "/vault", generation: 1 });
+
+    first!.release();
+    first!.release();
+    expect(releaseDrain).not.toHaveBeenCalled();
+    second!.release();
+    expect(releaseDrain).toHaveBeenCalledOnce();
+  });
+
+  it("does not let an old lease release a newer generation", async () => {
+    const releaseDrain = vi.fn();
+    const drain = vi.fn().mockResolvedValue(true);
+    registerNotesVaultDrain("/vault", { drain, releaseDrain });
+
+    const oldLease = await acquireNotesVaultDrain("/vault");
+    oldLease!.release();
+    const newLease = await acquireNotesVaultDrain("/vault");
+    expect(drain).toHaveBeenCalledTimes(2);
+    expect(newLease!.generation).toBe(2);
+
+    oldLease!.release();
+    expect(releaseDrain).toHaveBeenCalledOnce();
+    newLease!.release();
+    expect(releaseDrain).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a committed generation locked until participant teardown", async () => {
+    const releaseDrain = vi.fn();
+    const unregister = registerNotesVaultDrain("/vault", {
+      drain: vi.fn().mockResolvedValue(true),
+      releaseDrain,
+    });
+
+    const lease = await acquireNotesVaultDrain("/vault");
+    lease!.commit();
+    lease!.commit();
+    lease!.release();
+    expect(releaseDrain).not.toHaveBeenCalled();
+
+    unregister();
+    await expect(acquireNotesVaultDrain("/vault")).resolves.toMatchObject({
+      vaultRoot: "/vault",
+    });
+    expect(releaseDrain).not.toHaveBeenCalled();
   });
 });
