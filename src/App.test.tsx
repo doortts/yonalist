@@ -10,6 +10,7 @@ const githubAuthOverride = vi.hoisted(() => vi.fn());
 const drainNotesVaultOverride = vi.hoisted(() => vi.fn());
 const releaseNotesVaultOverride = vi.hoisted(() => vi.fn());
 const commitNotesVaultOverride = vi.hoisted(() => vi.fn());
+const flushNotesSyncOverride = vi.hoisted(() => vi.fn());
 const registerNotesVaultDrain = vi.hoisted(() => vi.fn(() => vi.fn()));
 
 vi.mock("./features/notes/notesVaultDrain", () => ({
@@ -26,6 +27,15 @@ vi.mock("./features/notes/notesVaultDrain", () => ({
   },
   registerNotesVaultDrain,
 }));
+
+vi.mock("./services/notesStore", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./services/notesStore")>();
+  return {
+    ...actual,
+    notesSyncFlush: (...args: Parameters<typeof actual.notesSyncFlush>) =>
+      flushNotesSyncOverride(...args),
+  };
+});
 
 vi.mock("./hooks/useNotificationDetail", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./hooks/useNotificationDetail")>();
@@ -290,6 +300,8 @@ describe("Yonalist app shell", () => {
     releaseNotesVaultOverride.mockReset();
     releaseNotesVaultOverride.mockResolvedValue(undefined);
     commitNotesVaultOverride.mockReset();
+    flushNotesSyncOverride.mockReset();
+    flushNotesSyncOverride.mockResolvedValue(undefined);
     registerNotesVaultDrain.mockClear();
     githubAuthOverride.mockReset();
     Reflect.deleteProperty(notesStore, "refreshMaterializedGithubNotifications");
@@ -4971,6 +4983,85 @@ describe("Yonalist app shell", () => {
         ([vaultPath]) => vaultPath === "/vault-still-unsaved"
       )
     ).toBe(false);
+  });
+
+  it("keeps the old Vault active when its sync exporter cannot flush", async () => {
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ vaultFolder: "/vault-old" })
+    );
+    flushNotesSyncOverride.mockRejectedValueOnce(new Error("export failed"));
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByLabelText("Notes library");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
+        name: /Vault and sync/
+      })
+    );
+    const input = await screen.findByLabelText("Vault folder");
+
+    fireEvent.change(input, { target: { value: "/vault-unsynced" } });
+    fireEvent.blur(input);
+
+    expect(
+      await screen.findByText("Could not save the current Vault. Try again.")
+    ).toBeInTheDocument();
+    expect(flushNotesSyncOverride).toHaveBeenCalledWith("/vault-old");
+    expect(releaseNotesVaultOverride).toHaveBeenCalledWith("/vault-old");
+    expect(commitNotesVaultOverride).not.toHaveBeenCalled();
+    expect(
+      vi.mocked(notesStore.initialize).mock.calls.some(
+        ([vaultPath]) => vaultPath === "/vault-unsynced"
+      )
+    ).toBe(false);
+  });
+
+  it("waits for the current Vault sync exporter before switching", async () => {
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ vaultFolder: "/vault-old" })
+    );
+    const flush = deferred<void>();
+    flushNotesSyncOverride.mockReturnValueOnce(flush.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByLabelText("Notes library");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
+        name: /Vault and sync/
+      })
+    );
+    const input = await screen.findByLabelText("Vault folder");
+
+    fireEvent.change(input, { target: { value: "/vault-after-flush" } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(flushNotesSyncOverride).toHaveBeenCalledWith("/vault-old")
+    );
+    expect(
+      vi.mocked(notesStore.initialize).mock.calls.some(
+        ([vaultPath]) => vaultPath === "/vault-after-flush"
+      )
+    ).toBe(false);
+    expect(commitNotesVaultOverride).not.toHaveBeenCalled();
+
+    await act(async () => {
+      flush.resolve();
+      await flush.promise;
+    });
+    await waitFor(() =>
+      expect(
+        vi.mocked(notesStore.initialize).mock.calls.some(
+          ([vaultPath]) => vaultPath === "/vault-after-flush"
+        )
+      ).toBe(true)
+    );
+    expect(commitNotesVaultOverride).toHaveBeenCalledWith("/vault-old");
   });
 
   it("retries the same requested Vault folder after a failed drain", async () => {

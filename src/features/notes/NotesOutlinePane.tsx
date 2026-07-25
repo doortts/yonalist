@@ -1434,11 +1434,14 @@ export function NotesOutlinePane({
           metaKey: event.metaKey,
           shiftKey: event.shiftKey,
           isComposing: event.isComposing,
+          repeat: event.repeat,
           platform: detectOutlineShortcutPlatform(),
         });
         if (historyShortcut) {
           event.preventDefault();
-          void actions[historyShortcut]?.();
+          if (historyShortcut !== "consume") {
+            void actions[historyShortcut]?.();
+          }
           return;
         }
       }

@@ -6776,7 +6776,9 @@ describe("Notes workspace", () => {
     title.setSelectionRange(5, 8);
 
     expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
-    expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+    expect(
+      fireEvent.keyDown(title, { key: "Enter", repeat: true }),
+    ).toBe(false);
     expect(randomUUID).toHaveBeenCalledTimes(idsBeforeSplit + 1);
     await waitFor(() =>
       expect(notesStoreMock.splitNode).toHaveBeenCalledOnce(),
@@ -7092,7 +7094,7 @@ describe("Notes workspace", () => {
       expect(await findTitleInput("typed before save")).toHaveFocus();
     });
 
-    it("queues rapid Enter splits in provisional order", async () => {
+    it("chains held Enter repeats through provisional rows in order", async () => {
       configureRepository([
         node({ id: "solo", sortKey: 1024, title: "alpha" })
       ]);
@@ -7112,7 +7114,7 @@ describe("Notes workspace", () => {
       const firstProvisional = await findTitleInput("pha");
       fireEvent.change(firstProvisional, { target: { value: "beta" } });
       firstProvisional.setSelectionRange(2, 2);
-      fireEvent.keyDown(firstProvisional, { key: "Enter" });
+      fireEvent.keyDown(firstProvisional, { key: "Enter", repeat: true });
 
       expect(getTitleInput("be")).toBeInTheDocument();
       expect(getTitleInput("ta")).toHaveFocus();
@@ -7140,6 +7142,11 @@ describe("Notes workspace", () => {
         historyContextMatcher()
       );
       const secondId = notesStoreMock.splitNode.mock.lastCall![1].newNodeId;
+      const firstHistory = notesStoreMock.splitNode.mock.calls[0]![2];
+      const secondHistory = notesStoreMock.splitNode.mock.calls[1]![2];
+      expect(secondHistory.historyEpoch).toBe(firstHistory.historyEpoch);
+      expect(secondHistory.entryId).not.toBe(firstHistory.entryId);
+      expect(secondHistory.commandKind).toBe("split");
       expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
 
       await act(async () =>
@@ -7621,6 +7628,12 @@ describe("Notes workspace", () => {
       const toolbar = await screen.findByRole("toolbar", {
         name: "Actions for 2 selected notes",
       });
+
+      alpha.focus();
+      expect(
+        fireEvent.keyDown(alpha, { key: "F6", repeat: true }),
+      ).toBe(true);
+      expect(alpha).toHaveFocus();
 
       expect(fireEvent.keyDown(alpha, { key: "F6" })).toBe(false);
       const clear = within(toolbar).getByRole("button", {
@@ -12358,17 +12371,19 @@ describe("Notes workspace", () => {
       }),
     ).toBe(false);
     await waitFor(() => expect(notesStoreMock.undo).toHaveBeenCalledOnce());
-    for (const outline of outlines) {
-      for (const nodeId of [
-        "empty-a",
-        "empty-b",
-        "empty-c",
-        "empty-d",
-        "empty-e",
-      ]) {
-        expect(titleIn(outline, nodeId)).not.toBeNull();
+    await waitFor(() => {
+      for (const outline of outlines) {
+        for (const nodeId of [
+          "empty-a",
+          "empty-b",
+          "empty-c",
+          "empty-d",
+          "empty-e",
+        ]) {
+          expect(titleIn(outline, nodeId)).not.toBeNull();
+        }
       }
-    }
+    });
     await waitFor(() => expect(titleIn(primary, "empty-e")).toHaveFocus());
     expect(titleIn(primary, "empty-e")?.selectionStart).toBe(0);
     expect(titleIn(primary, "empty-e")?.selectionEnd).toBe(0);

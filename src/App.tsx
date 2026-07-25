@@ -171,6 +171,7 @@ import {
 } from "./features/notes/notesVaultDrain";
 import { clearImageProxyCache } from "./services/imageProxy";
 import { scheduleIdleTask } from "./services/idleQueue";
+import { notesSyncFlush } from "./services/notesStore";
 import {
   clearItemThreadCache,
   getItemThreadCacheStats
@@ -2065,6 +2066,24 @@ export default function App({ initialOnline }: AppProps) {
     const previousRequestedFolder = vaultFolderDraft;
     setVaultFolderDraft(nextFolder);
     const nextRoot = nextFolder.trim() || SAMPLE_VAULT_ROOT;
+    const flushCurrentVaultSync = async (
+      releaseDrain: () => void
+    ): Promise<boolean> => {
+      try {
+        await notesSyncFlush(vaultRoot);
+      } catch {
+        releaseDrain();
+        if (requestToken === vaultFolderRequestTokenRef.current) {
+          setSettingsStatus("Could not save the current Vault. Try again.");
+        }
+        return false;
+      }
+      if (requestToken !== vaultFolderRequestTokenRef.current) {
+        releaseDrain();
+        return false;
+      }
+      return true;
+    };
     if (nextRoot === vaultRoot) {
       if (previousRequestedFolder !== settings.vaultFolder) {
         setSettingsStatus("Saving current Vault…");
@@ -2080,6 +2099,9 @@ export default function App({ initialOnline }: AppProps) {
         }
         if (!lease) {
           setSettingsStatus("Could not save the current Vault. Try again.");
+          return false;
+        }
+        if (!(await flushCurrentVaultSync(() => lease.release()))) {
           return false;
         }
         lease.release();
@@ -2102,6 +2124,9 @@ export default function App({ initialOnline }: AppProps) {
     }
     if (!lease) {
       setSettingsStatus("Could not save the current Vault. Try again.");
+      return false;
+    }
+    if (!(await flushCurrentVaultSync(() => lease.release()))) {
       return false;
     }
     setSettings((current) => ({ ...current, vaultFolder: nextFolder }));

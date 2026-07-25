@@ -33,8 +33,14 @@ const notesStoreMock = vi.hoisted(() => ({
   listTagsWithCounts: vi.fn(),
   deleteDatabase: vi.fn()
 }));
+const notesSyncFlushMock = vi.hoisted(() =>
+  vi.fn().mockResolvedValue(undefined)
+);
 
-vi.mock("../../services/notesStore", () => ({ notesStore: notesStoreMock }));
+vi.mock("../../services/notesStore", () => ({
+  notesStore: notesStoreMock,
+  notesSyncFlush: notesSyncFlushMock
+}));
 
 import { NotesFeatureProvider } from "./NotesFeature";
 import { NotesLibraryPane } from "./NotesLibraryPane";

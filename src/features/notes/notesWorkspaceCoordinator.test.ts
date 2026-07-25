@@ -1168,10 +1168,11 @@ describe("notesWorkspaceCoordinator registry", () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
     const session = registry.openSession(writableOptions(pool, {
       repository: store,
       vaultRoot: "/keyboard-insertion-preparation",
-      onEvent: vi.fn()
+      onEvent: events
     }));
     await session.activation;
     session.publishOutlinePaneState({
@@ -1232,6 +1233,21 @@ describe("notesWorkspaceCoordinator registry", () => {
         entryId: expect.any(String),
         commandKind: "split"
       })
+    });
+    if (!preparation) {
+      throw new Error("Expected keyboard insertion preparation.");
+    }
+    events.mockClear();
+
+    await session.enqueueStructural(
+      () => ({ kind: "skipped" as const }),
+      { keyboardInsertion: preparation }
+    );
+
+    expect(events).toHaveBeenCalledWith({
+      type: "pending",
+      selectionPolicy: "clear",
+      showLoading: true
     });
     session.close();
   });
@@ -1341,6 +1357,11 @@ describe("notesWorkspaceCoordinator registry", () => {
     blocker.resolve(workspace([node({ id: "root", title: "Root" })]));
     await blockerCompletion;
     await insertionCompletion;
+    expect(events).toHaveBeenCalledWith({
+      type: "pending",
+      selectionPolicy: "clear",
+      showLoading: false
+    });
     session.close();
   });
 
@@ -2313,7 +2334,8 @@ describe("notesWorkspaceCoordinator registry", () => {
 
     expect(events).toHaveBeenCalledWith({
       type: "pending",
-      selectionPolicy: "clear"
+      selectionPolicy: "clear",
+      showLoading: true
     });
     session.close();
   });
@@ -2335,7 +2357,8 @@ describe("notesWorkspaceCoordinator registry", () => {
 
     expect(events).toHaveBeenCalledWith({
       type: "pending",
-      selectionPolicy: "clear"
+      selectionPolicy: "clear",
+      showLoading: true
     });
     session.close();
   });
@@ -2360,7 +2383,8 @@ describe("notesWorkspaceCoordinator registry", () => {
 
     expect(events).toHaveBeenCalledWith({
       type: "pending",
-      selectionPolicy: "preserve"
+      selectionPolicy: "preserve",
+      showLoading: true
     });
     session.close();
   });

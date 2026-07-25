@@ -708,17 +708,27 @@ export function useNotesWorkspacePaneRegistry({
     ]
   );
   const primaryOptimisticKeyboardInsertions = useMemo(
-    () =>
-      draftsSlice.optimisticKeyboardInsertions?.filter(
-        (insertion) => insertion.pending.ownerPaneId === "primary"
-      ) ?? EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS,
+    () => {
+      const owned =
+        draftsSlice.optimisticKeyboardInsertions?.filter(
+          (insertion) => insertion.pending.ownerPaneId === "primary"
+        ) ?? EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS;
+      return owned.length === 0
+        ? EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS
+        : owned;
+    },
     [draftsSlice.optimisticKeyboardInsertions]
   );
   const secondaryOptimisticKeyboardInsertions = useMemo(
-    () =>
-      draftsSlice.optimisticKeyboardInsertions?.filter(
-        (insertion) => insertion.pending.ownerPaneId === "secondary"
-      ) ?? EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS,
+    () => {
+      const owned =
+        draftsSlice.optimisticKeyboardInsertions?.filter(
+          (insertion) => insertion.pending.ownerPaneId === "secondary"
+        ) ?? EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS;
+      return owned.length === 0
+        ? EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS
+        : owned;
+    },
     [draftsSlice.optimisticKeyboardInsertions]
   );
   const primaryOptimisticInsertionFailure =

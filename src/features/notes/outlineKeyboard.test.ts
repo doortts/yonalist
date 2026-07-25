@@ -214,6 +214,7 @@ function historyShortcutInput(
     metaKey: false,
     shiftKey: false,
     isComposing: false,
+    repeat: false,
     platform: "other",
     ...overrides
   };
@@ -516,6 +517,265 @@ describe("resolveExternalEditorKey", () => {
 });
 
 describe("resolveOutlineKey", () => {
+  const repeatPolicy = [
+    {
+      label: "plain text Backspace",
+      policy: "native-repeat",
+      initial: () =>
+        resolveOutlineKey(
+          input({
+            key: "Backspace",
+            selectionStart: 5,
+            selectionEnd: 5
+          })
+        ),
+      repeated: () =>
+        resolveOutlineKey(
+          input({
+            key: "Backspace",
+            repeat: true,
+            selectionStart: 5,
+            selectionEnd: 5
+          })
+        ),
+      initialType: null,
+      repeatType: null
+    },
+    {
+      label: "eligible empty-row Backspace",
+      policy: "app-repeat",
+      initial: () =>
+        resolveOutlineKey(
+          input({
+            key: "Backspace",
+            nodeId: "root-b",
+            title: "",
+            selectionStart: 0,
+            selectionEnd: 0
+          })
+        ),
+      repeated: () =>
+        resolveOutlineKey(
+          input({
+            key: "Backspace",
+            repeat: true,
+            nodeId: "root-b",
+            title: "",
+            selectionStart: 0,
+            selectionEnd: 0
+          })
+        ),
+      initialType: "remove",
+      repeatType: "remove"
+    },
+    {
+      label: "ArrowUp/ArrowDown",
+      policy: "app-repeat",
+      initial: () =>
+        resolveOutlineKey(
+          input({ key: "ArrowDown", nodeId: "root-a", title: "Root alpha" })
+        ),
+      repeated: () =>
+        resolveOutlineKey(
+          input({
+            key: "ArrowDown",
+            repeat: true,
+            nodeId: "root-a",
+            title: "Root alpha"
+          })
+        ),
+      initialType: "focus",
+      repeatType: "focus"
+    },
+    {
+      label: "cross-row ArrowLeft/ArrowRight",
+      policy: "app-repeat",
+      initial: () =>
+        resolveOutlineKey(
+          input({
+            key: "ArrowRight",
+            nodeId: "child-b",
+            title: "child-b",
+            selectionStart: 7,
+            selectionEnd: 7
+          })
+        ),
+      repeated: () =>
+        resolveOutlineKey(
+          input({
+            key: "ArrowRight",
+            repeat: true,
+            nodeId: "child-b",
+            title: "child-b",
+            selectionStart: 7,
+            selectionEnd: 7
+          })
+        ),
+      initialType: "focus",
+      repeatType: "focus"
+    },
+    {
+      label: "plain Enter",
+      policy: "app-repeat",
+      initial: () => resolveOutlineKey(input({ key: "Enter" })),
+      repeated: () =>
+        resolveOutlineKey(input({ key: "Enter", repeat: true })),
+      initialType: "split",
+      repeatType: "split"
+    },
+    {
+      label: "Shift+Enter",
+      policy: "one-shot",
+      initial: () =>
+        resolveOutlineKey(input({ key: "Enter", shiftKey: true })),
+      repeated: () =>
+        resolveOutlineKey(
+          input({ key: "Enter", shiftKey: true, repeat: true })
+        ),
+      initialType: "focusNote",
+      repeatType: null
+    },
+    {
+      label: "toggle-complete shortcut (Command/Ctrl+Enter)",
+      policy: "one-shot",
+      initial: () =>
+        resolveOutlineKey(
+          input({ key: "Enter", metaKey: true, platform: "mac" })
+        ),
+      repeated: () =>
+        resolveOutlineKey(
+          input({
+            key: "Enter",
+            metaKey: true,
+            platform: "mac",
+            repeat: true
+          })
+        ),
+      initialType: "toggleComplete",
+      repeatType: null
+    },
+    {
+      label: "Tab/Shift+Tab",
+      policy: "one-shot",
+      initial: () =>
+        resolveOutlineKey(
+          input({ key: "Tab", nodeId: "child-b", title: "child-b" })
+        ),
+      repeated: () =>
+        resolveOutlineKey(
+          input({
+            key: "Tab",
+            repeat: true,
+            nodeId: "child-b",
+            title: "child-b"
+          })
+        ),
+      initialType: "move",
+      repeatType: "consumeTabShortcut"
+    },
+    {
+      label: "move shortcut",
+      policy: "one-shot",
+      initial: () =>
+        resolveOutlineKey(
+          input({
+            key: "ArrowUp",
+            ctrlKey: true,
+            shiftKey: true,
+            platform: "mac",
+            nodeId: "child-b"
+          })
+        ),
+      repeated: () =>
+        resolveOutlineKey(
+          input({
+            key: "ArrowUp",
+            ctrlKey: true,
+            shiftKey: true,
+            platform: "mac",
+            nodeId: "child-b",
+            repeat: true
+          })
+        ),
+      initialType: "move",
+      repeatType: "consumeSelectionShortcut"
+    },
+    {
+      label: "duplicate shortcut",
+      policy: "one-shot",
+      initial: () =>
+        resolveOutlineKey(
+          input({
+            key: "D",
+            metaKey: true,
+            shiftKey: true,
+            platform: "mac"
+          })
+        ),
+      repeated: () =>
+        resolveOutlineKey(
+          input({
+            key: "D",
+            metaKey: true,
+            shiftKey: true,
+            platform: "mac",
+            repeat: true
+          })
+        ),
+      initialType: "duplicate",
+      repeatType: null
+    },
+    {
+      label: "delete shortcut",
+      policy: "one-shot",
+      initial: () =>
+        resolveOutlineKey(
+          input({
+            key: "Backspace",
+            metaKey: true,
+            shiftKey: true,
+            platform: "mac"
+          })
+        ),
+      repeated: () =>
+        resolveOutlineKey(
+          input({
+            key: "Backspace",
+            metaKey: true,
+            shiftKey: true,
+            platform: "mac",
+            repeat: true
+          })
+        ),
+      initialType: "delete",
+      repeatType: null
+    },
+    {
+      label: "zoom shortcuts",
+      policy: "one-shot",
+      initial: () => resolveWorkflowyZoomShortcut(zoomShortcutInput()),
+      repeated: () =>
+        resolveWorkflowyZoomShortcut(zoomShortcutInput({ repeat: true })),
+      initialType: "zoomIn",
+      repeatType: "consume"
+    }
+  ] as const;
+
+  it.each(repeatPolicy)(
+    "keeps $label on the $policy repeat policy",
+    ({ initial, repeated, initialType, repeatType }) => {
+      const resolutionType = (
+        resolution: ReturnType<typeof initial> | ReturnType<typeof repeated>
+      ) =>
+        typeof resolution === "string"
+          ? resolution
+          : (resolution?.type ?? null);
+
+      expect(resolutionType(initial())).toBe(initialType);
+      expect(resolutionType(repeated())).toBe(repeatType);
+    }
+  );
+
   it.each([
     ["MacIntel", "mac"],
     ["MacPPC", "mac"],
@@ -1188,7 +1448,26 @@ describe("resolveOutlineKey", () => {
     ).toBeNull();
     expect(
       resolveOutlineKey(input({ ...provisional, repeat: true }))
+    ).toEqual({
+      type: "split",
+      prefix: "dr",
+      suffix: "aft"
+    });
+    expect(
+      resolveOutlineKey(
+        input({ ...provisional, repeat: true, isComposing: true })
+      )
     ).toBeNull();
+    for (const modifier of [
+      { altKey: true },
+      { ctrlKey: true },
+      { metaKey: true },
+      { shiftKey: true }
+    ]) {
+      expect(
+        resolveOutlineKey(input({ ...provisional, ...modifier, repeat: true }))
+      ).toBeNull();
+    }
     expect(
       resolveOutlineKey(input({ ...provisional, ctrlKey: true }))
     ).toBeNull();
@@ -1597,6 +1876,22 @@ describe("resolveNotesHistoryShortcut", () => {
         )
       )
     ).toBeNull();
+  });
+
+  it.each([
+    ["Undo", { key: "z", ctrlKey: true, repeat: true }],
+    ["Redo", { key: "y", ctrlKey: true, repeat: true }]
+  ])("consumes repeated %s without executing another history entry", (
+    _label,
+    overrides
+  ) => {
+    expect(
+      resolveNotesHistoryShortcut(
+        historyShortcutInput(
+          overrides as Partial<ResolveNotesHistoryShortcutInput>
+        )
+      )
+    ).toBe("consume");
   });
 });
 

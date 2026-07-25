@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { IconTooltip } from "../../components/ui/Tooltip";
 import {
@@ -77,6 +78,7 @@ import { OutlineSortableHandle } from "./OutlineSortableShell";
 import type { NotesWorkspaceCommandOutcome } from "./notesWorkspaceCoordinator";
 import type {
   NotesActionsSlice,
+  NotesKeyboardInsertionPreparation,
   NotesNodeDraft,
   NotesStateSlice,
   NotesPreparedMove,
@@ -189,6 +191,18 @@ const OUTLINE_NATIVE_SELECTION_CONTROL_SELECTOR =
   "input, select, textarea, [contenteditable='true'], [data-image-atom-interactive]";
 const OUTLINE_NATIVE_SELECTION_SURFACE_SELECTOR =
   "[data-notes-native-selection-surface='true']";
+
+function prepareKeyboardInsertionSynchronously(
+  prepare: () => NotesKeyboardInsertionPreparation | null | undefined,
+): NotesKeyboardInsertionPreparation | null {
+  let preparation: NotesKeyboardInsertionPreparation | null = null;
+  // The coordinator notification is synchronous, but React would otherwise
+  // wait until the key event finishes before committing the provisional row.
+  flushSync(() => {
+    preparation = prepare() ?? null;
+  });
+  return preparation;
+}
 
 export function isOutlineSelectionInteractiveTarget(
   target: EventTarget | null,
@@ -1048,6 +1062,7 @@ function OutlineNodeEditorComponent({
   const runStructuralCommand = (
     command: () => Promise<NotesWorkspaceCommandOutcome | void>,
     onTerminalFailure?: () => void,
+    focusBeforeCommand?: HTMLElement,
   ) => {
     if (structuralCommandInFlightRef.current) {
       return;
@@ -1059,9 +1074,10 @@ function OutlineNodeEditorComponent({
     // Remember the caret so a dropped command can hand focus back rather than
     // stranding it, e.g. after Enter blurs the title on the way to a split.
     const focusedBeforeCommand =
-      document.activeElement instanceof HTMLElement
+      focusBeforeCommand ??
+      (document.activeElement instanceof HTMLElement
         ? document.activeElement
-        : null;
+        : null);
     let completion: Promise<NotesWorkspaceCommandOutcome | void>;
     try {
       completion = command();
@@ -1216,11 +1232,14 @@ function OutlineNodeEditorComponent({
       metaKey: event.metaKey,
       shiftKey: event.shiftKey,
       isComposing: event.nativeEvent.isComposing,
+      repeat: event.repeat,
       platform: detectOutlineShortcutPlatform(),
     });
     if (historyShortcut) {
       event.preventDefault();
-      void actions[historyShortcut]?.();
+      if (historyShortcut !== "consume") {
+        void actions[historyShortcut]?.();
+      }
       return;
     }
     if (
@@ -1247,11 +1266,14 @@ function OutlineNodeEditorComponent({
       metaKey: event.metaKey,
       shiftKey: event.shiftKey,
       isComposing: event.nativeEvent.isComposing,
+      repeat: event.repeat,
       platform: detectOutlineShortcutPlatform(),
     });
     if (historyShortcut) {
       event.preventDefault();
-      void actions[historyShortcut]?.();
+      if (historyShortcut !== "consume") {
+        void actions[historyShortcut]?.();
+      }
       return;
     }
     if (
@@ -1386,38 +1408,44 @@ function OutlineNodeEditorComponent({
           );
           return;
         }
-        const keyboardInsertion = actions.prepareKeyboardInsertion?.({
-          ownerPaneId: paneId,
-          interactionEpochAtDispatch: interactionEpoch.current(),
-          intent: {
-            token: nextKeyboardInsertionToken(),
-            sourceId: nodeId,
-            expectedNodeId: newNodeId,
-            postcondition: {
-              kind: "first-child",
-              expectedParentId: nodeId,
-              expectedIndex: 0,
-              expectedInsertedTitle: "",
-            },
-          },
-          optimistic: {
-            checkpoint: {
-              sourceNode: {
-                ...node,
-                ...(sourceDraft ?? draftPatch()),
-              },
-              sourceRow,
-              sourceSelection: {
-                anchorUtf16: event.currentTarget.selectionStart,
-                focusUtf16: event.currentTarget.selectionEnd,
+        const focusBeforeInsertion =
+          document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : undefined;
+        const keyboardInsertion = prepareKeyboardInsertionSynchronously(() =>
+          actions.prepareKeyboardInsertion?.({
+            ownerPaneId: paneId,
+            interactionEpochAtDispatch: interactionEpoch.current(),
+            intent: {
+              token: nextKeyboardInsertionToken(),
+              sourceId: nodeId,
+              expectedNodeId: newNodeId,
+              postcondition: {
+                kind: "first-child",
+                expectedParentId: nodeId,
+                expectedIndex: 0,
+                expectedInsertedTitle: "",
               },
             },
-            sourceTitle: titleValue,
-            insertedTitle: "",
-            dependencyId:
-              optimisticInsertion?.pending.intent.expectedNodeId,
-          },
-        });
+            optimistic: {
+              checkpoint: {
+                sourceNode: {
+                  ...node,
+                  ...(sourceDraft ?? draftPatch()),
+                },
+                sourceRow,
+                sourceSelection: {
+                  anchorUtf16: event.currentTarget.selectionStart,
+                  focusUtf16: event.currentTarget.selectionEnd,
+                },
+              },
+              sourceTitle: titleValue,
+              insertedTitle: "",
+              dependencyId:
+                optimisticInsertion?.pending.intent.expectedNodeId,
+            },
+          }),
+        );
         if (!keyboardInsertion) return;
         markSplitPhase(newNodeId, "keydown");
         onKeyboardInsertionPrepared?.(
@@ -1435,6 +1463,7 @@ function OutlineNodeEditorComponent({
               keyboardInsertion.pending.intent.token,
               keyboardInsertion.pending.layoutGenerationAtDispatch,
             ),
+          focusBeforeInsertion,
         );
         return;
       }
@@ -1461,37 +1490,43 @@ function OutlineNodeEditorComponent({
           });
           return;
         }
-        const keyboardInsertion = actions.prepareKeyboardInsertion?.({
-          ownerPaneId: paneId,
-          interactionEpochAtDispatch: interactionEpoch.current(),
-          intent: {
-            token: nextKeyboardInsertionToken(),
-            sourceId: nodeId,
-            expectedNodeId: newNodeId,
-            postcondition: {
-              kind: "split",
-              expectedSourceTitle: resolution.prefix,
-              expectedInsertedTitle: resolution.suffix,
-            },
-          },
-          optimistic: {
-            checkpoint: {
-              sourceNode: {
-                ...node,
-                ...(sourceDraft ?? draftPatch()),
-              },
-              sourceRow,
-              sourceSelection: {
-                anchorUtf16: event.currentTarget.selectionStart,
-                focusUtf16: event.currentTarget.selectionEnd,
+        const focusBeforeInsertion =
+          document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : undefined;
+        const keyboardInsertion = prepareKeyboardInsertionSynchronously(() =>
+          actions.prepareKeyboardInsertion?.({
+            ownerPaneId: paneId,
+            interactionEpochAtDispatch: interactionEpoch.current(),
+            intent: {
+              token: nextKeyboardInsertionToken(),
+              sourceId: nodeId,
+              expectedNodeId: newNodeId,
+              postcondition: {
+                kind: "split",
+                expectedSourceTitle: resolution.prefix,
+                expectedInsertedTitle: resolution.suffix,
               },
             },
-            sourceTitle: resolution.prefix,
-            insertedTitle: resolution.suffix,
-            dependencyId:
-              optimisticInsertion?.pending.intent.expectedNodeId,
-          },
-        });
+            optimistic: {
+              checkpoint: {
+                sourceNode: {
+                  ...node,
+                  ...(sourceDraft ?? draftPatch()),
+                },
+                sourceRow,
+                sourceSelection: {
+                  anchorUtf16: event.currentTarget.selectionStart,
+                  focusUtf16: event.currentTarget.selectionEnd,
+                },
+              },
+              sourceTitle: resolution.prefix,
+              insertedTitle: resolution.suffix,
+              dependencyId:
+                optimisticInsertion?.pending.intent.expectedNodeId,
+            },
+          }),
+        );
         if (!keyboardInsertion) return;
         onKeyboardInsertionPrepared?.(
           keyboardInsertion.pending.intent.token,
@@ -1514,6 +1549,7 @@ function OutlineNodeEditorComponent({
               keyboardInsertion.pending.intent.token,
               keyboardInsertion.pending.layoutGenerationAtDispatch,
             ),
+          focusBeforeInsertion,
         );
         return;
       }
@@ -1632,11 +1668,14 @@ function OutlineNodeEditorComponent({
       metaKey: event.metaKey,
       shiftKey: event.shiftKey,
       isComposing: event.nativeEvent.isComposing,
+      repeat: event.repeat,
       platform: detectOutlineShortcutPlatform(),
     });
     if (historyShortcut) {
       event.preventDefault();
-      void actions[historyShortcut]?.();
+      if (historyShortcut !== "consume") {
+        void actions[historyShortcut]?.();
+      }
       return;
     }
     const resolution = resolveOutlineKey({
@@ -2627,11 +2666,14 @@ function OutlineNodeEditorComponent({
               metaKey: event.metaKey,
               shiftKey: event.shiftKey,
               isComposing: event.nativeEvent.isComposing,
+              repeat: event.repeat,
               platform: detectOutlineShortcutPlatform(),
             });
             if (historyShortcut) {
               event.preventDefault();
-              void actions[historyShortcut]?.();
+              if (historyShortcut !== "consume") {
+                void actions[historyShortcut]?.();
+              }
               return;
             }
             if (

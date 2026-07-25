@@ -181,7 +181,11 @@ export type NotesBackspaceGestureQueueWork = (
 ) => Promise<NotesWorkspaceQueueResult> | NotesWorkspaceQueueResult;
 
 export type NotesWorkspaceCoordinatorEvent =
-  | { type: "pending"; selectionPolicy: NotesPendingSelectionPolicy }
+  | {
+      type: "pending";
+      selectionPolicy: NotesPendingSelectionPolicy;
+      showLoading: boolean;
+    }
   | { type: "authorityRecovery"; authority: NotesWriteAuthority }
   | {
       type: "optimisticInsertion";
@@ -2817,7 +2821,15 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           );
         }
         if (!silent) {
-          notify(session, { type: "pending", selectionPolicy });
+          notify(session, {
+            type: "pending",
+            selectionPolicy,
+            showLoading:
+              keyboardInsertion === null ||
+              entry.optimisticKeyboardInsertions.get(
+                keyboardInsertion.pending.intent.expectedNodeId
+              )?.pending !== keyboardInsertion.pending
+          });
         }
         pump(entry);
         return item.completion;

@@ -467,11 +467,14 @@ export function NotesPageHeader({
       metaKey: event.metaKey,
       shiftKey: event.shiftKey,
       isComposing: event.nativeEvent.isComposing,
+      repeat: event.repeat,
       platform: detectOutlineShortcutPlatform(),
     });
     if (historyShortcut) {
       event.preventDefault();
-      void actions[historyShortcut]?.();
+      if (historyShortcut !== "consume") {
+        void actions[historyShortcut]?.();
+      }
       return;
     }
     if (
@@ -582,11 +585,14 @@ export function NotesPageHeader({
       metaKey: event.metaKey,
       shiftKey: event.shiftKey,
       isComposing: event.nativeEvent.isComposing,
+      repeat: event.repeat,
       platform: detectOutlineShortcutPlatform(),
     });
     if (historyShortcut) {
       event.preventDefault();
-      void actions[historyShortcut]?.();
+      if (historyShortcut !== "consume") {
+        void actions[historyShortcut]?.();
+      }
       return;
     }
     const resolution = resolveOutlineKey({
@@ -1399,11 +1405,14 @@ export function NotesPageHeader({
                       metaKey: event.metaKey,
                       shiftKey: event.shiftKey,
                       isComposing: event.nativeEvent.isComposing,
+                      repeat: event.repeat,
                       platform: detectOutlineShortcutPlatform(),
                     });
                     if (historyShortcut) {
                       event.preventDefault();
-                      void actions[historyShortcut]?.();
+                      if (historyShortcut !== "consume") {
+                        void actions[historyShortcut]?.();
+                      }
                       return;
                     }
                     if (

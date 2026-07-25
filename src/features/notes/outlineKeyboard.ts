@@ -16,10 +16,11 @@ export interface ResolveNotesHistoryShortcutInput {
   metaKey: boolean;
   shiftKey: boolean;
   isComposing: boolean;
+  repeat: boolean;
   platform: OutlineShortcutPlatform;
 }
 
-export type NotesHistoryShortcut = "undo" | "redo";
+export type NotesHistoryShortcut = "undo" | "redo" | "consume";
 
 export interface ResolveSupportingNoteKeyInput {
   key: string;
@@ -285,11 +286,13 @@ export function resolveNotesHistoryShortcut(
   }
   const key = input.key.toLowerCase();
   if (key === "z") {
+    if (input.repeat) return "consume";
     return input.shiftKey ? "redo" : "undo";
   }
-  return input.platform === "other" && key === "y" && !input.shiftKey
-    ? "redo"
-    : null;
+  if (input.platform === "other" && key === "y" && !input.shiftKey) {
+    return input.repeat ? "consume" : "redo";
+  }
+  return null;
 }
 
 export interface ResolveOutlineKeyInput {
@@ -445,8 +448,7 @@ export function resolveOutlineKey(
       input.altKey ||
       input.ctrlKey ||
       input.metaKey ||
-      input.shiftKey ||
-      input.repeat)
+      input.shiftKey)
   ) {
     return null;
   }
@@ -635,13 +637,11 @@ export function resolveOutlineKey(
     return null;
   }
 
-  if (
-    input.repeat &&
-    (input.key === "Tab" ||
-      input.key === "ArrowLeft" ||
-      input.key === "ArrowRight")
-  ) {
-    return input.key === "Tab" ? { type: "consumeTabShortcut" } : null;
+  if (input.repeat && input.key === "Tab") {
+    return { type: "consumeTabShortcut" };
+  }
+  if (input.repeat && imageAltStructuralKey) {
+    return null;
   }
 
   const { selectionStart, selectionEnd } = input;

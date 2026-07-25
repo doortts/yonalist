@@ -675,6 +675,40 @@ describe("outline row memoization", () => {
     );
   });
 
+  it("renders the provisional row before reporting keyboard insertion preparation", async () => {
+    const store = repository([node({ id: "leaf", title: "Leaf" })]);
+    let provisionalVisibleAtReport = false;
+    let provisionalFocusedAtReport = false;
+    rowPropsTransform.current = (props) => {
+      const report = props.onKeyboardInsertionPrepared as
+        ((token: number, generation: number) => void) | undefined;
+      return {
+        ...props,
+        onKeyboardInsertionPrepared: (token: number, generation: number) => {
+          provisionalVisibleAtReport = Array.from(
+            document.querySelectorAll<HTMLTextAreaElement>(
+              "textarea.notes-node-title",
+            ),
+          ).some((title) => title.value === "");
+          provisionalFocusedAtReport =
+            document.activeElement instanceof HTMLTextAreaElement &&
+            document.activeElement.value === "";
+          report?.(token, generation);
+        },
+      };
+    };
+    render(<Harness store={store} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    const title = titleInput("leaf");
+    title.focus();
+    title.setSelectionRange(title.value.length, title.value.length);
+
+    fireEvent.keyDown(title, { key: "Enter" });
+
+    expect(provisionalVisibleAtReport).toBe(true);
+    expect(provisionalFocusedAtReport).toBe(true);
+  });
+
   it("reports a rejected prepared insertion as terminal without waiting for a publication", async () => {
     const store = repository([node({ id: "leaf", title: "Leaf" })]);
     vi.mocked(store.splitNode).mockRejectedValue(new Error("write failed"));
@@ -715,6 +749,7 @@ describe("outline row memoization", () => {
         terminated: prepared.mock.calls,
       }),
     );
+    expect(captured?.status).toBe("error");
   });
 
   it("re-renders only the typed row (plus pane shell) on a keystroke", async () => {
@@ -909,6 +944,7 @@ describe("outline row memoization", () => {
 
       await waitFor(() => expect(store.splitNode).toHaveBeenCalledOnce());
       await waitFor(() => expect(insertedId).not.toBe(""));
+      expect(captured?.status).toBe("ready");
       await waitFor(() => {
         for (const nodeId of existingIds) {
           expect(shellRenderCounts.get(nodeId)).toBeGreaterThanOrEqual(2);
@@ -1825,6 +1861,13 @@ describe("outline row memoization", () => {
     expect(bullet).toHaveFocus();
 
     expect(fireEvent.keyDown(bullet, { key: "z", metaKey: true })).toBe(false);
+    expect(
+      fireEvent.keyDown(bullet, {
+        key: "z",
+        metaKey: true,
+        repeat: true,
+      }),
+    ).toBe(false);
     await waitFor(() => expect(undo).toHaveBeenCalledOnce());
     await waitFor(() =>
       expect(

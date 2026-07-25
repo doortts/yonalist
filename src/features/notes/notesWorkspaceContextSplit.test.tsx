@@ -1194,6 +1194,167 @@ describe("notes workspace context split", () => {
     ).toBeUndefined();
   });
 
+  it("keeps a secondary Enter from committing the inactive primary outline first", async () => {
+    const initial = workspace([node({ id: "root", title: "Root" })]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+    });
+    let captured: UseNotesWorkspaceHookResult | null = null;
+    const commits: {
+      paneId: "primary" | "secondary";
+      actualDuration: number;
+    }[] = [];
+
+    const OutlineProbe = memo(function OutlineProbe() {
+      const { state } = useNotesState();
+      const { optimisticKeyboardInsertions = [] } = useNotesDrafts();
+      return (
+        <output>
+          {state.selectedId}:{optimisticKeyboardInsertions.length}
+        </output>
+      );
+    });
+    const Pane = memo(function Pane({
+      pane,
+      activePaneId,
+    }: {
+      pane: NotesPaneRuntimeSlice;
+      activePaneId: "primary" | "secondary";
+    }) {
+      return (
+        <NotesPaneSliceScope
+          pane={pane}
+          activePaneId={activePaneId}
+          deferWhenInactive
+        >
+          <Profiler
+            id={pane.paneId}
+            onRender={(id, _phase, actualDuration) => {
+              commits.push({
+                paneId: id as "primary" | "secondary",
+                actualDuration,
+              });
+            }}
+          >
+            <OutlineProbe />
+          </Profiler>
+        </NotesPaneSliceScope>
+      );
+    });
+
+    function Harness() {
+      const value = useNotesWorkspace({
+        vaultRoot: "/secondary-enter-commit-order",
+        repository: store,
+      });
+      captured = value;
+      const registry = value.paneRegistrySlice;
+      return (
+        <>
+          <Pane
+            pane={registry.panes.primary}
+            activePaneId={registry.activePaneId}
+          />
+          <Pane
+            pane={registry.panes.secondary}
+            activePaneId={registry.activePaneId}
+          />
+        </>
+      );
+    }
+
+    render(<Harness />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    act(() => {
+      captured!.paneRegistrySlice.setActivePaneId("secondary");
+    });
+    await waitFor(() =>
+      expect(captured?.paneRegistrySlice.activePaneId).toBe("secondary"),
+    );
+    const paneSnapshot = {
+      scope: { kind: "active" } as const,
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set<string>(),
+      locallyExpandedNodeIds: new Set<string>(),
+      interactionEpoch: 0,
+      visibleSignature: createOutlineVisibleSignature([
+        {
+          id: "root",
+          parentId: null,
+          depth: 0,
+          isCollapsed: false,
+          ancestorIds: [],
+          ancestorGuideDepths: [],
+          visibleDescendantEndId: null,
+        },
+      ]),
+      geometryGeneration: 0,
+      activeDrag: false,
+    };
+    act(() => {
+      captured!.actions.publishOutlinePaneState?.({
+        ...paneSnapshot,
+        paneId: "primary",
+      });
+      captured!.actions.publishOutlinePaneState?.({
+        ...paneSnapshot,
+        paneId: "secondary",
+      });
+    });
+    commits.length = 0;
+    const inactivePaneBefore =
+      captured!.paneRegistrySlice.panes.primary;
+
+    act(() => {
+      captured!.paneRegistrySlice.panes.secondary.actionsSlice.actions
+        .prepareKeyboardInsertion?.({
+          ownerPaneId: "secondary",
+          interactionEpochAtDispatch: 0,
+          intent: {
+            token: 42,
+            sourceId: "root",
+            expectedNodeId: "split",
+            postcondition: {
+              kind: "split",
+              expectedSourceTitle: "Ro",
+              expectedInsertedTitle: "ot",
+            },
+          },
+          optimistic: {
+            checkpoint: {
+              sourceNode: initial.nodes[0]!,
+              sourceRow: {
+                id: "root",
+                parentId: null,
+                depth: 0,
+                isCollapsed: false,
+                ancestorIds: [],
+                ancestorGuideDepths: [],
+                visibleDescendantEndId: null,
+              },
+              sourceSelection: { anchorUtf16: 2, focusUtf16: 2 },
+            },
+            sourceTitle: "Ro",
+            insertedTitle: "ot",
+          },
+        });
+    });
+
+    expect({
+      inactivePaneRetained:
+        captured!.paneRegistrySlice.panes.primary === inactivePaneBefore,
+      commitOrder: commits.map(({ paneId }) => paneId),
+      inactiveDuration: commits
+        .filter(({ paneId }) => paneId === "primary")
+        .reduce((total, { actualDuration }) => total + actualDuration, 0),
+    }).toEqual({
+      inactivePaneRetained: true,
+      commitOrder: ["secondary"],
+      inactiveDuration: 0,
+    });
+  });
+
   it("keeps the inactive pane slice stable across 50 opposite-pane focus moves", async () => {
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(

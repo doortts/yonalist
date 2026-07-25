@@ -59,8 +59,14 @@ const notesStoreMock = vi.hoisted(() => ({
   restoreNode: vi.fn().mockResolvedValue({ nodes: [] }),
   emptyTrash: vi.fn().mockResolvedValue({ nodes: [] }),
 }));
+const notesSyncFlushMock = vi.hoisted(() =>
+  vi.fn().mockResolvedValue(undefined),
+);
 
-vi.mock("../../services/notesStore", () => ({ notesStore: notesStoreMock }));
+vi.mock("../../services/notesStore", () => ({
+  notesStore: notesStoreMock,
+  notesSyncFlush: notesSyncFlushMock,
+}));
 
 import { NotesFeatureProvider, notesFeatureRuntime } from "./NotesFeature";
 import { useNotesImageResidencyLease } from "./NotesImageResidencyContext";

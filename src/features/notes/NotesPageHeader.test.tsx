@@ -1946,6 +1946,24 @@ describe("NotesPageHeader", () => {
     expect(fireEvent.keyDown(childTitle, { key: "y", ctrlKey: true })).toBe(
       false,
     );
+    expect(
+      fireEvent.keyDown(title, { key: "z", ctrlKey: true, repeat: true }),
+    ).toBe(false);
+    expect(
+      fireEvent.keyDown(note, {
+        key: "z",
+        ctrlKey: true,
+        shiftKey: true,
+        repeat: true,
+      }),
+    ).toBe(false);
+    expect(
+      fireEvent.keyDown(childTitle, {
+        key: "y",
+        ctrlKey: true,
+        repeat: true,
+      }),
+    ).toBe(false);
 
     expect(workspace.actions.undo).toHaveBeenCalledOnce();
     expect(workspace.actions.redo).toHaveBeenCalledTimes(2);

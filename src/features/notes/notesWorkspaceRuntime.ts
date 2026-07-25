@@ -507,7 +507,9 @@ export function useNotesWorkspace({
           return;
         }
         if (event.type === "pending") {
-          applyAction({ type: "setLoading" });
+          if (event.showLoading) {
+            applyAction({ type: "setLoading" });
+          }
           if (
             event.selectionPolicy === "clear" &&
             selectionRef.current !== null
