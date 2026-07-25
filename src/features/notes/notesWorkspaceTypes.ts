@@ -268,8 +268,10 @@ export interface NotesWorkspaceActions {
   markEditingFocus?(nodeId: NoteId, field: NotesHistoryFocusField): void;
   notifyCaretMovedByDom?(
     nodeId: NoteId,
-    field: NotesHistoryFocusField
+    field: NotesHistoryFocusField,
+    claimAttempt?: object
   ): void;
+  settleDirectCaretClaim?(claimAttempt: object, claimed: boolean): boolean;
   invalidatePendingCaretMove?(): void;
   getNavigationVersion?(): number;
   prepareKeyboardInsertion?(

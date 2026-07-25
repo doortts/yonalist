@@ -373,10 +373,10 @@ export function useNotesWorkspace({
     },
     [selectionRef, updateSelection],
   );
-  const { notifyCaretMovedByDom, invalidatePendingCaretMove, cancelPendingCaretMove } =
+  const { notifyCaretMovedByDom, settleDirectCaretClaim, invalidatePendingCaretMove, cancelPendingCaretMove } =
     useNotesDirectCaretReconciliation({
       pendingPrimarySelectionRef, navigationVersionRef, editingFocusRef,
-      closedRef, applyAction,
+      stateRef, closedRef, applyAction,
     });
   const retirePendingPrimarySelection = useCallback((): void => {
     const pendingPrimarySelection = pendingPrimarySelectionRef.current;
@@ -387,7 +387,6 @@ export function useNotesWorkspace({
       nodeId: pendingPrimarySelection.nodeId,
     });
   }, [applyAction]);
-
   // Combine settled navigation with the live caret in one place. applyAction
   // retires the caret as soon as authoritative navigation moves elsewhere.
   const currentNavigation = useCallback(
@@ -1139,11 +1138,12 @@ export function useNotesWorkspace({
           markEditingFocus(nodeId, field);
         }
       },
-      notifyCaretMovedByDom: (nodeId, field) => {
+      notifyCaretMovedByDom: (nodeId, field, claimAttempt) => {
         if (!writesUnavailable()) {
-          notifyCaretMovedByDom(nodeId, field);
+          notifyCaretMovedByDom(nodeId, field, claimAttempt);
         }
       },
+      settleDirectCaretClaim,
       invalidatePendingCaretMove,
       getNavigationVersion,
       prepareKeyboardInsertion: (input) =>
@@ -1277,7 +1277,7 @@ export function useNotesWorkspace({
     acknowledgeFocus,
     focusNode,
     markEditingFocus,
-    notifyCaretMovedByDom, invalidatePendingCaretMove,
+    notifyCaretMovedByDom, settleDirectCaretClaim, invalidatePendingCaretMove,
     getNavigationVersion,
     prepareKeyboardInsertion,
     beginBackspaceGesture,
