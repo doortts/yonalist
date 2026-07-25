@@ -1324,6 +1324,20 @@ describe("resolveOutlineKey", () => {
         })
       )
     ).toEqual({ type: "remove", focusNodeId: "child-a" });
+
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Backspace",
+          nodeId: "root-b",
+          title: "",
+          note: "",
+          repeat: true,
+          selectionStart: 0,
+          selectionEnd: 0
+        })
+      )
+    ).toEqual({ type: "remove", focusNodeId: "child-b" });
   });
 
   it("chooses the first lifted child before the next visible row", () => {
@@ -1395,6 +1409,21 @@ describe("resolveOutlineKey", () => {
           key: "Backspace",
           nodeId: "with-att",
           title: "",
+          note: "",
+          repeat: true,
+          selectionStart: 0,
+          selectionEnd: 0,
+          workspace: withAttachment
+        })
+      )
+    ).toBeNull();
+
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Backspace",
+          nodeId: "with-att",
+          title: "",
           note: "context",
           selectionStart: 0,
           selectionEnd: 0,
@@ -1451,6 +1480,58 @@ describe("resolveOutlineKey", () => {
           note: "context",
           selectionStart: 1,
           selectionEnd: 1
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("keeps repeated Backspace non-removing for protected or nonempty rows", () => {
+    const protectedRows = normalizeWorkspace(
+      workspace([
+        node({ id: "previous", sortKey: 1, title: "" }),
+        node({ id: "nonempty", sortKey: 2, title: "text" }),
+        node({ id: "readonly", sortKey: 3, title: "", isReadonly: true }),
+        node({
+          id: "plugin",
+          sortKey: 4,
+          title: "",
+          pluginMeta: { kind: "date", dateKey: "2026.07.25" }
+        })
+      ])
+    );
+
+    for (const overrides of [
+      { nodeId: "nonempty", title: "text" },
+      { nodeId: "readonly", title: "" },
+      { nodeId: "plugin", title: "" }
+    ]) {
+      expect(
+        resolveOutlineKey(
+          input({
+            key: "Backspace",
+            note: "",
+            repeat: true,
+            selectionStart: 0,
+            selectionEnd: 0,
+            workspace: protectedRows,
+            ...overrides
+          })
+        )
+      ).toBeNull();
+    }
+
+    expect(
+      resolveOutlineKey(
+        input({
+          target: "image",
+          key: "Backspace",
+          nodeId: "previous",
+          title: "",
+          note: "",
+          repeat: true,
+          selectionStart: null,
+          selectionEnd: null,
+          workspace: protectedRows
         })
       )
     ).toBeNull();

@@ -38,11 +38,7 @@ import {
   noteNodePresentationLabel,
 } from "./notesPresentation";
 import type { NotesSelectionActionIntent } from "./notesSelectionActions";
-import {
-  captureNotesSplitInputBenchmarkBackspaceOperation,
-  markNotesSplitInputBenchmarkBackspaceSettled,
-  markSplitPhase,
-} from "./notesSplitLatencyProbe";
+import { markSplitPhase } from "./notesSplitLatencyProbe";
 import type { NotesSelection } from "./notesWorkspaceReducer";
 import {
   buildNotesMoveDestinations,
@@ -91,6 +87,7 @@ import {
   supportingNoteFocusTarget,
 } from "./outlineKeyboard";
 import type { OutlineInteractionEpoch } from "./outlineInteractionEpoch";
+import type { NotesPaneId } from "./notesPaneSession";
 
 export interface OutlineEditorFocusRequest {
   readonly requestId: number;
@@ -99,7 +96,7 @@ export interface OutlineEditorFocusRequest {
 }
 
 export interface OutlineNodeEditorProps {
-  paneId: string;
+  paneId: NotesPaneId;
   interactionEpoch: OutlineInteractionEpoch;
   nextKeyboardInsertionToken(): number;
   onKeyboardInsertionPrepared?(
@@ -1202,6 +1199,29 @@ function OutlineNodeEditorComponent({
       commitDrafts();
       return;
     }
+    const plainBackspace =
+      event.key === "Backspace" &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      !event.nativeEvent.isComposing;
+    const backspaceGestureToken =
+      plainBackspace &&
+      !disabled &&
+      !readOnly &&
+      !contentProtected &&
+      !selectionDisabled &&
+      (titleValue.trim().length > 0 ||
+        (noteValue.trim().length === 0 && attachments.length === 0))
+        ? (actions.beginBackspaceGesture?.(paneId, nodeId, {
+            anchorUtf16: event.currentTarget.selectionStart,
+            focusUtf16: event.currentTarget.selectionEnd,
+          }) ?? null)
+        : null;
+    if (backspaceGestureToken !== null) {
+      actions.touchBackspaceGesture?.(backspaceGestureToken, nodeId);
+    }
     const stateSnapshot = getStateSnapshot();
     const resolution = resolveOutlineKey({
       target: "title",
@@ -1483,23 +1503,21 @@ function OutlineNodeEditorComponent({
         runStructuralCommand(() => actions.toggleCollapsed(nodeId));
         return;
       case "remove": {
-        runStructuralCommand(() => {
-          const patch = draftToSave(true)!;
-          suppressHandledBlur();
-          const benchmarkOperation =
-            captureNotesSplitInputBenchmarkBackspaceOperation(
-              paneId as "primary" | "secondary",
-            );
-          return actions.removeEmptyNode(nodeId, resolution.focusNodeId, {
-            draft: patch,
-          }).then((result) => {
-            markNotesSplitInputBenchmarkBackspaceSettled(
-              benchmarkOperation,
-              result,
-            );
-            return result;
+        if (backspaceGestureToken === null) return;
+        suppressHandledBlur();
+        const focusNodeId = resolution.focusNodeId;
+        if (focusNodeId !== null) {
+          void actions.focusNode(focusNodeId, {
+            anchorUtf16: 0,
+            focusUtf16: 0,
           });
-        });
+        }
+        actions.removeEmptyNodeInBackspaceGesture?.(
+          backspaceGestureToken,
+          nodeId,
+          focusNodeId,
+        );
+        return;
       }
     }
   };

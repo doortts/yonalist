@@ -43,6 +43,7 @@ import {
   type NormalizedNotesWorkspace
 } from "./notesWorkspaceReducer";
 import type {
+  NotesBackspaceGestureCommitInput,
   NotesWorkspaceCommandOutcome,
   NotesWorkspaceCoordinatorSession,
   NotesWorkspaceQueueContext,
@@ -2502,6 +2503,52 @@ export async function applyBatchCommand(
     mutationCommitted,
     ...(duplicatedRootIds ? { duplicatedRootIds } : {}),
     ...(projectedWorkspace ? { projectedWorkspace } : {})
+  };
+}
+
+export async function applyBackspaceGestureCommand(
+  context: NotesWorkspaceQueueContext,
+  input: NotesBackspaceGestureCommitInput
+): Promise<NotesWorkspaceQueueResult> {
+  const mutation = unwrapNotesMutation(
+    await context.repository.applyBatch(
+      context.vaultRoot,
+      {
+        op: "backspaceGesture",
+        nodeIds: [...input.gesture.removedNodeIds],
+        titleUpdate: input.draftCommit.titleUpdate
+      },
+      input.historyContext
+    )
+  );
+  const projection = await projectNotesMutation(
+    context,
+    mutation,
+    context.sourceScope
+  );
+  const result = directMutationResult(
+    mutation,
+    projection,
+    input.gesture.ownerPaneId === "primary"
+      ? focusedUiUpdate(input.gesture.focusNodeId)
+      : undefined
+  );
+  if (result.kind !== "authoritative") return result;
+  const historyStatus =
+    mutation.historyStatus ??
+    (context.repository.historyStatus
+      ? await context.repository.historyStatus(
+          context.vaultRoot,
+          input.historyContext.sessionId
+        )
+      : undefined);
+  return {
+    ...result,
+    historyStatus,
+    committedHistoryEntryIds: [input.historyContext.entryId],
+    ...(mutation.atomic
+      ? {}
+      : { nonAtomicHistoryEntryIds: [input.historyContext.entryId] })
   };
 }
 

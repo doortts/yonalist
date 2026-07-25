@@ -58,6 +58,7 @@ import type {
   NormalizedNotesWorkspace,
   NotesSelection
 } from "./notesWorkspaceReducer";
+import type { OptimisticBackspaceGesture } from "./notesBackspaceGesture";
 import type { NotesWriteAuthority } from "./notesAuthorityRecovery";
 import type {
   NotesPaneId,
@@ -222,6 +223,7 @@ export interface NotesBackspaceDraftLease {
 export interface NotesDraftsSlice {
   draftsByNodeId: Readonly<Record<NoteId, NotesNodeDraft>>;
   writeError: NotesStoreError | null;
+  optimisticBackspaceGesture?: OptimisticBackspaceGesture | null;
   optimisticKeyboardInsertions?: readonly OptimisticKeyboardInsertion[];
   optimisticInsertionFailure?: OptimisticInsertionFailure | null;
   attachmentUploadErrorsByNodeId?: Readonly<Record<NoteId, string>>;
@@ -273,6 +275,21 @@ export interface NotesWorkspaceActions {
   ): void;
   dismissOptimisticInsertionFailure?(): void;
   pendingKeyboardInsertionInteractionEpoch?(nodeId: NoteId): number | undefined;
+  beginBackspaceGesture?(
+    paneId: NotesPaneId,
+    nodeId: NoteId,
+    selection: NotesHistoryPrimarySelection
+  ): number | null;
+  touchBackspaceGesture?(token: number, nodeId: NoteId): void;
+  removeEmptyNodeInBackspaceGesture?(
+    token: number,
+    nodeId: NoteId,
+    focusNodeId: NoteId | null
+  ): boolean;
+  finishBackspaceGesture?(
+    reason: "keyup" | "blur" | "hidden" | "drain"
+  ): Promise<void>;
+  cancelBackspaceGesture?(): void;
   publishOutlinePaneState?(
     input: Omit<OutlinePanePublicationSnapshot, "sessionId">
   ): void;

@@ -70,6 +70,7 @@ import {
 import type { NotesCommandContext } from "./notesCommands";
 import { emptyHistoryState } from "./notesWorkspaceCommandSupport";
 import type { OptimisticInsertionSnapshot } from "./notesKeyboardInsertion";
+import type { OptimisticBackspaceGesture } from "./notesBackspaceGesture";
 import * as settlementRuntime from "./notesWorkspaceSettlementRuntime";
 import type {
   LiveNotesNavigation,
@@ -146,6 +147,26 @@ export {
 } from "./notesDraftErrors";
 
 const EMPTY_DRAFTS: Readonly<Record<NoteId, NotesNodeDraft>> = {};
+const coordinatorSessionByDraftEngine = new WeakMap<
+  NotesDraftEngine,
+  NotesWorkspaceCoordinatorSession
+>();
+
+function shutdownAfterBackspaceDrain(engine: NotesDraftEngine): void {
+  const session = coordinatorSessionByDraftEngine.get(engine);
+  if (
+    engine.record.backspaceDraftLease?.active !== true ||
+    session === undefined
+  ) {
+    void engine.beginShutdown().finally(() => engine.dispose());
+    return;
+  }
+  const shutdown = (): Promise<void> => engine.beginShutdown();
+  void session
+    .finishBackspaceGesture("drain")
+    .then(shutdown, shutdown)
+    .finally(() => engine.dispose());
+}
 
 function resolveBufferedCommands(commands: BufferedWorkspaceCommand[]): void {
   for (const command of commands) {
@@ -240,6 +261,8 @@ export function useNotesWorkspace({
     });
   const optimisticInsertionSnapshotRef =
     useRef<OptimisticInsertionSnapshot>(optimisticInsertionSnapshot);
+  const [optimisticBackspaceGesture, setOptimisticBackspaceGesture] =
+    useState<OptimisticBackspaceGesture | null>(null);
   const pendingOptimisticTitleFlushesRef = useRef(new Map<NoteId, string>());
   // Backend status validates the mixed cursor; the session timeline owns availability.
   const [historyTimelineVersion, setHistoryTimelineVersion] = useState(0);
@@ -600,9 +623,7 @@ export function useNotesWorkspace({
     const previousEngine = draftEngineRef.current;
     if (previousEngine) {
       prepareAttachmentUploadAttemptsForTeardown();
-      void previousEngine
-        .beginShutdown()
-        .finally(() => previousEngine.dispose());
+      shutdownAfterBackspaceDrain(previousEngine);
     }
     applyAction({ type: "startWorkspaceLoad" });
     clearAttachmentUploadUi();
@@ -616,6 +637,7 @@ export function useNotesWorkspace({
     optimisticInsertionSnapshotRef.current = emptyOptimisticSnapshot;
     pendingOptimisticTitleFlushesRef.current.clear();
     setOptimisticInsertionSnapshot(emptyOptimisticSnapshot);
+    setOptimisticBackspaceGesture(null);
     activeScopeRef.current = { kind: "active" };
     activeWorkspaceGenerationRef.current += 1;
     movePreparationTokenRef.current += 1;
@@ -720,6 +742,39 @@ export function useNotesWorkspace({
               applyAction({
                 type: "focusNode",
                 nodeId: event.rollback.sourceId
+              });
+            }
+          }
+          return;
+        }
+        if (event.type === "optimisticBackspaceGesture") {
+          setOptimisticBackspaceGesture(event.snapshot);
+          if (event.rollback) {
+            const request = {
+              requestId: ++nextPrimarySelectionRequestIdRef.current,
+              nodeId: event.rollback.nodeId,
+              field: "title" as const,
+              selection: { ...event.rollback.selection },
+            };
+            if (event.rollback.ownerPaneId === "secondary") {
+              paneSessions.dispatchPane("secondary", {
+                type: "setPendingPrimarySelection",
+                request,
+              });
+              paneSessions.dispatchPane("secondary", {
+                type: "setNavigation",
+                patch: {
+                  selectedId: event.rollback.nodeId,
+                  editingNoteId: event.rollback.nodeId,
+                  pendingFocusId: event.rollback.nodeId,
+                  pendingFocusField: "title",
+                },
+              });
+            } else {
+              pendingPrimarySelectionRef.current = request;
+              applyAction({
+                type: "focusNode",
+                nodeId: event.rollback.nodeId,
               });
             }
           }
@@ -858,6 +913,7 @@ export function useNotesWorkspace({
       writeQueue: createNotesWriteQueue(),
       host,
     });
+    coordinatorSessionByDraftEngine.set(engine, session);
     adoptNotesWriteAuthority(
       session.writeAuthority(),
       setAuthorityRecovery,
@@ -917,7 +973,7 @@ export function useNotesWorkspace({
       const engine = draftEngineRef.current;
       if (engine) {
         prepareAttachmentUploadAttemptsForTeardown();
-        void engine.beginShutdown().finally(() => engine.dispose());
+        shutdownAfterBackspaceDrain(engine);
       }
       const token = {};
       finalCleanupTokenRef.current = token;
@@ -1167,6 +1223,11 @@ export function useNotesWorkspace({
     duplicateNode,
     archiveNode,
     unarchiveNode,
+    beginBackspaceGesture,
+    touchBackspaceGesture,
+    removeEmptyNodeInBackspaceGesture,
+    finishBackspaceGesture,
+    cancelBackspaceGesture,
     removeEmptyNode,
     deleteNode,
     deleteNodes,
@@ -1179,6 +1240,7 @@ export function useNotesWorkspace({
     vaultRoot,
     sessionRecordRef,
     sessionRef,
+    draftEngineRef,
     activeScopeRef,
     setLibraryView,
     setTagSummaries,
@@ -1261,6 +1323,20 @@ export function useNotesWorkspace({
           vaultRoot,
           nodeId,
         ),
+      beginBackspaceGesture: (paneId, nodeId, selection) =>
+        deletionInProgress()
+          ? null
+          : beginBackspaceGesture(paneId, nodeId, selection),
+      touchBackspaceGesture: (token, nodeId) => {
+        if (!deletionInProgress()) {
+          touchBackspaceGesture(token, nodeId);
+        }
+      },
+      removeEmptyNodeInBackspaceGesture: (token, nodeId, focusNodeId) =>
+        !deletionInProgress() &&
+        removeEmptyNodeInBackspaceGesture(token, nodeId, focusNodeId),
+      finishBackspaceGesture,
+      cancelBackspaceGesture,
       publishOutlinePaneState: (input) =>
         sessionRef.current?.publishOutlinePaneState(input),
       publishOutlineInteractionEpoch: (input) =>
@@ -1357,6 +1433,11 @@ export function useNotesWorkspace({
     markEditingFocus,
     getNavigationVersion,
     prepareKeyboardInsertion,
+    beginBackspaceGesture,
+    touchBackspaceGesture,
+    removeEmptyNodeInBackspaceGesture,
+    finishBackspaceGesture,
+    cancelBackspaceGesture,
     consumeInsertionMotion,
     createRoot,
     createNextTextSibling,
@@ -1482,6 +1563,7 @@ export function useNotesWorkspace({
     () => ({
       draftsByNodeId,
       writeError: currentWriteError,
+      optimisticBackspaceGesture,
       optimisticKeyboardInsertions: optimisticInsertionSnapshot.insertions,
       optimisticInsertionFailure: optimisticInsertionSnapshot.failure,
       attachmentUploadErrorsByNodeId,
@@ -1492,6 +1574,7 @@ export function useNotesWorkspace({
     [
       draftsByNodeId,
       currentWriteError,
+      optimisticBackspaceGesture,
       optimisticInsertionSnapshot,
       attachmentUploadErrorsByNodeId,
       attachmentUploadRetryAttemptIdsByNodeId,

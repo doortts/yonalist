@@ -17,6 +17,7 @@ import {
 } from "./notesWorkspaceCoordinator";
 import { createOutlineVisibleSignature } from "./notesKeyboardInsertion";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
+import type { NotesBackspaceDraftLease } from "./notesWorkspaceTypes";
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
@@ -181,6 +182,446 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
 }
 
 describe("notesWorkspaceCoordinator registry", () => {
+  it("owns one optimistic Backspace gesture and freezes it before queued persistence", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
+    const session = registry.openSession(writableOptions(pool, {
+      repository: store,
+      vaultRoot: "/backspace-gesture",
+      onEvent: events
+    }));
+    await session.activation;
+    session.publishOutlinePaneState({
+      paneId: "primary",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 1,
+      visibleSignature: JSON.stringify([["root", null, 0, false]]),
+      geometryGeneration: 0,
+      activeDrag: false
+    });
+    events.mockClear();
+    const prepared = deferred<{
+      baselineFlushed: boolean;
+      titleUpdate: null;
+    }>();
+    const settle = vi.fn();
+    const lease: NotesBackspaceDraftLease = {
+      token: 1,
+      touch: vi.fn(),
+      prepare: vi.fn(() => prepared.promise),
+      settle
+    };
+    const work = vi.fn(async (_context, input) => ({
+      kind: "authoritative" as const,
+      workspace: workspace([node({ id: "root", title: "Root" })]),
+      historyStatus: projectedHistoryState(input.historyContext.entryId),
+      committedHistoryEntryIds: [input.historyContext.entryId]
+    }));
+
+    const token = session.beginBackspaceGesture(
+      {
+        ownerPaneId: "primary",
+        nodeId: "empty-b",
+        selection: { anchorUtf16: 0, focusUtf16: 0 }
+      },
+      () => lease,
+      work
+    );
+    expect(token).toEqual(expect.any(Number));
+    expect(
+      session.beginBackspaceGesture(
+        {
+          ownerPaneId: "primary",
+          nodeId: "other",
+          selection: { anchorUtf16: 0, focusUtf16: 0 }
+        },
+        () => lease,
+        work
+      )
+    ).toBe(token);
+    session.touchBackspaceGesture(token!, "empty-b");
+    expect(lease.touch).toHaveBeenCalledWith("empty-b");
+    expect(
+      session.removeEmptyNodeInBackspaceGesture(token!, "empty-b", "empty-a")
+    ).toBe(true);
+    expect(events).toHaveBeenLastCalledWith({
+      type: "optimisticBackspaceGesture",
+      snapshot: expect.objectContaining({
+        token,
+        ownerPaneId: "primary",
+        removedNodeIds: ["empty-b"],
+        focusNodeId: "empty-a",
+        status: "active"
+      })
+    });
+
+    const completion = session.finishBackspaceGesture("keyup");
+    expect(events).toHaveBeenLastCalledWith({
+      type: "optimisticBackspaceGesture",
+      snapshot: expect.objectContaining({
+        token,
+        removedNodeIds: ["empty-b"],
+        status: "queued"
+      })
+    });
+    expect(
+      session.removeEmptyNodeInBackspaceGesture(token!, "empty-a", "root")
+    ).toBe(false);
+    expect(work).not.toHaveBeenCalled();
+
+    prepared.resolve({ baselineFlushed: true, titleUpdate: null });
+    await completion;
+    expect(work).toHaveBeenCalledOnce();
+    expect(work).toHaveBeenCalledWith(
+      expect.objectContaining({ vaultRoot: "/backspace-gesture" }),
+      expect.objectContaining({
+        gesture: expect.objectContaining({
+          removedNodeIds: ["empty-b"],
+          status: "running"
+        }),
+        historyContext: expect.objectContaining({
+          commandKind: "backspaceGesture"
+        }),
+        draftCommit: { baselineFlushed: true, titleUpdate: null }
+      })
+    );
+    expect(settle).toHaveBeenCalledWith("committed");
+    expect(events).toHaveBeenLastCalledWith({
+      type: "optimisticBackspaceGesture",
+      snapshot: null
+    });
+    session.close();
+  });
+
+  it("rolls a known Backspace failure back to its starting selection", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
+    const session = registry.openSession(writableOptions(pool, {
+      repository: store,
+      vaultRoot: "/backspace-known-failure",
+      onEvent: events
+    }));
+    await session.activation;
+    session.publishOutlinePaneState({
+      paneId: "primary",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 1,
+      visibleSignature: JSON.stringify([["root", null, 0, false]]),
+      geometryGeneration: 0,
+      activeDrag: false
+    });
+    events.mockClear();
+    const settle = vi.fn();
+    const lease: NotesBackspaceDraftLease = {
+      token: 1,
+      touch: vi.fn(),
+      prepare: vi.fn(async () => ({
+        baselineFlushed: true,
+        titleUpdate: null
+      })),
+      settle
+    };
+    const work = vi.fn(async () => ({
+      kind: "failure" as const,
+      error: "write rejected",
+      workspace: workspace([node({ id: "root", title: "Root" })]),
+      historyStatus: historyState()
+    }));
+    const token = session.beginBackspaceGesture(
+      {
+        ownerPaneId: "primary",
+        nodeId: "empty",
+        selection: { anchorUtf16: 3, focusUtf16: 3 }
+      },
+      () => lease,
+      work
+    )!;
+    session.removeEmptyNodeInBackspaceGesture(token, "empty", "root");
+
+    await session.finishBackspaceGesture("keyup");
+
+    expect(work).toHaveBeenCalledOnce();
+    expect(settle).toHaveBeenCalledWith("failed");
+    expect(events).toHaveBeenLastCalledWith({
+      type: "optimisticBackspaceGesture",
+      snapshot: null,
+      rollback: {
+        ownerPaneId: "primary",
+        nodeId: "empty",
+        selection: { anchorUtf16: 3, focusUtf16: 3 }
+      }
+    });
+    expect(
+      session.beginBackspaceGesture(
+        {
+          ownerPaneId: "primary",
+          nodeId: "empty",
+          selection: { anchorUtf16: 3, focusUtf16: 3 }
+        },
+        () => ({ ...lease, token: 2 }),
+        work
+      )
+    ).toBe(2);
+    session.cancelBackspaceGesture();
+    session.close();
+  });
+
+  it("drains a frozen Backspace gesture after its owner session closes", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession(writableOptions(pool, {
+      repository: store,
+      vaultRoot: "/backspace-drain",
+      onEvent: vi.fn()
+    }));
+    await session.activation;
+    session.publishOutlinePaneState({
+      paneId: "primary",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 1,
+      visibleSignature: JSON.stringify([["root", null, 0, false]]),
+      geometryGeneration: 0,
+      activeDrag: false
+    });
+    const prepared = deferred<{
+      baselineFlushed: boolean;
+      titleUpdate: null;
+    }>();
+    const settle = vi.fn();
+    const lease: NotesBackspaceDraftLease = {
+      token: 1,
+      touch: vi.fn(),
+      prepare: vi.fn(() => prepared.promise),
+      settle
+    };
+    const work = vi.fn(async (_context, input) => ({
+      kind: "authoritative" as const,
+      workspace: workspace([node({ id: "root", title: "Root" })]),
+      historyStatus: projectedHistoryState(input.historyContext.entryId),
+      committedHistoryEntryIds: [input.historyContext.entryId]
+    }));
+    const token = session.beginBackspaceGesture(
+      {
+        ownerPaneId: "primary",
+        nodeId: "empty",
+        selection: { anchorUtf16: 0, focusUtf16: 0 }
+      },
+      () => lease,
+      work
+    )!;
+    session.removeEmptyNodeInBackspaceGesture(token, "empty", "root");
+
+    const completion = session.finishBackspaceGesture("drain");
+    session.close();
+    prepared.resolve({ baselineFlushed: true, titleUpdate: null });
+    await completion;
+
+    expect(work).toHaveBeenCalledOnce();
+    expect(settle).toHaveBeenCalledWith("committed");
+    await vi.waitFor(() =>
+      expect(store.closeHistorySession).toHaveBeenCalledOnce()
+    );
+  });
+
+  it("keeps Backspace checking and proves an unknown outcome by its history entry", async () => {
+    let expectedEntryId = "";
+    const recoveredWorkspace = workspace([node({ id: "root", title: "Root" })]);
+    const loadWorkspace = vi
+      .fn<NotesStore["loadWorkspace"]>()
+      .mockResolvedValueOnce(
+        workspace([
+          node({ id: "root", title: "Root" }),
+          node({ id: "empty", title: "", sortKey: 2048 })
+        ])
+      )
+      .mockResolvedValueOnce(recoveredWorkspace);
+    const historyStatus = vi.fn(async () =>
+      projectedHistoryState(expectedEntryId)
+    );
+    const store = repository({ loadWorkspace, historyStatus });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
+    const session = registry.openSession(writableOptions(pool, {
+      repository: store,
+      vaultRoot: "/backspace-unknown",
+      onEvent: events
+    }));
+    await session.activation;
+    session.publishOutlinePaneState({
+      paneId: "primary",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 1,
+      visibleSignature: JSON.stringify([["root", null, 0, false]]),
+      geometryGeneration: 0,
+      activeDrag: false
+    });
+    events.mockClear();
+    const settle = vi.fn();
+    const lease: NotesBackspaceDraftLease = {
+      token: 1,
+      touch: vi.fn(),
+      prepare: vi.fn(async () => ({
+        baselineFlushed: true,
+        titleUpdate: null
+      })),
+      settle
+    };
+    const work = vi.fn(async (_context, input) => {
+      expectedEntryId = input.historyContext.entryId;
+      throw Object.assign(new Error("transport closed"), {
+        notesMutationOutcome: "unknown" as const
+      });
+    });
+    const token = session.beginBackspaceGesture(
+      {
+        ownerPaneId: "primary",
+        nodeId: "empty",
+        selection: { anchorUtf16: 0, focusUtf16: 0 }
+      },
+      () => lease,
+      work
+    )!;
+    session.removeEmptyNodeInBackspaceGesture(token, "empty", "root");
+
+    await session.finishBackspaceGesture("keyup");
+
+    expect(work).toHaveBeenCalledOnce();
+    expect(loadWorkspace).toHaveBeenCalledTimes(2);
+    expect(historyStatus).toHaveBeenCalledOnce();
+    expect(events).toHaveBeenCalledWith({
+      type: "optimisticBackspaceGesture",
+      snapshot: expect.objectContaining({ status: "checking" })
+    });
+    expect(settle).toHaveBeenCalledWith("committed");
+    expect(events).toHaveBeenLastCalledWith({
+      type: "optimisticBackspaceGesture",
+      snapshot: null
+    });
+    expect(session.history.next("undo")).toMatchObject({
+      entryId: expectedEntryId,
+      kind: "mutation"
+    });
+    expect(session.writeAuthority()).toEqual({ kind: "known" });
+    session.close();
+  });
+
+  it("keeps Backspace checking across a failed reload and settles on manual recovery", async () => {
+    let expectedEntryId = "";
+    const initial = workspace([
+      node({ id: "root", title: "Root" }),
+      node({ id: "empty", title: "", sortKey: 2048 })
+    ]);
+    const recovered = workspace([node({ id: "root", title: "Root" })]);
+    const loadWorkspace = vi
+      .fn<NotesStore["loadWorkspace"]>()
+      .mockResolvedValueOnce(initial)
+      .mockRejectedValueOnce(new Error("reload unavailable"))
+      .mockResolvedValueOnce(recovered);
+    const historyStatus = vi.fn(async () =>
+      projectedHistoryState(expectedEntryId)
+    );
+    const store = repository({ loadWorkspace, historyStatus });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
+    const session = registry.openSession(writableOptions(pool, {
+      repository: store,
+      vaultRoot: "/backspace-manual-recovery",
+      onEvent: events
+    }));
+    await session.activation;
+    session.publishOutlinePaneState({
+      paneId: "primary",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 1,
+      visibleSignature: JSON.stringify([["root", null, 0, false]]),
+      geometryGeneration: 0,
+      activeDrag: false
+    });
+    events.mockClear();
+    const settle = vi.fn();
+    const lease: NotesBackspaceDraftLease = {
+      token: 1,
+      touch: vi.fn(),
+      prepare: vi.fn(async () => ({
+        baselineFlushed: true,
+        titleUpdate: null
+      })),
+      settle
+    };
+    const work = vi.fn(async (_context, input) => {
+      expectedEntryId = input.historyContext.entryId;
+      throw Object.assign(new Error("transport closed"), {
+        notesMutationOutcome: "unknown" as const
+      });
+    });
+    const token = session.beginBackspaceGesture(
+      {
+        ownerPaneId: "primary",
+        nodeId: "empty",
+        selection: { anchorUtf16: 0, focusUtf16: 0 }
+      },
+      () => lease,
+      work
+    )!;
+    session.removeEmptyNodeInBackspaceGesture(token, "empty", "root");
+
+    await session.finishBackspaceGesture("keyup");
+
+    expect(session.writeAuthority()).toEqual({
+      kind: "unknown",
+      error: "reload unavailable"
+    });
+    expect(settle).not.toHaveBeenCalled();
+    expect(events).toHaveBeenCalledWith({
+      type: "optimisticBackspaceGesture",
+      snapshot: expect.objectContaining({ status: "checking" })
+    });
+
+    await expect(session.retryAuthorityRecovery()).resolves.toBe(true);
+
+    expect(work).toHaveBeenCalledOnce();
+    expect(loadWorkspace).toHaveBeenCalledTimes(3);
+    expect(historyStatus).toHaveBeenCalledOnce();
+    expect(settle).toHaveBeenCalledWith("committed");
+    expect(events).toHaveBeenCalledWith({
+      type: "optimisticBackspaceGesture",
+      snapshot: null
+    });
+    expect(session.history.next("undo")).toMatchObject({
+      entryId: expectedEntryId,
+      kind: "mutation"
+    });
+    expect(session.writeAuthority()).toEqual({ kind: "known" });
+    session.close();
+  });
+
   it("binds a prepared keyboard insertion to session, history, and Pane generations", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();

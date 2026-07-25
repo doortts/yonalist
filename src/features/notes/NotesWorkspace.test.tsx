@@ -39,6 +39,7 @@ import type {
   NoteSearchResult,
   NotesHistoryContext,
   NotesHistoryState,
+  NotesMutationResponse,
   NotesWorkspace,
   UpdateNoteNodeInput,
 } from "../../domain/notes";
@@ -11636,59 +11637,266 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledOnce();
   });
 
-  it("persists an empty draft before removal and focuses only after success", async () => {
+  it("projects five held Backspace removals immediately and queues one batch on keyup", async () => {
+    vi.spyOn(window.navigator, "platform", "get").mockReturnValue("Win32");
     const before = [
-      node({ id: "first", sortKey: 1, title: "First" }),
-      node({ id: "empty", sortKey: 2, title: "", note: "" }),
-      node({ id: "last", sortKey: 3, title: "Last" }),
+      node({ id: "survivor", sortKey: 1, title: "Keep" }),
+      node({ id: "empty-a", sortKey: 2, title: "" }),
+      node({ id: "empty-b", sortKey: 3, title: "" }),
+      node({ id: "empty-c", sortKey: 4, title: "" }),
+      node({ id: "empty-d", sortKey: 5, title: "" }),
+      node({ id: "starting", sortKey: 6, title: "x" }),
     ];
     configureRepository(before);
-    const save = deferred<NotesWorkspace>();
-    const remove = deferred<NotesWorkspace>();
-    notesStoreMock.updateNode.mockReturnValue(save.promise);
-    notesStoreMock.removeEmptyNode.mockReturnValue(remove.promise);
+    const batch = deferred<NotesMutationResponse>();
+    notesStoreMock.applyBatch.mockReturnValue(batch.promise);
+    renderNotesWorkspace();
+    const starting = await findTitleInput("x");
+    starting.focus();
+    starting.setSelectionRange(1, 1);
+
+    expect(fireEvent.keyDown(starting, { key: "Backspace" })).toBe(true);
+    fireEvent.change(starting, { target: { value: "" } });
+
+    for (const removedId of [
+      "starting",
+      "empty-d",
+      "empty-c",
+      "empty-b",
+      "empty-a",
+    ]) {
+      const current = document.querySelector<HTMLTextAreaElement>(
+        `[data-outline-motion-id="${removedId}"] textarea[aria-label="Edit node title"]`,
+      );
+      expect(current).not.toBeNull();
+      current!.focus();
+      current!.setSelectionRange(0, 0);
+      expect(
+        fireEvent.keyDown(current!, { key: "Backspace", repeat: true }),
+      ).toBe(false);
+      expect(
+        document.querySelector(`[data-outline-motion-id="${removedId}"]`),
+      ).toBeNull();
+    }
+
+    expect(queryTitleInput("Keep")).toHaveFocus();
+    expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+
+    fireEvent.keyUp(window, { key: "Backspace" });
+    await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+    expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+      "/vault",
+      {
+        op: "backspaceGesture",
+        nodeIds: ["starting", "empty-d", "empty-c", "empty-b", "empty-a"],
+        titleUpdate: null,
+      },
+      historyContextMatcher(),
+    );
+    const historyContext = notesStoreMock.applyBatch.mock
+      .calls[0]![2] as NotesHistoryContext;
+    notesStoreMock.historyStatus.mockResolvedValue(
+      historyState({
+        canUndo: true,
+        nextUndoEntryId: historyContext.entryId,
+      }),
+    );
+    notesStoreMock.undo.mockResolvedValue({
+      kind: "applied",
+      workspace: workspace(before),
+      replayedEntryId: historyContext.entryId,
+      ...historyState({
+        canRedo: true,
+        nextRedoEntryId: historyContext.entryId,
+      }),
+    });
+
+    expect(
+      fireEvent.keyDown(queryTitleInput("Keep")!, {
+        key: "Backspace",
+        repeat: true,
+      }),
+    ).toBe(true);
+    expect(queryTitleInput("Keep")).toHaveValue("Keep");
+
+    await act(async () =>
+      batch.resolve({
+        workspace: workspace([
+          node({ id: "survivor", sortKey: 1, title: "Keep" }),
+        ]),
+        historyEntryId: historyContext.entryId,
+        ...historyState({
+          canUndo: true,
+          nextUndoEntryId: historyContext.entryId,
+        }),
+      }),
+    );
+    expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce();
+    await waitFor(() =>
+      expect(screen.getByLabelText("Notes outline")).toHaveAttribute(
+        "aria-busy",
+        "false",
+      ),
+    );
+
+    const keep = await findTitleInput("Keep");
+    expect(
+      fireEvent.keyDown(keep, { key: "z", ctrlKey: true }),
+    ).toBe(false);
+    await waitFor(() => expect(notesStoreMock.undo).toHaveBeenCalledOnce());
+    const restored = await findTitleInput("x");
+    await waitFor(() => expect(restored).toHaveFocus());
+    expect(restored.selectionStart).toBe(1);
+    expect(restored.selectionEnd).toBe(1);
+    expect(notesStoreMock.undo).toHaveBeenCalledWith(
+      "/vault",
+      expect.objectContaining({
+        expectedEntryId: historyContext.entryId,
+      }),
+    );
+  });
+
+  it("restores the optimistic Backspace rows and starting caret after a known failure", async () => {
+    const before = [
+      node({ id: "first", sortKey: 1, title: "First" }),
+      node({ id: "empty", sortKey: 2, title: "" }),
+    ];
+    configureRepository(before);
+    const batch = deferred<NotesWorkspace>();
+    notesStoreMock.applyBatch.mockReturnValue(batch.promise);
     renderNotesWorkspace();
     const empty = await findTitleInput("");
     empty.focus();
     empty.setSelectionRange(0, 0);
 
     expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
+    expect(queryTitleInput("")).not.toBeInTheDocument();
+    expect(queryTitleInput("First")).toHaveFocus();
+    fireEvent.keyUp(window, { key: "Backspace" });
+    await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+
+    await act(async () => batch.reject(new Error("write rejected")));
+
+    const restored = await findTitleInput("");
+    await waitFor(() => expect(restored).toHaveFocus());
+    expect(restored.selectionStart).toBe(0);
+    expect(restored.selectionEnd).toBe(0);
+    expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce();
+    expect(notesStoreMock.undo).not.toHaveBeenCalled();
+  });
+
+  it("drains a held Backspace gesture before shutting down the draft engine", async () => {
+    const before = [
+      node({ id: "first", sortKey: 1, title: "First" }),
+      node({ id: "empty", sortKey: 2, title: "" }),
+    ];
+    configureRepository(before);
+    const batch = deferred<NotesWorkspace>();
+    notesStoreMock.applyBatch.mockReturnValue(batch.promise);
+    const rendered = renderNotesWorkspace();
+    const empty = await findTitleInput("");
+    empty.focus();
+    empty.setSelectionRange(0, 0);
+
     expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
-    await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledOnce(),
+    rendered.unmount();
+
+    await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+    await act(async () =>
+      batch.resolve(workspace([node({ id: "first", sortKey: 1, title: "First" })])),
     );
-    expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+    expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce();
+  });
+
+  it("does not batch repeated Backspace on note, attachment, readonly, or plugin rows", async () => {
+    const noteId = "note-protected";
+    const attachmentId = "attachment-protected";
+    const readonlyId = "readonly-protected";
+    const pluginId = "plugin-protected";
+    configureRepository(
+      [
+        node({ id: noteId, sortKey: 1, title: "", note: "Keep note" }),
+        node({ id: attachmentId, sortKey: 2, title: "" }),
+        node({
+          id: readonlyId,
+          sortKey: 3,
+          title: "",
+          isReadonly: true,
+        }),
+        node({
+          id: pluginId,
+          sortKey: 4,
+          title: "",
+          pluginMeta: { kind: "date", dateKey: "2026.07.25" },
+        }),
+      ],
+      {
+        [attachmentId]: [
+          attachment({ id: "protected-image", nodeId: attachmentId }),
+        ],
+      },
+    );
+    renderNotesWorkspace();
+    await findTitleInput("");
+
+    for (const nodeId of [noteId, attachmentId, readonlyId, pluginId]) {
+      const title = document.querySelector<HTMLTextAreaElement>(
+        `[data-outline-motion-id="${nodeId}"] textarea[aria-label="Edit node title"]`,
+      );
+      expect(title).not.toBeNull();
+      title!.focus();
+      title!.setSelectionRange(0, 0);
+      expect(
+        fireEvent.keyDown(title!, { key: "Backspace", repeat: true }),
+      ).toBe(true);
+    }
+    fireEvent.keyUp(window, { key: "Backspace" });
+
+    await act(async () => Promise.resolve());
+    expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+    expect(notesStoreMock.deleteNodes).not.toHaveBeenCalled();
+    expect(queryTitleInput("")).toBeInTheDocument();
+  });
+
+  it("focuses the previous row immediately and commits an empty removal on keyup", async () => {
+    const before = [
+      node({ id: "first", sortKey: 1, title: "First" }),
+      node({ id: "empty", sortKey: 2, title: "", note: "" }),
+      node({ id: "last", sortKey: 3, title: "Last" }),
+    ];
+    configureRepository(before);
+    const batch = deferred<NotesWorkspace>();
+    notesStoreMock.applyBatch.mockReturnValue(batch.promise);
+    renderNotesWorkspace();
+    const empty = await findTitleInput("");
+    empty.focus();
+    empty.setSelectionRange(0, 0);
+
+    expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
+    expect(queryTitleInput("")).not.toBeInTheDocument();
+    expect(await findTitleInput("First")).toHaveFocus();
+    expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+
+    fireEvent.keyUp(window, { key: "Backspace" });
+    await waitFor(() =>
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
       "/vault",
       {
-        id: "empty",
-        title: "",
-        note: "",
-        imageOffsetUtf16: 0,
-        markerKind: "bullet",
+          op: "backspaceGesture",
+          nodeIds: ["empty"],
+          titleUpdate: null,
       },
       historyContextMatcher(),
-    );
-    expect(notesStoreMock.removeEmptyNode).not.toHaveBeenCalled();
-    screen.getByRole("button", { name: "All notes" }).focus();
-
-    await act(async () => save.resolve(workspace(before)));
-    await waitFor(() =>
-      expect(notesStoreMock.removeEmptyNode).toHaveBeenCalledWith(
-        "/vault",
-        "empty",
-        historyContextMatcher(),
       ),
     );
-    expect(screen.getByRole("button", { name: "All notes" })).toHaveFocus();
 
     await act(async () =>
-      remove.resolve(
+      batch.resolve(
         workspace(before.filter((current) => current.id !== "empty")),
       ),
     );
     expect(await findTitleInput("First")).toHaveFocus();
-    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
-    expect(notesStoreMock.removeEmptyNode).toHaveBeenCalledOnce();
+    expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce();
   });
 
   it("focuses the first lifted child after removing a collapsed empty parent", async () => {
@@ -11709,24 +11917,29 @@ describe("Notes workspace", () => {
       node({ id: "next", sortKey: 2, title: "Next" }),
     ];
     configureRepository(before);
-    const remove = deferred<NotesWorkspace>();
-    notesStoreMock.removeEmptyNode.mockReturnValue(remove.promise);
+    const batch = deferred<NotesWorkspace>();
+    notesStoreMock.applyBatch.mockReturnValue(batch.promise);
     renderNotesWorkspace();
     const empty = await findTitleInput("");
     empty.focus();
     empty.setSelectionRange(0, 0);
 
     expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
+    fireEvent.keyUp(window, { key: "Backspace" });
     await waitFor(() =>
-      expect(notesStoreMock.removeEmptyNode).toHaveBeenCalledWith(
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
         "/vault",
-        "empty",
+        {
+          op: "backspaceGesture",
+          nodeIds: ["empty"],
+          titleUpdate: null,
+        },
         historyContextMatcher(),
       ),
     );
 
     await act(async () =>
-      remove.resolve(
+      batch.resolve(
         workspace([
           node({ id: "lifted-a", sortKey: 1, title: "Lifted A" }),
           node({ id: "lifted-b", sortKey: 2, title: "Lifted B" }),

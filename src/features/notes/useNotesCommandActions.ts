@@ -11,16 +11,21 @@ import type {
   NotesStore,
   NotesStoreError
 } from "../../domain/notes";
+import type { NotesHistoryPrimarySelection } from "./notesHistory";
 import {
   notesDataDeletionParticipants,
   releaseNotesDataDeletion,
   reserveNotesDataDeletion
 } from "./notesDataDeletionRegistry";
 import type { NotesWorkspaceCoordinatorSession } from "./notesWorkspaceCoordinator";
-import type { NotesWorkspaceSessionRecord } from "./notesDraftEngine";
+import type {
+  NotesDraftEngine,
+  NotesWorkspaceSessionRecord
+} from "./notesDraftEngine";
 import type { ParsedImageAtomPaste } from "./notesImageAtomClipboard";
 import {
   applyBatchCommand,
+  applyBackspaceGestureCommand,
   applyImageAtomEditCommand,
   applyImageAtomPasteCommand,
   createChildCommand,
@@ -65,6 +70,7 @@ import type {
   NotesPreparedSelectionBatchOptions,
   NotesWorkspaceCompoundOptions
 } from "./notesWorkspaceTypes";
+import type { NotesPaneId } from "./notesPaneSession";
 import type { NotesLibraryStateController } from "./useNotesLibraryController";
 
 interface LiveRef<T> {
@@ -77,6 +83,7 @@ interface NotesCommandActionsDependencies {
   readonly vaultRoot: string;
   readonly sessionRecordRef: LiveRef<NotesWorkspaceSessionRecord | null>;
   readonly sessionRef: LiveRef<NotesWorkspaceCoordinatorSession | null>;
+  readonly draftEngineRef: LiveRef<NotesDraftEngine | null>;
   readonly activeScopeRef: NotesLibraryStateController["activeScopeRef"];
   readonly setLibraryView: NotesLibraryStateController["setLibraryView"];
   readonly setTagSummaries: NotesLibraryStateController["setTagSummaries"];
@@ -105,6 +112,7 @@ export function useNotesCommandActions({
   vaultRoot,
   sessionRecordRef,
   sessionRef,
+  draftEngineRef,
   activeScopeRef,
   setLibraryView,
   setTagSummaries,
@@ -249,6 +257,58 @@ export function useNotesCommandActions({
       ).outcome,
     [commandCtx]
   );
+  const beginBackspaceGesture = useCallback(
+    (
+      paneId: NotesPaneId,
+      nodeId: NoteId,
+      selection: NotesHistoryPrimarySelection
+    ): number | null => {
+      const session = sessionRef.current;
+      const engine = draftEngineRef.current;
+      if (
+        !session ||
+        !engine ||
+        engine.record.closing ||
+        sessionRecordRef.current !== engine.record ||
+        engine.record.session !== session
+      ) {
+        return null;
+      }
+      return session.beginBackspaceGesture(
+        { ownerPaneId: paneId, nodeId, selection },
+        (token) => engine.beginBackspaceGesture(token, nodeId),
+        applyBackspaceGestureCommand
+      );
+    },
+    [draftEngineRef, sessionRecordRef, sessionRef]
+  );
+  const touchBackspaceGesture = useCallback(
+    (token: number, nodeId: NoteId): void => {
+      sessionRef.current?.touchBackspaceGesture(token, nodeId);
+    },
+    [sessionRef]
+  );
+  const removeEmptyNodeInBackspaceGesture = useCallback(
+    (
+      token: number,
+      nodeId: NoteId,
+      focusNodeId: NoteId | null
+    ): boolean =>
+      sessionRef.current?.removeEmptyNodeInBackspaceGesture(
+        token,
+        nodeId,
+        focusNodeId
+      ) ?? false,
+    [sessionRef]
+  );
+  const finishBackspaceGesture = useCallback(
+    (reason: "keyup" | "blur" | "hidden" | "drain"): Promise<void> =>
+      sessionRef.current?.finishBackspaceGesture(reason) ?? Promise.resolve(),
+    [sessionRef]
+  );
+  const cancelBackspaceGesture = useCallback((): void => {
+    sessionRef.current?.cancelBackspaceGesture();
+  }, [sessionRef]);
   const importSubtree = useCallback(
     (
       parentId: NoteId | null,
@@ -474,6 +534,11 @@ export function useNotesCommandActions({
     applyImageAtomPasteWithAuthority,
     moveNode,
     applyBatch,
+    beginBackspaceGesture,
+    touchBackspaceGesture,
+    removeEmptyNodeInBackspaceGesture,
+    finishBackspaceGesture,
+    cancelBackspaceGesture,
     importSubtree,
     toggleComplete,
     toggleCollapsed,

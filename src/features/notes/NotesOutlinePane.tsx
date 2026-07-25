@@ -183,9 +183,13 @@ import {
 } from "./outlineInteractionEpoch";
 import {
   createOutlineVisibleSignature,
-  projectOptimisticKeyboardInsertions,
+  projectOptimisticOutline,
   type KeyboardInsertionDisposition,
 } from "./notesKeyboardInsertion";
+import {
+  captureNotesSplitInputBenchmarkBackspaceOperation,
+  markNotesSplitInputBenchmarkBackspaceSettled,
+} from "./notesSplitLatencyProbe";
 import {
   detectOutlineShortcutPlatform,
   resolveNotesHistoryShortcut,
@@ -752,6 +756,7 @@ export function NotesOutlinePane({
     cancelled: boolean;
     epoch: OutlineInteractionEpoch;
     vaultRoot: string;
+    finishBackspaceGesture: typeof actions.finishBackspaceGesture;
     unregister: typeof actions.unregisterOutlinePane;
   } | null>(null);
   const interactionVaultRef = useRef(vaultRoot);
@@ -769,6 +774,7 @@ export function NotesOutlinePane({
       cancelled: false,
       epoch: interactionEpochRef.current,
       vaultRoot,
+      finishBackspaceGesture: actions.finishBackspaceGesture,
       unregister: actions.unregisterOutlinePane,
     };
     if (previous?.vaultRoot === token.vaultRoot) {
@@ -776,13 +782,20 @@ export function NotesOutlinePane({
     }
     interactionDisposeTokenRef.current = token;
     return () => {
+      const finishing =
+        token.finishBackspaceGesture?.("drain") ?? Promise.resolve();
       queueMicrotask(() => {
         if (token.cancelled) return;
         token.epoch.dispose();
-        token.unregister?.(paneId);
+        void finishing.finally(() => token.unregister?.(paneId));
       });
     };
-  }, [actions.unregisterOutlinePane, paneId, vaultRoot]);
+  }, [
+    actions.finishBackspaceGesture,
+    actions.unregisterOutlinePane,
+    paneId,
+    vaultRoot,
+  ]);
   const notesStateSlice = useNotesState();
   const notesActionsSliceRef = useRef(notesActionsSlice);
   notesActionsSliceRef.current = notesActionsSlice;
@@ -845,12 +858,49 @@ export function NotesOutlinePane({
     attachmentUploadErrorsByNodeId,
     attachmentUploadRetryAttemptIdsByNodeId,
     draftsByNodeId,
+    optimisticBackspaceGesture = null,
     optimisticInsertionFailure,
     optimisticKeyboardInsertions = [],
     selection,
     selectionRevision = 0,
     writeError,
   } = useNotesDrafts();
+  const backspaceBenchmarkRef = useRef<{
+    token: number;
+    operationId: string | null;
+  } | null>(null);
+  useEffect(() => {
+    if (
+      optimisticBackspaceGesture === null ||
+      optimisticBackspaceGesture.removedNodeIds.length === 0 ||
+      backspaceBenchmarkRef.current?.token ===
+        optimisticBackspaceGesture.token
+    ) {
+      return;
+    }
+    backspaceBenchmarkRef.current = {
+      token: optimisticBackspaceGesture.token,
+      operationId: captureNotesSplitInputBenchmarkBackspaceOperation(paneId),
+    };
+  }, [optimisticBackspaceGesture, paneId]);
+  const finishBackspaceGesture = useCallback(
+    (reason: "keyup" | "blur" | "hidden" | "drain"): Promise<void> => {
+      const benchmark = backspaceBenchmarkRef.current;
+      backspaceBenchmarkRef.current = null;
+      const completion =
+        actions.finishBackspaceGesture?.(reason) ?? Promise.resolve();
+      if (benchmark) {
+        void completion.then(() =>
+          markNotesSplitInputBenchmarkBackspaceSettled(
+            benchmark.operationId,
+            "committed",
+          ),
+        );
+      }
+      return completion;
+    },
+    [actions],
+  );
   const selectionChooserScopeKey = `${vaultRoot}\u0000${libraryView}\u0000${activeTagFilters
     .map((filter) => `${filter.prefix}\u0000${filter.normalizedTag}`)
     .join("\u0001")}`;
@@ -1551,12 +1601,18 @@ export function NotesOutlinePane({
   );
   const optimisticProjection = useMemo(
     () =>
-      projectOptimisticKeyboardInsertions(
+      projectOptimisticOutline(
         authoritativeBodyRows,
         state.nodesById,
         optimisticKeyboardInsertions,
+        optimisticBackspaceGesture,
       ),
-    [authoritativeBodyRows, optimisticKeyboardInsertions, state.nodesById],
+    [
+      authoritativeBodyRows,
+      optimisticBackspaceGesture,
+      optimisticKeyboardInsertions,
+      state.nodesById,
+    ],
   );
   const bodyRows = optimisticProjection.rows;
   useLayoutEffect(() => {
@@ -2935,10 +2991,36 @@ export function NotesOutlinePane({
   );
   const handleSelectionClipboardKeyUpCapture = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+      if (event.key === "Backspace") {
+        void finishBackspaceGesture("keyup");
+      }
       selectionNativeClipboard.handleKeyUp(event);
     },
-    [selectionNativeClipboard],
+    [finishBackspaceGesture, selectionNativeClipboard],
   );
+  useEffect(() => {
+    const handleWindowKeyUp = (event: globalThis.KeyboardEvent): void => {
+      if (event.key === "Backspace") {
+        void finishBackspaceGesture("keyup");
+      }
+    };
+    const handleWindowBlur = (): void => {
+      void finishBackspaceGesture("blur");
+    };
+    const handleVisibilityChange = (): void => {
+      if (document.visibilityState === "hidden") {
+        void finishBackspaceGesture("hidden");
+      }
+    };
+    window.addEventListener("keyup", handleWindowKeyUp);
+    window.addEventListener("blur", handleWindowBlur);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("keyup", handleWindowKeyUp);
+      window.removeEventListener("blur", handleWindowBlur);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [finishBackspaceGesture]);
   const handleSelectionCompositionStartCapture = useCallback((): void => {
     selectionNativeClipboard.handleCompositionStart();
     setOutlineComposing(true);

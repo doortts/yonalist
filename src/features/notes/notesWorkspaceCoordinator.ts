@@ -6,6 +6,7 @@ import {
   parseNotesError,
   type NoteId,
   type NoteTagSummary,
+  type NotesHistoryContext,
   type NotesHistoryState,
   type NotesHistoryStatus,
   type NotesStore,
@@ -45,7 +46,13 @@ import {
   flattenVisibleOutlineRows,
   type FlattenedOutlineRow
 } from "./outlineTree";
+import {
+  appendBackspaceRemoval,
+  type OptimisticBackspaceGesture
+} from "./notesBackspaceGesture";
 import type {
+  NotesBackspaceDraftCommit,
+  NotesBackspaceDraftLease,
   NotesKeyboardInsertionPreparation,
   NotesKeyboardInsertionRequest,
   NotesProjectionPublication
@@ -146,6 +153,17 @@ export type NotesWorkspaceQueueWork = (
 
 export type NotesPendingSelectionPolicy = "clear" | "preserve";
 
+export interface NotesBackspaceGestureCommitInput {
+  readonly gesture: OptimisticBackspaceGesture;
+  readonly historyContext: NotesHistoryContext;
+  readonly draftCommit: NotesBackspaceDraftCommit;
+}
+
+export type NotesBackspaceGestureQueueWork = (
+  context: NotesWorkspaceQueueContext,
+  input: NotesBackspaceGestureCommitInput
+) => Promise<NotesWorkspaceQueueResult> | NotesWorkspaceQueueResult;
+
 export type NotesWorkspaceCoordinatorEvent =
   | { type: "pending"; selectionPolicy: NotesPendingSelectionPolicy }
   | { type: "authorityRecovery"; authority: NotesWriteAuthority }
@@ -155,6 +173,15 @@ export type NotesWorkspaceCoordinatorEvent =
       rollback?: {
         ownerPaneId: string;
         sourceId: NoteId;
+        selection: NotesHistoryPrimarySelection;
+      };
+    }
+  | {
+      type: "optimisticBackspaceGesture";
+      snapshot: OptimisticBackspaceGesture | null;
+      rollback?: {
+        ownerPaneId: NotesPaneId;
+        nodeId: NoteId;
         selection: NotesHistoryPrimarySelection;
       };
     }
@@ -223,6 +250,7 @@ export interface NotesWorkspaceCoordinatorSession {
       requireAllBarriers?: boolean;
       settleFailure?: (error: string) => void;
       keyboardInsertion?: NotesKeyboardInsertionPreparation;
+      unknownOutcomeExpectation?: NotesUnknownOutcomeExpectation;
     }
   ): Promise<NotesWorkspaceCommandOutcome>;
   prepareKeyboardInsertion(
@@ -243,6 +271,25 @@ export interface NotesWorkspaceCoordinatorSession {
   pendingKeyboardInsertion(
     expectedNodeId: NoteId
   ): PendingKeyboardInsertion | undefined;
+  beginBackspaceGesture(
+    input: {
+      readonly ownerPaneId: NotesPaneId;
+      readonly nodeId: NoteId;
+      readonly selection: NotesHistoryPrimarySelection;
+    },
+    createDraftLease: (token: number) => NotesBackspaceDraftLease | null,
+    work: NotesBackspaceGestureQueueWork
+  ): number | null;
+  touchBackspaceGesture(token: number, nodeId: NoteId): void;
+  removeEmptyNodeInBackspaceGesture(
+    token: number,
+    nodeId: NoteId,
+    focusNodeId: NoteId | null
+  ): boolean;
+  finishBackspaceGesture(
+    reason: "keyup" | "blur" | "hidden" | "drain"
+  ): Promise<void>;
+  cancelBackspaceGesture(): void;
   publishOutlinePaneState(
     input: Omit<OutlinePanePublicationSnapshot, "sessionId">
   ): void;
@@ -356,6 +403,19 @@ interface CoordinatorEntry {
   authorityRecoveryGeneration: number;
   authorityRecovery: Promise<NotesUnknownOutcomeDecision> | null;
   unknownOutcomeExpectation: NotesUnknownOutcomeExpectation | null;
+  nextBackspaceGestureToken: number;
+  backspaceGesture: BackspaceGestureState | null;
+}
+
+interface BackspaceGestureState {
+  snapshot: OptimisticBackspaceGesture;
+  readonly owner: SessionState;
+  readonly historyContext: NotesHistoryContext;
+  readonly draftLease: NotesBackspaceDraftLease;
+  readonly work: NotesBackspaceGestureQueueWork;
+  afterSnapshot: NotesHistorySnapshot | null;
+  draftCommit: NotesBackspaceDraftCommit | null;
+  finishing: Promise<void> | null;
 }
 
 interface OutlinePaneState {
@@ -685,6 +745,46 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       },
       ...(rollback ? { rollback } : {})
     });
+  };
+
+  const notifyOptimisticBackspaceGesture = (
+    state: BackspaceGestureState,
+    rollback = false
+  ): void => {
+    notify(state.owner, {
+      type: "optimisticBackspaceGesture",
+      snapshot: state.owner.entry.backspaceGesture === state
+        ? state.snapshot
+        : null,
+      ...(rollback
+        ? {
+            rollback: {
+              ownerPaneId: state.snapshot.ownerPaneId,
+              nodeId: state.snapshot.startingNodeId,
+              selection: { ...state.snapshot.startingSelection }
+            }
+          }
+        : {})
+    });
+  };
+
+  const updateOptimisticBackspaceGesture = (
+    state: BackspaceGestureState,
+    snapshot: OptimisticBackspaceGesture
+  ): void => {
+    if (state.owner.entry.backspaceGesture !== state) return;
+    state.snapshot = snapshot;
+    notifyOptimisticBackspaceGesture(state);
+  };
+
+  const clearOptimisticBackspaceGesture = (
+    state: BackspaceGestureState,
+    rollback = false
+  ): void => {
+    if (state.owner.entry.backspaceGesture !== state) return;
+    state.owner.entry.backspaceGesture = null;
+    notifyOptimisticBackspaceGesture(state, rollback);
+    maybeDeleteEntry(state.owner.entry);
   };
 
   const setOptimisticInsertionStatus = (
@@ -1133,6 +1233,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       entry.pendingStructuralBarriers > 0 ||
       entry.historyRecovery !== null ||
       entry.authorityRecovery !== null ||
+      entry.backspaceGesture !== null ||
       entry.closing !== null ||
       !entry.installed
     ) {
@@ -1298,14 +1399,32 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           // Workspace authority can still be adopted without history proof.
         }
       }
-      let decision = recoverUnknownOutcome({
-        expectation,
-        authority: {
-          kind: "loaded",
-          workspace,
-          ...(historyStatus ? { historyStatus } : {})
-        }
-      });
+      const unclassifiedHistoryProven =
+        expectation.kind === "unclassified" &&
+        expectation.historyContext.entryId.length > 0 &&
+        historyStatus?.historyEpoch ===
+          expectation.historyContext.historyEpoch &&
+        historyStatus.canUndo &&
+        !historyStatus.canRedo &&
+        historyStatus.nextUndoEntryId === expectation.historyContext.entryId &&
+        historyStatus.nextRedoEntryId === null;
+      const provenHistoryStatus = unclassifiedHistoryProven
+        ? historyStatus
+        : undefined;
+      let decision: NotesUnknownOutcomeDecision = provenHistoryStatus
+        ? {
+            kind: "committedAndCurrent",
+            workspace,
+            historyStatus: provenHistoryStatus
+          }
+        : recoverUnknownOutcome({
+            expectation,
+            authority: {
+              kind: "loaded",
+              workspace,
+              ...(historyStatus ? { historyStatus } : {})
+            }
+          });
       if (decision.kind === "committedWithoutHistoryProof") {
         const recoveredWorkspace = decision.workspace;
         const snapshot = preferredSession?.captureHistoryLocation?.() ?? null;
@@ -1416,15 +1535,24 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       workspace: decision.workspace,
       historyStatus,
       scopeAgnostic: true,
-      ...(historyProven && expectedNodeId
+      ...(historyProven
         ? {
-            uiUpdate: {
-              selectedId: expectedNodeId,
-              editingNoteId: expectedNodeId,
-              pendingFocusId: expectedNodeId,
-              pendingFocusField: "title"
-            },
-            committedHistoryEntryIds: [expectation.historyContext.entryId]
+            committedHistoryEntryIds: [expectation.historyContext.entryId],
+            ...(expectedNodeId
+              ? {
+                  uiUpdate: {
+                    selectedId: expectedNodeId,
+                    editingNoteId: expectedNodeId,
+                    pendingFocusId: expectedNodeId,
+                    pendingFocusField: "title"
+                  }
+                }
+              : {
+                  uiUpdate: {
+                    pendingFocusId: null,
+                    pendingFocusField: null
+                  }
+                })
           }
         : {
             uiUpdate: {
@@ -1442,19 +1570,77 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       { readonly kind: "authorityUnknown" }
     >
   ): void => {
+    let recoveredDecision = decision;
+    const backspace = entry.backspaceGesture;
+    if (
+      backspace?.snapshot.status === "checking" &&
+      backspace.draftCommit !== null
+    ) {
+      if (
+        recoveredDecision.kind === "committedAndCurrent" &&
+        backspace.afterSnapshot
+      ) {
+        const accepted = entry.history.acceptMutationResult(
+          backspace.historyContext.entryId,
+          backspace.afterSnapshot,
+          recoveredDecision.historyStatus
+        );
+        if (accepted.accepted) {
+          for (const entryId of accepted.unreachableEntryIds) {
+            entry.pendingHistoryCleanupIds.add(entryId);
+          }
+          replaceAuthoritativePresentation(
+            entry,
+            normalizeWorkspace(recoveredDecision.workspace),
+            backspace.afterSnapshot,
+            false,
+            false
+          );
+          backspace.afterSnapshot = null;
+          backspace.draftLease.settle("committed");
+          clearOptimisticBackspaceGesture(backspace);
+        } else {
+          releaseHistorySnapshot(backspace.afterSnapshot);
+          backspace.afterSnapshot = null;
+          recoveredDecision = {
+            kind: "notProvenCommitted",
+            workspace: recoveredDecision.workspace,
+            historyStatus: recoveredDecision.historyStatus
+          };
+        }
+      } else if (recoveredDecision.kind === "committedAndCurrent") {
+        recoveredDecision = {
+          kind: "notProvenCommitted",
+          workspace: recoveredDecision.workspace,
+          historyStatus: recoveredDecision.historyStatus
+        };
+      }
+      if (
+        recoveredDecision.kind !== "committedAndCurrent" &&
+        entry.backspaceGesture === backspace
+      ) {
+        if (backspace.afterSnapshot) {
+          releaseHistorySnapshot(backspace.afterSnapshot);
+          backspace.afterSnapshot = null;
+        }
+        entry.history.discard(backspace.historyContext.entryId);
+        backspace.draftLease.settle("failed");
+        clearOptimisticBackspaceGesture(backspace, true);
+      }
+    }
     const historyStatus =
-      decision.kind === "committedAndCurrent"
-        ? decision.historyStatus
+      recoveredDecision.kind === "committedAndCurrent"
+        ? recoveredDecision.historyStatus
         : entry.historyStatus;
-    entry.confirmedWorkspace = decision.workspace;
+    entry.confirmedWorkspace = recoveredDecision.workspace;
     entry.historyStatus = historyStatus;
     entry.historyVersion += 1;
     const result: NotesWorkspaceQueueSettlement =
-      decision.kind === "notProvenCommitted"
+      recoveredDecision.kind === "notProvenCommitted"
         ? {
             kind: "failure",
             error: "The mutation could not be proven committed.",
-            workspace: decision.workspace,
+            workspace: recoveredDecision.workspace,
             historyStatus,
             historyVersion: entry.historyVersion,
             uiUpdate: { pendingFocusId: null, pendingFocusField: null },
@@ -1462,14 +1648,14 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           }
         : {
             kind: "authoritative",
-            workspace: decision.workspace,
+            workspace: recoveredDecision.workspace,
             historyStatus,
             historyVersion: entry.historyVersion,
             uiUpdate: { pendingFocusId: null, pendingFocusField: null },
             scopeAgnostic: true
           };
     for (const candidate of entry.sessions) {
-      candidate.confirmedWorkspace = decision.workspace;
+      candidate.confirmedWorkspace = recoveredDecision.workspace;
       notify(candidate, {
         type: candidate === entry.owner ? "settled" : "synchronized",
         result,
@@ -2090,7 +2276,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       writeAuthority: { kind: "known" },
       authorityRecoveryGeneration: 0,
       authorityRecovery: null,
-      unknownOutcomeExpectation: null
+      unknownOutcomeExpectation: null,
+      nextBackspaceGestureToken: 0,
+      backspaceGesture: null
     };
   };
 
@@ -2124,6 +2312,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     if (!session.active) {
       return;
     }
+    const drainingBackspace =
+      session.entry.backspaceGesture?.owner === session &&
+      session.entry.backspaceGesture.finishing !== null;
 
     if (
       session.entry.owner === session &&
@@ -2175,7 +2366,10 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       );
       if (successor) {
         transferOwner(session.entry, successor);
-      } else if (session.entry.authoritativePresentation) {
+      } else if (
+        session.entry.authoritativePresentation &&
+        !drainingBackspace
+      ) {
         session.entry.presentationBlocked = true;
         session.entry.authoritativePresentation.pendingOwnerApply = true;
       }
@@ -2366,7 +2560,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         pump(entry);
         return item.completion;
       };
-      return {
+      let coordinatorSession!: NotesWorkspaceCoordinatorSession;
+      coordinatorSession = {
         activation: activationCompletion,
         history: entry.history,
         prepareKeyboardInsertion(
@@ -2513,6 +2708,347 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             ? pending
             : undefined;
         },
+        beginBackspaceGesture(input, createDraftLease, work): number | null {
+          const current = entry.backspaceGesture;
+          if (current) {
+            return current.owner === session &&
+              current.snapshot.ownerPaneId === input.ownerPaneId &&
+              current.snapshot.status === "active"
+              ? current.snapshot.token
+              : null;
+          }
+          if (
+            !session.active ||
+            !session.activated ||
+            session.presentation !== "writable" ||
+            entry.owner !== session ||
+            !session.outlinePanes.has(input.ownerPaneId) ||
+            entry.historyBlocked ||
+            entry.presentationBlocked ||
+            entry.writeAuthority.kind !== "known"
+          ) {
+            return null;
+          }
+          let captured = session.captureHistoryLocation?.() ?? null;
+          if (!captured && entry.authoritativePresentation) {
+            captured = entry.authoritativePresentation.snapshot;
+            retainHistorySnapshot(captured);
+          }
+          if (!captured) return null;
+          const focus = {
+            nodeId: input.nodeId,
+            field: "title" as const,
+            primarySelection: { ...input.selection }
+          };
+          const before =
+            input.ownerPaneId === "secondary"
+              ? captured.secondaryPane
+                ? {
+                    ...captured,
+                    activePaneId: input.ownerPaneId,
+                    secondaryPane: {
+                      ...captured.secondaryPane,
+                      selectedId: input.nodeId,
+                      focus
+                    }
+                  }
+                : null
+              : {
+                  ...captured,
+                  activePaneId: input.ownerPaneId,
+                  selectedId: input.nodeId,
+                  focus
+                };
+          if (!before) {
+            releaseHistorySnapshot(captured);
+            return null;
+          }
+          let historyContext;
+          try {
+            historyContext = entry.history.beginStructuralEntry(
+              "backspaceGesture",
+              before
+            );
+          } catch {
+            releaseHistorySnapshot(captured);
+            return null;
+          }
+          releaseHistorySnapshot(captured);
+          const token = ++entry.nextBackspaceGestureToken;
+          let draftLease: NotesBackspaceDraftLease | null = null;
+          try {
+            draftLease = createDraftLease(token);
+          } catch {
+            // A missing draft owner invalidates the reserved history entry.
+          }
+          if (!draftLease || draftLease.token !== token) {
+            entry.history.discard(historyContext.entryId);
+            return null;
+          }
+          const state: BackspaceGestureState = {
+            snapshot: {
+              token,
+              ownerPaneId: input.ownerPaneId,
+              startingNodeId: input.nodeId,
+              startingSelection: { ...input.selection },
+              removedNodeIds: [],
+              titleUpdate: null,
+              focusNodeId: input.nodeId,
+              status: "active"
+            },
+            owner: session,
+            historyContext,
+            draftLease,
+            work,
+            afterSnapshot: null,
+            draftCommit: null,
+            finishing: null
+          };
+          entry.backspaceGesture = state;
+          notifyOptimisticBackspaceGesture(state);
+          return token;
+        },
+        touchBackspaceGesture(token, nodeId): void {
+          const state = entry.backspaceGesture;
+          if (
+            !state ||
+            state.owner !== session ||
+            state.snapshot.token !== token ||
+            state.snapshot.status !== "active"
+          ) {
+            return;
+          }
+          state.draftLease.touch(nodeId);
+        },
+        removeEmptyNodeInBackspaceGesture(
+          token,
+          nodeId,
+          focusNodeId
+        ): boolean {
+          const state = entry.backspaceGesture;
+          if (
+            !state ||
+            state.owner !== session ||
+            state.snapshot.token !== token ||
+            state.snapshot.status !== "active"
+          ) {
+            return false;
+          }
+          const snapshot = appendBackspaceRemoval(state.snapshot, {
+            nodeId,
+            focusNodeId,
+            titleUpdate: null
+          });
+          if (snapshot === state.snapshot) return false;
+          updateOptimisticBackspaceGesture(state, snapshot);
+          return true;
+        },
+        finishBackspaceGesture(reason): Promise<void> {
+          const state = entry.backspaceGesture;
+          if (!state || state.owner !== session) return Promise.resolve();
+          if (state.finishing) return state.finishing;
+          if (state.snapshot.status !== "active") return Promise.resolve();
+          const queued = Object.freeze({
+            ...state.snapshot,
+            removedNodeIds: Object.freeze([...state.snapshot.removedNodeIds]),
+            status: "queued" as const
+          });
+          updateOptimisticBackspaceGesture(state, queued);
+          const rollback = (outcome: "failed" | "cancelled", restore: boolean) => {
+            entry.history.discard(state.historyContext.entryId);
+            state.draftLease.settle(outcome);
+            clearOptimisticBackspaceGesture(state, restore);
+          };
+          let after = session.captureHistoryLocation?.() ?? null;
+          if (!after && entry.authoritativePresentation) {
+            after = entry.authoritativePresentation.snapshot;
+            retainHistorySnapshot(after);
+          }
+          state.afterSnapshot = after;
+          const releaseAfter = (): void => {
+            if (!state.afterSnapshot) return;
+            releaseHistorySnapshot(state.afterSnapshot);
+            state.afterSnapshot = null;
+          };
+          const fail = (
+            outcome: "failed" | "cancelled",
+            restore: boolean
+          ): void => {
+            releaseAfter();
+            rollback(outcome, restore);
+          };
+          const completion = (async () => {
+            if (!after) {
+              fail("failed", true);
+              return;
+            }
+            let draftCommit: NotesBackspaceDraftCommit;
+            try {
+              draftCommit = await state.draftLease.prepare(
+                queued.removedNodeIds
+              );
+            } catch {
+              fail("failed", true);
+              return;
+            }
+            if (!draftCommit.baselineFlushed) {
+              fail("failed", true);
+              return;
+            }
+            state.draftCommit = draftCommit;
+            if (
+              queued.removedNodeIds.length === 0 &&
+              draftCommit.titleUpdate === null
+            ) {
+              fail("cancelled", false);
+              return;
+            }
+            const prepared = Object.freeze({
+              ...queued,
+              titleUpdate: draftCommit.titleUpdate
+                ? Object.freeze({ ...draftCommit.titleUpdate })
+                : null
+            });
+            updateOptimisticBackspaceGesture(state, prepared);
+            const outcome = await coordinatorSession.enqueueStructural(
+              async (context) => {
+                const running = Object.freeze({
+                  ...prepared,
+                  status: "running" as const
+                });
+                updateOptimisticBackspaceGesture(state, running);
+                let result;
+                try {
+                  result = await state.work(context, {
+                    gesture: running,
+                    historyContext: state.historyContext,
+                    draftCommit
+                  });
+                } catch (cause) {
+                  if (isNotesMutationOutcomeUnknown(cause)) {
+                    updateOptimisticBackspaceGesture(state, {
+                      ...running,
+                      status: "checking"
+                    });
+                  }
+                  throw cause;
+                }
+                if (result.kind !== "authoritative") return result;
+                const acceptedAfter = state.afterSnapshot;
+                if (!acceptedAfter) {
+                  return {
+                    kind: "failure",
+                    error: "Backspace history location is unavailable.",
+                    workspace: result.workspace,
+                    historyStatus: result.historyStatus,
+                    committedHistoryEntryIds: result.committedHistoryEntryIds
+                  };
+                }
+                if (result.historyStatus) {
+                  const accepted = entry.history.acceptMutationResult(
+                    state.historyContext.entryId,
+                    acceptedAfter,
+                    result.historyStatus
+                  );
+                  if (!accepted.accepted) {
+                    releaseAfter();
+                    return {
+                      kind: "failure",
+                      error: "Backspace history acknowledgement was rejected.",
+                      workspace: result.workspace,
+                      historyStatus: result.historyStatus,
+                      committedHistoryEntryIds: result.committedHistoryEntryIds
+                    };
+                  }
+                  for (const entryId of accepted.unreachableEntryIds) {
+                    entry.pendingHistoryCleanupIds.add(entryId);
+                  }
+                } else {
+                  entry.history.rememberAfter(
+                    state.historyContext.entryId,
+                    acceptedAfter
+                  );
+                }
+                replaceAuthoritativePresentation(
+                  entry,
+                  normalizeWorkspace(result.workspace),
+                  acceptedAfter,
+                  false,
+                  false
+                );
+                state.afterSnapshot = null;
+                return result;
+              },
+              {
+                retainAfterClose: reason === "drain",
+                requireAllBarriers: true,
+                unknownOutcomeExpectation: {
+                  kind: "unclassified",
+                  historyContext: state.historyContext
+                }
+              }
+            );
+            if (outcome === "committed") {
+              const recoveredAfter = state.afterSnapshot;
+              if (recoveredAfter) {
+                const historyStatus = entry.historyStatus;
+                if (!historyStatus) {
+                  fail("failed", true);
+                  return;
+                }
+                const accepted = entry.history.acceptMutationResult(
+                  state.historyContext.entryId,
+                  recoveredAfter,
+                  historyStatus
+                );
+                if (!accepted.accepted) {
+                  fail("failed", true);
+                  return;
+                }
+                for (const entryId of accepted.unreachableEntryIds) {
+                  entry.pendingHistoryCleanupIds.add(entryId);
+                }
+                replaceAuthoritativePresentation(
+                  entry,
+                  normalizeWorkspace(entry.confirmedWorkspace),
+                  recoveredAfter,
+                  false,
+                  false
+                );
+                state.afterSnapshot = null;
+              }
+              state.draftLease.settle("committed");
+              clearOptimisticBackspaceGesture(state);
+              return;
+            }
+            if (
+              state.snapshot.status === "checking" &&
+              entry.writeAuthority.kind === "unknown"
+            ) {
+              return;
+            }
+            fail("failed", true);
+          })().catch(() => {
+            if (entry.backspaceGesture === state) {
+              fail("failed", true);
+            }
+          });
+          state.finishing = completion;
+          return completion;
+        },
+        cancelBackspaceGesture(): void {
+          const state = entry.backspaceGesture;
+          if (
+            !state ||
+            state.owner !== session ||
+            state.snapshot.status !== "active"
+          ) {
+            return;
+          }
+          entry.history.discard(state.historyContext.entryId);
+          state.draftLease.settle("cancelled");
+          clearOptimisticBackspaceGesture(state);
+        },
         publishOutlinePaneState(input): void {
           if (!session.active) return;
           const snapshot = clonePaneSnapshot(
@@ -2638,6 +3174,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             requireAllBarriers?: boolean;
             settleFailure?: (error: string) => void;
             keyboardInsertion?: NotesKeyboardInsertionPreparation;
+            unknownOutcomeExpectation?: NotesUnknownOutcomeExpectation;
           }
         ): Promise<NotesWorkspaceCommandOutcome> {
           if (session.presentation === "background") {
@@ -2750,7 +3287,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                   options?.settleFailure ?? null,
                   keyboardInsertion,
                   { kind: "other" },
-                  null
+                  options?.unknownOutcomeExpectation ?? null
                 );
                 finalizeParticipants();
                 return await structural;
@@ -2962,6 +3499,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           closeSession(session);
         }
       };
+      return coordinatorSession;
     },
 
     hasCoordinator(repository: NotesStore, vaultRoot: string): boolean {

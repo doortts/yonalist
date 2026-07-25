@@ -812,13 +812,12 @@ export function resolveOutlineKey(
   }
 
   if (input.key === "Backspace") {
-    if (imageTarget) {
+    if (imageTarget || node.isReadonly === true || node.pluginMeta !== undefined) {
       return null;
     }
     const hasAttachments =
       (input.workspace.attachmentsByNodeId[input.nodeId]?.length ?? 0) > 0;
     if (
-      input.repeat ||
       !collapsedSelection ||
       selectionStart! !== 0 ||
       input.title.trim() ||
@@ -827,7 +826,7 @@ export function resolveOutlineKey(
       return null;
     }
     if (input.note.trim()) {
-      return hasAttachments ? null : { type: "confirmDelete" };
+      return hasAttachments || input.repeat ? null : { type: "confirmDelete" };
     }
     if (hasAttachments) {
       return null;

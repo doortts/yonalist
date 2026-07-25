@@ -559,10 +559,19 @@ export function useNotesWorkspacePaneRegistry({
     "secondary"
       ? draftsSlice.optimisticInsertionFailure
       : null;
+  const primaryOptimisticBackspaceGesture =
+    draftsSlice.optimisticBackspaceGesture?.ownerPaneId === "primary"
+      ? draftsSlice.optimisticBackspaceGesture
+      : null;
+  const secondaryOptimisticBackspaceGesture =
+    draftsSlice.optimisticBackspaceGesture?.ownerPaneId === "secondary"
+      ? draftsSlice.optimisticBackspaceGesture
+      : null;
   const primaryDraftsSlice = useMemo<NotesDraftsSlice>(
     () => ({
       draftsByNodeId: draftsSlice.draftsByNodeId,
       writeError: draftsSlice.writeError,
+      optimisticBackspaceGesture: primaryOptimisticBackspaceGesture,
       optimisticKeyboardInsertions: primaryOptimisticKeyboardInsertions,
       optimisticInsertionFailure: primaryOptimisticInsertionFailure,
       attachmentUploadErrorsByNodeId:
@@ -579,6 +588,7 @@ export function useNotesWorkspacePaneRegistry({
       draftsSlice.writeError,
       primary.selection,
       primary.selectionRevision,
+      primaryOptimisticBackspaceGesture,
       primaryOptimisticInsertionFailure,
       primaryOptimisticKeyboardInsertions
     ]
@@ -587,6 +597,7 @@ export function useNotesWorkspacePaneRegistry({
     () => ({
       draftsByNodeId: draftsSlice.draftsByNodeId,
       writeError: draftsSlice.writeError,
+      optimisticBackspaceGesture: secondaryOptimisticBackspaceGesture,
       optimisticKeyboardInsertions: secondaryOptimisticKeyboardInsertions,
       optimisticInsertionFailure: secondaryOptimisticInsertionFailure,
       attachmentUploadErrorsByNodeId:
@@ -601,6 +612,7 @@ export function useNotesWorkspacePaneRegistry({
       draftsSlice.attachmentUploadRetryAttemptIdsByNodeId,
       draftsSlice.draftsByNodeId,
       draftsSlice.writeError,
+      secondaryOptimisticBackspaceGesture,
       secondaryOptimisticInsertionFailure,
       secondaryOptimisticKeyboardInsertions,
       secondaryPane.selection,
