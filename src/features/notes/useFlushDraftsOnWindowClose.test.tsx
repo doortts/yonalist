@@ -28,6 +28,16 @@ async function flushMicrotasks(): Promise<void> {
   }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function setTauriRuntime(present: boolean): void {
   if (present) {
     (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ =
@@ -61,7 +71,7 @@ describe("useFlushDraftsOnWindowClose", () => {
     });
 
     expect(onCloseRequested).toHaveBeenCalledTimes(1);
-    const handler = onCloseRequested.mock.calls[0][0] as (event: {
+    const handler = onCloseRequested.mock.lastCall?.[0] as (event: {
       preventDefault: () => void;
     }) => Promise<void>;
     const event = { preventDefault: vi.fn() };
@@ -113,8 +123,8 @@ describe("useFlushDraftsOnWindowClose", () => {
     expect(order).toEqual(["flush", "sync", "destroy"]);
   });
 
-  it("closes anyway and warns when the sync export flush fails", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  it("keeps the window open when the sync export flush fails", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
     let handler:
       | ((event: { preventDefault: () => void }) => Promise<void>)
       | undefined;
@@ -136,17 +146,16 @@ describe("useFlushDraftsOnWindowClose", () => {
     });
 
     expect(syncFlush).toHaveBeenCalledTimes(1);
-    expect(destroy).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("sync export flush before close did not complete"),
-      expect.anything()
+    expect(destroy).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      "Notes sync export flush before close failed",
+      expect.any(Error)
     );
-    warn.mockRestore();
+    error.mockRestore();
   });
 
-  it("destroys the window and logs even when the flush never resolves", async () => {
+  it("keeps the window open after ten seconds while a drain is pending", async () => {
     vi.useFakeTimers();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const flush = vi.fn().mockReturnValue(new Promise<boolean>(() => {}));
     await act(async () => {
       render(<Harness flush={flush} />);
@@ -163,17 +172,15 @@ describe("useFlushDraftsOnWindowClose", () => {
     expect(flush).toHaveBeenCalledTimes(1);
     expect(destroy).not.toHaveBeenCalled();
 
-    await vi.advanceTimersByTimeAsync(3000);
-    await settled;
+    await vi.advanceTimersByTimeAsync(10_000);
+    await flushMicrotasks();
 
-    expect(destroy).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("timed out")
-    );
-    warn.mockRestore();
+    expect(destroy).not.toHaveBeenCalled();
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    void settled;
   });
 
-  it("logs and still destroys when the flush reports an incomplete drain", async () => {
+  it("keeps the window open when the drain reports incomplete", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const flush = vi.fn().mockResolvedValue(false);
     await act(async () => {
@@ -190,14 +197,14 @@ describe("useFlushDraftsOnWindowClose", () => {
     });
 
     expect(flush).toHaveBeenCalledTimes(1);
-    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(destroy).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining("could not persist")
     );
     warn.mockRestore();
   });
 
-  it("logs and still destroys when the flush rejects", async () => {
+  it("keeps the window open when the drain rejects", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const failure = new Error("write queue exploded");
     const flush = vi.fn().mockRejectedValue(failure);
@@ -215,12 +222,40 @@ describe("useFlushDraftsOnWindowClose", () => {
     });
 
     expect(flush).toHaveBeenCalledTimes(1);
-    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(destroy).not.toHaveBeenCalled();
     expect(error).toHaveBeenCalledWith(
       "Notes draft flush before close failed",
       failure
     );
     error.mockRestore();
+  });
+
+  it("prevents every simultaneous request and shares one drain", async () => {
+    const pending = deferred<boolean>();
+    const flush = vi.fn(() => pending.promise);
+    await act(async () => {
+      render(<Harness flush={flush} />);
+      await flushMicrotasks();
+    });
+    const handler = onCloseRequested.mock.calls[0][0] as (event: {
+      preventDefault: () => void;
+    }) => Promise<void>;
+    const firstEvent = { preventDefault: vi.fn() };
+    const secondEvent = { preventDefault: vi.fn() };
+
+    const first = handler(firstEvent);
+    const second = handler(secondEvent);
+    await flushMicrotasks();
+
+    expect(first).toBe(second);
+    expect(firstEvent.preventDefault).toHaveBeenCalledOnce();
+    expect(secondEvent.preventDefault).toHaveBeenCalledOnce();
+    expect(flush).toHaveBeenCalledOnce();
+    pending.resolve(true);
+    await act(async () => {
+      await first;
+    });
+    expect(destroy).toHaveBeenCalledOnce();
   });
 
   it("does nothing outside a Tauri runtime", async () => {

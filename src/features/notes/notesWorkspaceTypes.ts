@@ -251,6 +251,7 @@ export interface NotesPreparedSelectionBatchOptions {
 }
 
 export interface NotesWorkspaceActions {
+  drain?(): Promise<boolean>;
   setReadonly(nodeId: NoteId, isReadonly: boolean): Promise<NotesWorkspaceCommandOutcome>;
   setOutlineCompositionActive?(active: boolean): void;
   claimEditingFocus?(

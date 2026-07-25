@@ -230,6 +230,8 @@ export interface NotesNavigationPresentationLease {
 export interface NotesWorkspaceCoordinatorSession {
   readonly activation: Promise<void>;
   readonly history: NotesHistorySession;
+  drain(): Promise<boolean>;
+  isLifecycleDraining(): boolean;
   reserveImageImportInsertion?(
     anchor: ImageNodeInsertionAnchor
   ): NotesWorkspaceImageImportReservation;
@@ -405,6 +407,11 @@ interface CoordinatorEntry {
   unknownOutcomeExpectation: NotesUnknownOutcomeExpectation | null;
   nextBackspaceGestureToken: number;
   backspaceGesture: BackspaceGestureState | null;
+  lifecycleDrain: {
+    readonly owner: SessionState;
+    readonly completion: Promise<boolean>;
+    settled: boolean;
+  } | null;
 }
 
 interface BackspaceGestureState {
@@ -475,6 +482,7 @@ interface SessionState {
     NoteId,
     NotesKeyboardInsertionPreparation
   >;
+  coordinatorSession: NotesWorkspaceCoordinatorSession | null;
 }
 
 interface QueueItemBase {
@@ -1255,6 +1263,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       entry.historyRecovery !== null ||
       entry.authorityRecovery !== null ||
       entry.backspaceGesture !== null ||
+      entry.lifecycleDrain !== null ||
       entry.closing !== null ||
       !entry.installed
     ) {
@@ -2316,7 +2325,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       authorityRecovery: null,
       unknownOutcomeExpectation: null,
       nextBackspaceGestureToken: 0,
-      backspaceGesture: null
+      backspaceGesture: null,
+      lifecycleDrain: null
     };
   };
 
@@ -2435,6 +2445,10 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       }
     }
 
+    const lifecycleDrain = session.entry.lifecycleDrain;
+    if (lifecycleDrain?.owner === session && lifecycleDrain.settled) {
+      session.entry.lifecycleDrain = null;
+    }
     session.pendingWork = 0;
     maybeDeleteEntry(session.entry);
   };
@@ -2485,7 +2499,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         frontendSessionId: `${vaultRoot}\u0000${frontendSessionGeneration}`,
         frontendSessionGeneration,
         outlinePanes: new Map(),
-        preparedKeyboardInsertions: new Map()
+        preparedKeyboardInsertions: new Map(),
+        coordinatorSession: null
       };
       entry.sessions.add(session);
 
@@ -2517,12 +2532,21 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         settleFailure: ((error: string) => void) | null = null,
         keyboardInsertion: NotesKeyboardInsertionPreparation | null = null,
         publicationOwner: NotesProjectionPublicationOwner = { kind: "other" },
-        unknownOutcomeExpectation: NotesUnknownOutcomeExpectation | null = null
+        unknownOutcomeExpectation: NotesUnknownOutcomeExpectation | null = null,
+        lifecycleAdmitted = false
       ): Promise<NotesWorkspaceCommandOutcome> => {
         if (!session.active && !retainAfterOwnerClose) {
           return Promise.resolve("skipped");
         }
         if (session.presentation === "background") {
+          return Promise.resolve("skipped");
+        }
+        if (
+          entry.lifecycleDrain !== null &&
+          !lifecycleAdmitted &&
+          !silent &&
+          !observer
+        ) {
           return Promise.resolve("skipped");
         }
         if (
@@ -2599,9 +2623,130 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         return item.completion;
       };
       let coordinatorSession!: NotesWorkspaceCoordinatorSession;
+      const executeLifecycleDrain = async (): Promise<boolean> => {
+        await activationCompletion;
+        if (
+          !session.active ||
+          session.presentation !== "writable" ||
+          entry.owner !== session
+        ) {
+          return false;
+        }
+
+        const backspace = entry.backspaceGesture;
+        if (backspace) {
+          const backspaceOwner = backspace.owner.coordinatorSession;
+          if (!backspaceOwner) return false;
+          const outcome = await backspaceOwner.finishBackspaceGesture("drain");
+          if (outcome === "failed" || entry.backspaceGesture !== null) {
+            return false;
+          }
+        }
+
+        const admittedStructuralTail = entry.structuralTail;
+        await admittedStructuralTail;
+        if (!session.active || entry.writeAuthority.kind !== "known") {
+          return false;
+        }
+
+        const participants = [...entry.sessions]
+          .filter((participant) => participant.active)
+          .map((participant) => {
+            const cutoff =
+              participant.captureDraftCutoff?.({ kind: "other" }) ?? 0;
+            const beforeStructural = participant.beforeStructural;
+            const afterStructural = participant.afterStructural;
+            let finalized = false;
+            return {
+              cutoff,
+              beforeStructural,
+              finalize(): void {
+                if (finalized) return;
+                finalized = true;
+                try {
+                  afterStructural?.(cutoff);
+                } catch {
+                  // Lifecycle release cannot strand the strict drain.
+                }
+              }
+            };
+          });
+        try {
+          for (const participant of participants) {
+            if (
+              participant.beforeStructural &&
+              !(await participant.beforeStructural(participant.cutoff))
+            ) {
+              return false;
+            }
+          }
+        } finally {
+          for (const participant of participants) participant.finalize();
+        }
+
+        let observerRan = false;
+        await enqueueCommand(
+          () => {
+            observerRan = true;
+            return { kind: "skipped" };
+          },
+          true,
+          "preserve",
+          true,
+          true,
+          null,
+          null,
+          { kind: "other" },
+          null,
+          true
+        );
+        if (
+          !observerRan ||
+          !session.active ||
+          entry.writeAuthority.kind !== "known" ||
+          entry.backspaceGesture !== null
+        ) {
+          return false;
+        }
+        await drainHistoryCleanup(entry);
+        return entry.pendingHistoryCleanupIds.size === 0;
+      };
       coordinatorSession = {
         activation: activationCompletion,
         history: entry.history,
+        drain(): Promise<boolean> {
+          const active = entry.lifecycleDrain;
+          if (active) return active.completion;
+          const terminal = completionParts<boolean>();
+          const lifecycle = {
+            owner: session,
+            completion: terminal.completion,
+            settled: false
+          };
+          entry.lifecycleDrain = lifecycle;
+          void executeLifecycleDrain().then(
+            (succeeded) => {
+              lifecycle.settled = true;
+              if (!succeeded && entry.lifecycleDrain === lifecycle) {
+                entry.lifecycleDrain = null;
+              }
+              terminal.resolveCompletion(succeeded);
+              maybeDeleteEntry(entry);
+            },
+            () => {
+              lifecycle.settled = true;
+              if (entry.lifecycleDrain === lifecycle) {
+                entry.lifecycleDrain = null;
+              }
+              terminal.resolveCompletion(false);
+              maybeDeleteEntry(entry);
+            }
+          );
+          return terminal.completion;
+        },
+        isLifecycleDraining(): boolean {
+          return entry.lifecycleDrain !== null;
+        },
         prepareKeyboardInsertion(
           input: NotesKeyboardInsertionRequest
         ): NotesKeyboardInsertionPreparation | null {
@@ -2612,6 +2757,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             session.presentation !== "writable" ||
             entry.owner !== session ||
             !paneState ||
+            entry.lifecycleDrain !== null ||
             paneState.snapshot.interactionEpoch !==
               input.interactionEpochAtDispatch ||
             entry.keyboardInsertions.get(input.intent.expectedNodeId)
@@ -2761,6 +2907,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             session.presentation !== "writable" ||
             entry.owner !== session ||
             !session.outlinePanes.has(input.ownerPaneId) ||
+            entry.lifecycleDrain !== null ||
             entry.historyBlocked ||
             entry.presentationBlocked ||
             entry.writeAuthority.kind !== "known"
@@ -3245,6 +3392,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           const retainAfterClose = options?.retainAfterClose === true;
           const requireAllBarriers = options?.requireAllBarriers === true;
           const keyboardInsertion = options?.keyboardInsertion ?? null;
+          const lifecycleAdmitted =
+            entry.lifecycleDrain === null || retainAfterClose;
+          if (!lifecycleAdmitted) {
+            return Promise.resolve("skipped");
+          }
           if (keyboardInsertion) {
             const pending = entry.keyboardInsertions.get(
               keyboardInsertion.pending.intent.expectedNodeId
@@ -3349,7 +3501,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                   options?.settleFailure ?? null,
                   keyboardInsertion,
                   { kind: "other" },
-                  options?.unknownOutcomeExpectation ?? null
+                  options?.unknownOutcomeExpectation ?? null,
+                  lifecycleAdmitted
                 );
                 finalizeParticipants();
                 return await structural;
@@ -3561,6 +3714,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           closeSession(session);
         }
       };
+      session.coordinatorSession = coordinatorSession;
       return coordinatorSession;
     },
 

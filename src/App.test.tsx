@@ -7,6 +7,13 @@ const notificationDetailInputs = vi.hoisted(() => vi.fn());
 const loadVaultItemsOverride = vi.hoisted(() => vi.fn());
 const loadVaultOutboxOverride = vi.hoisted(() => vi.fn());
 const githubAuthOverride = vi.hoisted(() => vi.fn());
+const drainNotesVaultOverride = vi.hoisted(() => vi.fn());
+const registerNotesVaultDrain = vi.hoisted(() => vi.fn(() => vi.fn()));
+
+vi.mock("./features/notes/notesVaultDrain", () => ({
+  drainNotesVault: (...args: unknown[]) => drainNotesVaultOverride(...args),
+  registerNotesVaultDrain,
+}));
 
 vi.mock("./hooks/useNotificationDetail", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./hooks/useNotificationDetail")>();
@@ -70,6 +77,7 @@ import {
   GITHUB_NOTIFICATIONS_ROOT_ID
 } from "./services/githubNotificationsProvider";
 import * as windowDrag from "./windowDrag";
+import * as vaultFolderService from "./services/vaultFolder";
 
 const initializedHistoryState = {
   canUndo: false,
@@ -265,6 +273,9 @@ function ExternalRefreshProbe() {
 describe("Yonalist app shell", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    drainNotesVaultOverride.mockReset();
+    drainNotesVaultOverride.mockResolvedValue(true);
+    registerNotesVaultDrain.mockClear();
     githubAuthOverride.mockReset();
     Reflect.deleteProperty(notesStore, "refreshMaterializedGithubNotifications");
     Reflect.deleteProperty(notesStore, "setGithubGroupCollapsed");
@@ -4839,7 +4850,7 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
 
-    expect(screen.getByLabelText("Settings page")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Settings page")).toBeInTheDocument();
     await user.click(
       within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /Vault and sync/
@@ -4856,6 +4867,130 @@ describe("Yonalist app shell", () => {
       "/Users/doortts/Yonalist"
     );
     expect(screen.getByLabelText("Cache linked attachments")).not.toBeChecked();
+  });
+
+  it("keeps the active Vault unchanged while a manually typed folder drains", async () => {
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ vaultFolder: "/vault-old" })
+    );
+    const drain = deferred<boolean>();
+    drainNotesVaultOverride.mockReturnValue(drain.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByLabelText("Notes library");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
+        name: /Vault and sync/
+      })
+    );
+    const input = await screen.findByLabelText("Vault folder");
+
+    fireEvent.change(input, { target: { value: "/vault-new" } });
+    fireEvent.blur(input);
+
+    expect(input).toHaveValue("/vault-new");
+    expect(screen.getByText("Saving current Vault…")).toBeInTheDocument();
+    expect(drainNotesVaultOverride).toHaveBeenCalledWith("/vault-old");
+    expect(
+      vi.mocked(notesStore.initialize).mock.calls.some(
+        ([vaultPath]) => vaultPath === "/vault-new"
+      )
+    ).toBe(false);
+
+    await act(async () => {
+      drain.resolve(true);
+      await drain.promise;
+    });
+    await waitFor(() =>
+      expect(
+        vi.mocked(notesStore.initialize).mock.calls.some(
+          ([vaultPath]) => vaultPath === "/vault-new"
+        )
+      ).toBe(true)
+    );
+  });
+
+  it("preserves the typed folder but keeps the old Vault active when draining fails", async () => {
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ vaultFolder: "/vault-old" })
+    );
+    drainNotesVaultOverride.mockResolvedValueOnce(false);
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByLabelText("Notes library");
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
+        name: /Vault and sync/
+      })
+    );
+    const input = screen.getByLabelText("Vault folder");
+
+    fireEvent.change(input, { target: { value: "/vault-unsaved" } });
+    fireEvent.blur(input);
+
+    expect(
+      await screen.findByText("Could not save the current Vault. Try again.")
+    ).toBeInTheDocument();
+    expect(input).toHaveValue("/vault-unsaved");
+    expect(
+      vi.mocked(notesStore.initialize).mock.calls.some(
+        ([vaultPath]) => vaultPath === "/vault-unsaved"
+      )
+    ).toBe(false);
+
+    drainNotesVaultOverride.mockRejectedValueOnce(new Error("queue failed"));
+    fireEvent.change(input, { target: { value: "/vault-still-unsaved" } });
+    fireEvent.blur(input);
+    await waitFor(() =>
+      expect(drainNotesVaultOverride).toHaveBeenCalledTimes(2)
+    );
+    expect(input).toHaveValue("/vault-still-unsaved");
+    expect(
+      vi.mocked(notesStore.initialize).mock.calls.some(
+        ([vaultPath]) => vaultPath === "/vault-still-unsaved"
+      )
+    ).toBe(false);
+  });
+
+  it("ignores a stale folder picker result after a newer request wins", async () => {
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ vaultFolder: "/vault-old" })
+    );
+    const first = deferred<string | null>();
+    const second = deferred<string | null>();
+    vi.spyOn(vaultFolderService, "pickVaultFolder")
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
+        name: /Vault and sync/
+      })
+    );
+    const browse = screen.getByRole("button", { name: "Browse…" });
+
+    await user.click(browse);
+    await user.click(browse);
+    second.resolve("/vault-latest");
+    await waitFor(() =>
+      expect(screen.getByLabelText("Vault folder")).toHaveValue("/vault-latest")
+    );
+    first.resolve("/vault-stale");
+    await act(async () => {
+      await first.promise;
+      await Promise.resolve();
+    });
+
+    expect(screen.getByLabelText("Vault folder")).toHaveValue("/vault-latest");
   });
 
   it("persists Notes asset retention settings from the Notes section", async () => {

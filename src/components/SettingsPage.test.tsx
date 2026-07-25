@@ -175,6 +175,30 @@ describe("SettingsPage Notes targets", () => {
 });
 
 describe("SettingsPage vault folder picker", () => {
+  it("keeps the local folder input intact and commits it on blur", () => {
+    const onUpdate = vi.fn();
+    render(
+      <SettingsPage
+        {...settingsPageProps()}
+        section="vault"
+        onUpdate={onUpdate}
+      />
+    );
+    const input = screen.getByLabelText("Vault folder");
+
+    fireEvent.change(input, {
+      target: { value: "/Users/doortts/TypedVault" }
+    });
+
+    expect(input).toHaveValue("/Users/doortts/TypedVault");
+    expect(onUpdate).not.toHaveBeenCalled();
+    fireEvent.blur(input);
+    expect(onUpdate).toHaveBeenCalledWith(
+      "vaultFolder",
+      "/Users/doortts/TypedVault"
+    );
+  });
+
   it("updates the vault folder with the picked path", async () => {
     const onUpdate = vi.fn();
     const onBrowseVaultFolder = vi

@@ -166,6 +166,7 @@ import {
   NotesFeedbackProvider,
   NotesStatusBarMessage
 } from "./features/notes/NotesFeedbackContext";
+import { drainNotesVault } from "./features/notes/notesVaultDrain";
 import { clearImageProxyCache } from "./services/imageProxy";
 import { scheduleIdleTask } from "./services/idleQueue";
 import {
@@ -388,7 +389,12 @@ export default function App({ initialOnline }: AppProps) {
     useState<GitHubNotification[]>([]);
   const [conversationRefreshKey, setConversationRefreshKey] = useState(0);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
+  const [vaultFolderDraft, setVaultFolderDraft] = useState(
+    () => settings.vaultFolder
+  );
   const [settingsStatus, setSettingsStatus] = useState("");
+  const vaultFolderRequestTokenRef = useRef(0);
+  const vaultFolderPickerTokenRef = useRef(0);
   const {
     paneWidths,
     paneCollapsed,
@@ -415,6 +421,9 @@ export default function App({ initialOnline }: AppProps) {
   const servers = useGithubServers();
   const auth = useGithubAuth(servers);
   const vaultRoot = settings.vaultFolder.trim() || SAMPLE_VAULT_ROOT;
+  useEffect(() => {
+    setVaultFolderDraft(settings.vaultFolder);
+  }, [settings.vaultFolder]);
   const authGate = useAuthGate({ auth, servers, online });
   const accountId = authGate.account?.id ?? null;
   const accountLogin = authGate.account?.login ?? null;
@@ -2048,7 +2057,50 @@ export default function App({ initialOnline }: AppProps) {
     );
   }
 
+  async function requestVaultFolderChange(nextFolder: string): Promise<void> {
+    const requestToken = ++vaultFolderRequestTokenRef.current;
+    vaultFolderPickerTokenRef.current += 1;
+    setVaultFolderDraft(nextFolder);
+    const nextRoot = nextFolder.trim() || SAMPLE_VAULT_ROOT;
+    if (nextRoot === vaultRoot) {
+      setSettings((current) => ({ ...current, vaultFolder: nextFolder }));
+      setSettingsStatus("");
+      return;
+    }
+
+    setSettingsStatus("Saving current Vault…");
+    let drained = false;
+    try {
+      drained = await drainNotesVault(vaultRoot);
+    } catch {
+      drained = false;
+    }
+    if (requestToken !== vaultFolderRequestTokenRef.current) return;
+    if (!drained) {
+      setSettingsStatus("Could not save the current Vault. Try again.");
+      return;
+    }
+    setSettings((current) => ({ ...current, vaultFolder: nextFolder }));
+    setSettingsStatus("");
+  }
+
+  async function browseVaultFolder(current: string): Promise<string | null> {
+    const pickerToken = ++vaultFolderPickerTokenRef.current;
+    try {
+      const selected = await pickVaultFolder(current);
+      return pickerToken === vaultFolderPickerTokenRef.current
+        ? selected
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
   function updateSetting<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
+    if (key === "vaultFolder") {
+      void requestVaultFolderChange(value as AppSettings["vaultFolder"]);
+      return;
+    }
     setSettings((current) => ({
       ...current,
       [key]: value
@@ -2184,7 +2236,11 @@ export default function App({ initialOnline }: AppProps) {
             section={settingsSection}
             target={settingsTarget}
             onTargetConsumed={consumeSettingsTarget}
-            settings={settings}
+            settings={
+              vaultFolderDraft === settings.vaultFolder
+                ? settings
+                : { ...settings, vaultFolder: vaultFolderDraft }
+            }
             status={settingsStatus}
             resetProgress={resetProgress}
             themeMode={themeMode}
@@ -2198,7 +2254,7 @@ export default function App({ initialOnline }: AppProps) {
             repositoryGroups={repositoryGroups.groups}
             projectVisibility={projectVisibility}
             onUpdate={updateSetting}
-            onBrowseVaultFolder={pickVaultFolder}
+            onBrowseVaultFolder={browseVaultFolder}
             onSave={saveSettings}
             onResetAll={resetAllSettingsAndCaches}
             onClose={closeSettings}

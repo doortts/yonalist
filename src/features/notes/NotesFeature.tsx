@@ -38,6 +38,10 @@ import {
   type NotesAttachmentUiBoundary,
 } from "./notesAttachmentController";
 import { useFlushDraftsOnWindowClose } from "./useFlushDraftsOnWindowClose";
+import {
+  drainNotesVault,
+  registerNotesVaultDrain,
+} from "./notesVaultDrain";
 import { useNotesWorkspace } from "./useNotesWorkspace";
 import "./notes.css";
 
@@ -187,8 +191,16 @@ export function NotesWorkspaceProvider({
     };
   }, [actionsSlice, requestDeleteNodes, sharedActions]);
 
+  const notesWorkspaceDrain = actions.drain;
+  useEffect(() => {
+    if (!vaultRoot) return;
+    return registerNotesVaultDrain(vaultRoot, {
+      drain: () => notesWorkspaceDrain?.() ?? Promise.resolve(false),
+    });
+  }, [notesWorkspaceDrain, vaultRoot]);
+
   useFlushDraftsOnWindowClose(
-    actions.flushAllDrafts,
+    () => (vaultRoot ? drainNotesVault(vaultRoot) : Promise.resolve(true)),
     vaultRoot ? () => notesSyncFlush(vaultRoot) : undefined,
   );
 

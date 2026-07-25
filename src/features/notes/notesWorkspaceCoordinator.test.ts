@@ -528,7 +528,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     session.close();
   });
 
-  it("keeps Backspace checking across a failed reload and settles on manual recovery", async () => {
+  it("keeps a strict drain pending until Backspace exact recovery settles", async () => {
     let expectedEntryId = "";
     const initial = workspace([
       node({ id: "root", title: "Root" }),
@@ -593,7 +593,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     )!;
     session.removeEmptyNodeInBackspaceGesture(token, "empty", "root");
 
-    const completion = session.finishBackspaceGesture("keyup");
+    const completion = session.drain();
     const settled = vi.fn();
     void completion.then(settled);
     await vi.waitFor(() =>
@@ -610,7 +610,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     });
 
     await expect(session.retryAuthorityRecovery()).resolves.toBe(true);
-    await expect(completion).resolves.toBe("committed");
+    await expect(completion).resolves.toBe(true);
 
     expect(work).toHaveBeenCalledOnce();
     expect(loadWorkspace).toHaveBeenCalledTimes(3);
@@ -2361,6 +2361,86 @@ describe("notesWorkspaceCoordinator registry", () => {
       type: "pending",
       selectionPolicy: "preserve"
     });
+    session.close();
+  });
+
+  it("strictly drains admitted structural work, drafts, the final queue observer, and history cleanup", async () => {
+    const prune = deferred<NotesHistoryState>();
+    const store = repository({
+      pruneHistoryEntries: vi.fn(() => prune.promise)
+    });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const admittedBarrier = deferred<boolean>();
+    const finalBarrier = deferred<boolean>();
+    const barriers = [admittedBarrier, finalBarrier];
+    const captureDraftCutoff = vi.fn()
+      .mockReturnValueOnce(7)
+      .mockReturnValueOnce(8);
+    const beforeStructural = vi.fn((cutoff: number) => {
+      expect([7, 8]).toContain(cutoff);
+      return barriers[beforeStructural.mock.calls.length - 1]!.promise;
+    });
+    const finalizedCutoffs: number[] = [];
+    const afterStructural = vi.fn((cutoff: number) => {
+      finalizedCutoffs.push(cutoff);
+    });
+    const session = registry.openSession(writableOptions(pool, {
+      repository: store,
+      vaultRoot: "/strict-drain",
+      onEvent: vi.fn(),
+      captureDraftCutoff,
+      beforeStructural,
+      afterStructural
+    }));
+    await session.activation;
+    const admittedWork = vi.fn(() => ({ kind: "skipped" as const }));
+    const admitted = session.enqueueStructural(admittedWork);
+    await vi.waitFor(() => expect(beforeStructural).toHaveBeenCalledTimes(1));
+
+    const firstDrain = session.drain();
+    const secondDrain = session.drain();
+    const lateUserWork = vi.fn(() => ({ kind: "skipped" as const }));
+
+    expect(secondDrain).toBe(firstDrain);
+    await expect(session.enqueue(lateUserWork)).resolves.toBe("skipped");
+    expect(lateUserWork).not.toHaveBeenCalled();
+    admittedBarrier.resolve(true);
+    await admitted;
+    session.queueHistoryCleanup(["trimmed"]);
+    await vi.waitFor(() => expect(beforeStructural).toHaveBeenCalledTimes(2));
+    expect(store.pruneHistoryEntries).not.toHaveBeenCalled();
+
+    finalBarrier.resolve(true);
+    await vi.waitFor(() => expect(store.pruneHistoryEntries).toHaveBeenCalledOnce());
+    expect(firstDrain).not.toBeNull();
+    prune.resolve(historyState());
+
+    await expect(firstDrain).resolves.toBe(true);
+    expect(admittedWork).toHaveBeenCalledOnce();
+    expect(captureDraftCutoff).toHaveBeenCalledTimes(2);
+    expect(finalizedCutoffs).toEqual([7, 8]);
+    session.close();
+  });
+
+  it("releases the lifecycle write lock after a failed strict drain", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession(writableOptions(pool, {
+      repository: store,
+      vaultRoot: "/failed-strict-drain",
+      onEvent: vi.fn(),
+      captureDraftCutoff: () => 3,
+      beforeStructural: async () => false
+    }));
+    await session.activation;
+
+    await expect(session.drain()).resolves.toBe(false);
+    const retriedWork = vi.fn(() => ({ kind: "skipped" as const }));
+    await expect(session.enqueue(retriedWork)).resolves.toBe("skipped");
+
+    expect(retriedWork).toHaveBeenCalledOnce();
     session.close();
   });
 

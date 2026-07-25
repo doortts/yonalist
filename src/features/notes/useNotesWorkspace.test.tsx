@@ -511,6 +511,42 @@ describe("useNotesWorkspace", () => {
     expect(store.loadWorkspace).toHaveBeenCalledOnce();
   });
 
+  it("blocks newly typed drafts while a strict drain persists the admitted draft", async () => {
+    const write = deferred<NotesWorkspace>();
+    const store = repository({
+      updateNode: vi.fn(() => write.promise)
+    });
+    const { result, unmount } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/strict-drain", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    act(() => {
+      result.current.actions.updateNodeDraft("root", {
+        title: "Admitted",
+        note: "",
+        imageOffsetUtf16: 0
+      });
+    });
+
+    const drain = result.current.actions.drain!();
+    await waitFor(() => expect(store.updateNode).toHaveBeenCalledOnce());
+    act(() => {
+      result.current.actions.updateNodeDraft("root", {
+        title: "Too late",
+        note: "",
+        imageOffsetUtf16: 0
+      });
+    });
+
+    expect(result.current.draftsByNodeId.root?.title).toBe("Admitted");
+    await act(async () => {
+      write.resolve(workspace([node({ id: "root", title: "Admitted" })]));
+      await expect(drain).resolves.toBe(true);
+    });
+    expect(result.current.draftsByNodeId.root).toBeUndefined();
+    unmount();
+  });
+
   it("keeps same-vault hooks gated until deletion settles after the owner unmounts", async () => {
     const deletion = deferred<{ attachmentCleanupFailed: boolean }>();
     const store = repository({

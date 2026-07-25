@@ -161,12 +161,18 @@ export function SettingsPage({
   const [githubRetentionDraft, setGithubRetentionDraft] = useState(() =>
     String(settings.githubNotificationsReadRetentionDays)
   );
+  const [vaultFolderInput, setVaultFolderInput] = useState(
+    () => settings.vaultFolder
+  );
 
   useEffect(() => {
     setGithubRetentionDraft(
       String(settings.githubNotificationsReadRetentionDays)
     );
   }, [settings.githubNotificationsReadRetentionDays]);
+  useEffect(() => {
+    setVaultFolderInput(settings.vaultFolder);
+  }, [settings.vaultFolder]);
 
   function updateGithubRetentionDraft(value: string) {
     setGithubRetentionDraft(value);
@@ -178,8 +184,9 @@ export function SettingsPage({
   }
 
   const handleBrowseVaultFolder = async () => {
-    const selected = await onBrowseVaultFolder(settings.vaultFolder);
-    if (selected !== null && selected !== settings.vaultFolder) {
+    const selected = await onBrowseVaultFolder(vaultFolderInput);
+    if (selected !== null && selected !== vaultFolderInput) {
+      setVaultFolderInput(selected);
       onUpdate("vaultFolder", selected);
     }
   };
@@ -359,10 +366,13 @@ export function SettingsPage({
               <div className="settings-input-row">
                 <input
                   aria-label="Vault folder"
-                  value={settings.vaultFolder}
-                  onChange={(event) =>
-                    onUpdate("vaultFolder", event.target.value)
-                  }
+                  value={vaultFolderInput}
+                  onChange={(event) => setVaultFolderInput(event.target.value)}
+                  onBlur={() => {
+                    if (vaultFolderInput !== settings.vaultFolder) {
+                      onUpdate("vaultFolder", vaultFolderInput);
+                    }
+                  }}
                 />
                 <button
                   type="button"

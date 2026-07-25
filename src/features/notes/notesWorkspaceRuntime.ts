@@ -1097,10 +1097,14 @@ export function useNotesWorkspace({
   const actions = useMemo<NotesWorkspaceActions>(() => {
     const deletionInProgress = (): boolean =>
       isNotesDataDeletionInProgress(repository, vaultRoot);
+    const lifecycleDrainInProgress = (): boolean =>
+      sessionRef.current?.isLifecycleDraining() === true;
+    const writesUnavailable = (): boolean =>
+      deletionInProgress() || lifecycleDrainInProgress();
     const gate =
       <Args extends unknown[]>(action: (...args: Args) => Promise<void>) =>
       (...args: Args): Promise<void> =>
-        deletionInProgress() ? Promise.resolve() : action(...args);
+        writesUnavailable() ? Promise.resolve() : action(...args);
 
     // Structural actions report their settlement, so the data-deletion
     // short-circuit resolves to "skipped" (the command never reached the queue).
@@ -1109,20 +1113,22 @@ export function useNotesWorkspace({
         action: (...args: Args) => Promise<NotesWorkspaceCommandOutcome>,
       ) =>
       (...args: Args): Promise<NotesWorkspaceCommandOutcome> =>
-        deletionInProgress() ? Promise.resolve("skipped") : action(...args);
+        writesUnavailable() ? Promise.resolve("skipped") : action(...args);
 
     return {
+      drain: () =>
+        sessionRef.current?.drain() ?? Promise.resolve(false),
       setOutlineCompositionActive,
       acknowledgeFocus: gate(acknowledgeFocus),
       focusNode: gate(focusNode),
       markEditingFocus: (nodeId, field) => {
-        if (!deletionInProgress()) {
+        if (!writesUnavailable()) {
           markEditingFocus(nodeId, field);
         }
       },
       getNavigationVersion,
       prepareKeyboardInsertion: (input) =>
-        deletionInProgress() ? null : prepareKeyboardInsertion(input),
+        writesUnavailable() ? null : prepareKeyboardInsertion(input),
       updateOptimisticKeyboardInsertion: (nodeId, title) =>
         sessionRef.current?.updateOptimisticKeyboardInsertion(nodeId, title),
       acknowledgeOptimisticKeyboardInsertionFocus: (nodeId, intentToken) =>
@@ -1139,16 +1145,16 @@ export function useNotesWorkspace({
           nodeId,
         ),
       beginBackspaceGesture: (paneId, nodeId, selection) =>
-        deletionInProgress()
+        writesUnavailable()
           ? null
           : beginBackspaceGesture(paneId, nodeId, selection),
       touchBackspaceGesture: (token, nodeId) => {
-        if (!deletionInProgress()) {
+        if (!writesUnavailable()) {
           touchBackspaceGesture(token, nodeId);
         }
       },
       removeEmptyNodeInBackspaceGesture: (token, nodeId, focusNodeId) =>
-        !deletionInProgress() &&
+        !writesUnavailable() &&
         removeEmptyNodeInBackspaceGesture(token, nodeId, focusNodeId),
       finishBackspaceGesture,
       cancelBackspaceGesture,
@@ -1184,15 +1190,15 @@ export function useNotesWorkspace({
       applyImageAtomEdit: gateOutcome(applyImageAtomEdit),
       applyImageAtomPaste: gateOutcome(applyImageAtomPaste),
       updateNodeDraft: (nodeId, patch, field) => {
-        if (!deletionInProgress()) {
+        if (!writesUnavailable()) {
           updateNodeDraft(nodeId, patch, field);
         }
       },
       registerImageAtomFlushAdapter,
       flushNodeDraft: (nodeId) =>
-        deletionInProgress() ? Promise.resolve(false) : flushNodeDraft(nodeId),
+        writesUnavailable() ? Promise.resolve(false) : flushNodeDraft(nodeId),
       flushAllDrafts: () =>
-        deletionInProgress()
+        writesUnavailable()
           ? Promise.resolve(false)
           : flushAllDraftsBeforeStructural(),
       moveNode: gateOutcome(moveNode),
@@ -1216,7 +1222,7 @@ export function useNotesWorkspace({
       selectLibraryView: gate(selectLibraryView),
       toggleTagFilter: gate(toggleTagFilter),
       searchNotes: (query) =>
-        deletionInProgress() ? Promise.resolve([]) : searchNotes(query),
+        writesUnavailable() ? Promise.resolve([]) : searchNotes(query),
       openSearchResult: gate(openSearchResult),
       deleteAllNotesData,
       zoomTo: gate(zoomTo),
