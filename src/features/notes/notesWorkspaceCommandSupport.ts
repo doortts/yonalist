@@ -41,6 +41,76 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
+export interface CommittedMutationReloadRecovery {
+  readonly historyContext: NotesHistoryContext;
+  readonly historyStatus: NotesHistoryStatus;
+}
+
+interface PendingCommittedMutationReloadRecovery {
+  readonly sessionId: string | null;
+  readonly coordinatorHistoryEpoch: string | null;
+  readonly historyEntryId: string | null;
+  readonly historyStatus: NotesHistoryStatus;
+  bound: CommittedMutationReloadRecovery | null;
+}
+
+const committedMutationReloadRecoveries = new WeakMap<
+  Error,
+  PendingCommittedMutationReloadRecovery
+>();
+
+function sameCommittedMutationHistory(
+  recovery: PendingCommittedMutationReloadRecovery,
+  context: NotesHistoryContext
+): boolean {
+  const status = recovery.historyStatus;
+  return (
+    recovery.sessionId === context.sessionId &&
+    recovery.coordinatorHistoryEpoch === context.historyEpoch &&
+    recovery.historyEntryId === context.entryId &&
+    status.historyEpoch === context.historyEpoch &&
+    status.canUndo &&
+    !status.canRedo &&
+    status.nextUndoEntryId === context.entryId &&
+    status.nextRedoEntryId === null
+  );
+}
+
+export function bindCommittedMutationReloadRecovery(
+  cause: unknown,
+  historyContext: NotesHistoryContext | null
+): boolean {
+  if (!(cause instanceof Error) || !historyContext) return false;
+  const recovery = committedMutationReloadRecoveries.get(cause);
+  if (
+    !recovery ||
+    recovery.bound !== null ||
+    !sameCommittedMutationHistory(recovery, historyContext)
+  ) {
+    return false;
+  }
+  const prunedEntryIds = [...recovery.historyStatus.prunedEntryIds];
+  Object.freeze(prunedEntryIds);
+  recovery.bound = Object.freeze({
+    historyContext: Object.freeze({ ...historyContext }),
+    historyStatus: Object.freeze({
+      ...recovery.historyStatus,
+      prunedEntryIds
+    })
+  });
+  return true;
+}
+
+export function takeCommittedMutationReloadRecovery(
+  cause: unknown
+): CommittedMutationReloadRecovery | null {
+  if (!(cause instanceof Error)) return null;
+  const recovery = committedMutationReloadRecoveries.get(cause);
+  if (!recovery?.bound) return null;
+  committedMutationReloadRecoveries.delete(cause);
+  return recovery.bound;
+}
+
 function cloneWorkspaceScope(scope: NotesWorkspaceScope): NotesWorkspaceScope {
   return scope.kind === "tags"
     ? { kind: "tags", tags: canonicalizeTagFilters(scope.tags) }
@@ -141,8 +211,12 @@ export async function workspaceForScope(
     : context.repository.loadWorkspace(context.vaultRoot, scope);
 }
 
-function mutationCommittedButProjectionUnavailable(cause: unknown): Error {
-  return Object.assign(
+function mutationCommittedButProjectionUnavailable(
+  cause: unknown,
+  context: NotesWorkspaceQueueContext,
+  response: Extract<NotesMutationResponse, { historyEntryId: unknown }>
+): Error {
+  const error = Object.assign(
     cause instanceof Error
       ? cause
       : new Error("The committed Notes workspace could not be loaded."),
@@ -151,6 +225,21 @@ function mutationCommittedButProjectionUnavailable(cause: unknown): Error {
       mutationCommitted: true as const
     }
   );
+  committedMutationReloadRecoveries.set(error, {
+    sessionId: context.history?.sessionId ?? null,
+    coordinatorHistoryEpoch: context.history?.historyEpoch ?? null,
+    historyEntryId: response.historyEntryId,
+    historyStatus: {
+      canUndo: response.canUndo,
+      canRedo: response.canRedo,
+      historyEpoch: response.historyEpoch,
+      nextUndoEntryId: response.nextUndoEntryId,
+      nextRedoEntryId: response.nextRedoEntryId,
+      prunedEntryIds: [...response.prunedEntryIds]
+    },
+    bound: null
+  });
+  return error;
 }
 
 export async function unwrapNotesMutationForContext(
@@ -172,7 +261,11 @@ export async function unwrapNotesMutationForContext(
         kind: "active"
       });
     } catch (cause) {
-      throw mutationCommittedButProjectionUnavailable(cause);
+      throw mutationCommittedButProjectionUnavailable(
+        cause,
+        context,
+        response
+      );
     }
     return {
       ...unwrapNotesMutation({ ...response, workspace }, null),

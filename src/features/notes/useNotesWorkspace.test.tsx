@@ -4163,6 +4163,101 @@ describe("useNotesWorkspace", () => {
     });
   });
 
+  it("recovers a committed compact Trash restore with its exact history after an Active reload failure", async () => {
+    const activeBefore = workspace([node({ id: "active", sortKey: 1 })]);
+    const deleted = node({
+      id: "deleted",
+      sortKey: 2,
+      title: "Deleted",
+      deletedAt: "2026-07-10T01:00:00Z"
+    });
+    const restoredNode = { ...deleted, deletedAt: null };
+    const activeAfter = workspace([
+      node({ id: "active", sortKey: 1 }),
+      restoredNode
+    ]);
+    let restored = false;
+    let activeReloadsAfterCommit = 0;
+    let compactResponse: NotesMutationResult | null = null;
+    const committed = {
+      context: null as NotesHistoryContext | null
+    };
+    const loadWorkspace = vi.fn(async (_vaultRoot, scope) => {
+      if (scope.kind === "trash") {
+        return workspace(restored ? [] : [deleted]);
+      }
+      if (!restored) return activeBefore;
+      activeReloadsAfterCommit += 1;
+      if (activeReloadsAfterCommit === 1) {
+        throw new Error("transient Active reload failure");
+      }
+      return activeAfter;
+    });
+    const restoreNode = vi.fn(async (_vaultRoot, _nodeId, context) => {
+      restored = true;
+      committed.context = context;
+      compactResponse = {
+        historyEntryId: context.entryId,
+        ...historyState(context.historyEpoch),
+        canUndo: true,
+        nextUndoEntryId: context.entryId,
+        changedNodes: [restoredNode],
+        removedNodeIds: [],
+        changedAttachments: []
+      };
+      return compactResponse;
+    });
+    const historyStatus = vi.fn(async (_vaultRoot, sessionId) =>
+      restored
+        ? {
+            ...historyState("stale-epoch"),
+            canUndo: false
+          }
+        : syntheticHistoryStatus(sessionId)
+    );
+    const store = repository({
+      loadWorkspace,
+      restoreNode,
+      historyStatus
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () => result.current.actions.selectLibraryView("trash"));
+    expect(result.current.libraryView).toBe("trash");
+    const historyStatusCallsBeforeRestore = historyStatus.mock.calls.length;
+
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await result.current.actions.restoreNode("deleted");
+    });
+
+    expect(outcome).toBe("committed");
+    expect(restoreNode).toHaveBeenCalledOnce();
+    expect(isNotesMutationResult(compactResponse)).toBe(true);
+    expect(activeReloadsAfterCommit).toBe(2);
+    expect(historyStatus).toHaveBeenCalledTimes(
+      historyStatusCallsBeforeRestore
+    );
+    expect(result.current.state.nodesById).toMatchObject({
+      active: expect.objectContaining({ id: "active" }),
+      deleted: expect.objectContaining({ deletedAt: null })
+    });
+    expect(result.current.canUndo).toBe(true);
+    if (!committed.context) {
+      throw new Error("Restore history context was not captured.");
+    }
+    const committedContext = committed.context;
+    const historySession = notesHistorySpies.sessionsById.get(
+      committedContext.sessionId
+    ) as NotesHistorySession;
+    expect(historySession.next("undo")).toMatchObject({
+      kind: "mutation",
+      entryId: committedContext.entryId
+    });
+  });
+
   it("flushes every draft before archiving a root and selects the next visible root", async () => {
     const before = workspace([
       node({ id: "first", sortKey: 1 }),

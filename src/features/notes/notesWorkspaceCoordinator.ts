@@ -63,6 +63,10 @@ import {
   type NotesUnknownOutcomeExpectation,
   type NotesWriteAuthority
 } from "./notesAuthorityRecovery";
+import {
+  takeCommittedMutationReloadRecovery,
+  type CommittedMutationReloadRecovery
+} from "./notesWorkspaceCommandSupport";
 
 export type NotesWorkspaceUiUpdate = Partial<{
   selectedId: NoteId | null;
@@ -416,6 +420,7 @@ interface CoordinatorEntry {
   authorityRecoveryGeneration: number;
   authorityRecovery: Promise<NotesUnknownOutcomeDecision> | null;
   unknownOutcomeExpectation: NotesUnknownOutcomeExpectation | null;
+  committedMutationReloadRecovery: CommittedMutationReloadRecovery | null;
   nextBackspaceGestureToken: number;
   backspaceGesture: BackspaceGestureState | null;
   nextLifecycleDrainGeneration: number;
@@ -1496,6 +1501,22 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     const generation = ++entry.authorityRecoveryGeneration;
     setWriteAuthority(entry, { kind: "recovering", generation });
     const recovery = (async (): Promise<NotesUnknownOutcomeDecision> => {
+      const committedReloadRecovery =
+        entry.committedMutationReloadRecovery;
+      const exactCommittedHistory =
+        committedReloadRecovery !== null &&
+        committedReloadRecovery.historyContext.sessionId ===
+          entry.history.sessionId &&
+        committedReloadRecovery.historyContext.historyEpoch ===
+          entry.history.historyEpoch &&
+        committedReloadRecovery.historyContext.sessionId ===
+          expectation.historyContext.sessionId &&
+        committedReloadRecovery.historyContext.historyEpoch ===
+          expectation.historyContext.historyEpoch &&
+        committedReloadRecovery.historyContext.entryId ===
+          expectation.historyContext.entryId
+          ? committedReloadRecovery
+          : null;
       let workspace;
       try {
         workspace = normalizeNotesWorkspace(
@@ -1520,8 +1541,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         });
         return decision;
       }
-      let historyStatus: NotesHistoryStatus | undefined;
-      if (entry.repository.historyStatus) {
+      let historyStatus: NotesHistoryStatus | undefined =
+        exactCommittedHistory?.historyStatus;
+      if (!historyStatus && entry.repository.historyStatus) {
         try {
           const status = await entry.repository.historyStatus(
             entry.vaultRoot,
@@ -1584,6 +1606,31 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             kind: "authorityUnknown",
             error: AUTHORITY_RECOVERY_INSTRUCTION
           };
+        }
+      }
+      if (
+        decision.kind === "committedAndCurrent" &&
+        exactCommittedHistory
+      ) {
+        const after = preferredSession?.captureHistoryLocation?.() ?? null;
+        const accepted = after
+          ? entry.history.acceptMutationResult(
+              exactCommittedHistory.historyContext.entryId,
+              after,
+              exactCommittedHistory.historyStatus
+            )
+          : null;
+        if (!accepted?.accepted) {
+          if (after) releaseHistorySnapshot(after);
+          decision = {
+            kind: "authorityUnknown",
+            error: AUTHORITY_RECOVERY_INSTRUCTION
+          };
+        } else {
+          for (const entryId of accepted.unreachableEntryIds) {
+            entry.pendingHistoryCleanupIds.add(entryId);
+          }
+          entry.committedMutationReloadRecovery = null;
         }
       }
       if (decision.kind === "authorityUnknown") {
@@ -2251,7 +2298,39 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       }
     } catch (cause) {
       if (item.kind === "command" && isNotesMutationOutcomeUnknown(cause)) {
+        const committedReloadRecovery =
+          takeCommittedMutationReloadRecovery(cause);
+        const existingExpectation = item.unknownOutcomeExpectation;
+        const recoveryMatchesExpectation =
+          existingExpectation === null ||
+          (committedReloadRecovery !== null &&
+            existingExpectation.historyContext.sessionId ===
+              committedReloadRecovery.historyContext.sessionId &&
+            existingExpectation.historyContext.historyEpoch ===
+              committedReloadRecovery.historyContext.historyEpoch &&
+            existingExpectation.historyContext.entryId ===
+              committedReloadRecovery.historyContext.entryId);
         if (
+          committedReloadRecovery &&
+          committedReloadRecovery.historyContext.sessionId ===
+            item.entry.history.sessionId &&
+          committedReloadRecovery.historyContext.historyEpoch ===
+            item.entry.history.historyEpoch &&
+          recoveryMatchesExpectation
+        ) {
+          item.unknownOutcomeExpectation =
+            existingExpectation === null
+              ? {
+                  kind: "unclassified",
+                  historyContext: committedReloadRecovery.historyContext,
+                  mutationCommitted: true
+                }
+              : existingExpectation.kind === "unclassified"
+                ? { ...existingExpectation, mutationCommitted: true }
+                : existingExpectation;
+          item.entry.committedMutationReloadRecovery =
+            committedReloadRecovery;
+        } else if (
           cause.mutationCommitted === true &&
           item.unknownOutcomeExpectation?.kind === "unclassified"
         ) {
@@ -2427,6 +2506,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       authorityRecoveryGeneration: 0,
       authorityRecovery: null,
       unknownOutcomeExpectation: null,
+      committedMutationReloadRecovery: null,
       nextBackspaceGestureToken: 0,
       backspaceGesture: null,
       nextLifecycleDrainGeneration: 0,

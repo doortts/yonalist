@@ -37,7 +37,7 @@ import {
   authoritative,
   type UnwrappedNotesMutation
 } from "./notesWorkspaceProjection";
-import { emptyHistoryState } from "./notesWorkspaceCommandSupport";
+import { bindCommittedMutationReloadRecovery, emptyHistoryState } from "./notesWorkspaceCommandSupport";
 import {
   cloneOwnedHistorySnapshot,
   cloneWorkspaceScope,
@@ -887,9 +887,10 @@ export function useNotesHistoryController({
           }
           return result;
         } catch (cause) {
-          if (!options?.retainHistoryOnFailure) {
+          if (bindCommittedMutationReloadRecovery(cause, historyContext))
+            completeHistoryOwner(historyContext!.entryId);
+          else if (!options?.retainHistoryOnFailure)
             discardHistoryEntry(historyContext);
-          }
           throw cause;
         }
       };
@@ -917,8 +918,7 @@ export function useNotesHistoryController({
     [
       beginStructuralEntry,
       bufferedCommandsRef,
-      captureHistorySnapshot,
-      closedRef,
+      captureHistorySnapshot, closedRef, completeHistoryOwner,
       discardHistoryEntry,
       historyOwnerByEntryIdRef,
       recoveredHistoryResultByEntryIdRef,
