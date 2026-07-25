@@ -39,6 +39,7 @@ import {
 } from "./notesPresentation";
 import type { NotesSelectionActionIntent } from "./notesSelectionActions";
 import {
+  isNotesSplitLatencyProbeEnabled,
   markCaretPhase,
   markRowRender,
   markSplitPhase,
@@ -1528,9 +1529,11 @@ function OutlineNodeEditorComponent({
         return;
       }
       case "focus":
-        markCaretPhase(resolution.nodeId, "keydown", {
-          visibleRows: getVisibleNodeIds().length,
-        });
+        if (isNotesSplitLatencyProbeEnabled()) {
+          markCaretPhase(resolution.nodeId, "keydown", {
+            visibleRows: getVisibleNodeIds().length,
+          });
+        }
         saveDrafts();
         suppressHandledBlur();
         if (
@@ -1712,9 +1715,11 @@ function OutlineNodeEditorComponent({
         );
         return;
       case "focus":
-        markCaretPhase(resolution.nodeId, "keydown", {
-          visibleRows: getVisibleNodeIds().length,
-        });
+        if (isNotesSplitLatencyProbeEnabled()) {
+          markCaretPhase(resolution.nodeId, "keydown", {
+            visibleRows: getVisibleNodeIds().length,
+          });
+        }
         saveDrafts();
         if (
           focusResolvedTitle(

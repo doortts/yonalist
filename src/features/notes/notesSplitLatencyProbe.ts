@@ -4,9 +4,10 @@ import { createElement, Profiler, type ReactNode } from "react";
  * Dev-only instrumentation for split, caret, and row-render latency. Records
  * are allocated only while the development probe is enabled.
  *
- * Disabled unless the build is DEV or `localStorage["notes:splitLatency"]` is
- * "1", so it is a genuine no-op in production and in ordinary test runs. Tests
- * force it on/off through {@link setNotesSplitLatencyProbeEnabled}.
+ * Disabled unless a development build has
+ * `localStorage["notes:splitLatency"] === "1"`, so it is a genuine no-op in
+ * production and in ordinary test runs. Tests force it on/off through
+ * {@link setNotesSplitLatencyProbeEnabled}.
  */
 
 export type SplitLatencyPhase =
@@ -51,28 +52,47 @@ function readDevFlag(): boolean {
   }
 }
 
+type CaretRecord = {
+  times: Map<CaretLatencyPhase, number>;
+  visibleRows?: number;
+};
+
 let enabled = readDevFlag();
+let marks: Map<string, Map<SplitLatencyPhase, number>> | null = enabled
+  ? new Map()
+  : null;
+let caretMarks: Map<string, CaretRecord> | null = enabled ? new Map() : null;
+let rowRenderCounts: Map<string, number> | null = enabled ? new Map() : null;
+let rowRenderFlush: ReturnType<typeof setTimeout> | null = null;
+
+export function isNotesSplitLatencyProbeEnabled(): boolean {
+  return import.meta.env.DEV && enabled;
+}
+
+export function hasNotesSplitLatencyProbeStores(): boolean {
+  return marks !== null || caretMarks !== null || rowRenderCounts !== null;
+}
 
 export function setNotesSplitLatencyProbeEnabled(value: boolean): void {
-  enabled = value;
-  marks.clear();
-  caretMarks.clear();
-  resetRowRenderCounts();
+  if (rowRenderFlush !== null) {
+    clearTimeout(rowRenderFlush);
+    rowRenderFlush = null;
+  }
+  marks = null;
+  caretMarks = null;
+  rowRenderCounts = null;
+  enabled = import.meta.env.DEV && value;
+  if (enabled) {
+    marks = new Map();
+    caretMarks = new Map();
+    rowRenderCounts = new Map();
+  }
 }
 
 // Records survive only from a split's keydown to its caret; a split that never
 // reaches the caret (failure/rollback) leaves one small stale map. Dev-only, so
 // no eviction policy — a session's abandoned splits are negligible.
 // ponytail: unbounded map, add an LRU cap only if a dev session ever leaks.
-const marks = new Map<string, Map<SplitLatencyPhase, number>>();
-
-type CaretRecord = {
-  times: Map<CaretLatencyPhase, number>;
-  visibleRows?: number;
-};
-
-const caretMarks = new Map<string, CaretRecord>();
-
 const SPLIT_INPUT_BENCHMARK_PORT = "1438";
 const SPLIT_INPUT_BACKSPACE_FIXTURE_ID =
   "10000031-0000-4000-8000-000000000031";
@@ -786,10 +806,11 @@ export function markSplitPhase(
   phase: SplitLatencyPhase
 ): void {
   markInstalledSplitPhase(splitId, phase);
-  if (!enabled) {
+  const splitMarks = marks;
+  if (!isNotesSplitLatencyProbeEnabled() || splitMarks === null) {
     return;
   }
-  let byPhase = marks.get(splitId);
+  let byPhase = splitMarks.get(splitId);
   if (!byPhase) {
     // Only a keydown opens a record: a settle/caret that arrives without one
     // (a non-optimistic or already-summarized split) is ignored, never faked.
@@ -797,7 +818,7 @@ export function markSplitPhase(
       return;
     }
     byPhase = new Map();
-    marks.set(splitId, byPhase);
+    splitMarks.set(splitId, byPhase);
   }
   byPhase.set(phase, performance.now());
   if (phase === "provisional-caret") {
@@ -820,17 +841,17 @@ export function markSplitPhase(
     console.log(
       `notes split-latency ${splitId.slice(0, 8)} persistence=${(end - provisional).toFixed(1)}ms total=${(end - start).toFixed(1)}ms`
     );
-    marks.delete(splitId);
+    splitMarks.delete(splitId);
     return;
   }
   if (phase === "rollback" || phase === "recovered") {
     logSummary(splitId, byPhase, phase);
-    marks.delete(splitId);
+    splitMarks.delete(splitId);
     return;
   }
   if (phase === "caret") {
     logSummary(splitId, byPhase);
-    marks.delete(splitId);
+    splitMarks.delete(splitId);
   }
 }
 
@@ -861,26 +882,23 @@ function logSummary(
   );
 }
 
-function developmentProbeEnabled(): boolean {
-  return import.meta.env.DEV && enabled;
-}
-
 export function markCaretPhase(
   nodeId: string,
   phase: CaretLatencyPhase,
   info?: { visibleRows?: number }
 ): boolean {
-  if (!developmentProbeEnabled()) {
+  const records = caretMarks;
+  if (!isNotesSplitLatencyProbeEnabled() || records === null) {
     return false;
   }
   if (phase === "keydown") {
-    caretMarks.set(nodeId, {
+    records.set(nodeId, {
       times: new Map([["keydown", performance.now()]]),
       visibleRows: info?.visibleRows
     });
     return true;
   }
-  const record = caretMarks.get(nodeId);
+  const record = records.get(nodeId);
   if (!record) {
     return false;
   }
@@ -907,18 +925,16 @@ export function markCaretPhase(
       `notes caret-latency ${nodeId.slice(0, 8)} rows=${record.visibleRows ?? "?"} total=${(end - start).toFixed(1)}ms ${spans.join(" ")}`
     );
   }
-  caretMarks.delete(nodeId);
+  records.delete(nodeId);
   return true;
 }
 
-const rowRenderCounts = new Map<string, number>();
-let rowRenderFlush: ReturnType<typeof setTimeout> | null = null;
-
 export function markRowRender(paneId: string): void {
-  if (!developmentProbeEnabled()) {
+  const counts = rowRenderCounts;
+  if (!isNotesSplitLatencyProbeEnabled() || counts === null) {
     return;
   }
-  rowRenderCounts.set(paneId, (rowRenderCounts.get(paneId) ?? 0) + 1);
+  counts.set(paneId, (counts.get(paneId) ?? 0) + 1);
   if (rowRenderFlush === null) {
     rowRenderFlush = setTimeout(flushRowRenderCounts, 100);
   }
@@ -926,15 +942,19 @@ export function markRowRender(paneId: string): void {
 
 function flushRowRenderCounts(): void {
   rowRenderFlush = null;
-  for (const [paneId, count] of rowRenderCounts) {
+  const counts = rowRenderCounts;
+  if (counts === null) return;
+  for (const [paneId, count] of counts) {
     console.log(`notes row-renders pane=${paneId} count=${count}`);
   }
-  rowRenderCounts.clear();
+  counts.clear();
 }
 
-export function resetRowRenderCounts(): ReadonlyMap<string, number> {
-  const snapshot = new Map(rowRenderCounts);
-  rowRenderCounts.clear();
+export function resetRowRenderCounts(): ReadonlyMap<string, number> | null {
+  const counts = rowRenderCounts;
+  if (counts === null) return null;
+  const snapshot = new Map(counts);
+  counts.clear();
   if (rowRenderFlush !== null) {
     clearTimeout(rowRenderFlush);
     rowRenderFlush = null;

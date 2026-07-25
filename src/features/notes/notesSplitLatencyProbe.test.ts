@@ -6,7 +6,9 @@ import {
   createNotesSplitInputBenchmarkCollector,
   captureNotesSplitInputBenchmarkBackspaceOperation,
   configureNotesSplitInputBenchmarkVault,
+  hasNotesSplitLatencyProbeStores,
   installNotesSplitInputBenchmarkCollector,
+  isNotesSplitLatencyProbeEnabled,
   markCaretPhase,
   markNotesSplitInputBenchmarkBackspaceSettled,
   markNotesSplitInputBenchmarkPaneCommit,
@@ -890,6 +892,20 @@ describe("notesSplitLatencyProbe caret chain", () => {
     expect(now).not.toHaveBeenCalled();
     expect(lines).toHaveLength(0);
   });
+
+  it("allocates probe stores only while explicitly enabled", () => {
+    setNotesSplitLatencyProbeEnabled(false);
+    expect(isNotesSplitLatencyProbeEnabled()).toBe(false);
+    expect(hasNotesSplitLatencyProbeStores()).toBe(false);
+
+    setNotesSplitLatencyProbeEnabled(true);
+    expect(isNotesSplitLatencyProbeEnabled()).toBe(true);
+    expect(hasNotesSplitLatencyProbeStores()).toBe(true);
+
+    setNotesSplitLatencyProbeEnabled(false);
+    expect(isNotesSplitLatencyProbeEnabled()).toBe(false);
+    expect(hasNotesSplitLatencyProbeStores()).toBe(false);
+  });
 });
 
 describe("notesSplitLatencyProbe row-render counter", () => {
@@ -940,7 +956,21 @@ describe("notesSplitLatencyProbe row-render counter", () => {
     markRowRender("primary");
 
     expect(schedule).not.toHaveBeenCalled();
-    expect(resetRowRenderCounts().size).toBe(0);
+    expect(resetRowRenderCounts()).toBeNull();
+    expect(lines).toHaveLength(0);
+  });
+
+  it("releases row counts and the pending timer when disabled", () => {
+    vi.useFakeTimers();
+    const lines = captureConsole();
+    setNotesSplitLatencyProbeEnabled(true);
+    markRowRender("primary");
+    expect(hasNotesSplitLatencyProbeStores()).toBe(true);
+
+    setNotesSplitLatencyProbeEnabled(false);
+    vi.advanceTimersByTime(100);
+
+    expect(hasNotesSplitLatencyProbeStores()).toBe(false);
     expect(lines).toHaveLength(0);
   });
 });
