@@ -354,6 +354,43 @@ describe("optimistic keyboard insertion projection", () => {
     expect(projection.nodeOverrides.size).toBe(0);
   });
 
+  it("projects Backspace over insertion overrides without enumerating the base node dictionary", () => {
+    const source = row("source");
+    const nodesById = new Proxy<Record<NoteId, NoteNode>>(
+      { source: note("source", "beforeafter") },
+      {
+        ownKeys() {
+          throw new Error("base nodes must not be copied");
+        }
+      }
+    );
+
+    const projection = projectOptimisticOutline(
+      [source],
+      nodesById,
+      [
+        optimistic("inserted", {
+          sourceRow: source,
+          sourceTitle: "before",
+          insertedTitle: "after"
+        })
+      ],
+      {
+        token: 9,
+        ownerPaneId: "primary",
+        startingNodeId: "inserted",
+        startingSelection: { anchorUtf16: 0, focusUtf16: 0 },
+        removedNodeIds: ["inserted"],
+        titleUpdate: { id: "source", title: "final" },
+        focusNodeId: "source",
+        status: "queued"
+      }
+    );
+
+    expect(projection.rows.map((entry) => entry.id)).toEqual(["source"]);
+    expect(projection.nodeOverrides.get("source")?.title).toBe("final");
+  });
+
   it("finds only the failed insertion and its transitive dependents", () => {
     const first = optimistic("first");
     const second = optimistic("second", {

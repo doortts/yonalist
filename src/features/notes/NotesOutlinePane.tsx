@@ -190,6 +190,8 @@ import {
   captureNotesSplitInputBenchmarkBackspaceOperation,
   markNotesSplitInputBenchmarkBackspaceSettled,
 } from "./notesSplitLatencyProbe";
+import type { NotesWorkspaceCommandOutcome } from "./notesWorkspaceCoordinator";
+import { observeBackspaceGestureTerminalOutcome } from "./notesWorkspaceRuntimeLifecycle";
 import {
   detectOutlineShortcutPlatform,
   resolveNotesHistoryShortcut,
@@ -884,16 +886,19 @@ export function NotesOutlinePane({
     };
   }, [optimisticBackspaceGesture, paneId]);
   const finishBackspaceGesture = useCallback(
-    (reason: "keyup" | "blur" | "hidden" | "drain"): Promise<void> => {
+    (
+      reason: "keyup" | "blur" | "hidden" | "drain",
+    ): Promise<NotesWorkspaceCommandOutcome> => {
       const benchmark = backspaceBenchmarkRef.current;
       backspaceBenchmarkRef.current = null;
       const completion =
-        actions.finishBackspaceGesture?.(reason) ?? Promise.resolve();
+        actions.finishBackspaceGesture?.(reason) ??
+        Promise.resolve("skipped" as const);
       if (benchmark) {
-        void completion.then(() =>
+        observeBackspaceGestureTerminalOutcome(completion, (outcome) =>
           markNotesSplitInputBenchmarkBackspaceSettled(
             benchmark.operationId,
-            "committed",
+            outcome,
           ),
         );
       }

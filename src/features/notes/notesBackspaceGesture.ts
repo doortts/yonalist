@@ -70,48 +70,45 @@ export function finalizeOptimisticOutlineRows(
 export function projectOptimisticBackspaceGesture(
   rows: readonly FlattenedOutlineRow[],
   nodesById: Readonly<Record<NoteId, NoteNode>>,
-  gesture: OptimisticBackspaceGesture | null
+  gesture: OptimisticBackspaceGesture | null,
+  resolveNode: (id: NoteId) => NoteNode | undefined = (id) => nodesById[id]
 ): OptimisticOutlineProjection {
   if (gesture === null) {
     return { rows, nodeOverrides: new Map() };
   }
 
-  const projectedRows = [...rows];
+  const removedNodeIds = new Set(gesture.removedNodeIds);
+  const rowsById = new Map(rows.map((row) => [row.id, row]));
+  const survivingParentById = new Map<NoteId, NoteId | null>();
   const nodeOverrides = new Map<NoteId, NoteNode>();
-
-  for (const removedNodeId of gesture.removedNodeIds) {
-    const removedIndex = projectedRows.findIndex(
-      (row) => row.id === removedNodeId
+  const survivingParent = (parentId: NoteId | null): NoteId | null => {
+    if (parentId === null || !removedNodeIds.has(parentId)) return parentId;
+    const remembered = survivingParentById.get(parentId);
+    if (remembered !== undefined) return remembered;
+    const parent =
+      rowsById.get(parentId)?.parentId ?? resolveNode(parentId)?.parentId ?? null;
+    const survivor = survivingParent(parent);
+    survivingParentById.set(parentId, survivor);
+    return survivor;
+  };
+  const projectedRows = rows.flatMap((row) => {
+    if (removedNodeIds.has(row.id)) return [];
+    const ancestorIds = row.ancestorIds.filter(
+      (id) => !removedNodeIds.has(id)
     );
-    if (removedIndex < 0) continue;
-
-    const removedRow = projectedRows[removedIndex];
-    let descendantEndIndex = removedIndex + 1;
-    while (
-      descendantEndIndex < projectedRows.length &&
-      projectedRows[descendantEndIndex].depth > removedRow.depth
-    ) {
-      descendantEndIndex += 1;
-    }
-
-    const liftedDescendants = projectedRows
-      .slice(removedIndex + 1, descendantEndIndex)
-      .map((row) => ({
-        ...row,
-        parentId:
-          row.depth === removedRow.depth + 1 ? removedRow.parentId : row.parentId,
-        depth: row.depth - 1,
-        ancestorIds: row.ancestorIds.filter((id) => id !== removedNodeId)
-      }));
-    projectedRows.splice(
-      removedIndex,
-      descendantEndIndex - removedIndex,
-      ...liftedDescendants
-    );
-  }
+    const parentId = survivingParent(row.parentId);
+    const removedAncestorCount = row.ancestorIds.length - ancestorIds.length;
+    if (removedAncestorCount === 0 && parentId === row.parentId) return [row];
+    return [{
+      ...row,
+      parentId,
+      depth: row.depth - removedAncestorCount,
+      ancestorIds
+    }];
+  });
 
   if (gesture.titleUpdate !== null) {
-    const survivor = nodesById[gesture.titleUpdate.id];
+    const survivor = resolveNode(gesture.titleUpdate.id);
     if (survivor) {
       nodeOverrides.set(gesture.titleUpdate.id, {
         ...survivor,

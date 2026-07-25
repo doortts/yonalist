@@ -288,7 +288,7 @@ export interface NotesWorkspaceCoordinatorSession {
   ): boolean;
   finishBackspaceGesture(
     reason: "keyup" | "blur" | "hidden" | "drain"
-  ): Promise<void>;
+  ): Promise<NotesWorkspaceCommandOutcome>;
   cancelBackspaceGesture(): void;
   publishOutlinePaneState(
     input: Omit<OutlinePanePublicationSnapshot, "sessionId">
@@ -415,7 +415,8 @@ interface BackspaceGestureState {
   readonly work: NotesBackspaceGestureQueueWork;
   afterSnapshot: NotesHistorySnapshot | null;
   draftCommit: NotesBackspaceDraftCommit | null;
-  finishing: Promise<void> | null;
+  finishing: Promise<NotesWorkspaceCommandOutcome> | null;
+  resolveFinishing: ((outcome: NotesWorkspaceCommandOutcome) => void) | null;
 }
 
 interface OutlinePaneState {
@@ -751,9 +752,23 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     state: BackspaceGestureState,
     rollback = false
   ): void => {
-    notify(state.owner, {
+    const entry = state.owner.entry;
+    const currentOwner =
+      entry.owner?.active === true && entry.owner.isCurrent?.() !== false
+        ? entry.owner
+        : null;
+    const recipient =
+      state.owner.active && state.owner.isCurrent?.() !== false
+        ? state.owner
+        : currentOwner ??
+          [...entry.sessions].find(
+            (candidate) =>
+              candidate.active && candidate.isCurrent?.() !== false
+          ) ??
+          state.owner;
+    notify(recipient, {
       type: "optimisticBackspaceGesture",
-      snapshot: state.owner.entry.backspaceGesture === state
+      snapshot: entry.backspaceGesture === state
         ? state.snapshot
         : null,
       ...(rollback
@@ -779,11 +794,17 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
 
   const clearOptimisticBackspaceGesture = (
     state: BackspaceGestureState,
-    rollback = false
+    rollback = false,
+    outcome?: NotesWorkspaceCommandOutcome
   ): void => {
     if (state.owner.entry.backspaceGesture !== state) return;
     state.owner.entry.backspaceGesture = null;
     notifyOptimisticBackspaceGesture(state, rollback);
+    if (outcome) {
+      const resolve = state.resolveFinishing;
+      state.resolveFinishing = null;
+      resolve?.(outcome);
+    }
     maybeDeleteEntry(state.owner.entry);
   };
 
@@ -1598,7 +1619,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           );
           backspace.afterSnapshot = null;
           backspace.draftLease.settle("committed");
-          clearOptimisticBackspaceGesture(backspace);
+          clearOptimisticBackspaceGesture(backspace, false, "committed");
         } else {
           releaseHistorySnapshot(backspace.afterSnapshot);
           backspace.afterSnapshot = null;
@@ -1625,7 +1646,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         }
         entry.history.discard(backspace.historyContext.entryId);
         backspace.draftLease.settle("failed");
-        clearOptimisticBackspaceGesture(backspace, true);
+        clearOptimisticBackspaceGesture(backspace, true, "failed");
       }
     }
     const historyStatus =
@@ -2802,7 +2823,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             work,
             afterSnapshot: null,
             draftCommit: null,
-            finishing: null
+            finishing: null,
+            resolveFinishing: null
           };
           entry.backspaceGesture = state;
           notifyOptimisticBackspaceGesture(state);
@@ -2843,11 +2865,18 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           updateOptimisticBackspaceGesture(state, snapshot);
           return true;
         },
-        finishBackspaceGesture(reason): Promise<void> {
+        finishBackspaceGesture(reason): Promise<NotesWorkspaceCommandOutcome> {
           const state = entry.backspaceGesture;
-          if (!state || state.owner !== session) return Promise.resolve();
+          if (!state || state.owner !== session) {
+            return Promise.resolve("skipped");
+          }
           if (state.finishing) return state.finishing;
-          if (state.snapshot.status !== "active") return Promise.resolve();
+          if (state.snapshot.status !== "active") {
+            return Promise.resolve("skipped");
+          }
+          const terminal = completionParts<NotesWorkspaceCommandOutcome>();
+          state.finishing = terminal.completion;
+          state.resolveFinishing = terminal.resolveCompletion;
           const queued = Object.freeze({
             ...state.snapshot,
             removedNodeIds: Object.freeze([...state.snapshot.removedNodeIds]),
@@ -2857,7 +2886,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           const rollback = (outcome: "failed" | "cancelled", restore: boolean) => {
             entry.history.discard(state.historyContext.entryId);
             state.draftLease.settle(outcome);
-            clearOptimisticBackspaceGesture(state, restore);
+            clearOptimisticBackspaceGesture(
+              state,
+              restore,
+              outcome === "failed" ? "failed" : "skipped"
+            );
           };
           let after = session.captureHistoryLocation?.() ?? null;
           if (!after && entry.authoritativePresentation) {
@@ -2951,14 +2984,16 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                     result.historyStatus
                   );
                   if (!accepted.accepted) {
-                    releaseAfter();
-                    return {
-                      kind: "failure",
-                      error: "Backspace history acknowledgement was rejected.",
-                      workspace: result.workspace,
-                      historyStatus: result.historyStatus,
-                      committedHistoryEntryIds: result.committedHistoryEntryIds
-                    };
+                    updateOptimisticBackspaceGesture(state, {
+                      ...running,
+                      status: "checking"
+                    });
+                    throw Object.assign(
+                      new Error(
+                        "Backspace history acknowledgement was rejected."
+                      ),
+                      { notesMutationOutcome: "unknown" as const }
+                    );
                   }
                   for (const entryId of accepted.unreachableEntryIds) {
                     entry.pendingHistoryCleanupIds.add(entryId);
@@ -3002,7 +3037,14 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                   historyStatus
                 );
                 if (!accepted.accepted) {
-                  fail("failed", true);
+                  updateOptimisticBackspaceGesture(state, {
+                    ...state.snapshot,
+                    status: "checking"
+                  });
+                  setWriteAuthority(entry, {
+                    kind: "unknown",
+                    error: AUTHORITY_RECOVERY_INSTRUCTION
+                  });
                   return;
                 }
                 for (const entryId of accepted.unreachableEntryIds) {
@@ -3018,7 +3060,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                 state.afterSnapshot = null;
               }
               state.draftLease.settle("committed");
-              clearOptimisticBackspaceGesture(state);
+              clearOptimisticBackspaceGesture(state, false, "committed");
               return;
             }
             if (
@@ -3033,8 +3075,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               fail("failed", true);
             }
           });
-          state.finishing = completion;
-          return completion;
+          void completion;
+          return terminal.completion;
         },
         cancelBackspaceGesture(): void {
           const state = entry.backspaceGesture;
@@ -3047,7 +3089,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           }
           entry.history.discard(state.historyContext.entryId);
           state.draftLease.settle("cancelled");
-          clearOptimisticBackspaceGesture(state);
+          clearOptimisticBackspaceGesture(state, false, "skipped");
         },
         publishOutlinePaneState(input): void {
           if (!session.active) return;

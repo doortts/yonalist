@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import type {
   GithubNotificationSnapshotInput,
   MaterializeGithubNotificationIntent,
@@ -17,11 +17,11 @@ import {
   releaseNotesDataDeletion,
   reserveNotesDataDeletion
 } from "./notesDataDeletionRegistry";
-import type { NotesWorkspaceCoordinatorSession } from "./notesWorkspaceCoordinator";
 import type {
-  NotesDraftEngine,
-  NotesWorkspaceSessionRecord
-} from "./notesDraftEngine";
+  NotesWorkspaceCommandOutcome,
+  NotesWorkspaceCoordinatorSession
+} from "./notesWorkspaceCoordinator";
+import type { NotesWorkspaceSessionRecord } from "./notesDraftEngine";
 import type { ParsedImageAtomPaste } from "./notesImageAtomClipboard";
 import {
   applyBatchCommand,
@@ -72,6 +72,10 @@ import type {
 } from "./notesWorkspaceTypes";
 import type { NotesPaneId } from "./notesPaneSession";
 import type { NotesLibraryStateController } from "./useNotesLibraryController";
+import {
+  createNotesBackspaceGestureRuntimeLifecycle
+} from "./notesWorkspaceRuntimeLifecycle";
+import type { NotesBackspaceDraftLease } from "./notesWorkspaceTypes";
 
 interface LiveRef<T> {
   current: T;
@@ -83,7 +87,10 @@ interface NotesCommandActionsDependencies {
   readonly vaultRoot: string;
   readonly sessionRecordRef: LiveRef<NotesWorkspaceSessionRecord | null>;
   readonly sessionRef: LiveRef<NotesWorkspaceCoordinatorSession | null>;
-  readonly draftEngineRef: LiveRef<NotesDraftEngine | null>;
+  readonly beginBackspaceDraftLease: (
+    token: number,
+    nodeId: NoteId
+  ) => NotesBackspaceDraftLease | null;
   readonly activeScopeRef: NotesLibraryStateController["activeScopeRef"];
   readonly setLibraryView: NotesLibraryStateController["setLibraryView"];
   readonly setTagSummaries: NotesLibraryStateController["setTagSummaries"];
@@ -112,7 +119,7 @@ export function useNotesCommandActions({
   vaultRoot,
   sessionRecordRef,
   sessionRef,
-  draftEngineRef,
+  beginBackspaceDraftLease,
   activeScopeRef,
   setLibraryView,
   setTagSummaries,
@@ -121,6 +128,17 @@ export function useNotesCommandActions({
   purgeAttachmentUploadAttemptsAfterDataDeletion,
   createDraftFlushFailedError
 }: NotesCommandActionsDependencies) {
+  const backspaceLifecycleRef = useRef(
+    createNotesBackspaceGestureRuntimeLifecycle()
+  );
+  const backspaceBindingRef = useRef({ repository, vaultRoot, key: {} });
+  if (
+    backspaceBindingRef.current.repository !== repository ||
+    backspaceBindingRef.current.vaultRoot !== vaultRoot
+  ) {
+    backspaceBindingRef.current = { repository, vaultRoot, key: {} };
+  }
+  const backspaceBindingKey = backspaceBindingRef.current.key;
   const createRoot = useCallback(
     () => createRootCommand(commandCtx),
     [commandCtx]
@@ -264,29 +282,41 @@ export function useNotesCommandActions({
       selection: NotesHistoryPrimarySelection
     ): number | null => {
       const session = sessionRef.current;
-      const engine = draftEngineRef.current;
+      const record = sessionRecordRef.current;
       if (
         !session ||
-        !engine ||
-        engine.record.closing ||
-        sessionRecordRef.current !== engine.record ||
-        engine.record.session !== session
+        !record ||
+        record.closing ||
+        record.session !== session ||
+        record.repository !== repository ||
+        record.vaultRoot !== vaultRoot
       ) {
         return null;
       }
-      return session.beginBackspaceGesture(
+      return backspaceLifecycleRef.current.begin(
+        {
+          key: backspaceBindingKey,
+          session,
+          beginDraftLease: beginBackspaceDraftLease
+        },
         { ownerPaneId: paneId, nodeId, selection },
-        (token) => engine.beginBackspaceGesture(token, nodeId),
         applyBackspaceGestureCommand
       );
     },
-    [draftEngineRef, sessionRecordRef, sessionRef]
+    [
+      backspaceBindingKey,
+      beginBackspaceDraftLease,
+      repository,
+      sessionRecordRef,
+      sessionRef,
+      vaultRoot
+    ]
   );
   const touchBackspaceGesture = useCallback(
     (token: number, nodeId: NoteId): void => {
-      sessionRef.current?.touchBackspaceGesture(token, nodeId);
+      backspaceLifecycleRef.current.touch(token, nodeId);
     },
-    [sessionRef]
+    []
   );
   const removeEmptyNodeInBackspaceGesture = useCallback(
     (
@@ -294,21 +324,19 @@ export function useNotesCommandActions({
       nodeId: NoteId,
       focusNodeId: NoteId | null
     ): boolean =>
-      sessionRef.current?.removeEmptyNodeInBackspaceGesture(
-        token,
-        nodeId,
-        focusNodeId
-      ) ?? false,
-    [sessionRef]
+      backspaceLifecycleRef.current.remove(token, nodeId, focusNodeId),
+    []
   );
   const finishBackspaceGesture = useCallback(
-    (reason: "keyup" | "blur" | "hidden" | "drain"): Promise<void> =>
-      sessionRef.current?.finishBackspaceGesture(reason) ?? Promise.resolve(),
-    [sessionRef]
+    (
+      reason: "keyup" | "blur" | "hidden" | "drain"
+    ): Promise<NotesWorkspaceCommandOutcome> =>
+      backspaceLifecycleRef.current.finish(backspaceBindingKey, reason),
+    [backspaceBindingKey]
   );
   const cancelBackspaceGesture = useCallback((): void => {
-    sessionRef.current?.cancelBackspaceGesture();
-  }, [sessionRef]);
+    backspaceLifecycleRef.current.cancel(backspaceBindingKey);
+  }, [backspaceBindingKey]);
   const importSubtree = useCallback(
     (
       parentId: NoteId | null,

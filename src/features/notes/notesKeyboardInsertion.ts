@@ -344,14 +344,11 @@ export function projectOptimisticOutline(
   if (backspaceGesture === null) {
     return insertionProjection;
   }
-  const projectedNodesById: Record<NoteId, NoteNode> = { ...nodesById };
-  for (const [id, node] of insertionProjection.nodeOverrides) {
-    projectedNodesById[id] = node;
-  }
   const backspaceProjection = projectOptimisticBackspaceGesture(
     insertionProjection.rows,
-    projectedNodesById,
-    backspaceGesture
+    nodesById,
+    backspaceGesture,
+    (id) => insertionProjection.nodeOverrides.get(id) ?? nodesById[id]
   );
   const nodeOverrides = new Map(insertionProjection.nodeOverrides);
   for (const [id, node] of backspaceProjection.nodeOverrides) {

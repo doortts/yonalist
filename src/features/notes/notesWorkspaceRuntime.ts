@@ -6,12 +6,10 @@ import {
   useReducer,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 import type {
   NoteId,
   NotesHistoryStatus,
-  NotesStoreError,
 } from "../../domain/notes";
 import { createNotesWriteQueue } from "../../services/notesWriteQueue";
 import { connectNotesSyncRuntime } from "../../services/notesSyncListener";
@@ -53,18 +51,10 @@ import { notesDraftsFlushFailedError } from "./notesDraftErrors";
 import {
   isNotesDataDeletionInProgress,
   registerNotesDataDeletionParticipant,
-  subscribeToNotesDataDeletion,
 } from "./notesDataDeletionRegistry";
-import {
-  createNotesImageAtomEditorRegistry,
-  type ActiveImageAtomEditor,
-  type ImageAtomEditorSelectionAuthority,
-  type NotesImageAtomEditorAuthority,
-} from "./notesImageAtomEditorRegistry";
 import {
   capturedImageAtomAuthority,
   imageAtomAuthorityMatches,
-  type CapturedImageAtomAuthority,
   type NotesImageAtomAuthority,
 } from "./notesImageAtomAuthority";
 import type { NotesCommandContext } from "./notesCommands";
@@ -76,9 +66,6 @@ import type {
   LiveNotesNavigation,
   NotesActionsSlice,
   NotesDraftsSlice,
-  NotesImageAtomCutAuthority,
-  NotesImageAtomPasteAuthority,
-  NotesNodeDraft,
   NotesPendingPrimarySelection,
   NotesProjectionPublication,
   NotesStateSlice,
@@ -86,10 +73,7 @@ import type {
   UseNotesWorkspaceHookResult,
   UseNotesWorkspaceOptions,
 } from "./notesWorkspaceTypes";
-import {
-  cloneWorkspaceScope,
-  type NavigationIntent,
-} from "./notesWorkspaceNavigationSupport";
+import type { NavigationIntent } from "./notesWorkspaceNavigationSupport";
 import { subscribeToImageImportRecovery } from "./notesImageImportRecovery";
 import {
   useNotesSelectionAuthority,
@@ -112,6 +96,17 @@ import {
   useNotesHistoryController,
   type BufferedWorkspaceCommand,
 } from "./useNotesHistoryController";
+import {
+  currentNotesNavigation,
+  enqueueBufferedWorkspaceCommands,
+  registerCoordinatorSessionForDraftEngine,
+  resolveBufferedWorkspaceCommands,
+  shutdownAfterBackspaceDrain,
+  useNotesDataDeletionExternalStore,
+  useNotesDraftExternalStore,
+  useNotesImageAtomAuthorityLifecycle,
+  useNotesImageAtomEditorRuntime,
+} from "./notesWorkspaceRuntimeLifecycle";
 
 export type { ResolvedHistoryLocation } from "./notesWorkspaceNavigationSupport";
 export { resetImageImportRecoveryForTests } from "./notesImageImportRecovery";
@@ -145,56 +140,6 @@ export {
   isNotesDraftsFlushFailedError,
   NOTES_DRAFTS_FLUSH_FAILED_CODE,
 } from "./notesDraftErrors";
-
-const EMPTY_DRAFTS: Readonly<Record<NoteId, NotesNodeDraft>> = {};
-const coordinatorSessionByDraftEngine = new WeakMap<
-  NotesDraftEngine,
-  NotesWorkspaceCoordinatorSession
->();
-
-function shutdownAfterBackspaceDrain(engine: NotesDraftEngine): void {
-  const session = coordinatorSessionByDraftEngine.get(engine);
-  if (
-    engine.record.backspaceDraftLease?.active !== true ||
-    session === undefined
-  ) {
-    void engine.beginShutdown().finally(() => engine.dispose());
-    return;
-  }
-  const shutdown = (): Promise<void> => engine.beginShutdown();
-  void session
-    .finishBackspaceGesture("drain")
-    .then(shutdown, shutdown)
-    .finally(() => engine.dispose());
-}
-
-function resolveBufferedCommands(commands: BufferedWorkspaceCommand[]): void {
-  for (const command of commands) {
-    // Draining without a live session drops the command, so its caller learns
-    // the work was skipped rather than committed.
-    command.resolve("skipped");
-  }
-}
-
-function enqueueBufferedCommands(
-  session: NotesWorkspaceCoordinatorSession,
-  commands: BufferedWorkspaceCommand[],
-): void {
-  for (const command of commands) {
-    let completion: Promise<NotesWorkspaceCommandOutcome>;
-    try {
-      completion = command.structural
-        ? session.enqueueStructural(command.work, {
-            selectionPolicy: command.selectionPolicy,
-          })
-        : session.enqueue(command.work);
-    } catch {
-      command.resolve("skipped");
-      continue;
-    }
-    void completion.then(command.resolve, () => command.resolve("failed"));
-  }
-}
 
 // Scope equality and tag-filter canonicalization live in one module so the
 // coordinator and this hook compare scopes the same, key-order-independent way.
@@ -234,19 +179,9 @@ export function useNotesWorkspace({
   const [locallyExpandedNodeIds, setLocallyExpandedNodeIds] = useState<
     ReadonlySet<NoteId>
   >(() => new Set());
-  const subscribeNotesDataDeletion = useCallback(
-    (subscriber: () => void): (() => void) =>
-      subscribeToNotesDataDeletion(repository, vaultRoot, subscriber),
-    [repository, vaultRoot],
-  );
-  const getNotesDataDeletionSnapshot = useCallback(
-    (): boolean => isNotesDataDeletionInProgress(repository, vaultRoot),
-    [repository, vaultRoot],
-  );
-  const deletingNotesData = useSyncExternalStore(
-    subscribeNotesDataDeletion,
-    getNotesDataDeletionSnapshot,
-    getNotesDataDeletionSnapshot,
+  const deletingNotesData = useNotesDataDeletionExternalStore(
+    repository,
+    vaultRoot,
   );
   const [historyStatus, setHistoryStatus] =
     useState<NotesHistoryStatus>(emptyHistoryState);
@@ -272,32 +207,11 @@ export function useNotesWorkspace({
   const movePreparationTokenRef = useRef(0);
   const vaultRootRef = useRef(vaultRoot);
   vaultRootRef.current = vaultRoot;
-  const imageAtomEditorRegistryRef = useRef({
-    repository,
-    vaultRoot,
-    registry: createNotesImageAtomEditorRegistry(),
-  });
-  if (
-    imageAtomEditorRegistryRef.current.repository !== repository ||
-    imageAtomEditorRegistryRef.current.vaultRoot !== vaultRoot
-  ) {
-    imageAtomEditorRegistryRef.current = {
-      repository,
-      vaultRoot,
-      registry: createNotesImageAtomEditorRegistry(),
-    };
-  }
-  const imageAtomEditorRegistry = imageAtomEditorRegistryRef.current.registry;
-  const registerActiveImageAtomEditor = useCallback(
-    (editor: ActiveImageAtomEditor): (() => void) =>
-      imageAtomEditorRegistry.register(editor),
-    [imageAtomEditorRegistry],
-  );
-  const claimActiveImageAtomPaste = useCallback(
-    (event: ClipboardEvent): boolean =>
-      imageAtomEditorRegistry.claimPaste(event),
-    [imageAtomEditorRegistry],
-  );
+  const {
+    registry: imageAtomEditorRegistry,
+    registerActiveEditor: registerActiveImageAtomEditor,
+    claimActivePaste: claimActiveImageAtomPaste,
+  } = useNotesImageAtomEditorRuntime(repository, vaultRoot);
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
   // The reducer owns settled navigation; this mirror prevents stale pre-render reads.
   const stateRef = useRef(state);
@@ -363,95 +277,20 @@ export function useNotesWorkspace({
     purgeAttachmentUploadAttemptsAfterDataDeletion,
     clearAttachmentUploadUi,
   } = attachmentWorkflowState;
-  const captureActiveImageAtomEditorAuthority = useCallback(
-    (
-      nodeId: NoteId,
-      selectionAuthority: ImageAtomEditorSelectionAuthority,
-    ): NotesImageAtomEditorAuthority | null =>
-      imageAtomEditorRegistry.capturePasteAuthority(nodeId, selectionAuthority),
-    [imageAtomEditorRegistry],
-  );
-  const captureImageAtomAuthority = useCallback(
-    (
-      nodeId: NoteId,
-      editorAuthority: NotesImageAtomEditorAuthority,
-    ): CapturedImageAtomAuthority | null => {
-      const record = sessionRecordRef.current;
-      const session = sessionRef.current;
-      const node = stateRef.current.nodesById[nodeId];
-      const attachments = stateRef.current.attachmentsByNodeId?.[nodeId] ?? [];
-      if (
-        !record ||
-        record.closing ||
-        !session ||
-        record.session !== session ||
-        record.drafts.has(nodeId) ||
-        !imageAtomEditorRegistry.isPasteAuthorityCurrent(editorAuthority) ||
-        !node ||
-        node.nodeKind !== "image" ||
-        attachments.length !== 1
-      ) {
-        return null;
-      }
-      const attachment = attachments[0]!;
-      const draft = record.drafts.get(nodeId);
-      return {
-        vaultRoot: vaultRootRef.current,
-        scope: cloneWorkspaceScope(activeScopeRef.current),
-        generation: activeWorkspaceGenerationRef.current,
-        session,
-        record,
-        nodeId,
-        nodeKind: node.nodeKind,
-        nodeUpdatedAt: node.updatedAt,
-        nodeTitle: node.title,
-        nodeNote: node.note,
-        nodeImageOffsetUtf16: node.imageOffsetUtf16,
-        attachmentId: attachment.id,
-        attachmentUpdatedAt: attachment.updatedAt,
-        attachmentContentHash: attachment.contentHash,
-        draftRevision: draft?.revision ?? null,
-        draftTitle: draft?.title ?? node.title,
-        draftNote: draft?.note ?? node.note,
-        draftImageOffsetUtf16: draft?.imageOffsetUtf16 ?? node.imageOffsetUtf16,
-        editorAuthority,
-      };
-    },
-    [activeScopeRef, imageAtomEditorRegistry],
-  );
-  const captureImageAtomCutAuthority = useCallback(
-    (nodeId: NoteId, editorAuthority: NotesImageAtomEditorAuthority) =>
-      captureImageAtomAuthority(
-        nodeId,
-        editorAuthority,
-      ) as unknown as NotesImageAtomCutAuthority | null,
-    [captureImageAtomAuthority],
-  );
-  const captureImageAtomPasteAuthority = useCallback(
-    (nodeId: NoteId, editorAuthority: NotesImageAtomEditorAuthority) =>
-      captureImageAtomAuthority(
-        nodeId,
-        editorAuthority,
-      ) as unknown as NotesImageAtomPasteAuthority | null,
-    [captureImageAtomAuthority],
-  );
-  const isImageAtomPasteAuthorityCurrent = useCallback(
-    (authority: NotesImageAtomPasteAuthority): boolean =>
-      imageAtomEditorRegistry.isPasteAuthorityCurrent(
-        capturedImageAtomAuthority(authority).editorAuthority,
-      ) &&
-      imageAtomAuthorityMatches(authority, {
-        vaultRoot: vaultRootRef.current,
-        scope: activeScopeRef.current,
-        generation: activeWorkspaceGenerationRef.current,
-        session: sessionRef.current,
-        record: sessionRecordRef.current,
-        workspace: stateRef.current,
-      }),
-    [activeScopeRef, imageAtomEditorRegistry],
-  );
-  const draftsListenersRef = useRef(new Set<() => void>());
-  const writeErrorListenersRef = useRef(new Set<() => void>());
+  const {
+    captureActiveEditorAuthority: captureActiveImageAtomEditorAuthority,
+    captureCutAuthority: captureImageAtomCutAuthority,
+    capturePasteAuthority: captureImageAtomPasteAuthority,
+    isPasteAuthorityCurrent: isImageAtomPasteAuthorityCurrent,
+  } = useNotesImageAtomAuthorityLifecycle({
+    registry: imageAtomEditorRegistry,
+    vaultRootRef,
+    activeScopeRef,
+    generationRef: activeWorkspaceGenerationRef,
+    sessionRef,
+    sessionRecordRef,
+    stateRef,
+  });
   const bufferedCommandsRef = useRef<BufferedWorkspaceCommand[]>([]);
   const finalCleanupTokenRef = useRef<object | null>(null);
   const captureHistoryLocationRef = useRef<() => NotesHistorySnapshot>(() => {
@@ -528,68 +367,22 @@ export function useNotesWorkspace({
 
   // Combine settled navigation with the live caret in one place. applyAction
   // retires the caret as soon as authoritative navigation moves elsewhere.
-  const currentNavigation = useCallback((): LiveNotesNavigation => {
-    const settled = stateRef.current;
-    const editing = editingFocusRef.current;
-    return {
-      selectedId: editing ? editing.nodeId : settled.selectedId,
-      zoomRootId: settled.zoomRootId,
-      editingNoteId: editing ? editing.nodeId : settled.editingNoteId,
-      pendingFocusId: settled.pendingFocusId,
-      pendingFocusField: editing ? editing.field : settled.pendingFocusField,
-    };
-  }, []);
+  const currentNavigation = useCallback(
+    (): LiveNotesNavigation =>
+      currentNotesNavigation(stateRef.current, editingFocusRef.current),
+    [],
+  );
   const currentEditingFocus = useCallback(
     (): NotesHistoryFocus | null => editingFocusRef.current,
     [],
   );
 
-  // The draft engine is the external store behind the drafts slice. A stable
-  // subscribe/getSnapshot pair reads whichever engine is currently active so
-  // the store facade survives vault switches without resubscribing.
-  const subscribeDrafts = useCallback((listener: () => void): (() => void) => {
-    draftsListenersRef.current.add(listener);
-    return () => {
-      draftsListenersRef.current.delete(listener);
-    };
-  }, []);
-  const getDraftsSnapshot = useCallback(
-    (): Readonly<Record<NoteId, NotesNodeDraft>> =>
-      draftEngineRef.current?.getDraftsSnapshot() ?? EMPTY_DRAFTS,
-    [],
-  );
-  const draftsByNodeId = useSyncExternalStore(
-    subscribeDrafts,
-    getDraftsSnapshot,
-  );
-  const subscribeWriteError = useCallback(
-    (listener: () => void): (() => void) => {
-      writeErrorListenersRef.current.add(listener);
-      return () => {
-        writeErrorListenersRef.current.delete(listener);
-      };
-    },
-    [],
-  );
-  const getWriteErrorSnapshot = useCallback(
-    (): NotesStoreError | null =>
-      draftEngineRef.current?.getWriteErrorSnapshot() ?? null,
-    [],
-  );
-  const currentWriteError = useSyncExternalStore(
-    subscribeWriteError,
-    getWriteErrorSnapshot,
-  );
-  const notifyDraftsListeners = useCallback((): void => {
-    for (const listener of draftsListenersRef.current) {
-      listener();
-    }
-  }, []);
-  const notifyWriteErrorListeners = useCallback((): void => {
-    for (const listener of writeErrorListenersRef.current) {
-      listener();
-    }
-  }, []);
+  const {
+    draftsByNodeId,
+    currentWriteError,
+    notifyDraftsListeners,
+    notifyWriteErrorListeners,
+  } = useNotesDraftExternalStore(draftEngineRef);
   const retryAuthorityRecovery = useCallback(async (): Promise<void> => {
     await sessionRef.current?.retryAuthorityRecovery();
   }, []);
@@ -623,7 +416,7 @@ export function useNotesWorkspace({
     const previousEngine = draftEngineRef.current;
     if (previousEngine) {
       prepareAttachmentUploadAttemptsForTeardown();
-      shutdownAfterBackspaceDrain(previousEngine);
+      void shutdownAfterBackspaceDrain(previousEngine);
     }
     applyAction({ type: "startWorkspaceLoad" });
     clearAttachmentUploadUi();
@@ -913,7 +706,7 @@ export function useNotesWorkspace({
       writeQueue: createNotesWriteQueue(),
       host,
     });
-    coordinatorSessionByDraftEngine.set(engine, session);
+    registerCoordinatorSessionForDraftEngine(engine, session);
     adoptNotesWriteAuthority(
       session.writeAuthority(),
       setAuthorityRecovery,
@@ -934,7 +727,10 @@ export function useNotesWorkspace({
     // buffer). The engine wires its own recovery subscription internally.
     notifyDraftsListeners();
     notifyWriteErrorListeners();
-    enqueueBufferedCommands(session, bufferedCommandsRef.current.splice(0));
+    enqueueBufferedWorkspaceCommands(
+      session,
+      bufferedCommandsRef.current.splice(0),
+    );
     const disconnectSync = connectNotesSyncRuntime({
       vaultRoot,
       onWorkspaceChanged: reloadFromSync,
@@ -949,7 +745,7 @@ export function useNotesWorkspace({
         sessionRef.current = null;
         // ref array is never reassigned; draining current buffered commands at teardown is intended
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        resolveBufferedCommands(bufferedCommandsRef.current.splice(0));
+        resolveBufferedWorkspaceCommands(bufferedCommandsRef.current.splice(0));
       }
     };
     // Session subscribe/teardown effect keyed on vault/repository; the engine's
@@ -973,7 +769,7 @@ export function useNotesWorkspace({
       const engine = draftEngineRef.current;
       if (engine) {
         prepareAttachmentUploadAttemptsForTeardown();
-        shutdownAfterBackspaceDrain(engine);
+        void shutdownAfterBackspaceDrain(engine);
       }
       const token = {};
       finalCleanupTokenRef.current = token;
@@ -991,7 +787,7 @@ export function useNotesWorkspace({
         discardAttachmentUploadAttempts();
         // ref array is never reassigned; draining current buffered commands at teardown is intended
         // eslint-disable-next-line react-hooks/exhaustive-deps
-        resolveBufferedCommands(bufferedCommandsRef.current.splice(0));
+        resolveBufferedWorkspaceCommands(bufferedCommandsRef.current.splice(0));
       });
     };
   }, [
@@ -1075,6 +871,7 @@ export function useNotesWorkspace({
     getNavigationVersion,
     updateNodeDraft,
     flushNodeDraft,
+    beginBackspaceDraftLease,
     registerImageAtomFlushAdapter,
     retryFailedDraft,
     retryLastFailedWrite,
@@ -1240,7 +1037,7 @@ export function useNotesWorkspace({
     vaultRoot,
     sessionRecordRef,
     sessionRef,
-    draftEngineRef,
+    beginBackspaceDraftLease,
     activeScopeRef,
     setLibraryView,
     setTagSummaries,

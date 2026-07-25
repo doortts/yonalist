@@ -288,7 +288,7 @@ export interface NotesWorkspaceActions {
   ): boolean;
   finishBackspaceGesture?(
     reason: "keyup" | "blur" | "hidden" | "drain"
-  ): Promise<void>;
+  ): Promise<NotesWorkspaceCommandOutcome>;
   cancelBackspaceGesture?(): void;
   publishOutlinePaneState?(
     input: Omit<OutlinePanePublicationSnapshot, "sessionId">

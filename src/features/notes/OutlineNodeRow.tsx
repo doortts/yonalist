@@ -1212,7 +1212,7 @@ function OutlineNodeEditorComponent({
       !readOnly &&
       !contentProtected &&
       !selectionDisabled &&
-      (titleValue.trim().length > 0 ||
+      (titleValue.length > 0 ||
         (noteValue.trim().length === 0 && attachments.length === 0))
         ? (actions.beginBackspaceGesture?.(paneId, nodeId, {
             anchorUtf16: event.currentTarget.selectionStart,

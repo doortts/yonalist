@@ -2534,14 +2534,22 @@ export async function applyBackspaceGestureCommand(
       : undefined
   );
   if (result.kind !== "authoritative") return result;
-  const historyStatus =
-    mutation.historyStatus ??
-    (context.repository.historyStatus
-      ? await context.repository.historyStatus(
-          context.vaultRoot,
-          input.historyContext.sessionId
-        )
-      : undefined);
+  let historyStatus = mutation.historyStatus;
+  if (!historyStatus && context.repository.historyStatus) {
+    try {
+      historyStatus = await context.repository.historyStatus(
+        context.vaultRoot,
+        input.historyContext.sessionId
+      );
+    } catch (cause) {
+      throw Object.assign(
+        cause instanceof Error
+          ? cause
+          : new Error("Backspace history status is unavailable."),
+        { notesMutationOutcome: "unknown" as const }
+      );
+    }
+  }
   return {
     ...result,
     historyStatus,
