@@ -225,12 +225,11 @@ pub struct NotesWorkspace {
     pub attachments_by_node_id: BTreeMap<NoteId, Vec<NoteAttachment>>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotesMutationResult {
     pub workspace: NotesWorkspace,
+    pub serialize_workspace: bool,
     pub history_entry_id: Option<String>,
-    #[serde(flatten)]
     pub state: NotesHistoryState,
     /// Incremental deltas derived from the mutation's history audit rows.
     ///
@@ -238,11 +237,8 @@ pub struct NotesMutationResult {
     /// (the audit triggers are the source). When they are `None` the full
     /// `workspace` above remains authoritative, so the fields are optional and
     /// omitted from the wire payload to keep the contract additive.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub changed_nodes: Option<Vec<NoteNode>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub removed_node_ids: Option<Vec<NoteId>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub changed_attachments: Option<Vec<NoteAttachment>>,
     /// New root ids created by `notes_import_subtree`, in the order the caller
     /// supplied them. Populated only by that command (every other mutation
@@ -250,12 +246,49 @@ pub struct NotesMutationResult {
     /// frontend focuses `importedRootIds[0]`. This carries only the imported
     /// roots — the full imported forest is available via `workspace` /
     /// `changedNodes`.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub imported_root_ids: Option<Vec<NoteId>>,
     /// New root ids created by a batch duplicate, in source order. Every other
     /// mutation leaves this `None`, so it is omitted from the wire payload.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub duplicated_root_ids: Option<Vec<NoteId>>,
+}
+
+impl Serialize for NotesMutationResult {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Wire<'a> {
+            #[serde(skip_serializing_if = "Option::is_none")]
+            workspace: Option<&'a NotesWorkspace>,
+            history_entry_id: &'a Option<String>,
+            #[serde(flatten)]
+            state: &'a NotesHistoryState,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            changed_nodes: &'a Option<Vec<NoteNode>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            removed_node_ids: &'a Option<Vec<NoteId>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            changed_attachments: &'a Option<Vec<NoteAttachment>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            imported_root_ids: &'a Option<Vec<NoteId>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            duplicated_root_ids: &'a Option<Vec<NoteId>>,
+        }
+
+        Wire {
+            workspace: self.serialize_workspace.then_some(&self.workspace),
+            history_entry_id: &self.history_entry_id,
+            state: &self.state,
+            changed_nodes: &self.changed_nodes,
+            removed_node_ids: &self.removed_node_ids,
+            changed_attachments: &self.changed_attachments,
+            imported_root_ids: &self.imported_root_ids,
+            duplicated_root_ids: &self.duplicated_root_ids,
+        }
+        .serialize(serializer)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -2640,6 +2673,7 @@ mod tests {
                 nodes: Vec::new(),
                 attachments_by_node_id: std::collections::BTreeMap::new(),
             },
+            serialize_workspace: true,
             history_entry_id: Some(SECOND_ID.to_string()),
             state: history_state(),
             changed_nodes: None,
@@ -2667,6 +2701,7 @@ mod tests {
                 nodes: Vec::new(),
                 attachments_by_node_id: std::collections::BTreeMap::new(),
             },
+            serialize_workspace: true,
             history_entry_id: Some(SECOND_ID.to_string()),
             state: history_state(),
             changed_nodes: None,
@@ -2698,6 +2733,7 @@ mod tests {
                 nodes: Vec::new(),
                 attachments_by_node_id: std::collections::BTreeMap::new(),
             },
+            serialize_workspace: true,
             history_entry_id: None,
             state: history_state(),
             changed_nodes: None,
@@ -2746,6 +2782,7 @@ mod tests {
                 nodes: vec![node.clone()],
                 attachments_by_node_id: std::collections::BTreeMap::new(),
             },
+            serialize_workspace: true,
             history_entry_id: None,
             state: history_state(),
             changed_nodes: Some(vec![node]),
@@ -2825,6 +2862,99 @@ mod tests {
                     "updatedAt": "2026-07-11T00:00:01.000Z"
                 }]
             })
+        );
+    }
+
+    #[test]
+    fn mutation_delta_only_omits_the_workspace_from_the_wire() {
+        let node = note_node();
+        let mutation = NotesMutationResult {
+            workspace: NotesWorkspace {
+                nodes: vec![node.clone()],
+                attachments_by_node_id: std::collections::BTreeMap::new(),
+            },
+            serialize_workspace: false,
+            history_entry_id: Some(SECOND_ID.to_string()),
+            state: history_state(),
+            changed_nodes: Some(vec![node]),
+            removed_node_ids: Some(vec![THIRD_ID.to_string()]),
+            changed_attachments: Some(Vec::new()),
+            imported_root_ids: None,
+            duplicated_root_ids: None,
+        };
+
+        let value = serde_json::to_value(mutation).expect("delta-only mutation");
+
+        assert!(value.get("workspace").is_none());
+        assert!(value.get("changedNodes").is_some());
+        assert_eq!(value["removedNodeIds"], json!([THIRD_ID]));
+        assert_eq!(value["historyEntryId"], json!(SECOND_ID));
+        assert_eq!(value["historyEpoch"], json!(THIRD_ID));
+    }
+
+    #[test]
+    fn mutation_delta_explicit_consumer_keeps_the_full_workspace_on_the_wire() {
+        let node = note_node();
+        let expected_workspace = json!({
+            "nodes": [serde_json::to_value(&node).expect("node")],
+            "attachmentsByNodeId": {}
+        });
+        let mutation = NotesMutationResult {
+            workspace: NotesWorkspace {
+                nodes: vec![node.clone()],
+                attachments_by_node_id: std::collections::BTreeMap::new(),
+            },
+            serialize_workspace: true,
+            history_entry_id: Some(SECOND_ID.to_string()),
+            state: history_state(),
+            changed_nodes: Some(vec![node]),
+            removed_node_ids: Some(Vec::new()),
+            changed_attachments: Some(Vec::new()),
+            imported_root_ids: None,
+            duplicated_root_ids: None,
+        };
+
+        let value = serde_json::to_value(mutation).expect("full mutation");
+
+        assert_eq!(value["workspace"], expected_workspace);
+        assert!(value.get("changedNodes").is_some());
+    }
+
+    #[test]
+    fn mutation_delta_history_conversion_omits_only_complete_nonempty_deltas() {
+        use crate::notes::history::{HistoryTransactionResult, MutationDelta};
+
+        let result = |delta| HistoryTransactionResult {
+            workspace: NotesWorkspace {
+                nodes: vec![note_node()],
+                attachments_by_node_id: std::collections::BTreeMap::new(),
+            },
+            history_entry_id: Some(SECOND_ID.to_string()),
+            state: history_state(),
+            pruned_attachment_paths: Vec::new(),
+            delta,
+        };
+        let changed = || MutationDelta {
+            changed_nodes: vec![note_node()],
+            removed_node_ids: Vec::new(),
+            changed_attachments: Vec::new(),
+        };
+
+        assert!(
+            !result(Some(changed()))
+                .into_mutation_result()
+                .serialize_workspace
+        );
+        assert!(
+            result(Some(MutationDelta::default()))
+                .into_mutation_result()
+                .serialize_workspace
+        );
+        assert!(result(None).into_mutation_result().serialize_workspace);
+        assert!(
+            result(Some(changed()))
+                .into_mutation_result_with_workspace()
+                .serialize_workspace
         );
     }
 

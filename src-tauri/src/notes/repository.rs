@@ -5308,6 +5308,7 @@ pub(crate) fn delete_nodes(
         .map_err(|error| format!("Could not commit the Notes delete transaction: {error}"))?;
     Ok(DeleteNodesOutcome::Deleted(NotesMutationResult {
         workspace,
+        serialize_workspace: true,
         history_entry_id: None,
         state: crate::notes::types::NotesHistoryState::default(),
         changed_nodes: None,

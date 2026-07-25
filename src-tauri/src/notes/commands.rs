@@ -1170,6 +1170,7 @@ pub(crate) fn notes_materialize_github_notification_and_create_sibling_inner(
                 },
             )?;
             result.imported_root_ids = Some(imported_root_ids);
+            result.serialize_workspace = true;
             Ok(result)
         }
     }
@@ -1704,7 +1705,7 @@ fn notes_import_markdown_with_permit_inner(
         validate_notes_connection(&connection)?;
         reconcile_after_committed_attachment_change(&storage, &connection);
         validate_notes_connection(&connection)?;
-        let mut mutation = result.into_mutation_result();
+        let mut mutation = result.into_mutation_result_with_workspace();
         mutation.imported_root_ids = Some(imported_root_ids);
         Ok(mutation)
     })();
@@ -2845,6 +2846,7 @@ fn committed_attachment_batch_retry(
     let deltas_available = history.context().is_some();
     Ok(Some(NotesMutationResult {
         workspace: load_workspace(connection, NotesWorkspaceScope::Active)?,
+        serialize_workspace: !deltas_available || existing.is_empty(),
         history_entry_id,
         state: status,
         changed_nodes: deltas_available.then(Vec::new),
@@ -3290,6 +3292,7 @@ fn committed_image_node_batch_retry(
     let status = history_status(connection, &history_context.session_id)?;
     Ok(Some(NotesMutationResult {
         workspace,
+        serialize_workspace: true,
         history_entry_id: Some(history_context.entry_id.clone()),
         state: status,
         changed_nodes: Some(changed_nodes),
@@ -3950,7 +3953,7 @@ fn import_prepared_image_node_batch(
         Ok(result) => {
             validate_notes_connection(connection)?;
             reconcile_after_committed_attachment_change(&storage, connection);
-            let mut mutation = result.into_mutation_result();
+            let mut mutation = result.into_mutation_result_with_workspace();
             mutation.imported_root_ids = Some(imported_root_ids);
             progress.map(|progress| progress.done(&completion_hash));
             Ok(mutation)

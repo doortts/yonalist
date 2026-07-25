@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { isNotesMutationResult } from "../../domain/notes";
 import type { NoteNode, NotesStore, NotesWorkspace } from "../../domain/notes";
 import {
   createNotesWriteQueue,
@@ -16,6 +15,7 @@ import {
   NotesDraftEngine,
   type NotesDraftEngineHost,
 } from "./notesDraftEngine";
+import { unwrapNotesMutation } from "./notesWorkspaceProjection";
 import type { NotesImageAtomFlushAdapter } from "./notesImageAtomEditorRegistry";
 
 // These tests exercise NotesDraftEngine as a plain object: no React, no
@@ -267,9 +267,8 @@ function createHarness(options: HarnessOptions = {}): Harness {
         );
         return {
           kind: "authoritative",
-          workspace: isNotesMutationResult(response)
-            ? response.workspace
-            : response,
+          workspace: unwrapNotesMutation(response, context.confirmedWorkspace)
+            .workspace,
         };
       } catch (cause) {
         return {

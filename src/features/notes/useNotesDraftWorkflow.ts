@@ -100,7 +100,8 @@ export function useNotesDraftWorkflow({
               markerKind: draft.markerKind ?? confirmedNode.markerKind
             },
             ...historyArguments(historyContext)
-          )
+          ),
+          context.confirmedWorkspace
         );
         const projection = await projectNotesMutation(
           context,

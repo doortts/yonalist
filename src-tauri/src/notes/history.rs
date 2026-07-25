@@ -310,16 +310,29 @@ pub(crate) struct HistoryTransactionResult {
 
 impl HistoryTransactionResult {
     pub(crate) fn into_mutation_result(self) -> NotesMutationResult {
-        let (changed_nodes, removed_node_ids, changed_attachments) = match self.delta {
-            Some(delta) => (
-                Some(delta.changed_nodes),
-                Some(delta.removed_node_ids),
-                Some(delta.changed_attachments),
-            ),
-            None => (None, None, None),
-        };
+        self.into_mutation_result_inner(false)
+    }
+
+    pub(crate) fn into_mutation_result_with_workspace(self) -> NotesMutationResult {
+        self.into_mutation_result_inner(true)
+    }
+
+    fn into_mutation_result_inner(self, force_workspace: bool) -> NotesMutationResult {
+        let (delta_is_nonempty, changed_nodes, removed_node_ids, changed_attachments) =
+            match self.delta {
+                Some(delta) => (
+                    !delta.changed_nodes.is_empty()
+                        || !delta.removed_node_ids.is_empty()
+                        || !delta.changed_attachments.is_empty(),
+                    Some(delta.changed_nodes),
+                    Some(delta.removed_node_ids),
+                    Some(delta.changed_attachments),
+                ),
+                None => (false, None, None, None),
+            };
         NotesMutationResult {
             workspace: self.workspace,
+            serialize_workspace: force_workspace || !delta_is_nonempty,
             history_entry_id: self.history_entry_id,
             state: self.state,
             changed_nodes,

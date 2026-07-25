@@ -301,6 +301,54 @@ describe("notesStore structured errors", () => {
     });
   });
 
+  it("accepts a complete delta-only readonly delete mutation wire payload", async () => {
+    Reflect.set(window, "__TAURI_INTERNALS__", {});
+    const changedNode = {
+      id: "22222222-2222-4222-8222-222222222222",
+      nodeKind: "text",
+      markerKind: "bullet",
+      parentId: null,
+      sortKey: 1024,
+      title: "Changed",
+      note: "",
+      imageOffsetUtf16: 0,
+      markdownImageWidth: null,
+      layoutMode: "bullets",
+      isCollapsed: false,
+      isStarred: false,
+      completedAt: null,
+      createdAt: "2026-07-10T00:00:00.000Z",
+      updatedAt: "2026-07-10T00:00:01.000Z",
+      deletedAt: null,
+      archivedAt: null,
+      archiveRootId: null
+    };
+    invokeMock.mockResolvedValue({
+      historyEntryId: historyContext.entryId,
+      canUndo: true,
+      canRedo: false,
+      historyEpoch: historyContext.historyEpoch,
+      nextUndoEntryId: historyContext.entryId,
+      nextRedoEntryId: null,
+      prunedEntryIds: [],
+      changedNodes: [changedNode],
+      removedNodeIds: [],
+      changedAttachments: []
+    });
+
+    await expect(
+      notesDeleteNodes(
+        "/vault",
+        { nodeIds: [changedNode.id] },
+        historyContext
+      )
+    ).resolves.toMatchObject({
+      changedNodes: [changedNode],
+      removedNodeIds: [],
+      changedAttachments: []
+    });
+  });
+
   it("rejects an ambiguous readonly preflight wire payload", async () => {
     Reflect.set(window, "__TAURI_INTERNALS__", {});
     invokeMock.mockResolvedValue({

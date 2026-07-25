@@ -11,6 +11,7 @@ import type {
   NotesWorkspaceQueueResult,
   NotesWorkspaceUiUpdate
 } from "./notesWorkspaceCoordinator";
+import { compareAttachments } from "./notesWorkspaceReducer";
 import type { NotesWorkspaceDelta } from "./notesWorkspaceReducer";
 
 export function authoritative(
@@ -54,8 +55,62 @@ export interface UnwrappedNotesMutation {
   duplicatedRootIds: readonly NoteId[] | undefined;
 }
 
+export function applyDeltaToNotesWorkspace(
+  base: NotesWorkspace,
+  raw: RawNotesMutationDelta
+): NotesWorkspace {
+  const delta = scopedActiveDelta(raw);
+  if (!delta) {
+    return base;
+  }
+  const nodesById = new Map<NoteId, NoteNode>(
+    base.nodes.map((node) => [node.id, node])
+  );
+  const attachmentsByNodeId: Record<NoteId, NoteAttachment[]> = {};
+  for (const [nodeId, attachments] of Object.entries(
+    base.attachmentsByNodeId ?? {}
+  )) {
+    attachmentsByNodeId[nodeId] = [...attachments];
+  }
+  for (const node of delta.changedNodes) {
+    nodesById.set(node.id, node);
+  }
+  for (const nodeId of delta.removedNodeIds) {
+    nodesById.delete(nodeId);
+    delete attachmentsByNodeId[nodeId];
+  }
+  for (const attachment of delta.changedAttachments) {
+    if (!nodesById.has(attachment.nodeId)) {
+      continue;
+    }
+    const attachments = (attachmentsByNodeId[attachment.nodeId] ??= []);
+    const currentIndex = attachments.findIndex(
+      ({ id }) => id === attachment.id
+    );
+    if (currentIndex >= 0) {
+      attachments.splice(currentIndex, 1);
+    }
+    let low = 0;
+    let high = attachments.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (compareAttachments(attachments[middle], attachment) <= 0) {
+        low = middle + 1;
+      } else {
+        high = middle;
+      }
+    }
+    attachments.splice(low, 0, attachment);
+  }
+  return {
+    nodes: [...nodesById.values()],
+    attachmentsByNodeId
+  };
+}
+
 export function unwrapNotesMutation(
-  response: NotesMutationResponse
+  response: NotesMutationResponse,
+  confirmedBase: NotesWorkspace | null
 ): UnwrappedNotesMutation {
   if (isNotesMutationResult(response)) {
     const delta =
@@ -66,8 +121,18 @@ export function unwrapNotesMutation(
             changedAttachments: response.changedAttachments ?? []
           }
         : null;
+    const workspace =
+      response.workspace ??
+      (delta && confirmedBase
+        ? applyDeltaToNotesWorkspace(confirmedBase, delta)
+        : null);
+    if (workspace === null) {
+      throw new Error(
+        "Cannot reconstruct a Notes mutation without a confirmed base workspace."
+      );
+    }
     return {
-      workspace: response.workspace,
+      workspace,
       historyEntryId: response.historyEntryId,
       historyStatus: {
         canUndo: response.canUndo,

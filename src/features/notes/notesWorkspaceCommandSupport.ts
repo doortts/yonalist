@@ -210,7 +210,10 @@ export async function runCompoundQueueWork(
       ) {
         return stepResult as NotesWorkspaceQueueResult;
       }
-      const mutation = unwrapNotesMutation(stepResult as NotesMutationResponse);
+      const mutation = unwrapNotesMutation(
+        stepResult as NotesMutationResponse,
+        workspace
+      );
       const expectedEntryId = step.historyEntryId ?? null;
       if (
         mutation.atomic &&

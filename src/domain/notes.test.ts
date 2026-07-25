@@ -599,6 +599,54 @@ describe("Notes domain contract", () => {
     ).toBe(false);
   });
 
+  it("accepts workspace-free mutation results only with a complete nonempty delta", () => {
+    const result = {
+      historyEntryId: UUID,
+      ...historyState()
+    };
+    const completeDelta = {
+      changedNodes: [makeNoteNode()],
+      removedNodeIds: [] as string[],
+      changedAttachments: [] as ReturnType<typeof makeNoteAttachment>[]
+    };
+
+    expect(isNotesMutationResult({ ...result, ...completeDelta })).toBe(true);
+    expect(
+      isNotesMutationResult({
+        ...result,
+        changedNodes: [],
+        removedNodeIds: [ATTACHMENT_UUID],
+        changedAttachments: []
+      })
+    ).toBe(true);
+    expect(isNotesMutationResult(result)).toBe(false);
+    expect(
+      isNotesMutationResult({ ...result, changedNodes: [makeNoteNode()] })
+    ).toBe(false);
+    expect(
+      isNotesMutationResult({
+        ...result,
+        changedNodes: [],
+        removedNodeIds: [],
+        changedAttachments: []
+      })
+    ).toBe(false);
+    expect(
+      isNotesMutationResult({
+        ...result,
+        ...completeDelta,
+        changedAttachments: [{}]
+      })
+    ).toBe(false);
+    expect(
+      isNotesMutationResult({
+        ...result,
+        ...completeDelta,
+        changedAttachments: null
+      })
+    ).toBe(false);
+  });
+
   it("requires every history state key on mutation results", () => {
     const result = {
       workspace: { nodes: [makeNoteNode()] },

@@ -205,7 +205,13 @@ export interface NotesHistoryResetInput {
 }
 
 export interface NotesMutationResult extends NotesHistoryState {
-  workspace: NotesWorkspace;
+  /**
+   * Full post-mutation workspace. The native layer may omit it only when all
+   * three audit-delta fields carry a complete, nonempty change. Callers must
+   * reconstruct such a result from the coordinator's confirmed pre-mutation
+   * workspace; explicit full-workspace consumers keep receiving this field.
+   */
+  workspace?: NotesWorkspace;
   historyEntryId: string | null;
   /**
    * Incremental deltas derived from the mutation's history audit rows. Present
@@ -1395,12 +1401,12 @@ export function isImageAtomMutationResult(
 }
 
 const NOTES_MUTATION_RESULT_REQUIRED_KEYS = [
-  "workspace",
   "historyEntryId",
   ...NOTES_HISTORY_STATE_KEYS
 ] as const;
 
 const NOTES_MUTATION_RESULT_OPTIONAL_KEYS = [
+  "workspace",
   "changedNodes",
   "removedNodeIds",
   "changedAttachments",
@@ -1420,12 +1426,19 @@ export function isNotesMutationResult(
     return false;
   }
   const keys = Object.keys(value);
+  const hasWorkspace = Object.prototype.hasOwnProperty.call(value, "workspace");
+  const hasCompleteDelta =
+    Object.prototype.hasOwnProperty.call(value, "changedNodes") &&
+    Object.prototype.hasOwnProperty.call(value, "removedNodeIds") &&
+    Object.prototype.hasOwnProperty.call(value, "changedAttachments");
   if (
     !NOTES_MUTATION_RESULT_REQUIRED_KEYS.every((key) =>
       Object.prototype.hasOwnProperty.call(value, key)
     ) ||
     !keys.every((key) => NOTES_MUTATION_RESULT_ALLOWED_KEYS.has(key)) ||
-    !isNotesWorkspace(value.workspace) ||
+    (hasWorkspace
+      ? !isNotesWorkspace(value.workspace)
+      : !hasCompleteDelta) ||
     !isNullableString(value.historyEntryId) ||
     !hasNotesHistoryState(value)
   ) {
@@ -1454,6 +1467,14 @@ export function isNotesMutationResult(
       isDenseArray(value.changedAttachments) &&
       value.changedAttachments.every(isNoteAttachment)
     )
+  ) {
+    return false;
+  }
+  if (
+    !hasWorkspace &&
+    (value.changedNodes as unknown[]).length === 0 &&
+    (value.removedNodeIds as unknown[]).length === 0 &&
+    (value.changedAttachments as unknown[]).length === 0
   ) {
     return false;
   }

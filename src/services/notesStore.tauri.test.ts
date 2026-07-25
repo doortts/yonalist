@@ -587,7 +587,7 @@ describe("notesStore in Tauri", () => {
     ["wrong imported parent", (result: NotesMutationResult) => ({
       ...result,
       workspace: {
-        nodes: result.workspace.nodes.map((node) =>
+        nodes: result.workspace!.nodes.map((node) =>
           node.id === secondNodeId
             ? { ...node, parentId: GITHUB_NOTIFICATIONS_ROOT_ID }
             : node
@@ -3491,6 +3491,58 @@ describe("notesStore in Tauri", () => {
       vaultPath,
       input: { id: nodeId, title: "Journaled", note: "", imageOffsetUtf16: 0, markerKind: "bullet" },
       historyContext
+    });
+  });
+
+  it("accepts complete delta-only mutations and rejects incomplete delta-only mutations", async () => {
+    const deltaOnly = {
+      historyEntryId: historyContext.entryId,
+      ...historyState(),
+      changedNodes: [
+        {
+          ...workspace.nodes[0]!,
+          title: "Delta only"
+        }
+      ],
+      removedNodeIds: [],
+      changedAttachments: []
+    };
+    invokeMock
+      .mockResolvedValueOnce(deltaOnly)
+      .mockResolvedValueOnce({
+        ...deltaOnly,
+        changedAttachments: undefined
+      });
+
+    await expect(
+      notesUpdateNode(
+        vaultPath,
+        {
+          id: nodeId,
+          title: "Delta only",
+          note: "",
+          imageOffsetUtf16: 0,
+          markerKind: "bullet"
+        },
+        historyContext
+      )
+    ).resolves.toEqual(deltaOnly);
+    await expect(
+      notesUpdateNode(
+        vaultPath,
+        {
+          id: nodeId,
+          title: "Incomplete",
+          note: "",
+          imageOffsetUtf16: 0,
+          markerKind: "bullet"
+        },
+        historyContext
+      )
+    ).rejects.toMatchObject({
+      message: "Notes mutation returned an invalid result.",
+      operation: "write",
+      retryable: false
     });
   });
 

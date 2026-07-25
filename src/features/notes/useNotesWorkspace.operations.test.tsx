@@ -151,6 +151,21 @@ function mutationResult(
   };
 }
 
+function deltaOnlyMutationResult(
+  changedNodes: NoteNode[],
+  context: NotesHistoryContext
+): NotesMutationResult {
+  return {
+    historyEntryId: context.entryId,
+    ...historyState(context.historyEpoch),
+    canUndo: true,
+    nextUndoEntryId: context.entryId,
+    changedNodes,
+    removedNodeIds: [],
+    changedAttachments: []
+  };
+}
+
 function appliedReplay(
   resultWorkspace: NotesWorkspace,
   replayedEntryId: string | null,
@@ -2537,6 +2552,37 @@ describe("useNotesWorkspace", () => {
     expect(
       result.current.actions.pendingKeyboardInsertionInteractionEpoch?.("child")
     ).toBeUndefined();
+  });
+
+  it("reconstructs a delta-only create from the coordinator's confirmed workspace", async () => {
+    createNoteIdMock.mockReturnValue("created");
+    const root = node({ id: "root" });
+    const createNode = vi.fn(async (_vaultRoot, _input, context) =>
+      deltaOnlyMutationResult(
+        [node({ id: "created", parentId: root.id, sortKey: 512 })],
+        context
+      )
+    );
+    const store = repository({
+      loadWorkspace: vi.fn(async () => workspace([root])),
+      createNode
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/delta-create", repository: store })
+    );
+
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    await act(async () =>
+      rendered.result.current.actions.createChild(root.id, "last")
+    );
+
+    expect(rendered.result.current.state.nodesById.created).toMatchObject({
+      id: "created",
+      parentId: root.id
+    });
+    expect(
+      rendered.result.current.state.childIdsByParent[root.id]
+    ).toContain("created");
   });
 
   it("creates before the real first child and leaves a filtered scope visible", async () => {

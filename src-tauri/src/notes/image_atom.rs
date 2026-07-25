@@ -796,6 +796,7 @@ fn mutation_from_receipt(
     Ok(ImageAtomMutationResult {
         mutation: NotesMutationResult {
             workspace,
+            serialize_workspace: true,
             history_entry_id: Some(history_context.entry_id.clone()),
             state: history::history_state(connection, &history_context.session_id, Vec::new())?,
             changed_nodes: None,
@@ -1183,7 +1184,7 @@ pub(crate) fn apply_image_atom_paste_with_prunes(
         },
     )?;
     let pruned_attachment_paths = result.pruned_attachment_paths.clone();
-    let mutation = result.into_mutation_result();
+    let mutation = result.into_mutation_result_with_workspace();
     if mutation.history_entry_id.as_deref() != Some(history_context.entry_id.as_str()) {
         return Err(
             "The Notes image atom paste did not create its required history entry.".to_string(),
@@ -1226,6 +1227,7 @@ pub(crate) fn apply_image_atom_edit_with_prunes(
             result: ImageAtomMutationResult {
                 mutation: NotesMutationResult {
                     workspace: repository::load_workspace(connection, NotesWorkspaceScope::Active)?,
+                    serialize_workspace: true,
                     history_entry_id: Some(history_context.entry_id),
                     state: history::history_state(
                         connection,
@@ -1274,7 +1276,7 @@ pub(crate) fn apply_image_atom_edit_with_prunes(
         },
     )?;
     let pruned_attachment_paths = result.pruned_attachment_paths.clone();
-    let mutation = result.into_mutation_result();
+    let mutation = result.into_mutation_result_with_workspace();
     if mutation.history_entry_id.as_deref() != Some(history_context.entry_id.as_str()) {
         return Err(
             "The Notes image atom edit did not create its required history entry.".to_string(),

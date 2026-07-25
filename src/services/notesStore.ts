@@ -1301,6 +1301,7 @@ export async function notesImportMarkdown(
         importedRootIds.length !== 1 ||
         !isCanonicalUuidV4(importedRootId) ||
         result.historyEntryId !== normalizedHistoryContext.entryId ||
+        result.workspace === undefined ||
         !result.workspace.nodes.some((node) => node.id === importedRootId)
       ) {
         throw notesStoreError(
@@ -1348,6 +1349,9 @@ function normalizeMutationResult(
       false
     );
   }
+  if (result.workspace === undefined) {
+    return result;
+  }
   const workspace = normalizeNotesWorkspace(result.workspace);
   if (workspace === null || !workspaceHasUniqueNodeIds(workspace)) {
     throw notesStoreError(
@@ -1379,6 +1383,7 @@ function normalizeGithubChildrenMaterializationResult(
     input.rootId !== GITHUB_NOTIFICATIONS_ROOT_ID ||
     input.target.nodes.length === 0 ||
     result.historyEntryId !== historyContext.entryId ||
+    result.workspace === undefined ||
     !Array.isArray(importedRootIds) ||
     importedRootIds.length !== input.target.nodes.length ||
     !importedRootIds.every(isCanonicalUuidV4) ||
@@ -1570,6 +1575,9 @@ function imageNodeImportDeltaMatchesWorkspace(
   if (!deltaFields.every(Boolean)) {
     return false;
   }
+  if (result.workspace === undefined) {
+    return false;
+  }
 
   const changedNodes = result.changedNodes!;
   const removedNodeIds = result.removedNodeIds!;
@@ -1685,6 +1693,7 @@ function normalizeImageNodeImportResult(
   }
   if (
     normalized.historyEntryId !== historyContext.entryId ||
+    normalized.workspace === undefined ||
     !imageNodeImportWorkspaceMatchesInput(normalized.workspace, input)
   ) {
     throw notesStoreError(
