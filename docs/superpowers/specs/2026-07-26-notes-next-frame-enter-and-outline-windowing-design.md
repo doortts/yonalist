@@ -93,6 +93,10 @@ export interface OutlineTitleEditorSession {
   };
   readonly interactionEpoch: number;
   readonly optimisticToken: number | null;
+  readonly depth: number;
+  readonly top: number;
+  readonly rowHeight: number;
+  readonly titleHeight: number;
 }
 ```
 
@@ -112,10 +116,37 @@ commands, inline formatting, typed dates, tags, clipboard behavior, draft
 updates, and selection reporting move with the pane editor session rather
 than staying in an individual row component.
 
+Introducing the persistent editor also installs the basic logical geometry
+index needed to position it. Claiming an ordinary resting row may measure and
+cache its top, total-row height, and title height. Plain Enter must splice the
+new row into that index and read the inserted row's cached rectangle; it must
+not introduce a DOM or layout read before the first paint opportunity. The
+later windowing work extends this same index with variable-height estimation,
+range lookup, and anchor correction rather than replacing it.
+
+Changing the logical editor session does not necessarily blur the persistent
+textarea. Before pointer, Arrow, F6, supporting-note, pane, Vault, visibility,
+or unmount transfer, `releaseTitleSession(reason)` synchronously captures the
+current value and selection and invokes the existing draft/commit path. Plain
+Enter is the exception: it passes the current draft directly to the prepared
+insertion and moves the session atomically, avoiding a second write.
+
+The former row-local structural in-flight flag becomes a map keyed by source
+row ID. A second structural command from the same source is rejected, while a
+held-Enter repeat on the newly projected row remains eligible and carries the
+prior insertion dependency. A single pane-global Boolean would reintroduce the
+held-repeat failure.
+
 The resting and focused states must keep identical visible text geometry.
 Component tests compare their line box, wrapping width, padding, indent, and
 first-line baseline. A focused row may not move when the presentation layer is
 replaced by the editor overlay.
+
+The editor overlay remains one persistent list child and does not duplicate
+`data-outline-id`. Event routing resolves its logical row from
+`data-editor-node-id`; row-local fields continue to resolve their nearest
+outline row. The active list item uses `aria-owns` to associate the focused
+textbox with its logical row.
 
 ### 2. Keep provisional insertion structurally light
 
@@ -163,6 +194,19 @@ The existing coordinator still admits the structural command immediately
 after the visible patch and publishes settlement later. Failure rolls back the
 optimistic splice and restores the pre-insertion editor session and selection.
 
+The external store is a view overlay, not a second workspace authority. It
+holds the inserted row plus token-keyed title overrides for both the source
+prefix and inserted suffix. If the coordinator's normal optimistic projection
+later contains the same inserted ID, the store deduplicates that ID and keeps
+fast-row/editor ownership until exact-token settlement. Unrelated
+authoritative publication rebases the overlay by stable IDs. Only an exact
+token clears its provisional row and title overrides.
+
+Editor and structure subscriptions are separate. Normal typing updates only
+the editor snapshot; it must not re-render `NotesOutlinePane` or its window.
+Insertion, rollback, hydration, and reconciliation publish the structure
+snapshot.
+
 ### 4. Use fixed geometry for new blank rows
 
 A blank ordinary title row has a known 28 px initial height. Creating or moving
@@ -180,6 +224,11 @@ resting row.
 The pane editor stays focused and uses `focus({ preventScroll: true })` only
 when focus is first claimed or restored after an external interaction. Plain
 Enter does not focus again.
+
+Each split pane owns an independent vertical scroll host. The outer
+`.detail-scroll` must not be the controller target because it is shared by
+both panes. Each pane persists and restores its own logical anchor ID and
+offset through the existing pane-session scroll state.
 
 `OutlineScrollController` consumes logical row offsets from the window model.
 It keeps a top and bottom caret margin and records the newest requested
@@ -204,15 +253,26 @@ Add a framework-free variable-height window model with:
 - O(log n) height and prefix updates, or a measured simpler implementation
   that remains below 1 ms p95 at 5,001 nodes.
 
+Unmeasured rows use deterministic estimates from known row content and
+attachment aspect ratios. Observed heights are cached by pane-width bucket so
+a wider-pane measurement is not reused after a ratio change or in the other
+pane. Width and Vault replacement preserve the logical anchor while resetting
+incompatible measurements.
+
 The rendered set is the union of the window range and pinned IDs:
 
 - active title editor;
 - page navigation target and pending focus target;
-- selected range endpoints and all rows required for the visible selection;
+- selected range anchor and head;
 - optimistic insertion and failure-recovery rows;
 - active drag source, drop target, and drag preview dependencies;
 - an open supporting note, menu, date picker, slash menu, or attachment
   interaction.
+
+Selection membership remains logical; pinning thousands of selected rows would
+defeat windowing. Rows acquire selected presentation when they enter the
+window. Pins are reason-counted so releasing a menu cannot recycle a row that
+still owns a supporting note or composition session.
 
 Keyboard navigation always uses the complete logical visible order. If a
 target row is outside the current window, update the window and editor session
@@ -224,6 +284,25 @@ The ordinary list uses one viewport `ResizeObserver`. Only rendered
 variable-height rows are observed. Observer callbacks update the height cache
 and publish one geometry generation per animation frame. The existing loop
 that observes every list child is removed.
+
+Title height and total row height are separate caches. An active editor height
+change adjusts total row height by the title-height delta; it cannot overwrite
+space owned by a supporting note or attachment.
+
+Windowing does not make DOM rectangles available for off-screen drag targets.
+Pointer and keyboard drag therefore synthesize logical row rectangles from the
+height index, with mounted `droppableRects` overriding cached estimates. The
+complete logical outline remains the input to drop projection. The drag source
+and current target are pinned; off-screen rows do not get hidden droppable DOM.
+
+`GITHUB_NOTIFICATIONS_ROOT_ID` and its external children form one measured
+composite block. The external projection renders only while that block is
+windowed or pinned, while the zoomed external page retains its specialized
+path.
+
+ARIA `posinset` and `setsize` are calculated among logical siblings with the
+same parent, not from the flat outline index. Window scrolling resets the FLIP
+baseline and does not animate rows merely because they entered the window.
 
 ### 7. Keep inactive-pane work after the active paint
 
@@ -326,6 +405,12 @@ identical. Alternate primary and secondary samples in the same fresh process
 to reduce thermal and run-order bias. Add a position-swap diagnostic that keeps
 pane identity while swapping visual columns; report whether any remaining
 difference follows pane identity or physical position.
+
+Held-Enter records share a physical gesture ID and repeat index. Related
+commands may overlap while they settle without invalidating one another.
+Pre-paint commit accounting remains operation-scoped; post-paint work is
+counted once per gesture. Benchmark fixture restoration reads a registered
+logical pane snapshot rather than assuming every row has a mounted textarea.
 
 For each pane and workload, run 10 warmups and 50 valid samples:
 
