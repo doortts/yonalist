@@ -234,6 +234,7 @@ export interface NotesDraftsSlice {
 
 declare const notesImageAtomPasteAuthorityBrand: unique symbol;
 declare const notesImageAtomCutAuthorityBrand: unique symbol;
+declare const notesDirectCaretClaimTokenBrand: unique symbol;
 
 export interface NotesImageAtomCutAuthority {
   readonly [notesImageAtomCutAuthorityBrand]: true;
@@ -241,6 +242,10 @@ export interface NotesImageAtomCutAuthority {
 
 export interface NotesImageAtomPasteAuthority {
   readonly [notesImageAtomPasteAuthorityBrand]: true;
+}
+
+export interface NotesDirectCaretClaimToken {
+  readonly [notesDirectCaretClaimTokenBrand]: true;
 }
 
 export interface NotesPreparedSelectionBatchOptions {
@@ -269,9 +274,12 @@ export interface NotesWorkspaceActions {
   notifyCaretMovedByDom?(
     nodeId: NoteId,
     field: NotesHistoryFocusField,
-    claimAttempt?: object
+    claimToken?: NotesDirectCaretClaimToken
   ): void;
-  settleDirectCaretClaim?(claimAttempt: object, claimed: boolean): boolean;
+  settleDirectCaretClaim?(
+    claimToken: NotesDirectCaretClaimToken,
+    claimed: boolean
+  ): boolean;
   invalidatePendingCaretMove?(): void;
   getNavigationVersion?(): number;
   prepareKeyboardInsertion?(

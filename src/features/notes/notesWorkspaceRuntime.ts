@@ -376,7 +376,7 @@ export function useNotesWorkspace({
   const { notifyCaretMovedByDom, settleDirectCaretClaim, invalidatePendingCaretMove, cancelPendingCaretMove } =
     useNotesDirectCaretReconciliation({
       pendingPrimarySelectionRef, navigationVersionRef, editingFocusRef,
-      stateRef, closedRef, applyAction,
+      selectionRef, selectionRevisionRef, stateRef, closedRef, applyAction, replaceSelection,
     });
   const retirePendingPrimarySelection = useCallback((): void => {
     const pendingPrimarySelection = pendingPrimarySelectionRef.current;

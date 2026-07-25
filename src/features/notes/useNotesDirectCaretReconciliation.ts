@@ -1,158 +1,146 @@
-import { useCallback, useRef, type MutableRefObject } from "react";
+import { useCallback, type MutableRefObject } from "react";
 import type { NoteId } from "../../domain/notes";
 import type {
   NotesHistoryFocus,
-  NotesHistoryFocusField,
+  NotesHistoryFocusField
 } from "./notesHistory";
 import type {
   NormalizedNotesWorkspace,
-  NotesWorkspaceReducerAction,
+  NotesSelection,
+  NotesWorkspaceReducerAction
 } from "./notesWorkspaceReducer";
-import type { NotesPendingPrimarySelection } from "./notesWorkspaceTypes";
-import { useNotesFrameReconciler } from "./useNotesFrameReconciler";
+import type {
+  NotesDirectCaretClaimToken,
+  NotesPendingPrimarySelection
+} from "./notesWorkspaceTypes";
+import { useNotesClaimBoundCaretReconciliation } from "./useNotesClaimBoundCaretReconciliation";
 
 interface NotesDirectCaretReconciliationOptions {
   readonly pendingPrimarySelectionRef: MutableRefObject<NotesPendingPrimarySelection | null>;
   readonly navigationVersionRef: MutableRefObject<number>;
   readonly editingFocusRef: MutableRefObject<NotesHistoryFocus | null>;
+  readonly selectionRef: MutableRefObject<NotesSelection | null>;
+  readonly selectionRevisionRef: MutableRefObject<number>;
   readonly stateRef: MutableRefObject<NormalizedNotesWorkspace>;
   readonly closedRef: MutableRefObject<boolean>;
   readonly applyAction: (action: NotesWorkspaceReducerAction) => void;
+  readonly replaceSelection: (selection: NotesSelection | null) => boolean;
+}
+
+interface PrimaryCaretBefore {
+  readonly pendingPrimarySelection: NotesPendingPrimarySelection | null;
+  readonly editingFocus: NotesHistoryFocus | null;
+  readonly selection: NotesSelection | null;
+  readonly ui: Pick<
+    NormalizedNotesWorkspace,
+    | "selectedId"
+    | "zoomRootId"
+    | "editingNoteId"
+    | "pendingFocusId"
+    | "pendingFocusField"
+  >;
+}
+
+type PrimaryCaretRevision = readonly [
+  navigationVersion: number,
+  selectionRevision: number
+];
+
+function sameRevision(
+  left: PrimaryCaretRevision,
+  right: PrimaryCaretRevision
+): boolean {
+  return left[0] === right[0] && left[1] === right[1];
 }
 
 export function useNotesDirectCaretReconciliation({
   pendingPrimarySelectionRef,
   navigationVersionRef,
   editingFocusRef,
+  selectionRef,
+  selectionRevisionRef,
   stateRef,
   closedRef,
   applyAction,
+  replaceSelection
 }: NotesDirectCaretReconciliationOptions): {
   readonly notifyCaretMovedByDom: (
     nodeId: NoteId,
     field: NotesHistoryFocusField,
-    claimAttempt?: object,
+    claimToken?: NotesDirectCaretClaimToken
   ) => void;
   readonly settleDirectCaretClaim: (
-    claimAttempt: object,
-    claimed: boolean,
+    claimToken: NotesDirectCaretClaimToken,
+    claimed: boolean
   ) => boolean;
   readonly invalidatePendingCaretMove: () => void;
   readonly cancelPendingCaretMove: () => void;
 } {
-  const activeAuthorityRef = useRef<object | null>(null);
-  const claimRecordsRef = useRef(
-    new Map<
-      object,
-      {
-        readonly navigationVersion: number;
-        readonly previousFocus: NotesHistoryFocus | null;
-        readonly previousUi: Pick<
-          NormalizedNotesWorkspace,
-          | "selectedId"
-          | "zoomRootId"
-          | "editingNoteId"
-          | "pendingFocusId"
-          | "pendingFocusField"
-        >;
-        applied: boolean;
+  const {
+    notify,
+    settle,
+    invalidate,
+    cancel
+  } = useNotesClaimBoundCaretReconciliation<
+      NotesHistoryFocus,
+      PrimaryCaretBefore,
+      PrimaryCaretRevision
+    >({
+      captureBefore: () => {
+        const previous = stateRef.current;
+        return {
+          pendingPrimarySelection: pendingPrimarySelectionRef.current,
+          editingFocus: editingFocusRef.current,
+          selection: selectionRef.current,
+          ui: {
+            selectedId: previous.selectedId,
+            zoomRootId: previous.zoomRootId,
+            editingNoteId: previous.editingNoteId,
+            pendingFocusId: previous.pendingFocusId,
+            pendingFocusField: previous.pendingFocusField
+          }
+        };
+      },
+      prepare: (focus) => {
+        pendingPrimarySelectionRef.current = null;
+        navigationVersionRef.current += 1;
+        editingFocusRef.current = focus;
+      },
+      currentRevision: () => [
+        navigationVersionRef.current,
+        selectionRevisionRef.current
+      ],
+      revisionsEqual: sameRevision,
+      canApply: () => !closedRef.current,
+      apply: (focus) => {
+        applyAction({ type: "caretMovedByDom", nodeId: focus.nodeId });
+      },
+      rollback: (before, applied) => {
+        pendingPrimarySelectionRef.current = before.pendingPrimarySelection;
+        editingFocusRef.current = before.editingFocus;
+        if (!applied) return;
+        applyAction({ type: "setUiState", ...before.ui });
+        replaceSelection(before.selection);
       }
-    >(),
-  );
-  const { enqueue, cancel } = useNotesFrameReconciler<{
-    readonly focus: NotesHistoryFocus;
-    readonly navigationVersion: number;
-    readonly authority: object;
-  }>(({ focus, navigationVersion, authority }) => {
-    if (
-      !closedRef.current &&
-      activeAuthorityRef.current === authority &&
-      navigationVersionRef.current === navigationVersion
-    ) {
-      applyAction({ type: "caretMovedByDom", nodeId: focus.nodeId });
-      const record = claimRecordsRef.current.get(authority);
-      if (record) record.applied = true;
-      else activeAuthorityRef.current = null;
-    }
-  });
+    });
   const notifyCaretMovedByDom = useCallback(
     (
       nodeId: NoteId,
       field: NotesHistoryFocusField,
-      claimAttempt?: object,
+      claimToken?: NotesDirectCaretClaimToken
     ): void => {
-      const authority = claimAttempt ?? {};
-      const previousFocus = editingFocusRef.current;
-      const previousState = stateRef.current;
-      pendingPrimarySelectionRef.current = null;
-      navigationVersionRef.current += 1;
-      const navigationVersion = navigationVersionRef.current;
-      editingFocusRef.current = { nodeId, field };
-      activeAuthorityRef.current = authority;
-      if (claimAttempt) {
-        claimRecordsRef.current.set(authority, {
-          navigationVersion,
-          previousFocus,
-          previousUi: {
-            selectedId: previousState.selectedId,
-            zoomRootId: previousState.zoomRootId,
-            editingNoteId: previousState.editingNoteId,
-            pendingFocusId: previousState.pendingFocusId,
-            pendingFocusField: previousState.pendingFocusField,
-          },
-          applied: false,
-        });
-      }
-      enqueue({
-        focus: { nodeId, field },
-        navigationVersion,
-        authority,
-      });
+      notify({ nodeId, field }, claimToken);
     },
-    [
-      editingFocusRef,
-      enqueue,
-      navigationVersionRef,
-      pendingPrimarySelectionRef,
-      stateRef,
-    ],
-  );
-  const settleDirectCaretClaim = useCallback(
-    (claimAttempt: object, claimed: boolean): boolean => {
-      const record = claimRecordsRef.current.get(claimAttempt);
-      if (!record) return false;
-      claimRecordsRef.current.delete(claimAttempt);
-      if (
-        activeAuthorityRef.current !== claimAttempt ||
-        navigationVersionRef.current !== record.navigationVersion
-      ) {
-        if (activeAuthorityRef.current === claimAttempt) {
-          activeAuthorityRef.current = null;
-        }
-        return true;
-      }
-      if (claimed) {
-        if (record.applied) activeAuthorityRef.current = null;
-        return true;
-      }
-      activeAuthorityRef.current = null;
-      navigationVersionRef.current += 1;
-      editingFocusRef.current = record.previousFocus;
-      if (record.applied) {
-        applyAction({ type: "setUiState", ...record.previousUi });
-      }
-      return true;
-    },
-    [applyAction, editingFocusRef, navigationVersionRef],
+    [notify]
   );
   const invalidatePendingCaretMove = useCallback((): void => {
-    activeAuthorityRef.current = null;
+    invalidate();
     navigationVersionRef.current += 1;
-  }, [navigationVersionRef]);
+  }, [invalidate, navigationVersionRef]);
   return {
     notifyCaretMovedByDom,
-    settleDirectCaretClaim,
+    settleDirectCaretClaim: settle,
     invalidatePendingCaretMove,
-    cancelPendingCaretMove: cancel,
+    cancelPendingCaretMove: cancel
   };
 }

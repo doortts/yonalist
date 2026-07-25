@@ -8,6 +8,7 @@ import {
 import type {
   NotesActionsSlice,
   NotesDraftsSlice,
+  NotesDirectCaretClaimToken,
   NotesPaneRegistrySlice,
   NotesPaneRuntimeSlice,
   NotesPendingPrimarySelection,
@@ -18,7 +19,10 @@ import type { NotesPaneSessionState } from "./notesPaneSession";
 import type { OptimisticKeyboardInsertion } from "./notesKeyboardInsertion";
 import type { NotesPaneSessionsController } from "./useNotesPaneSessions";
 import type { NotesEditingLeaseController } from "./useNotesEditingLease";
-import { useNotesFrameReconciler } from "./useNotesFrameReconciler";
+import {
+  createNotesDirectCaretClaimToken,
+  useNotesClaimBoundCaretReconciliation
+} from "./useNotesClaimBoundCaretReconciliation";
 import {
   cloneOwnedHistorySnapshot,
   type NavigationIntent
@@ -26,6 +30,24 @@ import {
 
 const EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS:
   readonly OptimisticKeyboardInsertion[] = [];
+
+interface SecondaryDirectCaretMove {
+  readonly nodeId: string;
+  readonly field: "title" | "note";
+  readonly nodesById: NormalizedNotesWorkspace["nodesById"];
+}
+
+type SecondaryDirectCaretRevision = readonly [
+  navigationVersion: number,
+  selectionRevision: number
+];
+
+function sameDirectCaretRevision(
+  left: SecondaryDirectCaretRevision,
+  right: SecondaryDirectCaretRevision
+): boolean {
+  return left[0] === right[0] && left[1] === right[1];
+}
 
 interface UseNotesWorkspacePaneRegistryOptions {
   readonly sessions: NotesPaneSessionsController;
@@ -145,88 +167,90 @@ export function useNotesWorkspacePaneRegistry({
         readonly paneId: "primary" | "secondary";
         readonly nodeId: string;
         readonly field: "title" | "note";
+        readonly token: NotesDirectCaretClaimToken;
       } | null
     >
   >({ primary: null, secondary: null });
-  const pendingSecondaryDirectCaretRef = useRef<{
-    readonly nodeId: string;
-    readonly field: "title" | "note";
-    readonly authority: object;
-  } | null>(null);
-  const activeSecondaryDirectCaretRef = useRef<object | null>(null);
-  const secondaryDirectClaimRecordsRef = useRef(
-    new Map<
-      object,
-      {
-        readonly before: NotesPaneSessionState;
-        appliedNavigationVersion: number | null;
-      }
-    >()
-  );
-  const settleSecondaryDirectClaim = useCallback(
-    (claimAttempt: object, claimed: boolean): boolean => {
-      const record = secondaryDirectClaimRecordsRef.current.get(claimAttempt);
-      if (!record) return false;
-      secondaryDirectClaimRecordsRef.current.delete(claimAttempt);
-      const current = getPaneSession("secondary");
-      const expectedNavigationVersion =
-        record.appliedNavigationVersion ?? record.before.navigationVersion;
-      if (
-        activeSecondaryDirectCaretRef.current !== claimAttempt ||
-        current.navigationVersion !== expectedNavigationVersion
-      ) {
-        if (activeSecondaryDirectCaretRef.current === claimAttempt) {
-          activeSecondaryDirectCaretRef.current = null;
-        }
-        return true;
-      }
-      if (claimed) {
-        if (record.appliedNavigationVersion !== null) {
-          activeSecondaryDirectCaretRef.current = null;
-        }
-        return true;
-      }
-      activeSecondaryDirectCaretRef.current = null;
-      if (pendingSecondaryDirectCaretRef.current?.authority === claimAttempt) {
-        pendingSecondaryDirectCaretRef.current = null;
-      }
-      if (record.appliedNavigationVersion !== null) {
+  const {
+    notify: notifySecondaryDirectCaret,
+    settle: settleSecondaryDirectClaim,
+    invalidate: invalidateSecondaryDirectCaret
+  } =
+    useNotesClaimBoundCaretReconciliation<
+      SecondaryDirectCaretMove,
+      NotesPaneSessionState,
+      SecondaryDirectCaretRevision
+    >({
+      captureBefore: () => getPaneSession("secondary"),
+      prepare: () => {
+        setActivePaneId("secondary");
+      },
+      currentRevision: () => {
+        const current = getPaneSession("secondary");
+        return [current.navigationVersion, current.selectionRevision];
+      },
+      revisionsEqual: sameDirectCaretRevision,
+      canApply: (move) =>
+        move.nodesById === stateRef.current.nodesById &&
+        stateRef.current.nodesById[move.nodeId] !== undefined,
+      apply: (move) => {
         dispatchPane("secondary", {
           type: "setPendingPrimarySelection",
-          request: record.before.pendingPrimarySelection
+          request: null
         });
         dispatchPane("secondary", {
           type: "setSelection",
-          selection: record.before.selection
+          selection: null
         });
         dispatchPane("secondary", {
           type: "setNavigation",
           patch: {
-            selectedId: record.before.selectedId,
-            zoomRootId: record.before.zoomRootId,
-            editingNoteId: record.before.editingNoteId,
-            pendingFocusId: record.before.pendingFocusId,
-            pendingFocusField: record.before.pendingFocusField
+            selectedId: move.nodeId,
+            editingNoteId: move.nodeId,
+            pendingFocusId: null,
+            pendingFocusField: null
+          }
+        });
+      },
+      rollback: (before, applied) => {
+        if (!applied) return;
+        dispatchPane("secondary", {
+          type: "setPendingPrimarySelection",
+          request: before.pendingPrimarySelection
+        });
+        dispatchPane("secondary", {
+          type: "setSelection",
+          selection: before.selection
+        });
+        dispatchPane("secondary", {
+          type: "setNavigation",
+          patch: {
+            selectedId: before.selectedId,
+            zoomRootId: before.zoomRootId,
+            editingNoteId: before.editingNoteId,
+            pendingFocusId: before.pendingFocusId,
+            pendingFocusField: before.pendingFocusField
           }
         });
       }
-      return true;
-    },
-    [dispatchPane, getPaneSession]
-  );
+    });
   const claimEditing = useCallback(
     async (
       paneId: "primary" | "secondary",
       nodeId: string,
       field: "title" | "note"
     ): Promise<boolean> => {
-      const claimAttempt = { paneId, nodeId, field };
+      const claimAttempt = {
+        paneId,
+        nodeId,
+        field,
+        token: createNotesDirectCaretClaimToken()
+      };
       unboundDirectClaimAttemptRef.current[paneId] = claimAttempt;
       if (paneId === "primary") {
         actionsRef.current.invalidatePendingCaretMove?.();
       } else {
-        activeSecondaryDirectCaretRef.current = null;
-        pendingSecondaryDirectCaretRef.current = null;
+        invalidateSecondaryDirectCaret();
       }
       const claimed = await claim(
         { paneId, nodeId, field },
@@ -238,10 +262,10 @@ export function useNotesWorkspacePaneRegistry({
       const directHandled =
         paneId === "primary"
           ? (actionsRef.current.settleDirectCaretClaim?.(
-              claimAttempt,
+              claimAttempt.token,
               claimed
             ) ?? false)
-          : settleSecondaryDirectClaim(claimAttempt, claimed);
+          : settleSecondaryDirectClaim(claimAttempt.token, claimed);
       if (!claimed) return false;
       if (directHandled) return true;
       setActivePaneId(paneId);
@@ -262,8 +286,9 @@ export function useNotesWorkspacePaneRegistry({
     [
       claim,
       dispatchPane,
+      invalidateSecondaryDirectCaret,
+      settleSecondaryDirectClaim,
       setActivePaneId,
-      settleSecondaryDirectClaim
     ]
   );
   const setPaneComposition = useCallback(
@@ -398,7 +423,7 @@ export function useNotesWorkspacePaneRegistry({
       actionsRef.current.notifyCaretMovedByDom?.(
         nodeId,
         field,
-        claimAttempt
+        claimAttempt?.token
       );
     },
     []
@@ -424,58 +449,8 @@ export function useNotesWorkspacePaneRegistry({
     },
     [dispatchPane, getPaneSession]
   );
-  const { enqueue: enqueueSecondaryCaretMove } =
-    useNotesFrameReconciler<{
-      readonly nodeId: string;
-      readonly nodesById: NormalizedNotesWorkspace["nodesById"];
-      readonly navigationVersion: number;
-      readonly authority: object;
-    }>((pending) => {
-      if (
-        activeSecondaryDirectCaretRef.current !== pending.authority ||
-        pendingSecondaryDirectCaretRef.current?.authority !== pending.authority
-      ) {
-        return;
-      }
-      pendingSecondaryDirectCaretRef.current = null;
-      if (
-        pending.nodesById !== stateRef.current.nodesById ||
-        pending.navigationVersion !==
-          getPaneSession("secondary").navigationVersion ||
-        stateRef.current.nodesById[pending.nodeId] === undefined
-      ) {
-        return;
-      }
-      dispatchPane("secondary", {
-        type: "setPendingPrimarySelection",
-        request: null
-      });
-      dispatchPane("secondary", {
-        type: "setSelection",
-        selection: null
-      });
-      dispatchPane("secondary", {
-        type: "setNavigation",
-        patch: {
-          selectedId: pending.nodeId,
-          editingNoteId: pending.nodeId,
-          pendingFocusId: null,
-          pendingFocusField: null
-        }
-      });
-      const record = secondaryDirectClaimRecordsRef.current.get(
-        pending.authority
-      );
-      if (record) {
-        record.appliedNavigationVersion =
-          getPaneSession("secondary").navigationVersion;
-      } else {
-        activeSecondaryDirectCaretRef.current = null;
-      }
-    });
   const notifySecondaryCaretMovedByDom = useCallback(
     (nodeId: string, field: "title" | "note"): void => {
-      setActivePaneId("secondary");
       const attempt = unboundDirectClaimAttemptRef.current.secondary;
       const claimAttempt =
         attempt?.nodeId === nodeId && attempt.field === field
@@ -484,23 +459,16 @@ export function useNotesWorkspacePaneRegistry({
       if (claimAttempt) {
         unboundDirectClaimAttemptRef.current.secondary = null;
       }
-      const authority = claimAttempt ?? {};
-      activeSecondaryDirectCaretRef.current = authority;
-      pendingSecondaryDirectCaretRef.current = { nodeId, field, authority };
-      if (claimAttempt) {
-        secondaryDirectClaimRecordsRef.current.set(authority, {
-          before: getPaneSession("secondary"),
-          appliedNavigationVersion: null
-        });
-      }
-      enqueueSecondaryCaretMove({
-        nodeId,
-        nodesById: stateRef.current.nodesById,
-        navigationVersion: getPaneSession("secondary").navigationVersion,
-        authority
-      });
+      notifySecondaryDirectCaret(
+        {
+          nodeId,
+          field,
+          nodesById: stateRef.current.nodesById
+        },
+        claimAttempt?.token
+      );
     },
-    [enqueueSecondaryCaretMove, getPaneSession, setActivePaneId]
+    [notifySecondaryDirectCaret]
   );
   const secondaryActions = useMemo<NotesWorkspaceActions>(
     () => ({
@@ -597,7 +565,7 @@ export function useNotesWorkspacePaneRegistry({
         getPaneSession("secondary").navigationVersion,
       zoomTo: async (nodeId) => {
         if (nodeId !== null && state.nodesById[nodeId] === undefined) return;
-        pendingSecondaryDirectCaretRef.current = null;
+        invalidateSecondaryDirectCaret();
         await navigateWithHistory(
           async ({ workspace, snapshot }) => {
             const destination = cloneOwnedHistorySnapshot(snapshot);
@@ -665,6 +633,7 @@ export function useNotesWorkspacePaneRegistry({
       getPaneSession,
       navigateWithHistory,
       notifySecondaryCaretMovedByDom,
+      invalidateSecondaryDirectCaret,
       setPaneComposition,
       setActivePaneId,
       state.nodesById,

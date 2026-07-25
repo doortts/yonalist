@@ -607,6 +607,163 @@ describe("notes workspace context split", () => {
     }
   );
 
+  it("restores the complete primary selection when a framed direct caret claim is denied", async () => {
+    const update = deferred<NotesWorkspace>();
+    const updateNode = vi.fn().mockReturnValue(update.promise);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(
+        workspace([
+          node({ id: "root", sortKey: 1024 }),
+          node({ id: "middle", sortKey: 2048 }),
+          node({ id: "other", sortKey: 3072 })
+        ])
+      ),
+      updateNode
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/denied-primary-direct-selection",
+        repository: store
+      })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const actions =
+      result.current.paneRegistrySlice.panes.primary.actionsSlice.actions;
+    await act(async () => {
+      expect(await actions.claimEditingFocus?.("root", "title")).toBe(true);
+    });
+    const selection = {
+      anchorId: "root",
+      headId: "other",
+      explicitNodeIds: ["root", "middle"] as const
+    };
+    act(() => {
+      actions.updateNodeDraft("root", {
+        title: "dirty",
+        note: "",
+        imageOffsetUtf16: 0
+      });
+      expect(actions.replaceSelection?.(selection)).toBe(true);
+    });
+    const before =
+      result.current.paneRegistrySlice.panes.primary.stateSlice.state;
+    expect(
+      result.current.paneRegistrySlice.panes.primary.draftsSlice.selection
+    ).toEqual(selection);
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    let claim: Promise<boolean> | undefined;
+    act(() => {
+      claim = actions.claimEditingFocus?.("other", "title");
+      actions.notifyCaretMovedByDom?.("other", "title");
+    });
+    await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
+    act(() => {
+      for (const frame of frames.splice(0)) frame(0);
+    });
+    expect(
+      result.current.paneRegistrySlice.panes.primary.draftsSlice.selection
+    ).toBeNull();
+
+    await act(async () => {
+      update.reject(new Error("denied"));
+      expect(await claim).toBe(false);
+    });
+
+    const primary =
+      result.current.paneRegistrySlice.panes.primary;
+    expect(primary.stateSlice.state).toMatchObject({
+      selectedId: before.selectedId,
+      editingNoteId: before.editingNoteId,
+      pendingFocusId: before.pendingFocusId,
+      pendingFocusField: before.pendingFocusField
+    });
+    expect(primary.draftsSlice.selection).toEqual(selection);
+  });
+
+  it("does not restore an old primary selection over a newer selection", async () => {
+    const update = deferred<NotesWorkspace>();
+    const updateNode = vi.fn().mockReturnValue(update.promise);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(
+        workspace([
+          node({ id: "root", sortKey: 1024 }),
+          node({ id: "middle", sortKey: 2048 }),
+          node({ id: "other", sortKey: 3072 })
+        ])
+      ),
+      updateNode
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/stale-denied-primary-selection",
+        repository: store
+      })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const actions =
+      result.current.paneRegistrySlice.panes.primary.actionsSlice.actions;
+    await act(async () => {
+      expect(await actions.claimEditingFocus?.("root", "title")).toBe(true);
+    });
+    act(() => {
+      actions.updateNodeDraft("root", {
+        title: "dirty",
+        note: "",
+        imageOffsetUtf16: 0
+      });
+      expect(
+        actions.replaceSelection?.({
+          anchorId: "root",
+          headId: "middle"
+        })
+      ).toBe(true);
+    });
+    expect(
+      result.current.paneRegistrySlice.panes.primary.draftsSlice.selection
+    ).toEqual({
+      anchorId: "root",
+      headId: "middle"
+    });
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    let claim: Promise<boolean> | undefined;
+    act(() => {
+      claim = actions.claimEditingFocus?.("other", "title");
+      actions.notifyCaretMovedByDom?.("other", "title");
+    });
+    await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
+    act(() => {
+      for (const frame of frames.splice(0)) frame(0);
+      expect(
+        actions.replaceSelection?.({
+          anchorId: "middle",
+          headId: "other"
+        })
+      ).toBe(true);
+    });
+
+    await act(async () => {
+      update.reject(new Error("denied"));
+      expect(await claim).toBe(false);
+    });
+
+    expect(
+      result.current.paneRegistrySlice.panes.primary.draftsSlice.selection
+    ).toEqual({
+      anchorId: "middle",
+      headId: "other"
+    });
+  });
+
   it("keeps a slow successful secondary direct claim merged after its frame", async () => {
     const update = deferred<NotesWorkspace>();
     const updateNode = vi.fn().mockReturnValue(update.promise);
