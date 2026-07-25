@@ -437,6 +437,22 @@ function OutlineNodeEditorComponent({
       : null;
   };
 
+  const focusVisibleTitle = (
+    source: HTMLTextAreaElement,
+    targetNodeId: NoteId,
+  ): void => {
+    const outline = source.closest<HTMLElement>(".notes-outline-content");
+    const row = Array.from(
+      outline?.querySelectorAll<HTMLElement>("[data-outline-id]") ?? [],
+    ).find((candidate) => candidate.dataset.outlineId === targetNodeId);
+    const target = row?.querySelector<HTMLTextAreaElement>(
+      "textarea.notes-node-title",
+    );
+    if (!target || target.disabled) return;
+    target.focus();
+    target.setSelectionRange(0, 0);
+  };
+
   const extendSelectionToThisRow = (anchorId: NoteId | null): void => {
     if (!getSelection()) {
       const selectionVisibleIds = getSelectionVisibleNodeIds();
@@ -1507,6 +1523,7 @@ function OutlineNodeEditorComponent({
         suppressHandledBlur();
         const focusNodeId = resolution.focusNodeId;
         if (focusNodeId !== null) {
+          focusVisibleTitle(event.currentTarget, focusNodeId);
           void actions.focusNode(focusNodeId, {
             anchorUtf16: 0,
             focusUtf16: 0,

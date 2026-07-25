@@ -405,7 +405,10 @@ export interface NotesStoreError extends Error {
 
 export function isNotesMutationOutcomeUnknown(
   cause: unknown
-): cause is Error & { readonly notesMutationOutcome: "unknown" } {
+): cause is Error & {
+  readonly notesMutationOutcome: "unknown";
+  readonly mutationCommitted?: unknown;
+} {
   return (
     cause instanceof Error &&
     "notesMutationOutcome" in cause &&

@@ -11839,8 +11839,18 @@ describe("Notes workspace", () => {
       node({ id: "empty", sortKey: 2, title: "" }),
     ];
     configureRepository(before);
-    const batch = deferred<NotesWorkspace>();
-    notesStoreMock.applyBatch.mockReturnValue(batch.promise);
+    const batch = deferred<NotesMutationResponse>();
+    let historyContext: NotesHistoryContext | null = null;
+    notesStoreMock.applyBatch.mockImplementation(
+      async (
+        _vaultRoot: string,
+        _input: ApplyNotesBatchInput,
+        context: NotesHistoryContext,
+      ) => {
+        historyContext = context;
+        return batch.promise;
+      },
+    );
     const rendered = renderNotesWorkspace();
     const empty = await findTitleInput("");
     empty.focus();
@@ -11850,8 +11860,19 @@ describe("Notes workspace", () => {
     rendered.unmount();
 
     await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+    expect(historyContext).not.toBeNull();
+    const committedContext = historyContext!;
     await act(async () =>
-      batch.resolve(workspace([node({ id: "first", sortKey: 1, title: "First" })])),
+      batch.resolve({
+        workspace: workspace([
+          node({ id: "first", sortKey: 1, title: "First" }),
+        ]),
+        historyEntryId: committedContext.entryId,
+        ...historyState({
+          canUndo: true,
+          nextUndoEntryId: committedContext.entryId,
+        }),
+      }),
     );
     expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce();
   });
@@ -12042,23 +12063,23 @@ describe("Notes workspace", () => {
     starting!.setSelectionRange(0, 0);
 
     expect(fireEvent.keyDown(starting!, { key: "Backspace" })).toBe(false);
-    await waitFor(() => expect(titleIn(primary, "empty-d")).toHaveFocus());
     expect(titleIn(outlines[1], "empty-e")).toBeNull();
     expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
 
-    for (const [removedId, focusId] of [
+    for (const [activeId, nextId] of [
       ["empty-d", "empty-c"],
       ["empty-c", "empty-b"],
       ["empty-b", "empty-a"],
       ["empty-a", "survivor"],
     ] as const) {
-      const current = titleIn(primary, removedId);
-      expect(current).not.toBeNull();
-      current!.setSelectionRange(0, 0);
+      const current = document.activeElement;
+      expect(current).toBe(titleIn(primary, activeId));
+      expect(current).toBeInstanceOf(HTMLTextAreaElement);
+      (current as HTMLTextAreaElement).setSelectionRange(0, 0);
       expect(
         fireEvent.keyDown(current!, { key: "Backspace", repeat: true }),
       ).toBe(false);
-      await waitFor(() => expect(titleIn(primary, focusId)).toHaveFocus());
+      expect(document.activeElement).toBe(titleIn(primary, nextId));
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
     }
 

@@ -2533,12 +2533,16 @@ export async function applyBackspaceGestureCommand(
       cause instanceof Error
         ? cause
         : new Error("Backspace projection is unavailable."),
-      { notesMutationOutcome: "unknown" as const }
+      {
+        notesMutationOutcome: "unknown" as const,
+        mutationCommitted: true as const
+      }
     );
   }
   if (projection.projectionError) {
     throw Object.assign(new Error(projection.projectionError), {
-      notesMutationOutcome: "unknown" as const
+      notesMutationOutcome: "unknown" as const,
+      mutationCommitted: true as const
     });
   }
   const result = directMutationResult(
@@ -2561,7 +2565,10 @@ export async function applyBackspaceGestureCommand(
         cause instanceof Error
           ? cause
           : new Error("Backspace history status is unavailable."),
-        { notesMutationOutcome: "unknown" as const }
+        {
+          notesMutationOutcome: "unknown" as const,
+          mutationCommitted: true as const
+        }
       );
     }
   }

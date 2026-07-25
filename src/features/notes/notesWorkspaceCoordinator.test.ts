@@ -887,6 +887,103 @@ describe("notesWorkspaceCoordinator registry", () => {
     session.close();
   });
 
+  it("keeps checking exact Backspace history when post-commit status names a different entry", async () => {
+    let expectedEntryId = "";
+    let activeLoads = 0;
+    const initial = workspace([
+      node({ id: "root", title: "Root" }),
+      node({ id: "empty", title: "", sortKey: 2048 })
+    ]);
+    const recovered = workspace([node({ id: "root", title: "Root" })]);
+    const applyBatch = vi.fn<NotesStore["applyBatch"]>(
+      async (_vaultRoot, _input, historyContext) => {
+        expectedEntryId = historyContext.entryId;
+        return {
+          workspace: recovered,
+          historyEntryId: expectedEntryId,
+          ...projectedHistoryState(expectedEntryId)
+        };
+      }
+    );
+    const loadWorkspace = vi.fn<NotesStore["loadWorkspace"]>(
+      async (_vaultRoot, scope) => {
+        if (scope.kind === "starred") {
+          throw new Error("filtered projection unavailable");
+        }
+        activeLoads += 1;
+        return activeLoads === 1 ? initial : recovered;
+      }
+    );
+    const historyStatus = vi.fn(async () =>
+      projectedHistoryState("different-entry")
+    );
+    const store = repository({ applyBatch, loadWorkspace, historyStatus });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/backspace-post-commit-history-mismatch",
+        getScope: () => ({ kind: "starred" }),
+        onEvent: events
+      })
+    );
+    await session.activation;
+    session.publishOutlinePaneState({
+      paneId: "primary",
+      scope: { kind: "starred" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 1,
+      visibleSignature: JSON.stringify([["root", null, 0, false]]),
+      geometryGeneration: 0,
+      activeDrag: false
+    });
+    const settle = vi.fn();
+    const lease: NotesBackspaceDraftLease = {
+      token: 1,
+      touch: vi.fn(),
+      prepare: vi.fn(async () => ({
+        baselineFlushed: true,
+        titleUpdate: null
+      })),
+      settle
+    };
+    const token = session.beginBackspaceGesture(
+      {
+        ownerPaneId: "primary",
+        nodeId: "empty",
+        selection: { anchorUtf16: 0, focusUtf16: 0 }
+      },
+      () => lease,
+      applyBackspaceGestureCommand
+    )!;
+    session.removeEmptyNodeInBackspaceGesture(token, "empty", "root");
+
+    const completion = session.finishBackspaceGesture("keyup");
+    const completed = vi.fn();
+    void completion.then(completed);
+    await vi.waitFor(() =>
+      expect(session.writeAuthority()).toEqual({
+        kind: "unknown",
+        error: expect.any(String)
+      })
+    );
+    expect(completed).not.toHaveBeenCalled();
+    expect(settle).not.toHaveBeenCalled();
+    expect(applyBatch).toHaveBeenCalledOnce();
+
+    historyStatus.mockResolvedValue(projectedHistoryState(expectedEntryId));
+    await expect(session.retryAuthorityRecovery()).resolves.toBe(true);
+    await expect(completion).resolves.toBe("committed");
+    expect(applyBatch).toHaveBeenCalledOnce();
+    expect(settle).toHaveBeenCalledWith("committed");
+    session.close();
+  });
+
   it("recovers instead of rolling back when Backspace history acknowledgement rejects after commit", async () => {
     let expectedEntryId = "";
     const initial = workspace([

@@ -30,6 +30,7 @@ export type NotesUnknownOutcomeExpectation =
   | {
       readonly kind: "unclassified";
       readonly historyContext: NotesHistoryContext;
+      readonly mutationCommitted?: true;
     };
 
 export type NotesWriteAuthority =

@@ -1433,7 +1433,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         ? historyStatus
         : undefined;
       let decision: NotesUnknownOutcomeDecision =
-        expectation.kind === "unclassified" && !historyStatus
+        expectation.kind === "unclassified" &&
+        expectation.mutationCommitted === true &&
+        !provenHistoryStatus
           ? {
               kind: "authorityUnknown",
               error: AUTHORITY_RECOVERY_INSTRUCTION
@@ -2136,11 +2138,20 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         }
       }
     } catch (cause) {
-      result =
-        item.kind === "command" &&
-        isNotesMutationOutcomeUnknown(cause)
-          ? await recoveredQueueResult(item)
-          : { kind: "failure", error: errorMessage(cause) };
+      if (item.kind === "command" && isNotesMutationOutcomeUnknown(cause)) {
+        if (
+          cause.mutationCommitted === true &&
+          item.unknownOutcomeExpectation?.kind === "unclassified"
+        ) {
+          item.unknownOutcomeExpectation = {
+            ...item.unknownOutcomeExpectation,
+            mutationCommitted: true
+          };
+        }
+        result = await recoveredQueueResult(item);
+      } else {
+        result = { kind: "failure", error: errorMessage(cause) };
+      }
     }
     if (
       item.kind === "command" &&
@@ -2998,7 +3009,10 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                       new Error(
                         "Backspace history acknowledgement was rejected."
                       ),
-                      { notesMutationOutcome: "unknown" as const }
+                      {
+                        notesMutationOutcome: "unknown" as const,
+                        mutationCommitted: true as const
+                      }
                     );
                   }
                   for (const entryId of accepted.unreachableEntryIds) {

@@ -604,6 +604,47 @@ describe("outline row memoization", () => {
     expect(finish).toHaveBeenCalledWith("drain");
   });
 
+  it("moves DOM focus before removing an empty row during held Backspace", async () => {
+    const store = repository([
+      node({ id: "survivor", sortKey: 1, title: "Keep" }),
+      node({ id: "empty", sortKey: 2, title: "" }),
+    ]);
+    let activeElementAtRemoval: Element | null = null;
+    const transform = (slice: NotesActionsSlice): NotesActionsSlice => {
+      const remove = slice.actions.removeEmptyNodeInBackspaceGesture;
+      return {
+        ...slice,
+        actions: {
+          ...slice.actions,
+          removeEmptyNodeInBackspaceGesture: (...input) => {
+            activeElementAtRemoval = document.activeElement;
+            return remove?.(...input) ?? false;
+          },
+        },
+      };
+    };
+    render(<Harness store={store} actionsTransform={transform} />);
+    const empty = (await screen.findByDisplayValue(
+      "",
+    )) as HTMLTextAreaElement;
+    const survivor = titleInput("survivor");
+    empty.focus();
+    empty.setSelectionRange(0, 0);
+    const outline = empty.closest<HTMLElement>(".notes-outline-content");
+    expect(outline).not.toBeNull();
+    expect(
+      outline
+        ?.querySelector<HTMLElement>('[data-outline-id="survivor"]')
+        ?.querySelector<HTMLTextAreaElement>(
+          "textarea.notes-node-title",
+        ),
+    ).toBe(survivor);
+
+    expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
+
+    expect(activeElementAtRemoval).toBe(survivor);
+  });
+
   it("reports a successful keyboard insertion preparation to the pane", async () => {
     const store = repository([node({ id: "leaf", title: "Leaf" })]);
     const prepared = vi.fn();
