@@ -68,9 +68,16 @@ interface BackspaceDraftLeaseState {
   readonly touchedNodeIds: Set<NoteId>;
   readonly startingDrafts: Map<NoteId, NotesNodeDraft | null>;
   readonly baselineFlushes: Promise<boolean>[];
-  readonly baselineHistoryContexts: Map<NoteId, NotesHistoryContext>;
+  readonly baselineHistoryOwners: Map<NoteId, BackspaceHistoryOwner>;
   active: boolean;
   frozen: boolean;
+}
+
+interface BackspaceHistoryOwner {
+  readonly attemptId: string | null;
+  readonly nodeId: NoteId;
+  readonly context: NotesHistoryContext;
+  status: "owned" | "retired";
 }
 
 /**
@@ -107,6 +114,7 @@ export interface NotesWorkspaceSessionRecord {
   authorityRecoveryPaused: boolean;
   manualRetryAttemptIds: Set<string>;
   backspaceDraftLease: BackspaceDraftLeaseState | null;
+  backspaceHistoryOwnersByAttemptId: Map<string, BackspaceHistoryOwner>;
   closing: boolean;
   closeCompletion: Promise<void> | null;
 }
@@ -440,6 +448,7 @@ export class NotesDraftEngine {
       authorityRecoveryPaused: false,
       manualRetryAttemptIds: new Set(),
       backspaceDraftLease: null,
+      backspaceHistoryOwnersByAttemptId: new Map(),
       closing: false,
       closeCompletion: null,
     };
@@ -713,10 +722,6 @@ export class NotesDraftEngine {
         protectedIds.has(nodeId),
       )
     ) {
-      this.discardBackspaceBaselineHistoryContexts(
-        backspaceLease,
-        protectedIds,
-      );
       this.settleBackspaceDraft(backspaceLease, "cancelled");
     }
     let changed = false;
@@ -959,10 +964,11 @@ export class NotesDraftEngine {
     writeSucceeded: boolean,
   ): boolean {
     const record = this.record;
+    const historyOwnerWasRetired =
+      this.takeBackspaceBaselineHistoryOwner(attempt);
     if (attempt.generation !== record.draftGeneration) {
       return false;
     }
-    this.releaseBackspaceBaselineHistoryContext(attempt);
     const { nodeId, draft, historyContext } = attempt;
     const latest = record.drafts.get(nodeId);
     const failed = record.failedWritesByNodeId.get(nodeId);
@@ -974,7 +980,11 @@ export class NotesDraftEngine {
     if (
       (this.retiredDraftRevisionByNodeId.get(nodeId) ?? 0) >= draft.revision
     ) {
-      if (attempt.standaloneHistoryEntry && historyContext) {
+      if (
+        !historyOwnerWasRetired &&
+        attempt.standaloneHistoryEntry &&
+        historyContext
+      ) {
         this.host.discardHistoryEntry(historyContext);
       }
       record.failedWritesByNodeId.delete(nodeId);
@@ -983,7 +993,9 @@ export class NotesDraftEngine {
       return true;
     }
     if (result.kind === "failure" && !writeSucceeded) {
-      this.host.discardHistoryEntry(historyContext);
+      if (!historyOwnerWasRetired) {
+        this.host.discardHistoryEntry(historyContext);
+      }
       if (
         record.draftHistoryContextByNodeId.get(nodeId)?.entryId ===
         historyContext?.entryId
@@ -1018,7 +1030,9 @@ export class NotesDraftEngine {
     }
 
     if (result.kind === "skipped") {
-      this.host.discardHistoryEntry(historyContext);
+      if (!historyOwnerWasRetired) {
+        this.host.discardHistoryEntry(historyContext);
+      }
       if (attemptOwnsLatestDraft) {
         record.drafts.delete(nodeId);
       }
@@ -1035,7 +1049,11 @@ export class NotesDraftEngine {
     ) {
       record.failedWritesByNodeId.delete(nodeId);
     }
-    if (attempt.standaloneHistoryEntry && historyContext) {
+    if (
+      !historyOwnerWasRetired &&
+      attempt.standaloneHistoryEntry &&
+      historyContext
+    ) {
       record.session.history.closeTextBurst(historyContext.entryId);
       if (writeSucceeded) {
         this.host.completeHistoryOwner(historyContext.entryId);
@@ -1045,6 +1063,7 @@ export class NotesDraftEngine {
     }
     const activeHistoryContext = record.draftHistoryContextByNodeId.get(nodeId);
     if (
+      !historyOwnerWasRetired &&
       writeSucceeded &&
       historyContext &&
       activeHistoryContext?.entryId !== historyContext.entryId
@@ -1075,11 +1094,17 @@ export class NotesDraftEngine {
     const record = this.record;
     if (
       scheduledAttempt.generation !== record.draftGeneration ||
-      record.authorityRecoveryPaused ||
-      record.manualRetryAttemptIds.has(scheduledAttempt.attemptId) ||
       (this.retiredDraftRevisionByNodeId.get(scheduledAttempt.nodeId) ?? 0) >=
         scheduledAttempt.draft.revision
     ) {
+      this.deleteRetiredBackspaceBaselineHistoryOwner(scheduledAttempt);
+      return false;
+    }
+    if (
+      record.authorityRecoveryPaused ||
+      record.manualRetryAttemptIds.has(scheduledAttempt.attemptId)
+    ) {
+      this.deleteRetiredBackspaceBaselineHistoryOwner(scheduledAttempt);
       return false;
     }
     const cutoff = record.structuralIntents.at(0)?.cutoff;
@@ -1088,6 +1113,7 @@ export class NotesDraftEngine {
       cutoff !== undefined &&
       scheduledAttempt.draft.revision > cutoff
     ) {
+      this.deleteRetiredBackspaceBaselineHistoryOwner(scheduledAttempt);
       return false;
     }
     const attempt =
@@ -1155,6 +1181,7 @@ export class NotesDraftEngine {
     }
 
     if (!result) {
+      this.deleteRetiredBackspaceBaselineHistoryOwner(attempt);
       if (outcome === "failed") {
         this.markDispatchedAttemptManualRetry(attempt.attemptId);
       }
@@ -1191,6 +1218,7 @@ export class NotesDraftEngine {
       record.authorityRecoveryPaused ||
       record.manualRetryAttemptIds.has(attempt.attemptId)
     ) {
+      this.deleteRetiredBackspaceBaselineHistoryOwner(attempt);
       return Promise.resolve(false);
     }
     return this.persistDraft(attempt);
@@ -1201,30 +1229,46 @@ export class NotesDraftEngine {
     return lease?.active === true && lease.touchedNodeIds.has(nodeId);
   }
 
-  private releaseBackspaceBaselineHistoryContext(
+  private takeBackspaceBaselineHistoryOwner(
+    attempt: DraftWriteAttempt,
+  ): boolean {
+    const record = this.record;
+    const owner = record.backspaceHistoryOwnersByAttemptId.get(
+      attempt.attemptId,
+    );
+    if (!owner) {
+      return false;
+    }
+    record.backspaceHistoryOwnersByAttemptId.delete(attempt.attemptId);
+    const lease = record.backspaceDraftLease;
+    if (lease?.baselineHistoryOwners.get(owner.nodeId) === owner) {
+      lease.baselineHistoryOwners.delete(owner.nodeId);
+    }
+    return owner.status === "retired";
+  }
+
+  private deleteRetiredBackspaceBaselineHistoryOwner(
     attempt: DraftWriteAttempt,
   ): void {
-    const historyContext = attempt.historyContext;
-    if (!historyContext) {
-      return;
-    }
-    const lease = this.record.backspaceDraftLease;
-    const ownedContext = lease?.baselineHistoryContexts.get(attempt.nodeId);
-    if (ownedContext?.entryId === historyContext.entryId) {
-      lease?.baselineHistoryContexts.delete(attempt.nodeId);
+    const owners = this.record.backspaceHistoryOwnersByAttemptId;
+    if (owners.get(attempt.attemptId)?.status === "retired") {
+      owners.delete(attempt.attemptId);
     }
   }
 
-  private discardBackspaceBaselineHistoryContexts(
+  private discardBackspaceBaselineHistoryOwners(
     state: BackspaceDraftLeaseState,
     nodeIds?: ReadonlySet<NoteId>,
   ): void {
-    for (const [nodeId, historyContext] of state.baselineHistoryContexts) {
+    for (const [nodeId, owner] of state.baselineHistoryOwners) {
       if (nodeIds && !nodeIds.has(nodeId)) {
         continue;
       }
-      this.host.discardHistoryEntry(historyContext);
-      state.baselineHistoryContexts.delete(nodeId);
+      if (owner.status === "owned") {
+        this.host.discardHistoryEntry(owner.context);
+        owner.status = "retired";
+      }
+      state.baselineHistoryOwners.delete(nodeId);
     }
   }
 
@@ -1261,7 +1305,16 @@ export class NotesDraftEngine {
       attempt?.historyContext ??
       null;
     if (historyContext) {
-      state.baselineHistoryContexts.set(nodeId, historyContext);
+      const owner: BackspaceHistoryOwner = {
+        attemptId: attempt?.attemptId ?? null,
+        nodeId,
+        context: historyContext,
+        status: "owned",
+      };
+      state.baselineHistoryOwners.set(nodeId, owner);
+      if (owner.attemptId) {
+        record.backspaceHistoryOwnersByAttemptId.set(owner.attemptId, owner);
+      }
     }
     record.session.history.closeTextBurst(historyContext?.entryId);
     record.draftHistoryContextByNodeId.delete(nodeId);
@@ -1338,6 +1391,9 @@ export class NotesDraftEngine {
     const record = this.record;
     if (!state.active || record.backspaceDraftLease !== state) {
       return;
+    }
+    if (outcome !== "committed") {
+      this.discardBackspaceBaselineHistoryOwners(state);
     }
     state.active = false;
     state.frozen = true;
@@ -1455,7 +1511,7 @@ export class NotesDraftEngine {
       touchedNodeIds: new Set(),
       startingDrafts: new Map(),
       baselineFlushes: [],
-      baselineHistoryContexts: new Map(),
+      baselineHistoryOwners: new Map(),
       active: true,
       frozen: false,
     };
@@ -1813,7 +1869,7 @@ export class NotesDraftEngine {
     const record = this.record;
     const backspaceLease = record.backspaceDraftLease;
     if (backspaceLease) {
-      this.discardBackspaceBaselineHistoryContexts(backspaceLease);
+      this.discardBackspaceBaselineHistoryOwners(backspaceLease);
       backspaceLease.active = false;
       backspaceLease.frozen = true;
       record.backspaceDraftLease = null;

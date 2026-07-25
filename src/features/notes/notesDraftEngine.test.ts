@@ -942,6 +942,160 @@ describe("NotesDraftEngine", () => {
       });
     });
 
+    it("retires a cancelled baseline owner before discard and late success", async () => {
+      vi.useFakeTimers();
+      const baselineWrite = deferred<NotesWorkspace>();
+      const store = repository({
+        updateNode: vi.fn().mockReturnValue(baselineWrite.promise),
+      });
+      const { engine, host } = createHarness({ store });
+      engine.updateNodeDraft("root", {
+        title: "before cancel",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      const oldHistory =
+        engine.record.draftHistoryContextByNodeId.get("root")!;
+      const lease = engine.beginBackspaceGesture(27, "root")!;
+      await flushMicrotasks();
+
+      lease.settle("cancelled");
+      expect(host.discardHistoryEntry).toHaveBeenCalledOnce();
+      expect(host.discardHistoryEntry).toHaveBeenCalledWith(oldHistory);
+      engine.discardPendingDrafts();
+      engine.updateNodeDraft("root", {
+        title: "after discard",
+        note: "later",
+        imageOffsetUtf16: 2,
+      });
+      const laterHistory =
+        engine.record.draftHistoryContextByNodeId.get("root")!;
+      baselineWrite.resolve(
+        workspace([node({ id: "root", title: "before cancel" })]),
+      );
+      await flushMicrotasks();
+
+      expect(host.discardHistoryEntry).toHaveBeenCalledOnce();
+      expect(host.discardHistoryEntry).toHaveBeenCalledWith(oldHistory);
+      expect(host.discardHistoryEntry).not.toHaveBeenCalledWith(laterHistory);
+      expect(host.completeHistoryOwner).not.toHaveBeenCalledWith(
+        oldHistory.entryId,
+      );
+      expect(host.completeHistoryOwner).not.toHaveBeenCalledWith(
+        laterHistory.entryId,
+      );
+      expect(engine.getDraftsSnapshot().root).toMatchObject({
+        title: "after discard",
+        note: "later",
+        status: "pending",
+      });
+      expect(engine.record.backspaceHistoryOwnersByAttemptId.size).toBe(0);
+      expect(store.updateNode).toHaveBeenCalledOnce();
+    });
+
+    it("retires a failed baseline owner before reset and late failure", async () => {
+      vi.useFakeTimers();
+      const baselineWrite = deferred<NotesWorkspace>();
+      const store = repository({
+        updateNode: vi.fn().mockReturnValue(baselineWrite.promise),
+      });
+      const { engine, host } = createHarness({ store });
+      engine.updateNodeDraft("root", {
+        title: "before failure",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      const oldHistory =
+        engine.record.draftHistoryContextByNodeId.get("root")!;
+      const lease = engine.beginBackspaceGesture(28, "root")!;
+      await flushMicrotasks();
+
+      lease.settle("failed");
+      expect(host.discardHistoryEntry).toHaveBeenCalledOnce();
+      expect(host.discardHistoryEntry).toHaveBeenCalledWith(oldHistory);
+      engine.resetAfterDataDeletion();
+      engine.updateNodeDraft("root", {
+        title: "after reset",
+        note: "later",
+        imageOffsetUtf16: 3,
+      });
+      const laterHistory =
+        engine.record.draftHistoryContextByNodeId.get("root")!;
+      baselineWrite.reject(new Error("late disk failure"));
+      await flushMicrotasks();
+
+      expect(host.discardHistoryEntry).toHaveBeenCalledOnce();
+      expect(host.discardHistoryEntry).toHaveBeenCalledWith(oldHistory);
+      expect(host.discardHistoryEntry).not.toHaveBeenCalledWith(laterHistory);
+      expect(host.completeHistoryOwner).not.toHaveBeenCalledWith(
+        oldHistory.entryId,
+      );
+      expect(host.completeHistoryOwner).not.toHaveBeenCalledWith(
+        laterHistory.entryId,
+      );
+      expect(engine.getDraftsSnapshot().root).toMatchObject({
+        title: "after reset",
+        note: "later",
+        status: "pending",
+      });
+      expect(engine.getWriteErrorSnapshot()).toBeNull();
+      expect(engine.record.backspaceHistoryOwnersByAttemptId.size).toBe(0);
+      expect(store.updateNode).toHaveBeenCalledOnce();
+    });
+
+    it("retires a cancelled baseline owner before readonly and late success", async () => {
+      vi.useFakeTimers();
+      const baselineWrite = deferred<NotesWorkspace>();
+      const store = repository({
+        updateNode: vi.fn().mockReturnValue(baselineWrite.promise),
+      });
+      const { engine, host } = createHarness({ store });
+      engine.updateNodeDraft("root", {
+        title: "before readonly",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      const oldHistory =
+        engine.record.draftHistoryContextByNodeId.get("root")!;
+      const lease = engine.beginBackspaceGesture(29, "root")!;
+      await flushMicrotasks();
+
+      lease.settle("cancelled");
+      expect(host.discardHistoryEntry).toHaveBeenCalledOnce();
+      expect(host.discardHistoryEntry).toHaveBeenCalledWith(oldHistory);
+      engine.reconcileReadonlyAuthority(
+        workspace([node({ id: "root", isReadonly: true })]),
+      );
+      engine.updateNodeDraft("root", {
+        title: "after readonly",
+        note: "later",
+        imageOffsetUtf16: 4,
+      });
+      const laterHistory =
+        engine.record.draftHistoryContextByNodeId.get("root")!;
+      baselineWrite.resolve(
+        workspace([node({ id: "root", title: "before readonly" })]),
+      );
+      await flushMicrotasks();
+
+      expect(host.discardHistoryEntry).toHaveBeenCalledOnce();
+      expect(host.discardHistoryEntry).toHaveBeenCalledWith(oldHistory);
+      expect(host.discardHistoryEntry).not.toHaveBeenCalledWith(laterHistory);
+      expect(host.completeHistoryOwner).not.toHaveBeenCalledWith(
+        oldHistory.entryId,
+      );
+      expect(host.completeHistoryOwner).not.toHaveBeenCalledWith(
+        laterHistory.entryId,
+      );
+      expect(engine.getDraftsSnapshot().root).toMatchObject({
+        title: "after readonly",
+        note: "later",
+        status: "pending",
+      });
+      expect(engine.record.backspaceHistoryOwnersByAttemptId.size).toBe(0);
+      expect(store.updateNode).toHaveBeenCalledOnce();
+    });
+
     it("invalidates a lease before readonly authority retires its draft", async () => {
       vi.useFakeTimers();
       const baselineWrite = deferred<NotesWorkspace>();
