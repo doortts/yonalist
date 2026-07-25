@@ -5,7 +5,8 @@ import type {
   NoteNode,
   NotesHistoryStatus,
   NotesMutationResponse,
-  NotesWorkspace
+  NotesWorkspace,
+  NotesWorkspaceScope
 } from "../../domain/notes";
 import type {
   NotesWorkspaceQueueResult,
@@ -53,6 +54,11 @@ export interface UnwrappedNotesMutation {
   delta: RawNotesMutationDelta | null;
   importedRootIds: readonly NoteId[] | undefined;
   duplicatedRootIds: readonly NoteId[] | undefined;
+}
+
+export interface NotesMutationProjectionBase {
+  workspace: NotesWorkspace;
+  scope: NotesWorkspaceScope;
 }
 
 export function applyDeltaToNotesWorkspace(
@@ -110,25 +116,29 @@ export function applyDeltaToNotesWorkspace(
 
 export function unwrapNotesMutation(
   response: NotesMutationResponse,
-  confirmedBase: NotesWorkspace | null
+  confirmedBase: NotesMutationProjectionBase | null
 ): UnwrappedNotesMutation {
   if (isNotesMutationResult(response)) {
-    const delta =
-      response.changedNodes !== undefined
+    const completeDelta =
+      response.changedNodes !== undefined &&
+      response.removedNodeIds !== undefined &&
+      response.changedAttachments !== undefined
         ? {
             changedNodes: response.changedNodes,
-            removedNodeIds: response.removedNodeIds ?? [],
-            changedAttachments: response.changedAttachments ?? []
+            removedNodeIds: response.removedNodeIds,
+            changedAttachments: response.changedAttachments
           }
         : null;
+    const delta =
+      confirmedBase?.scope.kind === "active" ? completeDelta : null;
     const workspace =
       response.workspace ??
-      (delta && confirmedBase
-        ? applyDeltaToNotesWorkspace(confirmedBase, delta)
+      (completeDelta && confirmedBase?.scope.kind === "active"
+        ? applyDeltaToNotesWorkspace(confirmedBase.workspace, completeDelta)
         : null);
     if (workspace === null) {
       throw new Error(
-        "Cannot reconstruct a Notes mutation without a confirmed base workspace."
+        "Cannot reconstruct an Active Notes mutation without a confirmed base workspace scoped to Active."
       );
     }
     return {

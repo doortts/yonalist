@@ -17,15 +17,13 @@ import type {
 } from "./notesHistory";
 import type { NotesImageAtomFlushAdapter } from "./notesImageAtomEditorRegistry";
 import type { NotesCommandContext } from "./notesCommands";
-import {
-  unwrapNotesMutation,
-  type UnwrappedNotesMutation
-} from "./notesWorkspaceProjection";
+import type { UnwrappedNotesMutation } from "./notesWorkspaceProjection";
 import {
   confirmedState,
   directMutationResult,
   historyArguments,
-  projectNotesMutation
+  projectNotesMutation,
+  unwrapNotesMutationForContext
 } from "./notesWorkspaceCommandSupport";
 import { errorMessage } from "./notesWorkspaceNavigationSupport";
 import type {
@@ -86,7 +84,8 @@ export function useNotesDraftWorkflow({
               confirmedNode.markdownImageWidth !== null
             ? null
             : undefined;
-        const mutation = unwrapNotesMutation(
+        const mutation = await unwrapNotesMutationForContext(
+          context,
           await context.repository.updateNode(
             context.vaultRoot,
             {
@@ -100,8 +99,7 @@ export function useNotesDraftWorkflow({
               markerKind: draft.markerKind ?? confirmedNode.markerKind
             },
             ...historyArguments(historyContext)
-          ),
-          context.confirmedWorkspace
+          )
         );
         const projection = await projectNotesMutation(
           context,

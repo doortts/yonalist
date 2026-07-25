@@ -4119,9 +4119,17 @@ describe("useNotesWorkspace", () => {
             ? activeAfter
             : activeBefore
       ),
-      restoreNode: vi.fn(async () => {
+      restoreNode: vi.fn(async (_vaultRoot, _nodeId, context) => {
         restored = true;
-        return activeAfter;
+        return {
+          historyEntryId: context.entryId,
+          ...historyState(context.historyEpoch),
+          canUndo: true,
+          nextUndoEntryId: context.entryId,
+          changedNodes: [{ ...deleted, deletedAt: null }],
+          removedNodeIds: [],
+          changedAttachments: []
+        };
       })
     });
     const { result } = renderHook(() =>
@@ -4141,6 +4149,9 @@ describe("useNotesWorkspace", () => {
       "deleted",
       historyContext("restore")
     );
+    expect(store.loadWorkspace).toHaveBeenCalledWith("/vault", {
+      kind: "active"
+    });
     expect(result.current.libraryView).toBe("all");
     expect(result.current.state).toMatchObject({
       rootIds: ["active", "deleted"],

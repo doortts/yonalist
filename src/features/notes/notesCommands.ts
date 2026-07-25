@@ -55,7 +55,6 @@ import { buildNotesMoveNodeInput } from "./notesMoveTargets";
 import { markSplitPhase } from "./notesSplitLatencyProbe";
 import {
   authoritative,
-  unwrapNotesMutation,
   type UnwrappedNotesMutation
 } from "./notesWorkspaceProjection";
 import {
@@ -72,6 +71,7 @@ import {
   rootIdForNode,
   runCompoundQueueWork,
   samePreparedMoveNode,
+  unwrapNotesMutationForContext,
   workspaceForScope
 } from "./notesWorkspaceCommandSupport";
 import { sameScope } from "./notesWorkspaceScope";
@@ -1032,13 +1032,13 @@ async function materializeImageAtomReceipt(
   if (!imageAtomFocusMatchesWorkspace(workspace, receipt)) {
     return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record);
   }
-  const mutation = unwrapNotesMutation(
+  const mutation = await unwrapNotesMutationForContext(
+    context,
     {
       workspace,
       historyEntryId: historyContext.entryId,
       ...historyStatus
-    },
-    context.confirmedWorkspace
+    }
   );
   return settleImageAtomMutation(
     ctx,
@@ -1081,7 +1081,7 @@ async function applyImageAtomMutation(
       context,
       historyContext,
       operation,
-      unwrapNotesMutation(response, context.confirmedWorkspace),
+      await unwrapNotesMutationForContext(context, response),
       { record, kind, preAuthority, directExpectation }
     );
   };
@@ -1481,7 +1481,8 @@ export async function createRootCommand(
     const id = createNoteId();
     const commandLocation = ctx.captureHistorySnapshot();
     try {
-      const mutation = unwrapNotesMutation(
+      const mutation = await unwrapNotesMutationForContext(
+        context,
         await context.repository.createNode(
           context.vaultRoot,
           {
@@ -1493,8 +1494,7 @@ export async function createRootCommand(
             markerKind: "bullet"
           },
           ...historyArguments(historyContext)
-        ),
-        context.confirmedWorkspace
+        )
       );
       const uiUpdate = {
         selectedId: id,
@@ -1632,10 +1632,7 @@ export async function createChildCommand(
           ...historyArguments(historyContext)
         );
         if (keyboardInsertion) markSplitPhase(id, "ipc-done");
-        const mutation = unwrapNotesMutation(
-          response,
-          context.confirmedWorkspace
-        );
+        const mutation = await unwrapNotesMutationForContext(context, response);
         const projection = transitionToAll
           ? { workspace: mutation.workspace }
           : await projectNotesMutation(
@@ -1745,7 +1742,8 @@ export async function createNextTextSiblingCommand(
       return { kind: "skipped" };
     }
     const id = createNoteId();
-    const mutation = unwrapNotesMutation(
+    const mutation = await unwrapNotesMutationForContext(
+      context,
       await context.repository.createNode(
         context.vaultRoot,
         {
@@ -1757,8 +1755,7 @@ export async function createNextTextSiblingCommand(
           markerKind: source.markerKind
         },
         ...historyArguments(historyContext)
-      ),
-      context.confirmedWorkspace
+      )
     );
     const projection = await projectNotesMutation(
       context,
@@ -1827,10 +1824,7 @@ export async function materializeGithubNotificationCommand(
           ...historyArguments(historyContext)
         );
       }
-      const mutation = unwrapNotesMutation(
-        response,
-        context.confirmedWorkspace
-      );
+      const mutation = await unwrapNotesMutationForContext(context, response);
       const projection = await projectNotesMutation(
         context,
         mutation,
@@ -1922,9 +1916,9 @@ export async function splitNodeCommand(
               },
               ...historyArguments(inlineTextContext)
             );
-            const mutation = unwrapNotesMutation(
-              response,
-              context.confirmedWorkspace
+            const mutation = await unwrapNotesMutationForContext(
+              context,
+              response
             );
             const settlement = await ctx.settleAtomicMutation(
               inlineTextContext,
@@ -2034,7 +2028,8 @@ export async function updateNodeCommand(
     if (!source) {
       return { kind: "skipped" };
     }
-    const mutation = unwrapNotesMutation(
+    const mutation = await unwrapNotesMutationForContext(
+      context,
       await context.repository.updateNode(
         context.vaultRoot,
         {
@@ -2044,8 +2039,7 @@ export async function updateNodeCommand(
           markerKind: patch.markerKind ?? source.markerKind
         },
         ...historyArguments(historyContext)
-      ),
-      context.confirmedWorkspace
+      )
     );
     const projection = await projectNotesMutation(
       context,
@@ -2107,9 +2101,9 @@ export async function moveNodeCommand(
             },
             ...historyArguments(inlineTextContext)
           );
-          const mutation = unwrapNotesMutation(
-            response,
-            context.confirmedWorkspace
+          const mutation = await unwrapNotesMutationForContext(
+            context,
+            response
           );
           const settlement = await ctx.settleAtomicMutation(
             inlineTextContext,
@@ -2490,13 +2484,13 @@ export async function applyBatchCommand(
         return { kind: "skipped" };
       }
       const resolvedOp = resolvedBatchOp(before, ids, op);
-      const mutation = unwrapNotesMutation(
+      const mutation = await unwrapNotesMutationForContext(
+        context,
         await context.repository.applyBatch(
           context.vaultRoot,
           buildApplyBatchInput(ids, resolvedOp),
           ...historyArguments(historyContext)
-        ),
-        context.confirmedWorkspace
+        )
       );
       mutationCommitted = true;
       duplicatedRootIds = mutation.duplicatedRootIds
@@ -2534,7 +2528,8 @@ export async function applyBackspaceGestureCommand(
   context: NotesWorkspaceQueueContext,
   input: NotesBackspaceGestureCommitInput
 ): Promise<NotesWorkspaceQueueResult> {
-  const mutation = unwrapNotesMutation(
+  const mutation = await unwrapNotesMutationForContext(
+    context,
     await context.repository.applyBatch(
       context.vaultRoot,
       {
@@ -2543,8 +2538,7 @@ export async function applyBackspaceGestureCommand(
         titleUpdate: input.draftCommit.titleUpdate
       },
       input.historyContext
-    ),
-    context.confirmedWorkspace
+    )
   );
   let projection: ProjectedNotesMutation;
   try {
@@ -2658,7 +2652,8 @@ export async function applyPreparedSelectionBatchCommand(
       ) {
         return { kind: "skipped" };
       }
-      const mutation = unwrapNotesMutation(
+      const mutation = await unwrapNotesMutationForContext(
+        context,
         await context.repository.applyBatch(
           context.vaultRoot,
           buildApplyBatchInput(
@@ -2666,8 +2661,7 @@ export async function applyPreparedSelectionBatchCommand(
             resolvedBatchOp(activeWorkspace, ids, op)
           ),
           ...historyArguments(historyContext)
-        ),
-        context.confirmedWorkspace
+        )
       );
       mutationCommitted = true;
       duplicatedRootIds = mutation.duplicatedRootIds
@@ -2775,13 +2769,13 @@ export async function importSubtreeCommand(
     ) {
       return { kind: "skipped" };
     }
-    const mutation = unwrapNotesMutation(
+    const mutation = await unwrapNotesMutationForContext(
+      context,
       await context.repository.importSubtree(
         context.vaultRoot,
         input,
         ...historyArguments(historyContext)
-      ),
-      context.confirmedWorkspace
+      )
     );
     const importedRootId = mutation.importedRootIds?.[0] ?? null;
     const projection = await projectNotesMutation(
@@ -2816,13 +2810,13 @@ export async function toggleCompleteCommand(
     if (!confirmedState(context).nodesById[nodeId]) {
       return { kind: "skipped" };
     }
-    const mutation = unwrapNotesMutation(
+    const mutation = await unwrapNotesMutationForContext(
+      context,
       await context.repository.toggleComplete(
         context.vaultRoot,
         nodeId,
         ...historyArguments(historyContext)
-      ),
-      context.confirmedWorkspace
+      )
     );
     const projection = await projectNotesMutation(
       context,
@@ -2856,13 +2850,13 @@ export async function toggleCollapsedCommand(
     if (!confirmedState(context).nodesById[nodeId]) {
       return { kind: "skipped" };
     }
-    const mutation = unwrapNotesMutation(
+    const mutation = await unwrapNotesMutationForContext(
+      context,
       await context.repository.toggleCollapsed(
         context.vaultRoot,
         nodeId,
         ...historyArguments(historyContext)
-      ),
-      context.confirmedWorkspace
+      )
     );
     const projection = await projectNotesMutation(
       context,
@@ -2898,13 +2892,13 @@ export async function runAtomicSubtreeCommand(
       if (!before.nodesById[nodeId] || !repositoryCommand) {
         return { kind: "skipped" };
       }
-      const mutation = unwrapNotesMutation(
+      const mutation = await unwrapNotesMutationForContext(
+        context,
         await repositoryCommand(
           context.vaultRoot,
           nodeId,
           ...historyArguments(historyContext)
-        ),
-        context.confirmedWorkspace
+        )
       );
       const projection = await projectNotesMutation(
         context,
@@ -2944,13 +2938,13 @@ export async function toggleStarCommand(
     if (!confirmedState(context).nodesById[nodeId]) {
       return { kind: "skipped" };
     }
-    const mutation = unwrapNotesMutation(
+    const mutation = await unwrapNotesMutationForContext(
+      context,
       await context.repository.toggleStar(
         context.vaultRoot,
         nodeId,
         ...historyArguments(historyContext)
-      ),
-      context.confirmedWorkspace
+      )
     );
     const projection = await projectNotesMutation(
       context,
@@ -2976,13 +2970,13 @@ export async function duplicateNodeCommand(
     if (!before.nodesById[nodeId]) {
       return { kind: "skipped" };
     }
-    const mutation = unwrapNotesMutation(
+    const mutation = await unwrapNotesMutationForContext(
+      context,
       await context.repository.duplicateNode(
         context.vaultRoot,
         nodeId,
         ...historyArguments(historyContext)
-      ),
-      context.confirmedWorkspace
+      )
     );
     const duplicateId = duplicateRootId(before, mutation.workspace, nodeId);
     const projection = await projectNotesMutation(
@@ -3056,24 +3050,25 @@ export async function runRootLifecycle(
       }
       const commandLocation = ctx.captureHistorySnapshot();
       try {
-        const mutationResult = unwrapNotesMutation(await (mutation === "archive"
-          ? context.repository.archiveNode(
-              context.vaultRoot,
-              nodeId,
-              ...historyArguments(historyContext)
-            )
-          : mutation === "unarchive"
-            ? context.repository.unarchiveNode(
+        const mutationResult = await unwrapNotesMutationForContext(
+          context,
+          await (mutation === "archive"
+            ? context.repository.archiveNode(
                 context.vaultRoot,
                 nodeId,
                 ...historyArguments(historyContext)
               )
-            : context.repository.softDeleteNode(
-                context.vaultRoot,
-                nodeId,
-                ...historyArguments(historyContext)
-              )),
-          context.confirmedWorkspace
+            : mutation === "unarchive"
+              ? context.repository.unarchiveNode(
+                  context.vaultRoot,
+                  nodeId,
+                  ...historyArguments(historyContext)
+                )
+              : context.repository.softDeleteNode(
+                  context.vaultRoot,
+                  nodeId,
+                  ...historyArguments(historyContext)
+                ))
         );
         const navigationVersion = ctx.navigationVersionRef.current;
         const activeOwner = isLifecycleOwnerActive();
@@ -3242,9 +3237,9 @@ export async function removeEmptyNodeCommand(
             },
             ...historyArguments(inlineTextContext)
           );
-          const mutation = unwrapNotesMutation(
-            response,
-            context.confirmedWorkspace
+          const mutation = await unwrapNotesMutationForContext(
+            context,
+            response
           );
           const settlement = await ctx.settleAtomicMutation(
             inlineTextContext,
@@ -3325,13 +3320,13 @@ export async function deleteNodeCommand(
     if (!confirmedState(context).nodesById[nodeId]) {
       return { kind: "skipped" };
     }
-    const mutation = unwrapNotesMutation(
+    const mutation = await unwrapNotesMutationForContext(
+      context,
       await context.repository.softDeleteNode(
         context.vaultRoot,
         nodeId,
         ...historyArguments(historyContext)
-      ),
-      context.confirmedWorkspace
+      )
     );
     const projection = await projectNotesMutation(
       context,
@@ -3424,10 +3419,7 @@ export async function deleteNodesCommand(
         ]);
         return { kind: "skipped" };
       }
-      const mutation = unwrapNotesMutation(
-        response,
-        context.confirmedWorkspace
-      );
+      const mutation = await unwrapNotesMutationForContext(context, response);
       mutationCommitted = true;
       const projection = await projectNotesMutation(
         context,
@@ -3486,13 +3478,13 @@ export async function setReadonlyCommand(
   isReadonly: boolean
 ): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand("set-readonly", async (context, historyContext) => {
-    const mutation = unwrapNotesMutation(
+    const mutation = await unwrapNotesMutationForContext(
+      context,
       await context.repository.setReadonly(
         context.vaultRoot,
         { nodeId, isReadonly },
         ...historyArguments(historyContext)
-      ),
-      context.confirmedWorkspace
+      )
     );
     const projection = await projectNotesMutation(
       context,
@@ -3547,13 +3539,13 @@ export async function setGithubGroupCollapsedCommand(
   collapsed: boolean
 ): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand("set-github-group-collapsed", async (context, historyContext) => {
-    const mutation = unwrapNotesMutation(
+    const mutation = await unwrapNotesMutationForContext(
+      context,
       await context.repository.setGithubGroupCollapsed(
         context.vaultRoot,
         { rootId: GITHUB_NOTIFICATIONS_ROOT_ID, groupKey, collapsed },
         ...historyArguments(historyContext)
-      ),
-      context.confirmedWorkspace
+      )
     );
     const projection = await projectNotesMutation(
       context,
@@ -3585,13 +3577,13 @@ export async function restoreNodeCommand(
     ) === nodeId;
   let followedIntoActive = false;
   const outcome = await ctx.runStructuralCommand("restore", async (context, historyContext) => {
-    const mutation = unwrapNotesMutation(
+    const mutation = await unwrapNotesMutationForContext(
+      context,
       await context.repository.restoreNode(
         context.vaultRoot,
         nodeId,
         ...historyArguments(historyContext)
-      ),
-      context.confirmedWorkspace
+      )
     );
     const canFollowIntoActive =
       followsViewedTrashRoot &&
@@ -3786,13 +3778,13 @@ export async function commitPreparedMoveCommand(
 
       let mutation: UnwrappedNotesMutation;
       try {
-        mutation = unwrapNotesMutation(
+        mutation = await unwrapNotesMutationForContext(
+          context,
           await context.repository.moveNode(
             context.vaultRoot,
             input,
             ...historyArguments(historyContext)
-          ),
-          context.confirmedWorkspace
+          )
         );
       } catch (cause) {
         specificError =

@@ -267,8 +267,10 @@ function createHarness(options: HarnessOptions = {}): Harness {
         );
         return {
           kind: "authoritative",
-          workspace: unwrapNotesMutation(response, context.confirmedWorkspace)
-            .workspace,
+          workspace: unwrapNotesMutation(response, {
+            workspace: context.confirmedWorkspace,
+            scope: context.sourceScope
+          }).workspace,
         };
       } catch (cause) {
         return {

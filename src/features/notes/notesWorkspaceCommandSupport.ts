@@ -1,4 +1,7 @@
-import { isNotesMutationOutcomeUnknown } from "../../domain/notes";
+import {
+  isNotesMutationOutcomeUnknown,
+  isNotesMutationResult
+} from "../../domain/notes";
 import type {
   MoveNoteNodeInput,
   NoteId,
@@ -18,6 +21,7 @@ import {
   authoritative,
   scopedActiveDelta,
   unwrapNotesMutation,
+  type NotesMutationProjectionBase,
   type UnwrappedNotesMutation
 } from "./notesWorkspaceProjection";
 import {
@@ -137,6 +141,47 @@ export async function workspaceForScope(
     : context.repository.loadWorkspace(context.vaultRoot, scope);
 }
 
+function mutationCommittedButProjectionUnavailable(cause: unknown): Error {
+  return Object.assign(
+    cause instanceof Error
+      ? cause
+      : new Error("The committed Notes workspace could not be loaded."),
+    {
+      notesMutationOutcome: "unknown" as const,
+      mutationCommitted: true as const
+    }
+  );
+}
+
+export async function unwrapNotesMutationForContext(
+  context: NotesWorkspaceQueueContext,
+  response: NotesMutationResponse,
+  confirmedBase: NotesMutationProjectionBase = {
+    workspace: context.confirmedWorkspace,
+    scope: context.sourceScope
+  }
+): Promise<UnwrappedNotesMutation> {
+  if (
+    isNotesMutationResult(response) &&
+    response.workspace === undefined &&
+    confirmedBase.scope.kind !== "active"
+  ) {
+    let workspace: NotesWorkspace;
+    try {
+      workspace = await context.repository.loadWorkspace(context.vaultRoot, {
+        kind: "active"
+      });
+    } catch (cause) {
+      throw mutationCommittedButProjectionUnavailable(cause);
+    }
+    return {
+      ...unwrapNotesMutation({ ...response, workspace }, null),
+      delta: null
+    };
+  }
+  return unwrapNotesMutation(response, confirmedBase);
+}
+
 export async function projectNotesMutation(
   context: NotesWorkspaceQueueContext,
   mutation: UnwrappedNotesMutation,
@@ -189,6 +234,7 @@ export async function runCompoundQueueWork(
   }
 > {
   let workspace = context.confirmedWorkspace;
+  let workspaceScope = context.sourceScope;
   let hasAuthoritativeStep = false;
   let historyStatus: NotesHistoryStatus | undefined;
   let stepCount = 0;
@@ -210,9 +256,10 @@ export async function runCompoundQueueWork(
       ) {
         return stepResult as NotesWorkspaceQueueResult;
       }
-      const mutation = unwrapNotesMutation(
+      const mutation = await unwrapNotesMutationForContext(
+        context,
         stepResult as NotesMutationResponse,
-        workspace
+        { workspace, scope: workspaceScope }
       );
       const expectedEntryId = step.historyEntryId ?? null;
       if (
@@ -242,6 +289,7 @@ export async function runCompoundQueueWork(
         };
       }
       workspace = mutation.workspace;
+      workspaceScope = { kind: "active" };
       hasAuthoritativeStep = true;
       stepCount += 1;
       lastMutation = mutation;

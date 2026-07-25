@@ -121,7 +121,10 @@ describe("delta-only Notes workspace projection", () => {
       changedAttachments: []
     } as NotesMutationResult;
 
-    const mutation = unwrapNotesMutation(response, base);
+    const mutation = unwrapNotesMutation(response, {
+      workspace: base,
+      scope: { kind: "active" }
+    });
 
     expect(mutation.atomic).toBe(true);
     expect(mutation.workspace.nodes.map(({ id }) => id).sort()).toEqual([
@@ -143,6 +146,23 @@ describe("delta-only Notes workspace projection", () => {
     expect(() => unwrapNotesMutation(response, null)).toThrow(/confirmed base/i);
   });
 
+  it("does not apply an Active delta to a confirmed base from another scope", () => {
+    const response = {
+      historyEntryId: "entry",
+      ...historyState(),
+      changedNodes: [node({ id: "restored" })],
+      removedNodeIds: [],
+      changedAttachments: []
+    } as NotesMutationResult;
+
+    expect(() =>
+      unwrapNotesMutation(response, {
+        workspace: base,
+        scope: { kind: "trash" }
+      })
+    ).toThrow(/scoped to Active/i);
+  });
+
   it("keeps full-workspace mutation results authoritative", () => {
     const carried = { nodes: [node({ id: "carried" })] };
     const response: NotesMutationResult = {
@@ -154,7 +174,32 @@ describe("delta-only Notes workspace projection", () => {
       changedAttachments: []
     };
 
-    expect(unwrapNotesMutation(response, base).workspace).toBe(carried);
+    expect(
+      unwrapNotesMutation(response, {
+        workspace: base,
+        scope: { kind: "active" }
+      }).workspace
+    ).toBe(carried);
+  });
+
+  it("does not invent a delta when a full-workspace result carries only some delta fields", () => {
+    const carried = { nodes: [node({ id: "carried" })] };
+    const response: NotesMutationResult = {
+      workspace: carried,
+      historyEntryId: "entry",
+      ...historyState(),
+      changedNodes: [node({ id: "changed" })]
+    };
+
+    expect(
+      unwrapNotesMutation(response, {
+        workspace: base,
+        scope: { kind: "active" }
+      })
+    ).toMatchObject({
+      workspace: carried,
+      delta: null
+    });
   });
 
   it("matches the reducer's normalized delta semantics", () => {

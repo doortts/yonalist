@@ -54,14 +54,14 @@ import {
   confirmedState,
   directMutationResult,
   historyArguments,
-  projectNotesMutation
+  projectNotesMutation,
+  unwrapNotesMutationForContext
 } from "./notesWorkspaceCommandSupport";
 import {
   cloneOwnedHistorySnapshot,
   cloneWorkspaceScope,
   errorMessage
 } from "./notesWorkspaceNavigationSupport";
-import { unwrapNotesMutation } from "./notesWorkspaceProjection";
 
 interface LiveRef<T> {
   current: T;
@@ -710,9 +710,9 @@ export function useNotesAttachmentWorkflow({
                       },
                       ...historyArguments(historyContext)
                     );
-              const mutation = unwrapNotesMutation(
-                response,
-                context.confirmedWorkspace
+              const mutation = await unwrapNotesMutationForContext(
+                context,
+                response
               );
               mutationOutcomeKnown = true;
               attempt.unknownOutcome = false;
@@ -1219,13 +1219,13 @@ export function useNotesAttachmentWorkflow({
           ) {
             return { kind: "skipped" };
           }
-          const mutation = unwrapNotesMutation(
+          const mutation = await unwrapNotesMutationForContext(
+            context,
             await context.repository.resizeAttachment(
               context.vaultRoot,
               { id: attachmentId, displayWidth },
               ...historyArguments(historyContext)
-            ),
-            context.confirmedWorkspace
+            )
           );
           const projection = await projectNotesMutation(
             context,
@@ -1261,13 +1261,13 @@ export function useNotesAttachmentWorkflow({
           ) {
             return { kind: "skipped" };
           }
-          const mutation = unwrapNotesMutation(
+          const mutation = await unwrapNotesMutationForContext(
+            context,
             await context.repository.removeAttachment(
               context.vaultRoot,
               attachmentId,
               ...historyArguments(historyContext)
-            ),
-            context.confirmedWorkspace
+            )
           );
           const projection = await projectNotesMutation(
             context,
