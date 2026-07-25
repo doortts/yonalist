@@ -80,7 +80,7 @@ describe("notesHeldBackspaceRepeat", () => {
     expect(controller.handleKeyDown(4, true)).toBe("native");
   });
 
-  it("stops and releases once when the detached original target receives keyup", () => {
+  it("ignores unrelated keyup before detached Backspace release", () => {
     vi.useFakeTimers();
     const repeat = vi.fn(() => true);
     const release = vi.fn();
@@ -99,6 +99,13 @@ describe("notesHeldBackspaceRepeat", () => {
     target.remove();
 
     target.dispatchEvent(
+      new KeyboardEvent("keyup", { key: "Shift", bubbles: true }),
+    );
+    vi.advanceTimersByTime(50);
+    expect(release).not.toHaveBeenCalled();
+    expect(repeat).toHaveBeenCalledTimes(2);
+
+    target.dispatchEvent(
       new KeyboardEvent("keyup", { key: "Backspace", bubbles: true }),
     );
     vi.advanceTimersByTime(500);
@@ -107,7 +114,7 @@ describe("notesHeldBackspaceRepeat", () => {
     );
 
     expect(release).toHaveBeenCalledOnce();
-    expect(repeat).toHaveBeenCalledOnce();
+    expect(repeat).toHaveBeenCalledTimes(2);
   });
 
   it("finds the previous extended grapheme boundary", () => {

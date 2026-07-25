@@ -96,10 +96,6 @@ export function createNotesHeldBackspaceRepeatController(options: {
   const listenForRelease = (token: number, target: EventTarget): void => {
     clearReleaseTarget();
     const listener: EventListener = (event) => {
-      if (releaseTarget === target && releaseListener === listener) {
-        releaseTarget = null;
-        releaseListener = null;
-      }
       if (
         activeToken !== token ||
         !(event instanceof KeyboardEvent) ||
@@ -112,7 +108,7 @@ export function createNotesHeldBackspaceRepeatController(options: {
     };
     releaseTarget = target;
     releaseListener = listener;
-    target.addEventListener("keyup", listener, { once: true });
+    target.addEventListener("keyup", listener);
   };
 
   return {

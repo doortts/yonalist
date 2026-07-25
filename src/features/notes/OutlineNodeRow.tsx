@@ -39,6 +39,7 @@ import {
 } from "./notesPresentation";
 import type { NotesSelectionActionIntent } from "./notesSelectionActions";
 import { markSplitPhase } from "./notesSplitLatencyProbe";
+import { outlineTitleTextarea } from "./outlineDom";
 import type { NotesSelection } from "./notesWorkspaceReducer";
 import {
   buildNotesMoveDestinations,
@@ -449,12 +450,7 @@ function OutlineNodeEditorComponent({
     targetNodeId: NoteId,
   ): void => {
     const outline = source.closest<HTMLElement>(".notes-outline-content");
-    const row = Array.from(
-      outline?.querySelectorAll<HTMLElement>("[data-outline-id]") ?? [],
-    ).find((candidate) => candidate.dataset.outlineId === targetNodeId);
-    const target = row?.querySelector<HTMLTextAreaElement>(
-      "textarea.notes-node-title",
-    );
+    const target = outlineTitleTextarea(outline, targetNodeId);
     if (!target || target.disabled) return;
     target.focus();
     target.setSelectionRange(0, 0);

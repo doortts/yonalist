@@ -11962,18 +11962,21 @@ describe("Notes workspace", () => {
         (input) =>
           input.value === value && input.getAttribute("aria-hidden") !== "true",
       ) ?? null;
-    const secondaryEmpty = anyTitleIn(outlines[1], "");
-    expect(secondaryEmpty).not.toBeNull();
+    const secondaryEmpty = await waitFor(() => {
+      const candidate = anyTitleIn(outlines[1], "");
+      expect(candidate).not.toBeNull();
+      return candidate!;
+    });
     fireEvent.pointerDown(
       outlines[1].closest<HTMLElement>(
         '[data-notes-pane-id="secondary"]',
       )!,
     );
-    secondaryEmpty!.focus();
-    secondaryEmpty!.setSelectionRange(0, 0);
+    secondaryEmpty.focus();
+    secondaryEmpty.setSelectionRange(0, 0);
 
     expect(
-      fireEvent.keyDown(secondaryEmpty!, { key: "Backspace" }),
+      fireEvent.keyDown(secondaryEmpty, { key: "Backspace" }),
     ).toBe(false);
     expect(visibleTitleIn(outlines[0], "")).toBeNull();
     expect(visibleTitleIn(outlines[1], "")).toBeNull();
