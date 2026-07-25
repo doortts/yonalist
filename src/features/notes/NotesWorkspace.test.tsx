@@ -12027,7 +12027,7 @@ describe("Notes workspace", () => {
     expect(anyTitleIn(outlines[0], "")).not.toHaveFocus();
   });
 
-  it("restores all five initially empty rows with one Cmd+Z after a held Backspace settles", async () => {
+  it("restores all five initially empty rows with one Cmd+Z after a fallback-held Backspace settles", async () => {
     vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
     const before = [
       node({ id: "survivor", sortKey: 1, title: "Keep" }),
@@ -12059,6 +12059,7 @@ describe("Notes workspace", () => {
     const primary = outlines[0];
     const starting = titleIn(primary, "empty-e");
     expect(starting).not.toBeNull();
+    vi.useFakeTimers();
     starting!.focus();
     starting!.setSelectionRange(0, 0);
 
@@ -12066,25 +12067,23 @@ describe("Notes workspace", () => {
     expect(titleIn(outlines[1], "empty-e")).toBeNull();
     expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
 
-    for (const [activeId, nextId] of [
-      ["empty-d", "empty-c"],
-      ["empty-c", "empty-b"],
-      ["empty-b", "empty-a"],
-      ["empty-a", "survivor"],
-    ] as const) {
-      const current = document.activeElement;
-      expect(current).toBe(titleIn(primary, activeId));
-      expect(current).toBeInstanceOf(HTMLTextAreaElement);
-      (current as HTMLTextAreaElement).setSelectionRange(0, 0);
-      expect(
-        fireEvent.keyDown(current!, { key: "Backspace", repeat: true }),
-      ).toBe(false);
-      expect(document.activeElement).toBe(titleIn(primary, nextId));
-      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTimeAsync(650));
+    expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+    for (const nodeId of [
+      "empty-a",
+      "empty-b",
+      "empty-c",
+      "empty-d",
+      "empty-e",
+    ]) {
+      expect(titleIn(primary, nodeId)).toBeNull();
+      expect(titleIn(outlines[1], nodeId)).toBeNull();
     }
 
     fireEvent.keyUp(window, { key: "Backspace" });
-    await waitFor(() => expect(historyContext).not.toBeNull());
+    await act(async () => Promise.resolve());
+    expect(historyContext).not.toBeNull();
+    vi.useRealTimers();
     const committedContext = historyContext!;
     notesStoreMock.historyStatus.mockResolvedValue(
       historyState({
@@ -12186,6 +12185,91 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
     expect(notesStoreMock.deleteNodes).not.toHaveBeenCalled();
     expect(queryTitleInput("")).toBeInTheDocument();
+  });
+
+  it("deletes one extended grapheme through fallback input and commits its draft in the gesture", async () => {
+    const family = "👨‍👩‍👧‍👦";
+    configureRepository([
+      node({ id: "grapheme", sortKey: 1, title: `A${family}` }),
+    ]);
+    renderNotesWorkspace();
+    const title = await findTitleInput(`A${family}`);
+    vi.useFakeTimers();
+    title.focus();
+    title.setSelectionRange(title.value.length, title.value.length);
+
+    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(true);
+    await act(async () => vi.advanceTimersByTimeAsync(400));
+    expect(title).toHaveValue("A");
+
+    fireEvent.keyUp(window, { key: "Backspace" });
+    await act(async () => Promise.resolve());
+    vi.useRealTimers();
+    await waitFor(() =>
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "backspaceGesture",
+          nodeIds: [],
+          titleUpdate: { id: "grapheme", title: "A" },
+        },
+        historyContextMatcher(),
+      ),
+    );
+    expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce();
+  });
+
+  it("consumes native repeats after the fallback owns the held Backspace", async () => {
+    configureRepository([
+      node({ id: "survivor", sortKey: 1, title: "Keep" }),
+      node({ id: "empty-a", sortKey: 2, title: "" }),
+      node({ id: "empty-b", sortKey: 3, title: "" }),
+      node({ id: "empty-c", sortKey: 4, title: "" }),
+    ]);
+    renderNotesWorkspace();
+    await findTitleInput("");
+    const title = (nodeId: string) =>
+      document.querySelector<HTMLTextAreaElement>(
+        `[data-outline-motion-id="${nodeId}"] textarea[aria-label="Edit node title"]`,
+      );
+    const starting = title("empty-c");
+    expect(starting).not.toBeNull();
+    vi.useFakeTimers();
+    starting!.focus();
+    starting!.setSelectionRange(0, 0);
+
+    expect(fireEvent.keyDown(starting!, { key: "Backspace" })).toBe(false);
+    await act(async () => vi.advanceTimersByTimeAsync(400));
+    expect(title("empty-c")).toBeNull();
+    expect(title("empty-b")).toBeNull();
+    expect(title("empty-a")).not.toBeNull();
+
+    expect(
+      fireEvent.keyDown(title("empty-a")!, {
+        key: "Backspace",
+        repeat: true,
+      }),
+    ).toBe(false);
+    expect(title("empty-a")).not.toBeNull();
+
+    await act(async () => vi.advanceTimersByTimeAsync(50));
+    expect(title("empty-a")).toBeNull();
+    fireEvent.keyUp(window, { key: "Backspace" });
+    await act(async () => Promise.resolve());
+    vi.useRealTimers();
+
+    await waitFor(() =>
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "backspaceGesture",
+          nodeIds: ["empty-c", "empty-b", "empty-a"],
+          titleUpdate: null,
+        },
+        historyContextMatcher(),
+      ),
+    );
+    expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce();
   });
 
   it.each([

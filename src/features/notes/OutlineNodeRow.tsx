@@ -108,6 +108,11 @@ export interface OutlineNodeEditorProps {
     layoutGeneration: number,
   ): void;
   onCommandFocusActivity?(): void;
+  onBackspaceGestureKeyDown?(
+    token: number,
+    nodeId: NoteId,
+    repeat: boolean,
+  ): "native" | "consume";
   node: NoteNode;
   attachments: readonly NoteAttachment[];
   childCount: number;
@@ -228,6 +233,7 @@ function OutlineNodeEditorComponent({
   onKeyboardInsertionPrepared,
   onKeyboardInsertionTerminated,
   onCommandFocusActivity,
+  onBackspaceGestureKeyDown,
   node,
   attachments,
   childCount,
@@ -1237,6 +1243,16 @@ function OutlineNodeEditorComponent({
         : null;
     if (backspaceGestureToken !== null) {
       actions.touchBackspaceGesture?.(backspaceGestureToken, nodeId);
+      if (
+        onBackspaceGestureKeyDown?.(
+          backspaceGestureToken,
+          nodeId,
+          event.repeat,
+        ) === "consume"
+      ) {
+        event.preventDefault();
+        return;
+      }
     }
     const stateSnapshot = getStateSnapshot();
     const resolution = resolveOutlineKey({

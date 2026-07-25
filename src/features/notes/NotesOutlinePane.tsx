@@ -223,6 +223,7 @@ import {
   useOutlineLayoutMotion,
 } from "./useOutlineLayoutMotion";
 import { resumeOutlineIdleBaselineAfterInsertionFailure } from "./outlineIdleBaseline";
+import { useNotesHeldBackspaceRepeat } from "./useNotesHeldBackspaceRepeat";
 import type {
   NotesPreparedSelectionAuthority,
   UseNotesWorkspaceResult,
@@ -885,27 +886,6 @@ export function NotesOutlinePane({
       operationId: captureNotesSplitInputBenchmarkBackspaceOperation(paneId),
     };
   }, [optimisticBackspaceGesture, paneId]);
-  const finishBackspaceGesture = useCallback(
-    (
-      reason: "keyup" | "blur" | "hidden" | "drain",
-    ): Promise<NotesWorkspaceCommandOutcome> => {
-      const benchmark = backspaceBenchmarkRef.current;
-      backspaceBenchmarkRef.current = null;
-      const completion =
-        actions.finishBackspaceGesture?.(reason) ??
-        Promise.resolve("skipped" as const);
-      if (benchmark) {
-        observeBackspaceGestureTerminalOutcome(completion, (outcome) =>
-          markNotesSplitInputBenchmarkBackspaceSettled(
-            benchmark.operationId,
-            outcome,
-          ),
-        );
-      }
-      return completion;
-    },
-    [actions],
-  );
   const selectionChooserScopeKey = `${vaultRoot}\u0000${libraryView}\u0000${activeTagFilters
     .map((filter) => `${filter.prefix}\u0000${filter.normalizedTag}`)
     .join("\u0001")}`;
@@ -2022,6 +2002,40 @@ export function NotesOutlinePane({
   bodyVisibleIdsRef.current = bodyVisibleIds;
   const bodyRowsRef = useRef(bodyRows);
   bodyRowsRef.current = bodyRows;
+  const heldBackspaceRepeat = useNotesHeldBackspaceRepeat({
+    paneId,
+    vaultRoot,
+    gesture: optimisticBackspaceGesture,
+    bodyRows,
+    draftsByNodeId,
+    stateSlice: notesStateSlice,
+    visibleNodeIds: structuralVisibleIds,
+    selectionVisibleNodeIds: bodyVisibleIds,
+    actions,
+    getContentRoot: () => contentRef.current,
+  });
+  const finishBackspaceGesture = useCallback(
+    (
+      reason: "keyup" | "blur" | "hidden" | "drain",
+    ): Promise<NotesWorkspaceCommandOutcome> => {
+      heldBackspaceRepeat.stop();
+      const benchmark = backspaceBenchmarkRef.current;
+      backspaceBenchmarkRef.current = null;
+      const completion =
+        actions.finishBackspaceGesture?.(reason) ??
+        Promise.resolve("skipped" as const);
+      if (benchmark) {
+        observeBackspaceGestureTerminalOutcome(completion, (outcome) =>
+          markNotesSplitInputBenchmarkBackspaceSettled(
+            benchmark.operationId,
+            outcome,
+          ),
+        );
+      }
+      return completion;
+    },
+    [actions, heldBackspaceRepeat],
+  );
   const getOutlineRow = useCallback(
     (nodeId: NoteId) =>
       bodyRowsRef.current.find((row) => row.id === nodeId),
@@ -4616,6 +4630,7 @@ export function NotesOutlinePane({
           resumeOutlineBaselineAfterInsertionFailure
         }
         onCommandFocusActivity={noteOutlineActivity}
+        onBackspaceGestureKeyDown={heldBackspaceRepeat.handleKeyDown}
         node={node}
         attachments={attachments}
         childCount={childCount}
