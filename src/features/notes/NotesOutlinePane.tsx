@@ -134,6 +134,7 @@ import {
 } from "./notesMoveTargets";
 import { tokenizeNoteText } from "./noteTokens";
 import { directTodoProgress } from "./notesTodoProgress";
+import { outlineTitleTextarea } from "./outlineDom";
 import {
   derivePreparedOutlineSelectionDropPreview,
   deriveOutlineDropPreview,
@@ -2389,14 +2390,7 @@ export function NotesOutlinePane({
   const focusBodyTitle = useCallback(
     (nodeId: NoteId): void => {
       noteOutlineActivity();
-      const row = Array.from(
-        contentRef.current?.querySelectorAll<HTMLElement>(
-          "[data-outline-id]",
-        ) ?? [],
-      ).find((candidate) => candidate.dataset.outlineId === nodeId);
-      row
-        ?.querySelector<HTMLTextAreaElement>("textarea.notes-node-title")
-        ?.focus();
+      outlineTitleTextarea(contentRef.current, nodeId)?.focus();
     },
     [noteOutlineActivity],
   );
