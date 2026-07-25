@@ -112,6 +112,7 @@ export interface OutlineNodeEditorProps {
     token: number,
     nodeId: NoteId,
     repeat: boolean,
+    releaseTarget: HTMLTextAreaElement,
   ): "native" | "consume";
   node: NoteNode;
   attachments: readonly NoteAttachment[];
@@ -1248,6 +1249,7 @@ function OutlineNodeEditorComponent({
           backspaceGestureToken,
           nodeId,
           event.repeat,
+          event.currentTarget,
         ) === "consume"
       ) {
         event.preventDefault();

@@ -52,14 +52,7 @@ function dispatchHeldBackspaceInput(
     target.value = value;
   }
   target.setSelectionRange(caretUtf16, caretUtf16);
-  target.dispatchEvent(
-    typeof InputEvent === "function"
-      ? new InputEvent("input", {
-          bubbles: true,
-          inputType: "deleteContentBackward",
-        })
-      : new Event("input", { bubbles: true }),
-  );
+  target.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 interface NotesHeldBackspaceRepeatOptions {
@@ -73,6 +66,7 @@ interface NotesHeldBackspaceRepeatOptions {
   readonly selectionVisibleNodeIds: readonly NoteId[];
   readonly actions: NotesActionsSlice["actions"];
   readonly getContentRoot: () => ParentNode | null;
+  readonly onRelease: () => void;
 }
 
 export interface NotesHeldBackspaceRepeat {
@@ -80,6 +74,7 @@ export interface NotesHeldBackspaceRepeat {
     token: number,
     nodeId: NoteId,
     repeat: boolean,
+    releaseTarget: HTMLTextAreaElement,
   ): "native" | "consume";
   stop(): void;
 }
@@ -92,6 +87,7 @@ export function useNotesHeldBackspaceRepeat(
   const routeRef = useRef<{
     token: number;
     focusNodeId: NoteId;
+    caretUtf16?: number;
   } | null>(null);
   const repeatStepRef = useRef<() => boolean>(() => false);
   const controllerRef = useRef<NotesHeldBackspaceRepeatController | null>(
@@ -100,6 +96,7 @@ export function useNotesHeldBackspaceRepeat(
   if (controllerRef.current === null) {
     controllerRef.current = createNotesHeldBackspaceRepeatController({
       repeat: () => repeatStepRef.current(),
+      release: () => optionsRef.current.onRelease(),
     });
   }
   const controller = controllerRef.current;
@@ -138,6 +135,10 @@ export function useNotesHeldBackspaceRepeat(
       return false;
     }
     title.focus();
+    if (route.caretUtf16 !== undefined) {
+      const caretUtf16 = Math.min(route.caretUtf16, title.value.length);
+      title.setSelectionRange(caretUtf16, caretUtf16);
+    }
 
     const selectionStart = title.selectionStart;
     const selectionEnd = title.selectionEnd;
@@ -187,18 +188,25 @@ export function useNotesHeldBackspaceRepeat(
     if (resolution?.type !== "remove") return false;
 
     const focusNodeId = resolution.focusNodeId;
+    let focusUtf16 = 0;
     if (focusNodeId !== null) {
+      const visibleIndex = current.visibleNodeIds.indexOf(nodeId);
+      const focusAtEnd =
+        visibleIndex > 0 &&
+        current.visibleNodeIds[visibleIndex - 1] === focusNodeId;
       const focusTarget = outlineTitleTextarea(
         current.getContentRoot(),
         focusNodeId,
       );
+      focusUtf16 = focusAtEnd && focusTarget ? focusTarget.value.length : 0;
       if (focusTarget && !focusTarget.disabled && !focusTarget.readOnly) {
+        current.actions.releaseEditingFocus?.();
         focusTarget.focus();
-        focusTarget.setSelectionRange(0, 0);
+        focusTarget.setSelectionRange(focusUtf16, focusUtf16);
       }
       void current.actions.focusNode(focusNodeId, {
-        anchorUtf16: 0,
-        focusUtf16: 0,
+        anchorUtf16: focusUtf16,
+        focusUtf16,
       });
     }
     current.actions.touchBackspaceGesture?.(gesture.token, nodeId);
@@ -209,7 +217,11 @@ export function useNotesHeldBackspaceRepeat(
         focusNodeId,
       ) === true;
     if (removed && focusNodeId !== null) {
-      routeRef.current = { token: gesture.token, focusNodeId };
+      routeRef.current = {
+        token: gesture.token,
+        focusNodeId,
+        caretUtf16: focusUtf16,
+      };
     }
     return removed;
   };
@@ -223,9 +235,10 @@ export function useNotesHeldBackspaceRepeat(
       token: number,
       nodeId: NoteId,
       repeat: boolean,
+      releaseTarget: HTMLTextAreaElement,
     ): "native" | "consume" => {
       routeRef.current = { token, focusNodeId: nodeId };
-      return controller.handleKeyDown(token, repeat);
+      return controller.handleKeyDown(token, repeat, releaseTarget);
     },
     [controller],
   );

@@ -42,9 +42,9 @@ export const notesWorkspaceProductionLineBudgets = Object.freeze({
   "src/features/notes/useNotesWorkspacePaneRegistry.ts": 1_500,
   "src/features/notes/notesBackspaceRuntime.ts": 159,
   "src/features/notes/notesBufferedWorkspaceCommands.ts": 31,
-  "src/features/notes/notesHeldBackspaceRepeat.ts": 102,
+  "src/features/notes/notesHeldBackspaceRepeat.ts": 143,
   "src/features/notes/useNotesImageAtomRuntime.ts": 187,
-  "src/features/notes/useNotesHeldBackspaceRepeat.ts": 244,
+  "src/features/notes/useNotesHeldBackspaceRepeat.ts": 257,
   "src/features/notes/useNotesWorkspaceExternalStores.ts": 66
 });
 

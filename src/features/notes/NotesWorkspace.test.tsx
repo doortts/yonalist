@@ -12030,7 +12030,12 @@ describe("Notes workspace", () => {
   it("restores all five initially empty rows with one Cmd+Z after a fallback-held Backspace settles", async () => {
     vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
     const before = [
-      node({ id: "survivor", sortKey: 1, title: "Keep" }),
+      node({
+        id: "survivor",
+        sortKey: 1,
+        title: "K",
+        note: "Keep note",
+      }),
       node({ id: "empty-a", sortKey: 2, title: "" }),
       node({ id: "empty-b", sortKey: 3, title: "" }),
       node({ id: "empty-c", sortKey: 4, title: "" }),
@@ -12067,7 +12072,7 @@ describe("Notes workspace", () => {
     expect(titleIn(outlines[1], "empty-e")).toBeNull();
     expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
 
-    await act(async () => vi.advanceTimersByTimeAsync(650));
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
     expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
     for (const nodeId of [
       "empty-a",
@@ -12079,10 +12084,27 @@ describe("Notes workspace", () => {
       expect(titleIn(primary, nodeId)).toBeNull();
       expect(titleIn(outlines[1], nodeId)).toBeNull();
     }
+    expect(titleIn(primary, "survivor")).toHaveValue("");
 
-    fireEvent.keyUp(window, { key: "Backspace" });
+    expect(starting!.isConnected).toBe(false);
+    fireEvent.keyUp(starting!, { key: "Backspace" });
     await act(async () => Promise.resolve());
     expect(historyContext).not.toBeNull();
+    expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+      "/vault",
+      {
+        op: "backspaceGesture",
+        nodeIds: [
+          "empty-e",
+          "empty-d",
+          "empty-c",
+          "empty-b",
+          "empty-a",
+        ],
+        titleUpdate: { id: "survivor", title: "" },
+      },
+      historyContextMatcher(),
+    );
     vi.useRealTimers();
     const committedContext = historyContext!;
     notesStoreMock.historyStatus.mockResolvedValue(
@@ -12102,7 +12124,7 @@ describe("Notes workspace", () => {
     });
     await act(async () =>
       batch.resolve({
-        workspace: workspace([before[0]]),
+        workspace: workspace([{ ...before[0], title: "" }]),
         historyEntryId: committedContext.entryId,
         ...historyState({
           canUndo: true,
@@ -12135,6 +12157,7 @@ describe("Notes workspace", () => {
     await waitFor(() => expect(titleIn(primary, "empty-e")).toHaveFocus());
     expect(titleIn(primary, "empty-e")?.selectionStart).toBe(0);
     expect(titleIn(primary, "empty-e")?.selectionEnd).toBe(0);
+    expect(titleIn(primary, "survivor")).toHaveValue("K");
   });
 
   it("does not batch repeated Backspace on note, attachment, readonly, or plugin rows", async () => {

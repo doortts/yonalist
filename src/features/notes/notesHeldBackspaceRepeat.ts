@@ -2,7 +2,11 @@ export const NOTES_HELD_BACKSPACE_INITIAL_DELAY_MS = 400;
 export const NOTES_HELD_BACKSPACE_REPEAT_INTERVAL_MS = 50;
 
 export interface NotesHeldBackspaceRepeatController {
-  handleKeyDown(token: number, repeat: boolean): "native" | "consume";
+  handleKeyDown(
+    token: number,
+    repeat: boolean,
+    releaseTarget?: EventTarget,
+  ): "native" | "consume";
   stop(): void;
   dispose(): void;
 }
@@ -29,6 +33,7 @@ export function previousGraphemeBoundary(
 
 export function createNotesHeldBackspaceRepeatController(options: {
   readonly repeat: () => boolean;
+  readonly release?: () => void;
   readonly initialDelayMs?: number;
   readonly repeatIntervalMs?: number;
 }): NotesHeldBackspaceRepeatController {
@@ -40,6 +45,8 @@ export function createNotesHeldBackspaceRepeatController(options: {
   let activeToken: number | null = null;
   let fallbackActive = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let releaseTarget: EventTarget | null = null;
+  let releaseListener: EventListener | null = null;
   let generation = 0;
 
   const cancelPending = (): void => {
@@ -71,19 +78,53 @@ export function createNotesHeldBackspaceRepeatController(options: {
     }, delayMs);
   };
 
+  const clearReleaseTarget = (): void => {
+    if (releaseTarget !== null && releaseListener !== null) {
+      releaseTarget.removeEventListener("keyup", releaseListener);
+    }
+    releaseTarget = null;
+    releaseListener = null;
+  };
+
   const stop = (): void => {
     cancelPending();
+    clearReleaseTarget();
     activeToken = null;
     fallbackActive = false;
   };
 
+  const listenForRelease = (token: number, target: EventTarget): void => {
+    clearReleaseTarget();
+    const listener: EventListener = (event) => {
+      if (releaseTarget === target && releaseListener === listener) {
+        releaseTarget = null;
+        releaseListener = null;
+      }
+      if (
+        activeToken !== token ||
+        !(event instanceof KeyboardEvent) ||
+        event.key !== "Backspace"
+      ) {
+        return;
+      }
+      stop();
+      options.release?.();
+    };
+    releaseTarget = target;
+    releaseListener = listener;
+    target.addEventListener("keyup", listener, { once: true });
+  };
+
   return {
-    handleKeyDown(token, repeat) {
+    handleKeyDown(token, repeat, target) {
       if (disposed) return "native";
       if (!repeat || activeToken !== token) {
         activeToken = token;
         fallbackActive = false;
         schedule(initialDelayMs);
+        if (!repeat && target) {
+          listenForRelease(token, target);
+        }
         return "native";
       }
       if (fallbackActive) {

@@ -2002,23 +2002,12 @@ export function NotesOutlinePane({
   bodyVisibleIdsRef.current = bodyVisibleIds;
   const bodyRowsRef = useRef(bodyRows);
   bodyRowsRef.current = bodyRows;
-  const heldBackspaceRepeat = useNotesHeldBackspaceRepeat({
-    paneId,
-    vaultRoot,
-    gesture: optimisticBackspaceGesture,
-    bodyRows,
-    draftsByNodeId,
-    stateSlice: notesStateSlice,
-    visibleNodeIds: structuralVisibleIds,
-    selectionVisibleNodeIds: bodyVisibleIds,
-    actions,
-    getContentRoot: () => contentRef.current,
-  });
+  const heldBackspaceStopRef = useRef<() => void>(() => {});
   const finishBackspaceGesture = useCallback(
     (
       reason: "keyup" | "blur" | "hidden" | "drain",
     ): Promise<NotesWorkspaceCommandOutcome> => {
-      heldBackspaceRepeat.stop();
+      heldBackspaceStopRef.current();
       const benchmark = backspaceBenchmarkRef.current;
       backspaceBenchmarkRef.current = null;
       const completion =
@@ -2034,8 +2023,22 @@ export function NotesOutlinePane({
       }
       return completion;
     },
-    [actions, heldBackspaceRepeat],
+    [actions],
   );
+  const heldBackspaceRepeat = useNotesHeldBackspaceRepeat({
+    paneId,
+    vaultRoot,
+    gesture: optimisticBackspaceGesture,
+    bodyRows,
+    draftsByNodeId,
+    stateSlice: notesStateSlice,
+    visibleNodeIds: structuralVisibleIds,
+    selectionVisibleNodeIds: bodyVisibleIds,
+    actions,
+    getContentRoot: () => contentRef.current,
+    onRelease: () => void finishBackspaceGesture("keyup"),
+  });
+  heldBackspaceStopRef.current = heldBackspaceRepeat.stop;
   const getOutlineRow = useCallback(
     (nodeId: NoteId) =>
       bodyRowsRef.current.find((row) => row.id === nodeId),

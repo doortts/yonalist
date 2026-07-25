@@ -48,24 +48,66 @@ describe("notesHeldBackspaceRepeat", () => {
   it("invalidates pending and recursive work when stopped or disposed", () => {
     vi.useFakeTimers();
     const repeat = vi.fn(() => true);
+    const release = vi.fn();
+    const firstTarget = document.createElement("textarea");
+    const secondTarget = document.createElement("textarea");
     const controller = createNotesHeldBackspaceRepeatController({
       repeat,
+      release,
       initialDelayMs: 400,
       repeatIntervalMs: 50,
     });
 
-    controller.handleKeyDown(3, false);
+    controller.handleKeyDown(3, false, firstTarget);
     controller.stop();
+    firstTarget.dispatchEvent(
+      new KeyboardEvent("keyup", { key: "Backspace" }),
+    );
     vi.advanceTimersByTime(1_000);
     expect(repeat).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
 
-    controller.handleKeyDown(4, false);
+    controller.handleKeyDown(4, false, secondTarget);
     vi.advanceTimersByTime(400);
     expect(repeat).toHaveBeenCalledOnce();
     controller.dispose();
+    secondTarget.dispatchEvent(
+      new KeyboardEvent("keyup", { key: "Backspace" }),
+    );
     vi.advanceTimersByTime(1_000);
     expect(repeat).toHaveBeenCalledOnce();
+    expect(release).not.toHaveBeenCalled();
     expect(controller.handleKeyDown(4, true)).toBe("native");
+  });
+
+  it("stops and releases once when the detached original target receives keyup", () => {
+    vi.useFakeTimers();
+    const repeat = vi.fn(() => true);
+    const release = vi.fn();
+    const target = document.createElement("textarea");
+    document.body.append(target);
+    const controller = createNotesHeldBackspaceRepeatController({
+      repeat,
+      release,
+      initialDelayMs: 400,
+      repeatIntervalMs: 50,
+    });
+
+    controller.handleKeyDown(5, false, target);
+    vi.advanceTimersByTime(400);
+    expect(repeat).toHaveBeenCalledOnce();
+    target.remove();
+
+    target.dispatchEvent(
+      new KeyboardEvent("keyup", { key: "Backspace", bubbles: true }),
+    );
+    vi.advanceTimersByTime(500);
+    target.dispatchEvent(
+      new KeyboardEvent("keyup", { key: "Backspace", bubbles: true }),
+    );
+
+    expect(release).toHaveBeenCalledOnce();
+    expect(repeat).toHaveBeenCalledOnce();
   });
 
   it("finds the previous extended grapheme boundary", () => {
