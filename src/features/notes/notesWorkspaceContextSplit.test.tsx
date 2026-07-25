@@ -12,8 +12,10 @@ import {
 import { createOutlineVisibleSignature } from "./notesKeyboardInsertion";
 import {
   useNotesWorkspace,
+  type UseNotesWorkspaceHookResult,
   type UseNotesWorkspaceResult
 } from "./useNotesWorkspace";
+import type { NotesPaneRuntimeSlice } from "./notesWorkspaceTypes";
 
 const createNoteIdMock = vi.hoisted(() => vi.fn());
 
@@ -279,6 +281,244 @@ describe("notes workspace context split", () => {
     expect(panes().primary.stateSlice.state.nodesById).toBe(
       panes().secondary.stateSlice.state.nodesById
     );
+  });
+
+  it("discards a direct-caret frame after newer focus wins in either pane", async () => {
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(
+        workspace([
+          node({ id: "root", sortKey: 1024 }),
+          node({ id: "other", sortKey: 2048 })
+        ])
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/caret-authority", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const panes = () => result.current.paneRegistrySlice.panes;
+
+    await act(async () => {
+      panes().primary.actionsSlice.actions.notifyCaretMovedByDom?.(
+        "other",
+        "title"
+      );
+      await panes().primary.actionsSlice.actions.focusNode("root");
+      panes().secondary.actionsSlice.actions.notifyCaretMovedByDom?.(
+        "other",
+        "title"
+      );
+      await panes().secondary.actionsSlice.actions.focusNode("root");
+    });
+    expect(frames).toHaveLength(2);
+    expect(panes().primary.stateSlice.state).toMatchObject({
+      selectedId: "root",
+      editingNoteId: "root",
+      pendingFocusId: "root",
+      pendingFocusField: "title"
+    });
+    expect(panes().secondary.stateSlice.state).toMatchObject({
+      selectedId: "root",
+      editingNoteId: "root",
+      pendingFocusId: "root",
+      pendingFocusField: "title"
+    });
+
+    act(() => {
+      for (const frame of frames.splice(0)) frame(0);
+    });
+
+    expect(panes().primary.stateSlice.state).toMatchObject({
+      selectedId: "root",
+      editingNoteId: "root",
+      pendingFocusId: "root",
+      pendingFocusField: "title"
+    });
+    expect(panes().secondary.stateSlice.state).toMatchObject({
+      selectedId: "root",
+      editingNoteId: "root",
+      pendingFocusId: "root",
+      pendingFocusField: "title"
+    });
+  });
+
+  it("discards direct-caret frames after newer editing claims and zoom history", async () => {
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(
+        workspace([
+          node({ id: "root", sortKey: 1024 }),
+          node({ id: "other", sortKey: 2048 })
+        ])
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/caret-click-zoom-authority",
+        repository: store
+      })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const panes = () => result.current.paneRegistrySlice.panes;
+
+    await act(async () => {
+      panes().primary.actionsSlice.actions.notifyCaretMovedByDom?.(
+        "other",
+        "title"
+      );
+      await panes().primary.actionsSlice.actions.claimEditingFocus?.(
+        "root",
+        "title"
+      );
+      panes().secondary.actionsSlice.actions.notifyCaretMovedByDom?.(
+        "other",
+        "title"
+      );
+      await panes().secondary.actionsSlice.actions.claimEditingFocus?.(
+        "root",
+        "title"
+      );
+    });
+    expect(frames).toHaveLength(2);
+    act(() => {
+      for (const frame of frames.splice(0)) frame(0);
+    });
+    expect(panes().primary.stateSlice.state.selectedId).toBeNull();
+    expect(panes().secondary.stateSlice.state).toMatchObject({
+      selectedId: "root",
+      editingNoteId: "root"
+    });
+
+    let primaryZoom: Promise<void> | undefined;
+    let secondaryZoom: Promise<void> | undefined;
+    act(() => {
+      panes().primary.actionsSlice.actions.notifyCaretMovedByDom?.(
+        "other",
+        "title"
+      );
+      primaryZoom = panes().primary.actionsSlice.actions.zoomTo("root");
+      panes().secondary.actionsSlice.actions.notifyCaretMovedByDom?.(
+        "other",
+        "title"
+      );
+      secondaryZoom = panes().secondary.actionsSlice.actions.zoomTo("root");
+    });
+    expect(frames).toHaveLength(2);
+    act(() => {
+      for (const frame of frames.splice(0)) frame(0);
+    });
+    expect(panes().primary.stateSlice.state.selectedId).toBeNull();
+    expect(panes().secondary.stateSlice.state.selectedId).toBe("root");
+    await act(async () => {
+      await Promise.all([primaryZoom, secondaryZoom]);
+    });
+    expect(panes().primary.stateSlice.state).toMatchObject({
+      selectedId: "root",
+      zoomRootId: "root"
+    });
+    expect(panes().secondary.stateSlice.state).toMatchObject({
+      selectedId: "root",
+      zoomRootId: "root"
+    });
+  });
+
+  it("settles repeated editing claims without publishing pane state per key", async () => {
+    const rows = Array.from({ length: 101 }, (_, index) =>
+      node({
+        id: `row-${index}`,
+        sortKey: (index + 1) * 1024
+      })
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace(rows))
+    });
+    let captured: UseNotesWorkspaceHookResult | null = null;
+    let primaryPaneRenders = 0;
+    let secondaryPaneRenders = 0;
+    const PrimaryPaneProbe = memo(function PrimaryPaneProbe({
+      pane: _pane
+    }: {
+      pane: NotesPaneRuntimeSlice;
+    }) {
+      primaryPaneRenders += 1;
+      return null;
+    });
+    const SecondaryPaneProbe = memo(function SecondaryPaneProbe({
+      pane: _pane
+    }: {
+      pane: NotesPaneRuntimeSlice;
+    }) {
+      secondaryPaneRenders += 1;
+      return null;
+    });
+    function Harness() {
+      const value = useNotesWorkspace({
+        vaultRoot: "/caret-claim-coalescing",
+        repository: store
+      });
+      captured = value;
+      return (
+        <>
+          <PrimaryPaneProbe pane={value.paneRegistrySlice.panes.primary} />
+          <SecondaryPaneProbe pane={value.paneRegistrySlice.panes.secondary} />
+        </>
+      );
+    }
+    render(<Harness />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const primaryBefore = primaryPaneRenders;
+    const secondaryBefore = secondaryPaneRenders;
+
+    const settleDirectClaim = async (
+      paneId: "primary" | "secondary",
+      nodeId: string
+    ) => {
+      let claim: Promise<boolean> | undefined;
+      act(() => {
+        const actions =
+          captured!.paneRegistrySlice.panes[paneId].actionsSlice.actions;
+        claim = actions.claimEditingFocus?.(nodeId, "title");
+        actions.notifyCaretMovedByDom?.(nodeId, "title");
+      });
+      await act(async () => {
+        await claim;
+      });
+    };
+    for (let index = 1; index <= 50; index += 1) {
+      await settleDirectClaim("primary", `row-${index}`);
+    }
+    for (let index = 99; index >= 50; index -= 1) {
+      await settleDirectClaim("secondary", `row-${index}`);
+    }
+
+    expect(frames).toHaveLength(2);
+    expect(primaryPaneRenders).toBe(primaryBefore);
+    // Activating the other pane may publish once; the 50 claims must not
+    // publish another 50 pane states while the shared frame is pending.
+    expect(secondaryPaneRenders).toBe(secondaryBefore + 1);
+
+    act(() => {
+      for (const frame of frames.splice(0)) frame(0);
+    });
+    expect(primaryPaneRenders).toBe(primaryBefore + 1);
+    expect(secondaryPaneRenders).toBe(secondaryBefore + 2);
   });
 
   it("routes a secondary split focus only to the secondary pane", async () => {

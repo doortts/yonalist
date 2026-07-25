@@ -27,21 +27,29 @@ export function useNotesDirectCaretReconciliation({
     nodeId: NoteId,
     field: NotesHistoryFocusField,
   ) => void;
+  readonly invalidatePendingCaretMove: () => void;
   readonly cancelPendingCaretMove: () => void;
 } {
-  const { enqueue, cancel } = useNotesFrameReconciler<NotesHistoryFocus>(
-    ({ nodeId }) => {
-      if (!closedRef.current) {
-        applyAction({ type: "caretMovedByDom", nodeId });
-      }
-    },
-  );
+  const { enqueue, cancel } = useNotesFrameReconciler<{
+    readonly focus: NotesHistoryFocus;
+    readonly navigationVersion: number;
+  }>(({ focus, navigationVersion }) => {
+    if (
+      !closedRef.current &&
+      navigationVersionRef.current === navigationVersion
+    ) {
+      applyAction({ type: "caretMovedByDom", nodeId: focus.nodeId });
+    }
+  });
   const notifyCaretMovedByDom = useCallback(
     (nodeId: NoteId, field: NotesHistoryFocusField): void => {
       pendingPrimarySelectionRef.current = null;
       navigationVersionRef.current += 1;
       editingFocusRef.current = { nodeId, field };
-      enqueue({ nodeId, field });
+      enqueue({
+        focus: { nodeId, field },
+        navigationVersion: navigationVersionRef.current,
+      });
     },
     [
       editingFocusRef,
@@ -50,8 +58,12 @@ export function useNotesDirectCaretReconciliation({
       pendingPrimarySelectionRef,
     ],
   );
+  const invalidatePendingCaretMove = useCallback((): void => {
+    navigationVersionRef.current += 1;
+  }, [navigationVersionRef]);
   return {
     notifyCaretMovedByDom,
+    invalidatePendingCaretMove,
     cancelPendingCaretMove: cancel,
   };
 }

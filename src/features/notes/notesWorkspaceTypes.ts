@@ -270,6 +270,7 @@ export interface NotesWorkspaceActions {
     nodeId: NoteId,
     field: NotesHistoryFocusField
   ): void;
+  invalidatePendingCaretMove?(): void;
   getNavigationVersion?(): number;
   prepareKeyboardInsertion?(
     input: NotesKeyboardInsertionRequest

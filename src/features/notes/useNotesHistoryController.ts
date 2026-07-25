@@ -1261,6 +1261,7 @@ export function useNotesHistoryController({
       if (!session) return;
       const ownerToken = session.ownerToken();
       if (ownerToken === 0 || !session.isCurrentOwner(ownerToken)) return;
+      if (originPaneId === "primary") navigationVersionRef.current += 1;
       if (outlineCompositionActiveRef.current) {
         pendingNavigationRef.current = {
           session,
@@ -1426,7 +1427,7 @@ export function useNotesHistoryController({
       activeWorkspaceGenerationRef,
       captureHistorySnapshot,
       outlineCompositionActiveRef,
-      pendingNavigationRef,
+      pendingNavigationRef, navigationVersionRef,
       publishFeedback,
       resolveHistoryLocation,
       sessionRef

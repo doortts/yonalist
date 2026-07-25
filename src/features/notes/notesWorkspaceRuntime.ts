@@ -373,7 +373,7 @@ export function useNotesWorkspace({
     },
     [selectionRef, updateSelection],
   );
-  const { notifyCaretMovedByDom, cancelPendingCaretMove } =
+  const { notifyCaretMovedByDom, invalidatePendingCaretMove, cancelPendingCaretMove } =
     useNotesDirectCaretReconciliation({
       pendingPrimarySelectionRef, navigationVersionRef, editingFocusRef,
       closedRef, applyAction,
@@ -1144,6 +1144,7 @@ export function useNotesWorkspace({
           notifyCaretMovedByDom(nodeId, field);
         }
       },
+      invalidatePendingCaretMove,
       getNavigationVersion,
       prepareKeyboardInsertion: (input) =>
         writesUnavailable() ? null : prepareKeyboardInsertion(input),
@@ -1276,7 +1277,7 @@ export function useNotesWorkspace({
     acknowledgeFocus,
     focusNode,
     markEditingFocus,
-    notifyCaretMovedByDom,
+    notifyCaretMovedByDom, invalidatePendingCaretMove,
     getNavigationVersion,
     prepareKeyboardInsertion,
     beginBackspaceGesture,

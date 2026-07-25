@@ -1184,49 +1184,89 @@ describe("Notes workspace", () => {
     expect("__TAURI_INTERNALS__" in window).toBe(false);
   });
 
-  it("moves a caret directly and does not call the state-focus fallback", async () => {
-    const workspace: UseNotesWorkspaceResult = rowReplayWorkspace();
-    const state = normalizeWorkspace({
-      nodes: [
-        node({ id: "first", sortKey: 1, title: "First" }),
-        node({ id: "second", sortKey: 2, title: "Second" }),
-      ],
-    });
-    state.pendingFocusId = null;
-    state.pendingFocusField = null;
-    workspace.state = state;
-    workspace.pendingPrimarySelection = null;
-    const focusNode = vi.fn().mockResolvedValue(undefined);
-    const notifyCaretMovedByDom = vi.fn();
-    workspace.actions = new Proxy(workspace.actions, {
-      get: (target, property, receiver) =>
-        property === "focusNode"
-          ? focusNode
-          : property === "notifyCaretMovedByDom"
-            ? notifyCaretMovedByDom
-            : Reflect.get(target, property, receiver),
-    });
+  it("moves 50 carets directly in both panes without a focus fallback", async () => {
+    const rows = Array.from({ length: 101 }, (_, index) =>
+      node({
+        id: `row-${index}`,
+        sortKey: index + 1,
+        title: `Row ${String(index).padStart(3, "0")}`,
+      }),
+    );
+    const buildWorkspace = () => {
+      const workspace: UseNotesWorkspaceResult = rowReplayWorkspace();
+      const state = normalizeWorkspace({ nodes: rows });
+      state.pendingFocusId = null;
+      state.pendingFocusField = null;
+      workspace.state = state;
+      workspace.pendingPrimarySelection = null;
+      const focusNode = vi.fn().mockResolvedValue(undefined);
+      const claimEditingFocus = vi.fn().mockResolvedValue(true);
+      const notifyCaretMovedByDom = vi.fn();
+      workspace.actions = new Proxy(workspace.actions, {
+        get: (target, property, receiver) =>
+          property === "focusNode"
+            ? focusNode
+            : property === "claimEditingFocus"
+              ? claimEditingFocus
+              : property === "notifyCaretMovedByDom"
+                ? notifyCaretMovedByDom
+                : Reflect.get(target, property, receiver),
+      });
+      return { workspace, focusNode, notifyCaretMovedByDom };
+    };
+    const primary = buildWorkspace();
+    const secondary = buildWorkspace();
     render(
       <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
         <VaultRootContext.Provider value="/vault">
           <NotesImageResidencyProvider scopeKey="/vault">
-            <NotesWorkspaceContext.Provider value={workspace}>
-              <NotesOutlinePane />
-            </NotesWorkspaceContext.Provider>
+            <>
+              <NotesWorkspaceContext.Provider value={primary.workspace}>
+                <NotesOutlinePane />
+              </NotesWorkspaceContext.Provider>
+              <NotesWorkspaceContext.Provider value={secondary.workspace}>
+                <NotesOutlinePane />
+              </NotesWorkspaceContext.Provider>
+            </>
           </NotesImageResidencyProvider>
         </VaultRootContext.Provider>
       </NotesDateTodayProvider>,
     );
-    const first = await findTitleInput("First");
-    const second = queryTitleInput("Second")!;
-    fireEvent.focus(first);
+    const outlines = await screen.findAllByLabelText("Notes outline");
+    const titleAt = (outline: HTMLElement, index: number) =>
+      Array.from(
+        outline.querySelectorAll<HTMLTextAreaElement>(
+          'textarea[aria-label="Edit node title"]',
+        ),
+      ).find(
+        (title) => title.value === `Row ${String(index).padStart(3, "0")}`,
+      )!;
 
-    fireEvent.keyDown(first, { key: "ArrowDown" });
+    let primaryTitle = titleAt(outlines[0]!, 0);
+    fireEvent.focus(primaryTitle);
+    for (let index = 1; index <= 50; index += 1) {
+      fireEvent.keyDown(primaryTitle, {
+        key: "ArrowDown",
+        repeat: index > 1,
+      });
+      primaryTitle = titleAt(outlines[0]!, index);
+      expect(primaryTitle).toHaveFocus();
+    }
+    let secondaryTitle = titleAt(outlines[1]!, 100);
+    fireEvent.focus(secondaryTitle);
+    for (let index = 99; index >= 50; index -= 1) {
+      fireEvent.keyDown(secondaryTitle, {
+        key: "ArrowUp",
+        repeat: index < 99,
+      });
+      secondaryTitle = titleAt(outlines[1]!, index);
+      expect(secondaryTitle).toHaveFocus();
+    }
 
-    expect(second).toHaveFocus();
-    expect(focusNode).not.toHaveBeenCalled();
-    expect(notifyCaretMovedByDom).toHaveBeenCalledOnce();
-    expect(notifyCaretMovedByDom).toHaveBeenCalledWith("second", "title");
+    expect(primary.focusNode).not.toHaveBeenCalled();
+    expect(secondary.focusNode).not.toHaveBeenCalled();
+    expect(primary.notifyCaretMovedByDom).toHaveBeenCalledTimes(50);
+    expect(secondary.notifyCaretMovedByDom).toHaveBeenCalledTimes(50);
   });
 
   it("uses the state-focus fallback when the target has no title textarea", async () => {
