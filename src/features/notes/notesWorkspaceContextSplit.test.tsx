@@ -1,5 +1,5 @@
 import { act, render, renderHook, waitFor } from "@testing-library/react";
-import { memo } from "react";
+import { memo, Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NoteNode, NotesStore, NotesWorkspace } from "../../domain/notes";
 import {
@@ -7,8 +7,10 @@ import {
   NotesDraftsContext,
   NotesStateContext,
   useNotesActions,
-  useNotesDrafts
+  useNotesDrafts,
+  useNotesState,
 } from "./NotesWorkspaceContext";
+import { NotesPaneSliceScope } from "./NotesPaneScope";
 import { createOutlineVisibleSignature } from "./notesKeyboardInsertion";
 import {
   useNotesWorkspace,
@@ -530,6 +532,125 @@ describe("notes workspace context split", () => {
     expect(primaryPaneRenders).toBe(primaryBefore + 1);
     expect(secondaryPaneRenders).toBe(secondaryBefore + 2);
   });
+
+  it.each(["primary", "secondary"] as const)(
+    "keeps the inactive outline at zero commits across 50 %s caret moves",
+    async (activePaneId) => {
+      const rows = Array.from({ length: 51 }, (_, index) =>
+        node({
+          id: `row-${index}`,
+          sortKey: (index + 1) * 1024,
+        }),
+      );
+      const store = repository({
+        loadWorkspace: vi.fn().mockResolvedValue(workspace(rows)),
+      });
+      let captured: UseNotesWorkspaceHookResult | null = null;
+      const outlineCommits = { primary: 0, secondary: 0 };
+      const OutlineProbe = memo(function OutlineProbe({
+        paneId,
+      }: {
+        paneId: "primary" | "secondary";
+      }) {
+        const { state } = useNotesState();
+        useNotesDrafts();
+        return <output>{paneId}:{state.selectedId}</output>;
+      });
+
+      const Pane = memo(function Pane({
+        pane,
+        currentActivePaneId,
+      }: {
+        pane: NotesPaneRuntimeSlice;
+        currentActivePaneId: "primary" | "secondary";
+      }) {
+        return (
+          <NotesPaneSliceScope
+            pane={pane}
+            activePaneId={currentActivePaneId}
+            deferWhenInactive
+          >
+            <Profiler
+              id={`${pane.paneId}-outline`}
+              onRender={() => {
+                outlineCommits[pane.paneId] += 1;
+              }}
+            >
+              <OutlineProbe paneId={pane.paneId} />
+            </Profiler>
+          </NotesPaneSliceScope>
+        );
+      });
+
+      function Harness() {
+        const value = useNotesWorkspace({
+          vaultRoot: `/inactive-outline-${activePaneId}`,
+          repository: store,
+        });
+        captured = value;
+        const registry = value.paneRegistrySlice;
+        return (
+          <>
+            <Pane
+              pane={registry.panes.primary}
+              currentActivePaneId={registry.activePaneId}
+            />
+            <Pane
+              pane={registry.panes.secondary}
+              currentActivePaneId={registry.activePaneId}
+            />
+          </>
+        );
+      }
+
+      render(<Harness />);
+      await waitFor(() => expect(captured?.status).toBe("ready"));
+      act(() => {
+        captured!.paneRegistrySlice.setActivePaneId(activePaneId);
+      });
+      await waitFor(() =>
+        expect(captured?.paneRegistrySlice.activePaneId).toBe(activePaneId),
+      );
+      outlineCommits.primary = 0;
+      outlineCommits.secondary = 0;
+
+      const frames: FrameRequestCallback[] = [];
+      vi.stubGlobal(
+        "requestAnimationFrame",
+        (callback: FrameRequestCallback) => {
+          frames.push(callback);
+          return frames.length;
+        },
+      );
+      vi.stubGlobal("cancelAnimationFrame", vi.fn());
+
+      for (let index = 1; index <= 50; index += 1) {
+        let claim: Promise<boolean> | undefined;
+        act(() => {
+          const actions =
+            captured!.paneRegistrySlice.panes[activePaneId].actionsSlice.actions;
+          claim = actions.claimEditingFocus?.(`row-${index}`, "title");
+          actions.notifyCaretMovedByDom?.(`row-${index}`, "title");
+        });
+        await act(async () => {
+          expect(await claim).toBe(true);
+        });
+      }
+
+      const inactivePaneId =
+        activePaneId === "primary" ? "secondary" : "primary";
+      expect(frames).toHaveLength(1);
+      expect(outlineCommits[inactivePaneId]).toBe(0);
+      expect(outlineCommits[activePaneId]).toBe(0);
+
+      act(() => {
+        frames.shift()!(0);
+      });
+
+      expect(outlineCommits[inactivePaneId]).toBe(0);
+      expect(outlineCommits[activePaneId]).toBe(1);
+    },
+  );
 
   it.each([
     ["primary", "before"],

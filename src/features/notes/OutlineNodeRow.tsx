@@ -38,7 +38,11 @@ import {
   noteNodePresentationLabel,
 } from "./notesPresentation";
 import type { NotesSelectionActionIntent } from "./notesSelectionActions";
-import { markSplitPhase } from "./notesSplitLatencyProbe";
+import {
+  markCaretPhase,
+  markRowRender,
+  markSplitPhase,
+} from "./notesSplitLatencyProbe";
 import {
   focusOutlineEditorDom,
   type OutlineCaretEdge,
@@ -271,6 +275,7 @@ function OutlineNodeEditorComponent({
   locallyExpanded = false,
   showDropPlaceholder = false,
 }: OutlineNodeEditorProps) {
+  markRowRender(paneId);
   type ActionFunction = (...args: never[]) => unknown;
   const liveActionWrappersRef = useRef(new Map<PropertyKey, ActionFunction>());
   const getLiveFunction = <Scope extends object, Key extends keyof Scope>(
@@ -479,7 +484,15 @@ function OutlineNodeEditorComponent({
     ) {
       return false;
     }
+    markCaretPhase(targetNodeId, "dom-focus");
     actions.notifyCaretMovedByDom(targetNodeId, "title");
+    if (markCaretPhase(targetNodeId, "sync")) {
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(() => markCaretPhase(targetNodeId, "paint"));
+      } else {
+        markCaretPhase(targetNodeId, "paint");
+      }
+    }
     return true;
   };
 
@@ -752,6 +765,7 @@ function OutlineNodeEditorComponent({
     // this node's id opened a record at a split keydown, so ordinary focus
     // moves never log.
     markSplitPhase(nodeId, "caret");
+    markCaretPhase(nodeId, "dom-focus");
     focusedPendingIdRef.current = focusRequestId;
     if (!interactionEpoch.isCurrent(focusEpoch)) return;
     try {
@@ -759,6 +773,13 @@ function OutlineNodeEditorComponent({
         ? actions.acknowledgeFocus(nodeId, focusRequestId)
         : actions.acknowledgeFocus(nodeId);
       void Promise.resolve(acknowledgement).finally(() => {
+        if (markCaretPhase(nodeId, "sync")) {
+          if (typeof requestAnimationFrame === "function") {
+            requestAnimationFrame(() => markCaretPhase(nodeId, "paint"));
+          } else {
+            markCaretPhase(nodeId, "paint");
+          }
+        }
         if (focusTargetMarker) {
           releaseAuthoritativeFocusTarget(focusTargetMarker);
         }
@@ -1507,6 +1528,9 @@ function OutlineNodeEditorComponent({
         return;
       }
       case "focus":
+        markCaretPhase(resolution.nodeId, "keydown", {
+          visibleRows: getVisibleNodeIds().length,
+        });
         saveDrafts();
         suppressHandledBlur();
         if (
@@ -1688,6 +1712,9 @@ function OutlineNodeEditorComponent({
         );
         return;
       case "focus":
+        markCaretPhase(resolution.nodeId, "keydown", {
+          visibleRows: getVisibleNodeIds().length,
+        });
         saveDrafts();
         if (
           focusResolvedTitle(

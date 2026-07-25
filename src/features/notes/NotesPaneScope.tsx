@@ -1,9 +1,11 @@
 import {
   createContext,
   type PropsWithChildren,
-  useContext
+  useContext,
+  useDeferredValue,
 } from "react";
 import type { NotesPaneId } from "./notesPaneSession";
+import type { NotesPaneRuntimeSlice } from "./notesWorkspaceTypes";
 import {
   NotesActionsContext,
   NotesDraftsContext,
@@ -19,14 +21,45 @@ export function useNotesPaneId(): NotesPaneId {
 
 export function NotesPaneScope({
   paneId,
+  deferWhenInactive = false,
   children
-}: PropsWithChildren<{ paneId: NotesPaneId }>) {
-  const pane = useNotesPaneRegistry().panes[paneId];
+}: PropsWithChildren<{
+  paneId: NotesPaneId;
+  deferWhenInactive?: boolean;
+}>) {
+  const registry = useNotesPaneRegistry();
   return (
-    <NotesPaneIdContext.Provider value={paneId}>
+    <NotesPaneSliceScope
+      pane={registry.panes[paneId]}
+      activePaneId={registry.activePaneId}
+      deferWhenInactive={deferWhenInactive}
+    >
+      {children}
+    </NotesPaneSliceScope>
+  );
+}
+
+export function NotesPaneSliceScope({
+  pane,
+  activePaneId,
+  deferWhenInactive = false,
+  children,
+}: PropsWithChildren<{
+  pane: NotesPaneRuntimeSlice;
+  activePaneId: NotesPaneId;
+  deferWhenInactive?: boolean;
+}>) {
+  const deferredStateSlice = useDeferredValue(pane.stateSlice);
+  const deferredDraftsSlice = useDeferredValue(pane.draftsSlice);
+  const shouldDefer =
+    deferWhenInactive && activePaneId !== pane.paneId;
+  const stateSlice = shouldDefer ? deferredStateSlice : pane.stateSlice;
+  const draftsSlice = shouldDefer ? deferredDraftsSlice : pane.draftsSlice;
+  return (
+    <NotesPaneIdContext.Provider value={pane.paneId}>
       <NotesActionsContext.Provider value={pane.actionsSlice}>
-        <NotesStateContext.Provider value={pane.stateSlice}>
-          <NotesDraftsContext.Provider value={pane.draftsSlice}>
+        <NotesStateContext.Provider value={stateSlice}>
+          <NotesDraftsContext.Provider value={draftsSlice}>
             {children}
           </NotesDraftsContext.Provider>
         </NotesStateContext.Provider>

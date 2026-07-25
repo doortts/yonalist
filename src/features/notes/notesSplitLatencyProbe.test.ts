@@ -7,10 +7,13 @@ import {
   captureNotesSplitInputBenchmarkBackspaceOperation,
   configureNotesSplitInputBenchmarkVault,
   installNotesSplitInputBenchmarkCollector,
+  markCaretPhase,
   markNotesSplitInputBenchmarkBackspaceSettled,
   markNotesSplitInputBenchmarkPaneCommit,
+  markRowRender,
   markSplitPhase,
   NotesSplitInputBenchmarkProfiler,
+  resetRowRenderCounts,
   setNotesSplitLatencyProbeEnabled
 } from "./notesSplitLatencyProbe";
 
@@ -835,5 +838,109 @@ describe("notesSplitLatencyProbe", () => {
       )
     ).toEqual([["authoritative-settled"], ["authoritative-settled"]]);
     dispose();
+  });
+});
+
+describe("notesSplitLatencyProbe caret chain", () => {
+  afterEach(() => {
+    setNotesSplitLatencyProbeEnabled(false);
+    vi.restoreAllMocks();
+  });
+
+  it("emits one guarded summary spanning keydown through paint", () => {
+    const lines = captureConsole();
+    let clock = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => (clock += 4));
+    setNotesSplitLatencyProbeEnabled(true);
+
+    markCaretPhase("node-1234abcd", "keydown", { visibleRows: 42 });
+    markCaretPhase("node-1234abcd", "dom-focus");
+    markCaretPhase("node-1234abcd", "sync");
+    markCaretPhase("node-1234abcd", "paint");
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("caret-latency node-123");
+    expect(lines[0]).toContain("rows=42");
+    expect(lines[0]).toContain("total=12.0ms");
+    expect(lines[0]).toContain("keydown->dom-focus=");
+    expect(lines[0]).toContain("sync->paint=");
+  });
+
+  it("does not create a record without a keydown", () => {
+    const lines = captureConsole();
+    setNotesSplitLatencyProbeEnabled(true);
+
+    markCaretPhase("orphan", "dom-focus");
+    markCaretPhase("orphan", "sync");
+    markCaretPhase("orphan", "paint");
+
+    expect(lines).toHaveLength(0);
+  });
+
+  it("does no timing work or logging while disabled", () => {
+    const lines = captureConsole();
+    const now = vi.spyOn(performance, "now");
+    setNotesSplitLatencyProbeEnabled(false);
+
+    markCaretPhase("node-off", "keydown", { visibleRows: 3 });
+    markCaretPhase("node-off", "dom-focus");
+    markCaretPhase("node-off", "sync");
+    markCaretPhase("node-off", "paint");
+
+    expect(now).not.toHaveBeenCalled();
+    expect(lines).toHaveLength(0);
+  });
+});
+
+describe("notesSplitLatencyProbe row-render counter", () => {
+  afterEach(() => {
+    setNotesSplitLatencyProbeEnabled(false);
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("logs one accumulated count per pane after the guarded window", () => {
+    vi.useFakeTimers();
+    const lines = captureConsole();
+    setNotesSplitLatencyProbeEnabled(true);
+
+    markRowRender("primary");
+    markRowRender("primary");
+    markRowRender("secondary");
+    expect(lines).toHaveLength(0);
+
+    vi.advanceTimersByTime(100);
+
+    expect(lines).toEqual([
+      "notes row-renders pane=primary count=2",
+      "notes row-renders pane=secondary count=1"
+    ]);
+  });
+
+  it("drains counts and cancels the pending flush", () => {
+    vi.useFakeTimers();
+    const lines = captureConsole();
+    setNotesSplitLatencyProbeEnabled(true);
+    markRowRender("primary");
+    markRowRender("primary");
+
+    expect(resetRowRenderCounts()).toEqual(
+      new Map([["primary", 2]])
+    );
+    vi.advanceTimersByTime(100);
+    expect(lines).toHaveLength(0);
+  });
+
+  it("does no timer or logging work while disabled", () => {
+    vi.useFakeTimers();
+    const lines = captureConsole();
+    const schedule = vi.spyOn(globalThis, "setTimeout");
+    setNotesSplitLatencyProbeEnabled(false);
+
+    markRowRender("primary");
+
+    expect(schedule).not.toHaveBeenCalled();
+    expect(resetRowRenderCounts().size).toBe(0);
+    expect(lines).toHaveLength(0);
   });
 });

@@ -1,12 +1,8 @@
 import { createElement, Profiler, type ReactNode } from "react";
 
 /**
- * Dev-only instrumentation for the Enter->caret split latency chain (plan Phase
- * L0). Each split records `performance.now()` at a handful of phases keyed by
- * the client-generated new node id; when the caret finally lands it logs one
- * console summary line with the per-phase spans and the end-to-end total. This
- * is how we confirm which span dominates (the plan expects the split IPC round
- * trip) before committing to the optimistic path in Phase L1.
+ * Dev-only instrumentation for split, caret, and row-render latency. Records
+ * are allocated only while the development probe is enabled.
  *
  * Disabled unless the build is DEV or `localStorage["notes:splitLatency"]` is
  * "1", so it is a genuine no-op in production and in ordinary test runs. Tests
@@ -34,10 +30,17 @@ const PHASE_ORDER: readonly SplitLatencyPhase[] = [
   "caret"
 ];
 
+export type CaretLatencyPhase = "keydown" | "dom-focus" | "sync" | "paint";
+
+const CARET_PHASE_ORDER: readonly CaretLatencyPhase[] = [
+  "keydown",
+  "dom-focus",
+  "sync",
+  "paint"
+];
+
 function readDevFlag(): boolean {
-  if (import.meta.env.DEV) {
-    return true;
-  }
+  if (!import.meta.env.DEV) return false;
   try {
     return (
       typeof localStorage !== "undefined" &&
@@ -53,6 +56,8 @@ let enabled = readDevFlag();
 export function setNotesSplitLatencyProbeEnabled(value: boolean): void {
   enabled = value;
   marks.clear();
+  caretMarks.clear();
+  resetRowRenderCounts();
 }
 
 // Records survive only from a split's keydown to its caret; a split that never
@@ -60,6 +65,13 @@ export function setNotesSplitLatencyProbeEnabled(value: boolean): void {
 // no eviction policy — a session's abandoned splits are negligible.
 // ponytail: unbounded map, add an LRU cap only if a dev session ever leaks.
 const marks = new Map<string, Map<SplitLatencyPhase, number>>();
+
+type CaretRecord = {
+  times: Map<CaretLatencyPhase, number>;
+  visibleRows?: number;
+};
+
+const caretMarks = new Map<string, CaretRecord>();
 
 const SPLIT_INPUT_BENCHMARK_PORT = "1438";
 const SPLIT_INPUT_BACKSPACE_FIXTURE_ID =
@@ -847,4 +859,85 @@ function logSummary(
   console.log(
     `notes split-latency ${splitId.slice(0, 8)} total=${(end - start).toFixed(1)}ms ${spans.join(" ")}`
   );
+}
+
+function developmentProbeEnabled(): boolean {
+  return import.meta.env.DEV && enabled;
+}
+
+export function markCaretPhase(
+  nodeId: string,
+  phase: CaretLatencyPhase,
+  info?: { visibleRows?: number }
+): boolean {
+  if (!developmentProbeEnabled()) {
+    return false;
+  }
+  if (phase === "keydown") {
+    caretMarks.set(nodeId, {
+      times: new Map([["keydown", performance.now()]]),
+      visibleRows: info?.visibleRows
+    });
+    return true;
+  }
+  const record = caretMarks.get(nodeId);
+  if (!record) {
+    return false;
+  }
+  record.times.set(phase, performance.now());
+  if (phase !== "paint") {
+    return true;
+  }
+  const start = record.times.get("keydown");
+  const end = record.times.get("paint");
+  if (start !== undefined && end !== undefined) {
+    const spans: string[] = [];
+    let previousTime = start;
+    let previousName: CaretLatencyPhase = "keydown";
+    for (const currentPhase of CARET_PHASE_ORDER.slice(1)) {
+      const time = record.times.get(currentPhase);
+      if (time === undefined) continue;
+      spans.push(
+        `${previousName}->${currentPhase}=${(time - previousTime).toFixed(1)}ms`
+      );
+      previousTime = time;
+      previousName = currentPhase;
+    }
+    console.log(
+      `notes caret-latency ${nodeId.slice(0, 8)} rows=${record.visibleRows ?? "?"} total=${(end - start).toFixed(1)}ms ${spans.join(" ")}`
+    );
+  }
+  caretMarks.delete(nodeId);
+  return true;
+}
+
+const rowRenderCounts = new Map<string, number>();
+let rowRenderFlush: ReturnType<typeof setTimeout> | null = null;
+
+export function markRowRender(paneId: string): void {
+  if (!developmentProbeEnabled()) {
+    return;
+  }
+  rowRenderCounts.set(paneId, (rowRenderCounts.get(paneId) ?? 0) + 1);
+  if (rowRenderFlush === null) {
+    rowRenderFlush = setTimeout(flushRowRenderCounts, 100);
+  }
+}
+
+function flushRowRenderCounts(): void {
+  rowRenderFlush = null;
+  for (const [paneId, count] of rowRenderCounts) {
+    console.log(`notes row-renders pane=${paneId} count=${count}`);
+  }
+  rowRenderCounts.clear();
+}
+
+export function resetRowRenderCounts(): ReadonlyMap<string, number> {
+  const snapshot = new Map(rowRenderCounts);
+  rowRenderCounts.clear();
+  if (rowRenderFlush !== null) {
+    clearTimeout(rowRenderFlush);
+    rowRenderFlush = null;
+  }
+  return snapshot;
 }

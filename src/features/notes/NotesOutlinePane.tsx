@@ -133,7 +133,7 @@ import {
   protectedNotesMoveRootIds,
 } from "./notesMoveTargets";
 import { tokenizeNoteText } from "./noteTokens";
-import { directTodoProgress } from "./notesTodoProgress";
+import { buildTodoProgressMap } from "./notesTodoProgress";
 import { outlineTitleTextarea } from "./outlineDom";
 import {
   derivePreparedOutlineSelectionDropPreview,
@@ -4544,6 +4544,10 @@ export function NotesOutlinePane({
     }
     return adapted;
   }, [bodyRowById, githubProjection.rows]);
+  const todoProgressByParent = useMemo(
+    () => buildTodoProgressMap(state.nodesById, state.childIdsByParent),
+    [state.nodesById, state.childIdsByParent],
+  );
   const renderOutlineNodeItem = (
     row: FlattenedOutlineRow,
     depth = row.depth,
@@ -4562,11 +4566,7 @@ export function NotesOutlinePane({
     const attachments =
       state.attachmentsByNodeId[row.id] ?? EMPTY_NOTE_ATTACHMENTS;
     const childCount = state.childIdsByParent[row.id]?.length ?? 0;
-    const todoProgress = directTodoProgress(
-      row.id,
-      state.nodesById,
-      state.childIdsByParent,
-    );
+    const todoProgress = todoProgressByParent.get(row.id) ?? null;
     const draft = optimisticProjection.nodeOverrides.has(row.id)
       ? undefined
       : draftsByNodeId[row.id];

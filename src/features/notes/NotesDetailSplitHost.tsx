@@ -3,16 +3,19 @@ import {
   type CSSProperties,
   type FocusEvent as ReactFocusEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  memo,
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState
 } from "react";
 import { VaultRootContext } from "../../VaultRootContext";
 import { IconTooltip } from "../../components/ui/Tooltip";
 import { NotesOutlinePane } from "./NotesOutlinePane";
-import { NotesPaneScope } from "./NotesPaneScope";
+import { NotesPaneSliceScope } from "./NotesPaneScope";
 import { NotesSplitDndContext } from "./NotesSplitDndContext";
 import {
   useNotesActions,
@@ -26,6 +29,7 @@ import {
   type NotesSplitLayoutStateV1
 } from "./notesSplitLayoutStore";
 import { NotesSplitInputBenchmarkProfiler } from "./notesSplitLatencyProbe";
+import type { NotesPaneRuntimeSlice } from "./notesWorkspaceTypes";
 
 const RATIO_STEP = 0.02;
 const PRIMARY_EDITOR_SELECTOR = [
@@ -36,6 +40,36 @@ const PRIMARY_EDITOR_SELECTOR = [
   ".notes-image-atom-editor[contenteditable='true']"
 ].join(",");
 
+const NotesScopedPane = memo(function NotesScopedPane({
+  pane,
+  activePaneId,
+  deferWhenInactive,
+  toolbarTrailing,
+}: {
+  pane: NotesPaneRuntimeSlice;
+  activePaneId: "primary" | "secondary";
+  deferWhenInactive: boolean;
+  toolbarTrailing?: ReactNode;
+}) {
+  const outline = useMemo(
+    () => (
+      <NotesSplitInputBenchmarkProfiler paneId={pane.paneId}>
+        <NotesOutlinePane toolbarTrailing={toolbarTrailing} />
+      </NotesSplitInputBenchmarkProfiler>
+    ),
+    [pane.paneId, toolbarTrailing],
+  );
+  return (
+    <NotesPaneSliceScope
+      pane={pane}
+      activePaneId={activePaneId}
+      deferWhenInactive={deferWhenInactive}
+    >
+      {outline}
+    </NotesPaneSliceScope>
+  );
+});
+
 function boundedRatio(value: number): number {
   return Math.min(0.75, Math.max(0.25, value));
 }
@@ -45,6 +79,8 @@ export function NotesDetailSplitHost() {
   const { actions } = useNotesActions();
   const { state } = useNotesState();
   const registry = useNotesPaneRegistry();
+  const registryRef = useRef(registry);
+  registryRef.current = registry;
   const splitOpenButtonRef = useRef<HTMLButtonElement>(null);
   const primaryPaneRef = useRef<HTMLDivElement>(null);
   const lastPrimaryEditorRef = useRef<HTMLElement | null>(null);
@@ -163,13 +199,14 @@ export function NotesDetailSplitHost() {
 
   const closeSplit = useCallback(async () => {
     if (!(await actions.flushAllDrafts())) return;
-    registry.panes.secondary.actionsSlice.actions.releaseEditingFocus?.();
-    if (registry.activePaneId === "secondary") {
-      registry.setActivePaneId("primary");
+    const currentRegistry = registryRef.current;
+    currentRegistry.panes.secondary.actionsSlice.actions.releaseEditingFocus?.();
+    if (currentRegistry.activePaneId === "secondary") {
+      currentRegistry.setActivePaneId("primary");
     }
     setLayout((current) => ({ ...current, splitOpen: false }));
     requestAnimationFrame(() => focusPrimaryEditor());
-  }, [actions, focusPrimaryEditor, registry]);
+  }, [actions, focusPrimaryEditor]);
 
   const changeRatio = useCallback((delta: number) => {
     setLayout((current) => ({
@@ -206,32 +243,40 @@ export function NotesDetailSplitHost() {
     []
   );
 
-  const splitOpenControl = !layout.splitOpen ? (
-    <IconTooltip label="Open split view" side="bottom">
-      <button
-        ref={splitOpenButtonRef}
-        className="notes-export-trigger notes-split-toggle"
-        type="button"
-        aria-label="Open split view"
-        onClick={openSplit}
-      >
-        <Columns2 size={16} aria-hidden="true" />
-      </button>
-    </IconTooltip>
-  ) : undefined;
+  const splitOpenControl = useMemo(
+    () =>
+      !layout.splitOpen ? (
+        <IconTooltip label="Open split view" side="bottom">
+          <button
+            ref={splitOpenButtonRef}
+            className="notes-export-trigger notes-split-toggle"
+            type="button"
+            aria-label="Open split view"
+            onClick={openSplit}
+          >
+            <Columns2 size={16} aria-hidden="true" />
+          </button>
+        </IconTooltip>
+      ) : undefined,
+    [layout.splitOpen, openSplit],
+  );
 
-  const splitCloseControl = layout.splitOpen ? (
-    <IconTooltip label="Close split view" side="bottom">
-      <button
-        className="notes-export-trigger notes-split-toggle"
-        type="button"
-        aria-label="Close split view"
-        onClick={() => void closeSplit()}
-      >
-        <PanelRightClose size={16} aria-hidden="true" />
-      </button>
-    </IconTooltip>
-  ) : undefined;
+  const splitCloseControl = useMemo(
+    () =>
+      layout.splitOpen ? (
+        <IconTooltip label="Close split view" side="bottom">
+          <button
+            className="notes-export-trigger notes-split-toggle"
+            type="button"
+            aria-label="Close split view"
+            onClick={() => void closeSplit()}
+          >
+            <PanelRightClose size={16} aria-hidden="true" />
+          </button>
+        </IconTooltip>
+      ) : undefined,
+    [closeSplit, layout.splitOpen],
+  );
 
   return (
     <NotesSplitDndContext>
@@ -251,11 +296,12 @@ export function NotesDetailSplitHost() {
         onFocusCapture={rememberPrimaryEditor}
         onPointerDownCapture={() => registry.setActivePaneId("primary")}
       >
-        <NotesSplitInputBenchmarkProfiler paneId="primary">
-          <NotesPaneScope paneId="primary">
-            <NotesOutlinePane toolbarTrailing={splitOpenControl} />
-          </NotesPaneScope>
-        </NotesSplitInputBenchmarkProfiler>
+        <NotesScopedPane
+          pane={registry.panes.primary}
+          activePaneId={registry.activePaneId}
+          deferWhenInactive={layout.splitOpen}
+          toolbarTrailing={splitOpenControl}
+        />
       </div>
       {layout.splitOpen && (
         <div
@@ -285,11 +331,12 @@ export function NotesDetailSplitHost() {
           data-notes-pane-id="secondary"
           onPointerDownCapture={() => registry.setActivePaneId("secondary")}
         >
-          <NotesSplitInputBenchmarkProfiler paneId="secondary">
-            <NotesPaneScope paneId="secondary">
-              <NotesOutlinePane toolbarTrailing={splitCloseControl} />
-            </NotesPaneScope>
-          </NotesSplitInputBenchmarkProfiler>
+          <NotesScopedPane
+            pane={registry.panes.secondary}
+            activePaneId={registry.activePaneId}
+            deferWhenInactive={layout.splitOpen}
+            toolbarTrailing={splitCloseControl}
+          />
         </div>
       )}
       </div>
