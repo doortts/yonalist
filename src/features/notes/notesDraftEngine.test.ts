@@ -1096,6 +1096,151 @@ describe("NotesDraftEngine", () => {
       expect(store.updateNode).toHaveBeenCalledOnce();
     });
 
+    it.each(["discard", "reset", "readonly"] as const)(
+      "terminates a retired late failure after cancel then %s",
+      async (invalidation) => {
+        vi.useFakeTimers();
+        const baselineWrite = deferred<NotesWorkspace>();
+        const store = repository({
+          updateNode: vi.fn().mockReturnValue(baselineWrite.promise),
+        });
+        const { engine, host } = createHarness({ store });
+        engine.updateNodeDraft("root", {
+          title: `before ${invalidation}`,
+          note: "",
+          imageOffsetUtf16: 0,
+        });
+        const oldHistory =
+          engine.record.draftHistoryContextByNodeId.get("root")!;
+        const lease = engine.beginBackspaceGesture(30, "root")!;
+        await flushMicrotasks();
+
+        lease.settle("cancelled");
+        if (invalidation === "discard") {
+          engine.discardPendingDrafts();
+        } else if (invalidation === "reset") {
+          engine.resetAfterDataDeletion();
+        } else {
+          engine.reconcileReadonlyAuthority(
+            workspace([node({ id: "root", isReadonly: true })]),
+          );
+        }
+        engine.updateNodeDraft("root", {
+          title: `after ${invalidation}`,
+          note: "later",
+          imageOffsetUtf16: 5,
+        });
+        const laterHistory =
+          engine.record.draftHistoryContextByNodeId.get("root")!;
+        engine.pauseForAuthorityRecovery();
+        baselineWrite.reject(new Error("late disk failure"));
+        await engine.record.writeQueue.flush();
+
+        expect(engine.getDraftsSnapshot().root).toMatchObject({
+          title: `after ${invalidation}`,
+          note: "later",
+          imageOffsetUtf16: 5,
+          status: "pending",
+        });
+        expect(engine.record.failedWritesByNodeId.size).toBe(0);
+        expect(engine.getWriteErrorSnapshot()).toBeNull();
+        expect(host.discardHistoryEntry).toHaveBeenCalledOnce();
+        expect(host.discardHistoryEntry).toHaveBeenCalledWith(oldHistory);
+        expect(host.discardHistoryEntry).not.toHaveBeenCalledWith(laterHistory);
+        expect(host.completeHistoryOwner).not.toHaveBeenCalledWith(
+          oldHistory.entryId,
+        );
+        expect(host.completeHistoryOwner).not.toHaveBeenCalledWith(
+          laterHistory.entryId,
+        );
+        expect(engine.record.backspaceHistoryOwnersByAttemptId.size).toBe(0);
+        expect(store.updateNode).toHaveBeenCalledOnce();
+      },
+    );
+
+    it("removes an owner when preflight finishes before cancellation", async () => {
+      vi.useFakeTimers();
+      const store = repository();
+      const { engine, host } = createHarness({ store });
+      engine.updateNodeDraft("root", {
+        title: "before preflight",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      const attempt = engine.record.retryWriteByNodeId.get("root")!;
+      engine.record.manualRetryAttemptIds.add(attempt.attemptId);
+      const oldHistory =
+        engine.record.draftHistoryContextByNodeId.get("root")!;
+      const lease = engine.beginBackspaceGesture(31, "root")!;
+
+      await expect(lease.prepare([])).resolves.toMatchObject({
+        baselineFlushed: false,
+      });
+      engine.pauseForAuthorityRecovery();
+      lease.settle("cancelled");
+      engine.updateNodeDraft("root", {
+        title: "after preflight",
+        note: "later",
+        imageOffsetUtf16: 6,
+      });
+      const laterHistory =
+        engine.record.draftHistoryContextByNodeId.get("root")!;
+
+      expect(engine.record.backspaceHistoryOwnersByAttemptId.size).toBe(0);
+      expect(host.discardHistoryEntry).toHaveBeenCalledOnce();
+      expect(host.discardHistoryEntry).toHaveBeenCalledWith(oldHistory);
+      expect(host.discardHistoryEntry).not.toHaveBeenCalledWith(laterHistory);
+      expect(host.completeHistoryOwner).not.toHaveBeenCalledWith(
+        oldHistory.entryId,
+      );
+      expect(host.completeHistoryOwner).not.toHaveBeenCalledWith(
+        laterHistory.entryId,
+      );
+      expect(store.updateNode).not.toHaveBeenCalled();
+    });
+
+    it("removes an owner when an unknown outcome finishes before failure settlement", async () => {
+      vi.useFakeTimers();
+      const store = repository();
+      const { engine, host } = createHarness({ store });
+      vi.spyOn(host, "persistDraftMutation").mockRejectedValueOnce(
+        new Error("unknown outcome"),
+      );
+      engine.updateNodeDraft("root", {
+        title: "before unknown",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
+      const oldHistory =
+        engine.record.draftHistoryContextByNodeId.get("root")!;
+      const lease = engine.beginBackspaceGesture(32, "root")!;
+
+      await expect(lease.prepare([])).resolves.toMatchObject({
+        baselineFlushed: false,
+      });
+      engine.pauseForAuthorityRecovery();
+      lease.settle("failed");
+      engine.updateNodeDraft("root", {
+        title: "after unknown",
+        note: "later",
+        imageOffsetUtf16: 7,
+      });
+      const laterHistory =
+        engine.record.draftHistoryContextByNodeId.get("root")!;
+
+      expect(engine.record.backspaceHistoryOwnersByAttemptId.size).toBe(0);
+      expect(host.discardHistoryEntry).toHaveBeenCalledOnce();
+      expect(host.discardHistoryEntry).toHaveBeenCalledWith(oldHistory);
+      expect(host.discardHistoryEntry).not.toHaveBeenCalledWith(laterHistory);
+      expect(host.completeHistoryOwner).not.toHaveBeenCalledWith(
+        oldHistory.entryId,
+      );
+      expect(host.completeHistoryOwner).not.toHaveBeenCalledWith(
+        laterHistory.entryId,
+      );
+      expect(store.updateNode).not.toHaveBeenCalled();
+    });
+
     it("invalidates a lease before readonly authority retires its draft", async () => {
       vi.useFakeTimers();
       const baselineWrite = deferred<NotesWorkspace>();

@@ -78,6 +78,7 @@ interface BackspaceHistoryOwner {
   readonly nodeId: NoteId;
   readonly context: NotesHistoryContext;
   status: "owned" | "retired";
+  terminal: boolean;
 }
 
 /**
@@ -966,7 +967,10 @@ export class NotesDraftEngine {
     const record = this.record;
     const historyOwnerWasRetired =
       this.takeBackspaceBaselineHistoryOwner(attempt);
-    if (attempt.generation !== record.draftGeneration) {
+    if (
+      historyOwnerWasRetired ||
+      attempt.generation !== record.draftGeneration
+    ) {
       return false;
     }
     const { nodeId, draft, historyContext } = attempt;
@@ -1097,14 +1101,14 @@ export class NotesDraftEngine {
       (this.retiredDraftRevisionByNodeId.get(scheduledAttempt.nodeId) ?? 0) >=
         scheduledAttempt.draft.revision
     ) {
-      this.deleteRetiredBackspaceBaselineHistoryOwner(scheduledAttempt);
+      this.markBackspaceBaselineAttemptTerminal(scheduledAttempt);
       return false;
     }
     if (
       record.authorityRecoveryPaused ||
       record.manualRetryAttemptIds.has(scheduledAttempt.attemptId)
     ) {
-      this.deleteRetiredBackspaceBaselineHistoryOwner(scheduledAttempt);
+      this.markBackspaceBaselineAttemptTerminal(scheduledAttempt);
       return false;
     }
     const cutoff = record.structuralIntents.at(0)?.cutoff;
@@ -1113,7 +1117,7 @@ export class NotesDraftEngine {
       cutoff !== undefined &&
       scheduledAttempt.draft.revision > cutoff
     ) {
-      this.deleteRetiredBackspaceBaselineHistoryOwner(scheduledAttempt);
+      this.markBackspaceBaselineAttemptTerminal(scheduledAttempt);
       return false;
     }
     const attempt =
@@ -1181,7 +1185,7 @@ export class NotesDraftEngine {
     }
 
     if (!result) {
-      this.deleteRetiredBackspaceBaselineHistoryOwner(attempt);
+      this.markBackspaceBaselineAttemptTerminal(attempt);
       if (outcome === "failed") {
         this.markDispatchedAttemptManualRetry(attempt.attemptId);
       }
@@ -1218,7 +1222,7 @@ export class NotesDraftEngine {
       record.authorityRecoveryPaused ||
       record.manualRetryAttemptIds.has(attempt.attemptId)
     ) {
-      this.deleteRetiredBackspaceBaselineHistoryOwner(attempt);
+      this.markBackspaceBaselineAttemptTerminal(attempt);
       return Promise.resolve(false);
     }
     return this.persistDraft(attempt);
@@ -1247,19 +1251,26 @@ export class NotesDraftEngine {
     return owner.status === "retired";
   }
 
-  private deleteRetiredBackspaceBaselineHistoryOwner(
+  private markBackspaceBaselineAttemptTerminal(
     attempt: DraftWriteAttempt,
   ): void {
     const owners = this.record.backspaceHistoryOwnersByAttemptId;
-    if (owners.get(attempt.attemptId)?.status === "retired") {
-      owners.delete(attempt.attemptId);
+    const owner = owners.get(attempt.attemptId);
+    if (!owner) {
+      return;
     }
+    if (owner.status === "retired") {
+      owners.delete(attempt.attemptId);
+      return;
+    }
+    owner.terminal = true;
   }
 
   private discardBackspaceBaselineHistoryOwners(
     state: BackspaceDraftLeaseState,
     nodeIds?: ReadonlySet<NoteId>,
   ): void {
+    const owners = this.record.backspaceHistoryOwnersByAttemptId;
     for (const [nodeId, owner] of state.baselineHistoryOwners) {
       if (nodeIds && !nodeIds.has(nodeId)) {
         continue;
@@ -1269,6 +1280,9 @@ export class NotesDraftEngine {
         owner.status = "retired";
       }
       state.baselineHistoryOwners.delete(nodeId);
+      if (owner.attemptId && owner.terminal) {
+        owners.delete(owner.attemptId);
+      }
     }
   }
 
@@ -1310,6 +1324,7 @@ export class NotesDraftEngine {
         nodeId,
         context: historyContext,
         status: "owned",
+        terminal: false,
       };
       state.baselineHistoryOwners.set(nodeId, owner);
       if (owner.attemptId) {
