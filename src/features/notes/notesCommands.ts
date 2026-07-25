@@ -2521,11 +2521,26 @@ export async function applyBackspaceGestureCommand(
       input.historyContext
     )
   );
-  const projection = await projectNotesMutation(
-    context,
-    mutation,
-    context.sourceScope
-  );
+  let projection: ProjectedNotesMutation;
+  try {
+    projection = await projectNotesMutation(
+      context,
+      mutation,
+      context.sourceScope
+    );
+  } catch (cause) {
+    throw Object.assign(
+      cause instanceof Error
+        ? cause
+        : new Error("Backspace projection is unavailable."),
+      { notesMutationOutcome: "unknown" as const }
+    );
+  }
+  if (projection.projectionError) {
+    throw Object.assign(new Error(projection.projectionError), {
+      notesMutationOutcome: "unknown" as const
+    });
+  }
   const result = directMutationResult(
     mutation,
     projection,

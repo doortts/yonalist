@@ -529,6 +529,81 @@ describe("outline row memoization", () => {
     expect(exported.$$typeof).toBe(Symbol.for("react.memo"));
   });
 
+  it("does not drain an active Backspace gesture when its same-Vault action facade is replaced", async () => {
+    const store = repository([
+      node({ id: "survivor", sortKey: 1, title: "Keep" }),
+      node({ id: "empty", sortKey: 2, title: "" }),
+    ]);
+    const firstFinish = vi.fn(async () => "skipped" as const);
+    const firstTransform = (slice: NotesActionsSlice): NotesActionsSlice => ({
+      ...slice,
+      actions: {
+        ...slice.actions,
+        finishBackspaceGesture: firstFinish,
+      },
+    });
+    const rendered = render(
+      <Harness store={store} actionsTransform={firstTransform} />,
+    );
+    const empty = (await screen.findByDisplayValue(
+      "",
+    )) as HTMLTextAreaElement;
+    empty.focus();
+    empty.setSelectionRange(0, 0);
+
+    expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
+    await waitFor(() => expect(titleInput("survivor")).toHaveFocus());
+    firstFinish.mockClear();
+
+    const secondFinish = vi.fn(async () => "skipped" as const);
+    const secondTransform = (slice: NotesActionsSlice): NotesActionsSlice => ({
+      ...slice,
+      actions: {
+        ...slice.actions,
+        finishBackspaceGesture: secondFinish,
+      },
+    });
+    rendered.rerender(
+      <Harness store={store} actionsTransform={secondTransform} />,
+    );
+    await act(async () => Promise.resolve());
+
+    expect(firstFinish).not.toHaveBeenCalled();
+    captured?.actions.cancelBackspaceGesture?.();
+  });
+
+  it("drains an active Backspace gesture when the pane actually unmounts", async () => {
+    const store = repository([
+      node({ id: "survivor", sortKey: 1, title: "Keep" }),
+      node({ id: "empty", sortKey: 2, title: "" }),
+    ]);
+    const finish = vi.fn(async () => "skipped" as const);
+    const transform = (slice: NotesActionsSlice): NotesActionsSlice => ({
+      ...slice,
+      actions: {
+        ...slice.actions,
+        finishBackspaceGesture: finish,
+      },
+    });
+    const rendered = render(
+      <Harness store={store} actionsTransform={transform} />,
+    );
+    const empty = (await screen.findByDisplayValue(
+      "",
+    )) as HTMLTextAreaElement;
+    empty.focus();
+    empty.setSelectionRange(0, 0);
+    expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
+    await waitFor(() => expect(titleInput("survivor")).toHaveFocus());
+    finish.mockClear();
+
+    rendered.unmount();
+    await act(async () => Promise.resolve());
+
+    expect(finish).toHaveBeenCalledOnce();
+    expect(finish).toHaveBeenCalledWith("drain");
+  });
+
   it("reports a successful keyboard insertion preparation to the pane", async () => {
     const store = repository([node({ id: "leaf", title: "Leaf" })]);
     const prepared = vi.fn();

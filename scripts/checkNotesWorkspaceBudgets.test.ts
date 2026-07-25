@@ -28,6 +28,24 @@ describe("Notes workspace architecture budgets", () => {
     ).toThrow(/notesWorkspaceRuntime\.ts lines actual=1501 budget=1500/);
   });
 
+  it("enforces a no-increase limit for every extracted production module", () => {
+    const extractedPath =
+      "src/features/notes/notesBackspaceRuntime.ts";
+    expect(() =>
+      checkNotesWorkspaceBudgets({
+        ...fixture({
+          [productionPath]: lines(1),
+          [extractedPath]: lines(101),
+        }),
+        productionFiles: [productionPath, extractedPath],
+        productionLineBudgets: {
+          [productionPath]: 1_500,
+          [extractedPath]: 100,
+        },
+      }),
+    ).toThrow(/notesBackspaceRuntime\.ts lines actual=101 budget=100/);
+  });
+
   it("rejects the integration test above 5,500 lines", () => {
     expect(() =>
       checkNotesWorkspaceBudgets(fixture({ [integrationPath]: lines(5_501) }))

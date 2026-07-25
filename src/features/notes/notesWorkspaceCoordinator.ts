@@ -1432,20 +1432,26 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       const provenHistoryStatus = unclassifiedHistoryProven
         ? historyStatus
         : undefined;
-      let decision: NotesUnknownOutcomeDecision = provenHistoryStatus
-        ? {
-            kind: "committedAndCurrent",
-            workspace,
-            historyStatus: provenHistoryStatus
-          }
-        : recoverUnknownOutcome({
-            expectation,
-            authority: {
-              kind: "loaded",
-              workspace,
-              ...(historyStatus ? { historyStatus } : {})
+      let decision: NotesUnknownOutcomeDecision =
+        expectation.kind === "unclassified" && !historyStatus
+          ? {
+              kind: "authorityUnknown",
+              error: AUTHORITY_RECOVERY_INSTRUCTION
             }
-          });
+          : provenHistoryStatus
+            ? {
+                kind: "committedAndCurrent",
+                workspace,
+                historyStatus: provenHistoryStatus
+              }
+            : recoverUnknownOutcome({
+                expectation,
+                authority: {
+                  kind: "loaded",
+                  workspace,
+                  ...(historyStatus ? { historyStatus } : {})
+                }
+              });
       if (decision.kind === "committedWithoutHistoryProof") {
         const recoveredWorkspace = decision.workspace;
         const snapshot = preferredSession?.captureHistoryLocation?.() ?? null;

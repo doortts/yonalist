@@ -11,36 +11,44 @@ export const notesWorkspaceBudgets = Object.freeze({
   allTestOrderObservations: 283
 });
 
-export const notesWorkspaceProductionFiles = Object.freeze([
-  "src/features/notes/useNotesWorkspace.ts",
-  "src/features/notes/notesWorkspaceRuntime.ts",
-  "src/features/notes/notesWorkspaceSettlementRuntime.ts",
-  "src/features/notes/notesWorkspaceTypes.ts",
-  "src/features/notes/notesAuthorityRecovery.ts",
-  "src/features/notes/notesWorkspaceIdentity.ts",
-  "src/features/notes/notesWorkspaceProjection.ts",
-  "src/features/notes/notesWorkspaceCommandSupport.ts",
-  "src/features/notes/notesKeyboardInsertion.ts",
-  "src/features/notes/outlineRowProjection.ts",
-  "src/features/notes/outlineInteractionEpoch.ts",
-  "src/features/notes/outlineIdleBaseline.ts",
-  "src/features/notes/OutlineSortableShell.tsx",
-  "src/features/notes/notesDataDeletionRegistry.ts",
-  "src/features/notes/notesDraftErrors.ts",
-  "src/features/notes/notesWorkspaceNavigationSupport.ts",
-  "src/features/notes/notesImageImportRecovery.ts",
-  "src/features/notes/notesImageAtomAuthority.ts",
-  "src/features/notes/useNotesHistoryController.ts",
-  "src/features/notes/useNotesDraftWorkflow.ts",
-  "src/features/notes/useNotesCommandActions.ts",
-  "src/features/notes/useNotesLibraryController.ts",
-  "src/features/notes/useNotesAttachmentWorkflow.ts",
-  "src/features/notes/useNotesSelectionController.ts",
-  "src/features/notes/useNotesEditingLease.ts",
-  "src/features/notes/notesPaneHistory.ts",
-  "src/features/notes/useNotesPaneSessions.ts",
-  "src/features/notes/useNotesWorkspacePaneRegistry.ts"
-]);
+export const notesWorkspaceProductionLineBudgets = Object.freeze({
+  "src/features/notes/useNotesWorkspace.ts": 1_500,
+  "src/features/notes/notesWorkspaceRuntime.ts": 1_500,
+  "src/features/notes/notesWorkspaceSettlementRuntime.ts": 1_500,
+  "src/features/notes/notesWorkspaceTypes.ts": 1_500,
+  "src/features/notes/notesAuthorityRecovery.ts": 1_500,
+  "src/features/notes/notesWorkspaceIdentity.ts": 1_500,
+  "src/features/notes/notesWorkspaceProjection.ts": 1_500,
+  "src/features/notes/notesWorkspaceCommandSupport.ts": 1_500,
+  "src/features/notes/notesKeyboardInsertion.ts": 1_500,
+  "src/features/notes/outlineRowProjection.ts": 1_500,
+  "src/features/notes/outlineInteractionEpoch.ts": 1_500,
+  "src/features/notes/outlineIdleBaseline.ts": 1_500,
+  "src/features/notes/OutlineSortableShell.tsx": 1_500,
+  "src/features/notes/notesDataDeletionRegistry.ts": 1_500,
+  "src/features/notes/notesDraftErrors.ts": 1_500,
+  "src/features/notes/notesWorkspaceNavigationSupport.ts": 1_500,
+  "src/features/notes/notesImageImportRecovery.ts": 1_500,
+  "src/features/notes/notesImageAtomAuthority.ts": 1_500,
+  "src/features/notes/useNotesHistoryController.ts": 1_500,
+  "src/features/notes/useNotesDraftWorkflow.ts": 1_500,
+  "src/features/notes/useNotesCommandActions.ts": 1_500,
+  "src/features/notes/useNotesLibraryController.ts": 1_500,
+  "src/features/notes/useNotesAttachmentWorkflow.ts": 1_500,
+  "src/features/notes/useNotesSelectionController.ts": 1_500,
+  "src/features/notes/useNotesEditingLease.ts": 1_500,
+  "src/features/notes/notesPaneHistory.ts": 1_500,
+  "src/features/notes/useNotesPaneSessions.ts": 1_500,
+  "src/features/notes/useNotesWorkspacePaneRegistry.ts": 1_500,
+  "src/features/notes/notesBackspaceRuntime.ts": 159,
+  "src/features/notes/notesBufferedWorkspaceCommands.ts": 31,
+  "src/features/notes/useNotesImageAtomRuntime.ts": 187,
+  "src/features/notes/useNotesWorkspaceExternalStores.ts": 66
+});
+
+export const notesWorkspaceProductionFiles = Object.freeze(
+  Object.keys(notesWorkspaceProductionLineBudgets)
+);
 
 export const notesWorkspaceIntegrationTest =
   "src/features/notes/useNotesWorkspace.test.tsx";
@@ -102,6 +110,7 @@ function actualInputs() {
       [...paths].map((path) => [path, readFileSync(resolve(path), "utf8")])
     ),
     productionFiles: [...notesWorkspaceProductionFiles],
+    productionLineBudgets: notesWorkspaceProductionLineBudgets,
     integrationTestFile: notesWorkspaceIntegrationTest,
     testFiles
   };
@@ -111,6 +120,7 @@ export function checkNotesWorkspaceBudgets(inputs = actualInputs()) {
   const {
     files,
     productionFiles,
+    productionLineBudgets = notesWorkspaceProductionLineBudgets,
     integrationTestFile,
     testFiles
   } = inputs;
@@ -118,10 +128,12 @@ export function checkNotesWorkspaceBudgets(inputs = actualInputs()) {
   const productionLines = {};
   for (const path of productionFiles) {
     const actual = lineCount(files[path] ?? "");
+    const budget =
+      productionLineBudgets[path] ?? notesWorkspaceBudgets.productionLines;
     productionLines[path] = actual;
-    if (actual > notesWorkspaceBudgets.productionLines) {
+    if (actual > budget) {
       violations.push(
-        `${path} lines actual=${actual} budget=${notesWorkspaceBudgets.productionLines}`
+        `${path} lines actual=${actual} budget=${budget}`
       );
     }
   }
@@ -170,7 +182,9 @@ export function checkNotesWorkspaceBudgets(inputs = actualInputs()) {
 function run() {
   const result = checkNotesWorkspaceBudgets();
   for (const [path, lines] of Object.entries(result.productionLines)) {
-    console.log(`${path} lines=${lines}/${notesWorkspaceBudgets.productionLines}`);
+    console.log(
+      `${path} lines=${lines}/${notesWorkspaceProductionLineBudgets[path]}`
+    );
   }
   console.log(
     `${notesWorkspaceIntegrationTest} lines=${result.integrationLines}/${notesWorkspaceBudgets.integrationLines}`

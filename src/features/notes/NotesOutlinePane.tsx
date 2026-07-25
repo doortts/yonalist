@@ -191,7 +191,7 @@ import {
   markNotesSplitInputBenchmarkBackspaceSettled,
 } from "./notesSplitLatencyProbe";
 import type { NotesWorkspaceCommandOutcome } from "./notesWorkspaceCoordinator";
-import { observeBackspaceGestureTerminalOutcome } from "./notesWorkspaceRuntimeLifecycle";
+import { observeBackspaceGestureTerminalOutcome } from "./notesBackspaceRuntime";
 import {
   detectOutlineShortcutPlatform,
   resolveNotesHistoryShortcut,
@@ -784,11 +784,11 @@ export function NotesOutlinePane({
     }
     interactionDisposeTokenRef.current = token;
     return () => {
-      const finishing =
-        token.finishBackspaceGesture?.("drain") ?? Promise.resolve();
       queueMicrotask(() => {
         if (token.cancelled) return;
         token.epoch.dispose();
+        const finishing =
+          token.finishBackspaceGesture?.("drain") ?? Promise.resolve();
         void finishing.finally(() => token.unregister?.(paneId));
       });
     };

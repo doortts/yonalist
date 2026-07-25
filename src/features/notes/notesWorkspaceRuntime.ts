@@ -93,20 +93,25 @@ import {
   useNotesAttachmentWorkflowState,
 } from "./useNotesAttachmentWorkflow";
 import {
+  enqueueBufferedWorkspaceCommands,
+  resolveBufferedWorkspaceCommands,
+} from "./notesBufferedWorkspaceCommands";
+import {
   useNotesHistoryController,
   type BufferedWorkspaceCommand,
 } from "./useNotesHistoryController";
 import {
-  currentNotesNavigation,
-  enqueueBufferedWorkspaceCommands,
   registerCoordinatorSessionForDraftEngine,
-  resolveBufferedWorkspaceCommands,
   shutdownAfterBackspaceDrain,
+} from "./notesBackspaceRuntime";
+import {
   useNotesDataDeletionExternalStore,
   useNotesDraftExternalStore,
+} from "./useNotesWorkspaceExternalStores";
+import {
   useNotesImageAtomAuthorityLifecycle,
   useNotesImageAtomEditorRuntime,
-} from "./notesWorkspaceRuntimeLifecycle";
+} from "./useNotesImageAtomRuntime";
 
 export type { ResolvedHistoryLocation } from "./notesWorkspaceNavigationSupport";
 export { resetImageImportRecoveryForTests } from "./notesImageImportRecovery";
@@ -140,6 +145,19 @@ export {
   isNotesDraftsFlushFailedError,
   NOTES_DRAFTS_FLUSH_FAILED_CODE,
 } from "./notesDraftErrors";
+
+function currentNotesNavigation(
+  state: NormalizedNotesWorkspace,
+  editing: NotesHistoryFocus | null,
+): LiveNotesNavigation {
+  return {
+    selectedId: editing ? editing.nodeId : state.selectedId,
+    zoomRootId: state.zoomRootId,
+    editingNoteId: editing ? editing.nodeId : state.editingNoteId,
+    pendingFocusId: state.pendingFocusId,
+    pendingFocusField: editing ? editing.field : state.pendingFocusField,
+  };
+}
 
 // Scope equality and tag-filter canonicalization live in one module so the
 // coordinator and this hook compare scopes the same, key-order-independent way.

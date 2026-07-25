@@ -12006,6 +12006,117 @@ describe("Notes workspace", () => {
     expect(anyTitleIn(outlines[0], "")).not.toHaveFocus();
   });
 
+  it("restores all five initially empty rows with one Cmd+Z after a held Backspace settles", async () => {
+    vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+    const before = [
+      node({ id: "survivor", sortKey: 1, title: "Keep" }),
+      node({ id: "empty-a", sortKey: 2, title: "" }),
+      node({ id: "empty-b", sortKey: 3, title: "" }),
+      node({ id: "empty-c", sortKey: 4, title: "" }),
+      node({ id: "empty-d", sortKey: 5, title: "" }),
+      node({ id: "empty-e", sortKey: 6, title: "" }),
+    ];
+    configureRepository(before);
+    const batch = deferred<NotesMutationResponse>();
+    let historyContext: NotesHistoryContext | null = null;
+    notesStoreMock.applyBatch.mockImplementation(
+      async (
+        _vaultRoot: string,
+        _input: ApplyNotesBatchInput,
+        context: NotesHistoryContext,
+      ) => {
+        historyContext = context;
+        return batch.promise;
+      },
+    );
+    renderSplitNotesWorkspace();
+    const outlines = await screen.findAllByLabelText("Notes outline");
+    const titleIn = (outline: HTMLElement, nodeId: string) =>
+      outline.querySelector<HTMLTextAreaElement>(
+        `[data-outline-motion-id="${nodeId}"] textarea[aria-label="Edit node title"]`,
+      );
+    const primary = outlines[0];
+    const starting = titleIn(primary, "empty-e");
+    expect(starting).not.toBeNull();
+    starting!.focus();
+    starting!.setSelectionRange(0, 0);
+
+    expect(fireEvent.keyDown(starting!, { key: "Backspace" })).toBe(false);
+    await waitFor(() => expect(titleIn(primary, "empty-d")).toHaveFocus());
+    expect(titleIn(outlines[1], "empty-e")).toBeNull();
+    expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+
+    for (const [removedId, focusId] of [
+      ["empty-d", "empty-c"],
+      ["empty-c", "empty-b"],
+      ["empty-b", "empty-a"],
+      ["empty-a", "survivor"],
+    ] as const) {
+      const current = titleIn(primary, removedId);
+      expect(current).not.toBeNull();
+      current!.setSelectionRange(0, 0);
+      expect(
+        fireEvent.keyDown(current!, { key: "Backspace", repeat: true }),
+      ).toBe(false);
+      await waitFor(() => expect(titleIn(primary, focusId)).toHaveFocus());
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+    }
+
+    fireEvent.keyUp(window, { key: "Backspace" });
+    await waitFor(() => expect(historyContext).not.toBeNull());
+    const committedContext = historyContext!;
+    notesStoreMock.historyStatus.mockResolvedValue(
+      historyState({
+        canUndo: true,
+        nextUndoEntryId: committedContext.entryId,
+      }),
+    );
+    notesStoreMock.undo.mockResolvedValue({
+      kind: "applied",
+      workspace: workspace(before),
+      replayedEntryId: committedContext.entryId,
+      ...historyState({
+        canRedo: true,
+        nextRedoEntryId: committedContext.entryId,
+      }),
+    });
+    await act(async () =>
+      batch.resolve({
+        workspace: workspace([before[0]]),
+        historyEntryId: committedContext.entryId,
+        ...historyState({
+          canUndo: true,
+          nextUndoEntryId: committedContext.entryId,
+        }),
+      }),
+    );
+    await waitFor(() =>
+      expect(primary).toHaveAttribute("aria-busy", "false"),
+    );
+
+    expect(
+      fireEvent.keyDown(titleIn(primary, "survivor")!, {
+        key: "z",
+        metaKey: true,
+      }),
+    ).toBe(false);
+    await waitFor(() => expect(notesStoreMock.undo).toHaveBeenCalledOnce());
+    for (const outline of outlines) {
+      for (const nodeId of [
+        "empty-a",
+        "empty-b",
+        "empty-c",
+        "empty-d",
+        "empty-e",
+      ]) {
+        expect(titleIn(outline, nodeId)).not.toBeNull();
+      }
+    }
+    await waitFor(() => expect(titleIn(primary, "empty-e")).toHaveFocus());
+    expect(titleIn(primary, "empty-e")?.selectionStart).toBe(0);
+    expect(titleIn(primary, "empty-e")?.selectionEnd).toBe(0);
+  });
+
   it("does not batch repeated Backspace on note, attachment, readonly, or plugin rows", async () => {
     const noteId = "note-protected";
     const attachmentId = "attachment-protected";

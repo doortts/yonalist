@@ -10,7 +10,7 @@ import {
   observeBackspaceGestureTerminalOutcome,
   registerCoordinatorSessionForDraftEngine,
   shutdownAfterBackspaceDrain
-} from "./notesWorkspaceRuntimeLifecycle";
+} from "./notesBackspaceRuntime";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -99,6 +99,42 @@ describe("Notes Backspace runtime lifecycle", () => {
     await expect(lifecycle.finish(firstKey, "keyup")).resolves.toBe("skipped");
     expect(first.coordinator.finishBackspaceGesture).toHaveBeenCalledOnce();
     expect(second.coordinator.finishBackspaceGesture).toHaveBeenCalledOnce();
+  });
+
+  it("does not join a different pane to an active gesture with the same binding", () => {
+    const completion = deferred<NotesWorkspaceCommandOutcome>();
+    const active = session(1, completion.promise);
+    const bindingKey = {};
+    const lifecycle = createNotesBackspaceGestureRuntimeLifecycle();
+    const binding = {
+      key: bindingKey,
+      session: active.coordinator,
+      beginDraftLease: () => active.draftLease
+    };
+
+    const primaryHandle = lifecycle.begin(
+      binding,
+      {
+        ownerPaneId: "primary",
+        nodeId: "primary-empty",
+        selection: { anchorUtf16: 0, focusUtf16: 0 }
+      },
+      vi.fn()
+    );
+    const secondaryHandle = lifecycle.begin(
+      binding,
+      {
+        ownerPaneId: "secondary",
+        nodeId: "secondary-empty",
+        selection: { anchorUtf16: 0, focusUtf16: 0 }
+      },
+      vi.fn()
+    );
+
+    expect(primaryHandle).not.toBeNull();
+    expect(secondaryHandle).toBeNull();
+    expect(active.coordinator.beginBackspaceGesture).toHaveBeenCalledOnce();
+    lifecycle.cancel(bindingKey);
   });
 
   it("does not shut down a draft engine until a checking Backspace drain reaches a terminal outcome", async () => {

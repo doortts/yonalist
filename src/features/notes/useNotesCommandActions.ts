@@ -74,7 +74,7 @@ import type { NotesPaneId } from "./notesPaneSession";
 import type { NotesLibraryStateController } from "./useNotesLibraryController";
 import {
   createNotesBackspaceGestureRuntimeLifecycle
-} from "./notesWorkspaceRuntimeLifecycle";
+} from "./notesBackspaceRuntime";
 import type { NotesBackspaceDraftLease } from "./notesWorkspaceTypes";
 
 interface LiveRef<T> {
