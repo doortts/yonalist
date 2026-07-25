@@ -126,8 +126,6 @@ export function useNotesDraftWorkflow({
   const markEditingFocus = useCallback(
     (nodeId: NoteId, field: NotesHistoryFocusField): void => {
       retirePendingPrimarySelection();
-      const current = editingFocusRef.current;
-      if (current?.nodeId === nodeId && current.field === field) return;
       navigationVersionRef.current += 1;
       editingFocusRef.current = { nodeId, field };
     },
