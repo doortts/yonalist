@@ -87,11 +87,13 @@ const notesStoreMock = vi.hoisted(() => ({
   listTagsWithCounts: vi.fn(),
   deleteDatabase: vi.fn(),
   repairData: vi.fn(),
+  syncFlush: vi.fn(),
 }));
 
 vi.mock("../../services/notesStore", () => ({
   notesStore: notesStoreMock,
-  notesRepairData: notesStoreMock.repairData
+  notesRepairData: notesStoreMock.repairData,
+  notesSyncFlush: notesStoreMock.syncFlush,
 }));
 
 import { NotesFeatureProvider } from "./NotesFeature";
@@ -642,6 +644,7 @@ function configureRepository(
     backedUpFileCount: 1,
     backupPath: "/vault/.yonalist/notes-repair-backups/repair-1",
   });
+  notesStoreMock.syncFlush.mockResolvedValue(undefined);
   const defaultMutationMethods = [
     "createNode",
     "materializeGithubNotificationAndCreateSibling",
@@ -1179,6 +1182,175 @@ describe("Notes workspace", () => {
       kind: "active",
     });
     expect("__TAURI_INTERNALS__" in window).toBe(false);
+  });
+
+  it("moves a caret directly and does not call the state-focus fallback", async () => {
+    const workspace: UseNotesWorkspaceResult = rowReplayWorkspace();
+    const state = normalizeWorkspace({
+      nodes: [
+        node({ id: "first", sortKey: 1, title: "First" }),
+        node({ id: "second", sortKey: 2, title: "Second" }),
+      ],
+    });
+    state.pendingFocusId = null;
+    state.pendingFocusField = null;
+    workspace.state = state;
+    workspace.pendingPrimarySelection = null;
+    const focusNode = vi.fn().mockResolvedValue(undefined);
+    const notifyCaretMovedByDom = vi.fn();
+    workspace.actions = new Proxy(workspace.actions, {
+      get: (target, property, receiver) =>
+        property === "focusNode"
+          ? focusNode
+          : property === "notifyCaretMovedByDom"
+            ? notifyCaretMovedByDom
+            : Reflect.get(target, property, receiver),
+    });
+    render(
+      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
+        <VaultRootContext.Provider value="/vault">
+          <NotesImageResidencyProvider scopeKey="/vault">
+            <NotesWorkspaceContext.Provider value={workspace}>
+              <NotesOutlinePane />
+            </NotesWorkspaceContext.Provider>
+          </NotesImageResidencyProvider>
+        </VaultRootContext.Provider>
+      </NotesDateTodayProvider>,
+    );
+    const first = await findTitleInput("First");
+    const second = queryTitleInput("Second")!;
+    fireEvent.focus(first);
+
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+
+    expect(second).toHaveFocus();
+    expect(focusNode).not.toHaveBeenCalled();
+    expect(notifyCaretMovedByDom).toHaveBeenCalledOnce();
+    expect(notifyCaretMovedByDom).toHaveBeenCalledWith("second", "title");
+  });
+
+  it("uses the state-focus fallback when the target has no title textarea", async () => {
+    const workspace: UseNotesWorkspaceResult = rowReplayWorkspace();
+    const state = normalizeWorkspace({
+      nodes: [
+        node({ id: "first", sortKey: 1, title: "First" }),
+        node({
+          id: "image",
+          sortKey: 2,
+          title: "image.png",
+          nodeKind: "image",
+        }),
+      ],
+    });
+    state.pendingFocusId = null;
+    state.pendingFocusField = null;
+    workspace.state = state;
+    workspace.pendingPrimarySelection = null;
+    const focusNode = vi.fn().mockResolvedValue(undefined);
+    const notifyCaretMovedByDom = vi.fn();
+    workspace.actions = new Proxy(workspace.actions, {
+      get: (target, property, receiver) =>
+        property === "focusNode"
+          ? focusNode
+          : property === "notifyCaretMovedByDom"
+            ? notifyCaretMovedByDom
+            : Reflect.get(target, property, receiver),
+    });
+    render(
+      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
+        <VaultRootContext.Provider value="/vault">
+          <NotesImageResidencyProvider scopeKey="/vault">
+            <NotesWorkspaceContext.Provider value={workspace}>
+              <NotesOutlinePane />
+            </NotesWorkspaceContext.Provider>
+          </NotesImageResidencyProvider>
+        </VaultRootContext.Provider>
+      </NotesDateTodayProvider>,
+    );
+    const first = await findTitleInput("First");
+
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+
+    expect(notifyCaretMovedByDom).not.toHaveBeenCalled();
+    expect(focusNode).toHaveBeenCalledOnce();
+    expect(focusNode).toHaveBeenCalledWith("image");
+  });
+
+  it("moves 50 repeated carets directly in both split panes without late refocus", async () => {
+    const before = Array.from({ length: 101 }, (_, index) =>
+      node({
+        id: `row-${index}`,
+        sortKey: index + 1,
+        title: `Row ${String(index).padStart(3, "0")}`,
+      }),
+    );
+    configureRepository(before);
+    renderSplitNotesWorkspace();
+    const outlines = await screen.findAllByLabelText("Notes outline");
+    expect(outlines).toHaveLength(2);
+    const titleAt = (outline: HTMLElement, index: number) =>
+      Array.from(
+        outline.querySelectorAll<HTMLTextAreaElement>(
+          'textarea[aria-label="Edit node title"]',
+        ),
+      ).find(
+        (title) => title.value === `Row ${String(index).padStart(3, "0")}`,
+      ) ?? null;
+    await waitFor(() => {
+      expect(titleAt(outlines[0]!, 0)).not.toBeNull();
+      expect(titleAt(outlines[1]!, 100)).not.toBeNull();
+    });
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+
+    let primary = titleAt(outlines[0]!, 0)!;
+    fireEvent.focus(primary);
+    for (let index = 1; index <= 50; index += 1) {
+      fireEvent.keyDown(primary, {
+        key: "ArrowDown",
+        repeat: index > 1,
+      });
+      primary = titleAt(outlines[0]!, index)!;
+      expect(primary).toHaveFocus();
+    }
+
+    fireEvent.pointerDown(
+      outlines[1]!.closest<HTMLElement>(
+        '[data-notes-pane-id="secondary"]',
+      )!,
+    );
+    let secondary = titleAt(outlines[1]!, 100)!;
+    fireEvent.focus(secondary);
+    for (let index = 99; index >= 50; index -= 1) {
+      fireEvent.keyDown(secondary, {
+        key: "ArrowUp",
+        repeat: index < 99,
+      });
+      secondary = titleAt(outlines[1]!, index)!;
+      expect(secondary).toHaveFocus();
+    }
+
+    expect(frames).toHaveLength(2);
+    await act(async () => {
+      for (const frame of frames.splice(0)) {
+        frame(0);
+      }
+    });
+    await act(async () => undefined);
+
+    expect(secondary).toHaveFocus();
+    expect(titleAt(outlines[0]!, 50)?.closest(".notes-node")).toHaveAttribute(
+      "data-selected",
+      "true",
+    );
+    expect(secondary.closest(".notes-node")).toHaveAttribute(
+      "data-selected",
+      "true",
+    );
   });
 
   it("repairs unknown write authority and reports the result after remount", async () => {
@@ -12374,12 +12546,14 @@ describe("Notes workspace", () => {
     );
     renderNotesWorkspace();
     const empty = await findTitleInput("");
-    empty.focus();
     empty.setSelectionRange(0, 0);
 
     expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
     expect(queryTitleInput("")).not.toBeInTheDocument();
-    expect(await findTitleInput("First")).toHaveFocus();
+    const first = queryTitleInput("First")!;
+    expect(first).toHaveFocus();
+    expect(first.selectionStart).toBe(first.value.length);
+    expect(first.selectionEnd).toBe(first.value.length);
     expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
 
     fireEvent.keyUp(window, { key: "Backspace" });

@@ -63,6 +63,7 @@ import { emptyHistoryState } from "./notesWorkspaceCommandSupport";
 import type { OptimisticInsertionSnapshot } from "./notesKeyboardInsertion";
 import type { OptimisticBackspaceGesture } from "./notesBackspaceGesture";
 import * as settlementRuntime from "./notesWorkspaceSettlementRuntime";
+import { useNotesDirectCaretReconciliation } from "./useNotesDirectCaretReconciliation";
 import type {
   LiveNotesNavigation,
   NotesActionsSlice,
@@ -321,7 +322,6 @@ export function useNotesWorkspace({
       snapshot: NotesHistorySnapshot,
     ) => boolean
   >(() => false);
-
   // Advance the pure reducer mirror before React and retire superseded live focus.
   const applyAction = useCallback(
     (action: NotesWorkspaceReducerAction): void => {
@@ -364,7 +364,7 @@ export function useNotesWorkspace({
       // Navigation invalidates any live selection range before the next render.
       if (
         selectionRef.current !== null &&
-        (action.type === "focusNode" ||
+        (action.type === "focusNode" || action.type === "caretMovedByDom" ||
           action.type === "setZoomRoot" ||
           action.type === "startWorkspaceLoad")
       ) {
@@ -373,7 +373,11 @@ export function useNotesWorkspace({
     },
     [selectionRef, updateSelection],
   );
-
+  const { notifyCaretMovedByDom, cancelPendingCaretMove } =
+    useNotesDirectCaretReconciliation({
+      pendingPrimarySelectionRef, navigationVersionRef, editingFocusRef,
+      closedRef, applyAction,
+    });
   const retirePendingPrimarySelection = useCallback((): void => {
     const pendingPrimarySelection = pendingPrimarySelectionRef.current;
     if (pendingPrimarySelection === null) return;
@@ -429,6 +433,7 @@ export function useNotesWorkspace({
     [applyAction, vaultRoot],
   );
   useLayoutEffect(() => {
+    cancelPendingCaretMove();
     closedRef.current = false;
     outlineCompositionActiveRef.current = false;
     pendingNavigationRef.current = null;
@@ -777,6 +782,7 @@ export function useNotesWorkspace({
   }, [
     discardAttachmentUploadAttempts,
     clearAttachmentUploadUi,
+    cancelPendingCaretMove,
     prepareAttachmentUploadAttemptsForTeardown,
     releaseFinalizedDetachedAttachmentUploadAttempts,
     invalidateTagSummaries,
@@ -1133,6 +1139,11 @@ export function useNotesWorkspace({
           markEditingFocus(nodeId, field);
         }
       },
+      notifyCaretMovedByDom: (nodeId, field) => {
+        if (!writesUnavailable()) {
+          notifyCaretMovedByDom(nodeId, field);
+        }
+      },
       getNavigationVersion,
       prepareKeyboardInsertion: (input) =>
         writesUnavailable() ? null : prepareKeyboardInsertion(input),
@@ -1265,6 +1276,7 @@ export function useNotesWorkspace({
     acknowledgeFocus,
     focusNode,
     markEditingFocus,
+    notifyCaretMovedByDom,
     getNavigationVersion,
     prepareKeyboardInsertion,
     beginBackspaceGesture,

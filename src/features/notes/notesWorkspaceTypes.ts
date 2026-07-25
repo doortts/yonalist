@@ -266,6 +266,10 @@ export interface NotesWorkspaceActions {
     selection?: NotesHistoryPrimarySelection
   ): Promise<void>;
   markEditingFocus?(nodeId: NoteId, field: NotesHistoryFocusField): void;
+  notifyCaretMovedByDom?(
+    nodeId: NoteId,
+    field: NotesHistoryFocusField
+  ): void;
   getNavigationVersion?(): number;
   prepareKeyboardInsertion?(
     input: NotesKeyboardInsertionRequest

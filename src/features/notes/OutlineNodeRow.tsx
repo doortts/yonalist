@@ -39,7 +39,10 @@ import {
 } from "./notesPresentation";
 import type { NotesSelectionActionIntent } from "./notesSelectionActions";
 import { markSplitPhase } from "./notesSplitLatencyProbe";
-import { outlineTitleTextarea } from "./outlineDom";
+import {
+  focusOutlineEditorDom,
+  type OutlineCaretEdge,
+} from "./outlineDomFocus";
 import type { NotesSelection } from "./notesWorkspaceReducer";
 import {
   buildNotesMoveDestinations,
@@ -445,15 +448,39 @@ function OutlineNodeEditorComponent({
       : null;
   };
 
-  const focusVisibleTitle = (
-    source: HTMLTextAreaElement,
+  const focusResolvedTitle = (
+    source: HTMLElement,
     targetNodeId: NoteId,
-  ): void => {
-    const outline = source.closest<HTMLElement>(".notes-outline-content");
-    const target = outlineTitleTextarea(outline, targetNodeId);
-    if (!target || target.disabled) return;
-    target.focus();
-    target.setSelectionRange(0, 0);
+    selection?: NotesHistoryPrimarySelection,
+    overrideEdge?: OutlineCaretEdge,
+  ): boolean => {
+    const paneRoot = source.closest<HTMLElement>(".notes-outline");
+    if (!paneRoot || !actions.notifyCaretMovedByDom) return false;
+    const edge =
+      overrideEdge ??
+      (selection === undefined
+        ? null
+        : selection.anchorUtf16 === Number.MAX_SAFE_INTEGER &&
+            selection.focusUtf16 === Number.MAX_SAFE_INTEGER
+          ? "end"
+          : selection.anchorUtf16 === 0 && selection.focusUtf16 === 0
+            ? "start"
+            : {
+                start: selection.anchorUtf16,
+                end: selection.focusUtf16,
+              });
+    if (
+      !focusOutlineEditorDom(
+        paneRoot,
+        targetNodeId,
+        "title",
+        edge,
+      )
+    ) {
+      return false;
+    }
+    actions.notifyCaretMovedByDom(targetNodeId, "title");
+    return true;
   };
 
   const extendSelectionToThisRow = (anchorId: NoteId | null): void => {
@@ -1482,6 +1509,15 @@ function OutlineNodeEditorComponent({
       case "focus":
         saveDrafts();
         suppressHandledBlur();
+        if (
+          focusResolvedTitle(
+            event.currentTarget,
+            resolution.nodeId,
+            resolution.selection,
+          )
+        ) {
+          return;
+        }
         void (resolution.selection
           ? actions.focusNode(resolution.nodeId, resolution.selection)
           : actions.focusNode(resolution.nodeId));
@@ -1537,11 +1573,19 @@ function OutlineNodeEditorComponent({
         suppressHandledBlur();
         const focusNodeId = resolution.focusNodeId;
         if (focusNodeId !== null) {
-          focusVisibleTitle(event.currentTarget, focusNodeId);
-          void actions.focusNode(focusNodeId, {
-            anchorUtf16: 0,
-            focusUtf16: 0,
-          });
+          if (
+            !focusResolvedTitle(
+              event.currentTarget,
+              focusNodeId,
+              undefined,
+              "end",
+            )
+          ) {
+            void actions.focusNode(focusNodeId, {
+              anchorUtf16: Number.MAX_SAFE_INTEGER,
+              focusUtf16: Number.MAX_SAFE_INTEGER,
+            });
+          }
         }
         actions.removeEmptyNodeInBackspaceGesture?.(
           backspaceGestureToken,
@@ -1645,6 +1689,15 @@ function OutlineNodeEditorComponent({
         return;
       case "focus":
         saveDrafts();
+        if (
+          focusResolvedTitle(
+            event.currentTarget,
+            resolution.nodeId,
+            resolution.selection,
+          )
+        ) {
+          return;
+        }
         void (resolution.selection
           ? actions.focusNode(resolution.nodeId, resolution.selection)
           : actions.focusNode(resolution.nodeId));

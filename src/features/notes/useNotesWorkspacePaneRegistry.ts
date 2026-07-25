@@ -18,6 +18,7 @@ import type { NotesPaneSessionState } from "./notesPaneSession";
 import type { OptimisticKeyboardInsertion } from "./notesKeyboardInsertion";
 import type { NotesPaneSessionsController } from "./useNotesPaneSessions";
 import type { NotesEditingLeaseController } from "./useNotesEditingLease";
+import { useNotesFrameReconciler } from "./useNotesFrameReconciler";
 import {
   cloneOwnedHistorySnapshot,
   type NavigationIntent
@@ -302,6 +303,45 @@ export function useNotesWorkspacePaneRegistry({
     },
     [dispatchPane, getPaneSession]
   );
+  const { enqueue: enqueueSecondaryCaretMove } =
+    useNotesFrameReconciler<{
+      readonly nodeId: string;
+      readonly nodesById: NormalizedNotesWorkspace["nodesById"];
+    }>((pending) => {
+      if (
+        pending.nodesById !== stateRef.current.nodesById ||
+        stateRef.current.nodesById[pending.nodeId] === undefined
+      ) {
+        return;
+      }
+      dispatchPane("secondary", {
+        type: "setPendingPrimarySelection",
+        request: null
+      });
+      dispatchPane("secondary", {
+        type: "setSelection",
+        selection: null
+      });
+      dispatchPane("secondary", {
+        type: "setNavigation",
+        patch: {
+          selectedId: pending.nodeId,
+          editingNoteId: pending.nodeId,
+          pendingFocusId: null,
+          pendingFocusField: null
+        }
+      });
+    });
+  const notifySecondaryCaretMovedByDom = useCallback(
+    (nodeId: string): void => {
+      setActivePaneId("secondary");
+      enqueueSecondaryCaretMove({
+        nodeId,
+        nodesById: stateRef.current.nodesById
+      });
+    },
+    [enqueueSecondaryCaretMove, setActivePaneId]
+  );
   const secondaryActions = useMemo<NotesWorkspaceActions>(
     () => ({
       ...actionsSlice.actions,
@@ -392,6 +432,7 @@ export function useNotesWorkspacePaneRegistry({
           }
         });
       },
+      notifyCaretMovedByDom: notifySecondaryCaretMovedByDom,
       getNavigationVersion: () =>
         getPaneSession("secondary").navigationVersion,
       zoomTo: async (nodeId) => {
@@ -462,6 +503,7 @@ export function useNotesWorkspacePaneRegistry({
       dispatchPane,
       getPaneSession,
       navigateWithHistory,
+      notifySecondaryCaretMovedByDom,
       setPaneComposition,
       setActivePaneId,
       state.nodesById,
