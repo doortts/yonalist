@@ -1,7 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import type { ComponentType, PropsWithChildren, ReactNode } from "react";
 
-export type FeatureId = "inbox" | "notes" | "settings";
+export type FeatureId = "notes" | "settings";
 
 export type FeatureNavigationSection = "workspace" | "app";
 
@@ -11,7 +11,6 @@ export interface FeaturePanes {
 }
 
 export interface FeatureRenderContext {
-  renderInboxPanes: () => FeaturePanes;
   renderSettingsPanes: () => FeaturePanes;
 }
 
@@ -21,7 +20,6 @@ export interface FeatureMetadata {
   icon: LucideIcon;
   section: FeatureNavigationSection;
   order: number;
-  requiresGithubAuth: boolean;
   /**
    * When true the feature's panes stay mounted (hidden) while another feature
    * is active, instead of being torn down on every switch. Reserved for

@@ -33,6 +33,20 @@ function ControlledPane({
 }
 
 describe("SettingsCategoryPane (Base UI vertical Tabs)", () => {
+  it("omits Inbox project and queue settings", () => {
+    expect(settingsSections.map(({ key }) => key)).toEqual([
+      "appearance",
+      "servers",
+      "vault",
+      "notes",
+      "plugins",
+      "reset"
+    ]);
+    expect(settingsSections.find(({ key }) => key === "notes")?.label).toBe(
+      "Yonalist"
+    );
+  });
+
   it("renders each settings section as a tab inside a vertical tablist", () => {
     render(<SettingsCategoryPane section="appearance" onSelect={vi.fn()} />);
 
@@ -69,12 +83,12 @@ describe("SettingsCategoryPane (Base UI vertical Tabs)", () => {
     expect(onSelect).toHaveBeenCalledWith("reset");
   });
 
-  it("offers Notes as a settings category", async () => {
+  it("offers Yonalist as a settings category", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
     render(<SettingsCategoryPane section="appearance" onSelect={onSelect} />);
 
-    await user.click(screen.getByRole("tab", { name: /Notes/ }));
+    await user.click(screen.getByRole("tab", { name: /Yonalist/ }));
 
     expect(onSelect).toHaveBeenCalledWith("notes");
   });
@@ -96,7 +110,7 @@ describe("SettingsCategoryPane (Base UI vertical Tabs)", () => {
     const onSelect = vi.fn();
     render(<ControlledPane initial="notes" onSelect={onSelect} />);
 
-    screen.getByRole("tab", { name: /Notes/ }).focus();
+    screen.getByRole("tab", { name: /Yonalist/ }).focus();
     await user.keyboard("{ArrowDown}");
 
     expect(

@@ -1,15 +1,13 @@
 import { NotebookPen } from "lucide-react";
-import { inboxFeature } from "../inbox/InboxFeature";
 import { settingsFeature } from "../settings/SettingsFeature";
 import type { FeatureDefinition, FeatureId } from "./featureTypes";
 
 const notesFeature: FeatureDefinition = {
   id: "notes",
-  label: "Notes",
+  label: "Yonalist",
   icon: NotebookPen,
   section: "workspace",
   order: 20,
-  requiresGithubAuth: false,
   // Notes owns a live workspace session. Retain its runtime and mounted panes
   // after the first activation so drafts, scroll, and edit focus survive
   // navigation without putting Notes in the Inbox startup graph.
@@ -21,13 +19,11 @@ const notesFeature: FeatureDefinition = {
 };
 
 export const featureRegistry: readonly FeatureDefinition[] = [
-  inboxFeature,
   notesFeature,
   settingsFeature
 ];
 
 const definitionsById: Record<FeatureId, FeatureDefinition> = {
-  inbox: inboxFeature,
   notes: notesFeature,
   settings: settingsFeature
 };

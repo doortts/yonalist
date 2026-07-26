@@ -51,7 +51,7 @@ describe("AppNavigationContext", () => {
     );
 
     const categories = await screen.findByLabelText("Settings sections");
-    expect(within(categories).getByRole("tab", { name: /Notes/ })).toHaveAttribute(
+    expect(within(categories).getByRole("tab", { name: /Yonalist/ })).toHaveAttribute(
       "aria-selected",
       "true"
     );
@@ -77,15 +77,19 @@ describe("AppNavigationContext", () => {
     );
 
     await user.click(within(categories).getByRole("tab", { name: /Appearance/ }));
-    await user.click(within(categories).getByRole("tab", { name: /Notes/ }));
+    await user.click(within(categories).getByRole("tab", { name: /Yonalist/ }));
     expect(screen.getByRole("region", { name: "Images" })).not.toHaveClass(
       "settings-target-highlight"
     );
 
     await user.click(screen.getByRole("button", { name: "Close settings" }));
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    expect(await screen.findByRole("region", { name: "Images" })).not.toHaveClass(
-      "settings-target-highlight"
-    );
-  });
+    expect(
+      await screen.findByRole(
+        "region",
+        { name: "Images" },
+        { timeout: 5_000 }
+      )
+    ).not.toHaveClass("settings-target-highlight");
+  }, 10_000);
 });

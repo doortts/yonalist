@@ -2,10 +2,6 @@ export type MarkdownStyle = "github" | "yona";
 
 export interface AppSettings {
   vaultFolder: string;
-  syncQueuedOnReconnect: boolean;
-  cacheLinkedAttachments: boolean;
-  downloadCommentsWhileSyncing: boolean;
-  prefetchVisibleItems: boolean;
   desktopNotifications: boolean;
   markdownStyle: MarkdownStyle;
   githubNotificationsPluginEnabled: boolean;
@@ -17,10 +13,6 @@ export interface AppSettings {
 
 export const defaultSettings: AppSettings = {
   vaultFolder: "~/Yonalist",
-  syncQueuedOnReconnect: true,
-  cacheLinkedAttachments: true,
-  downloadCommentsWhileSyncing: true,
-  prefetchVisibleItems: true,
   desktopNotifications: true,
   markdownStyle: "github",
   githubNotificationsPluginEnabled: true,
@@ -52,15 +44,6 @@ export function normalizeGithubNotificationsReadRetentionDays(
 export function normalizeSettings(settings: Partial<AppSettings> = {}): AppSettings {
   return {
     vaultFolder: settings.vaultFolder ?? defaultSettings.vaultFolder,
-    syncQueuedOnReconnect:
-      settings.syncQueuedOnReconnect ?? defaultSettings.syncQueuedOnReconnect,
-    cacheLinkedAttachments:
-      settings.cacheLinkedAttachments ?? defaultSettings.cacheLinkedAttachments,
-    downloadCommentsWhileSyncing:
-      settings.downloadCommentsWhileSyncing ??
-      defaultSettings.downloadCommentsWhileSyncing,
-    prefetchVisibleItems:
-      settings.prefetchVisibleItems ?? defaultSettings.prefetchVisibleItems,
     desktopNotifications:
       settings.desktopNotifications ?? defaultSettings.desktopNotifications,
     markdownStyle:
@@ -92,10 +75,6 @@ export function normalizeSettings(settings: Partial<AppSettings> = {}): AppSetti
 export function settingsNeedNormalization(settings: Partial<AppSettings>): boolean {
   return (
     settings.vaultFolder === undefined ||
-    settings.syncQueuedOnReconnect === undefined ||
-    settings.cacheLinkedAttachments === undefined ||
-    settings.downloadCommentsWhileSyncing === undefined ||
-    settings.prefetchVisibleItems === undefined ||
     settings.desktopNotifications === undefined ||
     settings.markdownStyle !== normalizeSettings(settings).markdownStyle ||
     settings.githubNotificationsPluginEnabled === undefined ||

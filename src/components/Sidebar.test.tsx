@@ -1,95 +1,67 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { Sidebar } from "./Sidebar";
+import type { FeatureId } from "../features/core/featureTypes";
+import { Sidebar, type SidebarProps } from "./Sidebar";
 
-function renderSidebar(
-  featureNavigation: {
-    activeFeatureId?: "inbox" | "notes" | "settings";
-    onFeatureChange?: (featureId: "inbox" | "notes" | "settings") => void;
-  } = {}
-) {
-  return render(
-    <Sidebar
-      online
-      loginRequired={false}
-      onToggleOnline={vi.fn()}
-      filter="all"
-      onFilterChange={vi.fn()}
-      repositoryFilter="yonalist/workflowy"
-      onRepositoryFilterChange={vi.fn()}
-      repositoryGroups={[
-        {
-          owner: "yonalist",
-          repositories: [
-            {
-              owner: "yonalist",
-              name: "workflowy",
-              fullName: "yonalist/workflowy",
-              openIssuesCount: 4,
-              pushedAt: "2026-07-10T00:00:00Z",
-              participating: true,
-              watched: false,
-              orgMember: false
-            }
-          ]
-        }
-      ]}
-      repositoriesLoading={false}
-      counts={{
-        all: 12,
-        favorites: 2,
-        issues: 7,
-        pulls: 3,
-        discussions: 2
-      }}
-      settingsOpen={false}
-      onOpenSettings={vi.fn()}
-      onOpenProjectSettings={vi.fn()}
-      notificationsOpen={false}
-      onOpenNotifications={vi.fn()}
-      unreadNotificationCount={0}
-      notificationsLoading={false}
-      {...featureNavigation}
-    />
-  );
+function renderSidebar(overrides: Partial<SidebarProps> = {}) {
+  const props: SidebarProps = {
+    online: true,
+    loginRequired: false,
+    onToggleOnline: vi.fn(),
+    activeFeatureId: "notes",
+    onFeatureChange: vi.fn(),
+    onOpenSettings: vi.fn(),
+    ...overrides
+  };
+  return { ...render(<Sidebar {...props} />), props };
 }
 
 describe("Sidebar", () => {
-  it("shows Notifications without a GitHub section heading", () => {
-    renderSidebar();
+  it("shows only Yonalist and Settings navigation", () => {
+    renderSidebar({ activeFeatureId: "notes" });
 
-    expect(screen.getByRole("button", { name: /^Notifications/ })).toBeInTheDocument();
-    expect(
-      screen.queryByRole("heading", { name: "GitHub" })
-    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Yonalist" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.queryByText("GitHub Inbox")).toBeNull();
+    expect(screen.queryByText("Notifications")).toBeNull();
+    expect(screen.queryByText("Favorites")).toBeNull();
+    expect(screen.queryByText("Repository")).toBeNull();
   });
 
-  it("shows Favorites before All items in the Inbox section", () => {
-    renderSidebar();
+  it("selects a workspace feature from the compiled registry", async () => {
+    const onFeatureChange = vi.fn<(featureId: FeatureId) => void>();
+    renderSidebar({ activeFeatureId: "settings", onFeatureChange });
 
-    const favorites = screen.getByRole("button", { name: /^Favorites/ });
-    const allItems = screen.getByRole("button", { name: /^All items/ });
-
-    expect(
-      favorites.compareDocumentPosition(allItems) &
-        Node.DOCUMENT_POSITION_FOLLOWING
-    ).toBeTruthy();
-  });
-
-  it("keeps the main workspaces visible and hides Inbox details while Notes is active", async () => {
-    const onFeatureChange = vi.fn();
-    renderSidebar({ activeFeatureId: "notes", onFeatureChange });
-
-    const notes = screen.getByRole("button", { name: "Notes" });
-    expect(screen.getByRole("heading", { name: "Notes" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "GitHub Inbox" })).toBeInTheDocument();
-    expect(notes).toHaveAttribute("aria-pressed", "true");
-    expect(screen.queryByRole("button", { name: /^All items/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^workflowy\s*4/ })).toBeNull();
-
-    await userEvent.setup().click(notes);
+    await userEvent.setup().click(
+      screen.getByRole("button", { name: "Yonalist" })
+    );
 
     expect(onFeatureChange).toHaveBeenCalledWith("notes");
+  });
+
+  it("keeps sign-in and connectivity controls", async () => {
+    const onToggleOnline = vi.fn();
+    const onOpenSettings = vi.fn();
+    renderSidebar({
+      online: false,
+      loginRequired: true,
+      onToggleOnline,
+      onOpenSettings
+    });
+
+    expect(screen.getByText("Offline")).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", {
+      name: "Login required"
+    }));
+    expect(onOpenSettings).toHaveBeenCalledOnce();
+
+    await userEvent.setup().click(screen.getByRole("button", {
+      name: "Go online"
+    }));
+    expect(onToggleOnline).toHaveBeenCalledOnce();
   });
 });

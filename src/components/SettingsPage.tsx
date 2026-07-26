@@ -27,13 +27,10 @@ import {
 } from "../appSettings";
 import type { UseGithubAuthResult } from "../hooks/useGithubAuth";
 import type { UseGithubServersResult } from "../hooks/useGithubServers";
-import type { UseProjectVisibilityResult } from "../hooks/useProjectVisibility";
 import type { DarkTheme, LightTheme, ThemeMode } from "../hooks/useTheme";
 import type { ResetProgressState, ResetProgressStepStatus } from "../resetProgress";
-import type { OwnerGroup } from "../services/githubItems";
 import { GithubServersSection } from "./GithubServersSection";
 import { MarkdownStyleComparison } from "./MarkdownStyleComparison";
-import { ProjectsVisibilitySection } from "./ProjectsVisibilitySection";
 import { settingsSections, type SettingsSection } from "./SettingsCategoryPane";
 import { ConfirmDialog } from "./ui/ConfirmDialog";
 
@@ -52,8 +49,6 @@ interface SettingsPageProps {
   onDarkThemeChange: (theme: DarkTheme) => void;
   servers: UseGithubServersResult;
   auth: UseGithubAuthResult;
-  repositoryGroups: OwnerGroup[];
-  projectVisibility: UseProjectVisibilityResult;
   onUpdate: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
   onBrowseVaultFolder: (current: string) => Promise<string | null>;
   onSave: (event: FormEvent, vaultFolder: string) => void;
@@ -147,8 +142,6 @@ export function SettingsPage({
   onDarkThemeChange,
   servers,
   auth,
-  repositoryGroups,
-  projectVisibility,
   onUpdate,
   onBrowseVaultFolder,
   onSave,
@@ -356,13 +349,6 @@ export function SettingsPage({
           <GithubServersSection servers={servers} auth={auth} />
         )}
 
-        {section === "projects" && (
-          <ProjectsVisibilitySection
-            groups={repositoryGroups}
-            visibility={projectVisibility}
-          />
-        )}
-
         {section === "vault" && (
           <section className="settings-section">
             <label>
@@ -383,45 +369,6 @@ export function SettingsPage({
                 </button>
               </div>
             </label>
-            <div className="settings-checks">
-              <SettingsCheck
-                label="Sync queued changes when online"
-                checked={settings.syncQueuedOnReconnect}
-                onCheckedChange={(next) => onUpdate("syncQueuedOnReconnect", next)}
-              >
-                Sync queued changes when online
-              </SettingsCheck>
-              <SettingsCheck
-                label="Cache linked attachments"
-                checked={settings.cacheLinkedAttachments}
-                onCheckedChange={(next) => onUpdate("cacheLinkedAttachments", next)}
-              >
-                Cache linked attachments
-              </SettingsCheck>
-              <SettingsCheck
-                label="Download comments while syncing"
-                checked={settings.downloadCommentsWhileSyncing}
-                onCheckedChange={(next) =>
-                  onUpdate("downloadCommentsWhileSyncing", next)
-                }
-              >
-                Download comments while syncing
-              </SettingsCheck>
-              <SettingsCheck
-                label="Prefetch visible conversations"
-                checked={settings.prefetchVisibleItems !== false}
-                onCheckedChange={(next) => onUpdate("prefetchVisibleItems", next)}
-              >
-                Prefetch visible conversations
-              </SettingsCheck>
-              <SettingsCheck
-                label="Desktop notifications for new items"
-                checked={settings.desktopNotifications}
-                onCheckedChange={(next) => onUpdate("desktopNotifications", next)}
-              >
-                Desktop notifications for new items
-              </SettingsCheck>
-            </div>
           </section>
         )}
 
@@ -509,6 +456,15 @@ export function SettingsPage({
             >
               GitHub Notifications 사용
             </SettingsCheck>
+            <SettingsCheck
+              label="Desktop notifications for GitHub Notifications"
+              checked={settings.desktopNotifications}
+              onCheckedChange={(checked) =>
+                onUpdate("desktopNotifications", checked)
+              }
+            >
+              Desktop notifications for GitHub Notifications
+            </SettingsCheck>
             <p className="settings-copy">
               읽은 알림은 설정한 기간 동안 표시됩니다. 읽지 않은 알림은 이
               기간보다 오래되어도 유지됩니다.
@@ -549,8 +505,8 @@ export function SettingsPage({
             </div>
             <p className="settings-copy">
               Restore app preferences to their defaults, sign out of saved GitHub
-              sessions, and clear notification, repository, avatar, and index caches.
-              Vault Markdown files and outbox documents are kept.
+              sessions, and clear local settings and runtime caches. Yonalist notes
+              and attachments are kept.
             </p>
             <button
               className="danger-button"
@@ -565,7 +521,7 @@ export function SettingsPage({
               open={showResetConfirm}
               onOpenChange={setShowResetConfirm}
               title="Reset all settings and caches?"
-              description="This signs out saved GitHub sessions and clears local caches. Vault Markdown files and outbox documents will be kept."
+              description="This signs out saved GitHub sessions and clears local settings and runtime caches. Yonalist notes and attachments will be kept."
               confirmLabel="Yes, reset everything"
               cancelLabel="Cancel"
               danger

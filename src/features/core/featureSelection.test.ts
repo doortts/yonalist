@@ -11,15 +11,16 @@ describe("feature selection", () => {
     window.localStorage.clear();
   });
 
-  it("falls back to Inbox when the saved feature is invalid", () => {
-    window.localStorage.setItem(activeFeatureStorageKey, "remote-plugin");
+  it.each([null, "inbox", "remote-plugin"])(
+    "loads Yonalist for an absent or invalid saved feature: %s",
+    (stored) => {
+      if (stored !== null) {
+        window.localStorage.setItem(activeFeatureStorageKey, stored);
+      }
 
-    expect(loadActiveFeature()).toBe("inbox");
-  });
-
-  it("falls back to Inbox when no feature has been saved", () => {
-    expect(loadActiveFeature()).toBe("inbox");
-  });
+      expect(loadActiveFeature()).toBe("notes");
+    }
+  );
 
   it("persists and reloads a valid feature selection", () => {
     persistActiveFeature("notes");
@@ -29,9 +30,9 @@ describe("feature selection", () => {
   });
 
   it("recognizes only the compiled feature identifiers", () => {
-    expect(isFeatureId("inbox")).toBe(true);
     expect(isFeatureId("notes")).toBe(true);
     expect(isFeatureId("settings")).toBe(true);
+    expect(isFeatureId("inbox")).toBe(false);
     expect(isFeatureId("remote-plugin")).toBe(false);
   });
 });

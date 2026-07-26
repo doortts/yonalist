@@ -1,43 +1,31 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetApplicationData } from "./appReset";
 
-const invokeMock = vi.hoisted(() => vi.fn());
+const cacheMocks = vi.hoisted(() => ({
+  clearImageProxyCache: vi.fn(),
+  clearNotificationCache: vi.fn()
+}));
 
 vi.mock("./sessionTokens", () => ({
   clearSessionToken: vi.fn(async () => undefined)
 }));
 
 vi.mock("./imageProxy", () => ({
-  clearImageProxyCache: vi.fn()
-}));
-
-vi.mock("./itemThread", () => ({
-  clearItemThreadCache: vi.fn()
-}));
-
-vi.mock("./notificationDetail", () => ({
-  clearNotificationDetailCache: vi.fn()
+  clearImageProxyCache: cacheMocks.clearImageProxyCache
 }));
 
 vi.mock("./notifications", () => ({
-  clearNotificationCache: vi.fn()
-}));
-
-vi.mock("./oauth", () => ({
-  isTauri: () => true
-}));
-
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: invokeMock
+  clearNotificationCache: cacheMocks.clearNotificationCache
 }));
 
 describe("resetApplicationData", () => {
   beforeEach(() => {
-    invokeMock.mockReset();
+    cacheMocks.clearImageProxyCache.mockReset();
+    cacheMocks.clearNotificationCache.mockReset();
     window.localStorage.clear();
   });
 
-  it("clears settings and caches while preserving vault documents", async () => {
+  it("clears settings and caches without touching unrelated browser data", async () => {
     window.localStorage.setItem("yonalist.settings.v1", "{\"vaultFolder\":\"/tmp\"}");
     window.localStorage.setItem("yonalist.themeMode.v1", "dark");
     window.localStorage.setItem(
@@ -60,7 +48,6 @@ describe("resetApplicationData", () => {
 
     const events: string[] = [];
     await resetApplicationData({
-      vaultRoot: "~/Yonalist",
       serverUrls: ["https://api.github.com"],
       onStep: (event) => {
         events.push(`${event.id}:${event.status}`);
@@ -73,53 +60,31 @@ describe("resetApplicationData", () => {
       "runtime-caches:running",
       "runtime-caches:complete",
       "local-storage:running",
-      "local-storage:complete",
-      "vault-cache:running",
-      "vault-cache:complete"
+      "local-storage:complete"
     ]);
     expect(window.localStorage.getItem("yonalist.settings.v1")).toBeNull();
     expect(window.localStorage.getItem("yonalist.themeMode.v1")).toBeNull();
     expect(window.localStorage.getItem("yonalist.github.sessionTokens.v1")).toBeNull();
     expect(window.localStorage.getItem("yonalist.repositorySummaries.v1")).toBeNull();
     expect(window.localStorage.getItem("yonalist.vaultDocumentHashes.v1")).toBeNull();
-    expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).toContain(
-      "github.com/acme/app/issues/1/issue.md"
-    );
+    expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).toBeNull();
     expect(window.localStorage.getItem("unrelated")).toBe("kept");
+    expect(cacheMocks.clearNotificationCache).toHaveBeenCalledOnce();
+    expect(cacheMocks.clearImageProxyCache).toHaveBeenCalledOnce();
   });
 
-  it("preserves Notes by clearing only the native vault cache command", async () => {
-    await resetApplicationData({ vaultRoot: "/vault" });
-
-    expect(invokeMock).toHaveBeenCalledTimes(1);
-    expect(invokeMock).toHaveBeenCalledWith("clear_vault_cache", {
-      vaultPath: "/vault"
-    });
-    expect(invokeMock.mock.calls.map(([command]) => command)).not.toContain(
-      "notes_empty_trash"
-    );
-    expect(invokeMock.mock.calls.map(([command]) => command)).not.toContain(
-      "notes_delete_database"
-    );
-  });
-
-  it("removes external snapshots while preserving vault documents", async () => {
-    const vaultDocuments = JSON.stringify({
-      "~/Yonalist": { "notes/kept.md": "kept" }
-    });
+  it("removes external snapshots and all other Yonalist browser keys", async () => {
     window.localStorage.setItem(
       "yonalist.externalSources.snapshots.v1",
       JSON.stringify({ cached: "external" })
     );
-    window.localStorage.setItem("yonalist.vaultDocuments.v1", vaultDocuments);
+    window.localStorage.setItem("yonalist.vaultDocuments.v1", "legacy inbox");
 
-    await resetApplicationData({ vaultRoot: "~/Yonalist" });
+    await resetApplicationData();
 
     expect(
       window.localStorage.getItem("yonalist.externalSources.snapshots.v1")
     ).toBeNull();
-    expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).toBe(
-      vaultDocuments
-    );
+    expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).toBeNull();
   });
 });

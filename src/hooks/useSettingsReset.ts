@@ -16,9 +16,8 @@ const resetStepTemplates: Array<{
   label: string;
 }> = [
   { id: "session-tokens", label: "Sign out saved GitHub sessions" },
-  { id: "runtime-caches", label: "Clear in-memory notification and thread caches" },
+  { id: "runtime-caches", label: "Clear in-memory notification and image caches" },
   { id: "local-storage", label: "Clear local settings and browser caches" },
-  { id: "vault-cache", label: "Clear vault index, avatar, and search caches" },
   { id: "restore-defaults", label: "Restore app preferences to defaults" }
 ];
 
@@ -34,7 +33,6 @@ function createResetProgress(): ResetProgressState {
 }
 
 export interface UseSettingsResetOptions {
-  vaultRoot: string;
   serverUrls: string[];
   /** Restores caller-owned state (settings, theme, selections) to defaults. */
   onRestoreDefaults: () => void;
@@ -48,7 +46,7 @@ export interface UseSettingsResetOptions {
  * progress list, and finishes by asking the caller to restore its own state.
  */
 export function useSettingsReset(options: UseSettingsResetOptions) {
-  const { vaultRoot, serverUrls, onRestoreDefaults, onStatus } = options;
+  const { serverUrls, onRestoreDefaults, onStatus } = options;
   const [resetProgress, setResetProgress] =
     useState<ResetProgressState>(idleResetProgress);
 
@@ -92,7 +90,6 @@ export function useSettingsReset(options: UseSettingsResetOptions) {
     onStatus("Resetting...");
     try {
       await resetApplicationData({
-        vaultRoot,
         serverUrls,
         onStep: ({ id, status }) => {
           updateResetStep(id, status === "complete" ? "done" : "running");
@@ -105,7 +102,7 @@ export function useSettingsReset(options: UseSettingsResetOptions) {
       setResetProgress((current) => ({
         ...current,
         status: "done",
-        message: "Reset complete. Vault Markdown files and outbox documents were kept."
+        message: "Reset complete. Yonalist notes and attachments were kept."
       }));
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);

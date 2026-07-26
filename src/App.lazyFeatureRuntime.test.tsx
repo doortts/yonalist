@@ -57,14 +57,14 @@ describe("App lazy feature runtime", () => {
   beforeEach(() => {
     window.localStorage.clear();
     window.localStorage.setItem("yonalist.auth.skipLogin.v1", "true");
-    window.localStorage.setItem(activeFeatureStorageKey, "inbox");
+    window.localStorage.setItem(activeFeatureStorageKey, "settings");
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it("loads Notes on first selection and retains its pane across navigation", async () => {
+  it("loads Yonalist on first selection and retains its pane across navigation", async () => {
     const pending = deferred<FeatureRuntime>();
     const loadRuntime = notesLoader().mockReturnValue(pending.promise);
     const user = userEvent.setup();
@@ -73,14 +73,14 @@ describe("App lazy feature runtime", () => {
     await screen.findByLabelText("Navigation");
     expect(loadRuntime).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole("button", { name: "Notes" }));
-    expect(await screen.findByText("Loading Notes…")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Yonalist" }));
+    expect(await screen.findByText("Loading Yonalist…")).toBeInTheDocument();
     pending.resolve(notesRuntime);
 
     const draft = await screen.findByRole("textbox", { name: "Notes draft" });
     await user.type(draft, "keep me");
-    await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
-    await user.click(screen.getByRole("button", { name: "Notes" }));
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("button", { name: "Yonalist" }));
 
     expect(screen.getByRole("textbox", { name: "Notes draft" })).toHaveValue(
       "keep me"
@@ -97,14 +97,14 @@ describe("App lazy feature runtime", () => {
     const user = userEvent.setup();
     render(<App initialOnline={false} />);
 
-    await user.click(await screen.findByRole("button", { name: "Notes" }));
+    await user.click(await screen.findByRole("button", { name: "Yonalist" }));
     first.reject(new Error("chunk unavailable"));
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Notes를 열 수 없습니다."
+      "Yonalist를 열 수 없습니다."
     );
 
     await user.click(screen.getByRole("button", { name: "다시 시도" }));
-    expect(await screen.findByText("Loading Notes…")).toBeInTheDocument();
+    expect(await screen.findByText("Loading Yonalist…")).toBeInTheDocument();
     second.resolve(notesRuntime);
 
     expect(await screen.findByLabelText("Notes library")).toBeInTheDocument();

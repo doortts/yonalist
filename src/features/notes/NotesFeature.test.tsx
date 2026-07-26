@@ -180,7 +180,6 @@ describe("NotesFeature", () => {
 
   it("renders its working panes through the registry provider", async () => {
     const panes = notesFeatureRuntime.renderPanes({
-      renderInboxPanes: vi.fn(),
       renderSettingsPanes: vi.fn(),
     });
 
@@ -218,7 +217,6 @@ describe("NotesFeature", () => {
 
   it("opens and closes one secondary pane without opening another workspace", async () => {
     const panes = notesFeatureRuntime.renderPanes({
-      renderInboxPanes: vi.fn(),
       renderSettingsPanes: vi.fn(),
     });
     const { container } = render(
@@ -306,7 +304,6 @@ describe("NotesFeature", () => {
       ]
     });
     const panes = notesFeatureRuntime.renderPanes({
-      renderInboxPanes: vi.fn(),
       renderSettingsPanes: vi.fn()
     });
     const { container } = render(
@@ -375,7 +372,6 @@ describe("NotesFeature", () => {
       ],
     });
     const panes = notesFeatureRuntime.renderPanes({
-      renderInboxPanes: vi.fn(),
       renderSettingsPanes: vi.fn(),
     });
     const { container } = render(
@@ -450,7 +446,6 @@ describe("NotesFeature", () => {
       ],
     });
     const panes = notesFeatureRuntime.renderPanes({
-      renderInboxPanes: vi.fn(),
       renderSettingsPanes: vi.fn(),
     });
     const externalSources: ExternalSourcesBoundary = {

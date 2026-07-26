@@ -33,8 +33,6 @@ function settingsPageProps(): ComponentProps<typeof SettingsPage> {
     onDarkThemeChange: vi.fn(),
     servers: {} as ComponentProps<typeof SettingsPage>["servers"],
     auth: {} as ComponentProps<typeof SettingsPage>["auth"],
-    repositoryGroups: [],
-    projectVisibility: {} as ComponentProps<typeof SettingsPage>["projectVisibility"],
     onUpdate: vi.fn(),
     onBrowseVaultFolder: vi.fn().mockResolvedValue(null),
     onSave: vi.fn(),
@@ -244,6 +242,17 @@ describe("SettingsPage vault folder picker", () => {
 });
 
 describe("SettingsPage Plugins", () => {
+  it("keeps desktop notifications with the GN plugin settings", () => {
+    render(<SettingsPage {...settingsPageProps()} section="plugins" />);
+
+    expect(screen.getByRole("checkbox", {
+      name: "Desktop notifications for GitHub Notifications"
+    })).toBeChecked();
+    expect(screen.queryByText("Sync queued changes when online")).toBeNull();
+    expect(screen.queryByText("Download comments while syncing")).toBeNull();
+    expect(screen.queryByText("Prefetch visible conversations")).toBeNull();
+  });
+
   it("toggles GitHub Notifications and disables its retention input", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn();
@@ -355,6 +364,22 @@ describe("SettingsPage Plugins", () => {
     expect(onUpdate).toHaveBeenLastCalledWith(
       "githubNotificationsReadRetentionDays",
       30
+    );
+  });
+});
+
+describe("SettingsPage Reset", () => {
+  it("explains that Yonalist notes and attachments are kept", async () => {
+    render(<SettingsPage {...settingsPageProps()} section="reset" />);
+
+    expect(screen.getByText(
+      /Yonalist notes and attachments are kept\./
+    )).toBeInTheDocument();
+    await userEvent.setup().click(
+      screen.getByRole("button", { name: "Reset settings and caches" })
+    );
+    expect(screen.getByRole("alertdialog")).toHaveTextContent(
+      "Yonalist notes and attachments will be kept."
     );
   });
 });

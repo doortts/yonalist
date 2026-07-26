@@ -1,6 +1,5 @@
 import { Tabs } from "@base-ui/react/tabs";
 import {
-  FolderTree,
   HardDrive,
   NotebookPen,
   Plug,
@@ -14,7 +13,6 @@ export type SettingsSection =
   | "appearance"
   | "notes"
   | "servers"
-  | "projects"
   | "vault"
   | "plugins"
   | "reset";
@@ -38,12 +36,6 @@ export const settingsSections: Array<{
     icon: Server
   },
   {
-    key: "projects",
-    label: "Projects 표시",
-    description: "사이드바 저장소 선택",
-    icon: FolderTree
-  },
-  {
     key: "vault",
     label: "Vault and sync",
     description: "볼트 폴더와 동기화",
@@ -51,7 +43,7 @@ export const settingsSections: Array<{
   },
   {
     key: "notes",
-    label: "Notes",
+    label: "Yonalist",
     description: "Images",
     icon: NotebookPen
   },

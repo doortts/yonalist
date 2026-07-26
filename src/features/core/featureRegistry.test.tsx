@@ -4,20 +4,23 @@ import { VaultRootContext } from "../../VaultRootContext";
 import { featureRegistry, getFeatureDefinition } from "./featureRegistry";
 
 describe("feature registry", () => {
-  it("registers the compiled features in navigation order", () => {
+  it("registers only Yonalist and Settings", () => {
     expect(featureRegistry.map((feature) => feature.id)).toEqual([
-      "inbox",
       "notes",
       "settings"
     ]);
+    expect(featureRegistry.map((feature) => feature.label)).toEqual([
+      "Yonalist",
+      "Settings"
+    ]);
   });
 
-  it("registers Notes as an offline workspace feature", () => {
+  it("registers Yonalist as the retained lazy workspace", () => {
     const notes = getFeatureDefinition("notes");
 
-    expect(notes.requiresGithubAuth).toBe(false);
     expect(notes.section).toBe("workspace");
     expect(notes.order).toBe(20);
+    expect(notes.keepMounted).toBe(true);
   });
 
   it("gives Notes metadata a loader instead of an eager runtime", () => {
@@ -28,30 +31,8 @@ describe("feature registry", () => {
     expect("loadRuntime" in notes).toBe(true);
   });
 
-  it("keeps Inbox and Settings runtimes eager", () => {
-    expect("runtime" in getFeatureDefinition("inbox")).toBe(true);
+  it("keeps the Settings runtime eager", () => {
     expect("runtime" in getFeatureDefinition("settings")).toBe(true);
-  });
-
-  it("delegates Inbox panes to the App-owned renderer", () => {
-    const renderInboxPanes = vi.fn(() => ({
-      middle: <div>Inbox middle pane</div>,
-      detail: <div>Inbox detail pane</div>
-    }));
-
-    const inbox = getFeatureDefinition("inbox");
-    if (!inbox.runtime) {
-      throw new Error("Inbox runtime must be eager.");
-    }
-    const panes = inbox.runtime.renderPanes({
-      renderInboxPanes,
-      renderSettingsPanes: vi.fn()
-    });
-
-    expect(renderInboxPanes).toHaveBeenCalledOnce();
-    render(<>{panes.middle}{panes.detail}</>);
-    expect(screen.getByText("Inbox middle pane")).toBeInTheDocument();
-    expect(screen.getByText("Inbox detail pane")).toBeInTheDocument();
   });
 
   it("delegates Settings panes to the App-owned renderer", () => {
@@ -65,7 +46,6 @@ describe("feature registry", () => {
       throw new Error("Settings runtime must be eager.");
     }
     const panes = settings.runtime.renderPanes({
-      renderInboxPanes: vi.fn(),
       renderSettingsPanes
     });
 
@@ -82,7 +62,6 @@ describe("feature registry", () => {
     }
     const runtime = await notes.loadRuntime();
     const panes = runtime.renderPanes({
-      renderInboxPanes: vi.fn(),
       renderSettingsPanes: vi.fn()
     });
     const NotesProvider = runtime.Provider;

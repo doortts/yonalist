@@ -33,31 +33,29 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-const inboxRuntime = runtime("Inbox");
+const settingsRuntime = runtime("Settings");
 
 function definitions(
   loadNotes: () => Promise<FeatureRuntime>
 ): readonly FeatureDefinition[] {
   return [
     {
-      id: "inbox",
-      label: "Inbox",
-      icon: Circle,
-      section: "workspace",
-      order: 10,
-      requiresGithubAuth: true,
-      keepMounted: false,
-      runtime: inboxRuntime
-    },
-    {
       id: "notes",
-      label: "Notes",
+      label: "Yonalist",
       icon: Circle,
       section: "workspace",
       order: 20,
-      requiresGithubAuth: false,
       keepMounted: true,
       loadRuntime: loadNotes
+    },
+    {
+      id: "settings",
+      label: "Settings",
+      icon: Circle,
+      section: "app",
+      order: 10,
+      keepMounted: false,
+      runtime: settingsRuntime
     }
   ];
 }
@@ -68,12 +66,12 @@ describe("useFeatureRuntimeHost", () => {
       vi.fn<() => Promise<FeatureRuntime>>()
     );
     const { result } = renderHook(() =>
-      useFeatureRuntimeHost("inbox", hostDefinitions)
+      useFeatureRuntimeHost("settings", hostDefinitions)
     );
 
     expect(result.current.active).toEqual({
       status: "ready",
-      runtime: inboxRuntime
+      runtime: settingsRuntime
     });
   });
 
@@ -98,7 +96,7 @@ describe("useFeatureRuntimeHost", () => {
       runtime: notesRuntime
     });
 
-    rerender({ activeFeatureId: "inbox" });
+    rerender({ activeFeatureId: "settings" });
     rerender({ activeFeatureId: "notes" });
 
     expect(result.current.active).toEqual({
@@ -118,7 +116,7 @@ describe("useFeatureRuntimeHost", () => {
       { initialProps: { activeFeatureId: "notes" as FeatureId } }
     );
 
-    rerender({ activeFeatureId: "inbox" });
+    rerender({ activeFeatureId: "settings" });
     await act(async () => {
       pending.resolve(notesRuntime);
       await pending.promise;
@@ -126,7 +124,7 @@ describe("useFeatureRuntimeHost", () => {
 
     expect(result.current.active).toEqual({
       status: "ready",
-      runtime: inboxRuntime
+      runtime: settingsRuntime
     });
     expect(result.current.readyRuntimes.get("notes")).toBe(notesRuntime);
   });

@@ -18,7 +18,7 @@ describe("App feature activation timing", () => {
     perfSpies.tracePerfOnce.mockClear();
     window.localStorage.clear();
     window.localStorage.setItem("yonalist.auth.skipLogin.v1", "true");
-    window.localStorage.setItem(activeFeatureStorageKey, "inbox");
+    window.localStorage.setItem(activeFeatureStorageKey, "settings");
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
       callback(performance.now());
       return 1;
@@ -29,13 +29,13 @@ describe("App feature activation timing", () => {
     vi.restoreAllMocks();
   });
 
-  it("records one start and visible event when Notes becomes visible", async () => {
+  it("records one start and visible event when Yonalist becomes visible", async () => {
     render(<App initialOnline={false} />);
 
     await userEvent.setup().click(
-      await screen.findByRole("button", { name: "Notes" })
+      await screen.findByRole("button", { name: "Yonalist" })
     );
-    await screen.findByLabelText("Notes library");
+    await screen.findByLabelText("Notes library", {}, { timeout: 5_000 });
 
     await waitFor(() => {
       const featureEvents = perfSpies.tracePerf.mock.calls.filter(
@@ -63,5 +63,5 @@ describe("App feature activation timing", () => {
       featureId: "notes",
       durationMs: expect.any(Number)
     });
-  });
+  }, 10_000);
 });

@@ -24,7 +24,7 @@ describe("FeatureRuntimeBoundary", () => {
     );
 
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Notes를 열 수 없습니다."
+      "Yonalist를 열 수 없습니다."
     );
     fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
     expect(onRetry).toHaveBeenCalledOnce();
@@ -38,11 +38,11 @@ describe("FeatureRuntimeBoundary", () => {
     );
 
     rerender(
-      <FeatureRuntimeBoundary featureId="inbox" onRetry={vi.fn()}>
-        <div>Inbox ready</div>
+      <FeatureRuntimeBoundary featureId="settings" onRetry={vi.fn()}>
+        <div>Settings ready</div>
       </FeatureRuntimeBoundary>
     );
 
-    expect(screen.getByText("Inbox ready")).toBeInTheDocument();
+    expect(screen.getByText("Settings ready")).toBeInTheDocument();
   });
 });
