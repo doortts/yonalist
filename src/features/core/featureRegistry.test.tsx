@@ -74,7 +74,7 @@ describe("feature registry", () => {
         </NotesProvider>
       </VaultRootContext.Provider>
     );
-    expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+    expect(screen.getByLabelText("Yonalist library")).toBeInTheDocument();
     expect(screen.getByLabelText("Notes outline")).toBeInTheDocument();
   });
 });

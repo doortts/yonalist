@@ -136,13 +136,17 @@ describe("NotesDataSettingsDialog", () => {
       </VaultRootContext.Provider>
     );
 
-    await user.click(screen.getByRole("button", { name: "Repair Notes data" }));
-    const confirm = screen.getByRole("alertdialog", {
-      name: "Repair Notes data?"
-    });
-    expect(confirm).toHaveTextContent("Notes, attachments, and Trash data will not be deleted");
     await user.click(
-      within(confirm).getByRole("button", { name: "Repair Notes data" })
+      screen.getByRole("button", { name: "Repair Yonalist data" }),
+    );
+    const confirm = screen.getByRole("alertdialog", {
+      name: "Repair Yonalist data?"
+    });
+    expect(confirm).toHaveTextContent(
+      "Pages, attachments, and Trash data will not be deleted",
+    );
+    await user.click(
+      within(confirm).getByRole("button", { name: "Repair Yonalist data" })
     );
 
     await waitFor(() =>
@@ -166,19 +170,21 @@ describe("NotesDataSettingsDialog", () => {
       </VaultRootContext.Provider>
     );
 
-    await user.click(screen.getByRole("button", { name: "Repair Notes data" }));
+    await user.click(
+      screen.getByRole("button", { name: "Repair Yonalist data" }),
+    );
     await user.click(
       within(
-        screen.getByRole("alertdialog", { name: "Repair Notes data?" })
-      ).getByRole("button", { name: "Repair Notes data" })
+        screen.getByRole("alertdialog", { name: "Repair Yonalist data?" })
+      ).getByRole("button", { name: "Repair Yonalist data" })
     );
     await waitFor(() => expect(notesRepairDataMock).toHaveBeenCalledOnce());
 
     expect(
-      screen.getByRole("button", { name: "Close Notes data settings" })
+      screen.getByRole("button", { name: "Close Yonalist data settings" })
     ).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: "Delete all Notes data" })
+      screen.getByRole("button", { name: "Delete all Yonalist data" })
     ).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "Check unused assets" })
@@ -208,13 +214,17 @@ describe("NotesDataSettingsDialog", () => {
       </VaultRootContext.Provider>
     );
 
-    await user.click(screen.getByRole("button", { name: "Reset Notes database" }));
+    await user.click(
+      screen.getByRole("button", { name: "Reset Yonalist database" }),
+    );
     const confirm = screen.getByRole("alertdialog", {
-      name: "Reset the Notes database?"
+      name: "Reset the Yonalist database?"
     });
-    expect(confirm).toHaveTextContent("Synced Notes files and attachments are kept");
     expect(confirm).toHaveTextContent(
-      "Notes that exist only in SQLite will be permanently discarded"
+      "Synced Yonalist files and attachments are kept",
+    );
+    expect(confirm).toHaveTextContent(
+      "Pages that exist only in SQLite will be permanently discarded",
     );
     await user.click(
       within(confirm).getByRole("button", { name: "Reset database" })
@@ -264,16 +274,18 @@ describe("NotesDataSettingsDialog", () => {
       </VaultRootContext.Provider>
     );
 
-    await user.click(screen.getByRole("button", { name: "Reset Notes database" }));
+    await user.click(
+      screen.getByRole("button", { name: "Reset Yonalist database" }),
+    );
     await user.click(
       within(
-        screen.getByRole("alertdialog", { name: "Reset the Notes database?" })
+        screen.getByRole("alertdialog", { name: "Reset the Yonalist database?" })
       ).getByRole("button", { name: "Reset database" })
     );
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Database is busy");
     const resetTrigger = screen.getByRole("button", {
-      name: "Reset Notes database"
+      name: "Reset Yonalist database"
     });
     expect(resetTrigger).toBeEnabled();
     expect(resetTrigger).toHaveFocus();
@@ -292,17 +304,19 @@ describe("NotesDataSettingsDialog", () => {
     );
 
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" })
+      screen.getByRole("button", { name: "Delete all Yonalist data" })
     );
     const confirm = screen.getByRole("alertdialog", {
-      name: "Delete all Notes data?"
+      name: "Delete all Yonalist data?"
     });
-    expect(confirm).toHaveTextContent("Notes database, synced Notes files, attachments, and Trash data");
+    expect(confirm).toHaveTextContent(
+      "Yonalist database, synced Yonalist files, attachments, and Trash data",
+    );
     expect(confirm).toHaveTextContent(
       "Other vault files and application settings are kept"
     );
     await user.click(
-      within(confirm).getByRole("button", { name: "Delete Notes data" })
+      within(confirm).getByRole("button", { name: "Delete Yonalist data" })
     );
 
     await waitFor(() => expect(deleteAllNotesDataMock).toHaveBeenCalledOnce());
@@ -321,16 +335,18 @@ describe("NotesDataSettingsDialog", () => {
     );
 
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" })
+      screen.getByRole("button", { name: "Delete all Yonalist data" })
     );
     expect(deleteAllNotesDataMock).not.toHaveBeenCalled();
     const confirm = screen.getByRole("alertdialog", {
-      name: "Delete all Notes data?"
+      name: "Delete all Yonalist data?"
     });
     await user.click(within(confirm).getByRole("button", { name: "Cancel" }));
 
     expect(deleteAllNotesDataMock).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog", { name: "Notes data" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("dialog", { name: "Yonalist data" }),
+    ).toBeInTheDocument();
   });
 
   it("deletes after confirmation and closes the data settings dialog", async () => {
@@ -345,12 +361,12 @@ describe("NotesDataSettingsDialog", () => {
     );
 
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" })
+      screen.getByRole("button", { name: "Delete all Yonalist data" })
     );
     await user.click(
       within(
-        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
-      ).getByRole("button", { name: "Delete Notes data" })
+        screen.getByRole("alertdialog", { name: "Delete all Yonalist data?" })
+      ).getByRole("button", { name: "Delete Yonalist data" })
     );
 
     await waitFor(() => expect(deleteAllNotesDataMock).toHaveBeenCalledTimes(1));
@@ -370,17 +386,17 @@ describe("NotesDataSettingsDialog", () => {
     );
 
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" })
+      screen.getByRole("button", { name: "Delete all Yonalist data" })
     );
     await user.click(
       within(
-        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
-      ).getByRole("button", { name: "Delete Notes data" })
+        screen.getByRole("alertdialog", { name: "Delete all Yonalist data?" })
+      ).getByRole("button", { name: "Delete Yonalist data" })
     );
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Database is busy");
     const deleteTrigger = screen.getByRole("button", {
-      name: "Delete all Notes data"
+      name: "Delete all Yonalist data"
     });
     expect(deleteTrigger).toBeEnabled();
     expect(deleteTrigger).toHaveFocus();
@@ -401,21 +417,23 @@ describe("NotesDataSettingsDialog", () => {
     );
 
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" })
+      screen.getByRole("button", { name: "Delete all Yonalist data" })
     );
     await user.click(
       within(
-        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
-      ).getByRole("button", { name: "Delete Notes data" })
+        screen.getByRole("alertdialog", { name: "Delete all Yonalist data?" })
+      ).getByRole("button", { name: "Delete Yonalist data" })
     );
     await waitFor(() => expect(deleteAllNotesDataMock).toHaveBeenCalledOnce());
 
     expect(
-      screen.getByRole("button", { name: "Close Notes data settings" })
+      screen.getByRole("button", { name: "Close Yonalist data settings" })
     ).toBeDisabled();
     await user.keyboard("{Escape}");
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
-    expect(screen.getByRole("dialog", { name: "Notes data" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("dialog", { name: "Yonalist data" }),
+    ).toBeInTheDocument();
 
     await act(async () => deletion.resolve());
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
@@ -442,12 +460,12 @@ describe("NotesDataSettingsDialog", () => {
     );
 
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" })
+      screen.getByRole("button", { name: "Delete all Yonalist data" })
     );
     await user.click(
       within(
-        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
-      ).getByRole("button", { name: "Delete Notes data" })
+        screen.getByRole("alertdialog", { name: "Delete all Yonalist data?" })
+      ).getByRole("button", { name: "Delete Yonalist data" })
     );
 
     const discardConfirm = await screen.findByRole("alertdialog", {
@@ -477,12 +495,12 @@ describe("NotesDataSettingsDialog", () => {
     render(<NotesDataSettingsDialog open onOpenChange={onOpenChange} />);
 
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" })
+      screen.getByRole("button", { name: "Delete all Yonalist data" })
     );
     await user.click(
       within(
-        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
-      ).getByRole("button", { name: "Delete Notes data" })
+        screen.getByRole("alertdialog", { name: "Delete all Yonalist data?" })
+      ).getByRole("button", { name: "Delete Yonalist data" })
     );
 
     expect(await screen.findByRole("status")).toHaveTextContent(
@@ -490,7 +508,7 @@ describe("NotesDataSettingsDialog", () => {
     );
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
     expect(
-      screen.getByRole("dialog", { name: "Notes data" })
+      screen.getByRole("dialog", { name: "Yonalist data" })
     ).toBeInTheDocument();
   });
 
@@ -511,7 +529,7 @@ describe("NotesDataSettingsDialog", () => {
       screen.getByRole("button", { name: "Delete 2 unused assets" })
     );
     const confirm = screen.getByRole("alertdialog", {
-      name: "Delete unused Notes assets now?"
+      name: "Delete unused Yonalist assets now?"
     });
     await user.click(
       within(confirm).getByRole("button", { name: "Delete unused assets" })
@@ -607,7 +625,7 @@ describe("NotesDataSettingsDialog", () => {
       </VaultRootContext.Provider>
     );
     const staleConfirm = latestOpenConfirmation(
-      "Delete unused Notes assets now?"
+      "Delete unused Yonalist assets now?"
     );
     await act(async () => staleConfirm());
 
@@ -624,10 +642,10 @@ describe("NotesDataSettingsDialog", () => {
     );
 
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" })
+      screen.getByRole("button", { name: "Delete all Yonalist data" })
     );
     expect(
-      screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
+      screen.getByRole("alertdialog", { name: "Delete all Yonalist data?" })
     ).toBeInTheDocument();
 
     activeDeleteAllNotesDataMock.current = deleteVaultB;
@@ -638,7 +656,7 @@ describe("NotesDataSettingsDialog", () => {
     );
 
     expect(
-      screen.queryByRole("alertdialog", { name: "Delete all Notes data?" })
+      screen.queryByRole("alertdialog", { name: "Delete all Yonalist data?" })
     ).not.toBeInTheDocument();
     expect(deleteVaultB).not.toHaveBeenCalled();
   });
@@ -659,12 +677,12 @@ describe("NotesDataSettingsDialog", () => {
     );
 
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" })
+      screen.getByRole("button", { name: "Delete all Yonalist data" })
     );
     await user.click(
       within(
-        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
-      ).getByRole("button", { name: "Delete Notes data" })
+        screen.getByRole("alertdialog", { name: "Delete all Yonalist data?" })
+      ).getByRole("button", { name: "Delete Yonalist data" })
     );
     expect(
       await screen.findByRole("alertdialog", {
@@ -699,12 +717,12 @@ describe("NotesDataSettingsDialog", () => {
     );
 
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" })
+      screen.getByRole("button", { name: "Delete all Yonalist data" })
     );
     await user.click(
       within(
-        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
-      ).getByRole("button", { name: "Delete Notes data" })
+        screen.getByRole("alertdialog", { name: "Delete all Yonalist data?" })
+      ).getByRole("button", { name: "Delete Yonalist data" })
     );
     await waitFor(() => expect(deleteAllNotesDataMock).toHaveBeenCalledOnce());
 
@@ -718,7 +736,7 @@ describe("NotesDataSettingsDialog", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByRole("button", { name: "Close Notes data settings" })
+        screen.getByRole("button", { name: "Close Yonalist data settings" })
       ).toBeEnabled()
     );
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
@@ -735,12 +753,12 @@ describe("NotesDataSettingsDialog", () => {
     );
 
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" })
+      screen.getByRole("button", { name: "Delete all Yonalist data" })
     );
     await user.click(
       within(
-        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
-      ).getByRole("button", { name: "Delete Notes data" })
+        screen.getByRole("alertdialog", { name: "Delete all Yonalist data?" })
+      ).getByRole("button", { name: "Delete Yonalist data" })
     );
     await waitFor(() => expect(deleteAllNotesDataMock).toHaveBeenCalledOnce());
 
@@ -767,12 +785,12 @@ describe("NotesDataSettingsDialog", () => {
     );
 
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" })
+      screen.getByRole("button", { name: "Delete all Yonalist data" })
     );
     await user.click(
       within(
-        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
-      ).getByRole("button", { name: "Delete Notes data" })
+        screen.getByRole("alertdialog", { name: "Delete all Yonalist data?" })
+      ).getByRole("button", { name: "Delete Yonalist data" })
     );
     await waitFor(() => expect(deleteAllNotesDataMock).toHaveBeenCalledOnce());
 
@@ -797,12 +815,12 @@ describe("NotesDataSettingsDialog", () => {
     );
 
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" })
+      screen.getByRole("button", { name: "Delete all Yonalist data" })
     );
     await user.click(
       within(
-        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
-      ).getByRole("button", { name: "Delete Notes data" })
+        screen.getByRole("alertdialog", { name: "Delete all Yonalist data?" })
+      ).getByRole("button", { name: "Delete Yonalist data" })
     );
     await waitFor(() => expect(deleteAllNotesDataMock).toHaveBeenCalledOnce());
 

@@ -193,7 +193,7 @@ describe("NotesFeature", () => {
       </VaultRootContext.Provider>,
     );
 
-    expect(screen.getByLabelText("Notes library")).toHaveClass(
+    expect(screen.getByLabelText("Yonalist library")).toHaveClass(
       "list-pane",
       "notes-library-pane",
     );

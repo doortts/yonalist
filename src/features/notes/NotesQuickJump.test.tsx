@@ -68,10 +68,10 @@ describe("NotesQuickJump", () => {
     );
 
     expect(
-      await screen.findByRole("dialog", { name: "Jump to note" })
+      await screen.findByRole("dialog", { name: "Jump to Yonalist page" })
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("combobox", { name: "Jump to note" })
+      screen.getByRole("combobox", { name: "Jump to Yonalist page" })
     ).toBeInTheDocument();
   });
 
@@ -99,7 +99,9 @@ describe("NotesQuickJump", () => {
     const user = userEvent.setup();
     render(<Harness onSearch={onSearch} onJump={vi.fn()} />);
 
-    const input = await screen.findByRole("combobox", { name: "Jump to note" });
+    const input = await screen.findByRole("combobox", {
+      name: "Jump to Yonalist page",
+    });
     await user.type(input, "plan");
 
     await waitFor(() => expect(onSearch).toHaveBeenCalledWith("plan"));
@@ -134,7 +136,7 @@ describe("NotesQuickJump", () => {
     render(<Harness onSearch={onSearch} onJump={vi.fn()} />);
 
     await user.type(
-      await screen.findByRole("combobox", { name: "Jump to note" }),
+      await screen.findByRole("combobox", { name: "Jump to Yonalist page" }),
       "project"
     );
 
@@ -164,7 +166,9 @@ describe("NotesQuickJump", () => {
     const user = userEvent.setup();
     render(<Harness onSearch={onSearch} onJump={onJump} />);
 
-    const input = await screen.findByRole("combobox", { name: "Jump to note" });
+    const input = await screen.findByRole("combobox", {
+      name: "Jump to Yonalist page",
+    });
     await user.type(input, "pl");
     await screen.findByRole("option", { name: "Plan, in Project" });
 
@@ -189,7 +193,9 @@ describe("NotesQuickJump", () => {
     const user = userEvent.setup();
     render(<Harness onSearch={onSearch} onJump={onJump} />);
 
-    const input = await screen.findByRole("combobox", { name: "Jump to note" });
+    const input = await screen.findByRole("combobox", {
+      name: "Jump to Yonalist page",
+    });
     await user.type(input, "pl");
     await screen.findByRole("option", { name: "Plan, in Project" });
 
@@ -197,7 +203,9 @@ describe("NotesQuickJump", () => {
     fireEvent.keyDown(input, { key: "Enter", isComposing: true });
 
     expect(onJump).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog", { name: "Jump to note" })).toBeVisible();
+    expect(
+      screen.getByRole("dialog", { name: "Jump to Yonalist page" }),
+    ).toBeVisible();
   });
 
   it("closes on Escape and restores focus to the previously focused element", async () => {
@@ -212,7 +220,7 @@ describe("NotesQuickJump", () => {
     const trigger = screen.getByRole("button", { name: "Open palette" });
     await user.click(trigger);
 
-    await screen.findByRole("dialog", { name: "Jump to note" });
+    await screen.findByRole("dialog", { name: "Jump to Yonalist page" });
     await user.keyboard("[Escape]");
 
     await waitFor(() =>

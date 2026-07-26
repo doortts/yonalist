@@ -142,8 +142,28 @@ describe("useGithubNotificationsRuntime", () => {
   it("acquires the source only while the authenticated online Notes lease is requested", () => {
     const { result } = renderRuntime();
     expect(sourceHandle.acquire).not.toHaveBeenCalled();
-    act(() => result.current.externalSources.requestGithubProjection?.(true));
+    act(() => result.current.externalSources.acquireGithubProjection?.());
     expect(sourceHandle.acquire).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the source acquired until every split-pane projection lease is released", () => {
+    const { result } = renderRuntime();
+    const acquireProjection =
+      result.current.externalSources.acquireGithubProjection;
+    let releasePrimary: () => void = () => undefined;
+    let releaseSecondary: () => void = () => undefined;
+
+    act(() => {
+      releasePrimary = acquireProjection?.() ?? releasePrimary;
+      releaseSecondary = acquireProjection?.() ?? releaseSecondary;
+      releaseSecondary();
+    });
+
+    expect(sourceHandle.acquire).toHaveBeenCalledOnce();
+    expect(sourceLeaseRelease).not.toHaveBeenCalled();
+
+    act(() => releasePrimary());
+    expect(sourceLeaseRelease).toHaveBeenCalledOnce();
   });
 
   it("enables desktop notifications without an Inbox or active-feature input", () => {
@@ -165,12 +185,51 @@ describe("useGithubNotificationsRuntime", () => {
         materialize,
       ),
     );
-    act(() => result.current.externalSources.requestGithubProjection?.(true));
+    act(() => result.current.externalSources.acquireGithubProjection?.());
     await waitFor(() =>
       expect(materialize).toHaveBeenCalledWith(
         expect.objectContaining({
           connectionId: expect.any(String),
           webBaseUrl: "https://github.com",
+          items: [notification],
+        }),
+      ),
+    );
+  });
+
+  it("restores the previous split-pane materializer when the newest pane closes", async () => {
+    const { result } = renderRuntime();
+    const primaryMaterialize = vi.fn().mockResolvedValue("committed");
+    const secondaryMaterialize = vi.fn().mockResolvedValue("committed");
+    let unregisterSecondary: () => void = () => undefined;
+
+    act(() => {
+      result.current.externalSources.registerGithubMaterializedRefresh?.(
+        primaryMaterialize,
+      );
+      unregisterSecondary =
+        result.current.externalSources.registerGithubMaterializedRefresh?.(
+          secondaryMaterialize,
+        ) ?? unregisterSecondary;
+      result.current.externalSources.acquireGithubProjection?.();
+    });
+
+    await waitFor(() =>
+      expect(secondaryMaterialize).toHaveBeenCalledWith(
+        expect.objectContaining({
+          connectionId: expect.any(String),
+          items: [notification],
+        }),
+      ),
+    );
+    expect(primaryMaterialize).not.toHaveBeenCalled();
+
+    act(() => unregisterSecondary());
+
+    await waitFor(() =>
+      expect(primaryMaterialize).toHaveBeenCalledWith(
+        expect.objectContaining({
+          connectionId: expect.any(String),
           items: [notification],
         }),
       ),
@@ -230,7 +289,7 @@ describe("useGithubNotificationsRuntime", () => {
         },
       },
     );
-    act(() => result.current.externalSources.requestGithubProjection?.(true));
+    act(() => result.current.externalSources.acquireGithubProjection?.());
     expect(mocks.createGithubNotificationsProvider).toHaveBeenCalledOnce();
     expect(mocks.createExternalSourceHost).toHaveBeenCalledOnce();
     expect(sourceHandle.acquire).toHaveBeenCalledOnce();

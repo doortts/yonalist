@@ -89,7 +89,7 @@ vi.mock("./features/notes/NotesFeature", async () => {
     }, [vaultRoot]);
     return (
       <section
-        aria-label="Notes library"
+        aria-label="Yonalist library"
         data-vault-root={vaultRoot}
         data-source-title={sources.pages[0]?.title ?? ""}
         data-github-api={connection.apiBaseUrl}
@@ -151,7 +151,7 @@ describe("Yonalist app shell", () => {
 
     render(<App initialOnline={false} />);
 
-    const notes = await screen.findByLabelText("Notes library");
+    const notes = await screen.findByLabelText("Yonalist library");
     expect(notes).toHaveAttribute("data-source-title", "Runtime source");
     expect(notes).toHaveAttribute(
       "data-github-api",
@@ -169,7 +169,7 @@ describe("Yonalist app shell", () => {
 
   it("does not expose the removed Inbox surfaces", async () => {
     render(<App />);
-    await screen.findByLabelText("Notes library");
+    await screen.findByLabelText("Yonalist library");
 
     expect(screen.queryByText("GitHub Inbox")).toBeNull();
     expect(screen.queryByRole("button", { name: /^Notifications/ })).toBeNull();
@@ -201,7 +201,7 @@ describe("Yonalist app shell", () => {
       await screen.findByRole("button", { name: "Close settings" })
     );
 
-    expect(await screen.findByLabelText("Notes library")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Yonalist library")).toBeInTheDocument();
     expect(window.localStorage.getItem(activeFeatureStorageKey)).toBe("notes");
   });
 
@@ -213,7 +213,7 @@ describe("Yonalist app shell", () => {
     const flush = deferred<void>();
     vaultMocks.flush.mockReturnValueOnce(flush.promise);
     render(<App />);
-    await screen.findByLabelText("Notes library");
+    await screen.findByLabelText("Yonalist library");
     await openVaultSettings();
     const input = screen.getByLabelText("Vault folder");
 
@@ -224,7 +224,7 @@ describe("Yonalist app shell", () => {
     await waitFor(() =>
       expect(vaultMocks.flush).toHaveBeenCalledWith("/vault-old")
     );
-    expect(screen.getByLabelText("Notes library")).toHaveAttribute(
+    expect(screen.getByLabelText("Yonalist library")).toHaveAttribute(
       "data-vault-root",
       "/vault-old"
     );
@@ -236,7 +236,7 @@ describe("Yonalist app shell", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByLabelText("Notes library")).toHaveAttribute(
+      expect(screen.getByLabelText("Yonalist library")).toHaveAttribute(
         "data-vault-root",
         "/vault-new"
       )
@@ -253,7 +253,7 @@ describe("Yonalist app shell", () => {
     vaultMocks.flush.mockReturnValueOnce(flush.promise);
     render(<App />);
 
-    expect(await screen.findByLabelText("Notes library")).toHaveAttribute(
+    expect(await screen.findByLabelText("Yonalist library")).toHaveAttribute(
       "data-vault-root",
       defaultSettings.vaultFolder
     );
@@ -273,7 +273,7 @@ describe("Yonalist app shell", () => {
         defaultSettings.vaultFolder
       )
     );
-    expect(screen.getByLabelText("Notes library")).toHaveAttribute(
+    expect(screen.getByLabelText("Yonalist library")).toHaveAttribute(
       "data-vault-root",
       defaultSettings.vaultFolder
     );
@@ -284,7 +284,7 @@ describe("Yonalist app shell", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByLabelText("Notes library")).toHaveAttribute(
+      expect(screen.getByLabelText("Yonalist library")).toHaveAttribute(
         "data-vault-root",
         "/vault-new"
       )
@@ -300,7 +300,7 @@ describe("Yonalist app shell", () => {
     const drain = deferred<boolean>();
     vaultMocks.drain.mockReturnValue(drain.promise);
     render(<App />);
-    await screen.findByLabelText("Notes library");
+    await screen.findByLabelText("Yonalist library");
     await openVaultSettings();
     const input = screen.getByLabelText("Vault folder");
 
@@ -321,7 +321,7 @@ describe("Yonalist app shell", () => {
     expect(vaultMocks.release).toHaveBeenNthCalledWith(2, "/vault-old");
     expect(vaultMocks.commit).not.toHaveBeenCalled();
     expect(vaultMocks.contextRoots).not.toContain("/vault-new");
-    expect(screen.getByLabelText("Notes library")).toHaveAttribute(
+    expect(screen.getByLabelText("Yonalist library")).toHaveAttribute(
       "data-vault-root",
       "/vault-old"
     );
@@ -335,7 +335,7 @@ describe("Yonalist app shell", () => {
     const drain = deferred<boolean>();
     vaultMocks.drain.mockReturnValue(drain.promise);
     render(<App />);
-    await screen.findByLabelText("Notes library");
+    await screen.findByLabelText("Yonalist library");
     await openVaultSettings();
     const input = screen.getByLabelText("Vault folder");
 
@@ -350,7 +350,7 @@ describe("Yonalist app shell", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByLabelText("Notes library")).toHaveAttribute(
+      expect(screen.getByLabelText("Yonalist library")).toHaveAttribute(
         "data-vault-root",
         "/vault-latest"
       )
@@ -372,7 +372,7 @@ describe("Yonalist app shell", () => {
     const drain = deferred<boolean>();
     vaultMocks.drain.mockReturnValue(drain.promise);
     render(<App />);
-    await screen.findByLabelText("Notes library");
+    await screen.findByLabelText("Yonalist library");
     await openVaultSettings();
     const input = screen.getByLabelText("Vault folder");
 
@@ -387,7 +387,7 @@ describe("Yonalist app shell", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByLabelText("Notes library")).toHaveAttribute(
+      expect(screen.getByLabelText("Yonalist library")).toHaveAttribute(
         "data-vault-root",
         "/vault-latest"
       )
@@ -407,7 +407,7 @@ describe("Yonalist app shell", () => {
     );
     vaultMocks.drain.mockResolvedValueOnce(false);
     render(<App />);
-    await screen.findByLabelText("Notes library");
+    await screen.findByLabelText("Yonalist library");
     await openVaultSettings();
     const input = screen.getByLabelText("Vault folder");
 
@@ -418,7 +418,7 @@ describe("Yonalist app shell", () => {
       await screen.findByText("Could not save the current Vault. Try again.")
     ).toBeInTheDocument();
     expect(input).toHaveValue("/vault-unsaved");
-    expect(screen.getByLabelText("Notes library")).toHaveAttribute(
+    expect(screen.getByLabelText("Yonalist library")).toHaveAttribute(
       "data-vault-root",
       "/vault-old"
     );
@@ -433,7 +433,7 @@ describe("Yonalist app shell", () => {
     );
     vaultMocks.flush.mockRejectedValueOnce(new Error("export failed"));
     render(<App />);
-    await screen.findByLabelText("Notes library");
+    await screen.findByLabelText("Yonalist library");
     await openVaultSettings();
     const input = screen.getByLabelText("Vault folder");
 
@@ -443,7 +443,7 @@ describe("Yonalist app shell", () => {
     expect(
       await screen.findByText("Could not save the current Vault. Try again.")
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("Notes library")).toHaveAttribute(
+    expect(screen.getByLabelText("Yonalist library")).toHaveAttribute(
       "data-vault-root",
       "/vault-old"
     );
@@ -462,7 +462,7 @@ describe("Yonalist app shell", () => {
       .mockReturnValueOnce(first.promise)
       .mockReturnValueOnce(second.promise);
     render(<App />);
-    await screen.findByLabelText("Notes library");
+    await screen.findByLabelText("Yonalist library");
     const user = await openVaultSettings();
     const browse = screen.getByRole("button", { name: "Browse…" });
 
@@ -481,7 +481,7 @@ describe("Yonalist app shell", () => {
     });
 
     expect(screen.getByLabelText("Vault folder")).toHaveValue("/vault-latest");
-    expect(screen.getByLabelText("Notes library")).toHaveAttribute(
+    expect(screen.getByLabelText("Yonalist library")).toHaveAttribute(
       "data-vault-root",
       "/vault-latest"
     );

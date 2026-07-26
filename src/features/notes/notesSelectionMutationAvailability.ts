@@ -39,7 +39,7 @@ export function notesSelectionMutationDisabledReason({
   writeError
 }: NotesSelectionMutationAvailability): string | null {
   if (deletingNotesData) {
-    return "Notes data is being deleted.";
+    return "Yonalist data is being deleted.";
   }
   if (lifecycleReadOnly) {
     return "Selection actions are unavailable in Archive or Trash.";

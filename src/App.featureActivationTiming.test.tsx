@@ -35,7 +35,7 @@ describe("App feature activation timing", () => {
     await userEvent.setup().click(
       await screen.findByRole("button", { name: "Yonalist" })
     );
-    await screen.findByLabelText("Notes library", {}, { timeout: 5_000 });
+    await screen.findByLabelText("Yonalist library", {}, { timeout: 5_000 });
 
     await waitFor(() => {
       const featureEvents = perfSpies.tracePerf.mock.calls.filter(

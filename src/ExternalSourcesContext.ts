@@ -26,7 +26,7 @@ export interface ExternalSourcesBoundary {
   /** The one App-owned projection clock shared by GitHub source labels. */
   readonly projectionNowMs?: number;
   readonly githubProjectionRequested?: boolean;
-  requestGithubProjection?(requested: boolean): void;
+  acquireGithubProjection?(): () => void;
   registerGithubMaterializedRefresh?(
     handler: GithubMaterializedRefreshHandler
   ): () => void;
@@ -41,7 +41,7 @@ export const rejectUnavailableExternalSource = () =>
 const emptyExternalSources: ExternalSourcesBoundary = {
   pages: [],
   githubProjectionRequested: false,
-  requestGithubProjection: () => undefined,
+  acquireGithubProjection: () => () => undefined,
   registerGithubMaterializedRefresh: () => () => undefined,
   refresh: rejectUnavailableExternalSource,
   complete: rejectUnavailableExternalSource,

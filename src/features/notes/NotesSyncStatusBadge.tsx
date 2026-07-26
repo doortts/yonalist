@@ -13,9 +13,9 @@ function summarize(status: SyncStatus): string {
     return `${count} note file${count === 1 ? "" : "s"} need attention`;
   }
   if (status.lastError) {
-    return "Notes sync reported an error";
+    return "Yonalist sync reported an error";
   }
-  return "Notes sync stopped";
+  return "Yonalist sync stopped";
 }
 
 function recommendedAction(status: SyncStatus): string | null {
@@ -29,7 +29,7 @@ function recommendedAction(status: SyncStatus): string | null {
       "cached Notes database identity changed"
     ].some((knownError) => error.includes(knownError))
   ) {
-    return "Open Notes data settings and run Retry sync, or restart Yonalist, to reopen the current Notes database. Do not replace or edit the Notes database files while Yonalist is running.";
+    return "Open Yonalist data settings and run Retry sync, or restart Yonalist, to reopen the current Yonalist database. Do not replace or edit the Yonalist database files while Yonalist is running.";
   }
   return null;
 }

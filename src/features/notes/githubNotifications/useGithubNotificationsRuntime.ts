@@ -74,8 +74,9 @@ export interface GithubNotificationsRuntime {
 export function useGithubNotificationsRuntime(
   input: UseGithubNotificationsRuntimeInput,
 ): GithubNotificationsRuntime {
-  const [githubProjectionRequested, setGithubProjectionRequested] =
-    useState(false);
+  const [githubProjectionLeaseCount, setGithubProjectionLeaseCount] =
+    useState(0);
+  const githubProjectionRequested = githubProjectionLeaseCount > 0;
   const [viewedAt, setViewedAt] = useState<GithubNotificationViewedAt>(
     loadGithubNotificationViewedAt,
   );
@@ -151,6 +152,9 @@ export function useGithubNotificationsRuntime(
 
   const githubMaterializedRefreshRef =
     useRef<GithubMaterializedRefreshHandler | null>(null);
+  const githubMaterializedRefreshHandlersRef = useRef(
+    new Array<{ readonly handler: GithubMaterializedRefreshHandler }>(),
+  );
   const githubMaterializedBridgePumpRef =
     useRef<GithubMaterializedBridgePump<GithubMaterializedRefreshRequest> | null>(
       null,
@@ -271,20 +275,37 @@ export function useGithubNotificationsRuntime(
       viewedAt,
     ],
   );
-  const requestGithubProjection = useCallback((requested: boolean) => {
-    setGithubProjectionRequested((current) =>
-      current === requested ? current : requested,
-    );
+  const acquireGithubProjection = useCallback(() => {
+    let released = false;
+    setGithubProjectionLeaseCount((current) => current + 1);
+    return () => {
+      if (released) return;
+      released = true;
+      setGithubProjectionLeaseCount((current) => Math.max(0, current - 1));
+    };
   }, []);
   const registerGithubMaterializedRefresh = useCallback(
     (handler: GithubMaterializedRefreshHandler) => {
+      const registrations = githubMaterializedRefreshHandlersRef.current;
+      const registration = { handler };
+      const previous = githubMaterializedRefreshRef.current;
+      registrations.push(registration);
       githubMaterializedRefreshRef.current = handler;
-      setGithubMaterializedRefreshVersion((version) => version + 1);
-      return () => {
-        if (githubMaterializedRefreshRef.current !== handler) return;
-        githubMaterializedRefreshRef.current = null;
+      if (githubMaterializedRefreshRef.current !== previous) {
         githubMaterializedBridgePump.invalidate();
         setGithubMaterializedRefreshVersion((version) => version + 1);
+      }
+      return () => {
+        const index = registrations.indexOf(registration);
+        if (index < 0) return;
+        registrations.splice(index, 1);
+        const active = githubMaterializedRefreshRef.current;
+        githubMaterializedRefreshRef.current =
+          registrations[registrations.length - 1]?.handler ?? null;
+        if (githubMaterializedRefreshRef.current !== active) {
+          githubMaterializedBridgePump.invalidate();
+          setGithubMaterializedRefreshVersion((version) => version + 1);
+        }
       };
     },
     [githubMaterializedBridgePump],
@@ -331,7 +352,7 @@ export function useGithubNotificationsRuntime(
       pages: githubPage ? [githubPage] : [],
       projectionNowMs,
       githubProjectionRequested,
-      requestGithubProjection,
+      acquireGithubProjection,
       registerGithubMaterializedRefresh,
       refresh,
       complete,
@@ -345,7 +366,7 @@ export function useGithubNotificationsRuntime(
       projectionNowMs,
       refresh,
       registerGithubMaterializedRefresh,
-      requestGithubProjection,
+      acquireGithubProjection,
     ],
   );
 

@@ -419,7 +419,7 @@ mod tests {
     const HLC_1: &str = "000000001-00-a3f2";
     const HLC_2: &str = "000000002-00-a3f2";
     const HLC_3: &str = "000000003-00-a3f2";
-    const ONBOARDING_TITLE: &str = "Yonalist Notes 시작하기";
+    const ONBOARDING_TITLE: &str = "Yonalist 시작하기";
 
     fn topic(title: &str) -> TopicDoc {
         TopicDoc {

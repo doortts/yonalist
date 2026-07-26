@@ -25,7 +25,7 @@ describe("notesSelectionMutationDisabledReason", () => {
         loading: true,
         writeError: true
       })
-    ).toBe("Notes data is being deleted.");
+    ).toBe("Yonalist data is being deleted.");
     expect(
       notesSelectionMutationDisabledReason({
         deletingNotesData: false,

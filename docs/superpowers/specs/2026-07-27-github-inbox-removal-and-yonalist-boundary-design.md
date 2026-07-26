@@ -1441,11 +1441,15 @@ scan_vault_item_index_changes
 commit_vault_item_index_changes
 load_cached_avatar_image
 store_cached_avatar_image
+touch_cached_avatar_image
 fetch_image
 ```
 
 인증과 링크에는 OAuth loopback, URL 열기, keychain token 명령도 사용했다.
 이들은 GN과 Yonalist에서도 쓸 수 있어 Inbox 전용으로 간주하면 안 된다.
+`touch_cached_avatar_image`는 캐시된 아바타를 다시 쓴 것으로 표시해 최근
+사용 시각을 갱신했다. 캐시 정리 작업이 실제로 쓰는 아바타를 오래된 파일로
+판단하지 않도록 하는 명령이었다.
 
 파일 명령의 안전 규칙:
 

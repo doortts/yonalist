@@ -13,7 +13,7 @@ const outlineRenders = vi.hoisted(() => ({ count: 0 }));
 vi.mock("./features/notes/NotesLibraryPane", () => ({
   NotesLibraryPane: () => {
     libraryRenders.count += 1;
-    return <div aria-label="Notes library" />;
+    return <div aria-label="Yonalist library" />;
   }
 }));
 
@@ -40,7 +40,7 @@ describe("feature pane memoization across App commits", () => {
     const user = userEvent.setup();
     render(<App initialOnline={false} />);
 
-    await screen.findByLabelText("Notes library");
+    await screen.findByLabelText("Yonalist library");
     await screen.findByLabelText("Notes outline");
 
     // Let the mount's effects (feature persistence, settings normalization,

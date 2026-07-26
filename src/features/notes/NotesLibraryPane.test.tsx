@@ -206,6 +206,20 @@ function renderLibraryWithExternal(
 }
 
 describe("NotesLibraryPane", () => {
+  it("presents the feature as Yonalist", () => {
+    renderLibraryWithExternal(activeWorkspace());
+
+    expect(
+      screen.getByRole("region", { name: "Yonalist library" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Yonalist" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("searchbox", { name: "Search Yonalist" }),
+    ).toBeInTheDocument();
+  });
+
   it("traverses stored roots once and keeps the action-free GN row in stored order", () => {
     const workspace = activeWorkspace();
     workspace.state = normalizeWorkspace({
@@ -377,7 +391,10 @@ describe("NotesLibraryPane", () => {
     });
     renderLibraryWithExternal(workspace, boundary);
 
-    await user.type(screen.getByRole("searchbox", { name: "Search notes" }), "local");
+    await user.type(
+      screen.getByRole("searchbox", { name: "Search Yonalist" }),
+      "local",
+    );
     await user.click(await screen.findByRole("option", { name: /Local result/ }));
 
     expect(workspace.actions.openSearchResult).toHaveBeenCalledWith("root");
@@ -407,7 +424,7 @@ describe("NotesLibraryPane", () => {
     renderLibraryWithExternal(workspace, boundary);
 
     await user.type(
-      screen.getByRole("searchbox", { name: "Search notes" }),
+      screen.getByRole("searchbox", { name: "Search Yonalist" }),
       "external thread title"
     );
 
@@ -429,7 +446,7 @@ describe("NotesLibraryPane", () => {
       </VaultRootContext.Provider>
     );
 
-    const library = screen.getByRole("region", { name: "Notes library" });
+    const library = screen.getByRole("region", { name: "Yonalist library" });
     expect(library).toHaveAttribute("aria-busy", "true");
     expect(library).not.toHaveAttribute("data-transient-workspace-busy");
     expect(
@@ -577,7 +594,7 @@ describe("NotesLibraryPane", () => {
       </VaultRootContext.Provider>
     );
 
-    const library = screen.getByRole("region", { name: "Notes library" });
+    const library = screen.getByRole("region", { name: "Yonalist library" });
     await user.click(
       within(library).getByRole("button", {
         name: "Page actions for Deleted project"
@@ -630,7 +647,7 @@ describe("NotesLibraryPane", () => {
       );
 
       await user.type(
-        screen.getByRole("searchbox", { name: "Search notes" }),
+        screen.getByRole("searchbox", { name: "Search Yonalist" }),
         "diagram"
       );
 
@@ -668,7 +685,7 @@ describe("NotesLibraryPane", () => {
     );
 
     await user.type(
-      screen.getByRole("searchbox", { name: "Search notes" }),
+      screen.getByRole("searchbox", { name: "Search Yonalist" }),
       "private"
     );
 

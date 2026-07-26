@@ -174,7 +174,7 @@ describe("Notes quick-jump wiring (Cmd/Ctrl+K)", () => {
     fireEvent.keyDown(window, { key: "k", metaKey: true });
 
     expect(
-      await screen.findByRole("dialog", { name: "Jump to note" })
+      await screen.findByRole("dialog", { name: "Jump to Yonalist page" })
     ).toBeInTheDocument();
   });
 
@@ -185,7 +185,7 @@ describe("Notes quick-jump wiring (Cmd/Ctrl+K)", () => {
     fireEvent.keyDown(window, { key: "k", ctrlKey: true });
 
     expect(
-      await screen.findByRole("dialog", { name: "Jump to note" })
+      await screen.findByRole("dialog", { name: "Jump to Yonalist page" })
     ).toBeInTheDocument();
   });
 
@@ -225,7 +225,9 @@ describe("Notes quick-jump wiring (Cmd/Ctrl+K)", () => {
     await findTitleInput("Project");
 
     fireEvent.keyDown(window, { key: "k", metaKey: true });
-    const input = await screen.findByRole("combobox", { name: "Jump to note" });
+    const input = await screen.findByRole("combobox", {
+      name: "Jump to Yonalist page",
+    });
     fireEvent.change(input, { target: { value: "milestone" } });
 
     await waitFor(() =>
@@ -264,7 +266,9 @@ describe("Notes quick-jump wiring (Cmd/Ctrl+K)", () => {
     notesStoreMock.prepareNavigation.mockClear();
 
     fireEvent.keyDown(window, { key: "k", metaKey: true });
-    const input = await screen.findByRole("combobox", { name: "Jump to note" });
+    const input = await screen.findByRole("combobox", {
+      name: "Jump to Yonalist page",
+    });
     fireEvent.change(input, { target: { value: "milestone" } });
     await screen.findByRole("option", { name: "Milestone, in Project / Plan" });
     fireEvent.keyDown(input, { key: "Enter" });

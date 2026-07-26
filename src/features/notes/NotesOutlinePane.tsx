@@ -1825,7 +1825,7 @@ export function NotesOutlinePane({
     githubEditorElement,
     githubProjection.editorFocusKeys,
   ]);
-  const requestGithubProjection = externalSources.requestGithubProjection;
+  const acquireGithubProjection = externalSources.acquireGithubProjection;
   const githubProjectionRequested = githubProjectionLeaseRequested({
     githubRootId: GITHUB_NOTIFICATIONS_ROOT_ID,
     libraryView,
@@ -1833,10 +1833,11 @@ export function NotesOutlinePane({
     githubRoot,
   });
   useEffect(() => {
-    if (requestGithubProjection === undefined) return;
-    requestGithubProjection(githubProjectionRequested);
-    return () => requestGithubProjection(false);
-  }, [githubProjectionRequested, requestGithubProjection]);
+    if (!githubProjectionRequested || acquireGithubProjection === undefined) {
+      return;
+    }
+    return acquireGithubProjection();
+  }, [acquireGithubProjection, githubProjectionRequested]);
   const refreshMaterializedGithubNotificationsAction =
     actions.refreshMaterializedGithubNotifications;
   const setGithubGroupCollapsedAction = actions.setGithubGroupCollapsed;

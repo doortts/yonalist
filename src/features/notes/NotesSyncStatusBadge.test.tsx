@@ -59,7 +59,7 @@ describe("NotesSyncStatusBadge", () => {
     });
     renderBadge();
     const status = screen.getByRole("status");
-    expect(status).toHaveTextContent("Notes sync reported an error");
+    expect(status).toHaveTextContent("Yonalist sync reported an error");
     expect(status).toHaveTextContent("Notes sync could not start.");
     expect(status).not.toHaveTextContent("Recommended action:");
   });
@@ -74,7 +74,7 @@ describe("NotesSyncStatusBadge", () => {
     renderBadge();
 
     expect(screen.getByRole("status")).toHaveTextContent(
-      "Recommended action: Open Notes data settings and run Retry sync, or restart Yonalist, to reopen the current Notes database. Do not replace or edit the Notes database files while Yonalist is running."
+      "Recommended action: Open Yonalist data settings and run Retry sync, or restart Yonalist, to reopen the current Yonalist database. Do not replace or edit the Yonalist database files while Yonalist is running."
     );
   });
 

@@ -4393,7 +4393,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(onboarding_roots.len(), 1);
         let onboarding_root = onboarding_roots[0];
-        assert_eq!(onboarding_root.title, "Yonalist Notes 시작하기");
+        assert_eq!(onboarding_root.title, "Yonalist 시작하기");
         assert_eq!(
             onboarding_root.note,
             "이 노트는 자유롭게 수정하거나 삭제할 수 있어요."

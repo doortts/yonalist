@@ -25,7 +25,7 @@ function RetainedNotesPane() {
   const [draft, setDraft] = useState("");
   return (
     <label>
-      Notes library
+      Yonalist library
       <input
         aria-label="Notes draft"
         value={draft}
@@ -107,7 +107,7 @@ describe("App lazy feature runtime", () => {
     expect(await screen.findByText("Loading Yonalist…")).toBeInTheDocument();
     second.resolve(notesRuntime);
 
-    expect(await screen.findByLabelText("Notes library")).toBeInTheDocument();
+    expect(await screen.findByLabelText("Yonalist library")).toBeInTheDocument();
     expect(loadRuntime).toHaveBeenCalledTimes(2);
   });
 });

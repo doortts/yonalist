@@ -1427,12 +1427,12 @@ describe("Notes workspace", () => {
       screen.getByRole("button", { name: "Retry recovery" }),
     ).toBeEnabled();
     await user.click(
-      screen.getByRole("button", { name: "Repair Notes data" }),
+      screen.getByRole("button", { name: "Repair Yonalist data" }),
     );
     await user.click(
       within(
-        screen.getByRole("alertdialog", { name: "Repair Notes data?" }),
-      ).getByRole("button", { name: "Repair Notes data" }),
+        screen.getByRole("alertdialog", { name: "Repair Yonalist data?" }),
+      ).getByRole("button", { name: "Repair Yonalist data" }),
     );
     await waitFor(() =>
       expect(notesStoreMock.repairData).toHaveBeenCalledWith("/vault"),
@@ -1725,7 +1725,7 @@ describe("Notes workspace", () => {
     const rendered = renderNotesWorkspace(undefined, undefined, sources);
 
     await user.click(
-      await within(screen.getByLabelText("Notes library")).findByRole("button", {
+      await within(screen.getByLabelText("Yonalist library")).findByRole("button", {
         name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
       }),
     );
@@ -1748,7 +1748,7 @@ describe("Notes workspace", () => {
       ),
     );
     expect(
-      within(screen.getByLabelText("Notes library")).queryByRole("button", {
+      within(screen.getByLabelText("Yonalist library")).queryByRole("button", {
         name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
       }),
     ).not.toBeInTheDocument();
@@ -1922,7 +1922,7 @@ describe("Notes workspace", () => {
     ).not.toHaveAttribute("data-outline-id");
 
     await user.click(
-      within(screen.getByLabelText("Notes library")).getByRole("button", {
+      within(screen.getByLabelText("Yonalist library")).getByRole("button", {
         name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
       }),
     );
@@ -2786,7 +2786,7 @@ describe("Notes workspace", () => {
       ]),
     );
     fireEvent.click(
-      await within(screen.getByLabelText("Notes library")).findByRole(
+      await within(screen.getByLabelText("Yonalist library")).findByRole(
         "button",
         {
           name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
@@ -2969,7 +2969,7 @@ describe("Notes workspace", () => {
     ).toBeNull();
 
     await user.click(
-      within(screen.getByLabelText("Notes library")).getByRole("button", {
+      within(screen.getByLabelText("Yonalist library")).getByRole("button", {
         name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
       }),
     );
@@ -5487,7 +5487,7 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
 
-    const library = screen.getByLabelText("Notes library");
+    const library = screen.getByLabelText("Yonalist library");
     expect(
       await within(library).findByRole("button", { name: "Project" }),
     ).toBeInTheDocument();
@@ -5757,7 +5757,7 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
 
-    const library = screen.getByLabelText("Notes library");
+    const library = screen.getByLabelText("Yonalist library");
     const project = await within(library).findByRole("button", {
       name: "Project",
     });
@@ -11508,7 +11508,7 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.moveNode).toHaveBeenCalledOnce();
   });
 
-  it("keeps Notes library visually stable during a pending Tab move", async () => {
+  it("keeps Yonalist library visually stable during a pending Tab move", async () => {
     const before = [
       node({ id: "project", sortKey: 1, title: "Project" }),
       node({ id: "first", parentId: "project", sortKey: 1, title: "First" }),
@@ -11523,7 +11523,7 @@ describe("Notes workspace", () => {
     expect(fireEvent.keyDown(second, { key: "Tab" })).toBe(false);
     await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
 
-    const library = screen.getByRole("region", { name: "Notes library" });
+    const library = screen.getByRole("region", { name: "Yonalist library" });
     expect(library).toHaveAttribute("data-transient-workspace-busy", "true");
     expect(
       within(library).getByRole("button", { name: "New page" }),
@@ -12799,7 +12799,7 @@ describe("Notes workspace", () => {
     ]);
     const deleteNodes = enableReadonlyDeletePreflight([readonlyId]);
     renderNotesWorkspace();
-    const library = screen.getByLabelText("Notes library");
+    const library = screen.getByLabelText("Yonalist library");
     await user.click(
       await within(library).findByRole("button", { name: "Untitled page" }),
     );
@@ -12840,7 +12840,7 @@ describe("Notes workspace", () => {
     ]);
     const deleteNodes = enableReadonlyDeletePreflight([readonlyId]);
     renderNotesWorkspace();
-    const library = screen.getByLabelText("Notes library");
+    const library = screen.getByLabelText("Yonalist library");
     await user.click(
       await within(library).findByRole("button", {
         name: "Page actions for Page",
@@ -12887,7 +12887,7 @@ describe("Notes workspace", () => {
     );
     const deleteNodes = enableReadonlyDeletePreflight([readonly.id]);
     renderNotesWorkspace();
-    const library = screen.getByLabelText("Notes library");
+    const library = screen.getByLabelText("Yonalist library");
     await user.click(within(library).getByRole("button", { name: "Starred" }));
     await user.click(
       await within(library).findByRole("button", {
@@ -13206,7 +13206,9 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
     await findTitleInput("Project");
 
-    const views = screen.getByRole("group", { name: "Notes library views" });
+    const views = screen.getByRole("group", {
+      name: "Yonalist library views",
+    });
     await user.click(within(views).getByRole("button", { name: "Starred" }));
     await waitFor(() =>
       expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
@@ -13335,7 +13337,7 @@ describe("Notes workspace", () => {
     );
     renderNotesWorkspace();
     const search = await screen.findByRole("searchbox", {
-      name: "Search notes",
+      name: "Search Yonalist",
     });
 
     fireEvent.change(search, { target: { value: "Old" } });
@@ -13377,7 +13379,7 @@ describe("Notes workspace", () => {
     ]);
     renderNotesWorkspace();
     const search = await screen.findByRole("searchbox", {
-      name: "Search notes",
+      name: "Search Yonalist",
     });
 
     fireEvent.change(search, {
@@ -13410,7 +13412,7 @@ describe("Notes workspace", () => {
   it("shows structured query validation errors without searching", async () => {
     renderNotesWorkspace();
     const search = await screen.findByRole("searchbox", {
-      name: "Search notes",
+      name: "Search Yonalist",
     });
     const invalid = Array.from(
       { length: 65 },
@@ -13435,7 +13437,7 @@ describe("Notes workspace", () => {
     );
     renderNotesWorkspace();
     const search = await screen.findByRole("searchbox", {
-      name: "Search notes",
+      name: "Search Yonalist",
     });
 
     fireEvent.change(search, { target: { value: "Old" } });
@@ -13497,7 +13499,7 @@ describe("Notes workspace", () => {
     ]);
     renderNotesWorkspace();
     const search = await screen.findByRole("searchbox", {
-      name: "Search notes",
+      name: "Search Yonalist",
     });
 
     await user.type(search, "result");
@@ -13570,7 +13572,7 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
 
     await user.type(
-      await screen.findByRole("searchbox", { name: "Search notes" }),
+      await screen.findByRole("searchbox", { name: "Search Yonalist" }),
       "Target",
     );
     await user.click(await screen.findByRole("option", { name: /Target/ }));
@@ -13711,7 +13713,7 @@ describe("Notes workspace", () => {
     );
     renderNotesWorkspace();
     await findTitleInput("Project");
-    const library = screen.getByLabelText("Notes library");
+    const library = screen.getByLabelText("Yonalist library");
 
     await user.click(within(library).getByRole("button", { name: "Project" }));
     await user.click(
@@ -13830,7 +13832,7 @@ describe("Notes workspace", () => {
       return workspace(activeNodes);
     });
     renderNotesWorkspace();
-    const library = screen.getByLabelText("Notes library");
+    const library = screen.getByLabelText("Yonalist library");
 
     await user.click(within(library).getByRole("button", { name: "Archive" }));
     await user.click(
@@ -14037,16 +14039,16 @@ describe("Notes workspace", () => {
     await user.type(title, "Unsaved project");
 
     await user.click(
-      screen.getByRole("button", { name: "Notes data settings" }),
+      screen.getByRole("button", { name: "Yonalist data settings" }),
     );
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" }),
+      screen.getByRole("button", { name: "Delete all Yonalist data" }),
     );
     const confirm = screen.getByRole("alertdialog", {
-      name: "Delete all Notes data?",
+      name: "Delete all Yonalist data?",
     });
     await user.click(
-      within(confirm).getByRole("button", { name: "Delete Notes data" }),
+      within(confirm).getByRole("button", { name: "Delete Yonalist data" }),
     );
 
     await waitFor(() =>
@@ -14069,22 +14071,22 @@ describe("Notes workspace", () => {
     await findTitleInput("Project");
 
     await user.click(
-      screen.getByRole("button", { name: "Notes data settings" }),
+      screen.getByRole("button", { name: "Yonalist data settings" }),
     );
     await user.click(
-      screen.getByRole("button", { name: "Delete all Notes data" }),
+      screen.getByRole("button", { name: "Delete all Yonalist data" }),
     );
     await user.click(
       within(
-        screen.getByRole("alertdialog", { name: "Delete all Notes data?" }),
-      ).getByRole("button", { name: "Delete Notes data" }),
+        screen.getByRole("alertdialog", { name: "Delete all Yonalist data?" }),
+      ).getByRole("button", { name: "Delete Yonalist data" }),
     );
     await waitFor(() =>
       expect(notesStoreMock.deleteDatabase).toHaveBeenCalledOnce(),
     );
 
     expect(
-      screen.getByRole("searchbox", { name: "Search notes", hidden: true }),
+      screen.getByRole("searchbox", { name: "Search Yonalist", hidden: true }),
     ).toBeDisabled();
     expect(
       screen.getByRole("button", { name: "New page", hidden: true }),
@@ -14102,12 +14104,14 @@ describe("Notes workspace", () => {
       }),
     ).toBeDisabled();
     expect(
-      screen.getByRole("button", { name: "Close Notes data settings" }),
+      screen.getByRole("button", { name: "Close Yonalist data settings" }),
     ).toBeDisabled();
 
     await act(async () => deletion.resolve());
     await waitFor(() =>
-      expect(screen.queryByRole("dialog", { name: "Notes data" })).toBeNull(),
+      expect(
+        screen.queryByRole("dialog", { name: "Yonalist data" }),
+      ).toBeNull(),
     );
   });
 
@@ -14126,7 +14130,7 @@ describe("Notes workspace", () => {
       within(screen.getByLabelText("Notes outline")).getByRole("alert"),
     ).toHaveTextContent("Load failed");
     expect(
-      within(screen.getByLabelText("Notes library")).queryByRole("alert"),
+      within(screen.getByLabelText("Yonalist library")).queryByRole("alert"),
     ).not.toBeInTheDocument();
   });
 

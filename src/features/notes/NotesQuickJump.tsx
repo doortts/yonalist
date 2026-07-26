@@ -173,13 +173,13 @@ export function NotesQuickJump({
         <Dialog.Backdrop className="modal-backdrop" />
         <Dialog.Popup
           className="modal notes-quick-jump"
-          aria-label="Jump to note"
+          aria-label="Jump to Yonalist page"
         >
           <Dialog.Title className="notes-quick-jump-visually-hidden">
-            Jump to note
+            Jump to Yonalist page
           </Dialog.Title>
           <Dialog.Description className="notes-quick-jump-visually-hidden">
-            Search notes by title and press Enter to jump to one.
+            Search Yonalist pages by title and press Enter to jump to one.
           </Dialog.Description>
           <label className="notes-quick-jump-field">
             <Search size={15} aria-hidden="true" />
@@ -192,8 +192,8 @@ export function NotesQuickJump({
                 activeIndex >= 0 ? `${listboxId}-${activeIndex}` : undefined
               }
               aria-autocomplete="list"
-              aria-label="Jump to note"
-              placeholder="Jump to a note..."
+              aria-label="Jump to Yonalist page"
+              placeholder="Jump to a Yonalist page..."
               value={query}
               onChange={handleQueryChange}
               onKeyDown={handleKeyDown}

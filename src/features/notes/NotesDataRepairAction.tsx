@@ -157,7 +157,7 @@ export function NotesDataRepairAction({
           Object.keys(draftsByNodeId).length > 0 ||
           writeError !== null)
       ) {
-        throw new Error("Unsaved Notes edits could not be written.");
+        throw new Error("Unsaved Yonalist edits could not be written.");
       }
       const report = await notesRepairData(requestVaultRoot);
       if (!isCurrentRequest()) {
@@ -179,7 +179,7 @@ export function NotesDataRepairAction({
       setError(
         cause instanceof Error
           ? cause.message
-          : "Notes data could not be repaired."
+          : "Yonalist data could not be repaired."
       );
     } finally {
       if (isCurrentRequest()) {
@@ -196,7 +196,7 @@ export function NotesDataRepairAction({
         disabled={disabled || pending || !vaultRoot}
         onClick={openConfirmation}
       >
-        {pending ? "Repairing..." : "Repair Notes data"}
+        {pending ? "Repairing..." : "Repair Yonalist data"}
       </button>
       {error && (
         <p className="notes-inline-error" role="alert">
@@ -211,9 +211,9 @@ export function NotesDataRepairAction({
           }
           setConfirmOpen(nextOpen);
         }}
-        title="Repair Notes data?"
-        description="Yonalist will back up and repair unsafe Notes ordering data. Notes, attachments, and Trash data will not be deleted."
-        confirmLabel="Repair Notes data"
+        title="Repair Yonalist data?"
+        description="Yonalist will back up and repair unsafe ordering data. Pages, attachments, and Trash data will not be deleted."
+        confirmLabel="Repair Yonalist data"
         cancelLabel="Cancel"
         onConfirm={() => void repairData()}
       />

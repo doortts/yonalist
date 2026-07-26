@@ -52,7 +52,7 @@ use std::cell::{Cell, RefCell};
 #[cfg(test)]
 use std::sync::mpsc::Sender;
 
-const NOTES_ONBOARDING_TITLE: &str = "Yonalist Notes 시작하기";
+const NOTES_ONBOARDING_TITLE: &str = "Yonalist 시작하기";
 const NOTES_DEVELOPMENT_SCHEMA_REJECTION: &str =
     "개발 단계 DB — .yonalist/notes.sqlite 삭제 후 재실행";
 const EXCLUDE_PLUGIN_OWNED_SQL: &str = "(plugin_meta IS NULL AND id <> ?1)";
@@ -17508,7 +17508,7 @@ mod tests {
             .expect("collect onboarding");
 
         assert_eq!(nodes.len(), 7);
-        assert_eq!(nodes[0].3, "Yonalist Notes 시작하기");
+        assert_eq!(nodes[0].3, "Yonalist 시작하기");
         assert_eq!(
             nodes[0].4,
             "이 노트는 자유롭게 수정하거나 삭제할 수 있어요."
@@ -21979,9 +21979,10 @@ mod tests {
             load_workspace(&reopened, NotesWorkspaceScope::Active).expect("load fresh workspace");
 
         assert_eq!(workspace.nodes.len(), 7);
-        assert!(workspace.nodes.iter().any(|node| {
-            node.parent_id.is_none() && node.title == "Yonalist Notes 시작하기"
-        }));
+        assert!(workspace
+            .nodes
+            .iter()
+            .any(|node| { node.parent_id.is_none() && node.title == "Yonalist 시작하기" }));
         assert!(notes_path.exists());
         assert_eq!(
             std::fs::read(plugin_path).expect("read plugin fixture"),

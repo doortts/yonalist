@@ -257,7 +257,7 @@ export function NotesDataSettingsDialog({
         // Deletion succeeded; keep the dialog open to surface the non-blocking
         // warning that some attachment files were left on disk.
         setAttachmentWarning(
-          "Notes data was deleted, but some attachment files could not be removed from disk."
+          "Yonalist data was deleted, but some attachment files could not be removed from disk."
         );
       } else {
         onOpenChange(false);
@@ -275,7 +275,9 @@ export function NotesDataSettingsDialog({
       deleteConfirmationVaultRootRef.current = null;
       errorFocusTargetRef.current = "delete";
       setError(
-        cause instanceof Error ? cause.message : "Notes data could not be deleted."
+        cause instanceof Error
+          ? cause.message
+          : "Yonalist data could not be deleted."
       );
     } finally {
       if (isCurrentRequest()) {
@@ -317,7 +319,7 @@ export function NotesDataSettingsDialog({
       setError(
         cause instanceof Error
           ? cause.message
-          : "The Notes database could not be reset."
+          : "The Yonalist database could not be reset."
       );
     } finally {
       if (isCurrentRequest()) {
@@ -333,19 +335,19 @@ export function NotesDataSettingsDialog({
           <Dialog.Backdrop className="modal-backdrop" />
           <Dialog.Popup
             className="modal notes-data-settings-dialog"
-            aria-label="Notes data"
+            aria-label="Yonalist data"
           >
             <div className="modal-header">
               <div>
                 <p className="eyebrow">Local storage</p>
-                <Dialog.Title render={<h2 />}>Notes data</Dialog.Title>
+                <Dialog.Title render={<h2 />}>Yonalist data</Dialog.Title>
                 <p className="modal-copy">
-                  Manage the Notes database stored inside this vault.
+                  Manage the Yonalist database stored inside this vault.
                 </p>
               </div>
               <Dialog.Close
                 className="icon-button"
-                aria-label="Close Notes data settings"
+                aria-label="Close Yonalist data settings"
                 disabled={busy}
               >
                 <X size={18} aria-hidden="true" />
@@ -392,9 +394,9 @@ export function NotesDataSettingsDialog({
                 <Wrench size={20} />
               </div>
               <div>
-                <strong>Repair Notes data</strong>
+                <strong>Repair Yonalist data</strong>
                 <p>
-                  Back up and repair Notes ordering data that prevents the
+                  Back up and repair Yonalist ordering data that prevents the
                   workspace from loading.
                 </p>
               </div>
@@ -411,10 +413,10 @@ export function NotesDataSettingsDialog({
                   <Database size={20} />
                 </div>
                 <div>
-                  <strong>Reset Notes database</strong>
+                  <strong>Reset Yonalist database</strong>
                   <p>
-                    Rebuild the local Notes database while keeping synced Notes
-                    files and attachments.
+                    Rebuild the local Yonalist database while keeping synced
+                    Yonalist files and attachments.
                   </p>
                 </div>
                 <button
@@ -423,7 +425,7 @@ export function NotesDataSettingsDialog({
                   disabled={busy}
                   onClick={openResetConfirmation}
                 >
-                  {resetPending ? "Resetting..." : "Reset Notes database"}
+                  {resetPending ? "Resetting..." : "Reset Yonalist database"}
                 </button>
               </div>
             )}
@@ -435,7 +437,8 @@ export function NotesDataSettingsDialog({
               <div>
                 <strong>Unused attachment assets</strong>
                 <p>
-                  Check files that are no longer referenced by any Notes attachment.
+                  Check files that are no longer referenced by any Yonalist
+                  attachment.
                 </p>
                 {purgeReport && (
                   <p role="status">
@@ -477,9 +480,9 @@ export function NotesDataSettingsDialog({
                 <Database size={20} />
               </div>
               <div>
-                <strong>Delete local Notes data</strong>
+                <strong>Delete local Yonalist data</strong>
                 <p>
-                  This removes the Notes database, synced Notes files,
+                  This removes the Yonalist database, synced Yonalist files,
                   attachments, and Trash data from this vault. Other vault files
                   and application settings are kept.
                 </p>
@@ -492,7 +495,7 @@ export function NotesDataSettingsDialog({
                 onClick={openDeleteConfirmation}
               >
                 <Trash2 size={16} aria-hidden="true" />
-                {deleting ? "Deleting..." : "Delete all Notes data"}
+                {deleting ? "Deleting..." : "Delete all Yonalist data"}
               </button>
             </div>
 
@@ -514,7 +517,7 @@ export function NotesDataSettingsDialog({
       <ConfirmDialog
         open={purgeConfirmOpen}
         onOpenChange={handlePurgeConfirmOpenChange}
-        title="Delete unused Notes assets now?"
+        title="Delete unused Yonalist assets now?"
         description="This permanently deletes the unused attachment files reported by the latest check, including files already in quarantine."
         confirmLabel="Delete unused assets"
         cancelLabel="Cancel"
@@ -525,9 +528,9 @@ export function NotesDataSettingsDialog({
       <ConfirmDialog
         open={confirmOpen}
         onOpenChange={setConfirmOpen}
-        title="Delete all Notes data?"
-        description="This removes the Notes database, synced Notes files, attachments, and Trash data from this vault. Other vault files and application settings are kept."
-        confirmLabel="Delete Notes data"
+        title="Delete all Yonalist data?"
+        description="This removes the Yonalist database, synced Yonalist files, attachments, and Trash data from this vault. Other vault files and application settings are kept."
+        confirmLabel="Delete Yonalist data"
         cancelLabel="Cancel"
         danger
         onConfirm={() => void deleteNotesData()}
@@ -536,8 +539,8 @@ export function NotesDataSettingsDialog({
       <ConfirmDialog
         open={resetConfirmOpen}
         onOpenChange={setResetConfirmOpen}
-        title="Reset the Notes database?"
-        description="Synced Notes files and attachments are kept. Notes that exist only in SQLite will be permanently discarded."
+        title="Reset the Yonalist database?"
+        description="Synced Yonalist files and attachments are kept. Pages that exist only in SQLite will be permanently discarded."
         confirmLabel="Reset database"
         cancelLabel="Cancel"
         danger
@@ -548,7 +551,7 @@ export function NotesDataSettingsDialog({
         open={discardConfirmOpen}
         onOpenChange={setDiscardConfirmOpen}
         title="Discard unsaved edits and delete?"
-        description="Unsaved edits could not be written. Discard them and delete all Notes data anyway?"
+        description="Unsaved edits could not be written. Discard them and delete all Yonalist data anyway?"
         confirmLabel="Discard and delete"
         cancelLabel="Cancel"
         danger

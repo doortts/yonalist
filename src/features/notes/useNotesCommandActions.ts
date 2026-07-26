@@ -457,7 +457,7 @@ export function useNotesCommandActions({
       }
       const deletionToken = {};
       if (!reserveNotesDataDeletion(repository, vaultRoot, deletionToken)) {
-        throw new Error("Notes data deletion is already in progress.");
+        throw new Error("Yonalist data deletion is already in progress.");
       }
       const discardDrafts = options?.discardDrafts === true;
       const participants = notesDataDeletionParticipants(repository, vaultRoot);
@@ -505,7 +505,7 @@ export function useNotesCommandActions({
           if (!discardDrafts && failedParticipant) {
             throw createDraftFlushFailedError(failedParticipant.record.writeError);
           }
-          throw new Error("Notes data deletion did not complete.");
+          throw new Error("Yonalist data deletion did not complete.");
         }
         purgeAttachmentUploadAttemptsAfterDataDeletion();
         const resetParticipants = new Set([

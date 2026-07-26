@@ -230,7 +230,9 @@ export function useNotesLibraryActions({
         try {
           const resolved = await resolveHistoryLocation(requested);
           if (!resolved) {
-            throw new Error("The requested Notes library could not be loaded.");
+            throw new Error(
+              "The requested Yonalist library could not be loaded.",
+            );
           }
           return resolved;
         } finally {

@@ -231,7 +231,7 @@ function NotesLibraryPaneContent({
   return (
     <section
       className="list-pane notes-library-pane"
-      aria-label="Notes library"
+      aria-label="Yonalist library"
       aria-busy={state.status === "loading" || deletingNotesData}
       data-transient-workspace-busy={
         transientWorkspaceBusy ? "true" : undefined
@@ -240,13 +240,13 @@ function NotesLibraryPaneContent({
       <TooltipProvider>
         <div className="pane-titlebar-spacer" />
         <header className="notes-library-header">
-          <h2>Notes</h2>
+          <h2>Yonalist</h2>
           <div className="notes-library-header-actions">
-            <IconTooltip label="Notes data settings" side="bottom">
+            <IconTooltip label="Yonalist data settings" side="bottom">
               <button
                 className="notes-library-icon-button"
                 type="button"
-                aria-label="Notes data settings"
+                aria-label="Yonalist data settings"
                 disabled={deletingNotesData}
                 onClick={() => setDataSettingsOpen(true)}
               >
@@ -273,15 +273,19 @@ function NotesLibraryPaneContent({
             <Search size={15} aria-hidden="true" />
             <input
               type="search"
-              aria-label="Search notes"
-              placeholder="Search notes"
+              aria-label="Search Yonalist"
+              placeholder="Search Yonalist"
               value={query}
               disabled={deletingNotesData}
               onChange={handleSearchChange}
             />
           </label>
 
-          <div className="notes-library-views" role="group" aria-label="Notes library views">
+          <div
+            className="notes-library-views"
+            role="group"
+            aria-label="Yonalist library views"
+          >
             {libraryViews.map(({ id, icon: Icon, label }) => (
               <button
                 key={id}

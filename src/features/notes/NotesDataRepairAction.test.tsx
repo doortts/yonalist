@@ -58,11 +58,13 @@ function repairActionTree(
 }
 
 async function confirmRepair(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole("button", { name: "Repair Notes data" }));
+  await user.click(
+    screen.getByRole("button", { name: "Repair Yonalist data" }),
+  );
   await user.click(
     within(
-      screen.getByRole("alertdialog", { name: "Repair Notes data?" })
-    ).getByRole("button", { name: "Repair Notes data" })
+      screen.getByRole("alertdialog", { name: "Repair Yonalist data?" })
+    ).getByRole("button", { name: "Repair Yonalist data" })
   );
 }
 
@@ -131,7 +133,7 @@ describe("NotesDataRepairAction", () => {
 
     expect(notesRepairDataMock).not.toHaveBeenCalled();
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Unsaved Notes edits could not be written."
+      "Unsaved Yonalist edits could not be written."
     );
   });
 
