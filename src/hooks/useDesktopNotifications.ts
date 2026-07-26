@@ -2,12 +2,12 @@ import { useCallback, useEffect, useRef } from "react";
 import {
   isReadAndQuiet,
   notificationWebUrl,
-  type GitHubNotification
+  type GitHubNotification,
 } from "../domain/notifications";
 import { fetchUnreadNotificationUpdates } from "../services/notifications";
 import {
   ensureNotificationPermission,
-  sendDesktopNotification
+  sendDesktopNotification,
 } from "../services/desktopNotifications";
 import type { ViewedAtMap } from "../services/notificationStores";
 import type { GithubConnection } from "./useGithubAuth";
@@ -20,7 +20,6 @@ interface UseDesktopNotificationsInput {
   online: boolean;
   enabled: boolean;
   demoMode: boolean;
-  isRepoVisible?: (repositoryFullName: string) => boolean;
 }
 
 /**
@@ -34,7 +33,6 @@ export function useDesktopNotifications({
   online,
   enabled,
   demoMode,
-  isRepoVisible
 }: UseDesktopNotificationsInput) {
   const running = useRef(false);
 
@@ -48,26 +46,20 @@ export function useDesktopNotifications({
     async (updates: GitHubNotification[]) => {
       for (const notification of updates) {
         if (
-          isRepoVisible &&
-          !isRepoVisible(notification.repository.full_name)
-        ) {
-          continue;
-        }
-        if (
           isReadAndQuiet(
             notification,
-            viewedAt[notificationWebUrl(notification, connection.webBaseUrl)]
+            viewedAt[notificationWebUrl(notification, connection.webBaseUrl)],
           )
         ) {
           continue;
         }
         await sendDesktopNotification({
           title: notification.repository.full_name,
-          body: notification.subject.title
+          body: notification.subject.title,
         });
       }
     },
-    [connection.webBaseUrl, isRepoVisible, viewedAt]
+    [connection.webBaseUrl, viewedAt],
   );
 
   const checkForUnreadUpdates = useCallback(async () => {
@@ -84,7 +76,7 @@ export function useDesktopNotifications({
     try {
       const updates = await fetchUnreadNotificationUpdates({
         token: connection.token,
-        apiBaseUrl: connection.apiBaseUrl
+        apiBaseUrl: connection.apiBaseUrl,
       });
       await notify(updates);
     } catch {
@@ -99,7 +91,7 @@ export function useDesktopNotifications({
     demoMode,
     enabled,
     notify,
-    online
+    online,
   ]);
 
   useEffect(() => {
@@ -107,13 +99,10 @@ export function useDesktopNotifications({
       return;
     }
     void checkForUnreadUpdates();
-    const interval = window.setInterval(checkForUnreadUpdates, POLL_INTERVAL_MS);
+    const interval = window.setInterval(
+      checkForUnreadUpdates,
+      POLL_INTERVAL_MS,
+    );
     return () => window.clearInterval(interval);
-  }, [
-    checkForUnreadUpdates,
-    connection.token,
-    demoMode,
-    enabled,
-    online
-  ]);
+  }, [checkForUnreadUpdates, connection.token, demoMode, enabled, online]);
 }
