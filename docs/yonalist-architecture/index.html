@@ -40,6 +40,16 @@
         line-height: 1.55;
       }
 
+      .legacy-notice {
+        margin-top: 16px;
+        padding: 12px 14px;
+        border: 1px solid #b7791f;
+        border-radius: 8px;
+        background: #fffaf0;
+        color: #744210;
+        font-size: 16px;
+      }
+
       nav {
         display: flex;
         flex-wrap: wrap;
@@ -89,6 +99,10 @@
     <header>
       <h1>Yonalist 아키텍처 분석</h1>
       <p>전체 구조, 런타임 데이터 흐름, outbox 동기화, 사용 기법과 개선 포인트를 큰 이미지로 펼쳐 볼 수 있습니다.</p>
+      <p class="legacy-notice">
+        이 자료는 제거 전 GitHub Inbox 구조를 기록한 역사 자료입니다.
+        현재 Yonalist 구조와 제거 결정은 2026-07-27 설계 문서를 따릅니다.
+      </p>
     </header>
     <nav>
       <a href="./yonalist-overall-architecture.svg">전체 구조 SVG</a>

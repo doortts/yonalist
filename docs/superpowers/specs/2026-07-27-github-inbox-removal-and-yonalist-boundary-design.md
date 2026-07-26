@@ -1774,15 +1774,22 @@ GN 플러그인 활성화
 - 데스크톱 알림
 - Yonalist 상태 메시지
 
-남은 GN 조립은 `src/features/notes/githubNotifications/` 아래의 전용 런타임
-또는 훅으로 옮긴다. 파일 이름은 구현 시 현재 모듈 경계에 맞게 정하되 다음
-책임을 한곳에서 소유해야 한다.
+남은 GN 조립은 다음 전용 모듈로 옮긴다.
+
+- `src/features/notes/githubNotifications/useGithubNotificationsRuntime.ts`
+- `src/features/notes/githubNotifications/githubNotificationViewedStore.ts`
+
+`useGithubNotificationsRuntime`은 다음 책임을 한곳에서 소유해야 한다.
 
 1. GN 활성 상태와 GitHub 인증 확인
 2. 알림 공급자 생성과 조회
 3. Yonalist 네이티브 반영
 4. 링크 열기 경계 제공
 5. 데스크톱 알림 실행
+
+`githubNotificationViewedStore`는 GN 투영과 링크 열기에 필요한 `viewedAt`을
+보관한다. 별도 Notifications 화면의 hidden·details 상태는 이 저장소에 넣지
+않는다.
 
 ### 7.4 삭제할 화면과 훅
 
