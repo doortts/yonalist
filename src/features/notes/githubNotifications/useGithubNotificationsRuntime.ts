@@ -89,9 +89,13 @@ export function useGithubNotificationsRuntime(
   const desktopNotificationsActive =
     connected && input.desktopNotificationsEnabled;
   const projectionNowMs = useProjectionClock(projectionActive, 60_000);
-  const sourceConnectionId = input.account
-    ? githubSourceConnectionId(input.connection.apiBaseUrl, input.account.id)
-    : null;
+  const apiBaseUrl = input.connection.apiBaseUrl;
+  const webBaseUrl = input.connection.webBaseUrl;
+  const token = input.connection.token;
+  const accountId = input.account?.id ?? null;
+  const accountLogin = input.account?.login ?? null;
+  const sourceConnectionId =
+    accountId !== null ? githubSourceConnectionId(apiBaseUrl, accountId) : null;
   const sourceItemsRef = useRef<readonly GitHubNotification[]>([]);
   const openNotificationUrl = useCallback((url: string) => {
     if (!isSafeExternalHttpUrl(url)) return;
@@ -104,23 +108,29 @@ export function useGithubNotificationsRuntime(
         (item) => item.id === remoteId,
       );
       if (notification) {
-        openNotificationUrl(
-          notificationWebUrl(notification, input.connection.webBaseUrl),
-        );
+        openNotificationUrl(notificationWebUrl(notification, webBaseUrl));
       }
     },
-    [input.connection.webBaseUrl, openNotificationUrl],
+    [openNotificationUrl, webBaseUrl],
   );
   const notificationProvider = useMemo(
     () =>
-      input.pluginEnabled && input.account
+      input.pluginEnabled && accountId !== null && accountLogin !== null
         ? createGithubNotificationsProvider({
-            connection: input.connection,
-            account: input.account,
+            connection: { apiBaseUrl, webBaseUrl, token },
+            account: { id: accountId, login: accountLogin },
             openDetails: openGithubDetails,
           })
         : null,
-    [input.account, input.connection, input.pluginEnabled, openGithubDetails],
+    [
+      accountId,
+      accountLogin,
+      apiBaseUrl,
+      input.pluginEnabled,
+      openGithubDetails,
+      token,
+      webBaseUrl,
+    ],
   );
   const notificationSourceHandle = useMemo(
     () =>
@@ -160,26 +170,22 @@ export function useGithubNotificationsRuntime(
   ] = useState(0);
   const materializedGithubSourceIdentityRef = useRef({
     handle: notificationSourceHandle,
-    webBaseUrl: input.connection.webBaseUrl,
+    webBaseUrl,
   });
   useEffect(() => {
     const previousIdentity = materializedGithubSourceIdentityRef.current;
     if (
       previousIdentity.handle === notificationSourceHandle &&
-      previousIdentity.webBaseUrl === input.connection.webBaseUrl
+      previousIdentity.webBaseUrl === webBaseUrl
     ) {
       return;
     }
     materializedGithubSourceIdentityRef.current = {
       handle: notificationSourceHandle,
-      webBaseUrl: input.connection.webBaseUrl,
+      webBaseUrl,
     };
     githubMaterializedBridgePump.invalidate();
-  }, [
-    githubMaterializedBridgePump,
-    input.connection.webBaseUrl,
-    notificationSourceHandle,
-  ]);
+  }, [githubMaterializedBridgePump, notificationSourceHandle, webBaseUrl]);
   useEffect(
     () => () => githubMaterializedBridgePump.dispose(),
     [githubMaterializedBridgePump],
@@ -196,7 +202,7 @@ export function useGithubNotificationsRuntime(
       token,
       request: {
         connectionId: sourceConnectionId,
-        webBaseUrl: input.connection.webBaseUrl,
+        webBaseUrl,
         items: notificationSourceState.items,
         syncedAt: notificationSourceState.syncedAt ?? new Date().toISOString(),
       },
@@ -204,10 +210,10 @@ export function useGithubNotificationsRuntime(
   }, [
     githubMaterializedBridgePump,
     githubMaterializedRefreshVersion,
-    input.connection.webBaseUrl,
     notificationSourceState,
     projectionActive,
     sourceConnectionId,
+    webBaseUrl,
   ]);
 
   const githubPage = useMemo<ExternalSourcePageSnapshot | null>(
@@ -218,13 +224,13 @@ export function useGithubNotificationsRuntime(
             connectionId: sourceConnectionId,
             title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
             availability:
-              input.authState === "required" && Boolean(input.connection.token)
+              input.authState === "required" && Boolean(token)
                 ? "authentication-required"
-                : !input.connection.token
+                : !token
                   ? "disconnected"
                   : !input.online
                     ? "offline"
-                    : !input.account
+                    : accountId === null
                       ? "connecting"
                       : "online",
             items:
@@ -252,9 +258,8 @@ export function useGithubNotificationsRuntime(
           }
         : null,
     [
-      input.account,
+      accountId,
       input.authState,
-      input.connection.token,
       input.online,
       input.pluginEnabled,
       input.readRetentionDays,
@@ -262,6 +267,7 @@ export function useGithubNotificationsRuntime(
       notificationSourceState,
       projectionNowMs,
       sourceConnectionId,
+      token,
       viewedAt,
     ],
   );
@@ -310,9 +316,7 @@ export function useGithubNotificationsRuntime(
           ? sourceItemsRef.current.find((item) => item.id === key.remoteId)
           : undefined;
       if (notification) {
-        openNotificationUrl(
-          notificationWebUrl(notification, input.connection.webBaseUrl),
-        );
+        openNotificationUrl(notificationWebUrl(notification, webBaseUrl));
       } else if (
         fallbackUrl !== undefined &&
         isSafeExternalHttpUrl(fallbackUrl)
@@ -320,7 +324,7 @@ export function useGithubNotificationsRuntime(
         openNotificationUrl(fallbackUrl);
       }
     },
-    [input.connection.webBaseUrl, openNotificationUrl, sourceConnectionId],
+    [openNotificationUrl, sourceConnectionId, webBaseUrl],
   );
   const externalSources = useMemo<ExternalSourcesBoundary>(
     () => ({

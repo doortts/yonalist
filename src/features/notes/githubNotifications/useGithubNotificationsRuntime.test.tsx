@@ -67,6 +67,7 @@ const externalKey: ExternalBulletKey = {
 const notificationUrl = "https://github.com/acme/app/issues/7";
 
 let sourceHandle: ExternalSourceHandle<GitHubNotification>;
+let sourceLeaseRelease: ReturnType<typeof vi.fn>;
 
 function renderRuntime(
   overrides: Partial<Parameters<typeof useGithubNotificationsRuntime>[0]> = {},
@@ -97,19 +98,33 @@ beforeEach(() => {
     completingKeys: new Set<string>(),
     completionErrors: {},
   };
+  sourceLeaseRelease = vi.fn();
   sourceHandle = {
     getState: () => sourceState,
     subscribe: () => () => undefined,
-    acquire: vi.fn(() => () => undefined),
+    acquire: vi.fn(() => sourceLeaseRelease),
     refresh: vi.fn(async () => undefined),
     complete: vi.fn(async () => undefined),
     dispose: vi.fn(),
   };
-  mocks.createExternalSourceHost.mockReturnValue(sourceHandle);
-  mocks.createGithubNotificationsProvider.mockReturnValue({
+  let returnedFirstSourceHandle = false;
+  mocks.createExternalSourceHost.mockReset();
+  mocks.createExternalSourceHost.mockImplementation(() => {
+    if (!returnedFirstSourceHandle) {
+      returnedFirstSourceHandle = true;
+      return sourceHandle;
+    }
+    return {
+      ...sourceHandle,
+      acquire: vi.fn(() => () => undefined),
+      dispose: vi.fn(),
+    };
+  });
+  mocks.createGithubNotificationsProvider.mockReset();
+  mocks.createGithubNotificationsProvider.mockImplementation(() => ({
     normalizeSettings: vi.fn((value) => value),
     project: vi.fn(() => []),
-  });
+  }));
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -191,24 +206,44 @@ describe("useGithubNotificationsRuntime", () => {
     expect(sourceHandle.dispose).not.toHaveBeenCalled();
   });
 
-  it("keeps the source host for an equivalent connection snapshot", () => {
-    const { rerender } = renderHook(
-      ({ runtimeConnection }: { runtimeConnection: GithubConnection }) =>
+  it("keeps the active provider and source lease for equivalent identity wrappers", () => {
+    const { result, rerender } = renderHook(
+      ({
+        runtimeConnection,
+        runtimeAccount,
+      }: {
+        runtimeConnection: GithubConnection;
+        runtimeAccount: typeof account;
+      }) =>
         useGithubNotificationsRuntime({
           connection: runtimeConnection,
           authState: "passed",
-          account,
+          account: runtimeAccount,
           online: true,
           pluginEnabled: true,
           desktopNotificationsEnabled: false,
         }),
-      { initialProps: { runtimeConnection: connection } },
+      {
+        initialProps: {
+          runtimeConnection: connection,
+          runtimeAccount: account,
+        },
+      },
     );
+    act(() => result.current.externalSources.requestGithubProjection?.(true));
+    expect(mocks.createGithubNotificationsProvider).toHaveBeenCalledOnce();
     expect(mocks.createExternalSourceHost).toHaveBeenCalledOnce();
+    expect(sourceHandle.acquire).toHaveBeenCalledOnce();
 
-    rerender({ runtimeConnection: { ...connection } });
+    rerender({
+      runtimeConnection: { ...connection },
+      runtimeAccount: { ...account },
+    });
 
+    expect(mocks.createGithubNotificationsProvider).toHaveBeenCalledOnce();
     expect(mocks.createExternalSourceHost).toHaveBeenCalledOnce();
+    expect(sourceHandle.acquire).toHaveBeenCalledOnce();
+    expect(sourceLeaseRelease).not.toHaveBeenCalled();
     expect(sourceHandle.dispose).not.toHaveBeenCalled();
   });
 });
