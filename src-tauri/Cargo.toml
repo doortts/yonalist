@@ -1,7 +1,7 @@
 [package]
 name = "yonalist"
 version = "0.1.0"
-description = "Offline-first GitHub issue and pull request client"
+description = "Local-first outliner with pluggable external sources"
 authors = ["doortts"]
 edition = "2021"
 rust-version = "1.97"

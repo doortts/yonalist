@@ -17333,7 +17333,6 @@ mod tests {
             temp_dir.path().join(".yonalist/notes.sqlite")
         );
         assert!(notes_db_path(vault_path).exists());
-        assert!(!temp_dir.path().join(".yonalist/index.sqlite").exists());
 
         for table in [
             "notes_nodes",
@@ -21876,9 +21875,9 @@ mod tests {
         let connection = connect_notes_db(vault_path).expect("connect notes");
         let notes_path = notes_db_path(vault_path);
         let metadata_path = notes_path.parent().expect("metadata path");
-        let index_path = metadata_path.join("index.sqlite");
+        let plugin_path = metadata_path.join("plugin.sqlite");
         let settings_path = metadata_path.join("settings.json");
-        std::fs::write(&index_path, b"index").expect("write index fixture");
+        std::fs::write(&plugin_path, b"plugin").expect("write plugin fixture");
         std::fs::write(&settings_path, b"{}").expect("write metadata fixture");
         drop(connection);
 
@@ -21896,7 +21895,7 @@ mod tests {
         assert!(!wal_path.exists());
         assert!(!shm_path.exists());
         assert!(!journal_path.exists());
-        assert_eq!(std::fs::read(index_path).expect("read index"), b"index");
+        assert_eq!(std::fs::read(plugin_path).expect("read plugin"), b"plugin");
         assert_eq!(std::fs::read(settings_path).expect("read settings"), b"{}");
         assert!(metadata_path.exists());
     }
@@ -21968,9 +21967,9 @@ mod tests {
 
         let notes_path = notes_db_path(vault_path);
         let metadata_path = notes_path.parent().expect("metadata path");
-        let index_path = metadata_path.join("index.sqlite");
+        let plugin_path = metadata_path.join("plugin.sqlite");
         let settings_path = metadata_path.join("settings.json");
-        std::fs::write(&index_path, b"index fixture").expect("write index fixture");
+        std::fs::write(&plugin_path, b"plugin fixture").expect("write plugin fixture");
         std::fs::write(&settings_path, b"metadata fixture").expect("write metadata fixture");
         drop(connection);
 
@@ -21985,8 +21984,8 @@ mod tests {
         }));
         assert!(notes_path.exists());
         assert_eq!(
-            std::fs::read(index_path).expect("read index fixture"),
-            b"index fixture"
+            std::fs::read(plugin_path).expect("read plugin fixture"),
+            b"plugin fixture"
         );
         assert_eq!(
             std::fs::read(settings_path).expect("read metadata fixture"),
