@@ -2382,12 +2382,6 @@ pub(crate) fn write_atomic_file_in_guarded_parent(
     result
 }
 
-/// Preserves the vault writer's existing overwrite behavior while sharing the
-/// byte-oriented atomic output path used by exports.
-pub(crate) fn write_text_file_inner(path: &Path, contents: &str) -> Result<(), String> {
-    write_atomic_file(path, contents.as_bytes(), true)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
