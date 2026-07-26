@@ -1447,9 +1447,13 @@ fetch_image
 
 인증과 링크에는 OAuth loopback, URL 열기, keychain token 명령도 사용했다.
 이들은 GN과 Yonalist에서도 쓸 수 있어 Inbox 전용으로 간주하면 안 된다.
-`touch_cached_avatar_image`는 캐시된 아바타를 다시 쓴 것으로 표시해 최근
-사용 시각을 갱신했다. 캐시 정리 작업이 실제로 쓰는 아바타를 오래된 파일로
-판단하지 않도록 하는 명령이었다.
+`touch_cached_avatar_image(vault_path, host, login, src, checked_at)`는
+`host`와 소문자로 바꾼 `login`이 일치하는 행에서 `source_url`과
+`checked_at`만 갱신했다. 아바타를 다시 가져오지 못해 기존 이미지를 쓰거나,
+새로 받은 이미지의 `hash`가 기존 값과 같을 때 호출했다. `checked_at`은 한
+시간 동안 같은 이미지를 다시 요청하지 않는 신선도 판단에 썼다. 이미지
+바이트와 `hash`, `updated_at`은 바꾸지 않았으며 오래된 캐시를 정리하는 명령도
+아니었다.
 
 파일 명령의 안전 규칙:
 
