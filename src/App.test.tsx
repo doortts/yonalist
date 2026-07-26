@@ -13,7 +13,8 @@ const vaultMocks = vi.hoisted(() => ({
   drain: vi.fn(),
   release: vi.fn(),
   commit: vi.fn(),
-  flush: vi.fn()
+  flush: vi.fn(),
+  contextRoots: [] as string[]
 }));
 
 const githubRuntimeMocks = vi.hoisted(() => ({
@@ -83,6 +84,9 @@ vi.mock("./features/notes/NotesFeature", async () => {
     const vaultRoot = React.useContext(VaultRootContext);
     const sources = React.useContext(ExternalSourcesContext);
     const connection = React.useContext(GithubConnectionContext);
+    React.useEffect(() => {
+      vaultMocks.contextRoots.push(vaultRoot);
+    }, [vaultRoot]);
     return (
       <section
         aria-label="Notes library"
@@ -105,6 +109,7 @@ vi.mock("./features/notes/NotesFeature", async () => {
 });
 
 import App from "./App";
+import { defaultSettings } from "./appSettings";
 import { activeFeatureStorageKey } from "./features/core/featureSelection";
 import * as vaultFolderService from "./services/vaultFolder";
 
@@ -137,6 +142,7 @@ describe("Yonalist app shell", () => {
     vaultMocks.commit.mockReset();
     vaultMocks.flush.mockReset();
     vaultMocks.flush.mockResolvedValue(undefined);
+    vaultMocks.contextRoots.length = 0;
     githubRuntimeMocks.useRuntime.mockClear();
   });
 
@@ -236,6 +242,162 @@ describe("Yonalist app shell", () => {
       )
     );
     expect(vaultMocks.commit).toHaveBeenCalledWith("/vault-old");
+  });
+
+  it("uses the default Vault root for context, drain, and flush when the stored folder is blank", async () => {
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ vaultFolder: "   " })
+    );
+    const flush = deferred<void>();
+    vaultMocks.flush.mockReturnValueOnce(flush.promise);
+    render(<App />);
+
+    expect(await screen.findByLabelText("Notes library")).toHaveAttribute(
+      "data-vault-root",
+      defaultSettings.vaultFolder
+    );
+    await openVaultSettings();
+    const input = screen.getByLabelText("Vault folder");
+
+    fireEvent.change(input, { target: { value: "/vault-new" } });
+    fireEvent.blur(input);
+
+    await waitFor(() =>
+      expect(vaultMocks.drain).toHaveBeenCalledWith(
+        defaultSettings.vaultFolder
+      )
+    );
+    await waitFor(() =>
+      expect(vaultMocks.flush).toHaveBeenCalledWith(
+        defaultSettings.vaultFolder
+      )
+    );
+    expect(screen.getByLabelText("Notes library")).toHaveAttribute(
+      "data-vault-root",
+      defaultSettings.vaultFolder
+    );
+
+    await act(async () => {
+      flush.resolve();
+      await flush.promise;
+    });
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Notes library")).toHaveAttribute(
+        "data-vault-root",
+        "/vault-new"
+      )
+    );
+    expect(vaultMocks.commit).toHaveBeenCalledWith(defaultSettings.vaultFolder);
+  });
+
+  it("releases a superseded drain when the latest request returns to the active Vault", async () => {
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ vaultFolder: "/vault-old" })
+    );
+    const drain = deferred<boolean>();
+    vaultMocks.drain.mockReturnValue(drain.promise);
+    render(<App />);
+    await screen.findByLabelText("Notes library");
+    await openVaultSettings();
+    const input = screen.getByLabelText("Vault folder");
+
+    fireEvent.change(input, { target: { value: "/vault-new" } });
+    fireEvent.blur(input);
+    fireEvent.change(input, { target: { value: "/vault-old" } });
+    fireEvent.blur(input);
+
+    await act(async () => {
+      drain.resolve(true);
+      await drain.promise;
+    });
+
+    await waitFor(() =>
+      expect(vaultMocks.release).toHaveBeenCalledTimes(2)
+    );
+    expect(vaultMocks.release).toHaveBeenNthCalledWith(1, "/vault-old");
+    expect(vaultMocks.release).toHaveBeenNthCalledWith(2, "/vault-old");
+    expect(vaultMocks.commit).not.toHaveBeenCalled();
+    expect(vaultMocks.contextRoots).not.toContain("/vault-new");
+    expect(screen.getByLabelText("Notes library")).toHaveAttribute(
+      "data-vault-root",
+      "/vault-old"
+    );
+  });
+
+  it("commits only the latest eligible Vault when a pending change is superseded", async () => {
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ vaultFolder: "/vault-old" })
+    );
+    const drain = deferred<boolean>();
+    vaultMocks.drain.mockReturnValue(drain.promise);
+    render(<App />);
+    await screen.findByLabelText("Notes library");
+    await openVaultSettings();
+    const input = screen.getByLabelText("Vault folder");
+
+    fireEvent.change(input, { target: { value: "/vault-first" } });
+    fireEvent.blur(input);
+    fireEvent.change(input, { target: { value: "/vault-latest" } });
+    fireEvent.blur(input);
+
+    await act(async () => {
+      drain.resolve(true);
+      await drain.promise;
+    });
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Notes library")).toHaveAttribute(
+        "data-vault-root",
+        "/vault-latest"
+      )
+    );
+    expect(vaultMocks.release).toHaveBeenCalledOnce();
+    expect(vaultMocks.release).toHaveBeenCalledWith("/vault-old");
+    expect(vaultMocks.commit).toHaveBeenCalledOnce();
+    expect(vaultMocks.commit).toHaveBeenCalledWith("/vault-old");
+    expect(vaultMocks.flush).toHaveBeenCalledOnce();
+    expect(vaultMocks.flush).toHaveBeenCalledWith("/vault-old");
+    expect(vaultMocks.contextRoots).not.toContain("/vault-first");
+  });
+
+  it("keeps a return-to-active request stale when another Vault supersedes it", async () => {
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ vaultFolder: "/vault-old" })
+    );
+    const drain = deferred<boolean>();
+    vaultMocks.drain.mockReturnValue(drain.promise);
+    render(<App />);
+    await screen.findByLabelText("Notes library");
+    await openVaultSettings();
+    const input = screen.getByLabelText("Vault folder");
+
+    for (const folder of ["/vault-first", "/vault-old", "/vault-latest"]) {
+      fireEvent.change(input, { target: { value: folder } });
+      fireEvent.blur(input);
+    }
+
+    await act(async () => {
+      drain.resolve(true);
+      await drain.promise;
+    });
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Notes library")).toHaveAttribute(
+        "data-vault-root",
+        "/vault-latest"
+      )
+    );
+    expect(vaultMocks.release).toHaveBeenCalledTimes(2);
+    expect(vaultMocks.commit).toHaveBeenCalledOnce();
+    expect(vaultMocks.commit).toHaveBeenCalledWith("/vault-old");
+    expect(vaultMocks.flush).toHaveBeenCalledOnce();
+    expect(vaultMocks.flush).toHaveBeenCalledWith("/vault-old");
+    expect(vaultMocks.contextRoots).not.toContain("/vault-first");
   });
 
   it("keeps the current Vault selected when its drain fails", async () => {
