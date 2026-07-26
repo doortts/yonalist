@@ -9,14 +9,14 @@ import {
   ensureNotificationPermission,
   sendDesktopNotification,
 } from "../services/desktopNotifications";
-import type { ViewedAtMap } from "../services/notificationStores";
+import type { GithubNotificationViewedAt } from "../features/notes/githubNotifications/githubNotificationViewedStore";
 import type { GithubConnection } from "./useGithubAuth";
 
 const POLL_INTERVAL_MS = 60 * 1000;
 
 interface UseDesktopNotificationsInput {
   connection: GithubConnection;
-  viewedAt: ViewedAtMap;
+  viewedAt: GithubNotificationViewedAt;
   online: boolean;
   enabled: boolean;
   demoMode: boolean;
@@ -80,8 +80,8 @@ export function useDesktopNotifications({
       });
       await notify(updates);
     } catch {
-      // Native notifications are best-effort; the main Notifications pane owns
-      // user-visible loading and error states.
+      // Native notifications are best-effort; GN projection refresh reports
+      // its own user-visible loading and error states.
     } finally {
       running.current = false;
     }

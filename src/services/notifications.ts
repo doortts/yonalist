@@ -2,12 +2,7 @@ import {
   notificationsEqual,
   type GitHubNotification
 } from "../domain/notifications";
-import {
-  estimateJsonBytes,
-  estimateTextBytes,
-  type CacheSizeStats
-} from "./cacheStats";
-import { GitHubRequestError } from "./github";
+import { GitHubRequestError } from "./githubTransport";
 import { tracePerf } from "./perfTrace";
 
 export interface FetchNotificationsOptions {
@@ -69,36 +64,11 @@ function cacheKey(options: FetchNotificationsOptions): string {
 // request instead of hitting the API twice.
 const inflight = new Map<string, Promise<GitHubNotification[]>>();
 
-// The notifications list is a plain Map (not an LruCache), so its byte total
-// cannot be tracked incrementally per write. Instead the reduce result is
-// memoized behind a dirty flag: every `cache` mutation clears it so the next
-// stats read (e.g. a status-bar render) rebuilds it once, and repeated reads
-// between mutations return the same object.
-let cacheStatsMemo: CacheSizeStats | null = null;
-
-function invalidateCacheStats(): void {
-  cacheStatsMemo = null;
-}
-
 export function clearNotificationCache() {
   cache.clear();
-  invalidateCacheStats();
   unreadUpdateCache.clear();
   inflight.clear();
   consecutiveProbeNotModified.clear();
-}
-
-export function getNotificationCacheStats(): CacheSizeStats {
-  return (cacheStatsMemo ??= [...cache.entries()].reduce<CacheSizeStats>(
-    (stats, [key, entry]) => ({
-      entries: stats.entries + entry.notifications.length,
-      bytes:
-        stats.bytes +
-        estimateTextBytes(key) +
-        estimateJsonBytes(entry.notifications)
-    }),
-    { entries: 0, bytes: 0 }
-  ));
 }
 
 export function fetchNotifications(
@@ -221,7 +191,6 @@ async function doFetchNotifications(
         etag: etag ?? cached.etag,
         notifications: cached.notifications
       });
-      invalidateCacheStats();
       return cached.notifications;
     }
 
@@ -231,7 +200,6 @@ async function doFetchNotifications(
   }
 
   cache.set(key, { lastModified, etag, notifications });
-  invalidateCacheStats();
   return notifications;
 }
 

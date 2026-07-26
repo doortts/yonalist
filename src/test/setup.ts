@@ -43,47 +43,6 @@ beforeEach(() => {
   window.localStorage.clear?.();
 });
 
-// Base UI's Avatar resolves image load state with a detached `new Image()`
-// whose `onload`/`onerror` jsdom never fires (and `complete` stays false), so
-// the component would never mount its <img>. Install a minimal Image that
-// synchronously reports a successful load — setting `complete`/`naturalWidth`
-// so Base UI's fast path (`if (image.complete) …`) picks it up during its
-// layout effect, keeping avatar images observable in the same tick as render
-// (as they were before the migration). Tests that need the error branch stub
-// their own Image (see Avatar.test.tsx).
-if (typeof window !== "undefined") {
-  class LoadingImageMock {
-    onload: (() => void) | null = null;
-    onerror: (() => void) | null = null;
-    complete = false;
-    naturalWidth = 0;
-    crossOrigin: string | null = null;
-    referrerPolicy = "";
-    sizes = "";
-    srcset = "";
-    private currentSrc = "";
-
-    set src(value: string) {
-      this.currentSrc = value;
-      if (value) {
-        this.complete = true;
-        this.naturalWidth = 1;
-        this.onload?.();
-      }
-    }
-
-    get src() {
-      return this.currentSrc;
-    }
-  }
-
-  Object.defineProperty(window, "Image", {
-    configurable: true,
-    writable: true,
-    value: LoadingImageMock
-  });
-}
-
 // jsdom does not implement PointerEvent; the pane resizer relies on it.
 if (typeof window !== "undefined" && !window.PointerEvent) {
   class PointerEventPolyfill extends MouseEvent {

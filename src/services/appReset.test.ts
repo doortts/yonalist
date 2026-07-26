@@ -33,16 +33,8 @@ describe("resetApplicationData", () => {
       JSON.stringify({ "https://api.github.com": "gho_session" })
     );
     window.localStorage.setItem(
-      "yonalist.repositorySummaries.v1",
+      "yonalist.testCache.v1",
       JSON.stringify({ "https://api.github.com": [] })
-    );
-    window.localStorage.setItem(
-      "yonalist.vaultDocumentHashes.v1",
-      JSON.stringify({ "~/Yonalist": {} })
-    );
-    window.localStorage.setItem(
-      "yonalist.vaultDocuments.v1",
-      JSON.stringify({ "~/Yonalist": { "github.com/acme/app/issues/1/issue.md": "body" } })
     );
     window.localStorage.setItem("unrelated", "kept");
 
@@ -65,9 +57,7 @@ describe("resetApplicationData", () => {
     expect(window.localStorage.getItem("yonalist.settings.v1")).toBeNull();
     expect(window.localStorage.getItem("yonalist.themeMode.v1")).toBeNull();
     expect(window.localStorage.getItem("yonalist.github.sessionTokens.v1")).toBeNull();
-    expect(window.localStorage.getItem("yonalist.repositorySummaries.v1")).toBeNull();
-    expect(window.localStorage.getItem("yonalist.vaultDocumentHashes.v1")).toBeNull();
-    expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).toBeNull();
+    expect(window.localStorage.getItem("yonalist.testCache.v1")).toBeNull();
     expect(window.localStorage.getItem("unrelated")).toBe("kept");
     expect(cacheMocks.clearNotificationCache).toHaveBeenCalledOnce();
     expect(cacheMocks.clearImageProxyCache).toHaveBeenCalledOnce();
@@ -78,13 +68,13 @@ describe("resetApplicationData", () => {
       "yonalist.externalSources.snapshots.v1",
       JSON.stringify({ cached: "external" })
     );
-    window.localStorage.setItem("yonalist.vaultDocuments.v1", "legacy inbox");
+    window.localStorage.setItem("yonalist.otherRuntimeCache.v1", "cached");
 
     await resetApplicationData();
 
     expect(
       window.localStorage.getItem("yonalist.externalSources.snapshots.v1")
     ).toBeNull();
-    expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).toBeNull();
+    expect(window.localStorage.getItem("yonalist.otherRuntimeCache.v1")).toBeNull();
   });
 });

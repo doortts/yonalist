@@ -14,12 +14,12 @@ describe("useNavigationListAccent", () => {
 
   it("changes the list hover and selected palette when navigation changes", async () => {
     vi.spyOn(Math, "random").mockReturnValueOnce(0).mockReturnValueOnce(0.8);
-    const { rerender } = render(<AccentProbe activeKey="inbox:all" />);
+    const { rerender } = render(<AccentProbe activeKey="workspace:notes" />);
     const output = document.querySelector("output") as HTMLOutputElement;
     const initialHover = output.style.getPropertyValue("--nav-list-hover-bg");
     const initialSelected = output.style.getPropertyValue("--nav-list-selected-bg");
 
-    rerender(<AccentProbe activeKey="repo:pi/agent-dev" />);
+    rerender(<AccentProbe activeKey="app:settings" />);
 
     await waitFor(() => {
       expect(output.style.getPropertyValue("--nav-list-hover-bg")).not.toBe(

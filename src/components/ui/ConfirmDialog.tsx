@@ -27,10 +27,10 @@ interface ConfirmDialogProps {
 
 /**
  * Shared confirmation dialog built on Base UI's AlertDialog. It reuses the
- * existing modal look (`.modal-backdrop` / `.modal` from styles.css, matching
- * OutboxModal) and the standard `.secondary-button` / `.danger-button` action
- * styles, while gaining focus trapping, focus restoration, and Escape-to-close
- * from AlertDialog. The AlertDialog.Title supplies the accessible name and
+ * existing modal look (`.modal-backdrop` / `.modal` from styles.css) and the
+ * standard `.secondary-button` / `.danger-button` action styles, while gaining
+ * focus trapping, focus restoration, and Escape-to-close from AlertDialog.
+ * The AlertDialog.Title supplies the accessible name and
  * AlertDialog.Description the described-by copy.
  */
 export function ConfirmDialog({

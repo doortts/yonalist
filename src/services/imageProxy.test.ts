@@ -2,10 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GithubConnection } from "../hooks/useGithubAuth";
 import {
   clearImageProxyCache,
-  loadCachedAvatarImage,
   needsAuthenticatedFetch,
-  persistCachedAvatarImage,
-  resolveAvatarImage,
   resolveAuthenticatedImage
 } from "./imageProxy";
 
@@ -204,86 +201,5 @@ describe("resolveAuthenticatedImage", () => {
     expect(successFetch).toHaveBeenCalledTimes(1);
 
     onLineSpy.mockRestore();
-  });
-});
-
-describe("avatar image cache", () => {
-  it("loads a locally cached avatar by user before checking the network", () => {
-    persistCachedAvatarImage("mona", connection, "https://oss.navercorp.com/mona.png", {
-      dataUrl: "data:image/png;base64,old",
-      checkedAt: new Date("2026-07-01T00:00:00Z")
-    });
-
-    expect(loadCachedAvatarImage("mona", connection)?.dataUrl).toBe(
-      "data:image/png;base64,old"
-    );
-  });
-
-  it("checks a stale avatar once and updates the cached image only when it changed", async () => {
-    vi.setSystemTime(new Date("2026-07-05T00:00:00Z"));
-    persistCachedAvatarImage("mona", connection, "https://oss.navercorp.com/mona.png", {
-      dataUrl: "data:image/png;base64,old",
-      checkedAt: new Date("2026-07-01T00:00:00Z")
-    });
-    const bytes = new Uint8Array([137, 80, 78, 71, 1]);
-    const fetchMock = vi.fn(async () =>
-      new Response(bytes, {
-        status: 200,
-        headers: { "content-type": "image/png" }
-      })
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const first = await resolveAvatarImage(
-      "mona",
-      "https://oss.navercorp.com/mona.png",
-      connection
-    );
-    const second = await resolveAvatarImage(
-      "mona",
-      "https://oss.navercorp.com/mona.png",
-      connection
-    );
-
-    expect(first).toMatch(/^data:image\/png;base64,/);
-    expect(second).toBe(first);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(loadCachedAvatarImage("mona", connection)?.dataUrl).toBe(first);
-  });
-
-  it("keeps cached avatars fresh for one hour and only refreshes after that", async () => {
-    persistCachedAvatarImage("mona", connection, "https://oss.navercorp.com/mona.png", {
-      dataUrl: "data:image/png;base64,old",
-      checkedAt: new Date("2026-07-05T00:00:00Z")
-    });
-    const bytes = new Uint8Array([137, 80, 78, 71, 2]);
-    const fetchMock = vi.fn(async () =>
-      new Response(bytes, {
-        status: 200,
-        headers: { "content-type": "image/png" }
-      })
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    vi.setSystemTime(new Date("2026-07-05T00:59:59Z"));
-    const fresh = await resolveAvatarImage(
-      "mona",
-      "https://oss.navercorp.com/mona.png",
-      connection
-    );
-
-    expect(fresh).toBe("data:image/png;base64,old");
-    expect(fetchMock).not.toHaveBeenCalled();
-
-    vi.setSystemTime(new Date("2026-07-05T01:00:01Z"));
-    const refreshed = await resolveAvatarImage(
-      "mona",
-      "https://oss.navercorp.com/mona.png",
-      connection
-    );
-
-    expect(refreshed).toMatch(/^data:image\/png;base64,/);
-    expect(refreshed).not.toBe("data:image/png;base64,old");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

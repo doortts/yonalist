@@ -14,8 +14,7 @@ import {
   projectGithubNotifications
 } from "./githubNotificationsProvider";
 import {
-  clearNotificationCache,
-  getNotificationCacheStats
+  clearNotificationCache
 } from "./notifications";
 import { loadExternalSourceSnapshot } from "./externalSourceSnapshotStore";
 
@@ -620,7 +619,6 @@ describe("GitHub notifications provider", () => {
 
     await expect(source.load(input)).resolves.toEqual([valid]);
     await expect(source.load(input)).rejects.toThrow();
-    expect(getNotificationCacheStats().entries).toBe(1);
     await expect(source.load(input)).resolves.toEqual([recovered]);
   });
 
@@ -669,9 +667,7 @@ describe("GitHub notifications provider", () => {
       };
 
       await expect(source.load(input)).resolves.toEqual([valid]);
-      const cacheStats = getNotificationCacheStats();
       await expect(source.load(input)).rejects.toThrow();
-      expect(getNotificationCacheStats()).toBe(cacheStats);
       await expect(source.load(input)).resolves.toEqual([recovered]);
     }
   );
