@@ -67,7 +67,7 @@ const externalKey: ExternalBulletKey = {
 const notificationUrl = "https://github.com/acme/app/issues/7";
 
 let sourceHandle: ExternalSourceHandle<GitHubNotification>;
-let sourceLeaseRelease: ReturnType<typeof vi.fn>;
+let sourceLeaseRelease: ReturnType<typeof vi.fn<() => void>>;
 
 function renderRuntime(
   overrides: Partial<Parameters<typeof useGithubNotificationsRuntime>[0]> = {},
@@ -98,7 +98,7 @@ beforeEach(() => {
     completingKeys: new Set<string>(),
     completionErrors: {},
   };
-  sourceLeaseRelease = vi.fn();
+  sourceLeaseRelease = vi.fn<() => void>();
   sourceHandle = {
     getState: () => sourceState,
     subscribe: () => () => undefined,
@@ -116,7 +116,7 @@ beforeEach(() => {
     }
     return {
       ...sourceHandle,
-      acquire: vi.fn(() => () => undefined),
+      acquire: vi.fn<() => () => void>(() => () => undefined),
       dispose: vi.fn(),
     };
   });
