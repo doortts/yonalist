@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 /**
  * Tracks connectivity from browser online/offline events while still letting
- * the user force offline mode manually (useful for testing the outbox flow).
+ * the user force offline mode manually for Yonalist and GN testing.
  */
 export function useOnlineStatus(initialOnline?: boolean) {
   const [online, setOnline] = useState(

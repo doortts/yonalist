@@ -360,10 +360,6 @@
   color: #ffffff;
 }
 
-:root[data-theme="yona-dark"] .notification-unread-dot {
-  background: var(--yonal-gradient);
-}
-
 :root[data-theme="yona-dark"] .category-item.active {
   background: var(--yonal-gradient-soft);
 }
@@ -603,7 +599,7 @@ h2 {
 }
 
 /* Feature panes are wrapped in a slot so a kept-mounted-but-inactive feature
-   (Notes, while Inbox/Settings is showing) can stay in the tree without taking
+   (Yonalist, while Settings is showing) can stay in the tree without taking
    a grid cell. `display: contents` makes the slot itself invisible to layout,
    so the pane it wraps is placed as a direct grid item exactly as if it were an
    App child; `[hidden]` collapses the whole slot (and drops it from the a11y
@@ -853,7 +849,6 @@ body.is-resizing-pane {
      while it is on screen and offers the same action inline in its own actions
      row, so no reservation is needed. Desktop-only, matching the breakpoint
      where the toggles are shown. */
-  .issue-create-header,
   .settings-header {
     padding-right: 56px;
   }
@@ -1220,53 +1215,6 @@ body.is-resizing-pane {
   background: var(--bg-hover);
 }
 
-/* ---------- Login gate ---------- */
-
-.login-shell {
-  display: grid;
-  place-items: center;
-  height: 100vh;
-  overflow-y: auto;
-  padding: 56px 24px 32px;
-  background: var(--bg-app);
-}
-
-.login-card {
-  display: grid;
-  gap: 18px;
-  width: min(560px, 100%);
-  padding: 26px 28px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-card);
-}
-
-.login-card-header h1 {
-  margin-top: 2px;
-  font-size: 22px;
-}
-
-.login-copy {
-  margin: 6px 0 0;
-  color: var(--text-2);
-  font-size: 13.5px;
-}
-
-.login-card .settings-section {
-  padding: 0;
-  border-bottom: 0;
-}
-
-.login-skip {
-  justify-self: center;
-  color: var(--text-3);
-  font-weight: 500;
-}
-
-.login-error {
-  margin: 0;
-}
-
 /* ---------- Settings categories ---------- */
 
 .settings-category-header {
@@ -1386,8 +1334,6 @@ body.is-resizing-pane {
   color: var(--favorite);
 }
 
-/* keep favorite bookmark at the far right when a comment count is present */
-
 .list-empty {
   padding: 20px 16px;
   margin: 0;
@@ -1423,61 +1369,6 @@ body.is-resizing-pane {
   scrollbar-gutter: auto;
 }
 
-.detail-header {
-  padding: 10px 28px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-detail);
-}
-
-.detail-title-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.detail-title-row h2 {
-  margin-top: 4px;
-  overflow-wrap: anywhere;
-}
-
-.detail-header-actions {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  gap: 8px;
-}
-
-.favorite-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  background: var(--bg-card);
-  color: var(--text-3);
-  transition: color 120ms ease, border-color 120ms ease;
-}
-
-.favorite-button:hover {
-  color: var(--favorite);
-}
-
-.favorite-button.active {
-  border-color: var(--favorite);
-  color: var(--favorite);
-}
-
-.detail-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 14px;
-}
-
 .chip {
   display: inline-flex;
   align-items: center;
@@ -1489,181 +1380,6 @@ body.is-resizing-pane {
   font-weight: 600;
 }
 
-/* GitHub-style state pill: icon + word on a solid colored background. */
-
-.state-open {
-  background: #1a7f37;
-}
-
-.state-closed {
-  background: #cf222e;
-}
-
-.state-merged {
-  background: #8250df;
-}
-
-.state-draft {
-  background: #6e7781;
-}
-
-.chip-status {
-  background: var(--bg-hover);
-  color: var(--text-2);
-}
-
-.detail-connection {
-  margin-left: auto;
-  color: var(--text-3);
-  font-size: 12.5px;
-}
-
-.content-panel {
-  margin: 20px 28px 0;
-  padding: 20px 24px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-card);
-}
-
-.author-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--border);
-}
-
-.author-row p {
-  margin: 2px 0 0;
-  color: var(--text-3);
-  font-size: 12.5px;
-}
-
-@keyframes skeleton-shimmer {
-  0% {
-    background-position: 180% 0, 0 0;
-  }
-  100% {
-    background-position: -180% 0, 0 0;
-  }
-}
-
-/* ---- Label chips ---- */
-
-/* ---- Conversation ---- */
-.conversation {
-  margin: 20px 10px 8px;
-}
-
-/* Opening post: bleeds past the conversation's margins to fill the top and
-   sides, sharing the comment-card background, with just a bottom line
-   separating it from the timeline. */
-.opening-post {
-  margin: -20px -10px 0;
-  padding: 14px 16px 16px;
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border);
-}
-
-.opening-post-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 24px;
-  font-size: 13px;
-}
-
-.entry-avatar-slot {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 20px;
-  width: 20px;
-  height: 20px;
-}
-
-.opening-post-body {
-  padding-top: 4px;
-}
-
-.opening-post-body .markdown-body {
-  margin-top: 10px;
-  max-width: none;
-}
-
-/* Comment timeline: each reply is an avatar in a left gutter next to a
-   bordered speech bubble whose tail points back at the avatar. */
-
-/* Speech-bubble tail: a border-colored triangle with a header-colored
-   triangle laid 1px over it, so only the bubble's border edge shows. */
-
-.inline-reply-composer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: stretch;
-  margin-top: -1px;
-  border-top: 1px solid #ff7a2f;
-  background: var(--bg-card);
-}
-
-.inline-reply-composer textarea {
-  min-height: 36px;
-  max-height: 180px;
-  padding: 8px 12px;
-  border: 0;
-  background: transparent;
-  color: var(--text-1);
-  font: inherit;
-  line-height: 1.45;
-  resize: none;
-  overflow-y: auto;
-}
-
-.inline-reply-composer textarea:focus {
-  outline: none;
-}
-
-.inline-reply-composer button {
-  min-width: 62px;
-  border: 0;
-  border-radius: 0;
-  background: #ff7a2f;
-  color: #fff;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.inline-reply-composer button:disabled {
-  cursor: default;
-  opacity: 0.55;
-}
-
-/* read-only reaction summary */
-.reactions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 12px;
-}
-
-.reaction {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 1px 9px;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  color: var(--text-2);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.reaction-emoji {
-  font-size: 13px;
-}
-
-
 .markdown-body {
   max-width: 980px;
   margin-top: 0;
@@ -1671,10 +1387,6 @@ body.is-resizing-pane {
   overflow-wrap: break-word;
   -webkit-font-smoothing: antialiased;
   -webkit-text-size-adjust: 100%;
-}
-
-.opening-post-body .markdown-body {
-  padding: 16px 20px !important;
 }
 
 .markdown-body > *:first-child {
@@ -2158,212 +1870,13 @@ body.is-resizing-pane {
   z-index: 41;
 }
 
-.composer-preview-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 28px;
-  padding: 4px 9px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  background: var(--bg-card);
-  color: var(--text-2);
-  font-size: 12.5px;
-  font-weight: 650;
-}
-
-.composer-preview-toggle:hover {
-  background: var(--bg-hover);
-  color: var(--text-1);
-}
-
-.composer-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding-top: 10px;
-}
-
-.composer-actions span {
-  color: var(--text-3);
-  font-size: 12.5px;
-}
-
-.composer-buttons {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.secondary-danger-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 36px;
-  padding: 0 14px;
-  border: 1px solid var(--danger);
-  border-radius: var(--radius);
-  background: transparent;
-  color: var(--danger);
-  font-weight: 700;
-}
-
-.secondary-danger-button:hover:not(:disabled) {
-  background: var(--danger-soft);
-}
-
-.composer-close-split {
-  position: relative;
-  display: inline-flex;
-  align-items: stretch;
-}
-
-.secondary-danger-button.composer-close-main {
-  gap: 8px;
-  border-color: var(--border-strong);
-  background: var(--bg-card);
-  color: var(--text-1);
-  font-size: 13.5px;
-}
-
-.secondary-danger-button.composer-close-main svg {
-  color: var(--danger);
-}
-
-.secondary-danger-button.composer-close-main:hover:not(:disabled) {
-  background: var(--bg-hover);
-}
-
-.secondary-danger-button.composer-close-trigger {
-  width: 42px;
-  min-height: 36px;
-  padding: 0;
-  border-color: var(--border-strong);
-  border-left-width: 0;
-  border-top-left-radius: 0;
-  border-bottom-left-radius: 0;
-  background: var(--bg-card);
-  color: var(--text-2);
-}
-
-.composer-close-split .composer-close-main {
-  border-top-right-radius: 0;
-  border-bottom-right-radius: 0;
-}
-
-.secondary-danger-button.composer-close-trigger:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--text-1);
-}
-
-.composer-close-single {
-  min-width: 0;
-}
-
-.composer-close-menu {
-  z-index: 30;
-  min-width: min(440px, calc(100vw - 28px));
-  padding: 10px 0;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  background: var(--bg-card);
-  box-shadow: var(--shadow-modal);
-  color: var(--text-1);
-}
-
-.composer-close-menu-item {
-  display: grid;
-  grid-template-columns: 28px 28px minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: center;
-  min-height: 74px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-  cursor: default;
-  outline: none;
-}
-
-.composer-close-menu-item:last-child {
-  border-bottom: 0;
-}
-
-.composer-close-menu-item[data-highlighted] {
-  background: var(--bg-hover);
-}
-
-.composer-close-check {
-  display: inline-grid;
-  place-items: center;
-  color: var(--text-1);
-}
-
-.composer-close-option-icon {
-  display: inline-grid;
-  place-items: center;
-  color: var(--danger);
-}
-
-.composer-close-menu-discussion .composer-close-option-icon {
-  color: var(--accent);
-}
-
-.composer-close-option-copy {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.composer-close-option-copy strong {
-  color: var(--text-1);
-  font-size: 14px;
-  font-weight: 700;
-  line-height: 1.2;
-}
-
-.composer-close-option-copy span {
-  color: var(--text-3);
-  font-size: 12.5px;
-  line-height: 1.25;
-}
-
-.composer-close-duplicate-arrow {
-  rotate: -90deg;
-  color: var(--text-3);
-}
-
-.secondary-danger-button:disabled,
 .primary-button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
 
-.detail-empty {
-  display: grid;
-  flex: 1;
-  place-content: center;
-  justify-items: center;
-  gap: 10px;
-  color: var(--text-3);
-  text-align: center;
-}
-
-.detail-empty h2 {
-  color: var(--text-2);
-  font-size: 17px;
-}
-
-.empty-copy {
-  margin: 18px 0 0;
-  color: var(--text-3);
-  font-size: 13.5px;
-}
-
 /* ---------- Full-pane forms (new issue, settings) ---------- */
 
-.issue-create-page,
 .settings-page {
   display: grid;
   flex: 1;
@@ -2371,7 +1884,6 @@ body.is-resizing-pane {
   background: var(--bg-detail);
 }
 
-.issue-create-header,
 .settings-header {
   display: flex;
   align-items: flex-start;
@@ -2381,68 +1893,10 @@ body.is-resizing-pane {
   border-bottom: 1px solid var(--border);
 }
 
-.issue-create-header h2,
 .settings-header h2 {
   margin-top: 4px;
 }
 
-.issue-create-body {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  padding: 8px 28px 0;
-}
-
-.issue-create-body label {
-  display: grid;
-  color: var(--text-2);
-  font-size: 12.5px;
-  font-weight: 600;
-}
-
-.issue-create-body label span {
-  padding-top: 14px;
-}
-
-.issue-create-body input,
-.issue-create-body textarea {
-  width: 100%;
-  border: 0;
-  border-radius: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--text-1);
-}
-
-.issue-create-body input {
-  min-height: 52px;
-  padding: 4px 0 14px;
-  border-bottom: 1px solid var(--border);
-  font-size: 21px;
-  font-weight: 650;
-}
-
-.issue-create-body input:focus,
-.issue-create-body textarea:focus {
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-
-.issue-create-body .issue-body-field {
-  display: grid;
-  flex: 1;
-  min-height: 0;
-  grid-template-rows: auto minmax(0, 1fr);
-}
-
-.issue-create-body textarea {
-  min-height: 0;
-  height: 100%;
-  padding: 12px 0 20px;
-  resize: vertical;
-  line-height: 1.6;
-}
-
-.issue-create-actions,
 .settings-actions {
   display: flex;
   align-items: center;
@@ -2450,11 +1904,6 @@ body.is-resizing-pane {
   gap: 18px;
   padding: 14px 28px 18px;
   border-top: 1px solid var(--border);
-}
-
-.issue-create-actions span {
-  color: var(--text-3);
-  font-size: 12.5px;
 }
 
 /* ---------- Settings ---------- */
@@ -2868,108 +2317,6 @@ body.is-resizing-pane {
   font-size: 12.5px;
 }
 
-/* Simple underline-only search: no box, just a line that lights up on focus. */
-.settings-section .project-visibility-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  justify-self: start;
-  min-width: min(320px, 100%);
-  padding: 2px 2px 6px;
-  border-bottom: 1px solid var(--border);
-  color: var(--text-3);
-  transition: border-color 120ms ease;
-}
-
-.settings-section .project-visibility-search:focus-within {
-  border-bottom-color: var(--accent);
-}
-
-.settings-section .project-visibility-search input {
-  min-width: 0;
-  flex: 1;
-  min-height: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  outline: 0;
-  background: transparent;
-  box-shadow: none;
-  color: var(--text-1);
-  font-size: 13.5px;
-  font-weight: 400;
-}
-
-.settings-section .project-visibility-search input:focus {
-  border: 0;
-  outline: 0;
-  box-shadow: none;
-}
-
-.settings-section .project-visibility-search input::placeholder {
-  color: var(--text-3);
-}
-
-.project-visibility-list {
-  display: grid;
-  gap: 10px;
-}
-
-.project-visibility-group {
-  display: grid;
-  gap: 7px;
-}
-
-.project-owner-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.project-group-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-3);
-}
-
-.project-group-toggle:hover {
-  background: var(--bg-hover);
-  color: var(--text-1);
-}
-
-.project-owner-count {
-  color: var(--text-3);
-  font-size: 11px;
-}
-
-.project-owner-check span {
-  font-weight: 650;
-}
-
-.project-repo-check {
-  margin-left: 44px;
-}
-
-.project-repo-check span {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-weight: 450;
-}
-
-.project-repo-source {
-  color: var(--text-3);
-  font-size: 11px;
-  font-style: normal;
-}
-
 .theme-options {
   display: flex;
   gap: 10px;
@@ -3113,7 +2460,7 @@ body.is-resizing-pane {
   font-weight: 600;
 }
 
-/* ---------- Notifications ---------- */
+/* ---------- Shared feedback and status ---------- */
 
 .notifications-error {
   margin: 8px 16px 0;
@@ -3122,132 +2469,6 @@ body.is-resizing-pane {
 
 .notifications-error {
   color: var(--danger);
-}
-
-.notification-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 5px 10px;
-  border-bottom: 0;
-  border-radius: 0;
-  background: transparent;
-  transition: background-color 120ms ease;
-}
-
-.notification-row:hover {
-  background: var(--bg-hover);
-}
-
-.notification-row.quiet {
-  background: transparent;
-}
-
-.notification-row.quiet:hover {
-  background: var(--bg-hover);
-}
-
-.notification-row.selected {
-  background: var(--accent-soft);
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-
-.notification-lead {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 30px;
-  height: 30px;
-}
-
-.notification-reason {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  color: var(--text-3);
-}
-
-.reason-mention {
-  color: var(--reason-mention);
-}
-
-.reason-comment {
-  color: var(--reason-comment);
-}
-
-.reason-author {
-  color: var(--reason-author);
-}
-
-.reason-team {
-  color: var(--reason-team);
-}
-
-.notification-main {
-  display: grid;
-  flex: 1;
-  gap: 2px;
-  min-width: 0;
-  padding: 2px 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-}
-
-.notification-title {
-  color: var(--text-1);
-  font-size: 14.5px;
-  font-weight: 600;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-
-.notification-row.quiet .notification-title {
-  color: var(--text-2);
-  font-weight: 500;
-}
-
-.notification-number {
-  color: var(--text-3);
-  font-weight: 500;
-}
-
-.notification-subtitle {
-  overflow: hidden;
-  color: var(--text-3);
-  font-size: 12.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.notification-unread-dot {
-  flex-shrink: 0;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent);
-}
-
-.notification-hide {
-  flex-shrink: 0;
-  width: 30px;
-  min-height: 30px;
-  border-color: transparent;
-  background: transparent;
-  opacity: 0;
-  transition: opacity 100ms ease;
-}
-
-.notification-row:hover .notification-hide,
-.notification-hide:focus-visible {
-  opacity: 1;
 }
 
 .nav-item strong.nav-badge {
@@ -3259,14 +2480,6 @@ body.is-resizing-pane {
   text-align: center;
 }
 
-.nav-item .loading-dots {
-  min-width: 20px;
-  color: var(--text-3);
-  font-weight: 700;
-  letter-spacing: 1px;
-  text-align: left;
-}
-
 .detail-loading {
   display: flex;
   align-items: center;
@@ -3274,40 +2487,6 @@ body.is-resizing-pane {
   margin: 20px 28px 0;
   color: var(--text-3);
   font-size: 13.5px;
-}
-
-.detail-error {
-  margin: 20px 28px 0;
-}
-
-.notification-comments {
-  display: grid;
-  gap: 14px;
-  margin: 14px 0 28px;
-}
-
-.chip-state-open {
-  background: rgb(26 127 55 / 12%);
-  color: var(--success);
-}
-
-.chip-state-closed {
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-
-.chip-state-merged {
-  background: rgb(130 80 223 / 12%);
-  color: #8250df;
-}
-
-.chip-state-draft {
-  background: var(--bg-hover);
-  color: var(--text-2);
-}
-
-:root[data-theme="dark"] .chip-state-merged {
-  color: #a371f7;
 }
 
 .spinning {
@@ -3354,8 +2533,6 @@ body.is-resizing-pane {
   color: var(--text-3);
   font-size: 13.5px;
 }
-
-/* Queued-but-unsynced rows in the item list */
 
 /* App feedback snackbar card. Placement (fixed, bottom-right, stacking) is owned
    by ui/toast.css via `.app-toast-viewport`; this rule only styles the card. */
@@ -3417,8 +2594,7 @@ body.is-resizing-pane {
 
   /* The responsive layouts collapse to two/one columns, so the pane toggles
      have nothing meaningful to control below the desktop breakpoint. This
-     includes the inline detail-header maximize toggle, which drives the same
-     pane collapse. */
+     includes the detail maximize toggle, which drives the same pane collapse. */
   .pane-toggle-group,
   .detail-maximize-toggle {
     display: none;
@@ -3464,19 +2640,7 @@ body.is-resizing-pane {
     padding-top: 16px;
   }
 
-  .detail-header,
-  .issue-create-header,
   .settings-header {
     padding-top: 20px;
-  }
-
-  .detail-title-row,
-  .composer-actions {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .content-panel {
-    margin-inline: 16px;
   }
 }

@@ -34,7 +34,7 @@ interface UnreadUpdateCacheEntry {
 const MAX_PAGES = 20;
 const PER_PAGE = 50;
 
-// Full-list cache for the Notifications pane. Refreshes always read the first
+// Full-list cache for GN projection refreshes. Refreshes always read the first
 // page unconditionally; if it matches the cached first page, pagination can be
 // skipped without trusting a potentially stale 304.
 const cache = new Map<string, CacheEntry>();

@@ -1,12 +1,11 @@
 /*
  * Base UI AlertDialog styling for the shared ConfirmDialog wrapper.
  *
- * The wrapper reuses the legacy `.modal-backdrop` / `.modal` look (owned by the
- * global styles.css, same as OutboxModal). Like the Dialog, Base UI renders the
- * Backdrop and Popup as siblings inside a portal, so the popup must center
- * itself rather than relying on a grid-centered backdrop. These rules restore
- * that layout and add the small confirm-specific spacing without touching the
- * global styles.css.
+ * The wrapper reuses the shared `.modal-backdrop` / `.modal` look owned by
+ * global styles.css. Like the Dialog, Base UI renders the Backdrop and Popup as
+ * siblings inside a portal, so the popup centers itself rather than relying on
+ * a grid-centered backdrop. These rules add confirm-specific spacing without
+ * touching the global styles.
  */
 
 /* Backdrop overlay stacking above app chrome. `.modal-backdrop` (styles.css)

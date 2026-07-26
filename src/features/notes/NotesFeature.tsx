@@ -266,9 +266,8 @@ export function NotesFeatureProvider({
 // render body, so returning stable references lets React bail out of the Notes
 // subtree when an App-only state change (notification polling, status metrics,
 // online toggles) re-renders the shell. This mirrors main's 0c19b5d pane
-// memoization at the feature-pane layer. Inbox/Settings deliberately rebuild
-// their panes each render so selection/list props keep flowing; their leaf
-// panes are React.memo'd instead.
+// memoization at the feature-pane layer. Settings can rebuild its panes on
+// demand because it does not own a long-lived editor session.
 const notesPanes: FeaturePanes = {
   middle: <NotesLibraryPane />,
   detail: <NotesDetailSplitHost />,

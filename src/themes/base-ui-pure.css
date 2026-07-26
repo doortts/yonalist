@@ -114,46 +114,14 @@
  *    as the active indicator. (Keeps the 1px transparent border so widths
  *    don't shift.)
  * ------------------------------------------------------------------ */
-:root[data-theme="base-light"] .item-state-tab,
-:root[data-theme="base-dark"] .item-state-tab {
-  border-color: transparent;
-  border-radius: 0;
-  background: transparent;
-  color: var(--text-2);
-  box-shadow: none;
-}
-
-:root[data-theme="base-light"] .item-state-tab:hover,
-:root[data-theme="base-dark"] .item-state-tab:hover {
-  background: transparent;
-  color: var(--text-1);
-}
-
-:root[data-theme="base-light"] .item-state-tab.active,
-:root[data-theme="base-dark"] .item-state-tab.active {
-  border-color: transparent;
-  background: transparent;
-  color: var(--text-1);
-  box-shadow: inset 0 -2px 0 var(--text-1);
-}
-
-:root[data-theme="base-light"] .item-state-tab:focus-visible,
-:root[data-theme="base-dark"] .item-state-tab:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
 
 /* ------------------------------------------------------------------ *
  * 4. Selection / active states — soft blue tints become neutral gray with a
  *    foreground indicator (base-ui shows selection with foreground, not the
  *    accent hue; the accent stays reserved for focus & links).
  * ------------------------------------------------------------------ */
-:root[data-theme="base-light"] .item-card.selected,
-:root[data-theme="base-dark"] .item-card.selected,
 :root[data-theme="base-light"] .category-item.active,
-:root[data-theme="base-dark"] .category-item.active,
-:root[data-theme="base-light"] .notification-row.selected,
-:root[data-theme="base-dark"] .notification-row.selected {
+:root[data-theme="base-dark"] .category-item.active {
   background: var(--bg-active);
   box-shadow: inset 2px 0 0 var(--text-1);
 }
@@ -178,53 +146,13 @@
  * 5. Chips & badges — flat, no colored pills.
  * ------------------------------------------------------------------ */
 
-/* Accent chip → flat neutral. Colored label chips carry inline colors (inline
- * styles win), we only reset the border they'd otherwise inherit below. */
+/* Accent chip → flat neutral. */
 :root[data-theme="base-light"] .chip,
 :root[data-theme="base-dark"] .chip {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-quiet);
   color: var(--text-2);
-}
-
-:root[data-theme="base-light"] .label-chip,
-:root[data-theme="base-dark"] .label-chip {
-  border-color: transparent;
-}
-
-/* State badge: solid colored pill → flat bordered badge with the state hue as
- * text, preserving open/closed/merged/draft meaning without the raised pill. */
-:root[data-theme="base-light"] .state-badge,
-:root[data-theme="base-dark"] .state-badge {
-  padding: 2px 9px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-quiet);
-  color: var(--text-1);
-}
-
-:root[data-theme="base-light"] .state-open,
-:root[data-theme="base-dark"] .state-open {
-  color: var(--success);
-}
-
-:root[data-theme="base-light"] .state-closed,
-:root[data-theme="base-dark"] .state-closed {
-  color: var(--danger);
-}
-
-:root[data-theme="base-light"] .state-merged {
-  color: #8250df;
-}
-
-:root[data-theme="base-dark"] .state-merged {
-  color: #a371f7;
-}
-
-:root[data-theme="base-light"] .state-draft,
-:root[data-theme="base-dark"] .state-draft {
-  color: var(--text-3);
 }
 
 /* Nav unread badge: drop the accent fill for a flat neutral count. */
@@ -235,16 +163,8 @@
   color: var(--text-1);
 }
 
-/* Remaining pill decorations → small radius. */
-:root[data-theme="base-light"] .item-label,
-:root[data-theme="base-light"] .comment-association,
-:root[data-theme="base-light"] .reaction,
-:root[data-theme="base-light"] .item-sync-pending,
+/* Offline badge → small radius. */
 :root[data-theme="base-light"] .offline-badge,
-:root[data-theme="base-dark"] .item-label,
-:root[data-theme="base-dark"] .comment-association,
-:root[data-theme="base-dark"] .reaction,
-:root[data-theme="base-dark"] .item-sync-pending,
 :root[data-theme="base-dark"] .offline-badge {
   border-radius: var(--radius-sm);
 }
@@ -281,18 +201,6 @@
 :root[data-theme="base-light"] .ui-checkbox-indicator[data-indeterminate]::after,
 :root[data-theme="base-dark"] .ui-checkbox-indicator[data-indeterminate]::after {
   background: var(--bg-card);
-}
-
-/* Outbox dialog checkbox. */
-:root[data-theme="base-light"] .outbox-checkbox,
-:root[data-theme="base-dark"] .outbox-checkbox {
-  color: var(--bg-card);
-}
-
-:root[data-theme="base-light"] .outbox-checkbox[data-checked],
-:root[data-theme="base-dark"] .outbox-checkbox[data-checked] {
-  border-color: var(--text-1);
-  background: var(--text-1);
 }
 
 /* Segmented control (auth method) active segment → neutral. Covers both the

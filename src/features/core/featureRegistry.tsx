@@ -10,7 +10,7 @@ const notesFeature: FeatureDefinition = {
   order: 20,
   // Notes owns a live workspace session. Retain its runtime and mounted panes
   // after the first activation so drafts, scroll, and edit focus survive
-  // navigation without putting Notes in the Inbox startup graph.
+  // navigation between Yonalist and Settings.
   keepMounted: true,
   loadRuntime: () =>
     import("../notes/NotesFeature").then(

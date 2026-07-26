@@ -1,44 +1,188 @@
 import { readFileSync } from "node:fs";
+import postcss, { type Root } from "postcss";
 import { describe, expect, it } from "vitest";
 
 const styles = readFileSync("src/styles.css", "utf8");
+const baseThemeStyles = readFileSync("src/themes/base-ui-pure.css", "utf8");
 const notesStyles = readFileSync("src/features/notes/notes.css", "utf8");
+const stylesRoot = postcss.parse(styles);
+const baseThemeRoot = postcss.parse(baseThemeStyles);
+const notesRoot = postcss.parse(notesStyles);
 
-function rule(source: string, selector: string): string {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return source.match(new RegExp(`(?:^|\\n)${escaped}\\s*\\{([^}]*)\\}`))?.[1] ?? "";
+function rule(root: Root, selector: string): string {
+  let declarations = "";
+  root.walkRules((candidate) => {
+    if (candidate.selectors.includes(selector)) {
+      declarations += `${candidate.nodes
+        .map((node) => node.toString())
+        .join("\n")}\n`;
+    }
+  });
+  return declarations;
 }
 
 describe("surviving application styles", () => {
   it("keeps the status bar transparent", () => {
-    const statusbar = rule(styles, ".app-statusbar");
+    const statusbar = rule(stylesRoot, ".app-statusbar");
     expect(statusbar).toContain("background: transparent");
     expect(statusbar).not.toContain("border-top");
   });
 
   it("keeps the sidebar transparent and unframed", () => {
-    const sidebar = rule(styles, ".sidebar");
+    const sidebar = rule(stylesRoot, ".sidebar");
     expect(sidebar).toContain("background: transparent");
     expect(sidebar).toContain("border: 0");
     expect(sidebar).toContain("box-shadow: none");
   });
 
   it("keeps Settings scrollable inside its pane", () => {
-    const settings = rule(styles, ".settings-body");
+    const settings = rule(stylesRoot, ".settings-body");
     expect(settings).toContain("min-height: 0");
     expect(settings).toContain("overflow: auto");
   });
 
   it("keeps Markdown content width and wrapping", () => {
-    const markdown = rule(styles, ".markdown-body");
+    const markdown = rule(stylesRoot, ".markdown-body");
     expect(markdown).toContain("max-width: 980px");
     expect(markdown).toContain("overflow-wrap: break-word");
   });
 
   it("keeps the Notes outline geometry", () => {
-    const outline = rule(notesStyles, ".notes-outline");
+    const outline = rule(notesRoot, ".notes-outline");
     expect(outline).toContain("--notes-outline-indent: 36px");
     expect(outline).toContain("flex-direction: column");
     expect(outline).toContain("min-height: 100%");
+  });
+
+  it("keeps shared base-theme category, chip, and offline treatments", () => {
+    expect(
+      rule(
+        baseThemeRoot,
+        ':root[data-theme="base-light"] .category-item.active'
+      )
+    ).toContain("background: var(--bg-active)");
+    expect(
+      rule(baseThemeRoot, ':root[data-theme="base-light"] .chip')
+    ).toContain("border: 1px solid var(--border)");
+    expect(
+      rule(baseThemeRoot, ':root[data-theme="base-light"] .offline-badge')
+    ).toContain("border-radius: var(--radius-sm)");
+  });
+
+  it("does not ship selectors for producerless Inbox UI", () => {
+    const producerlessClassNames = new Set([
+      "item-state-tab",
+      "item-card",
+      "label-chip",
+      "state-badge",
+      "item-label",
+      "comment-association",
+      "item-sync-pending",
+      "outbox-checkbox",
+      "login-shell",
+      "login-card",
+      "login-card-header",
+      "login-copy",
+      "login-skip",
+      "login-error",
+      "detail-header",
+      "detail-title-row",
+      "detail-header-actions",
+      "favorite-button",
+      "detail-actions",
+      "state-open",
+      "state-closed",
+      "state-merged",
+      "state-draft",
+      "chip-status",
+      "detail-connection",
+      "content-panel",
+      "author-row",
+      "conversation",
+      "opening-post",
+      "opening-post-header",
+      "opening-post-body",
+      "entry-avatar-slot",
+      "inline-reply-composer",
+      "reactions",
+      "reaction",
+      "reaction-emoji",
+      "composer-preview-toggle",
+      "composer-actions",
+      "composer-buttons",
+      "secondary-danger-button",
+      "composer-close-split",
+      "composer-close-main",
+      "composer-close-trigger",
+      "composer-close-single",
+      "composer-close-menu",
+      "composer-close-menu-item",
+      "composer-close-check",
+      "composer-close-option-icon",
+      "composer-close-menu-discussion",
+      "composer-close-option-copy",
+      "composer-close-duplicate-arrow",
+      "detail-empty",
+      "empty-copy",
+      "issue-create-page",
+      "issue-create-header",
+      "issue-create-body",
+      "issue-body-field",
+      "issue-create-actions",
+      "project-visibility-search",
+      "project-visibility-list",
+      "project-visibility-group",
+      "project-owner-row",
+      "project-group-toggle",
+      "project-owner-count",
+      "project-owner-check",
+      "project-repo-check",
+      "project-repo-source",
+      "notification-row",
+      "notification-lead",
+      "notification-reason",
+      "reason-mention",
+      "reason-comment",
+      "reason-author",
+      "reason-team",
+      "notification-main",
+      "notification-title",
+      "notification-number",
+      "notification-subtitle",
+      "notification-unread-dot",
+      "notification-hide",
+      "loading-dots",
+      "detail-error",
+      "notification-comments",
+      "chip-state-open",
+      "chip-state-closed",
+      "chip-state-merged",
+      "chip-state-draft"
+    ]);
+    const residue: string[] = [];
+    for (const [stylesheet, root] of [
+      ["src/styles.css", stylesRoot],
+      ["src/themes/base-ui-pure.css", baseThemeRoot]
+    ] as const) {
+      root.walkRules((candidate) => {
+        for (const selector of candidate.selectors) {
+          const classNames = Array.from(
+            selector.matchAll(/\.([A-Za-z0-9_-]+)/g),
+            (match) => match[1]
+          );
+          if (classNames.some((className) => producerlessClassNames.has(className))) {
+            residue.push(`${stylesheet}: ${selector}`);
+          }
+        }
+      });
+    }
+
+    expect(residue).toEqual([]);
+    expect(
+      stylesRoot.nodes.some(
+        (node) => node.type === "atrule" && node.name === "keyframes" &&
+          node.params === "skeleton-shimmer"
+      )
+    ).toBe(false);
   });
 });
