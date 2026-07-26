@@ -1932,6 +1932,11 @@ Settings에서는 다음 항목을 제거한다.
 <app-data>/indexes/<vault-key>/index.sqlite-shm
 <app-data>/indexes/<vault-key>/index.sqlite-journal
 <app-data>/indexes/<vault-key>/cache/
+<vault>/.yonalist/index.sqlite
+<vault>/.yonalist/index.sqlite-wal
+<vault>/.yonalist/index.sqlite-shm
+<vault>/.yonalist/index.sqlite-journal
+<vault>/.yonalist/cache/avatars/
 <vault>/.yonalist/outbox/
 <vault>/<github-host>/<owner>/<repo>/issues/
 <vault>/<github-host>/<owner>/<repo>/pulls/
@@ -1944,15 +1949,34 @@ Tauri가 반환하는 앱 데이터 경로와 선택한 Vault로 계산한 `vaul
 넓은 경로를 이름만 보고 지우지 않는다. front matter의 `kind`와 Inbox 경로
 규칙을 함께 확인한다.
 
+2026-07-27에 현재 개발 환경을 읽기 전용으로 확인한 결과, 앱 데이터의
+`indexes/` 아래에는 세 Vault의 `index.sqlite`가 남아 있었다. 기본 Vault에는
+구형 `<vault>/.yonalist/index.sqlite*`, `.yonalist/cache/avatars/`,
+`.yonalist/outbox/`도 남아 있었다. 따라서 최신 앱 데이터 경로만 지우면 기존
+Inbox 데이터가 일부 남는다. 구현할 때는 앱을 완전히 종료한 뒤 앱 식별자가
+정확히 `com.doortts.yonalist`인지 확인하고 전용 `<app-data>/indexes/` 루트를
+통째로 제거한다. 이어서 현재 Vault에서 위 구형 파일만 따로 제거한다.
+
 삭제하지 않는 항목:
 
 ```text
 <app-data>/notes/<vault-key>/notes.sqlite
 <app-data>/notes/<vault-key>/notes.sqlite-wal
 <app-data>/notes/<vault-key>/notes.sqlite-shm
-<vault>/notes-assets/
+<vault>/.yonalist/notes.sqlite*
+<vault>/.yonalist/notes-assets/
+<vault>/.yonalist/asset-trash/
+<vault>/.yonalist/.notes-assets.lock
+<vault>/.yonalist/notes.app.lock
 Yonalist가 관리하는 Markdown과 휴지통
 ```
+
+`<vault>/.yonalist/notes.sqlite*`는 구형 Yonalist 데이터베이스가 아직 남은
+환경을 위한 보존 경계다. 이번 작업에서 이를 가져오거나 변환하는 코드를 새로
+만들지는 않지만, Inbox 정리 대상으로 오인해 지우지도 않는다. Vault 루트의
+`Github-Notifications.<id>.md` 같은 파일은 GN이 Yonalist 문서로 반영한
+결과이므로 GitHub Inbox의 `<host>/<owner>/<repo>/<kind>/` 문서와 구분해
+보존한다.
 
 ### 10.2 브라우저 저장소
 
