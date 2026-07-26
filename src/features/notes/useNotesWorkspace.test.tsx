@@ -423,6 +423,29 @@ describe("useNotesWorkspace", () => {
     vi.clearAllMocks();
   });
 
+  it("waits for Notes activation before starting file sync", async () => {
+    const initialization = deferred<NotesHistoryState>();
+    const store = repository({
+      initialize: vi.fn(() => initialization.promise)
+    });
+
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/fresh-vault", repository: store })
+    );
+
+    await waitFor(() => expect(store.initialize).toHaveBeenCalledOnce());
+    expect(notesSyncSpies.connect).not.toHaveBeenCalled();
+
+    await act(async () => {
+      initialization.resolve(historyState());
+      await initialization.promise;
+    });
+
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    expect(notesSyncSpies.connect).toHaveBeenCalledOnce();
+    rendered.unmount();
+  });
+
   it("connects sync reload through the current coordinator scope with StrictMode-safe cleanup", async () => {
     let current = workspace([node({ id: "before", title: "Before" })]);
     const store = repository({

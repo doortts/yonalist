@@ -466,6 +466,7 @@ export function useNotesWorkspace({
     setLocallyExpandedNodeIds(locallyExpandedNodeIdsRef.current);
     let engine!: NotesDraftEngine;
     let session!: NotesWorkspaceCoordinatorSession;
+    let disconnectSync: (() => void) | null = null;
     const reloadFromSync = async (): Promise<void> => {
       const refreshScope = activeScopeRef.current;
       await session.enqueue(
@@ -492,6 +493,20 @@ export function useNotesWorkspace({
         { observer: true },
       );
     };
+    const connectSyncAfterActivation = (): void => {
+      if (
+        disconnectSync !== null ||
+        engine.record.closing ||
+        sessionRecordRef.current !== engine.record ||
+        sessionRef.current !== session
+      ) {
+        return;
+      }
+      disconnectSync = connectNotesSyncRuntime({
+        vaultRoot,
+        onWorkspaceChanged: reloadFromSync,
+      });
+    };
     session = notesWorkspaceCoordinatorRegistry.openSession({
       repository,
       vaultRoot,
@@ -505,6 +520,12 @@ export function useNotesWorkspace({
           sessionRecordRef.current !== engine.record
         ) {
           return;
+        }
+        if (
+          event.type === "settled" &&
+          event.result.kind === "authoritative"
+        ) {
+          connectSyncAfterActivation();
         }
         if (event.type === "pending") {
           if (event.showLoading) {
@@ -759,12 +780,8 @@ export function useNotesWorkspace({
       session,
       bufferedCommandsRef.current.splice(0),
     );
-    const disconnectSync = connectNotesSyncRuntime({
-      vaultRoot,
-      onWorkspaceChanged: reloadFromSync,
-    });
     return () => {
-      disconnectSync();
+      disconnectSync?.();
       outlineCompositionActiveRef.current = false;
       pendingNavigationRef.current = null;
       unregisterNotesDataDeletionParticipant();
