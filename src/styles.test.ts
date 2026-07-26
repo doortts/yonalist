@@ -157,8 +157,24 @@ describe("surviving application styles", () => {
       "chip-state-open",
       "chip-state-closed",
       "chip-state-merged",
-      "chip-state-draft"
+      "chip-state-draft",
+      "nav-badge",
+      "statusbar-metrics",
+      "nav-section-heading",
+      "nav-section-icon-button",
+      "nav-owner-group",
+      "nav-owner",
+      "nav-note",
+      "list-refresh",
+      "list-note",
+      "list-error",
+      "search-row",
+      "small-bookmark",
+      "list-empty",
+      "modal-actions",
+      "detail-maximize-toggle"
     ]);
+    const producerlessSelectors = new Set([".nav-item strong"]);
     const residue: string[] = [];
     for (const [stylesheet, root] of [
       ["src/styles.css", stylesRoot],
@@ -170,7 +186,10 @@ describe("surviving application styles", () => {
             selector.matchAll(/\.([A-Za-z0-9_-]+)/g),
             (match) => match[1]
           );
-          if (classNames.some((className) => producerlessClassNames.has(className))) {
+          if (
+            classNames.some((className) => producerlessClassNames.has(className)) ||
+            producerlessSelectors.has(selector)
+          ) {
             residue.push(`${stylesheet}: ${selector}`);
           }
         }

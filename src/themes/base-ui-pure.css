@@ -155,14 +155,6 @@
   color: var(--text-2);
 }
 
-/* Nav unread badge: drop the accent fill for a flat neutral count. */
-:root[data-theme="base-light"] .nav-item strong.nav-badge,
-:root[data-theme="base-dark"] .nav-item strong.nav-badge {
-  border-radius: var(--radius-sm);
-  background: var(--bg-active);
-  color: var(--text-1);
-}
-
 /* Offline badge → small radius. */
 :root[data-theme="base-light"] .offline-badge,
 :root[data-theme="base-dark"] .offline-badge {
