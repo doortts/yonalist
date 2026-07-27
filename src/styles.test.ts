@@ -28,11 +28,20 @@ describe("surviving application styles", () => {
     expect(statusbar).not.toContain("border-top");
   });
 
-  it("keeps the sidebar transparent and unframed", () => {
-    const sidebar = rule(stylesRoot, ".sidebar");
-    expect(sidebar).toContain("background: transparent");
-    expect(sidebar).toContain("border: 0");
-    expect(sidebar).toContain("box-shadow: none");
+  it("keeps the unified navigation pane framed as an application pane", () => {
+    const navigationPane = rule(stylesRoot, ".yonalist-navigation-pane");
+    expect(navigationPane).toContain("background: var(--bg-list)");
+    expect(navigationPane).toContain("border: 1px solid var(--border)");
+    expect(navigationPane).toContain("border-radius: var(--radius-lg)");
+  });
+
+  it("uses two columns by default and adds the middle tracks only when needed", () => {
+    const shell = rule(stylesRoot, ".app-shell");
+    const settingsShell = rule(stylesRoot, '.app-shell[data-has-middle-pane="true"]');
+
+    expect(shell).toContain("var(--sidebar-width, 336px)");
+    expect(shell).not.toContain("var(--list-width, 340px)");
+    expect(settingsShell).toContain("var(--list-width, 340px)");
   });
 
   it("keeps Settings scrollable inside its pane", () => {

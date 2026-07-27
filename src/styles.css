@@ -576,14 +576,20 @@ h2 {
   --list-resizer-width: var(--pane-gap);
   display: grid;
   grid-template-columns:
-    var(--sidebar-width, 240px) var(--sidebar-resizer-width, 10px)
-    var(--list-width, 340px) var(--list-resizer-width, 10px)
+    var(--sidebar-width, 336px) var(--sidebar-resizer-width, 10px)
     minmax(520px, 1fr);
   grid-template-rows: minmax(0, 1fr) var(--statusbar-height);
   height: 100vh;
   padding-inline: var(--shell-inset);
   overflow: hidden;
   background: var(--bg-app);
+}
+
+.app-shell[data-has-middle-pane="true"] {
+  grid-template-columns:
+    var(--sidebar-width, 336px) var(--sidebar-resizer-width, 10px)
+    var(--list-width, 340px) var(--list-resizer-width, 10px)
+    minmax(520px, 1fr);
 }
 
 .yonalist-navigation-pane,
@@ -726,12 +732,12 @@ body.is-resizing-pane {
 
 .app-shell > .app-titlebar {
   right: auto;
-  width: calc(var(--shell-inset) + var(--sidebar-width, 240px));
+  width: calc(var(--shell-inset) + var(--sidebar-width, 336px));
 }
 
 .app-shell > .app-content-drag-strip {
   left: calc(
-    var(--shell-inset) + var(--sidebar-width, 240px) +
+    var(--shell-inset) + var(--sidebar-width, 336px) +
       var(--sidebar-resizer-width, var(--pane-gap))
   );
 }
@@ -808,10 +814,14 @@ body.is-resizing-pane {
 .app-shell[data-detail-maximized="true"] {
   --sidebar-resizer-width: 0px;
   --list-resizer-width: 0px;
+  grid-template-columns: 0 0 minmax(0, 1fr);
+}
+
+.app-shell[data-detail-maximized="true"][data-has-middle-pane="true"] {
   grid-template-columns: 0 0 0 0 minmax(0, 1fr);
 }
 
-.app-shell[data-detail-maximized="true"] > .sidebar,
+.app-shell[data-detail-maximized="true"] > .yonalist-navigation-pane,
 .app-shell[data-detail-maximized="true"] > .sidebar-list-resizer,
 .app-shell[data-detail-maximized="true"] > .feature-pane-slot > .list-pane,
 .app-shell[data-detail-maximized="true"] > .list-detail-resizer {
@@ -822,9 +832,14 @@ body.is-resizing-pane {
 
 .app-shell[data-detail-maximized="true"] > .detail-pane {
   display: flex;
-  grid-column: 5;
+  grid-column: 3;
   height: 100%;
   overflow: hidden;
+}
+
+.app-shell[data-detail-maximized="true"][data-has-middle-pane="true"]
+  > .detail-pane {
+  grid-column: 5;
 }
 
 /* Collapsing is a desktop-only affordance: below 981px the responsive layouts
@@ -839,16 +854,9 @@ body.is-resizing-pane {
     --list-resizer-width: 0px;
   }
 
-  /* Hide the collapsed pane and its resizer WITHOUT display:none. The five
-     row-1 grid items (sidebar, resizer, list/notifications, resizer, detail)
-     are auto-placed left to right, so display:none would pull the collapsed
-     ones out of the flow and shift every following item one column left — the
-     detail pane lands in the list column (x:0, list width) and the rightmost
-     1fr track is left empty. Keeping them in flow at their already-zeroed
-     column widths preserves placement. visibility:hidden still removes their
-     focusable content from the tab order and the accessibility tree, and
-     overflow/min-width clip any intrinsic content down to the 0px track. */
-  .app-shell[data-sidebar-collapsed="true"] > .sidebar,
+  /* Hide collapsed panes without display:none so auto-placement stays aligned
+     with either the two-pane Notes or three-pane Settings grid. */
+  .app-shell[data-sidebar-collapsed="true"] > .yonalist-navigation-pane,
   .app-shell[data-sidebar-collapsed="true"] > .sidebar-list-resizer,
   .app-shell[data-list-collapsed="true"] > .feature-pane-slot > .list-pane,
   .app-shell[data-list-collapsed="true"] > .list-detail-resizer {
@@ -862,7 +870,13 @@ body.is-resizing-pane {
      reserve only a slim top spacer, so their header (search row / eyebrow)
      would collide with the toggle buttons. Restore a full titlebar-height top
      spacer on whichever pane becomes leftmost so its header clears them. */
-  .app-shell[data-sidebar-collapsed="true"] > .feature-pane-slot > .list-pane > .pane-titlebar-spacer,
+  .app-shell[data-sidebar-collapsed="true"]
+    > .feature-pane-slot
+    > .list-pane
+    > .pane-titlebar-spacer,
+  .app-shell[data-sidebar-collapsed="true"]:not([data-has-middle-pane="true"])
+    > .detail-pane
+    > .pane-titlebar-spacer,
   .app-shell[data-sidebar-collapsed="true"][data-list-collapsed="true"]
     > .detail-pane
     > .pane-titlebar-spacer {
@@ -2440,12 +2454,12 @@ body.is-resizing-pane {
 @media (max-width: 980px) {
   .app-shell {
     grid-template-columns:
-      minmax(180px, var(--sidebar-width, 240px))
+      minmax(180px, var(--sidebar-width, 336px))
       var(--sidebar-resizer-width, var(--pane-gap)) minmax(280px, 1fr);
     grid-template-rows: minmax(0, 42%) minmax(0, 1fr) auto;
   }
 
-  .sidebar,
+  .yonalist-navigation-pane,
   .sidebar-list-resizer {
     grid-row: 1 / 3;
   }
@@ -2487,7 +2501,7 @@ body.is-resizing-pane {
     display: none;
   }
 
-  .sidebar,
+  .yonalist-navigation-pane,
   .list-pane,
   .detail-pane,
   .app-statusbar {
@@ -2495,7 +2509,7 @@ body.is-resizing-pane {
     grid-column: auto;
   }
 
-  .sidebar,
+  .yonalist-navigation-pane,
   .list-pane,
   .detail-pane {
     height: auto;

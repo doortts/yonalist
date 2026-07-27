@@ -532,7 +532,13 @@ export default function App({ initialOnline }: AppProps) {
                         )
                       }}
                     />
-                    <YonalistNavigationPane
+                    <FeatureRuntimeBoundary
+                      featureId={activeFeatureId}
+                      onRetry={featureRuntimeHost.retry}
+                    >
+                      {withFeatureProviders(
+                        <>
+                          <YonalistNavigationPane
                             activeFeatureId={activeFeatureId}
                             online={online}
                             loginRequired={!auth.signedIn}
@@ -547,9 +553,9 @@ export default function App({ initialOnline }: AppProps) {
                             onToggleOnline={toggleOnline}
                           >
                             {notesFeaturePanes?.navigation?.content ?? null}
-                    </YonalistNavigationPane>
+                          </YonalistNavigationPane>
 
-                    <div
+                          <div
                             className="pane-resizer sidebar-list-resizer"
                             role="separator"
                             aria-label="Resize navigation pane"
@@ -564,16 +570,10 @@ export default function App({ initialOnline }: AppProps) {
                             onKeyDown={(event) =>
                               resizeWithKeyboard("sidebar", event)
                             }
-                    />
+                          />
 
-                    <FeatureRuntimeBoundary
-                            featureId={activeFeatureId}
-                            onRetry={featureRuntimeHost.retry}
-                    >
-                      {withFeatureProviders(
-                        <>
-                              {hasMiddlePane && (
-                                <>
+                          {hasMiddlePane && (
+                            <>
                               <div className="feature-pane-slot">
                                 {activeFeaturePanes?.middle}
                               </div>
@@ -593,28 +593,23 @@ export default function App({ initialOnline }: AppProps) {
                                   resizeWithKeyboard("list", event)
                                 }
                               />
-                                </>
-                              )}
+                            </>
+                          )}
 
-                              <section
-                                className="detail-pane"
-                                aria-label="Detail"
-                              >
-                                <div className="pane-titlebar-spacer" />
-                                <div className="detail-scroll">
-                                  {featurePanes.map(
-                                    ({ id, active, panes }) => (
-                                      <div
-                                        key={id}
-                                        className="feature-pane-slot"
-                                        hidden={!active}
-                                      >
-                                        {panes.detail}
-                                      </div>
-                                    )
-                                  )}
+                          <section className="detail-pane" aria-label="Detail">
+                            <div className="pane-titlebar-spacer" />
+                            <div className="detail-scroll">
+                              {featurePanes.map(({ id, active, panes }) => (
+                                <div
+                                  key={id}
+                                  className="feature-pane-slot"
+                                  hidden={!active}
+                                >
+                                  {panes.detail}
                                 </div>
-                              </section>
+                              ))}
+                            </div>
+                          </section>
                         </>
                       )}
                     </FeatureRuntimeBoundary>

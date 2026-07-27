@@ -36,7 +36,7 @@
   opacity: 1;
 }
 
-.notes-library-pane[data-transient-workspace-busy="true"]
+.notes-navigation-content[data-transient-workspace-busy="true"]
   .notes-library-page-menu-trigger:disabled {
   opacity: 0.68;
 }

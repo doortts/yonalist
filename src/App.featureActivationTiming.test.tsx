@@ -33,7 +33,7 @@ describe("App feature activation timing", () => {
     render(<App initialOnline={false} />);
 
     await userEvent.setup().click(
-      await screen.findByRole("button", { name: "Yonalist" })
+      await screen.findByRole("button", { name: "Yonalist 열기" })
     );
     await screen.findByLabelText("Yonalist library", {}, { timeout: 5_000 });
 

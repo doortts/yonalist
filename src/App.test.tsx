@@ -198,9 +198,7 @@ describe("Yonalist app shell", () => {
   it("adds the Settings category pane without replacing navigation", async () => {
     const user = userEvent.setup();
     const { container } = render(<App />);
-    const navigation = await screen.findByRole("navigation", {
-      name: "Navigation"
-    });
+    await screen.findByLabelText("Yonalist library");
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
 
@@ -208,7 +206,9 @@ describe("Yonalist app shell", () => {
       "data-has-middle-pane",
       "true"
     );
-    expect(navigation).toBeInTheDocument();
+    expect(
+      screen.getByRole("navigation", { name: "Navigation" })
+    ).toBeInTheDocument();
     expect(await screen.findByLabelText("Settings sections")).toBeInTheDocument();
     expect(
       screen.getByRole("separator", { name: "Resize item list pane" })
@@ -218,6 +218,7 @@ describe("Yonalist app shell", () => {
   it("opens GitHub server settings while signed out", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await screen.findByLabelText("Yonalist library");
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
@@ -234,6 +235,7 @@ describe("Yonalist app shell", () => {
   it("returns from Settings to Yonalist", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await screen.findByLabelText("Yonalist library");
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
