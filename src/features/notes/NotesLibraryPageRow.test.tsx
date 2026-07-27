@@ -73,6 +73,7 @@ describe("NotesLibraryPageRow", () => {
 
     await user.click(screen.getByRole("button", { name: "Protected" }));
     expect(handlers.onOpen).toHaveBeenCalledOnce();
+    expect(handlers.onActivate).not.toHaveBeenCalled();
     expect(screen.queryByRole("textbox")).toBeNull();
 
     await user.click(
@@ -108,7 +109,7 @@ describe("NotesLibraryPageRow", () => {
     );
   });
 
-  it("opens an inactive page before a second click on the selected row starts rename", async () => {
+  it("opens an inactive text root before active activation starts rename", async () => {
     const user = userEvent.setup();
     const props = callbacks();
     const { rerender } = render(
@@ -141,6 +142,35 @@ describe("NotesLibraryPageRow", () => {
     expect(input).toHaveProperty("selectionEnd", "Project".length);
     expect(props.onOpen).toHaveBeenCalledOnce();
     expect(props.onActivate).toHaveBeenCalledOnce();
+    expect(props.onOpen.mock.invocationCallOrder[0]).toBeLessThan(
+      props.onActivate.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY
+    );
+  });
+
+  it("activates an active image root without entering rename", async () => {
+    const user = userEvent.setup();
+    const handlers = callbacks();
+    render(
+      <NotesLibraryPageRow
+        node={node({
+          nodeKind: "image",
+          title: "",
+          imageOffsetUtf16: 0
+        })}
+        imageAttachmentOriginalName="diagram.png"
+        mode="active"
+        active
+        {...handlers}
+      />
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Image: diagram.png" })
+    );
+
+    expect(handlers.onActivate).toHaveBeenCalledOnce();
+    expect(handlers.onOpen).not.toHaveBeenCalled();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
 
   it("commits a changed title exactly once with Enter", async () => {
@@ -542,6 +572,7 @@ describe("NotesLibraryPageRow", () => {
       await user.click(screen.getByRole("button", { name: "Project plan" }));
 
       expect(handlers.onOpen).toHaveBeenCalledOnce();
+      expect(handlers.onActivate).not.toHaveBeenCalled();
       expect(handlers.onRename).not.toHaveBeenCalled();
       expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     }

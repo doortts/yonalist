@@ -186,7 +186,8 @@ export function NotesLibraryPageRow({
       return;
     }
     if (!canRename) {
-      if (!active) onOpen();
+      if (active) onActivate();
+      else onOpen();
       return;
     }
     if (mode !== "active" || !active) {
