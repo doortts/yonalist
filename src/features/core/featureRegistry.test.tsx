@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { AppNavigationContext } from "../../AppNavigationContext";
 import { VaultRootContext } from "../../VaultRootContext";
 import { featureRegistry, getFeatureDefinition } from "./featureRegistry";
 
@@ -72,13 +73,17 @@ describe("feature registry", () => {
     expect(panes.navigation).toBeDefined();
 
     render(
-      <VaultRootContext.Provider value="/registry-vault">
-        <NotesProvider>
-          {panes.navigation?.headerActions}
-          {panes.navigation?.content}
-          {panes.detail}
-        </NotesProvider>
-      </VaultRootContext.Provider>
+      <AppNavigationContext.Provider
+        value={{ openNotes: vi.fn(), openSettings: vi.fn() }}
+      >
+        <VaultRootContext.Provider value="/registry-vault">
+          <NotesProvider>
+            {panes.navigation?.headerActions}
+            {panes.navigation?.content}
+            {panes.detail}
+          </NotesProvider>
+        </VaultRootContext.Provider>
+      </AppNavigationContext.Provider>
     );
     expect(screen.getByLabelText("Yonalist library")).toBeInTheDocument();
     expect(screen.getByLabelText("Notes outline")).toBeInTheDocument();

@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AppNavigationContext } from "../../AppNavigationContext";
 import { VaultRootContext } from "../../VaultRootContext";
 import {
   ExternalSourcesContext,
@@ -710,20 +711,24 @@ function notesWorkspaceElement(
   );
   return (
     <StrictMode>
-      <NotesFeedbackProvider active>
-        <VaultRootContext.Provider value="/vault">
-          {today ? (
-            <NotesDateTodayProvider today={today}>
-              {featureWithSources}
-            </NotesDateTodayProvider>
-          ) : (
-            featureWithSources
-          )}
-        </VaultRootContext.Provider>
-        <div className="statusbar-feedback" aria-label="Status bar feedback">
-          <NotesStatusBarMessage />
-        </div>
-      </NotesFeedbackProvider>
+      <AppNavigationContext.Provider
+        value={{ openNotes: vi.fn(), openSettings: vi.fn() }}
+      >
+        <NotesFeedbackProvider active>
+          <VaultRootContext.Provider value="/vault">
+            {today ? (
+              <NotesDateTodayProvider today={today}>
+                {featureWithSources}
+              </NotesDateTodayProvider>
+            ) : (
+              featureWithSources
+            )}
+          </VaultRootContext.Provider>
+          <div className="statusbar-feedback" aria-label="Status bar feedback">
+            <NotesStatusBarMessage />
+          </div>
+        </NotesFeedbackProvider>
+      </AppNavigationContext.Provider>
     </StrictMode>
   );
 }

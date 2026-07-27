@@ -224,7 +224,7 @@ describe("NotesImageAttachment", () => {
     const user = userEvent.setup();
     const openSettings = vi.fn();
     render(
-      <AppNavigationContext.Provider value={{ openSettings }}>
+      <AppNavigationContext.Provider value={{ openNotes: vi.fn(), openSettings }}>
         <NotesImageResidencyProvider scopeKey="inactive-image-node-menu-test">
           <NotesImageNodeContent
             nodeId="image-node"
@@ -563,7 +563,7 @@ describe("NotesImageAttachment", () => {
     const user = userEvent.setup();
     const openSettings = vi.fn();
     render(
-      <AppNavigationContext.Provider value={{ openSettings }}>
+      <AppNavigationContext.Provider value={{ openNotes: vi.fn(), openSettings }}>
         <NotesImageResidencyProvider scopeKey="missing-image-node-test">
           <NotesImageNodeContent
             nodeId="image-node"
@@ -2253,7 +2253,7 @@ describe("NotesImageAttachment", () => {
     const openSettings = vi.fn();
     const user = userEvent.setup();
     render(
-      <AppNavigationContext.Provider value={{ openSettings }}>
+      <AppNavigationContext.Provider value={{ openNotes: vi.fn(), openSettings }}>
         <NotesImageAttachment {...standardProps()} />
       </AppNavigationContext.Provider>
     );

@@ -574,7 +574,7 @@ describe("NotesAttachmentList", () => {
     const user = userEvent.setup();
     const openSettings = vi.fn();
     render(
-      <AppNavigationContext.Provider value={{ openSettings }}>
+      <AppNavigationContext.Provider value={{ openNotes: vi.fn(), openSettings }}>
         <ResidencyWrapper>
           <NotesAttachmentList
             nodeId="node-1"

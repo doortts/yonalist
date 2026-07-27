@@ -229,9 +229,12 @@ export default function App({ initialOnline }: AppProps) {
     },
     []
   );
+  const openNotes = useCallback(() => {
+    changeActiveFeatureRef.current("notes");
+  }, []);
   const appNavigation = useMemo<AppNavigation>(
-    () => ({ openSettings }),
-    [openSettings]
+    () => ({ openNotes, openSettings }),
+    [openNotes, openSettings]
   );
   const selectSettingsSection = useCallback((section: SettingsSection) => {
     setSettingsSection(section);
@@ -547,7 +550,7 @@ export default function App({ initialOnline }: AppProps) {
                               notesFeaturePanes?.navigation?.headerActions ??
                               null
                             }
-                            onOpenNotes={() => changeActiveFeature("notes")}
+                            onOpenNotes={openNotes}
                             onOpenSettings={openSettings}
                             onRetryNotes={featureRuntimeHost.retry}
                             onToggleOnline={toggleOnline}

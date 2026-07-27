@@ -8,6 +8,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { AppNavigationContext } from "../../AppNavigationContext";
 import { VaultRootContext } from "../../VaultRootContext";
 import {
   ExternalSourcesContext,
@@ -184,14 +185,18 @@ describe("NotesFeature", () => {
     });
 
     render(
-      <VaultRootContext.Provider value="/feature-vault">
-        <NotesFeatureProvider>
-          <ResidencyProbe />
-          {panes.navigation?.headerActions}
-          {panes.navigation?.content}
-          {panes.detail}
-        </NotesFeatureProvider>
-      </VaultRootContext.Provider>,
+      <AppNavigationContext.Provider
+        value={{ openNotes: vi.fn(), openSettings: vi.fn() }}
+      >
+        <VaultRootContext.Provider value="/feature-vault">
+          <NotesFeatureProvider>
+            <ResidencyProbe />
+            {panes.navigation?.headerActions}
+            {panes.navigation?.content}
+            {panes.detail}
+          </NotesFeatureProvider>
+        </VaultRootContext.Provider>
+      </AppNavigationContext.Provider>,
     );
 
     expect(screen.getByLabelText("Yonalist library")).toHaveClass(
@@ -471,15 +476,19 @@ describe("NotesFeature", () => {
     };
 
     render(
-      <VaultRootContext.Provider value="/feature-vault">
-        <ExternalSourcesContext.Provider value={externalSources}>
-          <NotesFeatureProvider>
-            {panes.navigation?.headerActions}
-            {panes.navigation?.content}
-            {panes.detail}
-          </NotesFeatureProvider>
-        </ExternalSourcesContext.Provider>
-      </VaultRootContext.Provider>,
+      <AppNavigationContext.Provider
+        value={{ openNotes: vi.fn(), openSettings: vi.fn() }}
+      >
+        <VaultRootContext.Provider value="/feature-vault">
+          <ExternalSourcesContext.Provider value={externalSources}>
+            <NotesFeatureProvider>
+              {panes.navigation?.headerActions}
+              {panes.navigation?.content}
+              {panes.detail}
+            </NotesFeatureProvider>
+          </ExternalSourcesContext.Provider>
+        </VaultRootContext.Provider>
+      </AppNavigationContext.Provider>,
     );
 
     expect(await screen.findByLabelText("Notes outline")).toBeInTheDocument();

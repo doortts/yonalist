@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AppNavigationContext } from "../../AppNavigationContext";
 import { VaultRootContext } from "../../VaultRootContext";
 import type { NoteNode } from "../../domain/notes";
 
@@ -131,16 +132,20 @@ function renderNotesWorkspace({ active = true } = {}) {
   // slot `hidden` so it drops out of the a11y tree while React keeps the
   // subtree alive.
   return render(
-    <VaultRootContext.Provider value="/vault">
-      <NotesFeatureProvider>
-        <div hidden={!active}>
-          <NotesLibraryPane />
-        </div>
-        <div hidden={!active}>
-          <NotesOutlinePane />
-        </div>
-      </NotesFeatureProvider>
-    </VaultRootContext.Provider>
+    <AppNavigationContext.Provider
+      value={{ openNotes: vi.fn(), openSettings: vi.fn() }}
+    >
+      <VaultRootContext.Provider value="/vault">
+        <NotesFeatureProvider>
+          <div hidden={!active}>
+            <NotesLibraryPane />
+          </div>
+          <div hidden={!active}>
+            <NotesOutlinePane />
+          </div>
+        </NotesFeatureProvider>
+      </VaultRootContext.Provider>
+    </AppNavigationContext.Provider>
   );
 }
 

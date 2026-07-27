@@ -127,6 +127,19 @@
   color: var(--text-1);
 }
 
+.yonalist-navigation-pane[data-active-feature="settings"]
+  .notes-library-views
+  button[aria-pressed="true"] {
+  background: transparent;
+  color: var(--text-3);
+}
+
+.yonalist-navigation-pane[data-active-feature="settings"]
+  .notes-library-page-row[data-active="true"] {
+  background: transparent;
+  box-shadow: none;
+}
+
 .notes-library-views button span {
   min-width: 0;
   overflow: hidden;

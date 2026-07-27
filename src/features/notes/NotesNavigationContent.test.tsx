@@ -1,6 +1,10 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import {
+  AppNavigationContext,
+  type AppNavigation
+} from "../../AppNavigationContext";
 import { VaultRootContext } from "../../VaultRootContext";
 import {
   ExternalSourcesContext,
@@ -24,8 +28,19 @@ import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
 
-function NotesLibraryPane() {
-  return <><NotesNavigationHeaderActions /><NotesNavigationContent /></>;
+function NotesLibraryPane({
+  navigation = { openNotes: vi.fn(), openSettings: vi.fn() }
+}: {
+  readonly navigation?: AppNavigation;
+}) {
+  return (
+    <AppNavigationContext.Provider value={navigation}>
+      <>
+        <NotesNavigationHeaderActions />
+        <NotesNavigationContent />
+      </>
+    </AppNavigationContext.Provider>
+  );
 }
 
 function deletedRoot(): NoteNode {
@@ -196,25 +211,34 @@ function externalBoundary(
   };
 }
 
-function renderLibraryWithExternal(
+function renderNavigationWithExternal(
   workspace: UseNotesWorkspaceResult,
-  boundary = externalBoundary()
+  boundary = externalBoundary(),
+  navigation: AppNavigation = {
+    openNotes: vi.fn(),
+    openSettings: vi.fn()
+  }
 ) {
   const rendered = render(
-    <VaultRootContext.Provider value="/vault">
-      <ExternalSourcesContext.Provider value={boundary}>
-        <NotesWorkspaceContext.Provider value={workspace}>
-          <><NotesNavigationHeaderActions /><NotesNavigationContent /></>
-        </NotesWorkspaceContext.Provider>
-      </ExternalSourcesContext.Provider>
-    </VaultRootContext.Provider>
+    <AppNavigationContext.Provider value={navigation}>
+      <VaultRootContext.Provider value="/vault">
+        <ExternalSourcesContext.Provider value={boundary}>
+          <NotesWorkspaceContext.Provider value={workspace}>
+            <>
+              <NotesNavigationHeaderActions />
+              <NotesNavigationContent />
+            </>
+          </NotesWorkspaceContext.Provider>
+        </ExternalSourcesContext.Provider>
+      </VaultRootContext.Provider>
+    </AppNavigationContext.Provider>
   );
-  return { ...rendered, boundary };
+  return { ...rendered, boundary, navigation };
 }
 
 describe("NotesNavigationContent", () => {
   it("presents the feature as Yonalist", () => {
-    renderLibraryWithExternal(activeWorkspace());
+    renderNavigationWithExternal(activeWorkspace());
 
     expect(
       screen.getByLabelText("Yonalist library"),
@@ -236,7 +260,7 @@ describe("NotesNavigationContent", () => {
         { ...activeRoot(), id: "root-b", sortKey: 3, title: "Project B" }
       ]
     });
-    renderLibraryWithExternal(workspace);
+    renderNavigationWithExternal(workspace);
 
     const rows = document.querySelectorAll(
       ".notes-library-list > .notes-library-page-row"
@@ -260,7 +284,7 @@ describe("NotesNavigationContent", () => {
 
   it("does not synthesize GN outside the roots returned by the workspace", () => {
     const workspace = activeWorkspace({ libraryView: "starred" });
-    renderLibraryWithExternal(workspace);
+    renderNavigationWithExternal(workspace);
 
     expect(
       screen.queryByRole("button", {
@@ -272,7 +296,7 @@ describe("NotesNavigationContent", () => {
   it("does not show the local empty state when the stored GN root exists", () => {
     const workspace = activeWorkspace();
     workspace.state = normalizeWorkspace({ nodes: [githubRoot()] });
-    renderLibraryWithExternal(workspace);
+    renderNavigationWithExternal(workspace);
 
     expect(
       screen.getByRole("button", { name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE })
@@ -284,7 +308,7 @@ describe("NotesNavigationContent", () => {
     const workspace = activeWorkspace();
     workspace.state = normalizeWorkspace({ nodes: [githubRoot()] });
 
-    renderLibraryWithExternal(
+    renderNavigationWithExternal(
       workspace,
       externalBoundary({ pages: [] })
     );
@@ -314,7 +338,11 @@ describe("NotesNavigationContent", () => {
     vi.mocked(workspace.actions.zoomTo).mockImplementation(async (nodeId) => {
       events.push(`zoom ${nodeId}`);
     });
-    renderLibraryWithExternal(workspace, boundary);
+    const navigation: AppNavigation = {
+      openNotes: vi.fn(() => events.push("open notes")),
+      openSettings: vi.fn()
+    };
+    renderNavigationWithExternal(workspace, boundary, navigation);
 
     await user.click(
       screen.getByRole("button", { name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE })
@@ -326,6 +354,7 @@ describe("NotesNavigationContent", () => {
       GITHUB_NOTIFICATIONS_ROOT_ID
     );
     expect(events).toEqual([
+      "open notes",
       "flush drafts",
       "clear selection",
       `zoom ${GITHUB_NOTIFICATIONS_ROOT_ID}`
@@ -337,7 +366,7 @@ describe("NotesNavigationContent", () => {
     const workspace = activeWorkspace();
     vi.mocked(workspace.actions.flushAllDrafts).mockResolvedValue(false);
     const boundary = externalBoundary();
-    renderLibraryWithExternal(workspace, boundary);
+    renderNavigationWithExternal(workspace, boundary);
 
     await user.click(
       screen.getByRole("button", { name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE })
@@ -363,7 +392,11 @@ describe("NotesNavigationContent", () => {
     vi.mocked(workspace.actions.selectLibraryView).mockImplementation(async () => {
       events.push("local action");
     });
-    renderLibraryWithExternal(workspace, boundary);
+    const navigation: AppNavigation = {
+      openNotes: vi.fn(() => events.push("open notes")),
+      openSettings: vi.fn()
+    };
+    renderNavigationWithExternal(workspace, boundary, navigation);
 
     await user.click(screen.getByRole("button", { name: "New page" }));
     await user.click(screen.getByRole("button", { name: "Project" }));
@@ -372,7 +405,14 @@ describe("NotesNavigationContent", () => {
     expect(workspace.actions.createRoot).toHaveBeenCalledTimes(1);
     expect(workspace.actions.zoomTo).toHaveBeenCalledWith("root");
     expect(workspace.actions.selectLibraryView).toHaveBeenCalledWith("starred");
-    expect(events).toEqual(["local action", "local action", "local action"]);
+    expect(events).toEqual([
+      "open notes",
+      "local action",
+      "open notes",
+      "local action",
+      "open notes",
+      "local action"
+    ]);
   });
 
   it("opens a Notes search result", async () => {
@@ -396,7 +436,11 @@ describe("NotesNavigationContent", () => {
     vi.mocked(workspace.actions.openSearchResult).mockImplementation(async () => {
       events.push("open search result");
     });
-    renderLibraryWithExternal(workspace, boundary);
+    const navigation: AppNavigation = {
+      openNotes: vi.fn(() => events.push("open notes")),
+      openSettings: vi.fn()
+    };
+    renderNavigationWithExternal(workspace, boundary, navigation);
 
     await user.type(
       screen.getByRole("searchbox", { name: "Search Yonalist" }),
@@ -405,30 +449,55 @@ describe("NotesNavigationContent", () => {
     await user.click(await screen.findByRole("option", { name: /Local result/ }));
 
     expect(workspace.actions.openSearchResult).toHaveBeenCalledWith("root");
-    expect(events).toEqual(["open search result"]);
+    expect(events).toEqual(["open notes", "open search result"]);
   });
 
-  it("selects a local tag", async () => {
+  it("returns to Notes before running navigation selected from Settings", async () => {
+    const user = userEvent.setup();
+    const workspace = activeWorkspace();
+    const events: string[] = [];
+    const navigation: AppNavigation = {
+      openNotes: vi.fn(() => events.push("open notes")),
+      openSettings: vi.fn()
+    };
+    vi.mocked(workspace.actions.selectLibraryView).mockImplementation(
+      async () => {
+        events.push("select starred");
+      }
+    );
+    renderNavigationWithExternal(workspace, externalBoundary(), navigation);
+
+    await user.click(screen.getByRole("button", { name: "Starred" }));
+
+    expect(events).toEqual(["open notes", "select starred"]);
+  });
+
+  it("opens Notes before selecting a local tag", async () => {
     const user = userEvent.setup();
     const workspace = activeWorkspace({ libraryView: "tags" });
     workspace.tagSummaries = [
       { prefix: "#", normalizedTag: "local", displayTag: "local", count: 1 }
     ];
-    const boundary = externalBoundary();
-    renderLibraryWithExternal(workspace, boundary);
+    const events: string[] = [];
+    const navigation: AppNavigation = {
+      openNotes: vi.fn(() => events.push("open notes")),
+      openSettings: vi.fn()
+    };
+    vi.mocked(workspace.actions.toggleTagFilter).mockImplementation(async () => {
+      events.push("toggle tag");
+    });
+    renderNavigationWithExternal(workspace, externalBoundary(), navigation);
 
     await user.click(screen.getByRole("button", { name: "#local, 1 note" }));
 
-    expect(workspace.actions.toggleTagFilter).toHaveBeenCalledWith(
-      workspace.tagSummaries[0]
-    );
+    expect(events).toEqual(["open notes", "toggle tag"]);
   });
 
   it("keeps external titles out of Notes search results", async () => {
     const user = userEvent.setup();
     const workspace = activeWorkspace();
     const boundary = externalBoundary();
-    renderLibraryWithExternal(workspace, boundary);
+    renderNavigationWithExternal(workspace, boundary);
 
     await user.type(
       screen.getByRole("searchbox", { name: "Search Yonalist" }),

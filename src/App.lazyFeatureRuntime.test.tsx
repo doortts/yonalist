@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useState, type PropsWithChildren } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
+import { useAppNavigation } from "./AppNavigationContext";
 import { getFeatureDefinition } from "./features/core/featureRegistry";
 import { activeFeatureStorageKey } from "./features/core/featureSelection";
 import type { FeatureRuntime } from "./features/core/featureTypes";
@@ -23,15 +24,21 @@ function PassthroughProvider({ children }: PropsWithChildren) {
 
 function RetainedNotesPane() {
   const [draft, setDraft] = useState("");
+  const { openNotes } = useAppNavigation();
   return (
-    <label>
-      Yonalist library
-      <input
-        aria-label="Notes draft"
-        value={draft}
-        onChange={(event) => setDraft(event.currentTarget.value)}
-      />
-    </label>
+    <>
+      <label>
+        Yonalist library
+        <input
+          aria-label="Notes draft"
+          value={draft}
+          onChange={(event) => setDraft(event.currentTarget.value)}
+        />
+      </label>
+      <button type="button" onClick={openNotes}>
+        Open retained note
+      </button>
+    </>
   );
 }
 
@@ -67,7 +74,7 @@ describe("App lazy feature runtime", () => {
     vi.restoreAllMocks();
   });
 
-  it("loads Yonalist on first selection and retains its pane across navigation", async () => {
+  it("retains Notes navigation state and detail mounts across Settings", async () => {
     const pending = deferred<FeatureRuntime>();
     const loadRuntime = notesLoader().mockReturnValue(pending.promise);
     const user = userEvent.setup();
@@ -84,6 +91,15 @@ describe("App lazy feature runtime", () => {
     await user.type(draft, "keep me");
     await user.click(screen.getByRole("button", { name: "Settings" }));
 
+    expect(screen.getByRole("textbox", { name: "Notes draft" })).toHaveValue(
+      "keep me"
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Open retained note" })
+    );
+
+    expect(screen.queryByLabelText("Settings sections")).toBeNull();
     expect(screen.getByRole("textbox", { name: "Notes draft" })).toHaveValue(
       "keep me"
     );

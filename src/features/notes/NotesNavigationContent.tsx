@@ -18,6 +18,7 @@ import {
   useState
 } from "react";
 import type { NoteSearchResult } from "../../domain/notes";
+import { useAppNavigation } from "../../AppNavigationContext";
 import { useExternalSources } from "../../ExternalSourcesContext";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { IconTooltip, TooltipProvider } from "../../components/ui/Tooltip";
@@ -72,6 +73,7 @@ function NotesNavigationBody({
   readonly githubNotificationsVisible: boolean;
 }) {
   const { actions } = useNotesActions();
+  const { openNotes } = useAppNavigation();
   const {
     activeTagFilters,
     deletingNotesData,
@@ -174,6 +176,7 @@ function NotesNavigationBody({
   };
 
   const openResult = async (nodeId: string) => {
+    openNotes();
     await actions.openSearchResult(nodeId);
     searchRequestRef.current += 1;
     resultOptionRefs.current = [];
@@ -183,6 +186,7 @@ function NotesNavigationBody({
   };
 
   const openGithubNotifications = async () => {
+    openNotes();
     if (!(await actions.flushAllDrafts())) {
       return;
     }
@@ -243,7 +247,10 @@ function NotesNavigationBody({
               className="primary-button notes-new-page"
               type="button"
               disabled={state.status === "loading" || deletingNotesData}
-              onClick={() => void actions.createRoot()}
+              onClick={() => {
+                openNotes();
+                void actions.createRoot();
+              }}
             >
               <Plus size={16} aria-hidden="true" />
               <span>New page</span>
@@ -280,7 +287,10 @@ function NotesNavigationBody({
                   type="button"
                   aria-pressed={libraryView === id}
                   disabled={deletingNotesData}
-                  onClick={() => void actions.selectLibraryView(id)}
+                  onClick={() => {
+                    openNotes();
+                    void actions.selectLibraryView(id);
+                  }}
                 >
                   <Icon size={14} aria-hidden="true" />
                   <span>{label}</span>
@@ -393,7 +403,10 @@ function NotesNavigationBody({
                         summary.normalizedTag
                       )}
                       disabled={deletingNotesData}
-                      onClick={() => void actions.toggleTagFilter(summary)}
+                      onClick={() => {
+                        openNotes();
+                        void actions.toggleTagFilter(summary);
+                      }}
                     >
                       <span className="notes-tag-label">{label}</span>
                       <span className="notes-tag-count">{summary.count}</span>
@@ -475,7 +488,10 @@ function NotesNavigationBody({
                   active={state.zoomRootId === nodeId}
                   disabled={deletingNotesData || state.status === "loading"}
                   skipTrashConfirmation
-                  onOpen={() => void actions.zoomTo(nodeId)}
+                  onOpen={() => {
+                    openNotes();
+                    void actions.zoomTo(nodeId);
+                  }}
                   onToggleStar={() => void actions.toggleStar(nodeId)}
                   onArchive={() => void actions.archiveNode(nodeId)}
                   onUnarchive={() => void actions.unarchiveNode(nodeId)}

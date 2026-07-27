@@ -4,6 +4,7 @@ import type { SettingsSection } from "./components/SettingsCategoryPane";
 export type SettingsTarget = "images";
 
 export interface AppNavigation {
+  openNotes: () => void;
   openSettings: (section: SettingsSection, target?: SettingsTarget) => void;
 }
 

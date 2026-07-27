@@ -9,6 +9,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AppNavigationContext } from "../../AppNavigationContext";
 import { VaultRootContext } from "../../VaultRootContext";
 import type {
   NoteAttachment,
@@ -450,18 +451,22 @@ function renderNotesPanes(
 ) {
   const workspace = workspaceValue(options);
   render(
-    <VaultRootContext.Provider value={vaultPath}>
-      <NotesImageResidencyProvider scopeKey={vaultPath}>
-        <NotesWorkspaceContext.Provider value={workspace}>
-          <div data-testid="notes-middle-pane">
-            <NotesLibraryPane />
-          </div>
-          <div data-testid="notes-detail-pane">
-            <NotesOutlinePane />
-          </div>
-        </NotesWorkspaceContext.Provider>
-      </NotesImageResidencyProvider>
-    </VaultRootContext.Provider>
+    <AppNavigationContext.Provider
+      value={{ openNotes: vi.fn(), openSettings: vi.fn() }}
+    >
+      <VaultRootContext.Provider value={vaultPath}>
+        <NotesImageResidencyProvider scopeKey={vaultPath}>
+          <NotesWorkspaceContext.Provider value={workspace}>
+            <div data-testid="notes-middle-pane">
+              <NotesLibraryPane />
+            </div>
+            <div data-testid="notes-detail-pane">
+              <NotesOutlinePane />
+            </div>
+          </NotesWorkspaceContext.Provider>
+        </NotesImageResidencyProvider>
+      </VaultRootContext.Provider>
+    </AppNavigationContext.Provider>
   );
   return workspace;
 }
