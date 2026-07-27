@@ -2524,6 +2524,7 @@ body.is-resizing-pane {
   --sidebar-resizer-width: 0px;
   --list-resizer-width: 0px;
   grid-template-columns: 0 0 minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
 }
 
 .app-shell[data-detail-maximized="true"][data-has-middle-pane="true"] {
@@ -2541,7 +2542,12 @@ body.is-resizing-pane {
 
 .app-shell[data-detail-maximized="true"] > .detail-pane {
   display: flex;
+  grid-row: 1;
   grid-column: -2 / -1;
   height: 100%;
   overflow: hidden;
+}
+
+.app-shell[data-detail-maximized="true"] > .app-statusbar {
+  grid-row: 2;
 }

@@ -73,10 +73,27 @@ describe("surviving application styles", () => {
     );
   });
 
-  it("applies detail maximization after responsive pane placement", () => {
+  it("resets responsive rows and pins Detail when maximized", () => {
+    const maximizedShell = rule(
+      stylesRoot,
+      '.app-shell[data-detail-maximized="true"]'
+    );
+    const maximizedDetail = rule(
+      stylesRoot,
+      '.app-shell[data-detail-maximized="true"] > .detail-pane'
+    );
+    const maximizedStatusbar = rule(
+      stylesRoot,
+      '.app-shell[data-detail-maximized="true"] > .app-statusbar'
+    );
+
     expect(styles.lastIndexOf('.app-shell[data-detail-maximized="true"]')).toBeGreaterThan(
       styles.indexOf("@media (max-width: 720px)")
     );
+    expect(maximizedShell).toContain("grid-template-rows: minmax(0, 1fr) auto");
+    expect(maximizedDetail).toContain("grid-row: 1");
+    expect(maximizedDetail).toContain("grid-column: -2 / -1");
+    expect(maximizedStatusbar).toContain("grid-row: 2");
   });
 
   it("keeps Settings scrollable inside its pane", () => {
