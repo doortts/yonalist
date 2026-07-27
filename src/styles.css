@@ -613,7 +613,6 @@ h2 {
   display: none;
 }
 
-.yonalist-navigation-pane,
 .list-pane,
 .detail-pane {
   min-width: 0;
@@ -665,10 +664,10 @@ body.is-resizing-pane {
   grid-row: 1;
   margin-top: var(--pane-top);
   overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-list);
-  box-shadow: 0 12px 32px rgb(50 39 31 / 7%);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .yonalist-navigation-header {

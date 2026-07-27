@@ -50,11 +50,12 @@ describe("surviving application styles", () => {
     expect(statusbar).not.toContain("border-top");
   });
 
-  it("keeps the unified navigation pane framed as an application pane", () => {
+  it("keeps the unified navigation pane unframed over the app background", () => {
     const navigationPane = rule(stylesRoot, ".yonalist-navigation-pane");
-    expect(navigationPane).toContain("background: var(--bg-list)");
-    expect(navigationPane).toContain("border: 1px solid var(--border)");
-    expect(navigationPane).toContain("border-radius: var(--radius-lg)");
+    expect(navigationPane).toContain("background: transparent");
+    expect(navigationPane).toContain("border: 0");
+    expect(navigationPane).toContain("border-radius: 0");
+    expect(navigationPane).toContain("box-shadow: none");
   });
 
   it("keeps the Notes detail minimum while allowing Settings detail to shrink", () => {
