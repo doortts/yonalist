@@ -29,6 +29,23 @@ describe("usePaneResize", () => {
     expect(result.current.paneWidths).toEqual({ sidebar: 320, list: 500 });
   });
 
+  it("restores a visible Settings list from unsupported persisted collapse", () => {
+    window.localStorage.setItem(
+      "yonalist.paneCollapsed.v1",
+      JSON.stringify({ sidebar: false, list: true })
+    );
+
+    const { result } = renderHook(() => usePaneResize());
+
+    expect(result.current.paneCollapsed).toEqual({
+      sidebar: false,
+      list: false
+    });
+    expect(window.localStorage.getItem("yonalist.paneCollapsed.v1")).toBe(
+      JSON.stringify({ sidebar: false, list: false })
+    );
+  });
+
   it("keeps keyboard resizing inside the unified navigation limits", () => {
     const { result } = renderHook(() => usePaneResize());
     const preventDefault = vi.fn();

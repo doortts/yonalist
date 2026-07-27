@@ -76,7 +76,7 @@ describe("surviving application styles", () => {
     const tablet = mediaRule(stylesRoot, "(max-width: 980px)");
 
     expect(tablet).toMatch(
-      /\.app-shell\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\) auto;/s
+      /\.app-shell,\s*\.app-shell\[data-has-middle-pane="true"\]\s*\{[^}]*grid-template-columns:\s*minmax\(320px, var\(--sidebar-width, 336px\)\)[^;]*minmax\(280px, 1fr\);[^}]*grid-template-rows:\s*minmax\(0, 1fr\) auto;/s
     );
     expect(tablet).toMatch(
       /\.app-shell\[data-has-middle-pane="true"\]\s*\{[^}]*grid-template-rows:\s*minmax\(0, 42%\) minmax\(0, 1fr\) auto;/s

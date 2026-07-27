@@ -2420,7 +2420,8 @@ body.is-resizing-pane {
 /* ---------- Responsive ---------- */
 
 @media (max-width: 980px) {
-  .app-shell {
+  .app-shell,
+  .app-shell[data-has-middle-pane="true"] {
     grid-template-columns:
       minmax(320px, var(--sidebar-width, 336px))
       var(--sidebar-resizer-width, var(--pane-gap)) minmax(280px, 1fr);

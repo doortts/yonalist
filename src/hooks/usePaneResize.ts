@@ -80,7 +80,7 @@ function loadPaneCollapsed(): PaneCollapsed {
     const parsed = JSON.parse(stored) as Partial<PaneCollapsed>;
     return {
       sidebar: parsed.sidebar === true,
-      list: parsed.list === true
+      list: false
     };
   } catch {
     return defaultPaneCollapsed;
@@ -89,7 +89,10 @@ function loadPaneCollapsed(): PaneCollapsed {
 
 function persistPaneCollapsed(collapsed: PaneCollapsed) {
   try {
-    window.localStorage.setItem(paneCollapsedStorageKey, JSON.stringify(collapsed));
+    window.localStorage.setItem(
+      paneCollapsedStorageKey,
+      JSON.stringify({ ...collapsed, list: false })
+    );
   } catch {
     // Collapsing remains available even when stored preferences are unavailable.
   }
