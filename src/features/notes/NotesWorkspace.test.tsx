@@ -14597,13 +14597,13 @@ describe("Notes workspace", () => {
 
   it("keeps library controls visually stable during transient workspace work", () => {
     expect(notesStyles).toMatch(
-      /\.notes-library-pane\[data-transient-workspace-busy="true"\][\s\S]*\.notes-new-page:disabled[^{]*\{[^}]*opacity:\s*1;/s,
+      /\.notes-navigation-content\[data-transient-workspace-busy="true"\][\s\S]*\.notes-new-page:disabled[^{]*\{[^}]*opacity:\s*1;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-library-pane\[data-transient-workspace-busy="true"\][\s\S]*\.notes-library-page:disabled[^{]*\{[^}]*opacity:\s*1;/s,
+      /\.notes-navigation-content\[data-transient-workspace-busy="true"\][\s\S]*\.notes-library-page:disabled[^{]*\{[^}]*opacity:\s*1;/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-library-pane\[data-transient-workspace-busy="true"\][\s\S]*\.notes-library-page-menu-trigger:disabled[^{]*\{[^}]*opacity:\s*0\.68;/s,
+      /\.notes-navigation-content\[data-transient-workspace-busy="true"\][\s\S]*\.notes-library-page-menu-trigger:disabled[^{]*\{[^}]*opacity:\s*0\.68;/s,
     );
   });
 

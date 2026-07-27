@@ -192,7 +192,13 @@ describe("Yonalist app shell", () => {
     ).toBeNull();
     expect(
       screen.getByRole("separator", { name: "Resize navigation pane" })
-    ).toBeInTheDocument();
+    ).toHaveAttribute("aria-valuemin", "320");
+    expect(
+      screen.getByRole("separator", { name: "Resize navigation pane" })
+    ).toHaveAttribute("aria-valuemax", "480");
+    expect(
+      screen.getByRole("separator", { name: "Resize navigation pane" })
+    ).toHaveAttribute("aria-valuenow", "336");
   });
 
   it("adds the Settings category pane without replacing navigation", async () => {
@@ -209,10 +215,12 @@ describe("Yonalist app shell", () => {
     expect(
       screen.getByRole("navigation", { name: "Navigation" })
     ).toBeInTheDocument();
-    expect(await screen.findByLabelText("Settings sections")).toBeInTheDocument();
-    expect(
+    const shell = container.querySelector("main.app-shell");
+    const settingsSections = await screen.findByLabelText("Settings sections");
+    expect(shell).toContainElement(settingsSections);
+    expect(shell).toContainElement(
       screen.getByRole("separator", { name: "Resize item list pane" })
-    ).toBeInTheDocument();
+    );
   });
 
   it("opens GitHub server settings while signed out", async () => {

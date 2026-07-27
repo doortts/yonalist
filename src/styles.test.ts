@@ -21,6 +21,16 @@ function rule(root: Root, selector: string): string {
   return declarations;
 }
 
+function mediaRule(root: Root, params: string): string {
+  let content = "";
+  root.walkAtRules("media", (candidate) => {
+    if (candidate.params === params) {
+      content += candidate.toString();
+    }
+  });
+  return content;
+}
+
 describe("surviving application styles", () => {
   it("keeps the status bar transparent", () => {
     const statusbar = rule(stylesRoot, ".app-statusbar");
@@ -42,6 +52,31 @@ describe("surviving application styles", () => {
     expect(shell).toContain("var(--sidebar-width, 336px)");
     expect(shell).not.toContain("var(--list-width, 340px)");
     expect(settingsShell).toContain("var(--list-width, 340px)");
+  });
+
+  it("keeps Notes horizontal at tablet widths and stacks Settings detail below its middle pane", () => {
+    const tablet = mediaRule(stylesRoot, "(max-width: 980px)");
+
+    expect(tablet).toMatch(
+      /\.app-shell\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\) auto;/s
+    );
+    expect(tablet).toMatch(
+      /\.app-shell\[data-has-middle-pane="true"\]\s*\{[^}]*grid-template-rows:\s*minmax\(0, 42%\) minmax\(0, 1fr\) auto;/s
+    );
+  });
+
+  it("stacks both Notes and Settings in DOM order on narrow screens", () => {
+    const narrow = mediaRule(stylesRoot, "(max-width: 720px)");
+
+    expect(narrow).toMatch(
+      /\.app-shell,\s*\.app-shell\[data-has-middle-pane="true"\]\s*\{[^}]*grid-template-rows:\s*none;/s
+    );
+  });
+
+  it("applies detail maximization after responsive pane placement", () => {
+    expect(styles.lastIndexOf('.app-shell[data-detail-maximized="true"]')).toBeGreaterThan(
+      styles.indexOf("@media (max-width: 720px)")
+    );
   });
 
   it("keeps Settings scrollable inside its pane", () => {

@@ -526,6 +526,7 @@ export default function App({ initialOnline }: AppProps) {
                       paneToggles={{
                         sidebarCollapsed: paneCollapsed.sidebar,
                         detailMaximized,
+                        middlePaneVisible: hasMiddlePane,
                         onToggleSidebar: () =>
                           togglePaneCollapsed("sidebar"),
                         onToggleMaximize: toggleDetailMaximized,

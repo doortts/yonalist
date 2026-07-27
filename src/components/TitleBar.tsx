@@ -7,6 +7,7 @@ import { SidebarPaneIcon, SidebarPaneOpenIcon } from "./ui/PaneIcons";
 export interface PaneToggleControls {
   sidebarCollapsed: boolean;
   detailMaximized: boolean;
+  middlePaneVisible: boolean;
   onToggleSidebar: () => void;
   onToggleMaximize: () => void;
   /**
@@ -72,7 +73,9 @@ export function TitleBar({ paneToggles }: TitleBarProps = {}) {
             // of the now-frontmost pane with a traffic-light-safe fallback.
             style={{
               left: paneToggles.sidebarCollapsed
-                ? "max(86px, calc(var(--shell-inset, 8px) + var(--list-width, 340px) - 36px))"
+                ? paneToggles.middlePaneVisible
+                  ? "max(86px, calc(var(--shell-inset, 8px) + var(--list-width, 340px) - 36px))"
+                  : "86px"
                 : "calc(var(--shell-inset, 8px) + var(--sidebar-width, 336px) - 36px)"
             }}
             // The buttons must not initiate a native window drag; keep pointer
