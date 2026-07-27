@@ -587,7 +587,12 @@ export default function App({ initialOnline }: AppProps) {
                         {hasMiddlePane && (
                           <>
                             <div className="feature-pane-slot">
-                              {activeFeaturePanes?.middle}
+                              <FeatureRuntimeBoundary
+                                featureId={activeFeatureId}
+                                onRetry={retryActiveFeatureRuntime}
+                              >
+                                {activeFeaturePanes?.middle}
+                              </FeatureRuntimeBoundary>
                             </div>
                             <div
                               className="pane-resizer list-detail-resizer"
@@ -611,21 +616,25 @@ export default function App({ initialOnline }: AppProps) {
                         <section className="detail-pane" aria-label="Detail">
                           <div className="pane-titlebar-spacer" />
                           <div className="detail-scroll">
-                            <FeatureRuntimeBoundary
-                              key={`${activeFeatureId}:${featureRender.generation}`}
-                              featureId={activeFeatureId}
-                              onRetry={retryFeatureRender}
-                            >
-                              {featurePanes.map(({ id, active, panes }) => (
-                                <div
-                                  key={id}
-                                  className="feature-pane-slot"
-                                  hidden={!active}
+                            {featurePanes.map(({ id, active, panes }) => (
+                              <div
+                                key={id}
+                                className="feature-pane-slot"
+                                hidden={!active}
+                              >
+                                <FeatureRuntimeBoundary
+                                  key={
+                                    id === "settings"
+                                      ? featureRender.generation
+                                      : id
+                                  }
+                                  featureId={id}
+                                  onRetry={retryFeatureRender}
                                 >
                                   {panes.detail}
-                                </div>
-                              ))}
-                            </FeatureRuntimeBoundary>
+                                </FeatureRuntimeBoundary>
+                              </div>
+                            ))}
                           </div>
                         </section>
                       </>

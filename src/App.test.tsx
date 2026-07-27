@@ -46,6 +46,16 @@ const settingsPageProbe = vi.hoisted(() => ({
   attempts: 0
 }));
 
+const settingsCategoryProbe = vi.hoisted(() => ({
+  fail: false,
+  attempts: 0
+}));
+
+const notesDetailProbe = vi.hoisted(() => ({
+  mounts: 0,
+  unmounts: 0
+}));
+
 vi.mock("./features/notes/notesVaultDrain", () => ({
   acquireNotesVaultDrain: async (vaultRoot: string) => {
     const result = await vaultMocks.drain(vaultRoot);
@@ -76,6 +86,23 @@ vi.mock(
     }
   })
 );
+
+vi.mock("./components/SettingsCategoryPane", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./components/SettingsCategoryPane")>();
+
+  function SettingsCategoryPaneProbe(
+    props: Parameters<typeof actual.SettingsCategoryPane>[0]
+  ) {
+    settingsCategoryProbe.attempts += 1;
+    if (settingsCategoryProbe.fail) {
+      throw new Error("settings category render failed");
+    }
+    return <actual.SettingsCategoryPane {...props} />;
+  }
+
+  return { ...actual, SettingsCategoryPane: SettingsCategoryPaneProbe };
+});
 
 vi.mock("./components/SettingsPage", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./components/SettingsPage")>();
@@ -118,6 +145,16 @@ vi.mock("./features/notes/NotesFeature", async () => {
     );
   }
 
+  function NotesDetailProbe() {
+    React.useEffect(() => {
+      notesDetailProbe.mounts += 1;
+      return () => {
+        notesDetailProbe.unmounts += 1;
+      };
+    }, []);
+    return <section aria-label="Notes outline" />;
+  }
+
   return {
     notesFeatureRuntime: {
       Provider: ({ children }: React.PropsWithChildren) => <>{children}</>,
@@ -126,7 +163,7 @@ vi.mock("./features/notes/NotesFeature", async () => {
           headerActions: null,
           content: <NotesLibraryProbe />
         },
-        detail: <section aria-label="Notes outline" />
+        detail: <NotesDetailProbe />
       })
     }
   };
@@ -170,6 +207,10 @@ describe("Yonalist app shell", () => {
     githubRuntimeMocks.useRuntime.mockClear();
     settingsPageProbe.fail = false;
     settingsPageProbe.attempts = 0;
+    settingsCategoryProbe.fail = false;
+    settingsCategoryProbe.attempts = 0;
+    notesDetailProbe.mounts = 0;
+    notesDetailProbe.unmounts = 0;
   });
 
   it("opens Yonalist without waiting for GitHub authentication", async () => {
@@ -255,6 +296,11 @@ describe("Yonalist app shell", () => {
     settingsPageProbe.fail = true;
     render(<App />);
     await screen.findByLabelText("Yonalist library");
+    await waitFor(() => {
+      expect(notesDetailProbe.mounts).toBeGreaterThan(0);
+    });
+    const notesMountsBeforeSettings = notesDetailProbe.mounts;
+    const notesUnmountsBeforeSettings = notesDetailProbe.unmounts;
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
 
@@ -270,6 +316,8 @@ describe("Yonalist app shell", () => {
     expect(screen.getByLabelText("Settings sections")).toBeInTheDocument();
     const detail = screen.getByRole("region", { name: "Detail" });
     expect(within(detail).getByRole("alert")).toBeInTheDocument();
+    expect(notesDetailProbe.mounts).toBe(notesMountsBeforeSettings);
+    expect(notesDetailProbe.unmounts).toBe(notesUnmountsBeforeSettings);
 
     const attemptsBeforeRetry = settingsPageProbe.attempts;
     settingsPageProbe.fail = false;
@@ -284,6 +332,49 @@ describe("Yonalist app shell", () => {
     expect(
       screen.getByRole("navigation", { name: "Navigation" })
     ).toBeInTheDocument();
+    expect(notesDetailProbe.mounts).toBe(notesMountsBeforeSettings);
+    expect(notesDetailProbe.unmounts).toBe(notesUnmountsBeforeSettings);
+    consoleError.mockRestore();
+  });
+
+  it("keeps navigation and Settings detail when the category pane retries", async () => {
+    const user = userEvent.setup();
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    settingsCategoryProbe.fail = true;
+    render(<App />);
+    await screen.findByLabelText("Yonalist library");
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Settings를 열 수 없습니다."
+    );
+    expect(
+      screen.getByRole("navigation", { name: "Navigation" })
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("radiogroup", { name: "Theme mode" })
+    ).toBeInTheDocument();
+    const detail = screen.getByRole("region", { name: "Detail" });
+    expect(within(detail).queryByRole("alert")).not.toBeInTheDocument();
+    const categoryFailure = screen.getByRole("alert");
+    const attemptsBeforeRetry = settingsCategoryProbe.attempts;
+
+    settingsCategoryProbe.fail = false;
+    await user.click(
+      within(categoryFailure).getByRole("button", { name: "다시 시도" })
+    );
+
+    expect(await screen.findByLabelText("Settings sections")).toBeInTheDocument();
+    expect(
+      screen.getByRole("radiogroup", { name: "Theme mode" })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("navigation", { name: "Navigation" })
+    ).toBeInTheDocument();
+    expect(settingsCategoryProbe.attempts).toBeGreaterThan(attemptsBeforeRetry);
     consoleError.mockRestore();
   });
 
