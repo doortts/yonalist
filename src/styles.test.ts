@@ -21,6 +21,18 @@ function rule(root: Root, selector: string): string {
   return declarations;
 }
 
+function topLevelRule(root: Root, selector: string): string {
+  let declarations = "";
+  root.walkRules((candidate) => {
+    if (candidate.parent === root && candidate.selectors.includes(selector)) {
+      declarations += `${candidate.nodes
+        .map((node) => node.toString())
+        .join("\n")}\n`;
+    }
+  });
+  return declarations;
+}
+
 function mediaRule(root: Root, params: string): string {
   let content = "";
   root.walkAtRules("media", (candidate) => {
@@ -45,13 +57,19 @@ describe("surviving application styles", () => {
     expect(navigationPane).toContain("border-radius: var(--radius-lg)");
   });
 
-  it("uses two columns by default and adds the middle tracks only when needed", () => {
-    const shell = rule(stylesRoot, ".app-shell");
-    const settingsShell = rule(stylesRoot, '.app-shell[data-has-middle-pane="true"]');
+  it("keeps the Notes detail minimum while allowing Settings detail to shrink", () => {
+    const notesShell = topLevelRule(stylesRoot, ".app-shell");
+    const settingsShell = topLevelRule(
+      stylesRoot,
+      '.app-shell[data-has-middle-pane="true"]'
+    );
 
-    expect(shell).toContain("var(--sidebar-width, 336px)");
-    expect(shell).not.toContain("var(--list-width, 340px)");
+    expect(notesShell).toContain("var(--sidebar-width, 336px)");
+    expect(notesShell).toContain("minmax(520px, 1fr)");
+    expect(notesShell).not.toContain("var(--list-width, 340px)");
     expect(settingsShell).toContain("var(--list-width, 340px)");
+    expect(settingsShell).toContain("minmax(280px, 1fr)");
+    expect(settingsShell).not.toContain("minmax(520px, 1fr)");
   });
 
   it("keeps Notes horizontal at tablet widths and stacks Settings detail below its middle pane", () => {

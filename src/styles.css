@@ -589,7 +589,7 @@ h2 {
   grid-template-columns:
     var(--sidebar-width, 336px) var(--sidebar-resizer-width, 10px)
     var(--list-width, 340px) var(--list-resizer-width, 10px)
-    minmax(520px, 1fr);
+    minmax(280px, 1fr);
 }
 
 .yonalist-navigation-pane,
