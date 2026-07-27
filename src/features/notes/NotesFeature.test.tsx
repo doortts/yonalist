@@ -187,16 +187,17 @@ describe("NotesFeature", () => {
       <VaultRootContext.Provider value="/feature-vault">
         <NotesFeatureProvider>
           <ResidencyProbe />
-          {panes.middle}
+          {panes.navigation?.headerActions}
+          {panes.navigation?.content}
           {panes.detail}
         </NotesFeatureProvider>
       </VaultRootContext.Provider>,
     );
 
     expect(screen.getByLabelText("Yonalist library")).toHaveClass(
-      "list-pane",
-      "notes-library-pane",
+      "notes-navigation-content",
     );
+    expect(panes.middle).toBeUndefined();
     expect(screen.getByLabelText("Notes outline")).toBeInTheDocument();
     expect(await screen.findByText("No pages yet.")).toBeInTheDocument();
     expect(notesStoreMock.initialize).toHaveBeenCalledWith(
@@ -473,7 +474,8 @@ describe("NotesFeature", () => {
       <VaultRootContext.Provider value="/feature-vault">
         <ExternalSourcesContext.Provider value={externalSources}>
           <NotesFeatureProvider>
-            {panes.middle}
+            {panes.navigation?.headerActions}
+            {panes.navigation?.content}
             {panes.detail}
           </NotesFeatureProvider>
         </ExternalSourcesContext.Provider>

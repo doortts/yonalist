@@ -10,8 +10,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const libraryRenders = vi.hoisted(() => ({ count: 0 }));
 const outlineRenders = vi.hoisted(() => ({ count: 0 }));
 
-vi.mock("./features/notes/NotesLibraryPane", () => ({
-  NotesLibraryPane: () => {
+vi.mock("./features/notes/NotesNavigationContent", () => ({
+  NotesNavigationHeaderActions: () => null,
+  NotesNavigationContent: () => {
     libraryRenders.count += 1;
     return <div aria-label="Yonalist library" />;
   }

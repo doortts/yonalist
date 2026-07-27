@@ -101,7 +101,10 @@ vi.mock("./features/notes/NotesFeature", async () => {
     notesFeatureRuntime: {
       Provider: ({ children }: React.PropsWithChildren) => <>{children}</>,
       renderPanes: () => ({
-        middle: <NotesLibraryProbe />,
+        navigation: {
+          headerActions: null,
+          content: <NotesLibraryProbe />
+        },
         detail: <section aria-label="Notes outline" />
       })
     }
@@ -174,6 +177,42 @@ describe("Yonalist app shell", () => {
     expect(screen.queryByText("GitHub Inbox")).toBeNull();
     expect(screen.queryByRole("button", { name: /^Notifications/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /outbox/i })).toBeNull();
+  });
+
+  it("renders Notes with no middle pane or item-list resizer", async () => {
+    const { container } = render(<App />);
+
+    await screen.findByLabelText("Yonalist library");
+
+    const shell = container.querySelector(".app-shell");
+    expect(shell).not.toHaveAttribute("data-has-middle-pane");
+    expect(screen.getAllByRole("navigation")).toHaveLength(1);
+    expect(
+      screen.queryByRole("separator", { name: "Resize item list pane" })
+    ).toBeNull();
+    expect(
+      screen.getByRole("separator", { name: "Resize navigation pane" })
+    ).toBeInTheDocument();
+  });
+
+  it("adds the Settings category pane without replacing navigation", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    const navigation = await screen.findByRole("navigation", {
+      name: "Navigation"
+    });
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    expect(container.querySelector(".app-shell")).toHaveAttribute(
+      "data-has-middle-pane",
+      "true"
+    );
+    expect(navigation).toBeInTheDocument();
+    expect(await screen.findByLabelText("Settings sections")).toBeInTheDocument();
+    expect(
+      screen.getByRole("separator", { name: "Resize item list pane" })
+    ).toBeInTheDocument();
   });
 
   it("opens GitHub server settings while signed out", async () => {

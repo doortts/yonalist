@@ -36,7 +36,10 @@ function RetainedNotesPane() {
 }
 
 const notesPanes = {
-  middle: <RetainedNotesPane />,
+  navigation: {
+    headerActions: null,
+    content: <RetainedNotesPane />
+  },
   detail: <div aria-label="Notes outline" />
 };
 
@@ -73,14 +76,13 @@ describe("App lazy feature runtime", () => {
     await screen.findByLabelText("Navigation");
     expect(loadRuntime).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole("button", { name: "Yonalist" }));
+    await user.click(screen.getByRole("button", { name: "Yonalist 열기" }));
     expect(await screen.findByText("Loading Yonalist…")).toBeInTheDocument();
     pending.resolve(notesRuntime);
 
     const draft = await screen.findByRole("textbox", { name: "Notes draft" });
     await user.type(draft, "keep me");
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.click(screen.getByRole("button", { name: "Yonalist" }));
 
     expect(screen.getByRole("textbox", { name: "Notes draft" })).toHaveValue(
       "keep me"
@@ -97,7 +99,7 @@ describe("App lazy feature runtime", () => {
     const user = userEvent.setup();
     render(<App initialOnline={false} />);
 
-    await user.click(await screen.findByRole("button", { name: "Yonalist" }));
+    await user.click(await screen.findByRole("button", { name: "Yonalist 열기" }));
     first.reject(new Error("chunk unavailable"));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Yonalist를 열 수 없습니다."

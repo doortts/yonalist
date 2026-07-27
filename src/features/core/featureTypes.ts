@@ -5,8 +5,14 @@ export type FeatureId = "notes" | "settings";
 
 export type FeatureNavigationSection = "workspace" | "app";
 
+export interface FeatureNavigationContent {
+  headerActions: ReactNode;
+  content: ReactNode;
+}
+
 export interface FeaturePanes {
-  middle: ReactNode;
+  navigation?: FeatureNavigationContent;
+  middle?: ReactNode;
   detail: ReactNode;
 }
 

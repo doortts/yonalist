@@ -43,7 +43,7 @@ vi.mock("../../services/notesStore", () => ({
 }));
 
 import { NotesFeatureProvider } from "./NotesFeature";
-import { NotesLibraryPane } from "./NotesLibraryPane";
+import { NotesNavigationContent as NotesLibraryPane } from "./NotesNavigationContent";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {

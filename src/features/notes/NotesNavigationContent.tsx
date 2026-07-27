@@ -66,7 +66,7 @@ function resultLabel(
   return `${title}${context}, ${result.matchedField} match`;
 }
 
-function NotesLibraryPaneContent({
+function NotesNavigationBody({
   githubNotificationsVisible
 }: {
   readonly githubNotificationsVisible: boolean;
@@ -86,7 +86,6 @@ function NotesLibraryPaneContent({
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
   const [activeResultIndex, setActiveResultIndex] = useState(-1);
-  const [dataSettingsOpen, setDataSettingsOpen] = useState(false);
   const searchRequestRef = useRef(0);
   const resultOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const visibleRootIds = githubNotificationsVisible
@@ -229,8 +228,8 @@ function NotesLibraryPaneContent({
   };
 
   return (
-    <section
-      className="list-pane notes-library-pane"
+    <div
+      className="notes-navigation-content"
       aria-label="Yonalist library"
       aria-busy={state.status === "loading" || deletingNotesData}
       data-transient-workspace-busy={
@@ -238,24 +237,6 @@ function NotesLibraryPaneContent({
       }
     >
       <TooltipProvider>
-        <div className="pane-titlebar-spacer" />
-        <header className="notes-library-header">
-          <h2>Yonalist</h2>
-          <div className="notes-library-header-actions">
-            <IconTooltip label="Yonalist data settings" side="bottom">
-              <button
-                className="notes-library-icon-button"
-                type="button"
-                aria-label="Yonalist data settings"
-                disabled={deletingNotesData}
-                onClick={() => setDataSettingsOpen(true)}
-              >
-                <Settings2 size={16} aria-hidden="true" />
-              </button>
-            </IconTooltip>
-          </div>
-        </header>
-
         <div className="notes-library-discovery">
           {libraryView !== "trash" && libraryView !== "archive" && (
             <button
@@ -281,24 +262,32 @@ function NotesLibraryPaneContent({
             />
           </label>
 
-          <div
-            className="notes-library-views"
-            role="group"
-            aria-label="Yonalist library views"
+          <section
+            className="notes-navigation-section"
+            aria-labelledby="notes-library-section-title"
           >
-            {libraryViews.map(({ id, icon: Icon, label }) => (
-              <button
-                key={id}
-                type="button"
-                aria-pressed={libraryView === id}
-                disabled={deletingNotesData}
-                onClick={() => void actions.selectLibraryView(id)}
-              >
-                <Icon size={14} aria-hidden="true" />
-                <span>{label}</span>
-              </button>
-            ))}
-          </div>
+            <h2 id="notes-library-section-title" className="eyebrow">
+              Library
+            </h2>
+            <div
+              className="notes-library-views"
+              role="group"
+              aria-label="Yonalist library views"
+            >
+              {libraryViews.map(({ id, icon: Icon, label }) => (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={libraryView === id}
+                  disabled={deletingNotesData}
+                  onClick={() => void actions.selectLibraryView(id)}
+                >
+                  <Icon size={14} aria-hidden="true" />
+                  <span>{label}</span>
+                </button>
+              ))}
+            </div>
+          </section>
 
           {activeTagFilters.length > 0 && (
             <div
@@ -417,7 +406,14 @@ function NotesLibraryPaneContent({
         </div>
 
         {!choosingTag && (
-          <div className="notes-library-list">
+          <section
+            className="notes-navigation-section notes-navigation-pages"
+            aria-labelledby="notes-pages-section-title"
+          >
+            <h2 id="notes-pages-section-title" className="eyebrow">
+              Pages
+            </h2>
+            <div className="notes-library-list">
             {initialLoading && <p className="notes-pane-state">Loading notes...</p>}
             {state.status === "error" && (
               <p className="notes-pane-state notes-pane-error">{state.error}</p>
@@ -510,7 +506,8 @@ function NotesLibraryPaneContent({
                 />
               );
             })}
-          </div>
+            </div>
+          </section>
         )}
 
         {exportController.busy && (
@@ -550,16 +547,37 @@ function NotesLibraryPaneContent({
           onConfirm={exportController.replaceExistingExport}
         />
 
-        <NotesDataSettingsDialog
-          open={dataSettingsOpen}
-          onOpenChange={setDataSettingsOpen}
-        />
       </TooltipProvider>
-    </section>
+    </div>
   );
 }
 
-export function NotesLibraryPane() {
+export function NotesNavigationHeaderActions() {
+  const { deletingNotesData } = useNotesState();
+  const [dataSettingsOpen, setDataSettingsOpen] = useState(false);
+
+  return (
+    <>
+      <IconTooltip label="Yonalist data settings" side="bottom">
+        <button
+          className="notes-library-icon-button"
+          type="button"
+          aria-label="Yonalist data settings"
+          disabled={deletingNotesData}
+          onClick={() => setDataSettingsOpen(true)}
+        >
+          <Settings2 size={16} aria-hidden="true" />
+        </button>
+      </IconTooltip>
+      <NotesDataSettingsDialog
+        open={dataSettingsOpen}
+        onOpenChange={setDataSettingsOpen}
+      />
+    </>
+  );
+}
+
+export function NotesNavigationContent() {
   const { actions } = useNotesActions();
   const { deletingNotesData, libraryView, state } = useNotesState();
   const githubNotificationsVisible = useExternalSources().pages.some(
@@ -579,7 +597,7 @@ export function NotesLibraryPane() {
       loading={state.status === "loading"}
       onFlushDrafts={actions.flushAllDrafts}
     >
-      <NotesLibraryPaneContent
+      <NotesNavigationBody
         githubNotificationsVisible={githubNotificationsVisible}
       />
     </NotesExportControllerProvider>

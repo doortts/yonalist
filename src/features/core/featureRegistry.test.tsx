@@ -50,12 +50,14 @@ describe("feature registry", () => {
     });
 
     expect(renderSettingsPanes).toHaveBeenCalledOnce();
+    expect(panes.navigation).toBeUndefined();
+    expect(panes.middle).toBeDefined();
     render(<>{panes.middle}{panes.detail}</>);
     expect(screen.getByText("Settings middle pane")).toBeInTheDocument();
     expect(screen.getByText("Settings detail pane")).toBeInTheDocument();
   });
 
-  it("loads structural Notes panes without App-owned renderers", async () => {
+  it("loads retained Notes navigation and detail without a middle pane", async () => {
     const notes = getFeatureDefinition("notes");
     if (!notes.loadRuntime) {
       throw new Error("Notes runtime must be lazy.");
@@ -66,10 +68,14 @@ describe("feature registry", () => {
     });
     const NotesProvider = runtime.Provider;
 
+    expect(panes.middle).toBeUndefined();
+    expect(panes.navigation).toBeDefined();
+
     render(
       <VaultRootContext.Provider value="/registry-vault">
         <NotesProvider>
-          {panes.middle}
+          {panes.navigation?.headerActions}
+          {panes.navigation?.content}
           {panes.detail}
         </NotesProvider>
       </VaultRootContext.Provider>

@@ -39,7 +39,7 @@ import {
   SettingsCategoryPane,
   type SettingsSection
 } from "./components/SettingsCategoryPane";
-import { Sidebar } from "./components/Sidebar";
+import { YonalistNavigationPane } from "./components/YonalistNavigationPane";
 import { TitleBar } from "./components/TitleBar";
 import { FeatureRuntimeBoundary } from "./features/core/FeatureRuntimeBoundary";
 import {
@@ -431,6 +431,7 @@ export default function App({ initialOnline }: AppProps) {
       return <FeatureProvider key={feature.id}>{wrapped}</FeatureProvider>;
     }, content);
 
+
   const featurePanes = featureRegistry.flatMap((feature) => {
     const runtime = featureRuntimeHost.readyRuntimes.get(feature.id);
     if (!runtime || (!feature.keepMounted && feature.id !== activeFeatureId)) {
@@ -453,7 +454,10 @@ export default function App({ initialOnline }: AppProps) {
       id: activeFeatureId,
       active: true,
       panes: {
-        middle: loading ? (
+        middle:
+          activeFeatureId === "notes"
+            ? undefined
+            : loading ? (
           <div className="feature-runtime-loading" role="status">
             Loading {activeFeature.label}…
           </div>
@@ -469,6 +473,18 @@ export default function App({ initialOnline }: AppProps) {
       }
     });
   }
+
+  const notesFeaturePanes = featurePanes.find(
+    ({ id }) => id === "notes"
+  )?.panes;
+  const activeFeaturePanes = featurePanes.find(({ active }) => active)?.panes;
+  const hasMiddlePane = activeFeaturePanes?.middle !== undefined;
+  const notesRuntimeReady = featureRuntimeHost.readyRuntimes.has("notes");
+  const notesStatus = notesRuntimeReady
+    ? "ready"
+    : activeFeatureId === "notes"
+      ? featureRuntimeHost.active.status
+      : "idle";
 
   const layoutStyle = {
     "--sidebar-width": paneCollapsed.sidebar
@@ -492,6 +508,7 @@ export default function App({ initialOnline }: AppProps) {
                     aria-label="Yonalist layout"
                     style={layoutStyle}
                     data-active-feature={activeFeatureId}
+                    data-has-middle-pane={hasMiddlePane ? "true" : undefined}
                     data-sidebar-collapsed={
                       paneCollapsed.sidebar ? "true" : undefined
                     }
@@ -515,85 +532,89 @@ export default function App({ initialOnline }: AppProps) {
                         )
                       }}
                     />
-                    <Sidebar
-                      online={online}
-                      loginRequired={!auth.signedIn}
-                      onToggleOnline={toggleOnline}
-                      activeFeatureId={activeFeatureId}
-                      featureEntries={featureRegistry}
-                      onFeatureChange={changeActiveFeature}
-                      onOpenSettings={openSettings}
-                    />
+                    <YonalistNavigationPane
+                            activeFeatureId={activeFeatureId}
+                            online={online}
+                            loginRequired={!auth.signedIn}
+                            notesStatus={notesStatus}
+                            headerActions={
+                              notesFeaturePanes?.navigation?.headerActions ??
+                              null
+                            }
+                            onOpenNotes={() => changeActiveFeature("notes")}
+                            onOpenSettings={openSettings}
+                            onRetryNotes={featureRuntimeHost.retry}
+                            onToggleOnline={toggleOnline}
+                          >
+                            {notesFeaturePanes?.navigation?.content ?? null}
+                    </YonalistNavigationPane>
 
                     <div
-                      className="pane-resizer sidebar-list-resizer"
-                      role="separator"
-                      aria-label="Resize navigation pane"
-                      aria-orientation="vertical"
-                      aria-valuemin={paneWidthLimits.sidebar.min}
-                      aria-valuemax={paneWidthLimits.sidebar.max}
-                      aria-valuenow={paneWidths.sidebar}
-                      tabIndex={0}
-                      onPointerDown={(event) =>
-                        startResize("sidebar", event)
-                      }
-                      onKeyDown={(event) =>
-                        resizeWithKeyboard("sidebar", event)
-                      }
+                            className="pane-resizer sidebar-list-resizer"
+                            role="separator"
+                            aria-label="Resize navigation pane"
+                            aria-orientation="vertical"
+                            aria-valuemin={paneWidthLimits.sidebar.min}
+                            aria-valuemax={paneWidthLimits.sidebar.max}
+                            aria-valuenow={paneWidths.sidebar}
+                            tabIndex={0}
+                            onPointerDown={(event) =>
+                              startResize("sidebar", event)
+                            }
+                            onKeyDown={(event) =>
+                              resizeWithKeyboard("sidebar", event)
+                            }
                     />
 
                     <FeatureRuntimeBoundary
-                      featureId={activeFeatureId}
-                      onRetry={featureRuntimeHost.retry}
+                            featureId={activeFeatureId}
+                            onRetry={featureRuntimeHost.retry}
                     >
                       {withFeatureProviders(
                         <>
-                          {featurePanes.map(({ id, active, panes }) => (
-                            <div
-                              key={id}
-                              className="feature-pane-slot"
-                              hidden={!active}
-                            >
-                              {panes.middle}
-                            </div>
-                          ))}
-
-                          <div
-                            className="pane-resizer list-detail-resizer"
-                            role="separator"
-                            aria-label="Resize item list pane"
-                            aria-orientation="vertical"
-                            aria-valuemin={paneWidthLimits.list.min}
-                            aria-valuemax={paneWidthLimits.list.max}
-                            aria-valuenow={paneWidths.list}
-                            tabIndex={0}
-                            onPointerDown={(event) =>
-                              startResize("list", event)
-                            }
-                            onKeyDown={(event) =>
-                              resizeWithKeyboard("list", event)
-                            }
-                          />
-
-                          <section
-                            className="detail-pane"
-                            aria-label="Detail"
-                          >
-                            <div className="pane-titlebar-spacer" />
-                            <div className="detail-scroll">
-                              {featurePanes.map(
-                                ({ id, active, panes }) => (
-                                  <div
-                                    key={id}
-                                    className="feature-pane-slot"
-                                    hidden={!active}
-                                  >
-                                    {panes.detail}
-                                  </div>
-                                )
+                              {hasMiddlePane && (
+                                <>
+                              <div className="feature-pane-slot">
+                                {activeFeaturePanes?.middle}
+                              </div>
+                              <div
+                                className="pane-resizer list-detail-resizer"
+                                role="separator"
+                                aria-label="Resize item list pane"
+                                aria-orientation="vertical"
+                                aria-valuemin={paneWidthLimits.list.min}
+                                aria-valuemax={paneWidthLimits.list.max}
+                                aria-valuenow={paneWidths.list}
+                                tabIndex={0}
+                                onPointerDown={(event) =>
+                                  startResize("list", event)
+                                }
+                                onKeyDown={(event) =>
+                                  resizeWithKeyboard("list", event)
+                                }
+                              />
+                                </>
                               )}
-                            </div>
-                          </section>
+
+                              <section
+                                className="detail-pane"
+                                aria-label="Detail"
+                              >
+                                <div className="pane-titlebar-spacer" />
+                                <div className="detail-scroll">
+                                  {featurePanes.map(
+                                    ({ id, active, panes }) => (
+                                      <div
+                                        key={id}
+                                        className="feature-pane-slot"
+                                        hidden={!active}
+                                      >
+                                        {panes.detail}
+                                      </div>
+                                    )
+                                  )}
+                                </div>
+                              </section>
                         </>
                       )}
                     </FeatureRuntimeBoundary>

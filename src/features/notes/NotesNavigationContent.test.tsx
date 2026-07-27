@@ -16,10 +16,17 @@ import {
   GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
   GITHUB_NOTIFICATIONS_ROOT_ID
 } from "../../services/githubNotificationsProvider";
-import { NotesLibraryPane } from "./NotesLibraryPane";
+import {
+  NotesNavigationContent,
+  NotesNavigationHeaderActions
+} from "./NotesNavigationContent";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
+
+function NotesLibraryPane() {
+  return <><NotesNavigationHeaderActions /><NotesNavigationContent /></>;
+}
 
 function deletedRoot(): NoteNode {
   return {
@@ -197,7 +204,7 @@ function renderLibraryWithExternal(
     <VaultRootContext.Provider value="/vault">
       <ExternalSourcesContext.Provider value={boundary}>
         <NotesWorkspaceContext.Provider value={workspace}>
-          <NotesLibraryPane />
+          <><NotesNavigationHeaderActions /><NotesNavigationContent /></>
         </NotesWorkspaceContext.Provider>
       </ExternalSourcesContext.Provider>
     </VaultRootContext.Provider>
@@ -205,15 +212,15 @@ function renderLibraryWithExternal(
   return { ...rendered, boundary };
 }
 
-describe("NotesLibraryPane", () => {
+describe("NotesNavigationContent", () => {
   it("presents the feature as Yonalist", () => {
     renderLibraryWithExternal(activeWorkspace());
 
     expect(
-      screen.getByRole("region", { name: "Yonalist library" }),
+      screen.getByLabelText("Yonalist library"),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: "Yonalist" }),
+      screen.getByRole("heading", { name: "Library" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("searchbox", { name: "Search Yonalist" }),
@@ -446,7 +453,7 @@ describe("NotesLibraryPane", () => {
       </VaultRootContext.Provider>
     );
 
-    const library = screen.getByRole("region", { name: "Yonalist library" });
+    const library = screen.getByLabelText("Yonalist library");
     expect(library).toHaveAttribute("aria-busy", "true");
     expect(library).not.toHaveAttribute("data-transient-workspace-busy");
     expect(
@@ -594,7 +601,7 @@ describe("NotesLibraryPane", () => {
       </VaultRootContext.Provider>
     );
 
-    const library = screen.getByRole("region", { name: "Yonalist library" });
+    const library = screen.getByLabelText("Yonalist library");
     await user.click(
       within(library).getByRole("button", {
         name: "Page actions for Deleted project"

@@ -102,7 +102,7 @@ import {
   NotesStatusBarMessage,
 } from "./NotesFeedbackContext";
 import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
-import { NotesLibraryPane } from "./NotesLibraryPane";
+import { NotesNavigationContent as NotesLibraryPane } from "./NotesNavigationContent";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesDetailSplitHost } from "./NotesDetailSplitHost";
 import { NOTES_SPLIT_LAYOUT_STORAGE_KEY } from "./notesSplitLayoutStore";

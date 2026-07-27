@@ -23,7 +23,7 @@ import {
   type NotesExportRequest,
   type NotesExportResult
 } from "../../domain/notesExport";
-import { NotesLibraryPane } from "./NotesLibraryPane";
+import { NotesNavigationContent as NotesLibraryPane } from "./NotesNavigationContent";
 import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";

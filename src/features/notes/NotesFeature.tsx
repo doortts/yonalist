@@ -19,7 +19,10 @@ import type {
   NotesPreparedSelectionAuthority,
   NotesPreparedSelectionBatchOptions,
 } from "./notesWorkspaceTypes";
-import { NotesLibraryPane } from "./NotesLibraryPane";
+import {
+  NotesNavigationContent,
+  NotesNavigationHeaderActions,
+} from "./NotesNavigationContent";
 import { NotesDetailSplitHost } from "./NotesDetailSplitHost";
 import {
   NotesAttachmentUiContext,
@@ -269,7 +272,10 @@ export function NotesFeatureProvider({
 // memoization at the feature-pane layer. Settings can rebuild its panes on
 // demand because it does not own a long-lived editor session.
 const notesPanes: FeaturePanes = {
-  middle: <NotesLibraryPane />,
+  navigation: {
+    headerActions: <NotesNavigationHeaderActions />,
+    content: <NotesNavigationContent />,
+  },
   detail: <NotesDetailSplitHost />,
 };
 
