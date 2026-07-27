@@ -46,6 +46,28 @@ describe("usePaneResize", () => {
     );
   });
 
+  it("restores the Settings list when the sidebar exits detail maximize", () => {
+    const { result } = renderHook(() => usePaneResize());
+
+    act(() => result.current.toggleDetailMaximized());
+    expect(result.current.detailMaximized).toBe(true);
+    expect(result.current.paneCollapsed).toEqual({
+      sidebar: true,
+      list: true
+    });
+
+    act(() => result.current.togglePaneCollapsed("sidebar"));
+
+    expect(result.current.detailMaximized).toBe(false);
+    expect(result.current.paneCollapsed).toEqual({
+      sidebar: false,
+      list: false
+    });
+    expect(window.localStorage.getItem("yonalist.paneCollapsed.v1")).toBe(
+      JSON.stringify({ sidebar: false, list: false })
+    );
+  });
+
   it("keeps keyboard resizing inside the unified navigation limits", () => {
     const { result } = renderHook(() => usePaneResize());
     const preventDefault = vi.fn();

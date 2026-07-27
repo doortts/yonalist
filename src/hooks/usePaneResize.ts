@@ -131,7 +131,8 @@ export function usePaneResize() {
     setDetailMaximized(false);
     setPaneCollapsed((current) => ({
       ...current,
-      [pane]: !current[pane]
+      [pane]: !current[pane],
+      list: false
     }));
   }, []);
 
