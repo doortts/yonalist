@@ -415,6 +415,27 @@ describe("NotesNavigationContent", () => {
     ]);
   });
 
+  it("returns to Notes before starting an active-page rename from Settings", async () => {
+    const user = userEvent.setup();
+    const events: string[] = [];
+    const navigation: AppNavigation = {
+      openNotes: vi.fn(() => events.push("open notes")),
+      openSettings: vi.fn()
+    };
+    renderNavigationWithExternal(
+      activeWorkspace(),
+      externalBoundary(),
+      navigation
+    );
+
+    await user.click(screen.getByRole("button", { name: "Project" }));
+
+    expect(events).toEqual(["open notes"]);
+    expect(
+      screen.getByRole("textbox", { name: "Rename Project" })
+    ).toBeInTheDocument();
+  });
+
   it("opens a Notes search result", async () => {
     const user = userEvent.setup();
     const workspace = activeWorkspace();

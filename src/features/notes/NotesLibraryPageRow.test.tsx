@@ -44,6 +44,7 @@ function node(overrides: Partial<NoteNode> = {}): NoteNode {
 
 function callbacks() {
   return {
+    onActivate: vi.fn(),
     onOpen: vi.fn(),
     onToggleStar: vi.fn(),
     onArchive: vi.fn(),
@@ -121,6 +122,7 @@ describe("NotesLibraryPageRow", () => {
 
     await user.click(screen.getByRole("button", { name: "Project" }));
     expect(props.onOpen).toHaveBeenCalledOnce();
+    expect(props.onActivate).not.toHaveBeenCalled();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
 
     rerender(
@@ -138,6 +140,7 @@ describe("NotesLibraryPageRow", () => {
     expect(input).toHaveProperty("selectionStart", 0);
     expect(input).toHaveProperty("selectionEnd", "Project".length);
     expect(props.onOpen).toHaveBeenCalledOnce();
+    expect(props.onActivate).toHaveBeenCalledOnce();
   });
 
   it("commits a changed title exactly once with Enter", async () => {

@@ -488,6 +488,7 @@ function NotesNavigationBody({
                   active={state.zoomRootId === nodeId}
                   disabled={deletingNotesData || state.status === "loading"}
                   skipTrashConfirmation
+                  onActivate={openNotes}
                   onOpen={() => {
                     openNotes();
                     void actions.zoomTo(nodeId);

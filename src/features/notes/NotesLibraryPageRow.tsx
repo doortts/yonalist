@@ -30,6 +30,7 @@ export interface NotesLibraryPageRowProps {
   active: boolean;
   disabled?: boolean;
   skipTrashConfirmation?: boolean;
+  onActivate(): void;
   onOpen(): void;
   onToggleStar(): void;
   onArchive(): void;
@@ -94,6 +95,7 @@ export function NotesLibraryPageRow({
   active,
   disabled = false,
   skipTrashConfirmation = false,
+  onActivate,
   onOpen,
   onToggleStar,
   onArchive,
@@ -191,6 +193,7 @@ export function NotesLibraryPageRow({
       onOpen();
       return;
     }
+    onActivate();
     skipBlurCommitRef.current = false;
     setEditTitle(displayTitle);
     setEditing(true);
