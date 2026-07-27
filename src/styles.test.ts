@@ -120,6 +120,13 @@ describe("surviving application styles", () => {
     expect(settings).toContain("overflow: auto");
   });
 
+  it("wraps Appearance theme options within narrow Settings detail panes", () => {
+    const themeOptions = rule(stylesRoot, ".theme-options");
+
+    expect(themeOptions).toContain("display: flex");
+    expect(themeOptions).toContain("flex-wrap: wrap");
+  });
+
   it("keeps Markdown content width and wrapping", () => {
     const markdown = rule(stylesRoot, ".markdown-body");
     expect(markdown).toContain("max-width: 980px");
