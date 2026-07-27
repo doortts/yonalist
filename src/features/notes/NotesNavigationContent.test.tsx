@@ -241,8 +241,8 @@ describe("NotesNavigationContent", () => {
     renderNavigationWithExternal(activeWorkspace());
 
     expect(
-      screen.getByLabelText("Yonalist library"),
-    ).toBeInTheDocument();
+      screen.getByRole("region", { name: "Yonalist library" }),
+    ).toHaveClass("notes-navigation-content");
     expect(
       screen.getByRole("heading", { name: "Library" }),
     ).toBeInTheDocument();

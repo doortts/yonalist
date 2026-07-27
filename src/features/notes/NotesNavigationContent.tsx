@@ -232,7 +232,7 @@ function NotesNavigationBody({
   };
 
   return (
-    <div
+    <section
       className="notes-navigation-content"
       aria-label="Yonalist library"
       aria-busy={state.status === "loading" || deletingNotesData}
@@ -565,7 +565,7 @@ function NotesNavigationBody({
         />
 
       </TooltipProvider>
-    </div>
+    </section>
   );
 }
 
