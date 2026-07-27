@@ -77,11 +77,10 @@ import { clearNotificationCache } from "./services/notifications";
 import { tracePerf } from "./services/perfTrace";
 import { pickVaultFolder } from "./services/vaultFolder";
 
-const SettingsPage = lazy(() =>
+const loadSettingsPage = () =>
   import("./components/SettingsPage").then((module) => ({
     default: module.SettingsPage
-  }))
-);
+  }));
 
 interface AppProps {
   initialOnline?: boolean;
@@ -98,6 +97,20 @@ export default function App({ initialOnline }: AppProps) {
   );
   const activeFeature = getFeatureDefinition(activeFeatureId);
   const featureRuntimeHost = useFeatureRuntimeHost(activeFeatureId);
+  // React.lazy caches a rejected load, so retry with a fresh wrapper.
+  const [featureRender, setFeatureRender] = useState(() => ({
+    generation: 0,
+    settingsPage: lazy(loadSettingsPage)
+  }));
+  const SettingsPage = featureRender.settingsPage;
+  const retryActiveFeatureRuntime = featureRuntimeHost.retry;
+  const retryFeatureRender = useCallback(() => {
+    setFeatureRender((current) => ({
+      generation: current.generation + 1,
+      settingsPage: lazy(loadSettingsPage)
+    }));
+    retryActiveFeatureRuntime();
+  }, [retryActiveFeatureRuntime]);
   const activeFeatureRuntimeReady =
     featureRuntimeHost.active.status === "ready";
   const [settingsSection, setSettingsSection] =
@@ -536,73 +549,73 @@ export default function App({ initialOnline }: AppProps) {
                         )
                       }}
                     />
-                    <FeatureRuntimeBoundary
-                      featureId={activeFeatureId}
-                      onRetry={featureRuntimeHost.retry}
-                    >
-                      {withFeatureProviders(
-                        <>
-                          <YonalistNavigationPane
-                            activeFeatureId={activeFeatureId}
-                            online={online}
-                            loginRequired={!auth.signedIn}
-                            notesStatus={notesStatus}
-                            headerActions={
-                              notesFeaturePanes?.navigation?.headerActions ??
-                              null
-                            }
-                            onOpenNotes={openNotes}
-                            onOpenSettings={openSettings}
-                            onRetryNotes={featureRuntimeHost.retry}
-                            onToggleOnline={toggleOnline}
-                          >
-                            {notesFeaturePanes?.navigation?.content ?? null}
-                          </YonalistNavigationPane>
+                    {withFeatureProviders(
+                      <>
+                        <YonalistNavigationPane
+                          activeFeatureId={activeFeatureId}
+                          online={online}
+                          loginRequired={!auth.signedIn}
+                          notesStatus={notesStatus}
+                          headerActions={
+                            notesFeaturePanes?.navigation?.headerActions ?? null
+                          }
+                          onOpenNotes={openNotes}
+                          onOpenSettings={openSettings}
+                          onRetryNotes={featureRuntimeHost.retry}
+                          onToggleOnline={toggleOnline}
+                        >
+                          {notesFeaturePanes?.navigation?.content ?? null}
+                        </YonalistNavigationPane>
 
-                          <div
-                            className="pane-resizer sidebar-list-resizer"
-                            role="separator"
-                            aria-label="Resize navigation pane"
-                            aria-orientation="vertical"
-                            aria-valuemin={paneWidthLimits.sidebar.min}
-                            aria-valuemax={paneWidthLimits.sidebar.max}
-                            aria-valuenow={paneWidths.sidebar}
-                            tabIndex={0}
-                            onPointerDown={(event) =>
-                              startResize("sidebar", event)
-                            }
-                            onKeyDown={(event) =>
-                              resizeWithKeyboard("sidebar", event)
-                            }
-                          />
+                        <div
+                          className="pane-resizer sidebar-list-resizer"
+                          role="separator"
+                          aria-label="Resize navigation pane"
+                          aria-orientation="vertical"
+                          aria-valuemin={paneWidthLimits.sidebar.min}
+                          aria-valuemax={paneWidthLimits.sidebar.max}
+                          aria-valuenow={paneWidths.sidebar}
+                          tabIndex={0}
+                          onPointerDown={(event) =>
+                            startResize("sidebar", event)
+                          }
+                          onKeyDown={(event) =>
+                            resizeWithKeyboard("sidebar", event)
+                          }
+                        />
 
-                          {hasMiddlePane && (
-                            <>
-                              <div className="feature-pane-slot">
-                                {activeFeaturePanes?.middle}
-                              </div>
-                              <div
-                                className="pane-resizer list-detail-resizer"
-                                role="separator"
-                                aria-label="Resize item list pane"
-                                aria-orientation="vertical"
-                                aria-valuemin={paneWidthLimits.list.min}
-                                aria-valuemax={paneWidthLimits.list.max}
-                                aria-valuenow={paneWidths.list}
-                                tabIndex={0}
-                                onPointerDown={(event) =>
-                                  startResize("list", event)
-                                }
-                                onKeyDown={(event) =>
-                                  resizeWithKeyboard("list", event)
-                                }
-                              />
-                            </>
-                          )}
+                        {hasMiddlePane && (
+                          <>
+                            <div className="feature-pane-slot">
+                              {activeFeaturePanes?.middle}
+                            </div>
+                            <div
+                              className="pane-resizer list-detail-resizer"
+                              role="separator"
+                              aria-label="Resize item list pane"
+                              aria-orientation="vertical"
+                              aria-valuemin={paneWidthLimits.list.min}
+                              aria-valuemax={paneWidthLimits.list.max}
+                              aria-valuenow={paneWidths.list}
+                              tabIndex={0}
+                              onPointerDown={(event) =>
+                                startResize("list", event)
+                              }
+                              onKeyDown={(event) =>
+                                resizeWithKeyboard("list", event)
+                              }
+                            />
+                          </>
+                        )}
 
-                          <section className="detail-pane" aria-label="Detail">
-                            <div className="pane-titlebar-spacer" />
-                            <div className="detail-scroll">
+                        <section className="detail-pane" aria-label="Detail">
+                          <div className="pane-titlebar-spacer" />
+                          <div className="detail-scroll">
+                            <FeatureRuntimeBoundary
+                              key={`${activeFeatureId}:${featureRender.generation}`}
+                              featureId={activeFeatureId}
+                              onRetry={retryFeatureRender}
+                            >
                               {featurePanes.map(({ id, active, panes }) => (
                                 <div
                                   key={id}
@@ -612,11 +625,11 @@ export default function App({ initialOnline }: AppProps) {
                                   {panes.detail}
                                 </div>
                               ))}
-                            </div>
-                          </section>
-                        </>
-                      )}
-                    </FeatureRuntimeBoundary>
+                            </FeatureRuntimeBoundary>
+                          </div>
+                        </section>
+                      </>
+                    )}
 
                     <AppStatusBar
                       feedback={<NotesStatusBarMessage />}

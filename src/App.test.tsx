@@ -41,6 +41,11 @@ const githubRuntimeMocks = vi.hoisted(() => ({
   }
 }));
 
+const settingsPageProbe = vi.hoisted(() => ({
+  fail: false,
+  attempts: 0
+}));
+
 vi.mock("./features/notes/notesVaultDrain", () => ({
   acquireNotesVaultDrain: async (vaultRoot: string) => {
     const result = await vaultMocks.drain(vaultRoot);
@@ -71,6 +76,22 @@ vi.mock(
     }
   })
 );
+
+vi.mock("./components/SettingsPage", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./components/SettingsPage")>();
+
+  function SettingsPageProbe(
+    props: Parameters<typeof actual.SettingsPage>[0]
+  ) {
+    settingsPageProbe.attempts += 1;
+    if (settingsPageProbe.fail) {
+      throw new Error("settings render failed");
+    }
+    return <actual.SettingsPage {...props} />;
+  }
+
+  return { ...actual, SettingsPage: SettingsPageProbe };
+});
 
 vi.mock("./features/notes/NotesFeature", async () => {
   const React = await import("react");
@@ -147,6 +168,8 @@ describe("Yonalist app shell", () => {
     vaultMocks.flush.mockResolvedValue(undefined);
     vaultMocks.contextRoots.length = 0;
     githubRuntimeMocks.useRuntime.mockClear();
+    settingsPageProbe.fail = false;
+    settingsPageProbe.attempts = 0;
   });
 
   it("opens Yonalist without waiting for GitHub authentication", async () => {
@@ -221,6 +244,47 @@ describe("Yonalist app shell", () => {
     expect(shell).toContainElement(
       screen.getByRole("separator", { name: "Resize item list pane" })
     );
+  });
+
+  it("keeps navigation and retries a Settings render failure inside Detail", async () => {
+    const user = userEvent.setup();
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    await import("./components/SettingsPage");
+    settingsPageProbe.fail = true;
+    render(<App />);
+    await screen.findByLabelText("Yonalist library");
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    await waitFor(() => {
+      expect(settingsPageProbe.attempts).toBeGreaterThan(0);
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Settings를 열 수 없습니다."
+    );
+    expect(
+      screen.getByRole("navigation", { name: "Navigation" })
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Settings sections")).toBeInTheDocument();
+    const detail = screen.getByRole("region", { name: "Detail" });
+    expect(within(detail).getByRole("alert")).toBeInTheDocument();
+
+    const attemptsBeforeRetry = settingsPageProbe.attempts;
+    settingsPageProbe.fail = false;
+    await user.click(
+      within(detail).getByRole("button", { name: "다시 시도" })
+    );
+
+    expect(
+      await screen.findByRole("radiogroup", { name: "Theme mode" })
+    ).toBeInTheDocument();
+    expect(settingsPageProbe.attempts).toBeGreaterThan(attemptsBeforeRetry);
+    expect(
+      screen.getByRole("navigation", { name: "Navigation" })
+    ).toBeInTheDocument();
+    consoleError.mockRestore();
   });
 
   it("opens GitHub server settings while signed out", async () => {
