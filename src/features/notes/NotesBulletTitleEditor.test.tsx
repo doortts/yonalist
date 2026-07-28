@@ -282,17 +282,41 @@ describe("NotesBulletTitleEditor", () => {
   it("keeps resting tag controls keyboard-accessible", async () => {
     vi.useRealTimers();
     const onTagClick = vi.fn();
-    renderEditor({ source: "Open #later", onTagClick });
+    const { root } = renderEditor({ source: "Open #later", onTagClick });
     const user = userEvent.setup();
     const tag = screen.getByRole("button", {
       name: "#later tag filter is inactive"
     });
 
-    tag.focus();
+    await user.tab();
+    expect(root).toHaveFocus();
+    expect(root).toHaveAttribute("contenteditable", "false");
+    expect(tag).toBeInTheDocument();
+
+    await user.tab();
+    expect(tag).toHaveFocus();
     await user.keyboard("{Enter}");
 
     expect(onTagClick).toHaveBeenCalledOnce();
   });
+
+  it.each(["{Enter}", " "] as const)(
+    "activates the keyboard-focused resting root with %s",
+    async (key) => {
+      vi.useRealTimers();
+      const { root } = renderEditor();
+      const user = userEvent.setup();
+
+      await user.tab();
+      expect(root).toHaveFocus();
+      expect(root).toHaveAttribute("contenteditable", "false");
+      await user.keyboard(key);
+
+      expect(root).toHaveFocus();
+      expect(root).toHaveAttribute("contenteditable", "plaintext-only");
+      expect(root).toHaveTextContent("before");
+    }
+  );
 
   it("exposes textbox semantics and native editing attributes", () => {
     const { root } = renderEditor();
@@ -349,6 +373,25 @@ describe("NotesBulletTitleEditor", () => {
     fireEvent.keyDown(root, { key: "y", ctrlKey: true });
 
     expect(order).toEqual(["publish:redo source", "key:redo source"]);
+  });
+
+  it.each([
+    ["Ctrl+Shift+Y", { shiftKey: true }],
+    ["Ctrl+Alt+Y", { altKey: true }]
+  ] as const)("does not treat %s as a history publication boundary", (_name, modifiers) => {
+    const order: string[] = [];
+    const { root } = renderEditor({
+      onPublish: (source) => order.push(`publish:${source}`),
+      onEditorKeyDown: (_event, snapshot) => {
+        order.push(`key:${snapshot.source}`);
+      }
+    });
+    activate(root);
+    inputSource(root, "modified redo");
+
+    fireEvent.keyDown(root, { key: "y", ctrlKey: true, ...modifiers });
+
+    expect(order).toEqual(["key:modified redo"]);
   });
 
   it("renders a supplied resting presentation inside the stable root", () => {

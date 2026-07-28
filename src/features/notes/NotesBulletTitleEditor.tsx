@@ -182,7 +182,11 @@ function needsSynchronousPublish(
   const key = event.key.toLowerCase();
   if (
     ((event.metaKey || event.ctrlKey) && key === "z") ||
-    (event.ctrlKey && !event.metaKey && key === "y")
+    (event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      !event.altKey &&
+      key === "y")
   ) {
     return true;
   }
@@ -492,6 +496,19 @@ export const NotesBulletTitleEditor = forwardRef<
     if (unavailable || composingRef.current || event.nativeEvent.isComposing) {
       return;
     }
+    if (!editingRef.current) {
+      if (
+        (event.key === "Enter" || event.key === " ") &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey
+      ) {
+        event.preventDefault();
+        requestEdit();
+      }
+      return;
+    }
     if (
       slashMenu &&
       !event.altKey &&
@@ -611,13 +628,6 @@ export const NotesBulletTitleEditor = forwardRef<
         suppressContentEditableWarning
         onPointerDown={handlePointerDown}
         onFocus={(event) => {
-          if (
-            event.target === event.currentTarget &&
-            !unavailable &&
-            !editingRef.current
-          ) {
-            requestEdit(pendingSelectionRef.current ?? undefined);
-          }
           onFocus?.(event);
         }}
         onBlur={(event) => {
