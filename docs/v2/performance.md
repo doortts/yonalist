@@ -1,19 +1,22 @@
 # Yonalist v2 performance record
 
-Measured on the active Windows development machine on 2026-07-27.
+Latest renderer and SQLite measurements were refreshed on the active Windows
+development machine on 2026-07-29.
 
 ## Renderer bundle
 
 `npm run test:v2:bundle`
 
-- Initial editable JavaScript: **218.9KB raw / 68.3KB gzip**.
+- Initial editable JavaScript: **293.1KB raw / 89.5KB gzip**.
 - Budget: 300KB raw / 90KB gzip.
 - Search is a lazy chunk.
 - Browser-only preview data is checked not to occur in production JavaScript.
 - The unchanged current CSS is 104.1KB raw / 17.5KB gzip and is recorded separately from
   the editable JavaScript budget.
-- A 200-event draft-overlay test enforces p95 below 20ms and every measured event below
-  the 50ms long-task boundary in the frontend test runtime.
+- An 800-node projection test proves one draft publishes only to its owning
+  row, without invalidating the shell, outline, or adjacent rows.
+- A 200-event draft-overlay test enforces p95 below 20ms and every measured
+  event below the 50ms long-task boundary in the frontend test runtime.
 
 ## Bounded SQLite bootstrap
 
@@ -22,19 +25,37 @@ Measured on the active Windows development machine on 2026-07-27.
 | Fixture | Result |
 |---|---:|
 | 1 node | below 100ms guard |
-| 5,000 nodes, single sample | 13.5ms |
-| 5,000 nodes, 50 samples | p50 11.8ms / p95 13.7ms |
-| 50,000 sibling append mutation | 13.9ms; one changed node |
-| 50,000 nodes, single sample | 104.1ms |
+| 5,000 nodes, single sample | 16.4ms |
+| 5,000 nodes, 50 samples | p50 12.0ms / p95 14.2ms |
+| 50,000 sibling append mutation | 15.8ms; one changed node |
+| 50,000 nodes, single sample | 108.6ms |
 
 These numbers cover the DB worker's bounded bootstrap query, not OS process creation.
 Process-spawn-to-editable cold-start measurement still requires the fixed Windows and Apple
 Silicon release reference machines. The 5,000-node renderer-side prerequisite is within the
 20ms target on this machine.
 
+## Fresh browser interaction path
+
+A newly started `127.0.0.1:1421` preview was exercised on 2026-07-29:
+
+- six consecutive Enter events left the caret in the final blank row with the
+  pre-existing next bullet immediately after it;
+- six consecutive Backspace events removed all six blank rows and restored
+  the caret to offset 4 at the end of `Beta`;
+- pointer and keyboard range selection both selected the same two rows;
+- batch indent/outdent and block up/down moves preserved order;
+- the selected block moved into the secondary split pane, and each accepted
+  structure change round-tripped through Undo/Redo; and
+- the inspected browser console contained zero warnings or errors.
+
+This is observable interaction evidence, not a process-spawn cold-start
+measurement.
+
 ## Windows release artifact
 
-`cargo build --release -p yonalist-v2-desktop`
+Previously measured on 2026-07-27 with
+`cargo build --release -p yonalist-v2-desktop`:
 
 - Optimized, LTO, stripped executable: **6.06MiB**.
 - Release build completed successfully with `panic=abort` and one codegen unit.
@@ -43,7 +64,8 @@ Silicon release reference machines. The 5,000-node renderer-side prerequisite is
 
 ## Windows cold-launch proxy
 
-Fifty release launches measured process spawn to an existing, responding native window:
+Previously measured on 2026-07-27: fifty release launches from process spawn
+to an existing, responding native window:
 
 | Samples | min | p50 | p95 | max |
 |---:|---:|---:|---:|---:|
