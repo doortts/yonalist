@@ -1,7 +1,8 @@
 import type { NoteId } from "../../domain/notes";
 import type { LogicalSelection } from "./imageAtomModel";
 
-export type ImageAtomEditorFlushResult = "flushed" | "deferred" | "cancelled";
+export type NotesEditorFlushResult = "flushed" | "deferred" | "cancelled";
+export type ImageAtomEditorFlushResult = NotesEditorFlushResult;
 
 declare const imageAtomEditorSelectionAuthorityBrand: unique symbol;
 declare const notesImageAtomEditorAuthorityBrand: unique symbol;
@@ -28,9 +29,12 @@ interface CapturedNotesImageAtomEditorAuthority
   readonly selectionAuthority: ImageAtomEditorSelectionAuthority;
 }
 
-export interface NotesImageAtomFlushAdapter {
+export interface NotesEditorFlushAdapter {
   readonly nodeId: NoteId;
-  flush(): Promise<ImageAtomEditorFlushResult>;
+  flush(): Promise<NotesEditorFlushResult>;
+}
+
+export interface NotesImageAtomFlushAdapter extends NotesEditorFlushAdapter {
   flushAndGetSelection?(): Promise<LogicalSelection | null>;
 }
 
