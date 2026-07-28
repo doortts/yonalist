@@ -1,0 +1,19 @@
+[package]
+name = "notes-sqlite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+bench-fixtures = []
+
+[dependencies]
+notes-application.workspace = true
+notes-core.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+unicode-normalization = "0.1.25"
+
+[dev-dependencies]
+tempfile = "3.27.0"

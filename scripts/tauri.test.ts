@@ -30,24 +30,22 @@ describe("Tauri command runner", () => {
       /* @vite-ignore */ pathToFileURL(wrapperPath).href
     );
     expect(isMainModule).toEqual(expect.any(Function));
+    const fixtureEntryPath = join(root, "scripts", "tauri.mjs");
     expect(
-      isMainModule(
-        "file:///Users/tester/yonalist/scripts/tauri.mjs",
-        "/Users/tester/yonalist/scripts/tauri.mjs"
-      )
+      isMainModule(pathToFileURL(fixtureEntryPath).href, fixtureEntryPath)
     ).toBe(true);
     expect(
       isMainModule(
-        "file:///Users/tester/yonalist/scripts/tauri.mjs",
-        "/Users/tester/yonalist/node_modules/vitest/vitest.mjs"
+        pathToFileURL(fixtureEntryPath).href,
+        join(root, "node_modules", "vitest", "vitest.mjs")
       )
     ).toBe(false);
-    expect(withRustupCargoBin("/usr/local/bin", "/Users/tester", true)).toBe(
-      ["/Users/tester/.cargo/bin", "/usr/local/bin"].join(delimiter)
+    const fixturePath = join(root, "bin");
+    const fixtureHome = join(root, "home");
+    expect(withRustupCargoBin(fixturePath, fixtureHome, true)).toBe(
+      [join(fixtureHome, ".cargo", "bin"), fixturePath].join(delimiter)
     );
-    expect(withRustupCargoBin("/usr/local/bin", "/Users/tester", false)).toBe(
-      "/usr/local/bin"
-    );
+    expect(withRustupCargoBin(fixturePath, fixtureHome, false)).toBe(fixturePath);
 
     const scripts = JSON.parse(readFileSync(join(root, "package.json"), "utf8"))
       .scripts;

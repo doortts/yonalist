@@ -1,0 +1,511 @@
+import { previewNotesApi } from "./previewApi";
+
+describe("browser-only preview adapter", () => {
+  it("boots a bounded editable outline and applies command patches", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    expect(boot.activePageId).not.toBeNull();
+    expect(boot.viewport?.nodes.length).toBeGreaterThan(0);
+
+    const target = boot.viewport!.nodes[0];
+    const receipt = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-request",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: { kind: "updateText", id: target.id, text: "Edited in preview" }
+    });
+
+    expect(receipt.revision).toBe(boot.revision + 1);
+    expect(receipt.changedNodes).toContainEqual(
+      expect.objectContaining({ id: target.id, text: "Edited in preview" })
+    );
+  });
+
+  it("supports atomic split and empty-row removal in browser preview", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const target = boot.viewport!.nodes[0];
+    const next = boot.viewport!.nodes[1];
+    const split = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-split-request",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: {
+        kind: "splitNode",
+        id: target.id,
+        new_id: "preview-split",
+        parent_id: target.parentId!,
+        before_id: next.id,
+        prefix: target.text,
+        suffix: ""
+      }
+    });
+
+    expect(split.changedNodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: target.id, text: target.text }),
+      expect.objectContaining({
+        id: "preview-split",
+        parentId: target.parentId,
+        text: ""
+      })
+    ]));
+
+    const removed = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-remove-request",
+      baseRevision: split.revision,
+      historyGroup: null,
+      command: { kind: "removeEmptyNode", id: "preview-split" }
+    });
+
+    expect(removed.deletedIds).toContain("preview-split");
+    expect((await previewNotesApi.bootstrap()).viewport?.nodes)
+      .not.toContainEqual(expect.objectContaining({ id: "preview-split" }));
+  });
+
+  it("deletes rows that disappear when a repeated split is undone", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    const created = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-repeat-undo-create",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: {
+        kind: "createNode",
+        id: "preview-repeat-undo-source",
+        parent_id: pageId,
+        before_id: null,
+        text: "하하하"
+      }
+    });
+    const firstSplit = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-repeat-undo-first",
+      baseRevision: created.revision,
+      historyGroup: null,
+      command: {
+        kind: "splitNode",
+        id: "preview-repeat-undo-source",
+        new_id: "preview-repeat-undo-first-row",
+        parent_id: pageId,
+        before_id: null,
+        prefix: "",
+        suffix: "하하하"
+      }
+    });
+    const secondSplit = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-repeat-undo-second",
+      baseRevision: firstSplit.revision,
+      historyGroup: null,
+      command: {
+        kind: "splitNode",
+        id: "preview-repeat-undo-first-row",
+        new_id: "preview-repeat-undo-second-row",
+        parent_id: pageId,
+        before_id: null,
+        prefix: "",
+        suffix: "하하하"
+      }
+    });
+
+    const undone = await previewNotesApi.undo({
+      sessionId: boot.sessionId,
+      baseRevision: secondSplit.revision
+    });
+
+    expect(undone.deletedIds).toEqual(["preview-repeat-undo-second-row"]);
+    expect(undone.changedNodes.map((node) => node.id))
+      .toEqual(["preview-repeat-undo-first-row"]);
+    expect(undone.changedNodes[0]?.text).toBe("하하하");
+  });
+
+  it("keeps long repeated splits ordered directly before their anchor", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    const source = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-repeat-order-source-request",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: {
+        kind: "createNode",
+        id: "preview-repeat-order-source",
+        parent_id: pageId,
+        before_id: null,
+        text: ""
+      }
+    });
+    const anchor = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-repeat-order-anchor-request",
+      baseRevision: source.revision,
+      historyGroup: null,
+      command: {
+        kind: "createNode",
+        id: "middle-preview-repeat-order-anchor",
+        parent_id: pageId,
+        before_id: null,
+        text: "anchor"
+      }
+    });
+    let currentId = "preview-repeat-order-source";
+    let revision = anchor.revision;
+
+    for (let index = 0; index < 24; index += 1) {
+      const newId = `${index % 2 === 0 ? "z" : "a"}-preview-repeat-${index}`;
+      const split = await previewNotesApi.execute({
+        sessionId: boot.sessionId,
+        requestId: `preview-repeat-order-split-${index}`,
+        baseRevision: revision,
+        historyGroup: null,
+        command: {
+          kind: "splitNode",
+          id: currentId,
+          new_id: newId,
+          parent_id: pageId,
+          before_id: "middle-preview-repeat-order-anchor",
+          prefix: "",
+          suffix: ""
+        }
+      });
+      currentId = newId;
+      revision = split.revision;
+    }
+
+    const siblings = (await previewNotesApi.bootstrap()).viewport!.nodes
+      .filter((node) =>
+        node.id === "preview-repeat-order-source" ||
+        node.id === "middle-preview-repeat-order-anchor" ||
+        node.id.includes("-preview-repeat-")
+      );
+    const anchorIndex = siblings.findIndex(
+      (node) => node.id === "middle-preview-repeat-order-anchor"
+    );
+
+    expect(siblings[anchorIndex - 1]?.id).toBe(currentId);
+    expect(new Set(siblings.map((node) => node.sortKey)).size)
+      .toBe(siblings.length);
+  });
+
+  it("keeps the current row identity during an atomic backward merge", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const parentId = boot.activePageId!;
+    const previous = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-merge-previous-request",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: {
+        kind: "createNode",
+        id: "preview-merge-previous",
+        parent_id: parentId,
+        before_id: null,
+        text: "stale previous"
+      }
+    });
+    const current = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-merge-current-request",
+      baseRevision: previous.revision,
+      historyGroup: null,
+      command: {
+        kind: "createNode",
+        id: "preview-merge-current",
+        parent_id: parentId,
+        before_id: null,
+        text: "stale current"
+      }
+    });
+
+    const merged = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-merge-request",
+      baseRevision: current.revision,
+      historyGroup: null,
+      command: {
+        kind: "mergeNodeBackward",
+        id: "preview-merge-current",
+        previous_id: "preview-merge-previous",
+        previous_text: "draft previous",
+        current_text: "draft current"
+      }
+    });
+
+    expect(merged.deletedIds).toEqual(["preview-merge-previous"]);
+    expect(merged.changedNodes).toEqual([
+      expect.objectContaining({
+        id: "preview-merge-current",
+        text: "draft previousdraft current"
+      })
+    ]);
+  });
+
+  it("imports a nested outline with one preview command", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    const imported = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-import-request",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: {
+        kind: "importNodes",
+        parent_id: pageId,
+        before_id: null,
+        nodes: [
+          { id: "preview-import-root", parentId: pageId, text: "Root" },
+          {
+            id: "preview-import-child",
+            parentId: "preview-import-root",
+            text: "Child"
+          }
+        ]
+      }
+    });
+
+    expect(imported.changedNodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "preview-import-root",
+        parentId: pageId,
+        text: "Root"
+      }),
+      expect.objectContaining({
+        id: "preview-import-child",
+        parentId: "preview-import-root",
+        text: "Child"
+      })
+    ]));
+  });
+
+  it("completes multiple preview rows with one batch command", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const ids = boot.viewport!.nodes.slice(0, 2).map((node) => node.id);
+    const completed = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-complete-many-request",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: { kind: "setCompletedMany", ids, completed: true }
+    });
+
+    expect(completed.changedNodes).toHaveLength(2);
+    expect(completed.changedNodes).toEqual(expect.arrayContaining(
+      ids.map((id) => expect.objectContaining({ id, completed: true }))
+    ));
+  });
+
+  it("deletes multiple preview subtrees with one batch command", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const ids = boot.viewport!.nodes.slice(0, 2).map((node) => node.id);
+    const deleted = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-delete-many-request",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: { kind: "deleteSubtrees", ids }
+    });
+
+    expect(deleted.deletedIds).toEqual(expect.arrayContaining(ids));
+    expect((await previewNotesApi.bootstrap()).viewport?.nodes)
+      .not.toEqual(expect.arrayContaining(
+        ids.map((id) => expect.objectContaining({ id }))
+      ));
+  });
+
+  it("moves multiple preview roots with one batch command", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    const setup = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-move-setup-request",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: {
+        kind: "importNodes",
+        parent_id: pageId,
+        before_id: null,
+        nodes: [
+          { id: "preview-move-parent", parentId: pageId, text: "Parent" },
+          { id: "preview-move-first", parentId: pageId, text: "First" },
+          { id: "preview-move-second", parentId: pageId, text: "Second" }
+        ]
+      }
+    });
+    const moved = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-move-many-request",
+      baseRevision: setup.revision,
+      historyGroup: null,
+      command: {
+        kind: "moveNodes",
+        moves: [
+          {
+            id: "preview-move-first",
+            parentId: "preview-move-parent",
+            beforeId: null
+          },
+          {
+            id: "preview-move-second",
+            parentId: "preview-move-parent",
+            beforeId: null
+          }
+        ]
+      }
+    });
+
+    expect(moved.changedNodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "preview-move-first",
+        parentId: "preview-move-parent"
+      }),
+      expect.objectContaining({
+        id: "preview-move-second",
+        parentId: "preview-move-parent"
+      })
+    ]));
+  });
+
+  it("expands a collapsed preview destination in the batch move", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    const setup = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-collapsed-move-setup",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: {
+        kind: "importNodes",
+        parent_id: pageId,
+        before_id: null,
+        nodes: [
+          { id: "preview-collapsed-parent", parentId: pageId, text: "Parent" },
+          { id: "preview-collapsed-moving", parentId: pageId, text: "Moving" }
+        ]
+      }
+    });
+    const collapsed = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-collapse-move-parent",
+      baseRevision: setup.revision,
+      historyGroup: null,
+      command: {
+        kind: "setCollapsed",
+        id: "preview-collapsed-parent",
+        collapsed: true
+      }
+    });
+    const moved = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-move-into-collapsed",
+      baseRevision: collapsed.revision,
+      historyGroup: null,
+      command: {
+        kind: "moveNodes",
+        moves: [{
+          id: "preview-collapsed-moving",
+          parentId: "preview-collapsed-parent",
+          beforeId: null
+        }]
+      }
+    });
+
+    expect(moved.changedNodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "preview-collapsed-parent",
+        collapsed: false
+      }),
+      expect.objectContaining({
+        id: "preview-collapsed-moving",
+        parentId: "preview-collapsed-parent"
+      })
+    ]));
+  });
+
+  it("duplicates complete preview subtrees with one batch command", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    const duplicated = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-duplicate-many-request",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: {
+        kind: "duplicateNodes",
+        duplicates: [{
+          id: "preview-move-parent",
+          newId: "preview-move-parent-copy",
+          parentId: pageId,
+          beforeId: null
+        }]
+      }
+    });
+
+    expect(duplicated.changedNodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "preview-move-parent-copy",
+        parentId: pageId,
+        text: "Parent"
+      }),
+      expect.objectContaining({
+        id: "preview-move-parent-copy/1",
+        parentId: "preview-move-parent-copy",
+        text: "First"
+      }),
+      expect.objectContaining({
+        id: "preview-move-parent-copy/2",
+        parentId: "preview-move-parent-copy",
+        text: "Second"
+      })
+    ]));
+  });
+
+  it("rejects an invalid preview batch without a partial mutation or revision", async () => {
+    const before = await previewNotesApi.bootstrap();
+    const first = before.viewport!.nodes[0];
+
+    await expect(previewNotesApi.execute({
+      sessionId: before.sessionId,
+      requestId: "preview-invalid-atomic-batch",
+      baseRevision: before.revision,
+      historyGroup: null,
+      command: {
+        kind: "moveNodes",
+        moves: [
+          { id: first.id, parentId: before.activePageId!, beforeId: null },
+          { id: "missing-preview-node", parentId: before.activePageId!, beforeId: null }
+        ]
+      }
+    })).rejects.toThrow("stale node");
+
+    const after = await previewNotesApi.bootstrap();
+    expect(after.revision).toBe(before.revision);
+    expect(after.viewport!.nodes.find((node) => node.id === first.id))
+      .toEqual(first);
+  });
+
+  it("bounds preview undo history to the production session limit", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const target = boot.viewport!.nodes[0];
+    let baseRevision = boot.revision;
+
+    for (let index = 0; index <= 1_000; index += 1) {
+      const receipt = await previewNotesApi.execute({
+        sessionId: boot.sessionId,
+        requestId: `preview-bounded-history-${index}`,
+        baseRevision,
+        historyGroup: null,
+        command: {
+          kind: "updateText",
+          id: target.id,
+          text: index % 2 === 0 ? "even" : "odd"
+        }
+      });
+      baseRevision = receipt.revision;
+    }
+
+    const after = await previewNotesApi.bootstrap();
+    expect(after.history.undoDepth).toBe(1_000);
+  });
+});

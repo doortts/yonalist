@@ -1,0 +1,440 @@
+use notes_application::{
+    BootSnapshot, HistoryState, NoteView, PageSummary, SearchHit, SearchPage, SearchQuery,
+    StorageError, ViewportPage, ViewportRequest,
+};
+use rusqlite::types::Value;
+use rusqlite::{Connection, OptionalExtension, params};
+
+use crate::repository;
+
+const MAX_VIEWPORT_LIMIT: u32 = 200;
+const MAX_SEARCH_LIMIT: u32 = 100;
+
+pub(crate) fn bootstrap(
+    connection: &Connection,
+    session_id: String,
+    viewport_limit: u32,
+) -> Result<BootSnapshot, StorageError> {
+    let revision = repository::revision(connection)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT id, text
+             FROM notes_nodes
+             WHERE kind = 'page' AND deleted = 0
+             ORDER BY sort_key, id",
+        )
+        .map_err(internal)?;
+    let pages = statement
+        .query_map([], |row| {
+            Ok(PageSummary {
+                id: row.get(0)?,
+                title: row.get(1)?,
+            })
+        })
+        .map_err(internal)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(internal)?;
+    let preferred_page = connection
+        .query_row(
+            "SELECT value FROM notes_ui_state WHERE key = 'active_page_id'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(internal)?;
+    let active_page_id = preferred_page
+        .filter(|preferred| pages.iter().any(|page| page.id == *preferred))
+        .or_else(|| pages.first().map(|page| page.id.clone()));
+    let viewport = active_page_id
+        .as_ref()
+        .map(|page_id| {
+            viewport(
+                connection,
+                ViewportRequest {
+                    page_id: page_id.clone(),
+                    anchor_id: None,
+                    before_cursor: None,
+                    after_cursor: None,
+                    limit: viewport_limit,
+                },
+            )
+        })
+        .transpose()?;
+    Ok(BootSnapshot {
+        session_id,
+        revision,
+        active_page_id,
+        pages,
+        viewport,
+        history: HistoryState {
+            can_undo: false,
+            can_redo: false,
+            undo_depth: 0,
+            redo_depth: 0,
+        },
+    })
+}
+
+pub(crate) fn viewport(
+    connection: &Connection,
+    request: ViewportRequest,
+) -> Result<ViewportPage, StorageError> {
+    if request.before_cursor.is_some() && request.after_cursor.is_some() {
+        return Err(StorageError::Internal(
+            "a viewport request cannot use both cursors".into(),
+        ));
+    }
+    let revision = repository::revision(connection)?;
+    let limit = request.limit.clamp(1, MAX_VIEWPORT_LIMIT) as usize;
+    let offset = if let Some(cursor) = request.after_cursor.as_deref() {
+        parse_cursor(cursor, revision)?
+    } else if let Some(cursor) = request.before_cursor.as_deref() {
+        parse_cursor(cursor, revision)?.saturating_sub(limit)
+    } else if let Some(anchor_id) = request.anchor_id.as_deref() {
+        anchor_offset(connection, &request.page_id, anchor_id)?
+            .saturating_sub(limit.saturating_div(2))
+    } else {
+        0
+    };
+    let mut statement = connection
+        .prepare(
+            "WITH RECURSIVE outline(id, path) AS (
+                SELECT id,
+                       CASE WHEN sort_key < 0
+                           THEN printf(
+                               '0%019lld:%s',
+                               9223372036854775807 + sort_key + 1,
+                               id
+                           )
+                           ELSE printf('1%019lld:%s', sort_key, id)
+                       END
+                FROM notes_nodes
+                WHERE id = ?1 AND kind = 'page' AND deleted = 0
+                UNION ALL
+                SELECT child.id,
+                       outline.path || '/' ||
+                           CASE WHEN child.sort_key < 0
+                               THEN printf(
+                                   '0%019lld:%s',
+                                   9223372036854775807 + child.sort_key + 1,
+                                   child.id
+                               )
+                               ELSE printf('1%019lld:%s', child.sort_key, child.id)
+                           END
+                FROM notes_nodes child
+                JOIN outline ON child.parent_id = outline.id
+                WHERE child.deleted = 0
+             )
+             SELECT node.id, node.parent_id, node.sort_key, node.kind, node.text,
+                    node.note, node.marker, node.collapsed, node.completed,
+                    node.starred, node.deleted
+             FROM outline
+             JOIN notes_nodes node ON node.id = outline.id
+             WHERE node.id <> ?1
+             ORDER BY outline.path
+             LIMIT ?2 OFFSET ?3",
+        )
+        .map_err(internal)?;
+    let rows = statement
+        .query_map(
+            params![
+                request.page_id,
+                i64::from(request.limit.clamp(1, MAX_VIEWPORT_LIMIT)) + 1,
+                i64::try_from(offset).map_err(|_| {
+                    StorageError::Internal("viewport offset exceeded SQLite INTEGER".into())
+                })?
+            ],
+            repository::parse_node,
+        )
+        .map_err(internal)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(internal)?;
+    let has_more = rows.len() > limit;
+    let nodes = rows
+        .into_iter()
+        .take(limit)
+        .map(NoteView::from)
+        .collect::<Vec<_>>();
+    let consumed = offset + nodes.len();
+    connection
+        .execute(
+            "INSERT INTO notes_ui_state(key, value)
+             VALUES ('active_page_id', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [&request.page_id],
+        )
+        .map_err(internal)?;
+    Ok(ViewportPage {
+        page_id: request.page_id,
+        anchor_id: request.anchor_id,
+        before_cursor: (offset > 0).then(|| cursor(revision, offset)),
+        after_cursor: has_more.then(|| cursor(revision, consumed)),
+        nodes,
+    })
+}
+
+pub(crate) fn search(
+    connection: &Connection,
+    request: SearchQuery,
+) -> Result<SearchPage, StorageError> {
+    let text = request.text.trim();
+    if text.is_empty() {
+        return Ok(SearchPage {
+            hits: Vec::new(),
+            next_cursor: None,
+        });
+    }
+    let revision = repository::revision(connection)?;
+    let offset = request
+        .cursor
+        .as_deref()
+        .map(|cursor| parse_cursor(cursor, revision))
+        .transpose()?
+        .unwrap_or(0);
+    let limit = request.limit.clamp(1, MAX_SEARCH_LIMIT) as usize;
+    let normalized = text.to_ascii_lowercase();
+    let filter = if normalized == "is:starred" {
+        Some(("node.starred = ?1 AND node.deleted = 0", Value::Integer(1)))
+    } else if normalized == "is:trash" {
+        Some(("node.deleted = ?1", Value::Integer(1)))
+    } else if normalized == "is:tagged" {
+        Some((
+            "?1 = 1 AND EXISTS (
+                SELECT 1 FROM notes_tags WHERE notes_tags.node_id = node.id
+             ) AND node.deleted = 0",
+            Value::Integer(1),
+        ))
+    } else if let Some(tag) = text.strip_prefix("tag:").filter(|tag| !tag.is_empty()) {
+        Some((
+            "EXISTS (
+                SELECT 1 FROM notes_tags
+                WHERE notes_tags.node_id = node.id AND notes_tags.token = ?1
+             ) AND node.deleted = 0",
+            Value::Text(tag.to_lowercase()),
+        ))
+    } else {
+        text.strip_prefix("date:")
+            .filter(|date| !date.is_empty())
+            .map(|date| {
+                (
+                    "EXISTS (
+                        SELECT 1 FROM notes_dates
+                        WHERE notes_dates.node_id = node.id AND notes_dates.date_key = ?1
+                     ) AND node.deleted = 0",
+                    Value::Text(date.to_owned()),
+                )
+            })
+    };
+    if let Some((clause, value)) = filter {
+        return filtered_search(
+            connection,
+            clause,
+            value,
+            revision,
+            offset,
+            limit,
+            request.limit,
+        );
+    }
+    let expression = format!("\"{}\"", text.replace('"', "\"\""));
+    let mut statement = connection
+        .prepare(
+            "SELECT node.id, node.parent_id, node.sort_key, node.kind, node.text,
+                    node.note, node.marker, node.collapsed, node.completed,
+                    node.starred, node.deleted,
+                    (
+                        WITH RECURSIVE ancestors(id, parent_id) AS (
+                            SELECT node.id, node.parent_id
+                            UNION ALL
+                            SELECT parent.id, parent.parent_id
+                            FROM notes_nodes parent
+                            JOIN ancestors child ON child.parent_id = parent.id
+                        )
+                        SELECT id FROM ancestors WHERE parent_id IS NULL LIMIT 1
+                    ) AS page_id,
+                    snippet(notes_fts, -1, '', '', '…', 12)
+             FROM notes_fts
+             JOIN notes_nodes node ON node.id = notes_fts.node_id
+             WHERE notes_fts MATCH ?1 AND node.deleted = 0
+             ORDER BY rank, node.id
+             LIMIT ?2 OFFSET ?3",
+        )
+        .map_err(internal)?;
+    let rows = statement
+        .query_map(
+            params![
+                expression,
+                i64::from(request.limit.clamp(1, MAX_SEARCH_LIMIT)) + 1,
+                i64::try_from(offset).map_err(|_| {
+                    StorageError::Internal("search offset exceeded SQLite INTEGER".into())
+                })?
+            ],
+            |row| {
+                Ok(SearchHit {
+                    node: repository::parse_node(row)?.into(),
+                    page_id: row.get(11)?,
+                    snippet: row.get(12)?,
+                })
+            },
+        )
+        .map_err(internal)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(internal)?;
+    let has_more = rows.len() > limit;
+    let hits = rows.into_iter().take(limit).collect::<Vec<_>>();
+    let consumed = offset + hits.len();
+    Ok(SearchPage {
+        hits,
+        next_cursor: has_more.then(|| cursor(revision, consumed)),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn filtered_search(
+    connection: &Connection,
+    clause: &str,
+    value: Value,
+    revision: u64,
+    offset: usize,
+    limit: usize,
+    requested_limit: u32,
+) -> Result<SearchPage, StorageError> {
+    let sql = format!(
+        "SELECT node.id, node.parent_id, node.sort_key, node.kind, node.text,
+                node.note, node.marker, node.collapsed, node.completed,
+                node.starred, node.deleted,
+                (
+                    WITH RECURSIVE ancestors(id, parent_id) AS (
+                        SELECT node.id, node.parent_id
+                        UNION ALL
+                        SELECT parent.id, parent.parent_id
+                        FROM notes_nodes parent
+                        JOIN ancestors child ON child.parent_id = parent.id
+                    )
+                    SELECT id FROM ancestors WHERE parent_id IS NULL LIMIT 1
+                ) AS page_id,
+                CASE
+                    WHEN node.note = '' THEN node.text
+                    ELSE node.text || ' ' || node.note
+                END
+         FROM notes_nodes node
+         WHERE {clause}
+         ORDER BY node.sort_key, node.id
+         LIMIT ?2 OFFSET ?3"
+    );
+    let mut statement = connection.prepare(&sql).map_err(internal)?;
+    let rows = statement
+        .query_map(
+            params![
+                value,
+                i64::from(requested_limit.clamp(1, MAX_SEARCH_LIMIT)) + 1,
+                i64::try_from(offset).map_err(|_| {
+                    StorageError::Internal("search offset exceeded SQLite INTEGER".into())
+                })?
+            ],
+            |row| {
+                Ok(SearchHit {
+                    node: repository::parse_node(row)?.into(),
+                    page_id: row.get(11)?,
+                    snippet: row.get(12)?,
+                })
+            },
+        )
+        .map_err(internal)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(internal)?;
+    let has_more = rows.len() > limit;
+    let hits = rows.into_iter().take(limit).collect::<Vec<_>>();
+    let consumed = offset + hits.len();
+    Ok(SearchPage {
+        hits,
+        next_cursor: has_more.then(|| cursor(revision, consumed)),
+    })
+}
+
+fn anchor_offset(
+    connection: &Connection,
+    page_id: &str,
+    anchor_id: &str,
+) -> Result<usize, StorageError> {
+    let offset = connection
+        .query_row(
+            "WITH RECURSIVE outline(id, path) AS (
+                SELECT id,
+                       CASE WHEN sort_key < 0
+                           THEN printf(
+                               '0%019lld:%s',
+                               9223372036854775807 + sort_key + 1,
+                               id
+                           )
+                           ELSE printf('1%019lld:%s', sort_key, id)
+                       END
+                FROM notes_nodes
+                WHERE id = ?1 AND kind = 'page' AND deleted = 0
+                UNION ALL
+                SELECT child.id,
+                       outline.path || '/' ||
+                           CASE WHEN child.sort_key < 0
+                               THEN printf(
+                                   '0%019lld:%s',
+                                   9223372036854775807 + child.sort_key + 1,
+                                   child.id
+                               )
+                               ELSE printf('1%019lld:%s', child.sort_key, child.id)
+                           END
+                FROM notes_nodes child
+                JOIN outline ON child.parent_id = outline.id
+                WHERE child.deleted = 0
+             ),
+             ordered AS (
+                SELECT id, row_number() OVER (ORDER BY path) - 2 AS offset
+                FROM outline
+             )
+             SELECT MAX(offset, 0) FROM ordered WHERE id = ?2",
+            params![page_id, anchor_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(internal)?
+        .ok_or_else(|| StorageError::Internal("viewport anchor was not found".into()))?;
+    usize::try_from(offset)
+        .map_err(|_| StorageError::Internal("viewport anchor offset was invalid".into()))
+}
+
+fn cursor(revision: u64, offset: usize) -> String {
+    format!("r:{revision}:o:{offset}")
+}
+
+fn parse_cursor(value: &str, actual_revision: u64) -> Result<usize, StorageError> {
+    let mut parts = value.split(':');
+    let parsed = match (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) {
+        (Some("r"), Some(revision), Some("o"), Some(offset), None) => {
+            Some((revision.parse::<u64>(), offset.parse::<usize>()))
+        }
+        _ => None,
+    }
+    .ok_or_else(|| StorageError::Internal("viewport cursor is malformed".into()))?;
+    let revision = parsed
+        .0
+        .map_err(|_| StorageError::Internal("cursor revision is invalid".into()))?;
+    let offset = parsed
+        .1
+        .map_err(|_| StorageError::Internal("cursor offset is invalid".into()))?;
+    if revision != actual_revision {
+        return Err(StorageError::RevisionConflict {
+            expected: revision,
+            actual: actual_revision,
+        });
+    }
+    Ok(offset)
+}
+
+fn internal(error: rusqlite::Error) -> StorageError {
+    StorageError::Internal(error.to_string())
+}

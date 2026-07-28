@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-execute"
+description = "Enables the notes_execute command without any pre-configured scope."
+commands.allow = ["notes_execute"]
+
+[[permission]]
+identifier = "deny-notes-execute"
+description = "Denies the notes_execute command without any pre-configured scope."
+commands.deny = ["notes_execute"]

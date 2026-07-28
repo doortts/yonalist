@@ -420,7 +420,7 @@ impl LocalNotesStorageDirectory {
             .directory
             .dir_metadata()
             .map_err(|error| format!("Could not inspect the held Notes data directory: {error}"))?;
-        if notes_file_identity(&path_metadata) != self.identity
+        if notes_path_identity(&self.path)? != self.identity
             || notes_capability_identity(&held_metadata) != self.identity
         {
             return Err("The Notes data directory identity changed.".to_string());
@@ -463,7 +463,7 @@ fn try_open_local_notes_storage_directory(
     if !root_metadata.file_type().is_dir() || root_metadata.file_type().is_symlink() {
         return Err("The Notes data root must not be a symlink or reparse point.".to_string());
     }
-    let root_identity = notes_file_identity(&root_metadata);
+    let root_identity = notes_path_identity(root_path)?;
     let root = Dir::open_ambient_dir(root_path, ambient_authority())
         .map_err(|error| format!("Could not open the Notes data root safely: {error}"))?;
     let held_root_metadata = root
@@ -596,11 +596,29 @@ struct NotesFileIdentity {
     inode: u64,
 }
 
+#[cfg(not(windows))]
 fn notes_file_identity(metadata: &fs::Metadata) -> NotesFileIdentity {
     NotesFileIdentity {
         device: CapMetadataExt::dev(metadata),
         inode: CapMetadataExt::ino(metadata),
     }
+}
+
+#[cfg(not(windows))]
+fn notes_path_identity(path: &Path) -> Result<NotesFileIdentity, String> {
+    fs::symlink_metadata(path)
+        .map(|metadata| notes_file_identity(&metadata))
+        .map_err(|error| format!("Could not identify the Notes path: {error}"))
+}
+
+#[cfg(windows)]
+fn notes_path_identity(path: &Path) -> Result<NotesFileIdentity, String> {
+    crate::file_io::windows_file_information_at(path)
+        .map(|information| NotesFileIdentity {
+            device: information.device,
+            inode: information.inode,
+        })
+        .map_err(|error| format!("Could not identify the Notes path: {error}"))
 }
 
 fn notes_capability_identity(metadata: &cap_std::fs::Metadata) -> NotesFileIdentity {
@@ -610,19 +628,44 @@ fn notes_capability_identity(metadata: &cap_std::fs::Metadata) -> NotesFileIdent
     }
 }
 
-fn validate_notes_owned_file_metadata(
-    metadata: &fs::Metadata,
+fn validate_notes_owned_file(
+    file: &fs::File,
     description: &str,
 ) -> Result<NotesFileIdentity, String> {
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("Could not inspect the held {description}: {error}"))?;
     if !metadata.file_type().is_file() {
         return Err(format!("The {description} must be a regular file."));
     }
-    if CapMetadataExt::nlink(metadata) != 1 {
+    #[cfg(not(windows))]
+    if CapMetadataExt::nlink(&metadata) != 1 {
         return Err(format!(
             "The {description} must not have multiple hard links."
         ));
     }
-    Ok(notes_file_identity(metadata))
+    #[cfg(not(windows))]
+    {
+        Ok(notes_file_identity(&metadata))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::HANDLE;
+
+        let information =
+            crate::file_io::windows_file_information_from_handle(file.as_raw_handle() as HANDLE)
+                .map_err(|error| format!("Could not identify the held {description}: {error}"))?;
+        if information.link_count != 1 {
+            return Err(format!(
+                "The {description} must not have multiple hard links."
+            ));
+        }
+        Ok(NotesFileIdentity {
+            device: information.device,
+            inode: information.inode,
+        })
+    }
 }
 
 fn validate_notes_owned_capability_metadata(
@@ -751,12 +794,7 @@ impl HeldNotesFile {
         let path_identity = validate_notes_owned_capability_metadata(&path_metadata, description)?;
         let file = open_notes_file_nofollow(directory, name, path, writable, false)
             .map_err(|error| format!("Could not open the {description} safely: {error}"))?;
-        let identity = validate_notes_owned_file_metadata(
-            &file
-                .metadata()
-                .map_err(|error| format!("Could not inspect the held {description}: {error}"))?,
-            description,
-        )?;
+        let identity = validate_notes_owned_file(&file, description)?;
         if identity != path_identity {
             return Err(format!(
                 "The {description} identity changed while it was acquired."
@@ -779,12 +817,7 @@ impl HeldNotesFile {
     ) -> Result<Self, String> {
         let file = open_notes_file_nofollow(directory, name, path, true, true)
             .map_err(|error| format!("Could not create the {description} safely: {error}"))?;
-        let identity = validate_notes_owned_file_metadata(
-            &file
-                .metadata()
-                .map_err(|error| format!("Could not inspect the held {description}: {error}"))?,
-            description,
-        )?;
+        let identity = validate_notes_owned_file(&file, description)?;
         Ok(Self {
             path: path.to_path_buf(),
             name: name.to_path_buf(),
@@ -795,12 +828,7 @@ impl HeldNotesFile {
     }
 
     fn verify_at(&self, directory: &Dir) -> Result<(), String> {
-        let held_identity = validate_notes_owned_file_metadata(
-            &self.file.metadata().map_err(|error| {
-                format!("Could not inspect the held {}: {error}", self.description)
-            })?,
-            self.description,
-        )?;
+        let held_identity = validate_notes_owned_file(&self.file, self.description)?;
         if held_identity != self.identity {
             return Err(format!(
                 "The {} held identity changed during acquisition.",

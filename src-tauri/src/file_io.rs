@@ -28,6 +28,68 @@ pub(crate) const WINDOWS_PRIVATE_DIRECTORY_ACE_FLAGS: u32 =
         | windows_sys::Win32::Security::CONTAINER_INHERIT_ACE;
 
 #[cfg(windows)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WindowsFileInformation {
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+    pub(crate) link_count: u64,
+    pub(crate) attributes: u32,
+}
+
+#[cfg(windows)]
+pub(crate) fn windows_file_information_from_handle(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+) -> std::io::Result<WindowsFileInformation> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(handle, &mut information) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(WindowsFileInformation {
+        device: u64::from(information.dwVolumeSerialNumber),
+        inode: (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+        link_count: u64::from(information.nNumberOfLinks),
+        attributes: information.dwFileAttributes,
+    })
+}
+
+#[cfg(windows)]
+pub(crate) fn windows_file_information_at(path: &Path) -> std::io::Result<WindowsFileInformation> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    let path = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+    windows_file_information_from_handle(handle.as_raw_handle() as HANDLE)
+}
+
+#[cfg(windows)]
 struct WindowsPrivateAcl {
     sid: Vec<usize>,
     acl: Vec<usize>,
@@ -913,38 +975,19 @@ impl<T: CapMetadataExt> TryCapabilityFileLinkCount for T {
 }
 
 #[cfg(windows)]
-impl TryCapabilityFileIdentity for std::fs::Metadata {
-    fn try_capability_file_identity(&self) -> std::io::Result<CapabilityFileIdentity> {
-        use std::os::windows::fs::MetadataExt;
-
-        windows_file_identity_from_optional_fields(self.volume_serial_number(), self.file_index())
-    }
-}
-
-#[cfg(windows)]
 impl TryCapabilityFileIdentity for cap_std::fs::Metadata {
     fn try_capability_file_identity(&self) -> std::io::Result<CapabilityFileIdentity> {
-        use cap_std::fs::MetadataExt;
-
-        windows_file_identity_from_optional_fields(self.volume_serial_number(), self.file_index())
-    }
-}
-
-#[cfg(windows)]
-impl TryCapabilityFileLinkCount for std::fs::Metadata {
-    fn try_capability_file_link_count(&self) -> std::io::Result<u64> {
-        use std::os::windows::fs::MetadataExt;
-
-        windows_file_link_count_from_optional_field(self.number_of_links())
+        Ok(CapabilityFileIdentity {
+            device: CapMetadataExt::dev(self),
+            inode: CapMetadataExt::ino(self),
+        })
     }
 }
 
 #[cfg(windows)]
 impl TryCapabilityFileLinkCount for cap_std::fs::Metadata {
     fn try_capability_file_link_count(&self) -> std::io::Result<u64> {
-        use cap_std::fs::MetadataExt;
-
-        windows_file_link_count_from_optional_field(self.number_of_links())
+        Ok(CapMetadataExt::nlink(self))
     }
 }
 
@@ -1018,7 +1061,18 @@ fn inspect_ambient_read_parent(path: &Path) -> std::io::Result<CapabilityFileIde
             "held read parent must be a real directory",
         ));
     }
-    try_capability_file_identity(&metadata)
+    #[cfg(not(windows))]
+    {
+        try_capability_file_identity(&metadata)
+    }
+    #[cfg(windows)]
+    {
+        let information = windows_file_information_at(&absolute)?;
+        Ok(CapabilityFileIdentity {
+            device: information.device,
+            inode: information.inode,
+        })
+    }
 }
 
 struct HeldCapabilityDirectory {
@@ -2398,9 +2452,37 @@ mod tests {
         write_atomic_file, write_atomic_file_in_guarded_parent, write_atomic_file_with_parent_sync,
         HeldCapabilityFile,
     };
+    #[cfg(windows)]
+    use super::{windows_file_information_at, windows_file_information_from_handle};
     use std::cell::Cell;
     use std::fs;
     use std::path::Path;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_information_uses_stable_handle_identity_and_link_count() {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::HANDLE;
+
+        let root = tempfile::tempdir().expect("create root");
+        let original = root.path().join("original.txt");
+        let linked = root.path().join("linked.txt");
+        fs::write(&original, b"identity").unwrap();
+        let file = fs::File::open(&original).unwrap();
+
+        let before = windows_file_information_from_handle(file.as_raw_handle() as HANDLE).unwrap();
+        let by_path = windows_file_information_at(&original).unwrap();
+        assert_eq!(
+            (before.device, before.inode),
+            (by_path.device, by_path.inode)
+        );
+        assert_eq!(before.link_count, 1);
+
+        fs::hard_link(&original, &linked).unwrap();
+        let after = windows_file_information_from_handle(file.as_raw_handle() as HANDLE).unwrap();
+        assert_eq!((after.device, after.inode), (before.device, before.inode));
+        assert_eq!(after.link_count, 2);
+    }
 
     #[cfg(unix)]
     #[test]

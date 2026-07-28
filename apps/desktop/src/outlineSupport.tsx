@@ -1,0 +1,416 @@
+import type { ClipboardEvent, KeyboardEvent, ReactNode } from "react";
+import type { NoteView } from "../../../packages/contracts/generated/NoteView";
+import type { NotesStore } from "./notesStore";
+import type { OutlineIndex } from "./outlineIndex";
+import {
+  focusOutlineEditor,
+  focusOutlineEditorAt,
+  type OutlineFocusEdge
+} from "./outlineFocus";
+import { parsePastedOutline } from "./outlinePaste";
+import {
+  resolveOutlineKey,
+  type OutlineKeyIntent
+} from "./outlineKeyboard";
+import { measureTextareaCaretLines } from "./textareaCaretLines";
+
+export interface SelectionKeyboardActions {
+  readonly indent: () => void;
+  readonly outdent: () => void;
+  readonly move: (direction: "up" | "down") => void;
+  readonly toggleComplete: () => void;
+  readonly duplicate: () => void;
+  readonly delete: () => void;
+}
+
+interface EnterSplitGesture {
+  readonly tailId: string;
+  readonly parentId: string;
+  readonly beforeId: string | null;
+}
+
+const enterSplitGestures = new WeakMap<HTMLElement, EnterSplitGesture>();
+
+export function endOutlineEnterGesture(target: HTMLElement): void {
+  const scope = target.closest<HTMLElement>(".notes-outline");
+  if (scope) enterSplitGestures.delete(scope);
+}
+
+export function RowMenuItem({
+  icon, label, danger = false, onClick
+}: {
+  readonly icon: ReactNode;
+  readonly label: string;
+  readonly danger?: boolean;
+  readonly onClick: () => void;
+}) {
+  return (
+    <button
+      className="notes-bullet-menu-item"
+      type="button"
+      role="menuitem"
+      data-danger={danger ? "true" : undefined}
+      style={{ width: "100%", border: 0, background: "transparent" }}
+      onClick={onClick}
+    >
+      {icon}
+      <span>{label}</span>
+    </button>
+  );
+}
+
+export function hideCompletedSubtrees(
+  nodes: readonly NoteView[],
+  pageId: string,
+  index: OutlineIndex
+): readonly NoteView[] {
+  let hiddenDepth: number | null = null;
+  return nodes.filter((node) => {
+    const depth = index.depthOf(node.id, pageId);
+    if (hiddenDepth !== null) {
+      if (depth > hiddenDepth) return false;
+      hiddenDepth = null;
+    }
+    if (!node.completed) return true;
+    hiddenDepth = depth;
+    return false;
+  });
+}
+
+export function hideCollapsedSubtrees(
+  nodes: readonly NoteView[],
+  pageId: string,
+  index: OutlineIndex
+): readonly NoteView[] {
+  let hiddenDepth: number | null = null;
+  return nodes.filter((node) => {
+    const depth = index.depthOf(node.id, pageId);
+    if (hiddenDepth !== null) {
+      if (depth > hiddenDepth) return false;
+      hiddenDepth = null;
+    }
+    if (node.collapsed) hiddenDepth = depth;
+    return true;
+  });
+}
+
+export function handleMultilinePaste(
+  event: ClipboardEvent<HTMLTextAreaElement>,
+  store: NotesStore,
+  node: NoteView
+) {
+  const roots = parsePastedOutline(event.clipboardData.getData("text/plain"));
+  if (!roots) return;
+  event.preventDefault();
+  const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
+  void store.importOutline(node.id, null, roots).then((id) => {
+    if (scope) requestAnimationFrame(() => focusOutlineEditor(scope, id, "start"));
+  });
+}
+
+export function handleOutlineKeyDown(
+  event: KeyboardEvent<HTMLTextAreaElement>,
+  store: NotesStore,
+  node: NoteView,
+  nodes: readonly NoteView[],
+  visibleNodes: readonly NoteView[],
+  structureIndex: OutlineIndex,
+  visibleIndex: OutlineIndex,
+  pageId: string,
+  onZoomIn: () => void,
+  onZoomOut: () => void,
+  selectionHeadId: string | null,
+  hasSelection: boolean,
+  onExtendSelection: (originId: string, headId: string) => void,
+  onClearSelection: () => void,
+  onFocusNote: () => void,
+  supportingNote: string,
+  selectionActions: SelectionKeyboardActions
+) {
+  const backspaceGroup = updateBackspaceGesture(event, store);
+  const caretLines = event.key === "ArrowUp" || event.key === "ArrowDown"
+    ? measureTextareaCaretLines(event.currentTarget)
+    : { first: true, last: true };
+  const intent = resolveOutlineKey({
+    key: event.key,
+    altKey: event.altKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+    isComposing: event.nativeEvent.isComposing,
+    repeat: event.repeat,
+    nodeId: node.id,
+    pageId,
+    value: event.currentTarget.value,
+    supportingNote,
+    selectionStart: event.currentTarget.selectionStart,
+    selectionEnd: event.currentTarget.selectionEnd,
+    firstVisualLine: caretLines.first,
+    lastVisualLine: caretLines.last,
+    visibleNodes,
+    structureNodes: nodes,
+    visibleIndex,
+    structureIndex,
+    selectionHeadId,
+    hasSelection,
+    target: "row",
+    platform: outlinePlatform()
+  });
+  if (!intent) return;
+
+  event.preventDefault();
+  const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
+  if (!scope) return;
+  if (hasSelection) {
+    if (intent.kind === "indent") return selectionActions.indent();
+    if (intent.kind === "outdent") return selectionActions.outdent();
+    if (intent.kind === "move") return selectionActions.move(intent.direction);
+    if (intent.kind === "toggleComplete") return selectionActions.toggleComplete();
+    if (intent.kind === "duplicate") return selectionActions.duplicate();
+    if (intent.kind === "trash") return selectionActions.delete();
+  }
+  executeRowIntent(
+    intent,
+    scope,
+    store,
+    node,
+    nodes,
+    structureIndex,
+    onZoomIn,
+    onZoomOut,
+    onExtendSelection,
+    onClearSelection,
+    onFocusNote,
+    backspaceGroup,
+    event.repeat
+  );
+}
+
+export function handlePageKeyDown(
+  event: KeyboardEvent<HTMLTextAreaElement>,
+  store: NotesStore,
+  pageId: string,
+  nodes: readonly NoteView[],
+  visibleNodes: readonly NoteView[],
+  structureIndex: OutlineIndex,
+  visibleIndex: OutlineIndex,
+  onZoomOut: () => void
+) {
+  updateBackspaceGesture(event, store);
+  const intent = resolveOutlineKey({
+    key: event.key,
+    altKey: event.altKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+    isComposing: event.nativeEvent.isComposing,
+    repeat: event.repeat,
+    nodeId: pageId,
+    pageId,
+    value: event.currentTarget.value,
+    selectionStart: event.currentTarget.selectionStart,
+    selectionEnd: event.currentTarget.selectionEnd,
+    firstVisualLine: true,
+    lastVisualLine: true,
+    visibleNodes,
+    structureNodes: nodes,
+    visibleIndex,
+    structureIndex,
+    target: "page",
+    platform: outlinePlatform()
+  });
+  if (!intent) return;
+
+  event.preventDefault();
+  const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
+  if (!scope) return;
+  if (intent.kind === "focus") {
+    focusOutlineEditor(scope, intent.nodeId, intent.edge);
+  } else if (intent.kind === "createFirstChild") {
+    createFirstChild(scope, store, structureIndex, intent.parentId);
+  } else if (intent.kind === "zoom" && intent.direction === "out") {
+    void store.flushDraft(pageId).then(onZoomOut);
+  }
+}
+
+function outlinePlatform(): "mac" | "other" {
+  return /Mac|iPhone|iPad|iPod/iu.test(globalThis.navigator?.platform ?? "")
+    ? "mac"
+    : "other";
+}
+
+function updateBackspaceGesture(
+  event: KeyboardEvent<HTMLTextAreaElement>,
+  store: NotesStore
+): string | null {
+  const isPlainBackspace = event.key === "Backspace" &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey &&
+    !event.nativeEvent.isComposing;
+  if (isPlainBackspace) return store.beginBackspaceGesture(event.repeat);
+  store.endBackspaceGesture();
+  return null;
+}
+
+function focusAfter(
+  scope: HTMLElement,
+  nodeId: string,
+  edge: OutlineFocusEdge
+): void {
+  requestAnimationFrame(() => focusOutlineEditor(scope, nodeId, edge));
+}
+
+function createFirstChild(
+  scope: HTMLElement,
+  store: NotesStore,
+  index: OutlineIndex,
+  parentId: string
+): void {
+  const beforeId = index.firstChildId(parentId);
+  const pending = store.beginCreateNode(parentId, "", beforeId);
+  focusAfter(scope, pending.id, "start");
+  void pending.committed.catch(() => undefined);
+}
+
+function executeRowIntent(
+  intent: OutlineKeyIntent,
+  scope: HTMLElement,
+  store: NotesStore,
+  node: NoteView,
+  nodes: readonly NoteView[],
+  structureIndex: OutlineIndex,
+  onZoomIn: () => void,
+  onZoomOut: () => void,
+  onExtendSelection: (originId: string, headId: string) => void,
+  onClearSelection: () => void,
+  onFocusNote: () => void,
+  backspaceGroup: string | null,
+  repeated: boolean
+): void {
+  switch (intent.kind) {
+    case "consume":
+      return;
+    case "split":
+      {
+        const activeGesture = repeated
+          ? enterSplitGestures.get(scope)
+          : undefined;
+        const activeTail = activeGesture
+          ? store.getSnapshot().nodes.find(
+              (candidate) => candidate.id === activeGesture.tailId
+            )
+          : undefined;
+        const pending = store.beginSplitNode(activeTail && activeGesture ? {
+          id: activeTail.id,
+          parentId: activeGesture.parentId,
+          beforeId: activeGesture.beforeId,
+          prefix: "",
+          suffix: store.getSnapshot().drafts[activeTail.id] ?? activeTail.text
+        } : {
+          id: node.id,
+          parentId: intent.parentId,
+          beforeId: intent.beforeId,
+          prefix: intent.prefix,
+          suffix: intent.suffix
+        });
+        enterSplitGestures.set(scope, {
+          tailId: pending.id,
+          parentId: activeGesture?.parentId ?? intent.parentId,
+          beforeId: activeGesture?.beforeId ?? intent.beforeId
+        });
+        focusAfter(scope, pending.id, "start");
+        void pending.committed.catch(() => undefined);
+      }
+      return;
+    case "createFirstChild":
+      createFirstChild(scope, store, structureIndex, intent.parentId);
+      return;
+    case "indent":
+      void store.indent(node.id, intent.previousSiblingId)
+        .then(() => focusAfter(scope, node.id, "preserve"));
+      return;
+    case "outdent":
+      void store.outdent(node.id, intent.parentId, intent.beforeId)
+        .then(() => focusAfter(scope, node.id, "preserve"));
+      return;
+    case "focus":
+      focusOutlineEditor(scope, intent.nodeId, intent.edge);
+      void store.flushDraft(node.id);
+      return;
+    case "removeEmpty":
+      {
+        const pending = store.beginRemoveEmptyNode(node.id, backspaceGroup);
+        if (intent.focusId) focusAfter(scope, intent.focusId, "end");
+        void pending.committed.catch(() => undefined);
+      }
+      return;
+    case "mergeBackward": {
+      const state = store.getSnapshot();
+      const previous = state.nodes.find(
+        (candidate) => candidate.id === intent.previousId
+      );
+      if (!previous) return;
+      const previousText = state.drafts[previous.id] ?? previous.text;
+      const pending = store.beginMergeNodeBackward({
+        id: node.id,
+        previousId: previous.id,
+        previousText,
+        currentText: state.drafts[node.id] ?? node.text,
+        historyGroup: backspaceGroup
+      });
+      requestAnimationFrame(() => {
+        focusOutlineEditorAt(scope, node.id, previousText.length);
+      });
+      void pending.committed.catch(() => undefined);
+      return;
+    }
+    case "toggleComplete":
+      void store.setCompleted(node.id, !node.completed);
+      return;
+    case "trash":
+      void store.deleteSubtree(node.id);
+      return;
+    case "duplicate": {
+      const siblings = node.parentId
+        ? structureIndex.childrenOf(node.parentId)
+        : nodes.filter((candidate) => candidate.parentId === null);
+      const index = node.parentId
+        ? structureIndex.siblingPositionOf(node.id)
+        : siblings.findIndex((candidate) => candidate.id === node.id);
+      const beforeId = index >= 0 ? siblings[index + 1]?.id ?? null : null;
+      void store.duplicate(node.id, node.parentId ?? "", beforeId)
+        .then((id) => focusAfter(scope, id, "start"));
+      return;
+    }
+    case "move": {
+      const siblings = node.parentId
+        ? structureIndex.childrenOf(node.parentId)
+        : nodes.filter((candidate) => candidate.parentId === null);
+      const index = node.parentId
+        ? structureIndex.siblingPositionOf(node.id)
+        : siblings.findIndex((candidate) => candidate.id === node.id);
+      const beforeId = intent.direction === "up"
+        ? siblings[index - 1]?.id
+        : siblings[index + 2]?.id ?? null;
+      if (index < 0 || (intent.direction === "up" && !beforeId)) return;
+      void store.moveNode(node.id, node.parentId ?? "", beforeId ?? null)
+        .then(() => focusAfter(scope, node.id, "preserve"));
+      return;
+    }
+    case "zoom":
+      void store.flushDraft(node.id).then(
+        intent.direction === "in" ? onZoomIn : onZoomOut
+      );
+      return;
+    case "focusNote":
+      onFocusNote();
+      return;
+    case "extendSelection":
+      onExtendSelection(node.id, intent.headId);
+      return;
+    case "clearSelection":
+      onClearSelection();
+  }
+}

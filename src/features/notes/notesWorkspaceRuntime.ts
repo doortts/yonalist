@@ -75,7 +75,10 @@ import type {
   UseNotesWorkspaceHookResult,
   UseNotesWorkspaceOptions,
 } from "./notesWorkspaceTypes";
-import type { NavigationIntent } from "./notesWorkspaceNavigationSupport";
+import {
+  currentNotesNavigation,
+  type NavigationIntent,
+} from "./notesWorkspaceNavigationSupport";
 import { subscribeToImageImportRecovery } from "./notesImageImportRecovery";
 import {
   useNotesSelectionAuthority,
@@ -115,57 +118,8 @@ import {
   useNotesImageAtomEditorRuntime,
 } from "./useNotesImageAtomRuntime";
 
-export type { ResolvedHistoryLocation } from "./notesWorkspaceNavigationSupport";
-export { resetImageImportRecoveryForTests } from "./notesImageImportRecovery";
-export {
-  authoritative,
-  scopedActiveDelta,
-  unwrapNotesMutation,
-} from "./notesWorkspaceProjection";
-export {
-  confirmedState,
-  directMutationResult,
-  duplicateRootId,
-  expansionsOutsideSubtree,
-  focusedUiUpdate,
-  hasMoveDependencies,
-  historyArguments,
-  notifySuccess,
-  projectNotesMutation,
-  resolveRootLifecycleNavigation,
-  rootIdForNode,
-  runCompoundQueueWork,
-  samePreparedMoveNode,
-  workspaceForScope,
-} from "./notesWorkspaceCommandSupport";
-export type {
-  RawNotesMutationDelta,
-  UnwrappedNotesMutation,
-} from "./notesWorkspaceProjection";
-export type * from "./notesWorkspaceTypes";
-export {
-  isNotesDraftsFlushFailedError,
-  NOTES_DRAFTS_FLUSH_FAILED_CODE,
-} from "./notesDraftErrors";
-
-function currentNotesNavigation(
-  state: NormalizedNotesWorkspace,
-  editing: NotesHistoryFocus | null,
-): LiveNotesNavigation {
-  return {
-    selectedId: editing ? editing.nodeId : state.selectedId,
-    zoomRootId: state.zoomRootId,
-    editingNoteId: editing ? editing.nodeId : state.editingNoteId,
-    pendingFocusId: state.pendingFocusId,
-    pendingFocusField: editing ? editing.field : state.pendingFocusField,
-  };
-}
-
 // Scope equality and tag-filter canonicalization live in one module so the
 // coordinator and this hook compare scopes the same, key-order-independent way.
-// Re-exported (below) because existing consumers (notesCommands, tests) import
-// these names from the hook module.
-export { canonicalizeTagFilters, sameScope, tagFilterKey };
 
 export function useNotesWorkspace({
   vaultRoot,

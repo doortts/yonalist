@@ -9,6 +9,7 @@ import type {
 import type { NotesWorkspaceUiUpdate } from "./notesWorkspaceCoordinator";
 import {
   notesExpansionSnapshotPool,
+  type NotesHistoryFocus,
   type NotesHistoryLocationSnapshot,
   type NotesHistorySnapshot
 } from "./notesHistory";
@@ -23,6 +24,7 @@ import {
   tagFilterKey
 } from "./notesWorkspaceScope";
 import type {
+  LiveNotesNavigation,
   NotesLibraryView,
   TagFilterOrigin
 } from "./notesWorkspaceTypes";
@@ -47,6 +49,19 @@ export interface NavigationOrigin {
 export type NavigationIntent = (
   origin: NavigationOrigin
 ) => Promise<ResolvedHistoryLocation | null>;
+
+export function currentNotesNavigation(
+  state: NormalizedNotesWorkspace,
+  editing: NotesHistoryFocus | null
+): LiveNotesNavigation {
+  return {
+    selectedId: editing ? editing.nodeId : state.selectedId,
+    zoomRootId: state.zoomRootId,
+    editingNoteId: editing ? editing.nodeId : state.editingNoteId,
+    pendingFocusId: state.pendingFocusId,
+    pendingFocusField: editing ? editing.field : state.pendingFocusField
+  };
+}
 
 export function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
