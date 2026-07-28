@@ -16,7 +16,10 @@ import {
   type NotesDraftEngineHost,
 } from "./notesDraftEngine";
 import { unwrapNotesMutation } from "./notesWorkspaceProjection";
-import type { NotesImageAtomFlushAdapter } from "./notesImageAtomEditorRegistry";
+import type {
+  NotesEditorFlushAdapter,
+  NotesImageAtomFlushAdapter,
+} from "./notesImageAtomEditorRegistry";
 
 // These tests exercise NotesDraftEngine as a plain object: no React, no
 // renderHook, no context. The engine reaches history/scope/navigation through
@@ -1754,7 +1757,7 @@ describe("NotesDraftEngine", () => {
       const { engine, session } = createHarness({ store });
       const enqueue = vi.spyOn(session, "enqueue");
       const otherFlush = vi.fn().mockResolvedValue("flushed" as const);
-      engine.registerImageAtomFlushAdapter({
+      engine.registerEditorFlushAdapter({
         nodeId: "other",
         flush: otherFlush,
       });
@@ -1801,7 +1804,7 @@ describe("NotesDraftEngine", () => {
           return "flushed";
         },
       };
-      engine.registerImageAtomFlushAdapter(adapter);
+      engine.registerEditorFlushAdapter(adapter);
 
       await expect(engine.flushNodeDraft("root")).resolves.toBe(true);
       expect(order).toEqual(["adapter", "write:beforeafter"]);
@@ -1810,6 +1813,40 @@ describe("NotesDraftEngine", () => {
         expect.objectContaining({ imageOffsetUtf16: 6 }),
         textHistoryContext,
       );
+    });
+
+    it("flushes a registered title editor before enqueuing and draining its draft write", async () => {
+      const order: string[] = [];
+      const store = repository({
+        updateNode: vi.fn((_vaultRoot, input) => {
+          order.push("write-queue-flush");
+          return Promise.resolve(
+            workspace([node({ id: "root", title: input.title })]),
+          );
+        }),
+      });
+      const { engine } = createHarness({ store });
+      const adapter: NotesEditorFlushAdapter = {
+        nodeId: "root",
+        flush: async () => {
+          order.push("title-flush");
+          engine.updateNodeDraft("root", {
+            title: "live title",
+            note: "",
+            imageOffsetUtf16: 0,
+          });
+          order.push("draft-enqueue");
+          return "flushed";
+        },
+      };
+      engine.registerEditorFlushAdapter(adapter);
+
+      await expect(engine.flushNodeDraft("root")).resolves.toBe(true);
+      expect(order).toEqual([
+        "title-flush",
+        "draft-enqueue",
+        "write-queue-flush",
+      ]);
     });
 
     it("flushes only the image editor for the requested node", async () => {
@@ -1822,8 +1859,8 @@ describe("NotesDraftEngine", () => {
         nodeId: "other",
         flush: vi.fn().mockResolvedValue("flushed" as const),
       };
-      engine.registerImageAtomFlushAdapter(root);
-      engine.registerImageAtomFlushAdapter(other);
+      engine.registerEditorFlushAdapter(root);
+      engine.registerEditorFlushAdapter(other);
 
       await expect(engine.flushNodeDraft("root")).resolves.toBe(true);
 
@@ -1834,7 +1871,7 @@ describe("NotesDraftEngine", () => {
     it("waits for a deferred editor before completing an all-drafts barrier", async () => {
       const deferredFlush = deferred<"deferred" | "cancelled">();
       const { engine } = createHarness();
-      engine.registerImageAtomFlushAdapter({
+      engine.registerEditorFlushAdapter({
         nodeId: "root",
         flush: () => deferredFlush.promise,
       });
@@ -1866,7 +1903,7 @@ describe("NotesDraftEngine", () => {
         ),
       });
       const { engine } = createHarness({ store });
-      engine.registerImageAtomFlushAdapter({
+      engine.registerEditorFlushAdapter({
         nodeId: "root",
         flush: async () => {
           engine.updateNodeDraft("root", {
@@ -1894,12 +1931,26 @@ describe("NotesDraftEngine", () => {
       const { engine, host } = createHarness();
       const report = vi.fn();
       host.onCompositionInterrupted = report;
-      engine.registerImageAtomFlushAdapter({
+      engine.registerEditorFlushAdapter({
         nodeId: "root",
         flush: async () => "cancelled",
       });
 
       await expect(engine.flushNodeDraft("root")).resolves.toBe(false);
+      expect(report).toHaveBeenCalledOnce();
+    });
+
+    it("fails a structural drain when a composing title editor is cancelled", async () => {
+      const { engine, host } = createHarness();
+      const report = vi.fn();
+      host.onCompositionInterrupted = report;
+      engine.registerEditorFlushAdapter({
+        nodeId: "root",
+        flush: async () => "cancelled",
+      });
+      const cutoff = engine.captureDraftCutoff();
+
+      await expect(engine.flushDraftBarrier(cutoff)).resolves.toBe(false);
       expect(report).toHaveBeenCalledOnce();
     });
 
@@ -2020,7 +2071,7 @@ describe("NotesDraftEngine", () => {
         }),
       });
       const { engine } = createHarness({ store });
-      engine.registerImageAtomFlushAdapter({
+      engine.registerEditorFlushAdapter({
         nodeId: "root",
         flush: async () => {
           order.push("adapter");

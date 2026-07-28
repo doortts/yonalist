@@ -46,6 +46,7 @@ vi.mock("../../services/notesStore", () => ({
 import { NotesFeatureProvider } from "./NotesFeature";
 import { NotesNavigationContent as NotesLibraryPane } from "./NotesNavigationContent";
 import { NotesOutlinePane } from "./NotesOutlinePane";
+import { readPlainText } from "./plainTextContenteditable";
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
@@ -152,10 +153,10 @@ function renderNotesWorkspace({ active = true } = {}) {
 async function findTitleInput(value: string) {
   return waitFor(() => {
     const input = Array.from(
-      document.querySelectorAll<HTMLTextAreaElement>(
-        'textarea[aria-label="Edit node title"]'
+      document.querySelectorAll<HTMLDivElement>(
+        "[data-notes-bullet-title]"
       )
-    ).find((candidate) => candidate.value === value);
+    ).find((candidate) => readPlainText(candidate) === value);
     if (!input) {
       throw new Error(`Unable to find a node title input with value ${value}`);
     }

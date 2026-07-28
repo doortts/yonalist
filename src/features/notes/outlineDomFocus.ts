@@ -1,21 +1,25 @@
 import type { NoteId } from "../../domain/notes";
+import {
+  readPlainText,
+  restorePlainTextSelection,
+} from "./plainTextContenteditable";
+import { outlineTitleEditor } from "./outlineDom";
 
 export type OutlineCaretEdge =
   | "start"
   | "end"
   | { readonly start: number; readonly end: number };
 
-function outlineEditor(
+function outlineNoteEditor(
   paneRoot: HTMLElement,
   nodeId: NoteId,
-  field: "title" | "note",
 ): HTMLTextAreaElement | null {
   const row = Array.from(
     paneRoot.querySelectorAll<HTMLElement>("[data-outline-id]"),
   ).find((candidate) => candidate.dataset.outlineId === nodeId);
-  const fieldSelector =
-    field === "title" ? "textarea.notes-node-title" : "textarea.notes-node-note";
-  return row?.querySelector<HTMLTextAreaElement>(fieldSelector) ?? null;
+  return (
+    row?.querySelector<HTMLTextAreaElement>("textarea.notes-node-note") ?? null
+  );
 }
 
 export function focusOutlineEditorDom(
@@ -24,20 +28,42 @@ export function focusOutlineEditorDom(
   field: "title" | "note",
   edge: OutlineCaretEdge | null,
 ): boolean {
-  const textarea = outlineEditor(paneRoot, nodeId, field);
-  if (!textarea) return false;
+  const editor =
+    field === "title"
+      ? outlineTitleEditor(paneRoot, nodeId)
+      : outlineNoteEditor(paneRoot, nodeId);
+  if (!editor) return false;
 
-  textarea.focus();
-  if (document.activeElement !== textarea) return false;
-  if (edge === null) return true;
-
-  const length = textarea.value.length;
+  const value =
+    editor instanceof HTMLTextAreaElement ? editor.value : readPlainText(editor);
+  const length = value.length;
+  if (edge === null) {
+    editor.focus();
+    return document.activeElement === editor;
+  }
   const clamp = (offset: number): number =>
     Math.max(0, Math.min(length, offset));
   const start =
     edge === "start" ? 0 : edge === "end" ? length : clamp(edge.start);
   const end =
     edge === "start" ? 0 : edge === "end" ? length : clamp(edge.end);
-  textarea.setSelectionRange(Math.min(start, end), Math.max(start, end));
+  if (editor instanceof HTMLTextAreaElement) {
+    editor.focus();
+    if (document.activeElement !== editor) return false;
+    editor.setSelectionRange(Math.min(start, end), Math.max(start, end));
+  } else {
+    restorePlainTextSelection(editor, {
+      anchorUtf16: Math.min(start, end),
+      focusUtf16: Math.max(start, end),
+    });
+    editor.setAttribute("data-notes-restore-title-selection", "true");
+    editor.focus();
+    editor.removeAttribute("data-notes-restore-title-selection");
+    if (document.activeElement !== editor) return false;
+    restorePlainTextSelection(editor, {
+      anchorUtf16: Math.min(start, end),
+      focusUtf16: Math.max(start, end),
+    });
+  }
   return true;
 }

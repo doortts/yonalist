@@ -15,7 +15,7 @@ import type {
   NotesHistoryFocus,
   NotesHistoryFocusField
 } from "./notesHistory";
-import type { NotesImageAtomFlushAdapter } from "./notesImageAtomEditorRegistry";
+import type { NotesEditorFlushAdapter } from "./notesImageAtomEditorRegistry";
 import type { NotesCommandContext } from "./notesCommands";
 import type { UnwrappedNotesMutation } from "./notesWorkspaceProjection";
 import {
@@ -168,8 +168,8 @@ export function useNotesDraftWorkflow({
       draftEngineRef.current?.beginBackspaceGesture(token, nodeId) ?? null,
     [draftEngineRef]
   );
-  const registerImageAtomFlushAdapter = useCallback(
-    (adapter: NotesImageAtomFlushAdapter): (() => void) => {
+  const registerEditorFlushAdapter = useCallback(
+    (adapter: NotesEditorFlushAdapter): (() => void) => {
       const engine = draftEngineRef.current;
       if (
         !engine ||
@@ -180,7 +180,7 @@ export function useNotesDraftWorkflow({
       ) {
         return () => undefined;
       }
-      return engine.registerImageAtomFlushAdapter(adapter);
+      return engine.registerEditorFlushAdapter(adapter);
     },
     [draftEngineRef, repository, vaultRoot]
   );
@@ -208,7 +208,7 @@ export function useNotesDraftWorkflow({
     updateNodeDraft,
     flushNodeDraft,
     beginBackspaceDraftLease,
-    registerImageAtomFlushAdapter,
+    registerEditorFlushAdapter,
     retryFailedDraft,
     retryLastFailedWrite,
     flushAllDraftsBeforeStructural

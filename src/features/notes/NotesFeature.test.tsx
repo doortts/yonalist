@@ -74,6 +74,10 @@ import { useNotesImageResidencyLease } from "./NotesImageResidencyContext";
 import { useNotesPaneRegistry } from "./NotesWorkspaceContext";
 import { useNotesActions, useNotesState } from "./NotesWorkspaceContext";
 import type { NotesPreparedSelectionAuthority } from "./notesWorkspaceTypes";
+import {
+  readPlainTextSelection,
+  restorePlainTextSelection,
+} from "./plainTextContenteditable";
 
 function ResidencyProbe() {
   const lease = useNotesImageResidencyLease();
@@ -321,14 +325,17 @@ describe("NotesFeature", () => {
       '[data-notes-pane-id="primary"]'
     )!;
     const title = await waitFor(() => {
-      const editor = primary.querySelector<HTMLTextAreaElement>(
-        "textarea.notes-node-title"
+      const editor = primary.querySelector<HTMLDivElement>(
+        "[data-notes-bullet-title]"
       );
       if (!editor) throw new Error("Primary title editor did not render");
       return editor;
     });
-    fireEvent.focus(title);
-    title.setSelectionRange(2, 2);
+    fireEvent.pointerDown(title);
+    restorePlainTextSelection(title, {
+      anchorUtf16: 2,
+      focusUtf16: 2,
+    });
 
     fireEvent.click(
       within(primary).getByRole("button", { name: "Open split view" })
@@ -348,8 +355,10 @@ describe("NotesFeature", () => {
       expect(screen.getAllByLabelText("Notes outline")).toHaveLength(1)
     );
     await waitFor(() => expect(title).toHaveFocus());
-    expect(title.selectionStart).toBe(2);
-    expect(title.selectionEnd).toBe(2);
+    expect(readPlainTextSelection(title)).toEqual({
+      anchorUtf16: 2,
+      focusUtf16: 2,
+    });
   });
 
   it("zooms the primary pane when its bullet is clicked in split view", async () => {

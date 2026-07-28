@@ -25,8 +25,8 @@ import type { ParsedImageAtomPaste } from "./notesImageAtomClipboard";
 import type {
   ActiveImageAtomEditor,
   ImageAtomEditorSelectionAuthority,
+  NotesEditorFlushAdapter,
   NotesImageAtomEditorAuthority,
-  NotesImageAtomFlushAdapter
 } from "./notesImageAtomEditorRegistry";
 import type {
   NotesHistoryFocus,
@@ -363,9 +363,7 @@ export interface NotesWorkspaceActions {
       Partial<Pick<NoteNode, "markerKind" | "markdownImageWidth">>,
     field?: NotesHistoryFocusField
   ): void;
-  registerImageAtomFlushAdapter?(
-    adapter: NotesImageAtomFlushAdapter
-  ): () => void;
+  registerEditorFlushAdapter?(adapter: NotesEditorFlushAdapter): () => void;
   flushNodeDraft(nodeId: NoteId): Promise<boolean>;
   flushAllDrafts(): Promise<boolean>;
   applyImageAtomEdit(

@@ -5,6 +5,7 @@ function buildPane(
   rows: readonly {
     id: string;
     title?: string;
+    liveTitle?: string;
     note?: string;
   }[],
 ): HTMLElement {
@@ -17,6 +18,13 @@ function buildPane(
       const title = document.createElement("textarea");
       title.className = "notes-node-title";
       title.value = row.title;
+      shell.appendChild(title);
+    }
+    if (row.liveTitle !== undefined) {
+      const title = document.createElement("div");
+      title.setAttribute("data-notes-bullet-title", "");
+      title.tabIndex = 0;
+      title.textContent = row.liveTitle;
       shell.appendChild(title);
     }
     if (row.note !== undefined) {
@@ -68,6 +76,24 @@ describe("focusOutlineEditorDom", () => {
     expect(document.activeElement).toBe(textarea);
     expect(textarea.selectionStart).toBe(5);
     expect(textarea.selectionEnd).toBe(5);
+  });
+
+  it("focuses the live title editor and restores its plain-text range", () => {
+    const pane = buildPane([{ id: "a", liveTitle: "hello" }]);
+    const editor = pane.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]",
+    )!;
+
+    expect(
+      focusOutlineEditorDom(pane, "a", "title", { start: 1, end: 4 }),
+    ).toBe(true);
+
+    expect(document.activeElement).toBe(editor);
+    const selection = document.getSelection()!;
+    expect(selection.anchorNode).toBe(editor.firstChild);
+    expect(selection.anchorOffset).toBe(1);
+    expect(selection.focusNode).toBe(editor.firstChild);
+    expect(selection.focusOffset).toBe(4);
   });
 
   it("collapses the caret to the start", () => {

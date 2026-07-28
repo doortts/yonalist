@@ -17,6 +17,10 @@ import type {
   NotesDatePickerContext
 } from "./NotesDatePicker";
 import type { LocalDate, NoteDateMatch } from "./noteDates";
+import {
+  readPlainText,
+  restorePlainTextSelection,
+} from "./plainTextContenteditable";
 
 const LazyNotesDatePicker = lazy(() =>
   import("./NotesDatePicker").then(({ NotesDatePicker }) => ({
@@ -68,7 +72,10 @@ interface NotesDateTodayProviderProps {
 interface UseNotesDatePickerIntegrationOptions {
   readonly values: Readonly<Record<NotesDateField, string>>;
   readonly refs: Readonly<
-    Record<NotesDateField, RefObject<HTMLTextAreaElement | null>>
+    Record<
+      NotesDateField,
+      RefObject<HTMLTextAreaElement | HTMLDivElement | null>
+    >
   >;
   readonly onCommit: (
     field: NotesDateField,
@@ -345,6 +352,8 @@ export function useNotesDatePickerIntegration({
       if (currentElement.value !== pendingFocus.expectedValue) {
         return;
       }
+    } else if (readPlainText(currentElement) !== pendingFocus.expectedValue) {
+      return;
     }
     if (values[pendingFocus.field] !== pendingFocus.expectedValue) {
       return;
@@ -356,6 +365,15 @@ export function useNotesDatePickerIntegration({
         currentElement.value.length
       );
       currentElement.setSelectionRange(caretUtf16, caretUtf16);
+    } else {
+      const caretUtf16 = Math.min(
+        pendingFocus.caretUtf16,
+        pendingFocus.expectedValue.length
+      );
+      restorePlainTextSelection(currentElement, {
+        anchorUtf16: caretUtf16,
+        focusUtf16: caretUtf16
+      });
     }
     setPendingFocus(null);
     // values is decomposed into note/title (the only fields read via
@@ -384,7 +402,7 @@ export function useNotesDatePickerIntegration({
       source:
         focusElement instanceof HTMLTextAreaElement
           ? focusElement.value
-          : values[field],
+          : readPlainText(focusElement),
       context: createExistingDateContext(match),
       anchor,
       focusElement
@@ -402,7 +420,7 @@ export function useNotesDatePickerIntegration({
       source:
         focusElement instanceof HTMLTextAreaElement
           ? focusElement.value
-          : (explicitSource ?? values[field]),
+          : (explicitSource ?? readPlainText(focusElement)),
       context: { kind: "typed-trigger", ...range },
       anchor: focusElement,
       focusElement
@@ -414,7 +432,10 @@ export function useNotesDatePickerIntegration({
     if (!focusElement) {
       return;
     }
-    const source = values.title;
+    const source =
+      focusElement instanceof HTMLTextAreaElement
+        ? focusElement.value
+        : readPlainText(focusElement);
     const requestedStart =
       typeof selection === "number" ? selection : selection?.startUtf16;
     const requestedEnd =

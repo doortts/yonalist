@@ -16,6 +16,11 @@ import {
   type NotesDatePickerTarget
 } from "./NotesDatePickerIntegration";
 import { findNoteDateMatches } from "./noteDates";
+import {
+  readPlainText,
+  readPlainTextSelection,
+  replacePlainText,
+} from "./plainTextContenteditable";
 
 const today = { year: 2026, month: 7, day: 11 } as const;
 const notesStyles = readFileSync(
@@ -120,6 +125,56 @@ function LegacyCaretDateField() {
       </button>
       {datePicker.picker}
     </>
+  );
+}
+
+function ControlledLiveTitleDateFieldContent() {
+  const [title, setTitle] = useState("State source");
+  const titleRef = useRef<HTMLDivElement>(null);
+  const noteRef = useRef<HTMLTextAreaElement>(null);
+  const datePicker = useNotesDatePickerIntegration({
+    values: { title, note: "" },
+    refs: { title: titleRef, note: noteRef },
+    onCommit: (_field, value) => setTitle(value),
+  });
+
+  return (
+    <>
+      <div
+        ref={titleRef}
+        data-notes-bullet-title
+        role="textbox"
+        tabIndex={0}
+      >
+        {title}
+      </div>
+      <button
+        type="button"
+        onClick={() => {
+          const editor = titleRef.current!;
+          replacePlainText(editor, "DOM !! source", {
+            anchorUtf16: 6,
+            focusUtf16: 6,
+          });
+          datePicker.openTypedDate(
+            "title",
+            { startUtf16: 4, endUtf16: 6 },
+            editor,
+          );
+        }}
+      >
+        Open live title date
+      </button>
+      {datePicker.picker}
+    </>
+  );
+}
+
+function ControlledLiveTitleDateField() {
+  return (
+    <NotesDateTodayProvider today={today}>
+      <ControlledLiveTitleDateFieldContent />
+    </NotesDateTodayProvider>
   );
 }
 
@@ -289,6 +344,30 @@ describe("NotesDatePickerHost", () => {
     await waitFor(() => expect(title).toHaveFocus());
     expect(title.selectionStart).toBe(15);
     expect(title.selectionEnd).toBe(15);
+  });
+
+  it("reads and restores a live title through its plain-text DOM source", async () => {
+    const user = userEvent.setup();
+    render(<ControlledLiveTitleDateField />);
+    const title = document.querySelector<HTMLElement>(
+      "[data-notes-bullet-title]",
+    )!;
+
+    await user.click(
+      screen.getByRole("button", { name: "Open live title date" }),
+    );
+    const picker = await screen.findByRole("dialog", { name: "Choose date" });
+    await user.click(within(picker).getByRole("button", { name: "Tomorrow" }));
+    await user.keyboard("{Enter}");
+
+    await waitFor(() =>
+      expect(readPlainText(title)).toBe("DOM 07/12/2026 source"),
+    );
+    await waitFor(() => expect(title).toHaveFocus());
+    expect(readPlainTextSelection(title)).toEqual({
+      anchorUtf16: 14,
+      focusUtf16: 14,
+    });
   });
 
   it("removes exactly one existing date and returns focus", async () => {

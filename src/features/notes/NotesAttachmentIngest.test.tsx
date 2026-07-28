@@ -40,6 +40,10 @@ import {
 import { ImageAtomEditor } from "./ImageAtomEditor";
 import { NOTES_IMAGE_ATOM_CLIPBOARD_MIME } from "./notesImageAtomClipboard";
 import type { NotesImageAtomCutAuthority } from "./notesWorkspaceTypes";
+import {
+  readPlainTextSelection,
+  restorePlainTextSelection
+} from "./plainTextContenteditable";
 
 const capturedImageAtomEditorProps = vi.hoisted(
   () => new Map<string, import("./ImageAtomEditor").ImageAtomEditorProps>()
@@ -157,6 +161,37 @@ function pasteClipboardItems(
   const event = createClipboardPasteEvent(target, entries);
   fireEvent(target, event);
   return event;
+}
+
+function ordinaryTitleEditor(id: string): HTMLDivElement {
+  return document.querySelector<HTMLDivElement>(
+    `[data-outline-id="${id}"] [data-notes-bullet-title]`
+  )!;
+}
+
+function activateTitleEditor(
+  editor: HTMLDivElement,
+  startUtf16?: number,
+  endUtf16 = startUtf16
+): void {
+  fireEvent.pointerDown(editor);
+  if (startUtf16 !== undefined) {
+    restorePlainTextSelection(editor, {
+      anchorUtf16: startUtf16,
+      focusUtf16: endUtf16 ?? startUtf16
+    });
+  }
+}
+
+function expectTitleSelection(
+  editor: HTMLDivElement,
+  startUtf16: number,
+  endUtf16: number
+): void {
+  expect(readPlainTextSelection(editor)).toEqual({
+    anchorUtf16: startUtf16,
+    focusUtf16: endUtf16
+  });
 }
 
 function workspaceValue(options: {
@@ -510,13 +545,13 @@ describe("Notes image ingest", () => {
     const secondRow = document.querySelector<HTMLElement>(
       '[data-outline-id="second"]'
     )!;
-    const firstTitle = within(firstRow).getByRole("group", {
+    const firstTitle = within(firstRow).getByRole("textbox", {
       name: "Edit node title"
     });
-    const secondTitle = secondRow.querySelector("textarea")!;
-    act(() => secondTitle.focus());
+    const secondTitle = ordinaryTitleEditor("second");
+    activateTitleEditor(secondTitle, 1, 4);
     expect(secondTitle).toHaveFocus();
-    secondTitle.setSelectionRange(1, 4);
+    expectTitleSelection(secondTitle, 1, 4);
     elementFromPoint.mockReturnValue(firstTitle);
 
     act(() =>
@@ -573,8 +608,7 @@ describe("Notes image ingest", () => {
     ).toBeNull();
     expect(screen.queryByTestId("notes-attachment-drag-preview")).toBeNull();
     expect(document.activeElement).toBe(secondTitle);
-    expect(secondTitle.selectionStart).toBe(1);
-    expect(secondTitle.selectionEnd).toBe(4);
+    expectTitleSelection(secondTitle, 1, 4);
     expect(workspace.state.nodesById.first.isCollapsed).toBe(true);
   });
 
@@ -724,7 +758,7 @@ describe("Notes image ingest", () => {
     const row = document.querySelector<HTMLElement>(
       '[data-outline-id="second"]'
     )!;
-    const title = within(row).getByRole("group", {
+    const title = within(row).getByRole("textbox", {
       name: "Edit node title"
     });
     const outside = document.createElement("button");
@@ -919,16 +953,9 @@ describe("Notes image ingest", () => {
     const childIdsBefore = JSON.stringify(workspace.state.childIdsByParent);
     const nodeIdsBefore = Object.keys(workspace.state.nodesById);
     renderPane(workspace, vi.fn().mockResolvedValue(vi.fn()));
-    const firstRow = document.querySelector<HTMLElement>(
-      '[data-outline-id="first"]'
-    )!;
-    const title = firstRow.querySelector<HTMLTextAreaElement>(
-      "textarea.notes-node-title"
-    )!;
-    act(() => {
-      title.focus();
-      title.setSelectionRange(1, 4);
-    });
+    const title = ordinaryTitleEditor("first");
+    activateTitleEditor(title, 1, 4);
+    expectTitleSelection(title, 1, 4);
     const first = new File(["first"], "first.png", { type: "image/png" });
     const second = new File(["second"], "second.jpg", {
       type: "image/jpeg"
@@ -950,8 +977,7 @@ describe("Notes image ingest", () => {
       { blob: second, originalName: "second.jpg", mimeType: "image/jpeg" }
     ]);
     expect(document.activeElement).toBe(title);
-    expect(title.selectionStart).toBe(1);
-    expect(title.selectionEnd).toBe(4);
+    expectTitleSelection(title, 1, 4);
     expect(workspace.state.selectedId).toBe("second");
     expect(workspace.state.nodesById.first.isCollapsed).toBe(true);
     expect(workspace.state.rootIds).toEqual(rootIdsBefore);
@@ -962,24 +988,22 @@ describe("Notes image ingest", () => {
 
     await act(async () => pendingImport.resolve(undefined));
     expect(document.activeElement).toBe(title);
-    expect(title.selectionStart).toBe(1);
-    expect(title.selectionEnd).toBe(4);
+    expectTitleSelection(title, 1, 4);
   });
 
-  it("leaves ordinary text paste browser-owned", () => {
+  it("keeps ordinary text paste out of image import", () => {
     const importClipboardImages = vi.fn().mockResolvedValue(undefined);
     const workspace = workspaceValue({ importClipboardImages });
     renderPane(workspace, vi.fn().mockResolvedValue(vi.fn()));
-    const title = document.querySelector<HTMLTextAreaElement>(
-      '[data-outline-id="first"] textarea.notes-node-title'
-    )!;
+    const title = ordinaryTitleEditor("first");
+    activateTitleEditor(title);
 
     const event = pasteClipboardItems(title, [
       clipboardItem("text/plain", null),
       clipboardItem("text/html", null)
     ]);
 
-    expect(event.defaultPrevented).toBe(false);
+    expect(event.defaultPrevented).toBe(true);
     expect(importClipboardImages).not.toHaveBeenCalled();
   });
 
@@ -994,9 +1018,7 @@ describe("Notes image ingest", () => {
       workspaceValue({ importClipboardImages }),
       vi.fn().mockResolvedValue(vi.fn())
     );
-    const title = document.querySelector(
-      '[data-outline-id="first"] textarea.notes-node-title'
-    )!;
+    const title = ordinaryTitleEditor("first");
 
     pasteClipboardItems(title, [
       clipboardItem(
@@ -1039,7 +1061,7 @@ describe("Notes image ingest", () => {
       vi.fn().mockResolvedValue(vi.fn())
     );
     const title = document.querySelector(
-      '[data-outline-id="first"] textarea.notes-node-title'
+      '[data-outline-id="first"] [data-notes-bullet-title]'
     )!;
 
     pasteClipboardItems(title, [
@@ -1088,7 +1110,7 @@ describe("Notes image ingest", () => {
       vi.fn().mockResolvedValue(vi.fn())
     );
     const title = document.querySelector(
-      '[data-outline-id="first"] textarea.notes-node-title'
+      '[data-outline-id="first"] [data-notes-bullet-title]'
     )!;
 
     try {
@@ -1127,7 +1149,7 @@ describe("Notes image ingest", () => {
         vi.fn().mockResolvedValue(vi.fn())
       );
       const title = document.querySelector(
-        '[data-outline-id="first"] textarea.notes-node-title'
+        '[data-outline-id="first"] [data-notes-bullet-title]'
       )!;
       pasteClipboardItems(title, [
         clipboardItem(
@@ -1159,7 +1181,7 @@ describe("Notes image ingest", () => {
       vi.fn().mockResolvedValue(vi.fn())
     );
     const title = document.querySelector(
-      '[data-outline-id="first"] textarea.notes-node-title'
+      '[data-outline-id="first"] [data-notes-bullet-title]'
     )!;
     pasteClipboardItems(title, [
       clipboardItem(
@@ -1191,7 +1213,7 @@ describe("Notes image ingest", () => {
       vi.fn().mockResolvedValue(vi.fn())
     );
     const title = document.querySelector(
-      '[data-outline-id="first"] textarea.notes-node-title'
+      '[data-outline-id="first"] [data-notes-bullet-title]'
     )!;
     pasteClipboardItems(title, [
       clipboardItem(
@@ -1339,13 +1361,9 @@ describe("Notes image ingest", () => {
       nodeIds: Object.keys(workspace.state.nodesById)
     });
     renderPane(workspace, vi.fn().mockResolvedValue(vi.fn()));
-    const title = document.querySelector<HTMLTextAreaElement>(
-      '[data-outline-id="first"] textarea.notes-node-title'
-    )!;
-    act(() => {
-      title.focus();
-      title.setSelectionRange(0, 2);
-    });
+    const title = ordinaryTitleEditor("first");
+    activateTitleEditor(title, 0, 2);
+    expectTitleSelection(title, 0, 2);
     const readable = new File(["readable"], "readable.png", {
       type: "image/png"
     });
@@ -1364,8 +1382,7 @@ describe("Notes image ingest", () => {
       screen.getAllByRole("alert", { name: "Image paste failed" })
     ).toHaveLength(1);
     expect(document.activeElement).toBe(title);
-    expect(title.selectionStart).toBe(0);
-    expect(title.selectionEnd).toBe(2);
+    expectTitleSelection(title, 0, 2);
     expect(workspace.state.selectedId).toBe(selectedIdBefore);
     expect(workspace.state.nodesById.first.isCollapsed).toBe(collapsedBefore);
     expect(
@@ -1388,7 +1405,7 @@ describe("Notes image ingest", () => {
       vi.fn().mockResolvedValue(vi.fn())
     );
     const title = document.querySelector(
-      '[data-outline-id="first"] textarea.notes-node-title'
+      '[data-outline-id="first"] [data-notes-bullet-title]'
     )!;
     const png = new File(["png"], "", { type: "image/png" });
     const heic = new File(["heic"], "", { type: "image/heic" });
@@ -1432,7 +1449,7 @@ describe("Notes image ingest", () => {
       vi.fn().mockResolvedValue(vi.fn())
     );
     const title = document.querySelector(
-      '[data-outline-id="first"] textarea.notes-node-title'
+      '[data-outline-id="first"] [data-notes-bullet-title]'
     )!;
     const image = new File(["png"], "image.png", { type: "image/png" });
 
@@ -1563,7 +1580,7 @@ describe("Notes image ingest", () => {
       await screen.findByRole("alert", { name: "Image drop failed" })
     ).toHaveTextContent("native listener unavailable");
     const title = document.querySelector(
-      '[data-outline-id="first"] textarea.notes-node-title'
+      '[data-outline-id="first"] [data-notes-bullet-title]'
     )!;
 
     const event = pasteClipboardItems(title, [
@@ -1599,7 +1616,7 @@ describe("Notes image ingest", () => {
     const firstRow = document.querySelector<HTMLElement>(
       '[data-outline-id="first"]'
     )!;
-    const firstTitle = firstRow.querySelector("textarea.notes-node-title")!;
+    const firstTitle = firstRow.querySelector("[data-notes-bullet-title]")!;
     expect(firstRow).toHaveAttribute("data-notes-attachment-target", "first");
 
     pasteClipboardItems(firstTitle, [
@@ -1789,12 +1806,8 @@ function textPasteEventInit(text: string) {
   return pasteEventInit([], text);
 }
 
-function titleTextarea(id: string): HTMLTextAreaElement {
-  return document
-    .querySelector(`[data-outline-id="${id}"]`)!
-    .querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="Edit node title"]'
-    )!;
+function titleEditor(id: string): HTMLDivElement {
+  return ordinaryTitleEditor(id);
 }
 
 function noteTextarea(id: string, label: string): HTMLTextAreaElement {
@@ -1816,7 +1829,7 @@ describe("clipboard Notes image paste ingest", () => {
     const file = pngFile("title-shot.png");
 
     const notPrevented = fireEvent.paste(
-      titleTextarea("first"),
+      titleEditor("first"),
       pasteEventInit([
         { kind: "file", type: "image/png", getAsFile: () => file }
       ])
@@ -1851,34 +1864,34 @@ describe("clipboard Notes image paste ingest", () => {
     ]);
   });
 
-  it("leaves a text-only paste to the browser without importing", () => {
+  it("leaves a text-only paste to the title editor without importing", () => {
     const importClipboardImages = vi.fn().mockResolvedValue(undefined);
     renderPane(workspaceValue({ importClipboardImages }), idleSubscribe());
 
     const notPrevented = fireEvent.paste(
-      titleTextarea("first"),
+      titleEditor("first"),
       pasteEventInit([
         { kind: "string", type: "text/plain", getAsFile: () => null }
       ])
     );
 
-    expect(notPrevented).toBe(true);
+    expect(notPrevented).toBe(false);
     expect(importClipboardImages).not.toHaveBeenCalled();
   });
 
-  it("falls back to the browser when clipboard extraction reports a hard error", () => {
+  it("falls back to the title editor when clipboard extraction reports a hard error", () => {
     const importClipboardImages = vi.fn().mockResolvedValue(undefined);
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     renderPane(workspaceValue({ importClipboardImages }), idleSubscribe());
 
     const notPrevented = fireEvent.paste(
-      titleTextarea("first"),
+      titleEditor("first"),
       pasteEventInit([
         { kind: "string", type: "image/png", getAsFile: () => null }
       ])
     );
 
-    expect(notPrevented).toBe(true);
+    expect(notPrevented).toBe(false);
     expect(importClipboardImages).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });
@@ -1889,7 +1902,7 @@ describe("clipboard Notes image paste ingest", () => {
     renderPane(workspaceValue({ importClipboardImages }), idleSubscribe());
 
     const notPrevented = fireEvent.paste(
-      titleTextarea("first"),
+      titleEditor("first"),
       pasteEventInit([
         {
           kind: "file",
@@ -1915,13 +1928,13 @@ describe("clipboard Notes image paste ingest", () => {
     const file = pngFile("blocked.png");
 
     const notPrevented = fireEvent.paste(
-      titleTextarea("first"),
+      titleEditor("first"),
       pasteEventInit([
         { kind: "file", type: "image/png", getAsFile: () => file }
       ])
     );
 
-    expect(notPrevented).toBe(true);
+    expect(notPrevented).toBe(false);
     expect(importClipboardImages).not.toHaveBeenCalled();
   });
 
@@ -1933,13 +1946,13 @@ describe("clipboard Notes image paste ingest", () => {
     const file = pngFile("no-capability.png");
 
     const notPrevented = fireEvent.paste(
-      titleTextarea("first"),
+      titleEditor("first"),
       pasteEventInit([
         { kind: "file", type: "image/png", getAsFile: () => file }
       ])
     );
 
-    expect(notPrevented).toBe(true);
+    expect(notPrevented).toBe(false);
   });
 });
 
@@ -1949,7 +1962,7 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
     renderPane(workspaceValue({ importSubtree }), idleSubscribe());
 
     const notPrevented = fireEvent.paste(
-      titleTextarea("second"),
+      titleEditor("second"),
       textPasteEventInit("Parent\n\tChild")
     );
 
@@ -1969,7 +1982,7 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
 
     // "first" already has one child ("child"); the import should land after it.
     const notPrevented = fireEvent.paste(
-      titleTextarea("first"),
+      titleEditor("first"),
       textPasteEventInit("Alpha\nBeta")
     );
 
@@ -1980,16 +1993,16 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
     ]);
   });
 
-  it("leaves a single-line paste to the default browser paste (not an import)", () => {
+  it("leaves a single-line paste to the title editor (not an import)", () => {
     const importSubtree = vi.fn().mockResolvedValue("committed");
     renderPane(workspaceValue({ importSubtree }), idleSubscribe());
 
     const notPrevented = fireEvent.paste(
-      titleTextarea("second"),
+      titleEditor("second"),
       textPasteEventInit("Just one line")
     );
 
-    expect(notPrevented).toBe(true);
+    expect(notPrevented).toBe(false);
     expect(importSubtree).not.toHaveBeenCalled();
   });
 
@@ -2003,7 +2016,7 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
     const file = pngFile("both.png");
 
     const notPrevented = fireEvent.paste(
-      titleTextarea("second"),
+      titleEditor("second"),
       pasteEventInit(
         [{ kind: "file", type: "image/png", getAsFile: () => file }],
         "Parent\n\tChild"
@@ -2023,11 +2036,11 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
     );
 
     const notPrevented = fireEvent.paste(
-      titleTextarea("second"),
+      titleEditor("second"),
       textPasteEventInit("Parent\n\tChild")
     );
 
-    expect(notPrevented).toBe(true);
+    expect(notPrevented).toBe(false);
     expect(importSubtree).not.toHaveBeenCalled();
   });
 
@@ -2600,7 +2613,6 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
     );
     renderPane(workspace, idleSubscribe());
     const first = document.querySelector<HTMLElement>('[data-outline-id="first"]')!;
-    const second = document.querySelector<HTMLElement>('[data-outline-id="second"]')!;
     const editor = within(first).getByRole("textbox", { name: "Image note" });
     const before = editor.querySelector<HTMLElement>('[data-image-atom-region="before"]')!;
 
@@ -2608,7 +2620,7 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
       fireEvent.pointerDown(before, { button: 0, buttons: 1, pointerId: 7 });
       Object.defineProperty(document, "elementFromPoint", {
         configurable: true,
-        value: vi.fn(() => second.querySelector("textarea"))
+        value: vi.fn(() => ordinaryTitleEditor("second"))
       });
       fireEvent.pointerMove(before, {
         buttons: 1,

@@ -257,6 +257,7 @@ export const NotesBulletTitleEditor = forwardRef<
   const [editing, setEditingState] = useState(false);
   const [publishedSource, setPublishedSource] = useState(source);
   const lastPublishedSourceRef = useRef(source);
+  const lastSourcePropRef = useRef(source);
   const [slashMenu, setSlashMenu] = useState<SlashCommandMenuState | null>(
     null
   );
@@ -345,7 +346,9 @@ export const NotesBulletTitleEditor = forwardRef<
   }, [editing]);
 
   useEffect(() => {
-    if (editing || source === lastPublishedSourceRef.current) return;
+    if (editing || source === lastSourcePropRef.current) return;
+    lastSourcePropRef.current = source;
+    if (source === lastPublishedSourceRef.current) return;
     lastPublishedSourceRef.current = source;
     setPublishedSource(source);
   }, [editing, source]);
@@ -637,15 +640,19 @@ export const NotesBulletTitleEditor = forwardRef<
           ) {
             return;
           }
+          const wasEditing = editingRef.current;
           setSlashMenu(null);
           if (composingRef.current) {
             blurredDuringCompositionRef.current = true;
             void flush();
           } else {
             publishNow();
-            setEditing(false);
+            if (wasEditing) {
+              event.currentTarget.replaceChildren();
+              setEditing(false);
+            }
           }
-          onBlur?.(event);
+          if (wasEditing) onBlur?.(event);
         }}
         onInput={handleInput}
         onKeyDown={handleKeyDown}
@@ -664,6 +671,7 @@ export const NotesBulletTitleEditor = forwardRef<
           }
           if (blurredDuringCompositionRef.current) {
             blurredDuringCompositionRef.current = false;
+            rootRef.current?.replaceChildren();
             setEditing(false);
           }
         }}

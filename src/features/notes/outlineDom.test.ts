@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { outlineTitleTextarea } from "./outlineDom";
+import { outlineTitleEditor } from "./outlineDom";
 
 describe("outlineDom", () => {
   it("finds the title textarea for the matching outline row", () => {
@@ -15,7 +15,21 @@ describe("outlineDom", () => {
 
     const secondTitle = root.querySelectorAll("textarea")[1];
 
-    expect(outlineTitleTextarea(root, "second")).toBe(secondTitle);
-    expect(outlineTitleTextarea(root, "missing")).toBeNull();
+    expect(outlineTitleEditor(root, "second")).toBe(secondTitle);
+    expect(outlineTitleEditor(root, "missing")).toBeNull();
+  });
+
+  it("prefers the live title root over a specialized textarea", () => {
+    const root = document.createElement("section");
+    root.innerHTML = `
+      <div data-outline-id="row">
+        <textarea class="notes-node-title"></textarea>
+        <div data-notes-bullet-title></div>
+      </div>
+    `;
+
+    expect(outlineTitleEditor(root, "row")).toBe(
+      root.querySelector("[data-notes-bullet-title]"),
+    );
   });
 });

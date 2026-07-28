@@ -127,6 +127,22 @@ describe("NotesBulletTitleEditor", () => {
     expect(onPublish).toHaveBeenCalledWith("after");
   });
 
+  it("hands one source node back to the resting presentation on blur", () => {
+    const onBlur = vi.fn();
+    const { root, onPublish } = renderEditor({ onBlur });
+    activate(root);
+    inputSource(root, "after");
+
+    fireEvent.blur(root);
+    fireEvent.blur(root);
+
+    expect(onPublish).toHaveBeenCalledWith("after");
+    expect(root).toHaveAttribute("contenteditable", "false");
+    expect(root).toHaveTextContent("after");
+    expect(root.textContent).toBe("after");
+    expect(onBlur).toHaveBeenCalledOnce();
+  });
+
   it("restarts one timer for multiple inputs without rerendering its parent", () => {
     let parentRenders = 0;
     const onPublish = vi.fn();

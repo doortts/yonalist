@@ -1,4 +1,5 @@
 import { createElement, Profiler, type ReactNode } from "react";
+import { readPlainText } from "./plainTextContenteditable";
 
 /**
  * Dev-only instrumentation for split, caret, and row-render latency. Records
@@ -541,7 +542,9 @@ export function installNotesSplitInputBenchmarkCollector(
           const title = row.querySelector<HTMLElement>(TITLE_EDITOR_SELECTOR);
           return title instanceof HTMLTextAreaElement
             ? title.value
-            : title?.textContent ?? "";
+            : title
+              ? readPlainText(title)
+              : "";
         })(),
         note: row.querySelector<HTMLTextAreaElement>("textarea.notes-node-note")?.value ?? ""
       })),
@@ -671,7 +674,7 @@ export function installNotesSplitInputBenchmarkCollector(
         showValue(
           JSON.stringify({
             panes: document.querySelectorAll("[data-notes-pane-id]").length,
-            titleFields: document.querySelectorAll("textarea.notes-node-title").length,
+            titleFields: document.querySelectorAll(TITLE_EDITOR_SELECTOR).length,
             openSplitButtons: document.querySelectorAll(
               'button[aria-label="Open split view"]'
             ).length,
@@ -881,7 +884,9 @@ export function markNotesSplitInputBenchmarkPaneCommit(
         const title = row.querySelector<HTMLElement>(TITLE_EDITOR_SELECTOR);
         return title instanceof HTMLTextAreaElement
           ? title.value
-          : title?.textContent ?? "";
+          : title
+            ? readPlainText(title)
+            : "";
       })(),
       note: row.querySelector<HTMLTextAreaElement>("textarea.notes-node-note")?.value ?? ""
     })),

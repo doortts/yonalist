@@ -14,7 +14,7 @@ import {
   type NotesHeldBackspaceRepeatController,
 } from "./notesHeldBackspaceRepeat";
 import type { NotesPaneId } from "./notesPaneSession";
-import { outlineTitleTextarea } from "./outlineDom";
+import { outlineTitleEditor } from "./outlineDom";
 import {
   detectOutlineShortcutPlatform,
   resolveOutlineKey,
@@ -25,12 +25,31 @@ import type {
   NotesNodeDraft,
   NotesStateSlice,
 } from "./useNotesWorkspace";
+import {
+  readPlainText,
+  readPlainTextSelection,
+  replacePlainText,
+  restorePlainTextSelection,
+} from "./plainTextContenteditable";
 
 function dispatchHeldBackspaceInput(
-  target: HTMLTextAreaElement,
+  target: HTMLTextAreaElement | HTMLDivElement,
   value: string,
   caretUtf16: number,
 ): void {
+  if (target instanceof HTMLDivElement) {
+    replacePlainText(target, value, {
+      anchorUtf16: caretUtf16,
+      focusUtf16: caretUtf16,
+    });
+    target.dispatchEvent(
+      new InputEvent("input", {
+        bubbles: true,
+        inputType: "deleteContentBackward",
+      }),
+    );
+    return;
+  }
   const nativeValueSetter = Object.getOwnPropertyDescriptor(
     HTMLTextAreaElement.prototype,
     "value",
@@ -42,6 +61,43 @@ function dispatchHeldBackspaceInput(
   }
   target.setSelectionRange(caretUtf16, caretUtf16);
   target.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+function editorSource(editor: HTMLTextAreaElement | HTMLDivElement): string {
+  return editor instanceof HTMLTextAreaElement
+    ? editor.value
+    : readPlainText(editor);
+}
+
+function editorSelection(
+  editor: HTMLTextAreaElement | HTMLDivElement,
+  source: string,
+): { readonly start: number; readonly end: number } {
+  if (editor instanceof HTMLTextAreaElement) {
+    return { start: editor.selectionStart, end: editor.selectionEnd };
+  }
+  const selection = readPlainTextSelection(editor);
+  return selection
+    ? {
+        start: Math.min(selection.anchorUtf16, selection.focusUtf16),
+        end: Math.max(selection.anchorUtf16, selection.focusUtf16),
+      }
+    : { start: source.length, end: source.length };
+}
+
+function focusEditor(
+  editor: HTMLTextAreaElement | HTMLDivElement,
+  caretUtf16: number,
+): void {
+  editor.focus();
+  if (editor instanceof HTMLTextAreaElement) {
+    editor.setSelectionRange(caretUtf16, caretUtf16);
+  } else {
+    restorePlainTextSelection(editor, {
+      anchorUtf16: caretUtf16,
+      focusUtf16: caretUtf16,
+    });
+  }
 }
 
 interface NotesHeldBackspaceRepeatOptions {
@@ -63,7 +119,7 @@ export interface NotesHeldBackspaceRepeat {
     token: number,
     nodeId: NoteId,
     repeat: boolean,
-    releaseTarget: HTMLTextAreaElement,
+    releaseTarget: HTMLTextAreaElement | HTMLDivElement,
   ): "native" | "consume";
   stop(): void;
 }
@@ -109,8 +165,14 @@ export function useNotesHeldBackspaceRepeat(
       : gesture.focusNodeId;
     if (nodeId === null || !projectedIds.has(nodeId)) return false;
     const contentRoot = current.getContentRoot();
-    const title = outlineTitleTextarea(contentRoot, nodeId);
-    if (!title || title.disabled || title.readOnly) return false;
+    const title = outlineTitleEditor(contentRoot, nodeId);
+    if (
+      !title ||
+      (title instanceof HTMLTextAreaElement &&
+        (title.disabled || title.readOnly))
+    ) {
+      return false;
+    }
     const activeElement = document.activeElement;
     if (
       activeElement !== null &&
@@ -123,24 +185,27 @@ export function useNotesHeldBackspaceRepeat(
     ) {
       return false;
     }
-    title.focus();
+    const source = editorSource(title);
     if (route.caretUtf16 !== undefined) {
-      const caretUtf16 = Math.min(route.caretUtf16, title.value.length);
-      title.setSelectionRange(caretUtf16, caretUtf16);
+      focusEditor(title, Math.min(route.caretUtf16, source.length));
+    } else {
+      title.focus();
     }
 
-    const selectionStart = title.selectionStart;
-    const selectionEnd = title.selectionEnd;
+    const { start: selectionStart, end: selectionEnd } = editorSelection(
+      title,
+      source,
+    );
     if (
       selectionStart !== selectionEnd ||
-      (selectionStart > 0 && title.value.length > 0)
+      (selectionStart > 0 && source.length > 0)
     ) {
       const deleteStart =
         selectionStart === selectionEnd
-          ? previousGraphemeBoundary(title.value, selectionStart)
+          ? previousGraphemeBoundary(source, selectionStart)
           : selectionStart;
       const nextValue =
-        title.value.slice(0, deleteStart) + title.value.slice(selectionEnd);
+        source.slice(0, deleteStart) + source.slice(selectionEnd);
       current.actions.touchBackspaceGesture?.(gesture.token, nodeId);
       dispatchHeldBackspaceInput(title, nextValue, deleteStart);
       return true;
@@ -160,7 +225,7 @@ export function useNotesHeldBackspaceRepeat(
       repeat: true,
       selectionStart,
       selectionEnd,
-      title: title.value,
+      title: source,
       note: draft?.note ?? node.note,
       nodeId,
       platform: detectOutlineShortcutPlatform(),
@@ -183,15 +248,19 @@ export function useNotesHeldBackspaceRepeat(
       const focusAtEnd =
         visibleIndex > 0 &&
         current.visibleNodeIds[visibleIndex - 1] === focusNodeId;
-      const focusTarget = outlineTitleTextarea(
+      const focusTarget = outlineTitleEditor(
         current.getContentRoot(),
         focusNodeId,
       );
-      focusUtf16 = focusAtEnd && focusTarget ? focusTarget.value.length : 0;
-      if (focusTarget && !focusTarget.disabled && !focusTarget.readOnly) {
+      focusUtf16 =
+        focusAtEnd && focusTarget ? editorSource(focusTarget).length : 0;
+      if (
+        focusTarget &&
+        (!(focusTarget instanceof HTMLTextAreaElement) ||
+          (!focusTarget.disabled && !focusTarget.readOnly))
+      ) {
         current.actions.releaseEditingFocus?.();
-        focusTarget.focus();
-        focusTarget.setSelectionRange(focusUtf16, focusUtf16);
+        focusEditor(focusTarget, focusUtf16);
       }
       void current.actions.focusNode(focusNodeId, {
         anchorUtf16: focusUtf16,
@@ -224,7 +293,7 @@ export function useNotesHeldBackspaceRepeat(
       token: number,
       nodeId: NoteId,
       repeat: boolean,
-      releaseTarget: HTMLTextAreaElement,
+      releaseTarget: HTMLTextAreaElement | HTMLDivElement,
     ): "native" | "consume" => {
       routeRef.current = { token, focusNodeId: nodeId };
       return controller.handleKeyDown(token, repeat, releaseTarget);

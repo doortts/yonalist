@@ -135,7 +135,15 @@ import {
 } from "./notesMoveTargets";
 import { tokenizeNoteText } from "./noteTokens";
 import { buildTodoProgressMap } from "./notesTodoProgress";
-import { outlineTitleTextarea } from "./outlineDom";
+import { outlineTitleEditor } from "./outlineDom";
+import {
+  focusOutlineEditorDom,
+  type OutlineCaretEdge,
+} from "./outlineDomFocus";
+import {
+  readPlainText,
+  readPlainTextSelection,
+} from "./plainTextContenteditable";
 import {
   derivePreparedOutlineSelectionDropPreview,
   deriveOutlineDropPreview,
@@ -1757,10 +1765,14 @@ export function NotesOutlinePane({
   const lastGithubEditorFocusRef = useRef<GithubEditorFocusKey | null>(null);
   const previousGithubFocusOrderRef = useRef(githubProjection.editorFocusKeys);
   const githubEditorElement = useCallback(
-    (key: GithubEditorFocusKey): HTMLTextAreaElement | undefined => {
+    (
+      key: GithubEditorFocusKey,
+    ): HTMLTextAreaElement | HTMLDivElement | undefined => {
       const editors = Array.from(
-        contentRef.current?.querySelectorAll<HTMLTextAreaElement>(
-          ".notes-external-children textarea",
+        contentRef.current?.querySelectorAll<
+          HTMLTextAreaElement | HTMLDivElement
+        >(
+          ".notes-external-children :is(textarea, [data-notes-bullet-title])",
         ) ?? [],
       );
       return key.kind === "stored"
@@ -1778,9 +1790,26 @@ export function NotesOutlinePane({
     [],
   );
   const focusGithubEditor = useCallback(
-    (key: GithubEditorFocusKey): boolean => {
+    (key: GithubEditorFocusKey, edge: OutlineCaretEdge | null = null): boolean => {
       const editor = githubEditorElement(key);
+      const content = contentRef.current;
+      if (
+        editor instanceof HTMLDivElement &&
+        content &&
+        key.kind === "stored"
+      ) {
+        return focusOutlineEditorDom(
+          content,
+          key.nodeId,
+          key.field,
+          edge,
+        );
+      }
       editor?.focus();
+      if (editor instanceof HTMLTextAreaElement && edge !== null) {
+        const offset = edge === "start" ? 0 : editor.value.length;
+        editor.setSelectionRange(offset, offset);
+      }
       return editor !== undefined;
     },
     [githubEditorElement],
@@ -2468,9 +2497,14 @@ export function NotesOutlinePane({
   const focusBodyTitle = useCallback(
     (nodeId: NoteId): void => {
       noteOutlineActivity();
-      const title = outlineTitleTextarea(contentRef.current, nodeId);
+      const title = outlineTitleEditor(contentRef.current, nodeId);
       if (title) {
         title.focus();
+        if (title instanceof HTMLDivElement) {
+          title.dispatchEvent(
+            new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }),
+          );
+        }
         return;
       }
       setDeferredDirectFocusId(nodeId);
@@ -2479,7 +2513,16 @@ export function NotesOutlinePane({
   );
   useLayoutEffect(() => {
     if (deferredDirectFocusId === null) return;
-    outlineTitleTextarea(contentRef.current, deferredDirectFocusId)?.focus();
+    const title = outlineTitleEditor(
+      contentRef.current,
+      deferredDirectFocusId,
+    );
+    title?.focus();
+    if (title instanceof HTMLDivElement) {
+      title.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }),
+      );
+    }
     setDeferredDirectFocusId(null);
   }, [deferredDirectFocusId]);
   useEffect(() => {
@@ -2924,7 +2967,11 @@ export function NotesOutlinePane({
   const handleGithubCompositeKeyDownCapture = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>): boolean => {
       const target =
-        event.target instanceof HTMLTextAreaElement ? event.target : null;
+        event.target instanceof HTMLTextAreaElement ||
+        (event.target instanceof HTMLDivElement &&
+          event.target.hasAttribute("data-notes-bullet-title"))
+          ? event.target
+          : null;
       if (
         target === null ||
         target.closest(".notes-external-children") === null ||
@@ -2939,6 +2986,26 @@ export function NotesOutlinePane({
       }
       const field =
         target.dataset.githubEditorField === "note" ? "note" : "title";
+      const selection =
+        target instanceof HTMLTextAreaElement
+          ? {
+              start: target.selectionStart,
+              end: target.selectionEnd,
+              value: target.value,
+            }
+          : (() => {
+              const range = readPlainTextSelection(target);
+              const value = readPlainText(target);
+              return {
+                start: range
+                  ? Math.min(range.anchorUtf16, range.focusUtf16)
+                  : value.length,
+                end: range
+                  ? Math.max(range.anchorUtf16, range.focusUtf16)
+                  : value.length,
+                value,
+              };
+            })();
       const resolution = resolveExternalEditorKey({
         field,
         key: event.key,
@@ -2948,9 +3015,9 @@ export function NotesOutlinePane({
         shiftKey: event.shiftKey,
         isComposing: event.nativeEvent.isComposing,
         repeat: event.repeat,
-        selectionStart: target.selectionStart,
-        selectionEnd: target.selectionEnd,
-        value: target.value,
+        selectionStart: selection.start,
+        selectionEnd: selection.end,
+        value: selection.value,
       });
       if (resolution?.type !== "focus") {
         return false;
@@ -2990,18 +3057,16 @@ export function NotesOutlinePane({
           githubProjection.editorFocusKeys[index]!,
         );
         if (next) {
-          next.focus();
-          if (resolution.edge === "end") {
-            next.setSelectionRange(next.value.length, next.value.length);
-          } else if (resolution.edge === "start") {
-            next.setSelectionRange(0, 0);
-          }
+          focusGithubEditor(
+            githubProjection.editorFocusKeys[index]!,
+            resolution.edge,
+          );
           break;
         }
       }
       return true;
     },
-    [githubEditorElement, githubProjection.editorFocusKeys],
+    [focusGithubEditor, githubEditorElement, githubProjection.editorFocusKeys],
   );
   const handleSelectionKeyDownCapture = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>): void => {
@@ -3041,7 +3106,9 @@ export function NotesOutlinePane({
         return;
       }
       const editor =
-        event.target instanceof HTMLTextAreaElement
+        event.target instanceof HTMLElement &&
+        (event.target instanceof HTMLTextAreaElement ||
+          event.target.matches("[data-notes-bullet-title]"))
           ? event.target.closest<HTMLElement>("[data-outline-id]")
           : null;
       if (

@@ -1366,10 +1366,6 @@
   transform: translateY(var(--notes-text-edit-offset));
 }
 
-.notes-node-title-field > textarea {
-  transform: none;
-}
-
 .notes-text-field[data-stable-presentation="true"] > textarea {
   transform: translateY(var(--notes-stable-caret-offset, 0));
 }
@@ -2128,6 +2124,14 @@ button.notes-date-token:hover {
   font-size: 16px;
   font-weight: 400;
   line-height: 25px;
+}
+
+.notes-node-title[data-notes-bullet-title] {
+  box-sizing: border-box;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  outline: 0;
 }
 
 .notes-node-title-field[data-markdown-level] > .notes-node-title {

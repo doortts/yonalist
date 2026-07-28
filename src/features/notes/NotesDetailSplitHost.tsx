@@ -35,6 +35,7 @@ const RATIO_STEP = 0.02;
 const PRIMARY_EDITOR_SELECTOR = [
   "textarea.notes-page-title:not(:disabled):not([readonly])",
   "textarea.notes-page-note:not(:disabled):not([readonly])",
+  "[data-notes-bullet-title]:not([aria-disabled='true']):not([aria-readonly='true'])",
   "textarea.notes-node-title:not(:disabled):not([readonly])",
   "textarea.notes-node-note:not(:disabled):not([readonly])",
   ".notes-image-atom-editor[contenteditable='true']"
@@ -179,18 +180,28 @@ export function NotesDetailSplitHost() {
   );
 
   const focusPrimaryEditor = useCallback(() => {
+    const focus = (editor: HTMLElement) => {
+      editor.focus();
+      if (editor.matches("[data-notes-bullet-title]")) {
+        editor.dispatchEvent(
+          new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }),
+        );
+      }
+    };
     const remembered = lastPrimaryEditorRef.current;
     if (remembered?.isConnected && remembered.matches(PRIMARY_EDITOR_SELECTOR)) {
-      remembered.focus();
+      focus(remembered);
       return;
     }
     const fallback = primaryPaneRef.current?.querySelector<HTMLElement>(
       [
         "textarea.notes-page-title:not(:disabled):not([readonly])",
+        "[data-notes-bullet-title]:not([aria-disabled='true']):not([aria-readonly='true'])",
         "textarea.notes-node-title:not(:disabled):not([readonly])"
       ].join(",")
     );
-    (fallback ?? splitOpenButtonRef.current)?.focus();
+    const target = fallback ?? splitOpenButtonRef.current;
+    if (target) focus(target);
   }, []);
 
   const openSplit = useCallback(() => {

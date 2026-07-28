@@ -918,7 +918,7 @@ export function useNotesWorkspace({
     updateNodeDraft,
     flushNodeDraft,
     beginBackspaceDraftLease,
-    registerImageAtomFlushAdapter,
+    registerEditorFlushAdapter,
     retryFailedDraft,
     retryLastFailedWrite,
     flushAllDraftsBeforeStructural,
@@ -1235,7 +1235,7 @@ export function useNotesWorkspace({
           updateNodeDraft(nodeId, patch, field);
         }
       },
-      registerImageAtomFlushAdapter,
+      registerEditorFlushAdapter,
       flushNodeDraft: (nodeId) =>
         writesUnavailable() ? Promise.resolve(false) : flushNodeDraft(nodeId),
       flushAllDrafts: () =>
@@ -1318,7 +1318,7 @@ export function useNotesWorkspace({
     applyImageAtomEdit,
     applyImageAtomPaste,
     updateNodeDraft,
-    registerImageAtomFlushAdapter,
+    registerEditorFlushAdapter,
     flushNodeDraft,
     flushAllDraftsBeforeStructural,
     moveNode,

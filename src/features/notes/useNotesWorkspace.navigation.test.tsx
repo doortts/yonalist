@@ -1941,7 +1941,7 @@ describe("Task 6 undoable navigation boundary", () => {
     }
   });
 
-  it("exposes a workspace-scoped image editor flush registrar that persists its exact draft triple", async () => {
+  it("exposes a workspace-scoped editor flush registrar that persists its exact draft triple", async () => {
     const updateNode = vi.fn().mockResolvedValue(
       workspace([node({ id: "root", title: "beforeafter", imageOffsetUtf16: 6 })])
     );
@@ -1966,8 +1966,8 @@ describe("Task 6 undoable navigation boundary", () => {
       })
     };
     const register = (result.current.actions as unknown as {
-      registerImageAtomFlushAdapter?: (adapter: ImageAdapter) => () => void;
-    }).registerImageAtomFlushAdapter;
+      registerEditorFlushAdapter?: (adapter: ImageAdapter) => () => void;
+    }).registerEditorFlushAdapter;
 
     expect(register).toEqual(expect.any(Function));
     const unregister = register!(adapter);
@@ -2005,11 +2005,11 @@ describe("Task 6 undoable navigation boundary", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const register = (result.current.actions as unknown as {
-      registerImageAtomFlushAdapter?: (adapter: {
+      registerEditorFlushAdapter?: (adapter: {
         nodeId: string;
         flush(): Promise<"cancelled">;
       }) => () => void;
-    }).registerImageAtomFlushAdapter;
+    }).registerEditorFlushAdapter;
 
     register!({ nodeId: "root", flush: async () => "cancelled" });
     await act(async () =>
@@ -2031,11 +2031,11 @@ describe("Task 6 undoable navigation boundary", () => {
     );
     await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
     const oldRegister = (rendered.result.current.actions as unknown as {
-      registerImageAtomFlushAdapter?: (adapter: {
+      registerEditorFlushAdapter?: (adapter: {
         nodeId: string;
         flush(): Promise<"flushed">;
       }) => () => void;
-    }).registerImageAtomFlushAdapter;
+    }).registerEditorFlushAdapter;
     const unregisterOld = oldRegister!({
       nodeId: "root",
       flush: async () => "flushed"
@@ -2044,11 +2044,11 @@ describe("Task 6 undoable navigation boundary", () => {
     rendered.rerender({ vaultRoot: "/image-atom-session-b" });
     await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
     const currentRegister = (rendered.result.current.actions as unknown as {
-      registerImageAtomFlushAdapter?: (adapter: {
+      registerEditorFlushAdapter?: (adapter: {
         nodeId: string;
         flush(): Promise<"flushed">;
       }) => () => void;
-    }).registerImageAtomFlushAdapter;
+    }).registerEditorFlushAdapter;
     const current = { nodeId: "root", flush: vi.fn().mockResolvedValue("flushed" as const) };
     const unregisterCurrent = currentRegister!(current);
 
@@ -2068,7 +2068,7 @@ describe("Task 6 undoable navigation boundary", () => {
       useNotesWorkspace({ vaultRoot: "/image-atom-unmount", repository: store })
     );
     await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
-    rendered.result.current.actions.registerImageAtomFlushAdapter!({
+    rendered.result.current.actions.registerEditorFlushAdapter!({
       nodeId: "root",
       flush
     });
@@ -2098,7 +2098,7 @@ describe("Task 6 undoable navigation boundary", () => {
       { initialProps: { vaultRoot: "/old-image" } }
     );
     await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
-    rendered.result.current.actions.registerImageAtomFlushAdapter!({
+    rendered.result.current.actions.registerEditorFlushAdapter!({
       nodeId: "old-root",
       flush: oldFlush
     });

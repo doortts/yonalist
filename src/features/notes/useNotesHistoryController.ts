@@ -1035,7 +1035,7 @@ export function useNotesHistoryController({
     updateNodeDraft,
     flushNodeDraft,
     beginBackspaceDraftLease,
-    registerImageAtomFlushAdapter,
+    registerEditorFlushAdapter,
     retryFailedDraft,
     retryLastFailedWrite,
     flushAllDraftsBeforeStructural
@@ -1488,7 +1488,7 @@ export function useNotesHistoryController({
     updateNodeDraft,
     flushNodeDraft,
     beginBackspaceDraftLease,
-    registerImageAtomFlushAdapter,
+    registerEditorFlushAdapter,
     retryFailedDraft,
     retryLastFailedWrite,
     flushAllDraftsBeforeStructural,

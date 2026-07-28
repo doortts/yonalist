@@ -1074,7 +1074,7 @@ export function NotesPageHeader({
                   }}
                   attachment={primaryImageAttachment}
                   onDraftChange={updateImageDraft}
-                  registerFlushAdapter={actions.registerImageAtomFlushAdapter}
+                  registerFlushAdapter={actions.registerEditorFlushAdapter}
                   registerActiveEditor={registerActiveImageAtomEditor}
                   onFocusLeave={
                     contentProtected ? restoreProtectedDraft : undefined

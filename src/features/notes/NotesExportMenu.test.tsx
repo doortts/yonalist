@@ -34,6 +34,10 @@ import type {
   UseNotesWorkspaceResult
 } from "./useNotesWorkspace";
 import { useNotesWorkspace } from "./useNotesWorkspace";
+import {
+  readPlainText,
+  replacePlainText
+} from "./plainTextContenteditable";
 
 const exportServiceMock = vi.hoisted(() => ({
   saveNotesExport: vi.fn(),
@@ -104,12 +108,12 @@ async function openExportMenu(user = userEvent.setup()) {
   return screen.findByRole("menu");
 }
 
-function findTitleTextarea(value: string) {
+function findTitleEditor(value: string) {
   return Array.from(
-    document.querySelectorAll<HTMLTextAreaElement>(
-      'textarea[aria-label="Edit node title"]'
+    document.querySelectorAll<HTMLDivElement>(
+      "[data-notes-bullet-title]"
     )
-  ).find((input) => input.value === value);
+  ).find((input) => readPlainText(input) === value);
 }
 
 function note(
@@ -810,9 +814,17 @@ describe("NotesExportMenu", () => {
     });
     await waitFor(() => expect(currentWorkspace?.status).toBe("ready"));
 
-    const childTitle = findTitleTextarea("Selected title");
+    const childTitle = findTitleEditor("Selected title");
     expect(childTitle).toBeDefined();
-    fireEvent.change(childTitle!, { target: { value: "Unsaved child" } });
+    fireEvent.pointerDown(childTitle!);
+    replacePlainText(childTitle!, "Unsaved child", {
+      anchorUtf16: 13,
+      focusUtf16: 13
+    });
+    fireEvent.input(childTitle!, {
+      inputType: "insertText",
+      data: "Unsaved child"
+    });
 
     await user.click(
       screen.getByRole("button", { name: "More actions for Page title" })

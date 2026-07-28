@@ -16,7 +16,7 @@ import type {
 } from "./notesWorkspaceCoordinator";
 import type { NotesProjectionPublicationOwner } from "./notesKeyboardInsertion";
 import type { NotesHistoryFocus, NotesHistoryFocusField } from "./notesHistory";
-import type { NotesImageAtomFlushAdapter } from "./notesImageAtomEditorRegistry";
+import type { NotesEditorFlushAdapter } from "./notesImageAtomEditorRegistry";
 import type {
   NotesBackspaceDraftCommit,
   NotesBackspaceDraftLease,
@@ -112,7 +112,7 @@ export interface NotesWorkspaceSessionRecord {
   failedWritesByNodeId: Map<NoteId, FailedDraftWrite>;
   writeError: NotesStoreError | null;
   recoveryEntry: NotesWorkspaceRecoveryEntry | null;
-  imageAtomFlushAdapters: Map<symbol, NotesImageAtomFlushAdapter>;
+  editorFlushAdapters: Map<symbol, NotesEditorFlushAdapter>;
   authorityRecoveryPaused: boolean;
   manualRetryAttemptIds: Set<string>;
   backspaceDraftLease: BackspaceDraftLeaseState | null;
@@ -447,7 +447,7 @@ export class NotesDraftEngine {
       failedWritesByNodeId: new Map(),
       writeError: null,
       recoveryEntry: null,
-      imageAtomFlushAdapters: new Map(),
+      editorFlushAdapters: new Map(),
       authorityRecoveryPaused: false,
       manualRetryAttemptIds: new Set(),
       backspaceDraftLease: null,
@@ -494,22 +494,20 @@ export class NotesDraftEngine {
 
   dispose(): void {
     this.recoveryUnsubscribe();
-    this.record.imageAtomFlushAdapters.clear();
+    this.record.editorFlushAdapters.clear();
   }
 
-  registerImageAtomFlushAdapter(
-    adapter: NotesImageAtomFlushAdapter,
-  ): () => void {
-    const adapters = this.record.imageAtomFlushAdapters;
-    const registration = Symbol("image-atom-flush-adapter");
+  registerEditorFlushAdapter(adapter: NotesEditorFlushAdapter): () => void {
+    const adapters = this.record.editorFlushAdapters;
+    const registration = Symbol("editor-flush-adapter");
     adapters.set(registration, adapter);
     return () => {
       adapters.delete(registration);
     };
   }
 
-  private flushImageAtomEditors(nodeId?: NoteId): true | Promise<boolean> {
-    const adapters = [...this.record.imageAtomFlushAdapters.values()].filter(
+  private flushEditors(nodeId?: NoteId): true | Promise<boolean> {
+    const adapters = [...this.record.editorFlushAdapters.values()].filter(
       (adapter) => nodeId === undefined || adapter.nodeId === nodeId,
     );
     if (adapters.length === 0) return true;
@@ -813,16 +811,16 @@ export class NotesDraftEngine {
     const previousDrainEnqueue = this.lifecycleDrainEnqueue;
     this.lifecycleDrainEnqueue = drainEnqueue ?? previousDrainEnqueue;
     try {
-      const hasImageAtomEditors = record.imageAtomFlushAdapters.size > 0;
-      const imageAtomFlush = this.flushImageAtomEditors();
-      if (imageAtomFlush !== true) {
-        if (!(await imageAtomFlush)) return false;
+      const hasLiveEditors = record.editorFlushAdapters.size > 0;
+      const editorFlush = this.flushEditors();
+      if (editorFlush !== true) {
+        if (!(await editorFlush)) return false;
       }
       // A composition-end callback can create its final draft after the
-      // structural command captured a cutoff. Only active image editors can do
+      // structural command captured a cutoff. Only active live editors can do
       // that during this barrier; ordinary post-command typing remains outside
       // the structural history boundary.
-      const effectiveCutoff = hasImageAtomEditors
+      const effectiveCutoff = hasLiveEditors
         ? Math.max(cutoff, record.nextDraftRevision - 1)
         : cutoff;
       const intent = record.structuralIntents.find(
@@ -952,16 +950,16 @@ export class NotesDraftEngine {
       };
       return record.writeQueue.flush().then(finish, finish);
     };
-    const imageAtomFlush = this.flushImageAtomEditors();
-    if (imageAtomFlush === true) {
+    const editorFlush = this.flushEditors();
+    if (editorFlush === true) {
       // Preserve the established synchronous shutdown kick-off for ordinary
       // text-only sessions. This matters to same-turn remount handoff.
       record.closeCompletion = closeAfterImageFlush();
       return record.closeCompletion;
     }
-    // A browser-owned composition may be the only copy of an image-primary
-    // edit. Let its adapter settle before closing the draft record.
-    record.closeCompletion = imageAtomFlush.then(
+    // A browser-owned composition may be the only copy of an editor's change.
+    // Let its adapter settle before closing the draft record.
+    record.closeCompletion = editorFlush.then(
       closeAfterImageFlush,
       closeAfterImageFlush,
     );
@@ -1690,9 +1688,9 @@ export class NotesDraftEngine {
     if (this.isBackspaceDraftHeld(nodeId)) {
       return false;
     }
-    const imageAtomFlush = this.flushImageAtomEditors(nodeId);
-    if (imageAtomFlush !== true) {
-      if (!(await imageAtomFlush)) return false;
+    const editorFlush = this.flushEditors(nodeId);
+    if (editorFlush !== true) {
+      if (!(await editorFlush)) return false;
     }
     const draft = record.drafts.get(nodeId);
     if (draft) {
@@ -1782,9 +1780,9 @@ export class NotesDraftEngine {
     ) {
       return false;
     }
-    const imageAtomFlush = this.flushImageAtomEditors();
-    if (imageAtomFlush !== true) {
-      if (!(await imageAtomFlush)) return false;
+    const editorFlush = this.flushEditors();
+    if (editorFlush !== true) {
+      if (!(await editorFlush)) return false;
     }
     while (true) {
       const cutoff = record.structuralIntents.at(0)?.cutoff;

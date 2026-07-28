@@ -124,6 +124,12 @@ import {
   readImageAtomDomSelection,
   writeImageAtomDomSelection,
 } from "./imageAtomDomSelection";
+import {
+  readPlainText,
+  readPlainTextSelection,
+  replacePlainText,
+  restorePlainTextSelection,
+} from "./plainTextContenteditable";
 
 const notesStyles = readFileSync(
   join(process.cwd(), "src/features/notes/notes.css"),
@@ -835,6 +841,7 @@ function rowReplayWorkspace(
   state.pendingFocusField = "title";
   const noOp = vi.fn().mockResolvedValue(undefined);
   const acknowledgeFocus = vi.fn().mockResolvedValue(undefined);
+  const claimEditingFocus = vi.fn().mockResolvedValue(true);
   const actions = new Proxy<Record<string, typeof noOp>>(
     {},
     {
@@ -843,6 +850,8 @@ function rowReplayWorkspace(
           ? () => keyboardInsertionInteractionEpoch
           : property === "acknowledgeFocus"
             ? acknowledgeFocus
+            : property === "claimEditingFocus"
+              ? claimEditingFocus
             : noOp,
     },
   ) as unknown as UseNotesWorkspaceResult["actions"];
@@ -984,29 +993,141 @@ function signatureMismatchInsertionWorkspace(
   } as unknown as UseNotesWorkspaceResult;
 }
 
-function queryTitleInput(value: string): HTMLTextAreaElement | null {
+interface LiveTitleTestApi {
+  value: string;
+  readonly selectionStart: number;
+  readonly selectionEnd: number;
+  setSelectionRange(startUtf16: number, endUtf16: number): void;
+}
+
+type NodeTitleEditor =
+  | HTMLTextAreaElement
+  | (HTMLDivElement & LiveTitleTestApi);
+
+function asNodeTitleEditor(
+  editor: HTMLTextAreaElement | HTMLDivElement,
+): NodeTitleEditor {
+  if (editor instanceof HTMLTextAreaElement) return editor;
+  if ("setSelectionRange" in editor) {
+    return editor as HTMLDivElement & LiveTitleTestApi;
+  }
+  Object.defineProperties(editor, {
+    value: {
+      configurable: true,
+      get: () => readPlainText(editor),
+      set: (value: string) => {
+        replacePlainText(editor, value, {
+          anchorUtf16: value.length,
+          focusUtf16: value.length,
+        });
+      },
+    },
+    selectionStart: {
+      configurable: true,
+      get: () => {
+        const selection = readPlainTextSelection(editor);
+        return selection
+          ? Math.min(selection.anchorUtf16, selection.focusUtf16)
+          : 0;
+      },
+    },
+    selectionEnd: {
+      configurable: true,
+      get: () => {
+        const selection = readPlainTextSelection(editor);
+        return selection
+          ? Math.max(selection.anchorUtf16, selection.focusUtf16)
+          : 0;
+      },
+    },
+    setSelectionRange: {
+      configurable: true,
+      value: (startUtf16: number, endUtf16: number) => {
+        restorePlainTextSelection(editor, {
+          anchorUtf16: startUtf16,
+          focusUtf16: endUtf16,
+        });
+      },
+    },
+  });
+  return editor as HTMLDivElement & LiveTitleTestApi;
+}
+
+function titleEditorSource(editor: NodeTitleEditor): string {
+  return editor instanceof HTMLTextAreaElement
+    ? editor.value
+    : readPlainText(editor);
+}
+
+function changeTitleEditor(editor: NodeTitleEditor, value: string): void {
+  if (editor instanceof HTMLTextAreaElement) {
+    fireEvent.change(editor, { target: { value } });
+    return;
+  }
+  replacePlainText(editor, value, {
+    anchorUtf16: value.length,
+    focusUtf16: value.length,
+  });
+  fireEvent.input(editor, {
+    data: value,
+    inputType: "insertText",
+  });
+}
+
+function nodeTitleEditors(root: ParentNode = document): NodeTitleEditor[] {
+  return Array.from(
+    root.querySelectorAll<HTMLTextAreaElement | HTMLDivElement>(
+      '[data-notes-bullet-title], textarea[aria-label="Edit node title"]',
+    ),
+  ).map(asNodeTitleEditor);
+}
+
+function titleEditorInMotionRow(
+  nodeId: string,
+  root: ParentNode = document,
+): NodeTitleEditor | null {
+  const row = root.querySelector<HTMLElement>(
+    `[data-outline-motion-id="${nodeId}"]`,
+  );
+  return row ? (nodeTitleEditors(row)[0] ?? null) : null;
+}
+
+function queryTitleInput(value: string): NodeTitleEditor | null {
   return (
-    Array.from(
-      document.querySelectorAll<HTMLTextAreaElement>(
-        'textarea[aria-label="Edit node title"]',
-      ),
-    ).find(
-      (input) => input.value === value || input.value.trim() === value.trim(),
+    nodeTitleEditors().find(
+      (input) => {
+        const source = titleEditorSource(input);
+        const zoomLabel = input
+          .closest<HTMLElement>("[data-outline-id]")
+          ?.querySelector<HTMLButtonElement>(".notes-node-bullet")
+          ?.getAttribute("aria-label");
+        return (
+          source === value ||
+          source.trim() === value.trim() ||
+          zoomLabel === `Zoom into ${value}`
+        );
+      },
     ) ?? null
   );
 }
 
-function getTitleInput(value: string): HTMLTextAreaElement {
+function getTitleInput(value: string): NodeTitleEditor {
   const input = queryTitleInput(value);
   if (!input) {
     throw new Error(`Unable to find a node title input with value ${value}`);
   }
-  fireEvent.focus(input);
-  return input;
+  if (input instanceof HTMLDivElement) {
+    fireEvent.pointerDown(input);
+    input.focus();
+  } else {
+    fireEvent.focus(input);
+  }
+  return queryTitleInput(value) ?? input;
 }
 
 function getTitlePresentation(value: string): HTMLElement {
   const input = queryTitleInput(value);
+  if (input instanceof HTMLDivElement) return input;
   const row = input?.closest<HTMLElement>(".notes-node");
   if (!row) {
     throw new Error(`Unable to find a node title presentation for ${value}`);
@@ -1014,8 +1135,28 @@ function getTitlePresentation(value: string): HTMLElement {
   return within(row).getByRole("group", { name: "Edit node title" });
 }
 
-async function findTitleInput(value: string): Promise<HTMLTextAreaElement> {
-  return waitFor(() => getTitleInput(value));
+async function findTitleInput(value: string): Promise<NodeTitleEditor> {
+  const input = await waitFor(() => {
+    const candidate = queryTitleInput(value);
+    if (!candidate) {
+      throw new Error(`Unable to find a node title input with value ${value}`);
+    }
+    return candidate;
+  });
+  if (input instanceof HTMLDivElement) {
+    fireEvent.pointerDown(input);
+    input.focus();
+    return waitFor(() => {
+      const active = queryTitleInput(value);
+      if (!active) {
+        throw new Error(`Unable to find a node title input with value ${value}`);
+      }
+      expect(active).toHaveAttribute("data-editing", "true");
+      return active;
+    });
+  }
+  fireEvent.focus(input);
+  return input;
 }
 
 async function activatePageTitle(): Promise<HTMLTextAreaElement> {
@@ -1178,6 +1319,118 @@ describe("Notes workspace", () => {
     localStorage.removeItem(NOTES_SPLIT_LAYOUT_STORAGE_KEY);
   });
 
+  it("renders an ordinary title in one DOM-owned root without a title textarea", async () => {
+    renderNotesWorkspace();
+    const outline = await screen.findByLabelText("Notes outline");
+    const row = await waitFor(() => {
+      const current = outline.querySelector<HTMLElement>(
+        '[data-outline-id="project"]',
+      );
+      expect(current).not.toBeNull();
+      return current!;
+    });
+
+    expect(
+      row.querySelector<HTMLDivElement>("[data-notes-bullet-title]"),
+    ).toBeInTheDocument();
+    expect(
+      row.querySelector<HTMLTextAreaElement>("textarea.notes-node-title"),
+    ).toBeNull();
+    expect(
+      row.querySelector<HTMLTextAreaElement>("textarea.notes-node-note"),
+    ).toHaveValue("Project note");
+  });
+
+  it("keeps specialized rows and fields out of the ordinary title editor", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({
+        id: "ordinary",
+        sortKey: 1,
+        title: "Ordinary",
+        note: "Supporting",
+      }),
+      node({
+        id: "protected",
+        sortKey: 2,
+        title: "Protected",
+        isReadonly: true,
+      }),
+      node({
+        id: "plugin-backed",
+        sortKey: 3,
+        title: "Plugin backed",
+        pluginMeta: { kind: "date", dateKey: "2026.07.28" },
+      }),
+      node({
+        id: "image",
+        sortKey: 4,
+        title: "image.png",
+        nodeKind: "image",
+      }),
+    ]);
+    const { container } = renderNotesWorkspace();
+    const outline = await screen.findByLabelText("Notes outline");
+    const row = (id: string) =>
+      outline.querySelector<HTMLElement>(`[data-outline-id="${id}"]`)!;
+
+    await waitFor(() =>
+      expect(
+        row("ordinary").querySelector("[data-notes-bullet-title]"),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      row("ordinary").querySelector("textarea.notes-node-note"),
+    ).toHaveValue("Supporting");
+    expect(
+      row("protected").querySelector("textarea.notes-node-title"),
+    ).toHaveValue("Protected");
+    expect(
+      row("plugin-backed").querySelector("textarea.notes-node-title"),
+    ).toHaveValue("Plugin backed");
+    expect(
+      row("image").querySelector("[data-notes-bullet-title]"),
+    ).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Zoom into Ordinary" }));
+    expect(
+      container.querySelector<HTMLTextAreaElement>("textarea.notes-page-title"),
+    ).toHaveValue("Ordinary");
+  });
+
+  it("publishes a live dirty title before zoom drains the write queue", async () => {
+    renderNotesWorkspace();
+    const outline = await screen.findByLabelText("Notes outline");
+    const editor = await waitFor(() => {
+      const current = outline.querySelector<HTMLDivElement>(
+        '[data-outline-id="project"] [data-notes-bullet-title]',
+      );
+      expect(current).not.toBeNull();
+      return current!;
+    });
+    fireEvent.pointerDown(editor);
+    replacePlainText(editor, "Project live", {
+      anchorUtf16: 12,
+      focusUtf16: 12,
+    });
+    fireEvent.input(editor, { inputType: "insertText", data: "e" });
+
+    expect(readPlainText(editor)).toBe("Project live");
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Zoom into Project" }));
+
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        expect.objectContaining({
+          id: "project",
+          title: "Project live",
+        }),
+        expect.objectContaining({ commandKind: "text" }),
+      ),
+    );
+  });
+
   it("uses the vault root and mocked repository without a Tauri runtime", async () => {
     renderNotesWorkspace();
 
@@ -1235,9 +1488,6 @@ describe("Notes workspace", () => {
     );
     const outlines = await screen.findAllByLabelText("Notes outline");
     const primaryRows = outlines[0]!.querySelector<HTMLElement>(
-      ".notes-outline-rows",
-    )!;
-    const secondaryRows = outlines[1]!.querySelector<HTMLElement>(
       ".notes-outline-rows",
     )!;
     const firstRow = outlines[0]!.querySelector('[data-outline-id="row-0"]');
@@ -1301,6 +1551,7 @@ describe("Notes workspace", () => {
       </NotesDateTodayProvider>,
     );
     const first = await findTitleInput("First");
+    expect(first).toHaveAttribute("data-editing", "true");
 
     fireEvent.keyDown(first, { key: "ArrowDown" });
 
@@ -1335,7 +1586,7 @@ describe("Notes workspace", () => {
   });
 
   it("pins the GitHub root for a deep GitHub descendant prefix target", async () => {
-    const workspace = rowReplayWorkspace();
+    const workspace: UseNotesWorkspaceResult = rowReplayWorkspace();
     const roots = Array.from({ length: 101 }, (_, index) =>
       index === 70
         ? node({
@@ -1548,7 +1799,7 @@ describe("Notes workspace", () => {
     expect(presentation).toHaveTextContent(source, {
       normalizeWhitespace: false,
     });
-    expect(textarea).toHaveValue(source);
+    expect(titleEditorSource(textarea)).toBe(source);
   });
 
   it("renders, edits, and persists resize for a remote Markdown image bullet", async () => {
@@ -1606,7 +1857,7 @@ describe("Notes workspace", () => {
         screen.getByRole("img", { name: "Quarterly chart" }),
       );
       await waitFor(() => expect(queryTitleInput(source)).toHaveFocus());
-      expect(queryTitleInput(source)).toHaveValue(source);
+      expect(titleEditorSource(queryTitleInput(source)!)).toBe(source);
     } finally {
       getBoundingClientRect.mockRestore();
     }
@@ -1620,10 +1871,9 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
 
     await waitFor(() => expect(queryTitleInput(source)).not.toBeNull());
-    const textarea = queryTitleInput(source)!;
-    fireEvent.focus(textarea);
-    fireEvent.change(textarea, { target: { value: "Quarterly chart" } });
-    fireEvent.blur(textarea);
+    const title = getTitleInput(source);
+    changeTitleEditor(title, "Quarterly chart");
+    fireEvent.blur(title);
 
     await waitFor(() =>
       expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
@@ -1676,7 +1926,7 @@ describe("Notes workspace", () => {
       /\.notes-node\[data-readonly="true"\]:hover\s+\.notes-node-readonly-actions,[^}]*\.notes-node\[data-readonly="true"\]:focus-within\s+\.notes-node-readonly-actions\s*{[^}]*opacity:\s*1;/s,
     );
 
-    fireEvent.change(title, { target: { value: "Temporary title" } });
+    changeTitleEditor(title, "Temporary title");
     expect(title).toHaveValue("Temporary title");
     fireEvent.blur(title);
     expect(title).toHaveValue("Protected title");
@@ -1712,7 +1962,7 @@ describe("Notes workspace", () => {
     ]);
     renderNotesWorkspace();
     const title = await findTitleInput("Protected title");
-    fireEvent.change(title, { target: { value: "Temporary title" } });
+    changeTitleEditor(title, "Temporary title");
     title.setSelectionRange(15, 15);
 
     fireEvent.keyDown(title, { key: "Enter", metaKey: true });
@@ -1970,7 +2220,7 @@ describe("Notes workspace", () => {
     fireEvent.pointerDown(
       within(
         outline.querySelector<HTMLElement>('[data-outline-id="user-child"]')!,
-      ).getByRole("group", { name: "Edit node title" }),
+      ).getByRole("textbox", { name: "Edit node title" }),
       { button: 0, shiftKey: true },
     );
     expect(
@@ -3089,17 +3339,18 @@ describe("Notes workspace", () => {
     );
 
     const title = await waitFor(() => {
-      const textarea = document.querySelector<HTMLTextAreaElement>(
-        'textarea[aria-label="Edit node title"]',
+      const editor = document.querySelector<HTMLDivElement>(
+        "[data-notes-bullet-title]",
       );
-      expect(textarea).not.toBeNull();
-      return textarea!;
+      expect(editor).not.toBeNull();
+      return editor!;
     });
     await waitFor(() => {
       expect(title).toHaveFocus();
-      expect(title.selectionStart).toBe(1);
-      expect(title.selectionEnd).toBe(5);
-      expect(title.selectionDirection).toBe("backward");
+      expect(readPlainTextSelection(title)).toEqual({
+        anchorUtf16: 5,
+        focusUtf16: 1,
+      });
     });
     expect(workspace.actions.acknowledgeFocus).toHaveBeenLastCalledWith(
       "row",
@@ -3122,11 +3373,11 @@ describe("Notes workspace", () => {
     );
 
     const title = await waitFor(() => {
-      const textarea = document.querySelector<HTMLTextAreaElement>(
-        'textarea[aria-label="Edit node title"]',
+      const editor = document.querySelector<HTMLDivElement>(
+        "[data-notes-bullet-title]",
       );
-      expect(textarea).not.toBeNull();
-      return textarea!;
+      expect(editor).not.toBeNull();
+      return editor!;
     });
     await act(async () => undefined);
 
@@ -3226,10 +3477,12 @@ describe("Notes workspace", () => {
       "caretPositionFromPoint",
     );
     try {
-      const presentation = await screen.findByRole("group", {
+      const presentation = await screen.findByRole("textbox", {
         name: "Edit node title",
       });
-      const textNode = presentation.firstChild!;
+      const textNode =
+        presentation.querySelector(".notes-token-text")?.firstChild;
+      expect(textNode).not.toBeNull();
       const notePresentation = screen.getByRole("group", {
         name: "Supporting note: Alpha 😀 omega",
       });
@@ -3249,9 +3502,11 @@ describe("Notes workspace", () => {
 
       fireEvent.pointerDown(presentation, { clientX: 80, clientY: 20 });
 
-      const title = screen.getByRole<HTMLTextAreaElement>("textbox", {
-        name: "Edit node title",
-      });
+      const title = asNodeTitleEditor(
+        screen.getByRole<HTMLDivElement>("textbox", {
+          name: "Edit node title",
+        }),
+      );
       expect(title).toHaveFocus();
       expect(title.selectionStart).toBe(8);
       expect(title.selectionEnd).toBe(8);
@@ -3833,7 +4088,7 @@ describe("Notes workspace", () => {
     },
   );
 
-  it("keeps native row and page textareas mounted behind interactive resting tags", async () => {
+  it("keeps the live row title and native page fields behind interactive resting tags", async () => {
     const user = userEvent.setup();
     configureRepository([
       node({
@@ -3850,10 +4105,12 @@ describe("Notes workspace", () => {
       name: "#today tag filter is inactive",
     });
     const row = rowTag.closest(".notes-node");
-    const rowTitle = row?.querySelector("textarea.notes-node-title");
+    const rowTitle = row?.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]",
+    );
     const rowNote = row?.querySelector("textarea.notes-node-note");
 
-    expect(rowTitle).toHaveValue("Project #today");
+    expect(rowTitle && readPlainText(rowTitle)).toBe("Project #today");
     expect(rowNote).toHaveValue("Owned by @Alice");
     expect(
       within(row as HTMLElement).getByRole("button", {
@@ -3951,7 +4208,7 @@ describe("Notes workspace", () => {
     expect(row).not.toBeNull();
     expect(within(row!).queryByText("Untitled")).not.toBeInTheDocument();
     expect(input).not.toHaveAttribute("placeholder");
-    expect(input).toHaveValue("");
+    expect(titleEditorSource(input)).toBe("");
     expect(input).toHaveAccessibleName("Edit node title");
     expect(row).toHaveAttribute("data-empty-bullet", "true");
     expect(row).toHaveAttribute("data-marker-kind", "bullet");
@@ -5102,7 +5359,7 @@ describe("Notes workspace", () => {
     const preview = screen.getByTestId("notes-selection-drag-preview");
     expect(preview).toHaveTextContent("Original title");
 
-    fireEvent.change(title, { target: { value: "Confirmed later" } });
+    changeTitleEditor(title, "Confirmed later");
     fireEvent.blur(title);
     await waitFor(() =>
       expect(queryTitleInput("Confirmed later")).not.toBeNull(),
@@ -5464,9 +5721,10 @@ describe("Notes workspace", () => {
       },
       historyContextMatcher(),
     );
-    expect(
-      textareasByName("Edit node title").map((input) => input.value),
-    ).toEqual(["First", "Second"]);
+    expect(nodeTitleEditors().map(titleEditorSource)).toEqual([
+      "First",
+      "Second",
+    ]);
 
     move.resolve(
       workspace([
@@ -5476,7 +5734,7 @@ describe("Notes workspace", () => {
     );
     await waitFor(() =>
       expect(
-        textareasByName("Edit node title").map((input) => input.value),
+        nodeTitleEditors().map(titleEditorSource),
       ).toEqual(["Second", "First"]),
     );
   });
@@ -6095,13 +6353,11 @@ describe("Notes workspace", () => {
   });
 
   it("writes a title on blur with the current supporting note", async () => {
-    const user = userEvent.setup();
     renderNotesWorkspace();
     const title = await findTitleInput("Project");
     expect(title).toHaveAccessibleName("Edit node title");
 
-    await user.clear(title);
-    await user.type(title, "Renamed project");
+    changeTitleEditor(title, "Renamed project");
     expect(title).toHaveAccessibleName("Edit node title");
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     fireEvent.blur(title);
@@ -6126,11 +6382,12 @@ describe("Notes workspace", () => {
     renderNotesWorkspace(undefined, { year: 2026, month: 7, day: 11 });
     const title = await findTitleInput("Project");
 
-    await user.clear(title);
-    await user.type(title, "/");
+    changeTitleEditor(title, "/");
     await user.click(screen.getByRole("option", { name: /Today/ }));
 
-    await waitFor(() => expect(title).toHaveValue("2026-07-11"));
+    await waitFor(() =>
+      expect(titleEditorSource(title)).toBe("2026-07-11"),
+    );
     fireEvent.blur(title);
     await waitFor(() =>
       expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
@@ -6175,15 +6432,15 @@ describe("Notes workspace", () => {
     );
   });
 
-  it("coalesces rapid title edits into one write after 300 ms", async () => {
+  it("coalesces rapid title edits through the live and draft debounces", async () => {
     renderNotesWorkspace();
     const title = await findTitleInput("Project");
     vi.useFakeTimers();
 
-    fireEvent.change(title, { target: { value: "Project one" } });
-    fireEvent.change(title, { target: { value: "Project latest" } });
+    changeTitleEditor(title, "Project one");
+    changeTitleEditor(title, "Project latest");
 
-    await vi.advanceTimersByTimeAsync(299);
+    await vi.advanceTimersByTimeAsync(799);
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     await act(async () => vi.advanceTimersByTimeAsync(1));
 
@@ -6206,11 +6463,12 @@ describe("Notes workspace", () => {
     const title = await findTitleInput("Project");
     vi.useFakeTimers();
 
-    fireEvent.change(title, { target: { value: "Blurred project" } });
+    changeTitleEditor(title, "Blurred project");
     fireEvent.blur(title);
 
+    await act(async () => Promise.resolve());
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
-    await act(async () => vi.advanceTimersByTimeAsync(300));
+    await act(async () => vi.advanceTimersByTimeAsync(500));
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
   });
 
@@ -6230,11 +6488,16 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
     const title = await findTitleInput("Project");
 
-    fireEvent.change(title, { target: { value: "Project next" } });
+    changeTitleEditor(title, "Project next");
     fireEvent.blur(title);
 
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledOnce(),
+    );
     const failedMenu = await openNodeMenu("Project next", user);
-    expect(title).toHaveValue("Project next");
+    expect(titleEditorSource(queryTitleInput("Project next")!)).toBe(
+      "Project next",
+    );
     await user.click(
       within(failedMenu).getByRole("menuitem", { name: "Retry save" }),
     );
@@ -6276,14 +6539,18 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
     const title = await findTitleInput("Project");
 
-    fireEvent.change(title, { target: { value: "Failed title" } });
+    changeTitleEditor(title, "Failed title");
     fireEvent.blur(title);
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledOnce(),
+    );
     const failedMenu = await openNodeMenu("Failed title", user);
     const retry = within(failedMenu).getByRole("menuitem", {
       name: "Retry save",
     });
+    fireEvent.pointerDown(title);
     title.focus();
-    fireEvent.change(title, { target: { value: "Newest visible title" } });
+    changeTitleEditor(title, "Newest visible title");
     fireEvent.click(retry);
 
     await waitFor(() =>
@@ -6301,7 +6568,7 @@ describe("Notes workspace", () => {
       },
       historyContextMatcher(),
     );
-    expect(title).toHaveValue("Newest visible title");
+    expect(titleEditorSource(title)).toBe("Newest visible title");
     await waitFor(() =>
       expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2),
     );
@@ -6313,13 +6580,13 @@ describe("Notes workspace", () => {
     const firstMount = renderNotesWorkspace();
     const firstTitle = await findTitleInput("Project");
 
-    fireEvent.change(firstTitle, { target: { value: "Recovered project" } });
+    changeTitleEditor(firstTitle, "Recovered project");
     firstMount.unmount();
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
 
     renderNotesWorkspace();
     const recoveredTitle = await findTitleInput("Recovered project");
-    expect(recoveredTitle).toHaveValue("Recovered project");
+    expect(titleEditorSource(recoveredTitle)).toBe("Recovered project");
 
     const failedMenu = await openNodeMenu("Recovered project", user);
     await user.click(
@@ -6356,17 +6623,13 @@ describe("Notes workspace", () => {
     const projectTitle = await findTitleInput("Project");
     const outsideTitle = getTitleInput("Outside branch");
 
-    fireEvent.change(projectTitle, {
-      target: { value: "Failed project draft" },
-    });
+    changeTitleEditor(projectTitle, "Failed project draft");
     fireEvent.blur(projectTitle);
     await waitFor(() =>
       expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(1),
     );
 
-    fireEvent.change(outsideTitle, {
-      target: { value: "Failed outside draft" },
-    });
+    changeTitleEditor(outsideTitle, "Failed outside draft");
     fireEvent.blur(outsideTitle);
     const projectMenu = await openNodeMenu("Failed project draft", user);
     await user.click(
@@ -6397,7 +6660,7 @@ describe("Notes workspace", () => {
     expect(
       within(outsideMenu).getByRole("menuitem", { name: "Retry save" }),
     ).toBeVisible();
-    expect(outsideTitle).toHaveValue("Failed outside draft");
+    expect(titleEditorSource(outsideTitle)).toBe("Failed outside draft");
   });
 
   it("shows and writes a nonempty supporting note on blur with the current title", async () => {
@@ -6687,7 +6950,7 @@ describe("Notes workspace", () => {
     const title = await findTitleInput("Project");
     const note = getTextareaByName("Supporting note: Project");
 
-    fireEvent.change(title, { target: { value: "Submitted title" } });
+    changeTitleEditor(title, "Submitted title");
     fireEvent.change(note, { target: { value: "Submitted note" } });
     fireEvent.blur(title);
     await waitFor(() =>
@@ -6704,7 +6967,7 @@ describe("Notes workspace", () => {
       ),
     );
 
-    fireEvent.change(title, { target: { value: "Newer title" } });
+    changeTitleEditor(title, "Newer title");
     fireEvent.change(note, { target: { value: "Newer note" } });
     await act(async () =>
       save.resolve(
@@ -6723,7 +6986,7 @@ describe("Notes workspace", () => {
     );
 
     await waitFor(() => {
-      expect(title).toHaveValue("Newer title");
+      expect(titleEditorSource(title)).toBe("Newer title");
       expect(note).toHaveValue("Newer note");
     });
   });
@@ -6769,9 +7032,7 @@ describe("Notes workspace", () => {
       historyContextMatcher(),
     );
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
-    expect(
-      document.querySelectorAll('textarea[aria-label="Edit node title"]'),
-    ).toHaveLength(3);
+    expect(nodeTitleEditors()).toHaveLength(3);
     expect(await findTitleInput("")).toHaveFocus();
 
     await act(async () =>
@@ -6806,7 +7067,7 @@ describe("Notes workspace", () => {
     ]);
     renderNotesWorkspace();
     const title = await findTitleInput("Parent");
-    fireEvent.change(title, { target: { value: "Parent draft" } });
+    changeTitleEditor(title, "Parent draft");
     title.focus();
     title.setSelectionRange(title.value.length, title.value.length);
     const caret = title.value.length;
@@ -6820,7 +7081,7 @@ describe("Notes workspace", () => {
     await act(async () => undefined);
     expect(notesStoreMock.createNode).not.toHaveBeenCalled();
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
-    expect(title).toHaveValue("Parent draft");
+    expect(titleEditorSource(title)).toBe("Parent draft");
     expect(title).toHaveFocus();
     expect(title.selectionStart).toBe(caret);
     expect(title.selectionEnd).toBe(caret);
@@ -6905,7 +7166,7 @@ describe("Notes workspace", () => {
     ]);
     renderNotesWorkspace();
     const title = await findTitleInput("alphaomega");
-    fireEvent.change(title, { target: { value: "alpha omega" } });
+    changeTitleEditor(title, "alpha omega");
     title.focus();
     title.setSelectionRange(5, 5);
     const randomUUID = vi
@@ -6966,14 +7227,14 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
     const title = await findTitleInput("alphaXYZomega");
     const note = getTextareaByName("Supporting note: alphaXYZomega");
-    fireEvent.change(title, { target: { value: "alphaXYZomega!" } });
+    changeTitleEditor(title, "alphaXYZomega!");
     fireEvent.change(note, { target: { value: "draft note" } });
     title.focus();
     title.setSelectionRange(5, 8);
 
     expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
     expect(await findTitleInput("omega!")).toHaveFocus();
-    expect(getTitleInput("alpha")).toHaveValue("alpha");
+    expect(titleEditorSource(getTitleInput("alpha"))).toBe("alpha");
     await waitFor(() =>
       expect(notesStoreMock.updateNode).toHaveBeenCalledOnce(),
     );
@@ -7016,7 +7277,7 @@ describe("Notes workspace", () => {
       historyContextMatcher(),
     );
 
-    expect(await findTitleInput("alpha")).toHaveValue("alpha");
+    expect(titleEditorSource(await findTitleInput("alpha"))).toBe("alpha");
     expect(getTitleInput("omega!")).toHaveFocus();
     randomUUID.mockRestore();
   });
@@ -7044,7 +7305,7 @@ describe("Notes workspace", () => {
       .mockReturnValue("00000000-0000-4000-8000-000000000003");
     renderNotesWorkspace();
     const title = await findTitleInput("alphaXYZomega");
-    fireEvent.change(title, { target: { value: "alphaXYZomega!" } });
+    changeTitleEditor(title, "alphaXYZomega!");
     title.focus();
     title.setSelectionRange(5, 8);
 
@@ -7086,7 +7347,7 @@ describe("Notes workspace", () => {
     notesStoreMock.updateNode.mockRejectedValue(new Error("save failed"));
     renderNotesWorkspace();
     const title = await findTitleInput("alphaXYZomega");
-    fireEvent.change(title, { target: { value: "alphaXYZomega!" } });
+    changeTitleEditor(title, "alphaXYZomega!");
     title.focus();
     title.setSelectionRange(5, 8);
 
@@ -7105,7 +7366,7 @@ describe("Notes workspace", () => {
   describe("authoritative end-of-line split", () => {
     const FIRST = "00000000-0000-4000-8000-0000000000a1";
 
-    function endCaret(input: HTMLTextAreaElement): void {
+    function endCaret(input: NodeTitleEditor): void {
       input.focus();
       input.setSelectionRange(input.value.length, input.value.length);
     }
@@ -7142,15 +7403,11 @@ describe("Notes workspace", () => {
         { id: "solo", newNodeId: FIRST, prefix: "Solo item", suffix: "" },
         historyContextMatcher(),
       );
-      const rowCountBeforeSettlement = document.querySelectorAll(
-        'textarea[aria-label="Edit node title"]',
-      ).length;
+      const rowCountBeforeSettlement = nodeTitleEditors().length;
       const sourceFocusedBeforeSettlement = title.matches(":focus");
       const provisionalTitle = getTitleInput("");
       expect(provisionalTitle).toHaveFocus();
-      fireEvent.change(provisionalTitle, {
-        target: { value: "typed before save" }
-      });
+      changeTitleEditor(provisionalTitle, "typed before save");
       expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
       expect(getTitleInput("typed before save")).toHaveFocus();
 
@@ -7195,7 +7452,7 @@ describe("Notes workspace", () => {
       await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
       const firstId = notesStoreMock.splitNode.mock.lastCall![1].newNodeId;
       const firstProvisional = await findTitleInput("pha");
-      fireEvent.change(firstProvisional, { target: { value: "beta" } });
+      changeTitleEditor(firstProvisional, "beta");
       firstProvisional.setSelectionRange(2, 2);
       fireEvent.keyDown(firstProvisional, { key: "Enter", repeat: true });
 
@@ -7429,7 +7686,7 @@ describe("Notes workspace", () => {
       if (!charlieRow) {
         throw new Error("Charlie row did not render");
       }
-      const charliePresentation = within(charlieRow).getByRole("group", {
+      const charliePresentation = within(charlieRow).getByRole("textbox", {
         name: "Edit node title",
       });
       fireEvent.pointerDown(charliePresentation, { button: 0, pointerId: 4 });
@@ -7443,10 +7700,7 @@ describe("Notes workspace", () => {
       configureRepository(fourRoots());
       renderNotesWorkspace();
       await findTitleInput("Alpha");
-      const titles = screen.getAllByLabelText<HTMLTextAreaElement>(
-        "Edit node title",
-        { selector: "textarea" },
-      );
+      const titles = nodeTitleEditors();
       const bravo = titles[1];
       const delta = titles[3];
 
@@ -7472,10 +7726,7 @@ describe("Notes workspace", () => {
         notesStoreMock.loadWorkspace.mock.calls.filter(
           ([, scope]) => scope.kind === "active",
         ).length;
-      const titles = screen.getAllByLabelText<HTMLTextAreaElement>(
-        "Edit node title",
-        { selector: "textarea" },
-      );
+      const titles = nodeTitleEditors();
       const bravo = titles[1];
       const delta = titles[3];
 
@@ -8441,7 +8692,7 @@ describe("Notes workspace", () => {
         true,
       );
 
-      fireEvent.change(bravo, { target: { value: "Bravo!" } });
+      changeTitleEditor(bravo, "Bravo!");
       await act(async () => undefined);
       expect(
         notesStoreMock.loadWorkspace.mock.calls.filter(
@@ -9218,7 +9469,7 @@ describe("Notes workspace", () => {
       await waitFor(() => expect(selectedOutlineIds()).toEqual(movingIds));
       await waitFor(() =>
         expect(
-          textareasByName("Edit node title").map((input) => input.value),
+          nodeTitleEditors().map(titleEditorSource),
         ).toEqual([
           "Parent",
           "Foxtrot",
@@ -11460,7 +11711,7 @@ describe("Notes workspace", () => {
       title.focus();
       // The dirty draft is the barrier the batch must clear; typing collapses
       // the selection, so rebuild it with Shift+ArrowDown afterward.
-      fireEvent.change(title, { target: { value: "Alpha edited" } });
+      changeTitleEditor(title, "Alpha edited");
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       expect(selectedOutlineIds()).toEqual(["a", "b", "c"]);
@@ -11544,7 +11795,7 @@ describe("Notes workspace", () => {
     });
     renderNotesWorkspace();
     const title = await findTitleInput("Second");
-    fireEvent.change(title, { target: { value: "Second edited" } });
+    changeTitleEditor(title, "Second edited");
     title.focus();
 
     expect(fireEvent.keyDown(title, { key: "Tab" })).toBe(false);
@@ -11725,7 +11976,7 @@ describe("Notes workspace", () => {
   it("saves before Shift+Tab outdent and does not duplicate the handled blur", async () => {
     renderNotesWorkspace();
     const title = await findTitleInput("Milestone");
-    fireEvent.change(title, { target: { value: "Milestone edited" } });
+    changeTitleEditor(title, "Milestone edited");
     title.focus();
 
     expect(fireEvent.keyDown(title, { key: "Tab", shiftKey: true })).toBe(
@@ -11764,7 +12015,7 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
     const title = await findTitleInput("Milestone");
     vi.useFakeTimers();
-    fireEvent.change(title, { target: { value: "Milestone queued" } });
+    changeTitleEditor(title, "Milestone queued");
     title.focus();
 
     expect(fireEvent.keyDown(title, { key: "Tab", shiftKey: true })).toBe(
@@ -11785,7 +12036,7 @@ describe("Notes workspace", () => {
     notesStoreMock.updateNode.mockReturnValue(save.promise);
     renderNotesWorkspace();
     const plan = await findTitleInput("Plan");
-    fireEvent.change(plan, { target: { value: "Plan edited" } });
+    changeTitleEditor(plan, "Plan edited");
     plan.focus();
 
     expect(fireEvent.keyDown(plan, { key: "ArrowDown" })).toBe(false);
@@ -12012,7 +12263,7 @@ describe("Notes workspace", () => {
     starting.setSelectionRange(1, 1);
 
     expect(fireEvent.keyDown(starting, { key: "Backspace" })).toBe(true);
-    fireEvent.change(starting, { target: { value: "" } });
+    changeTitleEditor(starting, "");
 
     for (const removedId of [
       "starting",
@@ -12021,9 +12272,7 @@ describe("Notes workspace", () => {
       "empty-b",
       "empty-a",
     ]) {
-      const current = document.querySelector<HTMLTextAreaElement>(
-        `[data-outline-motion-id="${removedId}"] textarea[aria-label="Edit node title"]`,
-      );
+      const current = titleEditorInMotionRow(removedId);
       expect(current).not.toBeNull();
       current!.focus();
       current!.setSelectionRange(0, 0);
@@ -12073,7 +12322,7 @@ describe("Notes workspace", () => {
         repeat: true,
       }),
     ).toBe(true);
-    expect(queryTitleInput("Keep")).toHaveValue("Keep");
+    expect(titleEditorSource(queryTitleInput("Keep")!)).toBe("Keep");
 
     await act(async () =>
       batch.resolve({
@@ -12256,19 +12505,14 @@ describe("Notes workspace", () => {
     const outlines = await screen.findAllByLabelText("Notes outline");
     expect(outlines).toHaveLength(2);
     const anyTitleIn = (outline: HTMLElement, value: string) =>
-      Array.from(
-        outline.querySelectorAll<HTMLTextAreaElement>(
-          'textarea[aria-label="Edit node title"]',
-        ),
-      ).find((input) => input.value === value) ?? null;
+      nodeTitleEditors(outline).find(
+        (input) => titleEditorSource(input) === value,
+      ) ?? null;
     const visibleTitleIn = (outline: HTMLElement, value: string) =>
-      Array.from(
-        outline.querySelectorAll<HTMLTextAreaElement>(
-          'textarea[aria-label="Edit node title"]',
-        ),
-      ).find(
+      nodeTitleEditors(outline).find(
         (input) =>
-          input.value === value && input.getAttribute("aria-hidden") !== "true",
+          titleEditorSource(input) === value &&
+          input.getAttribute("aria-hidden") !== "true",
       ) ?? null;
     const secondaryEmpty = await waitFor(() => {
       const candidate = anyTitleIn(outlines[1], "");
@@ -12369,9 +12613,7 @@ describe("Notes workspace", () => {
     renderSplitNotesWorkspace();
     const outlines = await screen.findAllByLabelText("Notes outline");
     const titleIn = (outline: HTMLElement, nodeId: string) =>
-      outline.querySelector<HTMLTextAreaElement>(
-        `[data-outline-motion-id="${nodeId}"] textarea[aria-label="Edit node title"]`,
-      );
+      titleEditorInMotionRow(nodeId, outline);
     const primary = outlines[0];
     const starting = titleIn(primary, "empty-e");
     expect(starting).not.toBeNull();
@@ -12395,7 +12637,7 @@ describe("Notes workspace", () => {
       expect(titleIn(primary, nodeId)).toBeNull();
       expect(titleIn(outlines[1], nodeId)).toBeNull();
     }
-    expect(titleIn(primary, "survivor")).toHaveValue("");
+    expect(titleEditorSource(titleIn(primary, "survivor")!)).toBe("");
 
     expect(starting!.isConnected).toBe(false);
     fireEvent.keyUp(starting!, { key: "Backspace" });
@@ -12470,7 +12712,7 @@ describe("Notes workspace", () => {
     await waitFor(() => expect(titleIn(primary, "empty-e")).toHaveFocus());
     expect(titleIn(primary, "empty-e")?.selectionStart).toBe(0);
     expect(titleIn(primary, "empty-e")?.selectionEnd).toBe(0);
-    expect(titleIn(primary, "survivor")).toHaveValue("K");
+    expect(titleEditorSource(titleIn(primary, "survivor")!)).toBe("K");
   });
 
   it("does not batch repeated Backspace on note, attachment, readonly, or plugin rows", async () => {
@@ -12505,9 +12747,7 @@ describe("Notes workspace", () => {
     await findTitleInput("");
 
     for (const nodeId of [noteId, attachmentId, readonlyId, pluginId]) {
-      const title = document.querySelector<HTMLTextAreaElement>(
-        `[data-outline-motion-id="${nodeId}"] textarea[aria-label="Edit node title"]`,
-      );
+      const title = titleEditorInMotionRow(nodeId);
       expect(title).not.toBeNull();
       title!.focus();
       title!.setSelectionRange(0, 0);
@@ -12536,7 +12776,7 @@ describe("Notes workspace", () => {
 
     expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(true);
     await act(async () => vi.advanceTimersByTimeAsync(400));
-    expect(title).toHaveValue("A");
+    expect(titleEditorSource(title)).toBe("A");
 
     fireEvent.keyUp(window, { key: "Backspace" });
     await act(async () => Promise.resolve());
@@ -12565,9 +12805,7 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
     await findTitleInput("");
     const title = (nodeId: string) =>
-      document.querySelector<HTMLTextAreaElement>(
-        `[data-outline-motion-id="${nodeId}"] textarea[aria-label="Edit node title"]`,
-      );
+      titleEditorInMotionRow(nodeId);
     const starting = title("empty-c");
     expect(starting).not.toBeNull();
     vi.useFakeTimers();
@@ -12646,7 +12884,7 @@ describe("Notes workspace", () => {
     title.setSelectionRange(1, 1);
 
     expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(true);
-    fireEvent.change(title, { target: { value: "" } });
+    changeTitleEditor(title, "");
     fireEvent.keyUp(window, { key: "Backspace" });
 
     await waitFor(() =>
@@ -13401,7 +13639,7 @@ describe("Notes workspace", () => {
       await screen.findByRole("button", { name: "#Work, 1 note" }),
     );
     const title = await findTitleInput("#Work");
-    fireEvent.change(title, { target: { value: "No tag" } });
+    changeTitleEditor(title, "No tag");
     fireEvent.blur(title);
 
     await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalled());
@@ -14118,8 +14356,7 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
     const title = await findTitleInput("Project");
-    await user.clear(title);
-    await user.type(title, "Unsaved project");
+    changeTitleEditor(title, "Unsaved project");
 
     await user.click(
       screen.getByRole("button", { name: "Yonalist data settings" }),
@@ -14141,7 +14378,7 @@ describe("Notes workspace", () => {
     expect(
       notesStoreMock.updateNode.mock.invocationCallOrder.at(-1),
     ).toBeLessThan(notesStoreMock.deleteDatabase.mock.invocationCallOrder[0]);
-    expect(queryTextareaByName("Edit node title")).toBeNull();
+    expect(queryTitleInput("Unsaved project")).toBeNull();
     expect(screen.getByText("No outline yet.")).toBeInTheDocument();
     expect(notesStoreMock.emptyTrash).not.toHaveBeenCalled();
   });
@@ -14177,8 +14414,12 @@ describe("Notes workspace", () => {
     expect(
       screen.getByRole("button", { name: "Starred", hidden: true }),
     ).toBeDisabled();
-    for (const titleInput of textareasByName("Edit node title")) {
-      expect(titleInput).toBeDisabled();
+    for (const titleInput of nodeTitleEditors()) {
+      if (titleInput instanceof HTMLTextAreaElement) {
+        expect(titleInput).toBeDisabled();
+      } else {
+        expect(titleInput).toHaveAttribute("aria-disabled", "true");
+      }
     }
     expect(
       screen.getByRole("button", {
