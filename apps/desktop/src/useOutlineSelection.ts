@@ -116,18 +116,20 @@ export function useOutlineSelection(
     forestStatus === "complete" && forestRevision === revision;
   const selectionComplete = forestComplete ||
     (forestRevision !== revision && outlineComplete);
-  const selectedIds = forestComplete
-    ? authoritativeNodes.map((node) => node.id)
-    : localSelectedIds;
-  const selectedIdsKey = selectedIds.join("\u0000");
+  const selectedIds = useMemo(
+    () => forestComplete
+      ? authoritativeNodes.map((node) => node.id)
+      : localSelectedIds,
+    [authoritativeNodes, forestComplete, localSelectedIds]
+  );
   const selectedEpoch = useSyncExternalStore(
     useCallback(
       (listener) => store.subscribeNodes(selectedIds, listener),
-      [selectedIdsKey, store]
+      [selectedIds, store]
     ),
     useCallback(
       () => store.getNodeEpoch(selectedIds),
-      [selectedIdsKey, store]
+      [selectedIds, store]
     )
   );
   const selectedContentNodes = useMemo(() => {
