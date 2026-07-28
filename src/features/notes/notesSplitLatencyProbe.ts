@@ -105,6 +105,31 @@ export type SplitInputBenchmarkPhase =
   | "keyup-stop"
   | "undo-restored";
 
+export interface HeldKeyFrameSummary {
+  readonly deliveredKeydowns: number;
+  readonly frameDurationsMs: readonly number[];
+  readonly frameP95Ms: number;
+  readonly framesOver34Ms: number;
+}
+
+export function summarizeHeldKeyFrames(
+  deliveredKeydowns: number,
+  frameDurationsMs: readonly number[]
+): HeldKeyFrameSummary {
+  const sorted = [...frameDurationsMs].sort((left, right) => left - right);
+  return {
+    deliveredKeydowns,
+    frameDurationsMs: [...frameDurationsMs],
+    frameP95Ms: sorted[Math.ceil(sorted.length * 0.95) - 1] ?? 0,
+    framesOver34Ms: frameDurationsMs.filter((duration) => duration > 34).length
+  };
+}
+
+type HeldKeyGestureResult = HeldKeyFrameSummary & {
+  finalFocusNodeId: string | null;
+  mountedOrdinaryRows: number;
+};
+
 type SplitInputBenchmarkRecord = {
   id: string;
   operation: SplitInputBenchmarkOperation;
@@ -117,6 +142,7 @@ type SplitInputBenchmarkRecord = {
   backlogWindowComplete: boolean;
   backlogAtTwoSeconds: boolean | null;
   invalidOverlap: boolean;
+  heldGesture?: HeldKeyGestureResult;
 };
 
 export type SplitInputBenchmarkSample = {
@@ -141,6 +167,7 @@ export type NotesSplitInputBenchmarkCollector = {
   recordLateWork: (id: string) => void;
   completeBacklogWindow: (id: string, backlogAtTwoSeconds: boolean) => void;
   invalidateOverlap: (id: string) => void;
+  completeHeldGesture: (id: string, result: HeldKeyGestureResult) => void;
   reset: () => void;
   snapshot: () => readonly SplitInputBenchmarkSample[];
   result: () => string;
@@ -225,6 +252,10 @@ export function createNotesSplitInputBenchmarkCollector(options: {
       const record = records.get(id);
       if (record) record.invalidOverlap = true;
     },
+    completeHeldGesture(id, result) {
+      const record = records.get(id);
+      if (record) record.heldGesture = result;
+    },
     reset() {
       records.clear();
     },
@@ -234,6 +265,7 @@ export function createNotesSplitInputBenchmarkCollector(options: {
       return JSON.stringify(
         [...records.values()].map((record, index) => ({
           ...samples[index],
+          ...record.heldGesture,
           elapsedMs: record.phases.map(({ phase, at }) => ({
             phase,
             elapsedMs: at - record.startedAt
@@ -256,6 +288,19 @@ export type NotesSplitInputBenchmarkInstallOptions = {
 
 type BenchmarkPaneId = "primary" | "secondary";
 
+const TITLE_EDITOR_SELECTOR =
+  "textarea.notes-node-title, [data-notes-bullet-title]";
+
+type HeldKeyGesture = {
+  operationId: string;
+  paneId: BenchmarkPaneId;
+  key: string;
+  deliveredKeydowns: number;
+  frameDurationsMs: number[];
+  priorFrameAt: number;
+  frameRequestId: number | null;
+};
+
 type InstalledSplitInputBenchmarkCollector = {
   collector: NotesSplitInputBenchmarkCollector;
   enterOperationIds: string[];
@@ -274,6 +319,7 @@ type InstalledSplitInputBenchmarkCollector = {
   overdueBackspaceOperationIds: Set<string>;
   activeOperationId: string | null;
   visibleOperationIds: Set<string>;
+  heldGesture: HeldKeyGesture | null;
   generation: number;
   scheduleClose: (id: string) => void;
   finishBackspaceOperation: (id: string) => void;
@@ -382,12 +428,14 @@ export function installNotesSplitInputBenchmarkCollector(
     overdueBackspaceOperationIds: new Set(),
     activeOperationId: null,
     visibleOperationIds: new Set(),
+    heldGesture: null,
     generation: 0,
     scheduleClose: () => {},
     finishBackspaceOperation: () => {}
   };
   installedSplitInputBenchmarkCollector = installed;
   const focusOperationIdsByPane = new Map<BenchmarkPaneId, string>();
+  const now = options.now ?? (() => performance.now());
   const scheduleBacklogCheck =
     options.scheduleBacklogCheck ??
     ((callback: () => void) => window.setTimeout(callback, 2_000));
@@ -421,11 +469,59 @@ export function installNotesSplitInputBenchmarkCollector(
     installed.scheduleClose(operationId);
   };
 
+  const finishHeldGesture = () => {
+    const gesture = installed.heldGesture;
+    if (!gesture) return;
+    if (gesture.frameRequestId !== null) {
+      window.cancelAnimationFrame(gesture.frameRequestId);
+    }
+    const active = document.activeElement;
+    collector.completeHeldGesture(gesture.operationId, {
+      ...summarizeHeldKeyFrames(
+        gesture.deliveredKeydowns,
+        gesture.frameDurationsMs
+      ),
+      finalFocusNodeId:
+        active instanceof Element
+          ? active.closest<HTMLElement>("[data-outline-id]")?.dataset.outlineId ?? null
+          : null,
+      mountedOrdinaryRows: document.querySelectorAll(
+        `[data-notes-pane-id="${gesture.paneId}"] [data-outline-id]`
+      ).length
+    });
+    installed.heldGesture = null;
+  };
+
+  const startHeldGesture = (
+    operationId: string,
+    paneId: BenchmarkPaneId,
+    key: string
+  ) => {
+    const gesture: HeldKeyGesture = {
+      operationId,
+      paneId,
+      key,
+      deliveredKeydowns: 1,
+      frameDurationsMs: [],
+      priorFrameAt: now(),
+      frameRequestId: null
+    };
+    const sampleFrame = () => {
+      if (installed.heldGesture !== gesture) return;
+      const frameAt = now();
+      gesture.frameDurationsMs.push(frameAt - gesture.priorFrameAt);
+      gesture.priorFrameAt = frameAt;
+      gesture.frameRequestId = window.requestAnimationFrame(sampleFrame);
+    };
+    installed.heldGesture = gesture;
+    gesture.frameRequestId = window.requestAnimationFrame(sampleFrame);
+  };
+
   const fieldContext = (
     target: EventTarget | null
-  ): { field: HTMLTextAreaElement; paneId: BenchmarkPaneId } | null => {
+  ): { field: Element; paneId: BenchmarkPaneId } | null => {
     const field = target instanceof Element
-      ? target.closest<HTMLTextAreaElement>("textarea.notes-node-title")
+      ? target.closest<HTMLElement>(TITLE_EDITOR_SELECTOR)
       : null;
     const row = field?.closest<HTMLElement>("[data-outline-id]");
     const pane = field?.closest<HTMLElement>("[data-notes-pane-id]");
@@ -441,7 +537,12 @@ export function installNotesSplitInputBenchmarkCollector(
         `[data-notes-pane-id="${paneId}"] [data-outline-id]`
       )].map((row) => ({
         id: row.dataset.outlineId,
-        title: row.querySelector<HTMLTextAreaElement>("textarea.notes-node-title")?.value ?? "",
+        title: (() => {
+          const title = row.querySelector<HTMLElement>(TITLE_EDITOR_SELECTOR);
+          return title instanceof HTMLTextAreaElement
+            ? title.value
+            : title?.textContent ?? "";
+        })(),
         note: row.querySelector<HTMLTextAreaElement>("textarea.notes-node-note")?.value ?? ""
       })),
       focus: document.activeElement instanceof HTMLTextAreaElement
@@ -455,6 +556,7 @@ export function installNotesSplitInputBenchmarkCollector(
 
   const reset = () => {
     installed.generation += 1;
+    finishHeldGesture();
     collector.reset();
     installed.enterOperationIds.length = 0;
     installed.splitOperationIds.clear();
@@ -492,14 +594,16 @@ export function installNotesSplitInputBenchmarkCollector(
 
   const focusPane = (paneId: BenchmarkPaneId, fixture = false) => {
     const selector = fixture
-      ? `[data-notes-pane-id="${paneId}"] [data-outline-id="${SPLIT_INPUT_BACKSPACE_FIXTURE_ID}"] textarea.notes-node-title`
-      : `[data-notes-pane-id="${paneId}"] textarea.notes-node-title`;
-    const field = document.querySelector<HTMLTextAreaElement>(selector);
+      ? `[data-notes-pane-id="${paneId}"] [data-outline-id="${SPLIT_INPUT_BACKSPACE_FIXTURE_ID}"] ${TITLE_EDITOR_SELECTOR}`
+      : `[data-notes-pane-id="${paneId}"] ${TITLE_EDITOR_SELECTOR}`;
+    const field = document.querySelector<HTMLElement>(selector);
     if (!field) {
       return;
     }
     field.focus();
-    field.setSelectionRange(field.value.length, field.value.length);
+    if (field instanceof HTMLTextAreaElement) {
+      field.setSelectionRange(field.value.length, field.value.length);
+    }
   };
 
   const showValue = (value: string) => {
@@ -605,6 +709,26 @@ export function installNotesSplitInputBenchmarkCollector(
       }
       return;
     }
+    if (
+      event.key !== "Enter" &&
+      event.key !== "Backspace" &&
+      event.key !== "ArrowUp" &&
+      event.key !== "ArrowDown"
+    ) {
+      finishHeldGesture();
+      return;
+    }
+    const priorGesture = installed.heldGesture;
+    if (
+      priorGesture &&
+      event.repeat &&
+      priorGesture.paneId === context.paneId &&
+      priorGesture.key === event.key
+    ) {
+      priorGesture.deliveredKeydowns += 1;
+      return;
+    }
+    finishHeldGesture();
     if (event.key === "Enter") {
       const operationId = collector.begin("enter", context.paneId);
       activateOperation(operationId, context.paneId, "enter");
@@ -622,12 +746,14 @@ export function installNotesSplitInputBenchmarkCollector(
         }
       });
       focusOperationIdsByPane.set(context.paneId, operationId);
+      startHeldGesture(operationId, context.paneId, event.key);
       return;
     }
     if (event.key === "ArrowUp" || event.key === "ArrowDown") {
       const operationId = collector.begin("arrow", context.paneId);
       activateOperation(operationId, context.paneId, "arrow");
       focusOperationIdsByPane.set(context.paneId, operationId);
+      startHeldGesture(operationId, context.paneId, event.key);
       return;
     }
     if (event.key !== "Backspace") {
@@ -641,6 +767,7 @@ export function installNotesSplitInputBenchmarkCollector(
       installed.backspaceSnapshotsByPane.set(context.paneId, paneSnapshot(context.paneId));
     }
     focusOperationIdsByPane.set(context.paneId, operationId);
+    startHeldGesture(operationId, context.paneId, event.key);
   };
 
   const focusin = (event: FocusEvent) => {
@@ -669,10 +796,16 @@ export function installNotesSplitInputBenchmarkCollector(
   };
 
   const keyup = (event: KeyboardEvent) => {
-    if (event.key !== "Backspace") {
-      return;
-    }
     const context = fieldContext(event.target);
+    const gesture = installed.heldGesture;
+    if (
+      context &&
+      gesture?.paneId === context.paneId &&
+      gesture.key === event.key
+    ) {
+      finishHeldGesture();
+    }
+    if (event.key !== "Backspace") return;
     const id = context && installed.activeBackspaceByPane.get(context.paneId);
     if (id) {
       collector.mark(id, "keyup-stop");
@@ -697,15 +830,30 @@ export function installNotesSplitInputBenchmarkCollector(
     }
   };
 
+  const blur = (event: FocusEvent) => {
+    const context = fieldContext(event.target);
+    if (context && installed.heldGesture?.paneId === context.paneId) {
+      finishHeldGesture();
+    }
+  };
+  const visibilitychange = () => {
+    if (document.visibilityState !== "visible") finishHeldGesture();
+  };
+
   window.addEventListener("keydown", keydown, true);
   window.addEventListener("focusin", focusin, true);
   window.addEventListener("input", input, true);
   window.addEventListener("keyup", keyup, true);
+  window.addEventListener("blur", blur, true);
+  document.addEventListener("visibilitychange", visibilitychange);
   return () => {
     window.removeEventListener("keydown", keydown, true);
     window.removeEventListener("focusin", focusin, true);
     window.removeEventListener("input", input, true);
     window.removeEventListener("keyup", keyup, true);
+    window.removeEventListener("blur", blur, true);
+    document.removeEventListener("visibilitychange", visibilitychange);
+    finishHeldGesture();
     if (installedSplitInputBenchmarkCollector === installed) {
       installedSplitInputBenchmarkCollector = null;
     }
@@ -729,7 +877,12 @@ export function markNotesSplitInputBenchmarkPaneCommit(
       `[data-notes-pane-id="${paneId}"] [data-outline-id]`
     )].map((row) => ({
       id: row.dataset.outlineId,
-      title: row.querySelector<HTMLTextAreaElement>("textarea.notes-node-title")?.value ?? "",
+      title: (() => {
+        const title = row.querySelector<HTMLElement>(TITLE_EDITOR_SELECTOR);
+        return title instanceof HTMLTextAreaElement
+          ? title.value
+          : title?.textContent ?? "";
+      })(),
       note: row.querySelector<HTMLTextAreaElement>("textarea.notes-node-note")?.value ?? ""
     })),
     focus: document.activeElement instanceof HTMLTextAreaElement

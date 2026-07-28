@@ -16,7 +16,8 @@ import {
   markSplitPhase,
   NotesSplitInputBenchmarkProfiler,
   resetRowRenderCounts,
-  setNotesSplitLatencyProbeEnabled
+  setNotesSplitLatencyProbeEnabled,
+  summarizeHeldKeyFrames
 } from "./notesSplitLatencyProbe";
 
 const PRIMARY_EMPTY_FIXTURE_ID = "10000031-0000-4000-8000-000000000031";
@@ -208,6 +209,15 @@ describe("notesSplitLatencyProbe", () => {
     expect(collector.snapshot()).toEqual([]);
   });
 
+  it("summarizes held-key frame durations", () => {
+    expect(summarizeHeldKeyFrames(5, [16, 18, 24, 27, 35])).toEqual({
+      deliveredKeydowns: 5,
+      frameDurationsMs: [16, 18, 24, 27, 35],
+      frameP95Ms: 35,
+      framesOver34Ms: 1
+    });
+  });
+
   it("configures the isolated Vault only from the exact benchmark origin", () => {
     const storage = new Map<string, string>();
     const adapter: Pick<Storage, "getItem" | "setItem"> = {
@@ -319,6 +329,94 @@ describe("notesSplitLatencyProbe", () => {
       document.querySelector('[data-notes-pane-id="secondary"] [data-outline-id="10000031-0000-4000-8000-000000000031"] textarea')
     );
     dispose();
+  });
+
+  it("keeps held Enter repeats in one contenteditable gesture with frame evidence", () => {
+    const frames: FrameRequestCallback[] = [];
+    let clock = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary">
+        <div data-outline-id="first"><div contenteditable data-notes-bullet-title>First</div></div>
+        <div data-outline-id="second"><div contenteditable data-notes-bullet-title>Second</div></div>
+      </section>
+    `;
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => clock,
+      scheduleBacklogCheck: () => {},
+      scheduleEnterCancellation: () => {}
+    });
+    const field = document.querySelector<HTMLElement>("[data-notes-bullet-title]")!;
+
+    try {
+      field.focus();
+      press(field, { key: "Enter" });
+      clock = 16;
+      frames.shift()!(clock);
+      clock = 34;
+      frames.shift()!(clock);
+      press(field, { key: "Enter", repeat: true });
+      press(field, { key: "Enter", repeat: true });
+      press(field, { key: "Enter", repeat: true });
+      press(field, { key: "Enter", repeat: true });
+      release(field, { key: "Enter" });
+
+      expect(benchmarkSamples()).toEqual([
+        expect.objectContaining({
+          operation: "enter",
+          paneId: "primary",
+          deliveredKeydowns: 5,
+          frameDurationsMs: [16, 18],
+          frameP95Ms: 18,
+          framesOver34Ms: 0,
+          finalFocusNodeId: "first",
+          mountedOrdinaryRows: 2,
+          invalidOverlap: false
+        })
+      ]);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("closes a held gesture before a different key or pane starts another", () => {
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary"><div data-outline-id="primary"><textarea class="notes-node-title">Primary</textarea></div></section>
+      <section data-notes-pane-id="secondary"><div data-outline-id="secondary"><textarea class="notes-node-title">Secondary</textarea></div></section>
+    `;
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => 0,
+      scheduleBacklogCheck: () => {},
+      scheduleEnterCancellation: () => {}
+    });
+    const primary = document.querySelector<HTMLTextAreaElement>(
+      '[data-notes-pane-id="primary"] textarea'
+    )!;
+    const secondary = document.querySelector<HTMLTextAreaElement>(
+      '[data-notes-pane-id="secondary"] textarea'
+    )!;
+
+    try {
+      press(primary, { key: "Enter" });
+      press(primary, { key: "ArrowDown" });
+      press(secondary, { key: "Enter" });
+      release(secondary, { key: "Enter" });
+
+      expect(benchmarkSamples()).toEqual([
+        expect.objectContaining({ operation: "enter", paneId: "primary", deliveredKeydowns: 1 }),
+        expect.objectContaining({ operation: "arrow", paneId: "primary", deliveredKeydowns: 1 }),
+        expect.objectContaining({ operation: "enter", paneId: "secondary", deliveredKeydowns: 1 })
+      ]);
+    } finally {
+      dispose();
+    }
   });
 
   it("binds physical Enter visibility, pane commit, and settlement to its split after a later operation starts", async () => {
