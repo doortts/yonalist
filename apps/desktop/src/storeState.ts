@@ -30,13 +30,31 @@ export function subtreeIds(
   }).map((node) => node.id);
 }
 
+export function changesOutlineStructure(
+  previous: NoteView | undefined,
+  changed: NoteView
+): boolean {
+  if (!previous) return changed.kind === "bullet" && !changed.deleted;
+  return previous.parentId !== changed.parentId ||
+    previous.sortKey !== changed.sortKey ||
+    previous.kind !== changed.kind ||
+    previous.marker !== changed.marker ||
+    previous.collapsed !== changed.collapsed ||
+    previous.completed !== changed.completed ||
+    previous.starred !== changed.starred ||
+    previous.deleted !== changed.deleted;
+}
+
 export function receiptState(
   state: NotesState,
   receipt: MutationReceipt
 ): {
   readonly patch: Partial<NotesState>;
   readonly removedDraftIds: readonly string[];
+  readonly changedNodeIds: readonly string[];
+  readonly outlineChanged: boolean;
 } {
+  const previousById = new Map(state.nodes.map((node) => [node.id, node]));
   const changedById = new Map(receipt.changedNodes.map((node) => [node.id, node]));
   const removed = new Set(receipt.deletedIds);
   const nodes = state.nodes
@@ -77,6 +95,17 @@ export function receiptState(
   ];
   const drafts = omitKeys(state.drafts, removedDraftIds);
   const noteDrafts = omitKeys(state.noteDrafts, removedDraftIds);
+  const changedNodeIds = [
+    ...new Set([
+      ...receipt.changedNodes.map((node) => node.id),
+      ...receipt.deletedIds
+    ])
+  ];
+  const outlineChanged = receipt.deletedIds.some((id) =>
+    previousById.get(id)?.kind === "bullet"
+  ) || receipt.changedNodes.some((node) =>
+    changesOutlineStructure(previousById.get(node.id), node)
+  );
   return {
     patch: {
       revision: receipt.revision,
@@ -89,7 +118,9 @@ export function receiptState(
       undoDepth: receipt.history.undoDepth,
       redoDepth: receipt.history.redoDepth
     },
-    removedDraftIds
+    removedDraftIds,
+    changedNodeIds,
+    outlineChanged
   };
 }
 

@@ -22,6 +22,10 @@ import {
   projectSplitNode
 } from "./optimisticOutline";
 import { orderOutline } from "./outlineModel";
+import {
+  StoreSubscriptions,
+  type StoreInvalidation
+} from "./storeSubscriptions";
 
 export interface PendingOutlineMutation {
   readonly committed: Promise<void>;
@@ -31,9 +35,55 @@ export interface PendingCreatedNode extends PendingOutlineMutation {
   readonly id: string;
 }
 
+function changedRecordKeys<T>(
+  previous: Readonly<Record<string, T>>,
+  next: Readonly<Record<string, T>>
+): readonly string[] {
+  return [...new Set([...Object.keys(previous), ...Object.keys(next)])]
+    .filter((id) => previous[id] !== next[id]);
+}
+
+function changedNodeIds(
+  previous: NotesState["nodes"],
+  next: NotesState["nodes"]
+): readonly string[] {
+  const previousById = new Map(previous.map((node) => [node.id, node]));
+  const nextById = new Map(next.map((node) => [node.id, node]));
+  return [...new Set([...previousById.keys(), ...nextById.keys()])]
+    .filter((id) => previousById.get(id) !== nextById.get(id));
+}
+
+function invalidationForPatch(
+  previous: NotesState,
+  patch: Partial<NotesState>
+): StoreInvalidation {
+  const shell = [
+    "status", "sessionId", "revision", "pages", "activePageId",
+    "canUndo", "canRedo", "undoDepth", "redoDepth",
+    "beforeCursor", "afterCursor", "error", "pendingWrites"
+  ].some((key) => key in patch);
+  const outline = [
+    "nodes", "activePageId", "beforeCursor", "afterCursor"
+  ].some((key) => key in patch);
+  const ids = new Set<string>();
+  if (patch.nodes) {
+    changedNodeIds(previous.nodes, patch.nodes).forEach((id) => ids.add(id));
+  }
+  if (patch.drafts) {
+    changedRecordKeys(previous.drafts, patch.drafts)
+      .forEach((id) => ids.add(id));
+  }
+  if (patch.noteDrafts) {
+    changedRecordKeys(previous.noteDrafts, patch.noteDrafts)
+      .forEach((id) => ids.add(id));
+  }
+  return { shell, outline, nodeIds: [...ids] };
+}
+
 export class NotesStore {
   private state: NotesState = initialNotesState;
   private readonly listeners = new Set<() => void>();
+  private readonly subscriptions: StoreSubscriptions;
   private readonly draftTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly noteDraftTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly draftHistoryGroups = new Map<string, string>();
@@ -43,6 +93,7 @@ export class NotesStore {
   private activeBackspaceGroup: string | null = null;
   private backspaceSequence = 0;
   constructor(private readonly api: NotesApi) {
+    this.subscriptions = new StoreSubscriptions(() => this.state);
     this.viewport = new StoreViewport(
       api,
       this.getSnapshot,
@@ -56,6 +107,24 @@ export class NotesStore {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   };
+  readonly subscribeShell = (listener: () => void): (() => void) =>
+    this.subscriptions.subscribeShell(listener);
+  readonly getShellSnapshot = () => this.subscriptions.getShellSnapshot();
+  readonly subscribeOutline = (listener: () => void): (() => void) =>
+    this.subscriptions.subscribeOutline(listener);
+  readonly getOutlineSnapshot = () => this.subscriptions.getOutlineSnapshot();
+  readonly subscribeNode = (
+    id: string,
+    listener: () => void
+  ): (() => void) => this.subscriptions.subscribeNode(id, listener);
+  readonly getNodeSnapshot = (id: string) =>
+    this.subscriptions.getNodeSnapshot(id);
+  readonly subscribeNodes = (
+    ids: readonly string[],
+    listener: () => void
+  ): (() => void) => this.subscriptions.subscribeNodes(ids, listener);
+  readonly getNodeEpoch = (ids: readonly string[]) =>
+    this.subscriptions.getNodeEpoch(ids);
   readonly subscribeHistory = (
     listener: (event: NotesMutationHistoryEvent) => void
   ): (() => void) => this.historyEvents.subscribe(listener);
@@ -99,6 +168,11 @@ export class NotesStore {
         error: null,
         pendingWrites: 0
       };
+      this.subscriptions.publish({
+        shell: true,
+        outline: true,
+        nodeIds: this.state.nodes.map((node) => node.id)
+      });
       this.emit();
     } catch (cause) {
       this.update({ status: "error", error: messageFrom(cause) });
@@ -607,14 +681,22 @@ export class NotesStore {
       this.cancelDraftTimer(id);
       this.cancelNoteDraftTimer(id);
     }
-    this.update(result.patch);
+    this.update(result.patch, {
+      shell: true,
+      outline: result.outlineChanged,
+      nodeIds: result.changedNodeIds
+    });
   }
 
   private cancelDraftTimer(id: string): void { cancelTimer(this.draftTimers, id); }
   private cancelNoteDraftTimer(id: string): void { cancelTimer(this.noteDraftTimers, id); }
 
-  private update(patch: Partial<NotesState>): void {
+  private update(
+    patch: Partial<NotesState>,
+    invalidation: StoreInvalidation = invalidationForPatch(this.state, patch)
+  ): void {
     this.state = { ...this.state, ...patch };
+    this.subscriptions.publish(invalidation);
     this.emit();
   }
 

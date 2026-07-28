@@ -52,6 +52,63 @@ function api(queryViewport: NotesApi["queryViewport"]): NotesApi {
   };
 }
 
+describe("NotesStore projection invalidation", () => {
+  it("publishes a draft only to its owning node projection", async () => {
+    const store = new NotesStore(api(vi.fn()));
+    await store.bootstrap();
+    const shellBefore = store.getShellSnapshot();
+    const outlineBefore = store.getOutlineSnapshot();
+    const shell = vi.fn();
+    const outline = vi.fn();
+    const changed = vi.fn();
+    const adjacent = vi.fn();
+    store.subscribeShell(shell);
+    store.subscribeOutline(outline);
+    store.subscribeNode("one", changed);
+    store.subscribeNode("two", adjacent);
+
+    store.setDraft("one", "Draft one");
+
+    expect(store.getShellSnapshot()).toBe(shellBefore);
+    expect(store.getOutlineSnapshot()).toBe(outlineBefore);
+    expect(store.getNodeSnapshot("one").title).toBe("Draft one");
+    expect(changed).toHaveBeenCalledOnce();
+    expect(adjacent).not.toHaveBeenCalled();
+    expect(shell).not.toHaveBeenCalled();
+    expect(outline).not.toHaveBeenCalled();
+  });
+
+  it("keeps the outline projection stable for a text-only receipt", async () => {
+    const notesApi = api(vi.fn());
+    notesApi.execute = vi.fn().mockResolvedValue({
+      revision: 2,
+      changedNodes: [{ ...bullet("one", 1_024), text: "Committed one" }],
+      deletedIds: [],
+      history: {
+        canUndo: true,
+        canRedo: false,
+        undoDepth: 1,
+        redoDepth: 0
+      }
+    });
+    const store = new NotesStore(notesApi);
+    await store.bootstrap();
+    const outlineBefore = store.getOutlineSnapshot();
+    const outline = vi.fn();
+    const changed = vi.fn();
+    store.subscribeOutline(outline);
+    store.subscribeNode("one", changed);
+
+    store.setDraft("one", "Committed one");
+    await store.flushDraft("one");
+
+    expect(store.getOutlineSnapshot()).toBe(outlineBefore);
+    expect(outline).not.toHaveBeenCalled();
+    expect(store.getNodeSnapshot("one").title).toBe("Committed one");
+    expect(changed).toHaveBeenCalled();
+  });
+});
+
 describe("NotesStore viewport recovery", () => {
   it("coalesces one typing group and fences it after navigation", async () => {
     const notesApi = api(vi.fn());

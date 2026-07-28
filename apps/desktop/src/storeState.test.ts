@@ -38,4 +38,42 @@ describe("receipt state", () => {
     expect(result.patch.nodes?.map((node) => node.id))
       .toEqual(["z-parent", "a-child"]);
   });
+
+  it("classifies text receipts as node-only invalidations", () => {
+    const original = bullet("one", "page");
+    const result = receiptState({
+      ...initialNotesState,
+      status: "ready",
+      sessionId: "session",
+      activePageId: "page",
+      nodes: [original]
+    }, {
+      revision: 2,
+      changedNodes: [{ ...original, text: "Renamed" }],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    });
+
+    expect(result.changedNodeIds).toEqual(["one"]);
+    expect(result.outlineChanged).toBe(false);
+  });
+
+  it("classifies hierarchy receipts as outline invalidations", () => {
+    const original = bullet("one", "page");
+    const result = receiptState({
+      ...initialNotesState,
+      status: "ready",
+      sessionId: "session",
+      activePageId: "page",
+      nodes: [original]
+    }, {
+      revision: 2,
+      changedNodes: [{ ...original, parentId: "two", sortKey: 2_048 }],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    });
+
+    expect(result.changedNodeIds).toEqual(["one"]);
+    expect(result.outlineChanged).toBe(true);
+  });
 });
