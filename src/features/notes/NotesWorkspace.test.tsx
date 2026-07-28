@@ -13136,6 +13136,90 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce();
   });
 
+  it("keeps text typed after Backspace keyup while the gesture batch settles", async () => {
+    const batch = deferred<NotesMutationResponse>();
+    const update = deferred<NotesMutationResponse>();
+    configureRepository([
+      node({ id: "root", sortKey: 1, title: "abc" }),
+    ]);
+    notesStoreMock.applyBatch.mockReturnValue(batch.promise);
+    notesStoreMock.updateNode.mockReturnValue(update.promise);
+    renderNotesWorkspace();
+    const title = await findTitleInput("abc");
+    title.focus();
+    title.setSelectionRange(3, 3);
+
+    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(true);
+    replacePlainText(title, "ab", {
+      anchorUtf16: 2,
+      focusUtf16: 2,
+    });
+    fireEvent.input(title, { inputType: "deleteContentBackward" });
+    fireEvent.keyUp(window, { key: "Backspace" });
+
+    await waitFor(() =>
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "backspaceGesture",
+          nodeIds: [],
+          titleUpdate: { id: "root", title: "ab" },
+        },
+        historyContextMatcher(),
+      ),
+    );
+    const backspaceHistory =
+      notesStoreMock.applyBatch.mock.calls[0]![2] as NotesHistoryContext;
+
+    vi.useFakeTimers();
+    replacePlainText(title, "abx", {
+      anchorUtf16: 3,
+      focusUtf16: 3,
+    });
+    fireEvent.input(title, { data: "x", inputType: "insertText" });
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+
+    expect(titleEditorSource(title)).toBe("abx");
+    expect(title).toHaveFocus();
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+
+    await act(async () =>
+      batch.resolve({
+        workspace: workspace([
+          node({ id: "root", sortKey: 1, title: "ab" }),
+        ]),
+        historyEntryId: backspaceHistory.entryId,
+        ...historyState({
+          canUndo: true,
+          nextUndoEntryId: backspaceHistory.entryId,
+        }),
+      }),
+    );
+
+    expect(titleEditorSource(title)).toBe("abx");
+    expect(title).toHaveFocus();
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+    expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "root",
+        title: "abx",
+        note: "",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet",
+      },
+      historyContextMatcher(),
+    );
+
+    await act(async () =>
+      update.resolve(
+        workspace([node({ id: "root", sortKey: 1, title: "abx" })]),
+      ),
+    );
+    expect(titleEditorSource(title)).toBe("abx");
+    expect(title).toHaveFocus();
+  });
+
   it("removes exactly one empty row for each native Backspace keydown", async () => {
     configureRepository([
       node({ id: "survivor", sortKey: 1, title: "Keep" }),

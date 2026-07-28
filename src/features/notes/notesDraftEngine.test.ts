@@ -513,6 +513,110 @@ describe("NotesDraftEngine", () => {
       expect(store.updateNode).not.toHaveBeenCalled();
     });
 
+    it.each(["committed", "failed", "cancelled"] as const)(
+      "preserves and schedules text typed after a gesture is prepared and %s",
+      async (outcome) => {
+        vi.useFakeTimers();
+        const baselineWrite = deferred<NotesWorkspace>();
+        const store = repository({
+          updateNode: vi
+            .fn()
+            .mockReturnValueOnce(baselineWrite.promise)
+            .mockResolvedValueOnce(
+              workspace([node({ id: "root", title: "abx" })]),
+            ),
+        });
+        const { engine, host } = createHarness({ store });
+        engine.updateNodeDraft("root", {
+          title: "abc",
+          note: "",
+          imageOffsetUtf16: 0,
+        });
+        const lease = engine.beginBackspaceGesture(34, "root")!;
+        engine.updateNodeDraft("root", {
+          title: "ab",
+          note: "",
+          imageOffsetUtf16: 0,
+        });
+
+        const preparation = lease.prepare([]);
+        await flushMicrotasks();
+        expect(store.updateNode).toHaveBeenCalledOnce();
+        vi.mocked(host.beginTextEntry).mockClear();
+
+        engine.updateNodeDraft("root", {
+          title: "abx",
+          note: "",
+          imageOffsetUtf16: 0,
+        });
+
+        expect(host.beginTextEntry).toHaveBeenCalledOnce();
+        await vi.advanceTimersByTimeAsync(MAX_DEBOUNCE_LATENCY_MS + 1);
+        expect(store.updateNode).toHaveBeenCalledOnce();
+
+        baselineWrite.resolve(
+          workspace([node({ id: "root", title: "abc" })]),
+        );
+        await expect(preparation).resolves.toEqual({
+          baselineFlushed: true,
+          titleUpdate: { id: "root", title: "ab" },
+        });
+
+        lease.settle(outcome);
+        expect(engine.getDraftsSnapshot().root).toMatchObject({
+          title: "abx",
+          status: "pending",
+        });
+        expect(
+          engine.record.draftHistoryContextByNodeId.has("root"),
+        ).toBe(true);
+
+        await vi.advanceTimersByTimeAsync(MAX_DEBOUNCE_LATENCY_MS + 1);
+        expect(store.updateNode).toHaveBeenCalledTimes(2);
+        expect(store.updateNode).toHaveBeenLastCalledWith(
+          "/vault",
+          expect.objectContaining({ id: "root", title: "abx" }),
+          textHistoryContext,
+        );
+      },
+    );
+
+    it.each(["failed", "cancelled"] as const)(
+      "preserves the first text draft created after an empty preparation and %s",
+      async (outcome) => {
+        vi.useFakeTimers();
+        const store = repository({
+          updateNode: vi
+            .fn()
+            .mockResolvedValue(
+              workspace([node({ id: "root", title: "typed" })]),
+            ),
+        });
+        const { engine, host } = createHarness({ store });
+        const lease = engine.beginBackspaceGesture(35, "root")!;
+        await expect(lease.prepare([])).resolves.toEqual({
+          baselineFlushed: true,
+          titleUpdate: null,
+        });
+        vi.mocked(host.beginTextEntry).mockClear();
+
+        engine.updateNodeDraft("root", {
+          title: "typed",
+          note: "",
+          imageOffsetUtf16: 0,
+        });
+        expect(host.beginTextEntry).toHaveBeenCalledOnce();
+
+        lease.settle(outcome);
+        expect(engine.getDraftsSnapshot().root).toMatchObject({
+          title: "typed",
+          status: "pending",
+        });
+        await vi.advanceTimersByTimeAsync(MAX_DEBOUNCE_LATENCY_MS + 1);
+        expect(store.updateNode).toHaveBeenCalledOnce();
+      },
+    );
+
     it.each(["failed", "cancelled"] as const)(
       "restores and reschedules the starting draft after %s settlement",
       async (outcome) => {
