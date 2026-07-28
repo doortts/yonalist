@@ -215,6 +215,7 @@ export interface NotesBackspaceDraftCommit {
 export interface NotesBackspaceDraftLease {
   readonly token: number;
   touch(nodeId: NoteId): void;
+  updateOptimisticInsertionTitle?(nodeId: NoteId, title: string): boolean;
   prepare(
     removedNodeIds: readonly NoteId[],
   ): Promise<NotesBackspaceDraftCommit>;

@@ -127,6 +127,62 @@ describe("NotesBulletTitleEditor", () => {
     expect(onPublish).toHaveBeenCalledWith("after");
   });
 
+  it("applies an authoritative source change to a clean live editor", () => {
+    const onPublish = vi.fn();
+    const view = render(
+      <NotesBulletTitleEditor
+        nodeId="node"
+        source="before"
+        onPublish={onPublish}
+        onTagClick={vi.fn()}
+      />,
+    );
+    const root = screen.getByRole("textbox", { name: "Edit node title" });
+    activate(root);
+    inputSource(root, "published");
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+
+    view.rerender(
+      <NotesBulletTitleEditor
+        nodeId="node"
+        source="authoritative"
+        onPublish={onPublish}
+        onTagClick={vi.fn()}
+      />,
+    );
+
+    expect(root).toHaveTextContent("authoritative");
+  });
+
+  it("preserves an unflushed live edit across a source prop change", () => {
+    const onPublish = vi.fn();
+    const view = render(
+      <NotesBulletTitleEditor
+        nodeId="node"
+        source="before"
+        onPublish={onPublish}
+        onTagClick={vi.fn()}
+      />,
+    );
+    const root = screen.getByRole("textbox", { name: "Edit node title" });
+    activate(root);
+    inputSource(root, "local dirty");
+
+    view.rerender(
+      <NotesBulletTitleEditor
+        nodeId="node"
+        source="authoritative"
+        onPublish={onPublish}
+        onTagClick={vi.fn()}
+      />,
+    );
+
+    expect(root).toHaveTextContent("local dirty");
+    expect(onPublish).not.toHaveBeenCalled();
+  });
+
   it("hands one source node back to the resting presentation on blur", () => {
     const onBlur = vi.fn();
     const { root, onPublish } = renderEditor({ onBlur });

@@ -15,7 +15,10 @@ import type {
   NotesStateSlice,
   NotesWorkspaceActions
 } from "./notesWorkspaceTypes";
-import type { NotesPaneSessionState } from "./notesPaneSession";
+import type {
+  NotesPaneId,
+  NotesPaneSessionState
+} from "./notesPaneSession";
 import type { OptimisticKeyboardInsertion } from "./notesKeyboardInsertion";
 import type { NotesPaneSessionsController } from "./useNotesPaneSessions";
 import type { NotesEditingLeaseController } from "./useNotesEditingLease";
@@ -41,6 +44,11 @@ type SecondaryDirectCaretRevision = readonly [
   navigationVersion: number,
   selectionRevision: number
 ];
+
+interface SecondaryDirectCaretBefore {
+  readonly pane: NotesPaneSessionState;
+  readonly activePaneId: NotesPaneId;
+}
 
 function sameDirectCaretRevision(
   left: SecondaryDirectCaretRevision,
@@ -84,6 +92,7 @@ export function useNotesWorkspacePaneRegistry({
     activePaneId,
     panes,
     setActivePaneId,
+    getActivePaneId,
     dispatchPane,
     getPaneSession
   } = sessions;
@@ -178,10 +187,13 @@ export function useNotesWorkspacePaneRegistry({
   } =
     useNotesClaimBoundCaretReconciliation<
       SecondaryDirectCaretMove,
-      NotesPaneSessionState,
+      SecondaryDirectCaretBefore,
       SecondaryDirectCaretRevision
     >({
-      captureBefore: () => getPaneSession("secondary"),
+      captureBefore: () => ({
+        pane: getPaneSession("secondary"),
+        activePaneId: getActivePaneId()
+      }),
       prepare: () => {
         setActivePaneId("secondary");
       },
@@ -213,23 +225,24 @@ export function useNotesWorkspacePaneRegistry({
         });
       },
       rollback: (before, applied) => {
+        setActivePaneId(before.activePaneId);
         if (!applied) return;
         dispatchPane("secondary", {
           type: "setPendingPrimarySelection",
-          request: before.pendingPrimarySelection
+          request: before.pane.pendingPrimarySelection
         });
         dispatchPane("secondary", {
           type: "setSelection",
-          selection: before.selection
+          selection: before.pane.selection
         });
         dispatchPane("secondary", {
           type: "setNavigation",
           patch: {
-            selectedId: before.selectedId,
-            zoomRootId: before.zoomRootId,
-            editingNoteId: before.editingNoteId,
-            pendingFocusId: before.pendingFocusId,
-            pendingFocusField: before.pendingFocusField
+            selectedId: before.pane.selectedId,
+            zoomRootId: before.pane.zoomRootId,
+            editingNoteId: before.pane.editingNoteId,
+            pendingFocusId: before.pane.pendingFocusId,
+            pendingFocusField: before.pane.pendingFocusField
           }
         });
       }

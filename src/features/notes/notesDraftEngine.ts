@@ -1560,6 +1560,22 @@ export class NotesDraftEngine {
       token,
       touch: (touchedNodeId) =>
         this.touchBackspaceDraft(state, touchedNodeId),
+      updateOptimisticInsertionTitle: (touchedNodeId, title) => {
+        if (
+          !state.active ||
+          state.frozen ||
+          record.backspaceDraftLease !== state ||
+          !state.touchedNodeIds.has(touchedNodeId)
+        ) {
+          return false;
+        }
+        this.updateNodeDraft(
+          touchedNodeId,
+          { title, note: "", imageOffsetUtf16: 0 },
+          "title",
+        );
+        return true;
+      },
       prepare: (removedNodeIds) =>
         this.prepareBackspaceDraft(state, removedNodeIds),
       settle: (outcome) => this.settleBackspaceDraft(state, outcome),

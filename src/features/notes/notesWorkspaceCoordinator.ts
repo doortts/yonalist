@@ -3193,6 +3193,17 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           const updated = { ...insertion, insertedTitle: title };
           entry.optimisticKeyboardInsertions.set(expectedNodeId, updated);
           notifyOptimisticInsertion(entry, updated);
+          const backspaceGesture = entry.backspaceGesture;
+          if (
+            backspaceGesture?.owner === session &&
+            (backspaceGesture.snapshot.status === "active" ||
+              backspaceGesture.snapshot.status === "queued")
+          ) {
+            backspaceGesture.draftLease.updateOptimisticInsertionTitle?.(
+              expectedNodeId,
+              title
+            );
+          }
         },
         dismissOptimisticInsertionFailure(): void {
           const failure = entry.optimisticInsertionFailure;

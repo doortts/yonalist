@@ -7532,6 +7532,112 @@ describe("Notes workspace", () => {
       expect(await findTitleInput("typed before save")).toHaveFocus();
     });
 
+    it("keeps a provisional native Backspace edit in one gesture history entry", async () => {
+      vi.spyOn(window.navigator, "platform", "get").mockReturnValue("Win32");
+      const split = deferred<NotesMutationResponse>();
+      const batch = deferred<NotesMutationResponse>();
+      configureRepository([
+        node({ id: "solo", sortKey: 1024, title: "alpha" }),
+      ]);
+      notesStoreMock.splitNode.mockReturnValue(split.promise);
+      notesStoreMock.applyBatch.mockReturnValue(batch.promise);
+      renderNotesWorkspace();
+      const source = await findTitleInput("alpha");
+      source.focus();
+      source.setSelectionRange(2, 2);
+
+      expect(fireEvent.keyDown(source, { key: "Enter" })).toBe(false);
+      await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+      const insertedId =
+        notesStoreMock.splitNode.mock.calls[0]![1].newNodeId;
+      const splitHistory =
+        notesStoreMock.splitNode.mock.calls[0]![2] as NotesHistoryContext;
+      const splitFixture = [
+        node({ id: "solo", sortKey: 1024, title: "al" }),
+        node({ id: insertedId, sortKey: 2048, title: "pha" }),
+      ];
+      const provisional = await findTitleInput("pha");
+      provisional.setSelectionRange(3, 3);
+      expect(fireEvent.keyDown(provisional, { key: "Backspace" })).toBe(true);
+      replacePlainText(provisional, "ph", {
+        anchorUtf16: 2,
+        focusUtf16: 2,
+      });
+      fireEvent.input(provisional, { inputType: "deleteContentBackward" });
+      fireEvent.keyUp(window, { key: "Backspace" });
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+
+      await act(async () =>
+        split.resolve({
+          workspace: workspace(splitFixture),
+          historyEntryId: splitHistory.entryId,
+          ...historyState({
+            canUndo: true,
+            nextUndoEntryId: splitHistory.entryId,
+          }),
+        }),
+      );
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      const backspaceHistory =
+        notesStoreMock.applyBatch.mock.calls[0]![2] as NotesHistoryContext;
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "backspaceGesture",
+          nodeIds: [],
+          titleUpdate: { id: insertedId, title: "ph" },
+        },
+        backspaceHistory,
+      );
+      expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+      notesStoreMock.historyStatus.mockResolvedValue(
+        historyState({
+          canUndo: true,
+          nextUndoEntryId: backspaceHistory.entryId,
+        }),
+      );
+      notesStoreMock.undo.mockResolvedValue({
+        kind: "applied",
+        workspace: workspace(splitFixture),
+        replayedEntryId: backspaceHistory.entryId,
+        ...historyState({
+          canUndo: true,
+          canRedo: true,
+          nextUndoEntryId: splitHistory.entryId,
+          nextRedoEntryId: backspaceHistory.entryId,
+        }),
+      });
+
+      await act(async () =>
+        batch.resolve({
+          workspace: workspace([
+            splitFixture[0]!,
+            { ...splitFixture[1]!, title: "ph" },
+          ]),
+          historyEntryId: backspaceHistory.entryId,
+          ...historyState({
+            canUndo: true,
+            nextUndoEntryId: backspaceHistory.entryId,
+          }),
+        }),
+      );
+      await waitFor(() =>
+        expect(screen.getByLabelText("Notes outline")).toHaveAttribute(
+          "aria-busy",
+          "false",
+        ),
+      );
+      const edited = await findTitleInput("ph");
+      expect(fireEvent.keyDown(edited, { key: "z", ctrlKey: true })).toBe(false);
+      await waitFor(() => expect(notesStoreMock.undo).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(nodeTitleEditors().map(titleEditorSource)).toEqual([
+          "al",
+          "pha",
+        ]),
+      );
+    });
+
     it("chains held Enter repeats through provisional rows in order", async () => {
       configureRepository([
         node({ id: "solo", sortKey: 1024, title: "alpha" })
@@ -12232,6 +12338,61 @@ describe("Notes workspace", () => {
     expect(await findTitleInput("Plan edited")).toHaveFocus();
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
   });
+
+  it.each(["primary", "secondary"] as const)(
+    "restores the previous DOM editor and active pane after a denied %s direct caret claim",
+    async (paneId) => {
+      configureRepository([
+        node({ id: "first", sortKey: 1, title: "First" }),
+        node({ id: "second", sortKey: 2, title: "Second" }),
+      ]);
+      const save = deferred<NotesWorkspace>();
+      notesStoreMock.updateNode.mockReturnValue(save.promise);
+      renderSplitNotesWorkspace();
+      const paneIndex = paneId === "primary" ? 0 : 1;
+      const panes = await waitFor(() => {
+        const current = Array.from(
+          document.querySelectorAll<HTMLElement>("[data-notes-pane-id]"),
+        );
+        expect(current).toHaveLength(2);
+        return current;
+      });
+      fireEvent.pointerDown(panes[paneIndex]);
+      const source = await activateTitleEditorInMotionRow(
+        "first",
+        panes[paneIndex],
+      );
+      const target = await waitFor(() => {
+        const current = titleEditorInMotionRow("second", panes[paneIndex]);
+        expect(current).not.toBeNull();
+        return current!;
+      });
+      changeTitleEditor(source, "First dirty");
+      fireEvent.pointerDown(panes[paneIndex]);
+      const previousPaneId = paneId;
+      await waitFor(() =>
+        expect(
+          JSON.parse(
+            localStorage.getItem(NOTES_SPLIT_LAYOUT_STORAGE_KEY)!,
+          ).vaults["/vault"].activePaneId,
+        ).toBe(previousPaneId),
+      );
+
+      expect(fireEvent.keyDown(source, { key: "ArrowDown" })).toBe(false);
+      expect(target).toHaveFocus();
+      await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledOnce());
+      await act(async () => save.reject(new Error("denied")));
+
+      await waitFor(() => expect(source).toHaveFocus());
+      await waitFor(() =>
+        expect(
+          JSON.parse(
+            localStorage.getItem(NOTES_SPLIT_LAYOUT_STORAGE_KEY)!,
+          ).vaults["/vault"].activePaneId,
+        ).toBe(previousPaneId),
+      );
+    },
+  );
 
   it("saves the zoomed page title before moving focus to its first child", async () => {
     const user = userEvent.setup();

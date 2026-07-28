@@ -676,7 +676,17 @@ describe("notes workspace context split", () => {
           note: "",
           imageOffsetUtf16: 0
         });
+        result.current.paneRegistrySlice.setActivePaneId(
+          paneId === "primary" ? "secondary" : "primary"
+        );
       });
+      const previousActivePaneId =
+        paneId === "primary" ? "secondary" : "primary";
+      await waitFor(() =>
+        expect(result.current.paneRegistrySlice.activePaneId).toBe(
+          previousActivePaneId
+        )
+      );
       const frames: FrameRequestCallback[] = [];
       vi.stubGlobal(
         "requestAnimationFrame",
@@ -712,6 +722,9 @@ describe("notes workspace context split", () => {
         result.current.paneRegistrySlice.panes[paneId].stateSlice.state;
       expect(state.selectedId).not.toBe("other");
       expect(state.editingNoteId).not.toBe("other");
+      expect(result.current.paneRegistrySlice.activePaneId).toBe(
+        previousActivePaneId
+      );
     }
   );
 

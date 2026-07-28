@@ -1942,13 +1942,23 @@ function OutlineNodeEditorComponent({
   const claimEditingFocus = (
     field: "title" | "note",
     target: HTMLElement,
+    previousTarget: EventTarget | null,
   ): void => {
     if (!actions.claimEditingFocus) {
       actions.markEditingFocus?.(nodeId, field);
       return;
     }
+    const previousElement =
+      previousTarget instanceof HTMLElement ? previousTarget : null;
     void actions.claimEditingFocus(nodeId, field).then((claimed) => {
-      if (!claimed && document.activeElement === target) target.blur();
+      if (!claimed && document.activeElement === target) {
+        if (previousElement?.isConnected) {
+          previousElement.focus();
+        }
+        if (document.activeElement === target) {
+          target.blur();
+        }
+      }
     });
   };
 
@@ -2552,7 +2562,11 @@ function OutlineNodeEditorComponent({
                     !optimisticInsertion &&
                     !pendingFocusInProgressRef.current
                   ) {
-                    claimEditingFocus("title", event.currentTarget);
+                    claimEditingFocus(
+                      "title",
+                      event.currentTarget,
+                      event.relatedTarget,
+                    );
                   }
                 }}
                 onPaste={(event) => handlePaste(event, "title")}
@@ -2693,7 +2707,11 @@ function OutlineNodeEditorComponent({
                   !optimisticInsertion &&
                   !pendingFocusInProgressRef.current
                 ) {
-                  claimEditingFocus("title", event.currentTarget);
+                  claimEditingFocus(
+                    "title",
+                    event.currentTarget,
+                    event.relatedTarget,
+                  );
                 }
               }}
               onKeyDown={handleTitleKeyDown}
@@ -2897,7 +2915,11 @@ function OutlineNodeEditorComponent({
               };
             }
             if (!pendingFocusInProgressRef.current) {
-              claimEditingFocus("note", event.currentTarget);
+              claimEditingFocus(
+                "note",
+                event.currentTarget,
+                event.relatedTarget,
+              );
             }
           }}
           onPaste={(event) => handlePaste(event, "note")}

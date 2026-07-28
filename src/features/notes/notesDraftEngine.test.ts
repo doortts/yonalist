@@ -409,6 +409,26 @@ describe("NotesDraftEngine", () => {
       });
     });
 
+    it("attaches an optimistic title to the latest touched survivor", async () => {
+      const store = repository();
+      const { engine } = createHarness({ store });
+      const lease = engine.beginBackspaceGesture(33, "starting")!;
+
+      expect(
+        lease.updateOptimisticInsertionTitle?.("survivor", "changed"),
+      ).toBe(false);
+      lease.touch("survivor");
+      expect(
+        lease.updateOptimisticInsertionTitle?.("survivor", "changed"),
+      ).toBe(true);
+
+      await expect(lease.prepare(["starting"])).resolves.toEqual({
+        baselineFlushed: true,
+        titleUpdate: { id: "survivor", title: "changed" },
+      });
+      expect(store.updateNode).not.toHaveBeenCalled();
+    });
+
     it("omits removed-node drafts from the prepared title update", async () => {
       vi.useFakeTimers();
       const { engine } = createHarness({

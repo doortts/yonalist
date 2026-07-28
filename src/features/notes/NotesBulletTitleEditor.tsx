@@ -354,6 +354,25 @@ export const NotesBulletTitleEditor = forwardRef<
     if (editing) {
       if (sourceChanged) {
         sourceChangedWhileEditingRef.current = true;
+        const root = rootRef.current;
+        if (
+          root &&
+          !dirtyRef.current &&
+          !composingRef.current &&
+          source !== lastPublishedSourceRef.current
+        ) {
+          const selection = readPlainTextSelection(root) ?? {
+            anchorUtf16: source.length,
+            focusUtf16: source.length
+          };
+          lastPublishedSourceRef.current = source;
+          setPublishedSource(source);
+          replacePlainText(root, source, {
+            anchorUtf16: Math.min(selection.anchorUtf16, source.length),
+            focusUtf16: Math.min(selection.focusUtf16, source.length)
+          });
+          sourceChangedWhileEditingRef.current = false;
+        }
       }
       return;
     }
