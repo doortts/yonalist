@@ -1478,6 +1478,7 @@ export function useNotesWorkspace({
     actionsSlice,
     navigateWithHistory,
     editingLease,
+    retirePendingPrimarySelection,
     primary: {
       pendingPrimarySelection: pendingPrimarySelectionRef.current,
       locallyExpandedNodeIds,

@@ -286,3 +286,74 @@ git diff --check
 - Selection restoration remains in the existing synchronous focus activation;
   no frame reconciler, timer, observer, dependency, or new runtime layer was
   added.
+
+## Fix round 5: request-owned insertion focus and activation-neutral selection
+
+### Root causes and fixes
+
+- The provisional insertion marker ended with optimistic settlement even when
+  focus acknowledgement was still waiting for the previous editor's dirty
+  draft to flush. Insertion focus ownership now remains marked through the
+  settlement-created focus request and ends only when that exact request
+  finishes its editing-lease claim.
+- The split interaction guard treated every event inside the marked editor as
+  insertion-owned. Plain Enter and Tab now advance the shared interaction
+  revision during capture, while a handled boundary Arrow advances it after
+  the editor resolves navigation. Text input, composition, pointer activity,
+  native caret Arrows, and slash-menu navigation remain insertion-owned.
+- Deferred registry claims checked only the interaction revision and restored a
+  captured active pane on failure. Primary and secondary acknowledgements now
+  capture the exact node/request identity, validate it before and after the
+  prior lease flush, leave a newer active-pane choice untouched, and retire
+  only the failed request that is still current. Same-revision replacements
+  retain their pending selection and focus.
+- Split close captured the primary title range only during a pointer
+  transition. The existing pane focus tracker now captures the exact UTF-16
+  range on primary title focus and blur, so pointer and keyboard toolbar
+  activation restore the same selection.
+
+### Red-green evidence
+
+```sh
+npm test -- src/features/notes/NotesWorkspace.test.tsx src/features/notes/notesWorkspaceContextSplit.test.tsx src/features/notes/NotesFeature.test.tsx -t "keeps insertion ownership|newest provisional row|provisional row after Tab|same-revision|previous .* editing lease|focus and selection"
+```
+
+- Before the fixes: 8 tests failed and the existing pointer selection case
+  passed. Failures covered the expired marker and dropped inserted draft, stale
+  B refocus after B-to-C Enter, Tab refocus, primary/secondary stale claims,
+  same-revision request replacement, active-pane restoration, and keyboard
+  selection restoration.
+- After the fixes: 3 files, 9 tests passed.
+
+### Final verification
+
+```sh
+npm test -- src/features/notes/NotesWorkspace.test.tsx src/features/notes/notesWorkspaceContextSplit.test.tsx src/features/notes/NotesFeature.test.tsx src/features/notes/useNotesEditingLease.test.tsx
+```
+
+- 4 files, 334 tests passed in 38.73 seconds.
+
+```sh
+npm run test:architecture
+npx tsc --noEmit
+npm run lint
+git diff --check
+```
+
+- Architecture budgets, TypeScript, ESLint, and whitespace checks passed.
+- `notesWorkspaceRuntime.ts`: 1,500/1,500 lines.
+- All-test order observations: 283/283. No budget changed.
+
+### Fix-round self-review
+
+- Persistence settlement, authority recovery, history epoch/entry validation,
+  and Undo/Redo ownership were not changed.
+- The insertion marker spans only optimistic insertion and its
+  settlement-created focus request; ordinary focus requests do not gain this
+  event exemption.
+- A stale claim cannot overwrite the active pane, editing lease, pending
+  primary selection, or pending focus. Failure cleanup is guarded by the exact
+  captured node/request pair.
+- Split-close restoration stays synchronous and uses the existing title
+  selection marker. No timer, frame reconciler, observer, dependency, public
+  action, or new runtime layer was added.

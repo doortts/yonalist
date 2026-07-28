@@ -325,6 +325,9 @@ function OutlineNodeEditorComponent({
     getLiveFunction(() => getActionsSnapshot(), key, `slice:${String(key)}`);
   const nodeId = node.id;
   const readOnly = readOnlyMode !== undefined;
+  const insertionFocusOwned =
+    optimisticInsertion !== undefined ||
+    focusRequest?.expectedUserInteractionRevision !== undefined;
   const contentProtected = node.isReadonly === true;
   const isImageIngestEnabled = () =>
     !selectionDisabled &&
@@ -2516,7 +2519,7 @@ function OutlineNodeEditorComponent({
                 }
                 aria-label="Edit node title"
                 data-notes-provisional-insertion={
-                  optimisticInsertion ? "true" : undefined
+                  insertionFocusOwned ? "true" : undefined
                 }
                 data-github-editor-node-id={nodeId}
                 data-github-editor-field="title"
@@ -2569,7 +2572,7 @@ function OutlineNodeEditorComponent({
                     );
                   }
                   if (
-                    !optimisticInsertion &&
+                    !insertionFocusOwned &&
                     !pendingFocusInProgressRef.current
                   ) {
                     claimEditingFocus(
@@ -2714,7 +2717,7 @@ function OutlineNodeEditorComponent({
                   };
                 }
                 if (
-                  !optimisticInsertion &&
+                  !insertionFocusOwned &&
                   !pendingFocusInProgressRef.current
                 ) {
                   claimEditingFocus(

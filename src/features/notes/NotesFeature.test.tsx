@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -288,8 +289,18 @@ describe("NotesFeature", () => {
     expect(notesStoreMock.initialize).toHaveBeenCalledTimes(1);
   });
 
-  it("returns focus to the last primary editor after closing from secondary", async () => {
+  const expectSplitCloseRestoresPrimarySelection = async (
+    activation: "pointer" | "keyboard"
+  ) => {
     const user = userEvent.setup();
+    const activateToggle = async (button: HTMLButtonElement) => {
+      if (activation === "pointer") {
+        await user.click(button);
+        return;
+      }
+      act(() => button.focus());
+      await user.keyboard("{Enter}");
+    };
     notesStoreMock.loadWorkspace.mockResolvedValueOnce({
       nodes: [
         {
@@ -345,7 +356,7 @@ describe("NotesFeature", () => {
       focusUtf16: 2,
     });
 
-    await user.click(
+    await activateToggle(
       within(primary).getByRole("button", { name: "Open split view" })
     );
     const secondary = await waitFor(() => {
@@ -355,7 +366,7 @@ describe("NotesFeature", () => {
       if (!pane) throw new Error("Secondary pane did not open");
       return pane;
     });
-    await user.click(
+    await activateToggle(
       within(secondary).getByRole("button", { name: "Close split view" })
     );
 
@@ -369,7 +380,12 @@ describe("NotesFeature", () => {
         focusUtf16: 2,
       });
     });
-  });
+  };
+
+  it.each(["pointer", "keyboard"] as const)(
+    "returns focus and selection to the last primary editor after %s split activation",
+    expectSplitCloseRestoresPrimarySelection,
+  );
 
   it("zooms the primary pane when its bullet is clicked in split view", async () => {
     notesStoreMock.loadWorkspace.mockResolvedValueOnce({

@@ -545,7 +545,12 @@ describe("notes workspace context split", () => {
         );
       });
       await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
-      act(() => actions().recordUserInteraction?.());
+      const interveningPaneId =
+        paneId === "primary" ? "secondary" : "primary";
+      act(() => {
+        actions().recordUserInteraction?.();
+        result.current.paneRegistrySlice.setActivePaneId(interveningPaneId);
+      });
       await act(async () =>
         save.resolve(
           workspace([
@@ -556,6 +561,13 @@ describe("notes workspace context split", () => {
       );
       await act(async () => acknowledgement);
 
+      expect(result.current.paneRegistrySlice.activePaneId).toBe(
+        interveningPaneId
+      );
+      expect(
+        panes()[paneId].stateSlice.pendingPrimarySelection
+      ).toBeNull();
+      expect(panes()[paneId].stateSlice.state.pendingFocusId).toBeNull();
       act(() => {
         actions().updateNodeDraft(
           "split",
@@ -568,6 +580,151 @@ describe("notes workspace context split", () => {
         );
       });
       expect(result.current.draftsByNodeId.split).toBeUndefined();
+      act(() => {
+        actions().updateNodeDraft(
+          "root",
+          {
+            title: "Root still owns editing",
+            note: "",
+            imageOffsetUtf16: 0,
+          },
+          "title"
+        );
+      });
+      expect(result.current.draftsByNodeId.root?.title).toBe(
+        "Root still owns editing"
+      );
+    }
+  );
+
+  it.each(["primary", "secondary"] as const)(
+    "keeps a same-revision %s focus replacement and active-pane choice when the prior claim settles",
+    async (paneId) => {
+      const initial = workspace([
+        node({ id: "root", title: "Root", sortKey: 1024 }),
+        node({ id: "first", title: "First", sortKey: 2048 }),
+        node({ id: "replacement", title: "Replacement", sortKey: 3072 }),
+      ]);
+      const save = deferred<NotesWorkspace>();
+      const updateNode = vi.fn().mockReturnValue(save.promise);
+      const store = repository({
+        loadWorkspace: vi.fn().mockResolvedValue(initial),
+        updateNode,
+      });
+      const { result } = renderHook(() =>
+        useNotesWorkspace({
+          vaultRoot: `/same-revision-${paneId}-focus-replacement`,
+          repository: store,
+        })
+      );
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      const panes = () => result.current.paneRegistrySlice.panes;
+      const actions = () => panes()[paneId].actionsSlice.actions;
+      result.current.actions.publishOutlinePaneState?.({
+        paneId,
+        scope: { kind: "active" },
+        zoomedNodeId: null,
+        showCompleted: true,
+        collapsedNodeIds: new Set(),
+        locallyExpandedNodeIds: new Set(),
+      });
+      await act(async () => {
+        expect(
+          await actions().claimEditingFocus?.("root", "title")
+        ).toBe(true);
+      });
+      act(() => {
+        actions().updateNodeDraft(
+          "root",
+          {
+            title: "Root dirty",
+            note: "",
+            imageOffsetUtf16: 0,
+          },
+          "title"
+        );
+      });
+      const interactionRevision =
+        actions().getUserInteractionRevision?.();
+      await act(async () =>
+        actions().focusNode("first", {
+          anchorUtf16: 1,
+          focusUtf16: 1,
+        })
+      );
+      const firstRequest =
+        panes()[paneId].stateSlice.pendingPrimarySelection;
+      expect(firstRequest).toMatchObject({
+        nodeId: "first",
+        selection: { anchorUtf16: 1, focusUtf16: 1 },
+      });
+
+      let acknowledgement!: Promise<void>;
+      act(() => {
+        acknowledgement = actions().acknowledgeFocus(
+          "first",
+          firstRequest!.requestId
+        );
+      });
+      await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
+      await act(async () =>
+        actions().focusNode("replacement", {
+          anchorUtf16: 2,
+          focusUtf16: 2,
+        })
+      );
+      const replacementRequest =
+        panes()[paneId].stateSlice.pendingPrimarySelection;
+      expect(replacementRequest).toMatchObject({
+        nodeId: "replacement",
+        selection: { anchorUtf16: 2, focusUtf16: 2 },
+      });
+      expect(replacementRequest?.requestId).not.toBe(firstRequest?.requestId);
+      expect(actions().getUserInteractionRevision?.()).toBe(
+        interactionRevision
+      );
+      const interveningPaneId =
+        paneId === "primary" ? "secondary" : "primary";
+      act(() =>
+        result.current.paneRegistrySlice.setActivePaneId(interveningPaneId)
+      );
+
+      await act(async () =>
+        save.resolve(
+          workspace([
+            node({ id: "root", title: "Root dirty", sortKey: 1024 }),
+            node({ id: "first", title: "First", sortKey: 2048 }),
+            node({
+              id: "replacement",
+              title: "Replacement",
+              sortKey: 3072,
+            }),
+          ])
+        )
+      );
+      await act(async () => acknowledgement);
+
+      expect(result.current.paneRegistrySlice.activePaneId).toBe(
+        interveningPaneId
+      );
+      expect(
+        panes()[paneId].stateSlice.pendingPrimarySelection
+      ).toEqual(replacementRequest);
+      expect(panes()[paneId].stateSlice.state.pendingFocusId).toBe(
+        "replacement"
+      );
+      act(() => {
+        actions().updateNodeDraft(
+          "first",
+          {
+            title: "Stale owner",
+            note: "",
+            imageOffsetUtf16: 0,
+          },
+          "title"
+        );
+      });
+      expect(result.current.draftsByNodeId.first).toBeUndefined();
       act(() => {
         actions().updateNodeDraft(
           "root",

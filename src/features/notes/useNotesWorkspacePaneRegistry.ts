@@ -35,6 +35,7 @@ interface UseNotesWorkspacePaneRegistryOptions {
   readonly draftsSlice: NotesDraftsSlice;
   readonly actionsSlice: NotesActionsSlice;
   readonly editingLease: NotesEditingLeaseController;
+  readonly retirePendingPrimarySelection: () => void;
   readonly navigateWithHistory: (
     intent: NavigationIntent,
     workspaceGeneration?: number,
@@ -56,6 +57,7 @@ export function useNotesWorkspacePaneRegistry({
   draftsSlice,
   actionsSlice,
   editingLease,
+  retirePendingPrimarySelection,
   navigateWithHistory,
   primary
 }: UseNotesWorkspacePaneRegistryOptions): NotesPaneRegistrySlice {
@@ -63,7 +65,6 @@ export function useNotesWorkspacePaneRegistry({
     activePaneId,
     panes,
     setActivePaneId,
-    getActivePaneId,
     dispatchPane,
     getPaneSession
   } = sessions;
@@ -147,22 +148,14 @@ export function useNotesWorkspacePaneRegistry({
       paneId: "primary" | "secondary",
       nodeId: string,
       field: "title" | "note",
-      expectedUserInteractionRevision?: number
+      isCurrent: () => boolean = () => true
     ): Promise<boolean> => {
-      const previousActivePaneId = getActivePaneId();
-      const interactionIsCurrent = () =>
-        expectedUserInteractionRevision === undefined ||
-        actionsRef.current.getUserInteractionRevision?.() ===
-          expectedUserInteractionRevision;
       const claimed = await claim(
         { paneId, nodeId, field },
         actionsRef.current.flushNodeDraft,
-        interactionIsCurrent
+        isCurrent
       );
-      if (!claimed || !interactionIsCurrent()) {
-        setActivePaneId(previousActivePaneId);
-        return false;
-      }
+      if (!claimed || !isCurrent()) return false;
       setActivePaneId(paneId);
       if (paneId === "primary") {
         actionsRef.current.markEditingFocus?.(nodeId, field);
@@ -190,7 +183,6 @@ export function useNotesWorkspacePaneRegistry({
     [
       claim,
       dispatchPane,
-      getActivePaneId,
       setActivePaneId,
     ]
   );
@@ -270,21 +262,46 @@ export function useNotesWorkspacePaneRegistry({
   );
   const primaryAcknowledgeFocus = useCallback(
     async (nodeId: string, requestId?: number) => {
-      const expectedUserInteractionRevision =
-        primaryPendingSelectionRef.current
-          ?.expectedUserInteractionRevision;
-      if (
-        await claimEditing(
-          "primary",
-          nodeId,
-          stateRef.current.pendingFocusField ?? "title",
-          expectedUserInteractionRevision
-        )
-      ) {
-        await actionsRef.current.acknowledgeFocus(nodeId, requestId);
+      const pendingSelection = primaryPendingSelectionRef.current;
+      const expectedRequestId = requestId ?? pendingSelection?.requestId;
+      const requestIsCurrent = () => {
+        if (pendingSelection === null) {
+          return (
+            primaryPendingSelectionRef.current === null &&
+            stateRef.current.pendingFocusId === nodeId
+          );
+        }
+        return (
+          pendingSelection.nodeId === nodeId &&
+          pendingSelection.requestId === expectedRequestId &&
+          primaryPendingSelectionRef.current?.nodeId === nodeId &&
+          primaryPendingSelectionRef.current.requestId ===
+            expectedRequestId &&
+          (pendingSelection.expectedUserInteractionRevision === undefined ||
+            actionsRef.current.getUserInteractionRevision?.() ===
+              pendingSelection.expectedUserInteractionRevision)
+        );
+      };
+      const claimed = await claimEditing(
+        "primary",
+        nodeId,
+        stateRef.current.pendingFocusField ?? "title",
+        requestIsCurrent
+      );
+      if (!claimed) {
+        if (
+          pendingSelection !== null &&
+          primaryPendingSelectionRef.current?.nodeId === nodeId &&
+          primaryPendingSelectionRef.current.requestId ===
+            expectedRequestId
+        ) {
+          retirePendingPrimarySelection();
+        }
+        return;
       }
+      await actionsRef.current.acknowledgeFocus(nodeId, expectedRequestId);
     },
-    [claimEditing]
+    [claimEditing, retirePendingPrimarySelection]
   );
   const primaryClaimEditingFocus = useCallback(
     (nodeId: string, field: "title" | "note") =>
@@ -358,29 +375,57 @@ export function useNotesWorkspacePaneRegistry({
       acknowledgeFocus: async (nodeId, requestId) => {
         const current = getPaneSession("secondary");
         const pendingSelection = current.pendingPrimarySelection;
-        const expectedUserInteractionRevision =
-          pendingSelection?.expectedUserInteractionRevision;
+        const expectedRequestId = requestId ?? pendingSelection?.requestId;
+        const requestIsCurrent = () => {
+          const live = getPaneSession("secondary");
+          if (pendingSelection === null) {
+            return (
+              live.pendingPrimarySelection === null &&
+              live.pendingFocusId === nodeId
+            );
+          }
+          return (
+            pendingSelection.nodeId === nodeId &&
+            pendingSelection.requestId === expectedRequestId &&
+            live.pendingPrimarySelection?.nodeId === nodeId &&
+            live.pendingPrimarySelection?.requestId === expectedRequestId &&
+            (pendingSelection.expectedUserInteractionRevision === undefined ||
+              pendingSelection.expectedUserInteractionRevision ===
+                actionsSlice.actions.getUserInteractionRevision?.())
+          );
+        };
         if (
           !(await claimEditing(
             "secondary",
             nodeId,
             current.pendingFocusField ?? "title",
-            expectedUserInteractionRevision
+            requestIsCurrent
           ))
         ) {
+          const failed = getPaneSession("secondary");
+          if (
+            pendingSelection !== null &&
+            failed.pendingPrimarySelection?.nodeId === nodeId &&
+            failed.pendingPrimarySelection.requestId ===
+              expectedRequestId
+          ) {
+            dispatchPane("secondary", {
+              type: "setPendingPrimarySelection",
+              request: null
+            });
+            if (failed.pendingFocusId === nodeId) {
+              dispatchPane("secondary", {
+                type: "setNavigation",
+                patch: { pendingFocusId: null, pendingFocusField: null }
+              });
+            }
+          }
           return;
         }
-        if (
-          pendingSelection !== null &&
-          (pendingSelection.nodeId !== nodeId ||
-            pendingSelection.requestId !== requestId ||
-            (expectedUserInteractionRevision !== undefined &&
-              expectedUserInteractionRevision !==
-                actionsSlice.actions.getUserInteractionRevision?.()))
-        ) {
-          return;
-        }
-        await actionsSlice.actions.acknowledgeFocus(nodeId, requestId);
+        await actionsSlice.actions.acknowledgeFocus(
+          nodeId,
+          expectedRequestId
+        );
         dispatchPane("secondary", {
           type: "setPendingPrimarySelection",
           request: null

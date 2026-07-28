@@ -2,8 +2,10 @@ import { Columns2, PanelRightClose } from "lucide-react";
 import {
   type CSSProperties,
   type FocusEvent as ReactFocusEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type SyntheticEvent,
   memo,
   useCallback,
   useContext,
@@ -68,6 +70,16 @@ const NotesScopedPane = memo(function NotesScopedPane({
 
 function boundedRatio(value: number): number {
   return Math.min(0.75, Math.max(0.25, value));
+}
+
+function insertionEditorForEvent(
+  event: SyntheticEvent<HTMLDivElement>,
+): HTMLElement | null {
+  return event.target instanceof Element
+    ? event.target.closest<HTMLElement>(
+        "[data-notes-provisional-insertion='true']",
+      )
+    : null;
 }
 
 export function NotesDetailSplitHost() {
@@ -173,6 +185,10 @@ export function NotesDetailSplitHost() {
         event.target.matches(PRIMARY_EDITOR_SELECTOR)
       ) {
         lastPrimaryEditorRef.current = event.target;
+        if (event.target.matches("[data-notes-bullet-title]")) {
+          lastPrimaryTitleSelectionRef.current =
+            readPlainTextSelection(event.target);
+        }
       }
     },
     []
@@ -295,24 +311,41 @@ export function NotesDetailSplitHost() {
     [closeSplit, layout.splitOpen],
   );
   const recordUserInteraction = useCallback(
-    (event: {
-      readonly target: EventTarget | null;
-      readonly type: string;
-    }) => {
-      const activeEditor =
-        event.type === "pointerdown" &&
-        document.activeElement instanceof HTMLDivElement &&
-        primaryPaneRef.current?.contains(document.activeElement) &&
-        document.activeElement.matches("[data-notes-bullet-title]")
-          ? document.activeElement
-          : null;
-      if (activeEditor) {
-        lastPrimaryTitleSelectionRef.current =
-          readPlainTextSelection(activeEditor);
+    (event: SyntheticEvent<HTMLDivElement>) => {
+      const insertionEditor = insertionEditorForEvent(event);
+      if (insertionEditor && event.type !== "keydown") {
+        return;
       }
+      if (insertionEditor) {
+        const keyboardEvent = event.nativeEvent as KeyboardEvent;
+        const plainEnter =
+          keyboardEvent.key === "Enter" &&
+          !keyboardEvent.altKey &&
+          !keyboardEvent.ctrlKey &&
+          !keyboardEvent.metaKey &&
+          !keyboardEvent.shiftKey;
+        if (
+          keyboardEvent.isComposing ||
+          insertionEditor.getAttribute("aria-expanded") === "true" ||
+          (!plainEnter && keyboardEvent.key !== "Tab")
+        ) {
+          return;
+        }
+      }
+      actions.recordUserInteraction?.();
+    },
+    [actions],
+  );
+  const recordInsertionNavigation = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      const insertionEditor = insertionEditorForEvent(event);
       if (
-        event.target instanceof Element &&
-        event.target.closest("[data-notes-provisional-insertion='true']")
+        !insertionEditor ||
+        insertionEditor.getAttribute("aria-expanded") === "true" ||
+        !event.defaultPrevented ||
+        !["ArrowDown", "ArrowLeft", "ArrowRight", "ArrowUp"].includes(
+          event.key,
+        )
       ) {
         return;
       }
@@ -331,6 +364,7 @@ export function NotesDetailSplitHost() {
         onCompositionStartCapture={recordUserInteraction}
         onInputCapture={recordUserInteraction}
         onKeyDownCapture={recordUserInteraction}
+        onKeyDown={recordInsertionNavigation}
         onPointerDownCapture={recordUserInteraction}
         style={
           {
@@ -343,6 +377,7 @@ export function NotesDetailSplitHost() {
         className="notes-detail-pane"
         data-notes-pane-id="primary"
         onFocusCapture={rememberPrimaryEditor}
+        onBlurCapture={rememberPrimaryEditor}
         onPointerDownCapture={() => registry.setActivePaneId("primary")}
       >
         <NotesScopedPane
