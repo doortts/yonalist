@@ -75,6 +75,7 @@ import { useNotesPaneRegistry } from "./NotesWorkspaceContext";
 import { useNotesActions, useNotesState } from "./NotesWorkspaceContext";
 import type { NotesPreparedSelectionAuthority } from "./notesWorkspaceTypes";
 import {
+  readPlainTextSelection,
   restorePlainTextSelection,
 } from "./plainTextContenteditable";
 
@@ -363,6 +364,10 @@ describe("NotesFeature", () => {
     );
     await waitFor(() => {
       expect(activeTitle).toHaveFocus();
+      expect(readPlainTextSelection(activeTitle)).toEqual({
+        anchorUtf16: 2,
+        focusUtf16: 2,
+      });
     });
   });
 

@@ -18,6 +18,10 @@ import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesPaneSliceScope } from "./NotesPaneScope";
 import { NotesSplitDndContext } from "./NotesSplitDndContext";
 import {
+  readPlainTextSelection,
+  restorePlainTextSelection,
+} from "./plainTextContenteditable";
+import {
   useNotesActions,
   useNotesPaneRegistry,
   useNotesState
@@ -76,6 +80,10 @@ export function NotesDetailSplitHost() {
   const splitOpenButtonRef = useRef<HTMLButtonElement>(null);
   const primaryPaneRef = useRef<HTMLDivElement>(null);
   const lastPrimaryEditorRef = useRef<HTMLElement | null>(null);
+  const lastPrimaryTitleSelectionRef = useRef<{
+    readonly anchorUtf16: number;
+    readonly focusUtf16: number;
+  } | null>(null);
   const hydratedVaultRef = useRef<string | null>(null);
   const [layout, setLayout] = useState<NotesSplitLayoutStateV1>(() =>
     loadNotesSplitLayout(localStorage, vaultRoot)
@@ -169,14 +177,22 @@ export function NotesDetailSplitHost() {
     },
     []
   );
-
   const focusPrimaryEditor = useCallback(() => {
     const focus = (editor: HTMLElement) => {
+      const isBulletTitle = editor.matches("[data-notes-bullet-title]");
+      const selection = isBulletTitle
+        ? lastPrimaryTitleSelectionRef.current
+        : null;
       editor.focus();
-      if (editor.matches("[data-notes-bullet-title]")) {
+      if (!isBulletTitle) return;
+      if (selection) restorePlainTextSelection(editor, selection);
+      editor.setAttribute("data-notes-restore-title-selection", "true");
+      try {
         editor.dispatchEvent(
-          new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }),
+          new KeyboardEvent("keydown", { bubbles: true, key: "Enter" })
         );
+      } finally {
+        editor.removeAttribute("data-notes-restore-title-selection");
       }
     };
     const remembered = lastPrimaryEditorRef.current;
@@ -278,7 +294,32 @@ export function NotesDetailSplitHost() {
       ) : undefined,
     [closeSplit, layout.splitOpen],
   );
-  const recordUserInteraction = actions.recordUserInteraction;
+  const recordUserInteraction = useCallback(
+    (event: {
+      readonly target: EventTarget | null;
+      readonly type: string;
+    }) => {
+      const activeEditor =
+        event.type === "pointerdown" &&
+        document.activeElement instanceof HTMLDivElement &&
+        primaryPaneRef.current?.contains(document.activeElement) &&
+        document.activeElement.matches("[data-notes-bullet-title]")
+          ? document.activeElement
+          : null;
+      if (activeEditor) {
+        lastPrimaryTitleSelectionRef.current =
+          readPlainTextSelection(activeEditor);
+      }
+      if (
+        event.target instanceof Element &&
+        event.target.closest("[data-notes-provisional-insertion='true']")
+      ) {
+        return;
+      }
+      actions.recordUserInteraction?.();
+    },
+    [actions],
+  );
 
   return (
     <NotesSplitDndContext>

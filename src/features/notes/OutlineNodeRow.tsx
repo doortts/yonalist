@@ -2515,6 +2515,9 @@ function OutlineNodeEditorComponent({
                   )
                 }
                 aria-label="Edit node title"
+                data-notes-provisional-insertion={
+                  optimisticInsertion ? "true" : undefined
+                }
                 data-github-editor-node-id={nodeId}
                 data-github-editor-field="title"
                 disabled={disabled}

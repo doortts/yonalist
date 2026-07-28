@@ -7397,7 +7397,7 @@ describe("Notes workspace", () => {
       input.setSelectionRange(input.value.length, input.value.length);
     }
 
-    it("renders and focuses the empty sibling before the split resolves", async () => {
+    it("keeps editing ownership when typing continues after the provisional sibling settles", async () => {
       configureRepository([
         node({ id: "solo", sortKey: 1024, title: "Solo item" }),
       ]);
@@ -7415,8 +7415,15 @@ describe("Notes workspace", () => {
           ])
       );
       vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(FIRST);
-      renderNotesWorkspace();
-      const title = await findTitleInput("Solo item");
+      renderSplitNotesWorkspace();
+      const primary = await waitFor(() => {
+        const pane = document.querySelector<HTMLElement>(
+          '[data-notes-pane-id="primary"]',
+        );
+        expect(pane).not.toBeNull();
+        return pane!;
+      });
+      const title = await activateTitleEditorInMotionRow("solo", primary);
       endCaret(title);
 
       expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
@@ -7429,15 +7436,19 @@ describe("Notes workspace", () => {
         { id: "solo", newNodeId: FIRST, prefix: "Solo item", suffix: "" },
         historyContextMatcher(),
       );
-      const rowCountBeforeSettlement = nodeTitleEditors().length;
+      const rowCountBeforeSettlement = nodeTitleEditors(primary).length;
       const sourceFocusedBeforeSettlement = title.matches(":focus");
-      const provisionalTitle = getTitleInput("");
+      const provisionalTitle = await waitFor(() => {
+        const editor = titleEditorInMotionRow(FIRST, primary);
+        expect(editor).not.toBeNull();
+        return editor!;
+      });
       expect(provisionalTitle).toHaveFocus();
       const sourceSaveCount = notesStoreMock.updateNode.mock.calls.length;
       expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
       changeTitleEditor(provisionalTitle, "typed before save");
       expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(sourceSaveCount);
-      expect(getTitleInput("typed before save")).toHaveFocus();
+      expect(titleEditorInMotionRow(FIRST, primary)).toHaveFocus();
 
       await act(async () =>
         split.resolve(
@@ -7462,10 +7473,28 @@ describe("Notes workspace", () => {
           historyContextMatcher()
         )
       );
-      const savedTitle = await findTitleInput("typed before save");
+      const savedTitle = await waitFor(() => {
+        const editor = titleEditorInMotionRow(FIRST, primary);
+        expect(editor).not.toBeNull();
+        expect(titleEditorSource(editor!)).toBe("typed before save");
+        return editor!;
+      });
       expect(savedTitle).toHaveFocus();
       expect(savedTitle.selectionStart).toBe("typed before save".length);
       expect(savedTitle.selectionEnd).toBe("typed before save".length);
+      changeTitleEditor(savedTitle, "typed after settlement");
+      expect(titleEditorInMotionRow(FIRST, primary)).toHaveFocus();
+      fireEvent.blur(savedTitle);
+      await waitFor(() =>
+        expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+          "/vault",
+          expect.objectContaining({
+            id: FIRST,
+            title: "typed after settlement",
+          }),
+          historyContextMatcher(),
+        ),
+      );
     });
 
     it("keeps a provisional native Backspace edit in one gesture history entry", async () => {

@@ -562,7 +562,13 @@ export const NotesBulletTitleEditor = forwardRef<
         !event.shiftKey
       ) {
         event.preventDefault();
-        requestEdit();
+        requestEdit(
+          event.currentTarget.hasAttribute(
+            "data-notes-restore-title-selection"
+          )
+            ? readPlainTextSelection(event.currentTarget) ?? undefined
+            : undefined
+        );
       }
       return;
     }

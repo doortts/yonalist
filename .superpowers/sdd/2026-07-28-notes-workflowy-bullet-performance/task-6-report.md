@@ -223,3 +223,66 @@ git diff --check
   automatic flush work.
 - No architecture budget, dependency, timer, observer, or new runtime layer was
   added.
+
+## Fix round 4: insertion ownership, deferred claims, and exact split-close selection
+
+### Root causes and fixes
+
+- The split host counted the provisional insertion editor's own input and key
+  events as competing user interaction. Provisional titles now carry one DOM
+  marker, and the shared capture handler ignores only events originating
+  inside that editor. Typing can therefore continue through settlement without
+  retiring the insertion-owned focus or editing lease.
+- A focus acknowledgement could wait for the previous editing lease to flush
+  and then claim the inserted node after the originating interaction revision
+  was stale. Editing-lease claims now accept a currentness predicate and check
+  it both before work and immediately before committing the lease. Primary and
+  secondary insertion acknowledgements capture the pending selection's
+  expected interaction revision before awaiting the claim.
+- Split close restored the primary bullet element but allowed the retained
+  synthetic Enter activation to replace its saved UTF-16 range with the default
+  end caret. The host now snapshots the active primary bullet selection on the
+  toolbar pointer transition and passes it synchronously through the existing
+  title-selection marker while retaining the synthetic Enter path.
+
+### Red-green evidence
+
+```sh
+npm test -- src/features/notes/NotesWorkspace.test.tsx src/features/notes/notesWorkspaceContextSplit.test.tsx src/features/notes/NotesFeature.test.tsx -t "keeps editing ownership when typing continues after the provisional sibling settles|keeps the previous .* editing lease when interaction invalidates a deferred insertion focus claim|returns focus to the last primary editor after closing from secondary"
+```
+
+- Before the fixes: the post-settlement title produced no persistence write,
+  both deferred primary/secondary claims displaced the previous lease, and
+  split close restored `{4,4}` instead of `{2,2}`.
+- After the fixes: 3 files, 4 tests passed.
+
+### Final verification
+
+```sh
+npm test -- src/features/notes/NotesWorkspace.test.tsx src/features/notes/notesWorkspaceContextSplit.test.tsx src/features/notes/NotesFeature.test.tsx src/features/notes/useNotesEditingLease.test.tsx
+```
+
+- 4 files, 330 tests passed in 40.41 seconds.
+
+```sh
+npm run test:architecture
+npx tsc --noEmit
+npm run lint
+git diff --check
+```
+
+- Architecture budgets, TypeScript, ESLint, and whitespace checks passed.
+- `notesWorkspaceRuntime.ts` remains 1,499/1,500 lines; no budget changed.
+
+### Fix-round self-review
+
+- Persistence settlement, exact history epoch/entry checks, authority recovery,
+  and Undo/Redo ownership were not changed.
+- Competing interaction elsewhere in either pane still invalidates
+  settlement-owned focus; only the provisional editor's own events are scoped
+  out.
+- A stale deferred focus claim cannot commit its lease or apply pane focus
+  state after the previous draft flush completes.
+- Selection restoration remains in the existing synchronous focus activation;
+  no frame reconciler, timer, observer, dependency, or new runtime layer was
+  added.

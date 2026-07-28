@@ -138,18 +138,28 @@ export function useNotesWorkspacePaneRegistry({
   const primaryActionsSlice = primaryActionsSliceRef.current;
   const primaryNavigationVersionRef = useRef(primary.navigationVersion);
   primaryNavigationVersionRef.current = primary.navigationVersion;
+  const primaryPendingSelectionRef = useRef(
+    primary.pendingPrimarySelection
+  );
+  primaryPendingSelectionRef.current = primary.pendingPrimarySelection;
   const claimEditing = useCallback(
     async (
       paneId: "primary" | "secondary",
       nodeId: string,
-      field: "title" | "note"
+      field: "title" | "note",
+      expectedUserInteractionRevision?: number
     ): Promise<boolean> => {
       const previousActivePaneId = getActivePaneId();
+      const interactionIsCurrent = () =>
+        expectedUserInteractionRevision === undefined ||
+        actionsRef.current.getUserInteractionRevision?.() ===
+          expectedUserInteractionRevision;
       const claimed = await claim(
         { paneId, nodeId, field },
-        actionsRef.current.flushNodeDraft
+        actionsRef.current.flushNodeDraft,
+        interactionIsCurrent
       );
-      if (!claimed) {
+      if (!claimed || !interactionIsCurrent()) {
         setActivePaneId(previousActivePaneId);
         return false;
       }
@@ -260,11 +270,15 @@ export function useNotesWorkspacePaneRegistry({
   );
   const primaryAcknowledgeFocus = useCallback(
     async (nodeId: string, requestId?: number) => {
+      const expectedUserInteractionRevision =
+        primaryPendingSelectionRef.current
+          ?.expectedUserInteractionRevision;
       if (
         await claimEditing(
           "primary",
           nodeId,
-          stateRef.current.pendingFocusField ?? "title"
+          stateRef.current.pendingFocusField ?? "title",
+          expectedUserInteractionRevision
         )
       ) {
         await actionsRef.current.acknowledgeFocus(nodeId, requestId);
@@ -343,24 +357,25 @@ export function useNotesWorkspacePaneRegistry({
       },
       acknowledgeFocus: async (nodeId, requestId) => {
         const current = getPaneSession("secondary");
+        const pendingSelection = current.pendingPrimarySelection;
+        const expectedUserInteractionRevision =
+          pendingSelection?.expectedUserInteractionRevision;
         if (
           !(await claimEditing(
             "secondary",
             nodeId,
-            current.pendingFocusField ?? "title"
+            current.pendingFocusField ?? "title",
+            expectedUserInteractionRevision
           ))
         ) {
           return;
         }
-        const settled = getPaneSession("secondary");
         if (
-          settled.pendingPrimarySelection !== null &&
-          (settled.pendingPrimarySelection.nodeId !== nodeId ||
-            settled.pendingPrimarySelection.requestId !== requestId ||
-            (settled.pendingPrimarySelection
-              .expectedUserInteractionRevision !== undefined &&
-              settled.pendingPrimarySelection
-                .expectedUserInteractionRevision !==
+          pendingSelection !== null &&
+          (pendingSelection.nodeId !== nodeId ||
+            pendingSelection.requestId !== requestId ||
+            (expectedUserInteractionRevision !== undefined &&
+              expectedUserInteractionRevision !==
                 actionsSlice.actions.getUserInteractionRevision?.()))
         ) {
           return;

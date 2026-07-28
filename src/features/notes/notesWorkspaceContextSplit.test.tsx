@@ -58,6 +58,14 @@ function workspace(nodes: NoteNode[]): NotesWorkspace {
   return { nodes };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 function repository(overrides: Partial<NotesStore> = {}): NotesStore {
   const empty = vi.fn().mockResolvedValue(workspace([]));
   const initialHistoryState = {
@@ -418,6 +426,164 @@ describe("notes workspace context split", () => {
     });
     expect(panes().secondary.stateSlice.state.pendingFocusId).toBeNull();
   });
+
+  it.each(["primary", "secondary"] as const)(
+    "keeps the previous %s editing lease when interaction invalidates a deferred insertion focus claim",
+    async (paneId) => {
+      const initial = workspace([
+        node({ id: "root", title: "Root", sortKey: 1024 }),
+      ]);
+      const settled = workspace([
+        node({ id: "root", title: "Root", sortKey: 1024 }),
+        node({ id: "split", title: "", sortKey: 2048 }),
+      ]);
+      const split = deferred<NotesMutationResponse>();
+      const save = deferred<NotesWorkspace>();
+      const updateNode = vi.fn().mockReturnValue(save.promise);
+      const splitNode = vi.fn().mockReturnValue(split.promise);
+      const store = repository({
+        loadWorkspace: vi.fn().mockResolvedValue(initial),
+        updateNode,
+        splitNode,
+      });
+      const { result } = renderHook(() =>
+        useNotesWorkspace({
+          vaultRoot: `/deferred-${paneId}-focus-claim`,
+          repository: store,
+        })
+      );
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      const panes = () => result.current.paneRegistrySlice.panes;
+      const actions = () => panes()[paneId].actionsSlice.actions;
+
+      result.current.actions.publishOutlinePaneState?.({
+        paneId,
+        scope: { kind: "active" },
+        zoomedNodeId: null,
+        showCompleted: true,
+        collapsedNodeIds: new Set(),
+        locallyExpandedNodeIds: new Set(),
+      });
+      await act(async () => {
+        expect(
+          await actions().claimEditingFocus?.("root", "title")
+        ).toBe(true);
+      });
+      let preparation: ReturnType<
+        NonNullable<typeof result.current.actions.prepareKeyboardInsertion>
+      > = null;
+      act(() => {
+        preparation =
+          actions().prepareKeyboardInsertion?.({
+            ownerPaneId: paneId,
+            navigationVersionAtDispatch: actions().getNavigationVersion?.(),
+            userInteractionRevisionAtDispatch:
+              actions().getUserInteractionRevision?.(),
+            intent: {
+              token: 42,
+              sourceId: "root",
+              expectedNodeId: "split",
+              postcondition: {
+                kind: "split",
+                expectedSourceTitle: "Root",
+                expectedInsertedTitle: "",
+              },
+            },
+            optimistic: {
+              sourceSelection: { anchorUtf16: 4, focusUtf16: 4 },
+              sourceTitle: "Root",
+              insertedTitle: "",
+            },
+          }) ?? null;
+      });
+      expect(preparation).not.toBeNull();
+      let splitCommand!: Promise<unknown>;
+      act(() => {
+        splitCommand = actions().splitNode("root", "split", "Root", "", {
+          keyboardInsertion: preparation!,
+        });
+      });
+      await waitFor(() => expect(splitNode).toHaveBeenCalledOnce());
+      act(() => {
+        actions().updateNodeDraft(
+          "root",
+          {
+            title: "Root dirty",
+            note: "",
+            imageOffsetUtf16: 0,
+          },
+          "title"
+        );
+      });
+      const historyContext =
+        splitNode.mock.lastCall![2] as NotesHistoryContext;
+      await act(async () =>
+        split.resolve({
+          workspace: settled,
+          historyEntryId: historyContext.entryId,
+          canUndo: true,
+          canRedo: false,
+          historyEpoch: historyContext.historyEpoch,
+          nextUndoEntryId: historyContext.entryId,
+          nextRedoEntryId: null,
+          prunedEntryIds: [],
+        })
+      );
+      await act(async () => splitCommand);
+      const pendingSelection =
+        panes()[paneId].stateSlice.pendingPrimarySelection;
+      expect(pendingSelection).toMatchObject({
+        nodeId: "split",
+        expectedUserInteractionRevision: 0,
+      });
+
+      let acknowledgement!: Promise<void>;
+      act(() => {
+        acknowledgement = actions().acknowledgeFocus(
+          "split",
+          pendingSelection!.requestId
+        );
+      });
+      await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
+      act(() => actions().recordUserInteraction?.());
+      await act(async () =>
+        save.resolve(
+          workspace([
+            node({ id: "root", title: "Root dirty", sortKey: 1024 }),
+            node({ id: "split", title: "", sortKey: 2048 }),
+          ])
+        )
+      );
+      await act(async () => acknowledgement);
+
+      act(() => {
+        actions().updateNodeDraft(
+          "split",
+          {
+            title: "stale claim",
+            note: "",
+            imageOffsetUtf16: 0,
+          },
+          "title"
+        );
+      });
+      expect(result.current.draftsByNodeId.split).toBeUndefined();
+      act(() => {
+        actions().updateNodeDraft(
+          "root",
+          {
+            title: "Root still owns editing",
+            note: "",
+            imageOffsetUtf16: 0,
+          },
+          "title"
+        );
+      });
+      expect(result.current.draftsByNodeId.root?.title).toBe(
+        "Root still owns editing"
+      );
+    }
+  );
 
   it("keeps a secondary Enter from committing the inactive primary outline first", async () => {
     const initial = workspace([node({ id: "root", title: "Root" })]);

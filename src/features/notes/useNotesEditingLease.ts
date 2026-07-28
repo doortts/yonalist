@@ -17,7 +17,8 @@ export interface NotesEditingLeaseController {
   setCompositionActive(paneId: NotesPaneId, active: boolean): void;
   claim(
     request: NotesEditingLease,
-    flushNodeDraft: (nodeId: NoteId) => Promise<boolean>
+    flushNodeDraft: (nodeId: NoteId) => Promise<boolean>,
+    isCurrent?: () => boolean
   ): Promise<boolean>;
   release(paneId: NotesPaneId, nodeId?: NoteId): void;
   canEdit(request: NotesEditingLease): boolean;
@@ -50,8 +51,10 @@ export function useNotesEditingLease(): NotesEditingLeaseController {
   const claim = useCallback(
     async (
       request: NotesEditingLease,
-      flushNodeDraft: (nodeId: NoteId) => Promise<boolean>
+      flushNodeDraft: (nodeId: NoteId) => Promise<boolean>,
+      isCurrent: () => boolean = () => true
     ): Promise<boolean> => {
+      if (!isCurrent()) return false;
       const current = leaseRef.current;
       if (
         current?.paneId === request.paneId &&
@@ -70,7 +73,7 @@ export function useNotesEditingLease(): NotesEditingLeaseController {
       ) {
         return false;
       }
-      if (claimRevisionRef.current !== revision) return false;
+      if (claimRevisionRef.current !== revision || !isCurrent()) return false;
       leaseRef.current = request;
       setLease(request);
       return true;
