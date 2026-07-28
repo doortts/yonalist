@@ -4,96 +4,55 @@ import type { SearchPage } from "../../../packages/contracts/generated/SearchPag
 import type { ForestSnapshot } from "../../../packages/contracts/generated/ForestSnapshot";
 import type { NotesApi } from "./api";
 import { initialNotesState, type NotesState } from "./notesState";
-import {
-  cancelTimer, confirmedNote, confirmedText, DRAFT_DEBOUNCE_MS, freshId,
-  messageFrom
-} from "./storeSupport";
+import { freshId, messageFrom } from "./storeSupport";
 import { flattenPastedOutline, type PastedOutlineNode } from "./outlinePaste";
 import { omitKeys, receiptState, subtreeIds, viewportState } from "./storeState";
 import { runSlashEdit } from "./storeSlash";
-import {
-  StoreHistoryEvents, type NotesMutationHistoryEvent
-} from "./storeHistory";
+import type { NotesMutationHistoryEvent } from "./storeHistory";
 import { StoreViewport } from "./storeViewport";
+import { StoreCommands } from "./storeCommands";
+import { StoreDrafts } from "./storeDrafts";
 import {
-  projectCreateNode,
-  projectMergeNodeBackward,
-  projectRemoveEmptyNode,
-  projectSplitNode
-} from "./optimisticOutline";
-import { orderOutline } from "./outlineModel";
+  StoreOutlineMutations,
+  type PendingCreatedNode,
+  type PendingOutlineMutation
+} from "./storeOutlineMutations";
 import {
   StoreSubscriptions,
+  invalidationForPatch,
   type StoreInvalidation
 } from "./storeSubscriptions";
-
-export interface PendingOutlineMutation {
-  readonly committed: Promise<void>;
-}
-
-export interface PendingCreatedNode extends PendingOutlineMutation {
-  readonly id: string;
-}
-
-function changedRecordKeys<T>(
-  previous: Readonly<Record<string, T>>,
-  next: Readonly<Record<string, T>>
-): readonly string[] {
-  return [...new Set([...Object.keys(previous), ...Object.keys(next)])]
-    .filter((id) => previous[id] !== next[id]);
-}
-
-function changedNodeIds(
-  previous: NotesState["nodes"],
-  next: NotesState["nodes"]
-): readonly string[] {
-  const previousById = new Map(previous.map((node) => [node.id, node]));
-  const nextById = new Map(next.map((node) => [node.id, node]));
-  return [...new Set([...previousById.keys(), ...nextById.keys()])]
-    .filter((id) => previousById.get(id) !== nextById.get(id));
-}
-
-function invalidationForPatch(
-  previous: NotesState,
-  patch: Partial<NotesState>
-): StoreInvalidation {
-  const shell = [
-    "status", "sessionId", "revision", "pages", "activePageId",
-    "canUndo", "canRedo", "undoDepth", "redoDepth",
-    "beforeCursor", "afterCursor", "error", "pendingWrites"
-  ].some((key) => key in patch);
-  const outline = [
-    "nodes", "activePageId", "beforeCursor", "afterCursor"
-  ].some((key) => key in patch);
-  const ids = new Set<string>();
-  if (patch.nodes) {
-    changedNodeIds(previous.nodes, patch.nodes).forEach((id) => ids.add(id));
-  }
-  if (patch.drafts) {
-    changedRecordKeys(previous.drafts, patch.drafts)
-      .forEach((id) => ids.add(id));
-  }
-  if (patch.noteDrafts) {
-    changedRecordKeys(previous.noteDrafts, patch.noteDrafts)
-      .forEach((id) => ids.add(id));
-  }
-  return { shell, outline, nodeIds: [...ids] };
-}
 
 export class NotesStore {
   private state: NotesState = initialNotesState;
   private readonly listeners = new Set<() => void>();
   private readonly subscriptions: StoreSubscriptions;
-  private readonly draftTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly noteDraftTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly draftHistoryGroups = new Map<string, string>();
-  private readonly historyEvents = new StoreHistoryEvents();
+  private readonly commands: StoreCommands;
+  private readonly drafts: StoreDrafts;
+  private readonly outlineMutations: StoreOutlineMutations;
   private readonly viewport: StoreViewport;
-  private commandQueue: Promise<void> = Promise.resolve();
-  private activeBackspaceGroup: string | null = null;
-  private backspaceSequence = 0;
   constructor(private readonly api: NotesApi) {
     this.subscriptions = new StoreSubscriptions(() => this.state);
+    this.commands = new StoreCommands(api, {
+      read: this.getSnapshot,
+      write: (patch, invalidation) => this.update(patch, invalidation),
+      applyReceipt: (receipt) => this.applyReceipt(receipt)
+    });
+    this.drafts = new StoreDrafts({
+      read: this.getSnapshot,
+      write: (patch, invalidation) => this.update(patch, invalidation),
+      execute: (command, group) => this.commands.execute(command, group),
+      settled: () => this.commands.settled(),
+      breakHistoryGroup: () => this.commands.breakHistoryGroup()
+    });
+    this.outlineMutations = new StoreOutlineMutations({
+      read: this.getSnapshot,
+      write: (patch) => this.update(patch),
+      execute: (command, group) => this.commands.execute(command, group),
+      cancelTitle: (id) => this.drafts.cancelTitle(id),
+      cancelNote: (id) => this.drafts.cancelNote(id),
+      cancelDrafts: (ids) => this.drafts.cancel(ids)
+    });
     this.viewport = new StoreViewport(
       api,
       this.getSnapshot,
@@ -127,22 +86,17 @@ export class NotesStore {
     this.subscriptions.getNodeEpoch(ids);
   readonly subscribeHistory = (
     listener: (event: NotesMutationHistoryEvent) => void
-  ): (() => void) => this.historyEvents.subscribe(listener);
+  ): (() => void) => this.commands.subscribeHistory(listener);
   breakHistoryGroup(): void {
-    this.historyEvents.breakGroup();
+    this.commands.breakHistoryGroup();
   }
 
   beginBackspaceGesture(repeat: boolean): string {
-    if (!repeat || this.activeBackspaceGroup === null) {
-      this.breakHistoryGroup();
-      this.backspaceSequence += 1;
-      this.activeBackspaceGroup = `backspace:${this.backspaceSequence}`;
-    }
-    return this.activeBackspaceGroup;
+    return this.drafts.beginBackspace(repeat);
   }
 
   endBackspaceGesture(): void {
-    this.activeBackspaceGroup = null;
+    this.drafts.endBackspace();
   }
 
   async bootstrap(): Promise<void> {
@@ -192,65 +146,23 @@ export class NotesStore {
   }
 
   setDraft(id: string, text: string): void {
-    if (this.activeBackspaceGroup) {
-      this.draftHistoryGroups.set(id, this.activeBackspaceGroup);
-    } else {
-      this.draftHistoryGroups.delete(id);
-    }
-    this.update({ drafts: { ...this.state.drafts, [id]: text } });
-    this.cancelDraftTimer(id);
-    this.draftTimers.set(id, setTimeout(() => void this.flushDraft(id), DRAFT_DEBOUNCE_MS));
+    this.drafts.setTitle(id, text);
   }
 
   async flushDraft(id: string): Promise<void> {
-    this.cancelDraftTimer(id);
-    const submittedText = this.state.drafts[id];
-    if (submittedText === undefined || submittedText === confirmedText(this.state, id)) return;
-    const historyGroup = this.draftHistoryGroups.get(id) ?? `text:${id}`;
-    await this.executeCommand(
-      { kind: "updateText", id, text: submittedText },
-      historyGroup
-    );
-    if (this.state.drafts[id] === submittedText) {
-      const drafts = { ...this.state.drafts };
-      delete drafts[id];
-      this.draftHistoryGroups.delete(id);
-      this.update({ drafts });
-    }
+    await this.drafts.flushTitle(id);
   }
 
   setNoteDraft(id: string, note: string): void {
-    this.update({ noteDrafts: { ...this.state.noteDrafts, [id]: note } });
-    this.cancelNoteDraftTimer(id);
-    this.noteDraftTimers.set(
-      id,
-      setTimeout(() => void this.flushNoteDraft(id), DRAFT_DEBOUNCE_MS)
-    );
+    this.drafts.setNote(id, note);
   }
 
   async flushNoteDraft(id: string): Promise<void> {
-    this.cancelNoteDraftTimer(id);
-    const submittedNote = this.state.noteDrafts[id];
-    if (submittedNote === undefined) return;
-    if (submittedNote !== confirmedNote(this.state, id)) {
-      await this.executeCommand(
-        { kind: "updateNote", id, note: submittedNote },
-        `note:${id}`
-      );
-    }
-    if (this.state.noteDrafts[id] === submittedNote) {
-      const noteDrafts = { ...this.state.noteDrafts };
-      delete noteDrafts[id];
-      this.update({ noteDrafts });
-    }
+    await this.drafts.flushNote(id);
   }
 
   async flushAllDrafts(): Promise<void> {
-    await Promise.all([
-      ...Object.keys(this.state.drafts).map((id) => this.flushDraft(id)),
-      ...Object.keys(this.state.noteDrafts).map((id) => this.flushNoteDraft(id))
-    ]);
-    await this.commandQueue;
+    await this.drafts.flushAll();
   }
 
   async createPage(): Promise<string> {
@@ -265,9 +177,7 @@ export class NotesStore {
     text = "",
     beforeId: string | null = null
   ): Promise<string> {
-    const pending = this.beginCreateNode(parentId, text, beforeId);
-    await pending.committed;
-    return pending.id;
+    return this.outlineMutations.createNode(parentId, text, beforeId);
   }
 
   beginCreateNode(
@@ -275,29 +185,7 @@ export class NotesStore {
     text = "",
     beforeId: string | null = null
   ): PendingCreatedNode {
-    const id = freshId();
-    this.update(projectCreateNode(this.state, {
-      id,
-      parentId,
-      beforeId,
-      text
-    }));
-    const committed = this.executeCommand({
-      kind: "createNode",
-      id,
-      parent_id: parentId,
-      before_id: beforeId,
-      text
-    }).then(() => undefined).catch((cause) => {
-      const removedIds = subtreeIds(this.state.nodes, [id]);
-      this.update({
-        nodes: this.state.nodes.filter((node) => !removedIds.includes(node.id)),
-        drafts: omitKeys(this.state.drafts, removedIds),
-        noteDrafts: omitKeys(this.state.noteDrafts, removedIds)
-      });
-      throw cause;
-    });
-    return { id, committed };
+    return this.outlineMutations.beginCreateNode(parentId, text, beforeId);
   }
 
   async importOutline(
@@ -323,9 +211,7 @@ export class NotesStore {
     readonly prefix: string;
     readonly suffix: string;
   }): Promise<string> {
-    const pending = this.beginSplitNode(input);
-    await pending.committed;
-    return pending.id;
+    return this.outlineMutations.splitNode(input);
   }
 
   beginSplitNode(input: {
@@ -335,84 +221,18 @@ export class NotesStore {
     readonly prefix: string;
     readonly suffix: string;
   }): PendingCreatedNode {
-    const previousDraft = this.state.drafts[input.id];
-    const newId = freshId();
-    this.cancelDraftTimer(input.id);
-    this.update(projectSplitNode(this.state, { ...input, newId }));
-    const committed = this.executeCommand({
-        kind: "splitNode",
-        id: input.id,
-        new_id: newId,
-        parent_id: input.parentId,
-        before_id: input.beforeId,
-        prefix: input.prefix,
-        suffix: input.suffix
-      }).then(() => {
-      if (this.state.drafts[input.id] === input.prefix) {
-        const drafts = { ...this.state.drafts };
-        delete drafts[input.id];
-        this.update({ drafts });
-      }
-    }).catch((cause) => {
-      const removedIds = subtreeIds(this.state.nodes, [newId]);
-      if (this.state.drafts[input.id] === input.prefix) {
-        const drafts = { ...this.state.drafts };
-        if (previousDraft === undefined) delete drafts[input.id];
-        else drafts[input.id] = previousDraft;
-        this.update({
-          nodes: this.state.nodes.filter(
-            (node) => !removedIds.includes(node.id)
-          ),
-          drafts,
-          noteDrafts: omitKeys(this.state.noteDrafts, removedIds)
-        });
-      }
-      throw cause;
-    });
-    return { id: newId, committed };
+    return this.outlineMutations.beginSplitNode(input);
   }
 
   async removeEmptyNode(id: string): Promise<void> {
-    await this.beginRemoveEmptyNode(id).committed;
+    await this.outlineMutations.removeEmptyNode(id);
   }
 
   beginRemoveEmptyNode(
     id: string,
     historyGroup: string | null = null
   ): PendingOutlineMutation {
-    const previousDraft = this.state.drafts[id];
-    const previousNoteDraft = this.state.noteDrafts[id];
-    const affectedNodes = this.state.nodes.filter(
-      (node) => node.id === id || node.parentId === id
-    );
-    this.cancelDraftTimer(id);
-    this.cancelNoteDraftTimer(id);
-    this.update(projectRemoveEmptyNode(this.state, id));
-    const committed = this.executeCommand(
-      { kind: "removeEmptyNode", id },
-      historyGroup
-    ).then(() => undefined).catch((cause) => {
-      const restoredDrafts = previousDraft !== undefined &&
-        this.state.drafts[id] === undefined
-        ? { ...this.state.drafts, [id]: previousDraft }
-        : this.state.drafts;
-      const restoredNoteDrafts = previousNoteDraft !== undefined &&
-        this.state.noteDrafts[id] === undefined
-        ? { ...this.state.noteDrafts, [id]: previousNoteDraft }
-        : this.state.noteDrafts;
-      const affectedIds = new Set(affectedNodes.map((node) => node.id));
-      const nodes = [
-        ...this.state.nodes.filter((node) => !affectedIds.has(node.id)),
-        ...affectedNodes
-      ];
-      this.update({
-        nodes: orderOutline(nodes, this.state.activePageId),
-        drafts: restoredDrafts,
-        noteDrafts: restoredNoteDrafts
-      });
-      throw cause;
-    });
-    return { committed };
+    return this.outlineMutations.beginRemoveEmptyNode(id, historyGroup);
   }
 
   beginMergeNodeBackward(input: {
@@ -422,49 +242,7 @@ export class NotesStore {
     readonly currentText: string;
     readonly historyGroup?: string | null;
   }): PendingOutlineMutation {
-    const previousNode = this.state.nodes.find(
-      (node) => node.id === input.previousId
-    );
-    const currentNode = this.state.nodes.find((node) => node.id === input.id);
-    const previousDraft = this.state.drafts[input.previousId];
-    const currentDraft = this.state.drafts[input.id];
-    const mergedText = input.previousText + input.currentText;
-    this.cancelDraftTimer(input.previousId);
-    this.cancelDraftTimer(input.id);
-    this.cancelNoteDraftTimer(input.previousId);
-    this.update(projectMergeNodeBackward(this.state, input));
-    const committed = this.executeCommand({
-      kind: "mergeNodeBackward",
-      id: input.id,
-      previous_id: input.previousId,
-      previous_text: input.previousText,
-      current_text: input.currentText
-    }, input.historyGroup ?? null).then(() => {
-      if (this.state.drafts[input.id] === mergedText) {
-        const drafts = { ...this.state.drafts };
-        delete drafts[input.id];
-        this.update({ drafts });
-      }
-    }).catch((cause) => {
-      const nodes = this.state.nodes
-        .filter((node) => node.id !== input.previousId && node.id !== input.id);
-      if (previousNode) nodes.push(previousNode);
-      if (currentNode) nodes.push(currentNode);
-      const drafts = { ...this.state.drafts };
-      if (drafts[input.id] === mergedText) {
-        if (currentDraft === undefined) delete drafts[input.id];
-        else drafts[input.id] = currentDraft;
-      }
-      if (previousDraft !== undefined) {
-        drafts[input.previousId] = previousDraft;
-      }
-      this.update({
-        nodes: orderOutline(nodes, this.state.activePageId),
-        drafts
-      });
-      throw cause;
-    });
-    return { committed };
+    return this.outlineMutations.beginMergeNodeBackward(input);
   }
 
   async indent(id: string, newParentId: string): Promise<void> {
@@ -561,7 +339,7 @@ export class NotesStore {
   ): Promise<void> {
     await runSlashEdit({
       getState: this.getSnapshot,
-      cancelDraft: () => this.cancelDraftTimer(id),
+      cancelDraft: () => this.drafts.cancelTitle(id),
       setDraft: (value) =>
         this.update({ drafts: { ...this.state.drafts, [id]: value } }),
       setDrafts: (drafts) => this.update({ drafts }),
@@ -572,8 +350,7 @@ export class NotesStore {
 
   async deleteSubtree(id: string): Promise<void> {
     const deletesPage = this.state.pages.some((page) => page.id === id);
-    this.cancelDraftTimer(id);
-    this.cancelNoteDraftTimer(id);
+    this.drafts.cancel([id]);
     this.update({
       drafts: omitKeys(this.state.drafts, [id]),
       noteDrafts: omitKeys(this.state.noteDrafts, [id])
@@ -606,11 +383,11 @@ export class NotesStore {
   }
   async undo(): Promise<void> {
     await this.flushAllDrafts();
-    await this.executeHistory("undo");
+    await this.commands.executeHistory("undo");
   }
   async redo(): Promise<void> {
     await this.flushAllDrafts();
-    await this.executeHistory("redo");
+    await this.commands.executeHistory("redo");
   }
   search(text: string): Promise<SearchPage> {
     return this.api.search({ text, cursor: null, limit: 30 });
@@ -624,72 +401,18 @@ export class NotesStore {
     command: IpcNotesCommand,
     historyGroup: string | null = null
   ): Promise<MutationReceipt> {
-    const scopedHistoryGroup = this.historyEvents.scopedGroup(historyGroup);
-    return this.enqueue(async () => {
-      const sessionId = this.state.sessionId;
-      if (!sessionId) throw new Error("Notes session is not ready.");
-      const previousUndoDepth = this.state.undoDepth;
-      const receipt = await this.api.execute({
-        sessionId,
-        requestId: freshId(),
-        baseRevision: this.state.revision,
-        historyGroup: scopedHistoryGroup,
-        command
-      });
-      this.applyReceipt(receipt);
-      this.historyEvents.record(
-        scopedHistoryGroup,
-        previousUndoDepth,
-        receipt
-      );
-      return receipt;
-    });
-  }
-
-  private executeHistory(direction: "undo" | "redo"): Promise<void> {
-    return this.enqueue(async () => {
-      const sessionId = this.state.sessionId;
-      if (!sessionId) throw new Error("Notes session is not ready.");
-      const receipt = await this.api[direction]({
-        sessionId,
-        baseRevision: this.state.revision
-      });
-      this.applyReceipt(receipt);
-      this.breakHistoryGroup();
-    });
-  }
-
-  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
-    const queued = this.commandQueue.then(async () => {
-      this.update({ pendingWrites: this.state.pendingWrites + 1, error: null });
-      try {
-        return await operation();
-      } catch (cause) {
-        this.update({ error: messageFrom(cause) });
-        throw cause;
-      } finally {
-        this.update({ pendingWrites: Math.max(0, this.state.pendingWrites - 1) });
-      }
-    });
-    this.commandQueue = queued.then(() => undefined, () => undefined);
-    return queued;
+    return this.commands.execute(command, historyGroup);
   }
 
   private applyReceipt(receipt: MutationReceipt): void {
     const result = receiptState(this.state, receipt);
-    for (const id of result.removedDraftIds) {
-      this.cancelDraftTimer(id);
-      this.cancelNoteDraftTimer(id);
-    }
+    this.drafts.cancel(result.removedDraftIds);
     this.update(result.patch, {
       shell: true,
       outline: result.outlineChanged,
       nodeIds: result.changedNodeIds
     });
   }
-
-  private cancelDraftTimer(id: string): void { cancelTimer(this.draftTimers, id); }
-  private cancelNoteDraftTimer(id: string): void { cancelTimer(this.noteDraftTimers, id); }
 
   private update(
     patch: Partial<NotesState>,

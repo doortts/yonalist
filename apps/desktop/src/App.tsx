@@ -10,59 +10,18 @@ import { NotesStore } from "./notesStore";
 import { WindowChrome } from "./WindowChrome";
 import { LibraryViewButtons, type LibraryView } from "./LibraryViewButtons";
 import { LibraryPageRow } from "./LibraryPageRow";
-import { useSplitResize } from "./useSplitResize";
 import { createCloseRequestHandler } from "./closeSession";
-import {
-  NotesOutline,
-  type PaneFocusSnapshot,
-  type PaneRestoreRequest
-} from "./NotesOutline";
+import type { PaneRestoreRequest } from "./NotesOutline";
 import { NotesInteractionHistory } from "./notesInteractionHistory";
+import {
+  capturePane,
+  emptyPaneLocation,
+  type AppNavigationLocation
+} from "./appNavigation";
+import { NotesDetailPanes } from "./NotesDetailPanes";
+import type { OutlineTagToken } from "./OutlineTextField";
 const SearchPanel = lazy(() => import("./SearchPanel").then((module) =>
   ({ default: module.SearchPanel })));
-
-interface AppNavigationLocation {
-  readonly pageId: string | null;
-  readonly primaryZoomRootId: string | null;
-  readonly splitOpen: boolean;
-  readonly secondaryZoomRootId: string | null;
-  readonly primarySelectedIds: readonly string[];
-  readonly primaryFocus: PaneFocusSnapshot | null;
-  readonly secondarySelectedIds: readonly string[];
-  readonly secondaryFocus: PaneFocusSnapshot | null;
-}
-
-function capturePane(paneId: "primary" | "secondary") {
-  const scope = document.querySelector<HTMLElement>(
-    `[data-outline-pane-id="${paneId}"]`
-  );
-  const selectedIds = scope
-    ? [...scope.querySelectorAll<HTMLElement>(
-        "[data-outline-id][data-selected='true']"
-      )].flatMap((node) => node.dataset.outlineId
-        ? [node.dataset.outlineId]
-        : [])
-    : [];
-  const active = document.activeElement;
-  if (
-    !scope ||
-    !(active instanceof HTMLTextAreaElement) ||
-    !scope.contains(active)
-  ) {
-    return { selectedIds, focus: null };
-  }
-  const nodeId = active.dataset.nodeId;
-  const field = active.dataset.outlineField;
-  const focus = nodeId && (field === "title" || field === "note")
-    ? {
-        nodeId,
-        field,
-        selectionStart: active.selectionStart,
-        selectionEnd: active.selectionEnd
-      } satisfies PaneFocusSnapshot
-    : null;
-  return { selectedIds, focus };
-}
 
 export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   const store = useMemo(() => new NotesStore(api), [api]);
@@ -84,7 +43,6 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     useState<PaneRestoreRequest | null>(null);
   const [secondaryRestore, setSecondaryRestore] =
     useState<PaneRestoreRequest | null>(null);
-  const splitResize = useSplitResize(splitOpen);
   const resizeStart = useRef<{ x: number; width: number } | null>(null);
   const applyNavigationRef = useRef<
     (location: AppNavigationLocation) => Promise<void>
@@ -191,11 +149,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     });
   }, [store]);
   applyNavigationRef.current = applyNavigation;
-  const recordNavigation = (
+  const recordNavigation = useCallback((
     before: AppNavigationLocation,
     after: AppNavigationLocation
-  ) => interactionHistory.recordNavigation(before, after);
-  const afterDraftFlush = (action: () => void) => {
+  ) => interactionHistory.recordNavigation(before, after), [
+    interactionHistory
+  ]);
+  const afterDraftFlush = useCallback((action: () => void) => {
     const current = store.getSnapshot();
     if (
       Object.keys(current.drafts).length === 0 &&
@@ -205,26 +165,17 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       return;
     }
     void store.flushAllDrafts().then(action);
-  };
-  const openPage = async (pageId: string) => {
-    if (pageId === state.activePageId) return;
+  }, [store]);
+  const openPage = useCallback(async (pageId: string) => {
+    if (pageId === store.getSnapshot().activePageId) return;
     await store.flushAllDrafts();
     const before = captureNavigation();
     await store.openPage(pageId);
-    const after = {
-      pageId,
-      primaryZoomRootId: null,
-      splitOpen: false,
-      secondaryZoomRootId: null,
-      primarySelectedIds: [],
-      primaryFocus: null,
-      secondarySelectedIds: [],
-      secondaryFocus: null
-    };
+    const after = emptyPaneLocation(pageId);
     await applyNavigation(after);
     recordNavigation(before, after);
-  };
-  const updatePrimaryZoom = (nodeId: string | null) => {
+  }, [applyNavigation, captureNavigation, recordNavigation, store]);
+  const updatePrimaryZoom = useCallback((nodeId: string | null) => {
     if (nodeId === primaryZoomRootId) return;
     const before = captureNavigation();
     afterDraftFlush(() => {
@@ -236,8 +187,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
         primaryFocus: null
       });
     });
-  };
-  const openSplit = (nodeId: string) => {
+  }, [
+    afterDraftFlush,
+    captureNavigation,
+    primaryZoomRootId,
+    recordNavigation
+  ]);
+  const openSplit = useCallback((nodeId: string) => {
     const before = captureNavigation();
     afterDraftFlush(() => {
       setSplitOpen(true);
@@ -250,8 +206,8 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
         secondaryFocus: null
       });
     });
-  };
-  const updateSecondaryZoom = (nodeId: string | null) => {
+  }, [afterDraftFlush, captureNavigation, recordNavigation]);
+  const updateSecondaryZoom = useCallback((nodeId: string | null) => {
     if (nodeId === secondaryZoomRootId) return;
     const before = captureNavigation();
     afterDraftFlush(() => {
@@ -263,15 +219,25 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
         secondaryFocus: null
       });
     });
-  };
-  const closeSplit = () => {
+  }, [
+    afterDraftFlush,
+    captureNavigation,
+    recordNavigation,
+    secondaryZoomRootId
+  ]);
+  const closeSplit = useCallback(() => {
     if (!splitOpen) return;
     const before = captureNavigation();
     afterDraftFlush(() => {
       setSplitOpen(false);
       recordNavigation(before, { ...before, splitOpen: false });
     });
-  };
+  }, [
+    afterDraftFlush,
+    captureNavigation,
+    recordNavigation,
+    splitOpen
+  ]);
   const libraryQuery = query.trim() ||
     (libraryView === "starred"
       ? "is:starred"
@@ -280,6 +246,9 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
         : libraryView === "trash"
           ? "is:trash"
           : "");
+  const handleTagClick = useCallback((token: OutlineTagToken) => {
+    setQuery(`tag:${token.prefix}${token.normalized}`);
+  }, []);
   const shellStyle = {
     "--sidebar-width": sidebarCollapsed ? "0px" : `${sidebarWidth}px`
   } as CSSProperties;
@@ -319,16 +288,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                     const before = captureNavigation();
                     afterDraftFlush(() => {
                       void store.createPage().then((pageId) => {
-                        const after = {
-                          pageId,
-                          primaryZoomRootId: null,
-                          splitOpen: false,
-                          secondaryZoomRootId: null,
-                          primarySelectedIds: [],
-                          primaryFocus: null,
-                          secondarySelectedIds: [],
-                          secondaryFocus: null
-                        };
+                        const after = emptyPaneLocation(pageId);
                         void applyNavigation(after).then(() =>
                           recordNavigation(before, after));
                       });
@@ -414,75 +374,23 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           document.body.classList.add("is-resizing-pane");
         }}
       />
-      <section className="detail-pane" aria-label="Detail">
-        <div className="pane-titlebar-spacer" />
-        <div
-          className="detail-scroll"
-          style={{ overflowY: splitOpen ? "hidden" : undefined }}
-        >
-          <div
-            ref={splitResize.containerRef}
-            className="notes-detail-split"
-            data-split-open={splitOpen ? "true" : undefined}
-            style={{
-              "--notes-split-primary": `${splitResize.primaryPercent}%`
-            } as CSSProperties}
-          >
-            <div
-              className="notes-detail-pane"
-              style={{ overflowY: splitOpen ? "auto" : undefined }}
-            >
-              <NotesOutline
-                store={store}
-                status={state.status}
-                error={state.error}
-                pendingWrites={state.pendingWrites}
-                page={activePage}
-                zoomRootId={primaryZoomRootId}
-                onZoomRootChange={updatePrimaryZoom}
-                paneId="primary"
-                restoreRequest={primaryRestore}
-                onOpenSplit={openSplit}
-                onTagClick={(token) =>
-                  setQuery(`tag:${token.prefix}${token.normalized}`)}
-              />
-            </div>
-            {splitOpen && (
-              <>
-                <div
-                  className="notes-split-divider"
-                  role="separator"
-                  aria-label="Resize split"
-                  aria-orientation="vertical"
-                  aria-valuemin={25}
-                  aria-valuemax={75}
-                  aria-valuenow={Math.round(splitResize.primaryPercent)}
-                  tabIndex={0}
-                  onPointerDown={splitResize.onPointerDown}
-                  onKeyDown={splitResize.onKeyDown}
-                />
-                <div className="notes-detail-pane" style={{ overflowY: "auto" }}>
-                  <NotesOutline
-                    store={store}
-                    status={state.status}
-                    error={state.error}
-                    pendingWrites={state.pendingWrites}
-                    page={activePage}
-                    zoomRootId={secondaryZoomRootId}
-                    onZoomRootChange={updateSecondaryZoom}
-                    paneId="secondary"
-                    restoreRequest={secondaryRestore}
-                    onOpenSplit={openSplit}
-                    onTagClick={(token) =>
-                      setQuery(`tag:${token.prefix}${token.normalized}`)}
-                    onClose={closeSplit}
-                  />
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      </section>
+      <NotesDetailPanes
+        store={store}
+        status={state.status}
+        error={state.error}
+        pendingWrites={state.pendingWrites}
+        page={activePage}
+        splitOpen={splitOpen}
+        primaryZoomRootId={primaryZoomRootId}
+        secondaryZoomRootId={secondaryZoomRootId}
+        primaryRestore={primaryRestore}
+        secondaryRestore={secondaryRestore}
+        onPrimaryZoomChange={updatePrimaryZoom}
+        onSecondaryZoomChange={updateSecondaryZoom}
+        onOpenSplit={openSplit}
+        onCloseSplit={closeSplit}
+        onTagClick={handleTagClick}
+      />
       <footer className="app-statusbar" aria-label="Status bar">
         <div className="statusbar-feedback">
           {state.error && <span className="statusbar-message" data-kind="error">{state.error}</span>}

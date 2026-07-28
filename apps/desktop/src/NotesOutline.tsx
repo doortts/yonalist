@@ -21,13 +21,7 @@ import {
   buildSelectionMovePlans, selectedCompletion, type SelectionMovePlan
 } from "./selectionMoves";
 import { OutlineIndex } from "./outlineIndex";
-
-export interface PaneFocusSnapshot {
-  readonly nodeId: string;
-  readonly field: "title" | "note";
-  readonly selectionStart: number;
-  readonly selectionEnd: number;
-}
+import type { PaneFocusSnapshot } from "./appNavigation";
 
 export interface PaneRestoreRequest {
   readonly epoch: number;

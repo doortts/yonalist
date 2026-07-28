@@ -1,0 +1,229 @@
+import type { NotesState } from "./notesState";
+import type { StoreCommands } from "./storeCommands";
+import {
+  projectCreateNode,
+  projectMergeNodeBackward,
+  projectRemoveEmptyNode,
+  projectSplitNode
+} from "./optimisticOutline";
+import { orderOutline } from "./outlineModel";
+import { omitKeys, subtreeIds } from "./storeState";
+import { freshId } from "./storeSupport";
+
+export interface PendingOutlineMutation {
+  readonly committed: Promise<void>;
+}
+
+export interface PendingCreatedNode extends PendingOutlineMutation {
+  readonly id: string;
+}
+
+export interface StoreOutlineMutationHost {
+  readonly read: () => NotesState;
+  readonly write: (patch: Partial<NotesState>) => void;
+  readonly execute: StoreCommands["execute"];
+  readonly cancelTitle: (id: string) => void;
+  readonly cancelNote: (id: string) => void;
+  readonly cancelDrafts: (ids: readonly string[]) => void;
+}
+
+interface SplitNodeInput {
+  readonly id: string;
+  readonly parentId: string;
+  readonly beforeId: string | null;
+  readonly prefix: string;
+  readonly suffix: string;
+}
+
+interface MergeNodeInput {
+  readonly id: string;
+  readonly previousId: string;
+  readonly previousText: string;
+  readonly currentText: string;
+  readonly historyGroup?: string | null;
+}
+
+export class StoreOutlineMutations {
+  constructor(private readonly host: StoreOutlineMutationHost) {}
+
+  async createNode(
+    parentId: string,
+    text = "",
+    beforeId: string | null = null
+  ): Promise<string> {
+    const pending = this.beginCreateNode(parentId, text, beforeId);
+    await pending.committed;
+    return pending.id;
+  }
+
+  beginCreateNode(
+    parentId: string,
+    text = "",
+    beforeId: string | null = null
+  ): PendingCreatedNode {
+    const id = freshId();
+    const state = this.host.read();
+    this.host.write(projectCreateNode(state, {
+      id,
+      parentId,
+      beforeId,
+      text
+    }));
+    const committed = this.host.execute({
+      kind: "createNode",
+      id,
+      parent_id: parentId,
+      before_id: beforeId,
+      text
+    }).then(() => undefined).catch((cause) => {
+      const current = this.host.read();
+      const removedIds = subtreeIds(current.nodes, [id]);
+      this.host.write({
+        nodes: current.nodes.filter((node) => !removedIds.includes(node.id)),
+        drafts: omitKeys(current.drafts, removedIds),
+        noteDrafts: omitKeys(current.noteDrafts, removedIds)
+      });
+      throw cause;
+    });
+    return { id, committed };
+  }
+
+  async splitNode(input: SplitNodeInput): Promise<string> {
+    const pending = this.beginSplitNode(input);
+    await pending.committed;
+    return pending.id;
+  }
+
+  beginSplitNode(input: SplitNodeInput): PendingCreatedNode {
+    const previousDraft = this.host.read().drafts[input.id];
+    const newId = freshId();
+    this.host.cancelTitle(input.id);
+    this.host.write(projectSplitNode(this.host.read(), { ...input, newId }));
+    const committed = this.host.execute({
+      kind: "splitNode",
+      id: input.id,
+      new_id: newId,
+      parent_id: input.parentId,
+      before_id: input.beforeId,
+      prefix: input.prefix,
+      suffix: input.suffix
+    }).then(() => {
+      const current = this.host.read();
+      if (current.drafts[input.id] === input.prefix) {
+        const drafts = { ...current.drafts };
+        delete drafts[input.id];
+        this.host.write({ drafts });
+      }
+    }).catch((cause) => {
+      const current = this.host.read();
+      const removedIds = subtreeIds(current.nodes, [newId]);
+      if (current.drafts[input.id] === input.prefix) {
+        const drafts = { ...current.drafts };
+        if (previousDraft === undefined) delete drafts[input.id];
+        else drafts[input.id] = previousDraft;
+        this.host.write({
+          nodes: current.nodes.filter(
+            (node) => !removedIds.includes(node.id)
+          ),
+          drafts,
+          noteDrafts: omitKeys(current.noteDrafts, removedIds)
+        });
+      }
+      throw cause;
+    });
+    return { id: newId, committed };
+  }
+
+  async removeEmptyNode(id: string): Promise<void> {
+    await this.beginRemoveEmptyNode(id).committed;
+  }
+
+  beginRemoveEmptyNode(
+    id: string,
+    historyGroup: string | null = null
+  ): PendingOutlineMutation {
+    const state = this.host.read();
+    const previousDraft = state.drafts[id];
+    const previousNoteDraft = state.noteDrafts[id];
+    const affectedNodes = state.nodes.filter(
+      (node) => node.id === id || node.parentId === id
+    );
+    this.host.cancelDrafts([id]);
+    this.host.write(projectRemoveEmptyNode(state, id));
+    const committed = this.host.execute(
+      { kind: "removeEmptyNode", id },
+      historyGroup
+    ).then(() => undefined).catch((cause) => {
+      const current = this.host.read();
+      const restoredDrafts = previousDraft !== undefined &&
+        current.drafts[id] === undefined
+        ? { ...current.drafts, [id]: previousDraft }
+        : current.drafts;
+      const restoredNoteDrafts = previousNoteDraft !== undefined &&
+        current.noteDrafts[id] === undefined
+        ? { ...current.noteDrafts, [id]: previousNoteDraft }
+        : current.noteDrafts;
+      const affectedIds = new Set(affectedNodes.map((node) => node.id));
+      const nodes = [
+        ...current.nodes.filter((node) => !affectedIds.has(node.id)),
+        ...affectedNodes
+      ];
+      this.host.write({
+        nodes: orderOutline(nodes, current.activePageId),
+        drafts: restoredDrafts,
+        noteDrafts: restoredNoteDrafts
+      });
+      throw cause;
+    });
+    return { committed };
+  }
+
+  beginMergeNodeBackward(input: MergeNodeInput): PendingOutlineMutation {
+    const state = this.host.read();
+    const previousNode = state.nodes.find(
+      (node) => node.id === input.previousId
+    );
+    const currentNode = state.nodes.find((node) => node.id === input.id);
+    const previousDraft = state.drafts[input.previousId];
+    const currentDraft = state.drafts[input.id];
+    const mergedText = input.previousText + input.currentText;
+    this.host.cancelTitle(input.previousId);
+    this.host.cancelTitle(input.id);
+    this.host.cancelNote(input.previousId);
+    this.host.write(projectMergeNodeBackward(state, input));
+    const committed = this.host.execute({
+      kind: "mergeNodeBackward",
+      id: input.id,
+      previous_id: input.previousId,
+      previous_text: input.previousText,
+      current_text: input.currentText
+    }, input.historyGroup ?? null).then(() => {
+      const current = this.host.read();
+      if (current.drafts[input.id] === mergedText) {
+        const drafts = { ...current.drafts };
+        delete drafts[input.id];
+        this.host.write({ drafts });
+      }
+    }).catch((cause) => {
+      const current = this.host.read();
+      const nodes = current.nodes
+        .filter((node) => node.id !== input.previousId && node.id !== input.id);
+      if (previousNode) nodes.push(previousNode);
+      if (currentNode) nodes.push(currentNode);
+      const drafts = { ...current.drafts };
+      if (drafts[input.id] === mergedText) {
+        if (currentDraft === undefined) delete drafts[input.id];
+        else drafts[input.id] = currentDraft;
+      }
+      if (previousDraft !== undefined) {
+        drafts[input.previousId] = previousDraft;
+      }
+      this.host.write({
+        nodes: orderOutline(nodes, current.activePageId),
+        drafts
+      });
+      throw cause;
+    });
+    return { committed };
+  }
+}

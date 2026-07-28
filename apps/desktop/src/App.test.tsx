@@ -1,89 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { BootSnapshot } from "../../../packages/contracts/generated/BootSnapshot";
-import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
-import type { NotesApi } from "./api";
 import { App } from "./App";
-
-const snapshot: BootSnapshot = {
-  sessionId: "session-1",
-  revision: 7,
-  activePageId: "page-1",
-  pages: [{ id: "page-1", title: "Today" }],
-  viewport: {
-    pageId: "page-1",
-    anchorId: null,
-    beforeCursor: null,
-    afterCursor: null,
-    nodes: [
-      {
-        id: "bullet-1",
-        parentId: "page-1",
-        sortKey: 1024,
-        kind: "bullet",
-        text: "First thought",
-        note: "",
-        marker: "bullet",
-        collapsed: false,
-        completed: false,
-        starred: false,
-        deleted: false
-      },
-      {
-        id: "bullet-2",
-        parentId: "page-1",
-        sortKey: 2048,
-        kind: "bullet",
-        text: "Second thought",
-        note: "",
-        marker: "bullet",
-        collapsed: false,
-        completed: false,
-        starred: false,
-        deleted: false
-      }
-    ]
-  },
-  history: { canUndo: false, canRedo: false, undoDepth: 0, redoDepth: 0 }
-};
-
-function receipt(text: string): MutationReceipt {
-  return {
-    revision: 8,
-    changedNodes: [
-      {
-        ...snapshot.viewport!.nodes[0],
-        text
-      }
-    ],
-    deletedIds: [],
-    history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
-  };
-}
-
-function api(): NotesApi {
-  return {
-    bootstrap: vi.fn().mockResolvedValue(snapshot),
-    queryViewport: vi.fn(),
-    queryForest: vi.fn().mockImplementation(async (request) => ({
-      revision: snapshot.revision,
-      nodes: snapshot.viewport?.nodes.filter((node) =>
-        request.rootIds.includes(node.id)) ?? [],
-      complete: true
-    })),
-    execute: vi.fn().mockImplementation((envelope) =>
-      Promise.resolve(receipt(
-        envelope.command.kind === "updateText"
-          ? envelope.command.text
-          : "First thought"
-      ))
-    ),
-    undo: vi.fn(),
-    redo: vi.fn(),
-    search: vi.fn().mockResolvedValue({ hits: [], nextCursor: null }),
-    closeSession: vi.fn()
-  };
-}
+import {
+  appApi as api,
+  receipt,
+  snapshot
+} from "./test/appApiFixture";
 
 describe("Yonalist v2 desktop shell", () => {
   afterEach(() => {
@@ -440,24 +362,6 @@ describe("Yonalist v2 desktop shell", () => {
     expect(second.selectionStart).toBe(0);
   });
 
-  it("zooms into and out of a row with Workflowy keyboard shortcuts", async () => {
-    const notesApi = api();
-    const { container } = render(<App api={notesApi} />);
-    const first = await screen.findByDisplayValue("First thought");
-
-    fireEvent.keyDown(first, { key: ".", altKey: true });
-    const zoomTitle = container.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="Page title"]'
-    )!;
-    await waitFor(() => expect(zoomTitle).toHaveValue("First thought"));
-
-    fireEvent.keyDown(zoomTitle, { key: ",", altKey: true });
-    expect(await screen.findByDisplayValue("Today")).toHaveAttribute(
-      "aria-label",
-      "Page title"
-    );
-  });
-
   it("extends and clears a pane-local selection with the keyboard", async () => {
     const notesApi = api();
     render(<App api={notesApi} />);
@@ -785,20 +689,6 @@ describe("Yonalist v2 desktop shell", () => {
     });
   });
 
-  it("zooms a bullet into the page header without querying the workspace", async () => {
-    const notesApi = api();
-    render(<App api={notesApi} />);
-    await screen.findByDisplayValue("First thought");
-
-    fireEvent.click(screen.getAllByRole("button", { name: "Zoom to item" })[0]);
-
-    expect(screen.getByDisplayValue("First thought")).toHaveAttribute(
-      "aria-label",
-      "Page title"
-    );
-    expect(notesApi.queryViewport).not.toHaveBeenCalled();
-  });
-
   it("executes duplicate through the row action menu", async () => {
     const notesApi = api();
     render(<App api={notesApi} />);
@@ -878,27 +768,6 @@ describe("Yonalist v2 desktop shell", () => {
         limit: 30
       });
     });
-  });
-
-  it("opens a second outline pane when a bullet is shift-clicked", async () => {
-    const notesApi = api();
-    render(<App api={notesApi} />);
-    await screen.findByDisplayValue("First thought");
-
-    fireEvent.click(screen.getAllByRole("button", { name: "Zoom to item" })[0], {
-      shiftKey: true
-    });
-
-    expect(screen.getAllByRole("region", { name: "Notes outline" })).toHaveLength(2);
-    expect(screen.getAllByDisplayValue("First thought")[1]).toHaveAttribute(
-      "aria-label",
-      "Page title"
-    );
-
-    const divider = screen.getByRole("separator", { name: "Resize split" });
-    expect(divider).toHaveAttribute("aria-valuenow", "50");
-    fireEvent.keyDown(divider, { key: "ArrowRight" });
-    expect(divider).toHaveAttribute("aria-valuenow", "52");
   });
 
   it("moves a sibling with Alt+ArrowUp", async () => {

@@ -41,6 +41,51 @@ export interface StoreInvalidation {
   readonly nodeIds?: readonly string[];
 }
 
+function changedRecordKeys<T>(
+  previous: Readonly<Record<string, T>>,
+  next: Readonly<Record<string, T>>
+): readonly string[] {
+  return [...new Set([...Object.keys(previous), ...Object.keys(next)])]
+    .filter((id) => previous[id] !== next[id]);
+}
+
+function changedNodeIds(
+  previous: NotesState["nodes"],
+  next: NotesState["nodes"]
+): readonly string[] {
+  const previousById = new Map(previous.map((node) => [node.id, node]));
+  const nextById = new Map(next.map((node) => [node.id, node]));
+  return [...new Set([...previousById.keys(), ...nextById.keys()])]
+    .filter((id) => previousById.get(id) !== nextById.get(id));
+}
+
+export function invalidationForPatch(
+  previous: NotesState,
+  patch: Partial<NotesState>
+): StoreInvalidation {
+  const shell = [
+    "status", "sessionId", "revision", "pages", "activePageId",
+    "canUndo", "canRedo", "undoDepth", "redoDepth",
+    "beforeCursor", "afterCursor", "error", "pendingWrites"
+  ].some((key) => key in patch);
+  const outline = [
+    "nodes", "activePageId", "beforeCursor", "afterCursor"
+  ].some((key) => key in patch);
+  const ids = new Set<string>();
+  if (patch.nodes) {
+    changedNodeIds(previous.nodes, patch.nodes).forEach((id) => ids.add(id));
+  }
+  if (patch.drafts) {
+    changedRecordKeys(previous.drafts, patch.drafts)
+      .forEach((id) => ids.add(id));
+  }
+  if (patch.noteDrafts) {
+    changedRecordKeys(previous.noteDrafts, patch.noteDrafts)
+      .forEach((id) => ids.add(id));
+  }
+  return { shell, outline, nodeIds: [...ids] };
+}
+
 function shellSnapshot(state: NotesState): NotesShellSnapshot {
   return {
     status: state.status,
