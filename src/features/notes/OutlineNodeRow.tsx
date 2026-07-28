@@ -109,6 +109,7 @@ export interface OutlineEditorFocusRequest {
   readonly requestId: number;
   readonly field: NotesHistoryFocusField;
   readonly selection?: NotesHistoryPrimarySelection;
+  readonly expectedNavigationVersion?: number;
 }
 
 export interface OutlineNodeEditorProps {
@@ -411,6 +412,12 @@ function OutlineNodeEditorComponent({
   const datePicker = useNotesDatePickerIntegration({
     values: { title: titleValue, note: noteValue },
     refs: { title: dateTitleRef, note: noteRef },
+    focusRestorers: primaryImageAttachment
+      ? {
+          title: (selection) =>
+            imageEditorRef.current?.focus(selection) ?? false,
+        }
+      : undefined,
     onCommit: (field, value, replacement) => {
       const nextImageOffsetUtf16 =
         node?.nodeKind === "image" &&
@@ -724,6 +731,10 @@ function OutlineNodeEditorComponent({
     if (!target) {
       return;
     }
+    const navigationOwned = (): boolean =>
+      focusRequest.expectedNavigationVersion === undefined ||
+      actions.getNavigationVersion?.() ===
+        focusRequest.expectedNavigationVersion;
     // This focus is the command's own pending-focus postcondition. Do not
     // report it as a newer user navigation and invalidate its ownership.
     let focused = false;
@@ -734,7 +745,17 @@ function OutlineNodeEditorComponent({
       "true",
     );
     try {
-      if (replaySelection && node.nodeKind === "image") {
+      if (!navigationOwned()) {
+        focusTargetMarker &&
+          releaseAuthoritativeFocusTarget(focusTargetMarker);
+        return;
+      }
+      if (
+        focusRequest.expectedNavigationVersion !== undefined &&
+        document.activeElement === target
+      ) {
+        focused = true;
+      } else if (replaySelection && node.nodeKind === "image") {
         focused = imageEditorRef.current?.focus(replaySelection) ?? false;
       } else if (liveTitleRef.current?.element === target) {
         focused =
@@ -763,6 +784,10 @@ function OutlineNodeEditorComponent({
     markSplitPhase(nodeId, "caret");
     markCaretPhase(nodeId, "dom-focus");
     focusedPendingIdRef.current = focusRequestId;
+    if (!navigationOwned()) {
+      focusTargetMarker && releaseAuthoritativeFocusTarget(focusTargetMarker);
+      return;
+    }
     try {
       const acknowledgement = replaySelection
         ? actions.acknowledgeFocus(nodeId, focusRequestId)
@@ -1405,6 +1430,7 @@ function OutlineNodeEditorComponent({
         const keyboardInsertion =
           actions.prepareKeyboardInsertion?.({
           ownerPaneId: paneId,
+          navigationVersionAtDispatch: actions.getNavigationVersion?.(),
           intent: {
               token: nextKeyboardInsertionToken(),
               sourceId: nodeId,
@@ -1473,6 +1499,7 @@ function OutlineNodeEditorComponent({
         const keyboardInsertion =
           actions.prepareKeyboardInsertion?.({
           ownerPaneId: paneId,
+          navigationVersionAtDispatch: actions.getNavigationVersion?.(),
           intent: {
               token: nextKeyboardInsertionToken(),
               sourceId: nodeId,

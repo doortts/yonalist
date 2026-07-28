@@ -39,6 +39,7 @@ export interface PendingKeyboardInsertion {
   readonly intent: KeyboardInsertionIntent;
   readonly ownerSessionId: string;
   readonly ownerPaneId: string;
+  readonly navigationVersionAtDispatch?: number;
   readonly expectedStructuralHistoryEpoch: string;
   readonly expectedStructuralHistoryEntryId: string;
 }

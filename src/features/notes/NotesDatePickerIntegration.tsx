@@ -37,12 +37,22 @@ export interface NotesTextSelection {
 
 type NotesDateFocusElement = HTMLTextAreaElement | HTMLDivElement;
 
+interface NotesDateFocusSelection {
+  readonly anchorUtf16: number;
+  readonly focusUtf16: number;
+}
+
+type NotesDateFocusRestorer = (
+  selection: NotesDateFocusSelection
+) => boolean;
+
 export interface NotesDatePickerTarget {
   readonly field: NotesDateField;
   readonly source: string;
   readonly context: NotesDatePickerContext;
   readonly anchor: HTMLElement;
   readonly focusElement: NotesDateFocusElement;
+  readonly restoreFocus?: NotesDateFocusRestorer;
 }
 
 interface NotesDatePickerHostProps {
@@ -62,6 +72,7 @@ interface NotesDateFocusRequest {
   readonly element: NotesDateFocusElement;
   readonly caretUtf16: number;
   readonly expectedValue: string;
+  readonly restoreFocus?: NotesDateFocusRestorer;
 }
 
 interface NotesDateTodayProviderProps {
@@ -76,6 +87,9 @@ interface UseNotesDatePickerIntegrationOptions {
       NotesDateField,
       RefObject<HTMLTextAreaElement | HTMLDivElement | null>
     >
+  >;
+  readonly focusRestorers?: Readonly<
+    Partial<Record<NotesDateField, NotesDateFocusRestorer>>
   >;
   readonly onCommit: (
     field: NotesDateField,
@@ -270,7 +284,8 @@ export function NotesDatePickerHost({
       field: target.field,
       element: target.focusElement,
       caretUtf16,
-      expectedValue
+      expectedValue,
+      restoreFocus: target.restoreFocus
     };
   };
 
@@ -279,7 +294,8 @@ export function NotesDatePickerHost({
       field: target.field,
       element: target.focusElement,
       caretUtf16: target.context.endUtf16,
-      expectedValue: target.source
+      expectedValue: target.source,
+      restoreFocus: target.restoreFocus
     };
     focusReturnRef.current = null;
     onRequestFocusReturn(focusReturn);
@@ -329,6 +345,7 @@ export function NotesDatePickerHost({
 export function useNotesDatePickerIntegration({
   values,
   refs,
+  focusRestorers,
   onCommit
 }: UseNotesDatePickerIntegrationOptions) {
   const { today, getToday } = useNotesDateToday();
@@ -348,6 +365,25 @@ export function useNotesDatePickerIntegration({
       setPendingFocus(null);
       return;
     }
+    if (values[pendingFocus.field] !== pendingFocus.expectedValue) {
+      return;
+    }
+    const caretUtf16 = Math.min(
+      pendingFocus.caretUtf16,
+      pendingFocus.expectedValue.length
+    );
+    if (pendingFocus.restoreFocus) {
+      if (
+        !pendingFocus.restoreFocus({
+          anchorUtf16: caretUtf16,
+          focusUtf16: caretUtf16
+        })
+      ) {
+        return;
+      }
+      setPendingFocus(null);
+      return;
+    }
     if (currentElement instanceof HTMLTextAreaElement) {
       if (currentElement.value !== pendingFocus.expectedValue) {
         return;
@@ -355,21 +391,10 @@ export function useNotesDatePickerIntegration({
     } else if (readPlainText(currentElement) !== pendingFocus.expectedValue) {
       return;
     }
-    if (values[pendingFocus.field] !== pendingFocus.expectedValue) {
-      return;
-    }
     currentElement.focus();
     if (currentElement instanceof HTMLTextAreaElement) {
-      const caretUtf16 = Math.min(
-        pendingFocus.caretUtf16,
-        currentElement.value.length
-      );
       currentElement.setSelectionRange(caretUtf16, caretUtf16);
     } else {
-      const caretUtf16 = Math.min(
-        pendingFocus.caretUtf16,
-        pendingFocus.expectedValue.length
-      );
       restorePlainTextSelection(currentElement, {
         anchorUtf16: caretUtf16,
         focusUtf16: caretUtf16
@@ -406,7 +431,8 @@ export function useNotesDatePickerIntegration({
           : (explicitSource ?? readPlainText(focusElement)),
       context: createExistingDateContext(match),
       anchor,
-      focusElement
+      focusElement,
+      restoreFocus: focusRestorers?.[field]
     });
   };
 
@@ -424,7 +450,8 @@ export function useNotesDatePickerIntegration({
           : (explicitSource ?? readPlainText(focusElement)),
       context: { kind: "typed-trigger", ...range },
       anchor: focusElement,
-      focusElement
+      focusElement,
+      restoreFocus: focusRestorers?.[field]
     });
   };
 
@@ -458,7 +485,8 @@ export function useNotesDatePickerIntegration({
         endUtf16
       },
       anchor: focusElement,
-      focusElement
+      focusElement,
+      restoreFocus: focusRestorers?.title
     });
   };
 

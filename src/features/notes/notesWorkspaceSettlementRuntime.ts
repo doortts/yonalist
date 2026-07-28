@@ -78,10 +78,36 @@ export function confirmedOptimisticTitleUpdates(
 }
 
 export function routeKeyboardInsertionNavigation(
-  result: NotesWorkspaceQueueSettlement
+  result: NotesWorkspaceQueueSettlement,
+  navigationOwned = true
 ): RoutedKeyboardInsertionNavigation {
   if (result.kind === "skipped") {
     return { primaryResult: result, secondaryNavigation: null };
+  }
+  if (
+    result.projectionPublication?.expectedNavigationVersion !== undefined &&
+    !navigationOwned
+  ) {
+    if (!result.uiUpdate) {
+      return { primaryResult: result, secondaryNavigation: null };
+    }
+    const {
+      selectedId: _selectedId,
+      editingNoteId: _editingNoteId,
+      pendingFocusId: _pendingFocusId,
+      pendingFocusField: _pendingFocusField,
+      ...retainedUiUpdate
+    } = result.uiUpdate;
+    return {
+      primaryResult: {
+        ...result,
+        uiUpdate:
+          Object.keys(retainedUiUpdate).length === 0
+            ? undefined
+            : retainedUiUpdate
+      },
+      secondaryNavigation: null
+    };
   }
   if (
     result.projectionPublication?.targetPaneId !== "secondary" ||

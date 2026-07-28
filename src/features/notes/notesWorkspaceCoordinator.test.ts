@@ -1646,6 +1646,270 @@ describe("notesWorkspaceCoordinator registry", () => {
     session.close();
   });
 
+  it("accepts the frozen insertion postcondition after the provisional title changes", async () => {
+    const inserted = workspace([
+      node({ id: "root", title: "Root", sortKey: 1024 }),
+      node({ id: "split", title: "", sortKey: 2048 })
+    ]);
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
+    const session = registry.openSession(writableOptions(pool, {
+      repository: store,
+      vaultRoot: "/keyboard-insertion-frozen-postcondition",
+      onEvent: events
+    }));
+    await session.activation;
+    session.publishOutlinePaneState({
+      paneId: "primary",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set()
+    });
+    const preparation = session.prepareKeyboardInsertion({
+      ownerPaneId: "primary",
+      intent: {
+        token: 90,
+        sourceId: "root",
+        expectedNodeId: "split",
+        postcondition: {
+          kind: "split",
+          expectedSourceTitle: "Root",
+          expectedInsertedTitle: ""
+        }
+      },
+      optimistic: optimisticInsertion()
+    })!;
+    session.updateOptimisticKeyboardInsertion("split", "typed live");
+    events.mockClear();
+
+    await expect(
+      session.enqueueStructural(
+        () => ({
+          kind: "authoritative" as const,
+          workspace: inserted,
+          uiUpdate: {
+            selectedId: "split",
+            editingNoteId: "split",
+            pendingFocusId: "split",
+            pendingFocusField: "title" as const
+          },
+          historyStatus: projectedHistoryState(
+            preparation.historyContext.entryId
+          ),
+          committedHistoryEntryIds: [preparation.historyContext.entryId]
+        }),
+        { keyboardInsertion: preparation }
+      )
+    ).resolves.toBe("committed");
+
+    expect(session.pendingKeyboardInsertion("split")).toBeUndefined();
+    expect(events).toHaveBeenCalledWith({
+      type: "optimisticInsertion",
+      snapshot: { insertions: [], failure: null }
+    });
+    expect(events).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "settled",
+        result: expect.objectContaining({
+          kind: "authoritative",
+          uiUpdate: expect.objectContaining({ pendingFocusId: "split" })
+        })
+      })
+    );
+    session.close();
+  });
+
+  it("recovers authority and retains provisional text when an insertion success violates its structural postcondition", async () => {
+    const mismatched = workspace([
+      node({ id: "root", title: "Root", sortKey: 1024 }),
+      node({ id: "split", title: "wrong", sortKey: 2048 })
+    ]);
+    const loadWorkspace = vi
+      .fn<NotesStore["loadWorkspace"]>()
+      .mockResolvedValueOnce(workspace([node({ id: "root", title: "Root" })]))
+      .mockResolvedValueOnce(mismatched);
+    let expectedEntryId = "";
+    const historyStatus = vi.fn(async () =>
+      projectedHistoryState(expectedEntryId)
+    );
+    const store = repository({ loadWorkspace, historyStatus });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
+    const session = registry.openSession(writableOptions(pool, {
+      repository: store,
+      vaultRoot: "/keyboard-insertion-postcondition-mismatch",
+      onEvent: events
+    }));
+    await session.activation;
+    session.publishOutlinePaneState({
+      paneId: "primary",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set()
+    });
+    const preparation = session.prepareKeyboardInsertion({
+      ownerPaneId: "primary",
+      intent: {
+        token: 91,
+        sourceId: "root",
+        expectedNodeId: "split",
+        postcondition: {
+          kind: "split",
+          expectedSourceTitle: "Root",
+          expectedInsertedTitle: ""
+        }
+      },
+      optimistic: optimisticInsertion()
+    })!;
+    expectedEntryId = preparation.historyContext.entryId;
+    session.updateOptimisticKeyboardInsertion("split", "typed live");
+    events.mockClear();
+
+    await expect(
+      session.enqueueStructural(
+        () => ({
+          kind: "authoritative" as const,
+          workspace: mismatched,
+          uiUpdate: {
+            selectedId: "split",
+            editingNoteId: "split",
+            pendingFocusId: "split",
+            pendingFocusField: "title" as const
+          },
+          historyStatus: projectedHistoryState(expectedEntryId),
+          committedHistoryEntryIds: [expectedEntryId]
+        }),
+        { keyboardInsertion: preparation }
+      )
+    ).resolves.toBe("failed");
+
+    expect(loadWorkspace).toHaveBeenCalledTimes(2);
+    expect(historyStatus).toHaveBeenCalledWith(
+      "/keyboard-insertion-postcondition-mismatch",
+      preparation.historyContext.sessionId
+    );
+    const settled = events.mock.calls
+      .map(([event]) => event)
+      .find((event) => event.type === "settled");
+    expect(settled?.result).toMatchObject({
+      kind: "failure",
+      uiUpdate: {
+        pendingFocusId: null,
+        pendingFocusField: null
+      }
+    });
+    expect(events).toHaveBeenCalledWith({
+      type: "optimisticInsertion",
+      snapshot: {
+        insertions: [],
+        failure: expect.objectContaining({
+          recoveryText: "Root\ntyped live"
+        })
+      }
+    });
+    session.close();
+  });
+
+  it("does not accept an insertion success whose next undo entry belongs to another command", async () => {
+    const inserted = workspace([
+      node({ id: "root", title: "Root", sortKey: 1024 }),
+      node({ id: "split", title: "", sortKey: 2048 })
+    ]);
+    const loadWorkspace = vi
+      .fn<NotesStore["loadWorkspace"]>()
+      .mockResolvedValueOnce(workspace([node({ id: "root", title: "Root" })]))
+      .mockResolvedValueOnce(inserted);
+    const historyStatus = vi
+      .fn(async (_vaultRoot: string, _sessionId: string) =>
+        projectedHistoryState("another-entry")
+      );
+    const clearHistory = vi
+      .fn<NotesStore["clearHistory"]>()
+      .mockResolvedValue({
+        ...historyState("epoch-b"),
+        historyReset: true
+      });
+    const store = repository({
+      loadWorkspace,
+      historyStatus,
+      clearHistory
+    });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
+    const session = registry.openSession(writableOptions(pool, {
+      repository: store,
+      vaultRoot: "/keyboard-insertion-history-mismatch",
+      onEvent: events
+    }));
+    await session.activation;
+    session.publishOutlinePaneState({
+      paneId: "primary",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set()
+    });
+    const preparation = session.prepareKeyboardInsertion({
+      ownerPaneId: "primary",
+      intent: {
+        token: 92,
+        sourceId: "root",
+        expectedNodeId: "split",
+        postcondition: {
+          kind: "split",
+          expectedSourceTitle: "Root",
+          expectedInsertedTitle: ""
+        }
+      },
+      optimistic: optimisticInsertion()
+    })!;
+    events.mockClear();
+
+    await expect(
+      session.enqueueStructural(
+        () => ({
+          kind: "authoritative" as const,
+          workspace: inserted,
+          uiUpdate: {
+            selectedId: "split",
+            editingNoteId: "split",
+            pendingFocusId: "split",
+            pendingFocusField: "title" as const
+          },
+          historyStatus: projectedHistoryState("another-entry"),
+          committedHistoryEntryIds: ["another-entry"]
+        }),
+        { keyboardInsertion: preparation }
+      )
+    ).resolves.toBe("committed");
+
+    expect(loadWorkspace).toHaveBeenCalledTimes(2);
+    expect(clearHistory).toHaveBeenCalledWith(
+      "/keyboard-insertion-history-mismatch",
+      {
+        sessionId: preparation.historyContext.sessionId,
+        historyEpoch: "epoch-a"
+      }
+    );
+    const settled = events.mock.calls
+      .map(([event]) => event)
+      .find((event) => event.type === "settled");
+    expect(settled?.result.uiUpdate).toEqual({
+      pendingFocusId: null,
+      pendingFocusField: null
+    });
+    session.close();
+  });
+
   it("does not publish or consume another frontend session's insertion", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();

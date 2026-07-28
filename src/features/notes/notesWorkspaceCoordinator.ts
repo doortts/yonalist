@@ -40,7 +40,10 @@ import {
   type OutlinePanePublicationSnapshot,
   type PendingKeyboardInsertion
 } from "./notesLocalStructure";
-import { classifyLocalStructureFailure } from "./notesLocalStructure";
+import {
+  classifyLocalStructureFailure,
+  settleLocalStructure
+} from "./notesLocalStructure";
 import {
   appendBackspaceRemoval,
   type OptimisticBackspaceGesture
@@ -842,9 +845,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
   ): void => {
     const expectedNodeId = preparation.pending.intent.expectedNodeId;
     const optimistic = entry.optimisticKeyboardInsertions.get(expectedNodeId);
-    if (optimistic?.pending !== preparation.pending) return;
-    entry.optimisticKeyboardInsertions.delete(expectedNodeId);
-    notifyOptimisticInsertion(entry, optimistic);
+    if (optimistic && optimistic.pending !== preparation.pending) return;
+    if (optimistic) {
+      entry.optimisticKeyboardInsertions.delete(expectedNodeId);
+      notifyOptimisticInsertion(entry, optimistic);
+    }
     entry.history.discard(preparation.historyContext.entryId);
   };
 
@@ -863,6 +868,36 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       return session.outlinePanes.has(pending.ownerPaneId);
     }
     return false;
+  };
+
+  const keyboardInsertionSettlementMatches = (
+    entry: CoordinatorEntry,
+    item: CommandItem,
+    result: Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>
+  ): boolean => {
+    const preparation = item.keyboardInsertion;
+    if (!preparation) return true;
+    const context = preparation.historyContext;
+    const exactHistory =
+      context.sessionId === entry.history.sessionId &&
+      context.historyEpoch === entry.history.historyEpoch &&
+      result.historyStatus?.historyEpoch === context.historyEpoch &&
+      result.historyStatus.nextUndoEntryId === context.entryId;
+    if (!exactHistory) return false;
+    const optimistic = entry.optimisticKeyboardInsertions.get(
+      preparation.pending.intent.expectedNodeId
+    );
+    if (optimistic?.pending !== preparation.pending) return false;
+    const localEntry = {
+      ...optimisticKeyboardInsertionLocalEntry(optimistic),
+      postcondition: preparation.pending.intent.postcondition
+    };
+    const authoritative = normalizeWorkspace(result.workspace);
+    return settleLocalStructure(
+      [localEntry],
+      preparation.pending.intent.token,
+      authoritative
+    ).length === 0;
   };
 
   const acceptProjectionPublications = async (
@@ -910,7 +945,17 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       }
       if (ownsInsertion || locallyExpandedNodeIds !== undefined) {
         publications.set(session, {
-          ...(ownsInsertion ? { targetPaneId: pending.ownerPaneId } : {}),
+          ...(ownsInsertion
+            ? {
+                targetPaneId: pending.ownerPaneId,
+                ...(pending.navigationVersionAtDispatch === undefined
+                  ? {}
+                  : {
+                      expectedNavigationVersion:
+                        pending.navigationVersionAtDispatch
+                    })
+              }
+            : {}),
           ...(locallyExpandedNodeIds === undefined
             ? {}
             : { locallyExpandedNodeIds })
@@ -2036,6 +2081,16 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           };
         }
       }
+      if (
+        item.kind === "command" &&
+        item.keyboardInsertion &&
+        !item.keyboardInsertionInvalidated &&
+        result.kind === "authoritative" &&
+        !keyboardInsertionSettlementMatches(item.entry, item, result)
+      ) {
+        item.keyboardInsertionInvalidated = true;
+        result = await recoveredQueueResult(item);
+      }
     } catch (cause) {
       if (item.kind === "command" && isNotesMutationOutcomeUnknown(cause)) {
         const committedReloadRecovery =
@@ -2762,6 +2817,12 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             },
             ownerSessionId: session.frontendSessionId,
             ownerPaneId: input.ownerPaneId,
+            ...(input.navigationVersionAtDispatch === undefined
+              ? {}
+              : {
+                  navigationVersionAtDispatch:
+                    input.navigationVersionAtDispatch
+                }),
             expectedStructuralHistoryEpoch: historyContext.historyEpoch,
             expectedStructuralHistoryEntryId: historyContext.entryId
           };

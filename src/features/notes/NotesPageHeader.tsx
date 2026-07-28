@@ -183,6 +183,12 @@ export function NotesPageHeader({
   const datePicker = useNotesDatePickerIntegration({
     values: { title: titleValue, note: noteValue },
     refs: { title: titleRef, note: noteRef },
+    focusRestorers: primaryImageAttachment
+      ? {
+          title: (selection) =>
+            imageEditorRef.current?.focus(selection) ?? false,
+        }
+      : undefined,
     onCommit: (field, value, replacement) => {
       const nextImageOffsetUtf16 =
         node?.nodeKind === "image" &&
@@ -331,6 +337,13 @@ export function NotesPageHeader({
         : node?.nodeKind === "image"
           ? imageRef.current
           : titleRef.current;
+    const navigationOwned =
+      replaySelection?.expectedNavigationVersion === undefined ||
+      actions.getNavigationVersion?.() ===
+        replaySelection.expectedNavigationVersion;
+    if (!navigationOwned) {
+      return;
+    }
     let focused = false;
     if (replaySelection && node?.nodeKind === "image") {
       focused =
@@ -345,7 +358,12 @@ export function NotesPageHeader({
         );
       }
     }
-    if (focused) {
+    if (
+      focused &&
+      (replaySelection?.expectedNavigationVersion === undefined ||
+        actions.getNavigationVersion?.() ===
+          replaySelection.expectedNavigationVersion)
+    ) {
       if (replaySelection) {
         focusedPrimarySelectionRequestIdRef.current = replaySelection.requestId;
       }

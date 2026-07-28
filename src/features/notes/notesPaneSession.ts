@@ -33,6 +33,7 @@ export type NotesPaneSessionAction =
   | {
       readonly type: "setNavigation";
       readonly patch: Partial<LiveNotesNavigation>;
+      readonly preserveNavigationVersion?: boolean;
     }
   | {
       readonly type: "setExpansion";
@@ -153,7 +154,9 @@ export function notesPaneSessionReducer(
       return {
         ...state,
         ...next,
-        navigationVersion: state.navigationVersion + 1
+        navigationVersion:
+          state.navigationVersion +
+          (action.preserveNavigationVersion === true ? 0 : 1)
       };
     }
     case "setExpansion": {

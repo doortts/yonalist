@@ -261,6 +261,22 @@ function historyState(
   };
 }
 
+function acknowledgedMutationResult(
+  value: NotesWorkspace,
+  context: NotesHistoryContext,
+): NotesMutationResponse {
+  latestMutationEntryBySessionId.set(context.sessionId, context.entryId);
+  return {
+    workspace: value,
+    historyEntryId: context.entryId,
+    ...historyState({
+      historyEpoch: context.historyEpoch,
+      canUndo: true,
+      nextUndoEntryId: context.entryId,
+    }),
+  };
+}
+
 function historyContextMatcher() {
   return expect.objectContaining({
     sessionId: expect.stringMatching(/\S/),
@@ -6876,7 +6892,7 @@ describe("Notes workspace", () => {
       title: "Existing child",
     });
     configureRepository([parent, existingChild]);
-    const creation = deferred<NotesWorkspace>();
+    const creation = deferred<NotesMutationResponse>();
     notesStoreMock.createNode.mockReturnValue(creation.promise);
     const expectedNodeId = "00000000-0000-4000-8000-000000000004";
     const randomUUID = vi
@@ -6914,17 +6930,20 @@ describe("Notes workspace", () => {
 
     await act(async () =>
       creation.resolve(
-        workspace([
-          parent,
-          node({
-            id: expectedNodeId,
-            parentId: "parent",
-            sortKey: 1,
-            title: "",
-            note: "",
-          }),
-          existingChild,
-        ]),
+        acknowledgedMutationResult(
+          workspace([
+            parent,
+            node({
+              id: expectedNodeId,
+              parentId: "parent",
+              sortKey: 1,
+              title: "",
+              note: "",
+            }),
+            existingChild,
+          ]),
+          notesStoreMock.createNode.mock.calls[0]![2],
+        ),
       ),
     );
     expect(allocatedAtKeydown).toBe(true);
@@ -6998,7 +7017,7 @@ describe("Notes workspace", () => {
   it("does not animate an Enter structure change in reduced-motion mode", async () => {
     mockNarrowViewport(false, true);
     configureRepository([node({ id: "source", title: "Source" })]);
-    const split = deferred<NotesWorkspace>();
+    const split = deferred<NotesMutationResponse>();
     notesStoreMock.splitNode.mockReturnValue(split.promise);
     const originalAnimate = Object.getOwnPropertyDescriptor(
       Element.prototype,
@@ -7029,10 +7048,13 @@ describe("Notes workspace", () => {
       const insertedId = notesStoreMock.splitNode.mock.lastCall![1].newNodeId;
       await act(async () =>
         split.resolve(
-          workspace([
-            node({ id: "source", title: "Source", sortKey: 1 }),
-            node({ id: insertedId, title: "", sortKey: 2 }),
-          ]),
+          acknowledgedMutationResult(
+            workspace([
+              node({ id: "source", title: "Source", sortKey: 1 }),
+              node({ id: insertedId, title: "", sortKey: 2 }),
+            ]),
+            notesStoreMock.splitNode.mock.lastCall![2],
+          ),
         ),
       );
     } finally {
@@ -7101,7 +7123,7 @@ describe("Notes workspace", () => {
     configureRepository([
       node({ id: "source", sortKey: 1, title: "alphaXYZomega" }),
     ]);
-    const split = deferred<NotesWorkspace>();
+    const split = deferred<NotesMutationResponse>();
     notesStoreMock.splitNode.mockReturnValue(split.promise);
     const randomUUID = vi
       .spyOn(globalThis.crypto, "randomUUID")
@@ -7135,14 +7157,17 @@ describe("Notes workspace", () => {
 
     await act(async () =>
       split.resolve(
-        workspace([
-          node({ id: "source", sortKey: 1, title: "alpha" }),
-          node({
-            id: "00000000-0000-4000-8000-000000000001",
-            sortKey: 2,
-            title: "omega",
-          }),
-        ]),
+        acknowledgedMutationResult(
+          workspace([
+            node({ id: "source", sortKey: 1, title: "alpha" }),
+            node({
+              id: "00000000-0000-4000-8000-000000000001",
+              sortKey: 2,
+              title: "omega",
+            }),
+          ]),
+          notesStoreMock.splitNode.mock.calls[0]![2],
+        ),
       ),
     );
 
@@ -7198,26 +7223,31 @@ describe("Notes workspace", () => {
         note: "old note",
       }),
     ]);
-    const save = deferred<NotesWorkspace>();
+    const save = deferred<NotesMutationResponse>();
     notesStoreMock.updateNode.mockReturnValue(save.promise);
-    notesStoreMock.splitNode.mockResolvedValue(
-      workspace([
-        node({
-          id: "source",
-          sortKey: 1,
-          title: "alpha",
-          note: "draft note",
-        }),
-        node({
-          id: "00000000-0000-4000-8000-000000000002",
-          sortKey: 2,
-          title: "omega",
-        }),
-      ]),
+    notesStoreMock.splitNode.mockImplementation(
+      async (
+        _vaultRoot: string,
+        input: { newNodeId: NoteId },
+        context: NotesHistoryContext,
+      ) =>
+        acknowledgedMutationResult(
+          workspace([
+            node({
+              id: "source",
+              sortKey: 1,
+              title: "alpha",
+              note: "draft note",
+            }),
+            node({
+              id: input.newNodeId,
+              sortKey: 2,
+              title: "omega",
+            }),
+          ]),
+          context,
+        ),
     );
-    const randomUUID = vi
-      .spyOn(globalThis.crypto, "randomUUID")
-      .mockReturnValue("00000000-0000-4000-8000-000000000002");
     renderNotesWorkspace();
     const title = await findTitleInput("alphaXYZomega");
     const note = queryTextareaByName("Supporting note: alphaXYZomega");
@@ -7247,14 +7277,17 @@ describe("Notes workspace", () => {
 
     await act(async () =>
       save.resolve(
-        workspace([
-          node({
-            id: "source",
-            sortKey: 1,
-            title: "alphaXYZomega",
-            note: "draft note",
-          }),
-        ]),
+        acknowledgedMutationResult(
+          workspace([
+            node({
+              id: "source",
+              sortKey: 1,
+              title: "alphaXYZomega",
+              note: "draft note",
+            }),
+          ]),
+          notesStoreMock.updateNode.mock.calls[0]![2],
+        ),
       ),
     );
     await waitFor(() =>
@@ -7264,7 +7297,7 @@ describe("Notes workspace", () => {
       "/vault",
       {
         id: "source",
-        newNodeId: "00000000-0000-4000-8000-000000000002",
+        newNodeId: expect.any(String),
         prefix: "alpha",
         suffix: "omega",
       },
@@ -7273,7 +7306,6 @@ describe("Notes workspace", () => {
 
     expect(titleEditorSource(await findTitleInput("alpha"))).toBe("alpha");
     expect(getTitleInput("omega")).toHaveFocus();
-    randomUUID.mockRestore();
   });
 
   it("keeps a failed split prerequisite dirty and retries it before splitting", async () => {
@@ -7369,7 +7401,7 @@ describe("Notes workspace", () => {
       configureRepository([
         node({ id: "solo", sortKey: 1024, title: "Solo item" }),
       ]);
-      const split = deferred<NotesWorkspace>();
+      const split = deferred<NotesMutationResponse>();
       notesStoreMock.splitNode.mockReturnValue(split.promise);
       notesStoreMock.updateNode.mockImplementation(
         async (_vaultRoot, input) =>
@@ -7409,10 +7441,13 @@ describe("Notes workspace", () => {
 
       await act(async () =>
         split.resolve(
-          workspace([
-            node({ id: "solo", sortKey: 1024, title: "Solo item" }),
-            node({ id: FIRST, sortKey: 2048, title: "" }),
-          ]),
+          acknowledgedMutationResult(
+            workspace([
+              node({ id: "solo", sortKey: 1024, title: "Solo item" }),
+              node({ id: FIRST, sortKey: 2048, title: "" }),
+            ]),
+            notesStoreMock.splitNode.mock.calls[0]![2],
+          ),
         ),
       );
       expect(rowCountBeforeSettlement).toBe(2);
@@ -7427,7 +7462,10 @@ describe("Notes workspace", () => {
           historyContextMatcher()
         )
       );
-      expect(await findTitleInput("typed before save")).toHaveFocus();
+      const savedTitle = await findTitleInput("typed before save");
+      expect(savedTitle).toHaveFocus();
+      expect(savedTitle.selectionStart).toBe("typed before save".length);
+      expect(savedTitle.selectionEnd).toBe("typed before save".length);
     });
 
     it("keeps a provisional native Backspace edit in one gesture history entry", async () => {
@@ -7540,8 +7578,8 @@ describe("Notes workspace", () => {
       configureRepository([
         node({ id: "solo", sortKey: 1024, title: "alpha" })
       ]);
-      const firstSplit = deferred<NotesWorkspace>();
-      const secondSplit = deferred<NotesWorkspace>();
+      const firstSplit = deferred<NotesMutationResponse>();
+      const secondSplit = deferred<NotesMutationResponse>();
       notesStoreMock.splitNode
         .mockReturnValueOnce(firstSplit.promise)
         .mockReturnValueOnce(secondSplit.promise);
@@ -7564,10 +7602,13 @@ describe("Notes workspace", () => {
 
       await act(async () =>
         firstSplit.resolve(
-          workspace([
-            node({ id: "solo", sortKey: 1024, title: "al" }),
-            node({ id: firstId, sortKey: 2048, title: "pha" })
-          ])
+          acknowledgedMutationResult(
+            workspace([
+              node({ id: "solo", sortKey: 1024, title: "al" }),
+              node({ id: firstId, sortKey: 2048, title: "pha" })
+            ]),
+            notesStoreMock.splitNode.mock.calls[0]![2],
+          )
         )
       );
       await waitFor(() =>
@@ -7579,11 +7620,14 @@ describe("Notes workspace", () => {
 
       await act(async () =>
         secondSplit.resolve(
-          workspace([
-            node({ id: "solo", sortKey: 1024, title: "al" }),
-            node({ id: firstId, sortKey: 2048, title: "be" }),
-            node({ id: secondId, sortKey: 3072, title: "ta" })
-          ])
+          acknowledgedMutationResult(
+            workspace([
+              node({ id: "solo", sortKey: 1024, title: "al" }),
+              node({ id: firstId, sortKey: 2048, title: "be" }),
+              node({ id: secondId, sortKey: 3072, title: "ta" })
+            ]),
+            notesStoreMock.splitNode.mock.calls[1]![2],
+          )
         )
       );
       expect(await findTitleInput("ta")).toHaveFocus();
@@ -12321,6 +12365,71 @@ describe("Notes workspace", () => {
           ).vaults["/vault"].activePaneId,
         ).toBe(previousPaneId),
       );
+    },
+  );
+
+  it.each(["primary", "secondary"] as const)(
+    "does not let a settled %s Enter steal focus after the user moves to the next bullet",
+    async (paneId) => {
+      configureRepository([
+        node({ id: "source", sortKey: 1, title: "Source" }),
+        node({ id: "next", sortKey: 3, title: "Next" }),
+      ]);
+      const split = deferred<NotesMutationResponse>();
+      notesStoreMock.splitNode.mockReturnValue(split.promise);
+      renderSplitNotesWorkspace();
+      const panes = await waitFor(() => {
+        const current = Array.from(
+          document.querySelectorAll<HTMLElement>("[data-notes-pane-id]"),
+        );
+        expect(current).toHaveLength(2);
+        return current;
+      });
+      const pane = panes[paneId === "primary" ? 0 : 1]!;
+      fireEvent.pointerDown(pane);
+      await waitFor(() =>
+        expect(titleEditorInMotionRow("source", pane)).not.toBeNull(),
+      );
+      const source = await activateTitleEditorInMotionRow("source", pane);
+      source.setSelectionRange(
+        titleEditorSource(source).length,
+        titleEditorSource(source).length,
+      );
+
+      expect(fireEvent.keyDown(source, { key: "Enter" })).toBe(false);
+      await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+      const insertedId = notesStoreMock.splitNode.mock.lastCall![1].newNodeId;
+      const historyContext =
+        notesStoreMock.splitNode.mock.lastCall![2] as NotesHistoryContext;
+      const provisional = await waitFor(() => {
+        const current = titleEditorInMotionRow(insertedId, pane);
+        expect(current).not.toBeNull();
+        return current!;
+      });
+      expect(provisional).toHaveFocus();
+
+      const next = await activateTitleEditorInMotionRow("next", pane);
+      await waitFor(() => expect(next).toHaveFocus());
+      const refocusInserted = vi.fn();
+      provisional.addEventListener("focus", refocusInserted);
+
+      await act(async () =>
+        split.resolve({
+          workspace: workspace([
+            node({ id: "source", sortKey: 1, title: "Source" }),
+            node({ id: insertedId, sortKey: 2, title: "" }),
+            node({ id: "next", sortKey: 3, title: "Next" }),
+          ]),
+          historyEntryId: historyContext.entryId,
+          ...historyState({
+            canUndo: true,
+            nextUndoEntryId: historyContext.entryId,
+          }),
+        }),
+      );
+
+      await waitFor(() => expect(next).toHaveFocus());
+      expect(refocusInserted).not.toHaveBeenCalled();
     },
   );
 

@@ -113,11 +113,13 @@ export interface NotesCreateChildOptions {
 
 export interface NotesProjectionPublication {
   readonly targetPaneId?: string;
+  readonly expectedNavigationVersion?: number;
   readonly locallyExpandedNodeIds?: ReadonlySet<NoteId>;
 }
 
 export interface NotesKeyboardInsertionRequest {
   readonly ownerPaneId: string;
+  readonly navigationVersionAtDispatch?: number;
   readonly intent: Omit<KeyboardInsertionIntent, "ownerSessionGeneration">;
   readonly optimistic: {
     readonly sourceSelection: NotesHistoryPrimarySelection;
@@ -171,6 +173,7 @@ export interface NotesPendingPrimarySelection {
   readonly nodeId: NoteId;
   readonly field: "title";
   readonly selection: NotesHistoryPrimarySelection;
+  readonly expectedNavigationVersion?: number;
 }
 
 export interface NotesStateSlice {

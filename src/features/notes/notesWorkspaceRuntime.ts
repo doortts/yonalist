@@ -585,12 +585,75 @@ export function useNotesWorkspace({
           }
           return;
         }
+        const insertionPublication =
+          event.result.kind === "skipped"
+            ? undefined
+            : event.result.projectionPublication;
+        const insertionPaneId =
+          insertionPublication?.expectedNavigationVersion !== undefined &&
+          (insertionPublication.targetPaneId === "primary" ||
+            insertionPublication.targetPaneId === "secondary")
+            ? insertionPublication.targetPaneId
+            : null;
+        const expectedNavigationVersion =
+          insertionPublication?.expectedNavigationVersion;
+        const insertionNavigationOwned =
+          insertionPaneId === null ||
+          expectedNavigationVersion === undefined ||
+          (insertionPaneId === "primary"
+            ? navigationVersionRef.current
+            : paneSessions.getPaneSession("secondary").navigationVersion) ===
+            expectedNavigationVersion;
         const routed =
-          settlementRuntime.routeKeyboardInsertionNavigation(event.result);
+          settlementRuntime.routeKeyboardInsertionNavigation(
+            event.result,
+            insertionNavigationOwned
+          );
+        const insertionFocusId =
+          insertionNavigationOwned && event.result.kind !== "skipped"
+            ? event.result.uiUpdate?.pendingFocusId
+            : null;
+        if (
+          insertionPaneId !== null &&
+          expectedNavigationVersion !== undefined &&
+          insertionFocusId != null
+        ) {
+          const settledWorkspace =
+            event.result.kind === "authoritative"
+              ? event.result.workspace
+              : event.result.kind === "failure"
+                ? event.result.workspace
+                : undefined;
+          const titleLength =
+            settledWorkspace?.nodes.find(
+              (candidate) => candidate.id === insertionFocusId
+            )?.title.length ?? 0;
+          const request = {
+            requestId: ++nextPrimarySelectionRequestIdRef.current,
+            nodeId: insertionFocusId,
+            field: "title" as const,
+            selection: {
+              anchorUtf16: titleLength,
+              focusUtf16: titleLength
+            },
+            expectedNavigationVersion
+          };
+          if (insertionPaneId === "secondary") {
+            paneSessions.dispatchPane("secondary", {
+              type: "setPendingPrimarySelection",
+              request
+            });
+          } else {
+            pendingPrimarySelectionRef.current = request;
+          }
+        }
         if (routed.secondaryNavigation) {
           paneSessions.dispatchPane("secondary", {
             type: "setNavigation",
-            patch: routed.secondaryNavigation
+            patch: routed.secondaryNavigation,
+            preserveNavigationVersion:
+              insertionPaneId === "secondary" &&
+              insertionNavigationOwned
           });
         }
         const settledResult = routed.primaryResult;

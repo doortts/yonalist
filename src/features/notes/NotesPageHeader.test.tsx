@@ -1217,6 +1217,51 @@ describe("NotesPageHeader", () => {
     );
   });
 
+  it("returns image-editor focus and the logical caret after changing an existing date", async () => {
+    const user = userEvent.setup();
+    const workspace = workspaceValue({
+      nodeKind: "image",
+      title: "today after",
+      imageOffsetUtf16: 5,
+      attachments: [attachment({ id: "image-1", nodeId: "project" })],
+    });
+    const rendered = render(zoomedOutline(workspace));
+    const editor = screen.getByRole("textbox", { name: "Image note" });
+
+    await user.click(screen.getByRole("button", { name: "Edit date today" }));
+    const picker = await screen.findByRole("dialog", { name: "Choose date" });
+    await user.click(within(picker).getByRole("button", { name: "Today" }));
+    await user.keyboard("{Enter}");
+
+    rendered.rerender(
+      zoomedOutline({
+        ...workspace,
+        draftsByNodeId: {
+          project: {
+            title: "07/11/2026 after",
+            note: "Project context",
+            imageOffsetUtf16: 10,
+            revision: 1,
+            status: "pending",
+          },
+        },
+      }),
+    );
+
+    await waitFor(() => {
+      const [before, atom, after] = editor.querySelectorAll<HTMLElement>(
+        "[data-image-atom-region]",
+      );
+      expect(editor).toHaveFocus();
+      expect(
+        readImageAtomDomSelection(
+          { host: editor, before: before!, atom: atom!, after: after! },
+          document.getSelection()!,
+        ),
+      ).toEqual({ anchorUtf16: 10, focusUtf16: 10 });
+    });
+  });
+
   it("opens a typed-date picker from the latest page image-atom draft", async () => {
     const user = userEvent.setup();
     const workspace = workspaceValue({
