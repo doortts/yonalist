@@ -1181,6 +1181,8 @@
   flex: 1;
   min-height: 0;
   overflow-x: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 24px 28px 44px;
 }
 

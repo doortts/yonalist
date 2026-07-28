@@ -1193,7 +1193,7 @@ describe("Notes workspace", () => {
     expect("__TAURI_INTERNALS__" in window).toBe(false);
   });
 
-  it("moves 50 carets directly in both panes without a focus fallback", async () => {
+  it("keeps an independent prefix in each pane", async () => {
     const rows = Array.from({ length: 101 }, (_, index) =>
       node({
         id: `row-${index}`,
@@ -1208,32 +1208,24 @@ describe("Notes workspace", () => {
       state.pendingFocusField = null;
       workspace.state = state;
       workspace.pendingPrimarySelection = null;
-      const focusNode = vi.fn().mockResolvedValue(undefined);
-      const claimEditingFocus = vi.fn().mockResolvedValue(true);
-      const notifyCaretMovedByDom = vi.fn();
-      workspace.actions = new Proxy(workspace.actions, {
-        get: (target, property, receiver) =>
-          property === "focusNode"
-            ? focusNode
-            : property === "claimEditingFocus"
-              ? claimEditingFocus
-              : property === "notifyCaretMovedByDom"
-                ? notifyCaretMovedByDom
-                : Reflect.get(target, property, receiver),
-      });
-      return { workspace, focusNode, notifyCaretMovedByDom };
+      return workspace;
     };
     const primary = buildWorkspace();
     const secondary = buildWorkspace();
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return this.classList.contains("notes-outline-rows") ? 280 : 0;
+      },
+    );
     render(
       <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
         <VaultRootContext.Provider value="/vault">
           <NotesImageResidencyProvider scopeKey="/vault">
             <>
-              <NotesWorkspaceContext.Provider value={primary.workspace}>
+              <NotesWorkspaceContext.Provider value={primary}>
                 <NotesOutlinePane />
               </NotesWorkspaceContext.Provider>
-              <NotesWorkspaceContext.Provider value={secondary.workspace}>
+              <NotesWorkspaceContext.Provider value={secondary}>
                 <NotesOutlinePane />
               </NotesWorkspaceContext.Provider>
             </>
@@ -1242,40 +1234,32 @@ describe("Notes workspace", () => {
       </NotesDateTodayProvider>,
     );
     const outlines = await screen.findAllByLabelText("Notes outline");
-    const titleAt = (outline: HTMLElement, index: number) =>
-      Array.from(
-        outline.querySelectorAll<HTMLTextAreaElement>(
-          'textarea[aria-label="Edit node title"]',
-        ),
-      ).find(
-        (title) => title.value === `Row ${String(index).padStart(3, "0")}`,
-      )!;
+    const primaryRows = outlines[0]!.querySelector<HTMLElement>(
+      ".notes-outline-rows",
+    )!;
+    const secondaryRows = outlines[1]!.querySelector<HTMLElement>(
+      ".notes-outline-rows",
+    )!;
+    const firstRow = outlines[0]!.querySelector('[data-outline-id="row-0"]');
 
-    let primaryTitle = titleAt(outlines[0]!, 0);
-    fireEvent.focus(primaryTitle);
-    for (let index = 1; index <= 50; index += 1) {
-      fireEvent.keyDown(primaryTitle, {
-        key: "ArrowDown",
-        repeat: index > 1,
-      });
-      primaryTitle = titleAt(outlines[0]!, index);
-      expect(primaryTitle).toHaveFocus();
-    }
-    let secondaryTitle = titleAt(outlines[1]!, 100);
-    fireEvent.focus(secondaryTitle);
-    for (let index = 99; index >= 50; index -= 1) {
-      fireEvent.keyDown(secondaryTitle, {
-        key: "ArrowUp",
-        repeat: index < 99,
-      });
-      secondaryTitle = titleAt(outlines[1]!, index);
-      expect(secondaryTitle).toHaveFocus();
-    }
+    expect(outlines[0]!.querySelectorAll("[data-outline-id]")).toHaveLength(10);
+    expect(
+      outlines[0]!.querySelector(".notes-outline-tail-spacer"),
+    ).toHaveStyle({ height: "2548px" });
+    expect(outlines[1]!.querySelectorAll("[data-outline-id]")).toHaveLength(10);
 
-    expect(primary.focusNode).not.toHaveBeenCalled();
-    expect(secondary.focusNode).not.toHaveBeenCalled();
-    expect(primary.notifyCaretMovedByDom).toHaveBeenCalledTimes(50);
-    expect(secondary.notifyCaretMovedByDom).toHaveBeenCalledTimes(50);
+    primaryRows.scrollTop = 1_400;
+    fireEvent.scroll(primaryRows);
+    expect(outlines[0]!.querySelectorAll("[data-outline-id]")).toHaveLength(82);
+    expect(outlines[1]!.querySelectorAll("[data-outline-id]")).toHaveLength(10);
+
+    primaryRows.scrollTop = 700;
+    fireEvent.scroll(primaryRows);
+    expect(outlines[0]!.querySelectorAll("[data-outline-id]")).toHaveLength(58);
+    expect(outlines[0]!.querySelector('[data-outline-id="row-0"]')).toBe(
+      firstRow,
+    );
+    expect(primaryRows.scrollTop).toBe(700);
   });
 
   it("uses the state-focus fallback when the target has no title textarea", async () => {
@@ -1325,80 +1309,86 @@ describe("Notes workspace", () => {
     expect(focusNode).toHaveBeenCalledWith("image");
   });
 
-  it("moves 50 repeated carets directly in both split panes without late refocus", async () => {
-    const before = Array.from({ length: 101 }, (_, index) =>
+  it("moves a repeated caret across the prefix boundary", async () => {
+    const rows = Array.from({ length: 101 }, (_, index) =>
       node({
         id: `row-${index}`,
         sortKey: index + 1,
         title: `Row ${String(index).padStart(3, "0")}`,
       }),
     );
-    configureRepository(before);
-    renderSplitNotesWorkspace();
-    const outlines = await screen.findAllByLabelText("Notes outline");
-    expect(outlines).toHaveLength(2);
-    const titleAt = (outline: HTMLElement, index: number) =>
-      Array.from(
-        outline.querySelectorAll<HTMLTextAreaElement>(
-          'textarea[aria-label="Edit node title"]',
-        ),
-      ).find(
-        (title) => title.value === `Row ${String(index).padStart(3, "0")}`,
-      ) ?? null;
-    await waitFor(() => {
-      expect(titleAt(outlines[0]!, 0)).not.toBeNull();
-      expect(titleAt(outlines[1]!, 100)).not.toBeNull();
-    });
-    const frames: FrameRequestCallback[] = [];
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      frames.push(callback);
-      return frames.length;
-    });
-    vi.stubGlobal("cancelAnimationFrame", vi.fn());
-
-    let primary = titleAt(outlines[0]!, 0)!;
-    fireEvent.focus(primary);
-    for (let index = 1; index <= 50; index += 1) {
-      fireEvent.keyDown(primary, {
-        key: "ArrowDown",
-        repeat: index > 1,
-      });
-      primary = titleAt(outlines[0]!, index)!;
-      expect(primary).toHaveFocus();
-    }
-
-    fireEvent.pointerDown(
-      outlines[1]!.closest<HTMLElement>(
-        '[data-notes-pane-id="secondary"]',
-      )!,
+    configureRepository(rows);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return this.classList.contains("notes-outline-rows") ? 280 : 0;
+      },
     );
-    let secondary = titleAt(outlines[1]!, 100)!;
-    fireEvent.focus(secondary);
-    for (let index = 99; index >= 50; index -= 1) {
-      fireEvent.keyDown(secondary, {
-        key: "ArrowUp",
-        repeat: index < 99,
-      });
-      secondary = titleAt(outlines[1]!, index)!;
-      expect(secondary).toHaveFocus();
-    }
+    renderNotesWorkspace();
+    const outline = await screen.findByLabelText("Notes outline");
+    expect(outline.querySelectorAll("[data-outline-id]")).toHaveLength(10);
+    const boundary = await findTitleInput("Row 009");
 
-    expect(frames).toHaveLength(2);
-    await act(async () => {
-      for (const frame of frames.splice(0)) {
-        frame(0);
-      }
-    });
-    await act(async () => undefined);
+    fireEvent.focus(boundary);
+    fireEvent.keyDown(boundary, { key: "ArrowDown", repeat: true });
 
-    expect(secondary).toHaveFocus();
-    expect(titleAt(outlines[0]!, 50)?.closest(".notes-node")).toHaveAttribute(
-      "data-selected",
-      "true",
+    expect(await findTitleInput("Row 010")).toHaveFocus();
+  });
+
+  it("keeps a deep drag source mounted until drag source termination", async () => {
+    const user = userEvent.setup();
+    const rows = Array.from({ length: 101 }, (_, index) =>
+      node({
+        id: `row-${index}`,
+        sortKey: index + 1,
+        title: `Row ${String(index).padStart(3, "0")}`,
+      }),
     );
-    expect(secondary.closest(".notes-node")).toHaveAttribute(
-      "data-selected",
-      "true",
+    configureRepository(rows);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return this.classList.contains("notes-outline-rows") ? 280 : 0;
+      },
+    );
+    renderNotesWorkspace();
+    const outline = await screen.findByLabelText("Notes outline");
+    const scroller = outline.querySelector<HTMLElement>(".notes-outline-rows")!;
+    scroller.scrollTop = 1_400;
+    fireEvent.scroll(scroller);
+    expect(outline.querySelectorAll("[data-outline-id]")).toHaveLength(82);
+    mockOutlineRowRects();
+    const source = screen.getByRole("button", {
+      name: "Zoom into Row 070",
+    });
+
+    await user.pointer({
+      keys: "[MouseLeft>]",
+      target: source,
+      coords: { clientX: 8, clientY: 8 },
+    });
+    await user.pointer({
+      target: source,
+      coords: { clientX: 16, clientY: 16 },
+    });
+    await waitFor(() =>
+      expect(outline.querySelector(".notes-outline-list")).toHaveAttribute(
+        "data-drag-active",
+        "true",
+      ),
+    );
+
+    scroller.scrollTop = 0;
+    fireEvent.scroll(scroller);
+    expect(outline.querySelector('[data-outline-id="row-70"]')).not.toBeNull();
+
+    await user.pointer({
+      keys: "[/MouseLeft]",
+      target: source,
+      coords: { clientX: 16, clientY: 16 },
+    });
+    await waitFor(() =>
+      expect(
+        outline.querySelector('[data-outline-id="row-70"]'),
+      ).toBeNull(),
     );
   });
 

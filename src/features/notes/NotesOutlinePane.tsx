@@ -27,6 +27,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type UIEvent as ReactUIEvent,
   useCallback,
   useContext,
   useEffect,
@@ -154,6 +155,7 @@ import {
   type PreparedOutlineSelectionDrag,
 } from "./outlineDrag";
 import { NOTES_DRAG_OVERLAY_MODIFIERS } from "./notesDragOverlay";
+import { projectOutlinePrefix } from "./outlinePrefix";
 import {
   resolveOutlinePointerBoundary,
   type OutlinePointerBoundary,
@@ -890,9 +892,14 @@ export function NotesOutlinePane({
   const selectionChooserScopeKey = `${vaultRoot}\u0000${libraryView}\u0000${activeTagFilters
     .map((filter) => `${filter.prefix}\u0000${filter.normalizedTag}`)
     .join("\u0001")}`;
+  const outlinePageKey = `${selectionChooserScopeKey}\u0002${state.zoomRootId ?? ""}`;
   const selectionChooserLifecycleKey = `${selectionRevision}\u0002${selectionChooserScopeKey}`;
   const getLiveSelectionSnapshot = actions.getSelectionSnapshot;
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
+  const [deferredDirectFocusId, setDeferredDirectFocusId] =
+    useState<NoteId | null>(null);
+  const [outlineViewportHeight, setOutlineViewportHeight] = useState(0);
+  const [outlineScrollTop, setOutlineScrollTop] = useState(0);
   const [outlineComposing, setOutlineComposing] = useState(false);
   const [dragPresentation, setDragPresentation] =
     useState<NotesDragPresentationSnapshot | null>(null);
@@ -1940,6 +1947,27 @@ export function NotesOutlinePane({
     () => bodyRows.filter((row) => !githubDescendantIds.has(row.id)),
     [bodyRows, githubDescendantIds],
   );
+  const targetExpandedLimit = [
+    state.pendingFocusId,
+    state.editingNoteId,
+    activeDragId,
+    deferredDirectFocusId,
+    dropPreview?.beforeId,
+    imageDropTargetId,
+  ].reduce((limit, targetId) => {
+    if (targetId === null || targetId === undefined) return limit;
+    return Math.max(
+      limit,
+      ordinaryBodyRows.findIndex((row) => row.id === targetId) + 1,
+    );
+  }, 0);
+  const outlinePrefix = projectOutlinePrefix(
+    ordinaryBodyRows.length,
+    outlineViewportHeight,
+    outlineScrollTop,
+    targetExpandedLimit,
+  );
+  const mountedOrdinaryRows = ordinaryBodyRows.slice(0, outlinePrefix.limit);
   const completedItemsHidden =
     !showCompleted &&
     allStructuralRows.length > structuralRows.length &&
@@ -1999,9 +2027,29 @@ export function NotesOutlinePane({
     }
   }, [ordinaryBodyRows]);
   const bodySortableIds = useMemo(
-    () =>
-      sortableVisibleIds.map((nodeId) => notesPaneDndId(paneId, nodeId, "row")),
-    [paneId, sortableVisibleIds],
+    () => {
+      const mountedIds = new Set(mountedOrdinaryRows.map((row) => row.id));
+      if (
+        githubZoomed ||
+        (mountedIds.has(GITHUB_NOTIFICATIONS_ROOT_ID) &&
+          !state.nodesById[GITHUB_NOTIFICATIONS_ROOT_ID]?.isCollapsed)
+      ) {
+        for (const nodeId of githubProjection.sortableIds) {
+          mountedIds.add(nodeId);
+        }
+      }
+      return sortableVisibleIds
+        .filter((nodeId) => mountedIds.has(nodeId))
+        .map((nodeId) => notesPaneDndId(paneId, nodeId, "row"));
+    },
+    [
+      githubProjection.sortableIds,
+      githubZoomed,
+      mountedOrdinaryRows,
+      paneId,
+      sortableVisibleIds,
+      state.nodesById,
+    ],
   );
   const bodyVisibleIdsRef = useRef(bodyVisibleIds);
   bodyVisibleIdsRef.current = bodyVisibleIds;
@@ -2391,13 +2439,46 @@ export function NotesOutlinePane({
     },
     [],
   );
+  useLayoutEffect(() => {
+    const surface = dropSurfaceRef.current;
+    if (!surface) return;
+    surface.scrollTop = 0;
+    setDeferredDirectFocusId(null);
+    setOutlineScrollTop(0);
+    setOutlineViewportHeight(surface.clientHeight || window.innerHeight);
+  }, [outlinePageKey]);
+  const handleOutlineScroll = useCallback(
+    (event: ReactUIEvent<HTMLDivElement>) => {
+      const surface = event.currentTarget;
+      const viewportHeight = surface.clientHeight || window.innerHeight;
+      const scrollTop =
+        48 * Math.ceil(Math.max(0, surface.scrollTop) / 48);
+      setOutlineViewportHeight((current) =>
+        current === viewportHeight ? current : viewportHeight,
+      );
+      setOutlineScrollTop((current) =>
+        current === scrollTop ? current : scrollTop,
+      );
+    },
+    [],
+  );
   const focusBodyTitle = useCallback(
     (nodeId: NoteId): void => {
       noteOutlineActivity();
-      outlineTitleTextarea(contentRef.current, nodeId)?.focus();
+      const title = outlineTitleTextarea(contentRef.current, nodeId);
+      if (title) {
+        title.focus();
+        return;
+      }
+      setDeferredDirectFocusId(nodeId);
     },
     [noteOutlineActivity],
   );
+  useLayoutEffect(() => {
+    if (deferredDirectFocusId === null) return;
+    outlineTitleTextarea(contentRef.current, deferredDirectFocusId)?.focus();
+    setDeferredDirectFocusId(null);
+  }, [deferredDirectFocusId]);
   useEffect(() => {
     const retireMouseSelectionGesture = (event: globalThis.PointerEvent) => {
       const gesture = mouseSelectionGestureRef.current;
@@ -4973,7 +5054,11 @@ export function NotesOutlinePane({
               </button>
             </div>
           )}
-          <div className="notes-outline-rows" ref={dropSurfaceRef}>
+          <div
+            className="notes-outline-rows"
+            ref={dropSurfaceRef}
+            onScroll={handleOutlineScroll}
+          >
             <div
               className="notes-outline-content"
               data-zoomed-page={
@@ -5078,7 +5163,7 @@ export function NotesOutlinePane({
                     }
                     role="list"
                   >
-                    {ordinaryBodyRows.map((row) => (
+                    {mountedOrdinaryRows.map((row) => (
                       <Fragment key={row.id}>
                         {renderOutlineNodeItem(row)}
                         {row.id === GITHUB_NOTIFICATIONS_ROOT_ID &&
@@ -5097,6 +5182,14 @@ export function NotesOutlinePane({
                           )}
                       </Fragment>
                     ))}
+                    {outlinePrefix.tailHeight > 0 && (
+                      <li
+                        className="notes-outline-tail-spacer"
+                        role="presentation"
+                        aria-hidden="true"
+                        style={{ height: outlinePrefix.tailHeight }}
+                      />
+                    )}
                     {githubZoomed && (
                       <NotesExternalOutlinePane
                         onRetry={retryGithubNotifications}
