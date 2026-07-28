@@ -1956,9 +1956,12 @@ export function NotesOutlinePane({
     imageDropTargetId,
   ].reduce((limit, targetId) => {
     if (targetId === null || targetId === undefined) return limit;
+    const ordinaryTargetId = githubDescendantIds.has(targetId)
+      ? GITHUB_NOTIFICATIONS_ROOT_ID
+      : targetId;
     return Math.max(
       limit,
-      ordinaryBodyRows.findIndex((row) => row.id === targetId) + 1,
+      ordinaryBodyRows.findIndex((row) => row.id === ordinaryTargetId) + 1,
     );
   }, 0);
   const outlinePrefix = projectOutlinePrefix(

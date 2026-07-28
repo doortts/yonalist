@@ -1334,6 +1334,90 @@ describe("Notes workspace", () => {
     expect(await findTitleInput("Row 010")).toHaveFocus();
   });
 
+  it("pins the GitHub root for a deep GitHub descendant prefix target", async () => {
+    const workspace = rowReplayWorkspace();
+    const roots = Array.from({ length: 101 }, (_, index) =>
+      index === 70
+        ? node({
+            id: GITHUB_NOTIFICATIONS_ROOT_ID,
+            sortKey: index + 1,
+            title: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+            isReadonly: undefined,
+            pluginState: { collapsedGroups: [] },
+          })
+        : node({
+            id: `row-${index}`,
+            sortKey: index + 1,
+            title: `Row ${String(index).padStart(3, "0")}`,
+          }),
+    );
+    const state = normalizeWorkspace({
+      nodes: [
+        ...roots,
+        node({
+          id: "stored-github-date",
+          parentId: GITHUB_NOTIFICATIONS_ROOT_ID,
+          title: "2026.07.24",
+          isReadonly: undefined,
+          pluginMeta: { kind: "date", dateKey: "2026.07.24" },
+        }),
+        node({
+          id: "saved-notification",
+          parentId: "stored-github-date",
+          title: "Saved notification",
+          isReadonly: undefined,
+          pluginMeta: {
+            kind: "notification",
+            notificationKey:
+              '["github","[\\"https://api.github.com\\",\\"account-7\\"]","42"]',
+            notificationType: "Issue",
+            url: "https://github.com/acme/yonalist/issues/42",
+            updatedAt: "2026-07-24T10:00:00Z",
+            unread: true,
+          },
+        }),
+        node({
+          id: "github-user-child",
+          parentId: "saved-notification",
+          title: "GitHub user child",
+        }),
+      ],
+    });
+    state.pendingFocusId = null;
+    state.pendingFocusField = null;
+    state.editingNoteId = "github-user-child";
+    workspace.state = state;
+    workspace.pendingPrimarySelection = null;
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return this.classList.contains("notes-outline-rows") ? 280 : 0;
+      },
+    );
+    render(
+      <ExternalSourcesContext.Provider value={githubSources([])}>
+        <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
+          <VaultRootContext.Provider value="/vault">
+            <NotesImageResidencyProvider scopeKey="/vault">
+              <NotesWorkspaceContext.Provider value={workspace}>
+                <NotesOutlinePane />
+              </NotesWorkspaceContext.Provider>
+            </NotesImageResidencyProvider>
+          </VaultRootContext.Provider>
+        </NotesDateTodayProvider>
+      </ExternalSourcesContext.Provider>,
+    );
+    const outline = await screen.findByLabelText("Notes outline");
+
+    expect(
+      outline.querySelector(
+        `[data-outline-id="${GITHUB_NOTIFICATIONS_ROOT_ID}"]`,
+      ),
+    ).not.toBeNull();
+    expect(
+      outline.querySelector('[data-outline-id="github-user-child"]'),
+    ).not.toBeNull();
+  });
+
   it("keeps a deep drag source mounted until drag source termination", async () => {
     const user = userEvent.setup();
     const rows = Array.from({ length: 101 }, (_, index) =>
