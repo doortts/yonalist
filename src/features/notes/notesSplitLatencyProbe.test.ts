@@ -810,6 +810,105 @@ describe("notesSplitLatencyProbe", () => {
     }
   });
 
+  it("excludes live-title focus owned by the other pane from Undo snapshots", () => {
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary">
+        <div data-outline-id="primary">
+          <div data-notes-bullet-title contenteditable="plaintext-only">Primary</div>
+        </div>
+      </section>
+      <section data-notes-pane-id="secondary">
+        <div data-outline-id="secondary">
+          <div data-notes-bullet-title contenteditable="plaintext-only">Secondary</div>
+        </div>
+      </section>
+    `;
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => 0,
+      scheduleBacklogCheck: () => {}
+    });
+    const primary = document.querySelector<HTMLElement>(
+      '[data-notes-pane-id="primary"] [data-notes-bullet-title]'
+    )!;
+    const secondary = document.querySelector<HTMLElement>(
+      '[data-notes-pane-id="secondary"] [data-notes-bullet-title]'
+    )!;
+
+    try {
+      secondary.focus();
+      restorePlainTextSelection(secondary, {
+        anchorUtf16: 1,
+        focusUtf16: 1
+      });
+      press(primary, { key: "Backspace" });
+      release(primary, { key: "Backspace" });
+      press(primary, { key: "z", code: "KeyZ", metaKey: true });
+
+      restorePlainTextSelection(secondary, {
+        anchorUtf16: 2,
+        focusUtf16: 2
+      });
+      markNotesSplitInputBenchmarkPaneCommit("primary");
+
+      expect(benchmarkSamples()).toEqual([
+        expect.objectContaining({
+          operation: "backspace",
+          phases: expect.arrayContaining(["keyup-stop", "undo-restored"])
+        })
+      ]);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("excludes note and arbitrary textarea focus from Undo snapshots", () => {
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary">
+        <div data-outline-id="primary">
+          <textarea class="notes-node-title">Primary</textarea>
+          <textarea class="notes-node-note">Note</textarea>
+        </div>
+      </section>
+      <textarea aria-label="Outside">Outside</textarea>
+    `;
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => 0,
+      scheduleBacklogCheck: () => {}
+    });
+    const primary = document.querySelector<HTMLTextAreaElement>(
+      "textarea.notes-node-title"
+    )!;
+    const note = document.querySelector<HTMLTextAreaElement>(
+      "textarea.notes-node-note"
+    )!;
+    const outside = document.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Outside"]'
+    )!;
+
+    try {
+      note.focus();
+      note.setSelectionRange(1, 1);
+      press(primary, { key: "Backspace" });
+      release(primary, { key: "Backspace" });
+      press(primary, { key: "z", code: "KeyZ", metaKey: true });
+
+      outside.focus();
+      outside.setSelectionRange(2, 2);
+      markNotesSplitInputBenchmarkPaneCommit("primary");
+
+      expect(benchmarkSamples()).toEqual([
+        expect.objectContaining({
+          operation: "backspace",
+          phases: expect.arrayContaining(["keyup-stop", "undo-restored"])
+        })
+      ]);
+    } finally {
+      dispose();
+    }
+  });
+
   it("uses real Profiler commits to count both panes for one physical operation", () => {
     const dispose = installNotesSplitInputBenchmarkCollector({
       origin: "http://127.0.0.1:1438",

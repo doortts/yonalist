@@ -7079,6 +7079,7 @@ describe("Notes workspace", () => {
       historyContextMatcher(),
     );
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     expect(nodeTitleEditors()).toHaveLength(3);
     expect(await findTitleInput("")).toHaveFocus();
 
@@ -7188,18 +7189,7 @@ describe("Notes workspace", () => {
       },
       historyContextMatcher(),
     );
-    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
-    expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
-      "/vault",
-      {
-        id: "source",
-        title: "alphaXYZomega",
-        note: "",
-        imageOffsetUtf16: 0,
-        markerKind: "bullet",
-      },
-      historyContextMatcher(),
-    );
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     expect(getTitleInput("omega")).toHaveFocus();
 
     await act(async () =>
@@ -7217,7 +7207,7 @@ describe("Notes workspace", () => {
 
     expect(await findTitleInput("omega")).toHaveFocus();
     expect(title).not.toHaveFocus();
-    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     expect(notesStoreMock.splitNode).toHaveBeenCalledOnce();
     randomUUID.mockRestore();
   });
@@ -7258,7 +7248,7 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
   });
 
-  it("saves dirty title and note drafts before splitting and adopts the prefix", async () => {
+  it("saves an existing note draft before splitting a clean live title", async () => {
     configureRepository([
       node({
         id: "source",
@@ -7280,7 +7270,7 @@ describe("Notes workspace", () => {
         node({
           id: "00000000-0000-4000-8000-000000000002",
           sortKey: 2,
-          title: "omega!",
+          title: "omega",
         }),
       ]),
     );
@@ -7291,16 +7281,12 @@ describe("Notes workspace", () => {
     const title = await findTitleInput("alphaXYZomega");
     const note = queryTextareaByName("Supporting note: alphaXYZomega");
     expect(note).not.toBeNull();
-    vi.useFakeTimers();
-    changeTitleEditor(title, "alphaXYZomega!");
-    await act(async () => vi.advanceTimersByTimeAsync(500));
-    vi.useRealTimers();
     fireEvent.change(note!, { target: { value: "draft note" } });
     title.focus();
     title.setSelectionRange(5, 8);
 
     expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
-    expect(await findTitleInput("omega!")).toHaveFocus();
+    expect(await findTitleInput("omega")).toHaveFocus();
     expect(titleEditorSource(getTitleInput("alpha"))).toBe("alpha");
     await waitFor(() =>
       expect(notesStoreMock.updateNode).toHaveBeenCalledOnce(),
@@ -7309,8 +7295,8 @@ describe("Notes workspace", () => {
       "/vault",
       {
         id: "source",
-        title: "alphaXYZomega!",
-        note: "old note",
+        title: "alphaXYZomega",
+        note: "draft note",
         imageOffsetUtf16: 0,
         markerKind: "bullet",
       },
@@ -7324,7 +7310,7 @@ describe("Notes workspace", () => {
           node({
             id: "source",
             sortKey: 1,
-            title: "alphaXYZomega!",
+            title: "alphaXYZomega",
             note: "draft note",
           }),
         ]),
@@ -7339,13 +7325,13 @@ describe("Notes workspace", () => {
         id: "source",
         newNodeId: "00000000-0000-4000-8000-000000000002",
         prefix: "alpha",
-        suffix: "omega!",
+        suffix: "omega",
       },
       historyContextMatcher(),
     );
 
     expect(titleEditorSource(await findTitleInput("alpha"))).toBe("alpha");
-    expect(getTitleInput("omega!")).toHaveFocus();
+    expect(getTitleInput("omega")).toHaveFocus();
     randomUUID.mockRestore();
   });
 
@@ -7475,14 +7461,7 @@ describe("Notes workspace", () => {
       const provisionalTitle = getTitleInput("");
       expect(provisionalTitle).toHaveFocus();
       const sourceSaveCount = notesStoreMock.updateNode.mock.calls.length;
-      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
-        "/vault",
-        expect.objectContaining({
-          id: "solo",
-          title: "Solo item",
-        }),
-        historyContextMatcher(),
-      );
+      expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
       changeTitleEditor(provisionalTitle, "typed before save");
       expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(sourceSaveCount);
       expect(getTitleInput("typed before save")).toHaveFocus();
@@ -7574,15 +7553,8 @@ describe("Notes workspace", () => {
       expect(secondHistory.historyEpoch).toBe(firstHistory.historyEpoch);
       expect(secondHistory.entryId).not.toBe(firstHistory.entryId);
       expect(secondHistory.commandKind).toBe("split");
-      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2);
-      expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(
-        1,
-        "/vault",
-        expect.objectContaining({ id: "solo", title: "alpha" }),
-        historyContextMatcher()
-      );
-      expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(
-        2,
+      expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
         "/vault",
         expect.objectContaining({ id: firstId, title: "beta" }),
         historyContextMatcher()
@@ -11953,6 +11925,7 @@ describe("Notes workspace", () => {
 
     expect(fireEvent.keyDown(second, { key: "Tab" })).toBe(false);
     await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
 
     const library = screen.getByRole("region", { name: "Yonalist library" });
     expect(library).toHaveAttribute("data-transient-workspace-busy", "true");
@@ -11994,6 +11967,7 @@ describe("Notes workspace", () => {
     expect(
       within(library).getByRole("button", { name: "Page actions for Project" }),
     ).toBeEnabled();
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
   });
 
   it.each([

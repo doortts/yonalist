@@ -295,24 +295,26 @@ type BenchmarkPaneId = "primary" | "secondary";
 const TITLE_EDITOR_SELECTOR =
   "textarea.notes-node-title, [data-notes-bullet-title]";
 
-function benchmarkEditorFocusSnapshot(): {
+function benchmarkEditorFocusSnapshot(paneId: BenchmarkPaneId): {
   readonly id: string | undefined;
   readonly selectionStart: number;
   readonly selectionEnd: number;
 } | null {
   const active = document.activeElement;
+  if (
+    !(active instanceof HTMLElement) ||
+    !active.matches(TITLE_EDITOR_SELECTOR) ||
+    active.closest<HTMLElement>("[data-notes-pane-id]")?.dataset.notesPaneId !==
+      paneId
+  ) {
+    return null;
+  }
   if (active instanceof HTMLTextAreaElement) {
     return {
       id: active.closest<HTMLElement>("[data-outline-id]")?.dataset.outlineId,
       selectionStart: active.selectionStart,
       selectionEnd: active.selectionEnd
     };
-  }
-  if (
-    !(active instanceof HTMLElement) ||
-    !active.matches("[data-notes-bullet-title]")
-  ) {
-    return null;
   }
   const selection = readPlainTextSelection(active);
   if (!selection) return null;
@@ -346,7 +348,7 @@ function benchmarkPaneSnapshot(paneId: BenchmarkPaneId): string {
         row.querySelector<HTMLTextAreaElement>("textarea.notes-node-note")
           ?.value ?? ""
     })),
-    focus: benchmarkEditorFocusSnapshot()
+    focus: benchmarkEditorFocusSnapshot(paneId)
   });
 }
 

@@ -1471,7 +1471,10 @@ function OutlineNodeEditorComponent({
           return;
         }
         const sourceRow = getOutlineRow(nodeId);
-        const sourceDraft = draftToSave(usesLiveTitle, source);
+        const sourceDraft = draftToSave(
+          usesLiveTitle && source !== titleValue,
+          source,
+        );
         if (!sourceRow) {
           runStructuralCommand(() =>
             actions.createChild(nodeId, "first", { newNodeId })
@@ -1545,7 +1548,10 @@ function OutlineNodeEditorComponent({
           return;
         }
         const sourceRow = getOutlineRow(nodeId);
-        const sourceDraft = draftToSave(usesLiveTitle, source);
+        const sourceDraft = draftToSave(
+          usesLiveTitle && source !== titleValue,
+          source,
+        );
         if (!sourceRow) {
           markSplitPhase(newNodeId, "keydown");
           runStructuralCommand(() => {
@@ -1625,7 +1631,10 @@ function OutlineNodeEditorComponent({
       }
       case "move": {
         runStructuralCommand(() => {
-          const patch = draftToSave(usesLiveTitle, source);
+          const patch = draftToSave(
+            usesLiveTitle && source !== titleValue,
+            source,
+          );
           suppressHandledBlur(source);
           return actions.moveNode(resolution.input, resolution.focusNodeId, {
             draft: patch,
