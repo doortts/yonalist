@@ -45,6 +45,7 @@ import {
   readPlainText,
   readPlainTextSelection,
   replacePlainText,
+  restorePlainTextSelection,
   type PlainTextSnapshot
 } from "./plainTextContenteditable";
 
@@ -178,7 +179,11 @@ function needsSynchronousPublish(
   if (event.key === "Backspace") {
     return collapsed && selection.focusUtf16 === 0;
   }
-  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+  const key = event.key.toLowerCase();
+  if (
+    ((event.metaKey || event.ctrlKey) && key === "z") ||
+    (event.ctrlKey && !event.metaKey && key === "y")
+  ) {
     return true;
   }
   if (
@@ -332,6 +337,7 @@ export const NotesBulletTitleEditor = forwardRef<
     pendingSelectionRef.current = null;
     replacePlainText(root, lastPublishedSourceRef.current, requested);
     root.focus();
+    restorePlainTextSelection(root, requested);
   }, [editing]);
 
   useEffect(() => {
@@ -362,13 +368,14 @@ export const NotesBulletTitleEditor = forwardRef<
       focus(selection) {
         const root = rootRef.current;
         if (!root?.isConnected || unavailable) return false;
-        pendingSelectionRef.current = selection ?? {
-          anchorUtf16: lastPublishedSourceRef.current.length,
-          focusUtf16: lastPublishedSourceRef.current.length
-        };
-        root.focus();
-        if (document.activeElement !== root) return false;
-        requestEdit(pendingSelectionRef.current);
+        if (editingRef.current) {
+          root.focus();
+          return (
+            document.activeElement === root &&
+            (!selection || restorePlainTextSelection(root, selection))
+          );
+        }
+        requestEdit(selection);
         return true;
       },
       snapshot: currentSnapshot,
@@ -597,6 +604,7 @@ export const NotesBulletTitleEditor = forwardRef<
             : undefined
         }
         contentEditable={editing && !unavailable ? "plaintext-only" : false}
+        tabIndex={unavailable ? -1 : 0}
         spellCheck={false}
         autoCorrect="off"
         autoCapitalize="off"

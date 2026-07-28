@@ -1,5 +1,5 @@
 import { createRef } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   afterEach,
@@ -91,6 +91,28 @@ describe("NotesBulletTitleEditor", () => {
     ).toBe(root);
     expect(root).toHaveAttribute("contenteditable", "plaintext-only");
     expect(root).toHaveTextContent("before");
+  });
+
+  it("imperatively focuses the same resting root with the requested selection", () => {
+    const { root, ref } = renderEditor();
+    let accepted = false;
+
+    expect(root).toHaveAttribute("tabindex", "0");
+    act(() => {
+      accepted = ref.current!.focus({
+        anchorUtf16: 5,
+        focusUtf16: 1
+      });
+    });
+
+    expect(accepted).toBe(true);
+    expect(ref.current!.element).toBe(root);
+    expect(root).toHaveAttribute("contenteditable", "plaintext-only");
+    expect(root).toHaveFocus();
+    expect(ref.current!.snapshot()).toEqual({
+      source: "before",
+      selection: { anchorUtf16: 5, focusUtf16: 1 }
+    });
   });
 
   it("publishes once at 500 ms and not at 499 ms", () => {
@@ -262,8 +284,11 @@ describe("NotesBulletTitleEditor", () => {
     const onTagClick = vi.fn();
     renderEditor({ source: "Open #later", onTagClick });
     const user = userEvent.setup();
+    const tag = screen.getByRole("button", {
+      name: "#later tag filter is inactive"
+    });
 
-    await user.tab();
+    tag.focus();
     await user.keyboard("{Enter}");
 
     expect(onTagClick).toHaveBeenCalledOnce();
@@ -277,6 +302,7 @@ describe("NotesBulletTitleEditor", () => {
     expect(root).toHaveAttribute("spellcheck", "false");
     expect(root).toHaveAttribute("autocorrect", "off");
     expect(root).toHaveAttribute("autocapitalize", "off");
+    expect(root).toHaveAttribute("tabindex", "0");
   });
 
   it.each([
@@ -287,6 +313,7 @@ describe("NotesBulletTitleEditor", () => {
 
     expect(root).toHaveAttribute("contenteditable", "false");
     expect(root).toHaveAttribute(aria, "true");
+    expect(root).toHaveAttribute("tabindex", "-1");
     activate(root);
     expect(root).toHaveAttribute("contenteditable", "false");
   });
@@ -306,6 +333,22 @@ describe("NotesBulletTitleEditor", () => {
     fireEvent.keyDown(root, { key: "Enter" });
 
     expect(order).toEqual(["publish:next", "key:next:4"]);
+  });
+
+  it("publishes before forwarding Ctrl+Y redo", () => {
+    const order: string[] = [];
+    const { root } = renderEditor({
+      onPublish: (source) => order.push(`publish:${source}`),
+      onEditorKeyDown: (_event, snapshot) => {
+        order.push(`key:${snapshot.source}`);
+      }
+    });
+    activate(root);
+    inputSource(root, "redo source");
+
+    fireEvent.keyDown(root, { key: "y", ctrlKey: true });
+
+    expect(order).toEqual(["publish:redo source", "key:redo source"]);
   });
 
   it("renders a supplied resting presentation inside the stable root", () => {
