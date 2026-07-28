@@ -66,7 +66,11 @@ function capturePane(paneId: "primary" | "secondary") {
 
 export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   const store = useMemo(() => new NotesStore(api), [api]);
-  const state = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  const state = useSyncExternalStore(
+    store.subscribeShell,
+    store.getShellSnapshot,
+    store.getShellSnapshot
+  );
   const [query, setQuery] = useState("");
   const [libraryView, setLibraryView] = useState<LibraryView>("all");
   const [sidebarWidth, setSidebarWidth] = useState(336);
@@ -381,7 +385,6 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                     key={page.id}
                     page={page}
                     active={page.id === state.activePageId}
-                    draft={state.drafts[page.id]}
                     store={store}
                     onOpen={() => void openPage(page.id)}
                   />
@@ -431,7 +434,9 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             >
               <NotesOutline
                 store={store}
-                state={state}
+                status={state.status}
+                error={state.error}
+                pendingWrites={state.pendingWrites}
                 page={activePage}
                 zoomRootId={primaryZoomRootId}
                 onZoomRootChange={updatePrimaryZoom}
@@ -459,7 +464,9 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                 <div className="notes-detail-pane" style={{ overflowY: "auto" }}>
                   <NotesOutline
                     store={store}
-                    state={state}
+                    status={state.status}
+                    error={state.error}
+                    pendingWrites={state.pendingWrites}
                     page={activePage}
                     zoomRootId={secondaryZoomRootId}
                     onZoomRootChange={updateSecondaryZoom}

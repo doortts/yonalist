@@ -1,7 +1,9 @@
 import {
-  useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent
+  useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore,
+  type ClipboardEvent
 } from "react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
+import type { NotesStore } from "./notesStore";
 import {
   canCutSelectedOutline,
   normalizeSelectedRoots,
@@ -13,8 +15,7 @@ import {
 export function useOutlineSelection(
   nodes: readonly NoteView[],
   allNodes: readonly NoteView[],
-  drafts: Readonly<Record<string, string>>,
-  noteDrafts: Readonly<Record<string, string>>,
+  store: NotesStore,
   resetKey: string,
   outlineComplete: boolean,
   revision: number
@@ -118,9 +119,35 @@ export function useOutlineSelection(
   const selectedIds = forestComplete
     ? authoritativeNodes.map((node) => node.id)
     : localSelectedIds;
-  const selectedNodes = forestComplete ? authoritativeNodes : allNodes.filter(
+  const selectedIdsKey = selectedIds.join("\u0000");
+  const selectedEpoch = useSyncExternalStore(
+    useCallback(
+      (listener) => store.subscribeNodes(selectedIds, listener),
+      [selectedIdsKey, store]
+    ),
+    useCallback(
+      () => store.getNodeEpoch(selectedIds),
+      [selectedIdsKey, store]
+    )
+  );
+  const selectedContentNodes = useMemo(() => {
+    void selectedEpoch;
+    const currentById = new Map(
+      store.getSnapshot().nodes.map((node) => [node.id, node])
+    );
+    const source = forestComplete ? authoritativeNodes : allNodes;
+    return source.map((node) => currentById.get(node.id) ?? node);
+  }, [
+    allNodes,
+    authoritativeNodes,
+    forestComplete,
+    selectedEpoch,
+    store
+  ]);
+  const selectedNodes = selectedContentNodes.filter(
     (node) => selectedIds.includes(node.id)
   );
+  const { drafts, noteDrafts } = store.getSnapshot();
   const rootKey = selectedRootIds.join("\u0000");
   const materializeForest = useCallback((
     rootIds: readonly string[],
@@ -136,32 +163,28 @@ export function useOutlineSelection(
   const clipboardText = useMemo(
     () => selectionComplete
       ? serializeSelectedOutline(
-        forestComplete ? authoritativeNodes : allNodes,
+        selectedContentNodes,
         drafts,
         selectedIds
       )
       : null,
     [
-      allNodes,
-      authoritativeNodes,
+      selectedContentNodes,
       drafts,
-      forestComplete,
       selectedIds,
       selectionComplete
     ]
   );
   const canCut = useMemo(
     () => selectionComplete && canCutSelectedOutline(
-      forestComplete ? authoritativeNodes : allNodes,
+      selectedContentNodes,
       drafts,
       noteDrafts,
       selectedIds
     ),
     [
-      allNodes,
-      authoritativeNodes,
+      selectedContentNodes,
       drafts,
-      forestComplete,
       noteDrafts,
       selectedIds,
       selectionComplete

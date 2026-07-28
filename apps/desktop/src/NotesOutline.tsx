@@ -1,5 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect, useMemo, useRef, useState, useSyncExternalStore
+} from "react";
 import { NotesStore } from "./notesStore";
+import type { NotesShellSnapshot } from "./storeSubscriptions";
 import {
   hideCollapsedSubtrees, hideCompletedSubtrees
 } from "./outlineSupport";
@@ -33,11 +36,13 @@ export interface PaneRestoreRequest {
 }
 
 export function NotesOutline({
-  store, state, page, zoomRootId, onZoomRootChange, onOpenSplit, onTagClick,
-  onClose, paneId, restoreRequest
+  store, status, error, pendingWrites, page, zoomRootId, onZoomRootChange,
+  onOpenSplit, onTagClick, onClose, paneId, restoreRequest
 }: {
   readonly store: NotesStore;
-  readonly state: ReturnType<NotesStore["getSnapshot"]>;
+  readonly status: NotesShellSnapshot["status"];
+  readonly error: string | null;
+  readonly pendingWrites: number;
   readonly page: { id: string; title: string } | undefined;
   readonly zoomRootId: string | null;
   readonly onZoomRootChange: (nodeId: string | null) => void;
@@ -47,6 +52,11 @@ export function NotesOutline({
   readonly paneId: "primary" | "secondary";
   readonly restoreRequest: PaneRestoreRequest | null;
 }) {
+  const state = useSyncExternalStore(
+    store.subscribeOutline,
+    store.getOutlineSnapshot,
+    store.getOutlineSnapshot
+  );
   const scopeRef = useRef<HTMLElement>(null);
   const [showCompleted, setShowCompleted] = useState(true);
   const [selectionFeedback, setSelectionFeedback] = useState("");
@@ -79,7 +89,7 @@ export function NotesOutline({
   const structuralContextComplete =
     state.beforeCursor === null && state.afterCursor === null;
   const selection = useOutlineSelection(
-    bodyNodes, state.nodes, state.drafts, state.noteDrafts,
+    bodyNodes, state.nodes, store,
     `${page?.id ?? ""}:${zoomRootId ?? ""}`,
     structuralContextComplete,
     state.revision);
@@ -138,7 +148,8 @@ export function NotesOutline({
     enabled: structuralContextComplete &&
       (selection.selectedIds.length === 0 || selection.forestComplete),
     nodes: state.nodes, visibleNodes: bodyNodes, outlineRootId, selection,
-    moveNodes: (moves) => store.moveNodes(moves)
+    moveNodes: (moves) => store.moveNodes(moves),
+    labelForId: (id) => store.getNodeSnapshot(id).title
   });
   const allSelectedCompleted = selectedCompletion(
     selection.selectedNodes,
@@ -221,7 +232,7 @@ export function NotesOutline({
     () => new Set(selection.selectedIds),
     [selection.selectedIds]
   );
-  if (state.status === "loading" && !page) {
+  if (status === "loading" && !page) {
     return <section className="notes-outline"><p className="notes-pane-state">Loading notes...</p></section>;
   }
   if (!page) {
@@ -264,7 +275,7 @@ export function NotesOutline({
         pageTitle={page.title}
         zoomed={zoomRoot !== undefined}
         showCompleted={showCompleted}
-        error={state.error}
+        error={error}
         onToggleCompleted={() => setShowCompleted((visible) => !visible)}
         onBack={() => onZoomRootChange(null)}
         onTagClick={onTagClick}
@@ -274,7 +285,7 @@ export function NotesOutline({
             count={selection.selectedIds.length}
             allCompleted={allSelectedCompleted}
             canCut={selection.canCut}
-            busy={state.pendingWrites > 0 ||
+            busy={pendingWrites > 0 ||
               selectionOperationBusy ||
               !selection.forestComplete}
             plans={movePlans}
@@ -312,12 +323,9 @@ export function NotesOutline({
                 key={node.id}
                 node={node}
                 pageId={zoomRoot?.id ?? page.id}
-                nodes={state.nodes}
                 visibleNodes={bodyNodes}
                 index={index}
                 visibleIndex={visibleIndex}
-                draft={state.drafts[node.id]}
-                noteDraft={state.noteDrafts[node.id]}
                 store={store}
                 selected={selectedIds.has(node.id)}
                 onZoom={(split) => {

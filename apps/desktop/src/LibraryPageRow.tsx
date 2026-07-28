@@ -2,21 +2,21 @@ import { FileText, MoreHorizontal, Trash2 } from "lucide-react";
 import { useState, type CSSProperties } from "react";
 import type { PageSummary } from "../../../packages/contracts/generated/PageSummary";
 import type { NotesStore } from "./notesStore";
+import { useNotesNode } from "./useNotesNode";
 
 export function LibraryPageRow({
   page,
   active,
-  draft,
   store,
   onOpen
 }: {
   readonly page: PageSummary;
   readonly active: boolean;
-  readonly draft: string | undefined;
   readonly store: NotesStore;
   readonly onOpen: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const { title } = useNotesNode(store, page.id);
   return (
     <div
       className="notes-library-page-row"
@@ -30,12 +30,12 @@ export function LibraryPageRow({
         onClick={onOpen}
       >
         <FileText size={16} aria-hidden="true" />
-        <span>{(draft ?? page.title) || "Untitled page"}</span>
+        <span>{title || "Untitled page"}</span>
       </button>
       <button
         className="notes-library-page-menu-trigger"
         type="button"
-        aria-label={`Page actions for ${page.title}`}
+        aria-label={`Page actions for ${title || "Untitled page"}`}
         data-popup-open={menuOpen ? "true" : undefined}
         onClick={() => setMenuOpen((value) => !value)}
       >

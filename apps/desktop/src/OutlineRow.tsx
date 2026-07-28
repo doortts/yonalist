@@ -28,13 +28,14 @@ import {
 import {
   OutlineTextField, type OutlineTagToken
 } from "./OutlineTextField";
+import { useNotesNode } from "./useNotesNode";
 
 const SlashCommandMenu = lazy(() => import("./SlashCommandMenu").then((module) => ({
   default: module.SlashCommandMenu
 })));
 
 export function OutlineRow({
-  node, pageId, nodes, visibleNodes, index, visibleIndex, draft, noteDraft,
+  node: outlineNode, pageId, visibleNodes, index, visibleIndex,
   store, selected, onZoom,
   onZoomOut, selectionHeadId, hasSelection, onExtendSelection,
   onClearSelection, onTagClick, todoProgress, selectionActions, dragSource,
@@ -42,12 +43,9 @@ export function OutlineRow({
 }: {
   readonly node: NoteView;
   readonly pageId: string;
-  readonly nodes: readonly NoteView[];
   readonly visibleNodes: readonly NoteView[];
   readonly index: OutlineIndex;
   readonly visibleIndex: OutlineIndex;
-  readonly draft: string | undefined;
-  readonly noteDraft: string | undefined;
   readonly store: NotesStore;
   readonly selected: boolean;
   readonly onZoom: (split: boolean) => void;
@@ -68,6 +66,12 @@ export function OutlineRow({
   ) => void;
   readonly consumeDragHandleClick: () => boolean;
 }) {
+  const {
+    node: confirmedNode,
+    titleDraft: draft,
+    noteDraft
+  } = useNotesNode(store, outlineNode.id);
+  const node = confirmedNode ?? outlineNode;
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -306,12 +310,19 @@ export function OutlineRow({
                   return;
                 }
               }
+              const latestNodes = store.getSnapshot().nodes;
+              const latestById = new Map(
+                latestNodes.map((candidate) => [candidate.id, candidate])
+              );
+              const latestVisibleNodes = visibleNodes.map(
+                (candidate) => latestById.get(candidate.id) ?? candidate
+              );
               handleOutlineKeyDown(
                 event,
                 store,
-                node,
-                nodes,
-                visibleNodes,
+                latestById.get(node.id) ?? node,
+                latestNodes,
+                latestVisibleNodes,
                 index,
                 visibleIndex,
                 pageId,

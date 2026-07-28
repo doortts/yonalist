@@ -51,6 +51,7 @@ interface UseOutlineDragInput {
   readonly outlineRootId: string;
   readonly selection: ReturnType<typeof useOutlineSelection>;
   readonly moveNodes: (moves: readonly SelectionNodeMove[]) => Promise<void>;
+  readonly labelForId: (id: string) => string;
 }
 
 const ACTIVATION_DISTANCE = 4;
@@ -348,8 +349,7 @@ export function useOutlineDrag(input: UseOutlineDragInput) {
         x: rectangle.left + rectangle.width / 2,
         y: rectangle.top + rectangle.height / 2
       });
-      const label = input.nodes.find((node) => node.id === activeId)?.text ||
-        "Untitled";
+      const label = input.labelForId(activeId) || "Untitled";
       setAnnouncement(
         `Picked up ${label}. Use arrow keys to move, Space or Enter to drop, Escape to cancel.`
       );
@@ -421,8 +421,7 @@ export function useOutlineDrag(input: UseOutlineDragInput) {
 
   const preview = pointer ? {
     ...pointer,
-    labels: draggedRootIds.map((id) =>
-      input.nodes.find((node) => node.id === id)?.text ?? ""),
+    labels: draggedRootIds.map((id) => input.labelForId(id)),
     total: draggedTotal
   } : null;
   const dropTarget = plan && targetScope ? { plan, scope: targetScope } : null;

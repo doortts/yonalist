@@ -7,6 +7,7 @@ import type { OutlineIndex } from "./outlineIndex";
 import {
   OutlineTextField, type OutlineTagToken
 } from "./OutlineTextField";
+import { useNotesNode } from "./useNotesNode";
 
 export function OutlineHeader({
   store,
@@ -41,7 +42,7 @@ export function OutlineHeader({
   readonly onClose?: () => void;
   readonly selectionToolbar?: ReactNode;
 }) {
-  const state = store.getSnapshot();
+  const { title } = useNotesNode(store, target.id);
   return (
     <>
       {selectionToolbar ?? <div className="notes-outline-toolbar">
@@ -79,7 +80,7 @@ export function OutlineHeader({
                 data-outline-field="title"
                 aria-label="Page title"
                 rows={1}
-                value={state.drafts[target.id] ?? target.text}
+                value={title}
                 placeholder="Untitled page"
                 onTagClick={onTagClick}
                 onChange={(event) => store.setDraft(target.id, event.target.value)}
