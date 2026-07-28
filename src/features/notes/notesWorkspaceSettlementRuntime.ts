@@ -37,9 +37,12 @@ export function recordPendingOptimisticTitles(
     const consumedByDependent = event.snapshot.insertions.some(
       (candidate) => candidate.dependencyId === expectedNodeId
     );
+    const failedInsertionId =
+      event.snapshot.failure?.insertion.pending.intent.expectedNodeId;
     if (
       insertion.insertedTitle !== initialTitle &&
-      !consumedByDependent
+      !consumedByDependent &&
+      failedInsertionId !== expectedNodeId
     ) {
       pending.set(expectedNodeId, insertion.insertedTitle);
     }
@@ -138,6 +141,76 @@ export function routeKeyboardInsertionNavigation(
           : primaryUiUpdate
     },
     secondaryNavigation
+  };
+}
+
+export interface RoutedKeyboardInsertionSettlement
+  extends RoutedKeyboardInsertionNavigation {
+  readonly focusRequest: {
+    readonly paneId: "primary" | "secondary";
+    readonly nodeId: NoteId;
+    readonly titleLength: number;
+    readonly expectedNavigationVersion: number;
+    readonly expectedUserInteractionRevision?: number;
+  } | null;
+}
+
+export function routeKeyboardInsertionSettlement(
+  result: NotesWorkspaceQueueSettlement,
+  primaryNavigationVersion: number,
+  secondaryNavigationVersion: number,
+  userInteractionRevision: number
+): RoutedKeyboardInsertionSettlement {
+  const publication =
+    result.kind === "skipped" ? undefined : result.projectionPublication;
+  const paneId =
+    publication?.expectedNavigationVersion !== undefined &&
+    (publication.targetPaneId === "primary" ||
+      publication.targetPaneId === "secondary")
+      ? publication.targetPaneId
+      : null;
+  const expectedNavigationVersion = publication?.expectedNavigationVersion;
+  const expectedUserInteractionRevision =
+    publication?.expectedUserInteractionRevision;
+  const navigationOwned =
+    paneId === null ||
+    expectedNavigationVersion === undefined ||
+    ((paneId === "primary"
+      ? primaryNavigationVersion
+      : secondaryNavigationVersion) === expectedNavigationVersion &&
+      (expectedUserInteractionRevision === undefined ||
+        userInteractionRevision === expectedUserInteractionRevision));
+  const routed = routeKeyboardInsertionNavigation(result, navigationOwned);
+  const nodeId =
+    navigationOwned && result.kind !== "skipped"
+      ? result.uiUpdate?.pendingFocusId
+      : null;
+  if (
+    paneId === null ||
+    expectedNavigationVersion === undefined ||
+    nodeId == null
+  ) {
+    return { ...routed, focusRequest: null };
+  }
+  const workspace =
+    result.kind === "authoritative"
+      ? result.workspace
+      : result.kind === "failure"
+        ? result.workspace
+        : undefined;
+  return {
+    ...routed,
+    focusRequest: {
+      paneId,
+      nodeId,
+      titleLength:
+        workspace?.nodes.find((candidate) => candidate.id === nodeId)?.title
+          .length ?? 0,
+      expectedNavigationVersion,
+      ...(expectedUserInteractionRevision === undefined
+        ? {}
+        : { expectedUserInteractionRevision })
+    }
   };
 }
 

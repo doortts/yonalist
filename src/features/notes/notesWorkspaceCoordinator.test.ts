@@ -1723,6 +1723,120 @@ describe("notesWorkspaceCoordinator registry", () => {
     session.close();
   });
 
+  it.each<{
+    name: string;
+    scope: NotesWorkspaceScope;
+    projection: NotesWorkspace;
+  }>([
+    {
+      name: "Starred",
+      scope: { kind: "starred" },
+      projection: workspace([
+        node({ id: "root", title: "Ro", isStarred: true })
+      ])
+    },
+    {
+      name: "Tags",
+      scope: {
+        kind: "tags",
+        tags: [{ prefix: "#", normalizedTag: "work" }]
+      },
+      projection: workspace([])
+    }
+  ])(
+    "verifies a $name insertion against Active while publishing only its filtered projection",
+    async ({ name, scope, projection }) => {
+      const initial = workspace([
+        node({ id: "root", title: "Root", isStarred: true })
+      ]);
+      const active = workspace([
+        node({ id: "root", title: "Ro", isStarred: true }),
+        node({ id: "split", title: "ot", sortKey: 2048 }),
+        node({ id: "unrelated", title: "Unrelated", sortKey: 3072 })
+      ]);
+      const loadWorkspace = vi
+        .fn<NotesStore["loadWorkspace"]>()
+        .mockResolvedValueOnce(initial)
+        .mockResolvedValueOnce(active);
+      let expectedEntryId = "";
+      const store = repository({
+        loadWorkspace,
+        historyStatus: vi.fn(async () =>
+          projectedHistoryState(expectedEntryId)
+        )
+      });
+      const registry = createNotesWorkspaceCoordinatorRegistry();
+      const pool = createNotesExpansionSnapshotPool();
+      const events = vi.fn();
+      const session = registry.openSession(writableOptions(pool, {
+        repository: store,
+        vaultRoot: `/keyboard-insertion-${name.toLowerCase()}`,
+        getScope: () => scope,
+        onEvent: events
+      }));
+      await session.activation;
+      session.publishOutlinePaneState({
+        paneId: "primary",
+        scope,
+        zoomedNodeId: null,
+        showCompleted: true,
+        collapsedNodeIds: new Set(),
+        locallyExpandedNodeIds: new Set()
+      });
+      const preparation = session.prepareKeyboardInsertion({
+        ownerPaneId: "primary",
+        intent: {
+          token: 93,
+          sourceId: "root",
+          expectedNodeId: "split",
+          postcondition: {
+            kind: "split",
+            expectedSourceTitle: "Ro",
+            expectedInsertedTitle: "ot"
+          }
+        },
+        optimistic: optimisticInsertion("Ro", "ot")
+      })!;
+      expectedEntryId = preparation.historyContext.entryId;
+      events.mockClear();
+
+      await expect(
+        session.enqueueStructural(
+          () => ({
+            kind: "authoritative" as const,
+            workspace: projection,
+            projectionScope: scope,
+            uiUpdate: {
+              selectedId: "split",
+              editingNoteId: "split",
+              pendingFocusId: "split",
+              pendingFocusField: "title" as const
+            },
+            historyStatus: projectedHistoryState(expectedEntryId),
+            committedHistoryEntryIds: [expectedEntryId]
+          }),
+          { keyboardInsertion: preparation }
+        )
+      ).resolves.toBe("committed");
+
+      expect(loadWorkspace).toHaveBeenLastCalledWith(
+        `/keyboard-insertion-${name.toLowerCase()}`,
+        { kind: "active" }
+      );
+      const settled = events.mock.calls
+        .map(([event]) => event)
+        .find((event) => event.type === "settled");
+      expect(settled?.result).toMatchObject({
+        kind: "authoritative",
+        workspace: projection
+      });
+      expect(settled?.result.workspace.nodes).not.toContainEqual(
+        expect.objectContaining({ id: "unrelated" })
+      );
+      session.close();
+    }
+  );
+
   it("recovers authority and retains provisional text when an insertion success violates its structural postcondition", async () => {
     const mismatched = workspace([
       node({ id: "root", title: "Root", sortKey: 1024 }),

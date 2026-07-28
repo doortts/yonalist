@@ -1,7 +1,13 @@
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import { memo, Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { NoteNode, NotesStore, NotesWorkspace } from "../../domain/notes";
+import type {
+  NoteNode,
+  NotesHistoryContext,
+  NotesMutationResponse,
+  NotesStore,
+  NotesWorkspace
+} from "../../domain/notes";
 import {
   NotesActionsContext,
   NotesDraftsContext,
@@ -296,7 +302,22 @@ describe("notes workspace context split", () => {
     ]);
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(initial),
-      splitNode: vi.fn().mockResolvedValue(settled)
+      splitNode: vi.fn(
+        async (
+          _vaultRoot: string,
+          _input: unknown,
+          context: NotesHistoryContext
+        ): Promise<NotesMutationResponse> => ({
+          workspace: settled,
+          historyEntryId: context.entryId,
+          canUndo: true,
+          canRedo: false,
+          historyEpoch: context.historyEpoch,
+          nextUndoEntryId: context.entryId,
+          nextRedoEntryId: null,
+          prunedEntryIds: []
+        })
+      )
     });
     const { result } = renderHook(() =>
       useNotesWorkspace({

@@ -12433,6 +12433,108 @@ describe("Notes workspace", () => {
     },
   );
 
+  it("does not let a primary Enter settlement steal focus after a cross-pane interaction", async () => {
+    configureRepository([
+      node({ id: "source", sortKey: 1, title: "Source" }),
+      node({ id: "next", sortKey: 3, title: "Next" }),
+    ]);
+    const split = deferred<NotesMutationResponse>();
+    notesStoreMock.splitNode.mockReturnValue(split.promise);
+    renderSplitNotesWorkspace();
+    const panes = await waitFor(() => {
+      const current = Array.from(
+        document.querySelectorAll<HTMLElement>("[data-notes-pane-id]"),
+      );
+      expect(current).toHaveLength(2);
+      return current;
+    });
+    const source = await activateTitleEditorInMotionRow("source", panes[0]);
+    source.setSelectionRange(
+      titleEditorSource(source).length,
+      titleEditorSource(source).length,
+    );
+
+    expect(fireEvent.keyDown(source, { key: "Enter" })).toBe(false);
+    await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+    const insertedId = notesStoreMock.splitNode.mock.lastCall![1].newNodeId;
+    const historyContext =
+      notesStoreMock.splitNode.mock.lastCall![2] as NotesHistoryContext;
+    const otherPaneTarget = await activateTitleEditorInMotionRow(
+      "next",
+      panes[1],
+    );
+    await waitFor(() => expect(otherPaneTarget).toHaveFocus());
+
+    await act(async () =>
+      split.resolve({
+        workspace: workspace([
+          node({ id: "source", sortKey: 1, title: "Source" }),
+          node({ id: insertedId, sortKey: 2, title: "" }),
+          node({ id: "next", sortKey: 3, title: "Next" }),
+        ]),
+        historyEntryId: historyContext.entryId,
+        ...historyState({
+          canUndo: true,
+          nextUndoEntryId: historyContext.entryId,
+        }),
+      }),
+    );
+
+    await waitFor(() => expect(otherPaneTarget).toHaveFocus());
+  });
+
+  it("does not let an Enter settlement steal focus after a toolbar interaction", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({ id: "source", sortKey: 1, title: "Source" }),
+    ]);
+    const split = deferred<NotesMutationResponse>();
+    notesStoreMock.splitNode.mockReturnValue(split.promise);
+    renderSplitNotesWorkspace();
+    const primary = await waitFor(() => {
+      const pane = document.querySelector<HTMLElement>(
+        '[data-notes-pane-id="primary"]',
+      );
+      expect(pane).not.toBeNull();
+      return pane!;
+    });
+    await waitFor(() =>
+      expect(titleEditorInMotionRow("source", primary)).not.toBeNull(),
+    );
+    const source = await activateTitleEditorInMotionRow("source", primary);
+    source.setSelectionRange(
+      titleEditorSource(source).length,
+      titleEditorSource(source).length,
+    );
+
+    expect(fireEvent.keyDown(source, { key: "Enter" })).toBe(false);
+    await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+    const insertedId = notesStoreMock.splitNode.mock.lastCall![1].newNodeId;
+    const historyContext =
+      notesStoreMock.splitNode.mock.lastCall![2] as NotesHistoryContext;
+    const toolbarButton = within(primary).getByRole("button", {
+      name: "Completed items",
+    });
+    await user.click(toolbarButton);
+    expect(toolbarButton).toHaveFocus();
+
+    await act(async () =>
+      split.resolve({
+        workspace: workspace([
+          node({ id: "source", sortKey: 1, title: "Source" }),
+          node({ id: insertedId, sortKey: 2, title: "" }),
+        ]),
+        historyEntryId: historyContext.entryId,
+        ...historyState({
+          canUndo: true,
+          nextUndoEntryId: historyContext.entryId,
+        }),
+      }),
+    );
+
+    await waitFor(() => expect(toolbarButton).toHaveFocus());
+  });
+
   it("saves the zoomed page title before moving focus to its first child", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();

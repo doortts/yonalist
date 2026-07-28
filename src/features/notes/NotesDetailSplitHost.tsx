@@ -278,12 +278,19 @@ export function NotesDetailSplitHost() {
       ) : undefined,
     [closeSplit, layout.splitOpen],
   );
+  const recordUserInteraction = actions.recordUserInteraction;
 
   return (
     <NotesSplitDndContext>
       <div
         className="notes-detail-split"
         data-split-open={layout.splitOpen ? "true" : undefined}
+        onClickCapture={recordUserInteraction}
+        onCompositionEndCapture={recordUserInteraction}
+        onCompositionStartCapture={recordUserInteraction}
+        onInputCapture={recordUserInteraction}
+        onKeyDownCapture={recordUserInteraction}
+        onPointerDownCapture={recordUserInteraction}
         style={
           {
             "--notes-split-primary": `${layout.splitRatio * 100}%`

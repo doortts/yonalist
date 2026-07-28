@@ -110,6 +110,7 @@ export interface OutlineEditorFocusRequest {
   readonly field: NotesHistoryFocusField;
   readonly selection?: NotesHistoryPrimarySelection;
   readonly expectedNavigationVersion?: number;
+  readonly expectedUserInteractionRevision?: number;
 }
 
 export interface OutlineNodeEditorProps {
@@ -732,9 +733,12 @@ function OutlineNodeEditorComponent({
       return;
     }
     const navigationOwned = (): boolean =>
-      focusRequest.expectedNavigationVersion === undefined ||
-      actions.getNavigationVersion?.() ===
-        focusRequest.expectedNavigationVersion;
+      (focusRequest.expectedNavigationVersion === undefined ||
+        actions.getNavigationVersion?.() ===
+          focusRequest.expectedNavigationVersion) &&
+      (focusRequest.expectedUserInteractionRevision === undefined ||
+        actions.getUserInteractionRevision?.() ===
+          focusRequest.expectedUserInteractionRevision);
     // This focus is the command's own pending-focus postcondition. Do not
     // report it as a newer user navigation and invalidate its ownership.
     let focused = false;
@@ -1431,6 +1435,8 @@ function OutlineNodeEditorComponent({
           actions.prepareKeyboardInsertion?.({
           ownerPaneId: paneId,
           navigationVersionAtDispatch: actions.getNavigationVersion?.(),
+          userInteractionRevisionAtDispatch:
+            actions.getUserInteractionRevision?.(),
           intent: {
               token: nextKeyboardInsertionToken(),
               sourceId: nodeId,
@@ -1500,6 +1506,8 @@ function OutlineNodeEditorComponent({
           actions.prepareKeyboardInsertion?.({
           ownerPaneId: paneId,
           navigationVersionAtDispatch: actions.getNavigationVersion?.(),
+          userInteractionRevisionAtDispatch:
+            actions.getUserInteractionRevision?.(),
           intent: {
               token: nextKeyboardInsertionToken(),
               sourceId: nodeId,

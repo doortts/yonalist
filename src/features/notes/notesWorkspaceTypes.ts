@@ -114,12 +114,14 @@ export interface NotesCreateChildOptions {
 export interface NotesProjectionPublication {
   readonly targetPaneId?: string;
   readonly expectedNavigationVersion?: number;
+  readonly expectedUserInteractionRevision?: number;
   readonly locallyExpandedNodeIds?: ReadonlySet<NoteId>;
 }
 
 export interface NotesKeyboardInsertionRequest {
   readonly ownerPaneId: string;
   readonly navigationVersionAtDispatch?: number;
+  readonly userInteractionRevisionAtDispatch?: number;
   readonly intent: Omit<KeyboardInsertionIntent, "ownerSessionGeneration">;
   readonly optimistic: {
     readonly sourceSelection: NotesHistoryPrimarySelection;
@@ -174,6 +176,7 @@ export interface NotesPendingPrimarySelection {
   readonly field: "title";
   readonly selection: NotesHistoryPrimarySelection;
   readonly expectedNavigationVersion?: number;
+  readonly expectedUserInteractionRevision?: number;
 }
 
 export interface NotesStateSlice {
@@ -262,6 +265,8 @@ export interface NotesWorkspaceActions {
   ): Promise<void>;
   markEditingFocus?(nodeId: NoteId, field: NotesHistoryFocusField): void;
   getNavigationVersion?(): number;
+  recordUserInteraction?(): void;
+  getUserInteractionRevision?(): number;
   prepareKeyboardInsertion?(
     input: NotesKeyboardInsertionRequest
   ): NotesKeyboardInsertionPreparation | null;

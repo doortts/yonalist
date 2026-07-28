@@ -352,10 +352,16 @@ export function useNotesWorkspacePaneRegistry({
         ) {
           return;
         }
+        const settled = getPaneSession("secondary");
         if (
-          current.pendingPrimarySelection !== null &&
-          (current.pendingPrimarySelection.nodeId !== nodeId ||
-            current.pendingPrimarySelection.requestId !== requestId)
+          settled.pendingPrimarySelection !== null &&
+          (settled.pendingPrimarySelection.nodeId !== nodeId ||
+            settled.pendingPrimarySelection.requestId !== requestId ||
+            (settled.pendingPrimarySelection
+              .expectedUserInteractionRevision !== undefined &&
+              settled.pendingPrimarySelection
+                .expectedUserInteractionRevision !==
+                actionsSlice.actions.getUserInteractionRevision?.()))
         ) {
           return;
         }

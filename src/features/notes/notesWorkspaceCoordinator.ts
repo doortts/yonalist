@@ -870,11 +870,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     return false;
   };
 
-  const keyboardInsertionSettlementMatches = (
+  const keyboardInsertionSettlementMatches = async (
     entry: CoordinatorEntry,
     item: CommandItem,
     result: Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>
-  ): boolean => {
+  ): Promise<boolean> => {
     const preparation = item.keyboardInsertion;
     if (!preparation) return true;
     const context = preparation.historyContext;
@@ -892,7 +892,20 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       ...optimisticKeyboardInsertionLocalEntry(optimistic),
       postcondition: preparation.pending.intent.postcondition
     };
-    const authoritative = normalizeWorkspace(result.workspace);
+    let workspace = result.workspace;
+    if (
+      result.projectionScope &&
+      result.projectionScope.kind !== "active"
+    ) {
+      try {
+        workspace = await entry.repository.loadWorkspace(entry.vaultRoot, {
+          kind: "active"
+        });
+      } catch {
+        return false;
+      }
+    }
+    const authoritative = normalizeWorkspace(workspace);
     return settleLocalStructure(
       [localEntry],
       preparation.pending.intent.token,
@@ -953,6 +966,12 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                   : {
                       expectedNavigationVersion:
                         pending.navigationVersionAtDispatch
+                    }),
+                ...(pending.userInteractionRevisionAtDispatch === undefined
+                  ? {}
+                  : {
+                      expectedUserInteractionRevision:
+                        pending.userInteractionRevisionAtDispatch
                     })
               }
             : {}),
@@ -1455,6 +1474,21 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       item.keyboardInsertionInvalidated = true;
       return { kind: "failure", error: decision.error };
     }
+    let workspace: NotesWorkspace = decision.workspace;
+    if (item.keyboardInsertion && item.sourceScope.kind !== "active") {
+      try {
+        workspace = await item.entry.repository.loadWorkspace(
+          item.entry.vaultRoot,
+          item.sourceScope
+        );
+      } catch {
+        item.keyboardInsertionInvalidated = true;
+        return {
+          kind: "failure",
+          error: "The recovered Notes workspace could not be projected."
+        };
+      }
+    }
     const historyStatus =
       decision.kind === "committedAndCurrent"
         ? decision.historyStatus
@@ -1463,7 +1497,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       return {
         kind: "failure",
         error: "The draft outcome was recovered and requires manual retry.",
-        workspace: decision.workspace,
+        workspace,
         historyStatus
       };
     }
@@ -1472,7 +1506,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       return {
         kind: "failure",
         error: "The mutation could not be proven committed.",
-        workspace: decision.workspace,
+        workspace,
         historyStatus
       };
     }
@@ -1482,9 +1516,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       expectation.kind === "structural" ? expectation.expectedNodeId : null;
     return {
       kind: "authoritative",
-      workspace: decision.workspace,
+      workspace,
       historyStatus,
-      scopeAgnostic: true,
+      ...(item.keyboardInsertion ? {} : { scopeAgnostic: true }),
       ...(historyProven
         ? {
             committedHistoryEntryIds: [expectation.historyContext.entryId],
@@ -2086,7 +2120,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         item.keyboardInsertion &&
         !item.keyboardInsertionInvalidated &&
         result.kind === "authoritative" &&
-        !keyboardInsertionSettlementMatches(item.entry, item, result)
+        !(await keyboardInsertionSettlementMatches(item.entry, item, result))
       ) {
         item.keyboardInsertionInvalidated = true;
         result = await recoveredQueueResult(item);
@@ -2822,6 +2856,12 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               : {
                   navigationVersionAtDispatch:
                     input.navigationVersionAtDispatch
+                }),
+            ...(input.userInteractionRevisionAtDispatch === undefined
+              ? {}
+              : {
+                  userInteractionRevisionAtDispatch:
+                    input.userInteractionRevisionAtDispatch
                 }),
             expectedStructuralHistoryEpoch: historyContext.historyEpoch,
             expectedStructuralHistoryEntryId: historyContext.entryId

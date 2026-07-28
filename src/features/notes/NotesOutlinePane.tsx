@@ -4536,6 +4536,8 @@ export function NotesOutlinePane({
             selection: focusSelection?.selection,
             expectedNavigationVersion:
               focusSelection?.expectedNavigationVersion,
+            expectedUserInteractionRevision:
+              focusSelection?.expectedUserInteractionRevision,
           }
         : null;
     const titleValue = draft?.title ?? node.title;

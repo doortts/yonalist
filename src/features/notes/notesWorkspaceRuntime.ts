@@ -239,6 +239,7 @@ export function useNotesWorkspace({
     useRef<NotesPendingPrimarySelection | null>(null);
   const nextPrimarySelectionRequestIdRef = useRef(0);
   const navigationVersionRef = useRef(0);
+  const userInteractionRevisionRef = useRef(0);
   const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(null);
   const outlineCompositionActiveRef = useRef(false);
   const pendingNavigationRef = useRef<{
@@ -388,6 +389,10 @@ export function useNotesWorkspace({
     (): NotesHistoryFocus | null => editingFocusRef.current,
     [],
   );
+  const recordUserInteraction = useCallback(() => {
+    userInteractionRevisionRef.current += 1;
+  }, []);
+  const getUserInteractionRevision = useCallback(() => userInteractionRevisionRef.current, []);
 
   const {
     draftsByNodeId,
@@ -402,6 +407,7 @@ export function useNotesWorkspace({
     sessionRetirementTokenRef.current = null;
     closedRef.current = false;
     outlineCompositionActiveRef.current = false;
+    userInteractionRevisionRef.current = 0;
     pendingNavigationRef.current = null;
     const previousEngine = draftEngineRef.current;
     if (previousEngine) {
@@ -585,60 +591,27 @@ export function useNotesWorkspace({
           }
           return;
         }
-        const insertionPublication =
-          event.result.kind === "skipped"
-            ? undefined
-            : event.result.projectionPublication;
-        const insertionPaneId =
-          insertionPublication?.expectedNavigationVersion !== undefined &&
-          (insertionPublication.targetPaneId === "primary" ||
-            insertionPublication.targetPaneId === "secondary")
-            ? insertionPublication.targetPaneId
-            : null;
-        const expectedNavigationVersion =
-          insertionPublication?.expectedNavigationVersion;
-        const insertionNavigationOwned =
-          insertionPaneId === null ||
-          expectedNavigationVersion === undefined ||
-          (insertionPaneId === "primary"
-            ? navigationVersionRef.current
-            : paneSessions.getPaneSession("secondary").navigationVersion) ===
-            expectedNavigationVersion;
-        const routed =
-          settlementRuntime.routeKeyboardInsertionNavigation(
-            event.result,
-            insertionNavigationOwned
-          );
-        const insertionFocusId =
-          insertionNavigationOwned && event.result.kind !== "skipped"
-            ? event.result.uiUpdate?.pendingFocusId
-            : null;
-        if (
-          insertionPaneId !== null &&
-          expectedNavigationVersion !== undefined &&
-          insertionFocusId != null
-        ) {
-          const settledWorkspace =
-            event.result.kind === "authoritative"
-              ? event.result.workspace
-              : event.result.kind === "failure"
-                ? event.result.workspace
-                : undefined;
-          const titleLength =
-            settledWorkspace?.nodes.find(
-              (candidate) => candidate.id === insertionFocusId
-            )?.title.length ?? 0;
+        const routed = settlementRuntime.routeKeyboardInsertionSettlement(
+          event.result,
+          navigationVersionRef.current,
+          paneSessions.getPaneSession("secondary").navigationVersion,
+          userInteractionRevisionRef.current
+        );
+        if (routed.focusRequest) {
+          const focus = routed.focusRequest;
           const request = {
             requestId: ++nextPrimarySelectionRequestIdRef.current,
-            nodeId: insertionFocusId,
+            nodeId: focus.nodeId,
             field: "title" as const,
             selection: {
-              anchorUtf16: titleLength,
-              focusUtf16: titleLength
+              anchorUtf16: focus.titleLength,
+              focusUtf16: focus.titleLength
             },
-            expectedNavigationVersion
+            expectedNavigationVersion: focus.expectedNavigationVersion,
+            expectedUserInteractionRevision:
+              focus.expectedUserInteractionRevision
           };
-          if (insertionPaneId === "secondary") {
+          if (focus.paneId === "secondary") {
             paneSessions.dispatchPane("secondary", {
               type: "setPendingPrimarySelection",
               request
@@ -652,8 +625,7 @@ export function useNotesWorkspace({
             type: "setNavigation",
             patch: routed.secondaryNavigation,
             preserveNavigationVersion:
-              insertionPaneId === "secondary" &&
-              insertionNavigationOwned
+              routed.focusRequest?.paneId === "secondary"
           });
         }
         const settledResult = routed.primaryResult;
@@ -1021,7 +993,11 @@ export function useNotesWorkspace({
       if (
         pendingPrimarySelection !== null &&
         (pendingPrimarySelection.nodeId !== nodeId ||
-          pendingPrimarySelection.requestId !== requestId)
+          pendingPrimarySelection.requestId !== requestId ||
+          (pendingPrimarySelection.expectedUserInteractionRevision !==
+            undefined &&
+            pendingPrimarySelection.expectedUserInteractionRevision !==
+              userInteractionRevisionRef.current))
       ) {
         return;
       }
@@ -1185,6 +1161,8 @@ export function useNotesWorkspace({
         }
       },
       getNavigationVersion,
+      recordUserInteraction,
+      getUserInteractionRevision,
       prepareKeyboardInsertion: (input) =>
         writesUnavailable() ? null : prepareKeyboardInsertion(input),
       updateOptimisticKeyboardInsertion: (nodeId, title) => {
@@ -1301,6 +1279,8 @@ export function useNotesWorkspace({
     focusNode,
     markEditingFocus,
     getNavigationVersion,
+    recordUserInteraction,
+    getUserInteractionRevision,
     prepareKeyboardInsertion,
     beginBackspaceGesture,
     touchBackspaceGesture,

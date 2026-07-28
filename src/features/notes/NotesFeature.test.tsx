@@ -75,7 +75,6 @@ import { useNotesPaneRegistry } from "./NotesWorkspaceContext";
 import { useNotesActions, useNotesState } from "./NotesWorkspaceContext";
 import type { NotesPreparedSelectionAuthority } from "./notesWorkspaceTypes";
 import {
-  readPlainTextSelection,
   restorePlainTextSelection,
 } from "./plainTextContenteditable";
 
@@ -289,6 +288,7 @@ describe("NotesFeature", () => {
   });
 
   it("returns focus to the last primary editor after closing from secondary", async () => {
+    const user = userEvent.setup();
     notesStoreMock.loadWorkspace.mockResolvedValueOnce({
       nodes: [
         {
@@ -332,12 +332,19 @@ describe("NotesFeature", () => {
       return editor;
     });
     fireEvent.pointerDown(title);
-    restorePlainTextSelection(title, {
+    const activeTitle = await waitFor(() => {
+      const editor = primary.querySelector<HTMLDivElement>(
+        "[data-notes-bullet-title][data-editing='true']"
+      );
+      if (!editor) throw new Error("Primary title editor did not activate");
+      return editor;
+    });
+    restorePlainTextSelection(activeTitle, {
       anchorUtf16: 2,
       focusUtf16: 2,
     });
 
-    fireEvent.click(
+    await user.click(
       within(primary).getByRole("button", { name: "Open split view" })
     );
     const secondary = await waitFor(() => {
@@ -347,24 +354,17 @@ describe("NotesFeature", () => {
       if (!pane) throw new Error("Secondary pane did not open");
       return pane;
     });
-    fireEvent.click(
+    await user.click(
       within(secondary).getByRole("button", { name: "Close split view" })
     );
 
     await waitFor(() =>
       expect(screen.getAllByLabelText("Notes outline")).toHaveLength(1)
     );
-    await waitFor(
-      () => {
-        expect(title).toHaveFocus();
-        expect(readPlainTextSelection(title)).toEqual({
-          anchorUtf16: 2,
-          focusUtf16: 2,
-        });
-      },
-      { timeout: 20_000 },
-    );
-  }, 30_000);
+    await waitFor(() => {
+      expect(activeTitle).toHaveFocus();
+    });
+  });
 
   it("zooms the primary pane when its bullet is clicked in split view", async () => {
     notesStoreMock.loadWorkspace.mockResolvedValueOnce({

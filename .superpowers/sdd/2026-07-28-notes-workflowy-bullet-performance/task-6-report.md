@@ -1,0 +1,225 @@
+# Task 6 report: delete superseded outline tuning
+
+## Status
+
+Complete. The old motion, frame-caret, row-retention, inactive-pane deferral,
+prepared-insertion classifier, and held-Backspace timer systems are removed.
+The bounded-prefix, DOM-owned title, local-structure, draft, settlement,
+history, recovery, and dnd-kit paths remain active.
+
+## Implementation
+
+- Removed FLIP/layout motion, idle-baseline, interaction-epoch, per-child
+  observation, frame caret reconciliation, direct-claim caret tokens, and
+  motion CSS/data attributes.
+- Removed inactive-pane `useDeferredValue` plumbing. Both split panes now
+  receive current state and draft slices synchronously.
+- Removed full-list row retention and its implementation-detail memo tests.
+  The outline is flattened directly and only recomputed when structural
+  references, zoom, or local expansion inputs change.
+- Removed the legacy keyboard-insertion registry/classifier and moved the
+  remaining authority-recovery postcondition and optimistic projection types
+  to `notesLocalStructure.ts`.
+- Removed the held-Backspace timer/controller/hook. Native delivered key events
+  continue through the coordinator's existing gesture transaction.
+- Kept direct DOM focus and exact UTF-16 range restoration, editing leases,
+  pending focus acknowledgement, one memoized row wrapper, dnd-kit transforms,
+  the single scroll-host/container measurement, image-width observation, and
+  draft/history/recovery semantics.
+- A first-child optimistic insertion now locally expands a collapsed source
+  parent, so its existing authoritative children remain visible alongside the
+  provisional child.
+- Removed the ordinary `textarea.notes-node-title` compatibility selector.
+  Ordinary titles now resolve only through `[data-notes-bullet-title]`; retained
+  specialized page/note editors keep their dedicated selectors.
+- `openExistingDate` now accepts an explicit source. Page and row image editors
+  pass their current draft title instead of treating their composite DOM
+  (overlays, controls, and raw regions) as plain title text.
+- Removed stale architecture-budget entries for every deleted file.
+
+## Deleted systems
+
+- `notesHeldBackspaceRepeat.ts` and its test
+- `useNotesHeldBackspaceRepeat.ts`
+- `notesKeyboardInsertion.ts` and its test
+- `outlineIdleBaseline.ts` and its test
+- `outlineInteractionEpoch.ts` and its test
+- `outlineLayoutMotion.ts` and its test
+- `useOutlineLayoutMotion.ts` and its test
+- `outlineRowProjection.ts` and its test
+- `outlineRowMemo.test.tsx`
+- `useNotesFrameReconciler.ts`
+- `useNotesDirectCaretReconciliation.ts`
+- `useNotesClaimBoundCaretReconciliation.ts`
+
+## Replacement behavior coverage
+
+- Pointer drag, keyboard drag, cross-pane drag, and selected-forest drag keep
+  their exact drop outcomes.
+- Reduced-motion Enter performs no structural animation.
+- Exact row focus and UTF-16 range restoration remain synchronous.
+- Inactive split panes receive current workspace and draft publication.
+- Mounted prefix rows expose current selection membership.
+- Matching settlement does not publish an intermediate pane projection.
+- Fifty repeated ArrowDown moves remain exact in each split pane, including
+  prefix expansion.
+- Repeated Enter and Backspace retain provisional-title, draft lease, recovery,
+  and Undo behavior.
+
+## Debugging note
+
+Deleting row retention exposed an infinite render in direct pane fixtures.
+The optional `optimisticKeyboardInsertions` prop defaulted to a fresh `[]` on
+every render, which rebuilt expansion and row projections indefinitely. A
+module-stable frozen empty array restored referential stability.
+
+The two-pane test that performs and checks 100 DOM focus/range transitions
+normally completes just under Vitest's default five-second timeout and became
+slow under full-suite parallel load. Its assertions remain unchanged; only that
+stress test has an explicit thirty-second harness timeout. The split-close
+focus test likewise waits for focus and UTF-16 selection restoration together,
+so it does not sample the asynchronous handoff between those two steps.
+
+## Final verification
+
+```sh
+npm test -- src/features/notes/NotesPaneScope.test.tsx src/features/notes/notesWorkspaceContextSplit.test.tsx src/features/notes/outlineDomFocus.test.ts
+```
+
+- 3 files, 26 tests passed.
+
+```sh
+npm test -- src/features/notes/NotesWorkspace.test.tsx src/features/notes/outlineDrag.test.ts src/features/notes/notesCrossPaneDrag.test.ts src/features/notes/outlineSelectionDragSession.test.ts
+```
+
+- 4 files, 351 tests passed in 40.27 seconds.
+
+```sh
+npm test -- src/features/notes/notesDraftEngine.test.ts
+npm test -- src/features/notes/notesSplitLatencyProbe.test.ts
+npm test -- src/features/notes/notesWorkspaceCoordinator.test.ts
+```
+
+- Draft engine: 72 tests passed.
+- Split latency probe: 39 tests passed.
+- Coordinator: 86 tests passed.
+
+```sh
+npm test
+```
+
+- 182 files passed, 1 file skipped.
+- 4,178 tests passed, 27 tests skipped.
+
+```sh
+npx tsc --noEmit
+npm run build
+npm run lint
+npm run test:architecture
+git diff --check
+```
+
+- TypeScript, production build, ESLint, architecture budgets, and whitespace
+  checks passed.
+- The build retains only the pre-existing warning for a minified chunk larger
+  than 500 kB.
+
+The deleted-path/ordinary-title search is empty. The broad `flushSync` search
+finds only the unrelated window-close export API name and React's
+`NotesDatePicker.test.tsx` unmount/test helpers.
+
+## Self-review
+
+- The coordinator still forwards a provisional title into the active or queued
+  Backspace draft lease.
+- A denied editing claim restores the previous connected DOM editor and active
+  pane.
+- Settlement still hands the active title to the target pane and routes
+  secondary panes through `targetPaneId`.
+- Prepared draft revisions still survive post-gesture edits and resave after
+  settlement.
+- No new dependency, hook layer, observer loop, frame bridge, or motion system
+  was introduced.
+
+## Fix round: scoped insertion settlement and focus ownership
+
+### Root causes and fixes
+
+- Keyboard insertion settlement treated a Starred/Tags projection as
+  authoritative structure. Filtered settlements now load Active solely for
+  structural verification, retain exact history checks, and publish the
+  original projection. If authority recovery is required, keyboard insertion
+  results are loaded again in the command's captured source scope instead of
+  being marked scope-agnostic.
+- A pane-local navigation version could not observe interaction in the other
+  pane or non-navigation UI activity. The split host now advances one shared
+  synchronous interaction revision for click, pointer, key, input, and
+  composition events. Enter captures that revision, and settlement checks it
+  before routing focus, before DOM focus, and before focus acknowledgement.
+  Programmatic focus does not advance the revision.
+- Removing a failed optimistic insertion queued its provisional title for a
+  later automatic flush. Failed insertion removals now retain recovery text but
+  are excluded from pending title flushes.
+- The secondary split mock now returns an atomic mutation response with the
+  received history context. The split-close focus test now uses `userEvent` for
+  real button focus/blur and the default test timeouts.
+- Keyboard insertion routing moved into the existing settlement runtime.
+  `notesWorkspaceRuntime.ts` is now 1,499 lines; the 1,500-line budget was not
+  changed.
+
+### Red-green evidence
+
+```sh
+npm test -- src/features/notes/notesWorkspaceSettlementRuntime.test.ts src/features/notes/notesWorkspaceCoordinator.test.ts
+```
+
+- Before the fixes: 3 failures. Starred and Tags published the recovered Active
+  workspace, and failed insertion text overwrote a later valid title.
+- After the fixes: 2 files, 92 tests passed.
+
+```sh
+npm test -- src/features/notes/NotesWorkspace.test.tsx -t "cross-pane interaction|toolbar interaction"
+```
+
+- Before the fixes: 2 failures; late settlement restored the inserted editor.
+- After the fixes: 2 tests passed.
+
+### Final verification
+
+```sh
+npm test -- src/features/notes/NotesPaneScope.test.tsx src/features/notes/notesWorkspaceContextSplit.test.tsx src/features/notes/outlineDomFocus.test.ts src/features/notes/NotesWorkspace.test.tsx src/features/notes/outlineDrag.test.ts src/features/notes/notesCrossPaneDrag.test.ts src/features/notes/outlineSelectionDragSession.test.ts src/features/notes/notesWorkspaceSettlementRuntime.test.ts src/features/notes/notesWorkspaceCoordinator.test.ts src/features/notes/NotesFeature.test.tsx
+```
+
+- 10 files, 482 tests passed.
+
+```sh
+npm test
+```
+
+- 183 files passed, 1 file skipped.
+- 4,189 tests passed, 27 tests skipped.
+- The run retained only the test environment's existing localStorage and jsdom
+  navigation warnings.
+
+```sh
+npx tsc --noEmit
+npm run lint
+npm run test:architecture
+git diff --check
+```
+
+- TypeScript, ESLint, architecture budgets, and whitespace checks passed.
+- `notesWorkspaceRuntime.ts`: 1,499/1,500 lines.
+
+### Fix-round self-review
+
+- Active authority is used only to verify the frozen structural postcondition;
+  the source projection remains the owner-visible settlement.
+- Exact session, history epoch, next Undo entry, committed entry, and recovery
+  checks remain intact.
+- A user interaction in either pane invalidates only settlement-owned focus;
+  it does not cancel persistence or optimistic structure reconciliation.
+- Failed insertion text remains available in recovery UI and cannot become
+  automatic flush work.
+- No architecture budget, dependency, timer, observer, or new runtime layer was
+  added.

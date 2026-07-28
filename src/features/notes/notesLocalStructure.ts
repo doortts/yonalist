@@ -40,6 +40,7 @@ export interface PendingKeyboardInsertion {
   readonly ownerSessionId: string;
   readonly ownerPaneId: string;
   readonly navigationVersionAtDispatch?: number;
+  readonly userInteractionRevisionAtDispatch?: number;
   readonly expectedStructuralHistoryEpoch: string;
   readonly expectedStructuralHistoryEntryId: string;
 }
