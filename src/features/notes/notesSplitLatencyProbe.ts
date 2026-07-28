@@ -831,10 +831,7 @@ export function installNotesSplitInputBenchmarkCollector(
   };
 
   const blur = (event: FocusEvent) => {
-    const context = fieldContext(event.target);
-    if (context && installed.heldGesture?.paneId === context.paneId) {
-      finishHeldGesture();
-    }
+    if (event.target === event.currentTarget) finishHeldGesture();
   };
   const visibilitychange = () => {
     if (document.visibilityState !== "visible") finishHeldGesture();

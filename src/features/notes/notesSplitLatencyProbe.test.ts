@@ -385,6 +385,50 @@ describe("notesSplitLatencyProbe", () => {
     }
   });
 
+  it("keeps editor-to-editor repeats grouped but closes them on window blur", () => {
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary">
+        <div data-outline-id="first"><textarea class="notes-node-title">First</textarea></div>
+        <div data-outline-id="second"><textarea class="notes-node-title">Second</textarea></div>
+      </section>
+    `;
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => 0,
+      scheduleBacklogCheck: () => {},
+      scheduleEnterCancellation: () => {}
+    });
+    const [first, second] = [
+      ...document.querySelectorAll<HTMLTextAreaElement>("textarea")
+    ];
+
+    try {
+      first.focus();
+      press(first, { key: "Enter" });
+      second.focus();
+      press(second, { key: "Enter", repeat: true });
+      window.dispatchEvent(new FocusEvent("blur"));
+      press(second, { key: "Enter", repeat: true });
+      release(second, { key: "Enter" });
+
+      expect(benchmarkSamples()).toEqual([
+        expect.objectContaining({
+          operation: "enter",
+          paneId: "primary",
+          deliveredKeydowns: 2,
+          finalFocusNodeId: "second"
+        }),
+        expect.objectContaining({
+          operation: "enter",
+          paneId: "primary",
+          deliveredKeydowns: 1
+        })
+      ]);
+    } finally {
+      dispose();
+    }
+  });
+
   it("closes a held gesture before a different key or pane starts another", () => {
     document.body.innerHTML = `
       <section data-notes-pane-id="primary"><div data-outline-id="primary"><textarea class="notes-node-title">Primary</textarea></div></section>
