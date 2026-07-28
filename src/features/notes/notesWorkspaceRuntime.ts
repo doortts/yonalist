@@ -313,6 +313,7 @@ export function useNotesWorkspace({
   });
   const bufferedCommandsRef = useRef<BufferedWorkspaceCommand[]>([]);
   const finalCleanupTokenRef = useRef<object | null>(null);
+  const sessionRetirementTokenRef = useRef<object | null>(null);
   const captureHistoryLocationRef = useRef<() => NotesHistorySnapshot>(() => {
     throw new Error("Notes history presentation is not ready.");
   });
@@ -432,6 +433,7 @@ export function useNotesWorkspace({
     [applyAction, vaultRoot],
   );
   useLayoutEffect(() => {
+    sessionRetirementTokenRef.current = null;
     cancelPendingCaretMove();
     closedRef.current = false;
     outlineCompositionActiveRef.current = false;
@@ -764,6 +766,7 @@ export function useNotesWorkspace({
     sessionRecordRef.current = engine.record;
     sessionRef.current = session;
     draftEngineRef.current = engine;
+    const bufferedCommands = bufferedCommandsRef.current;
     const unregisterNotesDataDeletionParticipant =
       registerNotesDataDeletionParticipant(repository, vaultRoot, engine);
     const unsubscribeImageImportRecovery = subscribeToImageImportRecovery(
@@ -778,7 +781,7 @@ export function useNotesWorkspace({
     notifyWriteErrorListeners();
     enqueueBufferedWorkspaceCommands(
       session,
-      bufferedCommandsRef.current.splice(0),
+      bufferedCommands.splice(0),
     );
     return () => {
       disconnectSync?.();
@@ -787,10 +790,22 @@ export function useNotesWorkspace({
       unregisterNotesDataDeletionParticipant();
       unsubscribeImageImportRecovery();
       if (sessionRef.current === session) {
-        sessionRef.current = null;
-        // ref array is never reassigned; draining current buffered commands at teardown is intended
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        resolveBufferedWorkspaceCommands(bufferedCommandsRef.current.splice(0));
+        const retirementToken = {};
+        sessionRetirementTokenRef.current = retirementToken;
+        // Descendant layout cleanups may still publish DOM-owned editor buffers.
+        // A replaying setup clears this token before the old cleanup can retire
+        // the newly opened session.
+        queueMicrotask(() => {
+          if (
+            sessionRetirementTokenRef.current !== retirementToken ||
+            sessionRef.current !== session
+          ) {
+            return;
+          }
+          sessionRetirementTokenRef.current = null;
+          sessionRef.current = null;
+          resolveBufferedWorkspaceCommands(bufferedCommands.splice(0));
+        });
       }
     };
     // Session subscribe/teardown effect keyed on vault/repository; the engine's

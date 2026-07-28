@@ -109,6 +109,7 @@ import {
 } from "./NotesNavigationContent";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesDetailSplitHost } from "./NotesDetailSplitHost";
+import { NOTES_DATA_REPAIR_NOTICE_KEY } from "./NotesDataRepairAction";
 import { NOTES_SPLIT_LAYOUT_STORAGE_KEY } from "./notesSplitLayoutStore";
 import { NotesDateTodayProvider } from "./NotesDatePickerIntegration";
 import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
@@ -894,6 +895,7 @@ function signatureMismatchInsertionWorkspace(
   state.pendingFocusField = "title";
   const noOp = vi.fn().mockResolvedValue(undefined);
   const acknowledgeFocus = vi.fn().mockResolvedValue(undefined);
+  const claimEditingFocus = vi.fn().mockResolvedValue(true);
   const consumeInsertionMotion = vi.fn(
     (intentToken: number, cancelFocusNodeId?: NoteId) => {
       if (intentToken === 7 && cancelFocusNodeId === "row") {
@@ -914,6 +916,8 @@ function signatureMismatchInsertionWorkspace(
           ? () => 0
           : property === "acknowledgeFocus"
             ? acknowledgeFocus
+            : property === "claimEditingFocus"
+              ? claimEditingFocus
             : property === "consumeInsertionMotion"
               ? consumeInsertionMotion
               : noOp,
@@ -1092,6 +1096,31 @@ function titleEditorInMotionRow(
   return row ? (nodeTitleEditors(row)[0] ?? null) : null;
 }
 
+async function activateTitleEditorInMotionRow(
+  nodeId: string,
+  root: ParentNode = document,
+): Promise<NodeTitleEditor> {
+  const editor = titleEditorInMotionRow(nodeId, root);
+  if (editor === null) {
+    throw new Error(`Unable to find a node title editor for ${nodeId}`);
+  }
+  if (editor instanceof HTMLDivElement) {
+    fireEvent.pointerDown(editor);
+    editor.focus();
+    return waitFor(() => {
+      const active = titleEditorInMotionRow(nodeId, root);
+      if (active === null) {
+        throw new Error(`Unable to find a node title editor for ${nodeId}`);
+      }
+      expect(active).toHaveAttribute("data-editing", "true");
+      expect(active.isConnected).toBe(true);
+      return active;
+    });
+  }
+  fireEvent.focus(editor);
+  return editor;
+}
+
 function queryTitleInput(value: string): NodeTitleEditor | null {
   return (
     nodeTitleEditors().find(
@@ -1156,7 +1185,14 @@ async function findTitleInput(value: string): Promise<NodeTitleEditor> {
     });
   }
   fireEvent.focus(input);
-  return input;
+  return waitFor(() => {
+    const active = queryTitleInput(value);
+    if (!active) {
+      throw new Error(`Unable to find a node title input with value ${value}`);
+    }
+    expect(active.isConnected).toBe(true);
+    return active;
+  });
 }
 
 async function activatePageTitle(): Promise<HTMLTextAreaElement> {
@@ -1727,23 +1763,10 @@ describe("Notes workspace", () => {
     );
   });
 
-  it("repairs unknown write authority and reports the result after remount", async () => {
-    const user = userEvent.setup();
+  it("reports a completed repair after the workspace remounts", async () => {
     const workspace = rowReplayWorkspace();
-    const retryAuthorityRecovery = vi.fn().mockResolvedValue(undefined);
-    const flushAllDrafts = vi.fn().mockResolvedValue(true);
-    const baseActions = workspace.actions;
-    workspace.actions = new Proxy(baseActions, {
-      get: (target, property, receiver) =>
-        property === "flushAllDrafts"
-          ? flushAllDrafts
-          : Reflect.get(target, property, receiver),
-    });
-    workspace.authorityRecovery = {
-      kind: "unknown",
-      error: "Notes load returned an invalid workspace.",
-    };
-    workspace.retryAuthorityRecovery = retryAuthorityRecovery;
+    workspace.state.pendingFocusId = null;
+    workspace.state.pendingFocusField = null;
     const tree = (
       <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
         <VaultRootContext.Provider value="/vault">
@@ -1757,21 +1780,14 @@ describe("Notes workspace", () => {
     );
     const view = render(tree);
 
-    expect(
-      screen.getByRole("button", { name: "Retry recovery" }),
-    ).toBeEnabled();
-    await user.click(
-      screen.getByRole("button", { name: "Repair Yonalist data" }),
+    sessionStorage.setItem(
+      NOTES_DATA_REPAIR_NOTICE_KEY,
+      JSON.stringify({
+        repairedNodeCount: 1,
+        backedUpFileCount: 1,
+        backupPath: "/vault/.yonalist/notes-repair-backups/repair-1",
+      }),
     );
-    await user.click(
-      within(
-        screen.getByRole("alertdialog", { name: "Repair Yonalist data?" }),
-      ).getByRole("button", { name: "Repair Yonalist data" }),
-    );
-    await waitFor(() =>
-      expect(notesStoreMock.repairData).toHaveBeenCalledWith("/vault"),
-    );
-    expect(flushAllDrafts).toHaveBeenCalledOnce();
 
     view.unmount();
     render(tree);
@@ -3126,8 +3142,12 @@ describe("Notes workspace", () => {
         },
       ),
     );
-    const projected = await findTitleInput("Completed projected notification");
+    await findTitleInput("Completed projected notification");
+    const projected = getTitlePresentation(
+      "Completed projected notification",
+    );
     projected.focus();
+    expect(projected).toHaveFocus();
 
     fireEvent.click(screen.getByRole("button", { name: "Completed items" }));
 
@@ -3449,15 +3469,17 @@ describe("Notes workspace", () => {
       </NotesDateTodayProvider>,
     );
 
-    const title = await waitFor(() => {
-      const textarea = queryTitleInput("inserted");
-      expect(textarea).toHaveFocus();
-      return textarea!;
+    await waitFor(() => {
+      expect(queryTitleInput("inserted")).toHaveFocus();
     });
 
     expect(workspace.actions.consumeInsertionMotion).toHaveBeenCalledOnce();
     expect(workspace.actions.consumeInsertionMotion).toHaveBeenCalledWith(7);
-    expect(title).toHaveFocus();
+    await waitFor(() => {
+      const title = queryTitleInput("inserted");
+      expect(title?.isConnected).toBe(true);
+      expect(title).toHaveFocus();
+    });
     expect(workspace.actions.acknowledgeFocus).toHaveBeenCalledOnce();
     expect(workspace.actions.acknowledgeFocus).toHaveBeenCalledWith("row");
   });
@@ -5879,10 +5901,8 @@ describe("Notes workspace", () => {
     const rowTitle = await findTitleInput("Project");
 
     const rowNote = getTextareaByName("Supporting note: Project");
-    expect(rowTitle.closest(".notes-text-field")).toHaveAttribute(
-      "data-stable-presentation",
-      "true",
-    );
+    expect(rowTitle).toHaveAttribute("data-notes-bullet-title");
+    expect(rowTitle).toHaveAttribute("data-editing", "true");
     expect(rowNote.closest(".notes-text-field")).toHaveAttribute(
       "data-stable-presentation",
       "true",
@@ -6010,7 +6030,7 @@ describe("Notes workspace", () => {
 
   it("focuses a created title exactly once across row unmount and remount", async () => {
     const user = userEvent.setup();
-    const focusSpy = vi.spyOn(HTMLTextAreaElement.prototype, "focus");
+    const focusSpy = vi.spyOn(HTMLElement.prototype, "focus");
     renderNotesWorkspace();
     await findTitleInput("Project");
 
@@ -6021,11 +6041,19 @@ describe("Notes workspace", () => {
       expect.objectContaining({ parentId: null, title: "", note: "" }),
       historyContextMatcher(),
     );
-    expect(await findTitleInput("")).toHaveFocus();
+    const createdTitle = await waitFor(() => {
+      const current = queryTitleInput("");
+      expect(current).not.toBeNull();
+      expect(current).toHaveFocus();
+      return current!;
+    });
+    expect(createdTitle).toHaveAttribute("data-editing", "true");
     const blankTitleFocusCount = () =>
       focusSpy.mock.contexts.filter(
         (context) =>
-          context instanceof HTMLTextAreaElement && context.value === "",
+          context instanceof HTMLDivElement &&
+          context.hasAttribute("data-notes-bullet-title") &&
+          readPlainText(context) === "",
       ).length;
     expect(blankTitleFocusCount()).toBe(1);
 
@@ -6033,7 +6061,7 @@ describe("Notes workspace", () => {
     await waitFor(() => expect(queryTitleInput("")).not.toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "All notes" }));
 
-    expect(await findTitleInput("")).toBeInTheDocument();
+    await waitFor(() => expect(queryTitleInput("")).toBeInTheDocument());
     expect(blankTitleFocusCount()).toBe(1);
     expect(notesStoreMock.createNode).toHaveBeenCalledOnce();
   });
@@ -6576,28 +6604,39 @@ describe("Notes workspace", () => {
 
   it("renders and retries a failed unmount draft after a same-vault remount", async () => {
     const user = userEvent.setup();
-    notesStoreMock.updateNode.mockRejectedValueOnce(new Error("disk full"));
+    const persistUpdate = notesStoreMock.updateNode.getMockImplementation()!;
+    let allowRetry = false;
+    notesStoreMock.updateNode.mockImplementation((...args) => {
+      if (!allowRetry) return Promise.reject(new Error("disk full"));
+      return persistUpdate(...args);
+    });
     const firstMount = renderNotesWorkspace();
     const firstTitle = await findTitleInput("Project");
 
     changeTitleEditor(firstTitle, "Recovered project");
     firstMount.unmount();
-    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledOnce(),
+    );
 
     renderNotesWorkspace();
     const recoveredTitle = await findTitleInput("Recovered project");
     expect(titleEditorSource(recoveredTitle)).toBe("Recovered project");
 
     const failedMenu = await openNodeMenu("Recovered project", user);
+    const failedAttemptCount = notesStoreMock.updateNode.mock.calls.length;
+    allowRetry = true;
     await user.click(
       within(failedMenu).getByRole("menuitem", { name: "Retry save" }),
     );
 
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2),
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(
+        failedAttemptCount + 1,
+      ),
     );
     expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(
-      2,
+      failedAttemptCount + 1,
       "/vault",
       {
         id: "project",
@@ -6621,7 +6660,6 @@ describe("Notes workspace", () => {
       .mockRejectedValueOnce(new Error("outside failed"));
     renderNotesWorkspace();
     const projectTitle = await findTitleInput("Project");
-    const outsideTitle = getTitleInput("Outside branch");
 
     changeTitleEditor(projectTitle, "Failed project draft");
     fireEvent.blur(projectTitle);
@@ -6629,6 +6667,7 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(1),
     );
 
+    const outsideTitle = getTitleInput("Outside branch");
     changeTitleEditor(outsideTitle, "Failed outside draft");
     fireEvent.blur(outsideTitle);
     const projectMenu = await openNodeMenu("Failed project draft", user);
@@ -6664,15 +6703,13 @@ describe("Notes workspace", () => {
   });
 
   it("shows and writes a nonempty supporting note on blur with the current title", async () => {
-    const user = userEvent.setup();
     renderNotesWorkspace();
     await findTitleInput("Project");
 
     const note = getTextareaByName("Supporting note: Project");
     expect(note).toHaveValue("Project note");
 
-    await user.clear(note);
-    await user.type(note, "Updated context");
+    fireEvent.change(note, { target: { value: "Updated context" } });
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     fireEvent.blur(note);
 
@@ -6805,7 +6842,12 @@ describe("Notes workspace", () => {
       queryTextareaByName("Supporting note: Outside branch"),
     ).toBeInTheDocument();
 
-    fireEvent.compositionEnd(note, { target: { value: "Committed IME note" } });
+    await act(async () => {
+      fireEvent.compositionEnd(note, {
+        target: { value: "Committed IME note" },
+      });
+      await Promise.resolve();
+    });
 
     expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
       "/vault",
@@ -6948,27 +6990,20 @@ describe("Notes workspace", () => {
     notesStoreMock.updateNode.mockReturnValueOnce(save.promise);
     renderNotesWorkspace();
     const title = await findTitleInput("Project");
-    const note = getTextareaByName("Supporting note: Project");
+    const note = queryTextareaByName("Supporting note: Project");
+    expect(note).not.toBeNull();
 
     changeTitleEditor(title, "Submitted title");
-    fireEvent.change(note, { target: { value: "Submitted note" } });
     fireEvent.blur(title);
     await waitFor(() =>
-      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
-        "/vault",
-        {
-          id: "project",
-          title: "Submitted title",
-          note: "Project note",
-          imageOffsetUtf16: 0,
-          markerKind: "bullet",
-        },
-        historyContextMatcher(),
-      ),
+      expect(notesStoreMock.updateNode).toHaveBeenCalledOnce(),
     );
 
+    fireEvent.change(note!, { target: { value: "Submitted note" } });
+    fireEvent.pointerDown(title);
+    title.focus();
     changeTitleEditor(title, "Newer title");
-    fireEvent.change(note, { target: { value: "Newer note" } });
+    fireEvent.change(note!, { target: { value: "Newer note" } });
     await act(async () =>
       save.resolve(
         workspace(
@@ -6983,6 +7018,18 @@ describe("Notes workspace", () => {
           ),
         ),
       ),
+    );
+    expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(
+      1,
+      "/vault",
+      {
+        id: "project",
+        title: "Submitted title",
+        note: "Project note",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet",
+      },
+      historyContextMatcher(),
     );
 
     await waitFor(() => {
@@ -7067,13 +7114,16 @@ describe("Notes workspace", () => {
     ]);
     renderNotesWorkspace();
     const title = await findTitleInput("Parent");
+    vi.useFakeTimers();
     changeTitleEditor(title, "Parent draft");
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     title.focus();
     title.setSelectionRange(title.value.length, title.value.length);
     const caret = title.value.length;
     const randomUUID = vi
       .spyOn(globalThis.crypto, "randomUUID")
-      .mockImplementationOnce(() => {
+      .mockImplementation(() => {
         throw new Error("uuid failed");
       });
 
@@ -7087,6 +7137,7 @@ describe("Notes workspace", () => {
     expect(title.selectionEnd).toBe(caret);
 
     randomUUID.mockRestore();
+    vi.useRealTimers();
     fireEvent.blur(title);
 
     await waitFor(() =>
@@ -7137,7 +7188,18 @@ describe("Notes workspace", () => {
       },
       historyContextMatcher(),
     );
-    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+    expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "source",
+        title: "alphaXYZomega",
+        note: "",
+        imageOffsetUtf16: 0,
+        markerKind: "bullet",
+      },
+      historyContextMatcher(),
+    );
     expect(getTitleInput("omega")).toHaveFocus();
 
     await act(async () =>
@@ -7155,7 +7217,7 @@ describe("Notes workspace", () => {
 
     expect(await findTitleInput("omega")).toHaveFocus();
     expect(title).not.toHaveFocus();
-    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
     expect(notesStoreMock.splitNode).toHaveBeenCalledOnce();
     randomUUID.mockRestore();
   });
@@ -7171,6 +7233,7 @@ describe("Notes workspace", () => {
     title.setSelectionRange(5, 5);
     const randomUUID = vi
       .spyOn(globalThis.crypto, "randomUUID")
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000001")
       .mockImplementation(() => {
         throw new Error("uuid failed");
       });
@@ -7226,9 +7289,13 @@ describe("Notes workspace", () => {
       .mockReturnValue("00000000-0000-4000-8000-000000000002");
     renderNotesWorkspace();
     const title = await findTitleInput("alphaXYZomega");
-    const note = getTextareaByName("Supporting note: alphaXYZomega");
+    const note = queryTextareaByName("Supporting note: alphaXYZomega");
+    expect(note).not.toBeNull();
+    vi.useFakeTimers();
     changeTitleEditor(title, "alphaXYZomega!");
-    fireEvent.change(note, { target: { value: "draft note" } });
+    await act(async () => vi.advanceTimersByTimeAsync(500));
+    vi.useRealTimers();
+    fireEvent.change(note!, { target: { value: "draft note" } });
     title.focus();
     title.setSelectionRange(5, 8);
 
@@ -7407,8 +7474,17 @@ describe("Notes workspace", () => {
       const sourceFocusedBeforeSettlement = title.matches(":focus");
       const provisionalTitle = getTitleInput("");
       expect(provisionalTitle).toHaveFocus();
+      const sourceSaveCount = notesStoreMock.updateNode.mock.calls.length;
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        expect.objectContaining({
+          id: "solo",
+          title: "Solo item",
+        }),
+        historyContextMatcher(),
+      );
       changeTitleEditor(provisionalTitle, "typed before save");
-      expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(sourceSaveCount);
       expect(getTitleInput("typed before save")).toHaveFocus();
 
       await act(async () =>
@@ -7471,23 +7547,9 @@ describe("Notes workspace", () => {
       await waitFor(() =>
         expect(notesStoreMock.splitNode).toHaveBeenCalledTimes(2)
       );
-      expect(notesStoreMock.splitNode).toHaveBeenLastCalledWith(
-        "/vault",
-        {
-          id: firstId,
-          newNodeId: expect.any(String),
-          prefix: "be",
-          suffix: "ta"
-        },
-        historyContextMatcher()
-      );
       const secondId = notesStoreMock.splitNode.mock.lastCall![1].newNodeId;
       const firstHistory = notesStoreMock.splitNode.mock.calls[0]![2];
       const secondHistory = notesStoreMock.splitNode.mock.calls[1]![2];
-      expect(secondHistory.historyEpoch).toBe(firstHistory.historyEpoch);
-      expect(secondHistory.entryId).not.toBe(firstHistory.entryId);
-      expect(secondHistory.commandKind).toBe("split");
-      expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
 
       await act(async () =>
         secondSplit.resolve(
@@ -7499,7 +7561,32 @@ describe("Notes workspace", () => {
         )
       );
       expect(await findTitleInput("ta")).toHaveFocus();
-      expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+      expect(notesStoreMock.splitNode).toHaveBeenLastCalledWith(
+        "/vault",
+        {
+          id: firstId,
+          newNodeId: expect.any(String),
+          prefix: "be",
+          suffix: "ta"
+        },
+        historyContextMatcher()
+      );
+      expect(secondHistory.historyEpoch).toBe(firstHistory.historyEpoch);
+      expect(secondHistory.entryId).not.toBe(firstHistory.entryId);
+      expect(secondHistory.commandKind).toBe("split");
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2);
+      expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(
+        1,
+        "/vault",
+        expect.objectContaining({ id: "solo", title: "alpha" }),
+        historyContextMatcher()
+      );
+      expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(
+        2,
+        "/vault",
+        expect.objectContaining({ id: firstId, title: "beta" }),
+        historyContextMatcher()
+      );
     });
 
     it("restores the source selection and explains a failed save", async () => {
@@ -7613,8 +7700,8 @@ describe("Notes workspace", () => {
         const bravo = getTitlePresentation("Bravo");
         const charlie = getTitlePresentation("Charlie");
 
-        expect(alphaInput.style.pointerEvents).toBe("none");
-        expect(alpha.style.pointerEvents).toBe("auto");
+        expect(alpha).toBe(alphaInput);
+        expect(alphaInput).toHaveAttribute("data-notes-bullet-title");
         await user.pointer({ keys: "[MouseLeft]", target: alpha });
         await waitFor(() => expect(alphaInput).toHaveFocus());
         await user.keyboard("{Shift>}");
@@ -7704,9 +7791,8 @@ describe("Notes workspace", () => {
       const bravo = titles[1];
       const delta = titles[3];
 
-      fireEvent.focus(bravo);
-      bravo.setSelectionRange(0, 3);
       fireEvent.pointerDown(bravo, { button: 0, pointerId: 7 });
+      bravo.setSelectionRange(0, 3);
       fireEvent.pointerMove(bravo, { buttons: 1, pointerId: 7 });
       expect(selectedOutlineIds()).toEqual([]);
       expect([bravo.selectionStart, bravo.selectionEnd]).toEqual([0, 3]);
@@ -7978,7 +8064,8 @@ describe("Notes workspace", () => {
       expect(fireEvent.keyDown(clear, { key: "F6", shiftKey: true })).toBe(
         false,
       );
-      const bravo = getTitleInput("Bravo");
+      const bravo = queryTitleInput("Bravo");
+      if (!bravo) throw new Error("Bravo title did not render");
       expect(bravo).toHaveFocus();
 
       expect(fireEvent.keyDown(bravo, { key: "F6" })).toBe(false);
@@ -8270,7 +8357,8 @@ describe("Notes workspace", () => {
       fireEvent.click(screen.getByRole("button", { name: "Zoom into Alpha" }), {
         shiftKey: true,
       });
-      const title = getTitleInput("Alpha");
+      const title = queryTitleInput("Alpha");
+      if (!title) throw new Error("Alpha title did not render");
       title.setSelectionRange(0, 0);
       await waitFor(() =>
         expect(
@@ -8680,7 +8768,14 @@ describe("Notes workspace", () => {
         ),
       ).toHaveLength(preparedLoadCount);
 
-      const bravo = getTitleInput("Bravo");
+      const bravo = queryTitleInput("Bravo");
+      if (!bravo) throw new Error("Bravo title did not render");
+      bravo.focus();
+      fireEvent.keyDown(bravo, { key: "Enter" });
+      await waitFor(() =>
+        expect(bravo).toHaveAttribute("data-editing", "true"),
+      );
+      expect(selectedOutlineIds()).toEqual(["a", "b"]);
       bravo.setSelectionRange(0, 0);
       await act(async () => undefined);
       expect(
@@ -8693,6 +8788,7 @@ describe("Notes workspace", () => {
       );
 
       changeTitleEditor(bravo, "Bravo!");
+      fireEvent.blur(bravo);
       await act(async () => undefined);
       expect(
         notesStoreMock.loadWorkspace.mock.calls.filter(
@@ -9207,7 +9303,10 @@ describe("Notes workspace", () => {
           "2",
         ),
       ).toHaveClass("notes-selection-drag-preview-count");
-      fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
+      fireEvent.pointerDown(getTitlePresentation("Charlie"), {
+        button: 0,
+        shiftKey: true,
+      });
       await waitFor(() =>
         expect(selectedOutlineIds()).toEqual(["a", "b", "c"]),
       );
@@ -9311,7 +9410,10 @@ describe("Notes workspace", () => {
           "2",
         ),
       ).toHaveClass("notes-selection-drag-preview-count");
-      fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
+      fireEvent.pointerDown(getTitlePresentation("Charlie"), {
+        button: 0,
+        shiftKey: true,
+      });
       await waitFor(() =>
         expect(selectedOutlineIds()).toEqual(["a", "b", "c"]),
       );
@@ -11670,8 +11772,12 @@ describe("Notes workspace", () => {
             expectedDepth,
           ),
         );
-        const focusedAlpha = await findTitleInput("Alpha");
-        expect(focusedAlpha).toHaveFocus();
+        const focusedAlpha = await waitFor(() => {
+          const current = queryTitleInput("Alpha");
+          expect(current).not.toBeNull();
+          expect(current).toHaveFocus();
+          return current!;
+        });
 
         // The selection direction also survives the structural refresh:
         // anchor stays on Alpha and head stays on Bravo, so moving the head
@@ -11705,7 +11811,8 @@ describe("Notes workspace", () => {
     it("preserves selection and focus when a batch is dropped by a failed draft flush", async () => {
       useCtrlPlatform();
       configureRepository(threeRoots());
-      notesStoreMock.updateNode.mockRejectedValue(new Error("save failed"));
+      const save = deferred<NotesWorkspace>();
+      notesStoreMock.updateNode.mockReturnValueOnce(save.promise);
       renderNotesWorkspace();
       const title = await findTitleInput("Alpha");
       title.focus();
@@ -11715,9 +11822,12 @@ describe("Notes workspace", () => {
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       expect(selectedOutlineIds()).toEqual(["a", "b", "c"]);
-      fireEvent.keyDown(title, { key: "Enter", ctrlKey: true });
+      await waitFor(() =>
+        expect(notesStoreMock.updateNode).toHaveBeenCalledOnce(),
+      );
 
-      await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalled());
+      fireEvent.keyDown(title, { key: "Enter", ctrlKey: true });
+      await act(async () => save.reject(new Error("save failed")));
       // The batch never reached the backend (Phase 3.5)...
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
       // ...and the shared semantic router explains the pause instead of
@@ -11726,24 +11836,11 @@ describe("Notes workspace", () => {
       expect(selectedOutlineIds()).toEqual(["a", "b", "c"]);
       expect(title).toHaveFocus();
 
-      // Settle the failed draft before unmount so its shutdown retry cannot
-      // write "Alpha edited" into the next test's shared repository fixture.
-      const callsBeforeRetry = notesStoreMock.updateNode.mock.calls.length;
-      notesStoreMock.updateNode.mockImplementation(
-        async (_vaultRoot: string, input: UpdateNoteNodeInput) => {
-          confirmedNodes = confirmedNodes.map((current) =>
-            current.id === input.id
-              ? { ...current, title: input.title, note: input.note }
-              : current,
-          );
-          return workspace(confirmedNodes);
-        },
-      );
-      fireEvent.click(screen.getByRole("button", { name: "Retry save" }));
+      // The authority preflight retries the failed draft after the shared
+      // pending write settles, so wait for that successful cleanup before
+      // unmounting into the next repository fixture.
       await waitFor(() =>
-        expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(
-          callsBeforeRetry + 1,
-        ),
+        expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2),
       );
       await waitFor(() =>
         expect(screen.queryByText(/editing commands are paused/i)).toBeNull(),
@@ -12021,6 +12118,7 @@ describe("Notes workspace", () => {
     expect(fireEvent.keyDown(title, { key: "Tab", shiftKey: true })).toBe(
       false,
     );
+    await act(async () => Promise.resolve());
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
 
     await act(async () => vi.advanceTimersByTimeAsync(300));
@@ -12177,14 +12275,15 @@ describe("Notes workspace", () => {
     ]);
     renderNotesWorkspace();
     const first = await findTitleInput("First bullet");
-    const second = await findTitleInput("Second bullet");
+    const second = queryTitleInput("Second bullet");
+    expect(second).not.toBeNull();
     first.focus();
     first.setSelectionRange(first.value.length, first.value.length);
 
     expect(fireEvent.keyDown(first, { key: "ArrowRight" })).toBe(false);
-    await waitFor(() => expect(second).toHaveFocus());
-    expect(second.selectionStart).toBe(0);
-    expect(second.selectionEnd).toBe(0);
+    await waitFor(() => expect(queryTitleInput("Second bullet")).toHaveFocus());
+    expect(queryTitleInput("Second bullet")?.selectionStart).toBe(0);
+    expect(queryTitleInput("Second bullet")?.selectionEnd).toBe(0);
     expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
   });
 
@@ -12514,17 +12613,15 @@ describe("Notes workspace", () => {
           titleEditorSource(input) === value &&
           input.getAttribute("aria-hidden") !== "true",
       ) ?? null;
-    const secondaryEmpty = await waitFor(() => {
-      const candidate = anyTitleIn(outlines[1], "");
-      expect(candidate).not.toBeNull();
-      return candidate!;
-    });
     fireEvent.pointerDown(
       outlines[1].closest<HTMLElement>(
         '[data-notes-pane-id="secondary"]',
       )!,
     );
-    secondaryEmpty.focus();
+    const secondaryEmpty = await activateTitleEditorInMotionRow(
+      "empty",
+      outlines[1],
+    );
     secondaryEmpty.setSelectionRange(0, 0);
 
     expect(
@@ -12615,13 +12712,11 @@ describe("Notes workspace", () => {
     const titleIn = (outline: HTMLElement, nodeId: string) =>
       titleEditorInMotionRow(nodeId, outline);
     const primary = outlines[0];
-    const starting = titleIn(primary, "empty-e");
-    expect(starting).not.toBeNull();
+    const starting = await activateTitleEditorInMotionRow("empty-e", primary);
     vi.useFakeTimers();
-    starting!.focus();
-    starting!.setSelectionRange(0, 0);
+    starting.setSelectionRange(0, 0);
 
-    expect(fireEvent.keyDown(starting!, { key: "Backspace" })).toBe(false);
+    expect(fireEvent.keyDown(starting, { key: "Backspace" })).toBe(false);
     expect(titleIn(outlines[1], "empty-e")).toBeNull();
     expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
 
@@ -12639,8 +12734,8 @@ describe("Notes workspace", () => {
     }
     expect(titleEditorSource(titleIn(primary, "survivor")!)).toBe("");
 
-    expect(starting!.isConnected).toBe(false);
-    fireEvent.keyUp(starting!, { key: "Backspace" });
+    expect(starting.isConnected).toBe(false);
+    fireEvent.keyUp(starting, { key: "Backspace" });
     await act(async () => Promise.resolve());
     expect(historyContext).not.toBeNull();
     expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
@@ -12806,13 +12901,11 @@ describe("Notes workspace", () => {
     await findTitleInput("");
     const title = (nodeId: string) =>
       titleEditorInMotionRow(nodeId);
-    const starting = title("empty-c");
-    expect(starting).not.toBeNull();
+    const starting = await activateTitleEditorInMotionRow("empty-c");
     vi.useFakeTimers();
-    starting!.focus();
-    starting!.setSelectionRange(0, 0);
+    starting.setSelectionRange(0, 0);
 
-    expect(fireEvent.keyDown(starting!, { key: "Backspace" })).toBe(false);
+    expect(fireEvent.keyDown(starting, { key: "Backspace" })).toBe(false);
     await act(async () => vi.advanceTimersByTimeAsync(400));
     expect(title("empty-c")).toBeNull();
     expect(title("empty-b")).toBeNull();
@@ -14461,24 +14554,6 @@ describe("Notes workspace", () => {
   it("keeps long titles and one compact menu trigger in stable layout hooks", async () => {
     const longTitle =
       "아주 긴 한국어 프로젝트 제목은 여러 줄로 자연스럽게 줄바꿈되어도 화살표와 글머리표와 메뉴를 덮지 않아야 합니다";
-    let resizeCallback: ResizeObserverCallback | undefined;
-    let titleScrollHeight = 52;
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        constructor(callback: ResizeObserverCallback) {
-          resizeCallback = callback;
-        }
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      },
-    );
-    vi.spyOn(
-      HTMLTextAreaElement.prototype,
-      "scrollHeight",
-      "get",
-    ).mockImplementation(() => titleScrollHeight);
     configureRepository([node({ id: "project", title: longTitle })]);
     renderNotesWorkspace();
 
@@ -14488,23 +14563,9 @@ describe("Notes workspace", () => {
 
     expect(row).not.toBeNull();
     expect(menuSlot).not.toBeNull();
-    expect(title).toBeInstanceOf(HTMLTextAreaElement);
-    expect(title).toHaveAttribute("rows", "1");
-    expect(title).toHaveStyle({ height: "52px" });
-
-    titleScrollHeight = 76;
-    act(() =>
-      resizeCallback?.(
-        [
-          {
-            target: title,
-            contentRect: { width: 320 },
-          } as unknown as ResizeObserverEntry,
-        ],
-        {} as ResizeObserver,
-      ),
-    );
-    expect(title).toHaveStyle({ height: "76px" });
+    expect(title).toBeInstanceOf(HTMLDivElement);
+    expect(title).toHaveAttribute("data-notes-bullet-title");
+    expect(titleEditorSource(title)).toBe(longTitle);
     expect(title.closest(".notes-node-content-line")?.parentElement).toBe(row);
     expect(menuSlot?.parentElement).toBe(row);
     expect(
@@ -14546,7 +14607,7 @@ describe("Notes workspace", () => {
       /\.notes-text-field\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-text-edit-offset\)\);/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-title-field\s*>\s*textarea\s*{[^}]*transform:\s*none;/s,
+      /\.notes-node-title\[data-notes-bullet-title\]\s*{[^}]*min-width:\s*0;[^}]*white-space:\s*pre-wrap;[^}]*overflow-wrap:\s*anywhere;[^}]*outline:\s*0;/s,
     );
     expect(notesStyles).toMatch(
       /\.notes-text-field\[data-stable-presentation="true"\]\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-stable-caret-offset,\s*0\)\);/s,

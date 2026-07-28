@@ -1,4 +1,10 @@
-import { useContext, useEffect, useRef, useState } from "react";
+import {
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState
+} from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { VaultRootContext } from "../../VaultRootContext";
 import {
@@ -108,7 +114,7 @@ export function NotesDataRepairAction({
     [onPendingChange]
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     currentVaultRootRef.current = vaultRoot;
     requestGenerationRef.current += 1;
     confirmationVaultRootRef.current = null;

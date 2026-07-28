@@ -1,5 +1,8 @@
 import { createElement, Profiler, type ReactNode } from "react";
-import { readPlainText } from "./plainTextContenteditable";
+import {
+  readPlainText,
+  readPlainTextSelection
+} from "./plainTextContenteditable";
 
 /**
  * Dev-only instrumentation for split, caret, and row-render latency. Records
@@ -292,6 +295,61 @@ type BenchmarkPaneId = "primary" | "secondary";
 const TITLE_EDITOR_SELECTOR =
   "textarea.notes-node-title, [data-notes-bullet-title]";
 
+function benchmarkEditorFocusSnapshot(): {
+  readonly id: string | undefined;
+  readonly selectionStart: number;
+  readonly selectionEnd: number;
+} | null {
+  const active = document.activeElement;
+  if (active instanceof HTMLTextAreaElement) {
+    return {
+      id: active.closest<HTMLElement>("[data-outline-id]")?.dataset.outlineId,
+      selectionStart: active.selectionStart,
+      selectionEnd: active.selectionEnd
+    };
+  }
+  if (
+    !(active instanceof HTMLElement) ||
+    !active.matches("[data-notes-bullet-title]")
+  ) {
+    return null;
+  }
+  const selection = readPlainTextSelection(active);
+  if (!selection) return null;
+  return {
+    id: active.closest<HTMLElement>("[data-outline-id]")?.dataset.outlineId,
+    selectionStart: Math.min(
+      selection.anchorUtf16,
+      selection.focusUtf16
+    ),
+    selectionEnd: Math.max(selection.anchorUtf16, selection.focusUtf16)
+  };
+}
+
+function benchmarkPaneSnapshot(paneId: BenchmarkPaneId): string {
+  return JSON.stringify({
+    rows: [
+      ...document.querySelectorAll<HTMLElement>(
+        `[data-notes-pane-id="${paneId}"] [data-outline-id]`
+      )
+    ].map((row) => ({
+      id: row.dataset.outlineId,
+      title: (() => {
+        const title = row.querySelector<HTMLElement>(TITLE_EDITOR_SELECTOR);
+        return title instanceof HTMLTextAreaElement
+          ? title.value
+          : title
+            ? readPlainText(title)
+            : "";
+      })(),
+      note:
+        row.querySelector<HTMLTextAreaElement>("textarea.notes-node-note")
+          ?.value ?? ""
+    })),
+    focus: benchmarkEditorFocusSnapshot()
+  });
+}
+
 type HeldKeyGesture = {
   operationId: string;
   paneId: BenchmarkPaneId;
@@ -532,31 +590,6 @@ export function installNotesSplitInputBenchmarkCollector(
       : null;
   };
 
-  const paneSnapshot = (paneId: BenchmarkPaneId) =>
-    JSON.stringify({
-      rows: [...document.querySelectorAll<HTMLElement>(
-        `[data-notes-pane-id="${paneId}"] [data-outline-id]`
-      )].map((row) => ({
-        id: row.dataset.outlineId,
-        title: (() => {
-          const title = row.querySelector<HTMLElement>(TITLE_EDITOR_SELECTOR);
-          return title instanceof HTMLTextAreaElement
-            ? title.value
-            : title
-              ? readPlainText(title)
-              : "";
-        })(),
-        note: row.querySelector<HTMLTextAreaElement>("textarea.notes-node-note")?.value ?? ""
-      })),
-      focus: document.activeElement instanceof HTMLTextAreaElement
-        ? {
-            id: document.activeElement.closest<HTMLElement>("[data-outline-id]")?.dataset.outlineId,
-            selectionStart: document.activeElement.selectionStart,
-            selectionEnd: document.activeElement.selectionEnd
-          }
-        : null
-    });
-
   const reset = () => {
     installed.generation += 1;
     finishHeldGesture();
@@ -767,7 +800,10 @@ export function installNotesSplitInputBenchmarkCollector(
       operationId = collector.begin("backspace", context.paneId);
       activateOperation(operationId, context.paneId, "backspace");
       installed.activeBackspaceByPane.set(context.paneId, operationId);
-      installed.backspaceSnapshotsByPane.set(context.paneId, paneSnapshot(context.paneId));
+      installed.backspaceSnapshotsByPane.set(
+        context.paneId,
+        benchmarkPaneSnapshot(context.paneId)
+      );
     }
     focusOperationIdsByPane.set(context.paneId, operationId);
     startHeldGesture(operationId, context.paneId, event.key);
@@ -875,29 +911,7 @@ export function markNotesSplitInputBenchmarkPaneCommit(
   }
   const undo = installed.undoSnapshotsByPane.get(paneId);
   if (!undo) return;
-  const snapshot = JSON.stringify({
-    rows: [...document.querySelectorAll<HTMLElement>(
-      `[data-notes-pane-id="${paneId}"] [data-outline-id]`
-    )].map((row) => ({
-      id: row.dataset.outlineId,
-      title: (() => {
-        const title = row.querySelector<HTMLElement>(TITLE_EDITOR_SELECTOR);
-        return title instanceof HTMLTextAreaElement
-          ? title.value
-          : title
-            ? readPlainText(title)
-            : "";
-      })(),
-      note: row.querySelector<HTMLTextAreaElement>("textarea.notes-node-note")?.value ?? ""
-    })),
-    focus: document.activeElement instanceof HTMLTextAreaElement
-      ? {
-          id: document.activeElement.closest<HTMLElement>("[data-outline-id]")?.dataset.outlineId,
-          selectionStart: document.activeElement.selectionStart,
-          selectionEnd: document.activeElement.selectionEnd
-        }
-      : null
-  });
+  const snapshot = benchmarkPaneSnapshot(paneId);
   if (snapshot === undo.snapshot) {
     installed.collector.mark(undo.id, "undo-restored");
     installed.undoSnapshotsByPane.delete(paneId);

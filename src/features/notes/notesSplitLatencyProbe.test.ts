@@ -19,6 +19,7 @@ import {
   setNotesSplitLatencyProbeEnabled,
   summarizeHeldKeyFrames
 } from "./notesSplitLatencyProbe";
+import { restorePlainTextSelection } from "./plainTextContenteditable";
 
 const PRIMARY_EMPTY_FIXTURE_ID = "10000031-0000-4000-8000-000000000031";
 
@@ -751,6 +752,62 @@ describe("notesSplitLatencyProbe", () => {
       })
     ]);
     dispose();
+  });
+
+  it("verifies live-title Undo only after its UTF-16 focus selection is restored", () => {
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary">
+        <div data-outline-id="live">
+          <div data-notes-bullet-title contenteditable="plaintext-only">A😀BC</div>
+        </div>
+      </section>
+    `;
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => 0,
+      scheduleBacklogCheck: () => {}
+    });
+    const field = document.querySelector<HTMLElement>(
+      "[data-notes-bullet-title]"
+    )!;
+
+    try {
+      field.focus();
+      restorePlainTextSelection(field, {
+        anchorUtf16: 5,
+        focusUtf16: 1
+      });
+      press(field, { key: "Backspace" });
+      release(field, { key: "Backspace" });
+      press(field, { key: "z", code: "KeyZ", metaKey: true });
+
+      restorePlainTextSelection(field, {
+        anchorUtf16: 0,
+        focusUtf16: 0
+      });
+      markNotesSplitInputBenchmarkPaneCommit("primary");
+      expect(benchmarkSamples()).toEqual([
+        expect.objectContaining({
+          operation: "backspace",
+          phases: ["keyup-stop"]
+        })
+      ]);
+
+      field.focus();
+      restorePlainTextSelection(field, {
+        anchorUtf16: 5,
+        focusUtf16: 1
+      });
+      markNotesSplitInputBenchmarkPaneCommit("primary");
+      expect(benchmarkSamples()).toEqual([
+        expect.objectContaining({
+          operation: "backspace",
+          phases: expect.arrayContaining(["keyup-stop", "undo-restored"])
+        })
+      ]);
+    } finally {
+      dispose();
+    }
   });
 
   it("uses real Profiler commits to count both panes for one physical operation", () => {

@@ -258,6 +258,7 @@ export const NotesBulletTitleEditor = forwardRef<
   const [publishedSource, setPublishedSource] = useState(source);
   const lastPublishedSourceRef = useRef(source);
   const lastSourcePropRef = useRef(source);
+  const sourceChangedWhileEditingRef = useRef(false);
   const [slashMenu, setSlashMenu] = useState<SlashCommandMenuState | null>(
     null
   );
@@ -346,8 +347,20 @@ export const NotesBulletTitleEditor = forwardRef<
   }, [editing]);
 
   useEffect(() => {
-    if (editing || source === lastSourcePropRef.current) return;
-    lastSourcePropRef.current = source;
+    const sourceChanged = source !== lastSourcePropRef.current;
+    if (sourceChanged) {
+      lastSourcePropRef.current = source;
+    }
+    if (editing) {
+      if (sourceChanged) {
+        sourceChangedWhileEditingRef.current = true;
+      }
+      return;
+    }
+    const shouldReconcile =
+      sourceChanged || sourceChangedWhileEditingRef.current;
+    sourceChangedWhileEditingRef.current = false;
+    if (!shouldReconcile) return;
     if (source === lastPublishedSourceRef.current) return;
     lastPublishedSourceRef.current = source;
     setPublishedSource(source);
@@ -358,15 +371,26 @@ export const NotesBulletTitleEditor = forwardRef<
     return registerFlushAdapter({ nodeId, flush });
   }, [flush, nodeId, registerFlushAdapter]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     unmountedRef.current = false;
     const waiters = compositionWaitersRef.current;
     return () => {
-      unmountedRef.current = true;
       clearPublishTimer();
+      if (!composingRef.current && dirtyRef.current) {
+        const snapshot = currentSnapshot();
+        dirtyRef.current = false;
+        if (
+          snapshot &&
+          snapshot.source !== lastPublishedSourceRef.current
+        ) {
+          lastPublishedSourceRef.current = snapshot.source;
+          onPublishRef.current(snapshot.source);
+        }
+      }
+      unmountedRef.current = true;
       for (const resolve of waiters.splice(0)) resolve("cancelled");
     };
-  }, [clearPublishTimer]);
+  }, [clearPublishTimer, currentSnapshot]);
 
   useImperativeHandle(
     forwardedRef,

@@ -1381,6 +1381,19 @@ export class NotesDraftEngine {
     ) {
       return { baselineFlushed: false, titleUpdate: null };
     }
+    for (const nodeId of state.touchedNodeIds) {
+      const editorFlush = this.flushEditors(nodeId);
+      if (editorFlush !== true && !(await editorFlush)) {
+        return { baselineFlushed: false, titleUpdate: null };
+      }
+    }
+    if (
+      !state.active ||
+      this.record.backspaceDraftLease !== state ||
+      this.record.closing
+    ) {
+      return { baselineFlushed: false, titleUpdate: null };
+    }
     state.frozen = true;
     const results = await Promise.all(state.baselineFlushes);
     if (

@@ -1,5 +1,6 @@
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useLayoutEffect } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
 import type { NotesDataRepairReport } from "../../services/notesStore";
@@ -97,6 +98,24 @@ describe("NotesDataRepairAction", () => {
       JSON.parse(sessionStorage.getItem(NOTES_DATA_REPAIR_NOTICE_KEY)!)
     ).toMatchObject({ repairedNodeCount: 3 });
     expect(reloadApplication).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a confirmation opened by the parent mount layout effect", () => {
+    function ImmediateRepairClick() {
+      useLayoutEffect(() => {
+        const button = document.querySelector<HTMLButtonElement>(
+          "button:not([disabled])",
+        );
+        button?.click();
+      }, []);
+      return repairActionTree("/vault", vi.fn());
+    }
+
+    render(<ImmediateRepairClick />);
+
+    expect(
+      screen.getByRole("alertdialog", { name: "Repair Yonalist data?" }),
+    ).toBeInTheDocument();
   });
 
   it("proceeds without a draft flush result when no workspace or drafts exist", async () => {

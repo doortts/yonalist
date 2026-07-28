@@ -216,6 +216,17 @@ describe("NotesBulletTitleEditor", () => {
     await expect(pending).resolves.toBe("cancelled");
   });
 
+  it("publishes a dirty DOM buffer before the editor unmounts", () => {
+    const { root, onPublish, unmount } = renderEditor();
+    activate(root);
+    inputSource(root, "after");
+
+    unmount();
+
+    expect(onPublish).toHaveBeenCalledOnce();
+    expect(onPublish).toHaveBeenCalledWith("after");
+  });
+
   it("pastes only plain text at the current range", () => {
     const { root, onPublish } = renderEditor({ source: "abcd" });
     activate(root);
