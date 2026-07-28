@@ -214,7 +214,6 @@ export type NotesWorkspaceReducerAction =
     }
   | ({ type: "setUiState" } & Partial<UiState>)
   | { type: "focusNode"; nodeId: NoteId }
-  | { type: "caretMovedByDom"; nodeId: NoteId }
   | { type: "acknowledgePendingFocus"; nodeId: NoteId }
   | { type: "setZoomRoot"; zoomRootId: NoteId | null };
 
@@ -733,16 +732,6 @@ export function notesWorkspaceReducer(
             editingNoteId: action.nodeId,
             pendingFocusId: action.nodeId,
             pendingFocusField: "title"
-          };
-    case "caretMovedByDom":
-      return existingId(state, action.nodeId) === null
-        ? state
-        : {
-            ...state,
-            selectedId: action.nodeId,
-            editingNoteId: action.nodeId,
-            pendingFocusId: null,
-            pendingFocusField: null
           };
     case "acknowledgePendingFocus":
       return state.pendingFocusId === action.nodeId

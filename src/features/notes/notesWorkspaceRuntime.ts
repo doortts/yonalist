@@ -60,16 +60,14 @@ import {
 } from "./notesImageAtomAuthority";
 import type { NotesCommandContext } from "./notesCommands";
 import { emptyHistoryState } from "./notesWorkspaceCommandSupport";
-import type { OptimisticInsertionSnapshot } from "./notesKeyboardInsertion";
+import type { OptimisticInsertionSnapshot } from "./notesLocalStructure";
 import type { OptimisticBackspaceGesture } from "./notesBackspaceGesture";
 import * as settlementRuntime from "./notesWorkspaceSettlementRuntime";
-import { useNotesDirectCaretReconciliation } from "./useNotesDirectCaretReconciliation";
 import type {
   LiveNotesNavigation,
   NotesActionsSlice,
   NotesDraftsSlice,
   NotesPendingPrimarySelection,
-  NotesProjectionPublication,
   NotesStateSlice,
   NotesWorkspaceActions,
   UseNotesWorkspaceHookResult,
@@ -207,8 +205,6 @@ export function useNotesWorkspace({
     useState<NotesHistoryStatus>(emptyHistoryState);
   const [authorityRecovery, setAuthorityRecovery] =
     useState<NotesWriteAuthority>({ kind: "known" });
-  const [projectionPublication, setProjectionPublication] =
-    useState<NotesProjectionPublication | null>(null);
   const [optimisticInsertionSnapshot, setOptimisticInsertionSnapshot] =
     useState<OptimisticInsertionSnapshot>({
       insertions: [],
@@ -241,8 +237,6 @@ export function useNotesWorkspace({
   // Selection replay is a one-shot DOM effect republished by authoritative renders.
   const pendingPrimarySelectionRef =
     useRef<NotesPendingPrimarySelection | null>(null);
-  const pendingKeyboardInsertionFocusRef =
-    useRef<settlementRuntime.PendingKeyboardInsertionFocus | null>(null);
   const nextPrimarySelectionRequestIdRef = useRef(0);
   const navigationVersionRef = useRef(0);
   const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(null);
@@ -365,7 +359,7 @@ export function useNotesWorkspace({
       // Navigation invalidates any live selection range before the next render.
       if (
         selectionRef.current !== null &&
-        (action.type === "focusNode" || action.type === "caretMovedByDom" ||
+        (action.type === "focusNode" ||
           action.type === "setZoomRoot" ||
           action.type === "startWorkspaceLoad")
       ) {
@@ -374,11 +368,6 @@ export function useNotesWorkspace({
     },
     [selectionRef, updateSelection],
   );
-  const { notifyCaretMovedByDom, settleDirectCaretClaim, invalidatePendingCaretMove, cancelPendingCaretMove } =
-    useNotesDirectCaretReconciliation({
-      pendingPrimarySelectionRef, navigationVersionRef, editingFocusRef,
-      selectionRef, selectionRevisionRef, stateRef, closedRef, applyAction, replaceSelection,
-    });
   const retirePendingPrimarySelection = useCallback((): void => {
     const pendingPrimarySelection = pendingPrimarySelectionRef.current;
     if (pendingPrimarySelection === null) return;
@@ -409,32 +398,8 @@ export function useNotesWorkspace({
   const retryAuthorityRecovery = useCallback(async (): Promise<void> => {
     await sessionRef.current?.retryAuthorityRecovery();
   }, []);
-  const consumeInsertionMotion = useCallback(
-    (intentToken: number, cancelFocusNodeId?: NoteId): void => {
-      const focus = pendingKeyboardInsertionFocusRef.current;
-      if (
-        settlementRuntime.ownsKeyboardInsertionFocus(
-          focus,
-          vaultRoot,
-          intentToken,
-          cancelFocusNodeId,
-        )
-      ) {
-        pendingKeyboardInsertionFocusRef.current = null;
-        applyAction({
-          type: "acknowledgePendingFocus",
-          nodeId: cancelFocusNodeId,
-        });
-      }
-      setProjectionPublication((current) =>
-        settlementRuntime.consumedInsertionMotion(current, intentToken),
-      );
-    },
-    [applyAction, vaultRoot],
-  );
   useLayoutEffect(() => {
     sessionRetirementTokenRef.current = null;
-    cancelPendingCaretMove();
     closedRef.current = false;
     outlineCompositionActiveRef.current = false;
     pendingNavigationRef.current = null;
@@ -450,7 +415,6 @@ export function useNotesWorkspace({
     historyStatusRef.current = resetHistoryStatus;
     setHistoryStatus(resetHistoryStatus);
     setAuthorityRecovery({ kind: "known" });
-    setProjectionPublication(null);
     const emptyOptimisticSnapshot = { insertions: [], failure: null };
     optimisticInsertionSnapshotRef.current = emptyOptimisticSnapshot;
     pendingOptimisticTitleFlushesRef.current.clear();
@@ -663,12 +627,6 @@ export function useNotesWorkspace({
         ) {
           void requestTagSummaryRefresh();
         }
-        pendingKeyboardInsertionFocusRef.current =
-          settlementRuntime.settledKeyboardInsertionFocus(
-            pendingKeyboardInsertionFocusRef.current,
-            settledResult,
-            vaultRoot,
-          );
         const nextExpansions = settlementRuntime.settledLocalExpansions(
           locallyExpandedNodeIdsRef.current,
           settledResult,
@@ -685,11 +643,6 @@ export function useNotesWorkspace({
           void reloadFromSync();
           return;
         }
-        setProjectionPublication(
-          settledResult.kind === "skipped"
-            ? null
-            : (settledResult.projectionPublication ?? null),
-        );
         // The reducer settles navigation from this same result via its one
         // reconciler; a stale editing caret is naturally ignored once the
         // reducer moves the editing node (see currentNavigation's guard), so
@@ -815,7 +768,6 @@ export function useNotesWorkspace({
   }, [
     discardAttachmentUploadAttempts,
     clearAttachmentUploadUi,
-    cancelPendingCaretMove,
     prepareAttachmentUploadAttemptsForTeardown,
     releaseFinalizedDetachedAttachmentUploadAttempts,
     invalidateTagSummaries,
@@ -1027,9 +979,6 @@ export function useNotesWorkspace({
       if (pendingPrimarySelection !== null) {
         pendingPrimarySelectionRef.current = null;
       }
-      if (pendingKeyboardInsertionFocusRef.current?.nodeId === nodeId) {
-        pendingKeyboardInsertionFocusRef.current = null;
-      }
       applyAction({ type: "acknowledgePendingFocus", nodeId });
     },
     [applyAction],
@@ -1172,13 +1121,6 @@ export function useNotesWorkspace({
           markEditingFocus(nodeId, field);
         }
       },
-      notifyCaretMovedByDom: (nodeId, field, claimAttempt) => {
-        if (!writesUnavailable()) {
-          notifyCaretMovedByDom(nodeId, field, claimAttempt);
-        }
-      },
-      settleDirectCaretClaim,
-      invalidatePendingCaretMove,
       getNavigationVersion,
       prepareKeyboardInsertion: (input) =>
         writesUnavailable() ? null : prepareKeyboardInsertion(input),
@@ -1189,12 +1131,6 @@ export function useNotesWorkspace({
       },
       dismissOptimisticInsertionFailure: () =>
         sessionRef.current?.dismissOptimisticInsertionFailure(),
-      pendingKeyboardInsertionInteractionEpoch: (nodeId) =>
-        settlementRuntime.pendingKeyboardInsertionEpoch(
-          pendingKeyboardInsertionFocusRef.current,
-          vaultRoot,
-          nodeId,
-        ),
       beginBackspaceGesture: (paneId, nodeId, selection) =>
         writesUnavailable()
           ? null
@@ -1211,10 +1147,6 @@ export function useNotesWorkspace({
       cancelBackspaceGesture,
       publishOutlinePaneState: (input) =>
         sessionRef.current?.publishOutlinePaneState(input),
-      publishOutlineInteractionEpoch: (input) =>
-        sessionRef.current?.publishOutlineInteractionEpoch(input),
-      publishOutlineDragState: (input) =>
-        sessionRef.current?.publishOutlineDragState(input),
       unregisterOutlinePane: (paneId) =>
         settlementRuntime.unregisterOwnedOutlinePane(
           sessionRecordRef.current,
@@ -1223,7 +1155,6 @@ export function useNotesWorkspace({
           vaultRoot,
           paneId,
         ),
-      consumeInsertionMotion,
       createRoot: gateOutcome(createRoot),
       createNextTextSibling: gateOutcome(createNextTextSibling),
       materializeGithubNotification: gateOutcome(materializeGithubNotification),
@@ -1306,7 +1237,6 @@ export function useNotesWorkspace({
     acknowledgeFocus,
     focusNode,
     markEditingFocus,
-    notifyCaretMovedByDom, settleDirectCaretClaim, invalidatePendingCaretMove,
     getNavigationVersion,
     prepareKeyboardInsertion,
     beginBackspaceGesture,
@@ -1314,7 +1244,6 @@ export function useNotesWorkspace({
     removeEmptyNodeInBackspaceGesture,
     finishBackspaceGesture,
     cancelBackspaceGesture,
-    consumeInsertionMotion,
     createRoot,
     createNextTextSibling,
     materializeGithubNotification,
@@ -1418,7 +1347,6 @@ export function useNotesWorkspace({
         authorityRecovery.kind === "known" &&
         (sessionHistory?.canRedo() ?? false),
       authorityRecovery,
-      projectionPublication,
       retryAuthorityRecovery,
       pendingPrimarySelection: pendingPrimarySelectionRef.current,
     };
@@ -1431,7 +1359,6 @@ export function useNotesWorkspace({
     locallyExpandedNodeIds,
     historyTimelineVersion,
     authorityRecovery,
-    projectionPublication,
     retryAuthorityRecovery,
   ]);
 

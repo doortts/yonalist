@@ -391,7 +391,8 @@ export function useNotesDatePickerIntegration({
     field: NotesDateField,
     match: NoteDateMatch,
     anchor: HTMLButtonElement,
-    explicitFocusElement?: NotesDateFocusElement
+    explicitFocusElement?: NotesDateFocusElement,
+    explicitSource?: string
   ) => {
     const focusElement = explicitFocusElement ?? refs[field].current;
     if (!focusElement) {
@@ -402,7 +403,7 @@ export function useNotesDatePickerIntegration({
       source:
         focusElement instanceof HTMLTextAreaElement
           ? focusElement.value
-          : readPlainText(focusElement),
+          : (explicitSource ?? readPlainText(focusElement)),
       context: createExistingDateContext(match),
       anchor,
       focusElement

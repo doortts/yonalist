@@ -2,12 +2,96 @@ import type {
   NoteId,
   NoteNode,
   NotesHistoryContext,
+  NotesWorkspaceScope,
 } from "../../domain/notes";
 import type { NotesHistoryPrimarySelection } from "./notesHistory";
 import type { NotesPaneId } from "./notesPaneSession";
-import { finalizeOptimisticOutlineRows } from "./notesBackspaceGesture";
+import {
+  finalizeOptimisticOutlineRows,
+  projectOptimisticBackspaceGesture,
+  type OptimisticBackspaceGesture,
+} from "./notesBackspaceGesture";
 import type { NormalizedNotesWorkspace } from "./notesWorkspaceReducer";
 import type { FlattenedOutlineRow } from "./outlineTree";
+
+export type LocalStructurePostcondition =
+  | {
+      readonly kind: "split";
+      readonly expectedSourceTitle: string;
+      readonly expectedInsertedTitle: string;
+    }
+  | {
+      readonly kind: "first-child";
+      readonly expectedParentId: NoteId;
+      readonly expectedIndex: 0;
+      readonly expectedInsertedTitle: "";
+    };
+
+export interface KeyboardInsertionIntent {
+  readonly token: number;
+  readonly ownerSessionGeneration: number;
+  readonly sourceId: NoteId;
+  readonly expectedNodeId: NoteId;
+  readonly postcondition: LocalStructurePostcondition;
+}
+
+export interface PendingKeyboardInsertion {
+  readonly intent: KeyboardInsertionIntent;
+  readonly ownerSessionId: string;
+  readonly ownerPaneId: string;
+  readonly expectedStructuralHistoryEpoch: string;
+  readonly expectedStructuralHistoryEntryId: string;
+}
+
+export type OptimisticKeyboardInsertionStatus =
+  | "prepared"
+  | "queued"
+  | "running"
+  | "checking"
+  | "settled";
+
+export interface OptimisticKeyboardInsertion {
+  readonly pending: PendingKeyboardInsertion;
+  readonly historyContext: NotesHistoryContext;
+  readonly dependencyId: NoteId | null;
+  readonly sourceSelection: NotesHistoryPrimarySelection;
+  readonly sourceTitle: string;
+  readonly insertedTitle: string;
+  readonly status: OptimisticKeyboardInsertionStatus;
+  readonly undoRequested: boolean;
+}
+
+export interface OptimisticInsertionFailure {
+  readonly insertion: OptimisticKeyboardInsertion;
+  readonly message: string;
+  readonly recoveryText: string;
+  readonly retryable: boolean;
+}
+
+export interface OptimisticInsertionSnapshot {
+  readonly insertions: readonly OptimisticKeyboardInsertion[];
+  readonly failure: OptimisticInsertionFailure | null;
+}
+
+export interface OptimisticOutlineProjection {
+  readonly rows: readonly FlattenedOutlineRow[];
+  readonly nodeOverrides: ReadonlyMap<NoteId, NoteNode>;
+}
+
+export type NotesProjectionPublicationOwner =
+  | { readonly kind: "keyboard-insertion"; readonly intentToken: number }
+  | { readonly kind: "keyboard-draft"; readonly intentToken: number }
+  | { readonly kind: "other" };
+
+export interface OutlinePanePublicationSnapshot {
+  readonly paneId: string;
+  readonly sessionId: string;
+  readonly scope: NotesWorkspaceScope;
+  readonly zoomedNodeId: NoteId | null;
+  readonly showCompleted: boolean;
+  readonly collapsedNodeIds: ReadonlySet<NoteId>;
+  readonly locallyExpandedNodeIds: ReadonlySet<NoteId>;
+}
 
 export interface LocalStructureEntry {
   readonly token: number;
@@ -15,18 +99,7 @@ export interface LocalStructureEntry {
   readonly insertedId: NoteId;
   readonly ownerPaneId: NotesPaneId;
   readonly historyContext: NotesHistoryContext;
-  readonly postcondition:
-    | {
-        readonly kind: "split";
-        readonly expectedSourceTitle: string;
-        readonly expectedInsertedTitle: string;
-      }
-    | {
-        readonly kind: "first-child";
-        readonly expectedParentId: NoteId;
-        readonly expectedIndex: 0;
-        readonly expectedInsertedTitle: "";
-      };
+  readonly postcondition: LocalStructurePostcondition;
   readonly sourceSelection: NotesHistoryPrimarySelection;
   readonly sourceTitle: string;
   readonly insertedTitle: string;
@@ -76,6 +149,25 @@ export function localFirstChild(input: LocalSplitInput): LocalStructureEntry {
     },
     status: "prepared",
   };
+}
+
+export function optimisticKeyboardInsertionLocalEntry(
+  insertion: OptimisticKeyboardInsertion,
+): LocalStructureEntry {
+  const input = {
+    token: insertion.pending.intent.token,
+    sourceId: insertion.pending.intent.sourceId,
+    insertedId: insertion.pending.intent.expectedNodeId,
+    ownerPaneId: insertion.pending.ownerPaneId as NotesPaneId,
+    historyContext: insertion.historyContext,
+    sourceSelection: insertion.sourceSelection,
+    sourceTitle: insertion.sourceTitle,
+    insertedTitle: insertion.insertedTitle,
+    dependencyId: insertion.dependencyId,
+  };
+  return insertion.pending.intent.postcondition.kind === "first-child"
+    ? localFirstChild(input)
+    : localSplit(input);
 }
 
 export function projectLocalStructures(
@@ -155,6 +247,75 @@ export function projectLocalStructures(
         rows: finalizeOptimisticOutlineRows(projectedRows),
         nodeOverrides,
       };
+}
+
+export function projectOptimisticKeyboardInsertions(
+  rows: readonly FlattenedOutlineRow[],
+  nodesById: Readonly<Record<NoteId, NoteNode>>,
+  insertions: readonly OptimisticKeyboardInsertion[],
+): OptimisticOutlineProjection {
+  return projectLocalStructures(
+    rows,
+    nodesById,
+    insertions
+      .filter((insertion) => insertion.status !== "settled")
+      .map(optimisticKeyboardInsertionLocalEntry),
+  );
+}
+
+export function projectOptimisticOutline(
+  rows: readonly FlattenedOutlineRow[],
+  nodesById: Readonly<Record<NoteId, NoteNode>>,
+  insertions: readonly OptimisticKeyboardInsertion[],
+  backspaceGesture: OptimisticBackspaceGesture | null,
+): OptimisticOutlineProjection {
+  const insertionProjection = projectOptimisticKeyboardInsertions(
+    rows,
+    nodesById,
+    insertions,
+  );
+  if (backspaceGesture === null) {
+    return insertionProjection;
+  }
+  const backspaceProjection = projectOptimisticBackspaceGesture(
+    insertionProjection.rows,
+    nodesById,
+    backspaceGesture,
+    (id) => insertionProjection.nodeOverrides.get(id) ?? nodesById[id],
+  );
+  const nodeOverrides = new Map(insertionProjection.nodeOverrides);
+  for (const [id, node] of backspaceProjection.nodeOverrides) {
+    nodeOverrides.set(id, node);
+  }
+  return { rows: backspaceProjection.rows, nodeOverrides };
+}
+
+export function dependentOptimisticInsertionIds(
+  insertions: readonly OptimisticKeyboardInsertion[],
+  failedNodeId: NoteId,
+): readonly NoteId[] {
+  const affected = new Set<NoteId>([failedNodeId]);
+  let previousSize = 0;
+  while (affected.size !== previousSize) {
+    previousSize = affected.size;
+    for (const insertion of insertions) {
+      if (
+        insertion.dependencyId !== null &&
+        affected.has(insertion.dependencyId)
+      ) {
+        affected.add(insertion.pending.intent.expectedNodeId);
+      }
+    }
+  }
+  return insertions
+    .map((insertion) => insertion.pending.intent.expectedNodeId)
+    .filter((expectedNodeId) => affected.has(expectedNodeId));
+}
+
+export function optimisticInsertionRecoveryText(
+  insertion: Pick<OptimisticKeyboardInsertion, "sourceTitle" | "insertedTitle">,
+): string {
+  return `${insertion.sourceTitle}\n${insertion.insertedTitle}`;
 }
 
 export function settleLocalStructure(

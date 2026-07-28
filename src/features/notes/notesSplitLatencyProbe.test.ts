@@ -265,12 +265,12 @@ describe("notesSplitLatencyProbe", () => {
     document.body.innerHTML = `
       <section data-notes-pane-id="primary">
         <div data-outline-id="fixture">
-          <textarea class="notes-node-title"></textarea>
+          <div data-notes-bullet-title contenteditable="true" tabindex="0"></div>
         </div>
       </section>
     `;
-    const field = document.querySelector<HTMLTextAreaElement>(
-      "textarea.notes-node-title"
+    const field = document.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]"
     )!;
 
     installNotesSplitInputBenchmarkCollector();
@@ -292,12 +292,12 @@ describe("notesSplitLatencyProbe", () => {
     document.body.innerHTML = `
       <button aria-label="Open split view">Split</button>
       <section data-notes-pane-id="primary">
-        <div data-outline-id="primary"><textarea class="notes-node-title">Primary</textarea></div>
-        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><textarea class="notes-node-title"></textarea></div>
+        <div data-outline-id="primary"><div data-notes-bullet-title contenteditable="true" tabindex="0">Primary</div></div>
+        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><div data-notes-bullet-title contenteditable="true" tabindex="0"></div></div>
       </section>
       <section data-notes-pane-id="secondary">
-        <div data-outline-id="secondary"><textarea class="notes-node-title">Secondary</textarea></div>
-        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><textarea class="notes-node-title"></textarea></div>
+        <div data-outline-id="secondary"><div data-notes-bullet-title contenteditable="true" tabindex="0">Secondary</div></div>
+        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><div data-notes-bullet-title contenteditable="true" tabindex="0"></div></div>
       </section>
     `;
     const splitButton = document.querySelector<HTMLButtonElement>(
@@ -323,11 +323,11 @@ describe("notesSplitLatencyProbe", () => {
     expect(splitClick).toHaveBeenCalledOnce();
     press(window, { code: "Digit3", metaKey: true, altKey: true });
     expect(document.activeElement).toBe(
-      document.querySelector('[data-notes-pane-id="primary"] [data-outline-id="10000031-0000-4000-8000-000000000031"] textarea')
+      document.querySelector('[data-notes-pane-id="primary"] [data-outline-id="10000031-0000-4000-8000-000000000031"] [data-notes-bullet-title]')
     );
     press(window, { code: "Digit3", metaKey: true, altKey: true, shiftKey: true });
     expect(document.activeElement).toBe(
-      document.querySelector('[data-notes-pane-id="secondary"] [data-outline-id="10000031-0000-4000-8000-000000000031"] textarea')
+      document.querySelector('[data-notes-pane-id="secondary"] [data-outline-id="10000031-0000-4000-8000-000000000031"] [data-notes-bullet-title]')
     );
     dispose();
   });
@@ -389,8 +389,8 @@ describe("notesSplitLatencyProbe", () => {
   it("keeps editor-to-editor repeats grouped but closes them on window blur", () => {
     document.body.innerHTML = `
       <section data-notes-pane-id="primary">
-        <div data-outline-id="first"><textarea class="notes-node-title">First</textarea></div>
-        <div data-outline-id="second"><textarea class="notes-node-title">Second</textarea></div>
+        <div data-outline-id="first"><div data-notes-bullet-title contenteditable="true" tabindex="0">First</div></div>
+        <div data-outline-id="second"><div data-notes-bullet-title contenteditable="true" tabindex="0">Second</div></div>
       </section>
     `;
     const dispose = installNotesSplitInputBenchmarkCollector({
@@ -400,7 +400,7 @@ describe("notesSplitLatencyProbe", () => {
       scheduleEnterCancellation: () => {}
     });
     const [first, second] = [
-      ...document.querySelectorAll<HTMLTextAreaElement>("textarea")
+      ...document.querySelectorAll<HTMLDivElement>("[data-notes-bullet-title]")
     ];
 
     try {
@@ -432,8 +432,8 @@ describe("notesSplitLatencyProbe", () => {
 
   it("closes a held gesture before a different key or pane starts another", () => {
     document.body.innerHTML = `
-      <section data-notes-pane-id="primary"><div data-outline-id="primary"><textarea class="notes-node-title">Primary</textarea></div></section>
-      <section data-notes-pane-id="secondary"><div data-outline-id="secondary"><textarea class="notes-node-title">Secondary</textarea></div></section>
+      <section data-notes-pane-id="primary"><div data-outline-id="primary"><div data-notes-bullet-title contenteditable="true" tabindex="0">Primary</div></div></section>
+      <section data-notes-pane-id="secondary"><div data-outline-id="secondary"><div data-notes-bullet-title contenteditable="true" tabindex="0">Secondary</div></div></section>
     `;
     const dispose = installNotesSplitInputBenchmarkCollector({
       origin: "http://127.0.0.1:1438",
@@ -441,11 +441,11 @@ describe("notesSplitLatencyProbe", () => {
       scheduleBacklogCheck: () => {},
       scheduleEnterCancellation: () => {}
     });
-    const primary = document.querySelector<HTMLTextAreaElement>(
-      '[data-notes-pane-id="primary"] textarea'
+    const primary = document.querySelector<HTMLDivElement>(
+      '[data-notes-pane-id="primary"] [data-notes-bullet-title]'
     )!;
-    const secondary = document.querySelector<HTMLTextAreaElement>(
-      '[data-notes-pane-id="secondary"] textarea'
+    const secondary = document.querySelector<HTMLDivElement>(
+      '[data-notes-pane-id="secondary"] [data-notes-bullet-title]'
     )!;
 
     try {
@@ -468,10 +468,10 @@ describe("notesSplitLatencyProbe", () => {
     let clock = 0;
     document.body.innerHTML = `
       <section data-notes-pane-id="primary">
-        <div data-outline-id="primary"><textarea class="notes-node-title">Primary</textarea></div>
+        <div data-outline-id="primary"><div data-notes-bullet-title contenteditable="true" tabindex="0">Primary</div></div>
       </section>
       <section data-notes-pane-id="secondary">
-        <div data-outline-id="secondary"><textarea class="notes-node-title">Secondary</textarea></div>
+        <div data-outline-id="secondary"><div data-notes-bullet-title contenteditable="true" tabindex="0">Secondary</div></div>
       </section>
     `;
     setNotesSplitLatencyProbeEnabled(true);
@@ -480,11 +480,11 @@ describe("notesSplitLatencyProbe", () => {
       now: () => (clock += 10),
       scheduleBacklogCheck: () => {}
     });
-    const primary = document.querySelector<HTMLTextAreaElement>(
-      '[data-notes-pane-id="primary"] textarea'
+    const primary = document.querySelector<HTMLDivElement>(
+      '[data-notes-pane-id="primary"] [data-notes-bullet-title]'
     )!;
-    const secondary = document.querySelector<HTMLTextAreaElement>(
-      '[data-notes-pane-id="secondary"] textarea'
+    const secondary = document.querySelector<HTMLDivElement>(
+      '[data-notes-pane-id="secondary"] [data-notes-bullet-title]'
     )!;
 
     press(primary, { key: "Enter" });
@@ -514,8 +514,8 @@ describe("notesSplitLatencyProbe", () => {
 
   it("counts primary-origin commits separately in the active and inactive panes", () => {
     document.body.innerHTML = `
-      <section data-notes-pane-id="primary"><div data-outline-id="primary"><textarea class="notes-node-title">Primary</textarea></div></section>
-      <section data-notes-pane-id="secondary"><div data-outline-id="secondary"><textarea class="notes-node-title">Secondary</textarea></div></section>
+      <section data-notes-pane-id="primary"><div data-outline-id="primary"><div data-notes-bullet-title contenteditable="true" tabindex="0">Primary</div></div></section>
+      <section data-notes-pane-id="secondary"><div data-outline-id="secondary"><div data-notes-bullet-title contenteditable="true" tabindex="0">Secondary</div></div></section>
     `;
     setNotesSplitLatencyProbeEnabled(true);
     const dispose = installNotesSplitInputBenchmarkCollector({
@@ -523,7 +523,9 @@ describe("notesSplitLatencyProbe", () => {
       now: () => 0,
       scheduleBacklogCheck: () => {}
     });
-    const primary = document.querySelector<HTMLTextAreaElement>('[data-notes-pane-id="primary"] textarea')!;
+    const primary = document.querySelector<HTMLDivElement>(
+      '[data-notes-pane-id="primary"] [data-notes-bullet-title]'
+    )!;
     press(primary, { key: "Enter" });
     markSplitPhase("split-both", "keydown");
     markNotesSplitInputBenchmarkPaneCommit("primary");
@@ -542,7 +544,7 @@ describe("notesSplitLatencyProbe", () => {
 
   it("expires a non-splitting Enter before the next split binds its own operation", () => {
     const enterCancellations: (() => void)[] = [];
-    document.body.innerHTML = `<section data-notes-pane-id="primary"><div data-outline-id="primary"><textarea class="notes-node-title">Primary</textarea></div></section>`;
+    document.body.innerHTML = `<section data-notes-pane-id="primary"><div data-outline-id="primary"><div data-notes-bullet-title contenteditable="true" tabindex="0">Primary</div></div></section>`;
     setNotesSplitLatencyProbeEnabled(true);
     const dispose = installNotesSplitInputBenchmarkCollector({
       origin: "http://127.0.0.1:1438",
@@ -552,7 +554,7 @@ describe("notesSplitLatencyProbe", () => {
         enterCancellations.push(callback);
       }
     });
-    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+    const field = document.querySelector<HTMLDivElement>("[data-notes-bullet-title]")!;
     press(field, { key: "Enter" });
     enterCancellations.shift()!();
     press(field, { key: "Enter" });
@@ -569,8 +571,8 @@ describe("notesSplitLatencyProbe", () => {
     const closeOperations: (() => void)[] = [];
     document.body.innerHTML = `
       <section data-notes-pane-id="primary">
-        <div data-outline-id="first"><textarea class="notes-node-title">First</textarea></div>
-        <div data-outline-id="second"><textarea class="notes-node-title">Second</textarea></div>
+        <div data-outline-id="first"><div data-notes-bullet-title contenteditable="true" tabindex="0">First</div></div>
+        <div data-outline-id="second"><div data-notes-bullet-title contenteditable="true" tabindex="0">Second</div></div>
       </section>
     `;
     const dispose = installNotesSplitInputBenchmarkCollector({
@@ -580,7 +582,7 @@ describe("notesSplitLatencyProbe", () => {
       scheduleOperationClose: (callback) => closeOperations.push(callback)
     });
     const [first, second] = [
-      ...document.querySelectorAll<HTMLTextAreaElement>("textarea")
+      ...document.querySelectorAll<HTMLDivElement>("[data-notes-bullet-title]")
     ];
 
     first.focus();
@@ -605,8 +607,8 @@ describe("notesSplitLatencyProbe", () => {
     const closeOperations: (() => void)[] = [];
     document.body.innerHTML = `
       <section data-notes-pane-id="primary">
-        <div data-outline-id="first"><textarea class="notes-node-title">First</textarea></div>
-        <div data-outline-id="second"><textarea class="notes-node-title">Second</textarea></div>
+        <div data-outline-id="first"><div data-notes-bullet-title contenteditable="true" tabindex="0">First</div></div>
+        <div data-outline-id="second"><div data-notes-bullet-title contenteditable="true" tabindex="0">Second</div></div>
       </section>
     `;
     const dispose = installNotesSplitInputBenchmarkCollector({
@@ -616,7 +618,7 @@ describe("notesSplitLatencyProbe", () => {
       scheduleOperationClose: (callback) => closeOperations.push(callback)
     });
     const [first, second] = [
-      ...document.querySelectorAll<HTMLTextAreaElement>("textarea")
+      ...document.querySelectorAll<HTMLDivElement>("[data-notes-bullet-title]")
     ];
 
     first.focus();
@@ -638,15 +640,17 @@ describe("notesSplitLatencyProbe", () => {
 
   it("attributes Arrow and held Backspace commits in both panes to their origin operation", () => {
     document.body.innerHTML = `
-      <section data-notes-pane-id="primary"><div data-outline-id="primary"><textarea class="notes-node-title">Primary</textarea></div></section>
-      <section data-notes-pane-id="secondary"><div data-outline-id="secondary"><textarea class="notes-node-title">Secondary</textarea></div></section>
+      <section data-notes-pane-id="primary"><div data-outline-id="primary"><div data-notes-bullet-title contenteditable="true" tabindex="0">Primary</div></div></section>
+      <section data-notes-pane-id="secondary"><div data-outline-id="secondary"><div data-notes-bullet-title contenteditable="true" tabindex="0">Secondary</div></div></section>
     `;
     const dispose = installNotesSplitInputBenchmarkCollector({
       origin: "http://127.0.0.1:1438",
       now: () => 0,
       scheduleBacklogCheck: () => {}
     });
-    const primary = document.querySelector<HTMLTextAreaElement>('[data-notes-pane-id="primary"] textarea')!;
+    const primary = document.querySelector<HTMLDivElement>(
+      '[data-notes-pane-id="primary"] [data-notes-bullet-title]'
+    )!;
     press(primary, { key: "ArrowDown" });
     markNotesSplitInputBenchmarkPaneCommit("primary");
     markNotesSplitInputBenchmarkPaneCommit("secondary");
@@ -664,7 +668,7 @@ describe("notesSplitLatencyProbe", () => {
   it("finalizes held Backspace keyup after deletion moves focus outside a title", () => {
     document.body.innerHTML = `
       <section data-notes-pane-id="primary">
-        <div data-outline-id="empty"><textarea class="notes-node-title"></textarea></div>
+        <div data-outline-id="empty"><div data-notes-bullet-title contenteditable="true" tabindex="0"></div></div>
       </section>
       <button>Outside</button>
     `;
@@ -673,7 +677,7 @@ describe("notesSplitLatencyProbe", () => {
       now: () => 0,
       scheduleBacklogCheck: () => {}
     });
-    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+    const field = document.querySelector<HTMLDivElement>("[data-notes-bullet-title]")!;
     const outside = document.querySelector<HTMLButtonElement>("button")!;
 
     try {
@@ -702,8 +706,8 @@ describe("notesSplitLatencyProbe", () => {
     let runBacklogCheck: (() => void) | undefined;
     document.body.innerHTML = `
       <section data-notes-pane-id="primary">
-        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><textarea class="notes-node-title"></textarea></div>
-        <div data-outline-id="other"><textarea class="notes-node-title">Other</textarea></div>
+        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><div data-notes-bullet-title contenteditable="true" tabindex="0"></div></div>
+        <div data-outline-id="other"><div data-notes-bullet-title contenteditable="true" tabindex="0">Other</div></div>
       </section>
     `;
     const dispose = installNotesSplitInputBenchmarkCollector({
@@ -713,7 +717,7 @@ describe("notesSplitLatencyProbe", () => {
         runBacklogCheck = callback;
       }
     });
-    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+    const field = document.querySelector<HTMLDivElement>("[data-notes-bullet-title]")!;
 
     field.focus();
     press(field, { key: "Backspace" });
@@ -727,13 +731,15 @@ describe("notesSplitLatencyProbe", () => {
     markNotesSplitInputBenchmarkBackspaceSettled(operation, "committed");
     const row = field.closest<HTMLElement>("[data-outline-id]")!;
     row.remove();
-    const undoField = document.querySelector<HTMLTextAreaElement>('[data-outline-id="other"] textarea')!;
+    const undoField = document.querySelector<HTMLDivElement>(
+      '[data-outline-id="other"] [data-notes-bullet-title]'
+    )!;
     press(undoField, { key: "z", code: "KeyZ", metaKey: true });
-    undoField.value = "Changed";
+    undoField.textContent = "Changed";
     markNotesSplitInputBenchmarkPaneCommit("primary");
     const pane = document.querySelector('[data-notes-pane-id="primary"]')!;
     pane.insertBefore(row, pane.querySelector('[data-outline-id="other"]'));
-    undoField.value = "Other";
+    undoField.textContent = "Other";
     field.focus();
     markNotesSplitInputBenchmarkPaneCommit("primary");
 
@@ -866,7 +872,7 @@ describe("notesSplitLatencyProbe", () => {
     document.body.innerHTML = `
       <section data-notes-pane-id="primary">
         <div data-outline-id="primary">
-          <textarea class="notes-node-title">Primary</textarea>
+          <div data-notes-bullet-title contenteditable="true" tabindex="0">Primary</div>
           <textarea class="notes-node-note">Note</textarea>
         </div>
       </section>
@@ -877,8 +883,8 @@ describe("notesSplitLatencyProbe", () => {
       now: () => 0,
       scheduleBacklogCheck: () => {}
     });
-    const primary = document.querySelector<HTMLTextAreaElement>(
-      "textarea.notes-node-title"
+    const primary = document.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]"
     )!;
     const note = document.querySelector<HTMLTextAreaElement>(
       "textarea.notes-node-note"
@@ -930,8 +936,10 @@ describe("notesSplitLatencyProbe", () => {
             createElement(
               "div",
               { "data-outline-id": "primary" },
-              createElement("textarea", {
-                className: "notes-node-title",
+              createElement("div", {
+                "data-notes-bullet-title": "",
+                contentEditable: true,
+                tabIndex: 0,
                 onKeyDown: () => setVersion((current) => current + 1)
               })
             )
@@ -950,7 +958,7 @@ describe("notesSplitLatencyProbe", () => {
     }
     const view = render(createElement(Fixture));
 
-    fireEvent.keyDown(view.container.querySelector("textarea")!, {
+    fireEvent.keyDown(view.container.querySelector("[data-notes-bullet-title]")!, {
       key: "ArrowDown"
     });
 
@@ -968,8 +976,8 @@ describe("notesSplitLatencyProbe", () => {
 
   it("invalidates overlapping operations instead of silently charging delayed commits to the next input", () => {
     document.body.innerHTML = `
-      <section data-notes-pane-id="primary"><div data-outline-id="primary"><textarea class="notes-node-title">Primary</textarea></div></section>
-      <section data-notes-pane-id="secondary"><div data-outline-id="secondary"><textarea class="notes-node-title">Secondary</textarea></div></section>
+      <section data-notes-pane-id="primary"><div data-outline-id="primary"><div data-notes-bullet-title contenteditable="true" tabindex="0">Primary</div></div></section>
+      <section data-notes-pane-id="secondary"><div data-outline-id="secondary"><div data-notes-bullet-title contenteditable="true" tabindex="0">Secondary</div></div></section>
     `;
     const dispose = installNotesSplitInputBenchmarkCollector({
       origin: "http://127.0.0.1:1438",
@@ -977,11 +985,11 @@ describe("notesSplitLatencyProbe", () => {
       scheduleBacklogCheck: () => {},
       scheduleOperationClose: () => {}
     });
-    const primary = document.querySelector<HTMLTextAreaElement>(
-      '[data-notes-pane-id="primary"] textarea'
+    const primary = document.querySelector<HTMLDivElement>(
+      '[data-notes-pane-id="primary"] [data-notes-bullet-title]'
     )!;
-    const secondary = document.querySelector<HTMLTextAreaElement>(
-      '[data-notes-pane-id="secondary"] textarea'
+    const secondary = document.querySelector<HTMLDivElement>(
+      '[data-notes-pane-id="secondary"] [data-notes-bullet-title]'
     )!;
 
     press(primary, { key: "ArrowDown" });
@@ -1011,7 +1019,7 @@ describe("notesSplitLatencyProbe", () => {
     const backlogChecks: (() => void)[] = [];
     document.body.innerHTML = `
       <section data-notes-pane-id="primary">
-        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><textarea class="notes-node-title"></textarea></div>
+        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><div data-notes-bullet-title contenteditable="true" tabindex="0"></div></div>
       </section>
     `;
     const dispose = installNotesSplitInputBenchmarkCollector({
@@ -1020,7 +1028,7 @@ describe("notesSplitLatencyProbe", () => {
       scheduleBacklogCheck: (callback) => backlogChecks.push(callback),
       scheduleOperationClose: () => {}
     });
-    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+    const field = document.querySelector<HTMLDivElement>("[data-notes-bullet-title]")!;
 
     press(field, { key: "Backspace" });
     const committedOperation =
@@ -1066,7 +1074,7 @@ describe("notesSplitLatencyProbe", () => {
     let runBacklogCheck: (() => void) | undefined;
     document.body.innerHTML = `
       <section data-notes-pane-id="secondary">
-        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><textarea class="notes-node-title"></textarea></div>
+        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><div data-notes-bullet-title contenteditable="true" tabindex="0"></div></div>
       </section>
     `;
     const dispose = installNotesSplitInputBenchmarkCollector({
@@ -1077,7 +1085,7 @@ describe("notesSplitLatencyProbe", () => {
       },
       scheduleOperationClose: () => {}
     });
-    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+    const field = document.querySelector<HTMLDivElement>("[data-notes-bullet-title]")!;
 
     press(field, { key: "Backspace" });
     const operation =
@@ -1104,7 +1112,7 @@ describe("notesSplitLatencyProbe", () => {
     let runBacklogCheck: (() => void) | undefined;
     document.body.innerHTML = `
       <section data-notes-pane-id="primary">
-        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><textarea class="notes-node-title"></textarea></div>
+        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><div data-notes-bullet-title contenteditable="true" tabindex="0"></div></div>
       </section>
     `;
     const dispose = installNotesSplitInputBenchmarkCollector({
@@ -1115,7 +1123,7 @@ describe("notesSplitLatencyProbe", () => {
       },
       scheduleOperationClose: () => {}
     });
-    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+    const field = document.querySelector<HTMLDivElement>("[data-notes-bullet-title]")!;
 
     press(field, { key: "Backspace" });
     const first =
@@ -1147,7 +1155,7 @@ describe("notesSplitLatencyProbe", () => {
   it("uses the captured gesture token when an older command settles after a newer gesture starts", () => {
     document.body.innerHTML = `
       <section data-notes-pane-id="primary">
-        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><textarea class="notes-node-title"></textarea></div>
+        <div data-outline-id="${PRIMARY_EMPTY_FIXTURE_ID}"><div data-notes-bullet-title contenteditable="true" tabindex="0"></div></div>
       </section>
     `;
     const dispose = installNotesSplitInputBenchmarkCollector({
@@ -1156,7 +1164,7 @@ describe("notesSplitLatencyProbe", () => {
       scheduleBacklogCheck: () => {},
       scheduleOperationClose: () => {}
     });
-    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+    const field = document.querySelector<HTMLDivElement>("[data-notes-bullet-title]")!;
 
     press(field, { key: "Backspace" });
     const older = captureNotesSplitInputBenchmarkBackspaceOperation("primary");

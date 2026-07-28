@@ -89,7 +89,7 @@ import type {
   NotesHistoryFocusField,
   NotesHistoryPrimarySelection,
 } from "./notesHistory";
-import type { OptimisticKeyboardInsertion } from "./notesKeyboardInsertion";
+import type { OptimisticKeyboardInsertion } from "./notesLocalStructure";
 import type { FlattenedOutlineRow } from "./outlineTree";
 import { resizeTextarea, useAutoGrowTextarea } from "./autoGrowTextarea";
 import {
@@ -99,7 +99,6 @@ import {
   resolveSupportingNoteKey,
   supportingNoteFocusTarget,
 } from "./outlineKeyboard";
-import type { OutlineInteractionEpoch } from "./outlineInteractionEpoch";
 import type { NotesPaneId } from "./notesPaneSession";
 import {
   readPlainTextSelection,
@@ -114,9 +113,7 @@ export interface OutlineEditorFocusRequest {
 
 export interface OutlineNodeEditorProps {
   paneId: NotesPaneId;
-  interactionEpoch: OutlineInteractionEpoch;
   nextKeyboardInsertionToken(): number;
-  onCommandFocusActivity?(): void;
   node: NoteNode;
   attachments: readonly NoteAttachment[];
   childCount: number;
@@ -232,9 +229,7 @@ interface OutlineSelectionPointerDownEvent {
 
 function OutlineNodeEditorComponent({
   paneId,
-  interactionEpoch,
   nextKeyboardInsertionToken,
-  onCommandFocusActivity,
   node,
   attachments,
   childCount,
@@ -476,7 +471,7 @@ function OutlineNodeEditorComponent({
     overrideEdge?: OutlineCaretEdge,
   ): boolean => {
     const paneRoot = source.closest<HTMLElement>(".notes-outline");
-    if (!paneRoot || !actions.notifyCaretMovedByDom) return false;
+    if (!paneRoot) return false;
     const edge =
       overrideEdge ??
       (selection === undefined
@@ -501,7 +496,6 @@ function OutlineNodeEditorComponent({
       return false;
     }
     markCaretPhase(targetNodeId, "dom-focus");
-    actions.notifyCaretMovedByDom(targetNodeId, "title");
     if (markCaretPhase(targetNodeId, "sync")) {
       if (typeof requestAnimationFrame === "function") {
         requestAnimationFrame(() => markCaretPhase(targetNodeId, "paint"));
@@ -674,18 +668,15 @@ function OutlineNodeEditorComponent({
     if (!target) return;
     pendingFocusInProgressRef.current = true;
     try {
-      onCommandFocusActivity?.();
-      interactionEpoch.runCommandFocus(() => {
-        if (liveTitleRef.current?.element === target) {
-          liveTitleRef.current.focus({
-            anchorUtf16: titleValue.length,
-            focusUtf16: titleValue.length,
-          });
-        } else if (target instanceof HTMLTextAreaElement) {
-          target.focus();
-          target.setSelectionRange(target.value.length, target.value.length);
-        }
-      });
+      if (liveTitleRef.current?.element === target) {
+        liveTitleRef.current.focus({
+          anchorUtf16: titleValue.length,
+          focusUtf16: titleValue.length,
+        });
+      } else if (target instanceof HTMLTextAreaElement) {
+        target.focus();
+        target.setSelectionRange(target.value.length, target.value.length);
+      }
     } finally {
       pendingFocusInProgressRef.current = false;
     }
@@ -693,9 +684,7 @@ function OutlineNodeEditorComponent({
     focusedOptimisticTokenRef.current = token;
     markSplitPhase(nodeId, "provisional-caret");
   }, [
-    interactionEpoch,
     nodeId,
-    onCommandFocusActivity,
     optimisticInsertion,
     readOnly,
     titleValue.length,
@@ -738,10 +727,6 @@ function OutlineNodeEditorComponent({
     // This focus is the command's own pending-focus postcondition. Do not
     // report it as a newer user navigation and invalidate its ownership.
     let focused = false;
-    const focusEpoch =
-      actions.pendingKeyboardInsertionInteractionEpoch?.(nodeId) ??
-      interactionEpoch.current();
-    if (!interactionEpoch.isCurrent(focusEpoch)) return;
     pendingFocusInProgressRef.current = true;
     const focusTargetMarker = target instanceof HTMLElement ? target : null;
     focusTargetMarker?.setAttribute(
@@ -749,22 +734,13 @@ function OutlineNodeEditorComponent({
       "true",
     );
     try {
-      onCommandFocusActivity?.();
       if (replaySelection && node.nodeKind === "image") {
-        focused = interactionEpoch.runCommandFocus(() => {
-          if (!interactionEpoch.isCurrent(focusEpoch)) return false;
-          return imageEditorRef.current?.focus(replaySelection) ?? false;
-        });
+        focused = imageEditorRef.current?.focus(replaySelection) ?? false;
       } else if (liveTitleRef.current?.element === target) {
-        focused = interactionEpoch.runCommandFocus(() => {
-          if (!interactionEpoch.isCurrent(focusEpoch)) return false;
-          return liveTitleRef.current?.focus(replaySelection ?? undefined) ?? false;
-        });
+        focused =
+          liveTitleRef.current?.focus(replaySelection ?? undefined) ?? false;
       } else {
-        interactionEpoch.runCommandFocus(() => {
-          if (!interactionEpoch.isCurrent(focusEpoch)) return;
-          target.focus();
-        });
+        target.focus();
         focused = document.activeElement === target;
         if (
           focused &&
@@ -777,7 +753,7 @@ function OutlineNodeEditorComponent({
     } finally {
       pendingFocusInProgressRef.current = false;
     }
-    if (!focused || !interactionEpoch.isCurrent(focusEpoch)) {
+    if (!focused) {
       focusTargetMarker && releaseAuthoritativeFocusTarget(focusTargetMarker);
       return;
     }
@@ -787,7 +763,6 @@ function OutlineNodeEditorComponent({
     markSplitPhase(nodeId, "caret");
     markCaretPhase(nodeId, "dom-focus");
     focusedPendingIdRef.current = focusRequestId;
-    if (!interactionEpoch.isCurrent(focusEpoch)) return;
     try {
       const acknowledgement = replaySelection
         ? actions.acknowledgeFocus(nodeId, focusRequestId)
@@ -811,8 +786,6 @@ function OutlineNodeEditorComponent({
     }
   }, [
     actions,
-    interactionEpoch,
-    onCommandFocusActivity,
     nodeId,
     focusRequest,
     getStateSnapshot,
@@ -1431,9 +1404,8 @@ function OutlineNodeEditorComponent({
             : undefined;
         const keyboardInsertion =
           actions.prepareKeyboardInsertion?.({
-            ownerPaneId: paneId,
-            interactionEpochAtDispatch: interactionEpoch.current(),
-            intent: {
+          ownerPaneId: paneId,
+          intent: {
               token: nextKeyboardInsertionToken(),
               sourceId: nodeId,
               expectedNodeId: newNodeId,
@@ -1500,9 +1472,8 @@ function OutlineNodeEditorComponent({
             : undefined;
         const keyboardInsertion =
           actions.prepareKeyboardInsertion?.({
-            ownerPaneId: paneId,
-            interactionEpochAtDispatch: interactionEpoch.current(),
-            intent: {
+          ownerPaneId: paneId,
+          intent: {
               token: nextKeyboardInsertionToken(),
               sourceId: nodeId,
               expectedNodeId: newNodeId,
@@ -2395,6 +2366,7 @@ function OutlineNodeEditorComponent({
                             token,
                             anchor,
                             imageRef.current ?? undefined,
+                            titleValue,
                           )
                   }
                   onDateTrigger={

@@ -1176,7 +1176,7 @@ describe("NotesPageHeader", () => {
     renderZoomedOutline(workspace);
 
     await user.click(screen.getByRole("button", { name: "Edit date today" }));
-    const picker = screen.getByRole("dialog", { name: "Choose date" });
+    const picker = await screen.findByRole("dialog", { name: "Choose date" });
     await user.click(within(picker).getByRole("button", { name: "Today" }));
     await user.keyboard("{Enter}");
 
@@ -1202,7 +1202,7 @@ describe("NotesPageHeader", () => {
     renderZoomedOutline(workspace);
 
     await user.click(screen.getByRole("button", { name: "Edit date today" }));
-    const picker = screen.getByRole("dialog", { name: "Choose date" });
+    const picker = await screen.findByRole("dialog", { name: "Choose date" });
     await user.click(within(picker).getByRole("button", { name: "Today" }));
     await user.keyboard("{Enter}");
 
@@ -1933,7 +1933,9 @@ describe("NotesPageHeader", () => {
     const workspace = renderZoomedOutline();
     const title = editTextareaByName("Edit page title");
     const note = editTextareaByName("Supporting note: Project");
-    const childTitle = textareasByName("Edit node title")[0]!;
+    const childTitle = screen.getAllByRole("textbox", {
+      name: "Edit node title",
+    })[0]!;
 
     expect(fireEvent.keyDown(title, { key: "z", ctrlKey: true })).toBe(false);
     expect(

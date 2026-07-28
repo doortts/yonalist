@@ -14,7 +14,7 @@ import type {
   NotesWorkspaceQueueContext,
   NotesWorkspaceQueueResult,
 } from "./notesWorkspaceCoordinator";
-import type { NotesProjectionPublicationOwner } from "./notesKeyboardInsertion";
+import type { NotesProjectionPublicationOwner } from "./notesLocalStructure";
 import type { NotesHistoryFocus, NotesHistoryFocusField } from "./notesHistory";
 import type { NotesEditorFlushAdapter } from "./notesImageAtomEditorRegistry";
 import type {

@@ -5,14 +5,14 @@ import type {
   NotesHistoryStatus,
   NormalizedNotesWorkspace
 } from "../../domain/notes";
-import type { KeyboardInsertionPostcondition } from "./notesKeyboardInsertion";
+import type { LocalStructurePostcondition } from "./notesLocalStructure";
 
 export type NotesUnknownOutcomeExpectation =
   | {
       readonly kind: "structural";
       readonly sourceId: NoteId;
       readonly expectedNodeId: NoteId;
-      readonly postcondition: KeyboardInsertionPostcondition;
+      readonly postcondition: LocalStructurePostcondition;
       readonly historyContext: NotesHistoryContext;
     }
   | {

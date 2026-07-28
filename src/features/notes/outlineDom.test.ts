@@ -2,18 +2,18 @@ import { describe, expect, it } from "vitest";
 import { outlineTitleEditor } from "./outlineDom";
 
 describe("outlineDom", () => {
-  it("finds the title textarea for the matching outline row", () => {
+  it("finds the live title editor for the matching outline row", () => {
     const root = document.createElement("section");
     root.innerHTML = `
       <div data-outline-id="first">
-        <textarea class="notes-node-title"></textarea>
+        <div data-notes-bullet-title></div>
       </div>
       <div data-outline-id="second">
-        <textarea class="notes-node-title"></textarea>
+        <div data-notes-bullet-title></div>
       </div>
     `;
 
-    const secondTitle = root.querySelectorAll("textarea")[1];
+    const secondTitle = root.querySelectorAll("[data-notes-bullet-title]")[1];
 
     expect(outlineTitleEditor(root, "second")).toBe(secondTitle);
     expect(outlineTitleEditor(root, "missing")).toBeNull();

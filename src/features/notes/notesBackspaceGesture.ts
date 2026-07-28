@@ -9,7 +9,7 @@ import {
   deriveOutlineGuideMetadata,
   type FlattenedOutlineRow
 } from "./outlineTree";
-import type { OptimisticOutlineProjection } from "./notesKeyboardInsertion";
+import type { OptimisticOutlineProjection } from "./notesLocalStructure";
 
 export interface OptimisticBackspaceGesture {
   readonly token: number;

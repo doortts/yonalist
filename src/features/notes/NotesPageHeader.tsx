@@ -1134,6 +1134,7 @@ export function NotesPageHeader({
                             token,
                             anchor,
                             imageRef.current ?? undefined,
+                            titleValue,
                           )
                   }
                   onDateTrigger={

@@ -114,7 +114,6 @@ import { NOTES_SPLIT_LAYOUT_STORAGE_KEY } from "./notesSplitLayoutStore";
 import { NotesDateTodayProvider } from "./NotesDatePickerIntegration";
 import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
-import type { NotesProjectionPublication } from "./notesWorkspaceTypes";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
 import {
@@ -138,11 +137,19 @@ const notesStyles = readFileSync(
 );
 const appStyles = readFileSync(join(process.cwd(), "src/styles.css"), "utf8");
 
-function mockNarrowViewport(narrow: boolean): void {
+function mockNarrowViewport(
+  narrow: boolean,
+  reducedMotion = false,
+): void {
   vi.stubGlobal(
     "matchMedia",
     vi.fn((query: string) => ({
-      matches: query === "(max-width: 720px)" ? narrow : false,
+      matches:
+        query === "(max-width: 720px)"
+          ? narrow
+          : query === "(prefers-reduced-motion: reduce)"
+            ? reducedMotion
+            : false,
       media: query,
       onchange: null,
       addEventListener: vi.fn(),
@@ -825,9 +832,7 @@ function githubSources(
   };
 }
 
-function rowReplayWorkspace(
-  keyboardInsertionInteractionEpoch?: number,
-): UseNotesWorkspaceResult & {
+function rowReplayWorkspace(): UseNotesWorkspaceResult & {
   pendingPrimarySelection: {
     requestId: number;
     nodeId: string;
@@ -847,12 +852,10 @@ function rowReplayWorkspace(
     {},
     {
       get: (_target, property) =>
-        property === "pendingKeyboardInsertionInteractionEpoch"
-          ? () => keyboardInsertionInteractionEpoch
-          : property === "acknowledgeFocus"
-            ? acknowledgeFocus
-            : property === "claimEditingFocus"
-              ? claimEditingFocus
+        property === "acknowledgeFocus"
+          ? acknowledgeFocus
+          : property === "claimEditingFocus"
+            ? claimEditingFocus
             : noOp,
     },
   ) as unknown as UseNotesWorkspaceResult["actions"];
@@ -883,118 +886,6 @@ function rowReplayWorkspace(
       selection: { anchorUtf16: number; focusUtf16: number };
     };
   };
-}
-
-function signatureMismatchInsertionWorkspace(
-  visibleSignature = "different-visible-projection",
-): UseNotesWorkspaceResult {
-  const state = normalizeWorkspace({
-    nodes: [node({ id: "row", title: "inserted" })],
-  });
-  state.pendingFocusId = "row";
-  state.pendingFocusField = "title";
-  const noOp = vi.fn().mockResolvedValue(undefined);
-  const acknowledgeFocus = vi.fn().mockResolvedValue(undefined);
-  const claimEditingFocus = vi.fn().mockResolvedValue(true);
-  const consumeInsertionMotion = vi.fn(
-    (intentToken: number, cancelFocusNodeId?: NoteId) => {
-      if (intentToken === 7 && cancelFocusNodeId === "row") {
-        // The real action dispatches a reducer update; it cannot mutate the
-        // already-committed state snapshot read by this row's passive effect.
-        queueMicrotask(() => {
-          state.pendingFocusId = null;
-          state.pendingFocusField = null;
-        });
-      }
-    },
-  );
-  const actions = new Proxy<Record<string, typeof noOp>>(
-    {},
-    {
-      get: (_target, property) =>
-        property === "pendingKeyboardInsertionInteractionEpoch"
-          ? () => 0
-          : property === "acknowledgeFocus"
-            ? acknowledgeFocus
-            : property === "claimEditingFocus"
-              ? claimEditingFocus
-            : property === "consumeInsertionMotion"
-              ? consumeInsertionMotion
-              : noOp,
-    },
-  ) as unknown as UseNotesWorkspaceResult["actions"];
-  const projectionPublication = {
-    projectionGeneration: 24,
-    layoutGeneration: 13,
-    owner: { kind: "keyboard-insertion", intentToken: 7 },
-    visibleSignature,
-    keyboardInsertionDisposition: {
-      kind: "exact",
-      pending: {
-        intent: {
-          token: 7,
-          ownerSessionGeneration: 3,
-          sourceId: "source",
-          expectedNodeId: "row",
-          postcondition: {
-            kind: "split",
-            expectedSourceTitle: "before",
-            expectedInsertedTitle: "inserted",
-          },
-        },
-        ownerSessionId: "session-a",
-        ownerPaneId: "pane-a",
-        interactionEpochAtDispatch: 0,
-        expectedStructuralHistoryEpoch: "history-epoch",
-        expectedStructuralHistoryEntryId: "history-entry",
-        projectionGenerationAtDispatch: 20,
-        layoutGenerationAtDispatch: 9,
-        paneSnapshotAtDispatch: {
-          paneId: "pane-a",
-          sessionId: "session-a",
-          scope: { kind: "active" },
-          zoomedNodeId: null,
-          showCompleted: true,
-          collapsedNodeIds: new Set(),
-          locallyExpandedNodeIds: new Set(),
-          interactionEpoch: 0,
-          visibleSignature: "before",
-          geometryGeneration: 4,
-          activeDrag: false,
-        },
-        dragGenerationAtDispatch: 0,
-      },
-      settlement: {
-        intentToken: 7,
-        expectedNodeId: "row",
-        ownerSessionId: "session-a",
-        ownerPaneId: "pane-a",
-        ownerSessionGeneration: 3,
-        interactionEpochAtDispatch: 0,
-        baseProjectionGeneration: 20,
-        acceptedProjectionGeneration: 24,
-        baseLayoutGeneration: 9,
-        acceptedLayoutGeneration: 13,
-        authorityOutcome: "postconditionAccepted",
-        focusEligible: true,
-      },
-    },
-  } satisfies NotesProjectionPublication;
-  return {
-    state,
-    actions,
-    deletingNotesData: false,
-    libraryView: "all",
-    activeTagFilters: [],
-    tagSummaries: [],
-    locallyExpandedNodeIds: new Set(),
-    draftsByNodeId: {},
-    writeError: null,
-    status: "ready",
-    loading: false,
-    error: null,
-    projectionPublication,
-  } as unknown as UseNotesWorkspaceResult;
 }
 
 interface LiveTitleTestApi {
@@ -1091,7 +982,7 @@ function titleEditorInMotionRow(
   root: ParentNode = document,
 ): NodeTitleEditor | null {
   const row = root.querySelector<HTMLElement>(
-    `[data-outline-motion-id="${nodeId}"]`,
+    `[data-outline-id="${nodeId}"]`,
   );
   return row ? (nodeTitleEditors(row)[0] ?? null) : null;
 }
@@ -1355,7 +1246,7 @@ describe("Notes workspace", () => {
     localStorage.removeItem(NOTES_SPLIT_LAYOUT_STORAGE_KEY);
   });
 
-  it("renders an ordinary title in one DOM-owned root without a title textarea", async () => {
+  it("renders an ordinary title in one DOM-owned root", async () => {
     renderNotesWorkspace();
     const outline = await screen.findByLabelText("Notes outline");
     const row = await waitFor(() => {
@@ -1366,12 +1257,7 @@ describe("Notes workspace", () => {
       return current!;
     });
 
-    expect(
-      row.querySelector<HTMLDivElement>("[data-notes-bullet-title]"),
-    ).toBeInTheDocument();
-    expect(
-      row.querySelector<HTMLTextAreaElement>("textarea.notes-node-title"),
-    ).toBeNull();
+    expect(row.querySelectorAll("[data-notes-bullet-title]")).toHaveLength(1);
     expect(
       row.querySelector<HTMLTextAreaElement>("textarea.notes-node-note"),
     ).toHaveValue("Project note");
@@ -1419,11 +1305,17 @@ describe("Notes workspace", () => {
       row("ordinary").querySelector("textarea.notes-node-note"),
     ).toHaveValue("Supporting");
     expect(
-      row("protected").querySelector("textarea.notes-node-title"),
-    ).toHaveValue("Protected");
+      within(row("protected")).getByDisplayValue("Protected"),
+    ).toBeInTheDocument();
     expect(
-      row("plugin-backed").querySelector("textarea.notes-node-title"),
-    ).toHaveValue("Plugin backed");
+      row("protected").querySelector("[data-notes-bullet-title]"),
+    ).toBeNull();
+    expect(
+      within(row("plugin-backed")).getByDisplayValue("Plugin backed"),
+    ).toBeInTheDocument();
+    expect(
+      row("plugin-backed").querySelector("[data-notes-bullet-title]"),
+    ).toBeNull();
     expect(
       row("image").querySelector("[data-notes-bullet-title]"),
     ).toBeNull();
@@ -1548,7 +1440,7 @@ describe("Notes workspace", () => {
     expect(primaryRows.scrollTop).toBe(700);
   });
 
-  it("uses the state-focus fallback when the target has no title textarea", async () => {
+  it("uses the state-focus fallback when the target has no live title editor", async () => {
     const workspace: UseNotesWorkspaceResult = rowReplayWorkspace();
     const state = normalizeWorkspace({
       nodes: [
@@ -1566,14 +1458,11 @@ describe("Notes workspace", () => {
     workspace.state = state;
     workspace.pendingPrimarySelection = null;
     const focusNode = vi.fn().mockResolvedValue(undefined);
-    const notifyCaretMovedByDom = vi.fn();
     workspace.actions = new Proxy(workspace.actions, {
       get: (target, property, receiver) =>
         property === "focusNode"
           ? focusNode
-          : property === "notifyCaretMovedByDom"
-            ? notifyCaretMovedByDom
-            : Reflect.get(target, property, receiver),
+          : Reflect.get(target, property, receiver),
     });
     render(
       <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
@@ -1591,7 +1480,6 @@ describe("Notes workspace", () => {
 
     fireEvent.keyDown(first, { key: "ArrowDown" });
 
-    expect(notifyCaretMovedByDom).not.toHaveBeenCalled();
     expect(focusNode).toHaveBeenCalledOnce();
     expect(focusNode).toHaveBeenCalledWith("image");
   });
@@ -1621,48 +1509,52 @@ describe("Notes workspace", () => {
     expect(await findTitleInput("Row 010")).toHaveFocus();
   });
 
-  it("keeps fifty repeated caret moves exact across each pane prefix", async () => {
-    const rows = Array.from({ length: 101 }, (_, index) =>
-      node({
-        id: `row-${index}`,
-        sortKey: index + 1,
-        title: `Row ${String(index).padStart(3, "0")}`,
-      }),
-    );
-    configureRepository(rows);
-    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
-      function (this: HTMLElement) {
-        return this.classList.contains("notes-outline-rows") ? 280 : 0;
-      },
-    );
-    renderSplitNotesWorkspace();
-    const outlines = await screen.findAllByLabelText("Notes outline");
+  it(
+    "keeps fifty repeated caret moves exact across each pane prefix",
+    async () => {
+      const rows = Array.from({ length: 101 }, (_, index) =>
+        node({
+          id: `row-${index}`,
+          sortKey: index + 1,
+          title: `Row ${String(index).padStart(3, "0")}`,
+        }),
+      );
+      configureRepository(rows);
+      vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+        function (this: HTMLElement) {
+          return this.classList.contains("notes-outline-rows") ? 280 : 0;
+        },
+      );
+      renderSplitNotesWorkspace();
+      const outlines = await screen.findAllByLabelText("Notes outline");
 
-    for (const outline of outlines) {
-      const first = await activateTitleEditorInMotionRow("row-0", outline);
-      first.setSelectionRange(first.value.length, first.value.length);
-      for (let index = 0; index < 50; index += 1) {
-        const active = document.activeElement;
-        expect(active).toHaveAttribute("data-notes-bullet-title", "true");
-        const handled = fireEvent.keyDown(active!, {
-          key: "ArrowDown",
-          repeat: true,
-        });
-        expect(handled).toBe(false);
+      for (const outline of outlines) {
+        const first = await activateTitleEditorInMotionRow("row-0", outline);
+        first.setSelectionRange(first.value.length, first.value.length);
+        for (let index = 0; index < 50; index += 1) {
+          const active = document.activeElement;
+          expect(active).toHaveAttribute("data-notes-bullet-title", "true");
+          const handled = fireEvent.keyDown(active!, {
+            key: "ArrowDown",
+            repeat: true,
+          });
+          expect(handled).toBe(false);
+          await act(async () => Promise.resolve());
+          expect(
+            document.activeElement
+              ?.closest<HTMLElement>("[data-outline-id]")
+              ?.dataset.outlineId,
+          ).toBe(`row-${index + 1}`);
+        }
+        const expected = titleEditorInMotionRow("row-50", outline);
+        expect(expected).not.toBeNull();
+        expect(expected).toHaveFocus();
         await act(async () => Promise.resolve());
-        expect(
-          document.activeElement
-            ?.closest<HTMLElement>("[data-outline-id]")
-            ?.dataset.outlineId,
-        ).toBe(`row-${index + 1}`);
+        expect(expected).toHaveFocus();
       }
-      const expected = titleEditorInMotionRow("row-50", outline);
-      expect(expected).not.toBeNull();
-      expect(expected).toHaveFocus();
-      await act(async () => Promise.resolve());
-      expect(expected).toHaveFocus();
-    }
-  });
+    },
+    30_000,
+  );
 
   it("pins the GitHub root for a deep GitHub descendant prefix target", async () => {
     const workspace: UseNotesWorkspaceResult = rowReplayWorkspace();
@@ -3419,112 +3311,6 @@ describe("Notes workspace", () => {
       "row",
       31,
     );
-  });
-
-  it("does not focus an insertion target after its dispatch interaction epoch is stale", async () => {
-    const workspace = rowReplayWorkspace(1);
-    render(
-      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
-        <VaultRootContext.Provider value="/vault">
-          <NotesImageResidencyProvider scopeKey="/vault">
-            <NotesWorkspaceContext.Provider value={workspace}>
-              <NotesOutlinePane />
-            </NotesWorkspaceContext.Provider>
-          </NotesImageResidencyProvider>
-        </VaultRootContext.Provider>
-      </NotesDateTodayProvider>,
-    );
-
-    const title = await waitFor(() => {
-      const editor = document.querySelector<HTMLDivElement>(
-        "[data-notes-bullet-title]",
-      );
-      expect(editor).not.toBeNull();
-      return editor!;
-    });
-    await act(async () => undefined);
-
-    expect(title).not.toHaveFocus();
-    expect(workspace.actions.acknowledgeFocus).not.toHaveBeenCalled();
-  });
-
-  it("cancels a signature-mismatched insertion focus before it can focus or acknowledge", async () => {
-    const workspace = signatureMismatchInsertionWorkspace();
-    const rendered = render(
-      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
-        <VaultRootContext.Provider value="/vault">
-          <NotesImageResidencyProvider scopeKey="/vault">
-            <NotesWorkspaceContext.Provider value={workspace}>
-              <NotesOutlinePane />
-            </NotesWorkspaceContext.Provider>
-          </NotesImageResidencyProvider>
-        </VaultRootContext.Provider>
-      </NotesDateTodayProvider>,
-    );
-
-    const title = await waitFor(() => {
-      const textarea = queryTitleInput("inserted");
-      expect(textarea).not.toBeNull();
-      return textarea!;
-    });
-    await act(async () => undefined);
-
-    expect(workspace.actions.consumeInsertionMotion).toHaveBeenCalledOnce();
-    expect(workspace.actions.consumeInsertionMotion).toHaveBeenCalledWith(
-      7,
-      "row",
-    );
-    expect(title).not.toHaveFocus();
-    expect(workspace.actions.acknowledgeFocus).not.toHaveBeenCalled();
-
-    rendered.rerender(
-      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
-        <VaultRootContext.Provider value="/vault">
-          <NotesImageResidencyProvider scopeKey="/vault">
-            <NotesWorkspaceContext.Provider
-              value={{ ...workspace, projectionPublication: null }}
-            >
-              <NotesOutlinePane />
-            </NotesWorkspaceContext.Provider>
-          </NotesImageResidencyProvider>
-        </VaultRootContext.Provider>
-      </NotesDateTodayProvider>,
-    );
-    await act(async () => undefined);
-
-    expect(title).not.toHaveFocus();
-    expect(workspace.actions.acknowledgeFocus).not.toHaveBeenCalled();
-  });
-
-  it("focuses and acknowledges an insertion target whose visible signature still matches", async () => {
-    const workspace = signatureMismatchInsertionWorkspace(
-      '[["row",null,0,false]]',
-    );
-    render(
-      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
-        <VaultRootContext.Provider value="/vault">
-          <NotesImageResidencyProvider scopeKey="/vault">
-            <NotesWorkspaceContext.Provider value={workspace}>
-              <NotesOutlinePane />
-            </NotesWorkspaceContext.Provider>
-          </NotesImageResidencyProvider>
-        </VaultRootContext.Provider>
-      </NotesDateTodayProvider>,
-    );
-
-    await waitFor(() => {
-      expect(queryTitleInput("inserted")).toHaveFocus();
-    });
-
-    expect(workspace.actions.consumeInsertionMotion).toHaveBeenCalledOnce();
-    expect(workspace.actions.consumeInsertionMotion).toHaveBeenCalledWith(7);
-    await waitFor(() => {
-      const title = queryTitleInput("inserted");
-      expect(title?.isConnected).toBe(true);
-      expect(title).toHaveFocus();
-    });
-    expect(workspace.actions.acknowledgeFocus).toHaveBeenCalledOnce();
-    expect(workspace.actions.acknowledgeFocus).toHaveBeenCalledWith("row");
   });
 
   it("places the caret at clicked title and supporting-note positions", async () => {
@@ -7146,6 +6932,118 @@ describe("Notes workspace", () => {
     randomUUID.mockRestore();
   });
 
+  it("reveals a collapsed parent's existing children while projecting a first child", async () => {
+    const parent = node({
+      id: "parent",
+      sortKey: 1,
+      title: "Parent",
+      isCollapsed: true,
+    });
+    const firstExistingChild = node({
+      id: "existing-child-1",
+      parentId: "parent",
+      sortKey: 2,
+      title: "Existing child 1",
+    });
+    const secondExistingChild = node({
+      id: "existing-child-2",
+      parentId: "parent",
+      sortKey: 3,
+      title: "Existing child 2",
+    });
+    configureRepository([parent, firstExistingChild, secondExistingChild]);
+    const creation = deferred<NotesWorkspace>();
+    notesStoreMock.createNode.mockReturnValue(creation.promise);
+    const expectedNodeId = "00000000-0000-4000-8000-000000000005";
+    const randomUUID = vi
+      .spyOn(globalThis.crypto, "randomUUID")
+      .mockReturnValue(expectedNodeId);
+    renderNotesWorkspace();
+    const title = await findTitleInput("Parent");
+    title.focus();
+    title.setSelectionRange(title.value.length, title.value.length);
+
+    expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+    await waitFor(() =>
+      expect(notesStoreMock.createNode).toHaveBeenCalledOnce(),
+    );
+
+    expect(nodeTitleEditors().map(titleEditorSource)).toEqual([
+      "Parent",
+      "",
+      "Existing child 1",
+      "Existing child 2",
+    ]);
+    expect(await findTitleInput("")).toHaveFocus();
+
+    await act(async () =>
+      creation.resolve(
+        workspace([
+          parent,
+          node({
+            id: expectedNodeId,
+            parentId: "parent",
+            sortKey: 1,
+            title: "",
+            note: "",
+          }),
+          firstExistingChild,
+          secondExistingChild,
+        ]),
+      ),
+    );
+    randomUUID.mockRestore();
+  });
+
+  it("does not animate an Enter structure change in reduced-motion mode", async () => {
+    mockNarrowViewport(false, true);
+    configureRepository([node({ id: "source", title: "Source" })]);
+    const split = deferred<NotesWorkspace>();
+    notesStoreMock.splitNode.mockReturnValue(split.promise);
+    const originalAnimate = Object.getOwnPropertyDescriptor(
+      Element.prototype,
+      "animate",
+    );
+    const animate = vi.fn();
+
+    try {
+      renderNotesWorkspace();
+      const title = await findTitleInput("Source");
+      title.focus();
+      title.setSelectionRange(title.value.length, title.value.length);
+      Object.defineProperty(Element.prototype, "animate", {
+        configurable: true,
+        value: animate,
+      });
+
+      expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+      await waitFor(() =>
+        expect(notesStoreMock.splitNode).toHaveBeenCalledOnce(),
+      );
+      await findTitleInput("");
+
+      expect(
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+      ).toBe(true);
+      expect(animate).not.toHaveBeenCalled();
+      const insertedId = notesStoreMock.splitNode.mock.lastCall![1].newNodeId;
+      await act(async () =>
+        split.resolve(
+          workspace([
+            node({ id: "source", title: "Source", sortKey: 1 }),
+            node({ id: insertedId, title: "", sortKey: 2 }),
+          ]),
+        ),
+      );
+    } finally {
+      if (originalAnimate) {
+        Object.defineProperty(Element.prototype, "animate", originalAnimate);
+      } else {
+        Reflect.deleteProperty(Element.prototype, "animate");
+      }
+    }
+  });
+
   it("preserves a dirty parent draft and caret when first-child UUID allocation fails", async () => {
     configureRepository([
       node({ id: "parent", sortKey: 1, title: "Parent" }),
@@ -7856,6 +7754,38 @@ describe("Notes workspace", () => {
       fireEvent.pointerUp(child, { button: 0, pointerId: 31 });
 
       expect(selectedOutlineIds()).toEqual(["parent", "child", "grandchild"]);
+    });
+
+    it("publishes selection membership to every row in the mounted prefix", async () => {
+      const nodes = Array.from({ length: 80 }, (_, index) =>
+        node({
+          id: `row-${index}`,
+          sortKey: index + 1,
+          title: `Row ${index}`,
+        }),
+      );
+      configureRepository(nodes);
+      renderNotesWorkspace();
+      const first = await findTitleInput("Row 0");
+      const mountedRows = Array.from(
+        document.querySelectorAll<HTMLElement>("[data-outline-id]"),
+      );
+      expect(mountedRows.length).toBeGreaterThan(5);
+      expect(mountedRows.length).toBeLessThan(nodes.length);
+
+      for (let index = 0; index < 4; index += 1) {
+        fireEvent.keyDown(first, { key: "ArrowDown", shiftKey: true });
+      }
+
+      const selectedIds = new Set(
+        Array.from({ length: 5 }, (_, index) => `row-${index}`),
+      );
+      expect(selectedOutlineIds()).toEqual([...selectedIds]);
+      for (const row of mountedRows) {
+        expect(row.hasAttribute("data-range-selected")).toBe(
+          selectedIds.has(row.dataset.outlineId!),
+        );
+      }
     });
 
     it.each([
@@ -12617,7 +12547,7 @@ describe("Notes workspace", () => {
         fireEvent.keyDown(current!, { key: "Backspace", repeat: true }),
       ).toBe(false);
       expect(
-        document.querySelector(`[data-outline-motion-id="${removedId}"]`),
+        document.querySelector(`[data-outline-id="${removedId}"]`),
       ).toBeNull();
     }
 

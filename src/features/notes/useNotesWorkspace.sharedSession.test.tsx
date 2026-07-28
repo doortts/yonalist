@@ -417,11 +417,7 @@ describe("Task 5 shared session replay and reset", () => {
         zoomedNodeId: null,
         showCompleted: true,
         collapsedNodeIds: new Set(),
-        locallyExpandedNodeIds: new Set(),
-        interactionEpoch: 0,
-        visibleSignature: JSON.stringify([["root", null, 0, false]]),
-        geometryGeneration: 0,
-        activeDrag: false
+        locallyExpandedNodeIds: new Set()
       });
       let preparation: ReturnType<
         NonNullable<
@@ -432,7 +428,6 @@ describe("Task 5 shared session replay and reset", () => {
         preparation =
           second.result.current.actions.prepareKeyboardInsertion?.({
             ownerPaneId: "pane-second",
-            interactionEpochAtDispatch: 0,
             intent: {
               token: 1,
               sourceId: "root",

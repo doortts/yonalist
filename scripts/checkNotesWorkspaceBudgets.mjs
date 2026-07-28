@@ -20,10 +20,6 @@ export const notesWorkspaceProductionLineBudgets = Object.freeze({
   "src/features/notes/notesWorkspaceIdentity.ts": 1_500,
   "src/features/notes/notesWorkspaceProjection.ts": 1_500,
   "src/features/notes/notesWorkspaceCommandSupport.ts": 1_500,
-  "src/features/notes/notesKeyboardInsertion.ts": 1_500,
-  "src/features/notes/outlineRowProjection.ts": 1_500,
-  "src/features/notes/outlineInteractionEpoch.ts": 1_500,
-  "src/features/notes/outlineIdleBaseline.ts": 1_500,
   "src/features/notes/OutlineSortableShell.tsx": 1_500,
   "src/features/notes/notesDataDeletionRegistry.ts": 1_500,
   "src/features/notes/notesDraftErrors.ts": 1_500,
@@ -43,9 +39,7 @@ export const notesWorkspaceProductionLineBudgets = Object.freeze({
   "src/features/notes/useNotesWorkspacePaneRegistry.ts": 1_500,
   "src/features/notes/notesBackspaceRuntime.ts": 159,
   "src/features/notes/notesBufferedWorkspaceCommands.ts": 31,
-  "src/features/notes/notesHeldBackspaceRepeat.ts": 139,
   "src/features/notes/useNotesImageAtomRuntime.ts": 187,
-  "src/features/notes/useNotesHeldBackspaceRepeat.ts": 246,
   "src/features/notes/useNotesWorkspaceExternalStores.ts": 66
 });
 

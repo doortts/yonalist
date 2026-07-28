@@ -56,13 +56,7 @@ describe("NotesPaneScope", () => {
   });
 });
 
-describe("NotesPaneScope deferral", () => {
-  type SeenSlices = {
-    zoom: string[];
-    title: string[];
-    actionVersion: number[];
-  };
-
+describe("NotesPaneScope current slices", () => {
   function makeRegistry(
     activePaneId: NotesPaneId,
     secondaryZoom: string,
@@ -86,115 +80,40 @@ describe("NotesPaneScope deferral", () => {
     };
   }
 
-  function renderSecondary(
-    deferWhenInactive: boolean,
-    initialActive: NotesPaneId,
-    seen: SeenSlices,
-  ) {
-    function Probe() {
+  it("publishes current state, drafts, and actions to an inactive split pane", () => {
+    function Probe({ paneId }: { paneId: NotesPaneId }) {
       const { state } = useNotesState();
       const { draftsByNodeId } = useNotesDrafts();
       const { actions } = useNotesActions();
-      seen.zoom.push(state.zoomRootId ?? "");
-      seen.title.push(draftsByNodeId.secondary?.title ?? "");
-      seen.actionVersion.push(actions.getNavigationVersion?.() ?? -1);
       return (
-        <output>
-          {state.zoomRootId}:{draftsByNodeId.secondary?.title}
+        <output data-testid={`${paneId}-slices`}>
+          {state.zoomRootId}:{draftsByNodeId[paneId]?.title}:
+          {actions.getNavigationVersion?.()}
         </output>
       );
     }
     const tree = (registry: NotesPaneRegistrySlice) => (
       <NotesPaneRegistryContext.Provider value={registry}>
-        <NotesPaneScope paneId="secondary" deferWhenInactive={deferWhenInactive}>
-          <Probe />
+        <NotesPaneScope paneId="primary">
+          <Probe paneId="primary" />
+        </NotesPaneScope>
+        <NotesPaneScope paneId="secondary">
+          <Probe paneId="secondary" />
         </NotesPaneScope>
       </NotesPaneRegistryContext.Provider>
     );
-    const view = render(tree(makeRegistry(initialActive, "a", "draft-a")));
-    return {
-      rerender: (registry: NotesPaneRegistrySlice) =>
-        act(() => view.rerender(tree(registry))),
-    };
-  }
+    const view = render(tree(makeRegistry("primary", "a", "draft-a")));
 
-  const seenSlices = (): SeenSlices => ({
-    zoom: [],
-    title: [],
-    actionVersion: [],
-  });
+    act(() =>
+      view.rerender(tree(makeRegistry("primary", "b", "draft-b", 7))),
+    );
 
-  it("first retains then converges an inactive pane's state and drafts", () => {
-    const seen = seenSlices();
-    const { rerender } = renderSecondary(true, "primary", seen);
-    const updateStart = seen.zoom.length;
-
-    rerender(makeRegistry("primary", "b", "draft-b"));
-
-    const updates = seen.zoom.slice(updateStart).map((zoom, index) => ({
-      zoom,
-      title: seen.title[updateStart + index],
-    }));
-    expect(updates).toContainEqual({ zoom: "a", title: "draft-a" });
-    expect(updates.at(-1)).toEqual({ zoom: "b", title: "draft-b" });
-    expect(screen.getByText("b:draft-b")).toBeInTheDocument();
-  });
-
-  it("reflects an active pane's state and drafts immediately", () => {
-    const seen = seenSlices();
-    const { rerender } = renderSecondary(true, "secondary", seen);
-    const updateStart = seen.zoom.length;
-
-    rerender(makeRegistry("secondary", "b", "draft-b"));
-
-    expect(seen.zoom.slice(updateStart)).toEqual(["b"]);
-    expect(seen.title.slice(updateStart)).toEqual(["draft-b"]);
-  });
-
-  it("does not defer a single pane when split deferral is disabled", () => {
-    const seen = seenSlices();
-    const { rerender } = renderSecondary(false, "primary", seen);
-    const updateStart = seen.zoom.length;
-
-    rerender(makeRegistry("primary", "b", "draft-b"));
-
-    expect(seen.zoom.slice(updateStart)).toEqual(["b"]);
-    expect(seen.title.slice(updateStart)).toEqual(["draft-b"]);
-  });
-
-  it("keeps actions current while state and drafts are deferred", () => {
-    const seen = seenSlices();
-    const { rerender } = renderSecondary(true, "primary", seen);
-    const updateStart = seen.zoom.length;
-
-    rerender(makeRegistry("primary", "b", "draft-b", 7));
-
-    const updates = seen.zoom.slice(updateStart).map((zoom, index) => ({
-      zoom,
-      title: seen.title[updateStart + index],
-      actionVersion: seen.actionVersion[updateStart + index],
-    }));
-    expect(updates).toContainEqual({
-      zoom: "a",
-      title: "draft-a",
-      actionVersion: 7,
-    });
-    expect(updates.at(-1)).toEqual({
-      zoom: "b",
-      title: "draft-b",
-      actionVersion: 7,
-    });
-  });
-
-  it("uses current slices as soon as the pane becomes active", () => {
-    const seen = seenSlices();
-    const { rerender } = renderSecondary(true, "primary", seen);
-    const updateStart = seen.zoom.length;
-
-    rerender(makeRegistry("secondary", "b", "draft-b"));
-
-    expect(seen.zoom.slice(updateStart)).toEqual(["b"]);
-    expect(seen.title.slice(updateStart)).toEqual(["draft-b"]);
+    expect(screen.getByTestId("primary-slices")).toHaveTextContent(
+      "primary-zoom:primary:1",
+    );
+    expect(screen.getByTestId("secondary-slices")).toHaveTextContent(
+      "b:draft-b:7",
+    );
   });
 });
 

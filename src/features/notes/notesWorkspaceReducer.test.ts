@@ -362,38 +362,6 @@ describe("notesWorkspaceReducer", () => {
     ).toBe(focused);
   });
 
-  it("adopts a direct DOM caret move without leaving stale pending focus", () => {
-    const initial = normalizeWorkspace(
-      workspace([
-        node({ id: "root" }),
-        node({ id: "child", parentId: "root" }),
-      ]),
-    );
-    const pending = notesWorkspaceReducer(initial, {
-      type: "focusNode",
-      nodeId: "root",
-    });
-    expect(pending.pendingFocusId).toBe("root");
-
-    const moved = notesWorkspaceReducer(pending, {
-      type: "caretMovedByDom",
-      nodeId: "child",
-    });
-    expect(moved).toMatchObject({
-      selectedId: "child",
-      editingNoteId: "child",
-      pendingFocusId: null,
-      pendingFocusField: null,
-    });
-
-    expect(
-      notesWorkspaceReducer(moved, {
-        type: "caretMovedByDom",
-        nodeId: "missing",
-      }),
-    ).toBe(moved);
-  });
-
   it("keeps the confirmed tree on failures and settles status from remaining work", () => {
     const initial = normalizeWorkspace(workspace([node({ id: "root" })]));
     const pending = notesWorkspaceReducer(initial, {

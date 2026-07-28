@@ -6,7 +6,6 @@ import { resetImageImportRecoveryForTests, useNotesWorkspace, type NotesWorkspac
 import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
 import { notesWorkspaceCoordinatorRegistry, type NotesWorkspaceCoordinatorSession } from "./notesWorkspaceCoordinator";
 import { type NotesHistorySession } from "./notesHistory";
-import { createOutlineVisibleSignature } from "./notesKeyboardInsertion";
 import { journalNotesRepository } from "./testing/notesWorkspaceTestHarness";
 
 const createNoteIdMock = vi.hoisted(() => vi.fn());
@@ -1858,23 +1857,10 @@ describe("useNotesWorkspace", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: createOutlineVisibleSignature([{
-        id: "root",
-        parentId: null,
-        depth: 0,
-        isCollapsed: false,
-        ancestorIds: [],
-        ancestorGuideDepths: [],
-        visibleDescendantEndId: null
-      }]),
-      geometryGeneration: 0,
-      activeDrag: false
+      locallyExpandedNodeIds: new Set()
     });
     const preparation = result.current.actions.prepareKeyboardInsertion?.({
       ownerPaneId: "pane-a",
-      interactionEpochAtDispatch: 1,
       intent: {
         token: 99,
         sourceId: "root",
@@ -1884,6 +1870,11 @@ describe("useNotesWorkspace", () => {
           expectedSourceTitle: "Root",
           expectedInsertedTitle: ""
         }
+      },
+      optimistic: {
+        sourceSelection: { anchorUtf16: 4, focusUtf16: 4 },
+        sourceTitle: "Root",
+        insertedTitle: ""
       }
     })!;
 
@@ -2475,23 +2466,10 @@ describe("useNotesWorkspace", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 3,
-      visibleSignature: createOutlineVisibleSignature([{
-        id: parent.id,
-        parentId: null,
-        depth: 0,
-        isCollapsed: false,
-        ancestorIds: [],
-        ancestorGuideDepths: [],
-        visibleDescendantEndId: null
-      }]),
-      geometryGeneration: 0,
-      activeDrag: false
+      locallyExpandedNodeIds: new Set()
     });
     const preparation = result.current.actions.prepareKeyboardInsertion?.({
       ownerPaneId: "pane-a",
-      interactionEpochAtDispatch: 3,
       intent: {
         token: 1,
         sourceId: parent.id,
@@ -2502,6 +2480,11 @@ describe("useNotesWorkspace", () => {
           expectedIndex: 0,
           expectedInsertedTitle: ""
         }
+      },
+      optimistic: {
+        sourceSelection: { anchorUtf16: 6, focusUtf16: 6 },
+        sourceTitle: "Parent",
+        insertedTitle: ""
       }
     });
     expect(preparation).not.toBeNull();
@@ -2519,39 +2502,6 @@ describe("useNotesWorkspace", () => {
       preparation!.historyContext
     );
     expect(result.current.state.pendingFocusId).toBe("child");
-    expect(result.current.projectionPublication).toMatchObject({
-      owner: { kind: "keyboard-insertion", intentToken: 1 },
-      keyboardInsertionDisposition: {
-        kind: "exact",
-        pending: {
-          intent: {
-            token: 1,
-            expectedNodeId: "child"
-          }
-        }
-      }
-    });
-    expect(
-      result.current.actions.pendingKeyboardInsertionInteractionEpoch?.("child")
-    ).toBe(3);
-    act(() => result.current.actions.consumeInsertionMotion?.(2, "child"));
-    expect(
-      result.current.projectionPublication?.keyboardInsertionDisposition
-    ).toBeDefined();
-    expect(result.current.state.pendingFocusId).toBe("child");
-    act(() => result.current.actions.consumeInsertionMotion?.(1));
-    expect(
-      result.current.projectionPublication?.keyboardInsertionDisposition
-    ).toBeUndefined();
-    expect(result.current.state.pendingFocusId).toBe("child");
-    expect(
-      result.current.actions.pendingKeyboardInsertionInteractionEpoch?.("child")
-    ).toBe(3);
-    act(() => result.current.actions.consumeInsertionMotion?.(1, "child"));
-    expect(result.current.state.pendingFocusId).toBeNull();
-    expect(
-      result.current.actions.pendingKeyboardInsertionInteractionEpoch?.("child")
-    ).toBeUndefined();
   });
 
   it("reconstructs a delta-only create from the coordinator's confirmed workspace", async () => {

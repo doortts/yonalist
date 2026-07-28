@@ -11,7 +11,6 @@ import {
   useNotesState,
 } from "./NotesWorkspaceContext";
 import { NotesPaneSliceScope } from "./NotesPaneScope";
-import { createOutlineVisibleSignature } from "./notesKeyboardInsertion";
 import {
   useNotesWorkspace,
   type UseNotesWorkspaceHookResult,
@@ -51,16 +50,6 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
 
 function workspace(nodes: NoteNode[]): NotesWorkspace {
   return { nodes };
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
 }
 
 function repository(overrides: Partial<NotesStore> = {}): NotesStore {
@@ -295,742 +284,6 @@ describe("notes workspace context split", () => {
     );
   });
 
-  it("keeps newer focus after synchronous direct caret updates in either pane", async () => {
-    const store = repository({
-      loadWorkspace: vi.fn().mockResolvedValue(
-        workspace([
-          node({ id: "root", sortKey: 1024 }),
-          node({ id: "other", sortKey: 2048 })
-        ])
-      )
-    });
-    const { result } = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/caret-authority", repository: store })
-    );
-    await waitFor(() => expect(result.current.status).toBe("ready"));
-    const frames: FrameRequestCallback[] = [];
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      frames.push(callback);
-      return frames.length;
-    });
-    vi.stubGlobal("cancelAnimationFrame", vi.fn());
-    const panes = () => result.current.paneRegistrySlice.panes;
-
-    await act(async () => {
-      panes().primary.actionsSlice.actions.notifyCaretMovedByDom?.(
-        "other",
-        "title"
-      );
-      await panes().primary.actionsSlice.actions.focusNode("root");
-      panes().secondary.actionsSlice.actions.notifyCaretMovedByDom?.(
-        "other",
-        "title"
-      );
-      await panes().secondary.actionsSlice.actions.focusNode("root");
-    });
-    expect(frames).toHaveLength(0);
-    expect(panes().primary.stateSlice.state).toMatchObject({
-      selectedId: "root",
-      editingNoteId: "root",
-      pendingFocusId: "root",
-      pendingFocusField: "title"
-    });
-    expect(panes().secondary.stateSlice.state).toMatchObject({
-      selectedId: "root",
-      editingNoteId: "root",
-      pendingFocusId: "root",
-      pendingFocusField: "title"
-    });
-
-    act(() => {
-      for (const frame of frames.splice(0)) frame(0);
-    });
-
-    expect(panes().primary.stateSlice.state).toMatchObject({
-      selectedId: "root",
-      editingNoteId: "root",
-      pendingFocusId: "root",
-      pendingFocusField: "title"
-    });
-    expect(panes().secondary.stateSlice.state).toMatchObject({
-      selectedId: "root",
-      editingNoteId: "root",
-      pendingFocusId: "root",
-      pendingFocusField: "title"
-    });
-  });
-
-  it("keeps newer editing claims and zoom history after synchronous direct caret updates", async () => {
-    const store = repository({
-      loadWorkspace: vi.fn().mockResolvedValue(
-        workspace([
-          node({ id: "root", sortKey: 1024 }),
-          node({ id: "other", sortKey: 2048 })
-        ])
-      )
-    });
-    const { result } = renderHook(() =>
-      useNotesWorkspace({
-        vaultRoot: "/caret-click-zoom-authority",
-        repository: store
-      })
-    );
-    await waitFor(() => expect(result.current.status).toBe("ready"));
-    const frames: FrameRequestCallback[] = [];
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      frames.push(callback);
-      return frames.length;
-    });
-    vi.stubGlobal("cancelAnimationFrame", vi.fn());
-    const panes = () => result.current.paneRegistrySlice.panes;
-
-    await act(async () => {
-      panes().primary.actionsSlice.actions.notifyCaretMovedByDom?.(
-        "other",
-        "title"
-      );
-      await panes().primary.actionsSlice.actions.claimEditingFocus?.(
-        "root",
-        "title"
-      );
-      panes().secondary.actionsSlice.actions.notifyCaretMovedByDom?.(
-        "other",
-        "title"
-      );
-      await panes().secondary.actionsSlice.actions.claimEditingFocus?.(
-        "root",
-        "title"
-      );
-    });
-    expect(frames).toHaveLength(0);
-    act(() => {
-      for (const frame of frames.splice(0)) frame(0);
-    });
-    expect(panes().primary.stateSlice.state.selectedId).toBe("other");
-    expect(panes().secondary.stateSlice.state).toMatchObject({
-      selectedId: "root",
-      editingNoteId: "root"
-    });
-
-    await act(async () => {
-      panes().primary.actionsSlice.actions.notifyCaretMovedByDom?.(
-        "other",
-        "title"
-      );
-      const primaryZoom =
-        panes().primary.actionsSlice.actions.zoomTo("root");
-      panes().secondary.actionsSlice.actions.notifyCaretMovedByDom?.(
-        "other",
-        "title"
-      );
-      const secondaryZoom =
-        panes().secondary.actionsSlice.actions.zoomTo("root");
-      await Promise.all([primaryZoom, secondaryZoom]);
-    });
-    expect(frames).toHaveLength(0);
-    expect(panes().primary.stateSlice.state).toMatchObject({
-      selectedId: "root",
-      zoomRootId: "root"
-    });
-    expect(panes().secondary.stateSlice.state).toMatchObject({
-      selectedId: "root",
-      zoomRootId: "root"
-    });
-  });
-
-  it("publishes only the active pane for each synchronous repeated editing claim", async () => {
-    const rows = Array.from({ length: 101 }, (_, index) =>
-      node({
-        id: `row-${index}`,
-        sortKey: (index + 1) * 1024
-      })
-    );
-    const store = repository({
-      loadWorkspace: vi.fn().mockResolvedValue(workspace(rows))
-    });
-    let captured: UseNotesWorkspaceHookResult | null = null;
-    let primaryPaneRenders = 0;
-    let secondaryPaneRenders = 0;
-    const PrimaryPaneProbe = memo(function PrimaryPaneProbe({
-      pane: _pane
-    }: {
-      pane: NotesPaneRuntimeSlice;
-    }) {
-      primaryPaneRenders += 1;
-      return null;
-    });
-    const SecondaryPaneProbe = memo(function SecondaryPaneProbe({
-      pane: _pane
-    }: {
-      pane: NotesPaneRuntimeSlice;
-    }) {
-      secondaryPaneRenders += 1;
-      return null;
-    });
-    function Harness() {
-      const value = useNotesWorkspace({
-        vaultRoot: "/caret-claim-coalescing",
-        repository: store
-      });
-      captured = value;
-      return (
-        <>
-          <PrimaryPaneProbe pane={value.paneRegistrySlice.panes.primary} />
-          <SecondaryPaneProbe pane={value.paneRegistrySlice.panes.secondary} />
-        </>
-      );
-    }
-    render(<Harness />);
-    await waitFor(() => expect(captured?.status).toBe("ready"));
-    const frames: FrameRequestCallback[] = [];
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      frames.push(callback);
-      return frames.length;
-    });
-    vi.stubGlobal("cancelAnimationFrame", vi.fn());
-    const primaryBefore = primaryPaneRenders;
-    const secondaryBefore = secondaryPaneRenders;
-
-    const settleDirectClaim = async (
-      paneId: "primary" | "secondary",
-      nodeId: string
-    ) => {
-      let claim: Promise<boolean> | undefined;
-      act(() => {
-        const actions =
-          captured!.paneRegistrySlice.panes[paneId].actionsSlice.actions;
-        claim = actions.claimEditingFocus?.(nodeId, "title");
-        actions.notifyCaretMovedByDom?.(nodeId, "title");
-      });
-      await act(async () => {
-        await claim;
-      });
-    };
-    for (let index = 1; index <= 50; index += 1) {
-      await settleDirectClaim("primary", `row-${index}`);
-    }
-    for (let index = 99; index >= 50; index -= 1) {
-      await settleDirectClaim("secondary", `row-${index}`);
-    }
-
-    expect(frames).toHaveLength(0);
-    expect(primaryPaneRenders).toBe(primaryBefore + 50);
-    expect(secondaryPaneRenders).toBe(secondaryBefore + 50);
-
-    act(() => {
-      for (const frame of frames.splice(0)) frame(0);
-    });
-    expect(primaryPaneRenders).toBe(primaryBefore + 50);
-    expect(secondaryPaneRenders).toBe(secondaryBefore + 50);
-  });
-
-  it.each(["primary", "secondary"] as const)(
-    "keeps the inactive outline at zero commits across 50 %s caret moves",
-    async (activePaneId) => {
-      const rows = Array.from({ length: 51 }, (_, index) =>
-        node({
-          id: `row-${index}`,
-          sortKey: (index + 1) * 1024,
-        }),
-      );
-      const store = repository({
-        loadWorkspace: vi.fn().mockResolvedValue(workspace(rows)),
-      });
-      let captured: UseNotesWorkspaceHookResult | null = null;
-      const outlineCommits = { primary: 0, secondary: 0 };
-      const OutlineProbe = memo(function OutlineProbe({
-        paneId,
-      }: {
-        paneId: "primary" | "secondary";
-      }) {
-        const { state } = useNotesState();
-        useNotesDrafts();
-        return <output>{paneId}:{state.selectedId}</output>;
-      });
-
-      const Pane = memo(function Pane({
-        pane,
-        currentActivePaneId,
-      }: {
-        pane: NotesPaneRuntimeSlice;
-        currentActivePaneId: "primary" | "secondary";
-      }) {
-        return (
-          <NotesPaneSliceScope
-            pane={pane}
-            activePaneId={currentActivePaneId}
-            deferWhenInactive
-          >
-            <Profiler
-              id={`${pane.paneId}-outline`}
-              onRender={() => {
-                outlineCommits[pane.paneId] += 1;
-              }}
-            >
-              <OutlineProbe paneId={pane.paneId} />
-            </Profiler>
-          </NotesPaneSliceScope>
-        );
-      });
-
-      function Harness() {
-        const value = useNotesWorkspace({
-          vaultRoot: `/inactive-outline-${activePaneId}`,
-          repository: store,
-        });
-        captured = value;
-        const registry = value.paneRegistrySlice;
-        return (
-          <>
-            <Pane
-              pane={registry.panes.primary}
-              currentActivePaneId={registry.activePaneId}
-            />
-            <Pane
-              pane={registry.panes.secondary}
-              currentActivePaneId={registry.activePaneId}
-            />
-          </>
-        );
-      }
-
-      render(<Harness />);
-      await waitFor(() => expect(captured?.status).toBe("ready"));
-      act(() => {
-        captured!.paneRegistrySlice.setActivePaneId(activePaneId);
-      });
-      await waitFor(() =>
-        expect(captured?.paneRegistrySlice.activePaneId).toBe(activePaneId),
-      );
-      outlineCommits.primary = 0;
-      outlineCommits.secondary = 0;
-
-      const frames: FrameRequestCallback[] = [];
-      vi.stubGlobal(
-        "requestAnimationFrame",
-        (callback: FrameRequestCallback) => {
-          frames.push(callback);
-          return frames.length;
-        },
-      );
-      vi.stubGlobal("cancelAnimationFrame", vi.fn());
-
-      for (let index = 1; index <= 50; index += 1) {
-        let claim: Promise<boolean> | undefined;
-        act(() => {
-          const actions =
-            captured!.paneRegistrySlice.panes[activePaneId].actionsSlice.actions;
-          claim = actions.claimEditingFocus?.(`row-${index}`, "title");
-          actions.notifyCaretMovedByDom?.(`row-${index}`, "title");
-        });
-        await act(async () => {
-          expect(await claim).toBe(true);
-        });
-      }
-
-      const inactivePaneId =
-        activePaneId === "primary" ? "secondary" : "primary";
-      expect(frames).toHaveLength(0);
-      expect(outlineCommits[inactivePaneId]).toBe(0);
-      expect(outlineCommits[activePaneId]).toBe(50);
-
-      expect(outlineCommits[inactivePaneId]).toBe(0);
-      expect(outlineCommits[activePaneId]).toBe(50);
-    },
-  );
-
-  it.each([
-    ["primary", "before"],
-    ["primary", "after"],
-    ["secondary", "before"],
-    ["secondary", "after"]
-  ] as const)(
-    "does not publish a denied %s direct caret when failure settles %s its frame",
-    async (paneId, failureTiming) => {
-      const update = deferred<NotesWorkspace>();
-      const updateNode = vi.fn().mockReturnValue(update.promise);
-      const store = repository({
-        loadWorkspace: vi.fn().mockResolvedValue(
-          workspace([
-            node({ id: "root", sortKey: 1024 }),
-            node({ id: "other", sortKey: 2048 })
-          ])
-        ),
-        updateNode
-      });
-      const { result } = renderHook(() =>
-        useNotesWorkspace({
-          vaultRoot: `/denied-direct-${paneId}-${failureTiming}`,
-          repository: store
-        })
-      );
-      await waitFor(() => expect(result.current.status).toBe("ready"));
-      const actions =
-        result.current.paneRegistrySlice.panes[paneId].actionsSlice.actions;
-      await act(async () => {
-        expect(await actions.claimEditingFocus?.("root", "title")).toBe(true);
-      });
-      act(() => {
-        actions.updateNodeDraft("root", {
-          title: "dirty",
-          note: "",
-          imageOffsetUtf16: 0
-        });
-        result.current.paneRegistrySlice.setActivePaneId(
-          paneId === "primary" ? "secondary" : "primary"
-        );
-      });
-      const previousActivePaneId =
-        paneId === "primary" ? "secondary" : "primary";
-      await waitFor(() =>
-        expect(result.current.paneRegistrySlice.activePaneId).toBe(
-          previousActivePaneId
-        )
-      );
-      const frames: FrameRequestCallback[] = [];
-      vi.stubGlobal(
-        "requestAnimationFrame",
-        (callback: FrameRequestCallback) => {
-          frames.push(callback);
-          return frames.length;
-        }
-      );
-      vi.stubGlobal("cancelAnimationFrame", vi.fn());
-      let claim: Promise<boolean> | undefined;
-      act(() => {
-        claim = actions.claimEditingFocus?.("other", "title");
-        actions.notifyCaretMovedByDom?.("other", "title");
-      });
-      await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
-
-      if (failureTiming === "after") {
-        act(() => {
-          for (const frame of frames.splice(0)) frame(0);
-        });
-      }
-      await act(async () => {
-        update.reject(new Error("denied"));
-        expect(await claim).toBe(false);
-      });
-      if (failureTiming === "before") {
-        act(() => {
-          for (const frame of frames.splice(0)) frame(0);
-        });
-      }
-
-      const state =
-        result.current.paneRegistrySlice.panes[paneId].stateSlice.state;
-      expect(state.selectedId).not.toBe("other");
-      expect(state.editingNoteId).not.toBe("other");
-      expect(result.current.paneRegistrySlice.activePaneId).toBe(
-        previousActivePaneId
-      );
-    }
-  );
-
-  it("restores the complete primary selection when a framed direct caret claim is denied", async () => {
-    const update = deferred<NotesWorkspace>();
-    const updateNode = vi.fn().mockReturnValue(update.promise);
-    const store = repository({
-      loadWorkspace: vi.fn().mockResolvedValue(
-        workspace([
-          node({ id: "root", sortKey: 1024 }),
-          node({ id: "middle", sortKey: 2048 }),
-          node({ id: "other", sortKey: 3072 })
-        ])
-      ),
-      updateNode
-    });
-    const { result } = renderHook(() =>
-      useNotesWorkspace({
-        vaultRoot: "/denied-primary-direct-selection",
-        repository: store
-      })
-    );
-    await waitFor(() => expect(result.current.status).toBe("ready"));
-    const actions =
-      result.current.paneRegistrySlice.panes.primary.actionsSlice.actions;
-    await act(async () => {
-      expect(await actions.claimEditingFocus?.("root", "title")).toBe(true);
-    });
-    const selection = {
-      anchorId: "root",
-      headId: "other",
-      explicitNodeIds: ["root", "middle"] as const
-    };
-    act(() => {
-      actions.updateNodeDraft("root", {
-        title: "dirty",
-        note: "",
-        imageOffsetUtf16: 0
-      });
-      expect(actions.replaceSelection?.(selection)).toBe(true);
-    });
-    const before =
-      result.current.paneRegistrySlice.panes.primary.stateSlice.state;
-    expect(
-      result.current.paneRegistrySlice.panes.primary.draftsSlice.selection
-    ).toEqual(selection);
-    const frames: FrameRequestCallback[] = [];
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      frames.push(callback);
-      return frames.length;
-    });
-    vi.stubGlobal("cancelAnimationFrame", vi.fn());
-    let claim: Promise<boolean> | undefined;
-    act(() => {
-      claim = actions.claimEditingFocus?.("other", "title");
-      actions.notifyCaretMovedByDom?.("other", "title");
-    });
-    await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
-    act(() => {
-      for (const frame of frames.splice(0)) frame(0);
-    });
-    expect(
-      result.current.paneRegistrySlice.panes.primary.draftsSlice.selection
-    ).toBeNull();
-
-    await act(async () => {
-      update.reject(new Error("denied"));
-      expect(await claim).toBe(false);
-    });
-
-    const primary =
-      result.current.paneRegistrySlice.panes.primary;
-    expect(primary.stateSlice.state).toMatchObject({
-      selectedId: before.selectedId,
-      editingNoteId: before.editingNoteId,
-      pendingFocusId: before.pendingFocusId,
-      pendingFocusField: before.pendingFocusField
-    });
-    expect(primary.draftsSlice.selection).toEqual(selection);
-  });
-
-  it("does not restore an old primary selection over a newer selection", async () => {
-    const update = deferred<NotesWorkspace>();
-    const updateNode = vi.fn().mockReturnValue(update.promise);
-    const store = repository({
-      loadWorkspace: vi.fn().mockResolvedValue(
-        workspace([
-          node({ id: "root", sortKey: 1024 }),
-          node({ id: "middle", sortKey: 2048 }),
-          node({ id: "other", sortKey: 3072 })
-        ])
-      ),
-      updateNode
-    });
-    const { result } = renderHook(() =>
-      useNotesWorkspace({
-        vaultRoot: "/stale-denied-primary-selection",
-        repository: store
-      })
-    );
-    await waitFor(() => expect(result.current.status).toBe("ready"));
-    const actions =
-      result.current.paneRegistrySlice.panes.primary.actionsSlice.actions;
-    await act(async () => {
-      expect(await actions.claimEditingFocus?.("root", "title")).toBe(true);
-    });
-    act(() => {
-      actions.updateNodeDraft("root", {
-        title: "dirty",
-        note: "",
-        imageOffsetUtf16: 0
-      });
-      expect(
-        actions.replaceSelection?.({
-          anchorId: "root",
-          headId: "middle"
-        })
-      ).toBe(true);
-    });
-    expect(
-      result.current.paneRegistrySlice.panes.primary.draftsSlice.selection
-    ).toEqual({
-      anchorId: "root",
-      headId: "middle"
-    });
-    const frames: FrameRequestCallback[] = [];
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      frames.push(callback);
-      return frames.length;
-    });
-    vi.stubGlobal("cancelAnimationFrame", vi.fn());
-    let claim: Promise<boolean> | undefined;
-    act(() => {
-      claim = actions.claimEditingFocus?.("other", "title");
-      actions.notifyCaretMovedByDom?.("other", "title");
-    });
-    await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
-    act(() => {
-      for (const frame of frames.splice(0)) frame(0);
-      expect(
-        actions.replaceSelection?.({
-          anchorId: "middle",
-          headId: "other"
-        })
-      ).toBe(true);
-    });
-
-    await act(async () => {
-      update.reject(new Error("denied"));
-      expect(await claim).toBe(false);
-    });
-
-    expect(
-      result.current.paneRegistrySlice.panes.primary.draftsSlice.selection
-    ).toEqual({
-      anchorId: "middle",
-      headId: "other"
-    });
-  });
-
-  it("keeps a slow successful secondary direct claim merged after its frame", async () => {
-    const update = deferred<NotesWorkspace>();
-    const updateNode = vi.fn().mockReturnValue(update.promise);
-    const store = repository({
-      loadWorkspace: vi.fn().mockResolvedValue(
-        workspace([
-          node({ id: "root", sortKey: 1024 }),
-          node({ id: "other", sortKey: 2048 })
-        ])
-      ),
-      updateNode
-    });
-    const { result } = renderHook(() =>
-      useNotesWorkspace({
-        vaultRoot: "/slow-successful-secondary-direct",
-        repository: store
-      })
-    );
-    await waitFor(() => expect(result.current.status).toBe("ready"));
-    const actions =
-      result.current.paneRegistrySlice.panes.secondary.actionsSlice.actions;
-    await act(async () => {
-      expect(await actions.claimEditingFocus?.("root", "title")).toBe(true);
-    });
-    act(() => {
-      actions.updateNodeDraft("root", {
-        title: "dirty",
-        note: "",
-        imageOffsetUtf16: 0
-      });
-    });
-    const frames: FrameRequestCallback[] = [];
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      frames.push(callback);
-      return frames.length;
-    });
-    vi.stubGlobal("cancelAnimationFrame", vi.fn());
-    let claim: Promise<boolean> | undefined;
-    act(() => {
-      claim = actions.claimEditingFocus?.("other", "title");
-      actions.notifyCaretMovedByDom?.("other", "title");
-    });
-    await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
-    act(() => {
-      for (const frame of frames.splice(0)) frame(0);
-    });
-    const afterFrame =
-      result.current.paneRegistrySlice.getPaneSession("secondary");
-    const navigationVersion = afterFrame.navigationVersion;
-    expect(afterFrame.pendingFocusField).toBeNull();
-
-    await act(async () => {
-      update.resolve(
-        workspace([
-          node({ id: "root", title: "dirty", sortKey: 1024 }),
-          node({ id: "other", sortKey: 2048 })
-        ])
-      );
-      expect(await claim).toBe(true);
-    });
-
-    const settled =
-      result.current.paneRegistrySlice.getPaneSession("secondary");
-    expect(settled.navigationVersion).toBe(navigationVersion);
-    expect(settled.pendingFocusField).toBeNull();
-  });
-
-  it.each([
-    ["primary", "successful"],
-    ["primary", "failed"],
-    ["secondary", "successful"],
-    ["secondary", "failed"]
-  ] as const)(
-    "does not let an old %s %s claim supersede a newer direct move",
-    async (paneId, outcome) => {
-      const update = deferred<NotesWorkspace>();
-      const updateNode = vi.fn().mockReturnValue(update.promise);
-      const store = repository({
-        loadWorkspace: vi.fn().mockResolvedValue(
-          workspace([
-            node({ id: "root", sortKey: 1024 }),
-            node({ id: "other", sortKey: 2048 })
-          ])
-        ),
-        updateNode
-      });
-      const { result } = renderHook(() =>
-        useNotesWorkspace({
-          vaultRoot: `/old-success-newer-direct-${paneId}`,
-          repository: store
-        })
-      );
-      await waitFor(() => expect(result.current.status).toBe("ready"));
-      const actions =
-        result.current.paneRegistrySlice.panes[paneId].actionsSlice.actions;
-      await act(async () => {
-        expect(await actions.claimEditingFocus?.("root", "title")).toBe(true);
-      });
-      act(() => {
-        actions.updateNodeDraft("root", {
-          title: "dirty",
-          note: "",
-          imageOffsetUtf16: 0
-        });
-      });
-      const frames: FrameRequestCallback[] = [];
-      vi.stubGlobal(
-        "requestAnimationFrame",
-        (callback: FrameRequestCallback) => {
-          frames.push(callback);
-          return frames.length;
-        }
-      );
-      vi.stubGlobal("cancelAnimationFrame", vi.fn());
-      let oldClaim: Promise<boolean> | undefined;
-      act(() => {
-        oldClaim = actions.claimEditingFocus?.("other", "title");
-        actions.notifyCaretMovedByDom?.("other", "title");
-        actions.notifyCaretMovedByDom?.("root", "title");
-      });
-      await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
-      await act(async () => {
-        if (outcome === "successful") {
-          update.resolve(
-            workspace([
-              node({ id: "root", sortKey: 1024 }),
-              node({ id: "other", sortKey: 2048 })
-            ])
-          );
-        } else {
-          update.reject(new Error("denied"));
-        }
-        expect(await oldClaim).toBe(outcome === "successful");
-      });
-      act(() => {
-        for (const frame of frames.splice(0)) frame(0);
-      });
-
-      const state =
-        result.current.paneRegistrySlice.panes[paneId].stateSlice.state;
-      expect(state.selectedId).toBe("root");
-      expect(state.editingNoteId).toBe("root");
-      expect(state.pendingFocusField).toBeNull();
-    }
-  );
-
   it("routes a secondary split focus only to the secondary pane", async () => {
     const initial = workspace([
       node({ id: "root", title: "Root", sortKey: 1024 }),
@@ -1068,11 +321,7 @@ describe("notes workspace context split", () => {
       zoomedNodeId: "other",
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 0,
-      visibleSignature: createOutlineVisibleSignature([]),
-      geometryGeneration: 0,
-      activeDrag: false
+      locallyExpandedNodeIds: new Set()
     });
     result.current.actions.publishOutlinePaneState?.({
       paneId: "secondary",
@@ -1080,30 +329,7 @@ describe("notes workspace context split", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 0,
-      visibleSignature: createOutlineVisibleSignature([
-        {
-          id: "root",
-          parentId: null,
-          depth: 0,
-          isCollapsed: false,
-          ancestorIds: [],
-          ancestorGuideDepths: [],
-          visibleDescendantEndId: null
-        },
-        {
-          id: "other",
-          parentId: null,
-          depth: 0,
-          isCollapsed: false,
-          ancestorIds: [],
-          ancestorGuideDepths: [],
-          visibleDescendantEndId: null
-        }
-      ]),
-      geometryGeneration: 0,
-      activeDrag: false
+      locallyExpandedNodeIds: new Set()
     });
     let preparation: ReturnType<
       NonNullable<
@@ -1114,7 +340,6 @@ describe("notes workspace context split", () => {
       preparation =
         panes().secondary.actionsSlice.actions.prepareKeyboardInsertion?.({
         ownerPaneId: "secondary",
-        interactionEpochAtDispatch: 0,
         intent: {
           token: 41,
           sourceId: "root",
@@ -1164,22 +389,13 @@ describe("notes workspace context split", () => {
     expect(panes().secondary.stateSlice.state).toMatchObject({
       selectedId: "split",
       editingNoteId: "split",
-      pendingFocusId: null,
-      pendingFocusField: null
+      pendingFocusId: "split",
+      pendingFocusField: "title"
     });
-    expect(
-      panes().secondary.actionsSlice.actions
-        .pendingKeyboardInsertionInteractionEpoch?.("split")
-    ).toBeUndefined();
-
     await act(async () => {
       await panes().secondary.actionsSlice.actions.acknowledgeFocus("split");
     });
     expect(panes().secondary.stateSlice.state.pendingFocusId).toBeNull();
-    expect(
-      panes().secondary.actionsSlice.actions
-        .pendingKeyboardInsertionInteractionEpoch?.("split")
-    ).toBeUndefined();
   });
 
   it("keeps a secondary Enter from committing the inactive primary outline first", async () => {
@@ -1204,17 +420,11 @@ describe("notes workspace context split", () => {
     });
     const Pane = memo(function Pane({
       pane,
-      activePaneId,
     }: {
       pane: NotesPaneRuntimeSlice;
-      activePaneId: "primary" | "secondary";
     }) {
       return (
-        <NotesPaneSliceScope
-          pane={pane}
-          activePaneId={activePaneId}
-          deferWhenInactive
-        >
+        <NotesPaneSliceScope pane={pane}>
           <Profiler
             id={pane.paneId}
             onRender={(id, _phase, actualDuration) => {
@@ -1241,11 +451,9 @@ describe("notes workspace context split", () => {
         <>
           <Pane
             pane={registry.panes.primary}
-            activePaneId={registry.activePaneId}
           />
           <Pane
             pane={registry.panes.secondary}
-            activePaneId={registry.activePaneId}
           />
         </>
       );
@@ -1265,20 +473,6 @@ describe("notes workspace context split", () => {
       showCompleted: true,
       collapsedNodeIds: new Set<string>(),
       locallyExpandedNodeIds: new Set<string>(),
-      interactionEpoch: 0,
-      visibleSignature: createOutlineVisibleSignature([
-        {
-          id: "root",
-          parentId: null,
-          depth: 0,
-          isCollapsed: false,
-          ancestorIds: [],
-          ancestorGuideDepths: [],
-          visibleDescendantEndId: null,
-        },
-      ]),
-      geometryGeneration: 0,
-      activeDrag: false,
     };
     act(() => {
       captured!.actions.publishOutlinePaneState?.({
@@ -1298,7 +492,6 @@ describe("notes workspace context split", () => {
       captured!.paneRegistrySlice.panes.secondary.actionsSlice.actions
         .prepareKeyboardInsertion?.({
           ownerPaneId: "secondary",
-          interactionEpochAtDispatch: 0,
           intent: {
             token: 42,
             sourceId: "root",

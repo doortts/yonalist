@@ -292,8 +292,7 @@ export type NotesSplitInputBenchmarkInstallOptions = {
 
 type BenchmarkPaneId = "primary" | "secondary";
 
-const TITLE_EDITOR_SELECTOR =
-  "textarea.notes-node-title, [data-notes-bullet-title]";
+const TITLE_EDITOR_SELECTOR = "[data-notes-bullet-title]";
 
 function benchmarkEditorFocusSnapshot(paneId: BenchmarkPaneId): {
   readonly id: string | undefined;
@@ -308,13 +307,6 @@ function benchmarkEditorFocusSnapshot(paneId: BenchmarkPaneId): {
       paneId
   ) {
     return null;
-  }
-  if (active instanceof HTMLTextAreaElement) {
-    return {
-      id: active.closest<HTMLElement>("[data-outline-id]")?.dataset.outlineId,
-      selectionStart: active.selectionStart,
-      selectionEnd: active.selectionEnd
-    };
   }
   const selection = readPlainTextSelection(active);
   if (!selection) return null;

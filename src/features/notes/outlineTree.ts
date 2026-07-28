@@ -48,7 +48,10 @@ export function deriveOutlineGuideMetadata(
 }
 
 export function flattenVisibleOutlineRows(
-  workspace: NormalizedNotesWorkspace,
+  workspace: Pick<
+    NormalizedNotesWorkspace,
+    "nodesById" | "childIdsByParent" | "rootIds"
+  >,
   zoomRootId: NoteId | null,
   locallyExpandedNodeIds: ReadonlySet<NoteId> = new Set()
 ): FlattenedOutlineRow[] {

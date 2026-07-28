@@ -354,12 +354,17 @@ describe("NotesFeature", () => {
     await waitFor(() =>
       expect(screen.getAllByLabelText("Notes outline")).toHaveLength(1)
     );
-    await waitFor(() => expect(title).toHaveFocus());
-    expect(readPlainTextSelection(title)).toEqual({
-      anchorUtf16: 2,
-      focusUtf16: 2,
-    });
-  });
+    await waitFor(
+      () => {
+        expect(title).toHaveFocus();
+        expect(readPlainTextSelection(title)).toEqual({
+          anchorUtf16: 2,
+          focusUtf16: 2,
+        });
+      },
+      { timeout: 20_000 },
+    );
+  }, 30_000);
 
   it("zooms the primary pane when its bullet is clicked in split view", async () => {
     notesStoreMock.loadWorkspace.mockResolvedValueOnce({

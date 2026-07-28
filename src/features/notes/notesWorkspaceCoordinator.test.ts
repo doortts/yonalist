@@ -17,7 +17,6 @@ import {
   type OpenNotesWorkspaceSessionOptions
 } from "./notesWorkspaceCoordinator";
 import { applyBackspaceGestureCommand } from "./notesCommands";
-import { createOutlineVisibleSignature } from "./notesKeyboardInsertion";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import type { NotesBackspaceDraftLease } from "./notesWorkspaceTypes";
 
@@ -72,6 +71,15 @@ function projectedHistoryState(
     nextUndoEntryId,
     nextRedoEntryId,
     prunedEntryIds
+  };
+}
+
+function optimisticInsertion(sourceTitle = "Root", insertedTitle = "") {
+  const offset = sourceTitle.length;
+  return {
+    sourceSelection: { anchorUtf16: offset, focusUtf16: offset },
+    sourceTitle,
+    insertedTitle
   };
 }
 
@@ -202,10 +210,6 @@ describe("notesWorkspaceCoordinator registry", () => {
       showCompleted: true,
       collapsedNodeIds: new Set(),
       locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
     });
     events.mockClear();
     const prepared = deferred<{
@@ -319,10 +323,6 @@ describe("notesWorkspaceCoordinator registry", () => {
       showCompleted: true,
       collapsedNodeIds: new Set(),
       locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
     });
     events.mockClear();
     const settle = vi.fn();
@@ -397,10 +397,6 @@ describe("notesWorkspaceCoordinator registry", () => {
       showCompleted: true,
       collapsedNodeIds: new Set(),
       locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
     });
     const prepared = deferred<{
       baselineFlushed: boolean;
@@ -474,10 +470,6 @@ describe("notesWorkspaceCoordinator registry", () => {
       showCompleted: true,
       collapsedNodeIds: new Set(),
       locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
     });
     events.mockClear();
     const settle = vi.fn();
@@ -561,10 +553,6 @@ describe("notesWorkspaceCoordinator registry", () => {
       showCompleted: true,
       collapsedNodeIds: new Set(),
       locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
     });
     events.mockClear();
     const settle = vi.fn();
@@ -670,10 +658,6 @@ describe("notesWorkspaceCoordinator registry", () => {
       showCompleted: true,
       collapsedNodeIds: new Set(),
       locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
     });
     const settle = vi.fn();
     const lease: NotesBackspaceDraftLease = {
@@ -754,10 +738,6 @@ describe("notesWorkspaceCoordinator registry", () => {
       showCompleted: true,
       collapsedNodeIds: new Set(),
       locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
     });
     const settle = vi.fn();
     const lease: NotesBackspaceDraftLease = {
@@ -849,10 +829,6 @@ describe("notesWorkspaceCoordinator registry", () => {
       showCompleted: true,
       collapsedNodeIds: new Set(),
       locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
     });
     const settle = vi.fn();
     const lease: NotesBackspaceDraftLease = {
@@ -938,10 +914,6 @@ describe("notesWorkspaceCoordinator registry", () => {
       showCompleted: true,
       collapsedNodeIds: new Set(),
       locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
     });
     const settle = vi.fn();
     const lease: NotesBackspaceDraftLease = {
@@ -1018,10 +990,6 @@ describe("notesWorkspaceCoordinator registry", () => {
       showCompleted: true,
       collapsedNodeIds: new Set(),
       locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
     });
     const settle = vi.fn();
     const lease: NotesBackspaceDraftLease = {
@@ -1106,10 +1074,6 @@ describe("notesWorkspaceCoordinator registry", () => {
       showCompleted: true,
       collapsedNodeIds: new Set(),
       locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
     });
     const settle = vi.fn();
     const lease: NotesBackspaceDraftLease = {
@@ -1164,94 +1128,6 @@ describe("notesWorkspaceCoordinator registry", () => {
     departed.close();
   });
 
-  it("binds a prepared keyboard insertion to session, history, and Pane generations", async () => {
-    const store = repository();
-    const registry = createNotesWorkspaceCoordinatorRegistry();
-    const pool = createNotesExpansionSnapshotPool();
-    const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/keyboard-insertion-preparation",
-      onEvent: events
-    }));
-    await session.activation;
-    session.publishOutlinePaneState({
-      paneId: "pane-a",
-      scope: { kind: "active" },
-      zoomedNodeId: null,
-      showCompleted: true,
-      collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 7,
-      visibleSignature: createOutlineVisibleSignature([
-        {
-          id: "root",
-          parentId: null,
-          depth: 0,
-          isCollapsed: false,
-          ancestorIds: [],
-          ancestorGuideDepths: [],
-          visibleDescendantEndId: null
-        }
-      ]),
-      geometryGeneration: 3,
-      activeDrag: false
-    });
-
-    const preparation = session.prepareKeyboardInsertion({
-      ownerPaneId: "pane-a",
-      interactionEpochAtDispatch: 7,
-      intent: {
-        token: 41,
-        sourceId: "root",
-        expectedNodeId: "split",
-        postcondition: {
-          kind: "split",
-          expectedSourceTitle: "Root",
-          expectedInsertedTitle: ""
-        }
-      }
-    });
-
-    expect(preparation).toEqual({
-      pending: expect.objectContaining({
-        ownerPaneId: "pane-a",
-        interactionEpochAtDispatch: 7,
-        expectedStructuralHistoryEpoch: "epoch-a",
-        expectedStructuralHistoryEntryId:
-          preparation?.historyContext.entryId,
-        projectionGenerationAtDispatch: expect.any(Number),
-        layoutGenerationAtDispatch: expect.any(Number),
-        intent: expect.objectContaining({
-          token: 41,
-          ownerSessionGeneration: expect.any(Number),
-          expectedNodeId: "split"
-        })
-      }),
-      historyContext: expect.objectContaining({
-        historyEpoch: "epoch-a",
-        entryId: expect.any(String),
-        commandKind: "split"
-      })
-    });
-    if (!preparation) {
-      throw new Error("Expected keyboard insertion preparation.");
-    }
-    events.mockClear();
-
-    await session.enqueueStructural(
-      () => ({ kind: "skipped" as const }),
-      { keyboardInsertion: preparation }
-    );
-
-    expect(events).toHaveBeenCalledWith({
-      type: "pending",
-      selectionPolicy: "clear",
-      showLoading: true
-    });
-    session.close();
-  });
-
   it("publishes optimistic preparation and queued status to its owner", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
@@ -1263,32 +1139,18 @@ describe("notesWorkspaceCoordinator registry", () => {
       onEvent: events
     }));
     await session.activation;
-    const sourceRow = {
-      id: "root",
-      parentId: null,
-      depth: 0,
-      isCollapsed: false,
-      ancestorIds: [],
-      ancestorGuideDepths: [],
-      visibleDescendantEndId: null
-    };
     session.publishOutlinePaneState({
       paneId: "pane-a",
       scope: { kind: "active" },
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 7,
-      visibleSignature: createOutlineVisibleSignature([sourceRow]),
-      geometryGeneration: 3,
-      activeDrag: false
+      locallyExpandedNodeIds: new Set()
     });
     events.mockClear();
 
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
-      interactionEpochAtDispatch: 7,
       intent: {
         token: 42,
         sourceId: "root",
@@ -1381,14 +1243,9 @@ describe("notesWorkspaceCoordinator registry", () => {
       showCompleted: true,
       collapsedNodeIds: new Set(),
       locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
     });
     const first = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
-      interactionEpochAtDispatch: 1,
       intent: {
         token: 71,
         sourceId: "root",
@@ -1407,7 +1264,6 @@ describe("notesWorkspaceCoordinator registry", () => {
     })!;
     const dependent = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
-      interactionEpochAtDispatch: 1,
       intent: {
         token: 72,
         sourceId: "split-1",
@@ -1472,30 +1328,16 @@ describe("notesWorkspaceCoordinator registry", () => {
       onEvent: events
     }));
     await session.activation;
-    const sourceRow = {
-      id: "root",
-      parentId: null,
-      depth: 0,
-      isCollapsed: false,
-      ancestorIds: [],
-      ancestorGuideDepths: [],
-      visibleDescendantEndId: null
-    };
     session.publishOutlinePaneState({
       paneId: "pane-a",
       scope: { kind: "active" },
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 7,
-      visibleSignature: createOutlineVisibleSignature([sourceRow]),
-      geometryGeneration: 3,
-      activeDrag: false
+      locallyExpandedNodeIds: new Set()
     });
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
-      interactionEpochAtDispatch: 7,
       intent: {
         token: 43,
         sourceId: "root",
@@ -1542,18 +1384,13 @@ describe("notesWorkspaceCoordinator registry", () => {
         zoomedNodeId: null,
         showCompleted: true,
         collapsedNodeIds: new Set<string>(),
-        locallyExpandedNodeIds: new Set<string>(),
-        interactionEpoch: 1,
-        visibleSignature: JSON.stringify([["root", null, 0, false]]),
-        geometryGeneration: 0,
-        activeDrag: false
+        locallyExpandedNodeIds: new Set<string>()
       };
       session.publishOutlinePaneState({ ...basePane, paneId: "primary" });
       session.publishOutlinePaneState({ ...basePane, paneId: "secondary" });
 
       const preparation = session.prepareKeyboardInsertion({
         ownerPaneId: originPaneId,
-        interactionEpochAtDispatch: 1,
         intent: {
           token: 51,
           sourceId: "root",
@@ -1563,7 +1400,8 @@ describe("notesWorkspaceCoordinator registry", () => {
             expectedSourceTitle: "Root",
             expectedInsertedTitle: ""
           }
-        }
+        },
+        optimistic: optimisticInsertion()
       })!;
 
       await session.enqueueStructural(
@@ -1590,13 +1428,9 @@ describe("notesWorkspaceCoordinator registry", () => {
       const settled = events.mock.calls
         .map(([event]) => event)
         .find((event) => event.type === "settled");
-      expect(
-        settled?.result.projectionPublication?.keyboardInsertionDisposition
-      ).toMatchObject({
-        kind: "exact",
-        pending: { ownerPaneId: originPaneId },
-        settlement: { ownerPaneId: originPaneId, focusEligible: true }
-      });
+      expect(settled?.result.projectionPublication?.targetPaneId).toBe(
+        originPaneId
+      );
       session.close();
     }
   );
@@ -1617,16 +1451,11 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set<string>(),
-      locallyExpandedNodeIds: new Set<string>(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
+      locallyExpandedNodeIds: new Set<string>()
     };
     session.publishOutlinePaneState(paneSnapshot);
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
-      interactionEpochAtDispatch: 1,
       intent: {
         token: 8,
         sourceId: "root",
@@ -1636,7 +1465,8 @@ describe("notesWorkspaceCoordinator registry", () => {
           expectedSourceTitle: "Root",
           expectedInsertedTitle: ""
         }
-      }
+      },
+      optimistic: optimisticInsertion()
     })!;
 
     session.unregisterOutlinePane("pane-a");
@@ -1646,13 +1476,13 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(
       session.prepareKeyboardInsertion({
         ownerPaneId: "pane-a",
-        interactionEpochAtDispatch: 1,
         intent: {
           token: 9,
           sourceId: "root",
           expectedNodeId: "split",
           postcondition: preparation.pending.intent.postcondition
-        }
+        },
+        optimistic: optimisticInsertion()
       })
     ).not.toBeNull();
     session.close();
@@ -1676,16 +1506,11 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set<string>(),
-      locallyExpandedNodeIds: new Set<string>(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
+      locallyExpandedNodeIds: new Set<string>()
     };
     session.publishOutlinePaneState(paneSnapshot);
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
-      interactionEpochAtDispatch: 1,
       intent: {
         token: 81,
         sourceId: "root",
@@ -1695,7 +1520,8 @@ describe("notesWorkspaceCoordinator registry", () => {
           expectedSourceTitle: "Root",
           expectedInsertedTitle: ""
         }
-      }
+      },
+      optimistic: optimisticInsertion()
     })!;
     const accepted = deferred<NotesWorkspace>();
     const completion = session.enqueueStructural(
@@ -1730,9 +1556,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       .map(([event]) => event)
       .find((event) => event.type === "settled");
     expect(settled?.result.uiUpdate?.pendingFocusId).toBeNull();
-    expect(
-      settled?.result.projectionPublication?.keyboardInsertionDisposition
-    ).toBeUndefined();
+    expect(settled?.result.projectionPublication).toBeUndefined();
     session.close();
   });
 
@@ -1753,15 +1577,10 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
+      locallyExpandedNodeIds: new Set()
     });
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
-      interactionEpochAtDispatch: 1,
       intent: {
         token: 9,
         sourceId: "root",
@@ -1771,7 +1590,8 @@ describe("notesWorkspaceCoordinator registry", () => {
           expectedSourceTitle: "Root",
           expectedInsertedTitle: ""
         }
-      }
+      },
+      optimistic: optimisticInsertion()
     })!;
     const result = deferred<NotesWorkspace>();
 
@@ -1819,173 +1639,10 @@ describe("notesWorkspaceCoordinator registry", () => {
         type: "settled",
         result: expect.objectContaining({
           uiUpdate: expect.objectContaining({ pendingFocusId: "split" }),
-          projectionPublication: expect.objectContaining({
-            owner: { kind: "keyboard-insertion", intentToken: 9 },
-            keyboardInsertionDisposition: expect.objectContaining({
-              kind: "exact"
-            })
-          })
+          projectionPublication: { targetPaneId: "pane-a" }
         })
       })
     );
-    session.close();
-  });
-
-  it.each(["geometry", "drag-start-end"] as const)(
-    "classifies a %s interleave from the dispatch Pane baseline as mixed",
-    async (interleave) => {
-      const store = repository();
-      const registry = createNotesWorkspaceCoordinatorRegistry();
-      const pool = createNotesExpansionSnapshotPool();
-      const events = vi.fn();
-      const session = registry.openSession(writableOptions(pool, {
-        repository: store,
-        vaultRoot: `/keyboard-insertion-${interleave}`,
-        onEvent: events
-      }));
-      await session.activation;
-      events.mockClear();
-      const paneSnapshot = {
-        paneId: "pane-a",
-        scope: { kind: "active" } as const,
-        zoomedNodeId: null,
-        showCompleted: true,
-        collapsedNodeIds: new Set<string>(),
-        locallyExpandedNodeIds: new Set<string>(),
-        interactionEpoch: 1,
-        visibleSignature: JSON.stringify([["root", null, 0, false]]),
-        geometryGeneration: 0,
-        activeDrag: false
-      };
-      session.publishOutlinePaneState(paneSnapshot);
-      const preparation = session.prepareKeyboardInsertion({
-        ownerPaneId: "pane-a",
-        interactionEpochAtDispatch: 1,
-        intent: {
-          token: 10,
-          sourceId: "root",
-          expectedNodeId: "split",
-          postcondition: {
-            kind: "split",
-            expectedSourceTitle: "Root",
-            expectedInsertedTitle: ""
-          }
-        }
-      })!;
-      const result = deferred<NotesWorkspace>();
-      const completion = session.enqueueStructural(
-        async () => ({
-          kind: "authoritative" as const,
-          workspace: await result.promise,
-          uiUpdate: {
-            selectedId: "split",
-            editingNoteId: "split",
-            pendingFocusId: "split",
-            pendingFocusField: "title" as const
-          },
-          historyStatus: projectedHistoryState(
-            preparation.historyContext.entryId
-          ),
-          committedHistoryEntryIds: [preparation.historyContext.entryId]
-        }),
-        { keyboardInsertion: preparation }
-      );
-      await Promise.resolve();
-
-      if (interleave === "geometry") {
-        session.publishOutlinePaneState({
-          ...paneSnapshot,
-          geometryGeneration: 1
-        });
-      } else {
-        session.publishOutlineDragState({ paneId: "pane-a", activeDrag: true });
-        session.publishOutlineDragState({ paneId: "pane-a", activeDrag: false });
-      }
-      result.resolve(
-        workspace([
-          node({ id: "root", title: "Root", sortKey: 1024 }),
-          node({ id: "split", title: "", sortKey: 2048 })
-        ])
-      );
-      await completion;
-
-      const settled = events.mock.calls
-        .map(([event]) => event)
-        .find((event) => event.type === "settled");
-      expect(
-        settled?.result.projectionPublication
-          ?.keyboardInsertionDisposition?.kind
-      ).toBe("mixed");
-      session.close();
-    }
-  );
-
-  it("rejects committed-entry fallback when next Undo identifies another entry", async () => {
-    const store = repository();
-    const registry = createNotesWorkspaceCoordinatorRegistry();
-    const pool = createNotesExpansionSnapshotPool();
-    const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/keyboard-insertion-history-mismatch",
-      onEvent: events
-    }));
-    await session.activation;
-    events.mockClear();
-    session.publishOutlinePaneState({
-      paneId: "pane-a",
-      scope: { kind: "active" },
-      zoomedNodeId: null,
-      showCompleted: true,
-      collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
-    });
-    const preparation = session.prepareKeyboardInsertion({
-      ownerPaneId: "pane-a",
-      interactionEpochAtDispatch: 1,
-      intent: {
-        token: 11,
-        sourceId: "root",
-        expectedNodeId: "split",
-        postcondition: {
-          kind: "split",
-          expectedSourceTitle: "Root",
-          expectedInsertedTitle: ""
-        }
-      }
-    })!;
-
-    await session.enqueueStructural(
-      () => ({
-        kind: "authoritative" as const,
-        workspace: workspace([
-          node({ id: "root", title: "Root", sortKey: 1024 }),
-          node({ id: "split", title: "", sortKey: 2048 })
-        ]),
-        uiUpdate: {
-          selectedId: "split",
-          editingNoteId: "split",
-          pendingFocusId: "split",
-          pendingFocusField: "title" as const
-        },
-        historyStatus: projectedHistoryState("another-entry"),
-        committedHistoryEntryIds: [preparation.historyContext.entryId]
-      }),
-      { keyboardInsertion: preparation }
-    );
-
-    const settled = events.mock.calls
-      .map(([event]) => event)
-      .find((event) => event.type === "settled");
-    expect(
-      settled?.result.projectionPublication
-        ?.keyboardInsertionDisposition?.kind
-    ).toBe("mismatch");
-    expect(settled?.result.uiUpdate?.pendingFocusId).toBeNull();
     session.close();
   });
 
@@ -2007,15 +1664,10 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 0,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
+      locallyExpandedNodeIds: new Set()
     });
     const preparation = first.prepareKeyboardInsertion({
       ownerPaneId: "pane-first",
-      interactionEpochAtDispatch: 0,
       intent: {
         token: 12,
         sourceId: "root",
@@ -2025,7 +1677,8 @@ describe("notesWorkspaceCoordinator registry", () => {
           expectedSourceTitle: "Root",
           expectedInsertedTitle: ""
         }
-      }
+      },
+      optimistic: optimisticInsertion()
     })!;
     const second = registry.openSession(writableOptions(pool, {
       repository: store,
@@ -2045,9 +1698,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(secondEvents).not.toHaveBeenCalledWith(
       expect.objectContaining({
         result: expect.objectContaining({
-          projectionPublication: expect.objectContaining({
-            keyboardInsertionDisposition: expect.anything()
-          })
+          projectionPublication: expect.anything()
         })
       })
     );
@@ -2055,7 +1706,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     second.close();
   });
 
-  it("classifies a collapsed contextual first child against prospective expansion", async () => {
+  it("publishes the owner pane and local expansion for a first child", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
@@ -2073,15 +1724,10 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(["root"]),
-      locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 5,
-      visibleSignature: JSON.stringify([["root", null, 0, true]]),
-      geometryGeneration: 2,
-      activeDrag: false
+      locallyExpandedNodeIds: new Set()
     });
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
-      interactionEpochAtDispatch: 5,
       intent: {
         token: 21,
         sourceId: "root",
@@ -2092,7 +1738,8 @@ describe("notesWorkspaceCoordinator registry", () => {
           expectedIndex: 0,
           expectedInsertedTitle: ""
         }
-      }
+      },
+      optimistic: optimisticInsertion()
     })!;
 
     await session.enqueueStructural(
@@ -2125,10 +1772,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       expect.objectContaining({
         result: expect.objectContaining({
           projectionPublication: expect.objectContaining({
-            keyboardInsertionDisposition: expect.objectContaining({
-              kind: "exact",
-              settlement: expect.objectContaining({ focusEligible: true })
-            }),
+            targetPaneId: "pane-a",
             locallyExpandedNodeIds: expect.objectContaining({
               has: expect.any(Function)
             })
@@ -2143,270 +1787,6 @@ describe("notesWorkspaceCoordinator registry", () => {
       settled?.result.projectionPublication?.locallyExpandedNodeIds.has("root")
     ).toBe(true);
     session.close();
-  });
-
-  it("projects tag and active panes from their own scopes with Pane visibility inputs", async () => {
-    const tagScope: NotesWorkspaceScope = {
-      kind: "tags",
-      tags: [{ prefix: "#", normalizedTag: "work" }]
-    };
-    const root = node({ id: "root", title: "Root", isCollapsed: true });
-    const child = node({
-      id: "child",
-      parentId: "root",
-      title: "",
-      sortKey: 512
-    });
-    const completed = node({
-      id: "completed",
-      parentId: "root",
-      completedAt: "2026-07-24T00:00:00Z",
-      sortKey: 1024
-    });
-    const outside = node({
-      id: "outside",
-      parentId: "root",
-      sortKey: 2048
-    });
-    const activeWorkspace = workspace([root, child, completed, outside]);
-    const taggedWorkspace = workspace([root, child, completed]);
-    const loadWorkspace = vi.fn(async (_vaultRoot, scope) =>
-      scope.kind === "tags" ? taggedWorkspace : activeWorkspace
-    );
-    const store = repository({ loadWorkspace });
-    const registry = createNotesWorkspaceCoordinatorRegistry();
-    const pool = createNotesExpansionSnapshotPool();
-    const ownerEvents = vi.fn();
-    const siblingEvents = vi.fn();
-    const sibling = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/keyboard-insertion-scoped-pane",
-      getScope: () => ({ kind: "active" }),
-      onEvent: siblingEvents
-    }));
-    const owner = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/keyboard-insertion-scoped-pane",
-      getScope: () => tagScope,
-      onEvent: ownerEvents
-    }));
-    await Promise.all([owner.activation, sibling.activation]);
-    ownerEvents.mockClear();
-    siblingEvents.mockClear();
-    const basePane = {
-      zoomedNodeId: null,
-      collapsedNodeIds: new Set(["root"]),
-      locallyExpandedNodeIds: new Set(["root"]),
-      interactionEpoch: 1,
-      geometryGeneration: 0,
-      activeDrag: false
-    };
-    owner.publishOutlinePaneState({
-      ...basePane,
-      paneId: "tag-pane",
-      scope: tagScope,
-      showCompleted: false,
-      visibleSignature: JSON.stringify([["root", null, 0, false]])
-    });
-    sibling.publishOutlinePaneState({
-      ...basePane,
-      paneId: "active-pane",
-      scope: { kind: "active" },
-      showCompleted: true,
-      visibleSignature: JSON.stringify([["root", null, 0, false]])
-    });
-    const preparation = owner.prepareKeyboardInsertion({
-      ownerPaneId: "tag-pane",
-      interactionEpochAtDispatch: 1,
-      intent: {
-        token: 22,
-        sourceId: "root",
-        expectedNodeId: "child",
-        postcondition: {
-          kind: "first-child",
-          expectedParentId: "root",
-          expectedIndex: 0,
-          expectedInsertedTitle: ""
-        }
-      }
-    })!;
-
-    await owner.enqueueStructural(
-      () => ({
-        kind: "authoritative" as const,
-        workspace: taggedWorkspace,
-        projectionScope: tagScope,
-        uiUpdate: {
-          selectedId: "child",
-          editingNoteId: "child",
-          pendingFocusId: "child",
-          pendingFocusField: "title" as const
-        },
-        historyStatus: projectedHistoryState(
-          preparation.historyContext.entryId
-        )
-      }),
-      { keyboardInsertion: preparation }
-    );
-
-    const ownerSettlement = ownerEvents.mock.calls
-      .map(([event]) => event)
-      .find((event) => event.type === "settled");
-    const siblingSettlement = siblingEvents.mock.calls
-      .map(([event]) => event)
-      .find((event) => event.type === "synchronized");
-    expect(
-      ownerSettlement?.result.projectionPublication?.visibleSignature
-    ).toBe(
-      JSON.stringify([
-        ["root", null, 0, false],
-        ["child", "root", 1, false]
-      ])
-    );
-    expect(
-      siblingSettlement?.result.projectionPublication?.visibleSignature
-    ).toBe(
-      JSON.stringify([
-        ["root", null, 0, false],
-        ["child", "root", 1, false],
-        ["completed", "root", 1, false],
-        ["outside", "root", 1, false]
-      ])
-    );
-    expect(loadWorkspace).toHaveBeenCalledWith(
-      "/keyboard-insertion-scoped-pane",
-      { kind: "active" }
-    );
-    owner.close();
-    sibling.close();
-  });
-
-  it("does not partially publish an origin Pane when a later tag scope load fails", async () => {
-    const initialWorkspace = workspace([
-      node({ id: "root", title: "Root", sortKey: 1024 })
-    ]);
-    const acceptedWorkspace = workspace([
-      node({ id: "root", title: "Root", sortKey: 1024 }),
-      node({ id: "split", title: "", sortKey: 2048 })
-    ]);
-    const tagScope: NotesWorkspaceScope = {
-      kind: "tags",
-      tags: [{ prefix: "#", normalizedTag: "work" }]
-    };
-    const loadWorkspace = vi.fn(async (_vaultRoot, scope) => {
-      if (scope.kind === "tags") {
-        throw new Error("tag projection unavailable");
-      }
-      return initialWorkspace;
-    });
-    const store = repository({ loadWorkspace });
-    const registry = createNotesWorkspaceCoordinatorRegistry();
-    const pool = createNotesExpansionSnapshotPool();
-    const ownerEvents = vi.fn();
-    const owner = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/keyboard-insertion-scoped-pane-failure",
-      getScope: () => ({ kind: "active" }),
-      onEvent: ownerEvents
-    }));
-    await owner.activation;
-    const sibling = registry.openSession({
-      presentation: "background",
-      repository: store,
-      vaultRoot: "/keyboard-insertion-scoped-pane-failure",
-      getScope: () => tagScope,
-      onEvent: vi.fn()
-    });
-    await sibling.activation;
-    ownerEvents.mockClear();
-    const basePane = {
-      zoomedNodeId: null,
-      showCompleted: true,
-      collapsedNodeIds: new Set<string>(),
-      locallyExpandedNodeIds: new Set<string>(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
-    };
-    owner.publishOutlinePaneState({
-      ...basePane,
-      paneId: "active-pane",
-      scope: { kind: "active" }
-    });
-    sibling.publishOutlinePaneState({
-      ...basePane,
-      paneId: "tag-pane",
-      scope: tagScope
-    });
-    const preparation = owner.prepareKeyboardInsertion({
-      ownerPaneId: "active-pane",
-      interactionEpochAtDispatch: 1,
-      intent: {
-        token: 82,
-        sourceId: "root",
-        expectedNodeId: "split",
-        postcondition: {
-          kind: "split",
-          expectedSourceTitle: "Root",
-          expectedInsertedTitle: ""
-        }
-      }
-    })!;
-
-    await expect(
-      owner.enqueueStructural(
-        () => ({
-          kind: "authoritative" as const,
-          workspace: acceptedWorkspace,
-          projectionScope: { kind: "active" } as const,
-          uiUpdate: {
-            selectedId: "split",
-            editingNoteId: "split",
-            pendingFocusId: "split",
-            pendingFocusField: "title" as const
-          },
-          historyStatus: projectedHistoryState(
-            preparation.historyContext.entryId
-          )
-        }),
-        { keyboardInsertion: preparation }
-      )
-    ).resolves.toBe("failed");
-
-    expect(ownerEvents).not.toHaveBeenCalledWith(
-      expect.objectContaining({
-        result: expect.objectContaining({
-          projectionPublication: expect.anything()
-        })
-      })
-    );
-    const retryPreparation = owner.prepareKeyboardInsertion({
-      ownerPaneId: "active-pane",
-      interactionEpochAtDispatch: 1,
-      intent: {
-        token: 83,
-        sourceId: "root",
-        expectedNodeId: "retry",
-        postcondition: {
-          kind: "split",
-          expectedSourceTitle: "Root",
-          expectedInsertedTitle: ""
-        }
-      }
-    })!;
-    expect(retryPreparation.pending.projectionGenerationAtDispatch).toBe(
-      preparation.pending.projectionGenerationAtDispatch
-    );
-    expect(retryPreparation.pending.layoutGenerationAtDispatch).toBe(
-      preparation.pending.layoutGenerationAtDispatch
-    );
-    expect(retryPreparation.pending.paneSnapshotAtDispatch!.visibleSignature).toBe(
-      preparation.pending.paneSnapshotAtDispatch!.visibleSignature
-    );
-    owner.cancelKeyboardInsertion(retryPreparation);
-    owner.close();
-    sibling.close();
   });
 
   it("emits an explicit clear selection policy for ordinary queued work", async () => {
@@ -3828,65 +3208,6 @@ describe("notesWorkspaceCoordinator registry", () => {
     session.close();
   });
 
-  it("does not infer keyboard-draft ownership from a sole prepared insertion", async () => {
-    const store = repository();
-    const registry = createNotesWorkspaceCoordinatorRegistry();
-    const pool = createNotesExpansionSnapshotPool();
-    const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/silent-unrelated-to-insertion",
-      onEvent: events
-    }));
-    await session.activation;
-    session.publishOutlinePaneState({
-      paneId: "pane-a",
-      scope: { kind: "active" },
-      zoomedNodeId: null,
-      showCompleted: true,
-      collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
-    });
-    const preparation = session.prepareKeyboardInsertion({
-      ownerPaneId: "pane-a",
-      interactionEpochAtDispatch: 1,
-      intent: {
-        token: 14,
-        sourceId: "root",
-        expectedNodeId: "split",
-        postcondition: {
-          kind: "split",
-          expectedSourceTitle: "Root",
-          expectedInsertedTitle: ""
-        }
-      }
-    })!;
-    events.mockClear();
-
-    await session.enqueue(
-      () => ({
-        kind: "authoritative" as const,
-        workspace: workspace([node({ id: "root", title: "Root" })])
-      }),
-      { silent: true }
-    );
-
-    const settled = events.mock.calls
-      .map(([event]) => event)
-      .find((event) => event.type === "settled");
-    expect(settled?.result.projectionPublication?.owner).toEqual({
-      kind: "other"
-    });
-    expect(session.pendingKeyboardInsertion("split")).toEqual(
-      preparation.pending
-    );
-    session.close();
-  });
-
   it("reports enqueueStructural settlement as committed, skipped, or failed", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
@@ -4828,15 +4149,10 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
+      locallyExpandedNodeIds: new Set()
     });
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
-      interactionEpochAtDispatch: 1,
       intent: {
         token: 101,
         sourceId: "root",
@@ -4900,7 +4216,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const settled = events.mock.calls
       .map(([event]) => event)
       .find((event) => event.type === "settled");
-    expect(settled?.result.uiUpdate?.pendingFocusId).toBeNull();
+    expect(settled?.result.uiUpdate?.pendingFocusId).toBe("split");
     session.close();
   });
 
@@ -4933,15 +4249,10 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
+      locallyExpandedNodeIds: new Set()
     });
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
-      interactionEpochAtDispatch: 1,
       intent: {
         token: 102,
         sourceId: "root",
@@ -4951,7 +4262,8 @@ describe("notesWorkspaceCoordinator registry", () => {
           expectedSourceTitle: "Root",
           expectedInsertedTitle: ""
         }
-      }
+      },
+      optimistic: optimisticInsertion()
     })!;
     expectedEntryId = preparation.historyContext.entryId;
     const work = vi.fn(async () => {
@@ -5028,15 +4340,10 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set(),
-      interactionEpoch: 1,
-      visibleSignature: JSON.stringify([["root", null, 0, false]]),
-      geometryGeneration: 0,
-      activeDrag: false
+      locallyExpandedNodeIds: new Set()
     });
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
-      interactionEpochAtDispatch: 1,
       intent: {
         token: 103,
         sourceId: "root",
@@ -5046,7 +4353,8 @@ describe("notesWorkspaceCoordinator registry", () => {
           expectedSourceTitle: "Root",
           expectedInsertedTitle: ""
         }
-      }
+      },
+      optimistic: optimisticInsertion()
     })!;
 
     await expect(

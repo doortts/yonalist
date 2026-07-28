@@ -45,15 +45,12 @@ import type {
   NotesWorkspaceQueueResult
 } from "./notesWorkspaceCoordinator";
 import type {
-  KeyboardInsertionDisposition,
   KeyboardInsertionIntent,
-  NotesProjectionPublicationOwner,
   OptimisticInsertionFailure,
   OptimisticKeyboardInsertion,
-  OptimisticKeyboardInsertionCheckpoint,
   OutlinePanePublicationSnapshot,
   PendingKeyboardInsertion
-} from "./notesKeyboardInsertion";
+} from "./notesLocalStructure";
 import type {
   NormalizedNotesWorkspace,
   NotesSelection
@@ -115,21 +112,15 @@ export interface NotesCreateChildOptions {
 }
 
 export interface NotesProjectionPublication {
-  readonly projectionGeneration: number;
-  readonly layoutGeneration: number;
-  readonly owner: NotesProjectionPublicationOwner;
-  readonly keyboardInsertionDisposition?: KeyboardInsertionDisposition;
+  readonly targetPaneId?: string;
   readonly locallyExpandedNodeIds?: ReadonlySet<NoteId>;
-  readonly visibleSignature?: string;
 }
 
 export interface NotesKeyboardInsertionRequest {
   readonly ownerPaneId: string;
-  readonly interactionEpochAtDispatch: number;
   readonly intent: Omit<KeyboardInsertionIntent, "ownerSessionGeneration">;
-  readonly optimistic?: {
-    readonly sourceSelection?: NotesHistoryPrimarySelection;
-    readonly checkpoint?: OptimisticKeyboardInsertionCheckpoint;
+  readonly optimistic: {
+    readonly sourceSelection: NotesHistoryPrimarySelection;
     readonly sourceTitle: string;
     readonly insertedTitle: string;
     readonly dependencyId?: NoteId;
@@ -195,7 +186,6 @@ export interface NotesStateSlice {
   canUndo?: boolean;
   canRedo?: boolean;
   authorityRecovery?: NotesWriteAuthority;
-  projectionPublication?: NotesProjectionPublication | null;
   retryAuthorityRecovery?(): Promise<void>;
   pendingPrimarySelection?: NotesPendingPrimarySelection | null;
 }
@@ -236,7 +226,6 @@ export interface NotesDraftsSlice {
 
 declare const notesImageAtomPasteAuthorityBrand: unique symbol;
 declare const notesImageAtomCutAuthorityBrand: unique symbol;
-declare const notesDirectCaretClaimTokenBrand: unique symbol;
 
 export interface NotesImageAtomCutAuthority {
   readonly [notesImageAtomCutAuthorityBrand]: true;
@@ -244,10 +233,6 @@ export interface NotesImageAtomCutAuthority {
 
 export interface NotesImageAtomPasteAuthority {
   readonly [notesImageAtomPasteAuthorityBrand]: true;
-}
-
-export interface NotesDirectCaretClaimToken {
-  readonly [notesDirectCaretClaimTokenBrand]: true;
 }
 
 export interface NotesPreparedSelectionBatchOptions {
@@ -273,23 +258,12 @@ export interface NotesWorkspaceActions {
     selection?: NotesHistoryPrimarySelection
   ): Promise<void>;
   markEditingFocus?(nodeId: NoteId, field: NotesHistoryFocusField): void;
-  notifyCaretMovedByDom?(
-    nodeId: NoteId,
-    field: NotesHistoryFocusField,
-    claimToken?: NotesDirectCaretClaimToken
-  ): void;
-  settleDirectCaretClaim?(
-    claimToken: NotesDirectCaretClaimToken,
-    claimed: boolean
-  ): boolean;
-  invalidatePendingCaretMove?(): void;
   getNavigationVersion?(): number;
   prepareKeyboardInsertion?(
     input: NotesKeyboardInsertionRequest
   ): NotesKeyboardInsertionPreparation | null;
   updateOptimisticKeyboardInsertion?(nodeId: NoteId, title: string): void;
   dismissOptimisticInsertionFailure?(): void;
-  pendingKeyboardInsertionInteractionEpoch?(nodeId: NoteId): number | undefined;
   beginBackspaceGesture?(
     paneId: NotesPaneId,
     nodeId: NoteId,
@@ -308,19 +282,7 @@ export interface NotesWorkspaceActions {
   publishOutlinePaneState?(
     input: Omit<OutlinePanePublicationSnapshot, "sessionId">
   ): void;
-  publishOutlineInteractionEpoch?(input: {
-    readonly paneId: string;
-    readonly interactionEpoch: number;
-  }): void;
-  publishOutlineDragState?(input: {
-    readonly paneId: string;
-    readonly activeDrag: boolean;
-  }): void;
   unregisterOutlinePane?(paneId: string): void;
-  consumeInsertionMotion?(
-    intentToken: number,
-    cancelFocusNodeId?: NoteId
-  ): void;
   createRoot(): Promise<NotesWorkspaceCommandOutcome>;
   createNextTextSibling(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
   materializeGithubNotification(

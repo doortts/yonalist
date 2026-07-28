@@ -36,20 +36,15 @@ const PRIMARY_EDITOR_SELECTOR = [
   "textarea.notes-page-title:not(:disabled):not([readonly])",
   "textarea.notes-page-note:not(:disabled):not([readonly])",
   "[data-notes-bullet-title]:not([aria-disabled='true']):not([aria-readonly='true'])",
-  "textarea.notes-node-title:not(:disabled):not([readonly])",
   "textarea.notes-node-note:not(:disabled):not([readonly])",
   ".notes-image-atom-editor[contenteditable='true']"
 ].join(",");
 
 const NotesScopedPane = memo(function NotesScopedPane({
   pane,
-  activePaneId,
-  deferWhenInactive,
   toolbarTrailing,
 }: {
   pane: NotesPaneRuntimeSlice;
-  activePaneId: "primary" | "secondary";
-  deferWhenInactive: boolean;
   toolbarTrailing?: ReactNode;
 }) {
   const outline = useMemo(
@@ -61,11 +56,7 @@ const NotesScopedPane = memo(function NotesScopedPane({
     [pane.paneId, toolbarTrailing],
   );
   return (
-    <NotesPaneSliceScope
-      pane={pane}
-      activePaneId={activePaneId}
-      deferWhenInactive={deferWhenInactive}
-    >
+    <NotesPaneSliceScope pane={pane}>
       {outline}
     </NotesPaneSliceScope>
   );
@@ -196,8 +187,7 @@ export function NotesDetailSplitHost() {
     const fallback = primaryPaneRef.current?.querySelector<HTMLElement>(
       [
         "textarea.notes-page-title:not(:disabled):not([readonly])",
-        "[data-notes-bullet-title]:not([aria-disabled='true']):not([aria-readonly='true'])",
-        "textarea.notes-node-title:not(:disabled):not([readonly])"
+        "[data-notes-bullet-title]:not([aria-disabled='true']):not([aria-readonly='true'])"
       ].join(",")
     );
     const target = fallback ?? splitOpenButtonRef.current;
@@ -309,8 +299,6 @@ export function NotesDetailSplitHost() {
       >
         <NotesScopedPane
           pane={registry.panes.primary}
-          activePaneId={registry.activePaneId}
-          deferWhenInactive={layout.splitOpen}
           toolbarTrailing={splitOpenControl}
         />
       </div>
@@ -344,8 +332,6 @@ export function NotesDetailSplitHost() {
         >
           <NotesScopedPane
             pane={registry.panes.secondary}
-            activePaneId={registry.activePaneId}
-            deferWhenInactive={layout.splitOpen}
             toolbarTrailing={splitCloseControl}
           />
         </div>

@@ -185,18 +185,7 @@ import {
   parentTrail,
   type FlattenedOutlineRow,
 } from "./outlineTree";
-import { retainOutlineRowProjection } from "./outlineRowProjection";
-import {
-  createOutlineInteractionEpoch,
-  shouldRecordOutlineBaselineActivity,
-  type OutlineInteractionEpoch,
-  type OutlineInteractionReason,
-} from "./outlineInteractionEpoch";
-import {
-  createOutlineVisibleSignature,
-  projectOptimisticOutline,
-  type KeyboardInsertionDisposition,
-} from "./notesKeyboardInsertion";
+import { projectOptimisticOutline } from "./notesLocalStructure";
 import {
   captureNotesSplitInputBenchmarkBackspaceOperation,
   markNotesSplitInputBenchmarkBackspaceSettled,
@@ -229,16 +218,13 @@ import {
   type NotesSelectionCommandOwnership,
   type NotesSelectionCommandIntent,
 } from "./useNotesSelectionCommandRouter";
-import {
-  type OutlineLayoutMotionController,
-  useOutlineLayoutMotion,
-} from "./useOutlineLayoutMotion";
 import type {
   NotesPreparedSelectionAuthority,
   UseNotesWorkspaceResult,
 } from "./useNotesWorkspace";
 
 const EMPTY_GITHUB_COLLAPSED_GROUPS: readonly string[] = [];
+const EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS = Object.freeze([]);
 const selectionDragRejectedMessage =
   "Can't move selection: the selected rows cannot be moved together.";
 const filteredDragPreparingMessage =
@@ -325,12 +311,6 @@ interface NotesDragPresentationSnapshot {
   readonly forestNodeIds: readonly NoteId[];
   readonly representativeLabel: string;
   readonly representativeThumbnailSrc?: string;
-}
-
-interface CommittedOutlineRowProjection {
-  readonly vaultRoot: string;
-  readonly allStructuralRows: readonly FlattenedOutlineRow[];
-  readonly bodyRows: readonly FlattenedOutlineRow[];
 }
 
 function renderedDragImageSource(
@@ -717,9 +697,6 @@ export function NotesOutlinePane({
     retryLastFailedWrite,
   } = notesActionsSlice;
   const vaultRoot = useContext(VaultRootContext);
-  const outlineIdleBaselineRef = useRef<OutlineLayoutMotionController | null>(
-    null,
-  );
   const sortableControllersRef = useRef(
     new Map<NoteId, OutlineSortableController>(),
   );
@@ -739,52 +716,21 @@ export function NotesOutlinePane({
     },
     [vaultRoot],
   );
-  const outlineLayoutGenerationRef = useRef(0);
-  const noteOutlineActivity = useCallback(() => {
-    outlineIdleBaselineRef.current?.noteActivity(
-      outlineLayoutGenerationRef.current,
-    );
-  }, []);
-  const interactionEpochRef = useRef(createOutlineInteractionEpoch());
   const keyboardInsertionTokenRef = useRef(0);
   const nextKeyboardInsertionToken = useCallback(
     () => ++keyboardInsertionTokenRef.current,
     [],
   );
-  const advanceInteractionEpoch = useCallback(
-    (reason: OutlineInteractionReason): void => {
-      if (shouldRecordOutlineBaselineActivity(reason)) {
-        noteOutlineActivity();
-      }
-      const interactionEpoch = interactionEpochRef.current.advance(reason);
-      actions.publishOutlineInteractionEpoch?.({
-        paneId,
-        interactionEpoch,
-      });
-    },
-    [actions, noteOutlineActivity, paneId],
-  );
-  const interactionDisposeTokenRef = useRef<{
+  const paneDisposeTokenRef = useRef<{
     cancelled: boolean;
-    epoch: OutlineInteractionEpoch;
     vaultRoot: string;
     finishBackspaceGesture: typeof actions.finishBackspaceGesture;
     unregister: typeof actions.unregisterOutlinePane;
   } | null>(null);
-  const interactionVaultRef = useRef(vaultRoot);
-  useLayoutEffect(() => {
-    if (interactionVaultRef.current === vaultRoot) return;
-    outlineIdleBaselineRef.current?.resetForVaultReplacement();
-    interactionEpochRef.current.dispose();
-    interactionEpochRef.current = createOutlineInteractionEpoch();
-    interactionVaultRef.current = vaultRoot;
-    advanceInteractionEpoch("pane-switch");
-  }, [advanceInteractionEpoch, vaultRoot]);
   useEffect(() => {
-    const previous = interactionDisposeTokenRef.current;
+    const previous = paneDisposeTokenRef.current;
     const token = {
       cancelled: false,
-      epoch: interactionEpochRef.current,
       vaultRoot,
       finishBackspaceGesture: actions.finishBackspaceGesture,
       unregister: actions.unregisterOutlinePane,
@@ -792,11 +738,10 @@ export function NotesOutlinePane({
     if (previous?.vaultRoot === token.vaultRoot) {
       previous.cancelled = true;
     }
-    interactionDisposeTokenRef.current = token;
+    paneDisposeTokenRef.current = token;
     return () => {
       queueMicrotask(() => {
         if (token.cancelled) return;
-        token.epoch.dispose();
         const finishing =
           token.finishBackspaceGesture?.("drain") ?? Promise.resolve();
         void finishing.finally(() => token.unregister?.(paneId));
@@ -826,7 +771,6 @@ export function NotesOutlinePane({
     libraryView,
     locallyExpandedNodeIds,
     pendingPrimarySelection,
-    projectionPublication,
     retryAuthorityRecovery,
     state,
     tagSummaries,
@@ -864,15 +808,13 @@ export function NotesOutlinePane({
   const notesStateSliceRef = useRef(notesStateSlice);
   notesStateSliceRef.current = notesStateSlice;
   const getStateSnapshot = useCallback(() => notesStateSliceRef.current, []);
-  outlineLayoutGenerationRef.current =
-    projectionPublication?.layoutGeneration ?? 0;
   const {
     attachmentUploadErrorsByNodeId,
     attachmentUploadRetryAttemptIdsByNodeId,
     draftsByNodeId,
     optimisticBackspaceGesture = null,
     optimisticInsertionFailure,
-    optimisticKeyboardInsertions = [],
+    optimisticKeyboardInsertions = EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS,
     selection,
     selectionRevision = 0,
     writeError,
@@ -906,7 +848,6 @@ export function NotesOutlinePane({
     useState<NoteId | null>(null);
   const [outlineViewportHeight, setOutlineViewportHeight] = useState(0);
   const [outlineScrollTop, setOutlineScrollTop] = useState(0);
-  const [outlineComposing, setOutlineComposing] = useState(false);
   const [dragPresentation, setDragPresentation] =
     useState<NotesDragPresentationSnapshot | null>(null);
   const dragSourceNodeIdSet = useMemo(
@@ -975,7 +916,6 @@ export function NotesOutlinePane({
     string | null
   >(null);
   const contentRef = useRef<HTMLDivElement>(null);
-  const motionListRef = useRef<HTMLOListElement>(null);
   const dropSurfaceRef = useRef<HTMLDivElement>(null);
   const selectionToolbarRef = useRef<HTMLDivElement>(null);
   const mouseSelectionGestureRef = useRef<MouseSelectionGesture | null>(null);
@@ -992,9 +932,6 @@ export function NotesOutlinePane({
   const outlineDragAttemptEpochRef = useRef(0);
   const outlineDragSessionRef = useRef<PaneDragSession | null>(null);
   const pointerDropBoundaryRef = useRef<PanePointerDropBoundary | null>(null);
-  const committedOutlineRowsRef = useRef<CommittedOutlineRowProjection | null>(
-    null,
-  );
   const githubProjectionDropRef = useRef<GithubProjectionDrop | null>(null);
   const structuralRowsRef = useRef<readonly FlattenedOutlineRow[]>([]);
   const selectedDragNodeIdsRef = useRef<readonly NoteId[] | null>(null);
@@ -1506,37 +1443,47 @@ export function NotesOutlinePane({
       actions.setImageImportMaxDisplayWidth(null);
     };
   }, [actions]);
-  // Structural memoization avoids work on draft-only renders. Full workspace
-  // settles still replace `state`, so retain equal row metadata by id as well;
-  // an order shift changes the array while leaving unaffected row objects stable.
-  // The Vault-keyed candidate is published only after commit so an abandoned
-  // render cannot become the comparison baseline for a later render.
+  const expandedNodeIds = useMemo(() => {
+    const expanded = new Set(locallyExpandedNodeIds);
+    for (const insertion of optimisticKeyboardInsertions) {
+      if (
+        insertion.status !== "settled" &&
+        insertion.pending.intent.postcondition.kind === "first-child"
+      ) {
+        expanded.add(insertion.pending.intent.sourceId);
+      }
+    }
+    return expanded;
+  }, [locallyExpandedNodeIds, optimisticKeyboardInsertions]);
+  const outlineNodesById = state.nodesById;
+  const outlineChildIdsByParent = state.childIdsByParent;
+  const outlineRootIds = state.rootIds;
+  const outlineZoomRootId = state.zoomRootId;
   const allStructuralRows = useMemo(() => {
     const rows = flattenVisibleOutlineRows(
-      state,
-      state.zoomRootId,
-      locallyExpandedNodeIds,
+      {
+        nodesById: outlineNodesById,
+        childIdsByParent: outlineChildIdsByParent,
+        rootIds: outlineRootIds,
+      },
+      outlineZoomRootId,
+      expandedNodeIds,
     );
-    const visibleRows =
-      githubPage === null
-        ? rows.filter(
-            (row) =>
-              row.id !== GITHUB_NOTIFICATIONS_ROOT_ID &&
-              !githubDescendantIds.has(row.id),
-          )
-        : rows;
-    return retainOutlineRowProjection(
-      committedOutlineRowsRef.current?.vaultRoot === vaultRoot
-        ? committedOutlineRowsRef.current.allStructuralRows
-        : [],
-      visibleRows,
-    );
+    return githubPage === null
+      ? rows.filter(
+          (row) =>
+            row.id !== GITHUB_NOTIFICATIONS_ROOT_ID &&
+            !githubDescendantIds.has(row.id),
+        )
+      : rows;
   }, [
+    expandedNodeIds,
     githubDescendantIds,
     githubPage,
-    locallyExpandedNodeIds,
-    state,
-    vaultRoot,
+    outlineChildIdsByParent,
+    outlineNodesById,
+    outlineRootIds,
+    outlineZoomRootId,
   ]);
   const structuralRows = useMemo(
     () =>
@@ -1550,56 +1497,9 @@ export function NotesOutlinePane({
     [allStructuralRows, showCompleted, state.nodesById, state.zoomRootId],
   );
   structuralRowsRef.current = structuralRows;
-  const visibleSignature = useMemo(
-    () => createOutlineVisibleSignature(structuralRows),
-    [structuralRows],
-  );
-  const insertionDisposition = useMemo<KeyboardInsertionDisposition>(() => {
-    const disposition = projectionPublication?.keyboardInsertionDisposition ?? {
-      kind: "unrelated" as const,
-    };
-    if (
-      (disposition.kind !== "exact" && disposition.kind !== "mixed") ||
-      projectionPublication?.visibleSignature === undefined ||
-      projectionPublication.visibleSignature === visibleSignature
-    ) {
-      return disposition;
-    }
-    return {
-      kind: "mixed",
-      pending: disposition.pending,
-      settlement: {
-        ...disposition.settlement,
-        focusEligible: false,
-      },
-    };
-  }, [projectionPublication, visibleSignature]);
-  const insertionFocusCancellation = useMemo(
-    () =>
-      projectionPublication?.visibleSignature !== undefined &&
-      projectionPublication.visibleSignature !== visibleSignature &&
-      (projectionPublication.keyboardInsertionDisposition?.kind === "exact" ||
-        projectionPublication.keyboardInsertionDisposition?.kind === "mixed")
-        ? {
-            intentToken:
-              projectionPublication.keyboardInsertionDisposition.settlement
-                .intentToken,
-            nodeId:
-              projectionPublication.keyboardInsertionDisposition.pending.intent
-                .expectedNodeId,
-          }
-        : null,
-    [projectionPublication, visibleSignature],
-  );
   const authoritativeBodyRows = useMemo(
-    () =>
-      retainOutlineRowProjection(
-        committedOutlineRowsRef.current?.vaultRoot === vaultRoot
-          ? committedOutlineRowsRef.current.bodyRows
-          : [],
-        deriveOutlineBodyRows(structuralRows, state.zoomRootId),
-    ),
-    [structuralRows, state.zoomRootId, vaultRoot],
+    () => deriveOutlineBodyRows(structuralRows, state.zoomRootId),
+    [structuralRows, state.zoomRootId],
   );
   const optimisticProjection = useMemo(
     () =>
@@ -1617,13 +1517,6 @@ export function NotesOutlinePane({
     ],
   );
   const bodyRows = optimisticProjection.rows;
-  useLayoutEffect(() => {
-    committedOutlineRowsRef.current = {
-      vaultRoot,
-      allStructuralRows,
-      bodyRows: authoritativeBodyRows,
-    };
-  }, [allStructuralRows, authoritativeBodyRows, vaultRoot]);
   const paneScope = useMemo<NotesWorkspaceScope>(() => {
     switch (libraryView) {
       case "starred":
@@ -1643,58 +1536,27 @@ export function NotesOutlinePane({
         Object.values(state.nodesById)
           .filter((node) => node.isCollapsed)
           .map((node) => node.id),
-      ),
+    ),
     [state.nodesById],
   );
-  const geometryGenerationRef = useRef(0);
-  const panePublicationRef = useRef<Omit<
-    Parameters<NonNullable<typeof actions.publishOutlinePaneState>>[0],
-    "geometryGeneration"
-  > | null>(null);
   useLayoutEffect(() => {
-    const descriptor = {
+    actions.publishOutlinePaneState?.({
       paneId,
       scope: paneScope,
       zoomedNodeId: state.zoomRootId,
       showCompleted,
       collapsedNodeIds,
       locallyExpandedNodeIds,
-      interactionEpoch: interactionEpochRef.current.current(),
-      visibleSignature,
-      activeDrag: activeDragId !== null,
-    };
-    panePublicationRef.current = descriptor;
-    actions.publishOutlinePaneState?.({
-      ...descriptor,
-      geometryGeneration: geometryGenerationRef.current,
     });
   }, [
     actions,
-    activeDragId,
     collapsedNodeIds,
     locallyExpandedNodeIds,
     paneId,
     paneScope,
     showCompleted,
     state.zoomRootId,
-    structuralRows,
-    visibleSignature,
   ]);
-  useLayoutEffect(() => {
-    const root = motionListRef.current;
-    if (!root || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver((entries) => {
-      if (entries.length === 0 || !panePublicationRef.current) return;
-      geometryGenerationRef.current += 1;
-      actions.publishOutlinePaneState?.({
-        ...panePublicationRef.current,
-        geometryGeneration: geometryGenerationRef.current,
-      });
-    });
-    observer.observe(root);
-    for (const row of root.children) observer.observe(row);
-    return () => observer.disconnect();
-  }, [actions, structuralRows]);
   const githubRoot = state.nodesById[GITHUB_NOTIFICATIONS_ROOT_ID];
   const persistedGithubCollapsedGroups =
     githubRoot?.pluginState?.collapsedGroups ?? EMPTY_GITHUB_COLLAPSED_GROUPS;
@@ -2478,7 +2340,6 @@ export function NotesOutlinePane({
   );
   const focusBodyTitle = useCallback(
     (nodeId: NoteId): void => {
-      noteOutlineActivity();
       const title = outlineTitleEditor(contentRef.current, nodeId);
       if (title) {
         title.focus();
@@ -2491,7 +2352,7 @@ export function NotesOutlinePane({
       }
       setDeferredDirectFocusId(nodeId);
     },
-    [noteOutlineActivity],
+    [],
   );
   useLayoutEffect(() => {
     if (deferredDirectFocusId === null) return;
@@ -3176,12 +3037,10 @@ export function NotesOutlinePane({
   }, [finishBackspaceGesture]);
   const handleSelectionCompositionStartCapture = useCallback((): void => {
     selectionNativeClipboard.handleCompositionStart();
-    setOutlineComposing(true);
     actions.setOutlineCompositionActive?.(true);
   }, [actions, selectionNativeClipboard]);
   const handleSelectionCompositionEndCapture = useCallback((): void => {
     selectionNativeClipboard.handleCompositionEnd();
-    setOutlineComposing(false);
     actions.setOutlineCompositionActive?.(false);
   }, [actions, selectionNativeClipboard]);
   useEffect(() => {
@@ -3470,7 +3329,6 @@ export function NotesOutlinePane({
 
   const executeSelectionAction = useCallback(
     async (action: NotesSelectionActionBarAction): Promise<void> => {
-      noteOutlineActivity();
       if (rejectDisabledSelectionOperation(action)) {
         return;
       }
@@ -3506,7 +3364,6 @@ export function NotesOutlinePane({
     },
     [
       executeGuardedSelectionCommand,
-      noteOutlineActivity,
       rejectDisabledSelectionOperation,
       requestSelectionChooser,
     ],
@@ -3612,38 +3469,6 @@ export function NotesOutlinePane({
       : dropPreview;
   const initialLoading =
     state.status === "loading" && state.rootIds.length === 0;
-  const consumeInsertionMotion = useCallback(
-    (intentToken: number) => {
-      if (insertionFocusCancellation?.intentToken === intentToken) {
-        actions.consumeInsertionMotion?.(
-          intentToken,
-          insertionFocusCancellation.nodeId,
-        );
-        return;
-      }
-      actions.consumeInsertionMotion?.(intentToken);
-    },
-    [actions, insertionFocusCancellation],
-  );
-  const settledFirstPaintGenerationRef = useRef(0);
-  const recordSettledFirstPaint = useCallback((generation: number) => {
-    settledFirstPaintGenerationRef.current = Math.max(
-      settledFirstPaintGenerationRef.current,
-      generation,
-    );
-  }, []);
-  const outlineIdleBaseline = useOutlineLayoutMotion({
-    rootRef: motionListRef,
-    rows: bodyRows,
-    activeDrag: activeDragId !== null,
-    initialLoading,
-    isComposing: outlineComposing,
-    publication: projectionPublication ?? null,
-    insertionDisposition,
-    onInsertionMotionConsumed: consumeInsertionMotion,
-    onSettledFirstPaint: recordSettledFirstPaint,
-  });
-  outlineIdleBaselineRef.current = outlineIdleBaseline;
   const dragUnavailable =
     deletingNotesData ||
     lifecycleReadOnly ||
@@ -4258,7 +4083,6 @@ export function NotesOutlinePane({
         ),
       );
     }
-    actions.publishOutlineDragState?.({ paneId, activeDrag: true });
     setActiveDragId(id);
   };
 
@@ -4336,7 +4160,6 @@ export function NotesOutlinePane({
     };
     outlineDragSessionRef.current = null;
     pointerDropBoundaryRef.current = null;
-    actions.publishOutlineDragState?.({ paneId, activeDrag: false });
     githubProjectionDropRef.current = null;
     setActiveDragId(null);
     setDragPresentation(null);
@@ -4706,8 +4529,7 @@ export function NotesOutlinePane({
         ? pendingPrimarySelection
         : null;
     const focusRequest: OutlineEditorFocusRequest | null =
-      state.pendingFocusId === row.id &&
-      insertionFocusCancellation?.nodeId !== row.id
+      state.pendingFocusId === row.id
         ? {
             requestId: focusSelection?.requestId ?? 0,
             field: focusSelection?.field ?? state.pendingFocusField ?? "title",
@@ -4735,9 +4557,7 @@ export function NotesOutlinePane({
       <OutlineEditorExportBridge
         key={row.id}
         paneId={paneId}
-        interactionEpoch={interactionEpochRef.current}
         nextKeyboardInsertionToken={nextKeyboardInsertionToken}
-        onCommandFocusActivity={noteOutlineActivity}
         node={node}
         attachments={attachments}
         childCount={childCount}
@@ -4794,7 +4614,6 @@ export function NotesOutlinePane({
       <li
         className="notes-outline-item"
         key={row.id}
-        data-outline-motion-id={row.id}
         aria-level={depth + 1}
         data-drag-source={dragSourceNodeIdSet.has(row.id) ? "true" : undefined}
         role="listitem"
@@ -4897,13 +4716,6 @@ export function NotesOutlinePane({
           deletingNotesData ||
           authorityRecovery?.kind === "recovering"
         }
-        onKeyDownCapture={() => advanceInteractionEpoch("keydown")}
-        onBeforeInputCapture={() => advanceInteractionEpoch("beforeinput")}
-        onInputCapture={() => advanceInteractionEpoch("input")}
-        onCompositionStartCapture={() =>
-          advanceInteractionEpoch("compositionstart")
-        }
-        onPointerDownCapture={() => advanceInteractionEpoch("pointerdown")}
         style={
           {
             "--notes-outline-indent": `${outlineIndentPx}px`,
@@ -5176,7 +4988,6 @@ export function NotesOutlinePane({
                 >
                   <ol
                     className="notes-outline-list"
-                    ref={motionListRef}
                     data-drag-active={
                       activeDragId === null ? undefined : "true"
                     }

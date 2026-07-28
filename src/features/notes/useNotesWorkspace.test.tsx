@@ -5,7 +5,6 @@ import { isNotesMutationResult, MAX_NOTE_ATTACHMENT_BATCH_BYTES, MAX_NOTE_ATTACH
 import { isNotesDraftsFlushFailedError, NOTES_DRAFTS_FLUSH_FAILED_CODE, resetImageImportRecoveryForTests, useNotesWorkspace, type NotesDeleteAllResult } from "./useNotesWorkspace";
 import { notesWorkspaceCoordinatorRegistry, type NotesWorkspaceCoordinatorSession } from "./notesWorkspaceCoordinator";
 import { type NotesHistorySession } from "./notesHistory";
-import { createOutlineVisibleSignature } from "./notesKeyboardInsertion";
 import { journalNotesRepository } from "./testing/notesWorkspaceTestHarness";
 
 const createNoteIdMock = vi.hoisted(() => vi.fn());
@@ -551,19 +550,7 @@ describe("useNotesWorkspace", () => {
         zoomedNodeId: null,
         showCompleted: true,
         collapsedNodeIds: new Set(),
-        locallyExpandedNodeIds: new Set(),
-        interactionEpoch: 1,
-        visibleSignature: createOutlineVisibleSignature([{
-          id: "root",
-          parentId: null,
-          depth: 0,
-          isCollapsed: false,
-          ancestorIds: [],
-          ancestorGuideDepths: [],
-          visibleDescendantEndId: null
-        }]),
-        geometryGeneration: 0,
-        activeDrag: false
+        locallyExpandedNodeIds: new Set()
       });
     });
     let preparation: ReturnType<
@@ -572,7 +559,6 @@ describe("useNotesWorkspace", () => {
     act(() => {
       preparation = result.current.actions.prepareKeyboardInsertion?.({
         ownerPaneId: "pane-a",
-        interactionEpochAtDispatch: 1,
         intent: {
           token: 1,
           sourceId: "root",

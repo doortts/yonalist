@@ -14,17 +14,12 @@ function buildPane(
   for (const row of rows) {
     const shell = document.createElement("div");
     shell.setAttribute("data-outline-id", row.id);
-    if (row.title !== undefined) {
-      const title = document.createElement("textarea");
-      title.className = "notes-node-title";
-      title.value = row.title;
-      shell.appendChild(title);
-    }
-    if (row.liveTitle !== undefined) {
+    const titleValue = row.title ?? row.liveTitle;
+    if (titleValue !== undefined) {
       const title = document.createElement("div");
       title.setAttribute("data-notes-bullet-title", "");
       title.tabIndex = 0;
-      title.textContent = row.liveTitle;
+      title.textContent = titleValue;
       shell.appendChild(title);
     }
     if (row.note !== undefined) {
@@ -46,14 +41,14 @@ afterEach(() => {
 
 describe("focusOutlineEditorDom", () => {
   it("focuses only the exact escaped row id inside the owning pane", () => {
-    const escapedId = 'row"] .notes-node-title, [data-x="trap';
+    const escapedId = 'row"] [data-x="trap';
     const firstPane = buildPane([{ id: escapedId, title: "first" }]);
     const secondPane = buildPane([{ id: escapedId, title: "second" }]);
-    const firstTitle = firstPane.querySelector<HTMLTextAreaElement>(
-      "textarea.notes-node-title",
+    const firstTitle = firstPane.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]",
     )!;
-    const secondTitle = secondPane.querySelector<HTMLTextAreaElement>(
-      "textarea.notes-node-title",
+    const secondTitle = secondPane.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]",
     )!;
     secondTitle.focus();
 
@@ -65,17 +60,17 @@ describe("focusOutlineEditorDom", () => {
     expect(document.activeElement).not.toBe(secondTitle);
   });
 
-  it("focuses the title textarea and collapses the caret to the end", () => {
+  it("focuses the title editor and collapses the caret to the end", () => {
     const pane = buildPane([{ id: "a", title: "hello" }]);
-    const textarea = pane.querySelector<HTMLTextAreaElement>(
-      "textarea.notes-node-title",
+    const editor = pane.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]",
     )!;
 
     expect(focusOutlineEditorDom(pane, "a", "title", "end")).toBe(true);
 
-    expect(document.activeElement).toBe(textarea);
-    expect(textarea.selectionStart).toBe(5);
-    expect(textarea.selectionEnd).toBe(5);
+    expect(document.activeElement).toBe(editor);
+    expect(document.getSelection()?.anchorOffset).toBe(5);
+    expect(document.getSelection()?.focusOffset).toBe(5);
   });
 
   it("focuses the live title editor and restores its plain-text range", () => {
@@ -98,22 +93,19 @@ describe("focusOutlineEditorDom", () => {
 
   it("collapses the caret to the start", () => {
     const pane = buildPane([{ id: "a", title: "hello" }]);
-    const textarea = pane.querySelector<HTMLTextAreaElement>(
-      "textarea.notes-node-title",
+    const editor = pane.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]",
     )!;
 
     expect(focusOutlineEditorDom(pane, "a", "title", "start")).toBe(true);
 
-    expect(document.activeElement).toBe(textarea);
-    expect(textarea.selectionStart).toBe(0);
-    expect(textarea.selectionEnd).toBe(0);
+    expect(document.activeElement).toBe(editor);
+    expect(document.getSelection()?.anchorOffset).toBe(0);
+    expect(document.getSelection()?.focusOffset).toBe(0);
   });
 
   it("applies a normalized explicit range clamped to the value length", () => {
     const pane = buildPane([{ id: "a", title: "hello" }]);
-    const textarea = pane.querySelector<HTMLTextAreaElement>(
-      "textarea.notes-node-title",
-    )!;
 
     expect(
       focusOutlineEditorDom(pane, "a", "title", {
@@ -122,8 +114,8 @@ describe("focusOutlineEditorDom", () => {
       }),
     ).toBe(true);
 
-    expect(textarea.selectionStart).toBe(1);
-    expect(textarea.selectionEnd).toBe(5);
+    expect(document.getSelection()?.anchorOffset).toBe(1);
+    expect(document.getSelection()?.focusOffset).toBe(5);
   });
 
   it("focuses the supporting note textarea", () => {
@@ -139,16 +131,22 @@ describe("focusOutlineEditorDom", () => {
 
   it("keeps the existing selection when no edge is requested", () => {
     const pane = buildPane([{ id: "a", title: "hello" }]);
-    const textarea = pane.querySelector<HTMLTextAreaElement>(
-      "textarea.notes-node-title",
+    const editor = pane.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]",
     )!;
-    textarea.setSelectionRange(2, 4);
+    editor.focus();
+    const range = document.createRange();
+    range.setStart(editor.firstChild!, 2);
+    range.setEnd(editor.firstChild!, 4);
+    const selection = document.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
 
     expect(focusOutlineEditorDom(pane, "a", "title", null)).toBe(true);
 
-    expect(document.activeElement).toBe(textarea);
-    expect(textarea.selectionStart).toBe(2);
-    expect(textarea.selectionEnd).toBe(4);
+    expect(document.activeElement).toBe(editor);
+    expect(selection.anchorOffset).toBe(2);
+    expect(selection.focusOffset).toBe(4);
   });
 
   it("returns false when the row or requested field is not mounted", () => {
@@ -160,10 +158,10 @@ describe("focusOutlineEditorDom", () => {
 
   it("returns false when the browser refuses focus", () => {
     const pane = buildPane([{ id: "a", title: "hello" }]);
-    const textarea = pane.querySelector<HTMLTextAreaElement>(
-      "textarea.notes-node-title",
+    const editor = pane.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]",
     )!;
-    vi.spyOn(textarea, "focus").mockImplementation(() => undefined);
+    vi.spyOn(editor, "focus").mockImplementation(() => undefined);
 
     expect(focusOutlineEditorDom(pane, "a", "title", "end")).toBe(false);
   });
