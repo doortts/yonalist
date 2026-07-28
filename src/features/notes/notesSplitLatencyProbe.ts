@@ -798,20 +798,23 @@ export function installNotesSplitInputBenchmarkCollector(
   const keyup = (event: KeyboardEvent) => {
     const context = fieldContext(event.target);
     const gesture = installed.heldGesture;
+    const paneId =
+      context?.paneId ??
+      (gesture?.key === event.key ? gesture.paneId : null);
     if (
-      context &&
-      gesture?.paneId === context.paneId &&
+      paneId &&
+      gesture?.paneId === paneId &&
       gesture.key === event.key
     ) {
       finishHeldGesture();
     }
     if (event.key !== "Backspace") return;
-    const id = context && installed.activeBackspaceByPane.get(context.paneId);
-    if (id) {
+    const id = paneId && installed.activeBackspaceByPane.get(paneId);
+    if (id && paneId) {
       collector.mark(id, "keyup-stop");
-      installed.activeBackspaceByPane.delete(context!.paneId);
-      installed.lastBackspaceByPane.set(context!.paneId, id);
-      installed.backspaceObservationByPane.set(context!.paneId, id);
+      installed.activeBackspaceByPane.delete(paneId);
+      installed.lastBackspaceByPane.set(paneId, id);
+      installed.backspaceObservationByPane.set(paneId, id);
       installed.keyupBackspaceOperationIds.add(id);
       if ((installed.backspacePendingCounts.get(id) ?? 0) === 0) {
         installed.finishBackspaceOperation(id);
@@ -822,7 +825,7 @@ export function installNotesSplitInputBenchmarkCollector(
         const terminal = installed.terminalBackspaceOperationIds.has(id);
         collector.completeBacklogWindow(id, !terminal);
         if (terminal) {
-          installed.backspaceObservationByPane.delete(context!.paneId);
+          installed.backspaceObservationByPane.delete(paneId);
         } else {
           installed.overdueBackspaceOperationIds.add(id);
         }

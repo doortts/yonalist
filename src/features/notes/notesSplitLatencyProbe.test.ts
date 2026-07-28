@@ -660,6 +660,42 @@ describe("notesSplitLatencyProbe", () => {
     dispose();
   });
 
+  it("finalizes held Backspace keyup after deletion moves focus outside a title", () => {
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary">
+        <div data-outline-id="empty"><textarea class="notes-node-title"></textarea></div>
+      </section>
+      <button>Outside</button>
+    `;
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => 0,
+      scheduleBacklogCheck: () => {}
+    });
+    const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
+    const outside = document.querySelector<HTMLButtonElement>("button")!;
+
+    try {
+      field.focus();
+      press(field, { key: "Backspace" });
+      press(field, { key: "Backspace", repeat: true });
+      press(field, { key: "Backspace", repeat: true });
+      outside.focus();
+      release(outside, { key: "Backspace" });
+
+      expect(benchmarkSamples()).toEqual([
+        expect.objectContaining({
+          operation: "backspace",
+          paneId: "primary",
+          deliveredKeydowns: 3,
+          phases: ["keyup-stop"]
+        })
+      ]);
+    } finally {
+      dispose();
+    }
+  });
+
   it("keeps one physical held-Backspace record through repeats, keyup, verified Undo, and real late work", () => {
     let clock = 0;
     let runBacklogCheck: (() => void) | undefined;
