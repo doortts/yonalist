@@ -304,6 +304,18 @@ describe("outline clipboard integration", () => {
 
   it("indents a selected sibling block through one batch move", async () => {
     const notesApi = api();
+    notesApi.undo = vi.fn().mockResolvedValue({
+      revision: 9,
+      changedNodes: [],
+      deletedIds: [],
+      history: { canUndo: false, canRedo: true, undoDepth: 0, redoDepth: 1 }
+    });
+    notesApi.redo = vi.fn().mockResolvedValue({
+      revision: 10,
+      changedNodes: [],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    });
     render(<App api={notesApi} />);
     const second = await screen.findByDisplayValue("Second thought");
     const third = screen.getByDisplayValue("Third thought");
@@ -324,6 +336,11 @@ describe("outline clipboard integration", () => {
       })
     ));
     expect(notesApi.execute).toHaveBeenCalledOnce();
+
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    await waitFor(() => expect(notesApi.undo).toHaveBeenCalledOnce());
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true, shiftKey: true });
+    await waitFor(() => expect(notesApi.redo).toHaveBeenCalledOnce());
   });
 
   it("routes Tab on a keyboard-selected range through the same batch move", async () => {

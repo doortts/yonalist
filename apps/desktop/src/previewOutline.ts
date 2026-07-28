@@ -27,19 +27,6 @@ export function createInitialPreviewNodes(): NoteView[] {
       completed: false,
       starred: true,
       deleted: false
-    },
-    {
-      id: "preview-second",
-      parentId: "preview-page",
-      sortKey: 2048,
-      kind: "bullet",
-      text: "Press Enter to add another thought.",
-      note: "",
-      marker: "bullet",
-      collapsed: false,
-      completed: false,
-      starred: false,
-      deleted: false
     }
   ];
 }

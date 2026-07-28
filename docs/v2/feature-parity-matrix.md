@@ -29,8 +29,8 @@ helper must be ported.
 | Arrow navigation | Up/Down rows, boundary Left/Right, page-header boundary | `src/features/notes/outlineKeyboard.test.ts` | complete |
 | Empty Backspace | Start-caret guard, child lifting, focus order, single Undo | `src/features/notes/outlineKeyboard.test.ts` | complete |
 | Collapse | Collapse/expand, hidden subtree navigation, collapsed-halo behavior | `src/features/notes/NotesWorkspace.test.tsx` | complete |
-| Zoom | Bullet zoom, breadcrumb back, Workflowy shortcuts | `src/features/notes/NotesWorkspace.test.tsx` | complete |
-| Split panes | Open/close/resize, independent scroll/focus, cross-pane consistency | `apps/desktop/src/navigationHistoryIntegration.test.tsx`, `apps/desktop/src/outlineClipboardIntegration.test.tsx` | complete |
+| Zoom | Bullet zoom, breadcrumb back, Workflowy shortcuts | `apps/desktop/src/splitPaneIntegration.test.tsx`, `apps/desktop/src/navigationHistoryIntegration.test.tsx` | complete |
+| Split panes | Open/close/resize, independent scroll/focus, cross-pane consistency | `apps/desktop/src/splitPaneIntegration.test.tsx`, `apps/desktop/src/navigationHistoryIntegration.test.tsx`, `apps/desktop/src/outlineClipboardIntegration.test.tsx` | complete |
 | Supporting notes | Edit, auto-collapse, Shift+Enter and arrow navigation | `src/features/notes/NoteTextField.test.tsx` | complete |
 | Completion | Single-row complete/incomplete and hidden completed subtrees | `src/features/notes/NotesWorkspace.test.tsx` | complete |
 | Todo | Marker conversion, checkbox, direct-child progress | `src/features/notes/notesTodoProgress.test.ts` | complete |
@@ -39,10 +39,10 @@ helper must be ported.
 | Single-row shortcuts | Complete, duplicate, trash, structural move | `src/features/notes/outlineKeyboard.test.ts` | complete |
 | Pointer selection | Shift range, primary toggle, text-drag promotion | `apps/desktop/src/outlineClipboardIntegration.test.tsx` | complete |
 | Keyboard selection | Shift+arrows, Escape, selection focus ownership | `src/features/notes/outlineKeyboard.test.ts` | complete |
-| Batch actions | Complete, delete, indent, outdent, duplicate, reorder | `apps/desktop/src/outlineClipboardIntegration.test.tsx`, `crates/notes-sqlite/tests/vertical_slice.rs` | complete |
+| Batch actions | Complete, delete, indent, outdent, duplicate, reorder, single-step history | `apps/desktop/src/outlineClipboardIntegration.test.tsx`, `crates/notes-sqlite/tests/vertical_slice.rs` | complete |
 | Clipboard | Revision-checked complete-forest copy/cut and indented multiline paste | `apps/desktop/src/outlineClipboard.test.ts`, `apps/desktop/src/outlineClipboardIntegration.test.tsx`, `crates/notes-sqlite/tests/viewport_queries.rs` | complete |
 | Drag/drop | Single/multi/keyboard/cross-pane move and exact drop preview | `apps/desktop/src/outlineDragPlan.test.ts`, `apps/desktop/src/outlineClipboardIntegration.test.tsx` | complete |
-| Undo/Redo | Text/structure/session history and restart reset | `apps/desktop/src/notesInteractionHistory.test.ts`, `crates/notes-application/tests/session_service.rs` | complete |
+| Undo/Redo | Text/structure/session history and restart reset | `apps/desktop/src/notesInteractionHistory.test.ts`, `apps/desktop/src/outlineClipboardIntegration.test.tsx`, `crates/notes-application/tests/session_service.rs` | complete |
 | Navigation history | Zoom, pane, selection and focus undo/redo restoration | `apps/desktop/src/navigationHistoryIntegration.test.tsx` | complete |
 | Attachments | Picker, clipboard, filesystem drop, list actions and limits | `src/features/notes/NotesAttachmentIngest.test.tsx` | missing |
 | Image nodes | Atomic multi-import, independent image rows, restart restore | `src/features/notes/imageNodeInsertion.test.ts` | missing |

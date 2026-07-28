@@ -1,6 +1,14 @@
 import { previewNotesApi } from "./previewApi";
 
 describe("browser-only preview adapter", () => {
+  it("does not seed instructional text as a bullet", async () => {
+    const boot = await previewNotesApi.bootstrap();
+
+    expect(boot.viewport?.nodes.map((node) => node.text)).not.toContain(
+      "Press Enter to add another thought."
+    );
+  });
+
   it("boots a bounded editable outline and applies command patches", async () => {
     const boot = await previewNotesApi.bootstrap();
     expect(boot.activePageId).not.toBeNull();
@@ -24,7 +32,6 @@ describe("browser-only preview adapter", () => {
   it("supports atomic split and empty-row removal in browser preview", async () => {
     const boot = await previewNotesApi.bootstrap();
     const target = boot.viewport!.nodes[0];
-    const next = boot.viewport!.nodes[1];
     const split = await previewNotesApi.execute({
       sessionId: boot.sessionId,
       requestId: "preview-split-request",
@@ -35,7 +42,7 @@ describe("browser-only preview adapter", () => {
         id: target.id,
         new_id: "preview-split",
         parent_id: target.parentId!,
-        before_id: next.id,
+        before_id: null,
         prefix: target.text,
         suffix: ""
       }
