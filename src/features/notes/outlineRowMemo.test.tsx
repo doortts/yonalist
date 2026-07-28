@@ -423,23 +423,13 @@ function holdFocusAcknowledgement(
     ...slice,
     actions: {
       ...slice.actions,
-      acknowledgeOptimisticKeyboardInsertionFocus: (nodeId, intentToken) => {
-        slice.actions.acknowledgeOptimisticKeyboardInsertionFocus?.(
-          nodeId,
-          intentToken
-        );
-        if (!observed) {
-          observed = true;
-          started.resolve(undefined);
-        }
-      },
       acknowledgeFocus: async (nodeId, requestId) => {
-        await slice.actions.acknowledgeFocus(nodeId, requestId);
         if (!observed) {
           observed = true;
           started.resolve(undefined);
         }
         await release.promise;
+        await slice.actions.acknowledgeFocus(nodeId, requestId);
       },
     },
   });

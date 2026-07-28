@@ -233,8 +233,6 @@ import {
   type OutlineLayoutMotionController,
   useOutlineLayoutMotion,
 } from "./useOutlineLayoutMotion";
-import { resumeOutlineIdleBaselineAfterInsertionFailure } from "./outlineIdleBaseline";
-import { useNotesHeldBackspaceRepeat } from "./useNotesHeldBackspaceRepeat";
 import type {
   NotesPreparedSelectionAuthority,
   UseNotesWorkspaceResult,
@@ -2087,12 +2085,10 @@ export function NotesOutlinePane({
   bodyVisibleIdsRef.current = bodyVisibleIds;
   const bodyRowsRef = useRef(bodyRows);
   bodyRowsRef.current = bodyRows;
-  const heldBackspaceStopRef = useRef<() => void>(() => {});
   const finishBackspaceGesture = useCallback(
     (
       reason: "keyup" | "blur" | "hidden" | "drain",
     ): Promise<NotesWorkspaceCommandOutcome> => {
-      heldBackspaceStopRef.current();
       const benchmark = backspaceBenchmarkRef.current;
       backspaceBenchmarkRef.current = null;
       const completion =
@@ -2110,20 +2106,6 @@ export function NotesOutlinePane({
     },
     [actions],
   );
-  const heldBackspaceRepeat = useNotesHeldBackspaceRepeat({
-    paneId,
-    vaultRoot,
-    gesture: optimisticBackspaceGesture,
-    bodyRows,
-    draftsByNodeId,
-    stateSlice: notesStateSlice,
-    visibleNodeIds: structuralVisibleIds,
-    selectionVisibleNodeIds: bodyVisibleIds,
-    actions,
-    getContentRoot: () => contentRef.current,
-    onRelease: () => void finishBackspaceGesture("keyup"),
-  });
-  heldBackspaceStopRef.current = heldBackspaceRepeat.stop;
   const getOutlineRow = useCallback(
     (nodeId: NoteId) =>
       bodyRowsRef.current.find((row) => row.id === nodeId),
@@ -3662,28 +3644,6 @@ export function NotesOutlinePane({
     onSettledFirstPaint: recordSettledFirstPaint,
   });
   outlineIdleBaselineRef.current = outlineIdleBaseline;
-  const suspendOutlineBaselineForInsertion = useCallback(
-    (intentToken: number, layoutGeneration: number) => {
-      outlineIdleBaselineRef.current?.suspendForPendingInsertion(
-        intentToken,
-        layoutGeneration,
-      );
-    },
-    [],
-  );
-  const resumeOutlineBaselineAfterInsertionFailure = useCallback(
-    (intentToken: number, preparedLayoutGeneration: number) => {
-      const scheduler = outlineIdleBaselineRef.current;
-      if (!scheduler) return;
-      resumeOutlineIdleBaselineAfterInsertionFailure(
-        scheduler,
-        intentToken,
-        preparedLayoutGeneration,
-        outlineLayoutGenerationRef.current,
-      );
-    },
-    [],
-  );
   const dragUnavailable =
     deletingNotesData ||
     lifecycleReadOnly ||
@@ -4777,12 +4737,7 @@ export function NotesOutlinePane({
         paneId={paneId}
         interactionEpoch={interactionEpochRef.current}
         nextKeyboardInsertionToken={nextKeyboardInsertionToken}
-        onKeyboardInsertionPrepared={suspendOutlineBaselineForInsertion}
-        onKeyboardInsertionTerminated={
-          resumeOutlineBaselineAfterInsertionFailure
-        }
         onCommandFocusActivity={noteOutlineActivity}
-        onBackspaceGestureKeyDown={heldBackspaceRepeat.handleKeyDown}
         node={node}
         attachments={attachments}
         childCount={childCount}

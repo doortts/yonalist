@@ -1187,11 +1187,6 @@ export function useNotesWorkspace({
           sessionRef.current?.updateOptimisticKeyboardInsertion(nodeId, title);
         }
       },
-      acknowledgeOptimisticKeyboardInsertionFocus: (nodeId, intentToken) =>
-        sessionRef.current?.acknowledgeOptimisticKeyboardInsertionFocus(
-          nodeId,
-          intentToken
-        ),
       dismissOptimisticInsertionFailure: () =>
         sessionRef.current?.dismissOptimisticInsertionFailure(),
       pendingKeyboardInsertionInteractionEpoch: (nodeId) =>

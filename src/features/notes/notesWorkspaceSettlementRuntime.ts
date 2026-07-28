@@ -95,7 +95,6 @@ export function routeKeyboardInsertionNavigation(
     result.projectionPublication?.keyboardInsertionDisposition;
   if (
     (disposition?.kind !== "exact" && disposition?.kind !== "mixed") ||
-    !disposition.settlement.focusEligible ||
     disposition.settlement.ownerPaneId !== "secondary" ||
     !result.uiUpdate
   ) {
@@ -171,7 +170,7 @@ export function settledKeyboardInsertionFocus(
         nodeId: disposition.pending.intent.expectedNodeId,
         intentToken: disposition.settlement.intentToken,
         interactionEpochAtDispatch:
-          disposition.pending.interactionEpochAtDispatch
+          disposition.pending.interactionEpochAtDispatch ?? 0
       }
     : null;
 }

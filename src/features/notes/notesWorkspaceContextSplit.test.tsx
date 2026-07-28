@@ -295,7 +295,7 @@ describe("notes workspace context split", () => {
     );
   });
 
-  it("discards a direct-caret frame after newer focus wins in either pane", async () => {
+  it("keeps newer focus after synchronous direct caret updates in either pane", async () => {
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(
         workspace([
@@ -328,7 +328,7 @@ describe("notes workspace context split", () => {
       );
       await panes().secondary.actionsSlice.actions.focusNode("root");
     });
-    expect(frames).toHaveLength(2);
+    expect(frames).toHaveLength(0);
     expect(panes().primary.stateSlice.state).toMatchObject({
       selectedId: "root",
       editingNoteId: "root",
@@ -360,7 +360,7 @@ describe("notes workspace context split", () => {
     });
   });
 
-  it("discards direct-caret frames after newer editing claims and zoom history", async () => {
+  it("keeps newer editing claims and zoom history after synchronous direct caret updates", async () => {
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(
         workspace([
@@ -402,39 +402,32 @@ describe("notes workspace context split", () => {
         "title"
       );
     });
-    expect(frames).toHaveLength(2);
+    expect(frames).toHaveLength(0);
     act(() => {
       for (const frame of frames.splice(0)) frame(0);
     });
-    expect(panes().primary.stateSlice.state.selectedId).toBeNull();
+    expect(panes().primary.stateSlice.state.selectedId).toBe("other");
     expect(panes().secondary.stateSlice.state).toMatchObject({
       selectedId: "root",
       editingNoteId: "root"
     });
 
-    let primaryZoom: Promise<void> | undefined;
-    let secondaryZoom: Promise<void> | undefined;
-    act(() => {
+    await act(async () => {
       panes().primary.actionsSlice.actions.notifyCaretMovedByDom?.(
         "other",
         "title"
       );
-      primaryZoom = panes().primary.actionsSlice.actions.zoomTo("root");
+      const primaryZoom =
+        panes().primary.actionsSlice.actions.zoomTo("root");
       panes().secondary.actionsSlice.actions.notifyCaretMovedByDom?.(
         "other",
         "title"
       );
-      secondaryZoom = panes().secondary.actionsSlice.actions.zoomTo("root");
-    });
-    expect(frames).toHaveLength(2);
-    act(() => {
-      for (const frame of frames.splice(0)) frame(0);
-    });
-    expect(panes().primary.stateSlice.state.selectedId).toBeNull();
-    expect(panes().secondary.stateSlice.state.selectedId).toBe("root");
-    await act(async () => {
+      const secondaryZoom =
+        panes().secondary.actionsSlice.actions.zoomTo("root");
       await Promise.all([primaryZoom, secondaryZoom]);
     });
+    expect(frames).toHaveLength(0);
     expect(panes().primary.stateSlice.state).toMatchObject({
       selectedId: "root",
       zoomRootId: "root"
@@ -445,7 +438,7 @@ describe("notes workspace context split", () => {
     });
   });
 
-  it("settles repeated editing claims without publishing pane state per key", async () => {
+  it("publishes only the active pane for each synchronous repeated editing claim", async () => {
     const rows = Array.from({ length: 101 }, (_, index) =>
       node({
         id: `row-${index}`,
@@ -520,17 +513,15 @@ describe("notes workspace context split", () => {
       await settleDirectClaim("secondary", `row-${index}`);
     }
 
-    expect(frames).toHaveLength(2);
-    expect(primaryPaneRenders).toBe(primaryBefore);
-    // Activating the other pane may publish once; the 50 claims must not
-    // publish another 50 pane states while the shared frame is pending.
-    expect(secondaryPaneRenders).toBe(secondaryBefore + 1);
+    expect(frames).toHaveLength(0);
+    expect(primaryPaneRenders).toBe(primaryBefore + 50);
+    expect(secondaryPaneRenders).toBe(secondaryBefore + 50);
 
     act(() => {
       for (const frame of frames.splice(0)) frame(0);
     });
-    expect(primaryPaneRenders).toBe(primaryBefore + 1);
-    expect(secondaryPaneRenders).toBe(secondaryBefore + 2);
+    expect(primaryPaneRenders).toBe(primaryBefore + 50);
+    expect(secondaryPaneRenders).toBe(secondaryBefore + 50);
   });
 
   it.each(["primary", "secondary"] as const)(
@@ -639,16 +630,12 @@ describe("notes workspace context split", () => {
 
       const inactivePaneId =
         activePaneId === "primary" ? "secondary" : "primary";
-      expect(frames).toHaveLength(1);
+      expect(frames).toHaveLength(0);
       expect(outlineCommits[inactivePaneId]).toBe(0);
-      expect(outlineCommits[activePaneId]).toBe(0);
-
-      act(() => {
-        frames.shift()!(0);
-      });
+      expect(outlineCommits[activePaneId]).toBe(50);
 
       expect(outlineCommits[inactivePaneId]).toBe(0);
-      expect(outlineCommits[activePaneId]).toBe(1);
+      expect(outlineCommits[activePaneId]).toBe(50);
     },
   );
 
@@ -1126,19 +1113,7 @@ describe("notes workspace context split", () => {
           }
         },
         optimistic: {
-          checkpoint: {
-            sourceNode: initial.nodes[0]!,
-            sourceRow: {
-              id: "root",
-              parentId: null,
-              depth: 0,
-              isCollapsed: false,
-              ancestorIds: [],
-              ancestorGuideDepths: [],
-              visibleDescendantEndId: null
-            },
-            sourceSelection: { anchorUtf16: 2, focusUtf16: 2 }
-          },
+          sourceSelection: { anchorUtf16: 2, focusUtf16: 2 },
           sourceTitle: "Ro",
           insertedTitle: "ot"
         }
@@ -1176,13 +1151,13 @@ describe("notes workspace context split", () => {
     expect(panes().secondary.stateSlice.state).toMatchObject({
       selectedId: "split",
       editingNoteId: "split",
-      pendingFocusId: "split",
-      pendingFocusField: "title"
+      pendingFocusId: null,
+      pendingFocusField: null
     });
     expect(
       panes().secondary.actionsSlice.actions
         .pendingKeyboardInsertionInteractionEpoch?.("split")
-    ).toBe(0);
+    ).toBeUndefined();
 
     await act(async () => {
       await panes().secondary.actionsSlice.actions.acknowledgeFocus("split");
@@ -1322,19 +1297,7 @@ describe("notes workspace context split", () => {
             },
           },
           optimistic: {
-            checkpoint: {
-              sourceNode: initial.nodes[0]!,
-              sourceRow: {
-                id: "root",
-                parentId: null,
-                depth: 0,
-                isCollapsed: false,
-                ancestorIds: [],
-                ancestorGuideDepths: [],
-                visibleDescendantEndId: null,
-              },
-              sourceSelection: { anchorUtf16: 2, focusUtf16: 2 },
-            },
+            sourceSelection: { anchorUtf16: 2, focusUtf16: 2 },
             sourceTitle: "Ro",
             insertedTitle: "ot",
           },

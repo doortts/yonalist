@@ -525,6 +525,17 @@ export const NotesBulletTitleEditor = forwardRef<
     }
     if (!editingRef.current) {
       if (
+        (event.key === "ArrowDown" || event.key === "ArrowUp") &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey
+      ) {
+        const snapshot = currentSnapshot();
+        if (snapshot) onEditorKeyDown?.(event, snapshot);
+        return;
+      }
+      if (
         (event.key === "Enter" || event.key === " ") &&
         !event.altKey &&
         !event.ctrlKey &&

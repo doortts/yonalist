@@ -445,19 +445,7 @@ describe("Task 5 shared session replay and reset", () => {
               }
             },
             optimistic: {
-              checkpoint: {
-                sourceNode: node({ id: "root" }),
-                sourceRow: {
-                  id: "root",
-                  parentId: null,
-                  depth: 0,
-                  isCollapsed: false,
-                  ancestorIds: [],
-                  ancestorGuideDepths: [],
-                  visibleDescendantEndId: null
-                },
-                sourceSelection: { anchorUtf16: 0, focusUtf16: 0 }
-              },
+              sourceSelection: { anchorUtf16: 0, focusUtf16: 0 },
               sourceTitle: "root",
               insertedTitle: ""
             }

@@ -132,6 +132,7 @@ function optimistic(
       commandKind: kind === "split" ? "split" : "create"
     },
     dependencyId: overrides.dependencyId ?? null,
+    sourceSelection: { anchorUtf16: 3, focusUtf16: 3 },
     checkpoint: {
       sourceNode: note(sourceId, "before", {
         parentId: sourceRow.parentId,
@@ -143,7 +144,6 @@ function optimistic(
     sourceTitle,
     insertedTitle,
     status: "prepared",
-    focusAcknowledged: false,
     undoRequested: false
   };
 }

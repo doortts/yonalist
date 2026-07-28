@@ -128,7 +128,8 @@ export interface NotesKeyboardInsertionRequest {
   readonly interactionEpochAtDispatch: number;
   readonly intent: Omit<KeyboardInsertionIntent, "ownerSessionGeneration">;
   readonly optimistic?: {
-    readonly checkpoint: OptimisticKeyboardInsertionCheckpoint;
+    readonly sourceSelection?: NotesHistoryPrimarySelection;
+    readonly checkpoint?: OptimisticKeyboardInsertionCheckpoint;
     readonly sourceTitle: string;
     readonly insertedTitle: string;
     readonly dependencyId?: NoteId;
@@ -286,10 +287,6 @@ export interface NotesWorkspaceActions {
     input: NotesKeyboardInsertionRequest
   ): NotesKeyboardInsertionPreparation | null;
   updateOptimisticKeyboardInsertion?(nodeId: NoteId, title: string): void;
-  acknowledgeOptimisticKeyboardInsertionFocus?(
-    nodeId: NoteId,
-    intentToken: number
-  ): void;
   dismissOptimisticInsertionFailure?(): void;
   pendingKeyboardInsertionInteractionEpoch?(nodeId: NoteId): number | undefined;
   beginBackspaceGesture?(

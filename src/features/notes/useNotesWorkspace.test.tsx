@@ -584,19 +584,7 @@ describe("useNotesWorkspace", () => {
           }
         },
         optimistic: {
-          checkpoint: {
-            sourceNode: node({ id: "root", title: "Root" }),
-            sourceRow: {
-              id: "root",
-              parentId: null,
-              depth: 0,
-              isCollapsed: false,
-              ancestorIds: [],
-              ancestorGuideDepths: [],
-              visibleDescendantEndId: null
-            },
-            sourceSelection: { anchorUtf16: 4, focusUtf16: 4 }
-          },
+          sourceSelection: { anchorUtf16: 4, focusUtf16: 4 },
           sourceTitle: "Root",
           insertedTitle: ""
         }

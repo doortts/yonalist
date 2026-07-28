@@ -6,10 +6,16 @@ import type {
 } from "../../domain/notes";
 import type { NotesHistoryPrimarySelection } from "./notesHistory";
 import {
-  finalizeOptimisticOutlineRows,
   projectOptimisticBackspaceGesture,
   type OptimisticBackspaceGesture
 } from "./notesBackspaceGesture";
+import {
+  localFirstChild,
+  localSplit,
+  projectLocalStructures,
+  type LocalStructureEntry,
+} from "./notesLocalStructure";
+import type { NotesPaneId } from "./notesPaneSession";
 import type { FlattenedOutlineRow } from "./outlineTree";
 
 export type KeyboardInsertionKind = "split" | "first-child";
@@ -39,13 +45,13 @@ export interface PendingKeyboardInsertion {
   readonly intent: KeyboardInsertionIntent;
   readonly ownerSessionId: string;
   readonly ownerPaneId: string;
-  readonly interactionEpochAtDispatch: number;
+  readonly interactionEpochAtDispatch?: number;
   readonly expectedStructuralHistoryEpoch: string;
   readonly expectedStructuralHistoryEntryId: string;
-  readonly projectionGenerationAtDispatch: number;
-  readonly layoutGenerationAtDispatch: number;
-  readonly paneSnapshotAtDispatch: OutlinePanePublicationSnapshot;
-  readonly dragGenerationAtDispatch: number;
+  readonly projectionGenerationAtDispatch?: number;
+  readonly layoutGenerationAtDispatch?: number;
+  readonly paneSnapshotAtDispatch?: OutlinePanePublicationSnapshot;
+  readonly dragGenerationAtDispatch?: number;
 }
 
 export type OptimisticKeyboardInsertionStatus =
@@ -65,11 +71,11 @@ export interface OptimisticKeyboardInsertion {
   readonly pending: PendingKeyboardInsertion;
   readonly historyContext: NotesHistoryContext;
   readonly dependencyId: NoteId | null;
-  readonly checkpoint: OptimisticKeyboardInsertionCheckpoint;
+  readonly sourceSelection: NotesHistoryPrimarySelection;
+  readonly checkpoint?: OptimisticKeyboardInsertionCheckpoint;
   readonly sourceTitle: string;
   readonly insertedTitle: string;
   readonly status: OptimisticKeyboardInsertionStatus;
-  readonly focusAcknowledged: boolean;
   readonly undoRequested: boolean;
 }
 
@@ -227,107 +233,32 @@ export function projectOptimisticKeyboardInsertions(
   nodesById: Readonly<Record<NoteId, NoteNode>>,
   insertions: readonly OptimisticKeyboardInsertion[]
 ): OptimisticOutlineProjection {
-  if (insertions.length === 0) {
-    return { rows, nodeOverrides: new Map() };
-  }
+  return projectLocalStructures(
+    rows,
+    nodesById,
+    insertions
+      .filter((insertion) => insertion.status !== "settled")
+      .map(optimisticKeyboardInsertionLocalEntry),
+  );
+}
 
-  const projectedRows = [...rows];
-  const nodeOverrides = new Map<NoteId, NoteNode>();
-
-  for (const insertion of insertions) {
-    const expectedNodeId = insertion.pending.intent.expectedNodeId;
-    if (
-      nodesById[expectedNodeId] ||
-      projectedRows.some((row) => row.id === expectedNodeId)
-    ) {
-      continue;
-    }
-
-    const sourceId = insertion.pending.intent.sourceId;
-    const sourceIndex = projectedRows.findIndex((row) => row.id === sourceId);
-    if (sourceIndex < 0) continue;
-
-    const sourceRow = projectedRows[sourceIndex];
-    const sourceNode =
-      nodeOverrides.get(sourceId) ??
-      nodesById[sourceId] ??
-      insertion.checkpoint.sourceNode;
-    if (!sourceNode) continue;
-
-    const firstChild =
-      insertion.pending.intent.postcondition.kind === "first-child";
-    const insertedRow: FlattenedOutlineRow = {
-      id: expectedNodeId,
-      parentId: firstChild ? sourceId : sourceRow.parentId,
-      depth: sourceRow.depth + (firstChild ? 1 : 0),
-      isCollapsed: false,
-      ancestorIds: firstChild
-        ? [...sourceRow.ancestorIds, sourceId]
-        : sourceRow.ancestorIds,
-      ancestorGuideDepths: [],
-      visibleDescendantEndId: null
-    };
-    const insertedNode: NoteNode = {
-      ...sourceNode,
-      id: expectedNodeId,
-      nodeKind: "text",
-      markerKind: "bullet",
-      parentId: insertedRow.parentId,
-      title: insertion.insertedTitle,
-      note: "",
-      imageOffsetUtf16: 0,
-      markdownImageWidth: null,
-      isCollapsed: false,
-      isStarred: false,
-      completedAt: null,
-      deletedAt: null,
-      archivedAt: null,
-      archiveRootId: null
-    };
-
-    if (firstChild) {
-      if (sourceRow.isCollapsed) {
-        projectedRows[sourceIndex] = { ...sourceRow, isCollapsed: false };
-      }
-      if (
-        sourceNode.isCollapsed ||
-        sourceNode.title !== insertion.sourceTitle
-      ) {
-        nodeOverrides.set(sourceId, {
-          ...sourceNode,
-          title: insertion.sourceTitle,
-          isCollapsed: false
-        });
-      }
-      projectedRows.splice(sourceIndex + 1, 0, insertedRow);
-    } else {
-      nodeOverrides.set(sourceId, {
-        ...sourceNode,
-        title: insertion.sourceTitle
-      });
-      const descendantEndIndex =
-        sourceRow.visibleDescendantEndId === null
-          ? sourceIndex
-          : projectedRows.findIndex(
-              (row) => row.id === sourceRow.visibleDescendantEndId
-            );
-      projectedRows.splice(
-        Math.max(sourceIndex, descendantEndIndex) + 1,
-        0,
-        insertedRow
-      );
-    }
-    nodeOverrides.set(expectedNodeId, insertedNode);
-  }
-
-  if (nodeOverrides.size === 0) {
-    return { rows, nodeOverrides };
-  }
-
-  return {
-    rows: finalizeOptimisticOutlineRows(projectedRows),
-    nodeOverrides
+export function optimisticKeyboardInsertionLocalEntry(
+  insertion: OptimisticKeyboardInsertion,
+): LocalStructureEntry {
+  const input = {
+    token: insertion.pending.intent.token,
+    sourceId: insertion.pending.intent.sourceId,
+    insertedId: insertion.pending.intent.expectedNodeId,
+    ownerPaneId: insertion.pending.ownerPaneId as NotesPaneId,
+    historyContext: insertion.historyContext,
+    sourceSelection: insertion.sourceSelection,
+    sourceTitle: insertion.sourceTitle,
+    insertedTitle: insertion.insertedTitle,
+    dependencyId: insertion.dependencyId,
   };
+  return insertion.pending.intent.postcondition.kind === "first-child"
+    ? localFirstChild(input)
+    : localSplit(input);
 }
 
 export function projectOptimisticOutline(

@@ -64,7 +64,8 @@ export function useNotesEditingLease(): NotesEditingLeaseController {
       const revision = ++claimRevisionRef.current;
       if (
         current &&
-        current.nodeId !== request.nodeId &&
+        (current.paneId !== request.paneId ||
+          current.nodeId !== request.nodeId) &&
         !(await flushNodeDraft(current.nodeId))
       ) {
         return false;

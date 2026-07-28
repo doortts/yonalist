@@ -345,6 +345,25 @@ describe("NotesBulletTitleEditor", () => {
     }
   );
 
+  it("forwards repeated vertical navigation from the focused resting root", () => {
+    const onEditorKeyDown = vi.fn((event) => event.preventDefault());
+    const { root } = renderEditor({ onEditorKeyDown });
+    fireEvent.focus(root);
+
+    expect(
+      fireEvent.keyDown(root, { key: "ArrowDown", repeat: true })
+    ).toBe(false);
+
+    expect(root).toHaveAttribute("contenteditable", "false");
+    expect(onEditorKeyDown).toHaveBeenCalledWith(
+      expect.objectContaining({ key: "ArrowDown", repeat: true }),
+      {
+        source: "before",
+        selection: { anchorUtf16: 6, focusUtf16: 6 }
+      }
+    );
+  });
+
   it("exposes textbox semantics and native editing attributes", () => {
     const { root } = renderEditor();
 

@@ -51,7 +51,7 @@ describe("useNotesEditingLease", () => {
     expect(result.current.lease?.paneId).toBe("primary");
   });
 
-  it("moves the same node between panes without an unnecessary flush", async () => {
+  it("flushes the live editor when the same node moves between panes", async () => {
     const flush = vi.fn().mockResolvedValue(true);
     const { result } = renderHook(() => useNotesEditingLease());
 
@@ -68,8 +68,30 @@ describe("useNotesEditingLease", () => {
       ).toBe(true);
     });
 
-    expect(flush).not.toHaveBeenCalled();
+    expect(flush).toHaveBeenCalledOnce();
+    expect(flush).toHaveBeenCalledWith("same");
     expect(result.current.lease?.paneId).toBe("secondary");
+  });
+
+  it("keeps the same-node owner when a cross-pane flush fails", async () => {
+    const flush = vi.fn().mockResolvedValue(false);
+    const { result } = renderHook(() => useNotesEditingLease());
+
+    await act(async () => {
+      await result.current.claim(
+        { paneId: "primary", nodeId: "same", field: "title" },
+        flush
+      );
+      expect(
+        await result.current.claim(
+          { paneId: "secondary", nodeId: "same", field: "title" },
+          flush
+        )
+      ).toBe(false);
+    });
+
+    expect(flush).toHaveBeenCalledWith("same");
+    expect(result.current.lease?.paneId).toBe("primary");
   });
 
   it("blocks ownership transfer and structural work during composition", async () => {

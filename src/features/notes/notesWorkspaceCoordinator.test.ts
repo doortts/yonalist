@@ -1300,11 +1300,7 @@ describe("notesWorkspaceCoordinator registry", () => {
         }
       },
       optimistic: {
-        checkpoint: {
-          sourceNode: node({ id: "root", title: "Root" }),
-          sourceRow,
-          sourceSelection: { anchorUtf16: 2, focusUtf16: 2 }
-        },
+        sourceSelection: { anchorUtf16: 2, focusUtf16: 2 },
         sourceTitle: "Ro",
         insertedTitle: "ot"
       }
@@ -1365,6 +1361,106 @@ describe("notesWorkspaceCoordinator registry", () => {
     session.close();
   });
 
+  it("recovers authority instead of rolling back a failed insertion with a dependent", async () => {
+    const initial = workspace([node({ id: "root", title: "Root" })]);
+    const loadWorkspace = vi.fn().mockResolvedValue(initial);
+    const store = repository({ loadWorkspace });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
+    const session = registry.openSession(writableOptions(pool, {
+      repository: store,
+      vaultRoot: "/dependent-keyboard-insertion-failure",
+      onEvent: events
+    }));
+    await session.activation;
+    session.publishOutlinePaneState({
+      paneId: "pane-a",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+      interactionEpoch: 1,
+      visibleSignature: JSON.stringify([["root", null, 0, false]]),
+      geometryGeneration: 0,
+      activeDrag: false
+    });
+    const first = session.prepareKeyboardInsertion({
+      ownerPaneId: "pane-a",
+      interactionEpochAtDispatch: 1,
+      intent: {
+        token: 71,
+        sourceId: "root",
+        expectedNodeId: "split-1",
+        postcondition: {
+          kind: "split",
+          expectedSourceTitle: "Ro",
+          expectedInsertedTitle: "ot"
+        }
+      },
+      optimistic: {
+        sourceSelection: { anchorUtf16: 2, focusUtf16: 2 },
+        sourceTitle: "Ro",
+        insertedTitle: "ot"
+      }
+    })!;
+    const dependent = session.prepareKeyboardInsertion({
+      ownerPaneId: "pane-a",
+      interactionEpochAtDispatch: 1,
+      intent: {
+        token: 72,
+        sourceId: "split-1",
+        expectedNodeId: "split-2",
+        postcondition: {
+          kind: "split",
+          expectedSourceTitle: "o",
+          expectedInsertedTitle: "t"
+        }
+      },
+      optimistic: {
+        sourceSelection: { anchorUtf16: 1, focusUtf16: 1 },
+        sourceTitle: "o",
+        insertedTitle: "t",
+        dependencyId: "split-1"
+      }
+    })!;
+    events.mockClear();
+    const failed = deferred<{ kind: "failure"; error: string }>();
+    const firstCompletion = session.enqueueStructural(
+      () => failed.promise,
+      { keyboardInsertion: first }
+    );
+    const dependentWork = vi.fn(() => ({ kind: "skipped" as const }));
+    const dependentCompletion = session.enqueueStructural(dependentWork, {
+      keyboardInsertion: dependent
+    });
+
+    failed.resolve({ kind: "failure", error: "disk full" });
+
+    await expect(firstCompletion).resolves.toBe("failed");
+    await expect(dependentCompletion).resolves.toBe("skipped");
+    expect(loadWorkspace).toHaveBeenCalledTimes(2);
+    expect(dependentWork).not.toHaveBeenCalled();
+    expect(
+      events.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.type === "optimisticInsertion")
+        .some((event) => event.rollback !== undefined)
+    ).toBe(false);
+    expect(events).toHaveBeenLastCalledWith({
+      type: "optimisticInsertion",
+      snapshot: {
+        insertions: [],
+        failure: expect.objectContaining({
+          message: expect.stringContaining("disk full")
+        })
+      }
+    });
+    expect(session.writeAuthority()).toEqual({ kind: "known" });
+    session.close();
+  });
+
   it("removes an optimistic record when preparation is canceled", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
@@ -1411,11 +1507,7 @@ describe("notesWorkspaceCoordinator registry", () => {
         }
       },
       optimistic: {
-        checkpoint: {
-          sourceNode: node({ id: "root", title: "Root" }),
-          sourceRow,
-          sourceSelection: { anchorUtf16: 2, focusUtf16: 2 }
-        },
+        sourceSelection: { anchorUtf16: 2, focusUtf16: 2 },
         sourceTitle: "Ro",
         insertedTitle: "ot"
       }
@@ -2309,8 +2401,8 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(retryPreparation.pending.layoutGenerationAtDispatch).toBe(
       preparation.pending.layoutGenerationAtDispatch
     );
-    expect(retryPreparation.pending.paneSnapshotAtDispatch.visibleSignature).toBe(
-      preparation.pending.paneSnapshotAtDispatch.visibleSignature
+    expect(retryPreparation.pending.paneSnapshotAtDispatch!.visibleSignature).toBe(
+      preparation.pending.paneSnapshotAtDispatch!.visibleSignature
     );
     owner.cancelKeyboardInsertion(retryPreparation);
     owner.close();
@@ -4754,6 +4846,11 @@ describe("notesWorkspaceCoordinator registry", () => {
           expectedSourceTitle: "Root",
           expectedInsertedTitle: ""
         }
+      },
+      optimistic: {
+        sourceSelection: { anchorUtf16: 4, focusUtf16: 4 },
+        sourceTitle: "Root",
+        insertedTitle: ""
       }
     })!;
     expectedEntryId = preparation.historyContext.entryId;
@@ -4785,10 +4882,25 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(loadWorkspace).toHaveBeenCalledTimes(2);
     expect(historyStatus).toHaveBeenCalledOnce();
     expect(session.writeAuthority()).toEqual({ kind: "known" });
+    expect(
+      events.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.type === "optimisticInsertion")
+        .some((event) => event.rollback !== undefined)
+    ).toBe(false);
+    expect(
+      events.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.type === "optimisticInsertion")
+        .at(-1)
+    ).toEqual({
+      type: "optimisticInsertion",
+      snapshot: { insertions: [], failure: null }
+    });
     const settled = events.mock.calls
       .map(([event]) => event)
       .find((event) => event.type === "settled");
-    expect(settled?.result.uiUpdate?.pendingFocusId).toBe("split");
+    expect(settled?.result.uiUpdate?.pendingFocusId).toBeNull();
     session.close();
   });
 

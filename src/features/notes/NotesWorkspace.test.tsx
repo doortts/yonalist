@@ -1621,6 +1621,49 @@ describe("Notes workspace", () => {
     expect(await findTitleInput("Row 010")).toHaveFocus();
   });
 
+  it("keeps fifty repeated caret moves exact across each pane prefix", async () => {
+    const rows = Array.from({ length: 101 }, (_, index) =>
+      node({
+        id: `row-${index}`,
+        sortKey: index + 1,
+        title: `Row ${String(index).padStart(3, "0")}`,
+      }),
+    );
+    configureRepository(rows);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return this.classList.contains("notes-outline-rows") ? 280 : 0;
+      },
+    );
+    renderSplitNotesWorkspace();
+    const outlines = await screen.findAllByLabelText("Notes outline");
+
+    for (const outline of outlines) {
+      const first = await activateTitleEditorInMotionRow("row-0", outline);
+      first.setSelectionRange(first.value.length, first.value.length);
+      for (let index = 0; index < 50; index += 1) {
+        const active = document.activeElement;
+        expect(active).toHaveAttribute("data-notes-bullet-title", "true");
+        const handled = fireEvent.keyDown(active!, {
+          key: "ArrowDown",
+          repeat: true,
+        });
+        expect(handled).toBe(false);
+        await act(async () => Promise.resolve());
+        expect(
+          document.activeElement
+            ?.closest<HTMLElement>("[data-outline-id]")
+            ?.dataset.outlineId,
+        ).toBe(`row-${index + 1}`);
+      }
+      const expected = titleEditorInMotionRow("row-50", outline);
+      expect(expected).not.toBeNull();
+      expect(expected).toHaveFocus();
+      await act(async () => Promise.resolve());
+      expect(expected).toHaveFocus();
+    }
+  });
+
   it("pins the GitHub root for a deep GitHub descendant prefix target", async () => {
     const workspace: UseNotesWorkspaceResult = rowReplayWorkspace();
     const roots = Array.from({ length: 101 }, (_, index) =>
@@ -7561,6 +7604,62 @@ describe("Notes workspace", () => {
       );
     });
 
+    it("projects five held Enter keydowns before the repository settles", async () => {
+      configureRepository([
+        node({ id: "solo", sortKey: 1024, title: "alpha" }),
+      ]);
+      const defaultSplit = notesStoreMock.splitNode.getMockImplementation()!;
+      const firstSplit = deferred<NotesWorkspace>();
+      let firstSplitArguments: unknown[] | null = null;
+      notesStoreMock.splitNode
+        .mockImplementationOnce((...arguments_) => {
+          firstSplitArguments = arguments_;
+          return firstSplit.promise;
+        });
+      renderNotesWorkspace();
+      const source = await findTitleInput("alpha");
+      source.focus();
+      source.setSelectionRange(2, 2);
+
+      fireEvent.keyDown(source, { key: "Enter" });
+      for (let index = 0; index < 4; index += 1) {
+        const active = document.activeElement;
+        expect(active).toHaveAttribute("data-notes-bullet-title", "true");
+        fireEvent.keyDown(active!, { key: "Enter", repeat: true });
+      }
+
+      const rows = Array.from(
+        screen
+          .getByLabelText("Notes outline")
+          .querySelectorAll<HTMLElement>("[data-outline-id]"),
+      );
+      const rowIds = rows.map((row) => row.dataset.outlineId);
+      expect(rowIds).toHaveLength(6);
+      expect(new Set(rowIds).size).toBe(6);
+      expect(nodeTitleEditors().map(titleEditorSource)).toEqual([
+        "al",
+        "pha",
+        "",
+        "",
+        "",
+        "",
+      ]);
+      expect(nodeTitleEditors().at(-1)).toHaveFocus();
+      await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+      expect(firstSplitArguments).not.toBeNull();
+      await act(async () =>
+        firstSplit.resolve(
+          await defaultSplit(...firstSplitArguments!),
+        ),
+      );
+      await waitFor(() =>
+        expect(screen.getByLabelText("Yonalist library")).toHaveAttribute(
+          "aria-busy",
+          "false",
+        ),
+      );
+    });
+
     it("restores the source selection and explains a failed save", async () => {
       configureRepository([
         node({ id: "solo", sortKey: 1024, title: "Solo item" })
@@ -12325,21 +12424,25 @@ describe("Notes workspace", () => {
       node({ id: "empty-b", sortKey: 3, title: "" }),
       node({ id: "empty-c", sortKey: 4, title: "" }),
       node({ id: "empty-d", sortKey: 5, title: "" }),
-      node({ id: "starting", sortKey: 6, title: "x" }),
+      node({ id: "empty-e", sortKey: 6, title: "" }),
     ];
     configureRepository(before);
     const batch = deferred<NotesMutationResponse>();
     notesStoreMock.applyBatch.mockReturnValue(batch.promise);
     renderNotesWorkspace();
-    const starting = await findTitleInput("x");
+    await findTitleInput("");
+    const starting = await activateTitleEditorInMotionRow("empty-e");
+    vi.useFakeTimers();
     starting.focus();
-    starting.setSelectionRange(1, 1);
+    starting.setSelectionRange(0, 0);
 
-    expect(fireEvent.keyDown(starting, { key: "Backspace" })).toBe(true);
-    changeTitleEditor(starting, "");
+    expect(fireEvent.keyDown(starting, { key: "Backspace" })).toBe(false);
+    expect(titleEditorInMotionRow("empty-e")).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(titleEditorInMotionRow("empty-d")).not.toBeNull();
+    vi.useRealTimers();
 
     for (const removedId of [
-      "starting",
       "empty-d",
       "empty-c",
       "empty-b",
@@ -12366,7 +12469,7 @@ describe("Notes workspace", () => {
       "/vault",
       {
         op: "backspaceGesture",
-        nodeIds: ["starting", "empty-d", "empty-c", "empty-b", "empty-a"],
+        nodeIds: ["empty-e", "empty-d", "empty-c", "empty-b", "empty-a"],
         titleUpdate: null,
       },
       historyContextMatcher(),
@@ -12422,10 +12525,11 @@ describe("Notes workspace", () => {
       fireEvent.keyDown(keep, { key: "z", ctrlKey: true }),
     ).toBe(false);
     await waitFor(() => expect(notesStoreMock.undo).toHaveBeenCalledOnce());
-    const restored = await findTitleInput("x");
+    const restored = titleEditorInMotionRow("empty-e");
+    expect(restored).not.toBeNull();
     await waitFor(() => expect(restored).toHaveFocus());
-    expect(restored.selectionStart).toBe(1);
-    expect(restored.selectionEnd).toBe(1);
+    expect(restored!.selectionStart).toBe(0);
+    expect(restored!.selectionEnd).toBe(0);
     expect(notesStoreMock.undo).toHaveBeenCalledWith(
       "/vault",
       expect.objectContaining({
@@ -12653,7 +12757,7 @@ describe("Notes workspace", () => {
     expect(anyTitleIn(outlines[0], "")).not.toHaveFocus();
   });
 
-  it("restores all five initially empty rows with one Cmd+Z after a fallback-held Backspace settles", async () => {
+  it("restores five native-repeat Backspace removals in both panes with one Cmd+Z", async () => {
     vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
     const before = [
       node({
@@ -12687,15 +12791,21 @@ describe("Notes workspace", () => {
       titleEditorInMotionRow(nodeId, outline);
     const primary = outlines[0];
     const starting = await activateTitleEditorInMotionRow("empty-e", primary);
-    vi.useFakeTimers();
     starting.setSelectionRange(0, 0);
 
     expect(fireEvent.keyDown(starting, { key: "Backspace" })).toBe(false);
     expect(titleIn(outlines[1], "empty-e")).toBeNull();
     expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
 
-    await act(async () => vi.advanceTimersByTimeAsync(1_000));
-    expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+    for (const nodeId of ["empty-d", "empty-c", "empty-b", "empty-a"]) {
+      const current = titleIn(primary, nodeId);
+      expect(current).not.toBeNull();
+      expect(current).toHaveFocus();
+      current!.setSelectionRange(0, 0);
+      expect(
+        fireEvent.keyDown(current!, { key: "Backspace", repeat: true }),
+      ).toBe(false);
+    }
     for (const nodeId of [
       "empty-a",
       "empty-b",
@@ -12706,10 +12816,10 @@ describe("Notes workspace", () => {
       expect(titleIn(primary, nodeId)).toBeNull();
       expect(titleIn(outlines[1], nodeId)).toBeNull();
     }
-    expect(titleEditorSource(titleIn(primary, "survivor")!)).toBe("");
+    expect(titleEditorSource(titleIn(primary, "survivor")!)).toBe("K");
 
     expect(starting.isConnected).toBe(false);
-    fireEvent.keyUp(starting, { key: "Backspace" });
+    fireEvent.keyUp(window, { key: "Backspace" });
     await act(async () => Promise.resolve());
     expect(historyContext).not.toBeNull();
     expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
@@ -12723,11 +12833,10 @@ describe("Notes workspace", () => {
           "empty-b",
           "empty-a",
         ],
-        titleUpdate: { id: "survivor", title: "" },
+        titleUpdate: null,
       },
       historyContextMatcher(),
     );
-    vi.useRealTimers();
     const committedContext = historyContext!;
     notesStoreMock.historyStatus.mockResolvedValue(
       historyState({
@@ -12746,7 +12855,7 @@ describe("Notes workspace", () => {
     });
     await act(async () =>
       batch.resolve({
-        workspace: workspace([{ ...before[0], title: "" }]),
+        workspace: workspace([before[0]]),
         historyEntryId: committedContext.entryId,
         ...historyState({
           canUndo: true,
@@ -12832,24 +12941,26 @@ describe("Notes workspace", () => {
     expect(queryTitleInput("")).toBeInTheDocument();
   });
 
-  it("deletes one extended grapheme through fallback input and commits its draft in the gesture", async () => {
+  it("commits a native extended-grapheme deletion in the Backspace gesture", async () => {
     const family = "👨‍👩‍👧‍👦";
     configureRepository([
       node({ id: "grapheme", sortKey: 1, title: `A${family}` }),
     ]);
     renderNotesWorkspace();
     const title = await findTitleInput(`A${family}`);
-    vi.useFakeTimers();
     title.focus();
     title.setSelectionRange(title.value.length, title.value.length);
 
     expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(true);
-    await act(async () => vi.advanceTimersByTimeAsync(400));
+    replacePlainText(title, "A", {
+      anchorUtf16: 1,
+      focusUtf16: 1,
+    });
+    fireEvent.input(title, { inputType: "deleteContentBackward" });
     expect(titleEditorSource(title)).toBe("A");
 
     fireEvent.keyUp(window, { key: "Backspace" });
     await act(async () => Promise.resolve());
-    vi.useRealTimers();
     await waitFor(() =>
       expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
         "/vault",
@@ -12864,7 +12975,7 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce();
   });
 
-  it("consumes native repeats after the fallback owns the held Backspace", async () => {
+  it("removes exactly one empty row for each native Backspace keydown", async () => {
     configureRepository([
       node({ id: "survivor", sortKey: 1, title: "Keep" }),
       node({ id: "empty-a", sortKey: 2, title: "" }),
@@ -12876,28 +12987,30 @@ describe("Notes workspace", () => {
     const title = (nodeId: string) =>
       titleEditorInMotionRow(nodeId);
     const starting = await activateTitleEditorInMotionRow("empty-c");
-    vi.useFakeTimers();
     starting.setSelectionRange(0, 0);
 
     expect(fireEvent.keyDown(starting, { key: "Backspace" })).toBe(false);
-    await act(async () => vi.advanceTimersByTimeAsync(400));
     expect(title("empty-c")).toBeNull();
-    expect(title("empty-b")).toBeNull();
+    expect(title("empty-b")).toHaveFocus();
     expect(title("empty-a")).not.toBeNull();
 
+    expect(
+      fireEvent.keyDown(title("empty-b")!, {
+        key: "Backspace",
+        repeat: true,
+      }),
+    ).toBe(false);
+    expect(title("empty-b")).toBeNull();
+    expect(title("empty-a")).toHaveFocus();
     expect(
       fireEvent.keyDown(title("empty-a")!, {
         key: "Backspace",
         repeat: true,
       }),
     ).toBe(false);
-    expect(title("empty-a")).not.toBeNull();
-
-    await act(async () => vi.advanceTimersByTimeAsync(50));
     expect(title("empty-a")).toBeNull();
     fireEvent.keyUp(window, { key: "Backspace" });
     await act(async () => Promise.resolve());
-    vi.useRealTimers();
 
     await waitFor(() =>
       expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(

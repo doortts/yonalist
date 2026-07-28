@@ -10,7 +10,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { flushSync } from "react-dom";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { IconTooltip } from "../../components/ui/Tooltip";
 import {
@@ -82,7 +81,6 @@ import { OutlineSortableHandle } from "./OutlineSortableShell";
 import type { NotesWorkspaceCommandOutcome } from "./notesWorkspaceCoordinator";
 import type {
   NotesActionsSlice,
-  NotesKeyboardInsertionPreparation,
   NotesNodeDraft,
   NotesStateSlice,
   NotesPreparedMove,
@@ -118,21 +116,7 @@ export interface OutlineNodeEditorProps {
   paneId: NotesPaneId;
   interactionEpoch: OutlineInteractionEpoch;
   nextKeyboardInsertionToken(): number;
-  onKeyboardInsertionPrepared?(
-    intentToken: number,
-    layoutGeneration: number,
-  ): void;
-  onKeyboardInsertionTerminated?(
-    intentToken: number,
-    layoutGeneration: number,
-  ): void;
   onCommandFocusActivity?(): void;
-  onBackspaceGestureKeyDown?(
-    token: number,
-    nodeId: NoteId,
-    repeat: boolean,
-    releaseTarget: HTMLTextAreaElement | HTMLDivElement,
-  ): "native" | "consume";
   node: NoteNode;
   attachments: readonly NoteAttachment[];
   childCount: number;
@@ -200,18 +184,6 @@ const OUTLINE_NATIVE_SELECTION_CONTROL_SELECTOR =
 const OUTLINE_NATIVE_SELECTION_SURFACE_SELECTOR =
   "[data-notes-native-selection-surface='true']";
 
-function prepareKeyboardInsertionSynchronously(
-  prepare: () => NotesKeyboardInsertionPreparation | null | undefined,
-): NotesKeyboardInsertionPreparation | null {
-  let preparation: NotesKeyboardInsertionPreparation | null = null;
-  // The coordinator notification is synchronous, but React would otherwise
-  // wait until the key event finishes before committing the provisional row.
-  flushSync(() => {
-    preparation = prepare() ?? null;
-  });
-  return preparation;
-}
-
 export function isOutlineSelectionInteractiveTarget(
   target: EventTarget | null,
 ): boolean {
@@ -262,10 +234,7 @@ function OutlineNodeEditorComponent({
   paneId,
   interactionEpoch,
   nextKeyboardInsertionToken,
-  onKeyboardInsertionPrepared,
-  onKeyboardInsertionTerminated,
   onCommandFocusActivity,
-  onBackspaceGestureKeyDown,
   node,
   attachments,
   childCount,
@@ -702,14 +671,11 @@ function OutlineNodeEditorComponent({
     const token = optimisticInsertion.pending.intent.token;
     if (focusedOptimisticTokenRef.current === token) return;
     const target = liveTitleRef.current?.element ?? titleRef.current;
-    const focusEpoch =
-      optimisticInsertion.pending.interactionEpochAtDispatch;
-    if (!target || !interactionEpoch.isCurrent(focusEpoch)) return;
+    if (!target) return;
     pendingFocusInProgressRef.current = true;
     try {
       onCommandFocusActivity?.();
       interactionEpoch.runCommandFocus(() => {
-        if (!interactionEpoch.isCurrent(focusEpoch)) return;
         if (liveTitleRef.current?.element === target) {
           liveTitleRef.current.focus({
             anchorUtf16: titleValue.length,
@@ -723,17 +689,10 @@ function OutlineNodeEditorComponent({
     } finally {
       pendingFocusInProgressRef.current = false;
     }
-    if (
-      document.activeElement !== target ||
-      !interactionEpoch.isCurrent(focusEpoch)
-    ) {
-      return;
-    }
+    if (document.activeElement !== target) return;
     focusedOptimisticTokenRef.current = token;
     markSplitPhase(nodeId, "provisional-caret");
-    actions.acknowledgeOptimisticKeyboardInsertionFocus?.(nodeId, token);
   }, [
-    actions,
     interactionEpoch,
     nodeId,
     onCommandFocusActivity,
@@ -1381,17 +1340,6 @@ function OutlineNodeEditorComponent({
         : null;
     if (backspaceGestureToken !== null) {
       actions.touchBackspaceGesture?.(backspaceGestureToken, nodeId);
-      if (
-        onBackspaceGestureKeyDown?.(
-          backspaceGestureToken,
-          nodeId,
-          event.repeat,
-          event.currentTarget,
-        ) === "consume"
-      ) {
-        event.preventDefault();
-        return;
-      }
     }
     const stateSnapshot = getStateSnapshot();
     const resolution = resolveOutlineKey({
@@ -1471,10 +1419,6 @@ function OutlineNodeEditorComponent({
           return;
         }
         const sourceRow = getOutlineRow(nodeId);
-        const sourceDraft = draftToSave(
-          usesLiveTitle && source !== titleValue,
-          source,
-        );
         if (!sourceRow) {
           runStructuralCommand(() =>
             actions.createChild(nodeId, "first", { newNodeId })
@@ -1485,7 +1429,7 @@ function OutlineNodeEditorComponent({
           document.activeElement instanceof HTMLElement
             ? document.activeElement
             : undefined;
-        const keyboardInsertion = prepareKeyboardInsertionSynchronously(() =>
+        const keyboardInsertion =
           actions.prepareKeyboardInsertion?.({
             ownerPaneId: paneId,
             interactionEpochAtDispatch: interactionEpoch.current(),
@@ -1501,41 +1445,25 @@ function OutlineNodeEditorComponent({
               },
             },
             optimistic: {
-              checkpoint: {
-                sourceNode: {
-                  ...node,
-                  ...(sourceDraft ?? draftPatch(source)),
-                },
-                sourceRow,
-                sourceSelection: {
-                  anchorUtf16,
-                  focusUtf16,
-                },
+              sourceSelection: {
+                anchorUtf16,
+                focusUtf16,
               },
               sourceTitle: source,
               insertedTitle: "",
               dependencyId:
                 optimisticInsertion?.pending.intent.expectedNodeId,
             },
-          }),
-        );
+          }) ?? null;
         if (!keyboardInsertion) return;
         markSplitPhase(newNodeId, "keydown");
-        onKeyboardInsertionPrepared?.(
-          keyboardInsertion.pending.intent.token,
-          keyboardInsertion.pending.layoutGenerationAtDispatch,
-        );
         runStructuralCommand(
           () =>
             actions.createChild(nodeId, "first", {
               newNodeId,
               keyboardInsertion,
             }),
-          () =>
-            onKeyboardInsertionTerminated?.(
-              keyboardInsertion.pending.intent.token,
-              keyboardInsertion.pending.layoutGenerationAtDispatch,
-            ),
+          undefined,
           focusBeforeInsertion,
         );
         return;
@@ -1570,7 +1498,7 @@ function OutlineNodeEditorComponent({
           document.activeElement instanceof HTMLElement
             ? document.activeElement
             : undefined;
-        const keyboardInsertion = prepareKeyboardInsertionSynchronously(() =>
+        const keyboardInsertion =
           actions.prepareKeyboardInsertion?.({
             ownerPaneId: paneId,
             interactionEpochAtDispatch: interactionEpoch.current(),
@@ -1585,29 +1513,17 @@ function OutlineNodeEditorComponent({
               },
             },
             optimistic: {
-              checkpoint: {
-                sourceNode: {
-                  ...node,
-                  ...(sourceDraft ?? draftPatch(source)),
-                },
-                sourceRow,
-                sourceSelection: {
-                  anchorUtf16,
-                  focusUtf16,
-                },
+              sourceSelection: {
+                anchorUtf16,
+                focusUtf16,
               },
               sourceTitle: resolution.prefix,
               insertedTitle: resolution.suffix,
               dependencyId:
                 optimisticInsertion?.pending.intent.expectedNodeId,
             },
-          }),
-        );
+          }) ?? null;
         if (!keyboardInsertion) return;
-        onKeyboardInsertionPrepared?.(
-          keyboardInsertion.pending.intent.token,
-          keyboardInsertion.pending.layoutGenerationAtDispatch,
-        );
         markSplitPhase(newNodeId, "keydown");
         runStructuralCommand(
           () => {
@@ -1620,11 +1536,7 @@ function OutlineNodeEditorComponent({
               { draft: sourceDraft, keyboardInsertion },
             );
           },
-          () =>
-            onKeyboardInsertionTerminated?.(
-              keyboardInsertion.pending.intent.token,
-              keyboardInsertion.pending.layoutGenerationAtDispatch,
-            ),
+          undefined,
           focusBeforeInsertion,
         );
         return;
@@ -1715,6 +1627,7 @@ function OutlineNodeEditorComponent({
         suppressHandledBlur(source);
         const focusNodeId = resolution.focusNodeId;
         if (focusNodeId !== null) {
+          actions.releaseEditingFocus?.();
           if (
             !focusResolvedTitle(
               event.currentTarget,

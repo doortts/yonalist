@@ -1,6 +1,5 @@
 import { useCallback, useRef } from "react";
 import type { NotesDirectCaretClaimToken } from "./notesWorkspaceTypes";
-import { useNotesFrameReconciler } from "./useNotesFrameReconciler";
 
 export function createNotesDirectCaretClaimToken(): NotesDirectCaretClaimToken {
   return {} as NotesDirectCaretClaimToken;
@@ -40,28 +39,6 @@ export function useNotesClaimBoundCaretReconciliation<
   const claimRecordsRef = useRef(
     new Map<NotesDirectCaretClaimToken, ClaimRecord<Before, Revision>>()
   );
-  const { enqueue, cancel: cancelFrame } = useNotesFrameReconciler<{
-    readonly move: Move;
-    readonly revision: Revision;
-    readonly token: NotesDirectCaretClaimToken;
-  }>(({ move, revision, token }) => {
-    if (activeTokenRef.current !== token) return;
-    const current = adapterRef.current;
-    if (
-      !current.revisionsEqual(current.currentRevision(), revision) ||
-      !current.canApply(move)
-    ) {
-      activeTokenRef.current = null;
-      return;
-    }
-    current.apply(move);
-    const record = claimRecordsRef.current.get(token);
-    if (record) {
-      record.appliedRevision = current.currentRevision();
-    } else {
-      activeTokenRef.current = null;
-    }
-  });
   const notify = useCallback(
     (move: Move, claimToken?: NotesDirectCaretClaimToken): void => {
       const token = claimToken ?? createNotesDirectCaretClaimToken();
@@ -79,9 +56,23 @@ export function useNotesClaimBoundCaretReconciliation<
           appliedRevision: null
         });
       }
-      enqueue({ move, revision, token });
+      if (
+        activeTokenRef.current !== token ||
+        !current.revisionsEqual(current.currentRevision(), revision) ||
+        !current.canApply(move)
+      ) {
+        activeTokenRef.current = null;
+        return;
+      }
+      current.apply(move);
+      const record = claimRecordsRef.current.get(token);
+      if (record) {
+        record.appliedRevision = current.currentRevision();
+      } else {
+        activeTokenRef.current = null;
+      }
     },
-    [enqueue]
+    []
   );
   const settle = useCallback(
     (claimToken: NotesDirectCaretClaimToken, claimed: boolean): boolean => {
@@ -120,7 +111,6 @@ export function useNotesClaimBoundCaretReconciliation<
   }, []);
   const cancel = useCallback((): void => {
     activeTokenRef.current = null;
-    cancelFrame();
-  }, [cancelFrame]);
+  }, []);
   return { notify, settle, invalidate, cancel };
 }
