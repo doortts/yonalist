@@ -2150,6 +2150,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "notes-export"
+version = "0.2.0"
+dependencies = [
+ "notes-application",
+ "notes-core",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "notes-sqlite"
 version = "0.2.0"
 dependencies = [

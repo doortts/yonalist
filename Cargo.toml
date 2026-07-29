@@ -3,6 +3,7 @@ members = [
   "apps/desktop/src-tauri",
   "crates/notes-application",
   "crates/notes-core",
+  "crates/notes-export",
   "crates/notes-sqlite",
 ]
 exclude = ["src-tauri"]
@@ -17,6 +18,7 @@ license = "UNLICENSED"
 [workspace.dependencies]
 notes-application = { path = "crates/notes-application" }
 notes-core = { path = "crates/notes-core" }
+notes-export = { path = "crates/notes-export" }
 rusqlite = { version = "0.40.1", features = ["bundled", "functions"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
