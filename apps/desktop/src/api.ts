@@ -5,17 +5,25 @@ import type { CommandEnvelope } from "../../../packages/contracts/generated/Comm
 import type { ForestRequest } from "../../../packages/contracts/generated/ForestRequest";
 import type { ForestSnapshot } from "../../../packages/contracts/generated/ForestSnapshot";
 import type { HistoryRequest } from "../../../packages/contracts/generated/HistoryRequest";
+import type { ImageReadRequest } from "../../../packages/contracts/generated/ImageReadRequest";
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { SearchPage } from "../../../packages/contracts/generated/SearchPage";
 import type { SearchQuery } from "../../../packages/contracts/generated/SearchQuery";
 import type { ViewportPage } from "../../../packages/contracts/generated/ViewportPage";
 import type { ViewportRequest } from "../../../packages/contracts/generated/ViewportRequest";
+import {
+  encodeImageEnvelope,
+  normalizeImageBytes,
+  type ImageImportRequest
+} from "./imageApi";
 
 export interface NotesApi {
   bootstrap(): Promise<BootSnapshot>;
   queryViewport(request: ViewportRequest): Promise<ViewportPage>;
   queryForest(request: ForestRequest): Promise<ForestSnapshot>;
   execute(envelope: CommandEnvelope): Promise<MutationReceipt>;
+  importImageBytes(request: ImageImportRequest): Promise<MutationReceipt>;
+  readImage(request: ImageReadRequest): Promise<Uint8Array>;
   undo(request: HistoryRequest): Promise<MutationReceipt>;
   redo(request: HistoryRequest): Promise<MutationReceipt>;
   search(query: SearchQuery): Promise<SearchPage>;
@@ -27,6 +35,10 @@ export const tauriNotesApi: NotesApi = {
   queryViewport: (request) => invoke("notes_query_viewport", { request }),
   queryForest: (request) => invoke("notes_query_forest", { request }),
   execute: (envelope) => invoke("notes_execute", { envelope }),
+  importImageBytes: async (request) =>
+    invoke("notes_import_image_bytes", await encodeImageEnvelope(request)),
+  readImage: async (request) =>
+    normalizeImageBytes(await invoke<unknown>("notes_read_image", { request })),
   undo: (request) => invoke("notes_undo", { request }),
   redo: (request) => invoke("notes_redo", { request }),
   search: (query) => invoke("notes_search", { query }),

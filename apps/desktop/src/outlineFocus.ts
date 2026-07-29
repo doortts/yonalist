@@ -3,10 +3,14 @@ export type OutlineFocusEdge = "start" | "end" | "preserve";
 function editorById(
   scope: HTMLElement,
   nodeId: string
-): HTMLTextAreaElement | undefined {
-  return [...scope.querySelectorAll<HTMLTextAreaElement>(
-    "textarea[data-node-id]"
-  )].find((editor) => editor.dataset.nodeId === nodeId);
+): HTMLElement | undefined {
+  return [...scope.querySelectorAll<HTMLElement>("[data-node-id]")]
+    .find((editor) => editor.dataset.nodeId === nodeId && (
+      editor.dataset.outlineField === "image" ||
+      editor instanceof HTMLTextAreaElement &&
+        (!editor.dataset.outlineField ||
+          editor.dataset.outlineField === "title")
+    ));
 }
 
 export function focusOutlineEditorAt(
@@ -16,6 +20,10 @@ export function focusOutlineEditorAt(
 ): boolean {
   const target = editorById(scope, nodeId);
   if (!target) return false;
+  if (!(target instanceof HTMLTextAreaElement)) {
+    target.focus();
+    return true;
+  }
   const offset = Math.max(0, Math.min(requestedOffset, target.value.length));
   target.focus();
   target.setSelectionRange(offset, offset);
@@ -34,6 +42,10 @@ export function focusOutlineEditor(
     : 0;
   const target = editorById(scope, nodeId);
   if (!target) return false;
+  if (!(target instanceof HTMLTextAreaElement)) {
+    target.focus();
+    return true;
+  }
 
   const offset = edge === "start"
     ? 0

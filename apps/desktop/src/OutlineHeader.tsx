@@ -1,5 +1,5 @@
 import { Check, X } from "lucide-react";
-import type { ReactNode } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import { handlePageKeyDown } from "./outlineSupport";
 import type { NotesStore } from "./notesStore";
@@ -8,6 +8,10 @@ import {
   OutlineTextField, type OutlineTagToken
 } from "./OutlineTextField";
 import { useNotesNode } from "./useNotesNode";
+
+const ImageNodeContent = lazy(() => import("./ImageNodeContent").then((module) => ({
+  default: module.ImageNodeContent
+})));
 
 export function OutlineHeader({
   store,
@@ -43,6 +47,7 @@ export function OutlineHeader({
   readonly selectionToolbar?: ReactNode;
 }) {
   const { title } = useNotesNode(store, target.id);
+  const targetNode = nodes.find((node) => node.id === target.id);
   return (
     <>
       {selectionToolbar ?? <div className="notes-outline-toolbar">
@@ -71,7 +76,15 @@ export function OutlineHeader({
         <div className="notes-page-title-row">
           <span className="notes-page-menu-slot" />
           <div className="notes-page-primary">
-            <h2 className="notes-page-heading">
+            {targetNode?.kind === "image" ? (
+              <Suspense fallback={
+                <div className="notes-image-attachment-placeholder" role="status">
+                  Loading image
+                </div>
+              }>
+                <ImageNodeContent node={targetNode} store={store} />
+              </Suspense>
+            ) : <h2 className="notes-page-heading">
               <OutlineTextField
                 markdown
                 className="notes-page-title"
@@ -99,7 +112,7 @@ export function OutlineHeader({
                 }}
                 onBlur={() => void store.flushDraft(target.id)}
               />
-            </h2>
+            </h2>}
           </div>
         </div>
       </header>

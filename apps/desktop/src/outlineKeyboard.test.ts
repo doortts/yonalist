@@ -1,5 +1,6 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import {
+  handleImageNodeKeyDown,
   resolveSupportingNoteKey,
   resolveOutlineKey,
   supportingNoteFocusTarget,
@@ -58,6 +59,30 @@ function input(overrides: Partial<OutlineKeyInput> = {}): OutlineKeyInput {
 }
 
 describe("v2 outline keyboard intent resolver", () => {
+  it("maps image primary-content keys without inventing a text caret", () => {
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      repeat: true
+    }))).toEqual({
+      kind: "createSibling",
+      parentId: "page",
+      beforeId: null
+    });
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "Enter",
+      shiftKey: true
+    }))).toEqual({ kind: "focusNote" });
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "Tab"
+    }))).toEqual({ kind: "indent", previousSiblingId: "parent" });
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowUp"
+    }))).toEqual({ kind: "focus", nodeId: "child", edge: "start" });
+  });
+
   it("splits the selected title range into one atomic sibling gesture", () => {
     expect(resolveOutlineKey(input())).toEqual({
       kind: "split",

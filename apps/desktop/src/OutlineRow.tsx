@@ -10,7 +10,8 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import { NotesStore } from "./notesStore";
 import type { OutlineIndex } from "./outlineIndex";
 import {
-  endOutlineEnterGesture, handleMultilinePaste, handleOutlineKeyDown, RowMenuItem,
+  endOutlineEnterGesture, handleImagePrimaryKeyDown, handleMultilinePaste,
+  handleOutlineKeyDown, RowMenuItem,
   type SelectionKeyboardActions
 } from "./outlineSupport";
 import { focusOutlineEditor } from "./outlineFocus";
@@ -32,6 +33,9 @@ import { useNotesNode } from "./useNotesNode";
 
 const SlashCommandMenu = lazy(() => import("./SlashCommandMenu").then((module) => ({
   default: module.SlashCommandMenu
+})));
+const ImageNodeContent = lazy(() => import("./ImageNodeContent").then((module) => ({
+  default: module.ImageNodeContent
 })));
 
 export function OutlineRow({
@@ -255,7 +259,37 @@ export function OutlineRow({
               onToggle={() => void store.setCompleted(node.id, !node.completed)}
             />
           )}
-          <OutlineTextField
+          {node.kind === "image" ? (
+            <Suspense fallback={
+              <div className="notes-image-attachment-placeholder" role="status">
+                Loading image
+              </div>
+            }>
+              <ImageNodeContent
+                node={node}
+                store={store}
+                onPaste={(event) => handleMultilinePaste(event, store, node)}
+                onKeyDown={(event) => handleImagePrimaryKeyDown(
+                  event,
+                  store,
+                  node,
+                  store.getSnapshot().nodes,
+                  visibleNodes,
+                  index,
+                  visibleIndex,
+                  pageId,
+                  () => onZoom(false),
+                  onZoomOut,
+                  selectionHeadId,
+                  hasSelection,
+                  onExtendSelection,
+                  onClearSelection,
+                  openNoteAndFocus,
+                  selectionActions
+                )}
+              />
+            </Suspense>
+          ) : <OutlineTextField
             ref={editorRef}
             markdown
             className="notes-node-title"
@@ -343,7 +377,7 @@ export function OutlineRow({
             }}
             onPaste={(event) => handleMultilinePaste(event, store, node)}
             onBlur={() => void store.flushDraft(node.id)}
-          />
+          />}
         </div>
         {noteOpen && (
           <OutlineTextField

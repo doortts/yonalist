@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { BootSnapshot } from "../../../packages/contracts/generated/BootSnapshot";
 import type { NotesApi } from "./api";
 import { App } from "./App";
+import type { ImageImportRequest } from "./imageApi";
 
 const snapshot: BootSnapshot = {
   sessionId: "session-clipboard",
@@ -46,6 +47,8 @@ function api(): NotesApi {
       deletedIds: [],
       history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
     }),
+    importImageBytes: vi.fn(),
+    readImage: vi.fn(),
     undo: vi.fn(),
     redo: vi.fn(),
     search: vi.fn().mockResolvedValue({ hits: [], nextCursor: null }),
@@ -698,6 +701,75 @@ describe("outline clipboard integration", () => {
         Reflect.deleteProperty(document, "elementFromPoint");
       }
     }
+  });
+
+  it("routes image clipboard files before text paste with one sibling anchor", async () => {
+    const notesApi = api();
+    notesApi.importImageBytes = vi.fn().mockImplementation(
+      async (request: ImageImportRequest) => ({
+      revision: 8,
+      changedNodes: request.images.map((image, index) => ({
+        id: image.nodeId,
+        parentId: request.parentId,
+        sortKey: 1_536 + index,
+        kind: "image" as const,
+        image: {
+          contentHash: (index === 0 ? "a" : "b").repeat(64),
+          originalName: image.originalName,
+          mimeType: image.declaredMimeType ?? "image/png",
+          byteLength: image.blob.size,
+          pixelWidth: 1,
+          pixelHeight: 1,
+          displayWidth: 320
+        },
+        text: image.originalName,
+        note: "",
+        marker: "bullet" as const,
+        collapsed: false,
+        completed: false,
+        starred: false,
+        deleted: false
+      })),
+      deletedIds: [],
+      history: {
+        canUndo: true,
+        canRedo: false,
+        undoDepth: 1,
+        redoDepth: 0
+      }
+      })
+    );
+    notesApi.readImage = vi.fn().mockResolvedValue(Uint8Array.from([1]));
+    render(<App api={notesApi} />);
+    const editor = await screen.findByDisplayValue("First thought");
+    const cat = new File([Uint8Array.from([1])], "cat.png", {
+      type: "image/png"
+    });
+    const dog = new File([Uint8Array.from([2])], "dog.webp", {
+      type: "image/webp"
+    });
+    const fileItem = (file: File) => ({
+      kind: "file",
+      type: file.type,
+      getAsFile: () => file
+    });
+
+    fireEvent.paste(editor, {
+      clipboardData: {
+        items: [fileItem(cat), fileItem(dog)],
+        getData: () => "- should not import text"
+      }
+    });
+
+    await waitFor(() => expect(notesApi.importImageBytes).toHaveBeenCalledOnce());
+    const request = vi.mocked(notesApi.importImageBytes).mock.calls[0][0];
+    expect(request.parentId).toBe("page");
+    expect(request.beforeId).toBe("bullet-2");
+    expect(request.images.map((image) => image.originalName)).toEqual([
+      "cat.png",
+      "dog.webp"
+    ]);
+    expect(notesApi.execute).not.toHaveBeenCalled();
   });
 
   it("keeps 200 immediate draft overlays below the input latency budget", async () => {

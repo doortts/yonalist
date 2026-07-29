@@ -515,4 +515,48 @@ describe("browser-only preview adapter", () => {
     const after = await previewNotesApi.bootstrap();
     expect(after.history.undoDepth).toBe(1_000);
   });
+
+  it("keeps preview image bytes outside receipts while undo and redo restore metadata", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const imported = await previewNotesApi.importImageBytes({
+      sessionId: boot.sessionId,
+      requestId: "preview-image-import",
+      baseRevision: boot.revision,
+      historyGroup: "images:batch",
+      parentId: boot.activePageId!,
+      beforeId: null,
+      images: [{
+        nodeId: "preview-image",
+        originalName: "cat.png",
+        declaredMimeType: "image/png",
+        blob: new Blob([Uint8Array.from([1, 2, 3])], { type: "image/png" })
+      }]
+    });
+
+    expect(imported.changedNodes[0]).toEqual(expect.objectContaining({
+      id: "preview-image",
+      kind: "image",
+      text: "cat.png",
+      image: expect.objectContaining({ originalName: "cat.png" })
+    }));
+    expect(JSON.stringify(imported)).not.toContain("1,2,3");
+    expect(await previewNotesApi.readImage({
+      sessionId: boot.sessionId,
+      nodeId: "preview-image"
+    })).toEqual(Uint8Array.from([1, 2, 3]));
+
+    const undone = await previewNotesApi.undo({
+      sessionId: boot.sessionId,
+      baseRevision: imported.revision
+    });
+    expect(undone.deletedIds).toContain("preview-image");
+    const redone = await previewNotesApi.redo({
+      sessionId: boot.sessionId,
+      baseRevision: undone.revision
+    });
+    expect(redone.changedNodes[0]).toEqual(expect.objectContaining({
+      id: "preview-image",
+      image: expect.objectContaining({ originalName: "cat.png" })
+    }));
+  });
 });

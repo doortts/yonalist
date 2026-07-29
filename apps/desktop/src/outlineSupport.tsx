@@ -8,7 +8,9 @@ import {
   type OutlineFocusEdge
 } from "./outlineFocus";
 import { parsePastedOutline } from "./outlinePaste";
+import { clipboardImageCandidates } from "./imageClipboard";
 import {
+  handleImageNodeKeyDown,
   resolveOutlineKey,
   type OutlineKeyIntent
 } from "./outlineKeyboard";
@@ -95,10 +97,28 @@ export function hideCollapsedSubtrees(
 }
 
 export function handleMultilinePaste(
-  event: ClipboardEvent<HTMLTextAreaElement>,
+  event: ClipboardEvent<HTMLElement>,
   store: NotesStore,
   node: NoteView
 ) {
+  const images = clipboardImageCandidates(event.clipboardData);
+  if (images.length > 0 && node.parentId) {
+    event.preventDefault();
+    const state = store.getSnapshot();
+    const siblings = state.nodes
+      .filter((candidate) =>
+        candidate.parentId === node.parentId && !candidate.deleted)
+      .sort((left, right) =>
+        left.sortKey - right.sortKey || left.id.localeCompare(right.id));
+    const position = siblings.findIndex((candidate) => candidate.id === node.id);
+    const beforeId = position >= 0 ? siblings[position + 1]?.id ?? null : null;
+    const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
+    void store.images.importAfter(node.parentId, beforeId, images).then((id) => {
+      if (scope) requestAnimationFrame(() =>
+        focusOutlineEditor(scope, id, "start"));
+    });
+    return;
+  }
   const roots = parsePastedOutline(event.clipboardData.getData("text/plain"));
   if (!roots) return;
   event.preventDefault();
@@ -182,6 +202,77 @@ export function handleOutlineKeyDown(
     onClearSelection,
     onFocusNote,
     backspaceGroup,
+    event.repeat
+  );
+}
+
+export function handleImagePrimaryKeyDown(
+  event: KeyboardEvent<HTMLDivElement>,
+  store: NotesStore,
+  node: NoteView,
+  nodes: readonly NoteView[],
+  visibleNodes: readonly NoteView[],
+  structureIndex: OutlineIndex,
+  visibleIndex: OutlineIndex,
+  pageId: string,
+  onZoomIn: () => void,
+  onZoomOut: () => void,
+  selectionHeadId: string | null,
+  hasSelection: boolean,
+  onExtendSelection: (originId: string, headId: string) => void,
+  onClearSelection: () => void,
+  onFocusNote: () => void,
+  selectionActions: SelectionKeyboardActions
+) {
+  const intent = handleImageNodeKeyDown({
+    key: event.key,
+    altKey: event.altKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+    isComposing: event.nativeEvent.isComposing,
+    repeat: event.repeat,
+    nodeId: node.id,
+    pageId,
+    value: "",
+    selectionStart: 0,
+    selectionEnd: 0,
+    firstVisualLine: true,
+    lastVisualLine: true,
+    visibleNodes,
+    structureNodes: nodes,
+    visibleIndex,
+    structureIndex,
+    selectionHeadId,
+    hasSelection,
+    target: "row",
+    platform: outlinePlatform()
+  });
+  if (!intent) return;
+  event.preventDefault();
+  const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
+  if (!scope) return;
+  if (hasSelection) {
+    if (intent.kind === "indent") return selectionActions.indent();
+    if (intent.kind === "outdent") return selectionActions.outdent();
+    if (intent.kind === "move") return selectionActions.move(intent.direction);
+    if (intent.kind === "toggleComplete") return selectionActions.toggleComplete();
+    if (intent.kind === "duplicate") return selectionActions.duplicate();
+    if (intent.kind === "trash") return selectionActions.delete();
+  }
+  executeRowIntent(
+    intent,
+    scope,
+    store,
+    node,
+    nodes,
+    structureIndex,
+    onZoomIn,
+    onZoomOut,
+    onExtendSelection,
+    onClearSelection,
+    onFocusNote,
+    null,
     event.repeat
   );
 }
@@ -326,6 +417,23 @@ function executeRowIntent(
       return;
     case "createFirstChild":
       createFirstChild(scope, store, structureIndex, intent.parentId);
+      return;
+    case "createSibling":
+      {
+        const activeGesture = repeated
+          ? enterSplitGestures.get(scope)
+          : undefined;
+        const parentId = activeGesture?.parentId ?? intent.parentId;
+        const beforeId = activeGesture?.beforeId ?? intent.beforeId;
+        const pending = store.beginCreateNode(parentId, "", beforeId);
+        enterSplitGestures.set(scope, {
+          tailId: pending.id,
+          parentId,
+          beforeId
+        });
+        focusAfter(scope, pending.id, "start");
+        void pending.committed.catch(() => undefined);
+      }
       return;
     case "indent":
       void store.indent(node.id, intent.previousSiblingId)

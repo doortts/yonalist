@@ -66,6 +66,8 @@ function api(): NotesApi {
           ? envelope.command.text
           : "First thought"
       ))),
+    importImageBytes: vi.fn(),
+    readImage: vi.fn(),
     undo: vi.fn(),
     redo: vi.fn(),
     search: vi.fn().mockResolvedValue({ hits: [], nextCursor: null }),

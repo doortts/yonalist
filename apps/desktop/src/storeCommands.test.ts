@@ -23,6 +23,8 @@ function api(execute: NotesApi["execute"]): NotesApi {
     queryViewport: vi.fn(),
     queryForest: vi.fn(),
     execute,
+    importImageBytes: vi.fn(),
+    readImage: vi.fn(),
     undo: vi.fn(),
     redo: vi.fn(),
     search: vi.fn(),

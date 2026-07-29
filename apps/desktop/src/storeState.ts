@@ -34,7 +34,7 @@ export function changesOutlineStructure(
   previous: NoteView | undefined,
   changed: NoteView
 ): boolean {
-  if (!previous) return changed.kind === "bullet" && !changed.deleted;
+  if (!previous) return changed.kind !== "page" && !changed.deleted;
   return previous.parentId !== changed.parentId ||
     previous.sortKey !== changed.sortKey ||
     previous.kind !== changed.kind ||
@@ -62,7 +62,7 @@ export function receiptState(
     .filter((node) => !removed.has(node.id) && !node.deleted);
   const known = new Set(nodes.map((node) => node.id));
   let pending = receipt.changedNodes.filter((node) =>
-    node.kind === "bullet" && !node.deleted && !known.has(node.id));
+    node.kind !== "page" && !node.deleted && !known.has(node.id));
   while (pending.length > 0) {
     const remaining: NoteView[] = [];
     let attached = 0;
@@ -102,7 +102,7 @@ export function receiptState(
     ])
   ];
   const outlineChanged = receipt.deletedIds.some((id) =>
-    previousById.get(id)?.kind === "bullet"
+    previousById.get(id)?.kind !== "page"
   ) || receipt.changedNodes.some((node) =>
     changesOutlineStructure(previousById.get(node.id), node)
   );

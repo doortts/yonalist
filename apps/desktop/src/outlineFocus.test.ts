@@ -68,4 +68,17 @@ describe("pane-scoped outline focus", () => {
     expect(target.selectionStart).toBe(9);
     expect(target.selectionEnd).toBe(9);
   });
+
+  it("focuses image primary content without applying textarea selection", () => {
+    const scope = document.createElement("section");
+    document.body.append(scope);
+    const image = document.createElement("div");
+    image.tabIndex = 0;
+    image.dataset.nodeId = "image";
+    image.dataset.outlineField = "image";
+    scope.append(image);
+
+    expect(focusOutlineEditor(scope, "image", "end")).toBe(true);
+    expect(image).toHaveFocus();
+  });
 });

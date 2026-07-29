@@ -18,6 +18,13 @@ export interface StoreCommandHost {
   readonly applyReceipt: (receipt: MutationReceipt) => void;
 }
 
+export interface ExternalCommandContext {
+  readonly sessionId: string;
+  readonly requestId: string;
+  readonly baseRevision: number;
+  readonly historyGroup: string | null;
+}
+
 export class StoreCommands {
   private readonly historyEvents = new StoreHistoryEvents();
   private commandQueue: Promise<void> = Promise.resolve();
@@ -50,6 +57,34 @@ export class StoreCommands {
         baseRevision: state.revision,
         historyGroup: scopedHistoryGroup,
         command
+      });
+      this.host.applyReceipt(receipt);
+      this.historyEvents.record(
+        scopedHistoryGroup,
+        previousUndoDepth,
+        receipt
+      );
+      return receipt;
+    });
+  }
+
+  executeExternal(
+    operation: (
+      context: ExternalCommandContext
+    ) => Promise<MutationReceipt>,
+    historyGroup: string | null = null,
+    requestId: string = freshId()
+  ): Promise<MutationReceipt> {
+    const scopedHistoryGroup = this.historyEvents.scopedGroup(historyGroup);
+    return this.enqueue(async () => {
+      const state = this.host.read();
+      if (!state.sessionId) throw new Error("Notes session is not ready.");
+      const previousUndoDepth = state.undoDepth;
+      const receipt = await operation({
+        sessionId: state.sessionId,
+        requestId,
+        baseRevision: state.revision,
+        historyGroup: scopedHistoryGroup
       });
       this.host.applyReceipt(receipt);
       this.historyEvents.record(

@@ -12,6 +12,7 @@ import type { NotesMutationHistoryEvent } from "./storeHistory";
 import { StoreViewport } from "./storeViewport";
 import { StoreCommands } from "./storeCommands";
 import { StoreDrafts } from "./storeDrafts";
+import { StoreImages } from "./storeImages";
 import {
   StoreOutlineMutations,
   type PendingCreatedNode,
@@ -28,6 +29,7 @@ export class NotesStore {
   private readonly listeners = new Set<() => void>();
   private readonly subscriptions: StoreSubscriptions;
   private readonly commands: StoreCommands;
+  readonly images: StoreImages;
   private readonly drafts: StoreDrafts;
   private readonly outlineMutations: StoreOutlineMutations;
   private readonly viewport: StoreViewport;
@@ -38,6 +40,7 @@ export class NotesStore {
       write: (patch, invalidation) => this.update(patch, invalidation),
       applyReceipt: (receipt) => this.applyReceipt(receipt)
     });
+    this.images = new StoreImages(api, this.commands, this.getSnapshot);
     this.drafts = new StoreDrafts({
       read: this.getSnapshot,
       write: (patch, invalidation) => this.update(patch, invalidation),

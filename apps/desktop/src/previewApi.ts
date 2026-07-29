@@ -2,6 +2,7 @@ import type { CommandEnvelope } from "../../../packages/contracts/generated/Comm
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "./api";
+import type { ImageImportRequest } from "./imageApi";
 import { previewForest } from "./previewForest";
 import { previewHistory } from "./previewHistory";
 import {
@@ -29,6 +30,7 @@ const undoStack: PreviewHistoryEntry[] = [];
 const redoStack: PreviewHistoryEntry[] = [];
 const receiptsByRequest = new Map<string, MutationReceipt>();
 const completedRequestOrder: string[] = [];
+const imageBlobs = new Map<string, Blob>();
 function copyNodes(source = nodes): NoteView[] {
   return source.map((node) => ({ ...node }));
 }
@@ -61,6 +63,120 @@ function applyHistoryDelta(delta: PreviewNodeDelta): MutationReceipt {
   nodes = applyPreviewDelta(nodes, delta);
   revision += 1;
   return receipt([...delta.upserts], [...delta.receiptDeletedIds]);
+}
+
+async function importImageBytes(
+  request: ImageImportRequest
+): Promise<MutationReceipt> {
+  const priorReceipt = receiptsByRequest.get(request.requestId);
+  if (priorReceipt) return priorReceipt;
+  if (request.sessionId !== sessionId) {
+    throw new Error("Preview session does not match.");
+  }
+  if (request.baseRevision !== revision) {
+    throw new Error("Preview revision is stale.");
+  }
+  if (request.images.length === 0) {
+    throw new Error("The preview image batch is empty.");
+  }
+
+  const previousNodes = copyNodes();
+  redoStack.length = 0;
+  const changed: NoteView[] = [];
+  for (const input of request.images) {
+    const mimeType = input.declaredMimeType || input.blob.type;
+    const extension = extensionForMime(mimeType);
+    if (!extension) throw new Error("The preview image type is unsupported.");
+    const bytes = new Uint8Array(await input.blob.arrayBuffer());
+    const contentHash = await hashBytes(bytes);
+    const dimensions = await imageDimensions(input.blob);
+    const node: NoteView = {
+      id: input.nodeId,
+      parentId: request.parentId,
+      sortKey: sortKeyBefore(request.parentId, request.beforeId),
+      kind: "image",
+      image: {
+        contentHash,
+        originalName: input.originalName,
+        mimeType,
+        byteLength: bytes.length,
+        pixelWidth: dimensions.width,
+        pixelHeight: dimensions.height,
+        displayWidth: 320
+      },
+      text: input.originalName,
+      note: "",
+      marker: "bullet",
+      collapsed: false,
+      completed: false,
+      starred: false,
+      deleted: false
+    };
+    nodes.push(node);
+    changed.push(node);
+    imageBlobs.set(input.nodeId, input.blob);
+  }
+  const historyEntry = createPreviewHistoryEntry(previousNodes, nodes);
+  pushBoundedHistory(undoStack, historyEntry);
+  revision += 1;
+  const nextReceipt = receipt(changed);
+  recordReceipt(request.requestId, nextReceipt);
+  return nextReceipt;
+}
+
+async function readImage(
+  request: { readonly sessionId: string; readonly nodeId: string }
+): Promise<Uint8Array> {
+  if (request.sessionId !== sessionId) {
+    throw new Error("Preview session does not match.");
+  }
+  const node = nodes.find((candidate) =>
+    candidate.id === request.nodeId &&
+    candidate.kind === "image" &&
+    !candidate.deleted
+  );
+  const blob = node ? imageBlobs.get(node.id) : undefined;
+  if (!node?.image || !blob) throw new Error("Image unavailable");
+  return new Uint8Array(await blob.arrayBuffer());
+}
+
+function extensionForMime(mimeType: string): string | null {
+  if (mimeType === "image/png") return "png";
+  if (mimeType === "image/jpeg") return "jpg";
+  if (mimeType === "image/gif") return "gif";
+  if (mimeType === "image/webp") return "webp";
+  return null;
+}
+
+async function hashBytes(bytes: Uint8Array): Promise<string> {
+  if (globalThis.crypto?.subtle) {
+    const digestInput = new Uint8Array(bytes.length);
+    digestInput.set(bytes);
+    const digest = await globalThis.crypto.subtle.digest(
+      "SHA-256",
+      digestInput.buffer
+    );
+    return [...new Uint8Array(digest)]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+  }
+  let value = 0;
+  bytes.forEach((byte) => {
+    value = Math.imul(value ^ byte, 16_777_619) >>> 0;
+  });
+  return value.toString(16).padStart(8, "0").repeat(8);
+}
+
+async function imageDimensions(
+  blob: Blob
+): Promise<{ readonly width: number; readonly height: number }> {
+  if (typeof globalThis.createImageBitmap !== "function") {
+    return { width: 1, height: 1 };
+  }
+  const bitmap = await globalThis.createImageBitmap(blob);
+  const dimensions = { width: bitmap.width, height: bitmap.height };
+  bitmap.close();
+  return dimensions;
 }
 
 function descendantsOf(id: string): NoteView[] {
@@ -465,6 +581,8 @@ export const previewNotesApi: NotesApi = {
   queryForest: async (request) =>
     previewForest(nodes, request.rootIds, request.limit, revision),
   execute,
+  importImageBytes,
+  readImage,
   async undo(request) {
     if (request.baseRevision !== revision) throw new Error("Preview revision is stale.");
     const entry = undoStack.pop();

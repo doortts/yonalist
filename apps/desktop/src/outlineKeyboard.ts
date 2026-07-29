@@ -36,6 +36,11 @@ export type OutlineKeyIntent =
       readonly beforeId: string | null;
     }
   | { readonly kind: "createFirstChild"; readonly parentId: string }
+  | {
+      readonly kind: "createSibling";
+      readonly parentId: string;
+      readonly beforeId: string | null;
+    }
   | { readonly kind: "indent"; readonly previousSiblingId: string }
   | {
       readonly kind: "outdent";
@@ -400,6 +405,49 @@ export function resolveOutlineKey(
   }
 
   return null;
+}
+
+export function handleImageNodeKeyDown(
+  input: OutlineKeyInput
+): OutlineKeyIntent | null {
+  if (input.isComposing || input.key === "Process") return null;
+  const structureNodes = input.structureNodes ?? input.visibleNodes;
+  if (
+    input.key === "Enter" &&
+    !input.altKey &&
+    !input.ctrlKey &&
+    !input.metaKey &&
+    !input.shiftKey
+  ) {
+    const node = nodeById(
+      structureNodes,
+      input.nodeId,
+      input.structureIndex
+    );
+    return node ? {
+      kind: "createSibling",
+      parentId: node.parentId ?? input.pageId,
+      beforeId: nextSiblingId(structureNodes, node, input.structureIndex)
+    } : null;
+  }
+  if (
+    input.key === "Backspace" &&
+    !input.altKey &&
+    !input.ctrlKey &&
+    !input.metaKey &&
+    !input.shiftKey
+  ) {
+    return null;
+  }
+  return resolveOutlineKey({
+    ...input,
+    target: "row",
+    value: "",
+    selectionStart: 0,
+    selectionEnd: 0,
+    firstVisualLine: true,
+    lastVisualLine: true
+  });
 }
 
 export function resolveSupportingNoteKey(

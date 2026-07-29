@@ -41,6 +41,8 @@ function markdownApi(): NotesApi {
       complete: true
     })),
     execute: vi.fn(),
+    importImageBytes: vi.fn(),
+    readImage: vi.fn(),
     undo: vi.fn(),
     redo: vi.fn(),
     search: vi.fn().mockResolvedValue({ hits: [], nextCursor: null }),
