@@ -99,7 +99,7 @@ impl StoragePort for FakeStorage {
             .forward
             .iter()
             .filter_map(|mutation| match mutation {
-                TreeMutation::Upsert(node) => Some(node.clone()),
+                TreeMutation::Upsert(node) => Some(node.as_ref().clone()),
                 TreeMutation::Delete { .. } => None,
             })
             .collect();

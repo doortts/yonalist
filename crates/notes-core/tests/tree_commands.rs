@@ -61,9 +61,9 @@ fn creating_an_orphan_is_rejected_without_mutating_the_tree() {
 fn moving_a_parent_below_its_descendant_is_rejected() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::Upsert(NoteNode::child(id("parent"), id("page"), 1_024, "Parent")),
-        TreeMutation::Upsert(NoteNode::child(id("child"), id("parent"), 1_024, "Child")),
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("parent"), id("page"), 1_024, "Parent")),
+        TreeMutation::upsert(NoteNode::child(id("child"), id("parent"), 1_024, "Child")),
     ])
     .unwrap();
 
@@ -85,7 +85,7 @@ fn moving_a_parent_below_its_descendant_is_rejected() {
 #[test]
 fn sibling_positions_are_rebalanced_without_changing_visible_order() {
     let mut tree = NotesTree::default();
-    tree.apply(&[TreeMutation::Upsert(NoteNode::page(id("page"), "Page"))])
+    tree.apply(&[TreeMutation::upsert(NoteNode::page(id("page"), "Page"))])
         .unwrap();
     for value in ["one", "two", "three"] {
         let patch = tree
@@ -196,10 +196,10 @@ fn duplicating_a_bullet_copies_content_and_flags_without_sharing_identity() {
 fn duplicating_a_bullet_copies_its_descendants_with_fresh_ids() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::Upsert(NoteNode::child(id("source"), id("page"), 1_024, "Source")),
-        TreeMutation::Upsert(NoteNode::child(id("child"), id("source"), 1_024, "Child")),
-        TreeMutation::Upsert(NoteNode::child(
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("source"), id("page"), 1_024, "Source")),
+        TreeMutation::upsert(NoteNode::child(id("child"), id("source"), 1_024, "Child")),
+        TreeMutation::upsert(NoteNode::child(
             id("grandchild"),
             id("child"),
             1_024,
@@ -230,9 +230,9 @@ fn duplicating_a_bullet_copies_its_descendants_with_fresh_ids() {
 fn restoring_a_descendant_also_restores_its_deleted_ancestor_chain() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::Upsert(NoteNode::child(id("parent"), id("page"), 1_024, "Parent")),
-        TreeMutation::Upsert(NoteNode::child(id("child"), id("parent"), 1_024, "Child")),
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("parent"), id("page"), 1_024, "Parent")),
+        TreeMutation::upsert(NoteNode::child(id("child"), id("parent"), 1_024, "Child")),
     ])
     .unwrap();
     plan_and_apply(&mut tree, NotesCommand::DeleteSubtree { id: id("parent") });
@@ -287,9 +287,9 @@ fn deleted_siblings_keep_their_ordering_slot_until_restore() {
 fn completing_many_nodes_is_one_atomic_reversible_patch() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::Upsert(NoteNode::child(id("one"), id("page"), 1_024, "One")),
-        TreeMutation::Upsert(NoteNode::child(id("two"), id("page"), 2_048, "Two")),
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("one"), id("page"), 1_024, "One")),
+        TreeMutation::upsert(NoteNode::child(id("two"), id("page"), 2_048, "Two")),
     ])
     .unwrap();
     let original = tree.clone();
@@ -312,8 +312,8 @@ fn completing_many_nodes_is_one_atomic_reversible_patch() {
 fn importing_an_outline_forest_is_one_atomic_reversible_patch() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::Upsert(NoteNode::child(id("after"), id("page"), 1_024, "After")),
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("after"), id("page"), 1_024, "After")),
     ])
     .unwrap();
     let original = tree.clone();
@@ -356,10 +356,10 @@ fn importing_an_outline_forest_is_one_atomic_reversible_patch() {
 fn moving_many_nodes_is_one_atomic_reversible_patch() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::Upsert(NoteNode::child(id("a"), id("page"), 1_024, "A")),
-        TreeMutation::Upsert(NoteNode::child(id("b"), id("page"), 2_048, "B")),
-        TreeMutation::Upsert(NoteNode::child(id("c"), id("page"), 3_072, "C")),
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("a"), id("page"), 1_024, "A")),
+        TreeMutation::upsert(NoteNode::child(id("b"), id("page"), 2_048, "B")),
+        TreeMutation::upsert(NoteNode::child(id("c"), id("page"), 3_072, "C")),
     ])
     .unwrap();
     let original = tree.clone();
@@ -392,9 +392,9 @@ fn moving_many_nodes_is_one_atomic_reversible_patch() {
 fn moving_many_into_a_collapsed_parent_expands_it_in_the_same_patch() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::Upsert(NoteNode::child(id("parent"), id("page"), 1_024, "Parent")),
-        TreeMutation::Upsert(NoteNode::child(id("moving"), id("page"), 2_048, "Moving")),
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("parent"), id("page"), 1_024, "Parent")),
+        TreeMutation::upsert(NoteNode::child(id("moving"), id("page"), 2_048, "Moving")),
     ])
     .unwrap();
     plan_and_apply(
@@ -430,12 +430,12 @@ fn moving_many_into_a_collapsed_parent_expands_it_in_the_same_patch() {
 fn duplicating_many_subtrees_is_one_atomic_reversible_patch() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::Upsert(NoteNode::child(id("a"), id("page"), 1_024, "A")),
-        TreeMutation::Upsert(NoteNode::child(id("b"), id("page"), 2_048, "B")),
-        TreeMutation::Upsert(NoteNode::child(id("child"), id("b"), 1_024, "Child")),
-        TreeMutation::Upsert(NoteNode::child(id("c"), id("page"), 3_072, "C")),
-        TreeMutation::Upsert(NoteNode::child(id("after"), id("page"), 4_096, "After")),
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("a"), id("page"), 1_024, "A")),
+        TreeMutation::upsert(NoteNode::child(id("b"), id("page"), 2_048, "B")),
+        TreeMutation::upsert(NoteNode::child(id("child"), id("b"), 1_024, "Child")),
+        TreeMutation::upsert(NoteNode::child(id("c"), id("page"), 3_072, "C")),
+        TreeMutation::upsert(NoteNode::child(id("after"), id("page"), 4_096, "After")),
     ])
     .unwrap();
     let original = tree.clone();
@@ -480,10 +480,10 @@ fn duplicating_many_subtrees_is_one_atomic_reversible_patch() {
 fn deleting_many_subtrees_is_one_atomic_reversible_patch() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::Upsert(NoteNode::child(id("one"), id("page"), 1_024, "One")),
-        TreeMutation::Upsert(NoteNode::child(id("child"), id("one"), 1_024, "Child")),
-        TreeMutation::Upsert(NoteNode::child(id("two"), id("page"), 2_048, "Two")),
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("one"), id("page"), 1_024, "One")),
+        TreeMutation::upsert(NoteNode::child(id("child"), id("one"), 1_024, "Child")),
+        TreeMutation::upsert(NoteNode::child(id("two"), id("page"), 2_048, "Two")),
     ])
     .unwrap();
     let original = tree.clone();
@@ -506,14 +506,14 @@ fn deleting_many_subtrees_is_one_atomic_reversible_patch() {
 fn split_node_is_atomic_reversible_and_preserves_the_requested_sibling_slot() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::Upsert(NoteNode::child(
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(
             id("current"),
             id("page"),
             1_024,
             "alphaXYZomega",
         )),
-        TreeMutation::Upsert(NoteNode::child(id("next"), id("page"), 2_048, "Next")),
+        TreeMutation::upsert(NoteNode::child(id("next"), id("page"), 2_048, "Next")),
     ])
     .unwrap();
     let original = tree.clone();
@@ -545,8 +545,8 @@ fn split_node_is_atomic_reversible_and_preserves_the_requested_sibling_slot() {
 fn split_node_rejects_page_sources_and_duplicate_new_ids() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::Upsert(NoteNode::child(id("current"), id("page"), 1_024, "Current")),
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("current"), id("page"), 1_024, "Current")),
     ])
     .unwrap();
 
@@ -578,9 +578,9 @@ fn split_node_rejects_page_sources_and_duplicate_new_ids() {
 fn merge_backward_keeps_the_current_node_and_round_trips_all_preserved_state() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::Upsert(NoteNode::child(id("previous"), id("page"), 1_024, "alpha")),
-        TreeMutation::Upsert(NoteNode::from_persisted(
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("previous"), id("page"), 1_024, "alpha")),
+        TreeMutation::upsert(NoteNode::from_persisted(
             id("current"),
             Some(id("page")),
             2_048,
@@ -593,8 +593,8 @@ fn merge_backward_keeps_the_current_node_and_round_trips_all_preserved_state() {
             true,
             false,
         )),
-        TreeMutation::Upsert(NoteNode::child(id("child"), id("current"), 1_024, "Child")),
-        TreeMutation::Upsert(NoteNode::child(id("next"), id("page"), 3_072, "Next")),
+        TreeMutation::upsert(NoteNode::child(id("child"), id("current"), 1_024, "Child")),
+        TreeMutation::upsert(NoteNode::child(id("next"), id("page"), 3_072, "Next")),
     ])
     .unwrap();
     let original = tree.clone();
@@ -631,15 +631,15 @@ fn merge_backward_keeps_the_current_node_and_round_trips_all_preserved_state() {
 fn merge_backward_rejects_nonadjacent_or_structurally_occupied_predecessors() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::Upsert(NoteNode::child(
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(
             id("previous"),
             id("page"),
             1_024,
             "Previous",
         )),
-        TreeMutation::Upsert(NoteNode::child(id("middle"), id("page"), 2_048, "Middle")),
-        TreeMutation::Upsert(NoteNode::child(id("current"), id("page"), 3_072, "Current")),
+        TreeMutation::upsert(NoteNode::child(id("middle"), id("page"), 2_048, "Middle")),
+        TreeMutation::upsert(NoteNode::child(id("current"), id("page"), 3_072, "Current")),
     ])
     .unwrap();
 
@@ -701,17 +701,17 @@ fn merge_backward_rejects_nonadjacent_or_structurally_occupied_predecessors() {
 fn remove_empty_node_lifts_children_into_its_exact_slot_and_round_trips() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::Upsert(NoteNode::child(id("before"), id("page"), 1_024, "Before")),
-        TreeMutation::Upsert(NoteNode::child(id("empty"), id("page"), 2_048, " \t")),
-        TreeMutation::Upsert(NoteNode::child(id("after"), id("page"), 3_072, "After")),
-        TreeMutation::Upsert(NoteNode::child(
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("before"), id("page"), 1_024, "Before")),
+        TreeMutation::upsert(NoteNode::child(id("empty"), id("page"), 2_048, " \t")),
+        TreeMutation::upsert(NoteNode::child(id("after"), id("page"), 3_072, "After")),
+        TreeMutation::upsert(NoteNode::child(
             id("child-a"),
             id("empty"),
             1_024,
             "Child A",
         )),
-        TreeMutation::Upsert(NoteNode::child(
+        TreeMutation::upsert(NoteNode::child(
             id("child-b"),
             id("empty"),
             2_048,
@@ -748,8 +748,8 @@ fn remove_empty_node_lifts_children_into_its_exact_slot_and_round_trips() {
 fn remove_empty_node_rejects_nonempty_bullets_and_pages() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "")),
-        TreeMutation::Upsert(NoteNode::child(
+        TreeMutation::upsert(NoteNode::page(id("page"), "")),
+        TreeMutation::upsert(NoteNode::child(
             id("nonempty"),
             id("page"),
             1_024,
@@ -795,8 +795,8 @@ fn remove_empty_node_rejects_nonempty_bullets_and_pages() {
 fn node_editor_fields_are_reversible_without_crossing_domain_boundaries() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::Upsert(NoteNode::child(id("row"), id("page"), 1_024, "Row")),
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("row"), id("page"), 1_024, "Row")),
     ])
     .unwrap();
     let original = tree.clone();
@@ -835,9 +835,9 @@ fn node_editor_fields_are_reversible_without_crossing_domain_boundaries() {
 fn indenting_under_a_collapsed_sibling_expands_it_atomically() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::Upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::Upsert(NoteNode::child(id("parent"), id("page"), 1_024, "Parent")),
-        TreeMutation::Upsert(NoteNode::child(id("current"), id("page"), 2_048, "Current")),
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("parent"), id("page"), 1_024, "Parent")),
+        TreeMutation::upsert(NoteNode::child(id("current"), id("page"), 2_048, "Current")),
     ])
     .unwrap();
     plan_and_apply(
@@ -874,7 +874,7 @@ proptest! {
         before_index in 0_usize..64,
     ) {
         let mut tree = NotesTree::default();
-        tree.apply(&[TreeMutation::Upsert(NoteNode::page(id("page"), "Page"))])
+        tree.apply(&[TreeMutation::upsert(NoteNode::page(id("page"), "Page"))])
             .unwrap();
         let child_ids = (0..child_count)
             .map(|index| id(&format!("node-{index}")))

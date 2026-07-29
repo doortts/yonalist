@@ -631,7 +631,7 @@ fn invalid_patch_rolls_back_nodes_and_revision_atomically() {
     let result = storage.commit(
         0,
         &DomainPatch {
-            forward: vec![TreeMutation::Upsert(orphan)],
+            forward: vec![TreeMutation::upsert(orphan)],
             inverse: vec![TreeMutation::Delete {
                 id: NodeId::try_from("orphan").unwrap(),
             }],
@@ -652,7 +652,7 @@ fn stale_commit_never_applies_a_patch() {
         .commit(
             0,
             &DomainPatch {
-                forward: vec![TreeMutation::Upsert(page)],
+                forward: vec![TreeMutation::upsert(page)],
                 inverse: vec![TreeMutation::Delete { id: page_id }],
             },
         )
@@ -663,7 +663,7 @@ fn stale_commit_never_applies_a_patch() {
     let result = storage.commit(
         0,
         &DomainPatch {
-            forward: vec![TreeMutation::Upsert(other)],
+            forward: vec![TreeMutation::upsert(other)],
             inverse: vec![TreeMutation::Delete { id: other_id }],
         },
     );

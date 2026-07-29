@@ -199,7 +199,7 @@ pub(crate) fn load_command_tree(
     let mut tree = NotesTree::default();
     let mutations = nodes
         .into_values()
-        .map(TreeMutation::Upsert)
+        .map(TreeMutation::upsert)
         .collect::<Vec<_>>();
     tree.apply(&mutations).map_err(StorageError::Domain)?;
     Ok(tree)

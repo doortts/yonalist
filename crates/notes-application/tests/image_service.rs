@@ -41,7 +41,7 @@ struct StorageState {
 impl FakeStorage {
     fn new(fail_commit: bool) -> Self {
         let mut tree = NotesTree::default();
-        tree.apply(&[TreeMutation::Upsert(NoteNode::page(id("page"), "Page"))])
+        tree.apply(&[TreeMutation::upsert(NoteNode::page(id("page"), "Page"))])
             .expect("seed page");
         Self {
             state: Mutex::new(StorageState {
@@ -86,7 +86,7 @@ impl StoragePort for FakeStorage {
                 .forward
                 .iter()
                 .filter_map(|mutation| match mutation {
-                    TreeMutation::Upsert(node) => Some(node.clone()),
+                    TreeMutation::Upsert(node) => Some(node.as_ref().clone()),
                     TreeMutation::Delete { .. } => None,
                 })
                 .collect(),

@@ -49,7 +49,9 @@ impl NotesTree {
         for mutation in mutations {
             match mutation {
                 TreeMutation::Upsert(node) => {
-                    candidate.nodes.insert(node.id().clone(), node.clone());
+                    candidate
+                        .nodes
+                        .insert(node.id().clone(), node.as_ref().clone());
                 }
                 TreeMutation::Delete { id } => {
                     candidate.nodes.remove(id);
@@ -315,16 +317,16 @@ impl NotesTree {
         for id in ids {
             match (self.nodes.get(&id), candidate.nodes.get(&id)) {
                 (None, Some(after)) => {
-                    forward.push(TreeMutation::Upsert(after.clone()));
+                    forward.push(TreeMutation::upsert(after.clone()));
                     inverse.push(TreeMutation::Delete { id });
                 }
                 (Some(before), None) => {
                     forward.push(TreeMutation::Delete { id: id.clone() });
-                    inverse.push(TreeMutation::Upsert(before.clone()));
+                    inverse.push(TreeMutation::upsert(before.clone()));
                 }
                 (Some(before), Some(after)) if before != after => {
-                    forward.push(TreeMutation::Upsert(after.clone()));
-                    inverse.push(TreeMutation::Upsert(before.clone()));
+                    forward.push(TreeMutation::upsert(after.clone()));
+                    inverse.push(TreeMutation::upsert(before.clone()));
                 }
                 _ => {}
             }

@@ -158,8 +158,14 @@ pub enum NotesCommand {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum TreeMutation {
-    Upsert(NoteNode),
+    Upsert(Box<NoteNode>),
     Delete { id: NodeId },
+}
+
+impl TreeMutation {
+    pub fn upsert(node: NoteNode) -> Self {
+        Self::Upsert(Box::new(node))
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

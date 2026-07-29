@@ -66,8 +66,8 @@ impl SessionState {
     }
 
     fn record_completed(&mut self, request_id: String, receipt: MutationReceipt) {
-        if self.completed_requests.contains_key(&request_id) {
-            self.completed_requests.insert(request_id, receipt);
+        if let Some(previous) = self.completed_requests.get_mut(&request_id) {
+            *previous = receipt;
             return;
         }
         self.completed_request_order.push_back(request_id.clone());
@@ -198,7 +198,7 @@ impl<S: StoragePort> NotesService<S> {
             group: history_group.clone(),
         };
         session.record_history(entry);
-        let receipt = Self::receipt(&session, commit);
+        let receipt = Self::receipt(session, commit);
         session.record_completed(request_id, receipt.clone());
         Ok(receipt)
     }

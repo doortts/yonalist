@@ -59,7 +59,7 @@ fn sparse_batch_storage() -> SqliteStorage {
         .commit(
             0,
             &DomainPatch {
-                forward: nodes.into_iter().map(TreeMutation::Upsert).collect(),
+                forward: nodes.into_iter().map(TreeMutation::upsert).collect(),
                 inverse,
             },
         )
