@@ -125,11 +125,9 @@ pub(crate) fn viewport(
                 JOIN outline ON child.parent_id = outline.id
                 WHERE child.deleted = 0
              )
-             SELECT node.id, node.parent_id, node.sort_key, node.kind, node.text,
-                    node.note, node.marker, node.collapsed, node.completed,
-                    node.starred, node.deleted
+             SELECT node.*
              FROM outline
-             JOIN notes_nodes node ON node.id = outline.id
+             JOIN notes_node_records node ON node.id = outline.id
              WHERE node.id <> ?1
              ORDER BY outline.path
              LIMIT ?2 OFFSET ?3",
@@ -239,9 +237,7 @@ pub(crate) fn search(
     let expression = format!("\"{}\"", text.replace('"', "\"\""));
     let mut statement = connection
         .prepare(
-            "SELECT node.id, node.parent_id, node.sort_key, node.kind, node.text,
-                    node.note, node.marker, node.collapsed, node.completed,
-                    node.starred, node.deleted,
+            "SELECT node.*,
                     (
                         WITH RECURSIVE ancestors(id, parent_id) AS (
                             SELECT node.id, node.parent_id
@@ -254,7 +250,7 @@ pub(crate) fn search(
                     ) AS page_id,
                     snippet(notes_fts, -1, '', '', '…', 12)
              FROM notes_fts
-             JOIN notes_nodes node ON node.id = notes_fts.node_id
+             JOIN notes_node_records node ON node.id = notes_fts.node_id
              WHERE notes_fts MATCH ?1 AND node.deleted = 0
              ORDER BY rank, node.id
              LIMIT ?2 OFFSET ?3",
@@ -272,8 +268,8 @@ pub(crate) fn search(
             |row| {
                 Ok(SearchHit {
                     node: repository::parse_node(row)?.into(),
-                    page_id: row.get(11)?,
-                    snippet: row.get(12)?,
+                    page_id: row.get(19)?,
+                    snippet: row.get(20)?,
                 })
             },
         )
@@ -300,9 +296,7 @@ fn filtered_search(
     requested_limit: u32,
 ) -> Result<SearchPage, StorageError> {
     let sql = format!(
-        "SELECT node.id, node.parent_id, node.sort_key, node.kind, node.text,
-                node.note, node.marker, node.collapsed, node.completed,
-                node.starred, node.deleted,
+        "SELECT node.*,
                 (
                     WITH RECURSIVE ancestors(id, parent_id) AS (
                         SELECT node.id, node.parent_id
@@ -317,7 +311,7 @@ fn filtered_search(
                     WHEN node.note = '' THEN node.text
                     ELSE node.text || ' ' || node.note
                 END
-         FROM notes_nodes node
+         FROM notes_node_records node
          WHERE {clause}
          ORDER BY node.sort_key, node.id
          LIMIT ?2 OFFSET ?3"
@@ -335,8 +329,8 @@ fn filtered_search(
             |row| {
                 Ok(SearchHit {
                     node: repository::parse_node(row)?.into(),
-                    page_id: row.get(11)?,
-                    snippet: row.get(12)?,
+                    page_id: row.get(19)?,
+                    snippet: row.get(20)?,
                 })
             },
         )

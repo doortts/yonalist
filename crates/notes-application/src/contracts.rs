@@ -1,4 +1,4 @@
-use notes_core::{NoteMarkerKind, NoteNode, NoteNodeKind};
+use notes_core::{NoteImage, NoteMarkerKind, NoteNode, NoteNodeKind};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -21,6 +21,7 @@ pub struct NoteView {
     #[ts(type = "number")]
     pub sort_key: i64,
     pub kind: IpcNodeKind,
+    pub image: Option<ImageView>,
     pub text: String,
     pub note: String,
     pub marker: IpcMarkerKind,
@@ -37,6 +38,7 @@ impl From<NoteNode> for NoteView {
             parent_id: node.parent_id().map(ToString::to_string),
             sort_key: node.sort_key(),
             kind: node.kind().into(),
+            image: node.image().map(ImageView::from),
             text: node.text().to_owned(),
             note: node.note().to_owned(),
             marker: node.marker().into(),
@@ -44,6 +46,34 @@ impl From<NoteNode> for NoteView {
             completed: node.is_completed(),
             starred: node.is_starred(),
             deleted: node.is_deleted(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ImageView {
+    pub content_hash: String,
+    pub original_name: String,
+    pub mime_type: String,
+    #[ts(type = "number")]
+    pub byte_length: u64,
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+    pub display_width: u32,
+}
+
+impl From<&NoteImage> for ImageView {
+    fn from(image: &NoteImage) -> Self {
+        Self {
+            content_hash: image.content_hash().to_owned(),
+            original_name: image.original_name().to_owned(),
+            mime_type: image.mime_type().to_owned(),
+            byte_length: image.byte_length(),
+            pixel_width: image.pixel_width(),
+            pixel_height: image.pixel_height(),
+            display_width: image.display_width(),
         }
     }
 }
@@ -71,6 +101,7 @@ impl From<NoteMarkerKind> for IpcMarkerKind {
 pub enum IpcNodeKind {
     Page,
     Bullet,
+    Image,
 }
 
 impl From<NoteNodeKind> for IpcNodeKind {
@@ -78,6 +109,7 @@ impl From<NoteNodeKind> for IpcNodeKind {
         match kind {
             NoteNodeKind::Page => Self::Page,
             NoteNodeKind::Bullet => Self::Bullet,
+            NoteNodeKind::Image => Self::Image,
         }
     }
 }

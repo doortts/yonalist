@@ -11,7 +11,7 @@ function node(
     id,
     parentId,
     sortKey: 1_024,
-    kind: "bullet",
+    kind: "bullet", image: null,
     text: id,
     note: "",
     marker,

@@ -27,7 +27,7 @@ pub(crate) fn forest(
                 "WITH RECURSIVE subtree(id, path) AS (
                     SELECT id, ''
                     FROM notes_nodes
-                    WHERE id = ?1 AND kind = 'bullet' AND deleted = 0
+                    WHERE id = ?1 AND kind IN ('bullet', 'image') AND deleted = 0
                     UNION ALL
                     SELECT child.id,
                            subtree.path || '/' ||
@@ -43,11 +43,9 @@ pub(crate) fn forest(
                     JOIN subtree ON child.parent_id = subtree.id
                     WHERE child.deleted = 0
                  )
-                 SELECT node.id, node.parent_id, node.sort_key, node.kind, node.text,
-                        node.note, node.marker, node.collapsed, node.completed,
-                        node.starred, node.deleted
+                 SELECT node.*
                  FROM subtree
-                 JOIN notes_nodes node ON node.id = subtree.id
+                 JOIN notes_node_records node ON node.id = subtree.id
                  ORDER BY subtree.path
                  LIMIT ?2",
             )

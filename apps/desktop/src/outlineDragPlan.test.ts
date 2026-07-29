@@ -10,7 +10,7 @@ function node(
     id,
     parentId,
     sortKey,
-    kind: "bullet",
+    kind: "bullet", image: null,
     text: id,
     note: "",
     marker: "bullet",

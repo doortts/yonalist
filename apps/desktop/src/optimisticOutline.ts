@@ -23,7 +23,7 @@ function bullet(
     id,
     parentId,
     sortKey,
-    kind: "bullet",
+    kind: "bullet", image: null,
     text,
     note: "",
     marker: "bullet",

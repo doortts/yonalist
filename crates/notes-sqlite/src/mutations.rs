@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use notes_application::{StorageCommit, StorageError};
-use notes_core::{DomainError, DomainPatch, NodeId, NoteNode, TreeMutation};
+use notes_core::{DomainError, DomainPatch, NodeId, NoteNode, NoteNodeKind, TreeMutation};
 use rusqlite::{Connection, TransactionBehavior, params};
 use unicode_normalization::{UnicodeNormalization, char::canonical_combining_class};
 
@@ -40,11 +40,13 @@ pub(crate) fn commit(
     for mutation in &patch.forward {
         match mutation {
             TreeMutation::Upsert(node) => {
+                validate_image_ownership(node)?;
                 if inserted_ids.contains(node.id()) {
                     insert_node(&transaction, node)?;
                 } else {
                     update_node(&transaction, node)?;
                 }
+                sync_image(&transaction, node)?;
                 refresh_derived_data(&transaction, node)?;
             }
             TreeMutation::Delete { id } => {
@@ -85,6 +87,64 @@ pub(crate) fn commit(
             })
             .collect(),
     })
+}
+
+fn validate_image_ownership(node: &NoteNode) -> Result<(), StorageError> {
+    match (node.kind(), node.image()) {
+        (NoteNodeKind::Page | NoteNodeKind::Bullet, Some(_)) => {
+            Err(StorageError::Domain(DomainError::Invariant(format!(
+                "non-image node {} cannot own image metadata",
+                node.id()
+            ))))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn sync_image(
+    transaction: &rusqlite::Transaction<'_>,
+    node: &NoteNode,
+) -> Result<(), StorageError> {
+    let Some(image) = node.image() else {
+        transaction
+            .execute(
+                "DELETE FROM notes_images WHERE node_id = ?1",
+                [node.id().as_str()],
+            )
+            .map_err(internal)?;
+        return Ok(());
+    };
+    transaction
+        .execute(
+            "INSERT INTO notes_images(
+                node_id, content_hash, relative_path, original_name, mime_type,
+                byte_length, pixel_width, pixel_height, display_width
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(node_id) DO UPDATE SET
+                content_hash = excluded.content_hash,
+                relative_path = excluded.relative_path,
+                original_name = excluded.original_name,
+                mime_type = excluded.mime_type,
+                byte_length = excluded.byte_length,
+                pixel_width = excluded.pixel_width,
+                pixel_height = excluded.pixel_height,
+                display_width = excluded.display_width",
+            params![
+                node.id().as_str(),
+                image.content_hash(),
+                image.relative_path(),
+                image.original_name(),
+                image.mime_type(),
+                i64::try_from(image.byte_length()).map_err(|_| {
+                    StorageError::Internal("image byte length exceeded SQLite INTEGER".into())
+                })?,
+                image.pixel_width(),
+                image.pixel_height(),
+                image.display_width(),
+            ],
+        )
+        .map_err(internal)?;
+    Ok(())
 }
 
 fn insert_node(
@@ -184,7 +244,12 @@ fn refresh_derived_data(
             [node.id().as_str()],
         )
         .map_err(internal)?;
-    for content in [node.text(), node.note()] {
+    let indexed_content = if node.kind() == NoteNodeKind::Image {
+        vec![node.note()]
+    } else {
+        vec![node.text(), node.note()]
+    };
+    for content in indexed_content {
         for (token, display) in derived_tags(content) {
             transaction
                 .execute(

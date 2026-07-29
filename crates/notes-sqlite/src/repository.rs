@@ -19,9 +19,7 @@ pub(crate) fn revision(connection: &Connection) -> Result<u64, StorageError> {
 pub(crate) fn node(connection: &Connection, id: &str) -> Result<Option<NoteNode>, StorageError> {
     connection
         .query_row(
-            "SELECT id, parent_id, sort_key, kind, text, note, marker, collapsed,
-                    completed, starred, deleted
-             FROM notes_nodes WHERE id = ?1",
+            "SELECT * FROM notes_node_records WHERE id = ?1",
             [id],
             parse_node,
         )
@@ -60,8 +58,21 @@ pub(crate) fn load_command_tree(
                 collect_node(connection, &node.id, &mut nodes)?;
             }
         }
+        NotesCommand::ImportImages {
+            parent_id,
+            nodes: imported,
+            ..
+        } => {
+            collect_ancestors(connection, parent_id, &mut nodes)?;
+            collect_children(connection, parent_id, &mut nodes)?;
+            for node in imported {
+                collect_node(connection, &node.id, &mut nodes)?;
+            }
+        }
         NotesCommand::UpdateText { id, .. }
         | NotesCommand::UpdateNote { id, .. }
+        | NotesCommand::ResizeImage { id, .. }
+        | NotesCommand::ReplaceImage { id, .. }
         | NotesCommand::SetCompleted { id, .. }
         | NotesCommand::SetStarred { id, .. }
         | NotesCommand::SetCollapsed { id, .. }
@@ -234,9 +245,8 @@ fn collect_remove_context(
     }
     let next = connection
         .query_row(
-            "SELECT id, parent_id, sort_key, kind, text, note, marker, collapsed,
-                    completed, starred, deleted
-             FROM notes_nodes
+            "SELECT *
+             FROM notes_node_records
              WHERE parent_id = ?1
                AND (sort_key > ?2 OR (sort_key = ?2 AND id > ?3))
              ORDER BY sort_key, id
@@ -284,9 +294,8 @@ fn collect_root_pages(
 ) -> Result<(), StorageError> {
     let mut statement = connection
         .prepare(
-            "SELECT id, parent_id, sort_key, kind, text, note, marker, collapsed,
-                    completed, starred, deleted
-             FROM notes_nodes
+            "SELECT *
+             FROM notes_node_records
              WHERE kind = 'page' AND parent_id IS NULL
              ORDER BY sort_key, id",
         )
@@ -306,9 +315,8 @@ fn collect_duplicate_namespace(
 ) -> Result<(), StorageError> {
     let mut statement = connection
         .prepare(
-            "SELECT id, parent_id, sort_key, kind, text, note, marker, collapsed,
-                    completed, starred, deleted
-             FROM notes_nodes
+            "SELECT *
+             FROM notes_node_records
              WHERE id = ?1 OR substr(id, 1, length(?1) + 1) = ?1 || '/'",
         )
         .map_err(internal)?;
@@ -348,9 +356,8 @@ fn collect_children(
 ) -> Result<(), StorageError> {
     let mut statement = connection
         .prepare(
-            "SELECT id, parent_id, sort_key, kind, text, note, marker, collapsed,
-                    completed, starred, deleted
-             FROM notes_nodes
+            "SELECT *
+             FROM notes_node_records
              WHERE parent_id = ?1
              ORDER BY sort_key, id",
         )
@@ -376,9 +383,8 @@ fn collect_position_context(
         Position::AtEnd => {
             let last = connection
                 .query_row(
-                    "SELECT id, parent_id, sort_key, kind, text, note, marker, collapsed,
-                            completed, starred, deleted
-                     FROM notes_nodes
+                    "SELECT *
+                     FROM notes_node_records
                      WHERE parent_id = ?1 AND (?2 IS NULL OR id <> ?2)
                      ORDER BY sort_key DESC, id DESC
                      LIMIT 1",
@@ -402,9 +408,8 @@ fn collect_position_context(
             };
             let previous = connection
                 .query_row(
-                    "SELECT id, parent_id, sort_key, kind, text, note, marker, collapsed,
-                            completed, starred, deleted
-                     FROM notes_nodes
+                    "SELECT *
+                     FROM notes_node_records
                      WHERE parent_id = ?1
                        AND (?2 IS NULL OR id <> ?2)
                        AND (
@@ -455,10 +460,8 @@ fn collect_descendants(
                 FROM notes_nodes child
                 JOIN descendants parent ON child.parent_id = parent.id
              )
-             SELECT node.id, node.parent_id, node.sort_key, node.kind, node.text,
-                    node.note, node.marker, node.collapsed, node.completed,
-                    node.starred, node.deleted
-             FROM notes_nodes node
+             SELECT node.*
+             FROM notes_node_records node
              JOIN descendants ON descendants.id = node.id",
         )
         .map_err(internal)?;

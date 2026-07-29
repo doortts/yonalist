@@ -7,7 +7,7 @@ function bullet(id: string, sortKey: number): NoteView {
     id,
     parentId: "page",
     sortKey,
-    kind: "bullet",
+    kind: "bullet", image: null,
     text: "",
     note: "",
     marker: "bullet",

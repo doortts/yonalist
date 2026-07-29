@@ -48,7 +48,7 @@ fn create_schema(connection: &Connection) -> Result<(), StorageError> {
                 id TEXT PRIMARY KEY NOT NULL,
                 parent_id TEXT,
                 sort_key INTEGER NOT NULL,
-                kind TEXT NOT NULL CHECK (kind IN ('page', 'bullet')),
+                kind TEXT NOT NULL CHECK (kind IN ('page', 'bullet', 'image')),
                 text TEXT NOT NULL,
                 note TEXT NOT NULL DEFAULT '',
                 marker TEXT NOT NULL DEFAULT 'bullet'
@@ -62,11 +62,56 @@ fn create_schema(connection: &Connection) -> Result<(), StorageError> {
                     DEFERRABLE INITIALLY DEFERRED,
                 CHECK (
                     (kind = 'page' AND parent_id IS NULL) OR
-                    (kind = 'bullet' AND parent_id IS NOT NULL)
+                    (kind IN ('bullet', 'image') AND parent_id IS NOT NULL)
                 )
             ) STRICT;
             CREATE INDEX notes_nodes_parent_order
                 ON notes_nodes(parent_id, deleted, sort_key, id);
+
+            CREATE TABLE notes_images (
+                node_id TEXT PRIMARY KEY NOT NULL,
+                content_hash TEXT NOT NULL CHECK (
+                    length(content_hash) = 64 AND
+                    content_hash NOT GLOB '*[^0-9a-f]*'
+                ),
+                relative_path TEXT NOT NULL,
+                original_name TEXT NOT NULL,
+                mime_type TEXT NOT NULL CHECK (
+                    mime_type IN (
+                        'image/png', 'image/jpeg', 'image/gif', 'image/webp'
+                    )
+                ),
+                byte_length INTEGER NOT NULL
+                    CHECK (byte_length BETWEEN 1 AND 20971520),
+                pixel_width INTEGER NOT NULL CHECK (pixel_width > 0),
+                pixel_height INTEGER NOT NULL CHECK (pixel_height > 0),
+                display_width INTEGER NOT NULL CHECK (display_width >= 120),
+                FOREIGN KEY(node_id) REFERENCES notes_nodes(id) ON DELETE CASCADE
+            ) STRICT;
+
+            CREATE VIEW notes_node_records AS
+            SELECT
+                node.id,
+                node.parent_id,
+                node.sort_key,
+                node.kind,
+                node.text,
+                node.note,
+                node.marker,
+                node.collapsed,
+                node.completed,
+                node.starred,
+                node.deleted,
+                image.content_hash,
+                image.relative_path,
+                image.original_name,
+                image.mime_type,
+                image.byte_length,
+                image.pixel_width,
+                image.pixel_height,
+                image.display_width
+            FROM notes_nodes node
+            LEFT JOIN notes_images image ON image.node_id = node.id;
 
             CREATE TABLE notes_tags (
                 node_id TEXT NOT NULL,

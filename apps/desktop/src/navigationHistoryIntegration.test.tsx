@@ -18,7 +18,7 @@ const snapshot: BootSnapshot = {
       id: `bullet-${index + 1}`,
       parentId: "page",
       sortKey: (index + 1) * 1_024,
-      kind: "bullet",
+      kind: "bullet", image: null,
       text,
       note: "",
       marker: "bullet",

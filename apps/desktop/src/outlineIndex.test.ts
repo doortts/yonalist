@@ -11,6 +11,7 @@ function node(
     parentId,
     sortKey,
     kind: parentId === null ? "page" : "bullet",
+    image: null,
     text: id,
     note: "",
     marker: "bullet",

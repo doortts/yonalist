@@ -10,7 +10,7 @@ function notesStateWithNodes(count: number): NotesState {
     id: `node-${index}`,
     parentId: "page-1",
     sortKey: (index + 1) * 1_024,
-    kind: "bullet",
+    kind: "bullet", image: null,
     text: `Node ${index}`,
     note: "",
     marker: "bullet",

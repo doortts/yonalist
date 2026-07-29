@@ -17,7 +17,7 @@ export async function readyRealStore(): Promise<NotesStore> {
         id,
         parentId: "page-1",
         sortKey: (index + 1) * 1_024,
-        kind: "bullet" as const,
+        kind: "bullet" as const, image: null,
         text: id,
         note: "",
         marker: "bullet" as const,

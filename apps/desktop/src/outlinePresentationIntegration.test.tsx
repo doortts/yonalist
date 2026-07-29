@@ -17,7 +17,7 @@ const markdownSnapshot: BootSnapshot = {
       id: "bullet-1",
       parentId: "page-1",
       sortKey: 1024,
-      kind: "bullet",
+      kind: "bullet", image: null,
       text: "## **Launch** #Cafe\u0301",
       note: "",
       marker: "bullet",

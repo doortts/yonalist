@@ -164,7 +164,7 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
     case "createPage": {
       const node: NoteView = {
         id: command.id, parentId: null, sortKey: nodes.length * 1024 + 1024,
-        kind: "page", text: command.text, note: "", marker: "bullet",
+        kind: "page", image: null, text: command.text, note: "", marker: "bullet",
         collapsed: false, completed: false, starred: false, deleted: false
       };
       nodes.push(node);
@@ -177,7 +177,7 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
         id: command.id,
         parentId: command.parent_id,
         sortKey: sortKeyBefore(command.parent_id, command.before_id),
-        kind: "bullet", text: command.text, note: "", marker: "bullet",
+        kind: "bullet", image: null, text: command.text, note: "", marker: "bullet",
         collapsed: false, completed: false, starred: false, deleted: false
       };
       nodes.push(node);
@@ -194,7 +194,7 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
             imported.parentId,
             isRoot ? command.before_id : null
           ),
-          kind: "bullet",
+          kind: "bullet", image: null,
           text: imported.text,
           note: "",
           marker: "bullet",
@@ -232,7 +232,7 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
           id: command.new_id,
           parentId: command.parent_id,
           sortKey: sortKeyBefore(command.parent_id, command.before_id),
-          kind: "bullet",
+          kind: "bullet", image: null,
           text: command.suffix,
           note: "",
           marker: "bullet",

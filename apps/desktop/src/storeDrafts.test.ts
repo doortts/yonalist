@@ -7,7 +7,7 @@ function node(text: string) {
     id: "one",
     parentId: "page-1",
     sortKey: 1_024,
-    kind: "bullet" as const,
+    kind: "bullet" as const, image: null,
     text,
     note: "",
     marker: "bullet" as const,
