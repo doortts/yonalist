@@ -357,3 +357,64 @@ git diff --check
 - Split-close restoration stays synchronous and uses the existing title
   selection marker. No timer, frame reconciler, observer, dependency, public
   action, or new runtime layer was added.
+
+## User-authorized post-breaker data-loss fix
+
+The user explicitly authorized one additional fix after the five-round breaker.
+
+### Root cause and fix
+
+- The DOM-owned title editor marked B's latest source as published when its
+  500 ms timer fired, but the pane registry discarded that publication while
+  A still owned the editing lease. The later successful focus claim could not
+  ask the now-clean editor to publish again.
+- The existing pane registry now retains only the latest rejected patch for an
+  insertion-owned focus request. It keys the patch by pane and the exact
+  request object, merges optional marker/image fields with later title text,
+  forwards the result once after that request acquires the lease, and discards
+  it when the claim fails or the request is replaced.
+- No debounce, lease rule, public API, dependency, or general-purpose queue was
+  added.
+
+### Red-green evidence
+
+```sh
+npm test -- src/features/notes/NotesWorkspace.test.tsx -t "publishes the latest insertion once after its prior editor flush exceeds 500 ms"
+```
+
+- RED at `e6b30355`: 1 test failed because the inserted node had one expected
+  persistence call missing after A's delayed save resolved.
+- GREEN after the fix: 1 test passed. Two B publications made while A's save
+  remained unresolved collapsed to the latest patch, which was delivered once
+  after the claim.
+- Review then exposed a second RED case in the same path: selecting `/todo`
+  before more title input lost `markerKind` when the latest patch replaced the
+  buffered patch. The test failed with `markerKind: "bullet"`; merging the
+  same request's patches made it pass with `markerKind: "todo"`.
+
+```sh
+npm test -- src/features/notes/NotesWorkspace.test.tsx src/features/notes/notesWorkspaceContextSplit.test.tsx -t "publishes the latest insertion once|editing lease when interaction invalidates|same-revision .* focus replacement"
+```
+
+- 2 files, 5 tests passed. Primary and secondary stale/failed claims discard
+  their buffered patch, and same-revision replacements cannot publish the old
+  request.
+
+### Verification
+
+```sh
+npm test -- src/features/notes/NotesWorkspace.test.tsx src/features/notes/notesWorkspaceContextSplit.test.tsx src/features/notes/NotesFeature.test.tsx src/features/notes/useNotesEditingLease.test.tsx
+```
+
+- 4 files, 334 tests passed.
+
+```sh
+npm run test:architecture
+npm run lint
+npx tsc --noEmit
+git diff --check
+```
+
+- Architecture budgets, ESLint, TypeScript, and whitespace checks passed.
+- `notesWorkspaceRuntime.ts` remains 1,500/1,500 lines and all-test-order
+  observations remain 283/283.

@@ -545,6 +545,18 @@ describe("notes workspace context split", () => {
         );
       });
       await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
+      act(() => {
+        actions().updateNodeDraft(
+          "split",
+          {
+            title: "Buffered stale claim",
+            note: "",
+            imageOffsetUtf16: 0,
+          },
+          "title"
+        );
+      });
+      expect(result.current.draftsByNodeId.split).toBeUndefined();
       const interveningPaneId =
         paneId === "primary" ? "secondary" : "primary";
       act(() => {
@@ -667,6 +679,18 @@ describe("notes workspace context split", () => {
         );
       });
       await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
+      act(() => {
+        actions().updateNodeDraft(
+          "first",
+          {
+            title: "Buffered stale owner",
+            note: "",
+            imageOffsetUtf16: 0,
+          },
+          "title"
+        );
+      });
+      expect(result.current.draftsByNodeId.first).toBeUndefined();
       await act(async () =>
         actions().focusNode("replacement", {
           anchorUtf16: 2,

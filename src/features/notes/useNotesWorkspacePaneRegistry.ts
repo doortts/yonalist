@@ -28,6 +28,70 @@ import {
 const EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS:
   readonly OptimisticKeyboardInsertion[] = [];
 
+interface PendingInsertionFocusPublish {
+  readonly request: NotesPendingPrimarySelection;
+  readonly patch: Parameters<NotesWorkspaceActions["updateNodeDraft"]>[1];
+}
+
+type PaneId = "primary" | "secondary";
+type PendingInsertionFocusPublishes = Record<
+  PaneId,
+  PendingInsertionFocusPublish | null
+>;
+
+function takePendingInsertionFocusPublish(
+  publishes: PendingInsertionFocusPublishes,
+  paneId: PaneId,
+  request: NotesPendingPrimarySelection | null
+): PendingInsertionFocusPublish | null {
+  const pending = publishes[paneId];
+  if (request === null || pending?.request !== request) return null;
+  publishes[paneId] = null;
+  return pending;
+}
+
+function updateNodeDraftWithInsertionFocus(
+  publishes: PendingInsertionFocusPublishes,
+  paneId: PaneId,
+  request: NotesPendingPrimarySelection | null,
+  canEdit: NotesEditingLeaseController["canEdit"],
+  updateNodeDraft: NotesWorkspaceActions["updateNodeDraft"],
+  ...args: Parameters<NotesWorkspaceActions["updateNodeDraft"]>
+): void {
+  const [nodeId, patch, field] = args;
+  if (field === undefined || canEdit({ paneId, nodeId, field })) {
+    if (request?.nodeId === nodeId && request.field === field) {
+      takePendingInsertionFocusPublish(publishes, paneId, request);
+    }
+    updateNodeDraft(...args);
+    return;
+  }
+  if (
+    request?.expectedUserInteractionRevision !== undefined &&
+    request.nodeId === nodeId &&
+    request.field === field
+  ) {
+    const previous =
+      publishes[paneId]?.request === request
+        ? publishes[paneId]?.patch
+        : undefined;
+    publishes[paneId] = {
+      request,
+      patch: {
+        ...previous,
+        ...patch,
+        ...(patch.markerKind === undefined && previous?.markerKind !== undefined
+          ? { markerKind: previous.markerKind }
+          : {}),
+        ...(patch.markdownImageWidth === undefined &&
+        previous?.markdownImageWidth !== undefined
+          ? { markdownImageWidth: previous.markdownImageWidth }
+          : {})
+      }
+    };
+  }
+}
+
 interface UseNotesWorkspacePaneRegistryOptions {
   readonly sessions: NotesPaneSessionsController;
   readonly state: NormalizedNotesWorkspace;
@@ -143,6 +207,11 @@ export function useNotesWorkspacePaneRegistry({
     primary.pendingPrimarySelection
   );
   primaryPendingSelectionRef.current = primary.pendingPrimarySelection;
+  const pendingInsertionFocusPublishRef =
+    useRef<PendingInsertionFocusPublishes>({
+      primary: null,
+      secondary: null
+    });
   const claimEditing = useCallback(
     async (
       paneId: "primary" | "secondary",
@@ -264,6 +333,11 @@ export function useNotesWorkspacePaneRegistry({
     async (nodeId: string, requestId?: number) => {
       const pendingSelection = primaryPendingSelectionRef.current;
       const expectedRequestId = requestId ?? pendingSelection?.requestId;
+      const acknowledgedRequest =
+        pendingSelection?.nodeId === nodeId &&
+        pendingSelection.requestId === expectedRequestId
+          ? pendingSelection
+          : null;
       const requestIsCurrent = () => {
         if (pendingSelection === null) {
           return (
@@ -272,11 +346,8 @@ export function useNotesWorkspacePaneRegistry({
           );
         }
         return (
-          pendingSelection.nodeId === nodeId &&
-          pendingSelection.requestId === expectedRequestId &&
-          primaryPendingSelectionRef.current?.nodeId === nodeId &&
-          primaryPendingSelectionRef.current.requestId ===
-            expectedRequestId &&
+          acknowledgedRequest !== null &&
+          primaryPendingSelectionRef.current === acknowledgedRequest &&
           (pendingSelection.expectedUserInteractionRevision === undefined ||
             actionsRef.current.getUserInteractionRevision?.() ===
               pendingSelection.expectedUserInteractionRevision)
@@ -288,16 +359,26 @@ export function useNotesWorkspacePaneRegistry({
         stateRef.current.pendingFocusField ?? "title",
         requestIsCurrent
       );
+      const pendingPublish = takePendingInsertionFocusPublish(
+        pendingInsertionFocusPublishRef.current,
+        "primary",
+        acknowledgedRequest
+      );
       if (!claimed) {
         if (
-          pendingSelection !== null &&
-          primaryPendingSelectionRef.current?.nodeId === nodeId &&
-          primaryPendingSelectionRef.current.requestId ===
-            expectedRequestId
+          acknowledgedRequest !== null &&
+          primaryPendingSelectionRef.current === acknowledgedRequest
         ) {
           retirePendingPrimarySelection();
         }
         return;
+      }
+      if (pendingPublish) {
+        actionsRef.current.updateNodeDraft(
+          pendingPublish.request.nodeId,
+          pendingPublish.patch,
+          pendingPublish.request.field
+        );
       }
       await actionsRef.current.acknowledgeFocus(nodeId, expectedRequestId);
     },
@@ -327,10 +408,15 @@ export function useNotesWorkspacePaneRegistry({
   const primaryUpdateNodeDraft = useCallback<
     NotesWorkspaceActions["updateNodeDraft"]
   >(
-    (nodeId, patch, field) => {
-      if (!field || canEdit({ paneId: "primary", nodeId, field })) {
-        actionsRef.current.updateNodeDraft(nodeId, patch, field);
-      }
+    (...args) => {
+      updateNodeDraftWithInsertionFocus(
+        pendingInsertionFocusPublishRef.current,
+        "primary",
+        primaryPendingSelectionRef.current,
+        canEdit,
+        actionsRef.current.updateNodeDraft,
+        ...args
+      );
     },
     [canEdit]
   );
@@ -364,18 +450,25 @@ export function useNotesWorkspacePaneRegistry({
       releaseEditingFocus: (nodeId) => release("secondary", nodeId),
       setOutlineCompositionActive: (active) =>
         setPaneComposition("secondary", active),
-      updateNodeDraft: (nodeId, patch, field) => {
-        if (
-          !field ||
-          canEdit({ paneId: "secondary", nodeId, field })
-        ) {
-          actionsSlice.actions.updateNodeDraft(nodeId, patch, field);
-        }
+      updateNodeDraft: (...args) => {
+        updateNodeDraftWithInsertionFocus(
+          pendingInsertionFocusPublishRef.current,
+          "secondary",
+          getPaneSession("secondary").pendingPrimarySelection,
+          canEdit,
+          actionsSlice.actions.updateNodeDraft,
+          ...args
+        );
       },
       acknowledgeFocus: async (nodeId, requestId) => {
         const current = getPaneSession("secondary");
         const pendingSelection = current.pendingPrimarySelection;
         const expectedRequestId = requestId ?? pendingSelection?.requestId;
+        const acknowledgedRequest =
+          pendingSelection?.nodeId === nodeId &&
+          pendingSelection.requestId === expectedRequestId
+            ? pendingSelection
+            : null;
         const requestIsCurrent = () => {
           const live = getPaneSession("secondary");
           if (pendingSelection === null) {
@@ -385,29 +478,29 @@ export function useNotesWorkspacePaneRegistry({
             );
           }
           return (
-            pendingSelection.nodeId === nodeId &&
-            pendingSelection.requestId === expectedRequestId &&
-            live.pendingPrimarySelection?.nodeId === nodeId &&
-            live.pendingPrimarySelection?.requestId === expectedRequestId &&
+            acknowledgedRequest !== null &&
+            live.pendingPrimarySelection === acknowledgedRequest &&
             (pendingSelection.expectedUserInteractionRevision === undefined ||
               pendingSelection.expectedUserInteractionRevision ===
                 actionsSlice.actions.getUserInteractionRevision?.())
           );
         };
-        if (
-          !(await claimEditing(
-            "secondary",
-            nodeId,
-            current.pendingFocusField ?? "title",
-            requestIsCurrent
-          ))
-        ) {
+        const claimed = await claimEditing(
+          "secondary",
+          nodeId,
+          current.pendingFocusField ?? "title",
+          requestIsCurrent
+        );
+        const pendingPublish = takePendingInsertionFocusPublish(
+          pendingInsertionFocusPublishRef.current,
+          "secondary",
+          acknowledgedRequest
+        );
+        if (!claimed) {
           const failed = getPaneSession("secondary");
           if (
-            pendingSelection !== null &&
-            failed.pendingPrimarySelection?.nodeId === nodeId &&
-            failed.pendingPrimarySelection.requestId ===
-              expectedRequestId
+            acknowledgedRequest !== null &&
+            failed.pendingPrimarySelection === acknowledgedRequest
           ) {
             dispatchPane("secondary", {
               type: "setPendingPrimarySelection",
@@ -421,6 +514,13 @@ export function useNotesWorkspacePaneRegistry({
             }
           }
           return;
+        }
+        if (pendingPublish) {
+          actionsSlice.actions.updateNodeDraft(
+            pendingPublish.request.nodeId,
+            pendingPublish.patch,
+            pendingPublish.request.field
+          );
         }
         await actionsSlice.actions.acknowledgeFocus(
           nodeId,

@@ -7408,7 +7408,7 @@ describe("Notes workspace", () => {
       input.setSelectionRange(input.value.length, input.value.length);
     }
 
-    it("keeps insertion ownership while the previous editor flushes after settlement", async () => {
+    it("publishes the latest insertion once after its prior editor flush exceeds 500 ms", async () => {
       configureRepository([
         node({ id: "solo", sortKey: 1024, title: "Solo item" }),
       ]);
@@ -7496,7 +7496,20 @@ describe("Notes workspace", () => {
         "data-notes-provisional-insertion",
       );
       expect(settlingTitle).toHaveFocus();
+      changeTitleEditor(settlingTitle, "/t");
+      expect(
+        screen.getByRole("listbox", { name: "Slash commands" }),
+      ).toBeVisible();
+      fireEvent.keyDown(settlingTitle, { key: "ArrowDown" });
+      fireEvent.keyDown(settlingTitle, { key: "Enter" });
+      expect(titleEditorSource(settlingTitle)).toBe("");
+      vi.useFakeTimers();
+      changeTitleEditor(settlingTitle, "superseded through claim");
+      await act(async () => vi.advanceTimersByTimeAsync(501));
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(1);
       changeTitleEditor(settlingTitle, "typed through claim");
+      await act(async () => vi.advanceTimersByTimeAsync(501));
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(1);
       expect(titleEditorInMotionRow(FIRST, primary)).toHaveFocus();
       await act(async () =>
         sourceSave.resolve(
@@ -7506,22 +7519,22 @@ describe("Notes workspace", () => {
           ]),
         ),
       );
-      await waitFor(() =>
-        expect(settlingTitle).not.toHaveAttribute(
-          "data-notes-provisional-insertion",
-        ),
+      await act(async () => vi.advanceTimersByTimeAsync(800));
+      expect(settlingTitle).not.toHaveAttribute(
+        "data-notes-provisional-insertion",
       );
-      fireEvent.blur(settlingTitle);
-      await waitFor(() =>
-        expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
-          "/vault",
-          expect.objectContaining({
-            id: FIRST,
-            title: "typed through claim",
-          }),
-          historyContextMatcher(),
-        ),
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2);
+      expect(notesStoreMock.updateNode).toHaveBeenLastCalledWith(
+        "/vault",
+        expect.objectContaining({
+          id: FIRST,
+          title: "typed through claim",
+          markerKind: "todo",
+        }),
+        historyContextMatcher(),
       );
+      await act(async () => vi.advanceTimersByTimeAsync(500));
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2);
       expect(markerDuringClaim).toBe("true");
     });
 
