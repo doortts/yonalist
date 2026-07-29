@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::NodeId;
+use crate::{NodeId, NoteImage};
 
 pub const SORT_KEY_STEP: i64 = 1_024;
 
@@ -9,6 +9,7 @@ pub const SORT_KEY_STEP: i64 = 1_024;
 pub enum NoteNodeKind {
     Page,
     Bullet,
+    Image,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -24,6 +25,7 @@ pub struct NoteNode {
     parent_id: Option<NodeId>,
     sort_key: i64,
     kind: NoteNodeKind,
+    image: Option<NoteImage>,
     text: String,
     note: String,
     marker: NoteMarkerKind,
@@ -40,6 +42,7 @@ impl NoteNode {
             parent_id: None,
             sort_key: SORT_KEY_STEP,
             kind: NoteNodeKind::Page,
+            image: None,
             text: text.into(),
             note: String::new(),
             marker: NoteMarkerKind::Bullet,
@@ -56,7 +59,25 @@ impl NoteNode {
             parent_id: Some(parent_id),
             sort_key,
             kind: NoteNodeKind::Bullet,
+            image: None,
             text: text.into(),
+            note: String::new(),
+            marker: NoteMarkerKind::Bullet,
+            collapsed: false,
+            completed: false,
+            starred: false,
+            deleted: false,
+        }
+    }
+
+    pub fn image_child(id: NodeId, parent_id: NodeId, sort_key: i64, image: NoteImage) -> Self {
+        Self {
+            id,
+            parent_id: Some(parent_id),
+            sort_key,
+            kind: NoteNodeKind::Image,
+            text: image.original_name().to_owned(),
+            image: Some(image),
             note: String::new(),
             marker: NoteMarkerKind::Bullet,
             collapsed: false,
@@ -80,11 +101,33 @@ impl NoteNode {
         starred: bool,
         deleted: bool,
     ) -> Self {
+        Self::from_persisted_with_image(
+            id, parent_id, sort_key, kind, None, text, note, marker, collapsed, completed, starred,
+            deleted,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_persisted_with_image(
+        id: NodeId,
+        parent_id: Option<NodeId>,
+        sort_key: i64,
+        kind: NoteNodeKind,
+        image: Option<NoteImage>,
+        text: String,
+        note: String,
+        marker: NoteMarkerKind,
+        collapsed: bool,
+        completed: bool,
+        starred: bool,
+        deleted: bool,
+    ) -> Self {
         Self {
             id,
             parent_id,
             sort_key,
             kind,
+            image,
             text,
             note,
             marker,
@@ -109,6 +152,10 @@ impl NoteNode {
 
     pub fn kind(&self) -> NoteNodeKind {
         self.kind
+    }
+
+    pub fn image(&self) -> Option<&NoteImage> {
+        self.image.as_ref()
     }
 
     pub fn text(&self) -> &str {
@@ -149,6 +196,15 @@ impl NoteNode {
 
     pub(crate) fn set_text(&mut self, text: String) {
         self.text = text;
+    }
+
+    pub(crate) fn set_image(&mut self, image: NoteImage) {
+        self.text = image.original_name().to_owned();
+        self.image = Some(image);
+    }
+
+    pub(crate) fn image_mut(&mut self) -> Option<&mut NoteImage> {
+        self.image.as_mut()
     }
 
     pub(crate) fn set_note(&mut self, note: String) {

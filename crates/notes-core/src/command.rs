@@ -1,12 +1,18 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{NodeId, NoteMarkerKind, NoteNode};
+use crate::{NodeId, NoteImage, NoteMarkerKind, NoteNode};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ImportNode {
     pub id: NodeId,
     pub parent_id: NodeId,
     pub text: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ImportImageNode {
+    pub id: NodeId,
+    pub image: NoteImage,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -59,6 +65,11 @@ pub enum NotesCommand {
         position: Position,
         nodes: Vec<ImportNode>,
     },
+    ImportImages {
+        parent_id: NodeId,
+        position: Position,
+        nodes: Vec<ImportImageNode>,
+    },
     UpdateText {
         id: NodeId,
         text: String,
@@ -66,6 +77,14 @@ pub enum NotesCommand {
     UpdateNote {
         id: NodeId,
         note: String,
+    },
+    ResizeImage {
+        id: NodeId,
+        display_width: u32,
+    },
+    ReplaceImage {
+        id: NodeId,
+        image: NoteImage,
     },
     SplitNode {
         id: NodeId,

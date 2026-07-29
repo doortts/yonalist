@@ -103,11 +103,12 @@ impl NotesTree {
         }
         let source_ids = self.visible_subtree_ids(&source_id);
         let source = source.clone();
-        let copy = NoteNode::from_persisted(
+        let copy = NoteNode::from_persisted_with_image(
             new_id.clone(),
             Some(parent_id.clone()),
             SORT_KEY_STEP,
-            NoteNodeKind::Bullet,
+            source.kind(),
+            source.image().cloned(),
             source.text().to_owned(),
             source.note().to_owned(),
             source.marker(),
@@ -135,11 +136,12 @@ impl NotesTree {
                 .ok_or_else(|| DomainError::ParentNotFound(source_parent_id.clone()))?;
             self.nodes.insert(
                 copied_id.clone(),
-                NoteNode::from_persisted(
+                NoteNode::from_persisted_with_image(
                     copied_id.clone(),
                     Some(copied_parent_id),
                     source_child.sort_key(),
-                    NoteNodeKind::Bullet,
+                    source_child.kind(),
+                    source_child.image().cloned(),
                     source_child.text().to_owned(),
                     source_child.note().to_owned(),
                     source_child.marker(),
@@ -333,9 +335,11 @@ impl NotesTree {
     fn validate(&self) -> Result<(), DomainError> {
         for node in self.nodes.values() {
             match (node.kind(), node.parent_id()) {
-                (NoteNodeKind::Page, None) => {}
-                (NoteNodeKind::Bullet, Some(parent_id)) if self.nodes.contains_key(parent_id) => {}
-                (NoteNodeKind::Bullet, Some(parent_id)) => {
+                (NoteNodeKind::Page, None) if node.image().is_none() => {}
+                (NoteNodeKind::Bullet, Some(parent_id))
+                    if self.nodes.contains_key(parent_id) && node.image().is_none() => {}
+                (NoteNodeKind::Image, Some(parent_id)) if self.nodes.contains_key(parent_id) => {}
+                (NoteNodeKind::Bullet | NoteNodeKind::Image, Some(parent_id)) => {
                     return Err(DomainError::ParentNotFound(parent_id.clone()));
                 }
                 _ => {

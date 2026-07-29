@@ -24,6 +24,8 @@ pub enum DomainError {
     CannotRemovePage,
     #[error("node is not empty: {0}")]
     NodeNotEmpty(NodeId),
+    #[error("image metadata is invalid: {0}")]
+    InvalidImage(String),
     #[error("moving {node_id} below {parent_id} would create a cycle")]
     Cycle { node_id: NodeId, parent_id: NodeId },
     #[error("tree invariant failed: {0}")]

@@ -1,7 +1,10 @@
 use std::collections::BTreeSet;
 
 use crate::node::SORT_KEY_STEP;
-use crate::{DomainError, ImportNode, NodeId, NoteNode, NoteNodeKind, NotesCommand, Position};
+use crate::{
+    DomainError, ImportImageNode, ImportNode, NodeId, NoteNode, NoteNodeKind, NotesCommand,
+    Position,
+};
 
 use super::NotesTree;
 
@@ -20,12 +23,44 @@ impl NotesTree {
                 position,
                 nodes,
             } => self.import_nodes(parent_id, position, nodes),
+            NotesCommand::ImportImages {
+                parent_id,
+                position,
+                nodes,
+            } => self.import_images(parent_id, position, nodes),
             NotesCommand::UpdateText { id, text } => {
+                if self.node_mut(&id)?.kind() == NoteNodeKind::Image {
+                    return Err(DomainError::Invariant(
+                        "image filenames cannot be changed as bullet text".into(),
+                    ));
+                }
                 self.node_mut(&id)?.set_text(text);
                 Ok(())
             }
             NotesCommand::UpdateNote { id, note } => {
                 self.node_mut(&id)?.set_note(note);
+                Ok(())
+            }
+            NotesCommand::ResizeImage { id, display_width } => {
+                let image = self
+                    .node_mut(&id)?
+                    .image_mut()
+                    .ok_or_else(|| DomainError::InvalidImage("image metadata is missing".into()))?;
+                image.set_display_width(display_width)
+            }
+            NotesCommand::ReplaceImage { id, mut image } => {
+                let node = self.node_mut(&id)?;
+                if node.kind() != NoteNodeKind::Image {
+                    return Err(DomainError::InvalidImage(
+                        "only image nodes can replace image content".into(),
+                    ));
+                }
+                let display_width = node
+                    .image()
+                    .ok_or_else(|| DomainError::InvalidImage("image metadata is missing".into()))?
+                    .display_width();
+                image.set_display_width(display_width)?;
+                node.set_image(image);
                 Ok(())
             }
             NotesCommand::SplitNode {
@@ -181,6 +216,30 @@ impl NotesTree {
         Ok(())
     }
 
+    fn import_images(
+        &mut self,
+        parent_id: NodeId,
+        position: Position,
+        nodes: Vec<ImportImageNode>,
+    ) -> Result<(), DomainError> {
+        self.ensure_parent(&parent_id)?;
+        if nodes.is_empty() {
+            return Err(DomainError::Invariant(
+                "an imported image batch must contain at least one node".into(),
+            ));
+        }
+        for node in nodes {
+            self.ensure_new_id(&node.id)?;
+            let id = node.id;
+            self.nodes.insert(
+                id.clone(),
+                NoteNode::image_child(id.clone(), parent_id.clone(), SORT_KEY_STEP, node.image),
+            );
+            self.place_child(&id, &parent_id, position.clone())?;
+        }
+        Ok(())
+    }
+
     fn split_node(
         &mut self,
         id: NodeId,
@@ -194,7 +253,7 @@ impl NotesTree {
             .nodes
             .get(&id)
             .ok_or_else(|| DomainError::NodeNotFound(id.clone()))?;
-        if source.kind() == NoteNodeKind::Page {
+        if source.kind() != NoteNodeKind::Bullet {
             return Err(DomainError::CannotSplitPage);
         }
         if source.parent_id() != Some(&parent_id) {
@@ -229,7 +288,7 @@ impl NotesTree {
             .get(&previous_id)
             .cloned()
             .ok_or_else(|| DomainError::NodeNotFound(previous_id.clone()))?;
-        if current.kind() == NoteNodeKind::Page || previous.kind() == NoteNodeKind::Page {
+        if current.kind() != NoteNodeKind::Bullet || previous.kind() != NoteNodeKind::Bullet {
             return Err(DomainError::Invariant(
                 "only bullet titles can be merged".into(),
             ));
@@ -276,6 +335,11 @@ impl NotesTree {
             .ok_or_else(|| DomainError::NodeNotFound(id.clone()))?;
         if node.kind() == NoteNodeKind::Page {
             return Err(DomainError::CannotRemovePage);
+        }
+        if node.kind() == NoteNodeKind::Image {
+            return Err(DomainError::Invariant(
+                "image nodes cannot be removed by the empty-bullet gesture".into(),
+            ));
         }
         if !node.text().trim().is_empty() || !node.note().trim().is_empty() {
             return Err(DomainError::NodeNotEmpty(id.clone()));

@@ -6,13 +6,16 @@
 mod command;
 mod error;
 mod id;
+mod image;
 mod node;
 mod tree;
 
 pub use command::{
-    DomainPatch, ImportNode, NodeDuplicate, NodeMove, NotesCommand, Position, TreeMutation,
+    DomainPatch, ImportImageNode, ImportNode, NodeDuplicate, NodeMove, NotesCommand, Position,
+    TreeMutation,
 };
 pub use error::DomainError;
 pub use id::NodeId;
+pub use image::{MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS, MIN_IMAGE_DISPLAY_WIDTH, NoteImage};
 pub use node::{NoteMarkerKind, NoteNode, NoteNodeKind};
 pub use tree::NotesTree;
