@@ -202,6 +202,271 @@ describe("notesSyncListener", () => {
     disconnectCurrent();
   });
 
+  it("reloads the current workspace after native sync activation without waiting for a file event", async () => {
+    const status: SyncStatus = {
+      running: true,
+      dirtyTopics: 0,
+      quarantined: [],
+      lastExportAt: null,
+      lastMergeAt: null
+    };
+    let resolveStart!: (status: SyncStatus) => void;
+    notesSyncStartMock.mockImplementationOnce(
+      () =>
+        new Promise<SyncStatus>((resolve) => {
+          resolveStart = resolve;
+        })
+    );
+    const reload = vi.fn().mockResolvedValue(undefined);
+    const disconnect = connectNotesSyncRuntime({
+      vaultRoot: "/fresh-vault",
+      onWorkspaceChanged: reload
+    });
+
+    await vi.waitFor(() => expect(notesSyncStartMock).toHaveBeenCalledOnce());
+    expect(reload).not.toHaveBeenCalled();
+
+    resolveStart(status);
+    await vi.waitFor(() => expect(reload).toHaveBeenCalledOnce());
+
+    disconnect();
+  });
+
+  it("coalesces a startup file event with the native activation reload", async () => {
+    const status: SyncStatus = {
+      running: true,
+      dirtyTopics: 0,
+      quarantined: [],
+      lastExportAt: null,
+      lastMergeAt: null
+    };
+    let resolveStart!: (status: SyncStatus) => void;
+    notesSyncStartMock.mockImplementationOnce(
+      () =>
+        new Promise<SyncStatus>((resolve) => {
+          resolveStart = resolve;
+        })
+    );
+    const reload = vi.fn().mockResolvedValue(undefined);
+    const disconnect = connectNotesSyncRuntime({
+      vaultRoot: "/startup-event",
+      onWorkspaceChanged: reload
+    });
+
+    await vi.waitFor(() => expect(notesSyncStartMock).toHaveBeenCalledOnce());
+    emit("notes://sync-changed", {
+      vaultPath: "/startup-event",
+      topicIds: ["seeded-topic"]
+    } satisfies SyncChangedPayload);
+    resolveStart(status);
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(reload).toHaveBeenCalledOnce();
+    disconnect();
+  });
+
+  it("does not reload an existing same-vault subscriber for a later activation", async () => {
+    const firstReload = vi.fn();
+    const secondReload = vi.fn();
+    const disconnectFirst = connectNotesSyncRuntime({
+      vaultRoot: "/sequential-shared",
+      onWorkspaceChanged: firstReload
+    });
+    await vi.waitFor(() => expect(firstReload).toHaveBeenCalledOnce());
+    firstReload.mockClear();
+
+    const disconnectSecond = connectNotesSyncRuntime({
+      vaultRoot: "/sequential-shared",
+      onWorkspaceChanged: secondReload
+    });
+    await vi.waitFor(() => expect(secondReload).toHaveBeenCalledOnce());
+
+    expect(firstReload).not.toHaveBeenCalled();
+    disconnectFirst();
+    disconnectSecond();
+  });
+
+  it("cancels a scheduled activation reload when its connection closes", async () => {
+    const status: SyncStatus = {
+      running: true,
+      dirtyTopics: 0,
+      quarantined: [],
+      lastExportAt: null,
+      lastMergeAt: null
+    };
+    let resolveStart!: (status: SyncStatus) => void;
+    notesSyncStartMock.mockImplementationOnce(
+      () =>
+        new Promise<SyncStatus>((resolve) => {
+          resolveStart = resolve;
+        })
+    );
+    const reload = vi.fn().mockResolvedValue(undefined);
+    const disconnect = connectNotesSyncRuntime({
+      vaultRoot: "/closed-after-start",
+      onWorkspaceChanged: reload
+    });
+    await vi.waitFor(() => expect(notesSyncStartMock).toHaveBeenCalledOnce());
+
+    resolveStart(status);
+    await Promise.resolve();
+    disconnect();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("waits for the restored vault native start before reloading after a fast handoff", async () => {
+    const status: SyncStatus = {
+      running: true,
+      dirtyTopics: 0,
+      quarantined: [],
+      lastExportAt: null,
+      lastMergeAt: null
+    };
+    let resolveRestoredStart!: (status: SyncStatus) => void;
+    notesSyncStartMock
+      .mockResolvedValueOnce(status)
+      .mockResolvedValueOnce(status)
+      .mockImplementationOnce(
+        () =>
+          new Promise<SyncStatus>((resolve) => {
+            resolveRestoredStart = resolve;
+          })
+      );
+    const firstReload = vi.fn();
+    const secondReload = vi.fn();
+    const disconnectFirst = connectNotesSyncRuntime({
+      vaultRoot: "/handoff-a",
+      onWorkspaceChanged: firstReload
+    });
+    await vi.waitFor(() =>
+      expect(notesSyncStartMock).toHaveBeenCalledWith("/handoff-a")
+    );
+
+    const disconnectSecond = connectNotesSyncRuntime({
+      vaultRoot: "/handoff-b",
+      onWorkspaceChanged: secondReload
+    });
+    await vi.waitFor(() =>
+      expect(notesSyncStartMock).toHaveBeenCalledWith("/handoff-b")
+    );
+    disconnectSecond();
+    await vi.waitFor(() => expect(notesSyncStartMock).toHaveBeenCalledTimes(3));
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(firstReload).not.toHaveBeenCalled();
+    expect(secondReload).not.toHaveBeenCalled();
+
+    resolveRestoredStart(status);
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(firstReload).toHaveBeenCalledOnce();
+    expect(secondReload).not.toHaveBeenCalled();
+
+    disconnectFirst();
+  });
+
+  it("retries an activation reload that was skipped during a pending vault handoff", async () => {
+    let resolvePendingListen!: (unlisten: () => void) => void;
+    const pendingListen = new Promise<() => void>((resolve) => {
+      resolvePendingListen = resolve;
+    });
+    const firstReload = vi.fn();
+    const disconnectFirst = connectNotesSyncRuntime({
+      vaultRoot: "/pending-handoff-a",
+      onWorkspaceChanged: firstReload
+    });
+    await vi.waitFor(() => expect(notesSyncStartMock).toHaveBeenCalledOnce());
+
+    listenMock.mockImplementationOnce(() => pendingListen);
+    const disconnectSecond = connectNotesSyncRuntime({
+      vaultRoot: "/pending-handoff-b",
+      onWorkspaceChanged: vi.fn()
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(firstReload).not.toHaveBeenCalled();
+
+    disconnectSecond();
+    await vi.waitFor(() => expect(notesSyncStartMock).toHaveBeenCalledTimes(2));
+    expect(notesSyncStartMock.mock.calls.map(([vaultRoot]) => vaultRoot)).toEqual([
+      "/pending-handoff-a",
+      "/pending-handoff-a"
+    ]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(firstReload).toHaveBeenCalledOnce();
+
+    const lateUnlisten = vi.fn();
+    resolvePendingListen(lateUnlisten);
+    await vi.waitFor(() => expect(lateUnlisten).toHaveBeenCalledOnce());
+    disconnectFirst();
+  });
+
+  it("reloads the restored vault after a failed handoff", async () => {
+    const status: SyncStatus = {
+      running: true,
+      dirtyTopics: 0,
+      quarantined: [],
+      lastExportAt: null,
+      lastMergeAt: null
+    };
+    notesSyncStartMock
+      .mockResolvedValueOnce(status)
+      .mockRejectedValueOnce(new Error("handoff failed"))
+      .mockResolvedValueOnce(status);
+    const firstReload = vi.fn().mockResolvedValue(undefined);
+    const disconnectFirst = connectNotesSyncRuntime({
+      vaultRoot: "/failed-handoff-a",
+      onWorkspaceChanged: firstReload
+    });
+    await vi.waitFor(() => expect(firstReload).toHaveBeenCalledOnce());
+    firstReload.mockClear();
+
+    const disconnectSecond = connectNotesSyncRuntime({
+      vaultRoot: "/failed-handoff-b",
+      onWorkspaceChanged: vi.fn()
+    });
+    await vi.waitFor(() => {
+      expect(getNotesSyncStatus("/failed-handoff-b")?.lastError).toBe(
+        "handoff failed"
+      );
+    });
+
+    disconnectSecond();
+    await vi.waitFor(() => expect(notesSyncStartMock).toHaveBeenCalledTimes(3));
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(firstReload).toHaveBeenCalledOnce();
+    disconnectFirst();
+  });
+
+  it("retries a failed reload on the next same-vault activation", async () => {
+    const firstReload = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error("reload failed"))
+      .mockResolvedValue(undefined);
+    const disconnectFirst = connectNotesSyncRuntime({
+      vaultRoot: "/retry-activation-reload",
+      onWorkspaceChanged: firstReload
+    });
+    await vi.waitFor(() => expect(firstReload).toHaveBeenCalledOnce());
+    await Promise.resolve();
+
+    const secondReload = vi.fn().mockResolvedValue(undefined);
+    const disconnectSecond = connectNotesSyncRuntime({
+      vaultRoot: "/retry-activation-reload",
+      onWorkspaceChanged: secondReload
+    });
+    await vi.waitFor(() => expect(notesSyncStartMock).toHaveBeenCalledTimes(2));
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(firstReload).toHaveBeenCalledTimes(2);
+    expect(secondReload).toHaveBeenCalledOnce();
+    disconnectFirst();
+    disconnectSecond();
+  });
+
   it("keeps concurrent same-vault workspace listeners active", async () => {
     const firstReload = vi.fn();
     const secondReload = vi.fn();
@@ -214,6 +479,12 @@ describe("notesSyncListener", () => {
       onWorkspaceChanged: secondReload
     });
     await vi.waitFor(() => expect(unlistenCalls).toHaveLength(4));
+    await vi.waitFor(() => {
+      expect(firstReload).toHaveBeenCalledOnce();
+      expect(secondReload).toHaveBeenCalledOnce();
+    });
+    firstReload.mockClear();
+    secondReload.mockClear();
 
     emit("notes://sync-changed", {
       vaultPath: "/shared",

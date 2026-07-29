@@ -27,7 +27,15 @@ interface RuntimeConnection {
   vaultRoot: string;
   active: boolean;
   listenerReady: boolean;
+  activationReloadCompleted: boolean;
+  requestWorkspaceReload: () => void;
+  cancelWorkspaceReload: () => void;
   onStatus?: (status: SyncStatus) => void;
+}
+
+interface WorkspaceReloadScheduler {
+  request: () => void;
+  cancel: () => void;
 }
 
 let nextConnectionId = 0;
@@ -62,13 +70,50 @@ function currentConnection(): RuntimeConnection | undefined {
   return Array.from(runtimeConnections.values()).at(-1);
 }
 
+function createWorkspaceReloadScheduler(
+  onWorkspaceChanged: () => void | Promise<void>,
+  canReload: () => boolean
+): WorkspaceReloadScheduler {
+  let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+
+  return {
+    request: () => {
+      if (reloadTimer !== null) clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => {
+        reloadTimer = null;
+        if (!canReload()) return;
+        void Promise.resolve().then(onWorkspaceChanged).catch(() => undefined);
+      }, RELOAD_COALESCE_MS);
+    },
+    cancel: () => {
+      if (reloadTimer === null) return;
+      clearTimeout(reloadTimer);
+      reloadTimer = null;
+    }
+  };
+}
+
 function queueNativeStart(connection: RuntimeConnection): void {
   nativeStartQueue = nativeStartQueue.then(async () => {
     if (!connection.active || currentConnection()?.id !== connection.id) return;
+    if (activeNativeVaultRoot !== connection.vaultRoot) {
+      activeNativeVaultRoot = null;
+    }
     try {
       const startStatus = await notesSyncStart(connection.vaultRoot);
       if (!connection.active || currentConnection()?.id !== connection.id) return;
+      const nativeVaultChanged =
+        activeNativeVaultRoot !== connection.vaultRoot;
       activeNativeVaultRoot = connection.vaultRoot;
+      for (const activeConnection of runtimeConnections.values()) {
+        if (
+          activeConnection.active &&
+          activeConnection.vaultRoot === connection.vaultRoot &&
+          (nativeVaultChanged || !activeConnection.activationReloadCompleted)
+        ) {
+          activeConnection.requestWorkspaceReload();
+        }
+      }
       const sequenceBeforeRefresh =
         statusEventSequences.get(connection.vaultRoot) ?? 0;
       const status = await notesSyncStatus(connection.vaultRoot).catch(
@@ -119,19 +164,15 @@ function queueNativeStart(connection: RuntimeConnection): void {
   });
 }
 
-export async function startNotesSyncListener(
-  options: NotesSyncListenerOptions
+async function listenForNotesSyncEvents(
+  options: NotesSyncListenerOptions,
+  requestWorkspaceReload: () => void
 ): Promise<UnlistenFn> {
   let active = true;
-  let reloadTimer: ReturnType<typeof setTimeout> | null = null;
   const unlisten: UnlistenFn[] = [];
   const cleanup = (): void => {
     if (!active) return;
     active = false;
-    if (reloadTimer !== null) {
-      clearTimeout(reloadTimer);
-      reloadTimer = null;
-    }
     for (const stopListening of unlisten.splice(0)) {
       stopListening();
     }
@@ -141,14 +182,7 @@ export async function startNotesSyncListener(
     unlisten.push(
       await listen<SyncChangedPayload>("notes://sync-changed", (event) => {
         if (!active || event.payload.vaultPath !== options.vaultRoot) return;
-        if (reloadTimer !== null) clearTimeout(reloadTimer);
-        reloadTimer = setTimeout(() => {
-          reloadTimer = null;
-          if (!active) return;
-          void Promise.resolve()
-            .then(options.onWorkspaceChanged)
-            .catch(() => undefined);
-        }, RELOAD_COALESCE_MS);
+        requestWorkspaceReload();
       })
     );
     unlisten.push(
@@ -170,6 +204,33 @@ export async function startNotesSyncListener(
   return cleanup;
 }
 
+export async function startNotesSyncListener(
+  options: NotesSyncListenerOptions
+): Promise<UnlistenFn> {
+  let active = true;
+  const reloadScheduler = createWorkspaceReloadScheduler(
+    options.onWorkspaceChanged,
+    () => active
+  );
+
+  try {
+    const stopListening = await listenForNotesSyncEvents(
+      options,
+      reloadScheduler.request
+    );
+    return () => {
+      if (!active) return;
+      active = false;
+      reloadScheduler.cancel();
+      stopListening();
+    };
+  } catch (error) {
+    active = false;
+    reloadScheduler.cancel();
+    throw error;
+  }
+}
+
 export function connectNotesSyncRuntime(
   options: NotesSyncListenerOptions
 ): UnlistenFn {
@@ -178,42 +239,59 @@ export function connectNotesSyncRuntime(
     vaultRoot: options.vaultRoot,
     active: true,
     listenerReady: false,
+    activationReloadCompleted: false,
+    requestWorkspaceReload: () => undefined,
+    cancelWorkspaceReload: () => undefined,
     onStatus: options.onStatus
   };
+  const reloadScheduler = createWorkspaceReloadScheduler(
+    async () => {
+      await options.onWorkspaceChanged();
+      connection.activationReloadCompleted = true;
+    },
+    () =>
+      connection.active &&
+      currentConnection()?.vaultRoot === connection.vaultRoot &&
+      activeNativeVaultRoot === connection.vaultRoot
+  );
+  connection.requestWorkspaceReload = reloadScheduler.request;
+  connection.cancelWorkspaceReload = reloadScheduler.cancel;
   runtimeConnections.set(connection.id, connection);
   let listenerCleanup: UnlistenFn | null = null;
 
-  void startNotesSyncListener({
-    ...options,
-    onWorkspaceChanged: () => {
-      if (
-        !connection.active ||
-        currentConnection()?.vaultRoot !== connection.vaultRoot
-      ) {
-        return;
+  void listenForNotesSyncEvents(
+    {
+      ...options,
+      onStatus: (status) => {
+        statusEventSequences.set(
+          connection.vaultRoot,
+          (statusEventSequences.get(connection.vaultRoot) ?? 0) + 1
+        );
+        if (
+          connection.active &&
+          currentConnection()?.vaultRoot === connection.vaultRoot &&
+          activeNativeVaultRoot === connection.vaultRoot
+        ) {
+          // C3: mirror live status into the observable store (badge/dialog) in
+          // addition to the caller's optional callback.
+          publishNotesSyncStatus(connection.vaultRoot, status);
+          options.onStatus?.(status);
+        }
       }
-      return options.onWorkspaceChanged();
     },
-    onStatus: (status) => {
-      statusEventSequences.set(
-        connection.vaultRoot,
-        (statusEventSequences.get(connection.vaultRoot) ?? 0) + 1
-      );
+    () => {
       if (
         connection.active &&
-        currentConnection()?.vaultRoot === connection.vaultRoot &&
-        activeNativeVaultRoot === connection.vaultRoot
+        currentConnection()?.vaultRoot === connection.vaultRoot
       ) {
-        // C3: mirror live status into the observable store (badge/dialog) in
-        // addition to the caller's optional callback.
-        publishNotesSyncStatus(connection.vaultRoot, status);
-        options.onStatus?.(status);
+        reloadScheduler.request();
       }
     }
-  })
+  )
     .then((cleanup) => {
       if (!connection.active) {
         cleanup();
+        reloadScheduler.cancel();
         return;
       }
       listenerCleanup = cleanup;
@@ -225,6 +303,7 @@ export function connectNotesSyncRuntime(
     .catch(() => {
       const wasCurrent = currentConnection()?.id === connection.id;
       connection.active = false;
+      reloadScheduler.cancel();
       runtimeConnections.delete(connection.id);
       const fallback = currentConnection();
       if (wasCurrent && fallback?.listenerReady) queueNativeStart(fallback);
@@ -234,6 +313,7 @@ export function connectNotesSyncRuntime(
     if (!connection.active) return;
     const wasCurrent = currentConnection()?.id === connection.id;
     connection.active = false;
+    connection.cancelWorkspaceReload();
     runtimeConnections.delete(connection.id);
     listenerCleanup?.();
     listenerCleanup = null;
