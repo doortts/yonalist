@@ -1,3 +1,4 @@
+mod image_ipc;
 mod startup;
 
 use std::future::Future;
@@ -8,10 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use notes_application::{
     BootSnapshot, CloseOutcome, CommandEnvelope, ForestRequest, ForestSnapshot, HistoryRequest,
-    MutationReceipt, NotesError, NotesErrorCode, NotesService, SearchPage, SearchQuery,
-    ViewportPage, ViewportRequest,
+    ImageAssetPort, MutationReceipt, NotesError, NotesErrorCode, NotesService, SearchPage,
+    SearchQuery, ViewportPage, ViewportRequest,
 };
-use notes_sqlite::SqliteStorage;
+use notes_sqlite::{LocalImageAssets, SqliteStorage};
 use tauri::{Manager, State};
 
 use crate::startup::StartupGate;
@@ -19,6 +20,7 @@ use crate::startup::StartupGate;
 struct DesktopRuntime {
     session_id: String,
     storage: Arc<SqliteStorage>,
+    assets: Arc<LocalImageAssets>,
     service: Arc<NotesService<Arc<SqliteStorage>>>,
     initial_boot: Mutex<Option<BootSnapshot>>,
 }
@@ -139,7 +141,16 @@ async fn notes_close_session(state: State<'_, DesktopState>) -> Result<CloseOutc
     let gate = Arc::clone(&state.runtime);
     run_close_attempt(&state.closed, async move {
         run_blocking(move || {
-            gate.wait()?.storage.optimize().map_err(NotesError::from)?;
+            let runtime = gate.wait()?;
+            runtime.storage.optimize().map_err(NotesError::from)?;
+            let live_hashes = runtime
+                .storage
+                .live_image_hashes()
+                .map_err(NotesError::from)?;
+            runtime
+                .assets
+                .reconcile(&live_hashes)
+                .map_err(NotesError::from)?;
             Ok(())
         })
         .await
@@ -172,6 +183,9 @@ impl DesktopRuntime {
             SqliteStorage::open(&data_directory.join("notes-v2.sqlite"))
                 .map_err(NotesError::from)?,
         );
+        let assets = Arc::new(
+            LocalImageAssets::open(&data_directory.join("images")).map_err(NotesError::from)?,
+        );
         let session_id = uuid::Uuid::new_v4().to_string();
         let initial_boot = storage
             .bootstrap(session_id.clone(), 80)
@@ -184,6 +198,7 @@ impl DesktopRuntime {
         Ok(Self {
             session_id,
             storage,
+            assets,
             service,
             initial_boot: Mutex::new(Some(initial_boot)),
         })
@@ -281,6 +296,8 @@ pub fn run() {
             notes_redo,
             notes_search,
             notes_close_session,
+            image_ipc::notes_import_image_bytes,
+            image_ipc::notes_read_image,
             open_external_url
         ])
         .run(tauri::generate_context!())

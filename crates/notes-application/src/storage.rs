@@ -1,4 +1,5 @@
 use notes_core::{DomainError, DomainPatch, NodeId, NoteNode, NotesCommand, NotesTree};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -24,6 +25,10 @@ pub enum StorageError {
 pub trait StoragePort: Send + Sync {
     fn load_command_tree(&self, command: &NotesCommand) -> Result<NotesTree, StorageError>;
 
+    fn load_node(&self, id: &NodeId) -> Result<Option<NoteNode>, StorageError>;
+
+    fn live_image_hashes(&self) -> Result<BTreeSet<String>, StorageError>;
+
     fn commit(
         &self,
         expected_revision: u64,
@@ -34,6 +39,14 @@ pub trait StoragePort: Send + Sync {
 impl<T: StoragePort + ?Sized> StoragePort for &T {
     fn load_command_tree(&self, command: &NotesCommand) -> Result<NotesTree, StorageError> {
         (**self).load_command_tree(command)
+    }
+
+    fn load_node(&self, id: &NodeId) -> Result<Option<NoteNode>, StorageError> {
+        (**self).load_node(id)
+    }
+
+    fn live_image_hashes(&self) -> Result<BTreeSet<String>, StorageError> {
+        (**self).live_image_hashes()
     }
 
     fn commit(
@@ -48,6 +61,14 @@ impl<T: StoragePort + ?Sized> StoragePort for &T {
 impl<T: StoragePort + ?Sized> StoragePort for Arc<T> {
     fn load_command_tree(&self, command: &NotesCommand) -> Result<NotesTree, StorageError> {
         (**self).load_command_tree(command)
+    }
+
+    fn load_node(&self, id: &NodeId) -> Result<Option<NoteNode>, StorageError> {
+        (**self).load_node(id)
+    }
+
+    fn live_image_hashes(&self) -> Result<BTreeSet<String>, StorageError> {
+        (**self).live_image_hashes()
     }
 
     fn commit(

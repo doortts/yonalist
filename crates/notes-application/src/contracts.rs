@@ -258,6 +258,39 @@ pub struct CommandEnvelope {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
+pub struct ImageImportItem {
+    pub node_id: String,
+    pub original_name: String,
+    pub declared_mime_type: Option<String>,
+    #[ts(type = "number")]
+    pub byte_length: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ImageImportContext {
+    pub session_id: String,
+    pub request_id: String,
+    #[ts(type = "number")]
+    pub base_revision: u64,
+    pub history_group: Option<String>,
+    pub parent_id: String,
+    pub before_id: Option<String>,
+    pub items: Vec<ImageImportItem>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ImageReadRequest {
+    pub session_id: String,
+    pub node_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct HistoryRequest {
     pub session_id: String,
     #[ts(type = "number")]

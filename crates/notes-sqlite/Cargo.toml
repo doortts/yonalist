@@ -9,9 +9,11 @@ license.workspace = true
 bench-fixtures = []
 
 [dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 notes-application.workspace = true
 notes-core.workspace = true
 rusqlite.workspace = true
+sha2 = "0.10"
 thiserror.workspace = true
 unicode-normalization = "0.1.25"
 

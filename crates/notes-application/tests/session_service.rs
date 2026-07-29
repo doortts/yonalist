@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 use notes_application::{
@@ -66,6 +67,14 @@ impl FakeStorage {
 impl StoragePort for FakeStorage {
     fn load_command_tree(&self, _command: &NotesCommand) -> Result<NotesTree, StorageError> {
         Ok(self.state.lock().unwrap().tree.clone())
+    }
+
+    fn load_node(&self, id: &NodeId) -> Result<Option<notes_core::NoteNode>, StorageError> {
+        Ok(self.state.lock().unwrap().tree.node(id).cloned())
+    }
+
+    fn live_image_hashes(&self) -> Result<BTreeSet<String>, StorageError> {
+        Ok(BTreeSet::new())
     }
 
     fn commit(

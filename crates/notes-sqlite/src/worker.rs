@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, SyncSender};
 use std::thread::{self, JoinHandle};
@@ -32,6 +33,9 @@ enum Request {
     Node {
         id: String,
         reply: SyncSender<Result<Option<NoteNode>, StorageError>>,
+    },
+    LiveImageHashes {
+        reply: SyncSender<Result<BTreeSet<String>, StorageError>>,
     },
     Bootstrap {
         session_id: String,
@@ -84,6 +88,10 @@ impl SqliteStorage {
             id: id.to_owned(),
             reply,
         })
+    }
+
+    pub fn live_image_hashes(&self) -> Result<BTreeSet<String>, StorageError> {
+        self.request(|reply| Request::LiveImageHashes { reply })
     }
 
     pub fn bootstrap(
@@ -167,6 +175,9 @@ impl SqliteStorage {
                         Request::Node { id, reply } => {
                             let _ = reply.send(repository::node(&connection, &id));
                         }
+                        Request::LiveImageHashes { reply } => {
+                            let _ = reply.send(repository::live_image_hashes(&connection));
+                        }
                         Request::Bootstrap {
                             session_id,
                             viewport_limit,
@@ -234,6 +245,14 @@ impl StoragePort for SqliteStorage {
             command: command.clone(),
             reply,
         })
+    }
+
+    fn load_node(&self, id: &notes_core::NodeId) -> Result<Option<NoteNode>, StorageError> {
+        self.node(id.as_str())
+    }
+
+    fn live_image_hashes(&self) -> Result<BTreeSet<String>, StorageError> {
+        SqliteStorage::live_image_hashes(self)
     }
 
     fn commit(

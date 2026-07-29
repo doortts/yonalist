@@ -195,6 +195,12 @@
           "markdownDescription": "Enables the notes_execute command without any pre-configured scope."
         },
         {
+          "description": "Enables the notes_import_image_bytes command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-import-image-bytes",
+          "markdownDescription": "Enables the notes_import_image_bytes command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notes_query_forest command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notes-query-forest",
@@ -205,6 +211,12 @@
           "type": "string",
           "const": "allow-notes-query-viewport",
           "markdownDescription": "Enables the notes_query_viewport command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_read_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-read-image",
+          "markdownDescription": "Enables the notes_read_image command without any pre-configured scope."
         },
         {
           "description": "Enables the notes_redo command without any pre-configured scope.",
@@ -243,6 +255,12 @@
           "markdownDescription": "Denies the notes_execute command without any pre-configured scope."
         },
         {
+          "description": "Denies the notes_import_image_bytes command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-import-image-bytes",
+          "markdownDescription": "Denies the notes_import_image_bytes command without any pre-configured scope."
+        },
+        {
           "description": "Denies the notes_query_forest command without any pre-configured scope.",
           "type": "string",
           "const": "deny-notes-query-forest",
@@ -253,6 +271,12 @@
           "type": "string",
           "const": "deny-notes-query-viewport",
           "markdownDescription": "Denies the notes_query_viewport command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_read_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-read-image",
+          "markdownDescription": "Denies the notes_read_image command without any pre-configured scope."
         },
         {
           "description": "Denies the notes_redo command without any pre-configured scope.",

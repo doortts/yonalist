@@ -1,11 +1,15 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, PoisonError};
 
-use notes_core::{DomainPatch, TreeMutation};
+use notes_core::{
+    DomainError, DomainPatch, ImportImageNode, NodeId, NoteNodeKind, NotesCommand, Position,
+    TreeMutation,
+};
 
 use crate::{
-    CommandEnvelope, HistoryRequest, HistoryState, MutationReceipt, NoteView, NotesError,
-    StorageCommit, StoragePort,
+    CommandEnvelope, HistoryRequest, HistoryState, ImageAssetPort, ImageImportContext,
+    ImageImportSource, ImageReadRequest, ImageSource, MutationReceipt, NoteView, NotesError,
+    PublishedImage, StorageCommit, StoragePort,
 };
 
 const MAX_HISTORY_ENTRIES: usize = 1_000;
@@ -106,9 +110,84 @@ impl<S: StoragePort> NotesService<S> {
             return Ok(receipt.clone());
         }
         self.ensure_revision(&session, envelope.base_revision)?;
-        let history_group = envelope.history_group;
-        let request_id = envelope.request_id;
         let command = envelope.command.try_into()?;
+        self.execute_checked(
+            &mut session,
+            envelope.request_id,
+            envelope.history_group,
+            command,
+        )
+    }
+
+    pub fn import_images<A: ImageAssetPort>(
+        &self,
+        context: ImageImportContext,
+        sources: Vec<ImageImportSource>,
+        assets: &A,
+    ) -> Result<MutationReceipt, NotesError> {
+        let mut session = self.session.lock().unwrap_or_else(PoisonError::into_inner);
+        self.ensure_session(&session, &context.session_id)?;
+        if let Some(receipt) = session.completed_requests.get(&context.request_id) {
+            return Ok(receipt.clone());
+        }
+        self.ensure_revision(&session, context.base_revision)?;
+        validate_image_sources(&context, &sources)?;
+
+        let published = assets.prepare(&sources)?;
+        let command = match image_import_command(&context, &sources, &published) {
+            Ok(command) => command,
+            Err(error) => {
+                rollback_new_assets(assets, &published);
+                return Err(error);
+            }
+        };
+        match self.execute_checked(
+            &mut session,
+            context.request_id,
+            context.history_group,
+            command,
+        ) {
+            Ok(receipt) => Ok(receipt),
+            Err(error) => {
+                rollback_new_assets(assets, &published);
+                Err(error)
+            }
+        }
+    }
+
+    pub fn read_image<A: ImageAssetPort>(
+        &self,
+        request: ImageReadRequest,
+        assets: &A,
+    ) -> Result<Vec<u8>, NotesError> {
+        let session = self.session.lock().unwrap_or_else(PoisonError::into_inner);
+        self.ensure_session(&session, &request.session_id)?;
+        drop(session);
+
+        let id = NodeId::try_from(request.node_id)?;
+        let node = self
+            .storage
+            .load_node(&id)?
+            .ok_or_else(|| DomainError::NodeNotFound(id.clone()))?;
+        if node.kind() != NoteNodeKind::Image {
+            return Err(DomainError::InvalidImage(
+                "The requested Notes node is not an image.".into(),
+            )
+            .into());
+        }
+        let image = node.image().ok_or_else(|| {
+            DomainError::InvalidImage("The requested image metadata is unavailable.".into())
+        })?;
+        assets.read(image).map_err(NotesError::from)
+    }
+
+    fn execute_checked(
+        &self,
+        session: &mut SessionState,
+        request_id: String,
+        history_group: Option<String>,
+        command: NotesCommand,
+    ) -> Result<MutationReceipt, NotesError> {
         let tree = self.storage.load_command_tree(&command)?;
         let patch = tree.plan(command)?;
         let commit = self.storage.commit(session.revision, &patch)?;
@@ -209,6 +288,91 @@ impl<S: StoragePort> NotesService<S> {
             },
         }
     }
+}
+
+fn validate_image_sources(
+    context: &ImageImportContext,
+    sources: &[ImageImportSource],
+) -> Result<(), NotesError> {
+    if context.items.len() != sources.len() || sources.is_empty() {
+        return Err(invalid_image_request(
+            "Image metadata and payload counts do not match.",
+        ));
+    }
+    for (item, source) in context.items.iter().zip(sources) {
+        let item_id = NodeId::try_from(item.node_id.as_str())?;
+        if item_id != source.node_id
+            || item.original_name != source.original_name
+            || item.declared_mime_type != source.declared_mime_type
+        {
+            return Err(invalid_image_request(
+                "Image metadata does not match its payload.",
+            ));
+        }
+        if let ImageSource::Bytes(bytes) = &source.source {
+            let length = u64::try_from(bytes.len()).map_err(|_| {
+                invalid_image_request("The image payload byte length is too large.")
+            })?;
+            if length != item.byte_length {
+                return Err(invalid_image_request(
+                    "Image metadata byte length does not match its payload.",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn image_import_command(
+    context: &ImageImportContext,
+    sources: &[ImageImportSource],
+    published: &[PublishedImage],
+) -> Result<NotesCommand, NotesError> {
+    if sources.len() != published.len() {
+        return Err(invalid_image_request(
+            "The image asset store returned an incomplete batch.",
+        ));
+    }
+    let mut nodes = Vec::with_capacity(sources.len());
+    for ((item, source), published) in context.items.iter().zip(sources).zip(published) {
+        if published.image.original_name() != source.original_name
+            || published.image.byte_length() != item.byte_length
+            || source
+                .declared_mime_type
+                .as_deref()
+                .is_some_and(|mime| mime != published.image.mime_type())
+        {
+            return Err(invalid_image_request(
+                "The image asset store returned mismatched metadata.",
+            ));
+        }
+        nodes.push(ImportImageNode {
+            id: source.node_id.clone(),
+            image: published.image.clone(),
+        });
+    }
+    let position = match &context.before_id {
+        Some(before_id) => Position::before(NodeId::try_from(before_id.as_str())?),
+        None => Position::at_end(),
+    };
+    Ok(NotesCommand::ImportImages {
+        parent_id: NodeId::try_from(context.parent_id.as_str())?,
+        position,
+        nodes,
+    })
+}
+
+fn rollback_new_assets<A: ImageAssetPort>(assets: &A, published: &[PublishedImage]) {
+    let newly_created = published
+        .iter()
+        .filter(|image| image.newly_created)
+        .cloned()
+        .collect::<Vec<_>>();
+    assets.rollback(&newly_created);
+}
+
+fn invalid_image_request(message: impl Into<String>) -> NotesError {
+    DomainError::InvalidImage(message.into()).into()
 }
 
 #[cfg(test)]

@@ -27,6 +27,16 @@ pub(crate) fn node(connection: &Connection, id: &str) -> Result<Option<NoteNode>
         .map_err(internal)
 }
 
+pub(crate) fn live_image_hashes(connection: &Connection) -> Result<BTreeSet<String>, StorageError> {
+    let mut statement = connection
+        .prepare("SELECT DISTINCT content_hash FROM notes_images ORDER BY content_hash")
+        .map_err(internal)?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(internal)?;
+    rows.collect::<Result<BTreeSet<_>, _>>().map_err(internal)
+}
+
 pub(crate) fn load_command_tree(
     connection: &Connection,
     command: &NotesCommand,

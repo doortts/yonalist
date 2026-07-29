@@ -14,13 +14,12 @@ tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
 notes-application.workspace = true
+notes-core.workspace = true
 notes-sqlite = { path = "../../../crates/notes-sqlite" }
 open = "5.4"
+serde_json = "1"
 tauri = { version = "=2.11.5", features = [] }
 uuid.workspace = true
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "=2.4.3"
-
-[dev-dependencies]
-serde_json = "1"
