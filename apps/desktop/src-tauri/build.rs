@@ -10,6 +10,10 @@ const APP_COMMANDS: &[&str] = &[
     "notes_import_image_bytes",
     "notes_import_image_paths",
     "notes_read_image",
+    "notes_replace_image_bytes",
+    "notes_replace_image_path",
+    "notes_view_image_original",
+    "notes_download_image",
 ];
 
 fn main() {

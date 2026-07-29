@@ -6,8 +6,13 @@ import {
   type DragEventHandler,
   type RefObject
 } from "react";
-import type { ImageCandidate } from "./imageApi";
 import { imageInsertionAnchor } from "./imageInsertion";
+import {
+  imageCandidates,
+  isNativeImageRuntime,
+  pickImageFiles,
+  pickImagePaths
+} from "./imagePicker";
 import type { NotesStore } from "./notesStore";
 import type { OutlineIndex } from "./outlineIndex";
 
@@ -38,13 +43,6 @@ interface UseImageIngestInput {
   readonly scopeRef: RefObject<HTMLElement | null>;
   readonly boundary?: ImageIngestBoundary;
 }
-
-const supportedMimeTypes = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp"
-]);
 
 export function useImageIngest({
   store,
@@ -103,7 +101,7 @@ export function useImageIngest({
         const paths = await boundary.pickPaths();
         await importPaths(targetId, paths);
       } else {
-        const files = await pickBrowserFiles();
+        const files = await pickImageFiles(true);
         await importFiles(targetId, files);
       }
     } catch (cause) {
@@ -191,16 +189,6 @@ export function useImageIngest({
   };
 }
 
-function imageCandidates(files: readonly File[]): readonly ImageCandidate[] {
-  return files
-    .filter((file) => supportedMimeTypes.has(file.type))
-    .map((file) => ({
-      originalName: file.name,
-      declaredMimeType: file.type,
-      blob: file
-    }));
-}
-
 function targetAtPosition(
   scope: HTMLElement | null,
   position: { readonly x: number; readonly y: number },
@@ -228,49 +216,13 @@ function targetFromElement(
     outlineRootId;
 }
 
-function pickBrowserFiles(): Promise<readonly File[]> {
-  return new Promise((resolve) => {
-    const input = document.createElement("input");
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      window.removeEventListener("focus", handleWindowFocus);
-      const files = input.files ? [...input.files] : [];
-      input.remove();
-      resolve(files);
-    };
-    const handleWindowFocus = () => window.setTimeout(finish, 0);
-    input.type = "file";
-    input.accept = "image/png,image/jpeg,image/gif,image/webp";
-    input.multiple = true;
-    input.hidden = true;
-    input.addEventListener("change", finish, { once: true });
-    window.addEventListener("focus", handleWindowFocus, { once: true });
-    document.body.append(input);
-    input.click();
-  });
-}
-
 function messageFrom(cause: unknown): string {
   return cause instanceof Error ? cause.message : "The image could not be imported.";
 }
 
 const defaultImageIngestBoundary: ImageIngestBoundary = {
-  native: "__TAURI_INTERNALS__" in window,
-  async pickPaths() {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const selected = await open({
-      multiple: true,
-      directory: false,
-      filters: [{
-        name: "Images",
-        extensions: ["png", "jpg", "jpeg", "gif", "webp"]
-      }]
-    });
-    if (!selected) return [];
-    return Array.isArray(selected) ? selected : [selected];
-  },
+  native: isNativeImageRuntime(),
+  pickPaths: () => pickImagePaths(true),
   async listenNativeDrops(listener) {
     if (!("__TAURI_INTERNALS__" in window)) return () => undefined;
     const [{ getCurrentWebview }, { getCurrentWindow }] = await Promise.all([

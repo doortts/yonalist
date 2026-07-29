@@ -1,4 +1,6 @@
+mod image_file_actions;
 mod image_ipc;
+mod image_replace_ipc;
 mod startup;
 
 use std::future::Future;
@@ -21,6 +23,8 @@ struct DesktopRuntime {
     session_id: String,
     storage: Arc<SqliteStorage>,
     assets: Arc<LocalImageAssets>,
+    data_directory: PathBuf,
+    original_directory: PathBuf,
     service: Arc<NotesService<Arc<SqliteStorage>>>,
     initial_boot: Mutex<Option<BootSnapshot>>,
 }
@@ -151,6 +155,15 @@ async fn notes_close_session(state: State<'_, DesktopState>) -> Result<CloseOutc
                 .assets
                 .reconcile(&live_hashes)
                 .map_err(NotesError::from)?;
+            if runtime.original_directory.exists() {
+                std::fs::remove_dir_all(&runtime.original_directory).map_err(|error| {
+                    NotesError {
+                        code: NotesErrorCode::StorageUnavailable,
+                        message: error.to_string(),
+                        retryable: true,
+                    }
+                })?;
+            }
             Ok(())
         })
         .await
@@ -195,10 +208,13 @@ impl DesktopRuntime {
             session_id.clone(),
             initial_boot.revision,
         ));
+        let original_directory = data_directory.join("original-views").join(&session_id);
         Ok(Self {
             session_id,
             storage,
             assets,
+            data_directory,
+            original_directory,
             service,
             initial_boot: Mutex::new(Some(initial_boot)),
         })
@@ -300,6 +316,10 @@ pub fn run() {
             image_ipc::notes_import_image_bytes,
             image_ipc::notes_import_image_paths,
             image_ipc::notes_read_image,
+            image_replace_ipc::notes_replace_image_bytes,
+            image_replace_ipc::notes_replace_image_path,
+            image_file_actions::notes_view_image_original,
+            image_file_actions::notes_download_image,
             open_external_url
         ])
         .run(tauri::generate_context!())

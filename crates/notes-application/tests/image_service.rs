@@ -3,8 +3,8 @@ use std::sync::Mutex;
 
 use notes_application::{
     HistoryRequest, ImageAssetPort, ImageImportContext, ImageImportItem, ImageImportSource,
-    ImageReadRequest, ImageSource, NotesErrorCode, NotesService, PublishedImage, StorageCommit,
-    StorageError, StoragePort,
+    ImageReadRequest, ImageReplaceContext, ImageSource, NotesErrorCode, NotesService,
+    PublishedImage, StorageCommit, StorageError, StoragePort,
 };
 use notes_core::{DomainPatch, NodeId, NoteImage, NoteNode, NotesCommand, NotesTree, TreeMutation};
 
@@ -191,6 +191,31 @@ fn sources() -> Vec<ImageImportSource> {
     ]
 }
 
+fn replacement_context(request_id: &str) -> ImageReplaceContext {
+    ImageReplaceContext {
+        session_id: "session".into(),
+        request_id: request_id.into(),
+        base_revision: 2,
+        history_group: Some("images:replace".into()),
+        target_id: "image-a".into(),
+        item: ImageImportItem {
+            node_id: "image-a".into(),
+            original_name: "replacement.png".into(),
+            declared_mime_type: Some("image/png".into()),
+            byte_length: 3,
+        },
+    }
+}
+
+fn replacement_source() -> ImageImportSource {
+    ImageImportSource {
+        node_id: id("image-a"),
+        original_name: "replacement.png".into(),
+        declared_mime_type: Some("image/png".into()),
+        source: ImageSource::Bytes(vec![7, 8, 9]),
+    }
+}
+
 #[test]
 fn image_batch_uses_one_commit_history_entry_and_idempotency_cache() {
     let storage = FakeStorage::new(false);
@@ -288,4 +313,90 @@ fn image_reads_are_authorized_by_session_and_database_metadata() {
         .expect("read imported image");
     assert_eq!(bytes, [1, 2, 3]);
     assert_eq!(assets.reads.lock().unwrap().len(), 1);
+
+    let wrong_session = service.read_image(
+        ImageReadRequest {
+            session_id: "other-session".into(),
+            node_id: "image-a".into(),
+        },
+        &assets,
+    );
+    assert_eq!(
+        wrong_session
+            .expect_err("foreign session must be rejected")
+            .code,
+        NotesErrorCode::SessionMismatch
+    );
+
+    let text_node = service.read_image(
+        ImageReadRequest {
+            session_id: "session".into(),
+            node_id: "page".into(),
+        },
+        &assets,
+    );
+    assert_eq!(
+        text_node.expect_err("text node must be rejected").code,
+        NotesErrorCode::InvalidCommand
+    );
+
+    {
+        let mut state = storage.state.lock().unwrap();
+        let patch = state
+            .tree
+            .plan(NotesCommand::DeleteSubtree { id: id("image-a") })
+            .expect("delete image");
+        state.tree.apply(&patch.forward).expect("apply deletion");
+    }
+    let deleted = service.read_image(
+        ImageReadRequest {
+            session_id: "session".into(),
+            node_id: "image-a".into(),
+        },
+        &assets,
+    );
+    assert_eq!(
+        deleted.expect_err("deleted image must be rejected").code,
+        NotesErrorCode::InvalidCommand
+    );
+    assert_eq!(assets.reads.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn replacement_preserves_identity_width_and_uses_one_reversible_history_entry() {
+    let storage = FakeStorage::new(false);
+    let assets = FakeAssets::default();
+    let service = NotesService::new(&storage, "session", 1);
+    service
+        .import_images(context("import-1"), sources(), &assets)
+        .expect("import image batch");
+
+    let receipt = service
+        .replace_image(
+            replacement_context("replace-1"),
+            replacement_source(),
+            &assets,
+        )
+        .expect("replace image");
+
+    assert_eq!(receipt.changed_nodes.len(), 1);
+    let image = receipt.changed_nodes[0].image.as_ref().unwrap();
+    assert_eq!(receipt.changed_nodes[0].id, "image-a");
+    assert_eq!(image.original_name, "replacement.png");
+    assert_eq!(image.display_width, 320);
+
+    let undone = service
+        .undo(HistoryRequest {
+            session_id: "session".into(),
+            base_revision: 3,
+        })
+        .expect("undo replacement");
+    assert_eq!(
+        undone.changed_nodes[0]
+            .image
+            .as_ref()
+            .unwrap()
+            .original_name,
+        "a.png"
+    );
 }

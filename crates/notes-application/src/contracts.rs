@@ -232,6 +232,10 @@ pub enum IpcNotesCommand {
         id: String,
         marker: IpcMarkerKind,
     },
+    ResizeImage {
+        id: String,
+        display_width: u32,
+    },
     DeleteSubtree {
         id: String,
     },
@@ -308,6 +312,41 @@ pub struct ImagePathImportRequest {
     pub parent_id: String,
     pub before_id: Option<String>,
     pub images: Vec<ImagePathImportItem>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ImageReplaceContext {
+    pub session_id: String,
+    pub request_id: String,
+    #[ts(type = "number")]
+    pub base_revision: u64,
+    pub history_group: Option<String>,
+    pub target_id: String,
+    pub item: ImageImportItem,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ImageReplacePathRequest {
+    pub session_id: String,
+    pub request_id: String,
+    #[ts(type = "number")]
+    pub base_revision: u64,
+    pub history_group: Option<String>,
+    pub target_id: String,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ImageDownloadRequest {
+    pub session_id: String,
+    pub node_id: String,
+    pub destination_path: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]

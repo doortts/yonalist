@@ -26,6 +26,11 @@ interface RetryablePathImport {
 export class StoreImages {
   private retryableImport: RetryableImport | null = null;
   private retryablePathImport: RetryablePathImport | null = null;
+  private retryableReplacement: {
+    readonly targetId: string;
+    readonly candidate: ImageCandidate;
+    readonly requestId: string;
+  } | null = null;
 
   constructor(
     private readonly api: NotesApi,
@@ -73,6 +78,67 @@ export class StoreImages {
       return Promise.reject(new Error("Notes session is not ready."));
     }
     return this.api.readImage({ sessionId, nodeId });
+  }
+
+  async resize(nodeId: string, displayWidth: number): Promise<void> {
+    await this.commands.execute({
+      kind: "resizeImage",
+      id: nodeId,
+      display_width: displayWidth
+    });
+  }
+
+  async replace(
+    targetId: string,
+    candidate: ImageCandidate
+  ): Promise<void> {
+    const retry = this.retryableReplacement;
+    const operation = retry?.targetId === targetId &&
+      retry.candidate.blob === candidate.blob &&
+      retry.candidate.originalName === candidate.originalName &&
+      retry.candidate.declaredMimeType === candidate.declaredMimeType
+      ? retry
+      : { targetId, candidate, requestId: freshId() };
+    this.retryableReplacement = operation;
+    await this.commands.executeExternal(
+      (context) => this.api.replaceImageBytes({
+        ...context,
+        targetId,
+        image: { ...candidate, nodeId: targetId }
+      }),
+      "images:replace",
+      operation.requestId
+    );
+    if (this.retryableReplacement === operation) {
+      this.retryableReplacement = null;
+    }
+  }
+
+  async replacePath(targetId: string, path: string): Promise<void> {
+    await this.commands.executeExternal(
+      (context) => this.api.replaceImagePath({
+        ...context,
+        targetId,
+        path
+      }),
+      "images:replace"
+    );
+  }
+
+  viewOriginal(nodeId: string): Promise<void> {
+    const sessionId = this.readState().sessionId;
+    if (!sessionId) {
+      return Promise.reject(new Error("Notes session is not ready."));
+    }
+    return this.api.viewImageOriginal({ sessionId, nodeId });
+  }
+
+  download(nodeId: string, destinationPath: string): Promise<void> {
+    const sessionId = this.readState().sessionId;
+    if (!sessionId) {
+      return Promise.reject(new Error("Notes session is not ready."));
+    }
+    return this.api.downloadImage({ sessionId, nodeId, destinationPath });
   }
 
   async importPathsAfter(

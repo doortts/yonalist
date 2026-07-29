@@ -2,7 +2,7 @@ import type { CommandEnvelope } from "../../../packages/contracts/generated/Comm
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "./api";
-import type { ImageImportRequest } from "./imageApi";
+import type { ImageImportRequest, ImageReplaceRequest } from "./imageApi";
 import { previewForest } from "./previewForest";
 import { previewHistory } from "./previewHistory";
 import {
@@ -114,7 +114,7 @@ async function importImageBytes(
     };
     nodes.push(node);
     changed.push(node);
-    imageBlobs.set(input.nodeId, input.blob);
+    imageBlobs.set(contentHash, input.blob);
   }
   const historyEntry = createPreviewHistoryEntry(previousNodes, nodes);
   pushBoundedHistory(undoStack, historyEntry);
@@ -128,6 +128,70 @@ async function importImagePaths(): Promise<never> {
   throw new Error("Native image paths are unavailable in browser preview.");
 }
 
+async function replaceImageBytes(
+  request: ImageReplaceRequest
+): Promise<MutationReceipt> {
+  const priorReceipt = receiptsByRequest.get(request.requestId);
+  if (priorReceipt) return priorReceipt;
+  if (request.sessionId !== sessionId || request.baseRevision !== revision) {
+    throw new Error("Preview image replacement context is stale.");
+  }
+  const position = nodes.findIndex((node) =>
+    node.id === request.targetId &&
+    node.kind === "image" &&
+    !node.deleted
+  );
+  const target = nodes[position];
+  if (position < 0 || !target?.image) throw new Error("Image unavailable");
+  const mimeType = request.image.declaredMimeType || request.image.blob.type;
+  if (!extensionForMime(mimeType)) {
+    throw new Error("The preview image type is unsupported.");
+  }
+  const bytes = new Uint8Array(await request.image.blob.arrayBuffer());
+  const contentHash = await hashBytes(bytes);
+  const dimensions = await imageDimensions(request.image.blob);
+  const replacement: NoteView = {
+    ...target,
+    text: request.image.originalName,
+    image: {
+      contentHash,
+      originalName: request.image.originalName,
+      mimeType,
+      byteLength: bytes.length,
+      pixelWidth: dimensions.width,
+      pixelHeight: dimensions.height,
+      displayWidth: target.image.displayWidth
+    }
+  };
+  const previousNodes = copyNodes();
+  nodes = nodes.map((node, index) => index === position ? replacement : node);
+  imageBlobs.set(contentHash, request.image.blob);
+  redoStack.length = 0;
+  pushBoundedHistory(undoStack, createPreviewHistoryEntry(previousNodes, nodes));
+  revision += 1;
+  const nextReceipt = receipt([replacement]);
+  recordReceipt(request.requestId, nextReceipt);
+  return nextReceipt;
+}
+
+async function replaceImagePath(): Promise<never> {
+  throw new Error("Native image paths are unavailable in browser preview.");
+}
+
+async function viewImageOriginal(request: {
+  readonly sessionId: string;
+  readonly nodeId: string;
+}): Promise<void> {
+  await readImage(request);
+}
+
+async function downloadImage(request: {
+  readonly sessionId: string;
+  readonly nodeId: string;
+}): Promise<void> {
+  await readImage(request);
+}
+
 async function readImage(
   request: { readonly sessionId: string; readonly nodeId: string }
 ): Promise<Uint8Array> {
@@ -139,7 +203,7 @@ async function readImage(
     candidate.kind === "image" &&
     !candidate.deleted
   );
-  const blob = node ? imageBlobs.get(node.id) : undefined;
+  const blob = node?.image ? imageBlobs.get(node.image.contentHash) : undefined;
   if (!node?.image || !blob) throw new Error("Image unavailable");
   return new Uint8Array(await blob.arrayBuffer());
 }
@@ -587,7 +651,11 @@ export const previewNotesApi: NotesApi = {
   execute,
   importImageBytes,
   importImagePaths,
+  replaceImageBytes,
+  replaceImagePath,
   readImage,
+  viewImageOriginal,
+  downloadImage,
   async undo(request) {
     if (request.baseRevision !== revision) throw new Error("Preview revision is stale.");
     const entry = undoStack.pop();

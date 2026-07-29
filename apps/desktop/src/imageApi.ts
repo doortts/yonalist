@@ -3,6 +3,7 @@ import type { ImagePathImportItem } from "../../../packages/contracts/generated/
 import type {
   ImagePathImportRequest as GeneratedImagePathImportRequest
 } from "../../../packages/contracts/generated/ImagePathImportRequest";
+import type { ImageReplaceContext } from "../../../packages/contracts/generated/ImageReplaceContext";
 
 export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 export const MAX_IMAGE_BATCH_BYTES = 64 * 1024 * 1024;
@@ -37,6 +38,15 @@ export interface ImageImportRequest {
 export type ImagePathInput = ImagePathImportItem;
 export type ImagePathImportRequest = GeneratedImagePathImportRequest;
 
+export interface ImageReplaceRequest {
+  readonly sessionId: string;
+  readonly requestId: string;
+  readonly baseRevision: number;
+  readonly historyGroup: string | null;
+  readonly targetId: string;
+  readonly image: ImageInput;
+}
+
 export async function encodeImageEnvelope(
   request: ImageImportRequest
 ): Promise<Uint8Array> {
@@ -56,17 +66,55 @@ export async function encodeImageEnvelope(
     beforeId: request.beforeId,
     items
   };
+  return encodeRawEnvelope(context, request.images);
+}
+
+export async function encodeImageReplaceEnvelope(
+  request: ImageReplaceRequest
+): Promise<Uint8Array> {
+  validateRequest({
+    sessionId: request.sessionId,
+    requestId: request.requestId,
+    baseRevision: request.baseRevision,
+    historyGroup: request.historyGroup,
+    parentId: request.targetId,
+    beforeId: null,
+    images: [request.image]
+  });
+  if (request.image.nodeId !== request.targetId) {
+    throw new Error("The replacement image identity is invalid.");
+  }
+  const context: ImageReplaceContext = {
+    sessionId: request.sessionId,
+    requestId: request.requestId,
+    baseRevision: request.baseRevision,
+    historyGroup: request.historyGroup,
+    targetId: request.targetId,
+    item: {
+      nodeId: request.image.nodeId,
+      originalName: request.image.originalName,
+      declaredMimeType: request.image.declaredMimeType,
+      byteLength: request.image.blob.size
+    }
+  };
+  return encodeRawEnvelope(context, [request.image]);
+}
+
+async function encodeRawEnvelope(
+  context: ImageImportContext | ImageReplaceContext,
+  images: readonly ImageInput[]
+): Promise<Uint8Array> {
   const metadata = new TextEncoder().encode(JSON.stringify(context));
   const buffers = await Promise.all(
-    request.images.map((image) => image.blob.arrayBuffer())
+    images.map((image) => image.blob.arrayBuffer())
   );
   buffers.forEach((buffer, index) => {
-    if (buffer.byteLength !== request.images[index]!.blob.size) {
+    if (buffer.byteLength !== images[index]!.blob.size) {
       throw new Error("An image changed while its bytes were read.");
     }
   });
-  const payloadLength = items.reduce(
-    (total, item) => total + item.byteLength,
+  const payloadLength = images.reduce(
+    (total, image) => total + image.blob.size,
     0
   );
   const envelope = new Uint8Array(HEADER_BYTES + metadata.length + payloadLength);
@@ -75,7 +123,7 @@ export async function encodeImageEnvelope(
   view.setUint16(4, 1, true);
   view.setUint16(6, 0, true);
   view.setUint32(8, metadata.length, true);
-  view.setUint32(12, items.length, true);
+  view.setUint32(12, images.length, true);
   envelope.set(metadata, HEADER_BYTES);
   let offset = HEADER_BYTES + metadata.length;
   for (const buffer of buffers) {

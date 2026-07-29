@@ -151,44 +151,16 @@ fn path_import_sources(
     let mut sources = Vec::with_capacity(request.images.len());
     let mut aggregate = 0_u64;
     for image in request.images {
-        let path = std::path::PathBuf::from(&image.path);
-        if !path.is_absolute() {
-            return Err(invalid("Notes image paths must be absolute."));
-        }
-        let metadata = std::fs::symlink_metadata(&path)
-            .map_err(|error| unavailable(format!("The image path is unavailable: {error}")))?;
-        if !metadata.is_file() {
-            return Err(invalid("The selected image is not a regular file."));
-        }
-        let byte_length = metadata.len();
-        if !(1..=MAX_IMAGE_BYTES).contains(&byte_length) {
-            return Err(invalid("An image must be between 1 byte and 20 MiB."));
-        }
+        let (item, source) = path_source(image.node_id, image.path)?;
+        let byte_length = item.byte_length;
         aggregate = aggregate
             .checked_add(byte_length)
             .ok_or_else(|| invalid("The image path batch length overflowed."))?;
         if aggregate > MAX_IMAGE_BATCH_BYTES {
             return Err(invalid("The image path batch exceeds 64 MiB."));
         }
-        let original_name = path
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .filter(|name| !name.is_empty())
-            .ok_or_else(|| invalid("The image filename is invalid."))?
-            .to_owned();
-        let node_id = NodeId::try_from(image.node_id.as_str()).map_err(NotesError::from)?;
-        items.push(ImageImportItem {
-            node_id: image.node_id,
-            original_name: original_name.clone(),
-            declared_mime_type: None,
-            byte_length,
-        });
-        sources.push(ImageImportSource {
-            node_id,
-            original_name,
-            declared_mime_type: None,
-            source: ImageSource::Path(path),
-        });
+        items.push(item);
+        sources.push(source);
     }
     Ok((
         ImageImportContext {
@@ -204,21 +176,61 @@ fn path_import_sources(
     ))
 }
 
-fn read_u16(body: &[u8], offset: usize) -> Result<u16, NotesError> {
+pub(super) fn path_source(
+    node_id: String,
+    path: String,
+) -> Result<(ImageImportItem, ImageImportSource), NotesError> {
+    let path = std::path::PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err(invalid("Notes image paths must be absolute."));
+    }
+    let metadata = std::fs::symlink_metadata(&path)
+        .map_err(|error| unavailable(format!("The image path is unavailable: {error}")))?;
+    if !metadata.is_file() {
+        return Err(invalid("The selected image is not a regular file."));
+    }
+    let byte_length = metadata.len();
+    if !(1..=MAX_IMAGE_BYTES).contains(&byte_length) {
+        return Err(invalid("An image must be between 1 byte and 20 MiB."));
+    }
+    let original_name = path
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| invalid("The image filename is invalid."))?
+        .to_owned();
+    let parsed_id = NodeId::try_from(node_id.as_str()).map_err(NotesError::from)?;
+    Ok((
+        ImageImportItem {
+            node_id,
+            original_name: original_name.clone(),
+            declared_mime_type: None,
+            byte_length,
+        },
+        ImageImportSource {
+            node_id: parsed_id,
+            original_name,
+            declared_mime_type: None,
+            source: ImageSource::Path(path),
+        },
+    ))
+}
+
+pub(super) fn read_u16(body: &[u8], offset: usize) -> Result<u16, NotesError> {
     let bytes = body
         .get(offset..offset + 2)
         .ok_or_else(|| invalid("The image IPC header is truncated."))?;
     Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
 }
 
-fn read_u32(body: &[u8], offset: usize) -> Result<u32, NotesError> {
+pub(super) fn read_u32(body: &[u8], offset: usize) -> Result<u32, NotesError> {
     let bytes = body
         .get(offset..offset + 4)
         .ok_or_else(|| invalid("The image IPC header is truncated."))?;
     Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
-fn invalid(message: impl Into<String>) -> NotesError {
+pub(super) fn invalid(message: impl Into<String>) -> NotesError {
     NotesError {
         code: NotesErrorCode::InvalidCommand,
         message: message.into(),

@@ -189,6 +189,12 @@
           "markdownDescription": "Enables the notes_close_session command without any pre-configured scope."
         },
         {
+          "description": "Enables the notes_download_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-download-image",
+          "markdownDescription": "Enables the notes_download_image command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notes_execute command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notes-execute",
@@ -231,6 +237,18 @@
           "markdownDescription": "Enables the notes_redo command without any pre-configured scope."
         },
         {
+          "description": "Enables the notes_replace_image_bytes command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-replace-image-bytes",
+          "markdownDescription": "Enables the notes_replace_image_bytes command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_replace_image_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-replace-image-path",
+          "markdownDescription": "Enables the notes_replace_image_path command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notes_search command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notes-search",
@@ -243,6 +261,12 @@
           "markdownDescription": "Enables the notes_undo command without any pre-configured scope."
         },
         {
+          "description": "Enables the notes_view_image_original command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-view-image-original",
+          "markdownDescription": "Enables the notes_view_image_original command without any pre-configured scope."
+        },
+        {
           "description": "Denies the notes_bootstrap command without any pre-configured scope.",
           "type": "string",
           "const": "deny-notes-bootstrap",
@@ -253,6 +277,12 @@
           "type": "string",
           "const": "deny-notes-close-session",
           "markdownDescription": "Denies the notes_close_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_download_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-download-image",
+          "markdownDescription": "Denies the notes_download_image command without any pre-configured scope."
         },
         {
           "description": "Denies the notes_execute command without any pre-configured scope.",
@@ -297,6 +327,18 @@
           "markdownDescription": "Denies the notes_redo command without any pre-configured scope."
         },
         {
+          "description": "Denies the notes_replace_image_bytes command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-replace-image-bytes",
+          "markdownDescription": "Denies the notes_replace_image_bytes command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_replace_image_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-replace-image-path",
+          "markdownDescription": "Denies the notes_replace_image_path command without any pre-configured scope."
+        },
+        {
           "description": "Denies the notes_search command without any pre-configured scope.",
           "type": "string",
           "const": "deny-notes-search",
@@ -307,6 +349,12 @@
           "type": "string",
           "const": "deny-notes-undo",
           "markdownDescription": "Denies the notes_undo command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_view_image_original command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-view-image-original",
+          "markdownDescription": "Denies the notes_view_image_original command without any pre-configured scope."
         },
         {
           "description": "Allows the Yonalist v2 main window to invoke the bounded Notes API.",

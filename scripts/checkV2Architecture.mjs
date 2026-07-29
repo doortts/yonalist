@@ -160,6 +160,7 @@ const requiredPermissions = [
   "core:default",
   "core:window:allow-destroy",
   "dialog:allow-open",
+  "dialog:allow-save",
   "main-window-notes-commands"
 ].sort();
 const actualPermissions = [...mainWindowCapability.permissions].sort();

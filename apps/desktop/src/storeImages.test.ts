@@ -65,7 +65,11 @@ function api(
     execute: vi.fn(),
     importImageBytes,
     importImagePaths,
+    replaceImageBytes: vi.fn(),
+    replaceImagePath: vi.fn(),
     readImage: vi.fn(),
+    viewImageOriginal: vi.fn(),
+    downloadImage: vi.fn(),
     undo: vi.fn(),
     redo: vi.fn(),
     search: vi.fn(),
@@ -176,5 +180,71 @@ describe("StoreImages", () => {
       "/images/dog.png"
     ]);
     expect(request.images[0]!.nodeId).toBe(firstId);
+  });
+
+  it("resizes through the shared revision and history command path", async () => {
+    const notesApi = api(vi.fn());
+    notesApi.execute = vi.fn().mockResolvedValue({
+      revision: 8,
+      changedNodes: [],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    });
+    const store = new NotesStore(notesApi);
+    await store.bootstrap();
+
+    await store.images.resize("image", 480);
+
+    expect(notesApi.execute).toHaveBeenCalledWith(expect.objectContaining({
+      historyGroup: null,
+      command: {
+        kind: "resizeImage",
+        id: "image",
+        display_width: 480
+      }
+    }));
+  });
+
+  it("replaces bytes without changing the target node identity", async () => {
+    const notesApi = api(vi.fn());
+    notesApi.replaceImageBytes = vi.fn().mockImplementation(async (request) => ({
+      revision: 8,
+      changedNodes: [{
+        ...snapshot.viewport!.nodes[0]!,
+        id: request.targetId,
+        kind: "image",
+        text: request.image.originalName,
+        image: {
+          contentHash: "c".repeat(64),
+          originalName: request.image.originalName,
+          mimeType: "image/png",
+          byteLength: request.image.blob.size,
+          pixelWidth: 1,
+          pixelHeight: 1,
+          displayWidth: 320
+        }
+      }],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    }));
+    const store = new NotesStore(notesApi);
+    await store.bootstrap();
+    const replacement = candidates()[0]!;
+
+    await store.images.replace("image-a", replacement);
+
+    expect(notesApi.replaceImageBytes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetId: "image-a",
+        image: expect.objectContaining({
+          nodeId: "image-a",
+          originalName: "cat.png"
+        })
+      })
+    );
+    expect(store.getSnapshot().nodes.some((node) =>
+      node.id === "image-a" &&
+      node.image?.originalName === "cat.png"
+    )).toBe(true);
   });
 });

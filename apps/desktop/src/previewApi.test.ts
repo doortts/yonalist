@@ -558,5 +558,40 @@ describe("browser-only preview adapter", () => {
       id: "preview-image",
       image: expect.objectContaining({ originalName: "cat.png" })
     }));
+
+    const replaced = await previewNotesApi.replaceImageBytes({
+      sessionId: boot.sessionId,
+      requestId: "preview-image-replace",
+      baseRevision: redone.revision,
+      historyGroup: "images:replace",
+      targetId: "preview-image",
+      image: {
+        nodeId: "preview-image",
+        originalName: "dog.png",
+        declaredMimeType: "image/png",
+        blob: new Blob([Uint8Array.from([4, 5, 6])], { type: "image/png" })
+      }
+    });
+    expect(replaced.changedNodes[0]).toEqual(expect.objectContaining({
+      id: "preview-image",
+      image: expect.objectContaining({
+        originalName: "dog.png",
+        displayWidth: 320
+      })
+    }));
+    expect(await previewNotesApi.readImage({
+      sessionId: boot.sessionId,
+      nodeId: "preview-image"
+    })).toEqual(Uint8Array.from([4, 5, 6]));
+
+    const replacementUndone = await previewNotesApi.undo({
+      sessionId: boot.sessionId,
+      baseRevision: replaced.revision
+    });
+    expect(replacementUndone.changedNodes[0].image?.originalName).toBe("cat.png");
+    expect(await previewNotesApi.readImage({
+      sessionId: boot.sessionId,
+      nodeId: "preview-image"
+    })).toEqual(Uint8Array.from([1, 2, 3]));
   });
 });

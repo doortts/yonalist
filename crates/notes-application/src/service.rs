@@ -8,8 +8,8 @@ use notes_core::{
 
 use crate::{
     CommandEnvelope, HistoryRequest, HistoryState, ImageAssetPort, ImageImportContext,
-    ImageImportSource, ImageReadRequest, ImageSource, MutationReceipt, NoteView, NotesError,
-    PublishedImage, StorageCommit, StoragePort,
+    ImageImportSource, ImageReadRequest, ImageReplaceContext, ImageSource, MutationReceipt,
+    NoteView, NotesError, PublishedImage, StorageCommit, StoragePort,
 };
 
 const MAX_HISTORY_ENTRIES: usize = 1_000;
@@ -160,6 +160,15 @@ impl<S: StoragePort> NotesService<S> {
         request: ImageReadRequest,
         assets: &A,
     ) -> Result<Vec<u8>, NotesError> {
+        self.read_image_asset(request, assets)
+            .map(|(_, bytes)| bytes)
+    }
+
+    pub fn read_image_asset<A: ImageAssetPort>(
+        &self,
+        request: ImageReadRequest,
+        assets: &A,
+    ) -> Result<(notes_core::NoteImage, Vec<u8>), NotesError> {
         let session = self.session.lock().unwrap_or_else(PoisonError::into_inner);
         self.ensure_session(&session, &request.session_id)?;
         drop(session);
@@ -169,16 +178,81 @@ impl<S: StoragePort> NotesService<S> {
             .storage
             .load_node(&id)?
             .ok_or_else(|| DomainError::NodeNotFound(id.clone()))?;
-        if node.kind() != NoteNodeKind::Image {
+        if node.kind() != NoteNodeKind::Image || node.is_deleted() {
             return Err(DomainError::InvalidImage(
-                "The requested Notes node is not an image.".into(),
+                "The requested Notes node is not an active image.".into(),
             )
             .into());
         }
         let image = node.image().ok_or_else(|| {
             DomainError::InvalidImage("The requested image metadata is unavailable.".into())
         })?;
-        assets.read(image).map_err(NotesError::from)
+        let bytes = assets.read(image).map_err(NotesError::from)?;
+        Ok((image.clone(), bytes))
+    }
+
+    pub fn replace_image<A: ImageAssetPort>(
+        &self,
+        context: ImageReplaceContext,
+        source: ImageImportSource,
+        assets: &A,
+    ) -> Result<MutationReceipt, NotesError> {
+        let mut session = self.session.lock().unwrap_or_else(PoisonError::into_inner);
+        self.ensure_session(&session, &context.session_id)?;
+        if let Some(receipt) = session.completed_requests.get(&context.request_id) {
+            return Ok(receipt.clone());
+        }
+        self.ensure_revision(&session, context.base_revision)?;
+        let import_context = ImageImportContext {
+            session_id: context.session_id.clone(),
+            request_id: context.request_id.clone(),
+            base_revision: context.base_revision,
+            history_group: context.history_group.clone(),
+            parent_id: context.target_id.clone(),
+            before_id: None,
+            items: vec![context.item.clone()],
+        };
+        validate_image_sources(&import_context, std::slice::from_ref(&source))?;
+        let target_id = NodeId::try_from(context.target_id.as_str())?;
+        if source.node_id != target_id {
+            return Err(invalid_image_request(
+                "The replacement image identity does not match its target.",
+            ));
+        }
+        let published = assets.prepare(std::slice::from_ref(&source))?;
+        let Some(replacement) = published.first() else {
+            return Err(invalid_image_request(
+                "The image asset store returned an incomplete replacement.",
+            ));
+        };
+        if published.len() != 1
+            || replacement.image.original_name() != source.original_name
+            || replacement.image.byte_length() != context.item.byte_length
+            || source
+                .declared_mime_type
+                .as_deref()
+                .is_some_and(|mime| mime != replacement.image.mime_type())
+        {
+            rollback_new_assets(assets, &published);
+            return Err(invalid_image_request(
+                "The image asset store returned mismatched replacement metadata.",
+            ));
+        }
+        match self.execute_checked(
+            &mut session,
+            context.request_id,
+            context.history_group,
+            NotesCommand::ReplaceImage {
+                id: target_id,
+                image: replacement.image.clone(),
+            },
+        ) {
+            Ok(receipt) => Ok(receipt),
+            Err(error) => {
+                rollback_new_assets(assets, &published);
+                Err(error)
+            }
+        }
     }
 
     fn execute_checked(

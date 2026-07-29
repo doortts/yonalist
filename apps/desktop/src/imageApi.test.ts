@@ -4,8 +4,10 @@ import {
   MAX_IMAGE_BATCH_ITEMS,
   MAX_IMAGE_BYTES,
   encodeImageEnvelope,
+  encodeImageReplaceEnvelope,
   type ImageImportRequest,
-  type ImageInput
+  type ImageInput,
+  type ImageReplaceRequest
 } from "./imageApi";
 
 function request(images: readonly ImageInput[]): ImageImportRequest {
@@ -116,5 +118,37 @@ describe("image raw IPC envelope", () => {
       )
     ))).rejects.toThrow();
     expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
+  it("encodes one replacement with its target identity and raw bytes", async () => {
+    const image = input("image-a", "replacement.png", [7, 8, 9]);
+    const request: ImageReplaceRequest = {
+      sessionId: "session",
+      requestId: "replace",
+      baseRevision: 8,
+      historyGroup: "images:replace",
+      targetId: "image-a",
+      image
+    };
+
+    const encoded = await encodeImageReplaceEnvelope(request);
+    const metadataLength = u32(encoded, 8);
+    expect(u32(encoded, 12)).toBe(1);
+    expect(JSON.parse(new TextDecoder().decode(
+      encoded.slice(16, 16 + metadataLength)
+    ))).toEqual({
+      sessionId: "session",
+      requestId: "replace",
+      baseRevision: 8,
+      historyGroup: "images:replace",
+      targetId: "image-a",
+      item: {
+        nodeId: "image-a",
+        originalName: "replacement.png",
+        declaredMimeType: "image/png",
+        byteLength: 3
+      }
+    });
+    expect([...encoded.slice(16 + metadataLength)]).toEqual([7, 8, 9]);
   });
 });

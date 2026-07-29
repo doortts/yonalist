@@ -215,6 +215,13 @@ impl TryFrom<IpcNotesCommand> for NotesCommand {
                     IpcMarkerKind::Todo => NoteMarkerKind::Todo,
                 },
             }),
+            IpcNotesCommand::ResizeImage {
+                id: value,
+                display_width,
+            } => Ok(Self::ResizeImage {
+                id: id(value)?,
+                display_width,
+            }),
             IpcNotesCommand::DeleteSubtree { id: value } => {
                 Ok(Self::DeleteSubtree { id: id(value)? })
             }
