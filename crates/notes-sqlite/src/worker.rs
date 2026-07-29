@@ -4,8 +4,9 @@ use std::sync::mpsc::{self, SyncSender};
 use std::thread::{self, JoinHandle};
 
 use notes_application::{
-    BootSnapshot, ForestRequest, ForestSnapshot, SearchPage, SearchQuery, StorageCommit,
-    StorageError, StoragePort, ViewportPage, ViewportRequest,
+    BootSnapshot, ExportError, ExportSnapshot, ExportSnapshotPort, ForestRequest, ForestSnapshot,
+    SearchPage, SearchQuery, StorageCommit, StorageError, StoragePort, ViewportPage,
+    ViewportRequest,
 };
 use notes_core::{DomainPatch, NoteNode, NotesCommand, NotesTree};
 use rusqlite::Connection;
@@ -53,6 +54,11 @@ enum Request {
     Search {
         request: SearchQuery,
         reply: SyncSender<Result<SearchPage, StorageError>>,
+    },
+    ExportSnapshot {
+        expected_revision: u64,
+        root_id: String,
+        reply: SyncSender<Result<ExportSnapshot, ExportError>>,
     },
     Optimize {
         reply: SyncSender<Result<(), StorageError>>,
@@ -120,6 +126,24 @@ impl SqliteStorage {
 
     pub fn optimize(&self) -> Result<(), StorageError> {
         self.request(|reply| Request::Optimize { reply })
+    }
+
+    fn export_snapshot(
+        &self,
+        expected_revision: u64,
+        root_id: &notes_core::NodeId,
+    ) -> Result<ExportSnapshot, ExportError> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.sender
+            .send(Request::ExportSnapshot {
+                expected_revision,
+                root_id: root_id.to_string(),
+                reply,
+            })
+            .map_err(|error| StorageError::Unavailable(error.to_string()))?;
+        receiver
+            .recv()
+            .map_err(|error| StorageError::Unavailable(error.to_string()))?
     }
 
     #[cfg(feature = "bench-fixtures")]
@@ -198,6 +222,22 @@ impl SqliteStorage {
                         Request::Search { request, reply } => {
                             let _ = reply.send(queries::search(&connection, request));
                         }
+                        Request::ExportSnapshot {
+                            expected_revision,
+                            root_id,
+                            reply,
+                        } => {
+                            let result = notes_core::NodeId::try_from(root_id)
+                                .map_err(|error| ExportError::Failed(error.to_string()))
+                                .and_then(|root_id| {
+                                    crate::export_snapshot::load(
+                                        &mut connection,
+                                        expected_revision,
+                                        &root_id,
+                                    )
+                                });
+                            let _ = reply.send(result);
+                        }
                         Request::Optimize { reply } => {
                             let result = connection
                                 .execute_batch("PRAGMA optimize;")
@@ -265,6 +305,16 @@ impl StoragePort for SqliteStorage {
             patch: patch.clone(),
             reply,
         })
+    }
+}
+
+impl ExportSnapshotPort for SqliteStorage {
+    fn load_export_snapshot(
+        &self,
+        expected_revision: u64,
+        root_id: &notes_core::NodeId,
+    ) -> Result<ExportSnapshot, ExportError> {
+        self.export_snapshot(expected_revision, root_id)
     }
 }
 

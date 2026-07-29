@@ -12,6 +12,8 @@ use crate::{
     NoteView, NotesError, PublishedImage, StorageCommit, StoragePort,
 };
 
+mod export;
+
 const MAX_HISTORY_ENTRIES: usize = 1_000;
 const MAX_HISTORY_MUTATIONS_PER_ENTRY: usize = 256;
 const MAX_COMPLETED_REQUESTS: usize = 4_096;

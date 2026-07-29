@@ -3,12 +3,14 @@
 mod command_conversion;
 mod contracts;
 mod error;
+mod export;
 mod image;
 mod service;
 mod storage;
 
 pub use contracts::*;
 pub use error::{NotesError, NotesErrorCode};
+pub use export::*;
 pub use image::{
     ImageAssetPort, ImageImportSource, ImageSource, MAX_IMAGE_BATCH_BYTES, MAX_IMAGE_BATCH_ITEMS,
     PublishedImage,

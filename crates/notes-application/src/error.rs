@@ -2,7 +2,7 @@ use notes_core::DomainError;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::StorageError;
+use crate::{ExportError, StorageError};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
@@ -15,6 +15,10 @@ pub enum NotesErrorCode {
     StorageUnavailable,
     SessionMismatch,
     HistoryEmpty,
+    DestinationExists,
+    InvalidDestination,
+    ExportTooLarge,
+    ExportFailed,
     Internal,
 }
 
@@ -77,6 +81,34 @@ impl From<StorageError> for NotesError {
             },
             StorageError::Internal(message) => Self {
                 code: NotesErrorCode::Internal,
+                message,
+                retryable: false,
+            },
+        }
+    }
+}
+
+impl From<ExportError> for NotesError {
+    fn from(error: ExportError) -> Self {
+        match error {
+            ExportError::Storage(error) => error.into(),
+            ExportError::DestinationExists => Self {
+                code: NotesErrorCode::DestinationExists,
+                message: error.to_string(),
+                retryable: false,
+            },
+            ExportError::InvalidDestination(message) => Self {
+                code: NotesErrorCode::InvalidDestination,
+                message,
+                retryable: false,
+            },
+            ExportError::TooLarge(message) => Self {
+                code: NotesErrorCode::ExportTooLarge,
+                message,
+                retryable: false,
+            },
+            ExportError::Failed(message) => Self {
+                code: NotesErrorCode::ExportFailed,
                 message,
                 retryable: false,
             },

@@ -1,5 +1,6 @@
 //! SQLite adapter and dedicated database worker for Notes.
 
+mod export_snapshot;
 #[cfg(feature = "bench-fixtures")]
 mod fixtures;
 mod forest_queries;
