@@ -17,7 +17,6 @@ import {
   type OutlinePresentation,
   type OutlinePresentationToken
 } from "./outlinePresentation";
-import { openExternalUrl } from "./openExternal";
 
 export interface OutlineTagToken {
   readonly prefix: "#" | "@";
@@ -184,7 +183,9 @@ export const OutlineTextField = forwardRef<
     markdown = false,
     containerClassName,
     onTagClick,
-    onOpenExternal = (url) => void openExternalUrl(url),
+    onOpenExternal = (url) => void import("./openExternal").then(
+      ({ openExternalUrl }) => openExternalUrl(url)
+    ),
     className,
     style,
     placeholder,

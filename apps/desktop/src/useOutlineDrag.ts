@@ -7,11 +7,7 @@ import {
   type PointerEvent as ReactPointerEvent
 } from "react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
-import {
-  planCrossPaneDrop,
-  planOutlineDrop,
-  type OutlineDropPlan
-} from "./outlineDragPlan";
+import type { OutlineDropPlan } from "./outlineDragPlan";
 import type { SelectionNodeMove } from "./selectionMoves";
 import type { useOutlineSelection } from "./useOutlineSelection";
 
@@ -55,6 +51,17 @@ interface UseOutlineDragInput {
 }
 
 const ACTIVATION_DISTANCE = 4;
+type OutlineDragPlanner = typeof import("./outlineDragPlan");
+let outlineDragPlanner: OutlineDragPlanner | null = null;
+let outlineDragPlannerLoad: Promise<OutlineDragPlanner> | null = null;
+
+function loadOutlineDragPlanner(): Promise<OutlineDragPlanner> {
+  outlineDragPlannerLoad ??= import("./outlineDragPlan").then((planner) => {
+    outlineDragPlanner = planner;
+    return planner;
+  });
+  return outlineDragPlannerLoad;
+}
 
 function pointerDestination(
   event: globalThis.PointerEvent,
@@ -117,6 +124,9 @@ export function useOutlineDrag(input: UseOutlineDragInput) {
   targetScopeRef.current = targetScope;
 
   useEffect(() => {
+    const preload = window.setTimeout(() => {
+      void loadOutlineDragPlanner();
+    }, 0);
     const clearVisuals = () => {
       planRef.current = null;
       targetScopeRef.current = null;
@@ -163,11 +173,17 @@ export function useOutlineDrag(input: UseOutlineDragInput) {
       setPointer({ x: event.clientX, y: event.clientY });
       const current = inputRef.current;
       const destination = pointerDestination(event, current.nodes);
+      const planner = outlineDragPlanner;
+      if (!planner) {
+        void loadOutlineDragPlanner();
+        event.preventDefault();
+        return;
+      }
       const samePaneOverId = destination?.overId ??
         destination?.visibleNodes.at(-1)?.id ?? null;
       const nextPlan = destination
         ? destination.scope === gesture.sourceScope
-          ? samePaneOverId === null ? null : planOutlineDrop({
+          ? samePaneOverId === null ? null : planner.planOutlineDrop({
               nodes: current.nodes,
               visibleNodes: current.visibleNodes,
               selectedRootIds: gesture.rootIds,
@@ -176,7 +192,7 @@ export function useOutlineDrag(input: UseOutlineDragInput) {
               horizontalOffset: event.clientX - gesture.startX,
               outlineRootId: current.outlineRootId
             })
-          : planCrossPaneDrop({
+          : planner.planCrossPaneDrop({
               nodes: current.nodes,
               visibleNodes: destination.visibleNodes,
               selectedRootIds: gesture.rootIds,
@@ -214,6 +230,7 @@ export function useOutlineDrag(input: UseOutlineDragInput) {
     window.addEventListener("blur", cancelActive);
     document.addEventListener("visibilitychange", visibility);
     return () => {
+      window.clearTimeout(preload);
       window.removeEventListener("pointermove", move, true);
       window.removeEventListener("pointerup", up, true);
       window.removeEventListener("pointercancel", cancel, true);
@@ -271,7 +288,14 @@ export function useOutlineDrag(input: UseOutlineDragInput) {
   };
   const keyboardPlan = (gesture: KeyboardGesture) => {
     const current = inputRef.current;
-    const nextPlan = planOutlineDrop({
+    const planner = outlineDragPlanner;
+    if (!planner) {
+      void loadOutlineDragPlanner().then(() => {
+        if (keyboardRef.current === gesture) keyboardPlan(gesture);
+      });
+      return;
+    }
+    const nextPlan = planner.planOutlineDrop({
       nodes: current.nodes,
       visibleNodes: current.visibleNodes,
       selectedRootIds: gesture.rootIds,

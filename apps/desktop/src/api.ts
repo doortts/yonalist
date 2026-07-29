@@ -13,13 +13,10 @@ import type { SearchPage } from "../../../packages/contracts/generated/SearchPag
 import type { SearchQuery } from "../../../packages/contracts/generated/SearchQuery";
 import type { ViewportPage } from "../../../packages/contracts/generated/ViewportPage";
 import type { ViewportRequest } from "../../../packages/contracts/generated/ViewportRequest";
-import {
-  encodeImageEnvelope,
-  encodeImageReplaceEnvelope,
-  normalizeImageBytes,
-  type ImageImportRequest,
-  type ImagePathImportRequest,
-  type ImageReplaceRequest
+import type {
+  ImageImportRequest,
+  ImagePathImportRequest,
+  ImageReplaceRequest
 } from "./imageApi";
 
 export interface NotesApi {
@@ -45,16 +42,31 @@ export const tauriNotesApi: NotesApi = {
   queryViewport: (request) => invoke("notes_query_viewport", { request }),
   queryForest: (request) => invoke("notes_query_forest", { request }),
   execute: (envelope) => invoke("notes_execute", { envelope }),
-  importImageBytes: async (request) =>
-    invoke("notes_import_image_bytes", await encodeImageEnvelope(request)),
+  importImageBytes: async (request) => {
+    const { encodeImageEnvelope } = await import("./imageApi");
+    return invoke(
+      "notes_import_image_bytes",
+      await encodeImageEnvelope(request)
+    );
+  },
   importImagePaths: (request) =>
     invoke("notes_import_image_paths", { request }),
-  replaceImageBytes: async (request) =>
-    invoke("notes_replace_image_bytes", await encodeImageReplaceEnvelope(request)),
+  replaceImageBytes: async (request) => {
+    const { encodeImageReplaceEnvelope } = await import("./imageApi");
+    return invoke(
+      "notes_replace_image_bytes",
+      await encodeImageReplaceEnvelope(request)
+    );
+  },
   replaceImagePath: (request) =>
     invoke("notes_replace_image_path", { request }),
-  readImage: async (request) =>
-    normalizeImageBytes(await invoke<unknown>("notes_read_image", { request })),
+  readImage: async (request) => {
+    const [{ normalizeImageBytes }, response] = await Promise.all([
+      import("./imageApi"),
+      invoke<unknown>("notes_read_image", { request })
+    ]);
+    return normalizeImageBytes(response);
+  },
   viewImageOriginal: (request) =>
     invoke("notes_view_image_original", { request }),
   downloadImage: (request) =>

@@ -6,13 +6,6 @@ import {
   type DragEventHandler,
   type RefObject
 } from "react";
-import { imageInsertionAnchor } from "./imageInsertion";
-import {
-  imageCandidates,
-  isNativeImageRuntime,
-  pickImageFiles,
-  pickImagePaths
-} from "./imagePicker";
 import type { NotesStore } from "./notesStore";
 import type { OutlineIndex } from "./outlineIndex";
 
@@ -56,43 +49,48 @@ export function useImageIngest({
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const importPaths = useCallback((
+  const importPaths = useCallback(async (
     targetId: string,
     paths: readonly string[]
   ) => {
     const current = latest.current;
+    const { imageInsertionAnchor } = await import("./imageInsertion");
     const anchor = imageInsertionAnchor(
       targetId,
       current.outlineRootId,
       current.index
     );
-    if (!anchor || paths.length === 0) return Promise.resolve();
+    if (!anchor || paths.length === 0) return;
     setError(null);
-    return current.store.images.importPathsAfter(
+    await current.store.images.importPathsAfter(
       anchor.parentId,
       anchor.beforeId,
       paths
-    ).then(() => undefined);
+    );
   }, []);
 
-  const importFiles = useCallback((
+  const importFiles = useCallback(async (
     targetId: string,
     files: readonly File[]
   ) => {
     const current = latest.current;
+    const [{ imageInsertionAnchor }, { imageCandidates }] = await Promise.all([
+      import("./imageInsertion"),
+      import("./imagePicker")
+    ]);
     const anchor = imageInsertionAnchor(
       targetId,
       current.outlineRootId,
       current.index
     );
     const candidates = imageCandidates(files);
-    if (!anchor || candidates.length === 0) return Promise.resolve();
+    if (!anchor || candidates.length === 0) return;
     setError(null);
-    return current.store.images.importAfter(
+    await current.store.images.importAfter(
       anchor.parentId,
       anchor.beforeId,
       candidates
-    ).then(() => undefined);
+    );
   }, []);
 
   const openPicker = useCallback(async (targetId: string) => {
@@ -101,6 +99,7 @@ export function useImageIngest({
         const paths = await boundary.pickPaths();
         await importPaths(targetId, paths);
       } else {
+        const { pickImageFiles } = await import("./imagePicker");
         const files = await pickImageFiles(true);
         await importFiles(targetId, files);
       }
@@ -147,7 +146,7 @@ export function useImageIngest({
   }, [boundary, importPaths, scopeRef]);
 
   const onDragOver = useCallback<DragEventHandler<HTMLElement>>((event) => {
-    if (imageCandidates([...event.dataTransfer.files]).length === 0) return;
+    if (!hasSupportedImage([...event.dataTransfer.files])) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
     setDropTargetId(targetFromElement(
@@ -167,7 +166,7 @@ export function useImageIngest({
   }, []);
   const onDrop = useCallback<DragEventHandler<HTMLElement>>((event) => {
     const files = [...event.dataTransfer.files];
-    if (imageCandidates(files).length === 0) return;
+    if (!hasSupportedImage(files)) return;
     event.preventDefault();
     const targetId = targetFromElement(
       event.target,
@@ -221,8 +220,11 @@ function messageFrom(cause: unknown): string {
 }
 
 const defaultImageIngestBoundary: ImageIngestBoundary = {
-  native: isNativeImageRuntime(),
-  pickPaths: () => pickImagePaths(true),
+  native: "__TAURI_INTERNALS__" in window,
+  pickPaths: async () => {
+    const { pickImagePaths } = await import("./imagePicker");
+    return pickImagePaths(true);
+  },
   async listenNativeDrops(listener) {
     if (!("__TAURI_INTERNALS__" in window)) return () => undefined;
     const [{ getCurrentWebview }, { getCurrentWindow }] = await Promise.all([
@@ -246,3 +248,8 @@ const defaultImageIngestBoundary: ImageIngestBoundary = {
     });
   }
 };
+
+function hasSupportedImage(files: readonly File[]): boolean {
+  return files.some((file) =>
+    /^image\/(?:png|jpeg|gif|webp)$/u.test(file.type));
+}

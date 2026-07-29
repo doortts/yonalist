@@ -3,7 +3,6 @@ import type { BootSnapshot } from "../../../packages/contracts/generated/BootSna
 import type { NotesApi } from "./api";
 import { App } from "./App";
 import type { ImageImportRequest } from "./imageApi";
-
 const snapshot: BootSnapshot = {
   sessionId: "session-clipboard",
   revision: 7,
@@ -30,6 +29,7 @@ const snapshot: BootSnapshot = {
   },
   history: { canUndo: false, canRedo: false, undoDepth: 0, redoDepth: 0 }
 };
+
 function api(): NotesApi {
   return {
     bootstrap: vi.fn().mockResolvedValue(snapshot),
@@ -59,7 +59,6 @@ function api(): NotesApi {
     closeSession: vi.fn()
   };
 }
-
 describe("outline clipboard integration", () => {
   it("materializes a selected parent into its complete authoritative subtree", async () => {
     const notesApi = api();
@@ -87,18 +86,15 @@ describe("outline clipboard integration", () => {
       complete: true
     });
     render(<App api={notesApi} />);
-
     fireEvent.pointerDown(
       await screen.findByDisplayValue("Parent"),
       { button: 0, pointerId: 3, ctrlKey: true }
     );
-
     expect(await screen.findByRole("toolbar", {
       name: "Actions for 2 selected notes"
     })).toBeVisible();
     expect(screen.getByDisplayValue("Child").closest(".notes-node"))
       .toHaveAttribute("data-selected", "true");
-
     fireEvent.click(screen.getByRole("button", { name: "Complete" }));
     await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -110,13 +106,10 @@ describe("outline clipboard integration", () => {
       })
     ));
   });
-
   it("enters contextual selection mode for one modifier-selected row", async () => {
     render(<App api={api()} />);
     const first = await screen.findByDisplayValue("First thought");
-
     fireEvent.pointerDown(first, { button: 0, pointerId: 4, ctrlKey: true });
-
     expect(await screen.findByRole("toolbar", {
       name: "Actions for 1 selected notes"
     })).toBeVisible();
@@ -462,9 +455,10 @@ describe("outline clipboard integration", () => {
         clientY: 100
       });
 
-      expect(container.querySelector(".notes-outline-drop-preview"))
-        .toHaveStyle("--notes-drop-depth: 0");
-      expect(screen.getByTestId("notes-selection-drag-preview"))
+      await waitFor(() =>
+        expect(container.querySelector(".notes-outline-drop-preview"))
+          .toHaveStyle("--notes-drop-depth: 0"));
+      expect(await screen.findByTestId("notes-selection-drag-preview"))
         .toHaveTextContent("First thought");
       fireEvent.pointerUp(thirdRow, { button: 0, pointerId: 11 });
 
@@ -529,7 +523,7 @@ describe("outline clipboard integration", () => {
         clientX: 80,
         clientY: 100
       });
-      expect(screen.getByTestId("notes-selection-drag-preview"))
+      expect(await screen.findByTestId("notes-selection-drag-preview"))
         .toHaveAttribute("data-multiple", "true");
       expect(screen.getByText("2", {
         selector: ".notes-selection-drag-preview-count"
@@ -602,8 +596,9 @@ describe("outline clipboard integration", () => {
 
     fireEvent.keyDown(firstHandle, { key: " " });
     fireEvent.keyDown(firstHandle, { key: "ArrowDown" });
-    expect(document.querySelector(".notes-outline-drop-preview"))
-      .toBeVisible();
+    await waitFor(() =>
+      expect(document.querySelector(".notes-outline-drop-preview"))
+        .toBeVisible());
     fireEvent.keyDown(firstHandle, { key: "Escape" });
 
     expect(document.querySelector(".notes-outline-drop-preview")).toBeNull();
@@ -683,8 +678,9 @@ describe("outline clipboard integration", () => {
         clientX: 80,
         clientY: 100
       });
-      expect(panes[1].querySelector(".notes-outline-drop-preview"))
-        .toBeVisible();
+      await waitFor(() =>
+        expect(panes[1].querySelector(".notes-outline-drop-preview"))
+          .toBeVisible());
       expect(panes[0].querySelector(".notes-outline-drop-preview")).toBeNull();
       fireEvent.pointerUp(destinationChild, {
         button: 0,

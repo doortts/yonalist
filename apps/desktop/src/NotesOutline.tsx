@@ -1,28 +1,35 @@
 import {
-  useEffect, useMemo, useRef, useState, useSyncExternalStore
+  lazy, Suspense, useEffect, useMemo, useRef, useState,
+  useSyncExternalStore
 } from "react";
 import { NotesStore } from "./notesStore";
 import type { NotesShellSnapshot } from "./storeSubscriptions";
 import {
   hideCollapsedSubtrees, hideCompletedSubtrees
-} from "./outlineSupport";
+} from "./outlineVisibility";
 import { useOutlineSelection } from "./useOutlineSelection";
 import { useOutlinePointerSelection } from "./useOutlinePointerSelection";
 import { useOutlineDrag } from "./useOutlineDrag";
-import { OutlineDragPreview } from "./OutlineDragPreview";
-import { OutlineDropPortal } from "./OutlineDropPortal";
 import { OutlineHeader } from "./OutlineHeader";
 import { OutlineRow } from "./OutlineRow";
 import { NotesChildComposer } from "./NotesChildComposer";
 import { buildTodoProgressMap } from "./outlineTodo";
 import type { OutlineTagToken } from "./OutlineTextField";
-import { OutlineSelectionActionBar } from "./OutlineSelectionActionBar";
 import {
   buildSelectionMovePlans, selectedCompletion, type SelectionMovePlan
 } from "./selectionMoves";
 import { OutlineIndex } from "./outlineIndex";
 import type { PaneFocusSnapshot } from "./appNavigation";
 import { useImageIngest } from "./useImageIngest";
+
+const OutlineSelectionActionBar = lazy(() =>
+  import("./OutlineSelectionActionBar").then((module) => ({
+    default: module.OutlineSelectionActionBar
+  })));
+const OutlineDragVisuals = lazy(() =>
+  import("./OutlineDragVisuals").then((module) => ({
+    default: module.OutlineDragVisuals
+  })));
 
 export interface PaneRestoreRequest {
   readonly epoch: number;
@@ -283,24 +290,28 @@ export function NotesOutline({
         onTagClick={onTagClick}
         onClose={onClose}
         selectionToolbar={selection.selectedIds.length > 0 ? (
-          <OutlineSelectionActionBar
-            count={selection.selectedIds.length}
-            allCompleted={allSelectedCompleted}
-            canCut={selection.canCut}
-            busy={pendingWrites > 0 ||
-              selectionOperationBusy ||
-              !selection.forestComplete}
-            plans={movePlans}
-            onClear={clearSelection}
-            onComplete={() => runSelectionAction(() => store.setCompletedMany(
-              selection.selectedIds, !allSelectedCompleted
-            ))}
-            onCopy={() => runSelectionAction(copySelection)}
-            onCut={() => runSelectionAction(cutSelection)}
-            onMove={executeMovePlan}
-            onDuplicate={() => runSelectionAction(duplicateSelection)}
-            onDelete={() => runSelectionAction(deleteSelection)}
-          />
+          <Suspense fallback={null}>
+            <OutlineSelectionActionBar
+              count={selection.selectedIds.length}
+              allCompleted={allSelectedCompleted}
+              canCut={selection.canCut}
+              busy={pendingWrites > 0 ||
+                selectionOperationBusy ||
+                !selection.forestComplete}
+              plans={movePlans}
+              onClear={clearSelection}
+              onComplete={() => runSelectionAction(() =>
+                store.setCompletedMany(
+                  selection.selectedIds,
+                  !allSelectedCompleted
+                ))}
+              onCopy={() => runSelectionAction(copySelection)}
+              onCut={() => runSelectionAction(cutSelection)}
+              onMove={executeMovePlan}
+              onDuplicate={() => runSelectionAction(duplicateSelection)}
+              onDelete={() => runSelectionAction(deleteSelection)}
+            />
+          </Suspense>
         ) : undefined}
         imageDropTarget={imageIngest.dropTargetId === header.id}
         onPickImage={() => void imageIngest.openPicker(header.id)}
@@ -367,11 +378,13 @@ export function NotesOutline({
               />
             ))}
           </ol>
-          {outlineDrag.dropTarget && (
-            <OutlineDropPortal {...outlineDrag.dropTarget} />
-          )}
-          {outlineDrag.preview && (
-            <OutlineDragPreview {...outlineDrag.preview} />
+          {(outlineDrag.dropTarget || outlineDrag.preview) && (
+            <Suspense fallback={null}>
+              <OutlineDragVisuals
+                dropTarget={outlineDrag.dropTarget}
+                preview={outlineDrag.preview}
+              />
+            </Suspense>
           )}
           <NotesChildComposer
             store={store}

@@ -2,10 +2,14 @@ use std::fs;
 use std::io::Cursor;
 
 use image::{DynamicImage, ImageFormat};
-use notes_application::{ImageAssetPort, ImageImportSource, ImageSource, MAX_IMAGE_BATCH_ITEMS};
+use notes_application::{
+    CommandEnvelope, HistoryRequest, ImageAssetPort, ImageImportContext, ImageImportItem,
+    ImageImportSource, ImageReplaceContext, ImageSource, IpcNotesCommand, MAX_IMAGE_BATCH_ITEMS,
+    NotesErrorCode, NotesService,
+};
 use notes_core::MAX_IMAGE_BYTES;
 use notes_core::NodeId;
-use notes_sqlite::LocalImageAssets;
+use notes_sqlite::{LocalImageAssets, SqliteStorage};
 
 fn id(value: &str) -> NodeId {
     NodeId::try_from(value).expect("valid node id")
@@ -19,6 +23,14 @@ fn encoded(format: ImageFormat) -> Vec<u8> {
     let mut bytes = Cursor::new(Vec::new());
     DynamicImage::new_rgb8(1, 1)
         .write_to(&mut bytes, format)
+        .expect("encode image fixture");
+    bytes.into_inner()
+}
+
+fn png_with_width(width: u32) -> Vec<u8> {
+    let mut bytes = Cursor::new(Vec::new());
+    DynamicImage::new_rgb8(width, 1)
+        .write_to(&mut bytes, ImageFormat::Png)
         .expect("encode image fixture");
     bytes.into_inner()
 }
@@ -229,4 +241,134 @@ fn verified_read_detects_asset_tampering_and_reconcile_removes_orphans() {
     )
     .expect("tamper asset");
     assert!(assets.read(&first[0].image).is_err());
+}
+
+#[test]
+fn close_reconciliation_keeps_final_history_state_and_restart_clears_history() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database = directory.path().join("notes.sqlite");
+    let asset_root = directory.path().join("images");
+    let final_hash;
+    {
+        let storage = SqliteStorage::open(&database).expect("open storage");
+        let assets = LocalImageAssets::open(&asset_root).expect("open assets");
+        let service = NotesService::new(&storage, "session", 0);
+        service
+            .execute(CommandEnvelope {
+                session_id: "session".into(),
+                request_id: "page".into(),
+                base_revision: 0,
+                history_group: None,
+                command: IpcNotesCommand::CreatePage {
+                    id: "page".into(),
+                    text: "Page".into(),
+                },
+            })
+            .expect("create page");
+
+        let first_bytes = png_with_width(1);
+        service
+            .import_images(
+                ImageImportContext {
+                    session_id: "session".into(),
+                    request_id: "import".into(),
+                    base_revision: 1,
+                    history_group: Some("images:batch".into()),
+                    parent_id: "page".into(),
+                    before_id: None,
+                    items: vec![ImageImportItem {
+                        node_id: "image".into(),
+                        original_name: "first.png".into(),
+                        declared_mime_type: Some("image/png".into()),
+                        byte_length: u64::try_from(first_bytes.len()).unwrap(),
+                    }],
+                },
+                vec![ImageImportSource {
+                    node_id: id("image"),
+                    original_name: "first.png".into(),
+                    declared_mime_type: Some("image/png".into()),
+                    source: ImageSource::Bytes(first_bytes),
+                }],
+                &assets,
+            )
+            .expect("import first image");
+
+        let replacement_bytes = png_with_width(2);
+        let replaced = service
+            .replace_image(
+                ImageReplaceContext {
+                    session_id: "session".into(),
+                    request_id: "replace".into(),
+                    base_revision: 2,
+                    history_group: Some("images:replace".into()),
+                    target_id: "image".into(),
+                    item: ImageImportItem {
+                        node_id: "image".into(),
+                        original_name: "replacement.png".into(),
+                        declared_mime_type: Some("image/png".into()),
+                        byte_length: u64::try_from(replacement_bytes.len()).unwrap(),
+                    },
+                },
+                ImageImportSource {
+                    node_id: id("image"),
+                    original_name: "replacement.png".into(),
+                    declared_mime_type: Some("image/png".into()),
+                    source: ImageSource::Bytes(replacement_bytes),
+                },
+                &assets,
+            )
+            .expect("replace image");
+        final_hash = replaced.changed_nodes[0]
+            .image
+            .as_ref()
+            .expect("replacement metadata")
+            .content_hash
+            .clone();
+        service
+            .undo(HistoryRequest {
+                session_id: "session".into(),
+                base_revision: 3,
+            })
+            .expect("undo replacement");
+        service
+            .redo(HistoryRequest {
+                session_id: "session".into(),
+                base_revision: 4,
+            })
+            .expect("redo replacement");
+
+        assets
+            .prepare(&[ImageImportSource {
+                node_id: id("orphan"),
+                original_name: "orphan.png".into(),
+                declared_mime_type: Some("image/png".into()),
+                source: ImageSource::Bytes(png_with_width(3)),
+            }])
+            .expect("publish uncommitted orphan");
+        assert_eq!(fs::read_dir(&asset_root).unwrap().count(), 3);
+    }
+
+    let reopened = SqliteStorage::open(&database).expect("restart storage");
+    let assets = LocalImageAssets::open(&asset_root).expect("restart assets");
+    assert_eq!(
+        fs::read_dir(&asset_root).unwrap().count(),
+        3,
+        "startup must not scan or reconcile image assets"
+    );
+    let live_hashes = reopened.live_image_hashes().expect("load live hashes");
+    assert_eq!(live_hashes.len(), 1);
+    assert!(live_hashes.contains(&final_hash));
+    assets
+        .reconcile(&live_hashes)
+        .expect("close reconciliation");
+    assert_eq!(fs::read_dir(&asset_root).unwrap().count(), 1);
+
+    let restarted = NotesService::new(&reopened, "restart", 5);
+    let error = restarted
+        .undo(HistoryRequest {
+            session_id: "restart".into(),
+            base_revision: 5,
+        })
+        .expect_err("history is session-only");
+    assert_eq!(error.code, NotesErrorCode::HistoryEmpty);
 }

@@ -9,23 +9,7 @@ export default defineConfig({
     outDir: "dist",
     emptyOutDir: true,
     manifest: true,
-    sourcemap: false,
-    rolldownOptions: {
-      output: {
-        codeSplitting: {
-          groups: [
-            {
-              name: "react",
-              test: /[\\/]node_modules[\\/](?:react|react-dom)[\\/]/
-            },
-            {
-              name: "icons",
-              test: /[\\/]node_modules[\\/]lucide-react[\\/]/
-            }
-          ]
-        }
-      }
-    }
+    sourcemap: false
   },
   server: {
     host: "127.0.0.1",

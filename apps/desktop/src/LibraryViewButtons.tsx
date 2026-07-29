@@ -24,7 +24,7 @@ export function LibraryViewButtons({
       aria-pressed={active === id}
       disabled={!available}
       onClick={() => {
-        if (id === "all" || id === "starred" || id === "tags" || id === "trash") onSelect(id);
+        if (available) onSelect(id as LibraryView);
       }}
     >
       <Icon size={14} aria-hidden="true" />

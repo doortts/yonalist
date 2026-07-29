@@ -10,7 +10,6 @@ import { NotesStore } from "./notesStore";
 import { WindowChrome } from "./WindowChrome";
 import { LibraryViewButtons, type LibraryView } from "./LibraryViewButtons";
 import { LibraryPageRow } from "./LibraryPageRow";
-import { createCloseRequestHandler } from "./closeSession";
 import type { PaneRestoreRequest } from "./NotesOutline";
 import { NotesInteractionHistory } from "./notesInteractionHistory";
 import {
@@ -63,7 +62,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     if (!("__TAURI_INTERNALS__" in window)) return;
     let unlisten: (() => void) | undefined;
     let active = true;
-    void import("@tauri-apps/api/window").then(async ({ getCurrentWindow }) => {
+    void Promise.all([
+      import("@tauri-apps/api/window"),
+      import("./closeSession")
+    ]).then(async ([
+      { getCurrentWindow },
+      { createCloseRequestHandler }
+    ]) => {
       if (!active) return;
       const appWindow = getCurrentWindow();
       unlisten = await appWindow.onCloseRequested(createCloseRequestHandler(
