@@ -13,10 +13,10 @@ pane dimensions, color tokens, typography, and outline DOM geometry.
 | Undo/Redo | Frontend coordination plus Rust temporary history | Rust owns mutation patches and exposes history depth; a bounded frontend timeline interleaves pane-only navigation |
 | Rust boundaries | IPC, SQL, domain, and platform concerns concentrate in large modules | `notes-sqlite → notes-application → notes-core`, with Tauri as an outer adapter |
 | SQLite ownership | Vault-scoped shared connection mutex | One dedicated worker owns the connection |
-| IPC types | Large DTOs are maintained on both sides | Rust DTOs generate 23 TypeScript contract files |
+| IPC types | Large DTOs are maintained on both sides | Rust DTOs generate 32 TypeScript contract files |
 | Search | Search participates in the legacy workspace runtime | FTS5 text search plus indexed `is:starred`, `is:trash`, `tag:`, and `date:` filters |
 | Startup | DB work and UI preparation are mostly sequential | WebView and DB/schema/bounded-snapshot preparation run concurrently |
-| Bundle | Notes entry measured around 198KB gzip at the baseline | Initial editable JS graph is 276.1KB raw / 85.1KB gzip; Search and slash menus are lazy |
+| Bundle | Notes entry measured around 198KB gzip at the baseline | Initial editable JS graph is 293.9KB raw / 89.1KB gzip; Search, drag/selection actions, and image paths are lazy |
 | Data compatibility | Migration, repair, and legacy-schema defense paths | New schema v1 only; no v1 data compatibility |
 | Scope | Attachments, image handling, export, Markdown sync, and external sources share runtime | Text Notes core is complete first; remaining approved parity features are added behind isolated application ports while Vault sync and GitHub Notifications stay excluded |
 
@@ -57,13 +57,21 @@ pane dimensions, color tokens, typography, and outline DOM geometry.
 - Batch Import/Move/Duplicate loads the complete target sibling set before any
   rebalance, preventing sparse sort-key collisions while keeping one transaction
   and one Undo entry.
+- Local PNG/JPEG/GIF/WebP images import as independent image nodes through paste,
+  the native picker, or filesystem drop. Atomic multi-import, restart restore,
+  Undo/Redo, resizing, replacement, lightbox, original-file viewing, and atomic
+  download are implemented without changing the existing outline geometry.
+- Image files are content-addressed and kept outside SQLite/history/IPC patches.
+  A 512-row mixed-outline test bounds live verified Blob URLs to eight, and 100
+  menu openings perform no image reads.
 - Close-time draft flush, real Windows close-path verification, and close-only
-  `PRAGMA optimize`.
+  `PRAGMA optimize`; close also reconciles orphaned image assets without a startup scan.
 
 ## Remaining parity work
 
-Attachments, image editing, export, settings, Recent/Archive, full tag-count
+Generic non-image attachments, export, settings, Recent/Archive, full tag-count
 and multi-filter navigation, the date picker, and remote Markdown image sizing
-remain pending. Direct tag/date queries already use derived indexes. Vault
-synchronization, GitHub Notifications, migration, repair, and v1 compatibility
-readers remain the explicit exclusions.
+remain pending. The legacy inline image-atom caret editor is not recreated;
+v2 uses structurally independent image nodes instead. Direct tag/date queries
+already use derived indexes. Vault synchronization, GitHub Notifications,
+migration, repair, and v1 compatibility readers remain the explicit exclusions.

@@ -44,10 +44,10 @@ helper must be ported.
 | Drag/drop | Single/multi/keyboard/cross-pane move and exact drop preview | `apps/desktop/src/outlineDragPlan.test.ts`, `apps/desktop/src/outlineClipboardIntegration.test.tsx` | complete |
 | Undo/Redo | Text/structure/session history and restart reset | `apps/desktop/src/notesInteractionHistory.test.ts`, `apps/desktop/src/outlineClipboardIntegration.test.tsx`, `crates/notes-application/tests/session_service.rs` | complete |
 | Navigation history | Zoom, pane, selection and focus undo/redo restoration | `apps/desktop/src/navigationHistoryIntegration.test.tsx` | complete |
-| Attachments | Picker, clipboard, filesystem drop, list actions and limits | `src/features/notes/NotesAttachmentIngest.test.tsx` | missing |
-| Image nodes | Atomic multi-import, independent image rows, restart restore | `src/features/notes/imageNodeInsertion.test.ts` | missing |
-| Image atom editor | Caret, edit, copy/cut/paste, IME, keyboard navigation | `src/features/notes/ImageAtomEditor.test.tsx` | missing |
-| Image display | Resize, lightbox, remote Markdown image, progress/recovery | `src/features/notes/NotesResizableImageFrame.test.tsx` | missing |
+| Attachments | Picker, clipboard, filesystem drop, list actions and limits | `src/features/notes/NotesAttachmentIngest.test.tsx`, `apps/desktop/src/imageIngest.test.ts` | partial |
+| Image nodes | Atomic multi-import, independent image rows, restart restore | `apps/desktop/src/imageNodeIntegration.test.tsx`, `crates/notes-sqlite/tests/image_persistence.rs` | complete |
+| Image atom editor | Caret, edit, copy/cut/paste, IME, keyboard navigation | `src/features/notes/ImageAtomEditor.test.tsx`, independent v2 image-node contract | partial |
+| Image display | Resize, lightbox, remote Markdown image, progress/recovery | `apps/desktop/src/ImageNodeContent.test.tsx`, `apps/desktop/src/imagePerformance.test.tsx` | partial |
 | Export | Shared snapshot, frontmatter Markdown, Korean PDF, atomic overwrite | `src/features/notes/NotesExportMenu.test.tsx` | missing |
 | Data controls | Explicit Notes deletion, confirmation, local repair feedback | `src/features/notes/NotesDataSettingsDialog.test.tsx` | missing |
 | Failure recovery | Stale revisions/cursors, dropped commands, retryable feedback | `src/features/notes/notesAuthorityRecovery.test.ts` | partial |

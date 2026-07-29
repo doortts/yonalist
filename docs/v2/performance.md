@@ -7,9 +7,10 @@ development machine on 2026-07-29.
 
 `npm run test:v2:bundle`
 
-- Initial editable JavaScript: **293.1KB raw / 89.5KB gzip**.
+- Initial editable JavaScript: **293.9KB raw / 89.1KB gzip**.
 - Budget: 300KB raw / 90KB gzip.
-- Search is a lazy chunk.
+- Search, selection actions, drag visuals/planning, image ingest/editing, and
+  close/external-link adapters are lazy chunks.
 - Browser-only preview data is checked not to occur in production JavaScript.
 - The unchanged current CSS is 104.1KB raw / 17.5KB gzip and is recorded separately from
   the editable JavaScript budget.
@@ -17,6 +18,9 @@ development machine on 2026-07-29.
   row, without invalidating the shell, outline, or adjacent rows.
 - A 200-event draft-overlay test enforces p95 below 20ms and every measured
   event below the 50ms long-task boundary in the frontend test runtime.
+- A 512-row mixed outline containing 256 image nodes keeps no more than eight
+  verified Blob URLs alive while visibility moves through the list. Opening an
+  image action menu 100 times performs zero asset reads.
 
 ## Bounded SQLite bootstrap
 
@@ -25,9 +29,9 @@ development machine on 2026-07-29.
 | Fixture | Result |
 |---|---:|
 | 1 node | below 100ms guard |
-| 5,000 nodes, single sample | 16.4ms |
-| 5,000 nodes, 50 samples | p50 12.0ms / p95 14.2ms |
-| 50,000 sibling append mutation | 15.8ms; one changed node |
+| 5,000 nodes, single sample | 15.3ms |
+| 5,000 nodes, 50 samples | p50 12.7ms / p95 15.4ms |
+| 50,000 sibling append mutation | 19.6ms; one changed node |
 | 50,000 nodes, single sample | 108.6ms |
 
 These numbers cover the DB worker's bounded bootstrap query, not OS process creation.
@@ -37,12 +41,14 @@ Silicon release reference machines. The 5,000-node renderer-side prerequisite is
 
 ## Fresh browser interaction path
 
-A newly started `127.0.0.1:1421` preview was exercised on 2026-07-29:
+A newly started `127.0.0.1:1421` preview was exercised again on 2026-07-29:
 
-- six consecutive Enter events left the caret in the final blank row with the
-  pre-existing next bullet immediately after it;
-- six consecutive Backspace events removed all six blank rows and restored
-  the caret to offset 4 at the end of `Beta`;
+- 20 consecutive Enter events created exactly 20 blank bullets and left the
+  caret in the final row;
+- 20 consecutive Backspace events removed exactly those rows and restored the
+  caret to the end of the original bullet;
+- Shift-clicking Zoom opened a second Notes outline region without changing
+  the current layout;
 - pointer and keyboard range selection both selected the same two rows;
 - batch indent/outdent and block up/down moves preserved order;
 - the selected block moved into the secondary split pane, and each accepted
@@ -52,15 +58,31 @@ A newly started `127.0.0.1:1421` preview was exercised on 2026-07-29:
 This is observable interaction evidence, not a process-spawn cold-start
 measurement.
 
+## Image asset lifecycle
+
+Image bytes stay outside SQLite rows, generated IPC DTOs, mutation receipts, and
+Undo/Redo patches. Content-addressed files are decoded and verified before
+publication. Replace, Undo, and Redo retain one final live hash; startup performs
+no directory scan, while close reconciliation removes unreferenced assets. A
+restart then restores metadata and intentionally begins with empty session
+history.
+
 ## Windows release artifact
 
-Previously measured on 2026-07-27 with
-`cargo build --release -p yonalist-v2-desktop`:
+Rebuilt on 2026-07-29 with `npm run v2:tauri:build`:
 
-- Optimized, LTO, stripped executable: **6.06MiB**.
+- Optimized, LTO, stripped executable: **7.41MiB**.
 - Release build completed successfully with `panic=abort` and one codegen unit.
-- MSI installer: **3.99MiB**.
-- NSIS installer: **2.20MiB**.
+- MSI installer: **4.62MiB**.
+- NSIS installer: **2.65MiB**.
+
+A fresh packaged process using an isolated `YONALIST_V2_DATA_DIR` loaded the
+current shell and initialized the SQLite and content-addressed image
+directories. Through the live WebView debugging boundary,
+`notes_close_session` completed in 3.6–4.1ms and the authorized window destroy
+closed the process. A synthetic Windows close message sent to a hidden window
+did not reach WebView `closeRequested`, so it is not recorded as a user Alt+F4
+result.
 
 ## Windows cold-launch proxy
 
