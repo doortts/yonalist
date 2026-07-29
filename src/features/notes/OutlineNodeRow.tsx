@@ -89,7 +89,7 @@ import type {
   NotesHistoryFocusField,
   NotesHistoryPrimarySelection,
 } from "./notesHistory";
-import type { OptimisticKeyboardInsertion } from "./notesLocalStructure";
+import type { PendingKeyboardInsertion } from "./notesLocalStructure";
 import type { FlattenedOutlineRow } from "./outlineTree";
 import { resizeTextarea, useAutoGrowTextarea } from "./autoGrowTextarea";
 import {
@@ -116,7 +116,7 @@ export interface OutlineEditorFocusRequest {
 export interface OutlineNodeEditorProps {
   paneId: NotesPaneId;
   nextKeyboardInsertionToken(): number;
-  node: NoteNode;
+  node: Omit<NoteNode, "sortKey">;
   attachments: readonly NoteAttachment[];
   childCount: number;
   todoCompleted: number | null;
@@ -157,7 +157,7 @@ export interface OutlineNodeEditorProps {
   // the high-volatility drafts context. A keystroke in another row therefore
   // leaves these props referentially unchanged and the memo bails out.
   draft?: NotesNodeDraft;
-  optimisticInsertion?: OptimisticKeyboardInsertion;
+  optimisticInsertion?: PendingKeyboardInsertion;
   attachmentUploadError?: string;
   attachmentUploadRetryAttemptId?: string;
   movementProtected?: boolean;
@@ -359,6 +359,7 @@ function OutlineNodeEditorComponent({
   const focusedPendingIdRef = useRef<number | null>(null);
   const focusedOptimisticTokenRef = useRef<number | null>(null);
   const pendingFocusInProgressRef = useRef(false);
+  const pendingEditingClaimRef = useRef<Promise<boolean> | null>(null);
   const focusNoteOnOpenRef = useRef(false);
   const dateNoteOnOpenRef = useRef(false);
   const noteComposingRef = useRef(false);
@@ -485,6 +486,7 @@ function OutlineNodeEditorComponent({
     targetNodeId: NoteId,
     selection?: NotesHistoryPrimarySelection,
     overrideEdge?: OutlineCaretEdge,
+    skipEditingClaim = false,
   ): boolean => {
     const paneRoot = source.closest<HTMLElement>(".notes-outline");
     if (!paneRoot) return false;
@@ -507,6 +509,7 @@ function OutlineNodeEditorComponent({
         targetNodeId,
         "title",
         edge,
+        skipEditingClaim,
       )
     ) {
       return false;
@@ -678,7 +681,7 @@ function OutlineNodeEditorComponent({
 
   useLayoutEffect(() => {
     if (!optimisticInsertion || readOnly) return;
-    const token = optimisticInsertion.pending.intent.token;
+    const token = optimisticInsertion.intent.token;
     if (focusedOptimisticTokenRef.current === token) return;
     const target = liveTitleRef.current?.element ?? titleRef.current;
     if (!target) return;
@@ -699,12 +702,7 @@ function OutlineNodeEditorComponent({
     if (document.activeElement !== target) return;
     focusedOptimisticTokenRef.current = token;
     markSplitPhase(nodeId, "provisional-caret");
-  }, [
-    nodeId,
-    optimisticInsertion,
-    readOnly,
-    titleValue.length,
-  ]);
+  }, [nodeId, optimisticInsertion, readOnly, titleValue.length]);
 
   useEffect(() => {
     if (optimisticInsertion) return;
@@ -758,8 +756,7 @@ function OutlineNodeEditorComponent({
     );
     try {
       if (!navigationOwned()) {
-        focusTargetMarker &&
-          releaseAuthoritativeFocusTarget(focusTargetMarker);
+        focusTargetMarker && releaseAuthoritativeFocusTarget(focusTargetMarker);
         return;
       }
       if (
@@ -1349,7 +1346,7 @@ function OutlineNodeEditorComponent({
           }) ?? null)
         : null;
     if (backspaceGestureToken !== null) {
-      actions.touchBackspaceGesture?.(backspaceGestureToken, nodeId);
+      actions.touchBackspaceGesture?.(backspaceGestureToken, nodeId, titleValue);
     }
     const stateSnapshot = getStateSnapshot();
     const resolution = resolveOutlineKey({
@@ -1431,7 +1428,7 @@ function OutlineNodeEditorComponent({
         const sourceRow = getOutlineRow(nodeId);
         if (!sourceRow) {
           runStructuralCommand(() =>
-            actions.createChild(nodeId, "first", { newNodeId })
+            actions.createChild(nodeId, "first", { newNodeId }),
           );
           return;
         }
@@ -1441,11 +1438,11 @@ function OutlineNodeEditorComponent({
             : undefined;
         const keyboardInsertion =
           actions.prepareKeyboardInsertion?.({
-          ownerPaneId: paneId,
-          navigationVersionAtDispatch: actions.getNavigationVersion?.(),
-          userInteractionRevisionAtDispatch:
-            actions.getUserInteractionRevision?.(),
-          intent: {
+            ownerPaneId: paneId,
+            navigationVersionAtDispatch: actions.getNavigationVersion?.(),
+            userInteractionRevisionAtDispatch:
+              actions.getUserInteractionRevision?.(),
+            intent: {
               token: nextKeyboardInsertionToken(),
               sourceId: nodeId,
               expectedNodeId: newNodeId,
@@ -1463,8 +1460,7 @@ function OutlineNodeEditorComponent({
               },
               sourceTitle: source,
               insertedTitle: "",
-              dependencyId:
-                optimisticInsertion?.pending.intent.expectedNodeId,
+              dependencyId: optimisticInsertion?.intent.expectedNodeId,
             },
           }) ?? null;
         if (!keyboardInsertion) return;
@@ -1501,7 +1497,7 @@ function OutlineNodeEditorComponent({
               newNodeId,
               resolution.prefix,
               resolution.suffix,
-              { draft: sourceDraft }
+              { draft: sourceDraft },
             );
           });
           return;
@@ -1512,11 +1508,11 @@ function OutlineNodeEditorComponent({
             : undefined;
         const keyboardInsertion =
           actions.prepareKeyboardInsertion?.({
-          ownerPaneId: paneId,
-          navigationVersionAtDispatch: actions.getNavigationVersion?.(),
-          userInteractionRevisionAtDispatch:
-            actions.getUserInteractionRevision?.(),
-          intent: {
+            ownerPaneId: paneId,
+            navigationVersionAtDispatch: actions.getNavigationVersion?.(),
+            userInteractionRevisionAtDispatch:
+              actions.getUserInteractionRevision?.(),
+            intent: {
               token: nextKeyboardInsertionToken(),
               sourceId: nodeId,
               expectedNodeId: newNodeId,
@@ -1533,8 +1529,7 @@ function OutlineNodeEditorComponent({
               },
               sourceTitle: resolution.prefix,
               insertedTitle: resolution.suffix,
-              dependencyId:
-                optimisticInsertion?.pending.intent.expectedNodeId,
+              dependencyId: optimisticInsertion?.intent.expectedNodeId,
             },
           }) ?? null;
         if (!keyboardInsertion) return;
@@ -1582,6 +1577,8 @@ function OutlineNodeEditorComponent({
             event.currentTarget,
             resolution.nodeId,
             resolution.selection,
+            undefined,
+            draft === undefined && source === titleValue,
           )
         ) {
           return;
@@ -1964,16 +1961,26 @@ function OutlineNodeEditorComponent({
     }
     const previousElement =
       previousTarget instanceof HTMLElement ? previousTarget : null;
-    void actions.claimEditingFocus(nodeId, field).then((claimed) => {
-      if (!claimed && document.activeElement === target) {
-        if (previousElement?.isConnected) {
-          previousElement.focus();
+    const claim =
+      pendingEditingClaimRef.current ??
+      actions.claimEditingFocus(nodeId, field);
+    pendingEditingClaimRef.current = claim;
+    void claim
+      .then((claimed) => {
+        if (!claimed && document.activeElement === target) {
+          if (previousElement?.isConnected) {
+            previousElement.focus();
+          }
+          if (document.activeElement === target) {
+            target.blur();
+          }
         }
-        if (document.activeElement === target) {
-          target.blur();
+      })
+      .finally(() => {
+        if (pendingEditingClaimRef.current === claim) {
+          pendingEditingClaimRef.current = null;
         }
-      }
-    });
+      });
   };
 
   const handleImageAtomPaste = (event: globalThis.ClipboardEvent): boolean => {
@@ -2066,7 +2073,7 @@ function OutlineNodeEditorComponent({
       {guides}
       <div className="notes-node-main">
         <div className="notes-node-menu-slot">
-          {!pluginRoot && (
+          {!pluginRoot && !optimisticInsertion && (
             <NotesBulletMenu
               label={navigationLabel}
               completed={completed}
@@ -2540,19 +2547,15 @@ function OutlineNodeEditorComponent({
                           token,
                           anchor,
                           liveTitleRef.current?.element ?? undefined,
-                          liveTitleRef.current?.snapshot()?.source ?? titleValue,
+                          liveTitleRef.current?.snapshot()?.source ??
+                            titleValue,
                         )
                 }
                 onDateTrigger={
                   disabled
                     ? undefined
                     : (range, anchor, source) =>
-                        datePicker.openTypedDate(
-                          "title",
-                          range,
-                          anchor,
-                          source,
-                        )
+                        datePicker.openTypedDate("title", range, anchor, source)
                 }
                 onTagClick={(token) =>
                   void actions.toggleTagFilter({
@@ -2568,16 +2571,18 @@ function OutlineNodeEditorComponent({
                   )
                 }
                 onFocus={(event) => {
-                  if (
-                    event.currentTarget.hasAttribute(
-                      "data-notes-restore-title-selection",
-                    )
-                  ) {
+                  const restoresSelection = event.currentTarget.hasAttribute(
+                    "data-notes-restore-title-selection",
+                  );
+                  if (restoresSelection) {
                     liveTitleRef.current?.focus(
                       readPlainTextSelection(event.currentTarget) ?? undefined,
                     );
                   }
                   if (
+                    !event.currentTarget.hasAttribute(
+                      "data-notes-skip-editing-claim",
+                    ) &&
                     !insertionFocusOwned &&
                     !pendingFocusInProgressRef.current
                   ) {

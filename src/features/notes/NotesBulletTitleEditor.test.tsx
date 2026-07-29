@@ -1,17 +1,10 @@
 import { createRef } from "react";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi
-} from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   NotesBulletTitleEditor,
-  type NotesBulletTitleEditorHandle
+  type NotesBulletTitleEditorHandle,
 } from "./NotesBulletTitleEditor";
 import type { NotesEditorFlushAdapter } from "./notesImageAtomEditorRegistry";
 import { restorePlainTextSelection } from "./plainTextContenteditable";
@@ -19,7 +12,7 @@ import { restorePlainTextSelection } from "./plainTextContenteditable";
 const today = { year: 2026, month: 7, day: 28 } as const;
 
 function renderEditor(
-  overrides: Partial<Parameters<typeof NotesBulletTitleEditor>[0]> = {}
+  overrides: Partial<Parameters<typeof NotesBulletTitleEditor>[0]> = {},
 ) {
   const ref = createRef<NotesBulletTitleEditorHandle>();
   const onPublish = vi.fn();
@@ -38,7 +31,7 @@ function renderEditor(
         };
       }}
       {...overrides}
-    />
+    />,
   );
   return {
     ...result,
@@ -47,7 +40,7 @@ function renderEditor(
     get adapter() {
       return adapter;
     },
-    root: screen.getByRole("textbox", { name: "Edit node title" })
+    root: screen.getByRole("textbox", { name: "Edit node title" }),
   };
 }
 
@@ -59,12 +52,12 @@ function inputSource(
   root: HTMLElement,
   source: string,
   inputType = "insertText",
-  data: string | null = null
+  data: string | null = null,
 ): void {
   root.textContent = source;
   restorePlainTextSelection(root, {
     anchorUtf16: source.length,
-    focusUtf16: source.length
+    focusUtf16: source.length,
   });
   fireEvent.input(root, { inputType, data });
 }
@@ -86,22 +79,27 @@ describe("NotesBulletTitleEditor", () => {
     expect(container.querySelector("textarea")).toBeNull();
     activate(root);
 
-    expect(
-      screen.getByRole("textbox", { name: "Edit node title" })
-    ).toBe(root);
+    expect(screen.getByRole("textbox", { name: "Edit node title" })).toBe(root);
     expect(root).toHaveAttribute("contenteditable", "plaintext-only");
     expect(root).toHaveTextContent("before");
   });
 
   it("imperatively focuses the same resting root with the requested selection", () => {
     const { root, ref } = renderEditor();
+    const replaceChildren = root.replaceChildren.bind(root);
+    vi.spyOn(root, "replaceChildren").mockImplementation((...nodes) => {
+      const wasFocused = document.activeElement === root;
+      replaceChildren(...nodes);
+      if (wasFocused) root.blur();
+    });
+    root.focus();
     let accepted = false;
 
     expect(root).toHaveAttribute("tabindex", "0");
     act(() => {
       accepted = ref.current!.focus({
         anchorUtf16: 5,
-        focusUtf16: 1
+        focusUtf16: 1,
       });
     });
 
@@ -111,7 +109,7 @@ describe("NotesBulletTitleEditor", () => {
     expect(root).toHaveFocus();
     expect(ref.current!.snapshot()).toEqual({
       source: "before",
-      selection: { anchorUtf16: 5, focusUtf16: 1 }
+      selection: { anchorUtf16: 5, focusUtf16: 1 },
     });
   });
 
@@ -257,7 +255,7 @@ describe("NotesBulletTitleEditor", () => {
     expect(onPublish).toHaveBeenCalledWith("draft");
     expect(ref.current!.snapshot()).toEqual({
       source: "draft",
-      selection: { anchorUtf16: 5, focusUtf16: 1 }
+      selection: { anchorUtf16: 5, focusUtf16: 1 },
     });
   });
 
@@ -283,6 +281,15 @@ describe("NotesBulletTitleEditor", () => {
     expect(onPublish).toHaveBeenCalledWith("after");
   });
 
+  it("lets a structural barrier ignore a stale non-composing adapter", async () => {
+    const { adapter, unmount } = renderEditor();
+    const staleAdapter = adapter!;
+
+    unmount();
+
+    await expect(staleAdapter.flush()).resolves.toBe("flushed");
+  });
+
   it("pastes only plain text at the current range", () => {
     const { root, onPublish } = renderEditor({ source: "abcd" });
     activate(root);
@@ -290,8 +297,8 @@ describe("NotesBulletTitleEditor", () => {
 
     fireEvent.paste(root, {
       clipboardData: {
-        getData: (type: string) => (type === "text/plain" ? "<x>" : "")
-      }
+        getData: (type: string) => (type === "text/plain" ? "<x>" : ""),
+      },
     });
 
     expect(root).toHaveTextContent("a<x>d");
@@ -305,12 +312,14 @@ describe("NotesBulletTitleEditor", () => {
       source: "",
       today,
       slashCommands: true,
-      onSlashMarkerCommand
+      onSlashMarkerCommand,
     });
     activate(root);
     inputSource(root, "/t", "insertText", "t");
 
-    expect(screen.getByRole("listbox", { name: "Slash commands" })).toBeVisible();
+    expect(
+      screen.getByRole("listbox", { name: "Slash commands" }),
+    ).toBeVisible();
     fireEvent.keyDown(root, { key: "ArrowDown" });
     fireEvent.keyDown(root, { key: "Enter" });
 
@@ -338,7 +347,7 @@ describe("NotesBulletTitleEditor", () => {
       source: "today",
       today,
       onDateTrigger,
-      onDateClick
+      onDateClick,
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Edit date today" }));
@@ -349,7 +358,7 @@ describe("NotesBulletTitleEditor", () => {
     expect(onDateTrigger).toHaveBeenCalledWith(
       { startUtf16: 0, endUtf16: 2 },
       root,
-      "!!"
+      "!!",
     );
   });
 
@@ -368,7 +377,7 @@ describe("NotesBulletTitleEditor", () => {
     const { root } = renderEditor({ source: "Open #later", onTagClick });
     const user = userEvent.setup();
     const tag = screen.getByRole("button", {
-      name: "#later tag filter is inactive"
+      name: "#later tag filter is inactive",
     });
 
     await user.tab();
@@ -398,7 +407,7 @@ describe("NotesBulletTitleEditor", () => {
       expect(root).toHaveFocus();
       expect(root).toHaveAttribute("contenteditable", "plaintext-only");
       expect(root).toHaveTextContent("before");
-    }
+    },
   );
 
   it("forwards repeated vertical navigation from the focused resting root", () => {
@@ -406,17 +415,17 @@ describe("NotesBulletTitleEditor", () => {
     const { root } = renderEditor({ onEditorKeyDown });
     fireEvent.focus(root);
 
-    expect(
-      fireEvent.keyDown(root, { key: "ArrowDown", repeat: true })
-    ).toBe(false);
+    expect(fireEvent.keyDown(root, { key: "ArrowDown", repeat: true })).toBe(
+      false,
+    );
 
     expect(root).toHaveAttribute("contenteditable", "false");
     expect(onEditorKeyDown).toHaveBeenCalledWith(
       expect.objectContaining({ key: "ArrowDown", repeat: true }),
       {
         source: "before",
-        selection: { anchorUtf16: 6, focusUtf16: 6 }
-      }
+        selection: { anchorUtf16: 6, focusUtf16: 6 },
+      },
     );
   });
 
@@ -433,16 +442,19 @@ describe("NotesBulletTitleEditor", () => {
 
   it.each([
     ["readonly", { readOnly: true }, "aria-readonly"],
-    ["disabled", { disabled: true }, "aria-disabled"]
-  ] as const)("keeps a %s editor resting and exposes its state", (_name, props, aria) => {
-    const { root } = renderEditor(props);
+    ["disabled", { disabled: true }, "aria-disabled"],
+  ] as const)(
+    "keeps a %s editor resting and exposes its state",
+    (_name, props, aria) => {
+      const { root } = renderEditor(props);
 
-    expect(root).toHaveAttribute("contenteditable", "false");
-    expect(root).toHaveAttribute(aria, "true");
-    expect(root).toHaveAttribute("tabindex", "-1");
-    activate(root);
-    expect(root).toHaveAttribute("contenteditable", "false");
-  });
+      expect(root).toHaveAttribute("contenteditable", "false");
+      expect(root).toHaveAttribute(aria, "true");
+      expect(root).toHaveAttribute("tabindex", "-1");
+      activate(root);
+      expect(root).toHaveAttribute("contenteditable", "false");
+    },
+  );
 
   it("flushes before forwarding a structural key with its captured snapshot", () => {
     const order: string[] = [];
@@ -451,7 +463,7 @@ describe("NotesBulletTitleEditor", () => {
     });
     const { root } = renderEditor({
       onPublish: (source) => order.push(`publish:${source}`),
-      onEditorKeyDown
+      onEditorKeyDown,
     });
     activate(root);
     inputSource(root, "next");
@@ -467,7 +479,7 @@ describe("NotesBulletTitleEditor", () => {
       onPublish: (source) => order.push(`publish:${source}`),
       onEditorKeyDown: (_event, snapshot) => {
         order.push(`key:${snapshot.source}`);
-      }
+      },
     });
     activate(root);
     inputSource(root, "redo source");
@@ -479,22 +491,25 @@ describe("NotesBulletTitleEditor", () => {
 
   it.each([
     ["Ctrl+Shift+Y", { shiftKey: true }],
-    ["Ctrl+Alt+Y", { altKey: true }]
-  ] as const)("does not treat %s as a history publication boundary", (_name, modifiers) => {
-    const order: string[] = [];
-    const { root } = renderEditor({
-      onPublish: (source) => order.push(`publish:${source}`),
-      onEditorKeyDown: (_event, snapshot) => {
-        order.push(`key:${snapshot.source}`);
-      }
-    });
-    activate(root);
-    inputSource(root, "modified redo");
+    ["Ctrl+Alt+Y", { altKey: true }],
+  ] as const)(
+    "does not treat %s as a history publication boundary",
+    (_name, modifiers) => {
+      const order: string[] = [];
+      const { root } = renderEditor({
+        onPublish: (source) => order.push(`publish:${source}`),
+        onEditorKeyDown: (_event, snapshot) => {
+          order.push(`key:${snapshot.source}`);
+        },
+      });
+      activate(root);
+      inputSource(root, "modified redo");
 
-    fireEvent.keyDown(root, { key: "y", ctrlKey: true, ...modifiers });
+      fireEvent.keyDown(root, { key: "y", ctrlKey: true, ...modifiers });
 
-    expect(order).toEqual(["key:modified redo"]);
-  });
+      expect(order).toEqual(["key:modified redo"]);
+    },
+  );
 
   it("renders a supplied resting presentation inside the stable root", () => {
     const { root } = renderEditor({
@@ -502,7 +517,7 @@ describe("NotesBulletTitleEditor", () => {
         <button type="button" onClick={requestEdit}>
           Preview
         </button>
-      )
+      ),
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Preview" }));

@@ -298,8 +298,8 @@ pub(crate) struct MutationDelta {
     pub(crate) changed_attachments: Vec<NoteAttachment>,
 }
 
-pub(crate) struct HistoryTransactionResult {
-    pub(crate) workspace: NotesWorkspace,
+pub(crate) struct HistoryTransactionResult<T = NotesWorkspace> {
+    pub(crate) workspace: T,
     pub(crate) history_entry_id: Option<String>,
     pub(crate) state: NotesHistoryState,
     pub(crate) pruned_attachment_paths: Vec<String>,
@@ -308,7 +308,7 @@ pub(crate) struct HistoryTransactionResult {
     pub(crate) delta: Option<MutationDelta>,
 }
 
-impl HistoryTransactionResult {
+impl HistoryTransactionResult<NotesWorkspace> {
     pub(crate) fn into_mutation_result(self) -> NotesMutationResult {
         self.into_mutation_result_inner(false)
     }
@@ -397,11 +397,11 @@ fn read_mutation_delta(connection: &Connection) -> Result<MutationDelta, String>
     Ok(delta)
 }
 
-pub(crate) fn with_history_transaction_and_prunes(
+pub(crate) fn with_history_transaction_and_prunes<T>(
     connection: &mut Connection,
     context: Option<&NotesHistoryContext>,
-    operation: impl FnOnce(&mut Connection) -> Result<NotesWorkspace, String>,
-) -> Result<HistoryTransactionResult, String> {
+    operation: impl FnOnce(&mut Connection) -> Result<T, String>,
+) -> Result<HistoryTransactionResult<T>, String> {
     let Some(context) = context else {
         return Err("Notes mutations require a history context.".to_string());
     };

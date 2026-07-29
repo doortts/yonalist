@@ -1184,6 +1184,7 @@ pub enum BatchOp {
     RemoveTag { tag: NoteTagFilter },
     /// Replay one ordered Backspace gesture and optionally update its surviving text node.
     BackspaceGesture {
+        expected_titles: Vec<String>,
         title_update: Option<BackspaceTitleUpdate>,
     },
 }
@@ -1294,6 +1295,7 @@ enum ApplyBatchWire {
     },
     BackspaceGesture {
         node_ids: Vec<NoteId>,
+        expected_titles: Vec<String>,
         title_update: RequiredNullable<BackspaceTitleUpdate>,
     },
 }
@@ -1358,10 +1360,12 @@ impl<'de> Deserialize<'de> for ApplyBatchInput {
             },
             ApplyBatchWire::BackspaceGesture {
                 node_ids,
+                expected_titles,
                 title_update,
             } => ApplyBatchInput {
                 node_ids,
                 op: BatchOp::BackspaceGesture {
+                    expected_titles,
                     title_update: title_update.into_option(),
                 },
             },
@@ -1370,6 +1374,7 @@ impl<'de> Deserialize<'de> for ApplyBatchInput {
             && !matches!(
                 &input.op,
                 BatchOp::BackspaceGesture {
+                    expected_titles: _,
                     title_update: Some(_)
                 }
             )
@@ -1396,6 +1401,7 @@ impl ApplyBatchInput {
             && !matches!(
                 &self.op,
                 BatchOp::BackspaceGesture {
+                    expected_titles: _,
                     title_update: Some(_)
                 }
             )
@@ -1421,7 +1427,16 @@ impl ApplyBatchInput {
                 return Err("A batch move cannot specify both afterId and beforeId.".to_string());
             }
         }
-        if let BatchOp::BackspaceGesture { title_update } = &self.op {
+        if let BatchOp::BackspaceGesture {
+            expected_titles,
+            title_update,
+        } = &self.op
+        {
+            if expected_titles.len() != self.node_ids.len() {
+                return Err(
+                    "A Backspace gesture requires one expected title per removed node.".to_string(),
+                );
+            }
             if let Some(update) = title_update {
                 validate_note_id(&update.id)?;
                 if self.node_ids.iter().any(|node_id| node_id == &update.id) {
@@ -2198,6 +2213,7 @@ mod tests {
         let input: ApplyBatchInput = serde_json::from_value(json!({
             "op": "backspaceGesture",
             "nodeIds": [EMPTY_B_ID, EMPTY_A_ID],
+            "expectedTitles": ["consumed B", "consumed A"],
             "titleUpdate": { "id": SURVIVOR_ID, "title": "sur" }
         }))
         .expect("valid gesture");
@@ -2210,6 +2226,7 @@ mod tests {
         let title_only: ApplyBatchInput = serde_json::from_value(json!({
             "op": "backspaceGesture",
             "nodeIds": [],
+            "expectedTitles": [],
             "titleUpdate": { "id": SURVIVOR_ID, "title": "sur" }
         }))
         .expect("title-only gesture");
@@ -2218,6 +2235,7 @@ mod tests {
         assert!(serde_json::from_value::<ApplyBatchInput>(json!({
             "op": "backspaceGesture",
             "nodeIds": [],
+            "expectedTitles": [],
             "titleUpdate": null
         }))
         .is_err());
@@ -2225,14 +2243,25 @@ mod tests {
         let duplicate_owner: ApplyBatchInput = serde_json::from_value(json!({
             "op": "backspaceGesture",
             "nodeIds": [SURVIVOR_ID],
+            "expectedTitles": [""],
             "titleUpdate": { "id": SURVIVOR_ID, "title": "sur" }
         }))
         .expect("typed duplicate owner");
         assert!(duplicate_owner.validate().is_err());
 
+        let misaligned: ApplyBatchInput = serde_json::from_value(json!({
+            "op": "backspaceGesture",
+            "nodeIds": [EMPTY_A_ID],
+            "expectedTitles": [],
+            "titleUpdate": null
+        }))
+        .expect("typed misaligned gesture");
+        assert!(misaligned.validate().is_err());
+
         let invalid_title_id: ApplyBatchInput = serde_json::from_value(json!({
             "op": "backspaceGesture",
             "nodeIds": [],
+            "expectedTitles": [],
             "titleUpdate": { "id": "not-a-uuid", "title": "sur" }
         }))
         .expect("typed invalid title id");

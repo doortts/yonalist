@@ -1312,15 +1312,17 @@ export class NotesDraftEngine {
   private touchBackspaceDraft(
     state: BackspaceDraftLeaseState,
     nodeId: NoteId,
-  ): void {
+  ): string | undefined {
     const record = this.record;
     if (
       !state.active ||
       state.frozen ||
-      record.backspaceDraftLease !== state ||
-      state.touchedNodeIds.has(nodeId)
+      record.backspaceDraftLease !== state
     ) {
-      return;
+      return undefined;
+    }
+    if (state.touchedNodeIds.has(nodeId)) {
+      return state.startingDrafts.get(nodeId)?.title;
     }
 
     // Ownership must change in the keydown turn, before the browser emits the
@@ -1379,6 +1381,7 @@ export class NotesDraftEngine {
       void record.writeQueue.flush(nodeId).catch(() => undefined);
     }
     state.baselineFlushes.push(completion);
+    return startingDraft?.title;
   }
 
   private async prepareBackspaceDraft(

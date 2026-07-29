@@ -11,7 +11,8 @@ import {
   useMemo,
   useRef,
 } from "react";
-import type { NoteId, NoteMarkerKind } from "../../domain/notes";
+import type { NoteId, NoteMarkerKind, NoteNode } from "../../domain/notes";
+import { equalNoteNodeExceptSortKey } from "./notesWorkspaceIdentity";
 
 export type OutlineSortableHandleValue = {
   readonly attributes?: ReturnType<typeof useSortable>["attributes"];
@@ -190,14 +191,29 @@ function shallowObjectIs(
 ): boolean {
   const previousKeys = Object.keys(previous);
   const nextKeys = Object.keys(next);
-  return (
+  const equal =
     previousKeys.length === nextKeys.length &&
-    previousKeys.every(
-      (key) =>
+    previousKeys.every((key) => {
+      const previousValue = previous[key];
+      const nextValue = next[key];
+      return (
         Object.prototype.hasOwnProperty.call(next, key) &&
-        Object.is(previous[key], next[key]),
-    )
-  );
+        (Object.is(previousValue, nextValue) ||
+          (key === "node" &&
+            equalNoteNodeExceptSortKey(
+              previousValue as NoteNode,
+              nextValue as NoteNode,
+            )) ||
+          (key === "ancestorGuideDepths" &&
+            Array.isArray(previousValue) &&
+            Array.isArray(nextValue) &&
+            previousValue.length === nextValue.length &&
+            previousValue.every((value, index) =>
+              Object.is(value, nextValue[index]),
+            )))
+      );
+    });
+  return equal;
 }
 
 export function areOutlineSortableShellPropsEqual(

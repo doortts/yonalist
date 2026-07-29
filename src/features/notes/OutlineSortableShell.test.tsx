@@ -6,14 +6,14 @@ import {
   OutlineSortableHandle,
   OutlineSortableRuntime,
   OutlineSortableShell,
-  useOutlineSortableHandle
+  useOutlineSortableHandle,
 } from "./OutlineSortableShell";
 
 const sortable = vi.hoisted(() => ({
   attributes: {
     role: "button",
     "aria-roledescription": "sortable note",
-    tabIndex: 0
+    tabIndex: 0,
   },
   listeners: {
     onKeyDown: vi.fn(),
@@ -23,11 +23,11 @@ const sortable = vi.hoisted(() => ({
   setNodeRef: vi.fn(),
   isDragging: true,
   transform: { x: 4, y: 8, scaleX: 1, scaleY: 1 },
-  transition: "transform 100ms"
+  transition: "transform 100ms",
 }));
 
 vi.mock("@dnd-kit/sortable", () => ({
-  useSortable: vi.fn(() => sortable)
+  useSortable: vi.fn(() => sortable),
 }));
 
 function shellWithController(
@@ -71,7 +71,7 @@ function shell(editor: React.ReactElement) {
 describe("OutlineSortableShell", () => {
   it("keeps sortable root presentation in the shell and listeners in the handle", () => {
     const onKeyDown = vi.fn(
-      (_event: ReactKeyboardEvent<HTMLButtonElement>) => undefined
+      (_event: ReactKeyboardEvent<HTMLButtonElement>) => undefined,
     );
     render(
       shell(
@@ -80,11 +80,13 @@ describe("OutlineSortableShell", () => {
           type="button"
           aria-label="Zoom into node"
           onKeyDown={onKeyDown}
-        />
-      )
+        />,
+      ),
     );
 
-    const root = document.querySelector<HTMLElement>('[data-outline-id="node-a"]');
+    const root = document.querySelector<HTMLElement>(
+      '[data-outline-id="node-a"]',
+    );
     const handle = screen.getByRole("button", { name: "Zoom into node" });
     expect(root).toHaveClass("notes-node");
     expect(root).toHaveAttribute("data-dragging", "true");
@@ -104,7 +106,7 @@ describe("OutlineSortableShell", () => {
     }
 
     expect(() => render(<Outside />)).toThrow(
-      "OutlineSortableHandle requires OutlineSortableShell."
+      "OutlineSortableHandle requires OutlineSortableShell.",
     );
   });
 
@@ -162,6 +164,66 @@ describe("OutlineSortableShell", () => {
     expect(sortable.listeners.onKeyDown).toHaveBeenCalledOnce();
     expect(sortable.listeners.onPointerDown).toHaveBeenCalledOnce();
     expect(ownKeyDown).toHaveBeenCalledOnce();
+  });
+
+  it("does not rerender an editor when only equal guide-depth array identity changes", () => {
+    const controller = createOutlineSortableController();
+    const rendered = vi.fn();
+    function Editor({
+      ancestorGuideDepths,
+    }: {
+      ancestorGuideDepths: readonly number[];
+    }) {
+      rendered();
+      return <span>{ancestorGuideDepths.length}</span>;
+    }
+    const view = render(
+      shellWithController(
+        <Editor ancestorGuideDepths={[0, 1]} />,
+        controller,
+        false,
+      ),
+    );
+
+    view.rerender(
+      shellWithController(
+        <Editor ancestorGuideDepths={[0, 1]} />,
+        controller,
+        false,
+      ),
+    );
+
+    expect(rendered).toHaveBeenCalledOnce();
+  });
+
+  it("does not rerender an editor when only unused node sort order changes", () => {
+    const controller = createOutlineSortableController();
+    const rendered = vi.fn();
+    function Editor({
+      node,
+    }: {
+      node: { id: string; title: string; sortKey: number };
+    }) {
+      rendered();
+      return <span>{node.title}</span>;
+    }
+    const view = render(
+      shellWithController(
+        <Editor node={{ id: "node-a", title: "same", sortKey: 1 }} />,
+        controller,
+        false,
+      ),
+    );
+
+    view.rerender(
+      shellWithController(
+        <Editor node={{ id: "node-a", title: "same", sortKey: 2 }} />,
+        controller,
+        false,
+      ),
+    );
+
+    expect(rendered).toHaveBeenCalledOnce();
   });
 
   it("rebinds the shell root and handle after a controller replacement", () => {

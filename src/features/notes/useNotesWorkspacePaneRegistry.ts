@@ -3,7 +3,7 @@ import {
   notesSelectionReducer,
   type NormalizedNotesWorkspace,
   type NotesSelection,
-  type NotesSelectionAction
+  type NotesSelectionAction,
 } from "./notesWorkspaceReducer";
 import type {
   NotesActionsSlice,
@@ -12,21 +12,19 @@ import type {
   NotesPaneRuntimeSlice,
   NotesPendingPrimarySelection,
   NotesStateSlice,
-  NotesWorkspaceActions
+  NotesWorkspaceActions,
 } from "./notesWorkspaceTypes";
-import type {
-  NotesPaneSessionState
-} from "./notesPaneSession";
+import type { NotesPaneSessionState } from "./notesPaneSession";
 import type { OptimisticKeyboardInsertion } from "./notesLocalStructure";
 import type { NotesPaneSessionsController } from "./useNotesPaneSessions";
 import type { NotesEditingLeaseController } from "./useNotesEditingLease";
 import {
   cloneOwnedHistorySnapshot,
-  type NavigationIntent
+  type NavigationIntent,
 } from "./notesWorkspaceNavigationSupport";
 
-const EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS:
-  readonly OptimisticKeyboardInsertion[] = [];
+const EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS: readonly OptimisticKeyboardInsertion[] =
+  [];
 
 interface PendingInsertionFocusPublish {
   readonly request: NotesPendingPrimarySelection;
@@ -42,7 +40,7 @@ type PendingInsertionFocusPublishes = Record<
 function takePendingInsertionFocusPublish(
   publishes: PendingInsertionFocusPublishes,
   paneId: PaneId,
-  request: NotesPendingPrimarySelection | null
+  request: NotesPendingPrimarySelection | null,
 ): PendingInsertionFocusPublish | null {
   const pending = publishes[paneId];
   if (request === null || pending?.request !== request) return null;
@@ -86,8 +84,8 @@ function updateNodeDraftWithInsertionFocus(
         ...(patch.markdownImageWidth === undefined &&
         previous?.markdownImageWidth !== undefined
           ? { markdownImageWidth: previous.markdownImageWidth }
-          : {})
-      }
+          : {}),
+      },
     };
   }
 }
@@ -103,7 +101,7 @@ interface UseNotesWorkspacePaneRegistryOptions {
   readonly navigateWithHistory: (
     intent: NavigationIntent,
     workspaceGeneration?: number,
-    originPaneId?: "primary" | "secondary"
+    originPaneId?: "primary" | "secondary",
   ) => Promise<void>;
   readonly primary: {
     readonly pendingPrimarySelection: NotesPendingPrimarySelection | null;
@@ -123,21 +121,16 @@ export function useNotesWorkspacePaneRegistry({
   editingLease,
   retirePendingPrimarySelection,
   navigateWithHistory,
-  primary
+  primary,
 }: UseNotesWorkspacePaneRegistryOptions): NotesPaneRegistrySlice {
-  const {
-    activePaneId,
-    panes,
-    setActivePaneId,
-    dispatchPane,
-    getPaneSession
-  } = sessions;
+  const { activePaneId, panes, setActivePaneId, dispatchPane, getPaneSession } =
+    sessions;
   const {
     canEdit,
     claim,
     release,
     setCompositionActive,
-    structuralCommandsAllowed
+    structuralCommandsAllowed,
   } = editingLease;
   const actionsRef = useRef(actionsSlice.actions);
   actionsRef.current = actionsSlice.actions;
@@ -145,11 +138,9 @@ export function useNotesWorkspacePaneRegistry({
   actionsSliceRef.current = actionsSlice;
   const stateRef = useRef(state);
   stateRef.current = state;
-  const primaryActionOverridesRef = useRef<
-    Partial<NotesWorkspaceActions>
-  >({});
+  const primaryActionOverridesRef = useRef<Partial<NotesWorkspaceActions>>({});
   const primaryActionDispatchersRef = useRef(
-    new Map<PropertyKey, (...args: unknown[]) => unknown>()
+    new Map<PropertyKey, (...args: unknown[]) => unknown>(),
   );
   const primaryActionsRef = useRef<NotesWorkspaceActions | null>(null);
   if (primaryActionsRef.current === null) {
@@ -172,12 +163,12 @@ export function useNotesWorkspacePaneRegistry({
             primaryActionDispatchersRef.current.set(property, dispatch);
           }
           return dispatch;
-        }
-      }
+        },
+      },
     );
   }
   const primaryActionsSliceDispatchersRef = useRef(
-    new Map<PropertyKey, (...args: unknown[]) => unknown>()
+    new Map<PropertyKey, (...args: unknown[]) => unknown>(),
   );
   const primaryActionsSliceRef = useRef<NotesActionsSlice | null>(null);
   if (primaryActionsSliceRef.current === null) {
@@ -197,45 +188,70 @@ export function useNotesWorkspacePaneRegistry({
           primaryActionsSliceDispatchersRef.current.set(property, dispatch);
         }
         return dispatch;
-      }
+      },
     });
   }
   const primaryActionsSlice = primaryActionsSliceRef.current;
   const primaryNavigationVersionRef = useRef(primary.navigationVersion);
   primaryNavigationVersionRef.current = primary.navigationVersion;
-  const primaryPendingSelectionRef = useRef(
-    primary.pendingPrimarySelection
-  );
+  const primaryPendingSelectionRef = useRef(primary.pendingPrimarySelection);
   primaryPendingSelectionRef.current = primary.pendingPrimarySelection;
   const pendingInsertionFocusPublishRef =
     useRef<PendingInsertionFocusPublishes>({
       primary: null,
-      secondary: null
+      secondary: null,
     });
   const claimEditing = useCallback(
     async (
       paneId: "primary" | "secondary",
       nodeId: string,
       field: "title" | "note",
-      isCurrent: () => boolean = () => true
+      isCurrent: () => boolean = () => true,
     ): Promise<boolean> => {
+      const navigationVersion =
+        paneId === "primary"
+          ? primaryNavigationVersionRef.current
+          : getPaneSession("secondary").navigationVersion;
+      const claimIsCurrent = () => {
+        const current =
+          paneId === "primary"
+            ? {
+                navigationVersion: primaryNavigationVersionRef.current,
+                selectedId: stateRef.current.selectedId,
+                editingNoteId: stateRef.current.editingNoteId,
+              }
+            : getPaneSession("secondary");
+        return (
+          isCurrent() &&
+          (current.navigationVersion === navigationVersion ||
+            (current.selectedId === nodeId && current.editingNoteId === nodeId))
+        );
+      };
+      const pendingSecondarySelection =
+        paneId === "secondary"
+          ? getPaneSession("secondary").pendingPrimarySelection
+          : null;
       const claimed = await claim(
         { paneId, nodeId, field },
         actionsRef.current.flushNodeDraft,
-        isCurrent
+        claimIsCurrent,
       );
-      if (!claimed || !isCurrent()) return false;
+      const currentAfterClaim = claimIsCurrent();
+      if (!claimed || !currentAfterClaim) return false;
       setActivePaneId(paneId);
       if (paneId === "primary") {
         actionsRef.current.markEditingFocus?.(nodeId, field);
-      } else {
+      } else if (
+        getPaneSession("secondary").pendingPrimarySelection ===
+        pendingSecondarySelection
+      ) {
         dispatchPane("secondary", {
           type: "setPendingPrimarySelection",
-          request: null
+          request: null,
         });
         dispatchPane("secondary", {
           type: "setSelection",
-          selection: null
+          selection: null,
         });
         dispatchPane("secondary", {
           type: "setNavigation",
@@ -243,39 +259,35 @@ export function useNotesWorkspacePaneRegistry({
             selectedId: nodeId,
             editingNoteId: nodeId,
             pendingFocusId: null,
-            pendingFocusField: null
-          }
+            pendingFocusField: null,
+          },
         });
       }
       return true;
     },
-    [
-      claim,
-      dispatchPane,
-      setActivePaneId,
-    ]
+    [claim, dispatchPane, getPaneSession, setActivePaneId],
   );
   const setPaneComposition = useCallback(
     (paneId: "primary" | "secondary", active: boolean): void => {
       setCompositionActive(paneId, active);
       actionsRef.current.setOutlineCompositionActive?.(
-        !structuralCommandsAllowed()
+        !structuralCommandsAllowed(),
       );
     },
-    [setCompositionActive, structuralCommandsAllowed]
+    [setCompositionActive, structuralCommandsAllowed],
   );
   const settleCrossPaneMove = useCallback(
     (
       sourcePaneId: "primary" | "secondary",
       destinationPaneId: "primary" | "secondary",
-      focusNodeId: string
+      focusNodeId: string,
     ): void => {
       if (sourcePaneId === "primary") {
         actionsRef.current.clearSelection?.();
       } else {
         dispatchPane("secondary", {
           type: "setSelection",
-          selection: null
+          selection: null,
         });
       }
       setActivePaneId(destinationPaneId);
@@ -286,12 +298,12 @@ export function useNotesWorkspacePaneRegistry({
             selectedId: focusNodeId,
             editingNoteId: focusNodeId,
             pendingFocusId: focusNodeId,
-            pendingFocusField: "title"
-          }
+            pendingFocusField: "title",
+          },
         });
       }
     },
-    [dispatchPane, setActivePaneId]
+    [dispatchPane, setActivePaneId],
   );
   const moveNodeAcrossPanes = useCallback<
     NonNullable<NotesWorkspaceActions["moveNodeAcrossPanes"]>
@@ -303,10 +315,10 @@ export function useNotesWorkspacePaneRegistry({
         {
           ...(expandNodeId === undefined ? {} : { expandNodeId }),
           beforeHistoryCapture: () =>
-            settleCrossPaneMove(sourcePaneId, destinationPaneId, input.id)
-        }
+            settleCrossPaneMove(sourcePaneId, destinationPaneId, input.id),
+        },
       ),
-    [settleCrossPaneMove]
+    [settleCrossPaneMove],
   );
   const applyPreparedSelectionBatchAcrossPanes = useCallback<
     NonNullable<NotesWorkspaceActions["applyPreparedSelectionBatchAcrossPanes"]>
@@ -324,10 +336,10 @@ export function useNotesWorkspacePaneRegistry({
           primaryNavigationVersionRef.current,
         ...(expandNodeId === undefined ? {} : { expandNodeId }),
         beforeHistoryCapture: () =>
-          settleCrossPaneMove(sourcePaneId, destinationPaneId, focusNodeId)
+          settleCrossPaneMove(sourcePaneId, destinationPaneId, focusNodeId),
       });
     },
-    [settleCrossPaneMove]
+    [settleCrossPaneMove],
   );
   const primaryAcknowledgeFocus = useCallback(
     async (nodeId: string, requestId?: number) => {
@@ -357,12 +369,12 @@ export function useNotesWorkspacePaneRegistry({
         "primary",
         nodeId,
         stateRef.current.pendingFocusField ?? "title",
-        requestIsCurrent
+        requestIsCurrent,
       );
       const pendingPublish = takePendingInsertionFocusPublish(
         pendingInsertionFocusPublishRef.current,
         "primary",
-        acknowledgedRequest
+        acknowledgedRequest,
       );
       if (!claimed) {
         if (
@@ -377,25 +389,25 @@ export function useNotesWorkspacePaneRegistry({
         actionsRef.current.updateNodeDraft(
           pendingPublish.request.nodeId,
           pendingPublish.patch,
-          pendingPublish.request.field
+          pendingPublish.request.field,
         );
       }
       await actionsRef.current.acknowledgeFocus(nodeId, expectedRequestId);
     },
-    [claimEditing, retirePendingPrimarySelection]
+    [claimEditing, retirePendingPrimarySelection],
   );
   const primaryClaimEditingFocus = useCallback(
     (nodeId: string, field: "title" | "note") =>
       claimEditing("primary", nodeId, field),
-    [claimEditing]
+    [claimEditing],
   );
   const primaryReleaseEditingFocus = useCallback(
     (nodeId?: string) => release("primary", nodeId),
-    [release]
+    [release],
   );
   const primarySetOutlineCompositionActive = useCallback(
     (active: boolean) => setPaneComposition("primary", active),
-    [setPaneComposition]
+    [setPaneComposition],
   );
   const primaryMarkEditingFocus = useCallback(
     (nodeId: string, field: "title" | "note") => {
@@ -403,7 +415,7 @@ export function useNotesWorkspacePaneRegistry({
         actionsRef.current.markEditingFocus?.(nodeId, field);
       }
     },
-    [canEdit]
+    [canEdit],
   );
   const primaryUpdateNodeDraft = useCallback<
     NotesWorkspaceActions["updateNodeDraft"]
@@ -415,10 +427,10 @@ export function useNotesWorkspacePaneRegistry({
         primaryPendingSelectionRef.current,
         canEdit,
         actionsRef.current.updateNodeDraft,
-        ...args
+        ...args,
       );
     },
-    [canEdit]
+    [canEdit],
   );
   Object.assign(primaryActionOverridesRef.current, {
     moveNodeAcrossPanes,
@@ -428,17 +440,17 @@ export function useNotesWorkspacePaneRegistry({
     releaseEditingFocus: primaryReleaseEditingFocus,
     setOutlineCompositionActive: primarySetOutlineCompositionActive,
     markEditingFocus: primaryMarkEditingFocus,
-    updateNodeDraft: primaryUpdateNodeDraft
+    updateNodeDraft: primaryUpdateNodeDraft,
   });
   const updateSecondarySelection = useCallback(
     (action: NotesSelectionAction): void => {
       const current = getPaneSession("secondary");
       dispatchPane("secondary", {
         type: "setSelection",
-        selection: notesSelectionReducer(current.selection, action)
+        selection: notesSelectionReducer(current.selection, action),
       });
     },
-    [dispatchPane, getPaneSession]
+    [dispatchPane, getPaneSession],
   );
   const secondaryActions = useMemo<NotesWorkspaceActions>(
     () => ({
@@ -457,7 +469,7 @@ export function useNotesWorkspacePaneRegistry({
           getPaneSession("secondary").pendingPrimarySelection,
           canEdit,
           actionsSlice.actions.updateNodeDraft,
-          ...args
+          ...args,
         );
       },
       acknowledgeFocus: async (nodeId, requestId) => {
@@ -489,12 +501,12 @@ export function useNotesWorkspacePaneRegistry({
           "secondary",
           nodeId,
           current.pendingFocusField ?? "title",
-          requestIsCurrent
+          requestIsCurrent,
         );
         const pendingPublish = takePendingInsertionFocusPublish(
           pendingInsertionFocusPublishRef.current,
           "secondary",
-          acknowledgedRequest
+          acknowledgedRequest,
         );
         if (!claimed) {
           const failed = getPaneSession("secondary");
@@ -504,12 +516,12 @@ export function useNotesWorkspacePaneRegistry({
           ) {
             dispatchPane("secondary", {
               type: "setPendingPrimarySelection",
-              request: null
+              request: null,
             });
             if (failed.pendingFocusId === nodeId) {
               dispatchPane("secondary", {
                 type: "setNavigation",
-                patch: { pendingFocusId: null, pendingFocusField: null }
+                patch: { pendingFocusId: null, pendingFocusField: null },
               });
             }
           }
@@ -519,26 +531,10 @@ export function useNotesWorkspacePaneRegistry({
           actionsSlice.actions.updateNodeDraft(
             pendingPublish.request.nodeId,
             pendingPublish.patch,
-            pendingPublish.request.field
+            pendingPublish.request.field,
           );
         }
-        await actionsSlice.actions.acknowledgeFocus(
-          nodeId,
-          expectedRequestId
-        );
-        dispatchPane("secondary", {
-          type: "setPendingPrimarySelection",
-          request: null
-        });
-        dispatchPane("secondary", {
-          type: "setNavigation",
-          patch: {
-            pendingFocusId: null,
-            pendingFocusField: null,
-            editingNoteId: nodeId,
-            selectedId: nodeId
-          }
-        });
+        await actionsSlice.actions.acknowledgeFocus(nodeId, expectedRequestId);
       },
       focusNode: async (nodeId, primarySelection) => {
         const current = getPaneSession("secondary");
@@ -551,9 +547,9 @@ export function useNotesWorkspacePaneRegistry({
                   (current.pendingPrimarySelection?.requestId ?? 0) + 1,
                 nodeId,
                 field: "title",
-                selection: { ...primarySelection }
+                selection: { ...primarySelection },
               }
-            : null
+            : null,
         });
         dispatchPane("secondary", {
           type: "setNavigation",
@@ -561,8 +557,8 @@ export function useNotesWorkspacePaneRegistry({
             selectedId: nodeId,
             editingNoteId: nodeId,
             pendingFocusId: nodeId,
-            pendingFocusField: "title"
-          }
+            pendingFocusField: "title",
+          },
         });
       },
       markEditingFocus: (nodeId, field) => {
@@ -575,12 +571,11 @@ export function useNotesWorkspacePaneRegistry({
           patch: {
             selectedId: nodeId,
             editingNoteId: nodeId,
-            pendingFocusField: field
-          }
+            pendingFocusField: field,
+          },
         });
       },
-      getNavigationVersion: () =>
-        getPaneSession("secondary").navigationVersion,
+      getNavigationVersion: () => getPaneSession("secondary").navigationVersion,
       zoomTo: async (nodeId) => {
         if (nodeId !== null && state.nodesById[nodeId] === undefined) return;
         await navigateWithHistory(
@@ -595,19 +590,19 @@ export function useNotesWorkspacePaneRegistry({
                   ...destination.secondaryPane!,
                   selectedId: nodeId,
                   zoomRootId: nodeId,
-                  focus: null
-                }
-              }
+                  focus: null,
+                },
+              },
             };
           },
           undefined,
-          "secondary"
+          "secondary",
         );
       },
       setSelectionAnchor: (anchorId) =>
         updateSecondarySelection({
           type: "setSelectionAnchor",
-          anchorId
+          anchorId,
         }),
       extendSelectionTo: (headId) =>
         updateSecondarySelection({ type: "extendSelectionTo", headId }),
@@ -615,7 +610,7 @@ export function useNotesWorkspacePaneRegistry({
         updateSecondarySelection({
           type: "toggleSelectionNode",
           nodeId,
-          visibleNodeIds
+          visibleNodeIds,
         }),
       clearSelection: () =>
         updateSecondarySelection({ type: "clearSelection" }),
@@ -629,7 +624,7 @@ export function useNotesWorkspacePaneRegistry({
         }
         updateSecondarySelection({
           type: "replaceSelection",
-          selection: nextSelection
+          selection: nextSelection,
         });
         return true;
       },
@@ -637,9 +632,9 @@ export function useNotesWorkspacePaneRegistry({
         const current = getPaneSession("secondary");
         return {
           selection: current.selection,
-          revision: current.selectionRevision
+          revision: current.selectionRevision,
         };
-      }
+      },
     }),
     [
       actionsSlice.actions,
@@ -654,8 +649,8 @@ export function useNotesWorkspacePaneRegistry({
       state.nodesById,
       updateSecondarySelection,
       moveNodeAcrossPanes,
-      release
-    ]
+      release,
+    ],
   );
   const secondaryPane = panes.secondary;
   const secondaryState = useMemo<NormalizedNotesWorkspace>(
@@ -670,7 +665,7 @@ export function useNotesWorkspacePaneRegistry({
       pendingFocusId: secondaryPane.pendingFocusId,
       pendingFocusField: secondaryPane.pendingFocusField,
       status: state.status,
-      error: state.error
+      error: state.error,
     }),
     [
       secondaryPane.editingNoteId,
@@ -683,8 +678,8 @@ export function useNotesWorkspacePaneRegistry({
       state.error,
       state.nodesById,
       state.rootIds,
-      state.status
-    ]
+      state.status,
+    ],
   );
   const secondaryStateSlice = useMemo<NotesStateSlice>(
     () => ({
@@ -701,7 +696,7 @@ export function useNotesWorkspacePaneRegistry({
       canRedo: stateSlice.canRedo,
       authorityRecovery: stateSlice.authorityRecovery,
       retryAuthorityRecovery: stateSlice.retryAuthorityRecovery,
-      pendingPrimarySelection: secondaryPane.pendingPrimarySelection
+      pendingPrimarySelection: secondaryPane.pendingPrimarySelection,
     }),
     [
       secondaryPane.locallyExpandedNodeIds,
@@ -717,33 +712,23 @@ export function useNotesWorkspacePaneRegistry({
       stateSlice.loading,
       stateSlice.retryAuthorityRecovery,
       stateSlice.status,
-      stateSlice.tagSummaries
-    ]
+      stateSlice.tagSummaries,
+    ],
   );
-  const primaryOptimisticKeyboardInsertions = useMemo(
-    () => {
-      const owned =
-        draftsSlice.optimisticKeyboardInsertions?.filter(
-          (insertion) => insertion.pending.ownerPaneId === "primary"
-        ) ?? EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS;
-      return owned.length === 0
-        ? EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS
-        : owned;
-    },
-    [draftsSlice.optimisticKeyboardInsertions]
-  );
-  const secondaryOptimisticKeyboardInsertions = useMemo(
-    () => {
-      const owned =
-        draftsSlice.optimisticKeyboardInsertions?.filter(
-          (insertion) => insertion.pending.ownerPaneId === "secondary"
-        ) ?? EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS;
-      return owned.length === 0
-        ? EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS
-        : owned;
-    },
-    [draftsSlice.optimisticKeyboardInsertions]
-  );
+  const primaryOptimisticKeyboardInsertions = useMemo(() => {
+    const owned =
+      draftsSlice.optimisticKeyboardInsertions?.filter(
+        (insertion) => insertion.pending.ownerPaneId === "primary",
+      ) ?? EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS;
+    return owned.length === 0 ? EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS : owned;
+  }, [draftsSlice.optimisticKeyboardInsertions]);
+  const secondaryOptimisticKeyboardInsertions = useMemo(() => {
+    const owned =
+      draftsSlice.optimisticKeyboardInsertions?.filter(
+        (insertion) => insertion.pending.ownerPaneId === "secondary",
+      ) ?? EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS;
+    return owned.length === 0 ? EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS : owned;
+  }, [draftsSlice.optimisticKeyboardInsertions]);
   const primaryOptimisticInsertionFailure =
     draftsSlice.optimisticInsertionFailure?.insertion.pending.ownerPaneId ===
     "primary"
@@ -768,7 +753,7 @@ export function useNotesWorkspacePaneRegistry({
       attachmentUploadRetryAttemptIdsByNodeId:
         draftsSlice.attachmentUploadRetryAttemptIdsByNodeId,
       selection: primary.selection,
-      selectionRevision: primary.selectionRevision
+      selectionRevision: primary.selectionRevision,
     }),
     [
       draftsSlice.attachmentUploadErrorsByNodeId,
@@ -779,8 +764,8 @@ export function useNotesWorkspacePaneRegistry({
       primary.selectionRevision,
       optimisticBackspaceGesture,
       primaryOptimisticInsertionFailure,
-      primaryOptimisticKeyboardInsertions
-    ]
+      primaryOptimisticKeyboardInsertions,
+    ],
   );
   const secondaryDraftsSlice = useMemo<NotesDraftsSlice>(
     () => ({
@@ -794,7 +779,7 @@ export function useNotesWorkspacePaneRegistry({
       attachmentUploadRetryAttemptIdsByNodeId:
         draftsSlice.attachmentUploadRetryAttemptIdsByNodeId,
       selection: secondaryPane.selection,
-      selectionRevision: secondaryPane.selectionRevision
+      selectionRevision: secondaryPane.selectionRevision,
     }),
     [
       draftsSlice.attachmentUploadErrorsByNodeId,
@@ -805,12 +790,12 @@ export function useNotesWorkspacePaneRegistry({
       secondaryOptimisticInsertionFailure,
       secondaryOptimisticKeyboardInsertions,
       secondaryPane.selection,
-      secondaryPane.selectionRevision
-    ]
+      secondaryPane.selectionRevision,
+    ],
   );
   const secondaryActionsSlice = useMemo<NotesActionsSlice>(
     () => ({ ...actionsSlice, actions: secondaryActions }),
-    [actionsSlice, secondaryActions]
+    [actionsSlice, secondaryActions],
   );
   const primaryPaneSession = useMemo<NotesPaneSessionState>(
     () => ({
@@ -824,53 +809,53 @@ export function useNotesWorkspacePaneRegistry({
       locallyExpandedNodeIds: primary.locallyExpandedNodeIds,
       selection: primary.selection,
       selectionRevision: primary.selectionRevision,
-      navigationVersion: primary.navigationVersion
+      navigationVersion: primary.navigationVersion,
     }),
-    [panes.primary, primary, state]
+    [panes.primary, primary, state],
   );
   const paneSessionRef = useRef({
     primary: primaryPaneSession,
-    secondary: panes.secondary
+    secondary: panes.secondary,
   });
   paneSessionRef.current = {
     primary: primaryPaneSession,
-    secondary: panes.secondary
+    secondary: panes.secondary,
   };
   const primaryPaneSlice = useMemo<NotesPaneRuntimeSlice>(
     () => ({
       paneId: "primary",
       stateSlice,
       draftsSlice: primaryDraftsSlice,
-      actionsSlice: primaryActionsSlice
+      actionsSlice: primaryActionsSlice,
     }),
-    [primaryActionsSlice, primaryDraftsSlice, stateSlice]
+    [primaryActionsSlice, primaryDraftsSlice, stateSlice],
   );
   const secondaryPaneSlice = useMemo<NotesPaneRuntimeSlice>(
     () => ({
       paneId: "secondary",
       stateSlice: secondaryStateSlice,
       draftsSlice: secondaryDraftsSlice,
-      actionsSlice: secondaryActionsSlice
+      actionsSlice: secondaryActionsSlice,
     }),
-    [secondaryActionsSlice, secondaryDraftsSlice, secondaryStateSlice]
+    [secondaryActionsSlice, secondaryDraftsSlice, secondaryStateSlice],
   );
   return useMemo(
     () => ({
       activePaneId,
       panes: {
         primary: primaryPaneSlice,
-        secondary: secondaryPaneSlice
+        secondary: secondaryPaneSlice,
       },
       setActivePaneId,
       getPaneSession: (paneId) => paneSessionRef.current[paneId],
-      dispatchPane
+      dispatchPane,
     }),
     [
       activePaneId,
       dispatchPane,
       primaryPaneSlice,
       secondaryPaneSlice,
-      setActivePaneId
-    ]
+      setActivePaneId,
+    ],
   );
 }

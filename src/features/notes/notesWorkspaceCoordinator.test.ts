@@ -4,17 +4,17 @@ import type {
   NotesHistoryState,
   NotesStore,
   NotesWorkspace,
-  NotesWorkspaceScope
+  NotesWorkspaceScope,
 } from "../../domain/notes";
 import {
   createNotesExpansionSnapshotPool,
   type NotesExpansionSnapshotPool,
-  type NotesHistorySnapshot
+  type NotesHistorySnapshot,
 } from "./notesHistory";
 import {
   createNotesWorkspaceCoordinatorRegistry,
   type NotesWorkspaceDrainEnqueue,
-  type OpenNotesWorkspaceSessionOptions
+  type OpenNotesWorkspaceSessionOptions,
 } from "./notesWorkspaceCoordinator";
 import { applyBackspaceGestureCommand } from "./notesCommands";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
@@ -39,7 +39,7 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     imageOffsetUtf16: 0,
     ...overrides,
     markerKind: overrides.markerKind ?? "bullet",
-    markdownImageWidth: overrides.markdownImageWidth ?? null
+    markdownImageWidth: overrides.markdownImageWidth ?? null,
   };
 }
 
@@ -54,7 +54,7 @@ function historyState(historyEpoch = "epoch-a"): NotesHistoryState {
     historyEpoch,
     nextUndoEntryId: null,
     nextRedoEntryId: null,
-    prunedEntryIds: []
+    prunedEntryIds: [],
   };
 }
 
@@ -62,7 +62,7 @@ function projectedHistoryState(
   nextUndoEntryId: string | null,
   nextRedoEntryId: string | null = null,
   prunedEntryIds: string[] = [],
-  historyEpoch = "epoch-a"
+  historyEpoch = "epoch-a",
 ): NotesHistoryState {
   return {
     canUndo: nextUndoEntryId !== null,
@@ -70,7 +70,7 @@ function projectedHistoryState(
     historyEpoch,
     nextUndoEntryId,
     nextRedoEntryId,
-    prunedEntryIds
+    prunedEntryIds,
   };
 }
 
@@ -79,7 +79,7 @@ function optimisticInsertion(sourceTitle = "Root", insertedTitle = "") {
   return {
     sourceSelection: { anchorUtf16: offset, focusUtf16: offset },
     sourceTitle,
-    insertedTitle
+    insertedTitle,
   };
 }
 
@@ -96,7 +96,7 @@ function deferred<T>() {
 function historySnapshot(
   pool: NotesExpansionSnapshotPool,
   selectedId: string | null,
-  expanded: readonly string[] = selectedId ? [selectedId] : []
+  expanded: readonly string[] = selectedId ? [selectedId] : [],
 ): NotesHistorySnapshot {
   return {
     scope: { kind: "active" },
@@ -105,7 +105,7 @@ function historySnapshot(
     selectedId,
     zoomRootId: selectedId,
     expansion: pool.acquire(expanded),
-    focus: selectedId ? { nodeId: selectedId, field: "title" } : null
+    focus: selectedId ? { nodeId: selectedId, field: "title" } : null,
   };
 }
 
@@ -115,14 +115,14 @@ function writableOptions(
     OpenNotesWorkspaceSessionOptions,
     "presentation" | "captureHistoryLocation" | "applyHistoryLocation"
   >,
-  applyHistoryLocation: OpenNotesWorkspaceSessionOptions["applyHistoryLocation"] =
-    () => true
+  applyHistoryLocation: OpenNotesWorkspaceSessionOptions["applyHistoryLocation"] = () =>
+    true,
 ): OpenNotesWorkspaceSessionOptions {
   return {
     ...options,
     presentation: "writable",
     captureHistoryLocation: () => historySnapshot(pool, "root"),
-    applyHistoryLocation
+    applyHistoryLocation,
   };
 }
 
@@ -160,24 +160,24 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     importAttachmentBytes: empty,
     undo: vi.fn().mockResolvedValue({
       kind: "entryMissing",
-      ...historyState()
+      ...historyState(),
     }),
     redo: vi.fn().mockResolvedValue({
       kind: "entryMissing",
-      ...historyState()
+      ...historyState(),
     }),
     lookupImageAtomOperation: vi.fn<NotesStore["lookupImageAtomOperation"]>(
       async (_vaultPath, _sessionId, historyEpoch) => ({
         kind: "missing",
-        historyEpoch
-      })
+        historyEpoch,
+      }),
     ),
     ackImageAtomOperation: vi.fn<NotesStore["ackImageAtomOperation"]>(
-      async () => undefined
+      async () => undefined,
     ),
     clearHistory: vi.fn().mockResolvedValue({
       ...historyState(),
-      historyReset: true
+      historyReset: true,
     }),
     pruneHistoryEntries: vi.fn().mockResolvedValue(historyState()),
     prepareNavigation: vi.fn().mockResolvedValue(historyState()),
@@ -186,8 +186,10 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     search: vi.fn().mockResolvedValue([]),
     listTags: vi.fn().mockResolvedValue([]),
     listTagsWithCounts: vi.fn().mockResolvedValue([]),
-    deleteDatabase: vi.fn().mockResolvedValue({ attachmentCleanupFailed: false }),
-    ...overrides
+    deleteDatabase: vi
+      .fn()
+      .mockResolvedValue({ attachmentCleanupFailed: false }),
+    ...overrides,
   };
 }
 
@@ -197,11 +199,13 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/backspace-gesture",
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/backspace-gesture",
+        onEvent: events,
+      }),
+    );
     await session.activation;
     session.publishOutlinePaneState({
       paneId: "primary",
@@ -219,25 +223,25 @@ describe("notesWorkspaceCoordinator registry", () => {
     const settle = vi.fn();
     const lease: NotesBackspaceDraftLease = {
       token: 1,
-      touch: vi.fn(),
+      touch: vi.fn(() => "consumed B"),
       prepare: vi.fn(() => prepared.promise),
-      settle
+      settle,
     };
     const work = vi.fn(async (_context, input) => ({
       kind: "authoritative" as const,
       workspace: workspace([node({ id: "root", title: "Root" })]),
       historyStatus: projectedHistoryState(input.historyContext.entryId),
-      committedHistoryEntryIds: [input.historyContext.entryId]
+      committedHistoryEntryIds: [input.historyContext.entryId],
     }));
 
     const token = session.beginBackspaceGesture(
       {
         ownerPaneId: "primary",
         nodeId: "empty-b",
-        selection: { anchorUtf16: 0, focusUtf16: 0 }
+        selection: { anchorUtf16: 0, focusUtf16: 0 },
       },
       () => lease,
-      work
+      work,
     );
     expect(token).toEqual(expect.any(Number));
     expect(
@@ -245,16 +249,16 @@ describe("notesWorkspaceCoordinator registry", () => {
         {
           ownerPaneId: "primary",
           nodeId: "other",
-          selection: { anchorUtf16: 0, focusUtf16: 0 }
+          selection: { anchorUtf16: 0, focusUtf16: 0 },
         },
         () => lease,
-        work
-      )
+        work,
+      ),
     ).toBe(token);
-    session.touchBackspaceGesture(token!, "empty-b");
+    session.touchBackspaceGesture(token!, "empty-b", "rendered B");
     expect(lease.touch).toHaveBeenCalledWith("empty-b");
     expect(
-      session.removeEmptyNodeInBackspaceGesture(token!, "empty-b", "empty-a")
+      session.removeEmptyNodeInBackspaceGesture(token!, "empty-b", "empty-a"),
     ).toBe(true);
     expect(events).toHaveBeenLastCalledWith({
       type: "optimisticBackspaceGesture",
@@ -263,8 +267,8 @@ describe("notesWorkspaceCoordinator registry", () => {
         ownerPaneId: "primary",
         removedNodeIds: ["empty-b"],
         focusNodeId: "empty-a",
-        status: "active"
-      })
+        status: "active",
+      }),
     });
 
     const completion = session.finishBackspaceGesture("keyup");
@@ -273,11 +277,11 @@ describe("notesWorkspaceCoordinator registry", () => {
       snapshot: expect.objectContaining({
         token,
         removedNodeIds: ["empty-b"],
-        status: "queued"
-      })
+        status: "queued",
+      }),
     });
     expect(
-      session.removeEmptyNodeInBackspaceGesture(token!, "empty-a", "root")
+      session.removeEmptyNodeInBackspaceGesture(token!, "empty-a", "root"),
     ).toBe(false);
     expect(work).not.toHaveBeenCalled();
 
@@ -287,20 +291,21 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(work).toHaveBeenCalledWith(
       expect.objectContaining({ vaultRoot: "/backspace-gesture" }),
       expect.objectContaining({
+        expectedTitles: ["consumed B"],
         gesture: expect.objectContaining({
           removedNodeIds: ["empty-b"],
-          status: "running"
+          status: "running",
         }),
         historyContext: expect.objectContaining({
-          commandKind: "backspaceGesture"
+          commandKind: "backspaceGesture",
         }),
-        draftCommit: { baselineFlushed: true, titleUpdate: null }
-      })
+        draftCommit: { baselineFlushed: true, titleUpdate: null },
+      }),
     );
     expect(settle).toHaveBeenCalledWith("committed");
     expect(events).toHaveBeenLastCalledWith({
       type: "optimisticBackspaceGesture",
-      snapshot: null
+      snapshot: null,
     });
     session.close();
   });
@@ -310,11 +315,13 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/backspace-known-failure",
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/backspace-known-failure",
+        onEvent: events,
+      }),
+    );
     await session.activation;
     session.publishOutlinePaneState({
       paneId: "primary",
@@ -331,25 +338,26 @@ describe("notesWorkspaceCoordinator registry", () => {
       touch: vi.fn(),
       prepare: vi.fn(async () => ({
         baselineFlushed: true,
-        titleUpdate: null
+        titleUpdate: null,
       })),
-      settle
+      settle,
     };
     const work = vi.fn(async () => ({
       kind: "failure" as const,
       error: "write rejected",
       workspace: workspace([node({ id: "root", title: "Root" })]),
-      historyStatus: historyState()
+      historyStatus: historyState(),
     }));
     const token = session.beginBackspaceGesture(
       {
         ownerPaneId: "primary",
         nodeId: "empty",
-        selection: { anchorUtf16: 3, focusUtf16: 3 }
+        selection: { anchorUtf16: 3, focusUtf16: 3 },
       },
       () => lease,
-      work
+      work,
     )!;
+    session.touchBackspaceGesture(token, "empty", "");
     session.removeEmptyNodeInBackspaceGesture(token, "empty", "root");
 
     await session.finishBackspaceGesture("keyup");
@@ -362,19 +370,19 @@ describe("notesWorkspaceCoordinator registry", () => {
       rollback: {
         ownerPaneId: "primary",
         nodeId: "empty",
-        selection: { anchorUtf16: 3, focusUtf16: 3 }
-      }
+        selection: { anchorUtf16: 3, focusUtf16: 3 },
+      },
     });
     expect(
       session.beginBackspaceGesture(
         {
           ownerPaneId: "primary",
           nodeId: "empty",
-          selection: { anchorUtf16: 3, focusUtf16: 3 }
+          selection: { anchorUtf16: 3, focusUtf16: 3 },
         },
         () => ({ ...lease, token: 2 }),
-        work
-      )
+        work,
+      ),
     ).toBe(2);
     session.cancelBackspaceGesture();
     session.close();
@@ -384,11 +392,13 @@ describe("notesWorkspaceCoordinator registry", () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/backspace-drain",
-      onEvent: vi.fn()
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/backspace-drain",
+        onEvent: vi.fn(),
+      }),
+    );
     await session.activation;
     session.publishOutlinePaneState({
       paneId: "primary",
@@ -407,23 +417,24 @@ describe("notesWorkspaceCoordinator registry", () => {
       token: 1,
       touch: vi.fn(),
       prepare: vi.fn(() => prepared.promise),
-      settle
+      settle,
     };
     const work = vi.fn(async (_context, input) => ({
       kind: "authoritative" as const,
       workspace: workspace([node({ id: "root", title: "Root" })]),
       historyStatus: projectedHistoryState(input.historyContext.entryId),
-      committedHistoryEntryIds: [input.historyContext.entryId]
+      committedHistoryEntryIds: [input.historyContext.entryId],
     }));
     const token = session.beginBackspaceGesture(
       {
         ownerPaneId: "primary",
         nodeId: "empty",
-        selection: { anchorUtf16: 0, focusUtf16: 0 }
+        selection: { anchorUtf16: 0, focusUtf16: 0 },
       },
       () => lease,
-      work
+      work,
     )!;
+    session.touchBackspaceGesture(token, "empty", "");
     session.removeEmptyNodeInBackspaceGesture(token, "empty", "root");
 
     const completion = session.finishBackspaceGesture("drain");
@@ -434,7 +445,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(work).toHaveBeenCalledOnce();
     expect(settle).toHaveBeenCalledWith("committed");
     await vi.waitFor(() =>
-      expect(store.closeHistorySession).toHaveBeenCalledOnce()
+      expect(store.closeHistorySession).toHaveBeenCalledOnce(),
     );
   });
 
@@ -446,22 +457,24 @@ describe("notesWorkspaceCoordinator registry", () => {
       .mockResolvedValueOnce(
         workspace([
           node({ id: "root", title: "Root" }),
-          node({ id: "empty", title: "", sortKey: 2048 })
-        ])
+          node({ id: "empty", title: "", sortKey: 2048 }),
+        ]),
       )
       .mockResolvedValueOnce(recoveredWorkspace);
     const historyStatus = vi.fn(async () =>
-      projectedHistoryState(expectedEntryId)
+      projectedHistoryState(expectedEntryId),
     );
     const store = repository({ loadWorkspace, historyStatus });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/backspace-unknown",
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/backspace-unknown",
+        onEvent: events,
+      }),
+    );
     await session.activation;
     session.publishOutlinePaneState({
       paneId: "primary",
@@ -478,25 +491,26 @@ describe("notesWorkspaceCoordinator registry", () => {
       touch: vi.fn(),
       prepare: vi.fn(async () => ({
         baselineFlushed: true,
-        titleUpdate: null
+        titleUpdate: null,
       })),
-      settle
+      settle,
     };
     const work = vi.fn(async (_context, input) => {
       expectedEntryId = input.historyContext.entryId;
       throw Object.assign(new Error("transport closed"), {
-        notesMutationOutcome: "unknown" as const
+        notesMutationOutcome: "unknown" as const,
       });
     });
     const token = session.beginBackspaceGesture(
       {
         ownerPaneId: "primary",
         nodeId: "empty",
-        selection: { anchorUtf16: 0, focusUtf16: 0 }
+        selection: { anchorUtf16: 0, focusUtf16: 0 },
       },
       () => lease,
-      work
+      work,
     )!;
+    session.touchBackspaceGesture(token, "empty", "");
     session.removeEmptyNodeInBackspaceGesture(token, "empty", "root");
 
     await session.finishBackspaceGesture("keyup");
@@ -506,16 +520,16 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(historyStatus).toHaveBeenCalledOnce();
     expect(events).toHaveBeenCalledWith({
       type: "optimisticBackspaceGesture",
-      snapshot: expect.objectContaining({ status: "checking" })
+      snapshot: expect.objectContaining({ status: "checking" }),
     });
     expect(settle).toHaveBeenCalledWith("committed");
     expect(events).toHaveBeenLastCalledWith({
       type: "optimisticBackspaceGesture",
-      snapshot: null
+      snapshot: null,
     });
     expect(session.history.next("undo")).toMatchObject({
       entryId: expectedEntryId,
-      kind: "mutation"
+      kind: "mutation",
     });
     expect(session.writeAuthority()).toEqual({ kind: "known" });
     session.close();
@@ -525,7 +539,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     let expectedEntryId = "";
     const initial = workspace([
       node({ id: "root", title: "Root" }),
-      node({ id: "empty", title: "", sortKey: 2048 })
+      node({ id: "empty", title: "", sortKey: 2048 }),
     ]);
     const recovered = workspace([node({ id: "root", title: "Root" })]);
     const loadWorkspace = vi
@@ -534,17 +548,19 @@ describe("notesWorkspaceCoordinator registry", () => {
       .mockRejectedValueOnce(new Error("reload unavailable"))
       .mockResolvedValueOnce(recovered);
     const historyStatus = vi.fn(async () =>
-      projectedHistoryState(expectedEntryId)
+      projectedHistoryState(expectedEntryId),
     );
     const store = repository({ loadWorkspace, historyStatus });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/backspace-manual-recovery",
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/backspace-manual-recovery",
+        onEvent: events,
+      }),
+    );
     await session.activation;
     session.publishOutlinePaneState({
       paneId: "primary",
@@ -561,25 +577,26 @@ describe("notesWorkspaceCoordinator registry", () => {
       touch: vi.fn(),
       prepare: vi.fn(async () => ({
         baselineFlushed: true,
-        titleUpdate: null
+        titleUpdate: null,
       })),
-      settle
+      settle,
     };
     const work = vi.fn(async (_context, input) => {
       expectedEntryId = input.historyContext.entryId;
       throw Object.assign(new Error("transport closed"), {
-        notesMutationOutcome: "unknown" as const
+        notesMutationOutcome: "unknown" as const,
       });
     });
     const token = session.beginBackspaceGesture(
       {
         ownerPaneId: "primary",
         nodeId: "empty",
-        selection: { anchorUtf16: 0, focusUtf16: 0 }
+        selection: { anchorUtf16: 0, focusUtf16: 0 },
       },
       () => lease,
-      work
+      work,
     )!;
+    session.touchBackspaceGesture(token, "empty", "");
     session.removeEmptyNodeInBackspaceGesture(token, "empty", "root");
 
     const completion = session.drain();
@@ -588,14 +605,14 @@ describe("notesWorkspaceCoordinator registry", () => {
     await vi.waitFor(() =>
       expect(session.writeAuthority()).toEqual({
         kind: "unknown",
-        error: "reload unavailable"
-      })
+        error: "reload unavailable",
+      }),
     );
     expect(settled).not.toHaveBeenCalled();
     expect(settle).not.toHaveBeenCalled();
     expect(events).toHaveBeenCalledWith({
       type: "optimisticBackspaceGesture",
-      snapshot: expect.objectContaining({ status: "checking" })
+      snapshot: expect.objectContaining({ status: "checking" }),
     });
 
     await expect(session.retryAuthorityRecovery()).resolves.toBe(true);
@@ -607,11 +624,11 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(settle).toHaveBeenCalledWith("committed");
     expect(events).toHaveBeenCalledWith({
       type: "optimisticBackspaceGesture",
-      snapshot: null
+      snapshot: null,
     });
     expect(session.history.next("undo")).toMatchObject({
       entryId: expectedEntryId,
-      kind: "mutation"
+      kind: "mutation",
     });
     expect(session.writeAuthority()).toEqual({ kind: "known" });
     session.close();
@@ -621,14 +638,14 @@ describe("notesWorkspaceCoordinator registry", () => {
     let expectedEntryId = "";
     const initial = workspace([
       node({ id: "root", title: "Root" }),
-      node({ id: "empty", title: "", sortKey: 2048 })
+      node({ id: "empty", title: "", sortKey: 2048 }),
     ]);
     const recovered = workspace([node({ id: "root", title: "Root" })]);
     const applyBatch = vi.fn<NotesStore["applyBatch"]>(
       async (_vaultRoot, _input, historyContext) => {
         expectedEntryId = historyContext.entryId;
         return recovered;
-      }
+      },
     );
     const historyStatus = vi
       .fn<NonNullable<NotesStore["historyStatus"]>>()
@@ -640,16 +657,18 @@ describe("notesWorkspaceCoordinator registry", () => {
       loadWorkspace: vi
         .fn<NotesStore["loadWorkspace"]>()
         .mockResolvedValueOnce(initial)
-        .mockResolvedValueOnce(recovered)
+        .mockResolvedValueOnce(recovered),
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/backspace-post-commit-status",
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/backspace-post-commit-status",
+        onEvent: events,
+      }),
+    );
     await session.activation;
     session.publishOutlinePaneState({
       paneId: "primary",
@@ -665,23 +684,24 @@ describe("notesWorkspaceCoordinator registry", () => {
       touch: vi.fn(),
       prepare: vi.fn(async () => ({
         baselineFlushed: true,
-        titleUpdate: null
+        titleUpdate: null,
       })),
-      settle
+      settle,
     };
     const token = session.beginBackspaceGesture(
       {
         ownerPaneId: "primary",
         nodeId: "empty",
-        selection: { anchorUtf16: 0, focusUtf16: 0 }
+        selection: { anchorUtf16: 0, focusUtf16: 0 },
       },
       () => lease,
-      applyBackspaceGestureCommand
+      applyBackspaceGestureCommand,
     )!;
+    session.touchBackspaceGesture(token, "empty", "");
     session.removeEmptyNodeInBackspaceGesture(token, "empty", "root");
 
     await expect(session.finishBackspaceGesture("keyup")).resolves.toBe(
-      "committed"
+      "committed",
     );
 
     expect(expectedEntryId).not.toBe("");
@@ -689,11 +709,11 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(historyStatus).toHaveBeenCalledTimes(2);
     expect(events).toHaveBeenCalledWith({
       type: "optimisticBackspaceGesture",
-      snapshot: expect.objectContaining({ status: "checking" })
+      snapshot: expect.objectContaining({ status: "checking" }),
     });
     expect(settle).toHaveBeenCalledWith("committed");
     expect(session.history.next("undo")).toMatchObject({
-      entryId: expectedEntryId
+      entryId: expectedEntryId,
     });
     session.close();
   });
@@ -702,14 +722,14 @@ describe("notesWorkspaceCoordinator registry", () => {
     let expectedEntryId = "";
     const initial = workspace([
       node({ id: "root", title: "Root" }),
-      node({ id: "empty", title: "", sortKey: 2048 })
+      node({ id: "empty", title: "", sortKey: 2048 }),
     ]);
     const recovered = workspace([node({ id: "root", title: "Root" })]);
     const applyBatch = vi.fn<NotesStore["applyBatch"]>(
       async (_vaultRoot, _input, historyContext) => {
         expectedEntryId = historyContext.entryId;
         return recovered;
-      }
+      },
     );
     const historyStatus = vi
       .fn<NonNullable<NotesStore["historyStatus"]>>()
@@ -720,16 +740,18 @@ describe("notesWorkspaceCoordinator registry", () => {
       loadWorkspace: vi
         .fn<NotesStore["loadWorkspace"]>()
         .mockResolvedValueOnce(initial)
-        .mockResolvedValue(recovered)
+        .mockResolvedValue(recovered),
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/backspace-persistent-post-commit-status",
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/backspace-persistent-post-commit-status",
+        onEvent: events,
+      }),
+    );
     await session.activation;
     session.publishOutlinePaneState({
       paneId: "primary",
@@ -745,19 +767,20 @@ describe("notesWorkspaceCoordinator registry", () => {
       touch: vi.fn(),
       prepare: vi.fn(async () => ({
         baselineFlushed: true,
-        titleUpdate: null
+        titleUpdate: null,
       })),
-      settle
+      settle,
     };
     const token = session.beginBackspaceGesture(
       {
         ownerPaneId: "primary",
         nodeId: "empty",
-        selection: { anchorUtf16: 0, focusUtf16: 0 }
+        selection: { anchorUtf16: 0, focusUtf16: 0 },
       },
       () => lease,
-      applyBackspaceGestureCommand
+      applyBackspaceGestureCommand,
     )!;
+    session.touchBackspaceGesture(token, "empty", "");
     session.removeEmptyNodeInBackspaceGesture(token, "empty", "root");
 
     const completion = session.finishBackspaceGesture("keyup");
@@ -766,8 +789,8 @@ describe("notesWorkspaceCoordinator registry", () => {
     await vi.waitFor(() =>
       expect(session.writeAuthority()).toEqual({
         kind: "unknown",
-        error: expect.any(String)
-      })
+        error: expect.any(String),
+      }),
     );
     expect(completed).not.toHaveBeenCalled();
     expect(settle).not.toHaveBeenCalled();
@@ -786,7 +809,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     let activeLoads = 0;
     const initial = workspace([
       node({ id: "root", title: "Root" }),
-      node({ id: "empty", title: "", sortKey: 2048 })
+      node({ id: "empty", title: "", sortKey: 2048 }),
     ]);
     const recovered = workspace([node({ id: "root", title: "Root" })]);
     const applyBatch = vi.fn<NotesStore["applyBatch"]>(
@@ -795,9 +818,9 @@ describe("notesWorkspaceCoordinator registry", () => {
         return {
           workspace: recovered,
           historyEntryId: expectedEntryId,
-          ...projectedHistoryState(expectedEntryId)
+          ...projectedHistoryState(expectedEntryId),
         };
-      }
+      },
     );
     const loadWorkspace = vi.fn<NotesStore["loadWorkspace"]>(
       async (_vaultRoot, scope) => {
@@ -806,21 +829,23 @@ describe("notesWorkspaceCoordinator registry", () => {
         }
         activeLoads += 1;
         return activeLoads === 1 ? initial : recovered;
-      }
+      },
     );
     const historyStatus = vi.fn(async () =>
-      projectedHistoryState(expectedEntryId)
+      projectedHistoryState(expectedEntryId),
     );
     const store = repository({ applyBatch, loadWorkspace, historyStatus });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/backspace-post-commit-projection",
-      getScope: () => ({ kind: "starred" }),
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/backspace-post-commit-projection",
+        getScope: () => ({ kind: "starred" }),
+        onEvent: events,
+      }),
+    );
     await session.activation;
     session.publishOutlinePaneState({
       paneId: "primary",
@@ -836,29 +861,33 @@ describe("notesWorkspaceCoordinator registry", () => {
       touch: vi.fn(),
       prepare: vi.fn(async () => ({
         baselineFlushed: true,
-        titleUpdate: null
+        titleUpdate: null,
       })),
-      settle
+      settle,
     };
     const token = session.beginBackspaceGesture(
       {
         ownerPaneId: "primary",
         nodeId: "empty",
-        selection: { anchorUtf16: 0, focusUtf16: 0 }
+        selection: { anchorUtf16: 0, focusUtf16: 0 },
       },
       () => lease,
-      applyBackspaceGestureCommand
+      applyBackspaceGestureCommand,
     )!;
+    session.touchBackspaceGesture(token, "empty", "");
     session.removeEmptyNodeInBackspaceGesture(token, "empty", "root");
 
     await expect(session.finishBackspaceGesture("keyup")).resolves.toBe(
-      "committed"
+      "committed",
     );
 
     expect(applyBatch).toHaveBeenCalledOnce();
-    expect(loadWorkspace).toHaveBeenCalledWith("/backspace-post-commit-projection", {
-      kind: "starred"
-    });
+    expect(loadWorkspace).toHaveBeenCalledWith(
+      "/backspace-post-commit-projection",
+      {
+        kind: "starred",
+      },
+    );
     expect(historyStatus).toHaveBeenCalledOnce();
     expect(settle).toHaveBeenCalledWith("committed");
     session.close();
@@ -869,7 +898,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     let activeLoads = 0;
     const initial = workspace([
       node({ id: "root", title: "Root" }),
-      node({ id: "empty", title: "", sortKey: 2048 })
+      node({ id: "empty", title: "", sortKey: 2048 }),
     ]);
     const recovered = workspace([node({ id: "root", title: "Root" })]);
     const applyBatch = vi.fn<NotesStore["applyBatch"]>(
@@ -878,9 +907,9 @@ describe("notesWorkspaceCoordinator registry", () => {
         return {
           workspace: recovered,
           historyEntryId: expectedEntryId,
-          ...projectedHistoryState(expectedEntryId)
+          ...projectedHistoryState(expectedEntryId),
         };
-      }
+      },
     );
     const loadWorkspace = vi.fn<NotesStore["loadWorkspace"]>(
       async (_vaultRoot, scope) => {
@@ -889,10 +918,10 @@ describe("notesWorkspaceCoordinator registry", () => {
         }
         activeLoads += 1;
         return activeLoads === 1 ? initial : recovered;
-      }
+      },
     );
     const historyStatus = vi.fn(async () =>
-      projectedHistoryState("different-entry")
+      projectedHistoryState("different-entry"),
     );
     const store = repository({ applyBatch, loadWorkspace, historyStatus });
     const registry = createNotesWorkspaceCoordinatorRegistry();
@@ -903,8 +932,8 @@ describe("notesWorkspaceCoordinator registry", () => {
         repository: store,
         vaultRoot: "/backspace-post-commit-history-mismatch",
         getScope: () => ({ kind: "starred" }),
-        onEvent: events
-      })
+        onEvent: events,
+      }),
     );
     await session.activation;
     session.publishOutlinePaneState({
@@ -921,19 +950,20 @@ describe("notesWorkspaceCoordinator registry", () => {
       touch: vi.fn(),
       prepare: vi.fn(async () => ({
         baselineFlushed: true,
-        titleUpdate: null
+        titleUpdate: null,
       })),
-      settle
+      settle,
     };
     const token = session.beginBackspaceGesture(
       {
         ownerPaneId: "primary",
         nodeId: "empty",
-        selection: { anchorUtf16: 0, focusUtf16: 0 }
+        selection: { anchorUtf16: 0, focusUtf16: 0 },
       },
       () => lease,
-      applyBackspaceGestureCommand
+      applyBackspaceGestureCommand,
     )!;
+    session.touchBackspaceGesture(token, "empty", "");
     session.removeEmptyNodeInBackspaceGesture(token, "empty", "root");
 
     const completion = session.finishBackspaceGesture("keyup");
@@ -942,8 +972,8 @@ describe("notesWorkspaceCoordinator registry", () => {
     await vi.waitFor(() =>
       expect(session.writeAuthority()).toEqual({
         kind: "unknown",
-        error: expect.any(String)
-      })
+        error: expect.any(String),
+      }),
     );
     expect(completed).not.toHaveBeenCalled();
     expect(settle).not.toHaveBeenCalled();
@@ -961,27 +991,29 @@ describe("notesWorkspaceCoordinator registry", () => {
     let expectedEntryId = "";
     const initial = workspace([
       node({ id: "root", title: "Root" }),
-      node({ id: "empty", title: "", sortKey: 2048 })
+      node({ id: "empty", title: "", sortKey: 2048 }),
     ]);
     const recovered = workspace([node({ id: "root", title: "Root" })]);
     const historyStatus = vi.fn(async () =>
-      projectedHistoryState(expectedEntryId)
+      projectedHistoryState(expectedEntryId),
     );
     const store = repository({
       historyStatus,
       loadWorkspace: vi
         .fn<NotesStore["loadWorkspace"]>()
         .mockResolvedValueOnce(initial)
-        .mockResolvedValueOnce(recovered)
+        .mockResolvedValueOnce(recovered),
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/backspace-post-commit-ack",
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/backspace-post-commit-ack",
+        onEvent: events,
+      }),
+    );
     await session.activation;
     session.publishOutlinePaneState({
       paneId: "primary",
@@ -997,9 +1029,9 @@ describe("notesWorkspaceCoordinator registry", () => {
       touch: vi.fn(),
       prepare: vi.fn(async () => ({
         baselineFlushed: true,
-        titleUpdate: null
+        titleUpdate: null,
       })),
-      settle
+      settle,
     };
     const work = vi.fn(async (_context, input) => {
       expectedEntryId = input.historyContext.entryId;
@@ -1010,35 +1042,36 @@ describe("notesWorkspaceCoordinator registry", () => {
           expectedEntryId,
           null,
           [],
-          "wrong-epoch"
+          "wrong-epoch",
         ),
-        committedHistoryEntryIds: [expectedEntryId]
+        committedHistoryEntryIds: [expectedEntryId],
       };
     });
     const token = session.beginBackspaceGesture(
       {
         ownerPaneId: "primary",
         nodeId: "empty",
-        selection: { anchorUtf16: 0, focusUtf16: 0 }
+        selection: { anchorUtf16: 0, focusUtf16: 0 },
       },
       () => lease,
-      work
+      work,
     )!;
+    session.touchBackspaceGesture(token, "empty", "");
     session.removeEmptyNodeInBackspaceGesture(token, "empty", "root");
 
     await expect(session.finishBackspaceGesture("keyup")).resolves.toBe(
-      "committed"
+      "committed",
     );
 
     expect(work).toHaveBeenCalledOnce();
     expect(historyStatus).toHaveBeenCalledOnce();
     expect(events).toHaveBeenCalledWith({
       type: "optimisticBackspaceGesture",
-      snapshot: expect.objectContaining({ status: "checking" })
+      snapshot: expect.objectContaining({ status: "checking" }),
     });
     expect(settle).toHaveBeenCalledWith("committed");
     expect(session.history.next("undo")).toMatchObject({
-      entryId: expectedEntryId
+      entryId: expectedEntryId,
     });
     session.close();
   });
@@ -1047,7 +1080,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     let expectedEntryId = "";
     const initial = workspace([
       node({ id: "root", title: "Root" }),
-      node({ id: "empty", title: "", sortKey: 2048 })
+      node({ id: "empty", title: "", sortKey: 2048 }),
     ]);
     const loadWorkspace = vi
       .fn<NotesStore["loadWorkspace"]>()
@@ -1055,17 +1088,19 @@ describe("notesWorkspaceCoordinator registry", () => {
       .mockRejectedValueOnce(new Error("reload unavailable"))
       .mockResolvedValueOnce(initial);
     const historyStatus = vi.fn(async () =>
-      projectedHistoryState("another-entry")
+      projectedHistoryState("another-entry"),
     );
     const store = repository({ loadWorkspace, historyStatus });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const departedEvents = vi.fn();
-    const departed = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/backspace-replaced-recovery",
-      onEvent: departedEvents
-    }));
+    const departed = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/backspace-replaced-recovery",
+        onEvent: departedEvents,
+      }),
+    );
     await departed.activation;
     departed.publishOutlinePaneState({
       paneId: "primary",
@@ -1081,33 +1116,34 @@ describe("notesWorkspaceCoordinator registry", () => {
       touch: vi.fn(),
       prepare: vi.fn(async () => ({
         baselineFlushed: true,
-        titleUpdate: null
+        titleUpdate: null,
       })),
-      settle
+      settle,
     };
     const work = vi.fn(async (_context, input) => {
       expectedEntryId = input.historyContext.entryId;
       throw Object.assign(new Error("transport closed"), {
-        notesMutationOutcome: "unknown" as const
+        notesMutationOutcome: "unknown" as const,
       });
     });
     const token = departed.beginBackspaceGesture(
       {
         ownerPaneId: "primary",
         nodeId: "empty",
-        selection: { anchorUtf16: 2, focusUtf16: 2 }
+        selection: { anchorUtf16: 2, focusUtf16: 2 },
       },
       () => lease,
-      work
+      work,
     )!;
+    departed.touchBackspaceGesture(token, "empty", "");
     departed.removeEmptyNodeInBackspaceGesture(token, "empty", "root");
 
     const completion = departed.finishBackspaceGesture("keyup");
     await vi.waitFor(() =>
       expect(departed.writeAuthority()).toEqual({
         kind: "unknown",
-        error: "reload unavailable"
-      })
+        error: "reload unavailable",
+      }),
     );
     await expect(departed.retryAuthorityRecovery()).resolves.toBe(true);
     await expect(completion).resolves.toBe("failed");
@@ -1122,22 +1158,24 @@ describe("notesWorkspaceCoordinator registry", () => {
       rollback: {
         ownerPaneId: "primary",
         nodeId: "empty",
-        selection: { anchorUtf16: 2, focusUtf16: 2 }
-      }
+        selection: { anchorUtf16: 2, focusUtf16: 2 },
+      },
     });
     departed.close();
   });
 
-  it("publishes optimistic preparation and queued status to its owner", async () => {
+  it("does not republish projection-equivalent insertion status changes", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/optimistic-keyboard-insertion",
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/optimistic-keyboard-insertion",
+        onEvent: events,
+      }),
+    );
     await session.activation;
     session.publishOutlinePaneState({
       paneId: "pane-a",
@@ -1145,7 +1183,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set()
+      locallyExpandedNodeIds: new Set(),
     });
     events.mockClear();
 
@@ -1158,14 +1196,14 @@ describe("notesWorkspaceCoordinator registry", () => {
         postcondition: {
           kind: "split",
           expectedSourceTitle: "Ro",
-          expectedInsertedTitle: "ot"
-        }
+          expectedInsertedTitle: "ot",
+        },
       },
       optimistic: {
         sourceSelection: { anchorUtf16: 2, focusUtf16: 2 },
         sourceTitle: "Ro",
-        insertedTitle: "ot"
-      }
+        insertedTitle: "ot",
+      },
     })!;
 
     expect(events).toHaveBeenLastCalledWith({
@@ -1177,17 +1215,17 @@ describe("notesWorkspaceCoordinator registry", () => {
             historyContext: preparation.historyContext,
             status: "prepared",
             sourceTitle: "Ro",
-            insertedTitle: "ot"
-          })
+            insertedTitle: "ot",
+          }),
         ],
-        failure: null
-      }
+        failure: null,
+      },
     });
 
     const blocker = deferred<NotesWorkspace>();
     const blockerCompletion = session.enqueueStructural(async () => ({
       kind: "authoritative" as const,
-      workspace: await blocker.promise
+      workspace: await blocker.promise,
     }));
     await Promise.resolve();
     const insertionCompletion = session.enqueueStructural(
@@ -1195,31 +1233,321 @@ describe("notesWorkspaceCoordinator registry", () => {
         kind: "authoritative" as const,
         workspace: workspace([
           node({ id: "root", title: "Ro", sortKey: 1024 }),
-          node({ id: "split", title: "ot", sortKey: 2048 })
+          node({ id: "split", title: "ot", sortKey: 2048 }),
         ]),
         historyStatus: projectedHistoryState(
-          preparation.historyContext.entryId
+          preparation.historyContext.entryId,
         ),
-        committedHistoryEntryIds: [preparation.historyContext.entryId]
+        committedHistoryEntryIds: [preparation.historyContext.entryId],
       }),
-      { keyboardInsertion: preparation }
+      { keyboardInsertion: preparation },
     );
 
     expect(
       events.mock.calls
         .map(([event]) => event)
         .filter((event) => event.type === "optimisticInsertion")
-        .map((event) => event.snapshot.insertions[0]?.status)
-    ).toContain("queued");
+        .map((event) => event.snapshot.insertions[0]?.status),
+    ).toEqual(["prepared"]);
 
     blocker.resolve(workspace([node({ id: "root", title: "Root" })]));
     await blockerCompletion;
     await insertionCompletion;
+    const publications = events.mock.calls.map(([event]) => event);
+    const settledIndex = publications.findIndex(
+      (event) =>
+        event.type === "settled" &&
+        event.result.kind === "authoritative" &&
+        event.result.workspace.nodes.some(
+          (candidate: NoteNode) => candidate.id === "split",
+        ),
+    );
+    const optimisticRemovalIndex = publications.findIndex(
+      (event) =>
+        event.type === "optimisticInsertion" &&
+        event.snapshot.insertions.length === 0,
+    );
+    expect(settledIndex).toBeGreaterThanOrEqual(0);
+    expect(optimisticRemovalIndex).toBeGreaterThan(settledIndex);
     expect(events).toHaveBeenCalledWith({
       type: "pending",
       selectionPolicy: "clear",
-      showLoading: false
+      showLoading: false,
     });
+    session.close();
+  });
+
+  it("publishes a directly dependent Enter chain once at its tail", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/optimistic-keyboard-insertion-chain",
+        onEvent: events,
+      }),
+    );
+    await session.activation;
+    session.publishOutlinePaneState({
+      paneId: "pane-a",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+    });
+    const first = session.prepareKeyboardInsertion({
+      ownerPaneId: "pane-a",
+      intent: {
+        token: 51,
+        sourceId: "root",
+        expectedNodeId: "split-1",
+        postcondition: {
+          kind: "split",
+          expectedSourceTitle: "Ro",
+          expectedInsertedTitle: "ot",
+        },
+      },
+      optimistic: optimisticInsertion("Ro", "ot"),
+    })!;
+    const second = session.prepareKeyboardInsertion({
+      ownerPaneId: "pane-a",
+      intent: {
+        token: 52,
+        sourceId: "split-1",
+        expectedNodeId: "split-2",
+        postcondition: {
+          kind: "split",
+          expectedSourceTitle: "o",
+          expectedInsertedTitle: "t",
+        },
+      },
+      optimistic: {
+        ...optimisticInsertion("o", "t"),
+        dependencyId: "split-1",
+      },
+    })!;
+    const firstResult = deferred<NotesWorkspace>();
+    const secondResult = deferred<NotesWorkspace>();
+    events.mockClear();
+
+    const firstCompletion = session.enqueueStructural(
+      async () => {
+        const result = await firstResult.promise;
+        session.settleAuthoritativePresentation(
+          normalizeWorkspace(result),
+          historySnapshot(pool, "split-1"),
+        );
+        return {
+          kind: "authoritative" as const,
+          workspace: result,
+          uiUpdate: {
+            selectedId: "split-1",
+            editingNoteId: "split-1",
+            pendingFocusId: "split-1",
+            pendingFocusField: "title" as const,
+          },
+          historyStatus: projectedHistoryState(first.historyContext.entryId),
+          committedHistoryEntryIds: [first.historyContext.entryId],
+          delta: {
+            changedNodes: [
+              node({ id: "root", title: "Ro", sortKey: 1024 }),
+              node({ id: "split-1", title: "ot", sortKey: 2048 }),
+            ],
+            removedNodeIds: [],
+            changedAttachments: [],
+          },
+        };
+      },
+      { keyboardInsertion: first },
+    );
+    const secondCompletion = session.enqueueStructural(
+      async () => ({
+        kind: "authoritative" as const,
+        workspace: await secondResult.promise,
+        uiUpdate: {
+          selectedId: "split-2",
+          editingNoteId: "split-2",
+          pendingFocusId: "split-2",
+          pendingFocusField: "title" as const,
+        },
+        historyStatus: projectedHistoryState(second.historyContext.entryId),
+        committedHistoryEntryIds: [second.historyContext.entryId],
+        delta: {
+          changedNodes: [
+            node({ id: "split-1", title: "o", sortKey: 2048 }),
+            node({ id: "split-2", title: "t", sortKey: 3072 }),
+          ],
+          removedNodeIds: [],
+          changedAttachments: [],
+        },
+      }),
+      { keyboardInsertion: second },
+    );
+
+    firstResult.resolve(
+      workspace([
+        node({ id: "root", title: "Ro", sortKey: 1024 }),
+        node({ id: "split-1", title: "ot", sortKey: 2048 }),
+      ]),
+    );
+    await firstCompletion;
+    expect(
+      events.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.type === "settled"),
+    ).toHaveLength(0);
+    expect(
+      events.mock.calls
+        .map(([event]) => event)
+        .filter(
+          (event) =>
+            event.type === "optimisticInsertion" &&
+            event.snapshot.insertions.length === 0,
+        ),
+    ).toHaveLength(0);
+
+    secondResult.resolve(
+      workspace([
+        node({ id: "root", title: "Ro", sortKey: 1024 }),
+        node({ id: "split-1", title: "o", sortKey: 2048 }),
+        node({ id: "split-2", title: "t", sortKey: 3072 }),
+      ]),
+    );
+    await expect(secondCompletion).resolves.toBe("committed");
+
+    const settlements = events.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.type === "settled");
+    expect(settlements).toHaveLength(1);
+    expect(settlements[0]).toMatchObject({
+      result: {
+        kind: "authoritative",
+        historyStatus: projectedHistoryState(second.historyContext.entryId),
+        workspace: {
+          nodes: [
+            expect.objectContaining({ id: "root" }),
+            expect.objectContaining({ id: "split-1" }),
+            expect.objectContaining({ id: "split-2" }),
+          ],
+        },
+        uiUpdate: {
+          pendingFocusId: "split-2",
+        },
+      },
+      hasPendingWork: false,
+    });
+    expect(
+      (
+        settlements[0] as {
+          result: { delta?: unknown };
+        }
+      ).result.delta,
+    ).toBeUndefined();
+    expect(
+      events.mock.calls
+        .map(([event]) => event)
+        .filter(
+          (event) =>
+            event.type === "optimisticInsertion" &&
+            event.snapshot.insertions.length === 0,
+        ),
+    ).toHaveLength(1);
+    session.close();
+  });
+
+  it("defers a settled insertion until the held Enter gesture ends", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const events = vi.fn();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/held-enter-settlement",
+        onEvent: events,
+      }),
+    );
+    await session.activation;
+    session.publishOutlinePaneState({
+      paneId: "pane-a",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+    });
+    const preparation = session.prepareKeyboardInsertion({
+      ownerPaneId: "pane-a",
+      intent: {
+        token: 53,
+        sourceId: "root",
+        expectedNodeId: "split",
+        postcondition: {
+          kind: "split",
+          expectedSourceTitle: "Ro",
+          expectedInsertedTitle: "ot",
+        },
+      },
+      optimistic: optimisticInsertion("Ro", "ot"),
+    })!;
+    events.mockClear();
+    session.setKeyboardInsertionGestureActive(true);
+
+    await expect(
+      session.enqueueStructural(
+        () => ({
+          kind: "authoritative" as const,
+          workspace: workspace([
+            node({ id: "root", title: "Ro", sortKey: 1024 }),
+            node({ id: "split", title: "ot", sortKey: 2048 }),
+          ]),
+          historyStatus: projectedHistoryState(
+            preparation.historyContext.entryId,
+          ),
+          committedHistoryEntryIds: [preparation.historyContext.entryId],
+          delta: {
+            changedNodes: [
+              node({ id: "root", title: "Ro", sortKey: 1024 }),
+              node({ id: "split", title: "ot", sortKey: 2048 }),
+            ],
+            removedNodeIds: [],
+            changedAttachments: [],
+          },
+        }),
+        { keyboardInsertion: preparation },
+      ),
+    ).resolves.toBe("committed");
+    expect(
+      events.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.type === "settled"),
+    ).toHaveLength(0);
+
+    session.setKeyboardInsertionGestureActive(false);
+
+    const settlements = events.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.type === "settled");
+    expect(settlements).toHaveLength(1);
+    expect(
+      (
+        settlements[0] as {
+          result: { delta?: unknown };
+        }
+      ).result.delta,
+    ).toBeUndefined();
+    expect(
+      events.mock.calls
+        .map(([event]) => event)
+        .filter(
+          (event) =>
+            event.type === "optimisticInsertion" &&
+            event.snapshot.insertions.length === 0,
+        ),
+    ).toHaveLength(1);
     session.close();
   });
 
@@ -1230,11 +1558,13 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/dependent-keyboard-insertion-failure",
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/dependent-keyboard-insertion-failure",
+        onEvent: events,
+      }),
+    );
     await session.activation;
     session.publishOutlinePaneState({
       paneId: "pane-a",
@@ -1253,14 +1583,14 @@ describe("notesWorkspaceCoordinator registry", () => {
         postcondition: {
           kind: "split",
           expectedSourceTitle: "Ro",
-          expectedInsertedTitle: "ot"
-        }
+          expectedInsertedTitle: "ot",
+        },
       },
       optimistic: {
         sourceSelection: { anchorUtf16: 2, focusUtf16: 2 },
         sourceTitle: "Ro",
-        insertedTitle: "ot"
-      }
+        insertedTitle: "ot",
+      },
     })!;
     const dependent = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
@@ -1271,25 +1601,24 @@ describe("notesWorkspaceCoordinator registry", () => {
         postcondition: {
           kind: "split",
           expectedSourceTitle: "o",
-          expectedInsertedTitle: "t"
-        }
+          expectedInsertedTitle: "t",
+        },
       },
       optimistic: {
         sourceSelection: { anchorUtf16: 1, focusUtf16: 1 },
         sourceTitle: "o",
         insertedTitle: "t",
-        dependencyId: "split-1"
-      }
+        dependencyId: "split-1",
+      },
     })!;
     events.mockClear();
     const failed = deferred<{ kind: "failure"; error: string }>();
-    const firstCompletion = session.enqueueStructural(
-      () => failed.promise,
-      { keyboardInsertion: first }
-    );
+    const firstCompletion = session.enqueueStructural(() => failed.promise, {
+      keyboardInsertion: first,
+    });
     const dependentWork = vi.fn(() => ({ kind: "skipped" as const }));
     const dependentCompletion = session.enqueueStructural(dependentWork, {
-      keyboardInsertion: dependent
+      keyboardInsertion: dependent,
     });
 
     failed.resolve({ kind: "failure", error: "disk full" });
@@ -1302,16 +1631,16 @@ describe("notesWorkspaceCoordinator registry", () => {
       events.mock.calls
         .map(([event]) => event)
         .filter((event) => event.type === "optimisticInsertion")
-        .some((event) => event.rollback !== undefined)
+        .some((event) => event.rollback !== undefined),
     ).toBe(false);
     expect(events).toHaveBeenLastCalledWith({
       type: "optimisticInsertion",
       snapshot: {
         insertions: [],
         failure: expect.objectContaining({
-          message: expect.stringContaining("disk full")
-        })
-      }
+          message: expect.stringContaining("disk full"),
+        }),
+      },
     });
     expect(session.writeAuthority()).toEqual({ kind: "known" });
     session.close();
@@ -1322,11 +1651,13 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/optimistic-keyboard-insertion-cancel",
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/optimistic-keyboard-insertion-cancel",
+        onEvent: events,
+      }),
+    );
     await session.activation;
     session.publishOutlinePaneState({
       paneId: "pane-a",
@@ -1334,7 +1665,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set()
+      locallyExpandedNodeIds: new Set(),
     });
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
@@ -1345,21 +1676,21 @@ describe("notesWorkspaceCoordinator registry", () => {
         postcondition: {
           kind: "split",
           expectedSourceTitle: "Ro",
-          expectedInsertedTitle: "ot"
-        }
+          expectedInsertedTitle: "ot",
+        },
       },
       optimistic: {
         sourceSelection: { anchorUtf16: 2, focusUtf16: 2 },
         sourceTitle: "Ro",
-        insertedTitle: "ot"
-      }
+        insertedTitle: "ot",
+      },
     })!;
 
     session.cancelKeyboardInsertion(preparation);
 
     expect(events).toHaveBeenLastCalledWith({
       type: "optimisticInsertion",
-      snapshot: { insertions: [], failure: null }
+      snapshot: { insertions: [], failure: null },
     });
     session.close();
   });
@@ -1371,11 +1702,13 @@ describe("notesWorkspaceCoordinator registry", () => {
       const registry = createNotesWorkspaceCoordinatorRegistry();
       const pool = createNotesExpansionSnapshotPool();
       const events = vi.fn();
-      const session = registry.openSession(writableOptions(pool, {
-        repository: store,
-        vaultRoot: `/two-pane-${originPaneId}-insertion`,
-        onEvent: events
-      }));
+      const session = registry.openSession(
+        writableOptions(pool, {
+          repository: store,
+          vaultRoot: `/two-pane-${originPaneId}-insertion`,
+          onEvent: events,
+        }),
+      );
       await session.activation;
       events.mockClear();
 
@@ -1384,7 +1717,7 @@ describe("notesWorkspaceCoordinator registry", () => {
         zoomedNodeId: null,
         showCompleted: true,
         collapsedNodeIds: new Set<string>(),
-        locallyExpandedNodeIds: new Set<string>()
+        locallyExpandedNodeIds: new Set<string>(),
       };
       session.publishOutlinePaneState({ ...basePane, paneId: "primary" });
       session.publishOutlinePaneState({ ...basePane, paneId: "secondary" });
@@ -1398,10 +1731,10 @@ describe("notesWorkspaceCoordinator registry", () => {
           postcondition: {
             kind: "split",
             expectedSourceTitle: "Root",
-            expectedInsertedTitle: ""
-          }
+            expectedInsertedTitle: "",
+          },
         },
-        optimistic: optimisticInsertion()
+        optimistic: optimisticInsertion(),
       })!;
 
       await session.enqueueStructural(
@@ -1409,41 +1742,43 @@ describe("notesWorkspaceCoordinator registry", () => {
           kind: "authoritative" as const,
           workspace: workspace([
             node({ id: "root", title: "Root", sortKey: 1024 }),
-            node({ id: "split", title: "", sortKey: 2048 })
+            node({ id: "split", title: "", sortKey: 2048 }),
           ]),
           uiUpdate: {
             selectedId: "split",
             editingNoteId: "split",
             pendingFocusId: "split",
-            pendingFocusField: "title" as const
+            pendingFocusField: "title" as const,
           },
           historyStatus: projectedHistoryState(
-            preparation.historyContext.entryId
+            preparation.historyContext.entryId,
           ),
-          committedHistoryEntryIds: [preparation.historyContext.entryId]
+          committedHistoryEntryIds: [preparation.historyContext.entryId],
         }),
-        { keyboardInsertion: preparation }
+        { keyboardInsertion: preparation },
       );
 
       const settled = events.mock.calls
         .map(([event]) => event)
         .find((event) => event.type === "settled");
       expect(settled?.result.projectionPublication?.targetPaneId).toBe(
-        originPaneId
+        originPaneId,
       );
       session.close();
-    }
+    },
   );
 
   it("unregisters a Pane and cancels all insertion ownership scoped to it", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/keyboard-insertion-pane-unregister",
-      onEvent: vi.fn()
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/keyboard-insertion-pane-unregister",
+        onEvent: vi.fn(),
+      }),
+    );
     await session.activation;
     const paneSnapshot = {
       paneId: "pane-a",
@@ -1451,7 +1786,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set<string>(),
-      locallyExpandedNodeIds: new Set<string>()
+      locallyExpandedNodeIds: new Set<string>(),
     };
     session.publishOutlinePaneState(paneSnapshot);
     const preparation = session.prepareKeyboardInsertion({
@@ -1463,10 +1798,10 @@ describe("notesWorkspaceCoordinator registry", () => {
         postcondition: {
           kind: "split",
           expectedSourceTitle: "Root",
-          expectedInsertedTitle: ""
-        }
+          expectedInsertedTitle: "",
+        },
       },
-      optimistic: optimisticInsertion()
+      optimistic: optimisticInsertion(),
     })!;
 
     session.unregisterOutlinePane("pane-a");
@@ -1480,10 +1815,10 @@ describe("notesWorkspaceCoordinator registry", () => {
           token: 9,
           sourceId: "root",
           expectedNodeId: "split",
-          postcondition: preparation.pending.intent.postcondition
+          postcondition: preparation.pending.intent.postcondition,
         },
-        optimistic: optimisticInsertion()
-      })
+        optimistic: optimisticInsertion(),
+      }),
     ).not.toBeNull();
     session.close();
   });
@@ -1493,11 +1828,13 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/keyboard-insertion-pane-remount",
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/keyboard-insertion-pane-remount",
+        onEvent: events,
+      }),
+    );
     await session.activation;
     events.mockClear();
     const paneSnapshot = {
@@ -1506,7 +1843,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set<string>(),
-      locallyExpandedNodeIds: new Set<string>()
+      locallyExpandedNodeIds: new Set<string>(),
     };
     session.publishOutlinePaneState(paneSnapshot);
     const preparation = session.prepareKeyboardInsertion({
@@ -1518,10 +1855,10 @@ describe("notesWorkspaceCoordinator registry", () => {
         postcondition: {
           kind: "split",
           expectedSourceTitle: "Root",
-          expectedInsertedTitle: ""
-        }
+          expectedInsertedTitle: "",
+        },
       },
-      optimistic: optimisticInsertion()
+      optimistic: optimisticInsertion(),
     })!;
     const accepted = deferred<NotesWorkspace>();
     const completion = session.enqueueStructural(
@@ -1532,13 +1869,13 @@ describe("notesWorkspaceCoordinator registry", () => {
           selectedId: "split",
           editingNoteId: "split",
           pendingFocusId: "split",
-          pendingFocusField: "title" as const
+          pendingFocusField: "title" as const,
         },
         historyStatus: projectedHistoryState(
-          preparation.historyContext.entryId
-        )
+          preparation.historyContext.entryId,
+        ),
       }),
-      { keyboardInsertion: preparation }
+      { keyboardInsertion: preparation },
     );
     await Promise.resolve();
 
@@ -1547,8 +1884,8 @@ describe("notesWorkspaceCoordinator registry", () => {
     accepted.resolve(
       workspace([
         node({ id: "root", title: "Root", sortKey: 1024 }),
-        node({ id: "split", title: "", sortKey: 2048 })
-      ])
+        node({ id: "split", title: "", sortKey: 2048 }),
+      ]),
     );
 
     await expect(completion).resolves.toBe("committed");
@@ -1565,11 +1902,13 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/keyboard-insertion-pending",
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/keyboard-insertion-pending",
+        onEvent: events,
+      }),
+    );
     await session.activation;
     session.publishOutlinePaneState({
       paneId: "pane-a",
@@ -1577,7 +1916,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set()
+      locallyExpandedNodeIds: new Set(),
     });
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
@@ -1588,10 +1927,10 @@ describe("notesWorkspaceCoordinator registry", () => {
         postcondition: {
           kind: "split",
           expectedSourceTitle: "Root",
-          expectedInsertedTitle: ""
-        }
+          expectedInsertedTitle: "",
+        },
       },
-      optimistic: optimisticInsertion()
+      optimistic: optimisticInsertion(),
     })!;
     const result = deferred<NotesWorkspace>();
 
@@ -1603,33 +1942,33 @@ describe("notesWorkspaceCoordinator registry", () => {
           selectedId: "split",
           editingNoteId: "split",
           pendingFocusId: "split",
-          pendingFocusField: "title" as const
+          pendingFocusField: "title" as const,
         },
         historyStatus: projectedHistoryState(
-          preparation.historyContext.entryId
+          preparation.historyContext.entryId,
         ),
-        committedHistoryEntryIds: [preparation.historyContext.entryId]
+        committedHistoryEntryIds: [preparation.historyContext.entryId],
       }),
-      { keyboardInsertion: preparation }
+      { keyboardInsertion: preparation },
     );
     await Promise.resolve();
 
     expect(session.pendingKeyboardInsertion("split")).toEqual(
-      preparation.pending
+      preparation.pending,
     );
     expect(events).not.toHaveBeenCalledWith(
       expect.objectContaining({
         result: expect.objectContaining({
-          projectionPublication: expect.anything()
-        })
-      })
+          projectionPublication: expect.anything(),
+        }),
+      }),
     );
 
     result.resolve(
       workspace([
         node({ id: "root", title: "Root", sortKey: 1024 }),
-        node({ id: "split", title: "", sortKey: 2048 })
-      ])
+        node({ id: "split", title: "", sortKey: 2048 }),
+      ]),
     );
     await completion;
 
@@ -1639,9 +1978,9 @@ describe("notesWorkspaceCoordinator registry", () => {
         type: "settled",
         result: expect.objectContaining({
           uiUpdate: expect.objectContaining({ pendingFocusId: "split" }),
-          projectionPublication: { targetPaneId: "pane-a" }
-        })
-      })
+          projectionPublication: { targetPaneId: "pane-a" },
+        }),
+      }),
     );
     session.close();
   });
@@ -1649,17 +1988,19 @@ describe("notesWorkspaceCoordinator registry", () => {
   it("accepts the frozen insertion postcondition after the provisional title changes", async () => {
     const inserted = workspace([
       node({ id: "root", title: "Root", sortKey: 1024 }),
-      node({ id: "split", title: "", sortKey: 2048 })
+      node({ id: "split", title: "", sortKey: 2048 }),
     ]);
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/keyboard-insertion-frozen-postcondition",
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/keyboard-insertion-frozen-postcondition",
+        onEvent: events,
+      }),
+    );
     await session.activation;
     session.publishOutlinePaneState({
       paneId: "primary",
@@ -1667,7 +2008,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set()
+      locallyExpandedNodeIds: new Set(),
     });
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "primary",
@@ -1678,10 +2019,10 @@ describe("notesWorkspaceCoordinator registry", () => {
         postcondition: {
           kind: "split",
           expectedSourceTitle: "Root",
-          expectedInsertedTitle: ""
-        }
+          expectedInsertedTitle: "",
+        },
       },
-      optimistic: optimisticInsertion()
+      optimistic: optimisticInsertion(),
     })!;
     session.updateOptimisticKeyboardInsertion("split", "typed live");
     events.mockClear();
@@ -1695,31 +2036,104 @@ describe("notesWorkspaceCoordinator registry", () => {
             selectedId: "split",
             editingNoteId: "split",
             pendingFocusId: "split",
-            pendingFocusField: "title" as const
+            pendingFocusField: "title" as const,
           },
           historyStatus: projectedHistoryState(
-            preparation.historyContext.entryId
+            preparation.historyContext.entryId,
           ),
-          committedHistoryEntryIds: [preparation.historyContext.entryId]
+          committedHistoryEntryIds: [preparation.historyContext.entryId],
         }),
-        { keyboardInsertion: preparation }
-      )
+        { keyboardInsertion: preparation },
+      ),
     ).resolves.toBe("committed");
 
     expect(session.pendingKeyboardInsertion("split")).toBeUndefined();
     expect(events).toHaveBeenCalledWith({
       type: "optimisticInsertion",
-      snapshot: { insertions: [], failure: null }
+      snapshot: { insertions: [], failure: null },
     });
     expect(events).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "settled",
         result: expect.objectContaining({
           kind: "authoritative",
-          uiUpdate: expect.objectContaining({ pendingFocusId: "split" })
-        })
-      })
+          uiUpdate: expect.objectContaining({ pendingFocusId: "split" }),
+        }),
+      }),
     );
+    session.close();
+  });
+
+  it("reuses the settled Active presentation when verifying an insertion", async () => {
+    const insertedNodes = [
+      node({ id: "root", title: "Ro", sortKey: 1024 }),
+      node({ id: "split", title: "ot", sortKey: 2048 }),
+    ];
+    const resultWorkspace = workspace(insertedNodes);
+    let resultNodesReads = 0;
+    Object.defineProperty(resultWorkspace, "nodes", {
+      get() {
+        resultNodesReads += 1;
+        return insertedNodes;
+      },
+    });
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const pool = createNotesExpansionSnapshotPool();
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/keyboard-insertion-settled-presentation",
+        onEvent: vi.fn(),
+      }),
+    );
+    await session.activation;
+    session.publishOutlinePaneState({
+      paneId: "primary",
+      scope: { kind: "active" },
+      zoomedNodeId: null,
+      showCompleted: true,
+      collapsedNodeIds: new Set(),
+      locallyExpandedNodeIds: new Set(),
+    });
+    const preparation = session.prepareKeyboardInsertion({
+      ownerPaneId: "primary",
+      intent: {
+        token: 94,
+        sourceId: "root",
+        expectedNodeId: "split",
+        postcondition: {
+          kind: "split",
+          expectedSourceTitle: "Ro",
+          expectedInsertedTitle: "ot",
+        },
+      },
+      optimistic: optimisticInsertion("Ro", "ot"),
+    })!;
+    const presentationSnapshot = historySnapshot(pool, "split");
+
+    await expect(
+      session.enqueueStructural(
+        () => {
+          session.settleAuthoritativePresentation(
+            normalizeWorkspace(workspace(insertedNodes)),
+            presentationSnapshot,
+          );
+          return {
+            kind: "authoritative" as const,
+            workspace: resultWorkspace,
+            historyStatus: projectedHistoryState(
+              preparation.historyContext.entryId,
+            ),
+            committedHistoryEntryIds: [preparation.historyContext.entryId],
+          };
+        },
+        { keyboardInsertion: preparation },
+      ),
+    ).resolves.toBe("committed");
+
+    expect(resultNodesReads).toBe(0);
+    pool.release(presentationSnapshot.expansion);
     session.close();
   });
 
@@ -1732,27 +2146,27 @@ describe("notesWorkspaceCoordinator registry", () => {
       name: "Starred",
       scope: { kind: "starred" },
       projection: workspace([
-        node({ id: "root", title: "Ro", isStarred: true })
-      ])
+        node({ id: "root", title: "Ro", isStarred: true }),
+      ]),
     },
     {
       name: "Tags",
       scope: {
         kind: "tags",
-        tags: [{ prefix: "#", normalizedTag: "work" }]
+        tags: [{ prefix: "#", normalizedTag: "work" }],
       },
-      projection: workspace([])
-    }
+      projection: workspace([]),
+    },
   ])(
     "verifies a $name insertion against Active while publishing only its filtered projection",
     async ({ name, scope, projection }) => {
       const initial = workspace([
-        node({ id: "root", title: "Root", isStarred: true })
+        node({ id: "root", title: "Root", isStarred: true }),
       ]);
       const active = workspace([
         node({ id: "root", title: "Ro", isStarred: true }),
         node({ id: "split", title: "ot", sortKey: 2048 }),
-        node({ id: "unrelated", title: "Unrelated", sortKey: 3072 })
+        node({ id: "unrelated", title: "Unrelated", sortKey: 3072 }),
       ]);
       const loadWorkspace = vi
         .fn<NotesStore["loadWorkspace"]>()
@@ -1762,18 +2176,20 @@ describe("notesWorkspaceCoordinator registry", () => {
       const store = repository({
         loadWorkspace,
         historyStatus: vi.fn(async () =>
-          projectedHistoryState(expectedEntryId)
-        )
+          projectedHistoryState(expectedEntryId),
+        ),
       });
       const registry = createNotesWorkspaceCoordinatorRegistry();
       const pool = createNotesExpansionSnapshotPool();
       const events = vi.fn();
-      const session = registry.openSession(writableOptions(pool, {
-        repository: store,
-        vaultRoot: `/keyboard-insertion-${name.toLowerCase()}`,
-        getScope: () => scope,
-        onEvent: events
-      }));
+      const session = registry.openSession(
+        writableOptions(pool, {
+          repository: store,
+          vaultRoot: `/keyboard-insertion-${name.toLowerCase()}`,
+          getScope: () => scope,
+          onEvent: events,
+        }),
+      );
       await session.activation;
       session.publishOutlinePaneState({
         paneId: "primary",
@@ -1781,7 +2197,7 @@ describe("notesWorkspaceCoordinator registry", () => {
         zoomedNodeId: null,
         showCompleted: true,
         collapsedNodeIds: new Set(),
-        locallyExpandedNodeIds: new Set()
+        locallyExpandedNodeIds: new Set(),
       });
       const preparation = session.prepareKeyboardInsertion({
         ownerPaneId: "primary",
@@ -1792,10 +2208,10 @@ describe("notesWorkspaceCoordinator registry", () => {
           postcondition: {
             kind: "split",
             expectedSourceTitle: "Ro",
-            expectedInsertedTitle: "ot"
-          }
+            expectedInsertedTitle: "ot",
+          },
         },
-        optimistic: optimisticInsertion("Ro", "ot")
+        optimistic: optimisticInsertion("Ro", "ot"),
       })!;
       expectedEntryId = preparation.historyContext.entryId;
       events.mockClear();
@@ -1810,37 +2226,37 @@ describe("notesWorkspaceCoordinator registry", () => {
               selectedId: "split",
               editingNoteId: "split",
               pendingFocusId: "split",
-              pendingFocusField: "title" as const
+              pendingFocusField: "title" as const,
             },
             historyStatus: projectedHistoryState(expectedEntryId),
-            committedHistoryEntryIds: [expectedEntryId]
+            committedHistoryEntryIds: [expectedEntryId],
           }),
-          { keyboardInsertion: preparation }
-        )
+          { keyboardInsertion: preparation },
+        ),
       ).resolves.toBe("committed");
 
       expect(loadWorkspace).toHaveBeenLastCalledWith(
         `/keyboard-insertion-${name.toLowerCase()}`,
-        { kind: "active" }
+        { kind: "active" },
       );
       const settled = events.mock.calls
         .map(([event]) => event)
         .find((event) => event.type === "settled");
       expect(settled?.result).toMatchObject({
         kind: "authoritative",
-        workspace: projection
+        workspace: projection,
       });
       expect(settled?.result.workspace.nodes).not.toContainEqual(
-        expect.objectContaining({ id: "unrelated" })
+        expect.objectContaining({ id: "unrelated" }),
       );
       session.close();
-    }
+    },
   );
 
   it("recovers authority and retains provisional text when an insertion success violates its structural postcondition", async () => {
     const mismatched = workspace([
       node({ id: "root", title: "Root", sortKey: 1024 }),
-      node({ id: "split", title: "wrong", sortKey: 2048 })
+      node({ id: "split", title: "wrong", sortKey: 2048 }),
     ]);
     const loadWorkspace = vi
       .fn<NotesStore["loadWorkspace"]>()
@@ -1848,17 +2264,19 @@ describe("notesWorkspaceCoordinator registry", () => {
       .mockResolvedValueOnce(mismatched);
     let expectedEntryId = "";
     const historyStatus = vi.fn(async () =>
-      projectedHistoryState(expectedEntryId)
+      projectedHistoryState(expectedEntryId),
     );
     const store = repository({ loadWorkspace, historyStatus });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/keyboard-insertion-postcondition-mismatch",
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/keyboard-insertion-postcondition-mismatch",
+        onEvent: events,
+      }),
+    );
     await session.activation;
     session.publishOutlinePaneState({
       paneId: "primary",
@@ -1866,7 +2284,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set()
+      locallyExpandedNodeIds: new Set(),
     });
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "primary",
@@ -1877,10 +2295,10 @@ describe("notesWorkspaceCoordinator registry", () => {
         postcondition: {
           kind: "split",
           expectedSourceTitle: "Root",
-          expectedInsertedTitle: ""
-        }
+          expectedInsertedTitle: "",
+        },
       },
-      optimistic: optimisticInsertion()
+      optimistic: optimisticInsertion(),
     })!;
     expectedEntryId = preparation.historyContext.entryId;
     session.updateOptimisticKeyboardInsertion("split", "typed live");
@@ -1895,19 +2313,19 @@ describe("notesWorkspaceCoordinator registry", () => {
             selectedId: "split",
             editingNoteId: "split",
             pendingFocusId: "split",
-            pendingFocusField: "title" as const
+            pendingFocusField: "title" as const,
           },
           historyStatus: projectedHistoryState(expectedEntryId),
-          committedHistoryEntryIds: [expectedEntryId]
+          committedHistoryEntryIds: [expectedEntryId],
         }),
-        { keyboardInsertion: preparation }
-      )
+        { keyboardInsertion: preparation },
+      ),
     ).resolves.toBe("failed");
 
     expect(loadWorkspace).toHaveBeenCalledTimes(2);
     expect(historyStatus).toHaveBeenCalledWith(
       "/keyboard-insertion-postcondition-mismatch",
-      preparation.historyContext.sessionId
+      preparation.historyContext.sessionId,
     );
     const settled = events.mock.calls
       .map(([event]) => event)
@@ -1916,17 +2334,17 @@ describe("notesWorkspaceCoordinator registry", () => {
       kind: "failure",
       uiUpdate: {
         pendingFocusId: null,
-        pendingFocusField: null
-      }
+        pendingFocusField: null,
+      },
     });
     expect(events).toHaveBeenCalledWith({
       type: "optimisticInsertion",
       snapshot: {
         insertions: [],
         failure: expect.objectContaining({
-          recoveryText: "Root\ntyped live"
-        })
-      }
+          recoveryText: "Root\ntyped live",
+        }),
+      },
     });
     session.close();
   });
@@ -1934,35 +2352,35 @@ describe("notesWorkspaceCoordinator registry", () => {
   it("does not accept an insertion success whose next undo entry belongs to another command", async () => {
     const inserted = workspace([
       node({ id: "root", title: "Root", sortKey: 1024 }),
-      node({ id: "split", title: "", sortKey: 2048 })
+      node({ id: "split", title: "", sortKey: 2048 }),
     ]);
     const loadWorkspace = vi
       .fn<NotesStore["loadWorkspace"]>()
       .mockResolvedValueOnce(workspace([node({ id: "root", title: "Root" })]))
       .mockResolvedValueOnce(inserted);
-    const historyStatus = vi
-      .fn(async (_vaultRoot: string, _sessionId: string) =>
-        projectedHistoryState("another-entry")
-      );
-    const clearHistory = vi
-      .fn<NotesStore["clearHistory"]>()
-      .mockResolvedValue({
-        ...historyState("epoch-b"),
-        historyReset: true
-      });
+    const historyStatus = vi.fn(
+      async (_vaultRoot: string, _sessionId: string) =>
+        projectedHistoryState("another-entry"),
+    );
+    const clearHistory = vi.fn<NotesStore["clearHistory"]>().mockResolvedValue({
+      ...historyState("epoch-b"),
+      historyReset: true,
+    });
     const store = repository({
       loadWorkspace,
       historyStatus,
-      clearHistory
+      clearHistory,
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/keyboard-insertion-history-mismatch",
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/keyboard-insertion-history-mismatch",
+        onEvent: events,
+      }),
+    );
     await session.activation;
     session.publishOutlinePaneState({
       paneId: "primary",
@@ -1970,7 +2388,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set()
+      locallyExpandedNodeIds: new Set(),
     });
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "primary",
@@ -1981,10 +2399,10 @@ describe("notesWorkspaceCoordinator registry", () => {
         postcondition: {
           kind: "split",
           expectedSourceTitle: "Root",
-          expectedInsertedTitle: ""
-        }
+          expectedInsertedTitle: "",
+        },
       },
-      optimistic: optimisticInsertion()
+      optimistic: optimisticInsertion(),
     })!;
     events.mockClear();
 
@@ -1997,13 +2415,13 @@ describe("notesWorkspaceCoordinator registry", () => {
             selectedId: "split",
             editingNoteId: "split",
             pendingFocusId: "split",
-            pendingFocusField: "title" as const
+            pendingFocusField: "title" as const,
           },
           historyStatus: projectedHistoryState("another-entry"),
-          committedHistoryEntryIds: ["another-entry"]
+          committedHistoryEntryIds: ["another-entry"],
         }),
-        { keyboardInsertion: preparation }
-      )
+        { keyboardInsertion: preparation },
+      ),
     ).resolves.toBe("committed");
 
     expect(loadWorkspace).toHaveBeenCalledTimes(2);
@@ -2011,15 +2429,15 @@ describe("notesWorkspaceCoordinator registry", () => {
       "/keyboard-insertion-history-mismatch",
       {
         sessionId: preparation.historyContext.sessionId,
-        historyEpoch: "epoch-a"
-      }
+        historyEpoch: "epoch-a",
+      },
     );
     const settled = events.mock.calls
       .map(([event]) => event)
       .find((event) => event.type === "settled");
     expect(settled?.result.uiUpdate).toEqual({
       pendingFocusId: null,
-      pendingFocusField: null
+      pendingFocusField: null,
     });
     session.close();
   });
@@ -2030,11 +2448,13 @@ describe("notesWorkspaceCoordinator registry", () => {
     const pool = createNotesExpansionSnapshotPool();
     const firstEvents = vi.fn();
     const secondEvents = vi.fn();
-    const first = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/keyboard-insertion-session-isolation",
-      onEvent: firstEvents
-    }));
+    const first = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/keyboard-insertion-session-isolation",
+        onEvent: firstEvents,
+      }),
+    );
     await first.activation;
     first.publishOutlinePaneState({
       paneId: "pane-first",
@@ -2042,7 +2462,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set()
+      locallyExpandedNodeIds: new Set(),
     });
     const preparation = first.prepareKeyboardInsertion({
       ownerPaneId: "pane-first",
@@ -2053,32 +2473,34 @@ describe("notesWorkspaceCoordinator registry", () => {
         postcondition: {
           kind: "split",
           expectedSourceTitle: "Root",
-          expectedInsertedTitle: ""
-        }
+          expectedInsertedTitle: "",
+        },
       },
-      optimistic: optimisticInsertion()
+      optimistic: optimisticInsertion(),
     })!;
-    const second = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/keyboard-insertion-session-isolation",
-      onEvent: secondEvents
-    }));
+    const second = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/keyboard-insertion-session-isolation",
+        onEvent: secondEvents,
+      }),
+    );
     await second.activation;
 
     await second.enqueue(() => ({
       kind: "authoritative" as const,
-      workspace: workspace([node({ id: "other" })])
+      workspace: workspace([node({ id: "other" })]),
     }));
 
     expect(first.pendingKeyboardInsertion("split")).toEqual(
-      preparation.pending
+      preparation.pending,
     );
     expect(secondEvents).not.toHaveBeenCalledWith(
       expect.objectContaining({
         result: expect.objectContaining({
-          projectionPublication: expect.anything()
-        })
-      })
+          projectionPublication: expect.anything(),
+        }),
+      }),
     );
     first.close();
     second.close();
@@ -2089,11 +2511,13 @@ describe("notesWorkspaceCoordinator registry", () => {
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const events = vi.fn();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/keyboard-insertion-first-child",
-      onEvent: events
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/keyboard-insertion-first-child",
+        onEvent: events,
+      }),
+    );
     await session.activation;
     events.mockClear();
     session.publishOutlinePaneState({
@@ -2102,7 +2526,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(["root"]),
-      locallyExpandedNodeIds: new Set()
+      locallyExpandedNodeIds: new Set(),
     });
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
@@ -2114,10 +2538,10 @@ describe("notesWorkspaceCoordinator registry", () => {
           kind: "first-child",
           expectedParentId: "root",
           expectedIndex: 0,
-          expectedInsertedTitle: ""
-        }
+          expectedInsertedTitle: "",
+        },
       },
-      optimistic: optimisticInsertion()
+      optimistic: optimisticInsertion(),
     })!;
 
     await session.enqueueStructural(
@@ -2129,21 +2553,21 @@ describe("notesWorkspaceCoordinator registry", () => {
             id: "child",
             parentId: "root",
             title: "",
-            sortKey: 1024
-          })
+            sortKey: 1024,
+          }),
         ]),
         uiUpdate: {
           selectedId: "child",
           editingNoteId: "child",
           pendingFocusId: "child",
-          pendingFocusField: "title" as const
+          pendingFocusField: "title" as const,
         },
         historyStatus: projectedHistoryState(
-          preparation.historyContext.entryId
+          preparation.historyContext.entryId,
         ),
-        committedHistoryEntryIds: [preparation.historyContext.entryId]
+        committedHistoryEntryIds: [preparation.historyContext.entryId],
       }),
-      { keyboardInsertion: preparation }
+      { keyboardInsertion: preparation },
     );
 
     expect(events).toHaveBeenCalledWith(
@@ -2152,17 +2576,17 @@ describe("notesWorkspaceCoordinator registry", () => {
           projectionPublication: expect.objectContaining({
             targetPaneId: "pane-a",
             locallyExpandedNodeIds: expect.objectContaining({
-              has: expect.any(Function)
-            })
-          })
-        })
-      })
+              has: expect.any(Function),
+            }),
+          }),
+        }),
+      }),
     );
     const settled = events.mock.calls
       .map(([event]) => event)
       .find((event) => event.type === "settled");
     expect(
-      settled?.result.projectionPublication?.locallyExpandedNodeIds.has("root")
+      settled?.result.projectionPublication?.locallyExpandedNodeIds.has("root"),
     ).toBe(true);
     session.close();
   });
@@ -2175,7 +2599,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/ordinary-selection-policy",
-      onEvent: events
+      onEvent: events,
     });
     await session.activation;
     events.mockClear();
@@ -2185,7 +2609,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(events).toHaveBeenCalledWith({
       type: "pending",
       selectionPolicy: "clear",
-      showLoading: true
+      showLoading: true,
     });
     session.close();
   });
@@ -2198,7 +2622,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/default-structural-selection-policy",
-      onEvent: events
+      onEvent: events,
     });
     await session.activation;
     events.mockClear();
@@ -2208,7 +2632,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(events).toHaveBeenCalledWith({
       type: "pending",
       selectionPolicy: "clear",
-      showLoading: true
+      showLoading: true,
     });
     session.close();
   });
@@ -2221,20 +2645,19 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/preserved-structural-selection-policy",
-      onEvent: events
+      onEvent: events,
     });
     await session.activation;
     events.mockClear();
 
-    await session.enqueueStructural(
-      () => ({ kind: "skipped" as const }),
-      { selectionPolicy: "preserve" }
-    );
+    await session.enqueueStructural(() => ({ kind: "skipped" as const }), {
+      selectionPolicy: "preserve",
+    });
 
     expect(events).toHaveBeenCalledWith({
       type: "pending",
       selectionPolicy: "preserve",
-      showLoading: true
+      showLoading: true,
     });
     session.close();
   });
@@ -2242,14 +2665,15 @@ describe("notesWorkspaceCoordinator registry", () => {
   it("strictly drains admitted structural work, drafts, the final queue observer, and history cleanup", async () => {
     const prune = deferred<NotesHistoryState>();
     const store = repository({
-      pruneHistoryEntries: vi.fn(() => prune.promise)
+      pruneHistoryEntries: vi.fn(() => prune.promise),
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
     const admittedBarrier = deferred<boolean>();
     const finalBarrier = deferred<boolean>();
     const barriers = [admittedBarrier, finalBarrier];
-    const captureDraftCutoff = vi.fn()
+    const captureDraftCutoff = vi
+      .fn()
       .mockReturnValueOnce(7)
       .mockReturnValueOnce(8);
     const beforeStructural = vi.fn((cutoff: number) => {
@@ -2260,14 +2684,16 @@ describe("notesWorkspaceCoordinator registry", () => {
     const afterStructural = vi.fn((cutoff: number) => {
       finalizedCutoffs.push(cutoff);
     });
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/strict-drain",
-      onEvent: vi.fn(),
-      captureDraftCutoff,
-      beforeStructural,
-      afterStructural
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/strict-drain",
+        onEvent: vi.fn(),
+        captureDraftCutoff,
+        beforeStructural,
+        afterStructural,
+      }),
+    );
     await session.activation;
     const admittedWork = vi.fn(() => ({ kind: "skipped" as const }));
     const admitted = session.enqueueStructural(admittedWork);
@@ -2287,7 +2713,9 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(store.pruneHistoryEntries).not.toHaveBeenCalled();
 
     finalBarrier.resolve(true);
-    await vi.waitFor(() => expect(store.pruneHistoryEntries).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(store.pruneHistoryEntries).toHaveBeenCalledOnce(),
+    );
     expect(firstDrain).not.toBeNull();
     prune.resolve(historyState());
 
@@ -2306,20 +2734,22 @@ describe("notesWorkspaceCoordinator registry", () => {
     const barrier = deferred<boolean>();
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: repository(),
-      vaultRoot: "/strict-retained-work",
-      onEvent: vi.fn(),
-      captureDraftCutoff: () => 1,
-      beforeStructural: () => barrier.promise
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: repository(),
+        vaultRoot: "/strict-retained-work",
+        onEvent: vi.fn(),
+        captureDraftCutoff: () => 1,
+        beforeStructural: () => barrier.promise,
+      }),
+    );
     await session.activation;
     const drain = session.drain();
     await Promise.resolve();
     const retainedWork = vi.fn(() => ({ kind: "skipped" as const }));
 
     const retained = session.enqueueStructural(retainedWork, {
-      retainAfterClose: true
+      retainAfterClose: true,
     });
     const settled = vi.fn();
     void retained.then(settled);
@@ -2336,13 +2766,15 @@ describe("notesWorkspaceCoordinator registry", () => {
     const barrier = deferred<boolean>();
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: repository(),
-      vaultRoot: "/strict-capability",
-      onEvent: vi.fn(),
-      captureDraftCutoff: () => 1,
-      beforeStructural: () => barrier.promise
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: repository(),
+        vaultRoot: "/strict-capability",
+        onEvent: vi.fn(),
+        captureDraftCutoff: () => 1,
+        beforeStructural: () => barrier.promise,
+      }),
+    );
     await session.activation;
     const drain = session.drain();
     await Promise.resolve();
@@ -2352,7 +2784,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const forgedWork = vi.fn(() => ({ kind: "skipped" as const }));
     const forgedOptions = {
       lifecycleDrainWork: true,
-      retainAfterClose: true
+      retainAfterClose: true,
     } as unknown as NonNullable<
       Parameters<typeof session.enqueueStructural>[1]
     >;
@@ -2362,8 +2794,8 @@ describe("notesWorkspaceCoordinator registry", () => {
         session.enqueue(silentWork, { silent: true }),
         session.enqueue(observerWork, { observer: true }),
         session.enqueueStructural(retainedWork, { retainAfterClose: true }),
-        session.enqueueStructural(forgedWork, forgedOptions)
-      ])
+        session.enqueueStructural(forgedWork, forgedOptions),
+      ]),
     ).resolves.toEqual(["skipped", "skipped", "skipped", "skipped"]);
     expect(silentWork).not.toHaveBeenCalled();
     expect(observerWork).not.toHaveBeenCalled();
@@ -2380,31 +2812,33 @@ describe("notesWorkspaceCoordinator registry", () => {
     const drainEnqueues: NotesWorkspaceDrainEnqueue[] = [];
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: repository(),
-      vaultRoot: "/strict-capability-generation",
-      onEvent: vi.fn(),
-      captureDraftCutoff: () => drainEnqueues.length + 1,
-      beforeStructural: async (_cutoff, drainEnqueue) => {
-        drainEnqueues.push(drainEnqueue!);
-        if (drainEnqueues.length === 2) return secondBarrier.promise;
-        return true;
-      }
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: repository(),
+        vaultRoot: "/strict-capability-generation",
+        onEvent: vi.fn(),
+        captureDraftCutoff: () => drainEnqueues.length + 1,
+        beforeStructural: async (_cutoff, drainEnqueue) => {
+          drainEnqueues.push(drainEnqueue!);
+          if (drainEnqueues.length === 2) return secondBarrier.promise;
+          return true;
+        },
+      }),
+    );
     await session.activation;
 
     await expect(session.drain()).resolves.toBe(true);
     session.releaseDrain();
     const staleWork = vi.fn(() => ({ kind: "skipped" as const }));
-    await expect(
-      drainEnqueues[0]!(staleWork, { silent: true })
-    ).resolves.toBe("skipped");
+    await expect(drainEnqueues[0]!(staleWork, { silent: true })).resolves.toBe(
+      "skipped",
+    );
     expect(staleWork).not.toHaveBeenCalled();
 
     const secondDrain = session.drain();
     await vi.waitFor(() => expect(drainEnqueues).toHaveLength(2));
     await expect(
-      drainEnqueues[0]!(staleWork, { observer: true })
+      drainEnqueues[0]!(staleWork, { observer: true }),
     ).resolves.toBe("skipped");
     expect(staleWork).not.toHaveBeenCalled();
     secondBarrier.resolve(true);
@@ -2417,13 +2851,15 @@ describe("notesWorkspaceCoordinator registry", () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
-    const session = registry.openSession(writableOptions(pool, {
-      repository: store,
-      vaultRoot: "/failed-strict-drain",
-      onEvent: vi.fn(),
-      captureDraftCutoff: () => 3,
-      beforeStructural: async () => false
-    }));
+    const session = registry.openSession(
+      writableOptions(pool, {
+        repository: store,
+        vaultRoot: "/failed-strict-drain",
+        onEvent: vi.fn(),
+        captureDraftCutoff: () => 3,
+        beforeStructural: async () => false,
+      }),
+    );
     await session.activation;
 
     await expect(session.drain()).resolves.toBe(false);
@@ -2443,13 +2879,13 @@ describe("notesWorkspaceCoordinator registry", () => {
       repository: store,
       vaultRoot: "/departure",
       onEvent: vi.fn(),
-      beforeStructural: () => drain.promise
+      beforeStructural: () => drain.promise,
     });
     const requester = registry.openSession({
       presentation: "writable",
       repository: store,
       vaultRoot: "/departure",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
     await Promise.all([departed.activation, requester.activation]);
     const structuralWork = vi.fn(() => ({ kind: "skipped" as const }));
@@ -2481,13 +2917,13 @@ describe("notesWorkspaceCoordinator registry", () => {
         return 7;
       },
       beforeStructural: () => drain.promise,
-      afterStructural: finalize
+      afterStructural: finalize,
     });
     const requester = registry.openSession({
       presentation: "writable",
       repository: store,
       vaultRoot: "/departure-cleanup",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
     await Promise.all([departed.activation, requester.activation]);
     const structuralWork = vi.fn(() => ({ kind: "skipped" as const }));
@@ -2504,7 +2940,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(activeIntentTokens.size).toBe(0);
     requester.close();
     await vi.waitFor(() =>
-      expect(registry.hasCoordinator(store, "/departure-cleanup")).toBe(false)
+      expect(registry.hasCoordinator(store, "/departure-cleanup")).toBe(false),
     );
   });
 
@@ -2519,13 +2955,13 @@ describe("notesWorkspaceCoordinator registry", () => {
       vaultRoot: "/switched",
       onEvent: vi.fn(),
       beforeStructural: () => drain.promise,
-      isCurrent: () => current
+      isCurrent: () => current,
     });
     const requester = registry.openSession({
       presentation: "writable",
       repository: store,
       vaultRoot: "/switched",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
     await Promise.all([switched.activation, requester.activation]);
     const structuralWork = vi.fn(() => ({ kind: "skipped" as const }));
@@ -2556,7 +2992,7 @@ describe("notesWorkspaceCoordinator registry", () => {
         cutoffs.push(cutoff);
         generation += 1;
         return true;
-      }
+      },
     });
     await participant.activation;
     const structuralWork = vi.fn(() => ({ kind: "skipped" as const }));
@@ -2582,7 +3018,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       repository: store,
       vaultRoot: "/structural-scope",
       onEvent: siblingEvents,
-      getScope: () => scope
+      getScope: () => scope,
     });
     const owner = registry.openSession({
       presentation: "writable",
@@ -2590,19 +3026,21 @@ describe("notesWorkspaceCoordinator registry", () => {
       vaultRoot: "/structural-scope",
       onEvent: ownerEvents,
       beforeStructural: () => drain.promise,
-      getScope: () => scope
+      getScope: () => scope,
     });
     await Promise.all([owner.activation, sibling.activation]);
     ownerEvents.mockClear();
     siblingEvents.mockClear();
 
-    const projected = workspace([node({ id: "starred-result", isStarred: true })]);
+    const projected = workspace([
+      node({ id: "starred-result", isStarred: true }),
+    ]);
     let observedScope: NotesWorkspaceScope | null = null;
     const completion = owner.enqueueStructural((context) => {
       observedScope = context.sourceScope;
       return {
         kind: "authoritative" as const,
-        workspace: projected
+        workspace: projected,
       };
     });
     await Promise.resolve();
@@ -2617,32 +3055,30 @@ describe("notesWorkspaceCoordinator registry", () => {
       sourceScope: { kind: "starred" },
       result: expect.objectContaining({
         kind: "authoritative",
-        workspace: projected
-      })
+        workspace: projected,
+      }),
     });
     owner.close();
     sibling.close();
   });
 
   it("owns canonical tag scopes and gives work a separate snapshot", async () => {
-    const mutableTags: Extract<
-      NotesWorkspaceScope,
-      { kind: "tags" }
-    >["tags"] = [
-      { prefix: "@", normalizedTag: "alice" },
-      { prefix: "#", normalizedTag: "work" },
-      { prefix: "#", normalizedTag: "work" }
-    ];
+    const mutableTags: Extract<NotesWorkspaceScope, { kind: "tags" }>["tags"] =
+      [
+        { prefix: "@", normalizedTag: "alice" },
+        { prefix: "#", normalizedTag: "work" },
+        { prefix: "#", normalizedTag: "work" },
+      ];
     const ownerScope: NotesWorkspaceScope = {
       kind: "tags",
-      tags: mutableTags
+      tags: mutableTags,
     };
     const expectedScope: NotesWorkspaceScope = {
       kind: "tags",
       tags: [
         { prefix: "#", normalizedTag: "work" },
-        { prefix: "@", normalizedTag: "alice" }
-      ]
+        { prefix: "@", normalizedTag: "alice" },
+      ],
     };
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
@@ -2654,14 +3090,14 @@ describe("notesWorkspaceCoordinator registry", () => {
       repository: store,
       vaultRoot: "/owned-scope",
       onEvent: siblingEvents,
-      getScope: () => expectedScope
+      getScope: () => expectedScope,
     });
     const owner = registry.openSession({
       presentation: "writable",
       repository: store,
       vaultRoot: "/owned-scope",
       onEvent: vi.fn(),
-      getScope: () => ownerScope
+      getScope: () => ownerScope,
     });
     await Promise.all([owner.activation, sibling.activation]);
     siblingEvents.mockClear();
@@ -2696,8 +3132,8 @@ describe("notesWorkspaceCoordinator registry", () => {
       sourceScope: expectedScope,
       result: expect.objectContaining({
         kind: "authoritative",
-        workspace: projected
-      })
+        workspace: projected,
+      }),
     });
     sibling.close();
   });
@@ -2705,7 +3141,7 @@ describe("notesWorkspaceCoordinator registry", () => {
   it("prefers an explicit projection scope over a live scope reset", async () => {
     const filteredScope: NotesWorkspaceScope = {
       kind: "tags",
-      tags: [{ prefix: "#", normalizedTag: "work" }]
+      tags: [{ prefix: "#", normalizedTag: "work" }],
     };
     let ownerScope: NotesWorkspaceScope = filteredScope;
     const store = repository();
@@ -2719,7 +3155,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       repository: store,
       vaultRoot: "/explicit-projection-scope",
       onEvent: siblingEvents,
-      getScope: () => filteredScope
+      getScope: () => filteredScope,
     });
     const owner = registry.openSession({
       presentation: "writable",
@@ -2727,7 +3163,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       vaultRoot: "/explicit-projection-scope",
       onEvent: vi.fn(),
       beforeStructural: () => drain.promise,
-      getScope: () => ownerScope
+      getScope: () => ownerScope,
     });
     await Promise.all([owner.activation, sibling.activation]);
     siblingEvents.mockClear();
@@ -2739,7 +3175,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       return {
         kind: "authoritative" as const,
         workspace: projected,
-        broadcastScope: context.sourceScope
+        broadcastScope: context.sourceScope,
       };
     });
     await Promise.resolve();
@@ -2755,8 +3191,8 @@ describe("notesWorkspaceCoordinator registry", () => {
       sourceScope: filteredScope,
       result: expect.objectContaining({
         kind: "authoritative",
-        workspace: projected
-      })
+        workspace: projected,
+      }),
     });
     owner.close();
     sibling.close();
@@ -2772,13 +3208,13 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/retained-structural",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
     const sibling = registry.openSession({
       presentation: "writable",
       repository: store,
       vaultRoot: "/retained-structural",
-      onEvent: siblingEvents
+      onEvent: siblingEvents,
     });
     await Promise.all([owner.activation, sibling.activation]);
     siblingEvents.mockClear();
@@ -2790,7 +3226,7 @@ describe("notesWorkspaceCoordinator registry", () => {
         await finish.promise;
         return { kind: "authoritative" as const, workspace: projected };
       },
-      { retainAfterClose: true }
+      { retainAfterClose: true },
     );
     await started.promise;
     owner.close();
@@ -2803,8 +3239,8 @@ describe("notesWorkspaceCoordinator registry", () => {
       sourceScope: { kind: "active" },
       result: expect.objectContaining({
         kind: "authoritative",
-        workspace: projected
-      })
+        workspace: projected,
+      }),
     });
     sibling.close();
   });
@@ -2814,8 +3250,8 @@ describe("notesWorkspaceCoordinator registry", () => {
     const store = repository({
       historyStatus: vi.fn().mockResolvedValue({
         ...historyState(),
-        canUndo: true
-      })
+        canUndo: true,
+      }),
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const ownerEvents = vi.fn();
@@ -2824,13 +3260,13 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/partial",
-      onEvent: siblingEvents
+      onEvent: siblingEvents,
     });
     const owner = registry.openSession({
       presentation: "writable",
       repository: store,
       vaultRoot: "/partial",
-      onEvent: ownerEvents
+      onEvent: ownerEvents,
     });
     await Promise.all([owner.activation, sibling.activation]);
     ownerEvents.mockClear();
@@ -2839,7 +3275,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     await owner.enqueue(() => ({
       kind: "failure" as const,
       error: "move failed",
-      workspace: confirmed
+      workspace: confirmed,
     }));
 
     expect(ownerEvents).toHaveBeenCalledWith({
@@ -2849,9 +3285,9 @@ describe("notesWorkspaceCoordinator registry", () => {
         error: "move failed",
         workspace: confirmed,
         historyStatus: { ...historyState(), canUndo: true },
-        historyVersion: 2
+        historyVersion: 2,
       },
-      hasPendingWork: false
+      hasPendingWork: false,
     });
     expect(siblingEvents).toHaveBeenCalledWith({
       type: "synchronized",
@@ -2862,8 +3298,8 @@ describe("notesWorkspaceCoordinator registry", () => {
         error: "move failed",
         workspace: confirmed,
         historyStatus: { ...historyState(), canUndo: true },
-        historyVersion: 2
-      }
+        historyVersion: 2,
+      },
     });
     owner.close();
     sibling.close();
@@ -2872,7 +3308,7 @@ describe("notesWorkspaceCoordinator registry", () => {
   it("settles failure UI only to its owner and strips it from sibling sync", async () => {
     const confirmed = workspace([
       node({ id: "owner-selection" }),
-      node({ id: "sibling-selection", sortKey: 2048 })
+      node({ id: "sibling-selection", sortKey: 2048 }),
     ]);
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
@@ -2882,13 +3318,13 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/failure-ui",
-      onEvent: siblingEvents
+      onEvent: siblingEvents,
     });
     const owner = registry.openSession({
       presentation: "writable",
       repository: store,
       vaultRoot: "/failure-ui",
-      onEvent: ownerEvents
+      onEvent: ownerEvents,
     });
     await Promise.all([owner.activation, sibling.activation]);
     ownerEvents.mockClear();
@@ -2900,8 +3336,8 @@ describe("notesWorkspaceCoordinator registry", () => {
       workspace: confirmed,
       uiUpdate: {
         selectedId: "owner-selection",
-        pendingFocusId: "owner-selection"
-      }
+        pendingFocusId: "owner-selection",
+      },
     }));
 
     expect(ownerEvents).toHaveBeenCalledWith(
@@ -2911,16 +3347,16 @@ describe("notesWorkspaceCoordinator registry", () => {
           kind: "failure",
           uiUpdate: {
             selectedId: "owner-selection",
-            pendingFocusId: "owner-selection"
-          }
-        })
-      })
+            pendingFocusId: "owner-selection",
+          },
+        }),
+      }),
     );
     expect(siblingEvents).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "synchronized",
-        result: expect.not.objectContaining({ uiUpdate: expect.anything() })
-      })
+        result: expect.not.objectContaining({ uiUpdate: expect.anything() }),
+      }),
     );
     owner.close();
     sibling.close();
@@ -2937,14 +3373,14 @@ describe("notesWorkspaceCoordinator registry", () => {
       repository: store,
       vaultRoot: "/projection-failure",
       onEvent: siblingEvents,
-      getScope: () => ({ kind: "starred" })
+      getScope: () => ({ kind: "starred" }),
     });
     const owner = registry.openSession({
       presentation: "writable",
       repository: store,
       vaultRoot: "/projection-failure",
       onEvent: ownerEvents,
-      getScope: () => ({ kind: "starred" })
+      getScope: () => ({ kind: "starred" }),
     });
     await Promise.all([owner.activation, sibling.activation]);
     ownerEvents.mockClear();
@@ -2955,7 +3391,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       error: "Projection reload failed",
       workspace: confirmed,
       historyStatus: { ...historyState(), canUndo: true },
-      scopeAgnostic: true
+      scopeAgnostic: true,
     }));
 
     expect(siblingEvents).toHaveBeenCalledWith(
@@ -2964,9 +3400,9 @@ describe("notesWorkspaceCoordinator registry", () => {
         sourceScope: null,
         result: expect.objectContaining({
           workspace: confirmed,
-          historyStatus: { ...historyState(), canUndo: true }
-        })
-      })
+          historyStatus: { ...historyState(), canUndo: true },
+        }),
+      }),
     );
     owner.close();
     sibling.close();
@@ -2982,42 +3418,44 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/pending",
-      onEvent: siblingEvents
+      onEvent: siblingEvents,
     });
     const owner = registry.openSession({
       presentation: "writable",
       repository: store,
       vaultRoot: "/pending",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
     await Promise.all([owner.activation, sibling.activation]);
     siblingEvents.mockClear();
 
     const first = owner.enqueue(async () => ({
       kind: "authoritative" as const,
-      workspace: await ownerWork.promise
+      workspace: await ownerWork.promise,
     }));
     const second = sibling.enqueue(
       async () => ({
         kind: "authoritative" as const,
-        workspace: await siblingWork.promise
+        workspace: await siblingWork.promise,
       }),
-      { observer: true }
+      { observer: true },
     );
     siblingEvents.mockClear();
     ownerWork.resolve(workspace([node({ id: "owner-result" })]));
     await first;
 
-    expect(siblingEvents).toHaveBeenCalledWith(expect.objectContaining({
-      type: "synchronized",
-      hasPendingWork: true,
-      sourceScope: { kind: "active" },
-      result: expect.objectContaining({
-        kind: "authoritative",
-        workspace: workspace([node({ id: "owner-result" })]),
-        historyStatus: undefined
-      })
-    }));
+    expect(siblingEvents).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "synchronized",
+        hasPendingWork: true,
+        sourceScope: { kind: "active" },
+        result: expect.objectContaining({
+          kind: "authoritative",
+          workspace: workspace([node({ id: "owner-result" })]),
+          historyStatus: undefined,
+        }),
+      }),
+    );
     siblingWork.resolve(workspace([node({ id: "sibling-result" })]));
     await second;
     owner.close();
@@ -3039,7 +3477,7 @@ describe("notesWorkspaceCoordinator registry", () => {
         await firstDrain.promise;
         order.push("first:end");
         return true;
-      }
+      },
     });
     const second = registry.openSession({
       presentation: "writable",
@@ -3049,7 +3487,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       beforeStructural: async () => {
         order.push("second");
         return true;
-      }
+      },
     });
     await Promise.all([first.activation, second.activation]);
 
@@ -3062,12 +3500,7 @@ describe("notesWorkspaceCoordinator registry", () => {
 
     firstDrain.resolve();
     await structural;
-    expect(order).toEqual([
-      "first:start",
-      "first:end",
-      "second",
-      "structural"
-    ]);
+    expect(order).toEqual(["first:start", "first:end", "second", "structural"]);
     first.close();
     second.close();
   });
@@ -3078,8 +3511,8 @@ describe("notesWorkspaceCoordinator registry", () => {
       historyStatus: vi.fn().mockResolvedValue({
         ...historyState(),
         canUndo: true,
-        canRedo: false
-      })
+        canRedo: false,
+      }),
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const ownerEvents = vi.fn();
@@ -3088,13 +3521,13 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
-      onEvent: siblingEvents
+      onEvent: siblingEvents,
     });
     const owner = registry.openSession({
       presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
-      onEvent: ownerEvents
+      onEvent: ownerEvents,
     });
     await Promise.all([owner.activation, sibling.activation]);
     ownerEvents.mockClear();
@@ -3106,8 +3539,8 @@ describe("notesWorkspaceCoordinator registry", () => {
       tagSummaries: [],
       uiUpdate: {
         selectedId: "owner-selection",
-        zoomRootId: "owner-zoom"
-      }
+        zoomRootId: "owner-zoom",
+      },
     }));
     ownerEvents.mockClear();
     owner.close();
@@ -3125,8 +3558,8 @@ describe("notesWorkspaceCoordinator registry", () => {
         workspace: confirmed,
         historyStatus: { ...historyState(), canUndo: true },
         historyVersion: 2,
-        tagSummaries: []
-      }
+        tagSummaries: [],
+      },
     });
     sibling.close();
   });
@@ -3138,12 +3571,12 @@ describe("notesWorkspaceCoordinator registry", () => {
       "tags",
       {
         kind: "tags",
-        tags: [{ prefix: "#", normalizedTag: "work" }]
-      }
+        tags: [{ prefix: "#", normalizedTag: "work" }],
+      },
     ],
     ["recent", { kind: "recent" }],
     ["archive", { kind: "archive" }],
-    ["trash", { kind: "trash" }]
+    ["trash", { kind: "trash" }],
   ] as const)(
     "broadcasts an unmounted owner's captured %s projection to same-scope siblings",
     async (_label, capturedScope) => {
@@ -3151,36 +3584,38 @@ describe("notesWorkspaceCoordinator registry", () => {
       const store = repository();
       const registry = createNotesWorkspaceCoordinatorRegistry();
       const siblingEvents = vi.fn();
-      const projected = workspace([node({ id: `${capturedScope.kind}-projected` })]);
+      const projected = workspace([
+        node({ id: `${capturedScope.kind}-projected` }),
+      ]);
       const getScope = (): NotesWorkspaceScope => {
         if (capturedScope.kind === "tags") {
           return {
             kind: "tags",
-            tags: capturedScope.tags.map((tag) => ({ ...tag }))
+            tags: capturedScope.tags.map((tag) => ({ ...tag })),
           };
         }
         return { ...capturedScope };
       };
       const sibling = registry.openSession({
-      presentation: "writable",
+        presentation: "writable",
         repository: store,
         vaultRoot: `/ownerless-${capturedScope.kind}`,
         onEvent: siblingEvents,
-        getScope
+        getScope,
       });
       const owner = registry.openSession({
-      presentation: "writable",
+        presentation: "writable",
         repository: store,
         vaultRoot: `/ownerless-${capturedScope.kind}`,
         onEvent: vi.fn(),
-        getScope
+        getScope,
       });
       await Promise.all([owner.activation, sibling.activation]);
       siblingEvents.mockClear();
 
       const completion = owner.enqueue(async () => ({
         kind: "authoritative" as const,
-        workspace: await running.promise
+        workspace: await running.promise,
       }));
       owner.close();
       running.resolve(projected);
@@ -3194,11 +3629,11 @@ describe("notesWorkspaceCoordinator registry", () => {
           kind: "authoritative",
           workspace: projected,
           historyStatus: undefined,
-          historyVersion: undefined
-        }
+          historyVersion: undefined,
+        },
       });
       sibling.close();
-    }
+    },
   );
 
   it("broadcasts a departed owner's projection failure as a scope invalidation", async () => {
@@ -3213,14 +3648,14 @@ describe("notesWorkspaceCoordinator registry", () => {
       repository: store,
       vaultRoot: "/ownerless-projection-failure",
       onEvent: siblingEvents,
-      getScope: () => starredScope
+      getScope: () => starredScope,
     });
     const owner = registry.openSession({
       presentation: "writable",
       repository: store,
       vaultRoot: "/ownerless-projection-failure",
       onEvent: vi.fn(),
-      getScope: () => starredScope
+      getScope: () => starredScope,
     });
     await Promise.all([owner.activation, sibling.activation]);
     siblingEvents.mockClear();
@@ -3233,7 +3668,7 @@ describe("notesWorkspaceCoordinator registry", () => {
         workspace: rawActive,
         historyStatus: { ...historyState(), canUndo: true },
         scopeAgnostic: true,
-        committedHistoryEntryIds: ["committed-entry"]
+        committedHistoryEntryIds: ["committed-entry"],
       };
     });
     owner.close();
@@ -3251,8 +3686,8 @@ describe("notesWorkspaceCoordinator registry", () => {
         historyStatus: { ...historyState(), canUndo: true },
         historyVersion: 2,
         scopeAgnostic: true,
-        committedHistoryEntryIds: ["committed-entry"]
-      }
+        committedHistoryEntryIds: ["committed-entry"],
+      },
     });
     sibling.close();
   });
@@ -3260,7 +3695,7 @@ describe("notesWorkspaceCoordinator registry", () => {
   it("settles activation only after loading authoritative history status", async () => {
     const history = deferred<NotesHistoryState>();
     const store = repository({
-      initialize: vi.fn().mockReturnValue(history.promise)
+      initialize: vi.fn().mockReturnValue(history.promise),
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const events = vi.fn();
@@ -3268,7 +3703,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
-      onEvent: events
+      onEvent: events,
     });
     let activated = false;
     void session.activation.then(() => {
@@ -3280,7 +3715,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     history.resolve({
       ...historyState(),
       canRedo: true,
-      nextRedoEntryId: "redo-entry"
+      nextRedoEntryId: "redo-entry",
     });
     await session.activation;
     expect(events).toHaveBeenCalledWith({
@@ -3291,11 +3726,11 @@ describe("notesWorkspaceCoordinator registry", () => {
         historyStatus: {
           ...historyState(),
           canRedo: true,
-          nextRedoEntryId: "redo-entry"
+          nextRedoEntryId: "redo-entry",
         },
-        historyVersion: 1
+        historyVersion: 1,
       },
-      hasPendingWork: false
+      hasPendingWork: false,
     });
     session.close();
   });
@@ -3304,18 +3739,18 @@ describe("notesWorkspaceCoordinator registry", () => {
     const initialization = deferred<NotesHistoryState>();
     const store = repository({
       initialize: vi.fn().mockReturnValue(initialization.promise),
-      historyStatus: undefined
+      historyStatus: undefined,
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const session = registry.openSession({
       presentation: "writable",
       repository: store,
       vaultRoot: "/bound-history",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
 
     expect(store.initialize).toHaveBeenCalledWith("/bound-history", {
-      sessionId: session.history.sessionId
+      sessionId: session.history.sessionId,
     });
     expect(() => session.history.historyEpoch).toThrow("not initialized");
 
@@ -3330,8 +3765,8 @@ describe("notesWorkspaceCoordinator registry", () => {
     const store = repository({
       initialize: vi.fn().mockResolvedValue({
         ...historyState(),
-        nextUndoEntryId: 42
-      })
+        nextUndoEntryId: 42,
+      }),
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const events = vi.fn();
@@ -3339,7 +3774,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/malformed-history-state",
-      onEvent: events
+      onEvent: events,
     });
 
     await session.activation;
@@ -3348,9 +3783,9 @@ describe("notesWorkspaceCoordinator registry", () => {
       type: "settled",
       result: {
         kind: "failure",
-        error: "Notes initialization returned an invalid history state."
+        error: "Notes initialization returned an invalid history state.",
       },
-      hasPendingWork: false
+      hasPendingWork: false,
     });
     expect(() => session.history.historyEpoch).toThrow("not initialized");
     expect(store.loadWorkspace).not.toHaveBeenCalled();
@@ -3359,7 +3794,7 @@ describe("notesWorkspaceCoordinator registry", () => {
 
   it("normalizes malformed activation failures before notifying the UI", async () => {
     const store = repository({
-      initialize: vi.fn().mockRejectedValue({ detail: "opaque" })
+      initialize: vi.fn().mockRejectedValue({ detail: "opaque" }),
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const events = vi.fn();
@@ -3367,7 +3802,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/malformed-activation",
-      onEvent: events
+      onEvent: events,
     });
 
     await session.activation;
@@ -3375,7 +3810,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(events).toHaveBeenCalledWith({
       type: "settled",
       result: { kind: "failure", error: "Notes request failed." },
-      hasPendingWork: false
+      hasPendingWork: false,
     });
     expect(JSON.stringify(events.mock.calls)).not.toContain("[object Object]");
     session.close();
@@ -3388,22 +3823,26 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/vault-a",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
     const second = registry.openSession({
       presentation: "writable",
       repository: store,
       vaultRoot: "/vault-a",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
     const otherVault = registry.openSession({
       presentation: "writable",
       repository: store,
       vaultRoot: "/vault-b",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
 
-    await Promise.all([first.activation, second.activation, otherVault.activation]);
+    await Promise.all([
+      first.activation,
+      second.activation,
+      otherVault.activation,
+    ]);
 
     expect(first.history).toBe(second.history);
     expect(first.history.sessionId).toBe(second.history.sessionId);
@@ -3420,7 +3859,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
     await first.activation;
     const firstSessionId = first.history.sessionId;
@@ -3430,7 +3869,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
     await remounted.activation;
 
@@ -3447,7 +3886,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
-      onEvent: events
+      onEvent: events,
     });
     await session.activation;
     const saved = workspace([node({ id: "root", title: "saved draft" })]);
@@ -3455,7 +3894,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     await session.enqueue(() => ({
       kind: "failure" as const,
       error: "move failed",
-      workspace: saved
+      workspace: saved,
     }));
     let nextConfirmedWorkspace: NotesWorkspace | null = null;
     const nextWork = vi.fn(({ confirmedWorkspace }) => {
@@ -3471,9 +3910,9 @@ describe("notesWorkspaceCoordinator registry", () => {
       result: {
         kind: "failure",
         error: "move failed",
-        workspace: saved
+        workspace: saved,
       },
-      hasPendingWork: false
+      hasPendingWork: false,
     });
     session.close();
   });
@@ -3481,14 +3920,14 @@ describe("notesWorkspaceCoordinator registry", () => {
   it("removes an idle entry after deferred initialization settles without a session", async () => {
     const initialization = deferred<NotesHistoryState>();
     const store = repository({
-      initialize: vi.fn().mockReturnValue(initialization.promise)
+      initialize: vi.fn().mockReturnValue(initialization.promise),
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const session = registry.openSession({
       presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
 
     expect(registry.hasCoordinator(store, "/vault")).toBe(true);
@@ -3498,7 +3937,7 @@ describe("notesWorkspaceCoordinator registry", () => {
 
     expect(store.loadWorkspace).not.toHaveBeenCalled();
     await vi.waitFor(() =>
-      expect(registry.hasCoordinator(store, "/vault")).toBe(false)
+      expect(registry.hasCoordinator(store, "/vault")).toBe(false),
     );
   });
 
@@ -3510,15 +3949,15 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
     await firstSession.activation;
 
     const runningWork = vi.fn(() =>
       running.promise.then((confirmed) => ({
         kind: "authoritative" as const,
-        workspace: confirmed
-      }))
+        workspace: confirmed,
+      })),
     );
     const queuedWork = vi.fn(() => ({ kind: "skipped" as const }));
     const runningCompletion = firstSession.enqueue(runningWork);
@@ -3534,7 +3973,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/vault",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
     expect(store.initialize).toHaveBeenCalledOnce();
     expect(store.loadWorkspace).toHaveBeenCalledOnce();
@@ -3547,7 +3986,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(store.loadWorkspace).toHaveBeenCalledTimes(2);
     secondSession.close();
     await vi.waitFor(() =>
-      expect(registry.hasCoordinator(store, "/vault")).toBe(false)
+      expect(registry.hasCoordinator(store, "/vault")).toBe(false),
     );
   });
 
@@ -3559,7 +3998,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/silent",
-      onEvent: events
+      onEvent: events,
     });
     await session.activation;
     events.mockClear();
@@ -3567,7 +4006,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const settled = workspace([node({ id: "silent-result" })]);
     await session.enqueue(
       () => ({ kind: "authoritative" as const, workspace: settled }),
-      { silent: true }
+      { silent: true },
     );
 
     // No "pending" event is raised for silent work, so loading never toggles...
@@ -3579,9 +4018,9 @@ describe("notesWorkspaceCoordinator registry", () => {
       result: {
         kind: "authoritative",
         workspace: settled,
-        historyStatus: undefined
+        historyStatus: undefined,
       },
-      hasPendingWork: false
+      hasPendingWork: false,
     });
     session.close();
   });
@@ -3596,15 +4035,16 @@ describe("notesWorkspaceCoordinator registry", () => {
       repository: store,
       vaultRoot: "/settlement",
       onEvent: vi.fn(),
-      beforeStructural: () => (allowDrain ? Promise.resolve(true) : drain.promise),
-      isCurrent: () => true
+      beforeStructural: () =>
+        allowDrain ? Promise.resolve(true) : drain.promise,
+      isCurrent: () => true,
     });
     await session.activation;
 
     // Normal path: the work runs and returns authoritative -> "committed".
     const committed = await session.enqueueStructural(() => ({
       kind: "authoritative" as const,
-      workspace: workspace([node({ id: "committed" })])
+      workspace: workspace([node({ id: "committed" })]),
     }));
     expect(committed).toBe("committed");
 
@@ -3617,7 +4057,10 @@ describe("notesWorkspaceCoordinator registry", () => {
     // The draft-flush barrier fails for a still-current session -> the command
     // is dropped before it runs -> "skipped".
     allowDrain = false;
-    const droppedWork = vi.fn(() => ({ kind: "authoritative" as const, workspace: workspace([]) }));
+    const droppedWork = vi.fn(() => ({
+      kind: "authoritative" as const,
+      workspace: workspace([]),
+    }));
     const skipped = session.enqueueStructural(droppedWork);
     await Promise.resolve();
     drain.resolve(false);
@@ -3634,7 +4077,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/settlement-failure-callback",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
     await session.activation;
     const settleFailure = vi.fn(() => {
@@ -3644,8 +4087,8 @@ describe("notesWorkspaceCoordinator registry", () => {
     await expect(
       session.enqueueStructural(
         () => ({ kind: "failure" as const, error: "command failed" }),
-        { settleFailure }
-      )
+        { settleFailure },
+      ),
     ).resolves.toBe("skipped");
     expect(settleFailure).toHaveBeenCalledWith("command failed");
     const next = vi.fn(() => ({ kind: "skipped" as const }));
@@ -3661,7 +4104,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/settlement-skip",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
     await session.activation;
 
@@ -3678,14 +4121,14 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "writable",
       repository: store,
       vaultRoot: "/settlement-closed",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
     await session.activation;
     session.close();
 
     const work = vi.fn(() => ({
       kind: "authoritative" as const,
-      workspace: workspace([])
+      workspace: workspace([]),
     }));
     expect(await session.enqueue(work)).toBe("skipped");
     expect(work).not.toHaveBeenCalled();
@@ -3699,7 +4142,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       .mockResolvedValueOnce(historyState("epoch-b"));
     const store = repository({
       initialize,
-      closeHistorySession: vi.fn().mockReturnValue(closeBackend.promise)
+      closeHistorySession: vi.fn().mockReturnValue(closeBackend.promise),
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
@@ -3708,15 +4151,17 @@ describe("notesWorkspaceCoordinator registry", () => {
         writableOptions(pool, {
           repository: store,
           vaultRoot: "/close-reopen",
-          onEvent: vi.fn()
-        })
+          onEvent: vi.fn(),
+        }),
       );
     const first = open();
     await first.activation;
     const firstEpoch = first.history.historyEpoch;
 
     first.close();
-    await vi.waitFor(() => expect(store.closeHistorySession).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(store.closeHistorySession).toHaveBeenCalledOnce(),
+    );
     const second = open();
     const third = open();
 
@@ -3727,13 +4172,12 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(initialize).toHaveBeenCalledOnce();
 
     closeBackend.resolve();
-    await expect(Promise.all([second.activation, third.activation])).resolves.toEqual([
-      undefined,
-      undefined
-    ]);
+    await expect(
+      Promise.all([second.activation, third.activation]),
+    ).resolves.toEqual([undefined, undefined]);
     expect(initialize).toHaveBeenCalledTimes(2);
     expect(initialize).toHaveBeenLastCalledWith("/close-reopen", {
-      sessionId: second.history.sessionId
+      sessionId: second.history.sessionId,
     });
     expect(second.history.historyEpoch).toBe("epoch-b");
     expect(second.history.historyEpoch).not.toBe(firstEpoch);
@@ -3748,7 +4192,7 @@ describe("notesWorkspaceCoordinator registry", () => {
         .mockResolvedValueOnce(historyState("epoch-a"))
         .mockResolvedValueOnce(historyState("epoch-b")),
       pruneHistoryEntries: vi.fn().mockRejectedValue(new Error("cleanup busy")),
-      closeHistorySession: vi.fn().mockRejectedValue(new Error("close busy"))
+      closeHistorySession: vi.fn().mockRejectedValue(new Error("close busy")),
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
@@ -3756,8 +4200,8 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/failed-close-reopen",
-        onEvent: vi.fn()
-      })
+        onEvent: vi.fn(),
+      }),
     );
     await first.activation;
     first.queueHistoryCleanup(["unreachable"]);
@@ -3766,8 +4210,8 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/failed-close-reopen",
-        onEvent: vi.fn()
-      })
+        onEvent: vi.fn(),
+      }),
     );
 
     await expect(reopened.activation).resolves.toBeUndefined();
@@ -3785,14 +4229,14 @@ describe("notesWorkspaceCoordinator registry", () => {
       presentation: "background",
       repository: store,
       vaultRoot: "/background-owner",
-      onEvent: vi.fn()
+      onEvent: vi.fn(),
     });
     await background.activation;
     const backgroundWork = vi.fn(() => ({ kind: "skipped" as const }));
 
     await expect(background.enqueue(backgroundWork)).resolves.toBe("skipped");
     await expect(background.enqueueStructural(backgroundWork)).resolves.toBe(
-      "skipped"
+      "skipped",
     );
     expect(backgroundWork).not.toHaveBeenCalled();
 
@@ -3801,8 +4245,8 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/background-owner",
-        onEvent: vi.fn()
-      })
+        onEvent: vi.fn(),
+      }),
     );
     await visible.activation;
     expect(visible.isCurrentOwner(visible.ownerToken())).toBe(true);
@@ -3820,22 +4264,22 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(
         pool,
         { repository: store, vaultRoot: "/owner-transfer", onEvent: vi.fn() },
-        firstApply
-      )
+        firstApply,
+      ),
     );
     await first.activation;
     const second = registry.openSession(
       writableOptions(
         pool,
         { repository: store, vaultRoot: "/owner-transfer", onEvent: vi.fn() },
-        secondApply
-      )
+        secondApply,
+      ),
     );
     await second.activation;
     const running = deferred<NotesWorkspace>();
     const admitted = second.enqueue(async () => ({
       kind: "authoritative" as const,
-      workspace: await running.promise
+      workspace: await running.promise,
     }));
     const staleWork = vi.fn(() => ({ kind: "skipped" as const }));
     const stale = second.enqueue(staleWork);
@@ -3850,7 +4294,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(staleWork).not.toHaveBeenCalled();
     expect(firstApply).toHaveBeenLastCalledWith(
       expect.objectContaining({ nodesById: expect.any(Object) }),
-      expect.objectContaining({ selectedId: "root" })
+      expect.objectContaining({ selectedId: "root" }),
     );
     first.close();
   });
@@ -3867,18 +4311,20 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/cleanup-retry",
-        onEvent: vi.fn()
-      })
+        onEvent: vi.fn(),
+      }),
     );
     await session.activation;
     session.history.appendNavigation(
       historySnapshot(pool, "a"),
-      historySnapshot(pool, "b")
+      historySnapshot(pool, "b"),
     );
     session.queueHistoryCleanup(["trimmed-entry", "trimmed-entry"]);
     const blockedWork = vi.fn(() => ({ kind: "skipped" as const }));
 
-    await expect(session.enqueueStructural(blockedWork)).resolves.toBe("failed");
+    await expect(session.enqueueStructural(blockedWork)).resolves.toBe(
+      "failed",
+    );
     expect(blockedWork).not.toHaveBeenCalled();
     expect(session.history.canUndo()).toBe(true);
 
@@ -3886,7 +4332,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(pruneHistoryEntries).toHaveBeenLastCalledWith("/cleanup-retry", {
       sessionId: session.history.sessionId,
       historyEpoch: session.history.historyEpoch,
-      entryIds: ["trimmed-entry"]
+      entryIds: ["trimmed-entry"],
     });
     session.close();
   });
@@ -3899,14 +4345,14 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/cleanup-reset",
-        onEvent: vi.fn()
-      })
+        onEvent: vi.fn(),
+      }),
     );
     await session.activation;
     session.queueHistoryCleanup(["stale-entry"]);
     session.resetHistory("epoch-b", {
       workspace: normalizeWorkspace(workspace([node({ id: "reloaded" })])),
-      snapshot: historySnapshot(pool, "reloaded")
+      snapshot: historySnapshot(pool, "reloaded"),
     });
 
     await session.drainHistoryCleanup();
@@ -3919,8 +4365,8 @@ describe("notesWorkspaceCoordinator registry", () => {
     });
     expect(resetContextWorkspace).toEqual(
       expect.objectContaining({
-        nodes: [expect.objectContaining({ id: "reloaded" })]
-      })
+        nodes: [expect.objectContaining({ id: "reloaded" })],
+      }),
     );
     session.close();
   });
@@ -3934,8 +4380,8 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(
         pool,
         { repository: store, vaultRoot: "/lease-refs", onEvent: vi.fn() },
-        apply
-      )
+        apply,
+      ),
     );
     await session.activation;
     const before = historySnapshot(pool, "before", ["before-expansion"]);
@@ -3943,7 +4389,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const lease = session.reserveAdmittedNavigation(before);
     lease.setDestination(
       normalizeWorkspace(workspace([node({ id: "after" })])),
-      after
+      after,
     );
     pool.release(before.expansion);
     pool.release(after.expansion);
@@ -3956,7 +4402,7 @@ describe("notesWorkspaceCoordinator registry", () => {
 
     session.settleAuthoritativePresentation(
       normalizeWorkspace(workspace([node({ id: "replacement" })])),
-      historySnapshot(pool, "replacement", ["replacement-expansion"])
+      historySnapshot(pool, "replacement", ["replacement-expansion"]),
     );
     const afterWhileTimeline = pool.acquire(["after-expansion"]);
     expect(afterWhileTimeline).toBe(after.expansion);
@@ -3964,7 +4410,7 @@ describe("notesWorkspaceCoordinator registry", () => {
 
     session.resetHistory("epoch-b", {
       workspace: normalizeWorkspace(workspace([node({ id: "replacement" })])),
-      snapshot: historySnapshot(pool, "replacement", ["replacement-expansion"])
+      snapshot: historySnapshot(pool, "replacement", ["replacement-expansion"]),
     });
     const afterReleased = pool.acquire(["after-expansion"]);
     expect(afterReleased).not.toBe(after.expansion);
@@ -3983,20 +4429,20 @@ describe("notesWorkspaceCoordinator registry", () => {
         {
           repository: store,
           vaultRoot: "/current-owner-settlement",
-          onEvent: vi.fn()
+          onEvent: vi.fn(),
         },
-        applyHistoryLocation
-      )
+        applyHistoryLocation,
+      ),
     );
     await session.activation;
     applyHistoryLocation.mockClear();
 
     const replacement = normalizeWorkspace(
-      workspace([node({ id: "replacement" })])
+      workspace([node({ id: "replacement" })]),
     );
     const snapshot = historySnapshot(pool, "replacement");
     session.settleAuthoritativePresentation(replacement, snapshot, {
-      applyToCurrentOwner: true
+      applyToCurrentOwner: true,
     });
 
     expect(applyHistoryLocation).toHaveBeenCalledOnce();
@@ -4013,14 +4459,14 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/canonical-lease-origin",
-        onEvent: vi.fn()
-      })
+        onEvent: vi.fn(),
+      }),
     );
     await session.activation;
     const canonical = historySnapshot(pool, "canonical", ["canonical-origin"]);
     session.settleAuthoritativePresentation(
       normalizeWorkspace(workspace([node({ id: "canonical" })])),
-      canonical
+      canonical,
     );
     pool.release(canonical.expansion);
 
@@ -4028,13 +4474,13 @@ describe("notesWorkspaceCoordinator registry", () => {
     const borrowed = lease.beforeSnapshot();
     expect(borrowed).toMatchObject({
       selectedId: "canonical",
-      zoomRootId: "canonical"
+      zoomRootId: "canonical",
     });
 
     const replacement = historySnapshot(pool, "replacement", ["replacement"]);
     session.settleAuthoritativePresentation(
       normalizeWorkspace(workspace([node({ id: "replacement" })])),
-      replacement
+      replacement,
     );
     pool.release(replacement.expansion);
     const retainedByLease = pool.acquire(["canonical-origin"]);
@@ -4057,26 +4503,28 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/replace-before-refs",
-        onEvent: vi.fn()
-      })
+        onEvent: vi.fn(),
+      }),
     );
     await session.activation;
     const canonical = historySnapshot(pool, "canonical", ["canonical-origin"]);
     session.settleAuthoritativePresentation(
       normalizeWorkspace(workspace([node({ id: "canonical" })])),
-      canonical
+      canonical,
     );
     pool.release(canonical.expansion);
 
     const lease = session.reserveAdmittedNavigation();
-    const replacement = historySnapshot(pool, "replacement", ["replacement-origin"]);
+    const replacement = historySnapshot(pool, "replacement", [
+      "replacement-origin",
+    ]);
     lease.replaceBefore(replacement);
     lease.replaceBefore(replacement);
     pool.release(replacement.expansion);
     const nextCanonical = historySnapshot(pool, "next", ["next-canonical"]);
     session.settleAuthoritativePresentation(
       normalizeWorkspace(workspace([node({ id: "next" })])),
-      nextCanonical
+      nextCanonical,
     );
     pool.release(nextCanonical.expansion);
 
@@ -4108,14 +4556,16 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/activation-canonical",
-        onEvent: vi.fn()
-      })
+        onEvent: vi.fn(),
+      }),
     );
     await first.activation;
-    const lease = first.reserveAdmittedNavigation(historySnapshot(pool, "root"));
+    const lease = first.reserveAdmittedNavigation(
+      historySnapshot(pool, "root"),
+    );
     lease.setDestination(
       normalizeWorkspace(workspace([node({ id: "canonical" })])),
-      historySnapshot(pool, "canonical")
+      historySnapshot(pool, "canonical"),
     );
     lease.commit();
 
@@ -4127,28 +4577,28 @@ describe("notesWorkspaceCoordinator registry", () => {
         {
           repository: store,
           vaultRoot: "/activation-canonical",
-          onEvent: secondEvents
+          onEvent: secondEvents,
         },
-        secondApply
-      )
+        secondApply,
+      ),
     );
     await second.activation;
 
     expect(secondApply).toHaveBeenCalledWith(
       expect.objectContaining({
-        nodesById: expect.objectContaining({ canonical: expect.anything() })
+        nodesById: expect.objectContaining({ canonical: expect.anything() }),
       }),
-      expect.objectContaining({ selectedId: "canonical" })
+      expect.objectContaining({ selectedId: "canonical" }),
     );
     expect(secondEvents).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "settled",
         result: expect.objectContaining({
           workspace: expect.objectContaining({
-            nodes: [expect.objectContaining({ id: "canonical" })]
-          })
-        })
-      })
+            nodes: [expect.objectContaining({ id: "canonical" })],
+          }),
+        }),
+      }),
     );
     let nextContextWorkspace: NotesWorkspace | null = null;
     await second.enqueue((context) => {
@@ -4157,8 +4607,8 @@ describe("notesWorkspaceCoordinator registry", () => {
     });
     expect(nextContextWorkspace).toEqual(
       expect.objectContaining({
-        nodes: [expect.objectContaining({ id: "canonical" })]
-      })
+        nodes: [expect.objectContaining({ id: "canonical" })],
+      }),
     );
     second.close();
     let closeTransferWorkspace: NotesWorkspace | null = null;
@@ -4168,8 +4618,8 @@ describe("notesWorkspaceCoordinator registry", () => {
     });
     expect(closeTransferWorkspace).toEqual(
       expect.objectContaining({
-        nodes: [expect.objectContaining({ id: "canonical" })]
-      })
+        nodes: [expect.objectContaining({ id: "canonical" })],
+      }),
     );
     first.close();
   });
@@ -4182,22 +4632,22 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/settlement-canonical",
-        onEvent: vi.fn()
-      })
+        onEvent: vi.fn(),
+      }),
     );
     await first.activation;
     const second = registry.openSession(
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/settlement-canonical",
-        onEvent: vi.fn()
-      })
+        onEvent: vi.fn(),
+      }),
     );
     await second.activation;
 
     first.settleAuthoritativePresentation(
       normalizeWorkspace(workspace([node({ id: "settled-canonical" })])),
-      historySnapshot(pool, "settled-canonical")
+      historySnapshot(pool, "settled-canonical"),
     );
 
     let nextContextWorkspace: NotesWorkspace | null = null;
@@ -4207,8 +4657,8 @@ describe("notesWorkspaceCoordinator registry", () => {
     });
     expect(nextContextWorkspace).toEqual(
       expect.objectContaining({
-        nodes: [expect.objectContaining({ id: "settled-canonical" })]
-      })
+        nodes: [expect.objectContaining({ id: "settled-canonical" })],
+      }),
     );
     first.close();
     second.close();
@@ -4222,8 +4672,8 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/canonical-close-refs",
-        onEvent: vi.fn()
-      })
+        onEvent: vi.fn(),
+      }),
     );
     await session.activation;
 
@@ -4232,7 +4682,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const cancelled = session.reserveAdmittedNavigation(before);
     cancelled.setDestination(
       normalizeWorkspace(workspace([node({ id: "after" })])),
-      after
+      after,
     );
     cancelled.cancel();
     pool.release(before.expansion);
@@ -4242,11 +4692,13 @@ describe("notesWorkspaceCoordinator registry", () => {
     pool.release(releasedAfterCancel);
 
     const canonicalBefore = historySnapshot(pool, "root", ["before-canonical"]);
-    const canonical = historySnapshot(pool, "canonical", ["canonical-expansion"]);
+    const canonical = historySnapshot(pool, "canonical", [
+      "canonical-expansion",
+    ]);
     const committed = session.reserveAdmittedNavigation(canonicalBefore);
     committed.setDestination(
       normalizeWorkspace(workspace([node({ id: "canonical" })])),
-      canonical
+      canonical,
     );
     pool.release(canonicalBefore.expansion);
     pool.release(canonical.expansion);
@@ -4258,7 +4710,9 @@ describe("notesWorkspaceCoordinator registry", () => {
 
     session.close();
     await vi.waitFor(() =>
-      expect(registry.hasCoordinator(store, "/canonical-close-refs")).toBe(false)
+      expect(registry.hasCoordinator(store, "/canonical-close-refs")).toBe(
+        false,
+      ),
     );
     const releasedAfterClose = pool.acquire(["canonical-expansion"]);
     expect(releasedAfterClose).not.toBe(canonical.expansion);
@@ -4275,15 +4729,21 @@ describe("notesWorkspaceCoordinator registry", () => {
     const first = registry.openSession(
       writableOptions(
         pool,
-        { repository: store, vaultRoot: "/presentation-block", onEvent: firstEvents },
-        firstApply
-      )
+        {
+          repository: store,
+          vaultRoot: "/presentation-block",
+          onEvent: firstEvents,
+        },
+        firstApply,
+      ),
     );
     await first.activation;
-    const lease = first.reserveAdmittedNavigation(historySnapshot(pool, "root"));
+    const lease = first.reserveAdmittedNavigation(
+      historySnapshot(pool, "root"),
+    );
     lease.setDestination(
       normalizeWorkspace(workspace([node({ id: "destination" })])),
-      historySnapshot(pool, "destination")
+      historySnapshot(pool, "destination"),
     );
     canApply = false;
     lease.commit();
@@ -4291,20 +4751,28 @@ describe("notesWorkspaceCoordinator registry", () => {
     const blockedWork = vi.fn(() => ({ kind: "skipped" as const }));
     await expect(first.enqueue(blockedWork)).resolves.toBe("failed");
     expect(blockedWork).not.toHaveBeenCalled();
-    expect(JSON.stringify(firstEvents.mock.calls)).toContain("close and reopen");
+    expect(JSON.stringify(firstEvents.mock.calls)).toContain(
+      "close and reopen",
+    );
 
     const secondApply = vi.fn(() => true);
     const second = registry.openSession(
       writableOptions(
         pool,
-        { repository: store, vaultRoot: "/presentation-block", onEvent: vi.fn() },
-        secondApply
-      )
+        {
+          repository: store,
+          vaultRoot: "/presentation-block",
+          onEvent: vi.fn(),
+        },
+        secondApply,
+      ),
     );
     await second.activation;
     expect(secondApply).toHaveBeenCalledWith(
-      expect.objectContaining({ nodesById: expect.objectContaining({ destination: expect.anything() }) }),
-      expect.objectContaining({ selectedId: "destination" })
+      expect.objectContaining({
+        nodesById: expect.objectContaining({ destination: expect.anything() }),
+      }),
+      expect.objectContaining({ selectedId: "destination" }),
     );
     const allowedWork = vi.fn(() => ({ kind: "skipped" as const }));
     await second.enqueue(allowedWork);
@@ -4319,7 +4787,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       .mockResolvedValue(projectedHistoryState(null, null, [], "epoch-a"));
     const clearHistory = vi.fn().mockResolvedValue({
       ...projectedHistoryState(null, null, [], "epoch-b"),
-      historyReset: true as const
+      historyReset: true as const,
     });
     const store = repository({ historyStatus, clearHistory });
     const registry = createNotesWorkspaceCoordinatorRegistry();
@@ -4328,31 +4796,35 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/history-recovery",
-        onEvent: vi.fn()
-      })
+        onEvent: vi.fn(),
+      }),
     );
     await session.activation;
     const reload = vi.fn().mockResolvedValue({
       workspace: normalizeWorkspace(workspace([node({ id: "reloaded" })])),
-      snapshot: historySnapshot(pool, "reloaded")
+      snapshot: historySnapshot(pool, "reloaded"),
     });
 
     const first = session.recoverHistoryMismatch(
       projectedHistoryState("unexpected", null, [], "epoch-a"),
-      reload
+      reload,
     );
     const second = session.recoverHistoryMismatch(
       projectedHistoryState("unexpected", null, [], "epoch-a"),
-      reload
+      reload,
     );
     await expect(Promise.all([first, second])).resolves.toEqual([
-      expect.objectContaining({ snapshot: expect.objectContaining({ selectedId: "reloaded" }) }),
-      expect.objectContaining({ snapshot: expect.objectContaining({ selectedId: "reloaded" }) })
+      expect.objectContaining({
+        snapshot: expect.objectContaining({ selectedId: "reloaded" }),
+      }),
+      expect.objectContaining({
+        snapshot: expect.objectContaining({ selectedId: "reloaded" }),
+      }),
     ]);
     expect(historyStatus).toHaveBeenCalledOnce();
     expect(clearHistory).toHaveBeenCalledWith("/history-recovery", {
       sessionId: session.history.sessionId,
-      historyEpoch: "epoch-a"
+      historyEpoch: "epoch-a",
     });
     expect(reload).toHaveBeenCalledOnce();
     expect(session.history.historyEpoch).toBe("epoch-b");
@@ -4369,7 +4841,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const store = repository({
       historyStatus: vi.fn().mockResolvedValue(historyState("epoch-a")),
       clearHistory: vi.fn().mockReturnValue(clear.promise),
-      closeHistorySession
+      closeHistorySession,
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
@@ -4377,16 +4849,16 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/recovery-close",
-        onEvent: vi.fn()
-      })
+        onEvent: vi.fn(),
+      }),
     );
     await session.activation;
     const recovery = session.recoverHistoryMismatch(
       projectedHistoryState("unexpected", null, [], "epoch-a"),
       async () => ({
         workspace: normalizeWorkspace(workspace([node({ id: "reloaded" })])),
-        snapshot: historySnapshot(pool, "reloaded")
-      })
+        snapshot: historySnapshot(pool, "reloaded"),
+      }),
     );
     await vi.waitFor(() => expect(store.clearHistory).toHaveBeenCalledOnce());
 
@@ -4396,12 +4868,12 @@ describe("notesWorkspaceCoordinator registry", () => {
 
     clear.resolve({
       ...historyState("epoch-b"),
-      historyReset: true
+      historyReset: true,
     });
     await expect(recovery).resolves.toEqual(
       expect.objectContaining({
-        snapshot: expect.objectContaining({ selectedId: "reloaded" })
-      })
+        snapshot: expect.objectContaining({ selectedId: "reloaded" }),
+      }),
     );
     await vi.waitFor(() => expect(closeHistorySession).toHaveBeenCalledOnce());
     expect(pool.size()).toBe(0);
@@ -4416,21 +4888,26 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/recovery-no-status-close",
-        onEvent: vi.fn()
-      })
+        onEvent: vi.fn(),
+      }),
     );
     await session.activation;
 
     await expect(
-      session.recoverHistoryMismatch(projectedHistoryState("mismatch"), async () => {
-        throw new Error("reload must not run");
-      })
+      session.recoverHistoryMismatch(
+        projectedHistoryState("mismatch"),
+        async () => {
+          throw new Error("reload must not run");
+        },
+      ),
     ).resolves.toBeNull();
 
     session.close();
     await vi.waitFor(() => expect(closeHistorySession).toHaveBeenCalledOnce());
     await vi.waitFor(() =>
-      expect(registry.hasCoordinator(store, "/recovery-no-status-close")).toBe(false)
+      expect(registry.hasCoordinator(store, "/recovery-no-status-close")).toBe(
+        false,
+      ),
     );
     expect(pool.size()).toBe(0);
   });
@@ -4447,22 +4924,27 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/recovery-throw-close",
-        onEvent: vi.fn()
-      })
+        onEvent: vi.fn(),
+      }),
     );
     await session.activation;
 
     await expect(
-      session.recoverHistoryMismatch(projectedHistoryState("mismatch"), async () => {
-        throw new Error("reload must not run");
-      })
+      session.recoverHistoryMismatch(
+        projectedHistoryState("mismatch"),
+        async () => {
+          throw new Error("reload must not run");
+        },
+      ),
     ).resolves.toBeNull();
     expect(historyStatus).toHaveBeenCalledOnce();
 
     session.close();
     await vi.waitFor(() => expect(closeHistorySession).toHaveBeenCalledOnce());
     await vi.waitFor(() =>
-      expect(registry.hasCoordinator(store, "/recovery-throw-close")).toBe(false)
+      expect(registry.hasCoordinator(store, "/recovery-throw-close")).toBe(
+        false,
+      ),
     );
     expect(pool.size()).toBe(0);
   });
@@ -4470,7 +4952,7 @@ describe("notesWorkspaceCoordinator registry", () => {
   it("keeps a failed mismatch recovery blocked before later repository work", async () => {
     const store = repository({
       historyStatus: vi.fn().mockResolvedValue(historyState()),
-      clearHistory: vi.fn().mockRejectedValue(new Error("clear failed"))
+      clearHistory: vi.fn().mockRejectedValue(new Error("clear failed")),
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const pool = createNotesExpansionSnapshotPool();
@@ -4479,15 +4961,18 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/failed-recovery",
-        onEvent: events
-      })
+        onEvent: events,
+      }),
     );
     await session.activation;
     await expect(
-      session.recoverHistoryMismatch(projectedHistoryState("mismatch"), async () => ({
-        workspace: normalizeWorkspace(workspace([])),
-        snapshot: historySnapshot(pool, null)
-      }))
+      session.recoverHistoryMismatch(
+        projectedHistoryState("mismatch"),
+        async () => ({
+          workspace: normalizeWorkspace(workspace([])),
+          snapshot: historySnapshot(pool, null),
+        }),
+      ),
     ).resolves.toBeNull();
 
     const work = vi.fn(() => ({ kind: "skipped" as const }));
@@ -4506,7 +4991,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       .mockResolvedValueOnce(initial)
       .mockReturnValueOnce(recovered.promise);
     const historyStatus = vi.fn(async () =>
-      projectedHistoryState(expectedEntryId)
+      projectedHistoryState(expectedEntryId),
     );
     const store = repository({ loadWorkspace, historyStatus });
     const registry = createNotesWorkspaceCoordinatorRegistry();
@@ -4516,8 +5001,8 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/unknown-enter-current",
-        onEvent: events
-      })
+        onEvent: events,
+      }),
     );
     await session.activation;
     events.mockClear();
@@ -4527,7 +5012,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set()
+      locallyExpandedNodeIds: new Set(),
     });
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
@@ -4538,36 +5023,36 @@ describe("notesWorkspaceCoordinator registry", () => {
         postcondition: {
           kind: "split",
           expectedSourceTitle: "Root",
-          expectedInsertedTitle: ""
-        }
+          expectedInsertedTitle: "",
+        },
       },
       optimistic: {
         sourceSelection: { anchorUtf16: 4, focusUtf16: 4 },
         sourceTitle: "Root",
-        insertedTitle: ""
-      }
+        insertedTitle: "",
+      },
     })!;
     expectedEntryId = preparation.historyContext.entryId;
     const work = vi.fn(async () => {
       throw Object.assign(new Error("transport closed"), {
-        notesMutationOutcome: "unknown" as const
+        notesMutationOutcome: "unknown" as const,
       });
     });
 
     const completion = session.enqueueStructural(work, {
-      keyboardInsertion: preparation
+      keyboardInsertion: preparation,
     });
     await vi.waitFor(() => expect(loadWorkspace).toHaveBeenCalledTimes(2));
     expect(session.writeAuthority()).toEqual({
       kind: "recovering",
-      generation: 1
+      generation: 1,
     });
     const sharedRecovery = session.retryAuthorityRecovery();
     recovered.resolve(
       workspace([
         node({ id: "root", title: "Root", sortKey: 1024 }),
-        node({ id: "split", title: "", sortKey: 2048 })
-      ])
+        node({ id: "split", title: "", sortKey: 2048 }),
+      ]),
     );
 
     await expect(completion).resolves.toBe("committed");
@@ -4580,16 +5065,16 @@ describe("notesWorkspaceCoordinator registry", () => {
       events.mock.calls
         .map(([event]) => event)
         .filter((event) => event.type === "optimisticInsertion")
-        .some((event) => event.rollback !== undefined)
+        .some((event) => event.rollback !== undefined),
     ).toBe(false);
     expect(
       events.mock.calls
         .map(([event]) => event)
         .filter((event) => event.type === "optimisticInsertion")
-        .at(-1)
+        .at(-1),
     ).toEqual({
       type: "optimisticInsertion",
-      snapshot: { insertions: [], failure: null }
+      snapshot: { insertions: [], failure: null },
     });
     const settled = events.mock.calls
       .map(([event]) => event)
@@ -4608,7 +5093,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       .mockRejectedValueOnce(new Error("reload failed"))
       .mockReturnValueOnce(retry.promise);
     const historyStatus = vi.fn(async () =>
-      projectedHistoryState(expectedEntryId)
+      projectedHistoryState(expectedEntryId),
     );
     const store = repository({ loadWorkspace, historyStatus });
     const registry = createNotesWorkspaceCoordinatorRegistry();
@@ -4617,8 +5102,8 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/unknown-enter-retry",
-        onEvent: vi.fn()
-      })
+        onEvent: vi.fn(),
+      }),
     );
     await session.activation;
     session.publishOutlinePaneState({
@@ -4627,7 +5112,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set()
+      locallyExpandedNodeIds: new Set(),
     });
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
@@ -4638,25 +5123,25 @@ describe("notesWorkspaceCoordinator registry", () => {
         postcondition: {
           kind: "split",
           expectedSourceTitle: "Root",
-          expectedInsertedTitle: ""
-        }
+          expectedInsertedTitle: "",
+        },
       },
-      optimistic: optimisticInsertion()
+      optimistic: optimisticInsertion(),
     })!;
     expectedEntryId = preparation.historyContext.entryId;
     const work = vi.fn(async () => {
       throw Object.assign(new Error("transport closed"), {
-        notesMutationOutcome: "unknown" as const
+        notesMutationOutcome: "unknown" as const,
       });
     });
 
     await expect(
-      session.enqueueStructural(work, { keyboardInsertion: preparation })
+      session.enqueueStructural(work, { keyboardInsertion: preparation }),
     ).resolves.toBe("failed");
     expect(work).toHaveBeenCalledOnce();
     expect(session.writeAuthority()).toEqual({
       kind: "unknown",
-      error: "reload failed"
+      error: "reload failed",
     });
     const blocked = vi.fn(() => ({ kind: "skipped" as const }));
     await expect(session.enqueueStructural(blocked)).resolves.toBe("failed");
@@ -4668,12 +5153,12 @@ describe("notesWorkspaceCoordinator registry", () => {
     retry.resolve(
       workspace([
         node({ id: "root", title: "Root", sortKey: 1024 }),
-        node({ id: "split", title: "", sortKey: 2048 })
-      ])
+        node({ id: "split", title: "", sortKey: 2048 }),
+      ]),
     );
     await expect(Promise.all([firstRetry, secondRetry])).resolves.toEqual([
       true,
-      true
+      true,
     ]);
     expect(loadWorkspace).toHaveBeenCalledTimes(3);
     expect(historyStatus).toHaveBeenCalledOnce();
@@ -4685,7 +5170,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const initial = workspace([node({ id: "root", title: "Root" })]);
     const accepted = workspace([
       node({ id: "root", title: "Root", sortKey: 1024 }),
-      node({ id: "split", title: "", sortKey: 2048 })
+      node({ id: "split", title: "", sortKey: 2048 }),
     ]);
     const loadWorkspace = vi
       .fn()
@@ -4697,7 +5182,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       .mockResolvedValueOnce(projectedHistoryState("other-entry"));
     const clearHistory = vi.fn().mockResolvedValue({
       ...projectedHistoryState(null, null, [], "epoch-b"),
-      historyReset: true as const
+      historyReset: true as const,
     });
     const store = repository({ loadWorkspace, historyStatus, clearHistory });
     const registry = createNotesWorkspaceCoordinatorRegistry();
@@ -4707,8 +5192,8 @@ describe("notesWorkspaceCoordinator registry", () => {
       writableOptions(pool, {
         repository: store,
         vaultRoot: "/unknown-enter-history-reset",
-        onEvent: events
-      })
+        onEvent: events,
+      }),
     );
     await session.activation;
     events.mockClear();
@@ -4718,7 +5203,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set()
+      locallyExpandedNodeIds: new Set(),
     });
     const preparation = session.prepareKeyboardInsertion({
       ownerPaneId: "pane-a",
@@ -4729,21 +5214,21 @@ describe("notesWorkspaceCoordinator registry", () => {
         postcondition: {
           kind: "split",
           expectedSourceTitle: "Root",
-          expectedInsertedTitle: ""
-        }
+          expectedInsertedTitle: "",
+        },
       },
-      optimistic: optimisticInsertion()
+      optimistic: optimisticInsertion(),
     })!;
 
     await expect(
       session.enqueueStructural(
         async () => {
           throw Object.assign(new Error("decode failed"), {
-            notesMutationOutcome: "unknown" as const
+            notesMutationOutcome: "unknown" as const,
           });
         },
-        { keyboardInsertion: preparation }
-      )
+        { keyboardInsertion: preparation },
+      ),
     ).resolves.toBe("committed");
 
     expect(loadWorkspace).toHaveBeenCalledTimes(2);

@@ -313,8 +313,8 @@ export function useNotesCommandActions({
     ]
   );
   const touchBackspaceGesture = useCallback(
-    (token: number, nodeId: NoteId): void => {
-      backspaceLifecycleRef.current.touch(token, nodeId);
+    (token: number, nodeId: NoteId, renderedTitle: string): void => {
+      backspaceLifecycleRef.current.touch(token, nodeId, renderedTitle);
     },
     []
   );

@@ -32,7 +32,7 @@ import {
   SquareCheckBig,
   Star,
   Tags,
-  Trash2
+  Trash2,
 } from "lucide-react";
 import {
   type ChangeEvent,
@@ -45,7 +45,7 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore
+  useSyncExternalStore,
 } from "react";
 import { IconTooltip } from "../../components/ui/Tooltip";
 import type { NotesExportFormat } from "../../domain/notesExport";
@@ -55,13 +55,13 @@ import { detectOutlineShortcutPlatform } from "./outlineKeyboard";
 import type {
   NotesSelectionActionIntent,
   NotesSelectionActionSnapshot,
-  NotesSelectionEligibility
+  NotesSelectionEligibility,
 } from "./notesSelectionActions";
 
 export {
   buildNotesMoveDestinations,
   buildNotesMoveNodeInput,
-  type NotesMoveDestination
+  type NotesMoveDestination,
 } from "./notesMoveTargets";
 
 const EMPTY_EXPORT_SNAPSHOT = Object.freeze({
@@ -102,7 +102,7 @@ export interface NotesBulletMenuProps {
   onAddDate?(): void;
   onUploadImage?(): void;
   onMoveTo?(
-    destinationId: string | null
+    destinationId: string | null,
   ): void | NotesMoveCommitOutcome | Promise<void | NotesMoveCommitOutcome>;
   onExpandAll?(): void;
   onCollapseAll?(): void;
@@ -133,7 +133,7 @@ export interface NotesBulletMenuSelectionBridge {
   readonly getSnapshot: () => NotesBulletMenuSelectionState;
   readonly subscribe: (onStoreChange: () => void) => () => void;
   readonly execute: (
-    action: NotesSelectionActionIntent
+    action: NotesSelectionActionIntent,
   ) => void | Promise<unknown>;
   readonly requestChooser: (chooser: "move" | "tags") => void;
 }
@@ -164,28 +164,28 @@ function buildNotesBulletMenuShortcuts(): NotesBulletMenuShortcuts {
   return {
     toggleComplete: {
       visible: isMac ? "⌘↵" : "Ctrl+Enter",
-      aria: isMac ? "Meta+Enter" : "Control+Enter"
+      aria: isMac ? "Meta+Enter" : "Control+Enter",
     },
     focusNote: { visible: isMac ? "⇧↵" : "Shift+Enter", aria: "Shift+Enter" },
     duplicate: {
       visible: isMac ? "⌘⇧D" : "Alt+Shift+D",
-      aria: isMac ? "Meta+Shift+D" : "Alt+Shift+D"
+      aria: isMac ? "Meta+Shift+D" : "Alt+Shift+D",
     },
     delete: {
       visible: isMac ? "⌘⇧⌫" : "Ctrl+Shift+Backspace",
-      aria: isMac ? "Meta+Shift+Backspace" : "Control+Shift+Backspace"
+      aria: isMac ? "Meta+Shift+Backspace" : "Control+Shift+Backspace",
     },
     moveUp: {
       visible: isMac ? "⌃⇧↑ / ⌘⇧↑" : "Alt+Shift+ArrowUp",
       aria: isMac
         ? "Control+Shift+ArrowUp Meta+Shift+ArrowUp"
-        : "Alt+Shift+ArrowUp"
+        : "Alt+Shift+ArrowUp",
     },
     moveDown: {
       visible: isMac ? "⌃⇧↓ / ⌘⇧↓" : "Alt+Shift+ArrowDown",
       aria: isMac
         ? "Control+Shift+ArrowDown Meta+Shift+ArrowDown"
-        : "Alt+Shift+ArrowDown"
+        : "Alt+Shift+ArrowDown",
     },
     indent: { visible: "Tab", aria: "Tab" },
     outdent: { visible: isMac ? "⇧Tab" : "Shift+Tab", aria: "Shift+Tab" },
@@ -200,15 +200,17 @@ function buildNotesBulletMenuShortcuts(): NotesBulletMenuShortcuts {
   };
 }
 
+const notesTimestampFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
+
 export function formatNotesTimestamp(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return value;
   }
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short"
-  }).format(date);
+  return notesTimestampFormatter.format(date);
 }
 
 interface CommandItemProps {
@@ -232,7 +234,7 @@ function CommandItem({
   closeOnClick = true,
   itemRef,
   onClick,
-  shortcut
+  shortcut,
 }: CommandItemProps) {
   const disabledReasonId = useId();
 
@@ -277,7 +279,7 @@ const getNoSelectionState = () => NO_SELECTION_STATE;
 const subscribeNoSelection = () => () => undefined;
 
 function selectionEligibilityAvailability(
-  eligibility: NotesSelectionEligibility
+  eligibility: NotesSelectionEligibility,
 ): SelectionActionAvailability {
   return eligibility.eligible
     ? { available: true, reason: null }
@@ -285,7 +287,7 @@ function selectionEligibilityAvailability(
 }
 
 function selectionDisabledBy(
-  reason: string | null | undefined
+  reason: string | null | undefined,
 ): SelectionActionAvailability {
   return reason
     ? { available: false, reason }
@@ -297,8 +299,8 @@ function combineSelectionAvailability(
 ): SelectionActionAvailability {
   return (
     values.find((value) => !value.available) ?? {
-    available: true,
-    reason: null
+      available: true,
+      reason: null,
     }
   );
 }
@@ -342,9 +344,10 @@ export function NotesBulletMenu({
   onRestore,
   onUnarchive,
   onOpenChange,
-  selectionBridge
+  selectionBridge,
 }: NotesBulletMenuProps) {
   const [open, setOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const [exportView, setExportView] = useState(false);
   const exportSnapshot = useSyncExternalStore(
     open && subscribeExportState ? subscribeExportState : NOOP_EXPORT_SUBSCRIBE,
@@ -379,23 +382,23 @@ export function NotesBulletMenu({
   const filteredMoveDestinations = useMemo(
     () =>
       availableMoveDestinations.filter((destination) =>
-        destination.label.toLocaleLowerCase().includes(normalizedMoveQuery)
+        destination.label.toLocaleLowerCase().includes(normalizedMoveQuery),
       ),
-    [availableMoveDestinations, normalizedMoveQuery]
+    [availableMoveDestinations, normalizedMoveQuery],
   );
   const selectionState = useSyncExternalStore(
     selectionBridge?.subscribe ?? subscribeNoSelection,
     selectionBridge?.getSnapshot ?? getNoSelectionState,
-    selectionBridge?.getSnapshot ?? getNoSelectionState
+    selectionBridge?.getSnapshot ?? getNoSelectionState,
   );
   const showsShortcutHints =
     Boolean(selectionState) ||
     (mode === "standard" && !moveView && !exportView);
   const selectionBusyAvailability = selectionDisabledBy(
-    selectionState?.busy || actionBusy ? SELECTION_BUSY_REASON : null
+    selectionState?.busy || actionBusy ? SELECTION_BUSY_REASON : null,
   );
   const selectionMutationAvailability = selectionDisabledBy(
-    selectionState?.mutationDisabledReason
+    selectionState?.mutationDisabledReason,
   );
   const selectionAvailability: Record<
     NotesSelectionActionIntent,
@@ -404,74 +407,74 @@ export function NotesBulletMenu({
     ? {
         toggleComplete: combineSelectionAvailability(
           selectionBusyAvailability,
-          selectionMutationAvailability
+          selectionMutationAvailability,
         ),
         moveTo: combineSelectionAvailability(
           selectionBusyAvailability,
           selectionMutationAvailability,
           selectionEligibilityAvailability(
-            selectionState.snapshot.eligibility.moveTo
-          )
+            selectionState.snapshot.eligibility.moveTo,
+          ),
         ),
         moveUp: combineSelectionAvailability(
           selectionBusyAvailability,
           selectionMutationAvailability,
           selectionEligibilityAvailability(
-            selectionState.snapshot.eligibility.moveUp
-          )
+            selectionState.snapshot.eligibility.moveUp,
+          ),
         ),
         moveDown: combineSelectionAvailability(
           selectionBusyAvailability,
           selectionMutationAvailability,
           selectionEligibilityAvailability(
-            selectionState.snapshot.eligibility.moveDown
-          )
+            selectionState.snapshot.eligibility.moveDown,
+          ),
         ),
         indent: combineSelectionAvailability(
           selectionBusyAvailability,
           selectionMutationAvailability,
           selectionEligibilityAvailability(
-            selectionState.snapshot.eligibility.indent
-          )
+            selectionState.snapshot.eligibility.indent,
+          ),
         ),
         outdent: combineSelectionAvailability(
           selectionBusyAvailability,
           selectionMutationAvailability,
           selectionEligibilityAvailability(
-            selectionState.snapshot.eligibility.outdent
-          )
+            selectionState.snapshot.eligibility.outdent,
+          ),
         ),
         duplicate: combineSelectionAvailability(
           selectionBusyAvailability,
           selectionMutationAvailability,
           selectionEligibilityAvailability(
-            selectionState.snapshot.eligibility.duplicate
-          )
+            selectionState.snapshot.eligibility.duplicate,
+          ),
         ),
         tags: combineSelectionAvailability(
           selectionBusyAvailability,
-          selectionMutationAvailability
+          selectionMutationAvailability,
         ),
         copy: combineSelectionAvailability(
           selectionBusyAvailability,
           selectionEligibilityAvailability(
-            selectionState.snapshot.eligibility.copy
-          )
+            selectionState.snapshot.eligibility.copy,
+          ),
         ),
         cut: combineSelectionAvailability(
           selectionBusyAvailability,
           selectionMutationAvailability,
           selectionEligibilityAvailability(
-            selectionState.snapshot.eligibility.cut
-          )
+            selectionState.snapshot.eligibility.cut,
+          ),
         ),
         delete: combineSelectionAvailability(
           selectionBusyAvailability,
           selectionMutationAvailability,
           selectionEligibilityAvailability(
-            selectionState.snapshot.eligibility.delete
-          )
-        )
+            selectionState.snapshot.eligibility.delete,
+          ),
+        ),
       }
     : null;
 
@@ -596,6 +599,7 @@ export function NotesBulletMenu({
       modal={false}
       open={open}
       onOpenChange={(nextOpen) => {
+        if (nextOpen) setMounted(true);
         setOpen(nextOpen);
         if (!nextOpen) {
           setExportView(false);
@@ -621,7 +625,7 @@ export function NotesBulletMenu({
           } else {
             selectionSubmissionRef.current = false;
             selectionBridge?.requestChooser(
-              handoff === "selection-move" ? "move" : "tags"
+              handoff === "selection-move" ? "move" : "tags",
             );
           }
         }
@@ -637,483 +641,489 @@ export function NotesBulletMenu({
           <MoreHorizontal size={16} aria-hidden="true" />
         </Menu.Trigger>
       </IconTooltip>
-      <Menu.Portal>
-        <Menu.Positioner side="bottom" align="start" sideOffset={4}>
-          <Menu.Popup
-            className="notes-bullet-menu"
-            data-shortcut-hints={showsShortcutHints ? "true" : undefined}
-            finalFocus={handoffPendingRef.current ? false : undefined}
-          >
-            {mode === "provider" ? (
-              <CommandItem
-                disabled={actionBusy || completed || !onToggleComplete}
-                icon={<Check size={15} aria-hidden="true" />}
-                onClick={onToggleComplete}
-                shortcut={shortcuts.toggleComplete}
-              >
-                Complete
-              </CommandItem>
-            ) : selectionState && selectionAvailability ? (
-              <>
+      {mounted && (
+        <Menu.Portal>
+          <Menu.Positioner side="bottom" align="start" sideOffset={4}>
+            <Menu.Popup
+              className="notes-bullet-menu"
+              data-shortcut-hints={showsShortcutHints ? "true" : undefined}
+              finalFocus={handoffPendingRef.current ? false : undefined}
+            >
+              {mode === "provider" ? (
                 <CommandItem
-                  disabled={!selectionAvailability.toggleComplete.available}
-                  disabledReason={selectionAvailability.toggleComplete.reason}
-                  icon={<Check size={15} aria-hidden="true" />}
-                  onClick={() => invokeSelectionAction("toggleComplete")}
-                  shortcut={shortcuts.toggleComplete}
-                >
-                  {selectionState.snapshot.completion === "all"
-                    ? "Uncomplete"
-                    : "Complete"}
-                </CommandItem>
-                <CommandItem
-                  disabled={!selectionAvailability.moveTo.available}
-                  disabledReason={selectionAvailability.moveTo.reason}
-                  icon={<FolderInput size={15} aria-hidden="true" />}
-                  onClick={() => handoffSelectionChooser("move")}
-                >
-                  Move To
-                </CommandItem>
-                <CommandItem
-                  disabled={!selectionAvailability.moveUp.available}
-                  disabledReason={selectionAvailability.moveUp.reason}
-                  icon={<ArrowUp size={15} aria-hidden="true" />}
-                  onClick={() => invokeSelectionAction("moveUp")}
-                  shortcut={shortcuts.moveUp}
-                >
-                  Move up
-                </CommandItem>
-                <CommandItem
-                  disabled={!selectionAvailability.moveDown.available}
-                  disabledReason={selectionAvailability.moveDown.reason}
-                  icon={<ArrowDown size={15} aria-hidden="true" />}
-                  onClick={() => invokeSelectionAction("moveDown")}
-                  shortcut={shortcuts.moveDown}
-                >
-                  Move down
-                </CommandItem>
-                <CommandItem
-                  disabled={!selectionAvailability.indent.available}
-                  disabledReason={selectionAvailability.indent.reason}
-                  icon={<IndentIncrease size={15} aria-hidden="true" />}
-                  onClick={() => invokeSelectionAction("indent")}
-                  shortcut={shortcuts.indent}
-                >
-                  Indent
-                </CommandItem>
-                <CommandItem
-                  disabled={!selectionAvailability.outdent.available}
-                  disabledReason={selectionAvailability.outdent.reason}
-                  icon={<IndentDecrease size={15} aria-hidden="true" />}
-                  onClick={() => invokeSelectionAction("outdent")}
-                  shortcut={shortcuts.outdent}
-                >
-                  Outdent
-                </CommandItem>
-                <CommandItem
-                  disabled={!selectionAvailability.duplicate.available}
-                  disabledReason={selectionAvailability.duplicate.reason}
-                  icon={<CopyPlus size={15} aria-hidden="true" />}
-                  onClick={() => invokeSelectionAction("duplicate")}
-                  shortcut={shortcuts.duplicate}
-                >
-                  Duplicate
-                </CommandItem>
-                <CommandItem
-                  disabled={!selectionAvailability.tags.available}
-                  disabledReason={selectionAvailability.tags.reason}
-                  icon={<Tags size={15} aria-hidden="true" />}
-                  onClick={() => handoffSelectionChooser("tags")}
-                >
-                  Tags
-                </CommandItem>
-                <CommandItem
-                  disabled={!selectionAvailability.copy.available}
-                  disabledReason={selectionAvailability.copy.reason}
-                  icon={<Copy size={15} aria-hidden="true" />}
-                  onClick={() => invokeSelectionAction("copy")}
-                  shortcut={shortcuts.copy}
-                >
-                  Copy
-                </CommandItem>
-                <CommandItem
-                  disabled={!selectionAvailability.cut.available}
-                  disabledReason={selectionAvailability.cut.reason}
-                  icon={<Scissors size={15} aria-hidden="true" />}
-                  onClick={() => invokeSelectionAction("cut")}
-                  shortcut={shortcuts.cut}
-                >
-                  Cut
-                </CommandItem>
-                <CommandItem
-                  danger
-                  disabled={!selectionAvailability.delete.available}
-                  disabledReason={selectionAvailability.delete.reason}
-                  icon={<Trash2 size={15} aria-hidden="true" />}
-                  onClick={() => invokeSelectionAction("delete")}
-                  shortcut={shortcuts.delete}
-                >
-                  Delete
-                </CommandItem>
-              </>
-            ) : mode === "trash" ? (
-              <CommandItem
-                icon={<RotateCcw size={15} aria-hidden="true" />}
-                onClick={onRestore}
-              >
-                Restore
-              </CommandItem>
-            ) : mode === "archive" ? (
-              <>
-                <CommandItem
-                  icon={<RotateCcw size={15} aria-hidden="true" />}
-                  onClick={onUnarchive}
-                >
-                  Unarchive
-                </CommandItem>
-                <CommandItem
-                  danger
-                  icon={<Trash2 size={15} aria-hidden="true" />}
-                  onClick={onDelete}
-                >
-                  Move to Trash
-                </CommandItem>
-              </>
-            ) : moveView ? (
-              <div className="notes-move-chooser">
-                <div className="notes-move-search-field">
-                  <Search size={14} aria-hidden="true" />
-                  <input
-                    ref={moveSearchRef}
-                    type="search"
-                    role="searchbox"
-                    aria-label="Search move destinations"
-                    aria-controls={moveListboxId}
-                    aria-activedescendant={
-                      moveSelection >= 0
-                        ? `${moveListboxId}-${moveSelection}`
-                        : undefined
-                    }
-                    value={moveQuery}
-                    onChange={handleMoveSearchChange}
-                    onKeyDown={handleMoveSearchKeyDown}
-                  />
-                </div>
-                <div
-                  id={moveListboxId}
-                  className="notes-move-destinations"
-                  role="listbox"
-                  aria-label="Move destinations"
-                  aria-busy={moveDestinationsLoading || moveCommitPending}
-                >
-                  {filteredMoveDestinations.map((destination, index) => (
-                    <button
-                      id={`${moveListboxId}-${index}`}
-                      className="notes-move-destination"
-                      type="button"
-                      role="option"
-                      aria-selected={moveSelection === index}
-                      disabled={moveCommitPending}
-                      key={destination.id ?? "root"}
-                      style={
-                        {
-                          "--notes-move-depth": destination.depth
-                        } as CSSProperties
-                      }
-                      onMouseMove={() => setMoveSelection(index)}
-                      onClick={() => void chooseMoveDestination(destination.id)}
-                    >
-                      {destination.label}
-                    </button>
-                  ))}
-                  {moveDestinationsLoading ? (
-                    <p
-                      className="notes-move-empty"
-                      role="status"
-                      aria-label="Loading move destinations"
-                    >
-                      Loading...
-                    </p>
-                  ) : (
-                    filteredMoveDestinations.length === 0 && (
-                    <p className="notes-move-empty">No destinations found</p>
-                    )
-                  )}
-                </div>
-                {moveError && (
-                  <p className="notes-move-error" role="alert">
-                    {moveError}
-                  </p>
-                )}
-              </div>
-            ) : exportView ? (
-              <>
-                <CommandItem
-                  closeOnClick={false}
-                  itemRef={exportBackRef}
-                  icon={<ChevronLeft size={15} aria-hidden="true" />}
-                  onClick={() => {
-                    viewFocusTargetRef.current = "export";
-                    setExportView(false);
-                  }}
-                >
-                  Back
-                </CommandItem>
-                <CommandItem
-                  disabled={resolvedExportDisabled}
-                  icon={<FileText size={15} aria-hidden="true" />}
-                  onClick={() => onExport?.("markdown")}
-                >
-                  Export subtree as Markdown
-                </CommandItem>
-                <CommandItem
-                  disabled={resolvedExportDisabled}
-                  icon={<FileDown size={15} aria-hidden="true" />}
-                  onClick={() => onExport?.("pdf")}
-                >
-                  Export subtree as PDF
-                </CommandItem>
-              </>
-            ) : (
-              <>
-                <CommandItem
+                  disabled={actionBusy || completed || !onToggleComplete}
                   icon={<Check size={15} aria-hidden="true" />}
                   onClick={onToggleComplete}
                   shortcut={shortcuts.toggleComplete}
                 >
-                  {completed ? "Uncomplete" : "Complete"}
+                  Complete
                 </CommandItem>
-                <CommandItem
-                  icon={
-                    markerKind === "todo" ? (
-                      <Circle size={15} aria-hidden="true" />
-                    ) : (
-                      <SquareCheckBig size={15} aria-hidden="true" />
-                    )
-                  }
-                  onClick={() =>
-                    onChangeMarkerKind?.(
-                      markerKind === "todo" ? "bullet" : "todo"
-                    )
-                  }
-                >
-                  {markerKind === "todo" ? "Change to bullet" : "To-do"}
-                </CommandItem>
-                <CommandItem
-                  icon={
-                    <Star
-                      size={15}
-                      fill={starred ? "currentColor" : "none"}
-                      aria-hidden="true"
-                    />
-                  }
-                  onClick={onToggleStar}
-                >
-                  {starred ? "Unstar" : "Star"}
-                </CommandItem>
-                <CommandItem
-                  icon={<MessageSquareText size={15} aria-hidden="true" />}
-                  onClick={() => {
-                    handoffPendingRef.current = "note";
-                  }}
-                  shortcut={shortcuts.focusNote}
-                >
-                  {hasNote ? "Edit note" : "Add note"}
-                </CommandItem>
-                {!isReadonly && (
+              ) : selectionState && selectionAvailability ? (
+                <>
                   <CommandItem
-                    icon={<Calendar size={15} aria-hidden="true" />}
+                    disabled={!selectionAvailability.toggleComplete.available}
+                    disabledReason={selectionAvailability.toggleComplete.reason}
+                    icon={<Check size={15} aria-hidden="true" />}
+                    onClick={() => invokeSelectionAction("toggleComplete")}
+                    shortcut={shortcuts.toggleComplete}
+                  >
+                    {selectionState.snapshot.completion === "all"
+                      ? "Uncomplete"
+                      : "Complete"}
+                  </CommandItem>
+                  <CommandItem
+                    disabled={!selectionAvailability.moveTo.available}
+                    disabledReason={selectionAvailability.moveTo.reason}
+                    icon={<FolderInput size={15} aria-hidden="true" />}
+                    onClick={() => handoffSelectionChooser("move")}
+                  >
+                    Move To
+                  </CommandItem>
+                  <CommandItem
+                    disabled={!selectionAvailability.moveUp.available}
+                    disabledReason={selectionAvailability.moveUp.reason}
+                    icon={<ArrowUp size={15} aria-hidden="true" />}
+                    onClick={() => invokeSelectionAction("moveUp")}
+                    shortcut={shortcuts.moveUp}
+                  >
+                    Move up
+                  </CommandItem>
+                  <CommandItem
+                    disabled={!selectionAvailability.moveDown.available}
+                    disabledReason={selectionAvailability.moveDown.reason}
+                    icon={<ArrowDown size={15} aria-hidden="true" />}
+                    onClick={() => invokeSelectionAction("moveDown")}
+                    shortcut={shortcuts.moveDown}
+                  >
+                    Move down
+                  </CommandItem>
+                  <CommandItem
+                    disabled={!selectionAvailability.indent.available}
+                    disabledReason={selectionAvailability.indent.reason}
+                    icon={<IndentIncrease size={15} aria-hidden="true" />}
+                    onClick={() => invokeSelectionAction("indent")}
+                    shortcut={shortcuts.indent}
+                  >
+                    Indent
+                  </CommandItem>
+                  <CommandItem
+                    disabled={!selectionAvailability.outdent.available}
+                    disabledReason={selectionAvailability.outdent.reason}
+                    icon={<IndentDecrease size={15} aria-hidden="true" />}
+                    onClick={() => invokeSelectionAction("outdent")}
+                    shortcut={shortcuts.outdent}
+                  >
+                    Outdent
+                  </CommandItem>
+                  <CommandItem
+                    disabled={!selectionAvailability.duplicate.available}
+                    disabledReason={selectionAvailability.duplicate.reason}
+                    icon={<CopyPlus size={15} aria-hidden="true" />}
+                    onClick={() => invokeSelectionAction("duplicate")}
+                    shortcut={shortcuts.duplicate}
+                  >
+                    Duplicate
+                  </CommandItem>
+                  <CommandItem
+                    disabled={!selectionAvailability.tags.available}
+                    disabledReason={selectionAvailability.tags.reason}
+                    icon={<Tags size={15} aria-hidden="true" />}
+                    onClick={() => handoffSelectionChooser("tags")}
+                  >
+                    Tags
+                  </CommandItem>
+                  <CommandItem
+                    disabled={!selectionAvailability.copy.available}
+                    disabledReason={selectionAvailability.copy.reason}
+                    icon={<Copy size={15} aria-hidden="true" />}
+                    onClick={() => invokeSelectionAction("copy")}
+                    shortcut={shortcuts.copy}
+                  >
+                    Copy
+                  </CommandItem>
+                  <CommandItem
+                    disabled={!selectionAvailability.cut.available}
+                    disabledReason={selectionAvailability.cut.reason}
+                    icon={<Scissors size={15} aria-hidden="true" />}
+                    onClick={() => invokeSelectionAction("cut")}
+                    shortcut={shortcuts.cut}
+                  >
+                    Cut
+                  </CommandItem>
+                  <CommandItem
+                    danger
+                    disabled={!selectionAvailability.delete.available}
+                    disabledReason={selectionAvailability.delete.reason}
+                    icon={<Trash2 size={15} aria-hidden="true" />}
+                    onClick={() => invokeSelectionAction("delete")}
+                    shortcut={shortcuts.delete}
+                  >
+                    Delete
+                  </CommandItem>
+                </>
+              ) : mode === "trash" ? (
+                <CommandItem
+                  icon={<RotateCcw size={15} aria-hidden="true" />}
+                  onClick={onRestore}
+                >
+                  Restore
+                </CommandItem>
+              ) : mode === "archive" ? (
+                <>
+                  <CommandItem
+                    icon={<RotateCcw size={15} aria-hidden="true" />}
+                    onClick={onUnarchive}
+                  >
+                    Unarchive
+                  </CommandItem>
+                  <CommandItem
+                    danger
+                    icon={<Trash2 size={15} aria-hidden="true" />}
+                    onClick={onDelete}
+                  >
+                    Move to Trash
+                  </CommandItem>
+                </>
+              ) : moveView ? (
+                <div className="notes-move-chooser">
+                  <div className="notes-move-search-field">
+                    <Search size={14} aria-hidden="true" />
+                    <input
+                      ref={moveSearchRef}
+                      type="search"
+                      role="searchbox"
+                      aria-label="Search move destinations"
+                      aria-controls={moveListboxId}
+                      aria-activedescendant={
+                        moveSelection >= 0
+                          ? `${moveListboxId}-${moveSelection}`
+                          : undefined
+                      }
+                      value={moveQuery}
+                      onChange={handleMoveSearchChange}
+                      onKeyDown={handleMoveSearchKeyDown}
+                    />
+                  </div>
+                  <div
+                    id={moveListboxId}
+                    className="notes-move-destinations"
+                    role="listbox"
+                    aria-label="Move destinations"
+                    aria-busy={moveDestinationsLoading || moveCommitPending}
+                  >
+                    {filteredMoveDestinations.map((destination, index) => (
+                      <button
+                        id={`${moveListboxId}-${index}`}
+                        className="notes-move-destination"
+                        type="button"
+                        role="option"
+                        aria-selected={moveSelection === index}
+                        disabled={moveCommitPending}
+                        key={destination.id ?? "root"}
+                        style={
+                          {
+                            "--notes-move-depth": destination.depth,
+                          } as CSSProperties
+                        }
+                        onMouseMove={() => setMoveSelection(index)}
+                        onClick={() =>
+                          void chooseMoveDestination(destination.id)
+                        }
+                      >
+                        {destination.label}
+                      </button>
+                    ))}
+                    {moveDestinationsLoading ? (
+                      <p
+                        className="notes-move-empty"
+                        role="status"
+                        aria-label="Loading move destinations"
+                      >
+                        Loading...
+                      </p>
+                    ) : (
+                      filteredMoveDestinations.length === 0 && (
+                        <p className="notes-move-empty">
+                          No destinations found
+                        </p>
+                      )
+                    )}
+                  </div>
+                  {moveError && (
+                    <p className="notes-move-error" role="alert">
+                      {moveError}
+                    </p>
+                  )}
+                </div>
+              ) : exportView ? (
+                <>
+                  <CommandItem
+                    closeOnClick={false}
+                    itemRef={exportBackRef}
+                    icon={<ChevronLeft size={15} aria-hidden="true" />}
                     onClick={() => {
-                      handoffPendingRef.current = "date";
+                      viewFocusTargetRef.current = "export";
+                      setExportView(false);
                     }}
                   >
-                    Add date
+                    Back
                   </CommandItem>
-                )}
-                {!isReadonly && onUploadImage && (
                   <CommandItem
-                    icon={<ImageUp size={15} aria-hidden="true" />}
-                    onClick={onUploadImage}
+                    disabled={resolvedExportDisabled}
+                    icon={<FileText size={15} aria-hidden="true" />}
+                    onClick={() => onExport?.("markdown")}
                   >
-                    Upload image
+                    Export subtree as Markdown
                   </CommandItem>
-                )}
-                <Menu.Separator className="notes-bullet-menu-separator" />
-                {!isReadonly && (
+                  <CommandItem
+                    disabled={resolvedExportDisabled}
+                    icon={<FileDown size={15} aria-hidden="true" />}
+                    onClick={() => onExport?.("pdf")}
+                  >
+                    Export subtree as PDF
+                  </CommandItem>
+                </>
+              ) : (
+                <>
+                  <CommandItem
+                    icon={<Check size={15} aria-hidden="true" />}
+                    onClick={onToggleComplete}
+                    shortcut={shortcuts.toggleComplete}
+                  >
+                    {completed ? "Uncomplete" : "Complete"}
+                  </CommandItem>
+                  <CommandItem
+                    icon={
+                      markerKind === "todo" ? (
+                        <Circle size={15} aria-hidden="true" />
+                      ) : (
+                        <SquareCheckBig size={15} aria-hidden="true" />
+                      )
+                    }
+                    onClick={() =>
+                      onChangeMarkerKind?.(
+                        markerKind === "todo" ? "bullet" : "todo",
+                      )
+                    }
+                  >
+                    {markerKind === "todo" ? "Change to bullet" : "To-do"}
+                  </CommandItem>
+                  <CommandItem
+                    icon={
+                      <Star
+                        size={15}
+                        fill={starred ? "currentColor" : "none"}
+                        aria-hidden="true"
+                      />
+                    }
+                    onClick={onToggleStar}
+                  >
+                    {starred ? "Unstar" : "Star"}
+                  </CommandItem>
+                  <CommandItem
+                    icon={<MessageSquareText size={15} aria-hidden="true" />}
+                    onClick={() => {
+                      handoffPendingRef.current = "note";
+                    }}
+                    shortcut={shortcuts.focusNote}
+                  >
+                    {hasNote ? "Edit note" : "Add note"}
+                  </CommandItem>
+                  {!isReadonly && (
+                    <CommandItem
+                      icon={<Calendar size={15} aria-hidden="true" />}
+                      onClick={() => {
+                        handoffPendingRef.current = "date";
+                      }}
+                    >
+                      Add date
+                    </CommandItem>
+                  )}
+                  {!isReadonly && onUploadImage && (
+                    <CommandItem
+                      icon={<ImageUp size={15} aria-hidden="true" />}
+                      onClick={onUploadImage}
+                    >
+                      Upload image
+                    </CommandItem>
+                  )}
+                  <Menu.Separator className="notes-bullet-menu-separator" />
+                  {!isReadonly && (
+                    <Menu.Item
+                      ref={moveCommandRef}
+                      className="notes-bullet-menu-item"
+                      closeOnClick={false}
+                      disabled={
+                        actionBusy ||
+                        !onMoveTo ||
+                        (!getMoveDestinations && moveDestinations.length === 0)
+                      }
+                      onClick={() => {
+                        const requestId = moveRequestRef.current + 1;
+                        moveRequestRef.current = requestId;
+                        setMoveQuery("");
+                        setMoveSelection(-1);
+                        setMoveView(true);
+                        setMoveError(null);
+                        const destinations =
+                          getMoveDestinations?.() ?? moveDestinations;
+                        if (Array.isArray(destinations)) {
+                          setAvailableMoveDestinations(destinations);
+                          setMoveDestinationsLoading(false);
+                          return;
+                        }
+                        setAvailableMoveDestinations([]);
+                        setMoveDestinationsLoading(true);
+                        void Promise.resolve(destinations).then(
+                          (resolved) => {
+                            if (moveRequestRef.current === requestId) {
+                              setAvailableMoveDestinations(resolved);
+                              setMoveDestinationsLoading(false);
+                            }
+                          },
+                          (cause) => {
+                            if (moveRequestRef.current === requestId) {
+                              setMoveDestinationsLoading(false);
+                              setMoveError(
+                                cause instanceof Error
+                                  ? `${cause.message} Refresh Move To and try again.`
+                                  : "Could not load move destinations. Try again.",
+                              );
+                            }
+                          },
+                        );
+                      }}
+                    >
+                      <FolderInput size={15} aria-hidden="true" />
+                      <span>Move To...</span>
+                      <ChevronRight
+                        className="notes-bullet-menu-chevron"
+                        size={14}
+                        aria-hidden="true"
+                      />
+                    </Menu.Item>
+                  )}
+                  <CommandItem
+                    disabled={actionBusy || !onExpandAll}
+                    icon={<ChevronsUpDown size={15} aria-hidden="true" />}
+                    onClick={onExpandAll}
+                  >
+                    Expand all
+                  </CommandItem>
+                  <CommandItem
+                    disabled={actionBusy || !onCollapseAll}
+                    icon={<ChevronsDownUp size={15} aria-hidden="true" />}
+                    onClick={onCollapseAll}
+                  >
+                    Collapse all
+                  </CommandItem>
+                  {!isReadonly && (
+                    <>
+                      <CommandItem
+                        disabled={actionBusy || !onSortAscending}
+                        icon={<ArrowDownAZ size={15} aria-hidden="true" />}
+                        onClick={onSortAscending}
+                      >
+                        Sort A-Z
+                      </CommandItem>
+                      <CommandItem
+                        disabled={actionBusy || !onSortDescending}
+                        icon={<ArrowUpZA size={15} aria-hidden="true" />}
+                        onClick={onSortDescending}
+                      >
+                        Sort Z-A
+                      </CommandItem>
+                    </>
+                  )}
+                  <Menu.Separator className="notes-bullet-menu-separator" />
+                  {hasNote && !isReadonly && (
+                    <CommandItem
+                      danger
+                      icon={<MessageSquareOff size={15} aria-hidden="true" />}
+                      onClick={onRemoveNote}
+                    >
+                      Remove note
+                    </CommandItem>
+                  )}
+                  <CommandItem
+                    icon={<Copy size={15} aria-hidden="true" />}
+                    onClick={onDuplicate}
+                    shortcut={shortcuts.duplicate}
+                  >
+                    Duplicate
+                  </CommandItem>
+                  {onToggleReadonly && (
+                    <CommandItem
+                      icon={
+                        isReadonly ? (
+                          <LockOpen size={15} aria-hidden="true" />
+                        ) : (
+                          <Lock size={15} aria-hidden="true" />
+                        )
+                      }
+                      onClick={onToggleReadonly}
+                    >
+                      {isReadonly ? "Make editable" : "Make read-only"}
+                    </CommandItem>
+                  )}
                   <Menu.Item
-                    ref={moveCommandRef}
+                    ref={exportCommandRef}
                     className="notes-bullet-menu-item"
                     closeOnClick={false}
-                    disabled={
-                      actionBusy ||
-                      !onMoveTo ||
-                      (!getMoveDestinations && moveDestinations.length === 0)
-                    }
+                    disabled={resolvedExportDisabled}
                     onClick={() => {
-                      const requestId = moveRequestRef.current + 1;
-                      moveRequestRef.current = requestId;
-                      setMoveQuery("");
-                      setMoveSelection(-1);
-                      setMoveView(true);
-                      setMoveError(null);
-                      const destinations =
-                        getMoveDestinations?.() ?? moveDestinations;
-                      if (Array.isArray(destinations)) {
-                        setAvailableMoveDestinations(destinations);
-                        setMoveDestinationsLoading(false);
-                        return;
-                      }
-                      setAvailableMoveDestinations([]);
-                      setMoveDestinationsLoading(true);
-                      void Promise.resolve(destinations).then(
-                        (resolved) => {
-                          if (moveRequestRef.current === requestId) {
-                            setAvailableMoveDestinations(resolved);
-                            setMoveDestinationsLoading(false);
-                          }
-                        },
-                        (cause) => {
-                          if (moveRequestRef.current === requestId) {
-                            setMoveDestinationsLoading(false);
-                            setMoveError(
-                              cause instanceof Error
-                                ? `${cause.message} Refresh Move To and try again.`
-                                : "Could not load move destinations. Try again."
-                            );
-                          }
-                        }
-                      );
+                      viewFocusTargetRef.current = "back";
+                      setExportView(true);
                     }}
                   >
-                    <FolderInput size={15} aria-hidden="true" />
-                    <span>Move To...</span>
+                    <Download size={15} aria-hidden="true" />
+                    <span>Export subtree</span>
                     <ChevronRight
                       className="notes-bullet-menu-chevron"
                       size={14}
                       aria-hidden="true"
                     />
                   </Menu.Item>
-                )}
-                <CommandItem
-                  disabled={actionBusy || !onExpandAll}
-                  icon={<ChevronsUpDown size={15} aria-hidden="true" />}
-                  onClick={onExpandAll}
-                >
-                  Expand all
-                </CommandItem>
-                <CommandItem
-                  disabled={actionBusy || !onCollapseAll}
-                  icon={<ChevronsDownUp size={15} aria-hidden="true" />}
-                  onClick={onCollapseAll}
-                >
-                  Collapse all
-                </CommandItem>
-                {!isReadonly && (
-                  <>
+                  {!isReadonly && (
                     <CommandItem
-                      disabled={actionBusy || !onSortAscending}
-                      icon={<ArrowDownAZ size={15} aria-hidden="true" />}
-                      onClick={onSortAscending}
+                      danger
+                      icon={<Trash2 size={15} aria-hidden="true" />}
+                      onClick={onDelete}
+                      shortcut={shortcuts.delete}
                     >
-                      Sort A-Z
+                      Delete
                     </CommandItem>
+                  )}
+                  {saveFailed && (
                     <CommandItem
-                      disabled={actionBusy || !onSortDescending}
-                      icon={<ArrowUpZA size={15} aria-hidden="true" />}
-                      onClick={onSortDescending}
+                      icon={<RotateCcw size={15} aria-hidden="true" />}
+                      onClick={onRetrySave}
                     >
-                      Sort Z-A
+                      Retry save
                     </CommandItem>
-                  </>
-                )}
-                <Menu.Separator className="notes-bullet-menu-separator" />
-                {hasNote && !isReadonly && (
-                  <CommandItem
-                    danger
-                    icon={<MessageSquareOff size={15} aria-hidden="true" />}
-                    onClick={onRemoveNote}
-                  >
-                    Remove note
-                  </CommandItem>
-                )}
-                <CommandItem
-                  icon={<Copy size={15} aria-hidden="true" />}
-                  onClick={onDuplicate}
-                  shortcut={shortcuts.duplicate}
-                >
-                  Duplicate
-                </CommandItem>
-                {onToggleReadonly && (
-                  <CommandItem
-                    icon={
-                      isReadonly ? (
-                        <LockOpen size={15} aria-hidden="true" />
-                      ) : (
-                        <Lock size={15} aria-hidden="true" />
-                      )
-                    }
-                    onClick={onToggleReadonly}
-                  >
-                    {isReadonly ? "Make editable" : "Make read-only"}
-                  </CommandItem>
-                )}
-                <Menu.Item
-                  ref={exportCommandRef}
-                  className="notes-bullet-menu-item"
-                  closeOnClick={false}
-                  disabled={resolvedExportDisabled}
-                  onClick={() => {
-                    viewFocusTargetRef.current = "back";
-                    setExportView(true);
-                  }}
-                >
-                  <Download size={15} aria-hidden="true" />
-                  <span>Export subtree</span>
-                  <ChevronRight
-                    className="notes-bullet-menu-chevron"
-                    size={14}
-                    aria-hidden="true"
-                  />
-                </Menu.Item>
-                {!isReadonly && (
-                  <CommandItem
-                    danger
-                    icon={<Trash2 size={15} aria-hidden="true" />}
-                    onClick={onDelete}
-                    shortcut={shortcuts.delete}
-                  >
-                    Delete
-                  </CommandItem>
-                )}
-                {saveFailed && (
-                  <CommandItem
-                    icon={<RotateCcw size={15} aria-hidden="true" />}
-                    onClick={onRetrySave}
-                  >
-                    Retry save
-                  </CommandItem>
-                )}
-                {(createdAt || updatedAt) && (
-                  <>
-                    <Menu.Separator className="notes-bullet-menu-separator" />
-                    <div className="notes-bullet-menu-timestamps">
-                      <Clock3 size={14} aria-hidden="true" />
-                      <div>
-                        {createdAt && (
-                          <p>Created {formatTimestamp(createdAt)}</p>
-                        )}
-                        {updatedAt && (
-                          <p>Changed {formatTimestamp(updatedAt)}</p>
-                        )}
+                  )}
+                  {(createdAt || updatedAt) && (
+                    <>
+                      <Menu.Separator className="notes-bullet-menu-separator" />
+                      <div className="notes-bullet-menu-timestamps">
+                        <Clock3 size={14} aria-hidden="true" />
+                        <div>
+                          {createdAt && (
+                            <p>Created {formatTimestamp(createdAt)}</p>
+                          )}
+                          {updatedAt && (
+                            <p>Changed {formatTimestamp(updatedAt)}</p>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  </>
-                )}
-              </>
-            )}
-          </Menu.Popup>
-        </Menu.Positioner>
-      </Menu.Portal>
+                    </>
+                  )}
+                </>
+              )}
+            </Menu.Popup>
+          </Menu.Positioner>
+        </Menu.Portal>
+      )}
     </Menu.Root>
   );
 }

@@ -225,6 +225,7 @@ import type {
 
 const EMPTY_GITHUB_COLLAPSED_GROUPS: readonly string[] = [];
 const EMPTY_OPTIMISTIC_KEYBOARD_INSERTIONS = Object.freeze([]);
+const REROUTED_HELD_BACKSPACE_EVENT = "__yonalistReroutedHeldBackspace";
 const selectionDragRejectedMessage =
   "Can't move selection: the selected rows cannot be moved together.";
 const filteredDragPreparingMessage =
@@ -651,12 +652,12 @@ const ZOOM_EDITABLE_SELECTOR = [
   ".notes-page-note",
   ".notes-node-title",
   ".notes-node-note",
-  ".notes-image-atom-editor"
+  ".notes-image-atom-editor",
 ].join(",");
 
 function zoomNodeIdFromTarget(
   target: EventTarget | null,
-  zoomRootId: NoteId | null
+  zoomRootId: NoteId | null,
 ): NoteId | null {
   if (!(target instanceof Element) || !target.closest(ZOOM_EDITABLE_SELECTOR)) {
     return null;
@@ -798,8 +799,7 @@ export function NotesOutlinePane({
   const githubZoomed = state.zoomRootId === GITHUB_NOTIFICATIONS_ROOT_ID;
   const githubPluginPageOpen =
     githubZoomed ||
-    (state.zoomRootId !== null &&
-      githubDescendantIds.has(state.zoomRootId));
+    (state.zoomRootId !== null && githubDescendantIds.has(state.zoomRootId));
   useLayoutEffect(() => {
     if (githubPage !== null || !githubPluginPageOpen) return;
     actions.clearSelection();
@@ -823,12 +823,11 @@ export function NotesOutlinePane({
     token: number;
     operationId: string | null;
   } | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (
       optimisticBackspaceGesture === null ||
       optimisticBackspaceGesture.removedNodeIds.length === 0 ||
-      backspaceBenchmarkRef.current?.token ===
-        optimisticBackspaceGesture.token
+      backspaceBenchmarkRef.current?.token === optimisticBackspaceGesture.token
     ) {
       return;
     }
@@ -916,6 +915,8 @@ export function NotesOutlinePane({
     string | null
   >(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const heldBackspaceDestinationIdRef = useRef<NoteId | null>(null);
+  const heldBackspaceRoutingRef = useRef(false);
   const dropSurfaceRef = useRef<HTMLDivElement>(null);
   const selectionToolbarRef = useRef<HTMLDivElement>(null);
   const mouseSelectionGestureRef = useRef<MouseSelectionGesture | null>(null);
@@ -1444,16 +1445,18 @@ export function NotesOutlinePane({
     };
   }, [actions]);
   const expandedNodeIds = useMemo(() => {
-    const expanded = new Set(locallyExpandedNodeIds);
+    let expanded: Set<NoteId> | null = null;
     for (const insertion of optimisticKeyboardInsertions) {
       if (
         insertion.status !== "settled" &&
-        insertion.pending.intent.postcondition.kind === "first-child"
+        insertion.pending.intent.postcondition.kind === "first-child" &&
+        !locallyExpandedNodeIds.has(insertion.pending.intent.sourceId)
       ) {
+        expanded ??= new Set(locallyExpandedNodeIds);
         expanded.add(insertion.pending.intent.sourceId);
       }
     }
-    return expanded;
+    return expanded ?? locallyExpandedNodeIds;
   }, [locallyExpandedNodeIds, optimisticKeyboardInsertions]);
   const outlineNodesById = state.nodesById;
   const outlineChildIdsByParent = state.childIdsByParent;
@@ -1536,7 +1539,7 @@ export function NotesOutlinePane({
         Object.values(state.nodesById)
           .filter((node) => node.isCollapsed)
           .map((node) => node.id),
-    ),
+      ),
     [state.nodesById],
   );
   useLayoutEffect(() => {
@@ -1650,7 +1653,10 @@ export function NotesOutlinePane({
     [],
   );
   const focusGithubEditor = useCallback(
-    (key: GithubEditorFocusKey, edge: OutlineCaretEdge | null = null): boolean => {
+    (
+      key: GithubEditorFocusKey,
+      edge: OutlineCaretEdge | null = null,
+    ): boolean => {
       const editor = githubEditorElement(key);
       const content = contentRef.current;
       if (
@@ -1658,12 +1664,7 @@ export function NotesOutlinePane({
         content &&
         key.kind === "stored"
       ) {
-        return focusOutlineEditorDom(
-          content,
-          key.nodeId,
-          key.field,
-          edge,
-        );
+        return focusOutlineEditorDom(content, key.nodeId, key.field, edge);
       }
       editor?.focus();
       if (editor instanceof HTMLTextAreaElement && edge !== null) {
@@ -1833,7 +1834,10 @@ export function NotesOutlinePane({
     [actions],
   );
   const ordinaryBodyRows = useMemo(
-    () => bodyRows.filter((row) => !githubDescendantIds.has(row.id)),
+    () =>
+      githubDescendantIds.size === 0
+        ? bodyRows
+        : bodyRows.filter((row) => !githubDescendantIds.has(row.id)),
     [bodyRows, githubDescendantIds],
   );
   const targetExpandedLimit = [
@@ -1881,68 +1885,78 @@ export function NotesOutlinePane({
   // Selection is a body-row concept. While zoomed, the page header remains in
   // the structural order for ordinary Arrow navigation and drag geometry, but
   // it must never become an invisible member of a selected range.
-  const bodyVisibleIds = useMemo(() => {
+  const [bodyVisibleIds, sortableVisibleIds] = useMemo(() => {
     if (githubZoomed) {
-      return [...githubProjection.selectableUserNodeIds];
+      return [
+        [...githubProjection.selectableUserNodeIds],
+        [...githubProjection.sortableIds],
+      ] as const;
     }
     const visibleIds: NoteId[] = [];
+    const sortableIds: NoteId[] = [];
     for (const row of ordinaryBodyRows) {
+      sortableIds.push(row.id);
       if (row.id === GITHUB_NOTIFICATIONS_ROOT_ID) {
         if (!row.isCollapsed) {
           visibleIds.push(...githubProjection.selectableUserNodeIds);
+          sortableIds.push(...githubProjection.sortableIds);
         }
       } else {
         visibleIds.push(row.id);
       }
     }
-    return visibleIds;
-  }, [githubProjection.selectableUserNodeIds, githubZoomed, ordinaryBodyRows]);
-  const sortableVisibleIds = useMemo(() => {
-    if (githubZoomed) {
-      return [...githubProjection.sortableIds];
-    }
-    const visibleIds: NoteId[] = [];
-    for (const row of ordinaryBodyRows) {
-      visibleIds.push(row.id);
-      if (row.id === GITHUB_NOTIFICATIONS_ROOT_ID && !row.isCollapsed) {
-        visibleIds.push(...githubProjection.sortableIds);
-      }
-    }
-    return visibleIds;
-  }, [githubProjection.sortableIds, githubZoomed, ordinaryBodyRows]);
+    return [visibleIds, sortableIds] as const;
+  }, [
+    githubProjection.selectableUserNodeIds,
+    githubProjection.sortableIds,
+    githubZoomed,
+    ordinaryBodyRows,
+  ]);
   useEffect(() => {
-    const liveIds = new Set(ordinaryBodyRows.map((row) => row.id));
+    const liveIds = new Set(mountedOrdinaryRows.map((row) => row.id));
     for (const nodeId of sortableControllersRef.current.keys()) {
       if (!liveIds.has(nodeId)) {
         sortableControllersRef.current.delete(nodeId);
       }
     }
-  }, [ordinaryBodyRows]);
-  const bodySortableIds = useMemo(
-    () => {
-      const mountedIds = new Set(mountedOrdinaryRows.map((row) => row.id));
-      if (
-        githubZoomed ||
-        (mountedIds.has(GITHUB_NOTIFICATIONS_ROOT_ID) &&
-          !state.nodesById[GITHUB_NOTIFICATIONS_ROOT_ID]?.isCollapsed)
-      ) {
-        for (const nodeId of githubProjection.sortableIds) {
-          mountedIds.add(nodeId);
-        }
+  }, [mountedOrdinaryRows]);
+  const currentBodySortableIds = useMemo(() => {
+    const mountedIds = new Set(mountedOrdinaryRows.map((row) => row.id));
+    if (
+      githubZoomed ||
+      (mountedIds.has(GITHUB_NOTIFICATIONS_ROOT_ID) &&
+        !state.nodesById[GITHUB_NOTIFICATIONS_ROOT_ID]?.isCollapsed)
+    ) {
+      for (const nodeId of githubProjection.sortableIds) {
+        mountedIds.add(nodeId);
       }
-      return sortableVisibleIds
-        .filter((nodeId) => mountedIds.has(nodeId))
-        .map((nodeId) => notesPaneDndId(paneId, nodeId, "row"));
-    },
-    [
-      githubProjection.sortableIds,
-      githubZoomed,
-      mountedOrdinaryRows,
-      paneId,
-      sortableVisibleIds,
-      state.nodesById,
-    ],
-  );
+    }
+    return sortableVisibleIds
+      .filter((nodeId) => mountedIds.has(nodeId))
+      .map((nodeId) => notesPaneDndId(paneId, nodeId, "row"));
+  }, [
+    githubProjection.sortableIds,
+    githubZoomed,
+    mountedOrdinaryRows,
+    paneId,
+    sortableVisibleIds,
+    state.nodesById,
+  ]);
+  const bodySortableIdsRef = useRef({
+    pageKey: outlinePageKey,
+    ids: currentBodySortableIds,
+  });
+  if (
+    bodySortableIdsRef.current.pageKey !== outlinePageKey ||
+    ((optimisticKeyboardInsertions.length === 0 || activeDragId !== null) &&
+      !exactNoteIds(bodySortableIdsRef.current.ids, currentBodySortableIds))
+  ) {
+    bodySortableIdsRef.current = {
+      pageKey: outlinePageKey,
+      ids: currentBodySortableIds,
+    };
+  }
+  const bodySortableIds = bodySortableIdsRef.current.ids;
   const bodyVisibleIdsRef = useRef(bodyVisibleIds);
   bodyVisibleIdsRef.current = bodyVisibleIds;
   const bodyRowsRef = useRef(bodyRows);
@@ -1969,8 +1983,7 @@ export function NotesOutlinePane({
     [actions],
   );
   const getOutlineRow = useCallback(
-    (nodeId: NoteId) =>
-      bodyRowsRef.current.find((row) => row.id === nodeId),
+    (nodeId: NoteId) => bodyRowsRef.current.find((row) => row.id === nodeId),
     [],
   );
   const getSelectionVisibleNodeIds = useCallback(
@@ -1993,8 +2006,10 @@ export function NotesOutlinePane({
   const selectionRef = useRef(selection ?? null);
   selectionRef.current = selection ?? null;
   const getSelection = useCallback(
-    () => getLiveSelectionSnapshot?.().selection ?? selectionRef.current,
-    [getLiveSelectionSnapshot],
+    () =>
+      getActionsSnapshot().actions.getSelectionSnapshot?.().selection ??
+      selectionRef.current,
+    [getActionsSnapshot],
   );
   const handleMouseSelectionPointerDownCapture = (
     event: ReactPointerEvent<HTMLOListElement>,
@@ -2343,8 +2358,7 @@ export function NotesOutlinePane({
     (event: ReactUIEvent<HTMLDivElement>) => {
       const surface = event.currentTarget;
       const viewportHeight = surface.clientHeight || window.innerHeight;
-      const scrollTop =
-        48 * Math.ceil(Math.max(0, surface.scrollTop) / 48);
+      const scrollTop = 48 * Math.ceil(Math.max(0, surface.scrollTop) / 48);
       setOutlineViewportHeight((current) =>
         current === viewportHeight ? current : viewportHeight,
       );
@@ -2354,28 +2368,22 @@ export function NotesOutlinePane({
     },
     [],
   );
-  const focusBodyTitle = useCallback(
-    (nodeId: NoteId): void => {
-      const title = outlineTitleEditor(contentRef.current, nodeId);
-      if (title) {
-        title.focus();
-        if (title instanceof HTMLDivElement) {
-          title.dispatchEvent(
-            new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }),
-          );
-        }
-        return;
+  const focusBodyTitle = useCallback((nodeId: NoteId): void => {
+    const title = outlineTitleEditor(contentRef.current, nodeId);
+    if (title) {
+      title.focus();
+      if (title instanceof HTMLDivElement) {
+        title.dispatchEvent(
+          new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }),
+        );
       }
-      setDeferredDirectFocusId(nodeId);
-    },
-    [],
-  );
+      return;
+    }
+    setDeferredDirectFocusId(nodeId);
+  }, []);
   useLayoutEffect(() => {
     if (deferredDirectFocusId === null) return;
-    const title = outlineTitleEditor(
-      contentRef.current,
-      deferredDirectFocusId,
-    );
+    const title = outlineTitleEditor(contentRef.current, deferredDirectFocusId);
     title?.focus();
     if (title instanceof HTMLDivElement) {
       title.dispatchEvent(
@@ -3029,23 +3037,136 @@ export function NotesOutlinePane({
     [finishBackspaceGesture, selectionNativeClipboard],
   );
   useEffect(() => {
+    const currentDestination = (): HTMLElement | null => {
+      const destinationId = heldBackspaceDestinationIdRef.current;
+      return destinationId
+        ? (Array.from(
+            contentRef.current?.querySelectorAll<HTMLElement>(
+              "[data-notes-bullet-title]",
+            ) ?? [],
+          ).find(
+            (candidate) =>
+              candidate.getAttribute("data-github-editor-node-id") ===
+              destinationId,
+          ) ?? null)
+        : null;
+    };
+    const dispatchRepeat = (target: HTMLElement): void => {
+      const forwarded = new KeyboardEvent("keydown", {
+        key: "Backspace",
+        code: "Backspace",
+        repeat: true,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      });
+      Object.defineProperty(forwarded, REROUTED_HELD_BACKSPACE_EVENT, {
+        value: true,
+      });
+      target.dispatchEvent(forwarded);
+    };
+    const handleWindowKeyDown = (event: globalThis.KeyboardEvent): void => {
+      const source =
+        event.target instanceof Element
+          ? event.target.closest<HTMLElement>("[data-notes-bullet-title]")
+          : null;
+      if (source && contentRef.current?.contains(source)) {
+        heldBackspaceDestinationIdRef.current = source.getAttribute(
+          "data-github-editor-node-id",
+        );
+        if (
+          event.key === "Backspace" &&
+          !event.repeat &&
+          !event.altKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.shiftKey &&
+          !event.isComposing
+        ) {
+          heldBackspaceRoutingRef.current = true;
+        }
+      }
+      if (
+        event.key !== "Backspace" ||
+        !event.repeat ||
+        !heldBackspaceRoutingRef.current ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        event.isComposing ||
+        Reflect.get(event, REROUTED_HELD_BACKSPACE_EVENT) === true ||
+        source
+      ) {
+        return;
+      }
+      const active =
+        document.activeElement instanceof HTMLElement &&
+        document.activeElement.matches(
+          "[data-notes-bullet-title][data-editing='true']",
+        ) &&
+        contentRef.current?.contains(document.activeElement)
+          ? document.activeElement
+          : null;
+      if (
+        !active &&
+        document.activeElement !== document.body &&
+        document.activeElement !== document.documentElement
+      ) {
+        return;
+      }
+      const target = active ?? currentDestination();
+      if (!target) return;
+      event.preventDefault();
+      if (target.getAttribute("data-editing") === "true") {
+        dispatchRepeat(target);
+        return;
+      }
+      target.setAttribute("data-notes-restore-title-selection", "true");
+      target.focus();
+      target.removeAttribute("data-notes-restore-title-selection");
+      queueMicrotask(() => {
+        const editing = currentDestination();
+        if (editing?.getAttribute("data-editing") === "true") {
+          dispatchRepeat(editing);
+        }
+      });
+    };
+    const handleWindowFocusIn = (event: FocusEvent): void => {
+      const target =
+        event.target instanceof Element
+          ? event.target.closest<HTMLElement>("[data-notes-bullet-title]")
+          : null;
+      if (target && contentRef.current?.contains(target)) {
+        heldBackspaceDestinationIdRef.current = target.getAttribute(
+          "data-github-editor-node-id",
+        );
+      }
+    };
     const handleWindowKeyUp = (event: globalThis.KeyboardEvent): void => {
       if (event.key === "Backspace") {
+        heldBackspaceRoutingRef.current = false;
         void finishBackspaceGesture("keyup");
       }
     };
     const handleWindowBlur = (): void => {
+      heldBackspaceRoutingRef.current = false;
       void finishBackspaceGesture("blur");
     };
     const handleVisibilityChange = (): void => {
       if (document.visibilityState === "hidden") {
+        heldBackspaceRoutingRef.current = false;
         void finishBackspaceGesture("hidden");
       }
     };
+    window.addEventListener("keydown", handleWindowKeyDown, true);
+    window.addEventListener("focusin", handleWindowFocusIn, true);
     window.addEventListener("keyup", handleWindowKeyUp);
     window.addEventListener("blur", handleWindowBlur);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
+      window.removeEventListener("keydown", handleWindowKeyDown, true);
+      window.removeEventListener("focusin", handleWindowFocusIn, true);
       window.removeEventListener("keyup", handleWindowKeyUp);
       window.removeEventListener("blur", handleWindowBlur);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
@@ -4473,12 +4594,10 @@ export function NotesOutlinePane({
     onDragEnd: handleDragEnd,
   };
 
-  const bodyRowById = useMemo(
-    () => new Map(bodyRows.map((row) => [row.id, row])),
-    [bodyRows],
-  );
   const githubStoredRowById = useMemo(() => {
     const adapted = new Map<NoteId, FlattenedOutlineRow>();
+    if (githubProjection.rows.length === 0) return adapted;
+    const bodyRowById = new Map(bodyRows.map((row) => [row.id, row]));
     for (const projectedRow of githubProjection.rows) {
       if (projectedRow.kind !== "stored") {
         continue;
@@ -4497,7 +4616,7 @@ export function NotesOutlinePane({
       });
     }
     return adapted;
-  }, [bodyRowById, githubProjection.rows]);
+  }, [bodyRows, githubProjection.rows]);
   const todoProgressByParent = useMemo(
     () => buildTodoProgressMap(state.nodesById, state.childIdsByParent),
     [state.nodesById, state.childIdsByParent],
@@ -4507,8 +4626,7 @@ export function NotesOutlinePane({
     depth = row.depth,
   ) => {
     const node =
-      optimisticProjection.nodeOverrides.get(row.id) ??
-      state.nodesById[row.id];
+      optimisticProjection.nodeOverrides.get(row.id) ?? state.nodesById[row.id];
     if (!node) return null;
     const optimisticInsertion = optimisticKeyboardInsertions.find(
       (insertion) => insertion.pending.intent.expectedNodeId === row.id,
@@ -4596,7 +4714,7 @@ export function NotesOutlinePane({
         onSelectionAction={stableExecuteSelectionAction}
         selectionBridge={rangeSelected ? selectionMenuBridge : undefined}
         draft={draft}
-        optimisticInsertion={optimisticInsertion}
+        optimisticInsertion={optimisticInsertion?.pending}
         attachmentUploadError={attachmentUploadErrorsByNodeId?.[row.id]}
         attachmentUploadRetryAttemptId={
           attachmentUploadRetryAttemptIdsByNodeId?.[row.id]
@@ -4641,13 +4759,15 @@ export function NotesOutlinePane({
         {bodyDropPreview?.beforeId === row.id && (
           <DropPreviewLine preview={bodyDropPreview} />
         )}
-        <OutlineSortableRuntime
-          controller={sortableController}
-          nodeId={row.id}
-          sortableId={notesPaneDndId(paneId, row.id, "row")}
-          disabled={disabled || dragDisabled || readOnlyMode !== undefined}
-          suppressDragPresentation={activeDragId !== null}
-        />
+        {!optimisticInsertion && (
+          <OutlineSortableRuntime
+            controller={sortableController}
+            nodeId={row.id}
+            sortableId={notesPaneDndId(paneId, row.id, "row")}
+            disabled={disabled || dragDisabled || readOnlyMode !== undefined}
+            suppressDragPresentation={activeDragId !== null}
+          />
+        )}
         <OutlineSortableShell
           controller={sortableController}
           nodeId={row.id}
@@ -4855,7 +4975,7 @@ export function NotesOutlinePane({
                   >
                     Retry recovery
                   </button>
-              )}
+                )}
               {authorityRecovery.kind === "unknown" && (
                 <NotesDataRepairAction
                   className="notes-write-error-retry"
@@ -4885,9 +5005,7 @@ export function NotesOutlinePane({
               <button
                 type="button"
                 className="notes-write-error-retry"
-                onClick={() =>
-                  actions.dismissOptimisticInsertionFailure?.()
-                }
+                onClick={() => actions.dismissOptimisticInsertionFailure?.()}
               >
                 Dismiss
               </button>

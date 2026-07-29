@@ -79,11 +79,12 @@ describe("Notes Backspace runtime lifecycle", () => {
     );
 
     expect(firstHandle).not.toBe(secondHandle);
-    lifecycle.touch(firstHandle!, "first-next");
+    lifecycle.touch(firstHandle!, "first-next", "rendered title");
     lifecycle.remove(firstHandle!, "first-next", null);
     expect(first.coordinator.touchBackspaceGesture).toHaveBeenCalledWith(
       1,
-      "first-next"
+      "first-next",
+      "rendered title"
     );
     expect(
       first.coordinator.removeEmptyNodeInBackspaceGesture

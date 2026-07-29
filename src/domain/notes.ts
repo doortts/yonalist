@@ -543,6 +543,7 @@ export interface NotesBackspaceTitleUpdate {
 export interface ApplyNotesBackspaceGestureInput {
   readonly op: "backspaceGesture";
   readonly nodeIds: readonly NoteId[];
+  readonly expectedTitles: readonly string[];
   readonly titleUpdate: NotesBackspaceTitleUpdate | null;
 }
 

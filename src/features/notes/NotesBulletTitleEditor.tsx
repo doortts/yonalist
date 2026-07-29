@@ -12,7 +12,7 @@ import {
   type HTMLAttributes,
   type KeyboardEvent,
   type PointerEvent,
-  type ReactNode
+  type ReactNode,
 } from "react";
 import type { NoteId, NoteMarkerKind } from "../../domain/notes";
 import type { LocalDate, NoteDateMatch } from "./noteDates";
@@ -20,11 +20,11 @@ import type { NoteTagToken } from "./noteTokens";
 import type { NotesHistoryPrimarySelection } from "./notesHistory";
 import {
   resolveInlineFormatShortcut,
-  toggleInlineFormat
+  toggleInlineFormat,
 } from "./inlineFormat";
 import {
   parseNoteMarkdown,
-  sourceOffsetFromPresentation
+  sourceOffsetFromPresentation,
 } from "./noteMarkdown";
 import { NoteTokenText } from "./NoteTokenText";
 import { NotesSlashCommandMenu } from "./NotesSlashCommandMenu";
@@ -34,11 +34,11 @@ import {
   resolveNotesSlashCommandQuery,
   type NotesSlashCommandDefinition,
   type NotesSlashCommandId,
-  type NotesSlashCommandQuery
+  type NotesSlashCommandQuery,
 } from "./notesSlashCommands";
 import type {
   NotesEditorFlushAdapter,
-  NotesEditorFlushResult
+  NotesEditorFlushResult,
 } from "./notesImageAtomEditorRegistry";
 import {
   insertPlainTextAtSelection,
@@ -46,7 +46,7 @@ import {
   readPlainTextSelection,
   replacePlainText,
   restorePlainTextSelection,
-  type PlainTextSnapshot
+  type PlainTextSnapshot,
 } from "./plainTextContenteditable";
 
 interface SlashCommandMenuState {
@@ -61,33 +61,32 @@ export interface NotesBulletTitleEditorHandle {
   snapshot(): PlainTextSnapshot | null;
   replaceSource(
     source: string,
-    selection?: NotesHistoryPrimarySelection
+    selection?: NotesHistoryPrimarySelection,
   ): boolean;
   flush(): Promise<NotesEditorFlushResult>;
 }
 
-export interface NotesBulletTitleEditorProps
-  extends Omit<
-    HTMLAttributes<HTMLDivElement>,
-    | "children"
-    | "contentEditable"
-    | "onBlur"
-    | "onCompositionEnd"
-    | "onCompositionStart"
-    | "onFocus"
-    | "onInput"
-    | "onKeyDown"
-    | "onPaste"
-  > {
+export interface NotesBulletTitleEditorProps extends Omit<
+  HTMLAttributes<HTMLDivElement>,
+  | "children"
+  | "contentEditable"
+  | "onBlur"
+  | "onCompositionEnd"
+  | "onCompositionStart"
+  | "onFocus"
+  | "onInput"
+  | "onKeyDown"
+  | "onPaste"
+> {
   readonly nodeId: NoteId;
   readonly source: string;
   readonly onPublish: (source: string) => void;
   readonly registerFlushAdapter?: (
-    adapter: NotesEditorFlushAdapter
+    adapter: NotesEditorFlushAdapter,
   ) => () => void;
   readonly onEditorKeyDown?: (
     event: KeyboardEvent<HTMLDivElement>,
-    snapshot: PlainTextSnapshot
+    snapshot: PlainTextSnapshot,
   ) => void;
   readonly onFocus?: (event: FocusEvent<HTMLDivElement>) => void;
   readonly onBlur?: (event: FocusEvent<HTMLDivElement>) => void;
@@ -97,12 +96,12 @@ export interface NotesBulletTitleEditorProps
   readonly getToday?: () => LocalDate;
   readonly onDateClick?: (
     token: NoteDateMatch,
-    anchor: HTMLButtonElement
+    anchor: HTMLButtonElement,
   ) => void;
   readonly onDateTrigger?: (
     range: { readonly startUtf16: number; readonly endUtf16: number },
     anchor: HTMLDivElement,
-    source: string
+    source: string,
   ) => void;
   readonly isTagActive?: (token: NoteTagToken) => boolean;
   readonly markdown?: boolean;
@@ -111,7 +110,7 @@ export interface NotesBulletTitleEditorProps
   readonly onSlashMarkerCommand?: (
     markerKind: NoteMarkerKind,
     value: string,
-    caretUtf16: number
+    caretUtf16: number,
   ) => void;
   readonly readOnly?: boolean;
   readonly disabled?: boolean;
@@ -120,7 +119,7 @@ export interface NotesBulletTitleEditorProps
 interface CaretDocument {
   caretPositionFromPoint?: (
     x: number,
-    y: number
+    y: number,
   ) => { offsetNode: Node; offset: number } | null;
   caretRangeFromPoint?: (x: number, y: number) => Range | null;
 }
@@ -129,7 +128,7 @@ function presentationOffsetFromPoint(
   root: HTMLElement,
   clientX: number,
   clientY: number,
-  fallback: number
+  fallback: number,
 ): number {
   const documentWithCaret = root.ownerDocument as CaretDocument;
   const position = documentWithCaret.caretPositionFromPoint?.(clientX, clientY);
@@ -138,7 +137,11 @@ function presentationOffsetFromPoint(
     : documentWithCaret.caretRangeFromPoint?.(clientX, clientY);
   const node = position?.offsetNode ?? fallbackRange?.startContainer;
   const offset = position?.offset ?? fallbackRange?.startOffset;
-  if (!node || offset === undefined || (node !== root && !root.contains(node))) {
+  if (
+    !node ||
+    offset === undefined ||
+    (node !== root && !root.contains(node))
+  ) {
     return fallback;
   }
   try {
@@ -157,8 +160,8 @@ function snapshotFromDom(root: HTMLDivElement): PlainTextSnapshot {
     source,
     selection: readPlainTextSelection(root) ?? {
       anchorUtf16: source.length,
-      focusUtf16: source.length
-    }
+      focusUtf16: source.length,
+    },
   };
 }
 
@@ -171,7 +174,7 @@ function isInteractiveRestingTarget(target: EventTarget | null): boolean {
 
 function needsSynchronousPublish(
   event: KeyboardEvent<HTMLDivElement>,
-  snapshot: PlainTextSnapshot
+  snapshot: PlainTextSnapshot,
 ): boolean {
   if (event.key === "Enter" || event.key === "Tab") return true;
   const selection = snapshot.selection;
@@ -238,7 +241,7 @@ export const NotesBulletTitleEditor = forwardRef<
     "aria-label": ariaLabel = "Edit node title",
     ...divProps
   },
-  forwardedRef
+  forwardedRef,
 ) {
   const rootRef = useRef<HTMLDivElement>(null);
   const editingRef = useRef(false);
@@ -248,6 +251,7 @@ export const NotesBulletTitleEditor = forwardRef<
   const publishTimerRef = useRef<number | null>(null);
   const pendingSelectionRef = useRef<NotesHistoryPrimarySelection | null>(null);
   const blurredDuringCompositionRef = useRef(false);
+  const preparingEditRef = useRef(false);
   const compositionWaitersRef = useRef<
     Array<(result: NotesEditorFlushResult) => void>
   >([]);
@@ -260,7 +264,7 @@ export const NotesBulletTitleEditor = forwardRef<
   const lastSourcePropRef = useRef(source);
   const sourceChangedWhileEditingRef = useRef(false);
   const [slashMenu, setSlashMenu] = useState<SlashCommandMenuState | null>(
-    null
+    null,
   );
   const slashMenuId = `notes-slash-${useId().replaceAll(":", "")}`;
   const unavailable = readOnly || disabled;
@@ -290,8 +294,8 @@ export const NotesBulletTitleEditor = forwardRef<
       source: lastPublishedSourceRef.current,
       selection: {
         anchorUtf16: lastPublishedSourceRef.current.length,
-        focusUtf16: lastPublishedSourceRef.current.length
-      }
+        focusUtf16: lastPublishedSourceRef.current.length,
+      },
     };
   }, []);
 
@@ -310,7 +314,9 @@ export const NotesBulletTitleEditor = forwardRef<
   }, [clearPublishTimer, currentSnapshot]);
 
   const flush = useCallback(async (): Promise<NotesEditorFlushResult> => {
-    if (unmountedRef.current) return "cancelled";
+    if (unmountedRef.current) {
+      return composingRef.current ? "cancelled" : "flushed";
+    }
     if (composingRef.current) {
       return new Promise((resolve) => {
         compositionWaitersRef.current.push(resolve);
@@ -325,11 +331,11 @@ export const NotesBulletTitleEditor = forwardRef<
       if (unavailable) return;
       pendingSelectionRef.current = selection ?? {
         anchorUtf16: lastPublishedSourceRef.current.length,
-        focusUtf16: lastPublishedSourceRef.current.length
+        focusUtf16: lastPublishedSourceRef.current.length,
       };
       setEditing(true);
     },
-    [setEditing, unavailable]
+    [setEditing, unavailable],
   );
 
   useLayoutEffect(() => {
@@ -338,12 +344,18 @@ export const NotesBulletTitleEditor = forwardRef<
     if (!root || composingRef.current) return;
     const requested = pendingSelectionRef.current ?? {
       anchorUtf16: lastPublishedSourceRef.current.length,
-      focusUtf16: lastPublishedSourceRef.current.length
+      focusUtf16: lastPublishedSourceRef.current.length,
     };
     pendingSelectionRef.current = null;
-    replacePlainText(root, lastPublishedSourceRef.current, requested);
-    root.focus();
-    restorePlainTextSelection(root, requested);
+    preparingEditRef.current = true;
+    try {
+      if (document.activeElement === root) root.blur();
+      replacePlainText(root, lastPublishedSourceRef.current, requested);
+      root.focus();
+      restorePlainTextSelection(root, requested);
+    } finally {
+      preparingEditRef.current = false;
+    }
   }, [editing]);
 
   useEffect(() => {
@@ -363,13 +375,13 @@ export const NotesBulletTitleEditor = forwardRef<
         ) {
           const selection = readPlainTextSelection(root) ?? {
             anchorUtf16: source.length,
-            focusUtf16: source.length
+            focusUtf16: source.length,
           };
           lastPublishedSourceRef.current = source;
           setPublishedSource(source);
           replacePlainText(root, source, {
             anchorUtf16: Math.min(selection.anchorUtf16, source.length),
-            focusUtf16: Math.min(selection.focusUtf16, source.length)
+            focusUtf16: Math.min(selection.focusUtf16, source.length),
           });
           sourceChangedWhileEditingRef.current = false;
         }
@@ -398,10 +410,7 @@ export const NotesBulletTitleEditor = forwardRef<
       if (!composingRef.current && dirtyRef.current) {
         const snapshot = currentSnapshot();
         dirtyRef.current = false;
-        if (
-          snapshot &&
-          snapshot.source !== lastPublishedSourceRef.current
-        ) {
+        if (snapshot && snapshot.source !== lastPublishedSourceRef.current) {
           lastPublishedSourceRef.current = snapshot.source;
           onPublishRef.current(snapshot.source);
         }
@@ -439,9 +448,9 @@ export const NotesBulletTitleEditor = forwardRef<
         if (!editingRef.current) return true;
         return replacePlainText(root, nextSource, selection);
       },
-      flush
+      flush,
     }),
-    [clearPublishTimer, currentSnapshot, flush, requestEdit, unavailable]
+    [clearPublishTimer, currentSnapshot, flush, requestEdit, unavailable],
   );
 
   const refreshSlashMenu = (snapshot: PlainTextSnapshot) => {
@@ -457,13 +466,11 @@ export const NotesBulletTitleEditor = forwardRef<
     const query = resolveNotesSlashCommandQuery(
       snapshot.source,
       snapshot.selection.focusUtf16,
-      snapshot.selection.focusUtf16
+      snapshot.selection.focusUtf16,
     );
     const commands = query ? filterNotesSlashCommands(query.query) : [];
     setSlashMenu(
-      query && commands.length > 0
-        ? { query, commands, activeIndex: 0 }
-        : null
+      query && commands.length > 0 ? { query, commands, activeIndex: 0 } : null,
     );
   };
 
@@ -493,7 +500,7 @@ export const NotesBulletTitleEditor = forwardRef<
       onDateTriggerRef.current?.(
         { startUtf16: caret - 2, endUtf16: caret },
         event.currentTarget,
-        snapshot.source
+        snapshot.source,
       );
     }
   };
@@ -505,7 +512,7 @@ export const NotesBulletTitleEditor = forwardRef<
     const query = resolveNotesSlashCommandQuery(
       snapshot.source,
       snapshot.selection.focusUtf16,
-      snapshot.selection.focusUtf16
+      snapshot.selection.focusUtf16,
     );
     if (
       !query ||
@@ -519,11 +526,11 @@ export const NotesBulletTitleEditor = forwardRef<
       snapshot.source,
       query,
       commandId,
-      getToday?.() ?? today
+      getToday?.() ?? today,
     );
     replacePlainText(root, edit.value, {
       anchorUtf16: edit.caretUtf16,
-      focusUtf16: edit.caretUtf16
+      focusUtf16: edit.caretUtf16,
     });
     dirtyRef.current = true;
     setSlashMenu(null);
@@ -532,7 +539,7 @@ export const NotesBulletTitleEditor = forwardRef<
       onSlashMarkerCommandRef.current?.(
         edit.markerKind,
         edit.value,
-        edit.caretUtf16
+        edit.caretUtf16,
       );
     }
   };
@@ -563,11 +570,9 @@ export const NotesBulletTitleEditor = forwardRef<
       ) {
         event.preventDefault();
         requestEdit(
-          event.currentTarget.hasAttribute(
-            "data-notes-restore-title-selection"
-          )
-            ? readPlainTextSelection(event.currentTarget) ?? undefined
-            : undefined
+          event.currentTarget.hasAttribute("data-notes-restore-title-selection")
+            ? (readPlainTextSelection(event.currentTarget) ?? undefined)
+            : undefined,
         );
       }
       return;
@@ -588,9 +593,9 @@ export const NotesBulletTitleEditor = forwardRef<
                 ...current,
                 activeIndex:
                   (current.activeIndex + direction + current.commands.length) %
-                  current.commands.length
+                  current.commands.length,
               }
-            : null
+            : null,
         );
         return;
       }
@@ -611,17 +616,17 @@ export const NotesBulletTitleEditor = forwardRef<
       const snapshot = snapshotFromDom(root);
       const start = Math.min(
         snapshot.selection.anchorUtf16,
-        snapshot.selection.focusUtf16
+        snapshot.selection.focusUtf16,
       );
       const end = Math.max(
         snapshot.selection.anchorUtf16,
-        snapshot.selection.focusUtf16
+        snapshot.selection.focusUtf16,
       );
       const edit = toggleInlineFormat(snapshot.source, start, end, kind);
       event.preventDefault();
       replacePlainText(root, edit.value, {
         anchorUtf16: edit.selectionStart,
-        focusUtf16: edit.selectionEnd
+        focusUtf16: edit.selectionEnd,
       });
       dirtyRef.current = true;
       publishNow();
@@ -646,12 +651,12 @@ export const NotesBulletTitleEditor = forwardRef<
       event.currentTarget,
       event.clientX,
       event.clientY,
-      publishedSource.length
+      publishedSource.length,
     );
     const offset = markdown
       ? sourceOffsetFromPresentation(
           parseNoteMarkdown(publishedSource),
-          presentationOffset
+          presentationOffset,
         )
       : presentationOffset;
     event.preventDefault();
@@ -695,6 +700,7 @@ export const NotesBulletTitleEditor = forwardRef<
         }}
         onBlur={(event) => {
           if (
+            preparingEditRef.current ||
             event.relatedTarget instanceof Node &&
             event.currentTarget.contains(event.relatedTarget)
           ) {
@@ -745,14 +751,14 @@ export const NotesBulletTitleEditor = forwardRef<
             new InputEvent("input", {
               bubbles: true,
               data: text,
-              inputType: "insertFromPaste"
-            })
+              inputType: "insertFromPaste",
+            }),
           );
         }}
       >
         {editing
           ? null
-          : restingPresentation?.(() => requestEdit()) ?? (
+          : (restingPresentation?.(() => requestEdit()) ?? (
               <NoteTokenText
                 text={publishedSource}
                 markdownMode={markdown ? "rendered" : undefined}
@@ -761,7 +767,7 @@ export const NotesBulletTitleEditor = forwardRef<
                 onDateClick={unavailable ? undefined : onDateClick}
                 isTagActive={isTagActive}
               />
-            )}
+            ))}
       </div>
       {slashMenu && rootRef.current ? (
         <NotesSlashCommandMenu

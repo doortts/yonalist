@@ -12,7 +12,7 @@ import {
   useEffect,
   useMemo,
   useRef,
-  useState
+  useState,
 } from "react";
 import { VaultRootContext } from "../../VaultRootContext";
 import { IconTooltip } from "../../components/ui/Tooltip";
@@ -26,15 +26,18 @@ import {
 import {
   useNotesActions,
   useNotesPaneRegistry,
-  useNotesState
+  useNotesState,
 } from "./NotesWorkspaceContext";
 import {
   loadNotesSplitLayout,
   reconcilePersistedSplitLayout,
   saveNotesSplitLayout,
-  type NotesSplitLayoutStateV1
+  type NotesSplitLayoutStateV1,
 } from "./notesSplitLayoutStore";
-import { NotesSplitInputBenchmarkProfiler } from "./notesSplitLatencyProbe";
+import {
+  NOTES_REROUTED_HELD_ENTER_EVENT,
+  NotesSplitInputBenchmarkProfiler,
+} from "./notesSplitLatencyProbe";
 import type { NotesPaneRuntimeSlice } from "./notesWorkspaceTypes";
 
 const RATIO_STEP = 0.02;
@@ -43,7 +46,7 @@ const PRIMARY_EDITOR_SELECTOR = [
   "textarea.notes-page-note:not(:disabled):not([readonly])",
   "[data-notes-bullet-title]:not([aria-disabled='true']):not([aria-readonly='true'])",
   "textarea.notes-node-note:not(:disabled):not([readonly])",
-  ".notes-image-atom-editor[contenteditable='true']"
+  ".notes-image-atom-editor[contenteditable='true']",
 ].join(",");
 
 const NotesScopedPane = memo(function NotesScopedPane({
@@ -61,11 +64,7 @@ const NotesScopedPane = memo(function NotesScopedPane({
     ),
     [pane.paneId, toolbarTrailing],
   );
-  return (
-    <NotesPaneSliceScope pane={pane}>
-      {outline}
-    </NotesPaneSliceScope>
-  );
+  return <NotesPaneSliceScope pane={pane}>{outline}</NotesPaneSliceScope>;
 });
 
 function boundedRatio(value: number): number {
@@ -96,9 +95,10 @@ export function NotesDetailSplitHost() {
     readonly anchorUtf16: number;
     readonly focusUtf16: number;
   } | null>(null);
+  const heldEnterDestinationIdRef = useRef<string | null>(null);
   const hydratedVaultRef = useRef<string | null>(null);
   const [layout, setLayout] = useState<NotesSplitLayoutStateV1>(() =>
-    loadNotesSplitLayout(localStorage, vaultRoot)
+    loadNotesSplitLayout(localStorage, vaultRoot),
   );
 
   useEffect(() => {
@@ -122,24 +122,24 @@ export function NotesDetailSplitHost() {
         selectedId: secondary.zoomRootId,
         editingNoteId: null,
         pendingFocusId: null,
-        pendingFocusField: null
-      }
+        pendingFocusField: null,
+      },
     });
     registry.dispatchPane("secondary", {
       type: "setExpansion",
-      nodeIds: new Set(secondary.expandedNodeIds)
+      nodeIds: new Set(secondary.expandedNodeIds),
     });
     registry.dispatchPane("secondary", {
       type: "setScroll",
       anchorId: secondary.scrollAnchorId,
-      offset: secondary.scrollOffset
+      offset: secondary.scrollOffset,
     });
     if (
       restored.panes.primary.zoomRootId !== null &&
       restored.panes.primary.zoomRootId !== state.zoomRootId
     ) {
       void registry.panes.primary.actionsSlice.actions.zoomTo(
-        restored.panes.primary.zoomRootId
+        restored.panes.primary.zoomRootId,
       );
     }
   }, [layout, registry, state, vaultRoot]);
@@ -158,15 +158,15 @@ export function NotesDetailSplitHost() {
           zoomRootId: primary.zoomRootId,
           expandedNodeIds: [...primary.locallyExpandedNodeIds],
           scrollAnchorId: primary.scrollAnchorId,
-          scrollOffset: primary.scrollOffset
+          scrollOffset: primary.scrollOffset,
         },
         secondary: {
           zoomRootId: secondary.zoomRootId,
           expandedNodeIds: [...secondary.locallyExpandedNodeIds],
           scrollAnchorId: secondary.scrollAnchorId,
-          scrollOffset: secondary.scrollOffset
-        }
-      }
+          scrollOffset: secondary.scrollOffset,
+        },
+      },
     });
   }, [
     layout,
@@ -175,7 +175,7 @@ export function NotesDetailSplitHost() {
     registry.panes.primary.stateSlice.state.zoomRootId,
     registry.panes.secondary.stateSlice.state.zoomRootId,
     state.status,
-    vaultRoot
+    vaultRoot,
   ]);
 
   const rememberPrimaryEditor = useCallback(
@@ -186,12 +186,26 @@ export function NotesDetailSplitHost() {
       ) {
         lastPrimaryEditorRef.current = event.target;
         if (event.target.matches("[data-notes-bullet-title]")) {
-          lastPrimaryTitleSelectionRef.current =
-            readPlainTextSelection(event.target);
+          lastPrimaryTitleSelectionRef.current = readPlainTextSelection(
+            event.target,
+          );
         }
       }
     },
-    []
+    [],
+  );
+  const rememberHeldEnterDestination = useCallback(
+    (event: ReactFocusEvent<HTMLDivElement>) => {
+      if (
+        event.target instanceof HTMLElement &&
+        event.target.matches("[data-notes-provisional-insertion='true']")
+      ) {
+        heldEnterDestinationIdRef.current = event.target.getAttribute(
+          "data-github-editor-node-id",
+        );
+      }
+    },
+    [],
   );
   const focusPrimaryEditor = useCallback(() => {
     const focus = (editor: HTMLElement) => {
@@ -205,22 +219,25 @@ export function NotesDetailSplitHost() {
       editor.setAttribute("data-notes-restore-title-selection", "true");
       try {
         editor.dispatchEvent(
-          new KeyboardEvent("keydown", { bubbles: true, key: "Enter" })
+          new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }),
         );
       } finally {
         editor.removeAttribute("data-notes-restore-title-selection");
       }
     };
     const remembered = lastPrimaryEditorRef.current;
-    if (remembered?.isConnected && remembered.matches(PRIMARY_EDITOR_SELECTOR)) {
+    if (
+      remembered?.isConnected &&
+      remembered.matches(PRIMARY_EDITOR_SELECTOR)
+    ) {
       focus(remembered);
       return;
     }
     const fallback = primaryPaneRef.current?.querySelector<HTMLElement>(
       [
         "textarea.notes-page-title:not(:disabled):not([readonly])",
-        "[data-notes-bullet-title]:not([aria-disabled='true']):not([aria-readonly='true'])"
-      ].join(",")
+        "[data-notes-bullet-title]:not([aria-disabled='true']):not([aria-readonly='true'])",
+      ].join(","),
     );
     const target = fallback ?? splitOpenButtonRef.current;
     if (target) focus(target);
@@ -244,7 +261,7 @@ export function NotesDetailSplitHost() {
   const changeRatio = useCallback((delta: number) => {
     setLayout((current) => ({
       ...current,
-      splitRatio: boundedRatio(current.splitRatio + delta)
+      splitRatio: boundedRatio(current.splitRatio + delta),
     }));
   }, []);
 
@@ -260,8 +277,8 @@ export function NotesDetailSplitHost() {
         setLayout((current) => ({
           ...current,
           splitRatio: boundedRatio(
-            (moveEvent.clientX - rect.left) / rect.width
-          )
+            (moveEvent.clientX - rect.left) / rect.width,
+          ),
         }));
       };
       const finish = () => {
@@ -273,7 +290,7 @@ export function NotesDetailSplitHost() {
       window.addEventListener("pointerup", finish);
       window.addEventListener("pointercancel", finish);
     },
-    []
+    [],
   );
 
   const splitOpenControl = useMemo(
@@ -312,6 +329,105 @@ export function NotesDetailSplitHost() {
   );
   const recordUserInteraction = useCallback(
     (event: SyntheticEvent<HTMLDivElement>) => {
+      const keyboardEvent =
+        event.type === "keydown" ? (event.nativeEvent as KeyboardEvent) : null;
+      const source =
+        event.target instanceof Element
+          ? event.target.closest<HTMLElement>("[data-notes-bullet-title]")
+          : null;
+      const pane = source?.closest<HTMLElement>("[data-notes-pane-id]") ?? null;
+      const plainEnter =
+        keyboardEvent !== null &&
+        keyboardEvent.key === "Enter" &&
+        !keyboardEvent.altKey &&
+        !keyboardEvent.ctrlKey &&
+        !keyboardEvent.metaKey &&
+        !keyboardEvent.shiftKey &&
+        !keyboardEvent.isComposing;
+      const rerouted =
+        keyboardEvent !== null &&
+        Reflect.get(keyboardEvent, NOTES_REROUTED_HELD_ENTER_EVENT) === true;
+      if (event.type === "pointerdown") {
+        heldEnterDestinationIdRef.current = null;
+      } else if (plainEnter && !keyboardEvent.repeat && !rerouted) {
+        heldEnterDestinationIdRef.current = null;
+      }
+      if (plainEnter && keyboardEvent.repeat && source && !rerouted) {
+        const active =
+          document.activeElement instanceof HTMLElement &&
+          document.activeElement !== source &&
+          document.activeElement.matches(
+            "[data-notes-bullet-title][data-editing='true']",
+          ) &&
+          pane?.contains(document.activeElement)
+            ? document.activeElement
+            : null;
+        const provisional = pane?.querySelectorAll<HTMLElement>(
+          "[data-notes-provisional-insertion='true']",
+        );
+        const remembered = Array.from(
+          pane?.querySelectorAll<HTMLElement>("[data-notes-bullet-title]") ??
+            [],
+        ).find(
+          (candidate) =>
+            candidate.getAttribute("data-github-editor-node-id") ===
+            heldEnterDestinationIdRef.current,
+        );
+        const destination =
+          active ??
+          (provisional && provisional.length > 0
+            ? provisional.item(provisional.length - 1)
+            : null) ??
+          remembered;
+        const destinationId = destination?.getAttribute(
+          "data-github-editor-node-id",
+        );
+        if (destination && destination !== source && destinationId) {
+          event.preventDefault();
+          event.stopPropagation();
+          const dispatch = (target: HTMLElement, repeat: boolean) => {
+            const forwarded = new KeyboardEvent("keydown", {
+              key: keyboardEvent.key,
+              code: keyboardEvent.code,
+              location: keyboardEvent.location,
+              repeat,
+              bubbles: true,
+              cancelable: true,
+              composed: true,
+            });
+            Object.defineProperty(forwarded, NOTES_REROUTED_HELD_ENTER_EVENT, {
+              value: true,
+            });
+            target.dispatchEvent(forwarded);
+          };
+          const currentDestination = () =>
+            Array.from(
+              pane?.querySelectorAll<HTMLElement>(
+                "[data-notes-bullet-title]",
+              ) ?? [],
+            ).find(
+              (candidate) =>
+                candidate.getAttribute("data-github-editor-node-id") ===
+                destinationId,
+            );
+          queueMicrotask(() => {
+            const current = currentDestination();
+            if (!current) return;
+            if (current.getAttribute("data-editing") === "true") {
+              dispatch(current, true);
+              return;
+            }
+            dispatch(current, false);
+            queueMicrotask(() => {
+              const editing = currentDestination();
+              if (editing?.getAttribute("data-editing") === "true") {
+                dispatch(editing, true);
+              }
+            });
+          });
+          return;
+        }
+      }
       const insertionEditor = insertionEditorForEvent(event);
       if (insertionEditor && event.type !== "keydown") {
         return;
@@ -369,60 +485,61 @@ export function NotesDetailSplitHost() {
         onInputCapture={recordUserInteraction}
         onKeyDownCapture={recordUserInteraction}
         onKeyDown={recordInsertionNavigation}
+        onFocusCapture={rememberHeldEnterDestination}
         onPointerDownCapture={recordUserInteraction}
         style={
           {
-            "--notes-split-primary": `${layout.splitRatio * 100}%`
+            "--notes-split-primary": `${layout.splitRatio * 100}%`,
           } as CSSProperties
         }
       >
-      <div
-        ref={primaryPaneRef}
-        className="notes-detail-pane"
-        data-notes-pane-id="primary"
-        onFocusCapture={rememberPrimaryEditor}
-        onBlurCapture={rememberPrimaryEditor}
-        onPointerDownCapture={() => registry.setActivePaneId("primary")}
-      >
-        <NotesScopedPane
-          pane={registry.panes.primary}
-          toolbarTrailing={splitOpenControl}
-        />
-      </div>
-      {layout.splitOpen && (
         <div
-          className="notes-split-divider"
-          role="separator"
-          aria-label="Resize split view"
-          aria-orientation="vertical"
-          aria-valuemin={25}
-          aria-valuemax={75}
-          aria-valuenow={Math.round(layout.splitRatio * 100)}
-          tabIndex={0}
-          onPointerDown={startResize}
-          onKeyDown={(event) => {
-            if (event.key === "ArrowLeft") {
-              event.preventDefault();
-              changeRatio(-RATIO_STEP);
-            } else if (event.key === "ArrowRight") {
-              event.preventDefault();
-              changeRatio(RATIO_STEP);
-            }
-          }}
-        />
-      )}
-      {layout.splitOpen && (
-        <div
+          ref={primaryPaneRef}
           className="notes-detail-pane"
-          data-notes-pane-id="secondary"
-          onPointerDownCapture={() => registry.setActivePaneId("secondary")}
+          data-notes-pane-id="primary"
+          onFocusCapture={rememberPrimaryEditor}
+          onBlurCapture={rememberPrimaryEditor}
+          onPointerDownCapture={() => registry.setActivePaneId("primary")}
         >
           <NotesScopedPane
-            pane={registry.panes.secondary}
-            toolbarTrailing={splitCloseControl}
+            pane={registry.panes.primary}
+            toolbarTrailing={splitOpenControl}
           />
         </div>
-      )}
+        {layout.splitOpen && (
+          <div
+            className="notes-split-divider"
+            role="separator"
+            aria-label="Resize split view"
+            aria-orientation="vertical"
+            aria-valuemin={25}
+            aria-valuemax={75}
+            aria-valuenow={Math.round(layout.splitRatio * 100)}
+            tabIndex={0}
+            onPointerDown={startResize}
+            onKeyDown={(event) => {
+              if (event.key === "ArrowLeft") {
+                event.preventDefault();
+                changeRatio(-RATIO_STEP);
+              } else if (event.key === "ArrowRight") {
+                event.preventDefault();
+                changeRatio(RATIO_STEP);
+              }
+            }}
+          />
+        )}
+        {layout.splitOpen && (
+          <div
+            className="notes-detail-pane"
+            data-notes-pane-id="secondary"
+            onPointerDownCapture={() => registry.setActivePaneId("secondary")}
+          >
+            <NotesScopedPane
+              pane={registry.panes.secondary}
+              toolbarTrailing={splitCloseControl}
+            />
+          </div>
+        )}
       </div>
     </NotesSplitDndContext>
   );

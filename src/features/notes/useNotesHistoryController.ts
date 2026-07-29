@@ -4,7 +4,7 @@ import type {
   NotesHistoryContext,
   NotesHistoryStatus,
   NotesStore,
-  NotesWorkspace
+  NotesWorkspace,
 } from "../../domain/notes";
 import type {
   NotesPendingSelectionPolicy,
@@ -13,7 +13,7 @@ import type {
   NotesWorkspaceQueueContext,
   NotesWorkspaceQueueResult,
   NotesWorkspaceQueueWork,
-  NotesWorkspaceUiUpdate
+  NotesWorkspaceUiUpdate,
 } from "./notesWorkspaceCoordinator";
 import { isNotesDataDeletionInProgress } from "./notesDataDeletionRegistry";
 import {
@@ -21,21 +21,21 @@ import {
   normalizeHistoryPrimarySelection,
   type NotesHistoryFocus,
   type NotesHistoryOwnerRegistry,
-  type NotesHistorySnapshot
+  type NotesHistorySnapshot,
 } from "./notesHistory";
 import {
   normalizeWorkspace,
-  reconcileUiState,
+  settledUiState,
   type NormalizedNotesWorkspace,
   type NotesSelection,
-  type NotesWorkspaceReducerAction
+  type NotesWorkspaceReducerAction,
 } from "./notesWorkspaceReducer";
 import { canonicalizeTagFilters, sameScope } from "./notesWorkspaceScope";
 import type { NotesDraftEngine, NotesWorkspaceSessionRecord } from "./notesDraftEngine";
 import type { NotesCommandContext } from "./notesCommands";
 import {
   authoritative,
-  type UnwrappedNotesMutation
+  type UnwrappedNotesMutation,
 } from "./notesWorkspaceProjection";
 import { bindCommittedMutationReloadRecovery, emptyHistoryState } from "./notesWorkspaceCommandSupport";
 import {
@@ -47,7 +47,7 @@ import {
   releaseOwnedHistorySnapshot,
   sameHistorySnapshot,
   type NavigationIntent,
-  type ResolvedHistoryLocation
+  type ResolvedHistoryLocation,
 } from "./notesWorkspaceNavigationSupport";
 import type {
   LiveNotesNavigation,
@@ -56,7 +56,7 @@ import type {
   NotesPendingPrimarySelection,
   ProjectedNotesMutation,
   StructuralCommandOptions,
-  UseNotesWorkspaceOptions
+  UseNotesWorkspaceOptions,
 } from "./notesWorkspaceTypes";
 import type { NotesSelectionStateController } from "./useNotesSelectionController";
 import { useNotesDraftWorkflow } from "./useNotesDraftWorkflow";
@@ -67,7 +67,7 @@ import {
   captureNotesHistorySnapshot,
   isSecondaryPaneHistoryValid,
   mergeNavigationPaneHistory,
-  resolveSecondaryPaneHistory
+  resolveSecondaryPaneHistory,
 } from "./notesPaneHistory";
 
 interface LiveRef<T> {
@@ -125,7 +125,7 @@ export interface NotesHistoryControllerDependencies {
   readonly applyHistoryLocationRef: LiveRef<
     (
       workspace: NormalizedNotesWorkspace,
-      snapshot: NotesHistorySnapshot
+      snapshot: NotesHistorySnapshot,
     ) => boolean
   >;
   readonly bufferedCommandsRef: LiveRef<BufferedWorkspaceCommand[]>;
@@ -138,15 +138,13 @@ export interface NotesHistoryControllerDependencies {
   readonly closedRef: LiveRef<boolean>;
   readonly retirePendingPrimarySelection: () => void;
   readonly imageImportMaxDisplayWidthRef: LiveRef<number | null>;
-  readonly isImageAtomCutAuthorityCurrentAtQueueTurn:
-    NotesCommandContext["isImageAtomCutAuthorityCurrentAtQueueTurn"];
-  readonly isImageAtomPasteAuthorityCurrentAtQueueTurn:
-    NotesCommandContext["isImageAtomPasteAuthorityCurrentAtQueueTurn"];
+  readonly isImageAtomCutAuthorityCurrentAtQueueTurn: NotesCommandContext["isImageAtomCutAuthorityCurrentAtQueueTurn"];
+  readonly isImageAtomPasteAuthorityCurrentAtQueueTurn: NotesCommandContext["isImageAtomPasteAuthorityCurrentAtQueueTurn"];
   readonly paneSessions: NotesPaneSessionsController;
 }
 
 function asCoordinatorSession(
-  session: NotesWorkspaceSessionRecord["session"]
+  session: NotesWorkspaceSessionRecord["session"],
 ): NotesWorkspaceCoordinatorSession {
   return session as NotesWorkspaceCoordinatorSession;
 }
@@ -195,7 +193,7 @@ export function useNotesHistoryController({
   imageImportMaxDisplayWidthRef,
   isImageAtomCutAuthorityCurrentAtQueueTurn,
   isImageAtomPasteAuthorityCurrentAtQueueTurn,
-  paneSessions
+  paneSessions,
 }: NotesHistoryControllerDependencies) {
   const replaceLocalExpansions = useCallback(
     (nodeIds: ReadonlySet<NoteId>): void => {
@@ -203,14 +201,14 @@ export function useNotesHistoryController({
       locallyExpandedNodeIdsRef.current = nodeIds;
       setLocallyExpandedNodeIds(nodeIds);
     },
-    [locallyExpandedNodeIdsRef, navigationVersionRef, setLocallyExpandedNodeIds]
+    [locallyExpandedNodeIdsRef, navigationVersionRef, setLocallyExpandedNodeIds],
   );
 
   const buildHistorySnapshot = useCallback(
     (
       navigation: LiveNotesNavigation,
       expandedNodeIds: ReadonlySet<NoteId>,
-      focus?: NotesHistoryFocus | null
+      focus?: NotesHistoryFocus | null,
     ): NotesHistorySnapshot => {
       return captureNotesHistorySnapshot({
         navigation,
@@ -220,33 +218,20 @@ export function useNotesHistoryController({
         libraryView: libraryViewRef.current,
         activeTagFilters: requestedTagFiltersRef.current,
         tagFilterOrigin: tagFilterOriginRef.current,
-        paneSessions
+        paneSessions,
       });
     },
-    [
-      activeScopeRef,
-      libraryViewRef,
-      requestedTagFiltersRef,
-      tagFilterOriginRef,
-      paneSessions
-    ]
+    [activeScopeRef, libraryViewRef, requestedTagFiltersRef, tagFilterOriginRef, paneSessions],
   );
 
   const captureHistorySnapshot = useCallback(
     (focus?: NotesHistoryFocus | null): NotesHistorySnapshot =>
-      buildHistorySnapshot(
-        currentNavigation(),
-        locallyExpandedNodeIdsRef.current,
-        focus
-      ),
-    [buildHistorySnapshot, currentNavigation, locallyExpandedNodeIdsRef]
+      buildHistorySnapshot(currentNavigation(), locallyExpandedNodeIdsRef.current, focus),
+    [buildHistorySnapshot, currentNavigation, locallyExpandedNodeIdsRef],
   );
 
   const applyHistoryLocation = useCallback(
-    (
-      workspace: NormalizedNotesWorkspace,
-      snapshot: NotesHistorySnapshot
-    ): boolean => {
+    (workspace: NormalizedNotesWorkspace, snapshot: NotesHistorySnapshot): boolean => {
       const exists = (nodeId: NoteId | null): boolean =>
         nodeId === null || Boolean(workspace.nodesById[nodeId]);
       if (
@@ -279,9 +264,9 @@ export function useNotesHistoryController({
               zoomRootId: origin.zoomRootId,
               editingNoteId: origin.focus?.nodeId ?? null,
               pendingFocusId: origin.focus?.nodeId ?? null,
-              pendingFocusField: origin.focus?.field ?? null
+              pendingFocusField: origin.focus?.field ?? null,
             },
-            locallyExpandedNodeIds: new Set(origin.expansion.nodeIds)
+            locallyExpandedNodeIds: new Set(origin.expansion.nodeIds),
           }
         : null;
       const expansion = new Set(snapshot.expansion.nodeIds);
@@ -311,28 +296,24 @@ export function useNotesHistoryController({
           kind: "authoritative",
           workspace: {
             nodes: Object.values(workspace.nodesById),
-            attachmentsByNodeId: workspace.attachmentsByNodeId
+            attachmentsByNodeId: workspace.attachmentsByNodeId,
           },
           uiUpdate: {
             selectedId: snapshot.selectedId,
             zoomRootId: snapshot.zoomRootId,
             editingNoteId: replayFocus?.nodeId ?? null,
-            pendingFocusId: focusAlreadyAcknowledged
-              ? null
-              : replayFocus?.nodeId ?? null,
-            pendingFocusField: focusAlreadyAcknowledged
-              ? null
-              : replayFocus?.field ?? null
-          }
+            pendingFocusId: focusAlreadyAcknowledged ? null : replayFocus?.nodeId ?? null,
+            pendingFocusField: focusAlreadyAcknowledged ? null : replayFocus?.field ?? null,
+          },
         },
-        hasPendingWork: stateRef.current.status === "loading"
+        hasPendingWork: stateRef.current.status === "loading",
       });
       if (replayFocus?.field === "title" && replaySelection) {
         pendingPrimarySelectionRef.current = {
           requestId: ++nextPrimarySelectionRequestIdRef.current,
           nodeId: replayFocus.nodeId,
           field: "title",
-          selection: { ...replaySelection }
+          selection: { ...replaySelection },
         };
       }
       applySecondaryPaneHistory(snapshot.secondaryPane, paneSessions);
@@ -357,15 +338,12 @@ export function useNotesHistoryController({
       setLocallyExpandedNodeIds,
       stateRef,
       tagFilterOriginRef,
-      updateSelection
-    ]
+      updateSelection,
+    ],
   );
   // Resolution has no presentation side effects; callers own revisions until cursor/coordinator settlement.
   const resolveHistoryLocation = useCallback(
-    async (
-      requested: NotesHistorySnapshot,
-      loadedWorkspace?: NotesWorkspace
-    ): Promise<ResolvedHistoryLocation | null> => {
+    async (requested: NotesHistorySnapshot, loadedWorkspace?: NotesWorkspace): Promise<ResolvedHistoryLocation | null> => {
       const requestedLibrary = libraryStateForScope(requested.scope);
       const scope =
         requestedLibrary.view === "tags"
@@ -373,43 +351,37 @@ export function useNotesHistoryController({
           : cloneWorkspaceScope(requested.scope);
       let workspace: NormalizedNotesWorkspace;
       try {
-        workspace = normalizeWorkspace(
-          loadedWorkspace ?? await repository.loadWorkspace(vaultRoot, scope)
-        );
+        workspace = normalizeWorkspace(loadedWorkspace ?? await repository.loadWorkspace(vaultRoot, scope));
       } catch {
         return null;
       }
       const existing = (nodeId: NoteId | null): NoteId | null =>
         nodeId !== null && workspace.nodesById[nodeId] ? nodeId : null;
-      const focus = requested.focus && workspace.nodesById[requested.focus.nodeId]
-        ? {
-            ...requested.focus,
-            ...(requested.focus.field === "title" &&
-            requested.focus.primarySelection
-              ? {
-                  primarySelection: normalizeHistoryPrimarySelection(
-                    workspace.nodesById[requested.focus.nodeId],
-                    requested.focus.primarySelection
-                  )
-                }
-              : {})
-          }
-        : null;
-      const secondaryPane = resolveSecondaryPaneHistory(
-        requested.secondaryPane,
-        workspace
-      );
+      const focus =
+        requested.focus && workspace.nodesById[requested.focus.nodeId]
+          ? {
+              ...requested.focus,
+              ...(requested.focus.field === "title" &&
+              requested.focus.primarySelection
+                ? {
+                    primarySelection: normalizeHistoryPrimarySelection(
+                      workspace.nodesById[requested.focus.nodeId],
+                      requested.focus.primarySelection,
+                    ),
+                  }
+                : {}),
+            }
+          : null;
+      const secondaryPane = resolveSecondaryPaneHistory(requested.secondaryPane, workspace);
       const origin = requested.tagFilterOrigin;
-      const originLibrary = origin
-        ? libraryStateForScope(origin.scope)
-        : null;
+      const originLibrary = origin ? libraryStateForScope(origin.scope) : null;
       const resolvedOrigin = origin
         ? {
             scope:
               originLibrary?.view === "tags"
                 ? {
                     kind: "tags" as const,
-                    tags: [...originLibrary.filters]
+                    tags: [...originLibrary.filters],
                   }
                 : cloneWorkspaceScope(origin.scope),
             libraryView:
@@ -417,10 +389,8 @@ export function useNotesHistoryController({
             activeTagFilters: [],
             selectedId: origin.selectedId,
             zoomRootId: origin.zoomRootId,
-            expansion: notesExpansionSnapshotPool.acquire(
-              origin.expansion.nodeIds
-            ),
-            focus: origin.focus ? { ...origin.focus } : null
+            expansion: notesExpansionSnapshotPool.acquire(origin.expansion.nodeIds),
+            focus: origin.focus ? { ...origin.focus } : null,
           }
         : null;
       return {
@@ -432,20 +402,18 @@ export function useNotesHistoryController({
           selectedId: existing(requested.selectedId),
           zoomRootId: existing(requested.zoomRootId),
           expansion: notesExpansionSnapshotPool.acquire(
-            requested.expansion.nodeIds.filter((nodeId) =>
-              Boolean(workspace.nodesById[nodeId])
-            )
+            requested.expansion.nodeIds.filter((nodeId) => Boolean(workspace.nodesById[nodeId])),
           ),
           focus,
           ...(secondaryPane ? { secondaryPane } : {}),
           ...(requested.activePaneId
             ? { activePaneId: requested.activePaneId }
             : {}),
-          tagFilterOrigin: resolvedOrigin
-        }
+          tagFilterOrigin: resolvedOrigin,
+        },
       };
     },
-    [repository, vaultRoot]
+    [repository, vaultRoot],
   );
 
   captureHistoryLocationRef.current = captureHistorySnapshot;
@@ -454,49 +422,49 @@ export function useNotesHistoryController({
   const registerHistoryOwner = useCallback(
     (
       context: NotesHistoryContext,
-      owner: NotesWorkspaceCoordinatorSession
+      owner: NotesWorkspaceCoordinatorSession,
     ): NotesHistoryContext => {
       const owners = historyOwnerByEntryIdRef.current;
       owners.begin(context.entryId, owner);
       return context;
     },
-    [historyOwnerByEntryIdRef]
+    [historyOwnerByEntryIdRef],
   );
 
   const beginTextEntry = useCallback(
     (
       record: NotesWorkspaceSessionRecord,
       nodeId: NoteId,
-      focus: NotesHistoryFocus
+      focus: NotesHistoryFocus,
     ): NotesHistoryContext =>
       registerHistoryOwner(
         record.session.history.beginTextBurst(
           nodeId,
-          captureHistorySnapshot(focus)
+          captureHistorySnapshot(focus),
         ),
-        asCoordinatorSession(record.session)
+        asCoordinatorSession(record.session),
       ),
-    [captureHistorySnapshot, registerHistoryOwner]
+    [captureHistorySnapshot, registerHistoryOwner],
   );
 
   const beginStandaloneTextEntry = useCallback(
     (
       record: NotesWorkspaceSessionRecord,
       nodeId: NoteId,
-      focus: NotesHistoryFocus
+      focus: NotesHistoryFocus,
     ): NotesHistoryContext => {
       record.session.history.closeTextBurst();
       const context = registerHistoryOwner(
         record.session.history.beginTextBurst(
           nodeId,
-          captureHistorySnapshot(focus)
+          captureHistorySnapshot(focus),
         ),
-        asCoordinatorSession(record.session)
+        asCoordinatorSession(record.session),
       );
       record.session.history.closeTextBurst(context.entryId);
       return context;
     },
-    [captureHistorySnapshot, registerHistoryOwner]
+    [captureHistorySnapshot, registerHistoryOwner],
   );
 
   const closeTextBurst = useCallback((): void => {
@@ -507,20 +475,19 @@ export function useNotesHistoryController({
     (
       record: NotesWorkspaceSessionRecord,
       commandKind: string,
-      before = captureHistorySnapshot()
+      before = captureHistorySnapshot(),
     ): NotesHistoryContext => {
       return registerHistoryOwner(
-        record.session.history.beginStructuralEntry(
-          commandKind,
-          before
-        ),
-        asCoordinatorSession(record.session)
+        record.session.history.beginStructuralEntry(commandKind, before),
+        asCoordinatorSession(record.session),
       );
     },
-    [captureHistorySnapshot, registerHistoryOwner]
+    [captureHistorySnapshot, registerHistoryOwner],
   );
   const prepareKeyboardInsertion = useCallback(
-    (input: NotesKeyboardInsertionRequest): NotesKeyboardInsertionPreparation | null => {
+    (
+      input: NotesKeyboardInsertionRequest,
+    ): NotesKeyboardInsertionPreparation | null => {
       const session = sessionRef.current;
       const preparation = session?.prepareKeyboardInsertion(input) ?? null;
       if (preparation && session) {
@@ -528,17 +495,23 @@ export function useNotesHistoryController({
       }
       return preparation;
     },
-    [registerHistoryOwner, sessionRef]);
+    [registerHistoryOwner, sessionRef],
+  );
   const cancelKeyboardInsertion = useCallback(
     (preparation: NotesKeyboardInsertionPreparation): void => {
       sessionRef.current?.cancelKeyboardInsertion(preparation);
-      historyOwnerByEntryIdRef.current.discard(preparation.historyContext.entryId);
+      historyOwnerByEntryIdRef.current.discard(
+        preparation.historyContext.entryId,
+      );
     },
-    [historyOwnerByEntryIdRef, sessionRef]
+    [historyOwnerByEntryIdRef, sessionRef],
   );
-  const completeHistoryOwner = useCallback((entryId: string): void => {
-    historyOwnerByEntryIdRef.current.complete(entryId);
-  }, [historyOwnerByEntryIdRef]);
+  const completeHistoryOwner = useCallback(
+    (entryId: string): void => {
+      historyOwnerByEntryIdRef.current.complete(entryId);
+    },
+    [historyOwnerByEntryIdRef],
+  );
   const rememberHistoryAfter = useCallback(
     async (
       context: NotesHistoryContext | null | undefined,
@@ -554,7 +527,7 @@ export function useNotesHistoryController({
       >,
       returnedHistoryState?: NotesHistoryStatus,
       rejectedHistoryState?: NotesHistoryStatus,
-      applyToCurrentOwner = false
+      applyToCurrentOwner = false,
     ): Promise<NotesWorkspaceQueueResult | null> => {
       if (!context) {
         return null;
@@ -565,54 +538,59 @@ export function useNotesHistoryController({
         return null;
       }
       const recoverMutationMismatch = async (
-        state: NotesHistoryStatus
+        state: NotesHistoryStatus,
       ): Promise<NotesWorkspaceQueueResult> => {
         const current = recoveryLocation
           ? cloneOwnedHistorySnapshot(recoveryLocation)
           : captureHistorySnapshot();
         try {
-          const recovered = await owner.recoverHistoryMismatch(state, async () => {
-            const recoveryWorkspace = recoverySource
-              ? await recoverySource.repository.loadWorkspace(
-                  recoverySource.vaultRoot,
-                  current.scope
-                )
-              : undefined;
-            const resolved = await resolveHistoryLocation(
-              current,
-              recoveryWorkspace
-            );
-            if (!resolved) {
-              throw new Error("Notes history recovery could not reload its location.");
-            }
-            return resolved;
-          });
+          const recovered = await owner.recoverHistoryMismatch(
+            state,
+            async () => {
+              const recoveryWorkspace = recoverySource
+                ? await recoverySource.repository.loadWorkspace(
+                    recoverySource.vaultRoot,
+                    current.scope,
+                  )
+                : undefined;
+              const resolved = await resolveHistoryLocation(
+                current,
+                recoveryWorkspace,
+              );
+              if (!resolved) {
+                throw new Error(
+                  "Notes history recovery could not reload its location.",
+                );
+              }
+              return resolved;
+            },
+          );
           const result = recovered
             ? authoritative({
                 nodes: Object.values(recovered.workspace.nodesById),
-                attachmentsByNodeId: recovered.workspace.attachmentsByNodeId
+                attachmentsByNodeId: recovered.workspace.attachmentsByNodeId,
               })
             : {
                 kind: "failure" as const,
                 error:
-                  "Notes history could not be synchronized. Close and reopen this Vault."
+                  "Notes history could not be synchronized. Close and reopen this Vault.",
               };
           recoveredHistoryResultByEntryIdRef.current.set(
             context.entryId,
-            result
+            result,
           );
           publishFeedback?.(
             recovered
               ? {
                   kind: "status",
                   message:
-                    "Notes history was reset to recover synchronization."
+                    "Notes history was reset to recover synchronization.",
                 }
               : {
                   kind: "error",
                   message:
-                    "Notes history could not be synchronized. Close and reopen this Vault."
-              }
+                    "Notes history could not be synchronized. Close and reopen this Vault.",
+                },
           );
           return result;
         } finally {
@@ -630,7 +608,7 @@ export function useNotesHistoryController({
       if (requestedLocation) {
         const resolved = await resolveHistoryLocation(
           requestedLocation,
-          workspace
+          workspace,
         );
         if (!resolved) {
           owner.history.discard(context.entryId);
@@ -640,15 +618,15 @@ export function useNotesHistoryController({
         settledWorkspace = resolved.workspace;
         after = resolved.snapshot;
       } else {
-        const afterNavigation = reconcileUiState(
-          workspace,
+        const afterNavigation = settledUiState(
+          settledWorkspace,
           currentNavigation(),
-          uiUpdate
+          uiUpdate,
         );
         after = buildHistorySnapshot(
           afterNavigation,
           expandedNodeIds ?? locallyExpandedNodeIdsRef.current,
-          focus
+          focus,
         );
       }
       const returnedState = returnedHistoryState;
@@ -656,7 +634,7 @@ export function useNotesHistoryController({
         const acceptance = owner.history.acceptMutationResult(
           context.entryId,
           after,
-          returnedState
+          returnedState,
         );
         if (!acceptance.accepted) {
           historyOwnerByEntryIdRef.current.discard(context.entryId);
@@ -669,7 +647,7 @@ export function useNotesHistoryController({
       owner.settleAuthoritativePresentation(
         settledWorkspace,
         after,
-        applyToCurrentOwner ? { applyToCurrentOwner: true } : undefined
+        applyToCurrentOwner ? { applyToCurrentOwner: true } : undefined,
       );
       if (context.commandKind !== "text") {
         completeHistoryOwner(context.entryId);
@@ -686,8 +664,8 @@ export function useNotesHistoryController({
       locallyExpandedNodeIdsRef,
       publishFeedback,
       recoveredHistoryResultByEntryIdRef,
-      resolveHistoryLocation
-    ]
+      resolveHistoryLocation,
+    ],
   );
 
   const settleAtomicMutation = useCallback(
@@ -706,7 +684,7 @@ export function useNotesHistoryController({
           "repository" | "vaultRoot"
         >;
         applyToCurrentOwner?: boolean;
-      }
+      },
     ): Promise<NotesWorkspaceQueueResult | null> => {
       if (!context) return null;
       if (!mutation.atomic) {
@@ -721,7 +699,7 @@ export function useNotesHistoryController({
           options?.recoverySource,
           undefined,
           undefined,
-          options?.applyToCurrentOwner
+          options?.applyToCurrentOwner,
         );
       }
       const owner = historyOwnerByEntryIdRef.current.owner(context.entryId);
@@ -739,8 +717,10 @@ export function useNotesHistoryController({
         state?.nextRedoEntryId !== null ||
         state?.canUndo !== true ||
         state?.canRedo !== false;
-      const recoveryState =
-        state ?? { ...emptyHistoryState(), historyEpoch: context.historyEpoch };
+      const recoveryState = state ?? {
+        ...emptyHistoryState(),
+        historyEpoch: context.historyEpoch,
+      };
       return rememberHistoryAfter(
         context,
         projection.workspace,
@@ -752,10 +732,10 @@ export function useNotesHistoryController({
         options?.recoverySource,
         rejected ? undefined : state,
         rejected ? recoveryState : undefined,
-        options?.applyToCurrentOwner
+        options?.applyToCurrentOwner,
       );
     },
-    [historyOwnerByEntryIdRef, rememberHistoryAfter]
+    [historyOwnerByEntryIdRef, rememberHistoryAfter],
   );
 
   const discardHistoryEntry = useCallback(
@@ -767,14 +747,14 @@ export function useNotesHistoryController({
       owner?.history.discard(context.entryId);
       historyOwnerByEntryIdRef.current.discard(context.entryId);
     },
-    [historyOwnerByEntryIdRef]
+    [historyOwnerByEntryIdRef],
   );
 
   const settleInlineTextEntry = useCallback(
     (
       record: NotesWorkspaceSessionRecord,
       context: NotesHistoryContext | null,
-      result: NotesWorkspaceQueueResult
+      result: NotesWorkspaceQueueResult,
     ): void => {
       if (!context) {
         return;
@@ -796,8 +776,8 @@ export function useNotesHistoryController({
       completeHistoryOwner,
       discardHistoryEntry,
       historyOwnerByEntryIdRef,
-      sessionRef
-    ]
+      sessionRef,
+    ],
   );
 
   const runStructuralCommand = useCallback(
@@ -806,13 +786,13 @@ export function useNotesHistoryController({
       work: (
         context: NotesWorkspaceQueueContext,
         historyContext: NotesHistoryContext | null,
-        record: NotesWorkspaceSessionRecord
+        record: NotesWorkspaceSessionRecord,
       ) => Promise<NotesWorkspaceQueueResult> | NotesWorkspaceQueueResult,
-      options?: StructuralCommandOptions
+      options?: StructuralCommandOptions,
     ): Promise<NotesWorkspaceCommandOutcome> => {
       const sharedDeletionInProgress = isNotesDataDeletionInProgress(
         repository,
-        vaultRoot
+        vaultRoot,
       );
       if (sharedDeletionInProgress || closedRef.current) {
         if (
@@ -842,24 +822,24 @@ export function useNotesHistoryController({
         }
         const historyContext =
           options && "historyContext" in options
-            ? options.historyContext ?? null
+            ? (options.historyContext ?? null)
             : beginStructuralEntry(
                 record,
                 commandKind,
                 options?.historyFocus === undefined
                   ? undefined
-                  : captureHistorySnapshot(options.historyFocus)
+                  : captureHistorySnapshot(options.historyFocus),
               );
         try {
           const result = await work(context, historyContext, record);
           const recovered = historyContext
             ? recoveredHistoryResultByEntryIdRef.current.get(
-                historyContext.entryId
+                historyContext.entryId,
               )
             : undefined;
           if (historyContext && recovered) {
             recoveredHistoryResultByEntryIdRef.current.delete(
-              historyContext.entryId
+              historyContext.entryId,
             );
             return recovered;
           }
@@ -868,8 +848,8 @@ export function useNotesHistoryController({
             : undefined;
           const structuralCommitted = Boolean(
             historyContext &&
-              result.kind === "failure" &&
-              result.committedHistoryEntryIds?.includes(historyContext.entryId)
+            result.kind === "failure" &&
+            result.committedHistoryEntryIds?.includes(historyContext.entryId),
           );
           const retainHistory =
             options?.retainHistoryOnFailure === true &&
@@ -880,7 +860,7 @@ export function useNotesHistoryController({
               (historyContext !== null &&
                 (owner === undefined ||
                   historyOwnerByEntryIdRef.current.isInFlight(
-                    historyContext.entryId
+                    historyContext.entryId,
                   ))))
           ) {
             discardHistoryEntry(historyContext);
@@ -903,7 +883,7 @@ export function useNotesHistoryController({
       ) {
         return record.session.enqueueStructural(queueWork, {
           selectionPolicy: options?.selectionPolicy,
-          keyboardInsertion: options?.keyboardInsertion
+          keyboardInsertion: options?.keyboardInsertion,
         });
       }
       return new Promise<NotesWorkspaceCommandOutcome>((resolve) => {
@@ -911,21 +891,23 @@ export function useNotesHistoryController({
           work: queueWork,
           structural: true,
           selectionPolicy: options?.selectionPolicy,
-          resolve
+          resolve,
         });
       });
     },
     [
       beginStructuralEntry,
       bufferedCommandsRef,
-      captureHistorySnapshot, closedRef, completeHistoryOwner,
+      captureHistorySnapshot,
+      closedRef,
+      completeHistoryOwner,
       discardHistoryEntry,
       historyOwnerByEntryIdRef,
       recoveredHistoryResultByEntryIdRef,
       repository,
       sessionRecordRef,
-      vaultRoot
-    ]
+      vaultRoot,
+    ],
   );
 
   const commandCtx = useMemo<NotesCommandContext>(
@@ -968,7 +950,7 @@ export function useNotesHistoryController({
         focus,
         expandedNodeIds,
         returnedHistoryState,
-        historyRejectionState
+        historyRejectionState,
       ) =>
         rememberHistoryAfter(
           context,
@@ -980,14 +962,14 @@ export function useNotesHistoryController({
           undefined,
           undefined,
           returnedHistoryState,
-          historyRejectionState
+          historyRejectionState,
         ),
       settleAtomicMutation,
       replaceLocalExpansions,
       beginTextEntry,
       settleInlineTextEntry,
       closeTextBurst,
-      cancelKeyboardInsertion
+      cancelKeyboardInsertion,
     }),
     [
       currentNavigation,
@@ -1023,8 +1005,8 @@ export function useNotesHistoryController({
       tagFilterRequestRef,
       selectionPreparationTokenRef,
       selectionRevisionRef,
-      vaultRootRef
-    ]
+      vaultRootRef,
+    ],
   );
 
   const {
@@ -1038,7 +1020,7 @@ export function useNotesHistoryController({
     registerEditorFlushAdapter,
     retryFailedDraft,
     retryLastFailedWrite,
-    flushAllDraftsBeforeStructural
+    flushAllDraftsBeforeStructural,
   } = useNotesDraftWorkflow({
     repository,
     vaultRoot,
@@ -1049,7 +1031,7 @@ export function useNotesHistoryController({
     selectionRef,
     updateSelection,
     retirePendingPrimarySelection,
-    settleAtomicMutation
+    settleAtomicMutation,
   });
 
   const replayHistory = useCallback(
@@ -1068,7 +1050,7 @@ export function useNotesHistoryController({
           return { kind: "skipped" };
         }
         const recoverReplayMismatch = async (
-          state: NotesHistoryStatus
+          state: NotesHistoryStatus,
         ): Promise<NotesWorkspaceQueueResult> => {
           const current = captureHistorySnapshot();
           try {
@@ -1077,33 +1059,34 @@ export function useNotesHistoryController({
               async () => {
                 const resolved = await resolveHistoryLocation(current);
                 if (!resolved) {
-                  throw new Error("Notes history recovery could not reload its location.");
+                  throw new Error(
+                    "Notes history recovery could not reload its location.",
+                  );
                 }
                 return resolved;
-              }
+              },
             );
             if (!recovered) {
               publishFeedback?.({
                 kind: "error",
                 message:
-                  "Undo/Redo history could not be synchronized. Close and reopen this Vault."
+                  "Undo/Redo history could not be synchronized. Close and reopen this Vault.",
               });
               return {
                 kind: "failure",
                 error:
-                  "Undo/Redo history could not be synchronized. Close and reopen this Vault."
+                  "Undo/Redo history could not be synchronized. Close and reopen this Vault.",
               };
             }
             publishFeedback?.({
               kind: "status",
-              message: "Undo/Redo history was reset to recover synchronization."
+              message:
+                "Undo/Redo history was reset to recover synchronization.",
             });
-            return authoritative(
-              {
-                nodes: Object.values(recovered.workspace.nodesById),
-                attachmentsByNodeId: recovered.workspace.attachmentsByNodeId
-              }
-            );
+            return authoritative({
+              nodes: Object.values(recovered.workspace.nodesById),
+              attachmentsByNodeId: recovered.workspace.attachmentsByNodeId,
+            });
           } finally {
             releaseOwnedHistorySnapshot(current);
           }
@@ -1115,14 +1098,17 @@ export function useNotesHistoryController({
           }
           status = await context.repository.historyStatus(
             context.vaultRoot,
-            session.history.sessionId
+            session.history.sessionId,
           );
         } catch {
           publishFeedback?.({
             kind: "error",
-            message: "Undo/Redo history status is unavailable."
+            message: "Undo/Redo history status is unavailable.",
           });
-          return { kind: "failure", error: "Undo/Redo history status is unavailable." };
+          return {
+            kind: "failure",
+            error: "Undo/Redo history status is unavailable.",
+          };
         }
         if (!session.history.accepts(status)) {
           return recoverReplayMismatch(status);
@@ -1131,11 +1117,14 @@ export function useNotesHistoryController({
         if (!candidate) {
           return { kind: "skipped" };
         }
-        const target = direction === "undo" ? candidate.before : candidate.after;
+        const target =
+          direction === "undo" ? candidate.before : candidate.after;
         if (candidate.kind === "navigation") {
           const live = captureHistorySnapshot();
           const replayTarget = mergeNavigationPaneHistory(
-            target, live, candidate.originPaneId
+            target,
+            live,
+            candidate.originPaneId,
           );
           releaseOwnedHistorySnapshot(live);
           const resolved = await resolveHistoryLocation(replayTarget);
@@ -1143,18 +1132,19 @@ export function useNotesHistoryController({
           if (!resolved) {
             publishFeedback?.({
               kind: "error",
-              message: "Undo/Redo history could not restore its saved location."
+              message:
+                "Undo/Redo history could not restore its saved location.",
             });
             return {
               kind: "failure",
-              error: "Undo/Redo history could not restore its saved location."
+              error: "Undo/Redo history could not restore its saved location.",
             };
           }
           try {
             session.history.commitReplay(direction);
             session.settleAuthoritativePresentation(
               resolved.workspace,
-              resolved.snapshot
+              resolved.snapshot,
             );
             if (!applyHistoryLocation(resolved.workspace, resolved.snapshot)) {
               return recoverReplayMismatch(status);
@@ -1162,10 +1152,10 @@ export function useNotesHistoryController({
             return authoritative(
               {
                 nodes: Object.values(resolved.workspace.nodesById),
-                attachmentsByNodeId: resolved.workspace.attachmentsByNodeId
+                attachmentsByNodeId: resolved.workspace.attachmentsByNodeId,
               },
               undefined,
-              status
+              status,
             );
           } finally {
             // Canonical presentation takes the retain; this resolver lease only bridges commit.
@@ -1173,20 +1163,19 @@ export function useNotesHistoryController({
           }
         }
         const replay =
-          direction === "undo" ? context.repository.undo : context.repository.redo;
+          direction === "undo"
+            ? context.repository.undo
+            : context.repository.redo;
         if (!replay) {
           return { kind: "skipped" };
         }
         const currentScope = activeScopeRef.current;
-        const result = await replay(
-          context.vaultRoot,
-          {
-            sessionId: session.history.sessionId,
-            historyEpoch: session.history.historyEpoch,
-            expectedEntryId: candidate.entryId,
-            scope: currentScope
-          }
-        );
+        const result = await replay(context.vaultRoot, {
+          sessionId: session.history.sessionId,
+          historyEpoch: session.history.historyEpoch,
+          expectedEntryId: candidate.entryId,
+          scope: currentScope,
+        });
         if (result.kind !== "applied") {
           return recoverReplayMismatch(result);
         }
@@ -1196,7 +1185,7 @@ export function useNotesHistoryController({
             ? result.workspace
             : await context.repository.loadWorkspace(
                 context.vaultRoot,
-                target.scope
+                target.scope,
               );
         } catch {
           return recoverReplayMismatch(result);
@@ -1211,14 +1200,14 @@ export function useNotesHistoryController({
             !session.history.acceptReplayResult(
               result,
               direction,
-              candidate.entryId
+              candidate.entryId,
             )
           ) {
             return recoverReplayMismatch(result);
           }
           session.settleAuthoritativePresentation(
             resolved.workspace,
-            resolved.snapshot
+            resolved.snapshot,
           );
           if (!applyHistoryLocation(resolved.workspace, resolved.snapshot)) {
             return recoverReplayMismatch(result);
@@ -1226,11 +1215,11 @@ export function useNotesHistoryController({
           return authoritative(
             {
               nodes: Object.values(resolved.workspace.nodesById),
-              attachmentsByNodeId: resolved.workspace.attachmentsByNodeId
+              attachmentsByNodeId: resolved.workspace.attachmentsByNodeId,
             },
             undefined,
             result,
-            { invalidatesTagSummaries: true }
+            { invalidatesTagSummaries: true },
           );
         } finally {
           releaseOwnedHistorySnapshot(resolved.snapshot);
@@ -1244,8 +1233,8 @@ export function useNotesHistoryController({
       publishFeedback,
       resolveHistoryLocation,
       sessionRecordRef,
-      sessionRef
-    ]
+      sessionRef,
+    ],
   );
 
   const undo = useCallback(() => replayHistory("undo"), [replayHistory]);
@@ -1255,7 +1244,7 @@ export function useNotesHistoryController({
     async (
       intent: NavigationIntent,
       workspaceGeneration = activeWorkspaceGenerationRef.current,
-      originPaneId: NotesPaneId = "primary"
+      originPaneId: NotesPaneId = "primary",
     ): Promise<void> => {
       const session = sessionRef.current;
       if (!session) return;
@@ -1268,7 +1257,7 @@ export function useNotesHistoryController({
           ownerToken,
           workspaceGeneration,
           intent,
-          originPaneId
+          originPaneId,
         };
         return;
       }
@@ -1279,13 +1268,15 @@ export function useNotesHistoryController({
             return { kind: "skipped" };
           }
           session.history.closeTextBurst();
-          const lease =
-            session.reserveAdmittedNavigation(undefined, originPaneId);
+          const lease = session.reserveAdmittedNavigation(
+            undefined,
+            originPaneId,
+          );
           if (!lease.beforeSnapshot()) return { kind: "skipped" };
           let resolved: ResolvedHistoryLocation | null = null;
           try {
             const recoverMismatch = async (
-              state: NotesHistoryStatus
+              state: NotesHistoryStatus,
             ): Promise<NotesWorkspaceQueueResult> => {
               const current = captureHistorySnapshot();
               try {
@@ -1295,11 +1286,11 @@ export function useNotesHistoryController({
                     const resolved = await resolveHistoryLocation(current);
                     if (!resolved) {
                       throw new Error(
-                        "Notes navigation history recovery could not reload its location."
+                        "Notes navigation history recovery could not reload its location.",
                       );
                     }
                     return resolved;
-                  }
+                  },
                 );
                 if (!recovered) {
                   const error =
@@ -1309,11 +1300,12 @@ export function useNotesHistoryController({
                 }
                 publishFeedback?.({
                   kind: "status",
-                  message: "Notes history was reset to recover synchronization."
+                  message:
+                    "Notes history was reset to recover synchronization.",
                 });
                 return authoritative({
                   nodes: Object.values(recovered.workspace.nodesById),
-                  attachmentsByNodeId: recovered.workspace.attachmentsByNodeId
+                  attachmentsByNodeId: recovered.workspace.attachmentsByNodeId,
                 });
               } finally {
                 releaseOwnedHistorySnapshot(current);
@@ -1323,11 +1315,13 @@ export function useNotesHistoryController({
             let status: NotesHistoryStatus;
             try {
               if (!context.repository.historyStatus) {
-                throw new Error("Notes navigation history status is unavailable.");
+                throw new Error(
+                  "Notes navigation history status is unavailable.",
+                );
               }
               status = await context.repository.historyStatus(
                 context.vaultRoot,
-                session.history.sessionId
+                session.history.sessionId,
               );
             } catch {
               const error = "Notes navigation history status is unavailable.";
@@ -1350,7 +1344,7 @@ export function useNotesHistoryController({
             if (!before) return { kind: "skipped" };
             resolved = await intent({
               workspace: normalizeWorkspace(context.confirmedWorkspace),
-              snapshot: before
+              snapshot: before,
             });
             if (!resolved || sameHistorySnapshot(before, resolved.snapshot)) {
               return { kind: "skipped" };
@@ -1358,7 +1352,8 @@ export function useNotesHistoryController({
 
             const destinationWorkspace = resolved.workspace;
             const projectionOptions = historyProjectionOptions(
-              resolved.snapshot, resolved.tagSummaries
+              resolved.snapshot,
+              resolved.tagSummaries,
             );
             lease.setDestination(destinationWorkspace, resolved.snapshot);
             releaseOwnedHistorySnapshot(resolved.snapshot);
@@ -1375,8 +1370,8 @@ export function useNotesHistoryController({
                 {
                   sessionId: session.history.sessionId,
                   historyEpoch: session.history.historyEpoch,
-                  unreachableRedoEntryIds: invalidatedRedoIds
-                }
+                  unreachableRedoEntryIds: invalidatedRedoIds,
+                },
               );
             } catch {
               const error = "Notes navigation could not be prepared.";
@@ -1386,7 +1381,7 @@ export function useNotesHistoryController({
             if (
               !session.history.acceptPreparedNavigation(
                 guard,
-                invalidatedRedoIds
+                invalidatedRedoIds,
               )
             ) {
               lease.cancel();
@@ -1397,11 +1392,11 @@ export function useNotesHistoryController({
             return authoritative(
               {
                 nodes: Object.values(destinationWorkspace.nodesById),
-                attachmentsByNodeId: destinationWorkspace.attachmentsByNodeId
+                attachmentsByNodeId: destinationWorkspace.attachmentsByNodeId,
               },
               undefined,
               guard,
-              projectionOptions
+              projectionOptions,
             );
           } catch (cause) {
             const error = `Notes navigation failed: ${errorMessage(cause)}`;
@@ -1418,20 +1413,21 @@ export function useNotesHistoryController({
           settleFailure: (error) =>
             publishFeedback?.({
               kind: "error",
-              message: `Notes navigation failed: ${error}`
-            })
-        }
+              message: `Notes navigation failed: ${error}`,
+            }),
+        },
       );
     },
     [
       activeWorkspaceGenerationRef,
       captureHistorySnapshot,
       outlineCompositionActiveRef,
-      pendingNavigationRef, navigationVersionRef,
+      pendingNavigationRef,
+      navigationVersionRef,
       publishFeedback,
       resolveHistoryLocation,
-      sessionRef
-    ]
+      sessionRef,
+    ],
   );
 
   const setOutlineCompositionActive = useCallback(
@@ -1451,15 +1447,18 @@ export function useNotesHistoryController({
       ) {
         return;
       }
-      void navigateWithHistory(pending.intent, pending.workspaceGeneration,
-        pending.originPaneId);
+      void navigateWithHistory(
+        pending.intent,
+        pending.workspaceGeneration,
+        pending.originPaneId,
+      );
     },
     [
       navigateWithHistory,
       outlineCompositionActiveRef,
       pendingNavigationRef,
-      sessionRef
-    ]
+      sessionRef,
+    ],
   );
 
   return {
@@ -1495,6 +1494,6 @@ export function useNotesHistoryController({
     undo,
     redo,
     navigateWithHistory,
-    setOutlineCompositionActive
+    setOutlineCompositionActive,
   };
 }

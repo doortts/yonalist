@@ -6,9 +6,7 @@ import {
 import { outlineTitleEditor } from "./outlineDom";
 
 export type OutlineCaretEdge =
-  | "start"
-  | "end"
-  | { readonly start: number; readonly end: number };
+  "start" | "end" | { readonly start: number; readonly end: number };
 
 function outlineNoteEditor(
   paneRoot: HTMLElement,
@@ -27,6 +25,7 @@ export function focusOutlineEditorDom(
   nodeId: NoteId,
   field: "title" | "note",
   edge: OutlineCaretEdge | null,
+  skipEditingClaim = false,
 ): boolean {
   const editor =
     field === "title"
@@ -35,20 +34,33 @@ export function focusOutlineEditorDom(
   if (!editor) return false;
 
   const value =
-    editor instanceof HTMLTextAreaElement ? editor.value : readPlainText(editor);
+    editor instanceof HTMLTextAreaElement
+      ? editor.value
+      : readPlainText(editor);
   const length = value.length;
+  const focusEditor = (): void => {
+    if (skipEditingClaim) {
+      editor.setAttribute("data-notes-skip-editing-claim", "true");
+    }
+    try {
+      editor.focus();
+    } finally {
+      if (skipEditingClaim) {
+        editor.removeAttribute("data-notes-skip-editing-claim");
+      }
+    }
+  };
   if (edge === null) {
-    editor.focus();
+    focusEditor();
     return document.activeElement === editor;
   }
   const clamp = (offset: number): number =>
     Math.max(0, Math.min(length, offset));
   const start =
     edge === "start" ? 0 : edge === "end" ? length : clamp(edge.start);
-  const end =
-    edge === "start" ? 0 : edge === "end" ? length : clamp(edge.end);
+  const end = edge === "start" ? 0 : edge === "end" ? length : clamp(edge.end);
   if (editor instanceof HTMLTextAreaElement) {
-    editor.focus();
+    focusEditor();
     if (document.activeElement !== editor) return false;
     editor.setSelectionRange(Math.min(start, end), Math.max(start, end));
   } else {
@@ -57,7 +69,7 @@ export function focusOutlineEditorDom(
       focusUtf16: Math.max(start, end),
     });
     editor.setAttribute("data-notes-restore-title-selection", "true");
-    editor.focus();
+    focusEditor();
     editor.removeAttribute("data-notes-restore-title-selection");
     if (document.activeElement !== editor) return false;
     restorePlainTextSelection(editor, {

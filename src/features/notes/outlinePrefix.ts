@@ -1,6 +1,6 @@
 export const OUTLINE_MINIMUM_ROW_HEIGHT = 28;
 const OUTLINE_SCROLL_QUANTUM = 48;
-const OUTLINE_CHUNK_SIZE = 24;
+const OUTLINE_CHUNK_SIZE = 8;
 
 export function projectOutlinePrefix(
   totalRows: number,
@@ -19,8 +19,7 @@ export function projectOutlinePrefix(
     viewportRows +
     OUTLINE_CHUNK_SIZE *
       Math.ceil(
-        roundedScroll /
-          (OUTLINE_MINIMUM_ROW_HEIGHT * OUTLINE_CHUNK_SIZE),
+        roundedScroll / (OUTLINE_MINIMUM_ROW_HEIGHT * OUTLINE_CHUNK_SIZE),
       );
   const limit = Math.min(
     rows,

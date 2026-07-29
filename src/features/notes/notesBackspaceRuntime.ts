@@ -74,9 +74,9 @@ export function createNotesBackspaceGestureRuntimeLifecycle() {
       activeHandleByBinding.set(binding.key, handle);
       return handle;
     },
-    touch(handle: number, nodeId: NoteId): void {
+    touch(handle: number, nodeId: NoteId, renderedTitle: string): void {
       const current = origin(handle);
-      current?.session.touchBackspaceGesture(current.coordinatorToken, nodeId);
+      current?.session.touchBackspaceGesture(current.coordinatorToken, nodeId, renderedTitle);
     },
     remove(
       handle: number,

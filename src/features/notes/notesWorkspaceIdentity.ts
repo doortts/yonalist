@@ -69,13 +69,17 @@ function equalIds(
   );
 }
 
-function equalNoteNode(previous: NoteNode, next: NoteNode): boolean {
+function equalNoteNode(
+  previous: NoteNode,
+  next: NoteNode,
+  compareSortKey = true,
+): boolean {
   return (
     previous.id === next.id &&
     previous.nodeKind === next.nodeKind &&
     previous.markerKind === next.markerKind &&
     previous.parentId === next.parentId &&
-    previous.sortKey === next.sortKey &&
+    (!compareSortKey || previous.sortKey === next.sortKey) &&
     previous.title === next.title &&
     previous.note === next.note &&
     previous.imageOffsetUtf16 === next.imageOffsetUtf16 &&
@@ -93,6 +97,13 @@ function equalNoteNode(previous: NoteNode, next: NoteNode): boolean {
     equalPluginState(previous.pluginState, next.pluginState) &&
     equalPluginMeta(previous.pluginMeta, next.pluginMeta)
   );
+}
+
+export function equalNoteNodeExceptSortKey(
+  previous: NoteNode,
+  next: NoteNode,
+): boolean {
+  return equalNoteNode(previous, next, false);
 }
 
 function equalPluginState(

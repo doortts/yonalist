@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type {
-  NoteId,
-  NoteNode,
-  NotesHistoryContext,
-} from "../../domain/notes";
+import type { NoteId, NoteNode, NotesHistoryContext } from "../../domain/notes";
 import {
   classifyLocalStructureFailure,
   localFirstChild,
@@ -99,12 +95,7 @@ describe("local outline structure", () => {
       split(1, "a", "new", "pre", "post"),
     ]);
 
-    expect(projected.rows.map(({ id }) => id)).toEqual([
-      "a",
-      "new",
-      "b",
-      "c",
-    ]);
+    expect(projected.rows.map(({ id }) => id)).toEqual(["a", "new", "b", "c"]);
     expect(projected.nodeOverrides.get("a")?.title).toBe("pre");
     expect(projected.nodeOverrides.get("new")?.title).toBe("post");
     expect(nodesById.a.title).toBe("before");
@@ -143,9 +134,9 @@ describe("local outline structure", () => {
       ],
       attachmentsByNodeId: {},
     });
-    expect(
-      settleLocalStructure([entry], entry.token, authoritative),
-    ).toEqual([]);
+    expect(settleLocalStructure([entry], entry.token, authoritative)).toEqual(
+      [],
+    );
   });
 
   it("chains a held split through the row inserted by the previous keydown", () => {
@@ -172,6 +163,75 @@ describe("local outline structure", () => {
     expect(projected.nodeOverrides.get("a")?.title).toBe("al");
     expect(projected.nodeOverrides.get("new-1")?.title).toBe("p");
     expect(projected.nodeOverrides.get("new-2")?.title).toBe("ha");
+  });
+
+  it("projects a held split chain without rescanning the whole outline for every entry", () => {
+    let idReads = 0;
+    const rows = Array.from({ length: 5_000 }, (_, index) => {
+      const item = row(`row-${index}`);
+      Object.defineProperty(item, "id", {
+        enumerable: true,
+        get() {
+          idReads += 1;
+          return `row-${index}`;
+        },
+      });
+      return item;
+    });
+    const nodesById = Object.fromEntries(
+      rows.map((item) => [item.id, note(item.id, item.id)]),
+    );
+    idReads = 0;
+    const entries = Array.from({ length: 25 }, (_, index) =>
+      split(
+        index + 1,
+        index === 0 ? "row-0" : `new-${index}`,
+        `new-${index + 1}`,
+        "",
+        "",
+        index === 0 ? null : `new-${index}`,
+      ),
+    );
+
+    const projected = projectLocalStructures(rows, nodesById, entries);
+
+    expect(projected.rows.slice(0, 27).map(({ id }) => id)).toEqual([
+      "row-0",
+      ...entries.map(({ insertedId }) => insertedId),
+      "row-1",
+    ]);
+    expect(idReads).toBeLessThan(20_000);
+  });
+
+  it("keeps optimistic node metadata stable while authority catches up", () => {
+    const entry = {
+      ...split(7, "a", "new", "a", ""),
+      createdAt: "2026-07-29T01:02:03.000Z",
+    };
+    const project = (sortKey: number, updatedAt: string) =>
+      projectLocalStructures(
+        [row("a"), row("b")],
+        {
+          a: note("a", "a", {
+            sortKey,
+            createdAt: updatedAt,
+            updatedAt,
+          }),
+          b: note("b", "b"),
+        },
+        [entry],
+      ).nodeOverrides.get("new");
+
+    expect(project(1024, "2026-07-29T00:00:00.000Z")).toMatchObject({
+      sortKey: 7,
+      createdAt: entry.createdAt,
+      updatedAt: entry.createdAt,
+    });
+    expect(project(2048, "2026-07-29T02:00:00.000Z")).toMatchObject({
+      sortKey: 7,
+      createdAt: entry.createdAt,
+      updatedAt: entry.createdAt,
+    });
   });
 
   it("removes only the exactly settled entry", () => {
@@ -231,31 +291,21 @@ describe("local outline structure", () => {
   it("rolls back a known independent failure from its reserved history entry", () => {
     const entry = split(1, "a", "new", "pre", "post");
 
-    expect(classifyLocalStructureFailure([entry], entry.token, "known")).toEqual(
-      {
-        kind: "rollback",
-        historyContext: entry.historyContext,
-        sourceId: "a",
-        sourceSelection: entry.sourceSelection,
-      },
-    );
+    expect(
+      classifyLocalStructureFailure([entry], entry.token, "known"),
+    ).toEqual({
+      kind: "rollback",
+      historyContext: entry.historyContext,
+      sourceId: "a",
+      sourceSelection: entry.sourceSelection,
+    });
   });
 
-  it.each([
-    ["dependent", "known"] as const,
-    ["unknown", "unknown"] as const,
-  ])(
+  it.each([["dependent", "known"] as const, ["unknown", "unknown"] as const])(
     "requires authority recovery for a %s failure",
     (_label, outcome) => {
       const first = split(1, "a", "new-1", "pre", "post");
-      const dependent = split(
-        2,
-        "new-1",
-        "new-2",
-        "po",
-        "st",
-        "new-1",
-      );
+      const dependent = split(2, "new-1", "new-2", "po", "st", "new-1");
 
       expect(
         classifyLocalStructureFailure(

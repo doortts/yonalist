@@ -6,11 +6,11 @@ import type {
   NotesHistoryStatus,
   NotesMutationResponse,
   NotesWorkspace,
-  NotesWorkspaceScope
+  NotesWorkspaceScope,
 } from "../../domain/notes";
 import type {
   NotesWorkspaceQueueResult,
-  NotesWorkspaceUiUpdate
+  NotesWorkspaceUiUpdate,
 } from "./notesWorkspaceCoordinator";
 import { compareAttachments } from "./notesWorkspaceReducer";
 import type { NotesWorkspaceDelta } from "./notesWorkspaceReducer";
@@ -28,14 +28,14 @@ export function authoritative(
     | "invalidatesTagSummaries"
     | "tagSummaries"
     | "delta"
-  >
+  >,
 ): NotesWorkspaceQueueResult {
   return {
     kind: "authoritative",
     workspace,
     uiUpdate,
     historyStatus,
-    ...options
+    ...options,
   };
 }
 
@@ -63,35 +63,43 @@ export interface NotesMutationProjectionBase {
 
 export function applyDeltaToNotesWorkspace(
   base: NotesWorkspace,
-  raw: RawNotesMutationDelta
+  raw: RawNotesMutationDelta,
 ): NotesWorkspace {
   const delta = scopedActiveDelta(raw);
   if (!delta) {
     return base;
   }
-  const nodesById = new Map<NoteId, NoteNode>(
-    base.nodes.map((node) => [node.id, node])
+  const changedNodesById = new Map<NoteId, NoteNode>(
+    delta.changedNodes.map((node) => [node.id, node]),
   );
+  const removedNodeIds = new Set(delta.removedNodeIds);
+  const nodes: NoteNode[] = [];
+  for (const node of base.nodes) {
+    if (removedNodeIds.has(node.id)) continue;
+    nodes.push(changedNodesById.get(node.id) ?? node);
+    changedNodesById.delete(node.id);
+  }
+  nodes.push(...changedNodesById.values());
   const attachmentsByNodeId: Record<NoteId, NoteAttachment[]> = {};
   for (const [nodeId, attachments] of Object.entries(
-    base.attachmentsByNodeId ?? {}
+    base.attachmentsByNodeId ?? {},
   )) {
     attachmentsByNodeId[nodeId] = [...attachments];
   }
-  for (const node of delta.changedNodes) {
-    nodesById.set(node.id, node);
-  }
   for (const nodeId of delta.removedNodeIds) {
-    nodesById.delete(nodeId);
     delete attachmentsByNodeId[nodeId];
   }
+  const retainedNodeIds =
+    delta.changedAttachments.length > 0
+      ? new Set(nodes.map((node) => node.id))
+      : null;
   for (const attachment of delta.changedAttachments) {
-    if (!nodesById.has(attachment.nodeId)) {
+    if (!retainedNodeIds?.has(attachment.nodeId)) {
       continue;
     }
     const attachments = (attachmentsByNodeId[attachment.nodeId] ??= []);
     const currentIndex = attachments.findIndex(
-      ({ id }) => id === attachment.id
+      ({ id }) => id === attachment.id,
     );
     if (currentIndex >= 0) {
       attachments.splice(currentIndex, 1);
@@ -109,14 +117,14 @@ export function applyDeltaToNotesWorkspace(
     attachments.splice(low, 0, attachment);
   }
   return {
-    nodes: [...nodesById.values()],
-    attachmentsByNodeId
+    nodes,
+    attachmentsByNodeId,
   };
 }
 
 export function unwrapNotesMutation(
   response: NotesMutationResponse,
-  confirmedBase: NotesMutationProjectionBase | null
+  confirmedBase: NotesMutationProjectionBase | null,
 ): UnwrappedNotesMutation {
   if (isNotesMutationResult(response)) {
     const completeDelta =
@@ -126,11 +134,10 @@ export function unwrapNotesMutation(
         ? {
             changedNodes: response.changedNodes,
             removedNodeIds: response.removedNodeIds,
-            changedAttachments: response.changedAttachments
+            changedAttachments: response.changedAttachments,
           }
         : null;
-    const delta =
-      confirmedBase?.scope.kind === "active" ? completeDelta : null;
+    const delta = confirmedBase?.scope.kind === "active" ? completeDelta : null;
     const workspace =
       response.workspace ??
       (completeDelta && confirmedBase?.scope.kind === "active"
@@ -138,7 +145,7 @@ export function unwrapNotesMutation(
         : null);
     if (workspace === null) {
       throw new Error(
-        "Cannot reconstruct an Active Notes mutation without a confirmed base workspace scoped to Active."
+        "Cannot reconstruct an Active Notes mutation without a confirmed base workspace scoped to Active.",
       );
     }
     return {
@@ -150,12 +157,12 @@ export function unwrapNotesMutation(
         historyEpoch: response.historyEpoch,
         nextUndoEntryId: response.nextUndoEntryId,
         nextRedoEntryId: response.nextRedoEntryId,
-        prunedEntryIds: response.prunedEntryIds
+        prunedEntryIds: response.prunedEntryIds,
       },
       atomic: true,
       delta,
       importedRootIds: response.importedRootIds,
-      duplicatedRootIds: response.duplicatedRootIds
+      duplicatedRootIds: response.duplicatedRootIds,
     };
   }
   return {
@@ -165,12 +172,12 @@ export function unwrapNotesMutation(
     atomic: false,
     delta: null,
     importedRootIds: undefined,
-    duplicatedRootIds: undefined
+    duplicatedRootIds: undefined,
   };
 }
 
 export function scopedActiveDelta(
-  raw: RawNotesMutationDelta | null
+  raw: RawNotesMutationDelta | null,
 ): NotesWorkspaceDelta | undefined {
   if (!raw) {
     return undefined;
@@ -189,7 +196,7 @@ export function scopedActiveDelta(
     }
   }
   const changedAttachments = raw.changedAttachments.filter(
-    (attachment) => !removedSet.has(attachment.nodeId)
+    (attachment) => !removedSet.has(attachment.nodeId),
   );
   if (
     changedNodes.length === 0 &&

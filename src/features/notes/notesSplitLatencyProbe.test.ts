@@ -17,14 +17,16 @@ import {
   NotesSplitInputBenchmarkProfiler,
   resetRowRenderCounts,
   setNotesSplitLatencyProbeEnabled,
-  summarizeHeldKeyFrames
+  summarizeHeldKeyFrames,
 } from "./notesSplitLatencyProbe";
 import { restorePlainTextSelection } from "./plainTextContenteditable";
 
 const PRIMARY_EMPTY_FIXTURE_ID = "10000031-0000-4000-8000-000000000031";
 
 function press(target: EventTarget, init: KeyboardEventInit): void {
-  target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, ...init }));
+  target.dispatchEvent(
+    new KeyboardEvent("keydown", { bubbles: true, ...init }),
+  );
 }
 
 function release(target: EventTarget, init: KeyboardEventInit): void {
@@ -34,8 +36,9 @@ function release(target: EventTarget, init: KeyboardEventInit): void {
 function benchmarkSamples(): unknown[] {
   press(window, { code: "KeyB", metaKey: true, altKey: true });
   return JSON.parse(
-    document.querySelector<HTMLTextAreaElement>("#split-input-benchmark-result")!
-      .value
+    document.querySelector<HTMLTextAreaElement>(
+      "#split-input-benchmark-result",
+    )!.value,
   ) as unknown[];
 }
 
@@ -131,7 +134,7 @@ describe("notesSplitLatencyProbe", () => {
     let clock = 0;
     const collector = createNotesSplitInputBenchmarkCollector({
       enabled: true,
-      now: () => (clock += 10)
+      now: () => (clock += 10),
     });
 
     const arrow = collector.begin("arrow", "primary");
@@ -165,7 +168,7 @@ describe("notesSplitLatencyProbe", () => {
         inactivePaneCommits: 0,
         backlogWindowComplete: false,
         backlogAtTwoSeconds: null,
-        invalidOverlap: false
+        invalidOverlap: false,
       },
       {
         operation: "enter",
@@ -176,7 +179,7 @@ describe("notesSplitLatencyProbe", () => {
         inactivePaneCommits: 0,
         backlogWindowComplete: false,
         backlogAtTwoSeconds: null,
-        invalidOverlap: false
+        invalidOverlap: false,
       },
       {
         operation: "backspace",
@@ -186,22 +189,22 @@ describe("notesSplitLatencyProbe", () => {
           "visible",
           "keyup-stop",
           "authoritative-settled",
-          "undo-restored"
+          "undo-restored",
         ],
         lateWorkAfterTwoSeconds: 1,
         activePaneCommits: 1,
         inactivePaneCommits: 0,
         backlogWindowComplete: true,
         backlogAtTwoSeconds: true,
-        invalidOverlap: false
-      }
+        invalidOverlap: false,
+      },
     ]);
   });
 
   it("does not retain benchmark samples when disabled", () => {
     const collector = createNotesSplitInputBenchmarkCollector({
       enabled: false,
-      now: () => 0
+      now: () => 0,
     });
 
     const arrow = collector.begin("arrow", "primary");
@@ -215,7 +218,7 @@ describe("notesSplitLatencyProbe", () => {
       deliveredKeydowns: 5,
       frameDurationsMs: [16, 18, 24, 27, 35],
       frameP95Ms: 35,
-      framesOver34Ms: 1
+      framesOver34Ms: 1,
     });
   });
 
@@ -225,39 +228,43 @@ describe("notesSplitLatencyProbe", () => {
       getItem: (key) => storage.get(key) ?? null,
       setItem: (key, value) => {
         storage.set(key, value);
-      }
+      },
     };
     adapter.setItem(
       "yonalist.settings.v1",
-      JSON.stringify({ markdownStyle: "yona" })
+      JSON.stringify({ markdownStyle: "yona" }),
     );
 
     expect(
       configureNotesSplitInputBenchmarkVault(
         adapter,
         "http://localhost:1438",
-        "?splitInputBenchmarkVault=%2Ftmp%2Fwrong"
-      )
+        "?splitInputBenchmarkVault=%2Ftmp%2Fwrong",
+      ),
     ).toBe(false);
     expect(
       configureNotesSplitInputBenchmarkVault(
         adapter,
         "http://127.0.0.1:1438",
         "",
-        "/tmp/yonalist-split-input-bench.test123/vault"
-      )
+        "/tmp/yonalist-split-input-bench.test123/vault",
+      ),
     ).toBe(true);
     expect(JSON.parse(storage.get("yonalist.settings.v1")!)).toEqual({
       markdownStyle: "yona",
       githubNotificationsPluginEnabled: false,
-      vaultFolder: "/tmp/yonalist-split-input-bench.test123/vault"
+      vaultFolder: "/tmp/yonalist-split-input-bench.test123/vault",
+    });
+    expect(JSON.parse(storage.get("yonalist.notesSplitLayout.v1")!)).toEqual({
+      version: 1,
+      vaults: {},
     });
     expect(
       configureNotesSplitInputBenchmarkVault(
         adapter,
         "http://127.0.0.1:1438",
-        "?splitInputBenchmarkVault=%2Ftmp%2F..%2Freal-vault"
-      )
+        "?splitInputBenchmarkVault=%2Ftmp%2F..%2Freal-vault",
+      ),
     ).toBe(false);
   });
 
@@ -270,19 +277,21 @@ describe("notesSplitLatencyProbe", () => {
       </section>
     `;
     const field = document.querySelector<HTMLDivElement>(
-      "[data-notes-bullet-title]"
+      "[data-notes-bullet-title]",
     )!;
 
     installNotesSplitInputBenchmarkCollector();
-    field.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    field.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
+    );
     window.dispatchEvent(
       new KeyboardEvent("keydown", {
         key: "b",
         code: "KeyB",
         metaKey: true,
         altKey: true,
-        bubbles: true
-      })
+        bubbles: true,
+      }),
     );
 
     expect(document.getElementById("split-input-benchmark-result")).toBeNull();
@@ -301,14 +310,14 @@ describe("notesSplitLatencyProbe", () => {
       </section>
     `;
     const splitButton = document.querySelector<HTMLButtonElement>(
-      'button[aria-label="Open split view"]'
+      'button[aria-label="Open split view"]',
     )!;
     const splitClick = vi.fn();
     splitButton.addEventListener("click", splitClick);
     const noOp = installNotesSplitInputBenchmarkCollector({
       origin: "http://localhost:1438",
       now: () => 0,
-      scheduleBacklogCheck: () => {}
+      scheduleBacklogCheck: () => {},
     });
     press(window, { code: "KeyB", metaKey: true, altKey: true });
     expect(document.getElementById("split-input-benchmark-result")).toBeNull();
@@ -317,17 +326,26 @@ describe("notesSplitLatencyProbe", () => {
     const dispose = installNotesSplitInputBenchmarkCollector({
       origin: "http://127.0.0.1:1438",
       now: () => 0,
-      scheduleBacklogCheck: () => {}
+      scheduleBacklogCheck: () => {},
     });
     press(window, { code: "KeyS", metaKey: true, altKey: true });
     expect(splitClick).toHaveBeenCalledOnce();
     press(window, { code: "Digit3", metaKey: true, altKey: true });
     expect(document.activeElement).toBe(
-      document.querySelector('[data-notes-pane-id="primary"] [data-outline-id="10000031-0000-4000-8000-000000000031"] [data-notes-bullet-title]')
+      document.querySelector(
+        '[data-notes-pane-id="primary"] [data-outline-id="10000031-0000-4000-8000-000000000031"] [data-notes-bullet-title]',
+      ),
     );
-    press(window, { code: "Digit3", metaKey: true, altKey: true, shiftKey: true });
+    press(window, {
+      code: "Digit3",
+      metaKey: true,
+      altKey: true,
+      shiftKey: true,
+    });
     expect(document.activeElement).toBe(
-      document.querySelector('[data-notes-pane-id="secondary"] [data-outline-id="10000031-0000-4000-8000-000000000031"] [data-notes-bullet-title]')
+      document.querySelector(
+        '[data-notes-pane-id="secondary"] [data-outline-id="10000031-0000-4000-8000-000000000031"] [data-notes-bullet-title]',
+      ),
     );
     dispose();
   });
@@ -351,9 +369,11 @@ describe("notesSplitLatencyProbe", () => {
       origin: "http://127.0.0.1:1438",
       now: () => clock,
       scheduleBacklogCheck: () => {},
-      scheduleEnterCancellation: () => {}
+      scheduleEnterCancellation: () => {},
     });
-    const field = document.querySelector<HTMLElement>("[data-notes-bullet-title]")!;
+    const field = document.querySelector<HTMLElement>(
+      "[data-notes-bullet-title]",
+    )!;
 
     try {
       field.focus();
@@ -379,8 +399,8 @@ describe("notesSplitLatencyProbe", () => {
           framesOver34Ms: 1,
           finalFocusNodeId: "first",
           mountedOrdinaryRows: 2,
-          invalidOverlap: false
-        })
+          invalidOverlap: false,
+        }),
       ]);
     } finally {
       dispose();
@@ -398,10 +418,10 @@ describe("notesSplitLatencyProbe", () => {
       origin: "http://127.0.0.1:1438",
       now: () => 0,
       scheduleBacklogCheck: () => {},
-      scheduleEnterCancellation: () => {}
+      scheduleEnterCancellation: () => {},
     });
     const [first, second] = [
-      ...document.querySelectorAll<HTMLDivElement>("[data-notes-bullet-title]")
+      ...document.querySelectorAll<HTMLDivElement>("[data-notes-bullet-title]"),
     ];
 
     try {
@@ -418,13 +438,52 @@ describe("notesSplitLatencyProbe", () => {
           operation: "enter",
           paneId: "primary",
           deliveredKeydowns: 2,
-          finalFocusNodeId: "second"
+          finalFocusNodeId: "second",
         }),
         expect.objectContaining({
           operation: "enter",
           paneId: "primary",
-          deliveredKeydowns: 1
-        })
+          deliveredKeydowns: 1,
+        }),
+      ]);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("counts a rerouted held Enter only once", () => {
+    document.body.innerHTML = `
+      <section data-notes-pane-id="primary">
+        <div data-outline-id="first"><div data-notes-bullet-title contenteditable="true">First</div></div>
+        <div data-outline-id="second"><div data-notes-bullet-title contenteditable="true">Second</div></div>
+      </section>
+    `;
+    const dispose = installNotesSplitInputBenchmarkCollector({
+      origin: "http://127.0.0.1:1438",
+      now: () => 0,
+      scheduleBacklogCheck: () => {},
+      scheduleEnterCancellation: () => {},
+    });
+    const [first, second] = [
+      ...document.querySelectorAll<HTMLDivElement>("[data-notes-bullet-title]"),
+    ];
+
+    try {
+      press(first, { key: "Enter" });
+      const rerouted = new KeyboardEvent("keydown", {
+        key: "Enter",
+        repeat: true,
+        bubbles: true,
+      });
+      Object.defineProperty(rerouted, "__yonalistReroutedHeldEnter", {
+        value: true,
+      });
+      second.dispatchEvent(rerouted);
+      press(first, { key: "Enter", repeat: true });
+      release(first, { key: "Enter" });
+
+      expect(benchmarkSamples()).toEqual([
+        expect.objectContaining({ deliveredKeydowns: 2 }),
       ]);
     } finally {
       dispose();
@@ -440,13 +499,13 @@ describe("notesSplitLatencyProbe", () => {
       origin: "http://127.0.0.1:1438",
       now: () => 0,
       scheduleBacklogCheck: () => {},
-      scheduleEnterCancellation: () => {}
+      scheduleEnterCancellation: () => {},
     });
     const primary = document.querySelector<HTMLDivElement>(
-      '[data-notes-pane-id="primary"] [data-notes-bullet-title]'
+      '[data-notes-pane-id="primary"] [data-notes-bullet-title]',
     )!;
     const secondary = document.querySelector<HTMLDivElement>(
-      '[data-notes-pane-id="secondary"] [data-notes-bullet-title]'
+      '[data-notes-pane-id="secondary"] [data-notes-bullet-title]',
     )!;
 
     try {
@@ -456,9 +515,21 @@ describe("notesSplitLatencyProbe", () => {
       release(secondary, { key: "Enter" });
 
       expect(benchmarkSamples()).toEqual([
-        expect.objectContaining({ operation: "enter", paneId: "primary", deliveredKeydowns: 1 }),
-        expect.objectContaining({ operation: "arrow", paneId: "primary", deliveredKeydowns: 1 }),
-        expect.objectContaining({ operation: "enter", paneId: "secondary", deliveredKeydowns: 1 })
+        expect.objectContaining({
+          operation: "enter",
+          paneId: "primary",
+          deliveredKeydowns: 1,
+        }),
+        expect.objectContaining({
+          operation: "arrow",
+          paneId: "primary",
+          deliveredKeydowns: 1,
+        }),
+        expect.objectContaining({
+          operation: "enter",
+          paneId: "secondary",
+          deliveredKeydowns: 1,
+        }),
       ]);
     } finally {
       dispose();
@@ -479,13 +550,13 @@ describe("notesSplitLatencyProbe", () => {
     const dispose = installNotesSplitInputBenchmarkCollector({
       origin: "http://127.0.0.1:1438",
       now: () => (clock += 10),
-      scheduleBacklogCheck: () => {}
+      scheduleBacklogCheck: () => {},
     });
     const primary = document.querySelector<HTMLDivElement>(
-      '[data-notes-pane-id="primary"] [data-notes-bullet-title]'
+      '[data-notes-pane-id="primary"] [data-notes-bullet-title]',
     )!;
     const secondary = document.querySelector<HTMLDivElement>(
-      '[data-notes-pane-id="secondary"] [data-notes-bullet-title]'
+      '[data-notes-pane-id="secondary"] [data-notes-bullet-title]',
     )!;
 
     press(primary, { key: "Enter" });
@@ -501,14 +572,11 @@ describe("notesSplitLatencyProbe", () => {
       expect.objectContaining({
         operation: "enter",
         paneId: "primary",
-        phases: expect.arrayContaining([
-          "visible",
-          "authoritative-settled"
-        ]),
+        phases: expect.arrayContaining(["visible", "authoritative-settled"]),
         activePaneCommits: 0,
-        inactivePaneCommits: 0
+        inactivePaneCommits: 0,
       }),
-      expect.objectContaining({ operation: "arrow", paneId: "secondary" })
+      expect.objectContaining({ operation: "arrow", paneId: "secondary" }),
     ]);
     dispose();
   });
@@ -522,10 +590,10 @@ describe("notesSplitLatencyProbe", () => {
     const dispose = installNotesSplitInputBenchmarkCollector({
       origin: "http://127.0.0.1:1438",
       now: () => 0,
-      scheduleBacklogCheck: () => {}
+      scheduleBacklogCheck: () => {},
     });
     const primary = document.querySelector<HTMLDivElement>(
-      '[data-notes-pane-id="primary"] [data-notes-bullet-title]'
+      '[data-notes-pane-id="primary"] [data-notes-bullet-title]',
     )!;
     press(primary, { key: "Enter" });
     markSplitPhase("split-both", "keydown");
@@ -537,8 +605,8 @@ describe("notesSplitLatencyProbe", () => {
         operation: "enter",
         paneId: "primary",
         activePaneCommits: 1,
-        inactivePaneCommits: 1
-      })
+        inactivePaneCommits: 1,
+      }),
     ]);
     dispose();
   });
@@ -553,9 +621,11 @@ describe("notesSplitLatencyProbe", () => {
       scheduleBacklogCheck: () => {},
       scheduleEnterCancellation: (callback) => {
         enterCancellations.push(callback);
-      }
+      },
     });
-    const field = document.querySelector<HTMLDivElement>("[data-notes-bullet-title]")!;
+    const field = document.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]",
+    )!;
     press(field, { key: "Enter" });
     enterCancellations.shift()!();
     press(field, { key: "Enter" });
@@ -580,10 +650,10 @@ describe("notesSplitLatencyProbe", () => {
       origin: "http://127.0.0.1:1438",
       now: () => 0,
       scheduleBacklogCheck: () => {},
-      scheduleOperationClose: (callback) => closeOperations.push(callback)
+      scheduleOperationClose: (callback) => closeOperations.push(callback),
     });
     const [first, second] = [
-      ...document.querySelectorAll<HTMLDivElement>("[data-notes-bullet-title]")
+      ...document.querySelectorAll<HTMLDivElement>("[data-notes-bullet-title]"),
     ];
 
     first.focus();
@@ -600,7 +670,9 @@ describe("notesSplitLatencyProbe", () => {
       phases: string[];
     }[];
     expect(sample.activePaneCommits).toBe(1);
-    expect(sample.phases.filter((phase) => phase === "visible")).toHaveLength(1);
+    expect(sample.phases.filter((phase) => phase === "visible")).toHaveLength(
+      1,
+    );
     dispose();
   });
 
@@ -616,10 +688,10 @@ describe("notesSplitLatencyProbe", () => {
       origin: "http://127.0.0.1:1438",
       now: () => 0,
       scheduleBacklogCheck: () => {},
-      scheduleOperationClose: (callback) => closeOperations.push(callback)
+      scheduleOperationClose: (callback) => closeOperations.push(callback),
     });
     const [first, second] = [
-      ...document.querySelectorAll<HTMLDivElement>("[data-notes-bullet-title]")
+      ...document.querySelectorAll<HTMLDivElement>("[data-notes-bullet-title]"),
     ];
 
     first.focus();
@@ -633,8 +705,8 @@ describe("notesSplitLatencyProbe", () => {
     expect(benchmarkSamples()).toEqual([
       expect.objectContaining({
         operation: "backspace",
-        activePaneCommits: 1
-      })
+        activePaneCommits: 1,
+      }),
     ]);
     dispose();
   });
@@ -647,10 +719,10 @@ describe("notesSplitLatencyProbe", () => {
     const dispose = installNotesSplitInputBenchmarkCollector({
       origin: "http://127.0.0.1:1438",
       now: () => 0,
-      scheduleBacklogCheck: () => {}
+      scheduleBacklogCheck: () => {},
     });
     const primary = document.querySelector<HTMLDivElement>(
-      '[data-notes-pane-id="primary"] [data-notes-bullet-title]'
+      '[data-notes-pane-id="primary"] [data-notes-bullet-title]',
     )!;
     press(primary, { key: "ArrowDown" });
     markNotesSplitInputBenchmarkPaneCommit("primary");
@@ -660,8 +732,16 @@ describe("notesSplitLatencyProbe", () => {
     markNotesSplitInputBenchmarkPaneCommit("secondary");
 
     expect(benchmarkSamples()).toEqual([
-      expect.objectContaining({ operation: "arrow", activePaneCommits: 1, inactivePaneCommits: 1 }),
-      expect.objectContaining({ operation: "backspace", activePaneCommits: 1, inactivePaneCommits: 1 })
+      expect.objectContaining({
+        operation: "arrow",
+        activePaneCommits: 1,
+        inactivePaneCommits: 1,
+      }),
+      expect.objectContaining({
+        operation: "backspace",
+        activePaneCommits: 1,
+        inactivePaneCommits: 1,
+      }),
     ]);
     dispose();
   });
@@ -676,9 +756,11 @@ describe("notesSplitLatencyProbe", () => {
     const dispose = installNotesSplitInputBenchmarkCollector({
       origin: "http://127.0.0.1:1438",
       now: () => 0,
-      scheduleBacklogCheck: () => {}
+      scheduleBacklogCheck: () => {},
     });
-    const field = document.querySelector<HTMLDivElement>("[data-notes-bullet-title]")!;
+    const field = document.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]",
+    )!;
     const outside = document.querySelector<HTMLButtonElement>("button")!;
 
     try {
@@ -694,8 +776,8 @@ describe("notesSplitLatencyProbe", () => {
           operation: "backspace",
           paneId: "primary",
           deliveredKeydowns: 3,
-          phases: ["keyup-stop"]
-        })
+          phases: ["keyup-stop"],
+        }),
       ]);
     } finally {
       dispose();
@@ -716,9 +798,11 @@ describe("notesSplitLatencyProbe", () => {
       now: () => clock,
       scheduleBacklogCheck: (callback) => {
         runBacklogCheck = callback;
-      }
+      },
     });
-    const field = document.querySelector<HTMLDivElement>("[data-notes-bullet-title]")!;
+    const field = document.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]",
+    )!;
 
     field.focus();
     press(field, { key: "Backspace" });
@@ -733,7 +817,7 @@ describe("notesSplitLatencyProbe", () => {
     const row = field.closest<HTMLElement>("[data-outline-id]")!;
     row.remove();
     const undoField = document.querySelector<HTMLDivElement>(
-      '[data-outline-id="other"] [data-notes-bullet-title]'
+      '[data-outline-id="other"] [data-notes-bullet-title]',
     )!;
     press(undoField, { key: "z", code: "KeyZ", metaKey: true });
     undoField.textContent = "Changed";
@@ -750,13 +834,13 @@ describe("notesSplitLatencyProbe", () => {
         phases: expect.arrayContaining([
           "keyup-stop",
           "authoritative-settled",
-          "undo-restored"
+          "undo-restored",
         ]),
         lateWorkAfterTwoSeconds: 1,
         backlogWindowComplete: true,
         backlogAtTwoSeconds: true,
-        activePaneCommits: 0
-      })
+        activePaneCommits: 0,
+      }),
     ]);
     dispose();
   });
@@ -772,17 +856,17 @@ describe("notesSplitLatencyProbe", () => {
     const dispose = installNotesSplitInputBenchmarkCollector({
       origin: "http://127.0.0.1:1438",
       now: () => 0,
-      scheduleBacklogCheck: () => {}
+      scheduleBacklogCheck: () => {},
     });
     const field = document.querySelector<HTMLElement>(
-      "[data-notes-bullet-title]"
+      "[data-notes-bullet-title]",
     )!;
 
     try {
       field.focus();
       restorePlainTextSelection(field, {
         anchorUtf16: 5,
-        focusUtf16: 1
+        focusUtf16: 1,
       });
       press(field, { key: "Backspace" });
       release(field, { key: "Backspace" });
@@ -790,27 +874,27 @@ describe("notesSplitLatencyProbe", () => {
 
       restorePlainTextSelection(field, {
         anchorUtf16: 0,
-        focusUtf16: 0
+        focusUtf16: 0,
       });
       markNotesSplitInputBenchmarkPaneCommit("primary");
       expect(benchmarkSamples()).toEqual([
         expect.objectContaining({
           operation: "backspace",
-          phases: ["keyup-stop"]
-        })
+          phases: ["keyup-stop"],
+        }),
       ]);
 
       field.focus();
       restorePlainTextSelection(field, {
         anchorUtf16: 5,
-        focusUtf16: 1
+        focusUtf16: 1,
       });
       markNotesSplitInputBenchmarkPaneCommit("primary");
       expect(benchmarkSamples()).toEqual([
         expect.objectContaining({
           operation: "backspace",
-          phases: expect.arrayContaining(["keyup-stop", "undo-restored"])
-        })
+          phases: expect.arrayContaining(["keyup-stop", "undo-restored"]),
+        }),
       ]);
     } finally {
       dispose();
@@ -833,20 +917,20 @@ describe("notesSplitLatencyProbe", () => {
     const dispose = installNotesSplitInputBenchmarkCollector({
       origin: "http://127.0.0.1:1438",
       now: () => 0,
-      scheduleBacklogCheck: () => {}
+      scheduleBacklogCheck: () => {},
     });
     const primary = document.querySelector<HTMLElement>(
-      '[data-notes-pane-id="primary"] [data-notes-bullet-title]'
+      '[data-notes-pane-id="primary"] [data-notes-bullet-title]',
     )!;
     const secondary = document.querySelector<HTMLElement>(
-      '[data-notes-pane-id="secondary"] [data-notes-bullet-title]'
+      '[data-notes-pane-id="secondary"] [data-notes-bullet-title]',
     )!;
 
     try {
       secondary.focus();
       restorePlainTextSelection(secondary, {
         anchorUtf16: 1,
-        focusUtf16: 1
+        focusUtf16: 1,
       });
       press(primary, { key: "Backspace" });
       release(primary, { key: "Backspace" });
@@ -854,15 +938,15 @@ describe("notesSplitLatencyProbe", () => {
 
       restorePlainTextSelection(secondary, {
         anchorUtf16: 2,
-        focusUtf16: 2
+        focusUtf16: 2,
       });
       markNotesSplitInputBenchmarkPaneCommit("primary");
 
       expect(benchmarkSamples()).toEqual([
         expect.objectContaining({
           operation: "backspace",
-          phases: expect.arrayContaining(["keyup-stop", "undo-restored"])
-        })
+          phases: expect.arrayContaining(["keyup-stop", "undo-restored"]),
+        }),
       ]);
     } finally {
       dispose();
@@ -882,16 +966,16 @@ describe("notesSplitLatencyProbe", () => {
     const dispose = installNotesSplitInputBenchmarkCollector({
       origin: "http://127.0.0.1:1438",
       now: () => 0,
-      scheduleBacklogCheck: () => {}
+      scheduleBacklogCheck: () => {},
     });
     const primary = document.querySelector<HTMLDivElement>(
-      "[data-notes-bullet-title]"
+      "[data-notes-bullet-title]",
     )!;
     const note = document.querySelector<HTMLTextAreaElement>(
-      "textarea.notes-node-note"
+      "textarea.notes-node-note",
     )!;
     const outside = document.querySelector<HTMLTextAreaElement>(
-      'textarea[aria-label="Outside"]'
+      'textarea[aria-label="Outside"]',
     )!;
 
     try {
@@ -908,8 +992,8 @@ describe("notesSplitLatencyProbe", () => {
       expect(benchmarkSamples()).toEqual([
         expect.objectContaining({
           operation: "backspace",
-          phases: expect.arrayContaining(["keyup-stop", "undo-restored"])
-        })
+          phases: expect.arrayContaining(["keyup-stop", "undo-restored"]),
+        }),
       ]);
     } finally {
       dispose();
@@ -921,7 +1005,7 @@ describe("notesSplitLatencyProbe", () => {
       origin: "http://127.0.0.1:1438",
       now: () => 0,
       scheduleBacklogCheck: () => {},
-      scheduleOperationClose: () => {}
+      scheduleOperationClose: () => {},
     });
     function Fixture() {
       const [version, setVersion] = useState(0);
@@ -941,10 +1025,10 @@ describe("notesSplitLatencyProbe", () => {
                 "data-notes-bullet-title": "",
                 contentEditable: true,
                 tabIndex: 0,
-                onKeyDown: () => setVersion((current) => current + 1)
-              })
-            )
-          )
+                onKeyDown: () => setVersion((current) => current + 1),
+              }),
+            ),
+          ),
         ),
         createElement(
           NotesSplitInputBenchmarkProfiler,
@@ -952,16 +1036,19 @@ describe("notesSplitLatencyProbe", () => {
           createElement(
             "section",
             { "data-notes-pane-id": "secondary" },
-            createElement("span", null, version)
-          )
-        )
+            createElement("span", null, version),
+          ),
+        ),
       );
     }
     const view = render(createElement(Fixture));
 
-    fireEvent.keyDown(view.container.querySelector("[data-notes-bullet-title]")!, {
-      key: "ArrowDown"
-    });
+    fireEvent.keyDown(
+      view.container.querySelector("[data-notes-bullet-title]")!,
+      {
+        key: "ArrowDown",
+      },
+    );
 
     expect(benchmarkSamples()).toEqual([
       expect.objectContaining({
@@ -969,8 +1056,8 @@ describe("notesSplitLatencyProbe", () => {
         paneId: "primary",
         activePaneCommits: 1,
         inactivePaneCommits: 1,
-        invalidOverlap: false
-      })
+        invalidOverlap: false,
+      }),
     ]);
     dispose();
   });
@@ -984,13 +1071,13 @@ describe("notesSplitLatencyProbe", () => {
       origin: "http://127.0.0.1:1438",
       now: () => 0,
       scheduleBacklogCheck: () => {},
-      scheduleOperationClose: () => {}
+      scheduleOperationClose: () => {},
     });
     const primary = document.querySelector<HTMLDivElement>(
-      '[data-notes-pane-id="primary"] [data-notes-bullet-title]'
+      '[data-notes-pane-id="primary"] [data-notes-bullet-title]',
     )!;
     const secondary = document.querySelector<HTMLDivElement>(
-      '[data-notes-pane-id="secondary"] [data-notes-bullet-title]'
+      '[data-notes-pane-id="secondary"] [data-notes-bullet-title]',
     )!;
 
     press(primary, { key: "ArrowDown" });
@@ -1003,15 +1090,15 @@ describe("notesSplitLatencyProbe", () => {
         paneId: "primary",
         invalidOverlap: true,
         activePaneCommits: 0,
-        inactivePaneCommits: 0
+        inactivePaneCommits: 0,
       }),
       expect.objectContaining({
         operation: "arrow",
         paneId: "secondary",
         invalidOverlap: true,
         activePaneCommits: 1,
-        inactivePaneCommits: 0
-      })
+        inactivePaneCommits: 0,
+      }),
     ]);
     dispose();
   });
@@ -1027,16 +1114,18 @@ describe("notesSplitLatencyProbe", () => {
       origin: "http://127.0.0.1:1438",
       now: () => 0,
       scheduleBacklogCheck: (callback) => backlogChecks.push(callback),
-      scheduleOperationClose: () => {}
+      scheduleOperationClose: () => {},
     });
-    const field = document.querySelector<HTMLDivElement>("[data-notes-bullet-title]")!;
+    const field = document.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]",
+    )!;
 
     press(field, { key: "Backspace" });
     const committedOperation =
       captureNotesSplitInputBenchmarkBackspaceOperation("primary");
     markNotesSplitInputBenchmarkBackspaceSettled(
       committedOperation,
-      "committed"
+      "committed",
     );
     release(field, { key: "Backspace" });
     backlogChecks.shift()!();
@@ -1056,8 +1145,8 @@ describe("notesSplitLatencyProbe", () => {
         phases: ["keyup-stop", "authoritative-settled"],
         backlogWindowComplete: true,
         backlogAtTwoSeconds: false,
-        lateWorkAfterTwoSeconds: 0
-      })
+        lateWorkAfterTwoSeconds: 0,
+      }),
     ]);
     expect(benchmarkSamples()).toEqual([
       expect.objectContaining({
@@ -1065,8 +1154,8 @@ describe("notesSplitLatencyProbe", () => {
         phases: ["keyup-stop"],
         backlogWindowComplete: true,
         backlogAtTwoSeconds: false,
-        lateWorkAfterTwoSeconds: 0
-      })
+        lateWorkAfterTwoSeconds: 0,
+      }),
     ]);
     dispose();
   });
@@ -1084,9 +1173,11 @@ describe("notesSplitLatencyProbe", () => {
       scheduleBacklogCheck: (callback) => {
         runBacklogCheck = callback;
       },
-      scheduleOperationClose: () => {}
+      scheduleOperationClose: () => {},
     });
-    const field = document.querySelector<HTMLDivElement>("[data-notes-bullet-title]")!;
+    const field = document.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]",
+    )!;
 
     press(field, { key: "Backspace" });
     const operation =
@@ -1103,8 +1194,8 @@ describe("notesSplitLatencyProbe", () => {
         phases: ["keyup-stop", "authoritative-settled"],
         backlogWindowComplete: true,
         backlogAtTwoSeconds: true,
-        lateWorkAfterTwoSeconds: 1
-      })
+        lateWorkAfterTwoSeconds: 1,
+      }),
     ]);
     dispose();
   });
@@ -1122,16 +1213,16 @@ describe("notesSplitLatencyProbe", () => {
       scheduleBacklogCheck: (callback) => {
         runBacklogCheck = callback;
       },
-      scheduleOperationClose: () => {}
+      scheduleOperationClose: () => {},
     });
-    const field = document.querySelector<HTMLDivElement>("[data-notes-bullet-title]")!;
+    const field = document.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]",
+    )!;
 
     press(field, { key: "Backspace" });
-    const first =
-      captureNotesSplitInputBenchmarkBackspaceOperation("primary");
+    const first = captureNotesSplitInputBenchmarkBackspaceOperation("primary");
     press(field, { key: "Backspace", repeat: true });
-    const second =
-      captureNotesSplitInputBenchmarkBackspaceOperation("primary");
+    const second = captureNotesSplitInputBenchmarkBackspaceOperation("primary");
     markNotesSplitInputBenchmarkBackspaceSettled(first, "committed");
     release(field, { key: "Backspace" });
     runBacklogCheck!();
@@ -1145,9 +1236,9 @@ describe("notesSplitLatencyProbe", () => {
     expect(sample.backlogAtTwoSeconds).toBe(true);
 
     markNotesSplitInputBenchmarkBackspaceSettled(second, "committed");
-    [sample] = benchmarkSamples() as typeof sample[];
+    [sample] = benchmarkSamples() as (typeof sample)[];
     expect(
-      sample.phases.filter((phase) => phase === "authoritative-settled")
+      sample.phases.filter((phase) => phase === "authoritative-settled"),
     ).toHaveLength(1);
     expect(sample.lateWorkAfterTwoSeconds).toBe(1);
     dispose();
@@ -1163,9 +1254,11 @@ describe("notesSplitLatencyProbe", () => {
       origin: "http://127.0.0.1:1438",
       now: () => 0,
       scheduleBacklogCheck: () => {},
-      scheduleOperationClose: () => {}
+      scheduleOperationClose: () => {},
     });
-    const field = document.querySelector<HTMLDivElement>("[data-notes-bullet-title]")!;
+    const field = document.querySelector<HTMLDivElement>(
+      "[data-notes-bullet-title]",
+    )!;
 
     press(field, { key: "Backspace" });
     const older = captureNotesSplitInputBenchmarkBackspaceOperation("primary");
@@ -1179,8 +1272,8 @@ describe("notesSplitLatencyProbe", () => {
     const samples = benchmarkSamples() as { phases: string[] }[];
     expect(
       samples.map((sample) =>
-        sample.phases.filter((phase) => phase === "authoritative-settled")
-      )
+        sample.phases.filter((phase) => phase === "authoritative-settled"),
+      ),
     ).toEqual([["authoritative-settled"], ["authoritative-settled"]]);
     dispose();
   });
@@ -1272,7 +1365,7 @@ describe("notesSplitLatencyProbe row-render counter", () => {
 
     expect(lines).toEqual([
       "notes row-renders pane=primary count=2",
-      "notes row-renders pane=secondary count=1"
+      "notes row-renders pane=secondary count=1",
     ]);
   });
 
@@ -1283,9 +1376,7 @@ describe("notesSplitLatencyProbe row-render counter", () => {
     markRowRender("primary");
     markRowRender("primary");
 
-    expect(resetRowRenderCounts()).toEqual(
-      new Map([["primary", 2]])
-    );
+    expect(resetRowRenderCounts()).toEqual(new Map([["primary", 2]]));
     vi.advanceTimersByTime(100);
     expect(lines).toHaveLength(0);
   });

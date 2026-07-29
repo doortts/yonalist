@@ -1228,6 +1228,24 @@ export function notesApplyBatch(
       new Error("A batch operation can contain at most 10,000 node IDs.")
     );
   }
+  if (
+    input.op === "backspaceGesture" &&
+    input.expectedTitles.length !== input.nodeIds.length
+  ) {
+    return Promise.reject(
+      new Error(
+        "A Backspace gesture requires one expected title per removed node."
+      )
+    );
+  }
+  if (
+    input.op === "backspaceGesture" &&
+    new Set(input.nodeIds).size !== input.nodeIds.length
+  ) {
+    return Promise.reject(
+      new Error("A Backspace gesture cannot remove the same node twice.")
+    );
+  }
   const seenNodeIds = new Set<NoteId>();
   const nodeIds = input.nodeIds.filter((nodeId) => {
     if (seenNodeIds.has(nodeId)) {

@@ -2,8 +2,9 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import {
   configureNotesSplitInputBenchmarkVault,
-  installNotesSplitInputBenchmarkCollector
+  installNotesSplitInputBenchmarkCollector,
 } from "./features/notes/notesSplitLatencyProbe";
+import { setNotesDeltaVerificationEnabled } from "./features/notes/notesWorkspaceReducer";
 import { tracePerf } from "./services/perfTrace";
 import "./styles.css";
 
@@ -27,7 +28,7 @@ function renderStartupError(error: unknown) {
     "background: #15171c",
     "color: #e7eaef",
     "font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-    "white-space: pre-wrap"
+    "white-space: pre-wrap",
   ].join(";");
   container.textContent = `Yonalist failed to start.\n\n${startupErrorMessage(error)}`;
   root.appendChild(container);
@@ -43,14 +44,17 @@ function handleStartupUnhandledRejection(event: PromiseRejectionEvent) {
 
 function installStartupErrorHandlers() {
   window.addEventListener("error", handleStartupWindowError);
-  window.addEventListener("unhandledrejection", handleStartupUnhandledRejection);
+  window.addEventListener(
+    "unhandledrejection",
+    handleStartupUnhandledRejection,
+  );
 }
 
 function removeStartupErrorHandlers() {
   window.removeEventListener("error", handleStartupWindowError);
   window.removeEventListener(
     "unhandledrejection",
-    handleStartupUnhandledRejection
+    handleStartupUnhandledRejection,
   );
 }
 
@@ -60,18 +64,21 @@ async function start() {
   ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <React.StrictMode>
       <App />
-    </React.StrictMode>
+    </React.StrictMode>,
   );
   removeStartupErrorHandlers();
 }
 
 const splitInputBenchmarkEnv = import.meta.env;
-configureNotesSplitInputBenchmarkVault(
+const splitInputBenchmarkConfigured = configureNotesSplitInputBenchmarkVault(
   window.localStorage,
   window.location.origin,
   window.location.search,
-  splitInputBenchmarkEnv?.VITE_SPLIT_INPUT_BENCH_VAULT
+  splitInputBenchmarkEnv?.VITE_SPLIT_INPUT_BENCH_VAULT,
 );
+if (splitInputBenchmarkConfigured) {
+  setNotesDeltaVerificationEnabled(false);
+}
 installNotesSplitInputBenchmarkCollector();
 installStartupErrorHandlers();
 void start().catch(renderStartupError);

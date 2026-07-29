@@ -39,6 +39,8 @@ use crate::notes::markdown_import::{
     hold_markdown_import_source, parse_notes_markdown, prepare_markdown_assets, ParsedMarkdownNode,
     PreparedMarkdownAssets,
 };
+#[cfg(test)]
+use crate::notes::repository::split_node_at;
 use crate::notes::repository::{
     apply_batch_at, archive_node, attachment_by_id, attachment_matches_new_attachment,
     collapse_all, create_attachments_coordinated_for_node, create_image_nodes_coordinated,
@@ -52,7 +54,7 @@ use crate::notes::repository::{
     refresh_materialized_github_notifications, remove_attachment, remove_empty_node,
     removed_attachment_snapshot, resize_attachment, restore_attachment, restore_node_at,
     search_nodes_at, search_nodes_structured, set_github_group_collapsed, set_readonly_at,
-    soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node_at,
+    soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node_delta_at,
     toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
     validate_note_tag_filters, validate_structured_search_query_input, validate_vault_path,
     MarkdownImportNode, NewAttachment, NewImageNode, SORT_KEY_STEP,
@@ -916,6 +918,62 @@ fn run_mutation(
     Ok(result.into_mutation_result())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NotesDeltaMutationResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace: Option<NotesWorkspace>,
+    history_entry_id: Option<String>,
+    #[serde(flatten)]
+    state: NotesHistoryState,
+    changed_nodes: Vec<NoteNode>,
+    removed_node_ids: Vec<String>,
+    changed_attachments: Vec<NoteAttachment>,
+}
+
+fn run_dated_delta_mutation(
+    vault_path: &str,
+    history_context: NotesHistoryContext,
+    today_provider: &impl LocalTodayProvider,
+    operation: impl FnOnce(
+        &mut rusqlite::Connection,
+        crate::notes::date_index::LocalDate,
+    ) -> Result<(), String>,
+) -> Result<NotesDeltaMutationResult, String> {
+    let storage = AttachmentStorageLease::acquire(vault_path)?;
+    let shared = acquire_notes_connection(vault_path)?;
+    let mut connection = lock_notes_connection(&shared)?;
+    let today = today_provider.local_today(&connection)?;
+    let result = with_history_transaction_and_prunes(
+        &mut connection,
+        Some(&history_context),
+        |connection| operation(connection, today),
+    )?;
+    validate_notes_connection(&connection)?;
+    reconcile_candidates_after_committed_change(
+        &storage,
+        &connection,
+        &result.pruned_attachment_paths,
+    );
+    validate_notes_connection(&connection)?;
+    let delta = result.delta.unwrap_or_default();
+    let delta_is_empty = delta.changed_nodes.is_empty()
+        && delta.removed_node_ids.is_empty()
+        && delta.changed_attachments.is_empty();
+    Ok(NotesDeltaMutationResult {
+        workspace: if delta_is_empty {
+            Some(load_workspace(&connection, NotesWorkspaceScope::Active)?)
+        } else {
+            None
+        },
+        history_entry_id: result.history_entry_id,
+        state: result.state,
+        changed_nodes: delta.changed_nodes,
+        removed_node_ids: delta.removed_node_ids,
+        changed_attachments: delta.changed_attachments,
+    })
+}
+
 fn run_dated_mutation(
     vault_path: &str,
     history_context: NotesHistoryContext,
@@ -1308,7 +1366,7 @@ pub(crate) async fn notes_split_node(
     vault_path: String,
     input: SplitNodeInput,
     history_context: NotesHistoryContext,
-) -> Result<NotesMutationResult, NotesError> {
+) -> Result<NotesDeltaMutationResult, NotesError> {
     run_blocking(move || notes_split_node_inner(vault_path, input, history_context)).await
 }
 
@@ -1316,12 +1374,12 @@ pub(crate) fn notes_split_node_inner(
     vault_path: String,
     input: SplitNodeInput,
     history_context: NotesHistoryContext,
-) -> Result<NotesMutationResult, String> {
-    run_dated_mutation(
+) -> Result<NotesDeltaMutationResult, String> {
+    run_dated_delta_mutation(
         &vault_path,
         history_context,
         &SystemLocalTodayProvider,
-        |connection, today| split_node_at(connection, input, today),
+        |connection, today| split_node_delta_at(connection, input, today),
     )
 }
 
@@ -7960,12 +8018,27 @@ mod tests {
         let starting_workspace =
             notes_load_workspace(vault_path.to_string(), NotesWorkspaceScope::Active)
                 .expect("load starting workspace");
+        let expected_titles = node_ids
+            .iter()
+            .map(|node_id| {
+                starting_workspace
+                    .nodes
+                    .iter()
+                    .find(|node| &node.id == node_id)
+                    .expect("backspace fixture node")
+                    .title
+                    .clone()
+            })
+            .collect();
 
         let error = notes_apply_batch(
             vault_path.to_string(),
             ApplyBatchInput {
                 node_ids,
-                op: BatchOp::BackspaceGesture { title_update },
+                op: BatchOp::BackspaceGesture {
+                    expected_titles,
+                    title_update,
+                },
             },
             Some(batch_op_context(REPLACEMENT_ENTRY_ID, "backspaceGesture")),
         )
@@ -15030,6 +15103,63 @@ mod tests {
     }
 
     #[test]
+    fn production_split_uses_the_complete_delta_without_loading_the_workspace() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                marker_kind: crate::notes::types::NoteMarkerKind::Bullet,
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Before".to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("seed split source");
+
+        crate::notes::repository::reset_load_workspace_query_count();
+        let result = super::notes_split_node_inner(
+            vault_path.clone(),
+            SplitNodeInput {
+                id: ROOT_ID.to_string(),
+                new_node_id: SPLIT_ID.to_string(),
+                prefix: "Be".to_string(),
+                suffix: "fore".to_string(),
+            },
+            batch_op_context(REPLACEMENT_ENTRY_ID, "split"),
+        )
+        .expect("split");
+
+        assert_eq!(crate::notes::repository::load_workspace_query_count(), 0);
+        let wire = serde_json::to_value(result).expect("serialize split result");
+        assert!(wire.get("workspace").is_none());
+        assert_eq!(wire["historyEntryId"], REPLACEMENT_ENTRY_ID);
+        assert_eq!(
+            wire["changedNodes"]
+                .as_array()
+                .expect("changed node delta")
+                .len(),
+            2
+        );
+        assert_eq!(wire["removedNodeIds"], json!([]));
+        assert_eq!(wire["changedAttachments"], json!([]));
+
+        let undone = notes_undo(
+            vault_path,
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo split");
+        assert_eq!(undone.workspace.nodes.len(), 1);
+        assert_eq!(undone.workspace.nodes[0].id, ROOT_ID);
+        assert_eq!(undone.workspace.nodes[0].title, "Before");
+    }
+
+    #[test]
     fn mutation_commands_return_the_committed_history_result_atomically() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
@@ -15264,8 +15394,22 @@ mod tests {
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
         initialize_empty_test_vault(&vault_path);
         seed_backspace_node(&vault_path, BATCH_A_ID, None, None, "survivor #Old", "");
-        seed_backspace_node(&vault_path, BATCH_B_ID, None, Some(BATCH_A_ID), "", "");
-        seed_backspace_node(&vault_path, BATCH_C_ID, None, Some(BATCH_B_ID), "", "");
+        seed_backspace_node(
+            &vault_path,
+            BATCH_B_ID,
+            None,
+            Some(BATCH_A_ID),
+            "consumed B",
+            "",
+        );
+        seed_backspace_node(
+            &vault_path,
+            BATCH_C_ID,
+            None,
+            Some(BATCH_B_ID),
+            "consumed C",
+            "",
+        );
         let starting_workspace =
             notes_load_workspace(vault_path.clone(), NotesWorkspaceScope::Active)
                 .expect("load starting gesture workspace");
@@ -15275,6 +15419,7 @@ mod tests {
             ApplyBatchInput {
                 node_ids: vec![BATCH_C_ID.to_string(), BATCH_B_ID.to_string()],
                 op: BatchOp::BackspaceGesture {
+                    expected_titles: vec!["consumed C".to_string(), "consumed B".to_string()],
                     title_update: Some(BackspaceTitleUpdate {
                         id: BATCH_A_ID.to_string(),
                         title: "sur #New".to_string(),

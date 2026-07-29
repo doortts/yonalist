@@ -210,7 +210,7 @@ export interface NotesBackspaceDraftCommit {
 
 export interface NotesBackspaceDraftLease {
   readonly token: number;
-  touch(nodeId: NoteId): void;
+  touch(nodeId: NoteId): string | undefined;
   updateOptimisticInsertionTitle?(nodeId: NoteId, title: string): boolean;
   prepare(
     removedNodeIds: readonly NoteId[],
@@ -277,7 +277,11 @@ export interface NotesWorkspaceActions {
     nodeId: NoteId,
     selection: NotesHistoryPrimarySelection
   ): number | null;
-  touchBackspaceGesture?(token: number, nodeId: NoteId): void;
+  touchBackspaceGesture?(
+    token: number,
+    nodeId: NoteId,
+    renderedTitle: string
+  ): void;
   removeEmptyNodeInBackspaceGesture?(
     token: number,
     nodeId: NoteId,

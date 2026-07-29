@@ -3,14 +3,10 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
-  useReducer,
   useRef,
   useState,
 } from "react";
-import type {
-  NoteId,
-  NotesHistoryStatus,
-} from "../../domain/notes";
+import type { NoteId, NotesHistoryStatus } from "../../domain/notes";
 import { createNotesWriteQueue } from "../../services/notesWriteQueue";
 import { connectNotesSyncRuntime } from "../../services/notesSyncListener";
 import {
@@ -112,7 +108,6 @@ import {
   useNotesImageAtomAuthorityLifecycle,
   useNotesImageAtomEditorRuntime,
 } from "./useNotesImageAtomRuntime";
-
 export type { ResolvedHistoryLocation } from "./notesWorkspaceNavigationSupport";
 export { resetImageImportRecoveryForTests } from "./notesImageImportRecovery";
 export {
@@ -145,7 +140,6 @@ export {
   isNotesDraftsFlushFailedError,
   NOTES_DRAFTS_FLUSH_FAILED_CODE,
 } from "./notesDraftErrors";
-
 function currentNotesNavigation(
   state: NormalizedNotesWorkspace,
   editing: NotesHistoryFocus | null,
@@ -158,7 +152,6 @@ function currentNotesNavigation(
     pendingFocusField: editing ? editing.field : state.pendingFocusField,
   };
 }
-
 // Scope equality and tag-filter canonicalization live in one module so the
 // coordinator and this hook compare scopes the same, key-order-independent way.
 // Re-exported (below) because existing consumers (notesCommands, tests) import
@@ -173,14 +166,10 @@ export function useNotesWorkspace({
 }: UseNotesWorkspaceOptions): UseNotesWorkspaceHookResult {
   const paneSessions = useNotesPaneSessions();
   const editingLease = useNotesEditingLease();
-  const [state, dispatch] = useReducer(
-    notesWorkspaceReducer,
-    undefined,
-    (): NormalizedNotesWorkspace => ({
-      ...normalizeWorkspace({ nodes: [] }),
-      status: "loading",
-    }),
-  );
+  const [state, setState] = useState<NormalizedNotesWorkspace>(() => ({
+    ...normalizeWorkspace({ nodes: [] }),
+    status: "loading",
+  }));
   const {
     selection,
     selectionRef,
@@ -210,8 +199,9 @@ export function useNotesWorkspace({
       insertions: [],
       failure: null,
     });
-  const optimisticInsertionSnapshotRef =
-    useRef<OptimisticInsertionSnapshot>(optimisticInsertionSnapshot);
+  const optimisticInsertionSnapshotRef = useRef<OptimisticInsertionSnapshot>(
+    optimisticInsertionSnapshot,
+  );
   const [optimisticBackspaceGesture, setOptimisticBackspaceGesture] =
     useState<OptimisticBackspaceGesture | null>(null);
   const pendingOptimisticTitleFlushesRef = useRef(new Map<NoteId, string>());
@@ -356,7 +346,7 @@ export function useNotesWorkspace({
       ) {
         editingFocusRef.current = null;
       }
-      dispatch(action);
+      setState(next);
       // Navigation invalidates any live selection range before the next render.
       if (
         selectionRef.current !== null &&
@@ -439,6 +429,14 @@ export function useNotesWorkspace({
     let engine!: NotesDraftEngine;
     let session!: NotesWorkspaceCoordinatorSession;
     let disconnectSync: (() => void) | null = null;
+    const persistConfirmedOptimisticTitles = (
+      updates: readonly settlementRuntime.ConfirmedOptimisticTitleUpdate[],
+    ): void => {
+      for (const update of updates) {
+        updateNodeDraft(update.nodeId, update, "title");
+        void flushNodeDraft(update.nodeId);
+      }
+    };
     const reloadFromSync = async (): Promise<void> => {
       const refreshScope = activeScopeRef.current;
       await session.enqueue(
@@ -493,10 +491,7 @@ export function useNotesWorkspace({
         ) {
           return;
         }
-        if (
-          event.type === "settled" &&
-          event.result.kind === "authoritative"
-        ) {
+        if (event.type === "settled" && event.result.kind === "authoritative") {
           connectSyncAfterActivation();
         }
         if (event.type === "pending") {
@@ -523,21 +518,27 @@ export function useNotesWorkspace({
           settlementRuntime.recordPendingOptimisticTitles(
             optimisticInsertionSnapshotRef.current,
             event,
-            pendingOptimisticTitleFlushesRef.current
+            pendingOptimisticTitleFlushesRef.current,
           );
           optimisticInsertionSnapshotRef.current = event.snapshot;
           setOptimisticInsertionSnapshot(event.snapshot);
+          persistConfirmedOptimisticTitles(
+            settlementRuntime.confirmedOptimisticTitleUpdatesFromNodesById(
+              stateRef.current.nodesById,
+              pendingOptimisticTitleFlushesRef.current,
+            ),
+          );
           if (event.rollback) {
             const request = {
               requestId: ++nextPrimarySelectionRequestIdRef.current,
               nodeId: event.rollback.sourceId,
               field: "title" as const,
-              selection: { ...event.rollback.selection }
+              selection: { ...event.rollback.selection },
             };
             if (event.rollback.ownerPaneId === "secondary") {
               paneSessions.dispatchPane("secondary", {
                 type: "setPendingPrimarySelection",
-                request
+                request,
               });
               paneSessions.dispatchPane("secondary", {
                 type: "setNavigation",
@@ -545,14 +546,14 @@ export function useNotesWorkspace({
                   selectedId: event.rollback.sourceId,
                   editingNoteId: event.rollback.sourceId,
                   pendingFocusId: event.rollback.sourceId,
-                  pendingFocusField: "title"
-                }
+                  pendingFocusField: "title",
+                },
               });
             } else {
               pendingPrimarySelectionRef.current = request;
               applyAction({
                 type: "focusNode",
-                nodeId: event.rollback.sourceId
+                nodeId: event.rollback.sourceId,
               });
             }
           }
@@ -591,11 +592,14 @@ export function useNotesWorkspace({
           }
           return;
         }
+        const secondaryPane = paneSessions.getPaneSession("secondary");
+        const secondaryExpansions = settlementRuntime.settledLocalExpansions(secondaryPane.locallyExpandedNodeIds, event.result, "secondary");
+        if (secondaryExpansions !== secondaryPane.locallyExpandedNodeIds) paneSessions.dispatchPane("secondary", { type: "setExpansion", nodeIds: secondaryExpansions });
         const routed = settlementRuntime.routeKeyboardInsertionSettlement(
           event.result,
           navigationVersionRef.current,
           paneSessions.getPaneSession("secondary").navigationVersion,
-          userInteractionRevisionRef.current
+          userInteractionRevisionRef.current,
         );
         if (routed.focusRequest) {
           const focus = routed.focusRequest;
@@ -605,16 +609,16 @@ export function useNotesWorkspace({
             field: "title" as const,
             selection: {
               anchorUtf16: focus.titleLength,
-              focusUtf16: focus.titleLength
+              focusUtf16: focus.titleLength,
             },
             expectedNavigationVersion: focus.expectedNavigationVersion,
             expectedUserInteractionRevision:
-              focus.expectedUserInteractionRevision
+              focus.expectedUserInteractionRevision,
           };
           if (focus.paneId === "secondary") {
             paneSessions.dispatchPane("secondary", {
               type: "setPendingPrimarySelection",
-              request
+              request,
             });
           } else {
             pendingPrimarySelectionRef.current = request;
@@ -625,7 +629,7 @@ export function useNotesWorkspace({
             type: "setNavigation",
             patch: routed.secondaryNavigation,
             preserveNavigationVersion:
-              routed.focusRequest?.paneId === "secondary"
+              routed.focusRequest?.paneId === "secondary",
           });
         }
         const settledResult = routed.primaryResult;
@@ -640,10 +644,7 @@ export function useNotesWorkspace({
         // queue order, so the hook just adopts whatever the latest event
         // carries. No hook-side version comparison — settled/synchronized
         // events already arrive in the coordinator's monotonic order.
-        if (
-          settledResult.kind !== "skipped" &&
-          settledResult.historyStatus
-        ) {
+        if (settledResult.kind !== "skipped" && settledResult.historyStatus) {
           historyStatusRef.current = settledResult.historyStatus;
           setHistoryStatus(settledResult.historyStatus);
         }
@@ -688,27 +689,28 @@ export function useNotesWorkspace({
               ? settledResult.workspace
               : undefined;
         if (settledWorkspace) {
-          engine.reconcileReadonlyAuthority(settledWorkspace);
+          engine.reconcileReadonlyAuthority(
+            settledResult.kind === "authoritative" && settledResult.delta
+              ? { nodes: settledResult.delta.changedNodes }
+              : settledWorkspace,
+          );
         }
         applyAction({
           type: "settleQueueWork",
           result: settledResult,
           hasPendingWork: event.hasPendingWork,
         });
-        for (const update of settlementRuntime.confirmedOptimisticTitleUpdates(
-          settledResult,
-          pendingOptimisticTitleFlushesRef.current
-        )) {
-          updateNodeDraft(update.nodeId, update, "title");
-          void flushNodeDraft(update.nodeId);
-        }
+        persistConfirmedOptimisticTitles(
+          settlementRuntime.confirmedOptimisticTitleUpdates(
+            settledResult,
+            pendingOptimisticTitleFlushesRef.current,
+          ),
+        );
       },
       captureDraftCutoff: (publicationOwner) =>
         engine.captureDraftCutoff(publicationOwner),
-      beforeStructural: (
-        cutoff,
-        drainEnqueue?: NotesWorkspaceDrainEnqueue,
-      ) => engine.flushDraftBarrier(cutoff, drainEnqueue),
+      beforeStructural: (cutoff, drainEnqueue?: NotesWorkspaceDrainEnqueue) =>
+        engine.flushDraftBarrier(cutoff, drainEnqueue),
       afterStructural: (cutoff) => {
         engine.releaseDraftBarrier(cutoff);
         releaseFinalizedDetachedAttachmentUploadAttempts(engine.record);
@@ -754,6 +756,7 @@ export function useNotesWorkspace({
     sessionRecordRef.current = engine.record;
     sessionRef.current = session;
     draftEngineRef.current = engine;
+    const disconnectKeyboardInsertionGesture = settlementRuntime.observeKeyboardInsertionGesture(session);
     const bufferedCommands = bufferedCommandsRef.current;
     const unregisterNotesDataDeletionParticipant =
       registerNotesDataDeletionParticipant(repository, vaultRoot, engine);
@@ -767,11 +770,9 @@ export function useNotesWorkspace({
     // buffer). The engine wires its own recovery subscription internally.
     notifyDraftsListeners();
     notifyWriteErrorListeners();
-    enqueueBufferedWorkspaceCommands(
-      session,
-      bufferedCommands.splice(0),
-    );
+    enqueueBufferedWorkspaceCommands(session, bufferedCommands.splice(0));
     return () => {
+      disconnectKeyboardInsertionGesture();
       disconnectSync?.();
       outlineCompositionActiveRef.current = false;
       pendingNavigationRef.current = null;
@@ -1147,8 +1148,7 @@ export function useNotesWorkspace({
         writesUnavailable() ? Promise.resolve("skipped") : action(...args);
 
     return {
-      drain: () =>
-        sessionRef.current?.drain() ?? Promise.resolve(false),
+      drain: () => sessionRef.current?.drain() ?? Promise.resolve(false),
       releaseDrain: () => {
         sessionRef.current?.releaseDrain();
       },
@@ -1176,9 +1176,9 @@ export function useNotesWorkspace({
         writesUnavailable()
           ? null
           : beginBackspaceGesture(paneId, nodeId, selection),
-      touchBackspaceGesture: (token, nodeId) => {
+      touchBackspaceGesture: (token, nodeId, renderedTitle) => {
         if (!writesUnavailable()) {
-          touchBackspaceGesture(token, nodeId);
+          touchBackspaceGesture(token, nodeId, renderedTitle);
         }
       },
       removeEmptyNodeInBackspaceGesture: (token, nodeId, focusNodeId) =>

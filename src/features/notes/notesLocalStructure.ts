@@ -46,11 +46,7 @@ export interface PendingKeyboardInsertion {
 }
 
 export type OptimisticKeyboardInsertionStatus =
-  | "prepared"
-  | "queued"
-  | "running"
-  | "checking"
-  | "settled";
+  "prepared" | "queued" | "running" | "checking" | "settled";
 
 export interface OptimisticKeyboardInsertion {
   readonly pending: PendingKeyboardInsertion;
@@ -59,6 +55,7 @@ export interface OptimisticKeyboardInsertion {
   readonly sourceSelection: NotesHistoryPrimarySelection;
   readonly sourceTitle: string;
   readonly insertedTitle: string;
+  readonly createdAt: string;
   readonly status: OptimisticKeyboardInsertionStatus;
   readonly undoRequested: boolean;
 }
@@ -105,6 +102,7 @@ export interface LocalStructureEntry {
   readonly sourceSelection: NotesHistoryPrimarySelection;
   readonly sourceTitle: string;
   readonly insertedTitle: string;
+  readonly createdAt?: string;
   readonly dependencyId: NoteId | null;
   readonly status: "prepared" | "queued" | "running" | "checking";
 }
@@ -123,10 +121,7 @@ export type LocalStructureFailureResolution =
     }
   | { readonly kind: "recover-authority" };
 
-type LocalSplitInput = Omit<
-  LocalStructureEntry,
-  "postcondition" | "status"
->;
+type LocalSplitInput = Omit<LocalStructureEntry, "postcondition" | "status">;
 
 export function localSplit(input: LocalSplitInput): LocalStructureEntry {
   return {
@@ -165,6 +160,7 @@ export function optimisticKeyboardInsertionLocalEntry(
     sourceSelection: insertion.sourceSelection,
     sourceTitle: insertion.sourceTitle,
     insertedTitle: insertion.insertedTitle,
+    createdAt: insertion.createdAt,
     dependencyId: insertion.dependencyId,
   };
   return insertion.pending.intent.postcondition.kind === "first-child"
@@ -179,41 +175,49 @@ export function projectLocalStructures(
 ): LocalStructureProjection {
   if (entries.length === 0) return { rows, nodeOverrides: new Map() };
 
-  const projectedRows = [...rows];
+  type RowLink = {
+    row: FlattenedOutlineRow;
+    next: RowLink | null;
+  };
+  let firstRow: RowLink | null = null;
+  let lastRow: RowLink | null = null;
+  const rowsById = new Map<NoteId, RowLink>();
+  for (const row of rows) {
+    const link: RowLink = { row, next: null };
+    if (lastRow) {
+      lastRow.next = link;
+    } else {
+      firstRow = link;
+    }
+    lastRow = link;
+    rowsById.set(row.id, link);
+  }
   const nodeOverrides = new Map<NoteId, NoteNode>();
   for (const entry of entries) {
-    if (
-      nodesById[entry.insertedId] ||
-      projectedRows.some((candidate) => candidate.id === entry.insertedId)
-    ) {
+    if (nodesById[entry.insertedId] || rowsById.has(entry.insertedId)) {
       continue;
     }
-    const sourceIndex = projectedRows.findIndex(
-      (candidate) => candidate.id === entry.sourceId,
-    );
-    if (sourceIndex < 0) continue;
-    const sourceRow = projectedRows[sourceIndex]!;
+    const sourceLink = rowsById.get(entry.sourceId);
+    if (!sourceLink) continue;
+    const sourceRow = sourceLink.row;
     const sourceNode =
       nodeOverrides.get(entry.sourceId) ?? nodesById[entry.sourceId];
     if (!sourceNode) continue;
     const firstChild = entry.postcondition.kind === "first-child";
 
     if (firstChild && sourceRow.isCollapsed) {
-      projectedRows[sourceIndex] = { ...sourceRow, isCollapsed: false };
+      sourceLink.row = { ...sourceRow, isCollapsed: false };
     }
     nodeOverrides.set(entry.sourceId, {
       ...sourceNode,
       title: entry.sourceTitle,
       ...(firstChild ? { isCollapsed: false } : {}),
     });
-    const descendantEndIndex =
-      sourceRow.visibleDescendantEndId === null
-        ? sourceIndex
-        : projectedRows.findIndex(
-            (candidate) =>
-              candidate.id === sourceRow.visibleDescendantEndId,
-          );
-    projectedRows.splice(firstChild ? sourceIndex + 1 : Math.max(sourceIndex, descendantEndIndex) + 1, 0, {
+    const insertionPoint =
+      !firstChild && sourceRow.visibleDescendantEndId !== null
+        ? (rowsById.get(sourceRow.visibleDescendantEndId) ?? sourceLink)
+        : sourceLink;
+    const insertedRow: FlattenedOutlineRow = {
       id: entry.insertedId,
       parentId: firstChild ? entry.sourceId : sourceRow.parentId,
       depth: sourceRow.depth + (firstChild ? 1 : 0),
@@ -223,13 +227,23 @@ export function projectLocalStructures(
         : sourceRow.ancestorIds,
       ancestorGuideDepths: [],
       visibleDescendantEndId: null,
-    });
+    };
+    const insertedLink: RowLink = {
+      row: insertedRow,
+      next: insertionPoint.next,
+    };
+    insertionPoint.next = insertedLink;
+    if (lastRow === insertionPoint) {
+      lastRow = insertedLink;
+    }
+    rowsById.set(entry.insertedId, insertedLink);
     nodeOverrides.set(entry.insertedId, {
       ...sourceNode,
       id: entry.insertedId,
       nodeKind: "text",
       markerKind: "bullet",
       parentId: firstChild ? entry.sourceId : sourceRow.parentId,
+      sortKey: entry.token,
       title: entry.insertedTitle,
       note: "",
       imageOffsetUtf16: 0,
@@ -240,15 +254,21 @@ export function projectLocalStructures(
       deletedAt: null,
       archivedAt: null,
       archiveRootId: null,
+      ...(entry.createdAt
+        ? { createdAt: entry.createdAt, updatedAt: entry.createdAt }
+        : {}),
     });
   }
 
-  return nodeOverrides.size === 0
-    ? { rows, nodeOverrides }
-    : {
-        rows: finalizeOptimisticOutlineRows(projectedRows),
-        nodeOverrides,
-      };
+  if (nodeOverrides.size === 0) return { rows, nodeOverrides };
+  const projectedRows: FlattenedOutlineRow[] = [];
+  for (let link = firstRow; link !== null; link = link.next) {
+    projectedRows.push(link.row);
+  }
+  return {
+    rows: finalizeOptimisticOutlineRows(projectedRows),
+    nodeOverrides,
+  };
 }
 
 export function projectOptimisticKeyboardInsertions(
@@ -384,7 +404,7 @@ export function classifyLocalStructureFailure(
     return { kind: "recover-authority" };
   }
   const affectedIds = new Set<NoteId>([failed.insertedId]);
-  for (let previousSize = -1; previousSize !== affectedIds.size; ) {
+  for (let previousSize = -1; previousSize !== affectedIds.size;) {
     previousSize = affectedIds.size;
     for (const entry of entries) {
       if (entry.dependencyId && affectedIds.has(entry.dependencyId)) {

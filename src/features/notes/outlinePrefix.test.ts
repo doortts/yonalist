@@ -8,9 +8,9 @@ describe("projectOutlinePrefix", () => {
       limit: 25,
       tailHeight: 139_328,
     });
-    expect(projectOutlinePrefix(5_001, 685, 1_000).limit).toBe(73);
-    expect(projectOutlinePrefix(101, 280, 1_400).limit).toBe(82);
-    expect(projectOutlinePrefix(101, 280, 700).limit).toBe(58);
+    expect(projectOutlinePrefix(5_001, 685, 1_000).limit).toBe(65);
+    expect(projectOutlinePrefix(101, 280, 1_400).limit).toBe(66);
+    expect(projectOutlinePrefix(101, 280, 700).limit).toBe(42);
     expect(projectOutlinePrefix(101, 280, -40).limit).toBe(10);
   });
 

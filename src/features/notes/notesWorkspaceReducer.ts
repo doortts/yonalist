@@ -3,7 +3,7 @@ import type {
   NoteAttachmentsByNodeId,
   NoteId,
   NoteNode,
-  NotesWorkspace
+  NotesWorkspace,
 } from "../../domain/notes";
 import type { NotesHistoryFocusField } from "./notesHistory";
 import { retainNormalizedWorkspaceIdentity } from "./notesWorkspaceIdentity";
@@ -74,7 +74,7 @@ export type NotesSelectionAction =
  */
 export function notesSelectionReducer(
   state: NotesSelection | null,
-  action: NotesSelectionAction
+  action: NotesSelectionAction,
 ): NotesSelection | null {
   switch (action.type) {
     case "setSelectionAnchor":
@@ -82,41 +82,36 @@ export function notesSelectionReducer(
     case "extendSelectionTo":
       return {
         anchorId: state ? state.anchorId : action.headId,
-        headId: action.headId
+        headId: action.headId,
       };
     case "toggleSelectionNode": {
-      const selected = new Set(
-        selectionRangeIds(state, action.visibleNodeIds)
-      );
+      const selected = new Set(selectionRangeIds(state, action.visibleNodeIds));
       if (selected.has(action.nodeId)) {
         selected.delete(action.nodeId);
       } else {
         selected.add(action.nodeId);
       }
       const explicitNodeIds = action.visibleNodeIds.filter((id) =>
-        selected.has(id)
+        selected.has(id),
       );
       return explicitNodeIds.length === 0
         ? null
         : {
             anchorId: action.nodeId,
             headId: action.nodeId,
-            explicitNodeIds: Object.freeze(explicitNodeIds)
+            explicitNodeIds: Object.freeze(explicitNodeIds),
           };
     }
     case "replaceSelection": {
-      if (
-        !action.selection ||
-        action.selection.explicitNodeIds?.length === 0
-      ) {
+      if (!action.selection || action.selection.explicitNodeIds?.length === 0) {
         return null;
       }
       return action.selection.explicitNodeIds
         ? {
             ...action.selection,
             explicitNodeIds: Object.freeze([
-              ...action.selection.explicitNodeIds
-            ])
+              ...action.selection.explicitNodeIds,
+            ]),
           }
         : { ...action.selection };
     }
@@ -132,7 +127,7 @@ export function notesSelectionReducer(
  */
 export function selectionRangeIds(
   selection: NotesSelection | null,
-  visibleNodeIds: readonly NoteId[]
+  visibleNodeIds: readonly NoteId[],
 ): NoteId[] {
   if (!selection) {
     return [];
@@ -159,10 +154,10 @@ export function selectionRangeIds(
 export function selectionSubtreeIds(
   selection: NotesSelection | null,
   visibleNodeIds: readonly NoteId[],
-  workspace: NormalizedNotesWorkspace
+  workspace: NormalizedNotesWorkspace,
 ): NoteId[] {
   const directlySelected = new Set(
-    selectionRangeIds(selection, visibleNodeIds)
+    selectionRangeIds(selection, visibleNodeIds),
   );
   if (directlySelected.size === 0) {
     return [];
@@ -223,21 +218,21 @@ function compareNodes(left: NoteNode, right: NoteNode): number {
 
 export function compareAttachments(
   left: NoteAttachment,
-  right: NoteAttachment
+  right: NoteAttachment,
 ): number {
   return left.sortKey - right.sortKey || left.id.localeCompare(right.id);
 }
 
 function existingId(
   workspace: NormalizedNotesWorkspace,
-  id: NoteId | null
+  id: NoteId | null,
 ): NoteId | null {
   return id !== null && workspace.nodesById[id] ? id : null;
 }
 
 function normalizedUiState(
   workspace: NormalizedNotesWorkspace,
-  ui: UiState
+  ui: UiState,
 ): UiState {
   const pendingFocusId = existingId(workspace, ui.pendingFocusId);
   return {
@@ -246,7 +241,7 @@ function normalizedUiState(
     editingNoteId: existingId(workspace, ui.editingNoteId),
     pendingFocusId,
     pendingFocusField:
-      pendingFocusId === null ? null : (ui.pendingFocusField ?? "title")
+      pendingFocusId === null ? null : (ui.pendingFocusField ?? "title"),
   };
 }
 
@@ -261,7 +256,7 @@ function normalizedUiState(
 export function settledUiState(
   workspace: NormalizedNotesWorkspace,
   current: UiState,
-  uiUpdate?: Partial<UiState>
+  uiUpdate?: Partial<UiState>,
 ): UiState {
   const retainedUi = normalizedUiState(workspace, current);
   return normalizedUiState(workspace, {
@@ -284,7 +279,7 @@ export function settledUiState(
     pendingFocusField:
       uiUpdate?.pendingFocusField === undefined
         ? retainedUi.pendingFocusField
-        : uiUpdate.pendingFocusField
+        : uiUpdate.pendingFocusField,
   });
 }
 
@@ -296,12 +291,14 @@ export function settledUiState(
 export function reconcileUiState(
   workspace: NotesWorkspace,
   current: UiState,
-  uiUpdate?: Partial<UiState>
+  uiUpdate?: Partial<UiState>,
 ): UiState {
   return settledUiState(normalizeWorkspace(workspace), current, uiUpdate);
 }
 
-export function normalizeWorkspace(workspace: NotesWorkspace): NormalizedNotesWorkspace {
+export function normalizeWorkspace(
+  workspace: NotesWorkspace,
+): NormalizedNotesWorkspace {
   const nodesById = Object.create(null) as Record<NoteId, NoteNode>;
   const childIdsByParent = Object.create(null) as Record<string, NoteId[]>;
   const attachmentsByNodeId = Object.create(null) as NoteAttachmentsByNodeId;
@@ -311,16 +308,22 @@ export function normalizeWorkspace(workspace: NotesWorkspace): NormalizedNotesWo
     nodesById[node.id] = node;
   }
 
-  for (const node of Object.values(nodesById).sort(compareNodes)) {
+  for (const node of Object.values(nodesById)) {
     if (node.parentId === null) {
       rootIds.push(node.id);
       continue;
     }
     (childIdsByParent[node.parentId] ??= []).push(node.id);
   }
+  const compareIds = (left: NoteId, right: NoteId): number =>
+    compareNodes(nodesById[left], nodesById[right]);
+  rootIds.sort(compareIds);
+  for (const childIds of Object.values(childIdsByParent)) {
+    childIds.sort(compareIds);
+  }
 
   for (const [nodeId, attachments] of Object.entries(
-    workspace.attachmentsByNodeId ?? {}
+    workspace.attachmentsByNodeId ?? {},
   )) {
     attachmentsByNodeId[nodeId] = [...attachments];
   }
@@ -336,7 +339,7 @@ export function normalizeWorkspace(workspace: NotesWorkspace): NormalizedNotesWo
     pendingFocusId: null,
     pendingFocusField: null,
     status: "ready",
-    error: null
+    error: null,
   };
 }
 
@@ -383,7 +386,7 @@ function cloneNullProtoRecord<T>(source: Record<string, T>): Record<string, T> {
  */
 export function applyWorkspaceDelta(
   state: NormalizedNotesWorkspace,
-  delta: NotesWorkspaceDelta
+  delta: NotesWorkspaceDelta,
 ): NormalizedNotesWorkspace {
   const nodesById = cloneNullProtoRecord(state.nodesById);
   const childIdsByParent = cloneNullProtoRecord(state.childIdsByParent);
@@ -485,7 +488,7 @@ export function applyWorkspaceDelta(
     }
     const list = attachmentListFor(change.nodeId);
     const existingIndex = list.findIndex(
-      (candidate) => candidate.id === change.id
+      (candidate) => candidate.id === change.id,
     );
     if (existingIndex >= 0) {
       list.splice(existingIndex, 1);
@@ -514,7 +517,7 @@ export function applyWorkspaceDelta(
     pendingFocusId: null,
     pendingFocusField: null,
     status: "ready",
-    error: null
+    error: null,
   };
 }
 
@@ -539,7 +542,11 @@ function valuesEqual(left: unknown, right: unknown): boolean {
     return true;
   }
   if (Array.isArray(left) || Array.isArray(right)) {
-    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+    if (
+      !Array.isArray(left) ||
+      !Array.isArray(right) ||
+      left.length !== right.length
+    ) {
       return false;
     }
     return left.every((item, index) => valuesEqual(item, right[index]));
@@ -559,7 +566,7 @@ function valuesEqual(left: unknown, right: unknown): boolean {
     return leftKeys.every(
       (key) =>
         Object.prototype.hasOwnProperty.call(rightRecord, key) &&
-        valuesEqual(leftRecord[key], rightRecord[key])
+        valuesEqual(leftRecord[key], rightRecord[key]),
     );
   }
   return false;
@@ -576,38 +583,40 @@ export interface NormalizedStoreDiff {
 
 function diffNormalizedStores(
   patched: NormalizedNotesWorkspace,
-  full: NormalizedNotesWorkspace
+  full: NormalizedNotesWorkspace,
 ): NormalizedStoreDiff | null {
   const nodeIdsOnlyInDelta = Object.keys(patched.nodesById).filter(
-    (id) => !(id in full.nodesById)
+    (id) => !(id in full.nodesById),
   );
   const nodeIdsOnlyInFull = Object.keys(full.nodesById).filter(
-    (id) => !(id in patched.nodesById)
+    (id) => !(id in patched.nodesById),
   );
   const nodesWithDifferentValues = Object.keys(patched.nodesById).filter(
-    (id) => id in full.nodesById && !valuesEqual(patched.nodesById[id], full.nodesById[id])
+    (id) =>
+      id in full.nodesById &&
+      !valuesEqual(patched.nodesById[id], full.nodesById[id]),
   );
   const parentKeys = new Set([
     ...Object.keys(patched.childIdsByParent),
-    ...Object.keys(full.childIdsByParent)
+    ...Object.keys(full.childIdsByParent),
   ]);
   const parentsWithDifferentChildren = [...parentKeys].filter(
     (parentId) =>
       !valuesEqual(
         patched.childIdsByParent[parentId],
-        full.childIdsByParent[parentId]
-      )
+        full.childIdsByParent[parentId],
+      ),
   );
   const attachmentKeys = new Set([
     ...Object.keys(patched.attachmentsByNodeId),
-    ...Object.keys(full.attachmentsByNodeId)
+    ...Object.keys(full.attachmentsByNodeId),
   ]);
   const nodesWithDifferentAttachments = [...attachmentKeys].filter(
     (nodeId) =>
       !valuesEqual(
         patched.attachmentsByNodeId[nodeId],
-        full.attachmentsByNodeId[nodeId]
-      )
+        full.attachmentsByNodeId[nodeId],
+      ),
   );
   const rootIdsDiffer = !valuesEqual(patched.rootIds, full.rootIds);
 
@@ -627,7 +636,7 @@ function diffNormalizedStores(
     nodeIdsOnlyInFull,
     nodesWithDifferentValues,
     parentsWithDifferentChildren,
-    nodesWithDifferentAttachments
+    nodesWithDifferentAttachments,
   };
 }
 
@@ -642,12 +651,12 @@ function diffNormalizedStores(
 export function settleWorkspaceStore(
   state: NormalizedNotesWorkspace,
   workspace: NotesWorkspace,
-  delta: NotesWorkspaceDelta | undefined
+  delta: NotesWorkspaceDelta | undefined,
 ): NormalizedNotesWorkspace {
   if (!delta) {
     return retainNormalizedWorkspaceIdentity(
       state,
-      normalizeWorkspace(workspace)
+      normalizeWorkspace(workspace),
     );
   }
   const patched = applyWorkspaceDelta(state, delta);
@@ -659,7 +668,7 @@ export function settleWorkspaceStore(
   if (diff) {
     console.error(
       "Notes incremental mutation delta diverged from the full workspace payload; falling back to full normalization.",
-      diff
+      diff,
     );
     return full;
   }
@@ -668,7 +677,7 @@ export function settleWorkspaceStore(
 
 export function notesWorkspaceReducer(
   state: NormalizedNotesWorkspace,
-  action: NotesWorkspaceReducerAction
+  action: NotesWorkspaceReducerAction,
 ): NormalizedNotesWorkspace {
   switch (action.type) {
     case "settleQueueWork": {
@@ -679,13 +688,13 @@ export function notesWorkspaceReducer(
             ...workspace,
             ...settledUiState(workspace, state, action.result.uiUpdate),
             status: action.hasPendingWork ? "loading" : "error",
-            error: action.result.error
+            error: action.result.error,
           };
         }
         return {
           ...state,
           status: action.hasPendingWork ? "loading" : "error",
-          error: action.result.error
+          error: action.result.error,
         };
       }
 
@@ -696,32 +705,32 @@ export function notesWorkspaceReducer(
             ? "loading"
             : state.error
               ? "error"
-              : "ready"
+              : "ready",
         };
       }
 
       const workspace = settleWorkspaceStore(
         state,
         action.result.workspace,
-        action.result.delta
+        action.result.delta,
       );
       return {
         ...workspace,
         ...settledUiState(workspace, state, action.result.uiUpdate),
-        status: action.hasPendingWork ? "loading" : "ready"
+        status: action.hasPendingWork ? "loading" : "ready",
       };
     }
     case "startWorkspaceLoad":
       return {
         ...normalizeWorkspace({ nodes: [] }),
-        status: "loading"
+        status: "loading",
       };
     case "setLoading":
       return { ...state, status: "loading" };
     case "setZoomRoot":
       return {
         ...state,
-        zoomRootId: existingId(state, action.zoomRootId)
+        zoomRootId: existingId(state, action.zoomRootId),
       };
     case "focusNode":
       return existingId(state, action.nodeId) === null
@@ -731,7 +740,7 @@ export function notesWorkspaceReducer(
             selectedId: action.nodeId,
             editingNoteId: action.nodeId,
             pendingFocusId: action.nodeId,
-            pendingFocusField: "title"
+            pendingFocusField: "title",
           };
     case "acknowledgePendingFocus":
       return state.pendingFocusId === action.nodeId
@@ -740,9 +749,13 @@ export function notesWorkspaceReducer(
     case "setUiState": {
       const ui: UiState = {
         selectedId:
-          action.selectedId === undefined ? state.selectedId : action.selectedId,
+          action.selectedId === undefined
+            ? state.selectedId
+            : action.selectedId,
         zoomRootId:
-          action.zoomRootId === undefined ? state.zoomRootId : action.zoomRootId,
+          action.zoomRootId === undefined
+            ? state.zoomRootId
+            : action.zoomRootId,
         editingNoteId:
           action.editingNoteId === undefined
             ? state.editingNoteId
@@ -754,7 +767,7 @@ export function notesWorkspaceReducer(
         pendingFocusField:
           action.pendingFocusField === undefined
             ? state.pendingFocusField
-            : action.pendingFocusField
+            : action.pendingFocusField,
       };
       return { ...state, ...normalizedUiState(state, ui) };
     }

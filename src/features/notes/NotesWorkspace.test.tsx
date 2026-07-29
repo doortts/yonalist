@@ -91,11 +91,39 @@ const notesStoreMock = vi.hoisted(() => ({
   syncFlush: vi.fn(),
 }));
 
+const notesSplitLatencyProbeMock = vi.hoisted(() => ({
+  markSplitPhase: vi.fn(),
+  markRowRender: vi.fn(),
+}));
+
+const sortableRuntimeMock = vi.hoisted(() => ({
+  render: vi.fn(),
+}));
+
 vi.mock("../../services/notesStore", () => ({
   notesStore: notesStoreMock,
   notesRepairData: notesStoreMock.repairData,
   notesSyncFlush: notesStoreMock.syncFlush,
 }));
+
+vi.mock("./notesSplitLatencyProbe", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./notesSplitLatencyProbe")>()),
+  markSplitPhase: notesSplitLatencyProbeMock.markSplitPhase,
+  markRowRender: notesSplitLatencyProbeMock.markRowRender,
+}));
+
+vi.mock("@dnd-kit/sortable", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@dnd-kit/sortable")>();
+  return {
+    ...original,
+    useSortable: (
+      input: Parameters<typeof original.useSortable>[0],
+    ): ReturnType<typeof original.useSortable> => {
+      sortableRuntimeMock.render(input.id);
+      return original.useSortable(input);
+    },
+  };
+});
 
 import { NotesFeatureProvider } from "./NotesFeature";
 import {
@@ -140,10 +168,7 @@ const notesStyles = readFileSync(
 );
 const appStyles = readFileSync(join(process.cwd(), "src/styles.css"), "utf8");
 
-function mockNarrowViewport(
-  narrow: boolean,
-  reducedMotion = false,
-): void {
+function mockNarrowViewport(narrow: boolean, reducedMotion = false): void {
   vi.stubGlobal(
     "matchMedia",
     vi.fn((query: string) => ({
@@ -775,9 +800,7 @@ function renderNotesWorkspace(
   today?: { year: number; month: number; day: number },
   externalSources?: ExternalSourcesBoundary,
 ) {
-  return render(
-    notesWorkspaceElement(attachmentUi, today, externalSources),
-  );
+  return render(notesWorkspaceElement(attachmentUi, today, externalSources));
 }
 
 function renderSplitNotesWorkspace(
@@ -923,8 +946,7 @@ interface LiveTitleTestApi {
 }
 
 type NodeTitleEditor =
-  | HTMLTextAreaElement
-  | (HTMLDivElement & LiveTitleTestApi);
+  HTMLTextAreaElement | (HTMLDivElement & LiveTitleTestApi);
 
 function asNodeTitleEditor(
   editor: HTMLTextAreaElement | HTMLDivElement,
@@ -1008,9 +1030,7 @@ function titleEditorInMotionRow(
   nodeId: string,
   root: ParentNode = document,
 ): NodeTitleEditor | null {
-  const row = root.querySelector<HTMLElement>(
-    `[data-outline-id="${nodeId}"]`,
-  );
+  const row = root.querySelector<HTMLElement>(`[data-outline-id="${nodeId}"]`);
   return row ? (nodeTitleEditors(row)[0] ?? null) : null;
 }
 
@@ -1041,20 +1061,18 @@ async function activateTitleEditorInMotionRow(
 
 function queryTitleInput(value: string): NodeTitleEditor | null {
   return (
-    nodeTitleEditors().find(
-      (input) => {
-        const source = titleEditorSource(input);
-        const zoomLabel = input
-          .closest<HTMLElement>("[data-outline-id]")
-          ?.querySelector<HTMLButtonElement>(".notes-node-bullet")
-          ?.getAttribute("aria-label");
-        return (
-          source === value ||
-          source.trim() === value.trim() ||
-          zoomLabel === `Zoom into ${value}`
-        );
-      },
-    ) ?? null
+    nodeTitleEditors().find((input) => {
+      const source = titleEditorSource(input);
+      const zoomLabel = input
+        .closest<HTMLElement>("[data-outline-id]")
+        ?.querySelector<HTMLButtonElement>(".notes-node-bullet")
+        ?.getAttribute("aria-label");
+      return (
+        source === value ||
+        source.trim() === value.trim() ||
+        zoomLabel === `Zoom into ${value}`
+      );
+    }) ?? null
   );
 }
 
@@ -1096,7 +1114,9 @@ async function findTitleInput(value: string): Promise<NodeTitleEditor> {
     return waitFor(() => {
       const active = queryTitleInput(value);
       if (!active) {
-        throw new Error(`Unable to find a node title input with value ${value}`);
+        throw new Error(
+          `Unable to find a node title input with value ${value}`,
+        );
       }
       expect(active).toHaveAttribute("data-editing", "true");
       return active;
@@ -1260,6 +1280,7 @@ function mockNotesContentWidth(width: number, viewportWidth = 900): void {
 
 describe("Notes workspace", () => {
   beforeEach(() => {
+    notesSplitLatencyProbeMock.markSplitPhase.mockClear();
     mockNarrowViewport(false);
     configureRepository();
   });
@@ -1343,11 +1364,11 @@ describe("Notes workspace", () => {
     expect(
       row("plugin-backed").querySelector("[data-notes-bullet-title]"),
     ).toBeNull();
-    expect(
-      row("image").querySelector("[data-notes-bullet-title]"),
-    ).toBeNull();
+    expect(row("image").querySelector("[data-notes-bullet-title]")).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: "Zoom into Ordinary" }));
+    await user.click(
+      screen.getByRole("button", { name: "Zoom into Ordinary" }),
+    );
     expect(
       container.querySelector<HTMLTextAreaElement>("textarea.notes-page-title"),
     ).toHaveValue("Ordinary");
@@ -1455,12 +1476,12 @@ describe("Notes workspace", () => {
 
     primaryRows.scrollTop = 1_400;
     fireEvent.scroll(primaryRows);
-    expect(outlines[0]!.querySelectorAll("[data-outline-id]")).toHaveLength(82);
+    expect(outlines[0]!.querySelectorAll("[data-outline-id]")).toHaveLength(66);
     expect(outlines[1]!.querySelectorAll("[data-outline-id]")).toHaveLength(10);
 
     primaryRows.scrollTop = 700;
     fireEvent.scroll(primaryRows);
-    expect(outlines[0]!.querySelectorAll("[data-outline-id]")).toHaveLength(58);
+    expect(outlines[0]!.querySelectorAll("[data-outline-id]")).toHaveLength(42);
     expect(outlines[0]!.querySelector('[data-outline-id="row-0"]')).toBe(
       firstRow,
     );
@@ -1500,18 +1521,13 @@ describe("Notes workspace", () => {
     configureRepository(rows);
     renderNotesWorkspace();
     const outline = await screen.findByLabelText("Notes outline");
-    const scroller = outline.querySelector<HTMLElement>(
-      ".notes-outline-rows",
-    )!;
+    const scroller = outline.querySelector<HTMLElement>(".notes-outline-rows")!;
     const resizeOutline = (
       height: number,
       changedBox: ResizeObserverBoxOptions = "border-box",
     ) => {
       viewportHeight = height;
-      if (
-        changedBox === "content-box" &&
-        observedOutlineBox === "border-box"
-      ) {
+      if (changedBox === "content-box" && observedOutlineBox === "border-box") {
         return;
       }
       act(() =>
@@ -1587,6 +1603,51 @@ describe("Notes workspace", () => {
     expect(focusNode).toHaveBeenCalledWith("image");
   });
 
+  it("keeps vertical caret navigation out of the editing claim path", async () => {
+    const workspace: UseNotesWorkspaceResult = rowReplayWorkspace();
+    const state = normalizeWorkspace({
+      nodes: [
+        node({ id: "first", sortKey: 1, title: "First" }),
+        node({ id: "second", sortKey: 2, title: "Second" }),
+      ],
+    });
+    state.pendingFocusId = null;
+    state.pendingFocusField = null;
+    workspace.state = state;
+    workspace.pendingPrimarySelection = null;
+    const claimEditingFocus = vi.fn().mockResolvedValue(true);
+    workspace.actions = new Proxy(workspace.actions, {
+      get: (target, property, receiver) =>
+        property === "claimEditingFocus"
+          ? claimEditingFocus
+          : Reflect.get(target, property, receiver),
+    });
+    render(
+      <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
+        <VaultRootContext.Provider value="/vault">
+          <NotesImageResidencyProvider scopeKey="/vault">
+            <NotesWorkspaceContext.Provider value={workspace}>
+              <NotesOutlinePane />
+            </NotesWorkspaceContext.Provider>
+          </NotesImageResidencyProvider>
+        </VaultRootContext.Provider>
+      </NotesDateTodayProvider>,
+    );
+    const first = await activateTitleEditorInMotionRow("first");
+    await waitFor(() => expect(claimEditingFocus).toHaveBeenCalled());
+    claimEditingFocus.mockClear();
+
+    expect(fireEvent.keyDown(first, { key: "ArrowDown", repeat: true })).toBe(
+      false,
+    );
+
+    const second = titleEditorInMotionRow("second");
+    expect(second).not.toBeNull();
+    expect(second).toHaveFocus();
+    expect(second).toHaveAttribute("data-editing", "false");
+    expect(claimEditingFocus).not.toHaveBeenCalled();
+  });
+
   it("moves a repeated caret across the prefix boundary", async () => {
     const rows = Array.from({ length: 101 }, (_, index) =>
       node({
@@ -1612,52 +1673,47 @@ describe("Notes workspace", () => {
     expect(await findTitleInput("Row 010")).toHaveFocus();
   });
 
-  it(
-    "keeps fifty repeated caret moves exact across each pane prefix",
-    async () => {
-      const rows = Array.from({ length: 101 }, (_, index) =>
-        node({
-          id: `row-${index}`,
-          sortKey: index + 1,
-          title: `Row ${String(index).padStart(3, "0")}`,
-        }),
-      );
-      configureRepository(rows);
-      vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
-        function (this: HTMLElement) {
-          return this.classList.contains("notes-outline-rows") ? 280 : 0;
-        },
-      );
-      renderSplitNotesWorkspace();
-      const outlines = await screen.findAllByLabelText("Notes outline");
+  it("keeps fifty repeated caret moves exact across each pane prefix", async () => {
+    const rows = Array.from({ length: 101 }, (_, index) =>
+      node({
+        id: `row-${index}`,
+        sortKey: index + 1,
+        title: `Row ${String(index).padStart(3, "0")}`,
+      }),
+    );
+    configureRepository(rows);
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return this.classList.contains("notes-outline-rows") ? 280 : 0;
+      },
+    );
+    renderSplitNotesWorkspace();
+    const outlines = await screen.findAllByLabelText("Notes outline");
 
-      for (const outline of outlines) {
-        const first = await activateTitleEditorInMotionRow("row-0", outline);
-        first.setSelectionRange(first.value.length, first.value.length);
-        for (let index = 0; index < 50; index += 1) {
-          const active = document.activeElement;
-          expect(active).toHaveAttribute("data-notes-bullet-title", "true");
-          const handled = fireEvent.keyDown(active!, {
-            key: "ArrowDown",
-            repeat: true,
-          });
-          expect(handled).toBe(false);
-          await act(async () => Promise.resolve());
-          expect(
-            document.activeElement
-              ?.closest<HTMLElement>("[data-outline-id]")
-              ?.dataset.outlineId,
-          ).toBe(`row-${index + 1}`);
-        }
-        const expected = titleEditorInMotionRow("row-50", outline);
-        expect(expected).not.toBeNull();
-        expect(expected).toHaveFocus();
+    for (const outline of outlines) {
+      const first = await activateTitleEditorInMotionRow("row-0", outline);
+      first.setSelectionRange(first.value.length, first.value.length);
+      for (let index = 0; index < 50; index += 1) {
+        const active = document.activeElement;
+        expect(active).toHaveAttribute("data-notes-bullet-title", "true");
+        const handled = fireEvent.keyDown(active!, {
+          key: "ArrowDown",
+          repeat: true,
+        });
+        expect(handled).toBe(false);
         await act(async () => Promise.resolve());
-        expect(expected).toHaveFocus();
+        expect(
+          document.activeElement?.closest<HTMLElement>("[data-outline-id]")
+            ?.dataset.outlineId,
+        ).toBe(`row-${index + 1}`);
       }
-    },
-    30_000,
-  );
+      const expected = titleEditorInMotionRow("row-50", outline);
+      expect(expected).not.toBeNull();
+      expect(expected).toHaveFocus();
+      await act(async () => Promise.resolve());
+      expect(expected).toHaveFocus();
+    }
+  }, 30_000);
 
   it("pins the GitHub root for a deep GitHub descendant prefix target", async () => {
     const workspace: UseNotesWorkspaceResult = rowReplayWorkspace();
@@ -1763,10 +1819,10 @@ describe("Notes workspace", () => {
     const scroller = outline.querySelector<HTMLElement>(".notes-outline-rows")!;
     scroller.scrollTop = 1_400;
     fireEvent.scroll(scroller);
-    expect(outline.querySelectorAll("[data-outline-id]")).toHaveLength(82);
+    expect(outline.querySelectorAll("[data-outline-id]")).toHaveLength(66);
     mockOutlineRowRects();
     const source = screen.getByRole("button", {
-      name: "Zoom into Row 070",
+      name: "Zoom into Row 060",
     });
 
     await user.pointer({
@@ -1787,7 +1843,7 @@ describe("Notes workspace", () => {
 
     scroller.scrollTop = 0;
     fireEvent.scroll(scroller);
-    expect(outline.querySelector('[data-outline-id="row-70"]')).not.toBeNull();
+    expect(outline.querySelector('[data-outline-id="row-60"]')).not.toBeNull();
 
     await user.pointer({
       keys: "[/MouseLeft]",
@@ -1795,9 +1851,7 @@ describe("Notes workspace", () => {
       coords: { clientX: 16, clientY: 16 },
     });
     await waitFor(() =>
-      expect(
-        outline.querySelector('[data-outline-id="row-70"]'),
-      ).toBeNull(),
+      expect(outline.querySelector('[data-outline-id="row-60"]')).toBeNull(),
     );
   });
 
@@ -1829,7 +1883,9 @@ describe("Notes workspace", () => {
 
     view.unmount();
     render(tree);
-    expect(await screen.findByText(/Repaired 1 Notes item\./)).toHaveTextContent(
+    expect(
+      await screen.findByText(/Repaired 1 Notes item\./),
+    ).toHaveTextContent(
       "Repaired 1 Notes item. Backup: /vault/.yonalist/notes-repair-backups/repair-1",
     );
   });
@@ -2150,13 +2206,17 @@ describe("Notes workspace", () => {
     const rendered = renderNotesWorkspace(undefined, undefined, sources);
 
     await user.click(
-      await within(screen.getByLabelText("Yonalist library")).findByRole("button", {
-        name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
-      }),
+      await within(screen.getByLabelText("Yonalist library")).findByRole(
+        "button",
+        {
+          name: GITHUB_NOTIFICATIONS_PROVIDER_TITLE,
+        },
+      ),
     );
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "All notes" }))
-        .not.toHaveAttribute("aria-current"),
+      expect(
+        screen.getByRole("button", { name: "All notes" }),
+      ).not.toHaveAttribute("aria-current"),
     );
 
     rendered.rerender(
@@ -3219,9 +3279,7 @@ describe("Notes workspace", () => {
       ),
     );
     await findTitleInput("Completed projected notification");
-    const projected = getTitlePresentation(
-      "Completed projected notification",
-    );
+    const projected = getTitlePresentation("Completed projected notification");
     projected.focus();
     expect(projected).toHaveFocus();
 
@@ -4847,7 +4905,7 @@ describe("Notes workspace", () => {
   it.each([
     { surface: "title", nodeKind: "text" as const },
     { surface: "note", nodeKind: "text" as const },
-    { surface: "image", nodeKind: "image" as const }
+    { surface: "image", nodeKind: "image" as const },
   ])(
     "zooms into the containing bullet from its $surface editor",
     async ({ surface, nodeKind }) => {
@@ -4856,13 +4914,13 @@ describe("Notes workspace", () => {
         id: "target",
         nodeKind,
         title: nodeKind === "image" ? "diagram.png" : "Target",
-        note: "Target note"
+        note: "Target note",
       });
       configureRepository(
         [target],
         nodeKind === "image"
           ? { target: [attachment({ id: "target-image", nodeId: "target" })] }
-          : {}
+          : {},
       );
       renderNotesWorkspace();
 
@@ -4872,27 +4930,26 @@ describe("Notes workspace", () => {
           : surface === "note"
             ? await findTextareaByName("Supporting note: Target")
             : await screen.findByRole("textbox", { name: "Image note" });
-      expect(
-        fireEvent.keyDown(editor, { key: ".", metaKey: true })
-      ).toBe(false);
+      expect(fireEvent.keyDown(editor, { key: ".", metaKey: true })).toBe(
+        false,
+      );
 
       if (nodeKind === "image") {
         const page = await waitFor(() => {
-          const header = document.querySelector<HTMLElement>(
-            ".notes-page-header"
-          );
+          const header =
+            document.querySelector<HTMLElement>(".notes-page-header");
           if (!header) throw new Error("Zoomed image page did not render");
           return header;
         });
         expect(
-          await within(page).findByRole("textbox", { name: "Image note" })
+          await within(page).findByRole("textbox", { name: "Image note" }),
         ).toBeVisible();
       } else {
         expect(
-          await screen.findByRole("heading", { name: "Target", level: 1 })
+          await screen.findByRole("heading", { name: "Target", level: 1 }),
         ).toBeVisible();
       }
-    }
+    },
   );
 
   it("zooms out from a page editor and consumes root and page no-ops", async () => {
@@ -4903,52 +4960,51 @@ describe("Notes workspace", () => {
         id: "child",
         parentId: "parent",
         title: "Child",
-        note: "Child detail"
-      })
+        note: "Child detail",
+      }),
     ]);
     renderNotesWorkspace();
     fireEvent.click(
-      await screen.findByRole("button", { name: "Zoom into Child" })
+      await screen.findByRole("button", { name: "Zoom into Child" }),
     );
     const childHeading = await screen.findByRole("heading", {
       name: "Child",
-      level: 1
+      level: 1,
     });
     const childPage = childHeading.closest<HTMLElement>(".notes-page-header")!;
     const pageNote = childPage.querySelector<HTMLTextAreaElement>(
-      "textarea.notes-page-note"
+      "textarea.notes-page-note",
     )!;
     pageNote.focus();
 
+    expect(fireEvent.keyDown(pageNote, { key: ".", metaKey: true })).toBe(
+      false,
+    );
     expect(
-      fireEvent.keyDown(pageNote, { key: ".", metaKey: true })
-    ).toBe(false);
-    expect(
-      screen.getByRole("heading", { name: "Child", level: 1 })
+      screen.getByRole("heading", { name: "Child", level: 1 }),
     ).toBeVisible();
-    expect(
-      fireEvent.keyDown(pageNote, { key: ",", metaKey: true })
-    ).toBe(false);
+    expect(fireEvent.keyDown(pageNote, { key: ",", metaKey: true })).toBe(
+      false,
+    );
     const parentHeading = await screen.findByRole("heading", {
       name: "Parent",
-      level: 1
+      level: 1,
     });
     expect(parentHeading).toBeVisible();
 
-    const parentPage = parentHeading.closest<HTMLElement>(
-      ".notes-page-header"
-    )!;
+    const parentPage =
+      parentHeading.closest<HTMLElement>(".notes-page-header")!;
     const parentNote = parentPage.querySelector<HTMLTextAreaElement>(
-      "textarea.notes-page-note"
+      "textarea.notes-page-note",
     )!;
     parentNote.focus();
-    expect(
-      fireEvent.keyDown(parentNote, { key: ",", metaKey: true })
-    ).toBe(false);
+    expect(fireEvent.keyDown(parentNote, { key: ",", metaKey: true })).toBe(
+      false,
+    );
     const parentTitle = await findTitleInput("Parent");
-    expect(
-      fireEvent.keyDown(parentTitle, { key: ",", metaKey: true })
-    ).toBe(false);
+    expect(fireEvent.keyDown(parentTitle, { key: ",", metaKey: true })).toBe(
+      false,
+    );
     expect(await findTitleInput("Parent")).toBeVisible();
   });
 
@@ -5725,9 +5781,10 @@ describe("Notes workspace", () => {
       ]),
     );
     await waitFor(() =>
-      expect(
-        nodeTitleEditors().map(titleEditorSource),
-      ).toEqual(["Second", "First"]),
+      expect(nodeTitleEditors().map(titleEditorSource)).toEqual([
+        "Second",
+        "First",
+      ]),
     );
   });
 
@@ -6383,9 +6440,7 @@ describe("Notes workspace", () => {
     changeTitleEditor(title, "/");
     await user.click(screen.getByRole("option", { name: /Today/ }));
 
-    await waitFor(() =>
-      expect(titleEditorSource(title)).toBe("2026-07-11"),
-    );
+    await waitFor(() => expect(titleEditorSource(title)).toBe("2026-07-11"));
     fireEvent.blur(title);
     await waitFor(() =>
       expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
@@ -7076,6 +7131,31 @@ describe("Notes workspace", () => {
     randomUUID.mockRestore();
   });
 
+  it("does not mark a failed first-child insertion as settled", async () => {
+    configureRepository([
+      node({ id: "parent", sortKey: 1, title: "Parent" }),
+      node({
+        id: "existing-child",
+        parentId: "parent",
+        sortKey: 2,
+        title: "Existing child",
+      }),
+    ]);
+    notesStoreMock.createNode.mockRejectedValue(new Error("disk full"));
+    renderNotesWorkspace();
+    const title = await findTitleInput("Parent");
+    title.focus();
+    title.setSelectionRange(title.value.length, title.value.length);
+
+    expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+    await screen.findByText(/The new bullet could not be saved: disk full/i);
+
+    expect(notesSplitLatencyProbeMock.markSplitPhase).not.toHaveBeenCalledWith(
+      expect.any(String),
+      "settled",
+    );
+  });
+
   it("reveals a collapsed parent's existing children while projecting a first child", async () => {
     const parent = node({
       id: "parent",
@@ -7244,62 +7324,227 @@ describe("Notes workspace", () => {
     );
   });
 
-  it("deduplicates repeated Enter and keeps the first provisional target", async () => {
+  it.each(["primary", "secondary"] as const)(
+    "routes a native held Enter repeat from the original editor to the newest provisional row in the %s pane",
+    async (paneId) => {
+      configureRepository([node({ id: "source", sortKey: 1, title: "" })]);
+      const firstSplit = deferred<NotesMutationResponse>();
+      const secondSplit = deferred<NotesMutationResponse>();
+      notesStoreMock.splitNode
+        .mockReturnValueOnce(firstSplit.promise)
+        .mockReturnValueOnce(secondSplit.promise);
+      renderSplitNotesWorkspace();
+      const pane = await waitFor(() => {
+        const pane = document.querySelector<HTMLElement>(
+          `[data-notes-pane-id="${paneId}"]`,
+        );
+        expect(pane).not.toBeNull();
+        return pane!;
+      });
+      const title = await activateTitleEditorInMotionRow("source", pane);
+      const randomUUID = vi
+        .spyOn(globalThis.crypto, "randomUUID")
+        .mockReturnValueOnce("00000000-0000-4000-8000-000000000001")
+        .mockReturnValueOnce("00000000-0000-4000-8000-000000000002");
+      title.focus();
+      title.setSelectionRange(0, 0);
+
+      expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+      await waitFor(() =>
+        expect(
+          titleEditorInMotionRow("00000000-0000-4000-8000-000000000001", pane),
+        ).toHaveFocus(),
+      );
+      await waitFor(() =>
+        expect(notesStoreMock.splitNode).toHaveBeenCalledOnce(),
+      );
+      expect(notesStoreMock.splitNode).toHaveBeenCalledWith(
+        "/vault",
+        {
+          id: "source",
+          newNodeId: "00000000-0000-4000-8000-000000000001",
+          prefix: "",
+          suffix: "",
+        },
+        historyContextMatcher(),
+      );
+      expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+
+      await act(async () =>
+        firstSplit.resolve(
+          acknowledgedMutationResult(
+            workspace([
+              node({ id: "source", sortKey: 1, title: "" }),
+              node({
+                id: "00000000-0000-4000-8000-000000000001",
+                sortKey: 2,
+                title: "",
+              }),
+            ]),
+            notesStoreMock.splitNode.mock.calls[0]![2],
+          ),
+        ),
+      );
+
+      await waitFor(() => {
+        const settled = titleEditorInMotionRow(
+          "00000000-0000-4000-8000-000000000001",
+          pane,
+        );
+        expect(settled).not.toHaveAttribute("data-notes-provisional-insertion");
+        expect(settled).toHaveFocus();
+      });
+      title.focus();
+      expect(fireEvent.keyDown(title, { key: "Enter", repeat: true })).toBe(
+        false,
+      );
+      await waitFor(() => expect(randomUUID).toHaveBeenCalledTimes(2));
+      await waitFor(() => {
+        expect(
+          Array.from(
+            pane.querySelectorAll<HTMLElement>("[data-outline-id]"),
+          ).map((row) => row.dataset.outlineId),
+        ).toEqual([
+          "source",
+          "00000000-0000-4000-8000-000000000001",
+          "00000000-0000-4000-8000-000000000002",
+        ]);
+        expect(nodeTitleEditors(pane).at(-1)).toHaveFocus();
+      });
+      await waitFor(() =>
+        expect(notesStoreMock.splitNode).toHaveBeenCalledTimes(2),
+      );
+      expect(notesStoreMock.splitNode).toHaveBeenLastCalledWith(
+        "/vault",
+        {
+          id: "00000000-0000-4000-8000-000000000001",
+          newNodeId: "00000000-0000-4000-8000-000000000002",
+          prefix: "",
+          suffix: "",
+        },
+        historyContextMatcher(),
+      );
+      expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+      await act(async () =>
+        secondSplit.resolve(
+          acknowledgedMutationResult(
+            workspace([
+              node({ id: "source", sortKey: 1, title: "" }),
+              node({
+                id: "00000000-0000-4000-8000-000000000001",
+                sortKey: 2,
+                title: "",
+              }),
+              node({
+                id: "00000000-0000-4000-8000-000000000002",
+                sortKey: 3,
+                title: "",
+              }),
+            ]),
+            notesStoreMock.splitNode.mock.lastCall![2],
+          ),
+        ),
+      );
+      await waitFor(() => {
+        const settled = titleEditorInMotionRow(
+          "00000000-0000-4000-8000-000000000002",
+          pane,
+        );
+        expect(settled).not.toHaveAttribute("data-notes-provisional-insertion");
+        expect(settled).toHaveFocus();
+      });
+      randomUUID.mockRestore();
+    },
+  );
+
+  it("routes a stale held Enter repeat to the currently focused editor", async () => {
     configureRepository([
-      node({ id: "source", sortKey: 1, title: "alphaXYZomega" }),
+      node({ id: "source", sortKey: 1, title: "" }),
+      node({ id: "focused", sortKey: 3, title: "" }),
     ]);
-    const split = deferred<NotesMutationResponse>();
-    notesStoreMock.splitNode.mockReturnValue(split.promise);
+    const firstSplit = deferred<NotesMutationResponse>();
+    const secondSplit = deferred<NotesMutationResponse>();
+    notesStoreMock.splitNode
+      .mockReturnValueOnce(firstSplit.promise)
+      .mockReturnValueOnce(secondSplit.promise);
+    renderSplitNotesWorkspace();
+    const primary = await waitFor(() => {
+      const pane = document.querySelector<HTMLElement>(
+        '[data-notes-pane-id="primary"]',
+      );
+      expect(pane).not.toBeNull();
+      return pane!;
+    });
+    const source = await activateTitleEditorInMotionRow("source", primary);
     const randomUUID = vi
       .spyOn(globalThis.crypto, "randomUUID")
-      .mockReturnValue("00000000-0000-4000-8000-000000000001");
-    renderNotesWorkspace();
-    const title = await findTitleInput("alphaXYZomega");
-    const idsBeforeSplit = randomUUID.mock.calls.length;
-    title.focus();
-    title.setSelectionRange(5, 8);
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000001")
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000002");
 
-    expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
-    expect(
-      fireEvent.keyDown(title, { key: "Enter", repeat: true }),
-    ).toBe(false);
-    expect(randomUUID).toHaveBeenCalledTimes(idsBeforeSplit + 1);
+    expect(fireEvent.keyDown(source, { key: "Enter" })).toBe(false);
     await waitFor(() =>
       expect(notesStoreMock.splitNode).toHaveBeenCalledOnce(),
     );
-    expect(notesStoreMock.splitNode).toHaveBeenCalledWith(
-      "/vault",
-      {
-        id: "source",
-        newNodeId: "00000000-0000-4000-8000-000000000001",
-        prefix: "alpha",
-        suffix: "omega",
-      },
-      historyContextMatcher(),
-    );
-    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
-    expect(getTitleInput("omega")).toHaveFocus();
-
     await act(async () =>
-      split.resolve(
+      firstSplit.resolve(
         acknowledgedMutationResult(
           workspace([
-            node({ id: "source", sortKey: 1, title: "alpha" }),
+            node({ id: "source", sortKey: 1, title: "" }),
             node({
               id: "00000000-0000-4000-8000-000000000001",
               sortKey: 2,
-              title: "omega",
+              title: "",
             }),
+            node({ id: "focused", sortKey: 3, title: "" }),
           ]),
-          notesStoreMock.splitNode.mock.calls[0]![2],
+          notesStoreMock.splitNode.mock.lastCall![2],
         ),
       ),
     );
+    const focused = await activateTitleEditorInMotionRow("focused", primary);
+    expect(focused).toHaveFocus();
 
-    expect(await findTitleInput("omega")).toHaveFocus();
-    expect(title).not.toHaveFocus();
-    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
-    expect(notesStoreMock.splitNode).toHaveBeenCalledOnce();
+    expect(fireEvent.keyDown(source, { key: "Enter", repeat: true })).toBe(
+      false,
+    );
+    await waitFor(() =>
+      expect(notesStoreMock.splitNode).toHaveBeenCalledTimes(2),
+    );
+    expect(notesStoreMock.splitNode).toHaveBeenLastCalledWith(
+      "/vault",
+      expect.objectContaining({
+        id: "focused",
+        newNodeId: "00000000-0000-4000-8000-000000000002",
+      }),
+      historyContextMatcher(),
+    );
+
+    await act(async () =>
+      secondSplit.resolve(
+        acknowledgedMutationResult(
+          workspace([
+            node({ id: "source", sortKey: 1, title: "" }),
+            node({
+              id: "00000000-0000-4000-8000-000000000001",
+              sortKey: 2,
+              title: "",
+            }),
+            node({ id: "focused", sortKey: 3, title: "" }),
+            node({
+              id: "00000000-0000-4000-8000-000000000002",
+              sortKey: 4,
+              title: "",
+            }),
+          ]),
+          notesStoreMock.splitNode.mock.lastCall![2],
+        ),
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        titleEditorInMotionRow("00000000-0000-4000-8000-000000000002", primary),
+      ).not.toHaveAttribute("data-notes-provisional-insertion"),
+    );
     randomUUID.mockRestore();
   });
 
@@ -7512,6 +7757,10 @@ describe("Notes workspace", () => {
     await screen.findByText(/Command paused/i);
     // ...and hands focus back to the title so the caret is not stranded.
     await waitFor(() => expect(title).toHaveFocus());
+    expect(notesSplitLatencyProbeMock.markSplitPhase).not.toHaveBeenCalledWith(
+      expect.any(String),
+      "settled",
+    );
   });
 
   describe("authoritative end-of-line split", () => {
@@ -7667,11 +7916,12 @@ describe("Notes workspace", () => {
       source.setSelectionRange(2, 2);
 
       expect(fireEvent.keyDown(source, { key: "Enter" })).toBe(false);
-      await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
-      const insertedId =
-        notesStoreMock.splitNode.mock.calls[0]![1].newNodeId;
-      const splitHistory =
-        notesStoreMock.splitNode.mock.calls[0]![2] as NotesHistoryContext;
+      await waitFor(() =>
+        expect(notesStoreMock.splitNode).toHaveBeenCalledOnce(),
+      );
+      const insertedId = notesStoreMock.splitNode.mock.calls[0]![1].newNodeId;
+      const splitHistory = notesStoreMock.splitNode.mock
+        .calls[0]![2] as NotesHistoryContext;
       const splitFixture = [
         node({ id: "solo", sortKey: 1024, title: "al" }),
         node({ id: insertedId, sortKey: 2048, title: "pha" }),
@@ -7697,14 +7947,17 @@ describe("Notes workspace", () => {
           }),
         }),
       );
-      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
-      const backspaceHistory =
-        notesStoreMock.applyBatch.mock.calls[0]![2] as NotesHistoryContext;
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+      );
+      const backspaceHistory = notesStoreMock.applyBatch.mock
+        .calls[0]![2] as NotesHistoryContext;
       expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
         "/vault",
         {
           op: "backspaceGesture",
           nodeIds: [],
+          expectedTitles: [],
           titleUpdate: { id: insertedId, title: "ph" },
         },
         backspaceHistory,
@@ -7748,7 +8001,9 @@ describe("Notes workspace", () => {
         ),
       );
       const edited = await findTitleInput("ph");
-      expect(fireEvent.keyDown(edited, { key: "z", ctrlKey: true })).toBe(false);
+      expect(fireEvent.keyDown(edited, { key: "z", ctrlKey: true })).toBe(
+        false,
+      );
       await waitFor(() => expect(notesStoreMock.undo).toHaveBeenCalledOnce());
       await waitFor(() =>
         expect(nodeTitleEditors().map(titleEditorSource)).toEqual([
@@ -7760,7 +8015,7 @@ describe("Notes workspace", () => {
 
     it("keeps the newest provisional row focused while prior Enter settles", async () => {
       configureRepository([
-        node({ id: "solo", sortKey: 1024, title: "alpha" })
+        node({ id: "solo", sortKey: 1024, title: "alpha" }),
       ]);
       const firstSplit = deferred<NotesMutationResponse>();
       const secondSplit = deferred<NotesMutationResponse>();
@@ -7786,7 +8041,9 @@ describe("Notes workspace", () => {
       source.setSelectionRange(2, 2);
 
       fireEvent.keyDown(source, { key: "Enter" });
-      await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(notesStoreMock.splitNode).toHaveBeenCalledOnce(),
+      );
       const firstId = notesStoreMock.splitNode.mock.lastCall![1].newNodeId;
       const firstProvisional = await waitFor(() => {
         const editor = titleEditorInMotionRow(firstId, primary);
@@ -7809,14 +8066,14 @@ describe("Notes workspace", () => {
           acknowledgedMutationResult(
             workspace([
               node({ id: "solo", sortKey: 1024, title: "al" }),
-              node({ id: firstId, sortKey: 2048, title: "pha" })
+              node({ id: firstId, sortKey: 2048, title: "pha" }),
             ]),
             notesStoreMock.splitNode.mock.calls[0]![2],
-          )
-        )
+          ),
+        ),
       );
       await waitFor(() =>
-        expect(notesStoreMock.splitNode).toHaveBeenCalledTimes(2)
+        expect(notesStoreMock.splitNode).toHaveBeenCalledTimes(2),
       );
       const keptNewestFocusAfterFirstSettlement =
         document.activeElement === secondProvisional;
@@ -7830,11 +8087,11 @@ describe("Notes workspace", () => {
             workspace([
               node({ id: "solo", sortKey: 1024, title: "al" }),
               node({ id: firstId, sortKey: 2048, title: "be" }),
-              node({ id: secondId, sortKey: 3072, title: "ta" })
+              node({ id: secondId, sortKey: 3072, title: "ta" }),
             ]),
             notesStoreMock.splitNode.mock.calls[1]![2],
-          )
-        )
+          ),
+        ),
       );
       const settledSecond = await waitFor(() => {
         const editor = titleEditorInMotionRow(secondId, primary);
@@ -7849,9 +8106,9 @@ describe("Notes workspace", () => {
           id: firstId,
           newNodeId: expect.any(String),
           prefix: "be",
-          suffix: "ta"
+          suffix: "ta",
         },
-        historyContextMatcher()
+        historyContextMatcher(),
       );
       expect(secondHistory.historyEpoch).toBe(firstHistory.historyEpoch);
       expect(secondHistory.entryId).not.toBe(firstHistory.entryId);
@@ -7860,7 +8117,7 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
         "/vault",
         expect.objectContaining({ id: firstId, title: "beta" }),
-        historyContextMatcher()
+        historyContextMatcher(),
       );
       expect(keptNewestFocusAfterFirstSettlement).toBe(true);
       expect(refocusFirst).not.toHaveBeenCalled();
@@ -7886,7 +8143,9 @@ describe("Notes workspace", () => {
       endCaret(source);
 
       expect(fireEvent.keyDown(source, { key: "Enter" })).toBe(false);
-      await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(notesStoreMock.splitNode).toHaveBeenCalledOnce(),
+      );
       const provisional = await waitFor(() => {
         const editor = titleEditorInMotionRow(FIRST, primary);
         expect(editor).not.toBeNull();
@@ -7924,22 +8183,25 @@ describe("Notes workspace", () => {
       const defaultSplit = notesStoreMock.splitNode.getMockImplementation()!;
       const firstSplit = deferred<NotesWorkspace>();
       let firstSplitArguments: unknown[] | null = null;
-      notesStoreMock.splitNode
-        .mockImplementationOnce((...arguments_) => {
-          firstSplitArguments = arguments_;
-          return firstSplit.promise;
-        });
+      notesStoreMock.splitNode.mockImplementationOnce((...arguments_) => {
+        firstSplitArguments = arguments_;
+        return firstSplit.promise;
+      });
       renderNotesWorkspace();
       const source = await findTitleInput("alpha");
       source.focus();
       source.setSelectionRange(2, 2);
 
       fireEvent.keyDown(source, { key: "Enter" });
+      notesSplitLatencyProbeMock.markRowRender.mockClear();
+      sortableRuntimeMock.render.mockClear();
       for (let index = 0; index < 4; index += 1) {
         const active = document.activeElement;
         expect(active).toHaveAttribute("data-notes-bullet-title", "true");
         fireEvent.keyDown(active!, { key: "Enter", repeat: true });
       }
+      expect(notesSplitLatencyProbeMock.markRowRender).toHaveBeenCalledTimes(8);
+      expect(sortableRuntimeMock.render).not.toHaveBeenCalled();
 
       const rows = Array.from(
         screen
@@ -7957,13 +8219,16 @@ describe("Notes workspace", () => {
         "",
         "",
       ]);
+      expect(
+        screen.getAllByRole("button", { name: /More actions for/i }),
+      ).toHaveLength(1);
       expect(nodeTitleEditors().at(-1)).toHaveFocus();
-      await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(notesStoreMock.splitNode).toHaveBeenCalledOnce(),
+      );
       expect(firstSplitArguments).not.toBeNull();
       await act(async () =>
-        firstSplit.resolve(
-          await defaultSplit(...firstSplitArguments!),
-        ),
+        firstSplit.resolve(await defaultSplit(...firstSplitArguments!)),
       );
       await waitFor(() =>
         expect(screen.getByLabelText("Yonalist library")).toHaveAttribute(
@@ -7975,7 +8240,7 @@ describe("Notes workspace", () => {
 
     it("restores the source selection and explains a failed save", async () => {
       configureRepository([
-        node({ id: "solo", sortKey: 1024, title: "Solo item" })
+        node({ id: "solo", sortKey: 1024, title: "Solo item" }),
       ]);
       const split = deferred<NotesWorkspace>();
       notesStoreMock.splitNode.mockReturnValue(split.promise);
@@ -7991,14 +8256,14 @@ describe("Notes workspace", () => {
       await act(async () => split.reject(new Error("disk full")));
       expect(
         await screen.findByText(
-          /The new bullet could not be saved: disk full.*reverted/i
-        )
+          /The new bullet could not be saved: disk full.*reverted/i,
+        ),
       ).toBeInTheDocument();
       expect(getTitleInput("Solo item")).toHaveFocus();
       expect(getTitleInput("Solo item").selectionStart).toBe(4);
       expect(getTitleInput("Solo item").selectionEnd).toBe(4);
       expect(
-        screen.getByRole("button", { name: "Copy text" })
+        screen.getByRole("button", { name: "Copy text" }),
       ).toBeInTheDocument();
     });
   });
@@ -8466,9 +8731,7 @@ describe("Notes workspace", () => {
       });
 
       alpha.focus();
-      expect(
-        fireEvent.keyDown(alpha, { key: "F6", repeat: true }),
-      ).toBe(true);
+      expect(fireEvent.keyDown(alpha, { key: "F6", repeat: true })).toBe(true);
       expect(alpha).toHaveFocus();
 
       expect(fireEvent.keyDown(alpha, { key: "F6" })).toBe(false);
@@ -9986,9 +10249,7 @@ describe("Notes workspace", () => {
       );
       await waitFor(() => expect(selectedOutlineIds()).toEqual(movingIds));
       await waitFor(() =>
-        expect(
-          nodeTitleEditors().map(titleEditorSource),
-        ).toEqual([
+        expect(nodeTitleEditors().map(titleEditorSource)).toEqual([
           "Parent",
           "Foxtrot",
           "Destination",
@@ -12611,23 +12872,23 @@ describe("Notes workspace", () => {
       const previousPaneId = paneId;
       await waitFor(() =>
         expect(
-          JSON.parse(
-            localStorage.getItem(NOTES_SPLIT_LAYOUT_STORAGE_KEY)!,
-          ).vaults["/vault"].activePaneId,
+          JSON.parse(localStorage.getItem(NOTES_SPLIT_LAYOUT_STORAGE_KEY)!)
+            .vaults["/vault"].activePaneId,
         ).toBe(previousPaneId),
       );
 
       expect(fireEvent.keyDown(source, { key: "ArrowDown" })).toBe(false);
       expect(target).toHaveFocus();
-      await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(notesStoreMock.updateNode).toHaveBeenCalledOnce(),
+      );
       await act(async () => save.reject(new Error("denied")));
 
       await waitFor(() => expect(source).toHaveFocus());
       await waitFor(() =>
         expect(
-          JSON.parse(
-            localStorage.getItem(NOTES_SPLIT_LAYOUT_STORAGE_KEY)!,
-          ).vaults["/vault"].activePaneId,
+          JSON.parse(localStorage.getItem(NOTES_SPLIT_LAYOUT_STORAGE_KEY)!)
+            .vaults["/vault"].activePaneId,
         ).toBe(previousPaneId),
       );
     },
@@ -12662,10 +12923,12 @@ describe("Notes workspace", () => {
       );
 
       expect(fireEvent.keyDown(source, { key: "Enter" })).toBe(false);
-      await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(notesStoreMock.splitNode).toHaveBeenCalledOnce(),
+      );
       const insertedId = notesStoreMock.splitNode.mock.lastCall![1].newNodeId;
-      const historyContext =
-        notesStoreMock.splitNode.mock.lastCall![2] as NotesHistoryContext;
+      const historyContext = notesStoreMock.splitNode.mock
+        .lastCall![2] as NotesHistoryContext;
       const provisional = await waitFor(() => {
         const current = titleEditorInMotionRow(insertedId, pane);
         expect(current).not.toBeNull();
@@ -12720,10 +12983,12 @@ describe("Notes workspace", () => {
     );
 
     expect(fireEvent.keyDown(source, { key: "Enter" })).toBe(false);
-    await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(notesStoreMock.splitNode).toHaveBeenCalledOnce(),
+    );
     const insertedId = notesStoreMock.splitNode.mock.lastCall![1].newNodeId;
-    const historyContext =
-      notesStoreMock.splitNode.mock.lastCall![2] as NotesHistoryContext;
+    const historyContext = notesStoreMock.splitNode.mock
+      .lastCall![2] as NotesHistoryContext;
     const otherPaneTarget = await activateTitleEditorInMotionRow(
       "next",
       panes[1],
@@ -12750,9 +13015,7 @@ describe("Notes workspace", () => {
 
   it("does not let an Enter settlement steal focus after a toolbar interaction", async () => {
     const user = userEvent.setup();
-    configureRepository([
-      node({ id: "source", sortKey: 1, title: "Source" }),
-    ]);
+    configureRepository([node({ id: "source", sortKey: 1, title: "Source" })]);
     const split = deferred<NotesMutationResponse>();
     notesStoreMock.splitNode.mockReturnValue(split.promise);
     renderSplitNotesWorkspace();
@@ -12773,10 +13036,12 @@ describe("Notes workspace", () => {
     );
 
     expect(fireEvent.keyDown(source, { key: "Enter" })).toBe(false);
-    await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(notesStoreMock.splitNode).toHaveBeenCalledOnce(),
+    );
     const insertedId = notesStoreMock.splitNode.mock.lastCall![1].newNodeId;
-    const historyContext =
-      notesStoreMock.splitNode.mock.lastCall![2] as NotesHistoryContext;
+    const historyContext = notesStoreMock.splitNode.mock
+      .lastCall![2] as NotesHistoryContext;
     const toolbarButton = within(primary).getByRole("button", {
       name: "Completed items",
     });
@@ -13009,18 +13274,16 @@ describe("Notes workspace", () => {
     expect(titleEditorInMotionRow("empty-d")).not.toBeNull();
     vi.useRealTimers();
 
-    for (const removedId of [
-      "empty-d",
-      "empty-c",
-      "empty-b",
-      "empty-a",
-    ]) {
+    for (const removedId of ["empty-d", "empty-c", "empty-b", "empty-a"]) {
       const current = titleEditorInMotionRow(removedId);
       expect(current).not.toBeNull();
-      current!.focus();
-      current!.setSelectionRange(0, 0);
+      expect(current).toHaveFocus();
       expect(
-        fireEvent.keyDown(current!, { key: "Backspace", repeat: true }),
+        fireEvent.keyDown(document.body, {
+          key: "Backspace",
+          code: "Backspace",
+          repeat: true,
+        }),
       ).toBe(false);
       expect(
         document.querySelector(`[data-outline-id="${removedId}"]`),
@@ -13031,12 +13294,15 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
 
     fireEvent.keyUp(window, { key: "Backspace" });
-    await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+    );
     expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
       "/vault",
       {
         op: "backspaceGesture",
         nodeIds: ["empty-e", "empty-d", "empty-c", "empty-b", "empty-a"],
+        expectedTitles: ["", "", "", "", ""],
         titleUpdate: null,
       },
       historyContextMatcher(),
@@ -13088,9 +13354,7 @@ describe("Notes workspace", () => {
     );
 
     const keep = await findTitleInput("Keep");
-    expect(
-      fireEvent.keyDown(keep, { key: "z", ctrlKey: true }),
-    ).toBe(false);
+    expect(fireEvent.keyDown(keep, { key: "z", ctrlKey: true })).toBe(false);
     await waitFor(() => expect(notesStoreMock.undo).toHaveBeenCalledOnce());
     const restored = titleEditorInMotionRow("empty-e");
     expect(restored).not.toBeNull();
@@ -13122,7 +13386,9 @@ describe("Notes workspace", () => {
     expect(queryTitleInput("")).not.toBeInTheDocument();
     expect(queryTitleInput("First")).toHaveFocus();
     fireEvent.keyUp(window, { key: "Backspace" });
-    await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+    );
 
     await act(async () => batch.reject(new Error("write rejected")));
 
@@ -13160,7 +13426,9 @@ describe("Notes workspace", () => {
     expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
     rendered.unmount();
 
-    await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+    );
     expect(historyContext).not.toBeNull();
     const committedContext = historyContext!;
     await act(async () =>
@@ -13259,9 +13527,7 @@ describe("Notes workspace", () => {
           input.getAttribute("aria-hidden") !== "true",
       ) ?? null;
     fireEvent.pointerDown(
-      outlines[1].closest<HTMLElement>(
-        '[data-notes-pane-id="secondary"]',
-      )!,
+      outlines[1].closest<HTMLElement>('[data-notes-pane-id="secondary"]')!,
     );
     const secondaryEmpty = await activateTitleEditorInMotionRow(
       "empty",
@@ -13269,9 +13535,7 @@ describe("Notes workspace", () => {
     );
     secondaryEmpty.setSelectionRange(0, 0);
 
-    expect(
-      fireEvent.keyDown(secondaryEmpty, { key: "Backspace" }),
-    ).toBe(false);
+    expect(fireEvent.keyDown(secondaryEmpty, { key: "Backspace" })).toBe(false);
     expect(visibleTitleIn(outlines[0], "")).toBeNull();
     expect(visibleTitleIn(outlines[1], "")).toBeNull();
     fireEvent.keyUp(window, { key: "Backspace" });
@@ -13303,7 +13567,9 @@ describe("Notes workspace", () => {
         }),
       }),
     );
-    await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce(),
+    );
     await waitFor(() => {
       for (const outline of outlines) {
         expect(outline).toHaveAttribute("aria-busy", "false");
@@ -13368,9 +13634,12 @@ describe("Notes workspace", () => {
       const current = titleIn(primary, nodeId);
       expect(current).not.toBeNull();
       expect(current).toHaveFocus();
-      current!.setSelectionRange(0, 0);
       expect(
-        fireEvent.keyDown(current!, { key: "Backspace", repeat: true }),
+        fireEvent.keyDown(document.body, {
+          key: "Backspace",
+          code: "Backspace",
+          repeat: true,
+        }),
       ).toBe(false);
     }
     for (const nodeId of [
@@ -13393,13 +13662,8 @@ describe("Notes workspace", () => {
       "/vault",
       {
         op: "backspaceGesture",
-        nodeIds: [
-          "empty-e",
-          "empty-d",
-          "empty-c",
-          "empty-b",
-          "empty-a",
-        ],
+        nodeIds: ["empty-e", "empty-d", "empty-c", "empty-b", "empty-a"],
+        expectedTitles: ["", "", "", "", ""],
         titleUpdate: null,
       },
       historyContextMatcher(),
@@ -13430,9 +13694,7 @@ describe("Notes workspace", () => {
         }),
       }),
     );
-    await waitFor(() =>
-      expect(primary).toHaveAttribute("aria-busy", "false"),
-    );
+    await waitFor(() => expect(primary).toHaveAttribute("aria-busy", "false"));
 
     expect(
       fireEvent.keyDown(titleIn(primary, "survivor")!, {
@@ -13534,6 +13796,7 @@ describe("Notes workspace", () => {
         {
           op: "backspaceGesture",
           nodeIds: [],
+          expectedTitles: [],
           titleUpdate: { id: "grapheme", title: "A" },
         },
         historyContextMatcher(),
@@ -13542,12 +13805,43 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce();
   });
 
+  it("removes a row whose title was consumed in the same Backspace gesture", async () => {
+    configureRepository([
+      node({ id: "survivor", sortKey: 1, title: "Keep" }),
+      node({ id: "consumed", sortKey: 2, title: "A" }),
+    ]);
+    renderNotesWorkspace();
+    await findTitleInput("A");
+    const title = await activateTitleEditorInMotionRow("consumed");
+    title.setSelectionRange(1, 1);
+
+    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(true);
+    changeTitleEditor(title, "");
+    expect(fireEvent.keyDown(title, { key: "Backspace", repeat: true })).toBe(
+      false,
+    );
+    expect(titleEditorInMotionRow("consumed")).toBeNull();
+    expect(titleEditorInMotionRow("survivor")).toHaveFocus();
+    fireEvent.keyUp(window, { key: "Backspace" });
+
+    await waitFor(() =>
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        {
+          op: "backspaceGesture",
+          nodeIds: ["consumed"],
+          expectedTitles: ["A"],
+          titleUpdate: null,
+        },
+        historyContextMatcher(),
+      ),
+    );
+  });
+
   it("keeps text typed after Backspace keyup while the gesture batch settles", async () => {
     const batch = deferred<NotesMutationResponse>();
     const update = deferred<NotesMutationResponse>();
-    configureRepository([
-      node({ id: "root", sortKey: 1, title: "abc" }),
-    ]);
+    configureRepository([node({ id: "root", sortKey: 1, title: "abc" })]);
     notesStoreMock.applyBatch.mockReturnValue(batch.promise);
     notesStoreMock.updateNode.mockReturnValue(update.promise);
     renderNotesWorkspace();
@@ -13569,13 +13863,14 @@ describe("Notes workspace", () => {
         {
           op: "backspaceGesture",
           nodeIds: [],
+          expectedTitles: [],
           titleUpdate: { id: "root", title: "ab" },
         },
         historyContextMatcher(),
       ),
     );
-    const backspaceHistory =
-      notesStoreMock.applyBatch.mock.calls[0]![2] as NotesHistoryContext;
+    const backspaceHistory = notesStoreMock.applyBatch.mock
+      .calls[0]![2] as NotesHistoryContext;
 
     vi.useFakeTimers();
     replacePlainText(title, "abx", {
@@ -13591,9 +13886,7 @@ describe("Notes workspace", () => {
 
     await act(async () =>
       batch.resolve({
-        workspace: workspace([
-          node({ id: "root", sortKey: 1, title: "ab" }),
-        ]),
+        workspace: workspace([node({ id: "root", sortKey: 1, title: "ab" })]),
         historyEntryId: backspaceHistory.entryId,
         ...historyState({
           canUndo: true,
@@ -13635,8 +13928,7 @@ describe("Notes workspace", () => {
     ]);
     renderNotesWorkspace();
     await findTitleInput("");
-    const title = (nodeId: string) =>
-      titleEditorInMotionRow(nodeId);
+    const title = (nodeId: string) => titleEditorInMotionRow(nodeId);
     const starting = await activateTitleEditorInMotionRow("empty-c");
     starting.setSelectionRange(0, 0);
 
@@ -13669,6 +13961,7 @@ describe("Notes workspace", () => {
         {
           op: "backspaceGesture",
           nodeIds: ["empty-c", "empty-b", "empty-a"],
+          expectedTitles: ["", "", ""],
           titleUpdate: null,
         },
         historyContextMatcher(),
@@ -13704,33 +13997,34 @@ describe("Notes workspace", () => {
         ],
       } as NoteAttachmentsByNodeId,
     },
-  ])("keeps whitespace title Backspace in one gesture for a $label row", async ({
-    protectedNode,
-    attachments,
-  }) => {
-    configureRepository([protectedNode], attachments);
-    renderNotesWorkspace();
-    const title = await findTitleInput(" ");
-    title.focus();
-    title.setSelectionRange(1, 1);
+  ])(
+    "keeps whitespace title Backspace in one gesture for a $label row",
+    async ({ protectedNode, attachments }) => {
+      configureRepository([protectedNode], attachments);
+      renderNotesWorkspace();
+      const title = await findTitleInput(" ");
+      title.focus();
+      title.setSelectionRange(1, 1);
 
-    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(true);
-    changeTitleEditor(title, "");
-    fireEvent.keyUp(window, { key: "Backspace" });
+      expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(true);
+      changeTitleEditor(title, "");
+      fireEvent.keyUp(window, { key: "Backspace" });
 
-    await waitFor(() =>
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
-        "/vault",
-        {
-          op: "backspaceGesture",
-          nodeIds: [],
-          titleUpdate: { id: protectedNode.id, title: "" },
-        },
-        historyContextMatcher(),
-      ),
-    );
-    expect(notesStoreMock.deleteNodes).not.toHaveBeenCalled();
-  });
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+          "/vault",
+          {
+            op: "backspaceGesture",
+            nodeIds: [],
+            expectedTitles: [],
+            titleUpdate: { id: protectedNode.id, title: "" },
+          },
+          historyContextMatcher(),
+        ),
+      );
+      expect(notesStoreMock.deleteNodes).not.toHaveBeenCalled();
+    },
+  );
 
   it("focuses the previous row immediately and commits an empty removal on keyup", async () => {
     const before = [
@@ -13770,6 +14064,7 @@ describe("Notes workspace", () => {
         {
           op: "backspaceGesture",
           nodeIds: ["empty"],
+          expectedTitles: [""],
           titleUpdate: null,
         },
         historyContextMatcher(),
@@ -13779,18 +14074,16 @@ describe("Notes workspace", () => {
     const committedContext = historyContext!;
 
     await act(async () =>
-      batch.resolve(
-        {
-          workspace: workspace(
-            before.filter((current) => current.id !== "empty"),
-          ),
-          historyEntryId: committedContext.entryId,
-          ...historyState({
-            canUndo: true,
-            nextUndoEntryId: committedContext.entryId,
-          }),
-        },
-      ),
+      batch.resolve({
+        workspace: workspace(
+          before.filter((current) => current.id !== "empty"),
+        ),
+        historyEntryId: committedContext.entryId,
+        ...historyState({
+          canUndo: true,
+          nextUndoEntryId: committedContext.entryId,
+        }),
+      }),
     );
     expect(await findTitleInput("First")).toHaveFocus();
     expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce();
@@ -13839,6 +14132,7 @@ describe("Notes workspace", () => {
         {
           op: "backspaceGesture",
           nodeIds: ["empty"],
+          expectedTitles: [""],
           titleUpdate: null,
         },
         historyContextMatcher(),
@@ -13848,20 +14142,18 @@ describe("Notes workspace", () => {
     const committedContext = historyContext!;
 
     await act(async () =>
-      batch.resolve(
-        {
-          workspace: workspace([
-            node({ id: "lifted-a", sortKey: 1, title: "Lifted A" }),
-            node({ id: "lifted-b", sortKey: 2, title: "Lifted B" }),
-            node({ id: "next", sortKey: 3, title: "Next" }),
-          ]),
-          historyEntryId: committedContext.entryId,
-          ...historyState({
-            canUndo: true,
-            nextUndoEntryId: committedContext.entryId,
-          }),
-        },
-      ),
+      batch.resolve({
+        workspace: workspace([
+          node({ id: "lifted-a", sortKey: 1, title: "Lifted A" }),
+          node({ id: "lifted-b", sortKey: 2, title: "Lifted B" }),
+          node({ id: "next", sortKey: 3, title: "Next" }),
+        ]),
+        historyEntryId: committedContext.entryId,
+        ...historyState({
+          canUndo: true,
+          nextUndoEntryId: committedContext.entryId,
+        }),
+      }),
     );
     expect(await findTitleInput("Lifted A")).toHaveFocus();
   });
@@ -15330,13 +15622,13 @@ describe("Notes workspace", () => {
 
   it("keeps a 6px split resize target around a 1px visible divider", () => {
     expect(notesStyles).toMatch(
-      /\.notes-detail-split\[data-split-open="true"\]\s*{[^}]*6px/s
+      /\.notes-detail-split\[data-split-open="true"\]\s*{[^}]*6px/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-split-divider::before\s*{[^}]*width:\s*1px;[^}]*background:\s*var\(--border\);/s
+      /\.notes-split-divider::before\s*{[^}]*width:\s*1px;[^}]*background:\s*var\(--border\);/s,
     );
     expect(notesStyles).toMatch(
-      /\.notes-split-divider:hover::before,[\s\S]*\.notes-split-divider:focus-visible::before\s*{[^}]*background:\s*var\(--accent\);/s
+      /\.notes-split-divider:hover::before,[\s\S]*\.notes-split-divider:focus-visible::before\s*{[^}]*background:\s*var\(--accent\);/s,
     );
   });
 

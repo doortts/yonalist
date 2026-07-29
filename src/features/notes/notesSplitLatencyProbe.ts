@@ -1,8 +1,9 @@
 import { createElement, Profiler, type ReactNode } from "react";
 import {
   readPlainText,
-  readPlainTextSelection
+  readPlainTextSelection,
 } from "./plainTextContenteditable";
+import { NOTES_SPLIT_LAYOUT_STORAGE_KEY } from "./notesSplitLayoutStore";
 
 /**
  * Dev-only instrumentation for split, caret, and row-render latency. Records
@@ -32,7 +33,7 @@ const PHASE_ORDER: readonly SplitLatencyPhase[] = [
   "settled",
   "rollback",
   "recovered",
-  "caret"
+  "caret",
 ];
 
 export type CaretLatencyPhase = "keydown" | "dom-focus" | "sync" | "paint";
@@ -41,7 +42,7 @@ const CARET_PHASE_ORDER: readonly CaretLatencyPhase[] = [
   "keydown",
   "dom-focus",
   "sync",
-  "paint"
+  "paint",
 ];
 
 function readDevFlag(): boolean {
@@ -98,16 +99,12 @@ export function setNotesSplitLatencyProbeEnabled(value: boolean): void {
 // no eviction policy — a session's abandoned splits are negligible.
 // ponytail: unbounded map, add an LRU cap only if a dev session ever leaks.
 const SPLIT_INPUT_BENCHMARK_PORT = "1438";
-const SPLIT_INPUT_BACKSPACE_FIXTURE_ID =
-  "10000031-0000-4000-8000-000000000031";
+const SPLIT_INPUT_BACKSPACE_FIXTURE_ID = "10000031-0000-4000-8000-000000000031";
 const SPLIT_INPUT_BENCHMARK_ORIGIN = `http://127.0.0.1:${SPLIT_INPUT_BENCHMARK_PORT}`;
 
 export type SplitInputBenchmarkOperation = "arrow" | "enter" | "backspace";
 export type SplitInputBenchmarkPhase =
-  | "visible"
-  | "authoritative-settled"
-  | "keyup-stop"
-  | "undo-restored";
+  "visible" | "authoritative-settled" | "keyup-stop" | "undo-restored";
 
 export interface HeldKeyFrameSummary {
   readonly deliveredKeydowns: number;
@@ -118,14 +115,14 @@ export interface HeldKeyFrameSummary {
 
 export function summarizeHeldKeyFrames(
   deliveredKeydowns: number,
-  frameDurationsMs: readonly number[]
+  frameDurationsMs: readonly number[],
 ): HeldKeyFrameSummary {
   const sorted = [...frameDurationsMs].sort((left, right) => left - right);
   return {
     deliveredKeydowns,
     frameDurationsMs: [...frameDurationsMs],
     frameP95Ms: sorted[Math.ceil(sorted.length * 0.95) - 1] ?? 0,
-    framesOver34Ms: frameDurationsMs.filter((duration) => duration > 34).length
+    framesOver34Ms: frameDurationsMs.filter((duration) => duration > 34).length,
   };
 }
 
@@ -164,7 +161,7 @@ export type SplitInputBenchmarkSample = {
 export type NotesSplitInputBenchmarkCollector = {
   begin: (
     operation: SplitInputBenchmarkOperation,
-    paneId: "primary" | "secondary"
+    paneId: "primary" | "secondary",
   ) => string;
   mark: (id: string, phase: SplitInputBenchmarkPhase) => void;
   recordPaneCommit: (id: string, paneId: "primary" | "secondary") => void;
@@ -200,7 +197,7 @@ export function createNotesSplitInputBenchmarkCollector(options: {
       inactivePaneCommits: record.inactivePaneCommits,
       backlogWindowComplete: record.backlogWindowComplete,
       backlogAtTwoSeconds: record.backlogAtTwoSeconds,
-      invalidOverlap: record.invalidOverlap
+      invalidOverlap: record.invalidOverlap,
     }));
   const mark = (id: string, phase: SplitInputBenchmarkPhase): void => {
     if (!options.enabled) {
@@ -229,7 +226,7 @@ export function createNotesSplitInputBenchmarkCollector(options: {
           inactivePaneCommits: 0,
           backlogWindowComplete: false,
           backlogAtTwoSeconds: null,
-          invalidOverlap: false
+          invalidOverlap: false,
         });
       }
       return id;
@@ -272,13 +269,13 @@ export function createNotesSplitInputBenchmarkCollector(options: {
           ...record.heldGesture,
           elapsedMs: record.phases.map(({ phase, at }) => ({
             phase,
-            elapsedMs: at - record.startedAt
-          }))
+            elapsedMs: at - record.startedAt,
+          })),
         })),
         null,
-        2
+        2,
       );
-    }
+    },
   };
 }
 
@@ -293,6 +290,7 @@ export type NotesSplitInputBenchmarkInstallOptions = {
 type BenchmarkPaneId = "primary" | "secondary";
 
 const TITLE_EDITOR_SELECTOR = "[data-notes-bullet-title]";
+export const NOTES_REROUTED_HELD_ENTER_EVENT = "__yonalistReroutedHeldEnter";
 
 function benchmarkEditorFocusSnapshot(paneId: BenchmarkPaneId): {
   readonly id: string | undefined;
@@ -312,11 +310,8 @@ function benchmarkEditorFocusSnapshot(paneId: BenchmarkPaneId): {
   if (!selection) return null;
   return {
     id: active.closest<HTMLElement>("[data-outline-id]")?.dataset.outlineId,
-    selectionStart: Math.min(
-      selection.anchorUtf16,
-      selection.focusUtf16
-    ),
-    selectionEnd: Math.max(selection.anchorUtf16, selection.focusUtf16)
+    selectionStart: Math.min(selection.anchorUtf16, selection.focusUtf16),
+    selectionEnd: Math.max(selection.anchorUtf16, selection.focusUtf16),
   };
 }
 
@@ -324,8 +319,8 @@ function benchmarkPaneSnapshot(paneId: BenchmarkPaneId): string {
   return JSON.stringify({
     rows: [
       ...document.querySelectorAll<HTMLElement>(
-        `[data-notes-pane-id="${paneId}"] [data-outline-id]`
-      )
+        `[data-notes-pane-id="${paneId}"] [data-outline-id]`,
+      ),
     ].map((row) => ({
       id: row.dataset.outlineId,
       title: (() => {
@@ -338,9 +333,9 @@ function benchmarkPaneSnapshot(paneId: BenchmarkPaneId): string {
       })(),
       note:
         row.querySelector<HTMLTextAreaElement>("textarea.notes-node-note")
-          ?.value ?? ""
+          ?.value ?? "",
     })),
-    focus: benchmarkEditorFocusSnapshot(paneId)
+    focus: benchmarkEditorFocusSnapshot(paneId),
   });
 }
 
@@ -386,7 +381,7 @@ export function configureNotesSplitInputBenchmarkVault(
   storage: Pick<Storage, "getItem" | "setItem">,
   origin = window.location.origin,
   search = window.location.search,
-  configuredVault?: string
+  configuredVault?: string,
 ): boolean {
   if (!isSplitInputBenchmarkOrigin(origin)) return false;
   const vaultFolder =
@@ -395,17 +390,16 @@ export function configureNotesSplitInputBenchmarkVault(
   if (
     !vaultFolder ||
     !/^\/tmp\/yonalist-split-input-bench\.[A-Za-z0-9]+\/vault$/.test(
-      vaultFolder
+      vaultFolder,
     )
   ) {
     return false;
   }
   let current: Record<string, unknown> = {};
   try {
-    current = JSON.parse(storage.getItem("yonalist.settings.v1") ?? "{}") as Record<
-      string,
-      unknown
-    >;
+    current = JSON.parse(
+      storage.getItem("yonalist.settings.v1") ?? "{}",
+    ) as Record<string, unknown>;
   } catch {
     current = {};
   }
@@ -414,8 +408,12 @@ export function configureNotesSplitInputBenchmarkVault(
     JSON.stringify({
       ...current,
       vaultFolder,
-      githubNotificationsPluginEnabled: false
-    })
+      githubNotificationsPluginEnabled: false,
+    }),
+  );
+  storage.setItem(
+    NOTES_SPLIT_LAYOUT_STORAGE_KEY,
+    JSON.stringify({ version: 1, vaults: {} }),
   );
   return true;
 }
@@ -423,7 +421,10 @@ export function configureNotesSplitInputBenchmarkVault(
 let installedSplitInputBenchmarkCollector: InstalledSplitInputBenchmarkCollector | null =
   null;
 
-function markInstalledSplitPhase(splitId: string, phase: SplitLatencyPhase): void {
+function markInstalledSplitPhase(
+  splitId: string,
+  phase: SplitLatencyPhase,
+): void {
   const installed = installedSplitInputBenchmarkCollector;
   if (!installed) {
     return;
@@ -451,7 +452,7 @@ function markInstalledSplitPhase(splitId: string, phase: SplitLatencyPhase): voi
 }
 
 export function installNotesSplitInputBenchmarkCollector(
-  options: NotesSplitInputBenchmarkInstallOptions = {}
+  options: NotesSplitInputBenchmarkInstallOptions = {},
 ): () => void {
   if (
     !isSplitInputBenchmarkOrigin(options.origin) ||
@@ -461,7 +462,7 @@ export function installNotesSplitInputBenchmarkCollector(
   }
   const collector = createNotesSplitInputBenchmarkCollector({
     enabled: true,
-    now: options.now
+    now: options.now,
   });
   const installed: InstalledSplitInputBenchmarkCollector = {
     collector,
@@ -484,7 +485,7 @@ export function installNotesSplitInputBenchmarkCollector(
     heldGesture: null,
     generation: 0,
     scheduleClose: () => {},
-    finishBackspaceOperation: () => {}
+    finishBackspaceOperation: () => {},
   };
   installedSplitInputBenchmarkCollector = installed;
   const focusOperationIdsByPane = new Map<BenchmarkPaneId, string>();
@@ -498,7 +499,9 @@ export function installNotesSplitInputBenchmarkCollector(
   const scheduleOperationClose =
     options.scheduleOperationClose ??
     ((callback: () => void) =>
-      window.requestAnimationFrame(() => window.requestAnimationFrame(callback)));
+      window.requestAnimationFrame(() =>
+        window.requestAnimationFrame(callback),
+      ));
   installed.scheduleClose = (operationId) => {
     const generation = installed.generation;
     scheduleOperationClose(() => {
@@ -533,15 +536,16 @@ export function installNotesSplitInputBenchmarkCollector(
     collector.completeHeldGesture(gesture.operationId, {
       ...summarizeHeldKeyFrames(
         gesture.deliveredKeydowns,
-        gesture.frameDurationsMs
+        gesture.frameDurationsMs,
       ),
       finalFocusNodeId:
         active instanceof Element
-          ? active.closest<HTMLElement>("[data-outline-id]")?.dataset.outlineId ?? null
+          ? (active.closest<HTMLElement>("[data-outline-id]")?.dataset
+              .outlineId ?? null)
           : null,
       mountedOrdinaryRows: document.querySelectorAll(
-        `[data-notes-pane-id="${gesture.paneId}"] [data-outline-id]`
-      ).length
+        `[data-notes-pane-id="${gesture.paneId}"] [data-outline-id]`,
+      ).length,
     });
     installed.heldGesture = null;
   };
@@ -549,7 +553,7 @@ export function installNotesSplitInputBenchmarkCollector(
   const startHeldGesture = (
     operationId: string,
     paneId: BenchmarkPaneId,
-    key: string
+    key: string,
   ) => {
     const gesture: HeldKeyGesture = {
       operationId,
@@ -558,7 +562,7 @@ export function installNotesSplitInputBenchmarkCollector(
       deliveredKeydowns: 1,
       frameDurationsMs: [],
       priorFrameAt: now(),
-      frameRequestId: null
+      frameRequestId: null,
     };
     const sampleFrame = () => {
       if (installed.heldGesture !== gesture) return;
@@ -572,11 +576,12 @@ export function installNotesSplitInputBenchmarkCollector(
   };
 
   const fieldContext = (
-    target: EventTarget | null
+    target: EventTarget | null,
   ): { field: Element; paneId: BenchmarkPaneId } | null => {
-    const field = target instanceof Element
-      ? target.closest<HTMLElement>(TITLE_EDITOR_SELECTOR)
-      : null;
+    const field =
+      target instanceof Element
+        ? target.closest<HTMLElement>(TITLE_EDITOR_SELECTOR)
+        : null;
     const row = field?.closest<HTMLElement>("[data-outline-id]");
     const pane = field?.closest<HTMLElement>("[data-notes-pane-id]");
     const paneId = pane?.dataset.notesPaneId;
@@ -611,7 +616,7 @@ export function installNotesSplitInputBenchmarkCollector(
   const activateOperation = (
     operationId: string,
     paneId: BenchmarkPaneId,
-    operation: SplitInputBenchmarkOperation
+    operation: SplitInputBenchmarkOperation,
   ) => {
     const previousOperationId = installed.activeOperationId;
     if (previousOperationId && previousOperationId !== operationId) {
@@ -646,7 +651,7 @@ export function installNotesSplitInputBenchmarkCollector(
       "position:fixed",
       "inset:16px",
       "z-index:2147483647",
-      "font:14px ui-monospace,monospace"
+      "font:14px ui-monospace,monospace",
     ].join(";");
     output.value = value;
     document.getElementById(output.id)?.remove();
@@ -658,10 +663,15 @@ export function installNotesSplitInputBenchmarkCollector(
   const show = () => showValue(collector.result());
 
   const keydown = (event: KeyboardEvent) => {
+    if (Reflect.get(event, NOTES_REROUTED_HELD_ENTER_EVENT) === true) {
+      return;
+    }
     if (event.metaKey && event.altKey && event.code === "KeyS") {
       event.preventDefault();
       document
-        .querySelector<HTMLButtonElement>('button[aria-label="Open split view"]')
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Open split view"]',
+        )
         ?.click();
       return;
     }
@@ -702,9 +712,10 @@ export function installNotesSplitInputBenchmarkCollector(
         showValue(
           JSON.stringify({
             panes: document.querySelectorAll("[data-notes-pane-id]").length,
-            titleFields: document.querySelectorAll(TITLE_EDITOR_SELECTOR).length,
+            titleFields: document.querySelectorAll(TITLE_EDITOR_SELECTOR)
+              .length,
             openSplitButtons: document.querySelectorAll(
-              'button[aria-label="Open split view"]'
+              'button[aria-label="Open split view"]',
             ).length,
             activeClass:
               document.activeElement instanceof HTMLElement
@@ -712,11 +723,11 @@ export function installNotesSplitInputBenchmarkCollector(
                 : null,
             activePane:
               document.activeElement instanceof Element
-                ? document.activeElement.closest<HTMLElement>(
-                    "[data-notes-pane-id]"
-                  )?.dataset.notesPaneId ?? null
-                : null
-          })
+                ? (document.activeElement.closest<HTMLElement>(
+                    "[data-notes-pane-id]",
+                  )?.dataset.notesPaneId ?? null)
+                : null,
+          }),
         );
       } else {
         show();
@@ -732,7 +743,8 @@ export function installNotesSplitInputBenchmarkCollector(
       if (operationId) {
         installed.undoSnapshotsByPane.set(context.paneId, {
           id: operationId,
-          snapshot: installed.backspaceSnapshotsByPane.get(context.paneId) ?? ""
+          snapshot:
+            installed.backspaceSnapshotsByPane.get(context.paneId) ?? "",
         });
         if (installed.activeOperationId === operationId) {
           installed.activeOperationId = null;
@@ -797,7 +809,7 @@ export function installNotesSplitInputBenchmarkCollector(
       installed.activeBackspaceByPane.set(context.paneId, operationId);
       installed.backspaceSnapshotsByPane.set(
         context.paneId,
-        benchmarkPaneSnapshot(context.paneId)
+        benchmarkPaneSnapshot(context.paneId),
       );
     }
     focusOperationIdsByPane.set(context.paneId, operationId);
@@ -833,13 +845,8 @@ export function installNotesSplitInputBenchmarkCollector(
     const context = fieldContext(event.target);
     const gesture = installed.heldGesture;
     const paneId =
-      context?.paneId ??
-      (gesture?.key === event.key ? gesture.paneId : null);
-    if (
-      paneId &&
-      gesture?.paneId === paneId &&
-      gesture.key === event.key
-    ) {
+      context?.paneId ?? (gesture?.key === event.key ? gesture.paneId : null);
+    if (paneId && gesture?.paneId === paneId && gesture.key === event.key) {
       finishHeldGesture();
     }
     if (event.key !== "Backspace") return;
@@ -896,7 +903,7 @@ export function installNotesSplitInputBenchmarkCollector(
 
 /** Called from the dev-only React Profiler boundary around each real pane. */
 export function markNotesSplitInputBenchmarkPaneCommit(
-  paneId: BenchmarkPaneId
+  paneId: BenchmarkPaneId,
 ): void {
   const installed = installedSplitInputBenchmarkCollector;
   if (!installed) return;
@@ -915,7 +922,7 @@ export function markNotesSplitInputBenchmarkPaneCommit(
 
 export function NotesSplitInputBenchmarkProfiler({
   paneId,
-  children
+  children,
 }: {
   readonly paneId: BenchmarkPaneId;
   readonly children?: ReactNode;
@@ -924,22 +931,22 @@ export function NotesSplitInputBenchmarkProfiler({
     Profiler,
     {
       id: `notes-benchmark-${paneId}`,
-      onRender: () => markNotesSplitInputBenchmarkPaneCommit(paneId)
+      onRender: () => markNotesSplitInputBenchmarkPaneCommit(paneId),
     },
-    children
+    children,
   );
 }
 
 /** Captures the physical gesture identity before a real remove command starts. */
 export function captureNotesSplitInputBenchmarkBackspaceOperation(
-  paneId: BenchmarkPaneId
+  paneId: BenchmarkPaneId,
 ): string | null {
   const installed = installedSplitInputBenchmarkCollector;
   const operationId = installed?.activeBackspaceByPane.get(paneId);
   if (!installed || !operationId) return null;
   installed.backspacePendingCounts.set(
     operationId,
-    (installed.backspacePendingCounts.get(operationId) ?? 0) + 1
+    (installed.backspacePendingCounts.get(operationId) ?? 0) + 1,
   );
   return operationId;
 }
@@ -947,7 +954,7 @@ export function captureNotesSplitInputBenchmarkBackspaceOperation(
 /** Called after the captured empty-row remove command reaches a terminal outcome. */
 export function markNotesSplitInputBenchmarkBackspaceSettled(
   operationId: string | null,
-  outcome: "committed" | "skipped" | "failed"
+  outcome: "committed" | "skipped" | "failed",
 ): void {
   const installed = installedSplitInputBenchmarkCollector;
   if (!installed || !operationId) return;
@@ -957,20 +964,17 @@ export function markNotesSplitInputBenchmarkBackspaceSettled(
   if (outcome === "committed") {
     installed.backspaceCommittedCounts.set(
       operationId,
-      (installed.backspaceCommittedCounts.get(operationId) ?? 0) + 1
+      (installed.backspaceCommittedCounts.get(operationId) ?? 0) + 1,
     );
   }
-  if (
-    pending === 1 &&
-    installed.keyupBackspaceOperationIds.has(operationId)
-  ) {
+  if (pending === 1 && installed.keyupBackspaceOperationIds.has(operationId)) {
     installed.finishBackspaceOperation(operationId);
   }
 }
 
 export function markSplitPhase(
   splitId: string,
-  phase: SplitLatencyPhase
+  phase: SplitLatencyPhase,
 ): void {
   markInstalledSplitPhase(splitId, phase);
   const splitMarks = marks;
@@ -993,20 +997,17 @@ export function markSplitPhase(
     const end = byPhase.get("provisional-caret");
     if (start !== undefined && end !== undefined) {
       console.log(
-        `notes split-latency ${splitId.slice(0, 8)} ui=${(end - start).toFixed(1)}ms`
+        `notes split-latency ${splitId.slice(0, 8)} ui=${(end - start).toFixed(1)}ms`,
       );
     }
     return;
   }
-  if (
-    phase === "settled" &&
-    byPhase.has("provisional-caret")
-  ) {
+  if (phase === "settled" && byPhase.has("provisional-caret")) {
     const start = byPhase.get("keydown")!;
     const provisional = byPhase.get("provisional-caret")!;
     const end = byPhase.get("settled")!;
     console.log(
-      `notes split-latency ${splitId.slice(0, 8)} persistence=${(end - provisional).toFixed(1)}ms total=${(end - start).toFixed(1)}ms`
+      `notes split-latency ${splitId.slice(0, 8)} persistence=${(end - provisional).toFixed(1)}ms total=${(end - start).toFixed(1)}ms`,
     );
     splitMarks.delete(splitId);
     return;
@@ -1025,7 +1026,7 @@ export function markSplitPhase(
 function logSummary(
   splitId: string,
   byPhase: Map<SplitLatencyPhase, number>,
-  terminalPhase: SplitLatencyPhase = "caret"
+  terminalPhase: SplitLatencyPhase = "caret",
 ): void {
   const start = byPhase.get("keydown");
   const end = byPhase.get(terminalPhase);
@@ -1040,19 +1041,21 @@ function logSummary(
     if (time === undefined) {
       continue;
     }
-    spans.push(`${previousName}->${phase}=${(time - previousTime).toFixed(1)}ms`);
+    spans.push(
+      `${previousName}->${phase}=${(time - previousTime).toFixed(1)}ms`,
+    );
     previousTime = time;
     previousName = phase;
   }
   console.log(
-    `notes split-latency ${splitId.slice(0, 8)} total=${(end - start).toFixed(1)}ms ${spans.join(" ")}`
+    `notes split-latency ${splitId.slice(0, 8)} total=${(end - start).toFixed(1)}ms ${spans.join(" ")}`,
   );
 }
 
 export function markCaretPhase(
   nodeId: string,
   phase: CaretLatencyPhase,
-  info?: { visibleRows?: number }
+  info?: { visibleRows?: number },
 ): boolean {
   const records = caretMarks;
   if (!isNotesSplitLatencyProbeEnabled() || records === null) {
@@ -1061,7 +1064,7 @@ export function markCaretPhase(
   if (phase === "keydown") {
     records.set(nodeId, {
       times: new Map([["keydown", performance.now()]]),
-      visibleRows: info?.visibleRows
+      visibleRows: info?.visibleRows,
     });
     return true;
   }
@@ -1083,13 +1086,13 @@ export function markCaretPhase(
       const time = record.times.get(currentPhase);
       if (time === undefined) continue;
       spans.push(
-        `${previousName}->${currentPhase}=${(time - previousTime).toFixed(1)}ms`
+        `${previousName}->${currentPhase}=${(time - previousTime).toFixed(1)}ms`,
       );
       previousTime = time;
       previousName = currentPhase;
     }
     console.log(
-      `notes caret-latency ${nodeId.slice(0, 8)} rows=${record.visibleRows ?? "?"} total=${(end - start).toFixed(1)}ms ${spans.join(" ")}`
+      `notes caret-latency ${nodeId.slice(0, 8)} rows=${record.visibleRows ?? "?"} total=${(end - start).toFixed(1)}ms ${spans.join(" ")}`,
     );
   }
   records.delete(nodeId);

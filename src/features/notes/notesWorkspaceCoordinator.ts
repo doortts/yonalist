@@ -11,7 +11,7 @@ import {
   type NotesHistoryStatus,
   type NotesStore,
   type NotesWorkspace,
-  type NotesWorkspaceScope
+  type NotesWorkspaceScope,
 } from "../../domain/notes";
 import {
   createNotesHistorySession,
@@ -19,14 +19,14 @@ import {
   type NotesHistoryFocusField,
   type NotesHistoryPrimarySelection,
   type NotesHistorySession,
-  type NotesHistorySnapshot
+  type NotesHistorySnapshot,
 } from "./notesHistory";
 import type { ImageNodeInsertionAnchor } from "./imageNodeInsertion";
 import type { NotesPaneId } from "./notesPaneSession";
 import {
   normalizeWorkspace,
   type NormalizedNotesWorkspace as PresentationWorkspace,
-  type NotesWorkspaceDelta
+  type NotesWorkspaceDelta,
 } from "./notesWorkspaceReducer";
 import { canonicalizeTagFilters, scopeKey } from "./notesWorkspaceScope";
 import {
@@ -38,32 +38,32 @@ import {
   type OptimisticKeyboardInsertionStatus,
   optimisticInsertionRecoveryText,
   type OutlinePanePublicationSnapshot,
-  type PendingKeyboardInsertion
+  type PendingKeyboardInsertion,
 } from "./notesLocalStructure";
 import {
   classifyLocalStructureFailure,
-  settleLocalStructure
+  settleLocalStructure,
 } from "./notesLocalStructure";
 import {
   appendBackspaceRemoval,
-  type OptimisticBackspaceGesture
+  type OptimisticBackspaceGesture,
 } from "./notesBackspaceGesture";
 import type {
   NotesBackspaceDraftCommit,
   NotesBackspaceDraftLease,
   NotesKeyboardInsertionPreparation,
   NotesKeyboardInsertionRequest,
-  NotesProjectionPublication
+  NotesProjectionPublication,
 } from "./notesWorkspaceTypes";
 import {
   recoverUnknownOutcome,
   type NotesUnknownOutcomeDecision,
   type NotesUnknownOutcomeExpectation,
-  type NotesWriteAuthority
+  type NotesWriteAuthority,
 } from "./notesAuthorityRecovery";
 import {
   takeCommittedMutationReloadRecovery,
-  type CommittedMutationReloadRecovery
+  type CommittedMutationReloadRecovery,
 } from "./notesWorkspaceCommandSupport";
 
 export type NotesWorkspaceUiUpdate = Partial<{
@@ -129,7 +129,7 @@ export type NotesWorkspaceQueueSettlement = NotesWorkspaceQueueResult;
 export type NotesWorkspaceCommandOutcome = "committed" | "skipped" | "failed";
 
 function settlementOutcome(
-  result: NotesWorkspaceQueueSettlement
+  result: NotesWorkspaceQueueSettlement,
 ): NotesWorkspaceCommandOutcome {
   switch (result.kind) {
     case "authoritative":
@@ -150,7 +150,7 @@ export interface NotesWorkspaceQueueContext {
 }
 
 export type NotesWorkspaceQueueWork = (
-  context: NotesWorkspaceQueueContext
+  context: NotesWorkspaceQueueContext,
 ) => Promise<NotesWorkspaceQueueResult> | NotesWorkspaceQueueResult;
 
 export type NotesPendingSelectionPolicy = "clear" | "preserve";
@@ -164,18 +164,19 @@ export interface NotesWorkspaceEnqueueOptions {
 
 export type NotesWorkspaceDrainEnqueue = (
   work: NotesWorkspaceQueueWork,
-  options?: NotesWorkspaceEnqueueOptions
+  options?: NotesWorkspaceEnqueueOptions,
 ) => Promise<NotesWorkspaceCommandOutcome>;
 
 export interface NotesBackspaceGestureCommitInput {
   readonly gesture: OptimisticBackspaceGesture;
+  readonly expectedTitles: readonly string[];
   readonly historyContext: NotesHistoryContext;
   readonly draftCommit: NotesBackspaceDraftCommit;
 }
 
 export type NotesBackspaceGestureQueueWork = (
   context: NotesWorkspaceQueueContext,
-  input: NotesBackspaceGestureCommitInput
+  input: NotesBackspaceGestureCommitInput,
 ) => Promise<NotesWorkspaceQueueResult> | NotesWorkspaceQueueResult;
 
 export type NotesWorkspaceCoordinatorEvent =
@@ -221,10 +222,10 @@ export interface OpenNotesWorkspaceSessionOptions {
   onEvent(event: NotesWorkspaceCoordinatorEvent): void;
   beforeStructural?: (
     cutoff: number,
-    drainEnqueue?: NotesWorkspaceDrainEnqueue
+    drainEnqueue?: NotesWorkspaceDrainEnqueue,
   ) => Promise<boolean>;
   captureDraftCutoff?: (
-    publicationOwner: NotesProjectionPublicationOwner
+    publicationOwner: NotesProjectionPublicationOwner,
   ) => number;
   afterStructural?: (cutoff: number) => void;
   isCurrent?: () => boolean;
@@ -233,7 +234,7 @@ export interface OpenNotesWorkspaceSessionOptions {
   captureHistoryLocation?: () => NotesHistorySnapshot;
   applyHistoryLocation?: (
     workspace: PresentationWorkspace,
-    snapshot: NotesHistorySnapshot
+    snapshot: NotesHistorySnapshot,
   ) => boolean;
 }
 
@@ -242,7 +243,7 @@ export interface NotesNavigationPresentationLease {
   replaceBefore(before: NotesHistorySnapshot): void;
   setDestination(
     workspace: PresentationWorkspace,
-    after: NotesHistorySnapshot
+    after: NotesHistorySnapshot,
   ): void;
   commit(): readonly string[];
   cancel(): void;
@@ -255,11 +256,11 @@ export interface NotesWorkspaceCoordinatorSession {
   releaseDrain(): void;
   isLifecycleDraining(): boolean;
   reserveImageImportInsertion?(
-    anchor: ImageNodeInsertionAnchor
+    anchor: ImageNodeInsertionAnchor,
   ): NotesWorkspaceImageImportReservation;
   enqueue(
     work: NotesWorkspaceQueueWork,
-    options?: NotesWorkspaceEnqueueOptions
+    options?: NotesWorkspaceEnqueueOptions,
   ): Promise<NotesWorkspaceCommandOutcome>;
   enqueueStructural(
     work: NotesWorkspaceQueueWork,
@@ -270,21 +271,20 @@ export interface NotesWorkspaceCoordinatorSession {
       settleFailure?: (error: string) => void;
       keyboardInsertion?: NotesKeyboardInsertionPreparation;
       unknownOutcomeExpectation?: NotesUnknownOutcomeExpectation;
-    }
+    },
   ): Promise<NotesWorkspaceCommandOutcome>;
   prepareKeyboardInsertion(
-    input: NotesKeyboardInsertionRequest
+    input: NotesKeyboardInsertionRequest,
   ): NotesKeyboardInsertionPreparation | null;
-  cancelKeyboardInsertion(
-    preparation: NotesKeyboardInsertionPreparation
-  ): void;
+  cancelKeyboardInsertion(preparation: NotesKeyboardInsertionPreparation): void;
   updateOptimisticKeyboardInsertion(
     expectedNodeId: NoteId,
-    title: string
+    title: string,
   ): void;
+  setKeyboardInsertionGestureActive(active: boolean): void;
   dismissOptimisticInsertionFailure(): void;
   pendingKeyboardInsertion(
-    expectedNodeId: NoteId
+    expectedNodeId: NoteId,
   ): PendingKeyboardInsertion | undefined;
   beginBackspaceGesture(
     input: {
@@ -293,20 +293,24 @@ export interface NotesWorkspaceCoordinatorSession {
       readonly selection: NotesHistoryPrimarySelection;
     },
     createDraftLease: (token: number) => NotesBackspaceDraftLease | null,
-    work: NotesBackspaceGestureQueueWork
+    work: NotesBackspaceGestureQueueWork,
   ): number | null;
-  touchBackspaceGesture(token: number, nodeId: NoteId): void;
+  touchBackspaceGesture(
+    token: number,
+    nodeId: NoteId,
+    renderedTitle: string,
+  ): void;
   removeEmptyNodeInBackspaceGesture(
     token: number,
     nodeId: NoteId,
-    focusNodeId: NoteId | null
+    focusNodeId: NoteId | null,
   ): boolean;
   finishBackspaceGesture(
-    reason: "keyup" | "blur" | "hidden" | "drain"
+    reason: "keyup" | "blur" | "hidden" | "drain",
   ): Promise<NotesWorkspaceCommandOutcome>;
   cancelBackspaceGesture(): void;
   publishOutlinePaneState(
-    input: Omit<OutlinePanePublicationSnapshot, "sessionId">
+    input: Omit<OutlinePanePublicationSnapshot, "sessionId">,
   ): void;
   unregisterOutlinePane(paneId: string): void;
   writeAuthority(): NotesWriteAuthority;
@@ -316,12 +320,12 @@ export interface NotesWorkspaceCoordinatorSession {
   isCurrentOwner(token: number): boolean;
   reserveAdmittedNavigation(
     before?: NotesHistorySnapshot,
-    originPaneId?: NotesPaneId
+    originPaneId?: NotesPaneId,
   ): NotesNavigationPresentationLease;
   settleAuthoritativePresentation(
     workspace: PresentationWorkspace,
     snapshot: NotesHistorySnapshot,
-    options?: { readonly applyToCurrentOwner?: boolean }
+    options?: { readonly applyToCurrentOwner?: boolean },
   ): void;
   queueHistoryCleanup(entryIds: readonly string[]): void;
   drainHistoryCleanup(): Promise<void>;
@@ -330,7 +334,7 @@ export interface NotesWorkspaceCoordinatorSession {
     reload: () => Promise<{
       workspace: PresentationWorkspace;
       snapshot: NotesHistorySnapshot;
-    }>
+    }>,
   ): Promise<{
     workspace: PresentationWorkspace;
     snapshot: NotesHistorySnapshot;
@@ -340,7 +344,7 @@ export interface NotesWorkspaceCoordinatorSession {
     presentation: {
       workspace: PresentationWorkspace;
       snapshot: NotesHistorySnapshot;
-    }
+    },
   ): void;
 }
 
@@ -358,7 +362,7 @@ export interface NotesWorkspaceImageImportReservation {
 
 export interface NotesWorkspaceCoordinatorRegistry {
   openSession(
-    options: OpenNotesWorkspaceSessionOptions
+    options: OpenNotesWorkspaceSessionOptions,
   ): NotesWorkspaceCoordinatorSession;
   hasCoordinator(repository: NotesStore, vaultRoot: string): boolean;
 }
@@ -398,6 +402,15 @@ interface CoordinatorEntry {
   leases: Set<NavigationLeaseState>;
   optimisticKeyboardInsertions: Map<NoteId, OptimisticKeyboardInsertion>;
   optimisticInsertionFailure: OptimisticInsertionFailure | null;
+  deferredKeyboardInsertionSettlement: {
+    readonly owner: SessionState;
+    readonly ownerPaneId: string;
+    readonly insertionIds: NoteId[];
+    readonly result: Extract<
+      NotesWorkspaceQueueSettlement,
+      { kind: "authoritative" }
+    >;
+  } | null;
   nextFrontendSessionGeneration: number;
   reservedHistoryEntryIds: string[];
   writeAuthority: NotesWriteAuthority;
@@ -423,6 +436,7 @@ interface BackspaceGestureState {
   readonly historyContext: NotesHistoryContext;
   readonly draftLease: NotesBackspaceDraftLease;
   readonly work: NotesBackspaceGestureQueueWork;
+  readonly expectedTitlesByNodeId: Map<NoteId, string>;
   afterSnapshot: NotesHistorySnapshot | null;
   draftCommit: NotesBackspaceDraftCommit | null;
   finishing: Promise<NotesWorkspaceCommandOutcome> | null;
@@ -461,12 +475,11 @@ interface SessionState {
   beforeStructural:
     | ((
         cutoff: number,
-        drainEnqueue?: NotesWorkspaceDrainEnqueue
+        drainEnqueue?: NotesWorkspaceDrainEnqueue,
       ) => Promise<boolean>)
     | null;
   captureDraftCutoff:
-    | ((publicationOwner: NotesProjectionPublicationOwner) => number)
-    | null;
+    ((publicationOwner: NotesProjectionPublicationOwner) => number) | null;
   afterStructural: ((cutoff: number) => void) | null;
   isCurrent: (() => boolean) | null;
   getScope: (() => NotesWorkspaceScope) | null;
@@ -477,13 +490,17 @@ interface SessionState {
   strictPresentation: boolean;
   captureHistoryLocation: (() => NotesHistorySnapshot) | null;
   applyHistoryLocation:
-    | ((workspace: PresentationWorkspace, snapshot: NotesHistorySnapshot) => boolean)
+    | ((
+        workspace: PresentationWorkspace,
+        snapshot: NotesHistorySnapshot,
+      ) => boolean)
     | null;
   activated: boolean;
   ownerToken: number;
   readonly frontendSessionId: string;
   readonly frontendSessionGeneration: number;
   readonly outlinePanes: Map<string, OutlinePaneState>;
+  keyboardInsertionGestureActive: boolean;
   lifecycleBackspaceAuthority: object | null;
   coordinatorSession: NotesWorkspaceCoordinatorSession | null;
 }
@@ -494,7 +511,7 @@ interface CapturedDraftBarrierParticipant {
   readonly beforeStructural:
     | ((
         cutoff: number,
-        drainEnqueue?: NotesWorkspaceDrainEnqueue
+        drainEnqueue?: NotesWorkspaceDrainEnqueue,
       ) => Promise<boolean>)
     | null;
   readonly isCurrent: (() => boolean) | null;
@@ -504,8 +521,8 @@ interface CapturedDraftBarrierParticipant {
 function captureDraftBarrierParticipants(
   entry: CoordinatorEntry,
   publicationOwner: (
-    participant: SessionState
-  ) => NotesProjectionPublicationOwner
+    participant: SessionState,
+  ) => NotesProjectionPublicationOwner,
 ): CapturedDraftBarrierParticipant[] {
   return [...entry.sessions]
     .filter((participant) => participant.active)
@@ -528,13 +545,13 @@ function captureDraftBarrierParticipants(
           } catch {
             // Finalization cannot strand a structural queue or lifecycle drain.
           }
-        }
+        },
       };
     });
 }
 
 function finalizeDraftBarrierParticipants(
-  participants: readonly CapturedDraftBarrierParticipant[]
+  participants: readonly CapturedDraftBarrierParticipant[],
 ): void {
   for (const participant of participants) participant.finalize();
 }
@@ -560,9 +577,7 @@ interface InternalStructuralOptions {
 }
 
 interface InternalCoordinatorSession {
-  [LIFECYCLE_DRAIN_ENQUEUE](
-    authority: object
-  ): NotesWorkspaceDrainEnqueue;
+  [LIFECYCLE_DRAIN_ENQUEUE](authority: object): NotesWorkspaceDrainEnqueue;
 }
 
 interface LifecycleStructuralAdmission {
@@ -616,7 +631,7 @@ function errorMessage(cause: unknown): string {
 
 function settleFailureSafely(
   settleFailure: ((error: string) => void) | null | undefined,
-  error: string
+  error: string,
 ): void {
   try {
     settleFailure?.(error);
@@ -626,7 +641,7 @@ function settleFailureSafely(
 }
 
 function snapshotWorkspaceScope(
-  scope: NotesWorkspaceScope
+  scope: NotesWorkspaceScope,
 ): NotesWorkspaceScope {
   return scope.kind === "tags"
     ? { kind: "tags", tags: canonicalizeTagFilters(scope.tags) }
@@ -635,14 +650,14 @@ function snapshotWorkspaceScope(
 
 function clonePaneSnapshot(
   sessionId: string,
-  input: Omit<OutlinePanePublicationSnapshot, "sessionId">
+  input: Omit<OutlinePanePublicationSnapshot, "sessionId">,
 ): OutlinePanePublicationSnapshot {
   return {
     ...input,
     sessionId,
     scope: snapshotWorkspaceScope(input.scope),
     collapsedNodeIds: new Set(input.collapsedNodeIds),
-    locallyExpandedNodeIds: new Set(input.locallyExpandedNodeIds)
+    locallyExpandedNodeIds: new Set(input.locallyExpandedNodeIds),
   };
 }
 
@@ -659,7 +674,7 @@ function completionParts<T>(): {
 
 function notify(
   session: SessionState,
-  event: NotesWorkspaceCoordinatorEvent
+  event: NotesWorkspaceCoordinatorEvent,
 ): void {
   if (!session.active || !session.onEvent) {
     return;
@@ -673,7 +688,7 @@ function notify(
 
 function hasLiveActivationSession(item: ActivationItem): boolean {
   return [...item.sessions].some(
-    (session) => session.active && item.entry.sessions.has(session)
+    (session) => session.active && item.entry.sessions.has(session),
   );
 }
 
@@ -687,7 +702,7 @@ function retainHistorySnapshot(snapshot: NotesHistorySnapshot): void {
   const revisions = [
     snapshot.expansion,
     ...(snapshot.secondaryPane ? [snapshot.secondaryPane.expansion] : []),
-    ...(snapshot.tagFilterOrigin ? [snapshot.tagFilterOrigin.expansion] : [])
+    ...(snapshot.tagFilterOrigin ? [snapshot.tagFilterOrigin.expansion] : []),
   ];
   for (const revision of revisions) {
     // Revisions carry their originating pool record, so the shared pool can
@@ -700,7 +715,7 @@ function releaseHistorySnapshot(snapshot: NotesHistorySnapshot): void {
   const revisions = [
     snapshot.expansion,
     ...(snapshot.secondaryPane ? [snapshot.secondaryPane.expansion] : []),
-    ...(snapshot.tagFilterOrigin ? [snapshot.tagFilterOrigin.expansion] : [])
+    ...(snapshot.tagFilterOrigin ? [snapshot.tagFilterOrigin.expansion] : []),
   ];
   for (const revision of revisions) {
     notesExpansionSnapshotPool.release(revision);
@@ -708,11 +723,11 @@ function releaseHistorySnapshot(snapshot: NotesHistorySnapshot): void {
 }
 
 function workspaceFromPresentation(
-  workspace: PresentationWorkspace
+  workspace: PresentationWorkspace,
 ): NotesWorkspace {
   return {
     nodes: Object.values(workspace.nodesById),
-    attachmentsByNodeId: workspace.attachmentsByNodeId
+    attachmentsByNodeId: workspace.attachmentsByNodeId,
   };
 }
 
@@ -726,11 +741,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       readonly ownerPaneId: string;
       readonly sourceId: NoteId;
       readonly selection: NotesHistoryPrimarySelection;
-    }
+    },
   ): void => {
     const owner = [...entry.sessions].find(
       (session) =>
-        session.frontendSessionId === insertion.pending.ownerSessionId
+        session.frontendSessionId === insertion.pending.ownerSessionId,
     );
     if (!owner) return;
     notify(owner, {
@@ -739,21 +754,100 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         insertions: [...entry.optimisticKeyboardInsertions.values()].filter(
           (candidate) =>
             candidate.pending.ownerSessionId ===
-            insertion.pending.ownerSessionId
+            insertion.pending.ownerSessionId,
         ),
         failure:
           entry.optimisticInsertionFailure?.insertion.pending.ownerSessionId ===
           insertion.pending.ownerSessionId
             ? entry.optimisticInsertionFailure
-            : null
+            : null,
       },
-      ...(rollback ? { rollback } : {})
+      ...(rollback ? { rollback } : {}),
     });
+  };
+
+  const withoutWorkspaceDelta = (
+    result: Extract<NotesWorkspaceQueueSettlement, { kind: "authoritative" }>,
+  ): Extract<NotesWorkspaceQueueSettlement, { kind: "authoritative" }> => {
+    const { delta: _delta, ...settlement } = result;
+    return settlement;
+  };
+
+  const clearDeferredKeyboardInsertions = (
+    entry: CoordinatorEntry,
+    finalInsertion?: OptimisticKeyboardInsertion,
+  ): void => {
+    const deferred = entry.deferredKeyboardInsertionSettlement;
+    if (!deferred) return;
+    entry.deferredKeyboardInsertionSettlement = null;
+    let removed = finalInsertion;
+    for (const insertionId of [
+      ...deferred.insertionIds,
+      ...(finalInsertion ? [finalInsertion.pending.intent.expectedNodeId] : []),
+    ]) {
+      const insertion = entry.optimisticKeyboardInsertions.get(insertionId);
+      if (!insertion) continue;
+      removed ??= insertion;
+      entry.optimisticKeyboardInsertions.delete(insertionId);
+      entry.history.discard(insertion.historyContext.entryId);
+    }
+    if (removed) notifyOptimisticInsertion(entry, removed);
+  };
+
+  const flushDeferredKeyboardInsertionSettlement = (
+    entry: CoordinatorEntry,
+  ): void => {
+    const deferred = entry.deferredKeyboardInsertionSettlement;
+    if (!deferred) return;
+    if (deferred.owner.active) {
+      notify(deferred.owner, {
+        type: "settled",
+        result: deferred.result,
+        hasPendingWork: deferred.owner.pendingWork > 0,
+      });
+    }
+    clearDeferredKeyboardInsertions(entry);
+  };
+
+  const hasDirectDependentKeyboardInsertion = (
+    entry: CoordinatorEntry,
+    insertion: OptimisticKeyboardInsertion,
+  ): boolean => {
+    if (
+      entry.sessions.size !== 1 ||
+      entry.queue.length !== 0 ||
+      insertion.pending.intent.postcondition.kind !== "split"
+    ) {
+      return false;
+    }
+    const owner = [...entry.sessions][0];
+    if (
+      owner?.frontendSessionId === insertion.pending.ownerSessionId &&
+      owner.keyboardInsertionGestureActive
+    ) {
+      return true;
+    }
+    let foundCurrent = false;
+    for (const candidate of entry.optimisticKeyboardInsertions.values()) {
+      if (!foundCurrent) {
+        foundCurrent =
+          candidate.pending.intent.expectedNodeId ===
+          insertion.pending.intent.expectedNodeId;
+        continue;
+      }
+      return (
+        candidate.dependencyId === insertion.pending.intent.expectedNodeId &&
+        candidate.pending.ownerSessionId === insertion.pending.ownerSessionId &&
+        candidate.pending.ownerPaneId === insertion.pending.ownerPaneId &&
+        candidate.pending.intent.postcondition.kind === "split"
+      );
+    }
+    return false;
   };
 
   const notifyOptimisticBackspaceGesture = (
     state: BackspaceGestureState,
-    rollback = false
+    rollback = false,
   ): void => {
     const entry = state.owner.entry;
     const currentOwner =
@@ -763,32 +857,30 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     const recipient =
       state.owner.active && state.owner.isCurrent?.() !== false
         ? state.owner
-        : currentOwner ??
+        : (currentOwner ??
           [...entry.sessions].find(
             (candidate) =>
-              candidate.active && candidate.isCurrent?.() !== false
+              candidate.active && candidate.isCurrent?.() !== false,
           ) ??
-          state.owner;
+          state.owner);
     notify(recipient, {
       type: "optimisticBackspaceGesture",
-      snapshot: entry.backspaceGesture === state
-        ? state.snapshot
-        : null,
+      snapshot: entry.backspaceGesture === state ? state.snapshot : null,
       ...(rollback
         ? {
             rollback: {
               ownerPaneId: state.snapshot.ownerPaneId,
               nodeId: state.snapshot.startingNodeId,
-              selection: { ...state.snapshot.startingSelection }
-            }
+              selection: { ...state.snapshot.startingSelection },
+            },
           }
-        : {})
+        : {}),
     });
   };
 
   const updateOptimisticBackspaceGesture = (
     state: BackspaceGestureState,
-    snapshot: OptimisticBackspaceGesture
+    snapshot: OptimisticBackspaceGesture,
   ): void => {
     if (state.owner.entry.backspaceGesture !== state) return;
     state.snapshot = snapshot;
@@ -798,7 +890,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
   const clearOptimisticBackspaceGesture = (
     state: BackspaceGestureState,
     rollback = false,
-    outcome?: NotesWorkspaceCommandOutcome
+    outcome?: NotesWorkspaceCommandOutcome,
   ): void => {
     if (state.owner.entry.backspaceGesture !== state) return;
     state.owner.entry.backspaceGesture = null;
@@ -814,13 +906,12 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
   const setOptimisticInsertionStatus = (
     entry: CoordinatorEntry,
     expectedNodeId: NoteId,
-    status: OptimisticKeyboardInsertionStatus
+    status: OptimisticKeyboardInsertionStatus,
   ): void => {
     const current = entry.optimisticKeyboardInsertions.get(expectedNodeId);
     if (!current || current.status === status) return;
     const insertion = { ...current, status };
     entry.optimisticKeyboardInsertions.set(expectedNodeId, insertion);
-    notifyOptimisticInsertion(entry, insertion);
   };
 
   const removeOptimisticInsertion = (
@@ -830,10 +921,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       readonly ownerPaneId: string;
       readonly sourceId: NoteId;
       readonly selection: NotesHistoryPrimarySelection;
-    }
+    },
   ): void => {
-    const insertion =
-      entry.optimisticKeyboardInsertions.get(expectedNodeId);
+    const insertion = entry.optimisticKeyboardInsertions.get(expectedNodeId);
     if (!insertion) return;
     entry.optimisticKeyboardInsertions.delete(expectedNodeId);
     notifyOptimisticInsertion(entry, insertion, rollback);
@@ -841,8 +931,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
 
   const cancelKeyboardInsertion = (
     entry: CoordinatorEntry,
-    preparation: NotesKeyboardInsertionPreparation
+    preparation: NotesKeyboardInsertionPreparation,
   ): void => {
+    flushDeferredKeyboardInsertionSettlement(entry);
     const expectedNodeId = preparation.pending.intent.expectedNodeId;
     const optimistic = entry.optimisticKeyboardInsertions.get(expectedNodeId);
     if (optimistic && optimistic.pending !== preparation.pending) return;
@@ -855,7 +946,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
 
   const isKeyboardInsertionCurrent = (
     entry: CoordinatorEntry,
-    preparation: NotesKeyboardInsertionPreparation
+    preparation: NotesKeyboardInsertionPreparation,
   ): boolean => {
     const pending = preparation.pending;
     const expectedNodeId = pending.intent.expectedNodeId;
@@ -873,7 +964,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
   const keyboardInsertionSettlementMatches = async (
     entry: CoordinatorEntry,
     item: CommandItem,
-    result: Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>
+    result: Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>,
   ): Promise<boolean> => {
     const preparation = item.keyboardInsertion;
     if (!preparation) return true;
@@ -885,38 +976,49 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       result.historyStatus.nextUndoEntryId === context.entryId;
     if (!exactHistory) return false;
     const optimistic = entry.optimisticKeyboardInsertions.get(
-      preparation.pending.intent.expectedNodeId
+      preparation.pending.intent.expectedNodeId,
     );
     if (optimistic?.pending !== preparation.pending) return false;
     const localEntry = {
       ...optimisticKeyboardInsertionLocalEntry(optimistic),
-      postcondition: preparation.pending.intent.postcondition
+      postcondition: preparation.pending.intent.postcondition,
     };
-    let workspace = result.workspace;
+    const presentation = entry.authoritativePresentation;
     if (
-      result.projectionScope &&
-      result.projectionScope.kind !== "active"
+      (!result.projectionScope || result.projectionScope.kind === "active") &&
+      presentation?.snapshot.scope.kind === "active" &&
+      settleLocalStructure(
+        [localEntry],
+        preparation.pending.intent.token,
+        presentation.workspace,
+      ).length === 0
     ) {
+      return true;
+    }
+    let workspace = result.workspace;
+    if (result.projectionScope && result.projectionScope.kind !== "active") {
       try {
         workspace = await entry.repository.loadWorkspace(entry.vaultRoot, {
-          kind: "active"
+          kind: "active",
         });
       } catch {
         return false;
       }
     }
     const authoritative = normalizeWorkspace(workspace);
-    return settleLocalStructure(
-      [localEntry],
-      preparation.pending.intent.token,
-      authoritative
-    ).length === 0;
+    return (
+      settleLocalStructure(
+        [localEntry],
+        preparation.pending.intent.token,
+        authoritative,
+      ).length === 0
+    );
   };
 
   const acceptProjectionPublications = async (
     entry: CoordinatorEntry,
     item: CommandItem,
-    result: Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>
+    result: Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>,
   ): Promise<{
     publications: Map<SessionState, NotesProjectionPublication>;
     insertionFocusCanceled: boolean;
@@ -951,7 +1053,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           expanded.add(pending.intent.postcondition.expectedParentId);
           pane.snapshot = {
             ...pane.snapshot,
-            locallyExpandedNodeIds: expanded
+            locallyExpandedNodeIds: expanded,
           };
           locallyExpandedNodeIds = expanded;
         }
@@ -965,19 +1067,19 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                   ? {}
                   : {
                       expectedNavigationVersion:
-                        pending.navigationVersionAtDispatch
+                        pending.navigationVersionAtDispatch,
                     }),
                 ...(pending.userInteractionRevisionAtDispatch === undefined
                   ? {}
                   : {
                       expectedUserInteractionRevision:
-                        pending.userInteractionRevisionAtDispatch
-                    })
+                        pending.userInteractionRevisionAtDispatch,
+                    }),
               }
             : {}),
           ...(locallyExpandedNodeIds === undefined
             ? {}
-            : { locallyExpandedNodeIds })
+            : { locallyExpandedNodeIds }),
         });
       }
     }
@@ -986,19 +1088,19 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
 
   const notifyReopenInstruction = (
     entry: CoordinatorEntry,
-    preferred?: SessionState | null
+    preferred?: SessionState | null,
   ): void => {
     const target =
       preferred?.active && preferred.presentation === "writable"
         ? preferred
-        : [...entry.sessions].find(
-            (session) => session.active && session.presentation === "writable"
-          ) ?? null;
+        : ([...entry.sessions].find(
+            (session) => session.active && session.presentation === "writable",
+          ) ?? null);
     if (!target) return;
     notify(target, {
       type: "settled",
       result: { kind: "failure", error: HISTORY_REOPEN_INSTRUCTION },
-      hasPendingWork: target.pendingWork > 0
+      hasPendingWork: target.pendingWork > 0,
     });
   };
 
@@ -1007,21 +1109,21 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     workspace: PresentationWorkspace,
     snapshot: NotesHistorySnapshot,
     retainNew: boolean,
-    pendingOwnerApply = true
+    pendingOwnerApply = true,
   ): void => {
     if (retainNew) retainHistorySnapshot(snapshot);
     const previous = entry.authoritativePresentation;
     entry.authoritativePresentation = {
       workspace,
       snapshot,
-      pendingOwnerApply
+      pendingOwnerApply,
     };
     if (previous) releaseHistorySnapshot(previous.snapshot);
   };
 
   const applyPresentationTo = (
     entry: CoordinatorEntry,
-    candidate: SessionState
+    candidate: SessionState,
   ): boolean => {
     const presentation = entry.authoritativePresentation;
     if (!presentation) return true;
@@ -1031,7 +1133,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     try {
       return candidate.applyHistoryLocation(
         presentation.workspace,
-        presentation.snapshot
+        presentation.snapshot,
       );
     } catch {
       return false;
@@ -1040,19 +1142,19 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
 
   const confirmAppliedPresentation = (
     entry: CoordinatorEntry,
-    candidate: SessionState
+    candidate: SessionState,
   ): void => {
     const presentation = entry.authoritativePresentation;
     if (presentation) {
       candidate.confirmedWorkspace = workspaceFromPresentation(
-        presentation.workspace
+        presentation.workspace,
       );
     }
   };
 
   const transferOwner = (
     entry: CoordinatorEntry,
-    candidate: SessionState
+    candidate: SessionState,
   ): boolean => {
     if (
       !candidate.active ||
@@ -1093,13 +1195,15 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     lease.workspace = null;
   };
 
-  const drainHistoryCleanup = async (entry: CoordinatorEntry): Promise<void> => {
+  const drainHistoryCleanup = async (
+    entry: CoordinatorEntry,
+  ): Promise<void> => {
     if (entry.pendingHistoryCleanupIds.size === 0) return;
     const entryIds = [...entry.pendingHistoryCleanupIds];
     const state = await entry.repository.pruneHistoryEntries(entry.vaultRoot, {
       sessionId: entry.history.sessionId,
       historyEpoch: entry.history.historyEpoch,
-      entryIds
+      entryIds,
     });
     if (!isNotesHistoryState(state) || !entry.history.accepts(state)) {
       entry.historyBlocked = true;
@@ -1116,14 +1220,14 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     presentation: {
       workspace: PresentationWorkspace;
       snapshot: NotesHistorySnapshot;
-    }
+    },
   ): void => {
     // The replacement snapshot already owns a ref. Install it before releasing
     // any old timeline/canonical/lease owner that may share the same revision.
     const previous = entry.authoritativePresentation;
     entry.authoritativePresentation = {
       ...presentation,
-      pendingOwnerApply: true
+      pendingOwnerApply: true,
     };
     entry.history.reset(nextHistoryEpoch);
     for (const lease of [...entry.leases]) cancelNavigationLease(lease);
@@ -1187,7 +1291,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       try {
         await entry.repository.closeHistorySession(entry.vaultRoot, {
           sessionId: entry.history.sessionId,
-          historyEpoch: entry.history.historyEpoch
+          historyEpoch: entry.history.historyEpoch,
         });
       } catch {
         // Close errors cannot strand the registry generation.
@@ -1212,7 +1316,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
 
   const setWriteAuthority = (
     entry: CoordinatorEntry,
-    authority: NotesWriteAuthority
+    authority: NotesWriteAuthority,
   ): void => {
     entry.writeAuthority = authority;
     for (const session of entry.sessions) {
@@ -1226,7 +1330,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     reload: () => Promise<{
       workspace: PresentationWorkspace;
       snapshot: NotesHistorySnapshot;
-    }>
+    }>,
   ): Promise<{
     workspace: PresentationWorkspace;
     snapshot: NotesHistorySnapshot;
@@ -1241,14 +1345,14 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         }
         const status = await entry.repository.historyStatus(
           entry.vaultRoot,
-          entry.history.sessionId
+          entry.history.sessionId,
         );
         if (!isNotesHistoryState(status)) {
           throw new Error("Notes history status is invalid.");
         }
         const reset = await entry.repository.clearHistory(entry.vaultRoot, {
           sessionId: entry.history.sessionId,
-          historyEpoch: status.historyEpoch
+          historyEpoch: status.historyEpoch,
         });
         if (!isNotesHistoryResetResult(reset)) {
           throw new Error("Notes history reset was not acknowledged.");
@@ -1275,15 +1379,14 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
   const recoverUnknownOutcomeForEntry = (
     entry: CoordinatorEntry,
     expectation: NotesUnknownOutcomeExpectation,
-    preferredSession: SessionState | null
+    preferredSession: SessionState | null,
   ): Promise<NotesUnknownOutcomeDecision> => {
     if (entry.authorityRecovery) return entry.authorityRecovery;
     entry.unknownOutcomeExpectation = expectation;
     const generation = ++entry.authorityRecoveryGeneration;
     setWriteAuthority(entry, { kind: "recovering", generation });
     const recovery = (async (): Promise<NotesUnknownOutcomeDecision> => {
-      const committedReloadRecovery =
-        entry.committedMutationReloadRecovery;
+      const committedReloadRecovery = entry.committedMutationReloadRecovery;
       const exactCommittedHistory =
         committedReloadRecovery !== null &&
         committedReloadRecovery.historyContext.sessionId ===
@@ -1302,23 +1405,25 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       try {
         workspace = normalizeNotesWorkspace(
           await entry.repository.loadWorkspace(entry.vaultRoot, {
-            kind: "active"
-          })
+            kind: "active",
+          }),
         );
         if (!workspace) {
-          throw new Error("Notes authority reload returned an invalid workspace.");
+          throw new Error(
+            "Notes authority reload returned an invalid workspace.",
+          );
         }
       } catch (error) {
         const decision = recoverUnknownOutcome({
           expectation,
-          authority: { kind: "failed", error }
+          authority: { kind: "failed", error },
         });
         if (decision.kind !== "authorityUnknown") {
           throw new Error("Notes authority recovery classification failed.");
         }
         setWriteAuthority(entry, {
           kind: "unknown",
-          error: decision.error
+          error: decision.error,
         });
         return decision;
       }
@@ -1328,7 +1433,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         try {
           const status = await entry.repository.historyStatus(
             entry.vaultRoot,
-            expectation.historyContext.sessionId
+            expectation.historyContext.sessionId,
           );
           if (isNotesHistoryState(status)) historyStatus = status;
         } catch {
@@ -1353,21 +1458,21 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         !provenHistoryStatus
           ? {
               kind: "authorityUnknown",
-              error: AUTHORITY_RECOVERY_INSTRUCTION
+              error: AUTHORITY_RECOVERY_INSTRUCTION,
             }
           : provenHistoryStatus
             ? {
                 kind: "committedAndCurrent",
                 workspace,
-                historyStatus: provenHistoryStatus
+                historyStatus: provenHistoryStatus,
               }
             : recoverUnknownOutcome({
                 expectation,
                 authority: {
                   kind: "loaded",
                   workspace,
-                  ...(historyStatus ? { historyStatus } : {})
-                }
+                  ...(historyStatus ? { historyStatus } : {}),
+                },
               });
       if (decision.kind === "committedWithoutHistoryProof") {
         const recoveredWorkspace = decision.workspace;
@@ -1378,34 +1483,31 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               preferredSession,
               async () => ({
                 workspace: normalizeWorkspace(recoveredWorkspace),
-                snapshot
-              })
+                snapshot,
+              }),
             )
           : null;
         if (!recovered) {
           decision = {
             kind: "authorityUnknown",
-            error: AUTHORITY_RECOVERY_INSTRUCTION
+            error: AUTHORITY_RECOVERY_INSTRUCTION,
           };
         }
       }
-      if (
-        decision.kind === "committedAndCurrent" &&
-        exactCommittedHistory
-      ) {
+      if (decision.kind === "committedAndCurrent" && exactCommittedHistory) {
         const after = preferredSession?.captureHistoryLocation?.() ?? null;
         const accepted = after
           ? entry.history.acceptMutationResult(
               exactCommittedHistory.historyContext.entryId,
               after,
-              exactCommittedHistory.historyStatus
+              exactCommittedHistory.historyStatus,
             )
           : null;
         if (!accepted?.accepted) {
           if (after) releaseHistorySnapshot(after);
           decision = {
             kind: "authorityUnknown",
-            error: AUTHORITY_RECOVERY_INSTRUCTION
+            error: AUTHORITY_RECOVERY_INSTRUCTION,
           };
         } else {
           for (const entryId of accepted.unreachableEntryIds) {
@@ -1417,7 +1519,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       if (decision.kind === "authorityUnknown") {
         setWriteAuthority(entry, {
           kind: "unknown",
-          error: decision.error
+          error: decision.error,
         });
       } else {
         if (decision.kind === "committedAndCurrent") {
@@ -1435,7 +1537,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
   };
 
   const unknownOutcomeExpectation = (
-    item: CommandItem
+    item: CommandItem,
   ): NotesUnknownOutcomeExpectation => {
     if (item.unknownOutcomeExpectation) {
       return item.unknownOutcomeExpectation;
@@ -1447,7 +1549,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         sourceId: preparation.pending.intent.sourceId,
         expectedNodeId: preparation.pending.intent.expectedNodeId,
         postcondition: preparation.pending.intent.postcondition,
-        historyContext: preparation.historyContext
+        historyContext: preparation.historyContext,
       };
     }
     return {
@@ -1456,19 +1558,19 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         sessionId: item.entry.history.sessionId,
         historyEpoch: item.entry.history.historyEpoch,
         entryId: "",
-        commandKind: "unknown"
-      }
+        commandKind: "unknown",
+      },
     };
   };
 
   const recoveredQueueResult = async (
-    item: CommandItem
+    item: CommandItem,
   ): Promise<NotesWorkspaceQueueSettlement> => {
     const expectation = unknownOutcomeExpectation(item);
     const decision = await recoverUnknownOutcomeForEntry(
       item.entry,
       expectation,
-      item.owner
+      item.owner,
     );
     if (decision.kind === "authorityUnknown") {
       item.keyboardInsertionInvalidated = true;
@@ -1479,13 +1581,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       try {
         workspace = await item.entry.repository.loadWorkspace(
           item.entry.vaultRoot,
-          item.sourceScope
+          item.sourceScope,
         );
       } catch {
         item.keyboardInsertionInvalidated = true;
         return {
           kind: "failure",
-          error: "The recovered Notes workspace could not be projected."
+          error: "The recovered Notes workspace could not be projected.",
         };
       }
     }
@@ -1498,7 +1600,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         kind: "failure",
         error: "The draft outcome was recovered and requires manual retry.",
         workspace,
-        historyStatus
+        historyStatus,
       };
     }
     if (decision.kind === "notProvenCommitted") {
@@ -1507,7 +1609,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         kind: "failure",
         error: "The mutation could not be proven committed.",
         workspace,
-        historyStatus
+        historyStatus,
       };
     }
     const historyProven = decision.kind === "committedAndCurrent";
@@ -1528,22 +1630,22 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                     selectedId: expectedNodeId,
                     editingNoteId: expectedNodeId,
                     pendingFocusId: expectedNodeId,
-                    pendingFocusField: "title"
-                  }
+                    pendingFocusField: "title",
+                  },
                 }
               : {
                   uiUpdate: {
                     pendingFocusId: null,
-                    pendingFocusField: null
-                  }
-                })
+                    pendingFocusField: null,
+                  },
+                }),
           }
         : {
             uiUpdate: {
               pendingFocusId: null,
-              pendingFocusField: null
-            }
-          })
+              pendingFocusField: null,
+            },
+          }),
     };
   };
 
@@ -1552,7 +1654,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     decision: Exclude<
       NotesUnknownOutcomeDecision,
       { readonly kind: "authorityUnknown" }
-    >
+    >,
   ): void => {
     let recoveredDecision = decision;
     const backspace = entry.backspaceGesture;
@@ -1567,7 +1669,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         const accepted = entry.history.acceptMutationResult(
           backspace.historyContext.entryId,
           backspace.afterSnapshot,
-          recoveredDecision.historyStatus
+          recoveredDecision.historyStatus,
         );
         if (accepted.accepted) {
           for (const entryId of accepted.unreachableEntryIds) {
@@ -1578,7 +1680,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             normalizeWorkspace(recoveredDecision.workspace),
             backspace.afterSnapshot,
             false,
-            false
+            false,
           );
           backspace.afterSnapshot = null;
           backspace.draftLease.settle("committed");
@@ -1589,14 +1691,14 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           recoveredDecision = {
             kind: "notProvenCommitted",
             workspace: recoveredDecision.workspace,
-            historyStatus: recoveredDecision.historyStatus
+            historyStatus: recoveredDecision.historyStatus,
           };
         }
       } else if (recoveredDecision.kind === "committedAndCurrent") {
         recoveredDecision = {
           kind: "notProvenCommitted",
           workspace: recoveredDecision.workspace,
-          historyStatus: recoveredDecision.historyStatus
+          historyStatus: recoveredDecision.historyStatus,
         };
       }
       if (
@@ -1628,7 +1730,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             historyStatus,
             historyVersion: entry.historyVersion,
             uiUpdate: { pendingFocusId: null, pendingFocusField: null },
-            scopeAgnostic: true
+            scopeAgnostic: true,
           }
         : {
             kind: "authoritative",
@@ -1636,7 +1738,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             historyStatus,
             historyVersion: entry.historyVersion,
             uiUpdate: { pendingFocusId: null, pendingFocusField: null },
-            scopeAgnostic: true
+            scopeAgnostic: true,
           };
     for (const candidate of entry.sessions) {
       candidate.confirmedWorkspace = recoveredDecision.workspace;
@@ -1646,14 +1748,14 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         hasPendingWork: candidate.pendingWork > 0,
         ...(candidate === entry.owner
           ? {}
-          : { sourceScope: { kind: "active" } })
+          : { sourceScope: { kind: "active" } }),
       } as NotesWorkspaceCoordinatorEvent);
     }
   };
 
   const finishCompletion = (
     item: QueueItem,
-    outcome: NotesWorkspaceCommandOutcome
+    outcome: NotesWorkspaceCommandOutcome,
   ): void => {
     const resolve = item.resolveCompletion;
     item.resolveCompletion = null;
@@ -1682,7 +1784,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
 
   const reserveImageImportInsertion = (
     entry: CoordinatorEntry,
-    anchor: ImageNodeInsertionAnchor
+    anchor: ImageNodeInsertionAnchor,
   ): NotesWorkspaceImageImportReservation => {
     const key = imageImportAnchorKey(anchor);
     let sequence = entry.imageImportSequences.get(key);
@@ -1690,7 +1792,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       sequence = {
         anchor,
         pendingReservations: 0,
-        committedTailId: null
+        committedTailId: null,
       };
       entry.imageImportSequences.set(key, sequence);
     }
@@ -1704,14 +1806,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         }
         return {
           parentId: sequence!.anchor.parentId,
-          afterId: sequence!.committedTailId
+          afterId: sequence!.committedTailId,
         };
       },
       commit(tailId: NoteId): void {
-        if (
-          released ||
-          entry.imageImportSequences.get(key) !== sequence
-        ) {
+        if (released || entry.imageImportSequences.get(key) !== sequence) {
           return;
         }
         sequence!.committedTailId = tailId;
@@ -1723,7 +1822,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         released = true;
         sequence!.pendingReservations = Math.max(
           0,
-          sequence!.pendingReservations - 1
+          sequence!.pendingReservations - 1,
         );
         if (
           sequence!.pendingReservations === 0 &&
@@ -1731,7 +1830,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         ) {
           entry.imageImportSequences.delete(key);
         }
-      }
+      },
     };
   };
 
@@ -1745,7 +1844,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
 
   const settleItem = async (
     item: QueueItem,
-    result: NotesWorkspaceQueueSettlement
+    result: NotesWorkspaceQueueSettlement,
   ): Promise<void> => {
     const entry = item.entry;
     if (entry.running !== item) {
@@ -1784,13 +1883,16 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           session.presentation === "writable" &&
           session.activated
         ) {
-          if (!entry.authoritativePresentation && session.captureHistoryLocation) {
+          if (
+            !entry.authoritativePresentation &&
+            session.captureHistoryLocation
+          ) {
             try {
               replaceAuthoritativePresentation(
                 entry,
                 normalizeWorkspace(authoritativeWorkspace),
                 session.captureHistoryLocation(),
-                false
+                false,
               );
             } catch {
               entry.presentationBlocked = true;
@@ -1820,13 +1922,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               workspace: presentationWorkspace,
               ...(presentation?.snapshot.libraryView === "tags"
                 ? { invalidatesTagSummaries: true }
-                : {})
+                : {}),
             }
           : result;
         notify(session, {
           type: "settled",
           result: settledResult,
-          hasPendingWork: session.pendingWork > 0
+          hasPendingWork: session.pendingWork > 0,
         });
       }
       item.sessions.clear();
@@ -1836,9 +1938,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         result.kind === "authoritative"
           ? await acceptProjectionPublications(entry, item, result)
           : {
-              publications:
-                new Map<SessionState, NotesProjectionPublication>(),
-              insertionFocusCanceled: item.keyboardInsertionInvalidated
+              publications: new Map<SessionState, NotesProjectionPublication>(),
+              insertionFocusCanceled: item.keyboardInsertionInvalidated,
             };
       if (entry.running !== item) return;
       entry.running = null;
@@ -1863,17 +1964,44 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                     uiUpdate: {
                       ...result.uiUpdate,
                       pendingFocusId: null,
-                      pendingFocusField: null
-                    }
+                      pendingFocusField: null,
+                    },
                   }),
               ...(ownerPublication
                 ? { projectionPublication: ownerPublication }
-                : {})
+                : {}),
             }
           : result;
+      const currentOptimisticInsertion = item.keyboardInsertion
+        ? entry.optimisticKeyboardInsertions.get(
+            item.keyboardInsertion.pending.intent.expectedNodeId,
+          )
+        : undefined;
+      const deferredSettlement = entry.deferredKeyboardInsertionSettlement;
+      const continuesDeferredChain =
+        deferredSettlement !== null &&
+        ownerResult.kind === "authoritative" &&
+        currentOptimisticInsertion !== undefined &&
+        currentOptimisticInsertion.dependencyId ===
+          deferredSettlement.insertionIds.at(-1) &&
+        currentOptimisticInsertion.pending.ownerSessionId ===
+          deferredSettlement.owner.frontendSessionId &&
+        currentOptimisticInsertion.pending.ownerPaneId ===
+          deferredSettlement.ownerPaneId;
+      if (deferredSettlement && !continuesDeferredChain) {
+        flushDeferredKeyboardInsertionSettlement(entry);
+      }
+      let settledKeyboardInsertion:
+        | {
+            readonly expectedNodeId: NoteId;
+            readonly preparation: NotesKeyboardInsertionPreparation;
+            readonly insertion: OptimisticKeyboardInsertion;
+          }
+        | undefined;
+      let deferredKeyboardInsertion = false;
       if (item.keyboardInsertion) {
-        const expectedNodeId =
-          item.keyboardInsertion.pending.intent.expectedNodeId;
+        const preparation = item.keyboardInsertion;
+        const expectedNodeId = preparation.pending.intent.expectedNodeId;
         const optimistic =
           entry.optimisticKeyboardInsertions.get(expectedNodeId);
         const failureResolution =
@@ -1883,11 +2011,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                   .filter(
                     (candidate) =>
                       candidate.pending.ownerSessionId ===
-                      optimistic.pending.ownerSessionId
+                      optimistic.pending.ownerSessionId,
                   )
                   .map(optimisticKeyboardInsertionLocalEntry),
                 optimistic.pending.intent.token,
-                item.keyboardInsertionInvalidated ? "unknown" : "known"
+                item.keyboardInsertionInvalidated ? "unknown" : "known",
               )
             : null;
         if (
@@ -1898,7 +2026,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           const recovered = await recoverUnknownOutcomeForEntry(
             entry,
             unknownOutcomeExpectation(item),
-            owner
+            owner,
           );
           if (recovered.kind !== "authorityUnknown") {
             publishManualAuthorityRecovery(entry, recovered);
@@ -1912,7 +2040,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                 ? `The new bullet could not be saved: ${ownerResult.error}. The last bullet action was reverted.`
                 : `The new bullet could not be saved: ${ownerResult.error}. The outline was reconciled from storage.`,
             recoveryText: optimisticInsertionRecoveryText(optimistic),
-            retryable: false
+            retryable: false,
           };
           removeOptimisticInsertion(
             entry,
@@ -1921,15 +2049,39 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               ? {
                   ownerPaneId: optimistic.pending.ownerPaneId,
                   sourceId: optimistic.pending.intent.sourceId,
-                  selection: optimistic.sourceSelection
+                  selection: optimistic.sourceSelection,
                 }
-              : undefined
+              : undefined,
           );
+          cancelKeyboardInsertion(entry, preparation);
+          item.keyboardInsertion = null;
+        } else if (optimistic && ownerResult.kind === "authoritative") {
+          if (
+            !item.keyboardInsertionInvalidated &&
+            hasDirectDependentKeyboardInsertion(entry, optimistic)
+          ) {
+            const previous = entry.deferredKeyboardInsertionSettlement;
+            entry.deferredKeyboardInsertionSettlement = {
+              owner: owner!,
+              ownerPaneId: optimistic.pending.ownerPaneId,
+              insertionIds: [...(previous?.insertionIds ?? []), expectedNodeId],
+              result: withoutWorkspaceDelta(ownerResult),
+            };
+            entry.history.discard(preparation.historyContext.entryId);
+            deferredKeyboardInsertion = true;
+            item.keyboardInsertion = null;
+          } else {
+            settledKeyboardInsertion = {
+              expectedNodeId,
+              preparation,
+              insertion: optimistic,
+            };
+          }
         } else {
           removeOptimisticInsertion(entry, expectedNodeId);
+          cancelKeyboardInsertion(entry, preparation);
+          item.keyboardInsertion = null;
         }
-        cancelKeyboardInsertion(entry, item.keyboardInsertion);
-        item.keyboardInsertion = null;
       }
       item.work = null;
       item.settleFailure = null;
@@ -1940,13 +2092,36 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         if (!item.silent) {
           owner.pendingWork = Math.max(0, owner.pendingWork - 1);
         }
-        notify(owner, {
-          type: "settled",
-          result: ownerResult,
-          hasPendingWork: owner.pendingWork > 0
-        });
+        if (!deferredKeyboardInsertion) {
+          notify(owner, {
+            type: "settled",
+            result:
+              settledKeyboardInsertion &&
+              entry.deferredKeyboardInsertionSettlement &&
+              ownerResult.kind === "authoritative"
+                ? withoutWorkspaceDelta(ownerResult)
+                : ownerResult,
+            hasPendingWork: owner.pendingWork > 0,
+          });
+        }
+      }
+      if (settledKeyboardInsertion) {
+        if (entry.deferredKeyboardInsertionSettlement) {
+          clearDeferredKeyboardInsertions(
+            entry,
+            settledKeyboardInsertion.insertion,
+          );
+        } else {
+          removeOptimisticInsertion(
+            entry,
+            settledKeyboardInsertion.expectedNodeId,
+          );
+          cancelKeyboardInsertion(entry, settledKeyboardInsertion.preparation);
+        }
+        item.keyboardInsertion = null;
       }
       if (
+        !deferredKeyboardInsertion &&
         authoritativeWorkspace &&
         !(result.kind === "authoritative" && result.suppressSynchronization)
       ) {
@@ -1956,9 +2131,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             : result.kind !== "skipped" && result.broadcastScope
               ? snapshotWorkspaceScope(result.broadcastScope)
               : owner?.active
-                ? snapshotWorkspaceScope(
-                    owner.getScope?.() ?? item.sourceScope
-                  )
+                ? snapshotWorkspaceScope(owner.getScope?.() ?? item.sourceScope)
                 : item.sourceScope;
         let synchronizedResult: NotesWorkspaceQueueSettlement;
         if (result.kind === "authoritative") {
@@ -1971,12 +2144,12 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             ...(result.clearLocalExpansionSubtreeId
               ? {
                   clearLocalExpansionSubtreeId:
-                    result.clearLocalExpansionSubtreeId
+                    result.clearLocalExpansionSubtreeId,
                 }
               : {}),
             ...(result.committedHistoryEntryIds
               ? {
-                  committedHistoryEntryIds: result.committedHistoryEntryIds
+                  committedHistoryEntryIds: result.committedHistoryEntryIds,
                 }
               : {}),
             ...(result.invalidatesTagSummaries
@@ -1984,7 +2157,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               : {}),
             ...(result.tagSummaries !== undefined
               ? { tagSummaries: result.tagSummaries }
-              : {})
+              : {}),
           };
         } else if (result.kind === "failure") {
           const {
@@ -2000,11 +2173,10 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           if (session !== owner) {
             const sessionPublication = projectionPublications.get(session);
             const sessionResult: NotesWorkspaceQueueSettlement =
-              sessionPublication &&
-              synchronizedResult.kind !== "skipped"
+              sessionPublication && synchronizedResult.kind !== "skipped"
                 ? {
                     ...synchronizedResult,
-                    projectionPublication: sessionPublication
+                    projectionPublication: sessionPublication,
                   }
                 : synchronizedResult;
             if (
@@ -2018,7 +2190,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               type: "synchronized",
               result: sessionResult,
               hasPendingWork: session.pendingWork > 0,
-              sourceScope
+              sourceScope,
             });
           }
         }
@@ -2039,7 +2211,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           try {
             initialization = item.entry.repository.initialize(
               item.entry.vaultRoot,
-              { sessionId: item.entry.history.sessionId }
+              { sessionId: item.entry.history.sessionId },
             );
           } catch (cause) {
             await Promise.resolve();
@@ -2048,7 +2220,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           const initialState = await initialization;
           if (!isNotesHistoryState(initialState)) {
             throw new Error(
-              "Notes initialization returned an invalid history state."
+              "Notes initialization returned an invalid history state.",
             );
           }
           item.entry.history.bindInitialization(initialState);
@@ -2060,12 +2232,12 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         } else {
           const workspace = await item.entry.repository.loadWorkspace(
             item.entry.vaultRoot,
-            { kind: "active" }
+            { kind: "active" },
           );
           result = {
             kind: "authoritative",
             workspace,
-            historyStatus: item.entry.historyStatus
+            historyStatus: item.entry.historyStatus,
           };
         }
       } else {
@@ -2074,7 +2246,10 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           result = { kind: "skipped" };
         } else if (item.entry.writeAuthority.kind !== "known") {
           result = { kind: "failure", error: AUTHORITY_RECOVERY_INSTRUCTION };
-        } else if (item.entry.historyBlocked || item.entry.presentationBlocked) {
+        } else if (
+          item.entry.historyBlocked ||
+          item.entry.presentationBlocked
+        ) {
           result = { kind: "failure", error: HISTORY_REOPEN_INSTRUCTION };
         } else {
           if (item.entry.pendingHistoryCleanupIds.size > 0) {
@@ -2086,7 +2261,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             confirmedWorkspace:
               item.owner?.confirmedWorkspace ?? item.entry.confirmedWorkspace,
             sourceScope: snapshotWorkspaceScope(item.sourceScope),
-            history: item.entry.history
+            history: item.entry.history,
           });
         }
       }
@@ -2099,7 +2274,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           try {
             status = await item.entry.repository.historyStatus(
               item.entry.vaultRoot,
-              item.entry.history.sessionId
+              item.entry.history.sessionId,
             );
           } catch {
             // Workspace authority remains valid when status discovery fails.
@@ -2111,7 +2286,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           result = {
             ...result,
             historyStatus: status,
-            historyVersion: item.entry.historyVersion
+            historyVersion: item.entry.historyVersion,
           };
         }
       }
@@ -2152,20 +2327,19 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               ? {
                   kind: "unclassified",
                   historyContext: committedReloadRecovery.historyContext,
-                  mutationCommitted: true
+                  mutationCommitted: true,
                 }
               : existingExpectation.kind === "unclassified"
                 ? { ...existingExpectation, mutationCommitted: true }
                 : existingExpectation;
-          item.entry.committedMutationReloadRecovery =
-            committedReloadRecovery;
+          item.entry.committedMutationReloadRecovery = committedReloadRecovery;
         } else if (
           cause.mutationCommitted === true &&
           item.unknownOutcomeExpectation?.kind === "unclassified"
         ) {
           item.unknownOutcomeExpectation = {
             ...item.unknownOutcomeExpectation,
-            mutationCommitted: true
+            mutationCommitted: true,
           };
         }
         result = await recoveredQueueResult(item);
@@ -2194,7 +2368,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               workspace: result.workspace,
               historyStatus: result.historyStatus,
               historyVersion: result.historyVersion,
-              committedHistoryEntryIds: result.committedHistoryEntryIds
+              committedHistoryEntryIds: result.committedHistoryEntryIds,
             }
           : { kind: "failure", error: errorMessage(cause) };
       await settleItem(item, projectionFailure);
@@ -2231,11 +2405,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           cancelItem(item);
           continue;
         }
-        if (
-          item.ownerToken === 0 &&
-          owner.activated &&
-          entry.owner === owner
-        ) {
+        if (item.ownerToken === 0 && owner.activated && entry.owner === owner) {
           item.ownerToken = owner.ownerToken;
         }
         if (
@@ -2250,14 +2420,21 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
 
       if (item.kind === "command" && item.keyboardInsertion) {
         const optimistic = entry.optimisticKeyboardInsertions.get(
-          item.keyboardInsertion.pending.intent.expectedNodeId
+          item.keyboardInsertion.pending.intent.expectedNodeId,
         );
-        if (
-          optimistic?.dependencyId &&
-          !entry.confirmedWorkspace.nodes.some(
-            (node) => node.id === optimistic.dependencyId
-          )
-        ) {
+        const dependencyId = optimistic?.dependencyId;
+        const dependencyExists =
+          !dependencyId ||
+          (entry.authoritativePresentation?.snapshot.scope.kind === "active"
+            ? Boolean(
+                entry.authoritativePresentation.workspace.nodesById[
+                  dependencyId
+                ],
+              )
+            : entry.confirmedWorkspace.nodes.some(
+                (node) => node.id === dependencyId,
+              ));
+        if (!dependencyExists) {
           cancelItem(item);
           continue;
         }
@@ -2267,7 +2444,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         setOptimisticInsertionStatus(
           entry,
           item.keyboardInsertion.pending.intent.expectedNodeId,
-          "running"
+          "running",
         );
       }
       void executeItem(item);
@@ -2280,7 +2457,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
   const createEntry = (
     repository: NotesStore,
     vaultRoot: string,
-    installed: boolean
+    installed: boolean,
   ): CoordinatorEntry => {
     const reservedHistoryEntryIds: string[] = [];
     return {
@@ -2294,39 +2471,40 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             ? () =>
                 reservedHistoryEntryIds.shift() ??
                 globalThis.crypto.randomUUID()
-            : () => LEGACY_HISTORY_SESSION_ID
+            : () => LEGACY_HISTORY_SESSION_ID,
       }),
-    initialized: false,
-    sessions: new Set(),
-    queue: [],
-    running: null,
-    pendingActivation: null,
-    structuralTail: Promise.resolve(),
-    pendingStructuralBarriers: 0,
-    historyStatus: {
-      canUndo: false,
-      canRedo: false,
-      historyEpoch: "",
-      nextUndoEntryId: null,
-      nextRedoEntryId: null,
-      prunedEntryIds: []
-    },
-    historyVersion: 0,
-    imageImportSequences: new Map(),
-    ownerToken: 0,
-    owner: null,
-    closing: null,
-    pendingNext: null,
-    installed,
-    historyRecovery: null,
-    historyBlocked: false,
-    presentationBlocked: false,
-    authoritativePresentation: null,
-    pendingHistoryCleanupIds: new Set(),
-    leases: new Set(),
-    optimisticKeyboardInsertions: new Map(),
-    optimisticInsertionFailure: null,
-    nextFrontendSessionGeneration: 0,
+      initialized: false,
+      sessions: new Set(),
+      queue: [],
+      running: null,
+      pendingActivation: null,
+      structuralTail: Promise.resolve(),
+      pendingStructuralBarriers: 0,
+      historyStatus: {
+        canUndo: false,
+        canRedo: false,
+        historyEpoch: "",
+        nextUndoEntryId: null,
+        nextRedoEntryId: null,
+        prunedEntryIds: [],
+      },
+      historyVersion: 0,
+      imageImportSequences: new Map(),
+      ownerToken: 0,
+      owner: null,
+      closing: null,
+      pendingNext: null,
+      installed,
+      historyRecovery: null,
+      historyBlocked: false,
+      presentationBlocked: false,
+      authoritativePresentation: null,
+      pendingHistoryCleanupIds: new Set(),
+      leases: new Set(),
+      optimisticKeyboardInsertions: new Map(),
+      optimisticInsertionFailure: null,
+      deferredKeyboardInsertionSettlement: null,
+      nextFrontendSessionGeneration: 0,
       reservedHistoryEntryIds,
       writeAuthority: { kind: "known" },
       authorityRecoveryGeneration: 0,
@@ -2336,13 +2514,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       nextBackspaceGestureToken: 0,
       backspaceGesture: null,
       nextLifecycleDrainGeneration: 0,
-      lifecycleDrain: null
+      lifecycleDrain: null,
     };
   };
 
   const getOrCreateEntry = (
     repository: NotesStore,
-    vaultRoot: string
+    vaultRoot: string,
   ): CoordinatorEntry => {
     let repositoryEntries = entries.get(repository);
     if (!repositoryEntries) {
@@ -2354,7 +2532,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     if (entry?.closing) {
       if (!entry.pendingNext) {
         entry.pendingNext = {
-          entry: createEntry(repository, vaultRoot, false)
+          entry: createEntry(repository, vaultRoot, false),
         };
       }
       return entry.pendingNext.entry;
@@ -2370,20 +2548,18 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     if (!session.active) {
       return;
     }
+    flushDeferredKeyboardInsertionSettlement(session.entry);
     const drainingBackspace =
       session.entry.backspaceGesture?.owner === session &&
       session.entry.backspaceGesture.finishing !== null;
 
-    if (
-      session.entry.owner === session &&
-      session.captureHistoryLocation
-    ) {
+    if (session.entry.owner === session && session.captureHistoryLocation) {
       try {
         replaceAuthoritativePresentation(
           session.entry,
           normalizeWorkspace(session.confirmedWorkspace),
           session.captureHistoryLocation(),
-          false
+          false,
         );
       } catch {
         session.entry.presentationBlocked = true;
@@ -2399,11 +2575,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     session.getScope = null;
     session.captureHistoryLocation = null;
     session.applyHistoryLocation = null;
-    for (const [expectedNodeId, insertion] of
-      session.entry.optimisticKeyboardInsertions) {
-      if (
-        insertion.pending.ownerSessionId !== session.frontendSessionId
-      ) {
+    for (const [expectedNodeId, insertion] of session.entry
+      .optimisticKeyboardInsertions) {
+      if (insertion.pending.ownerSessionId !== session.frontendSessionId) {
         continue;
       }
       session.entry.optimisticKeyboardInsertions.delete(expectedNodeId);
@@ -2415,12 +2589,14 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     if (session.entry.owner === session) {
       session.entry.owner = null;
       session.entry.ownerToken += 1;
-      const successor = [...session.entry.sessions].reverse().find(
-        (candidate) =>
-          candidate.active &&
-          candidate.activated &&
-          candidate.presentation === "writable"
-      );
+      const successor = [...session.entry.sessions]
+        .reverse()
+        .find(
+          (candidate) =>
+            candidate.active &&
+            candidate.activated &&
+            candidate.presentation === "writable",
+        );
       if (successor) {
         transferOwner(session.entry, successor);
       } else if (
@@ -2474,18 +2650,17 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       getScope,
       presentation,
       captureHistoryLocation,
-      applyHistoryLocation
+      applyHistoryLocation,
     }: OpenNotesWorkspaceSessionOptions): NotesWorkspaceCoordinatorSession {
       const entry = getOrCreateEntry(repository, vaultRoot);
       const resolvedPresentation = presentation;
-      const frontendSessionGeneration =
-        ++entry.nextFrontendSessionGeneration;
+      const frontendSessionGeneration = ++entry.nextFrontendSessionGeneration;
       const session: SessionState = {
         ...(() => {
           const close = completionParts<void>();
           return {
             closeCompletion: close.completion,
-            resolveClose: close.resolveCompletion
+            resolveClose: close.resolveCompletion,
           };
         })(),
         entry,
@@ -2508,8 +2683,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         frontendSessionId: `${vaultRoot}\u0000${frontendSessionGeneration}`,
         frontendSessionGeneration,
         outlinePanes: new Map(),
+        keyboardInsertionGestureActive: false,
         lifecycleBackspaceAuthority: null,
-        coordinatorSession: null
+        coordinatorSession: null,
       };
       entry.sessions.add(session);
 
@@ -2521,7 +2697,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           entry,
           sessions: new Set(),
           canceled: false,
-          ...completion
+          ...completion,
         };
         entry.pendingActivation = activation;
         entry.queue.push(activation);
@@ -2534,7 +2710,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       const activationCompletion = activation.completion.then(() => undefined);
       const enqueueCommand = (
         work: NotesWorkspaceQueueWork,
-        options: EnqueueCommandOptions = {}
+        options: EnqueueCommandOptions = {},
       ): Promise<NotesWorkspaceCommandOutcome> => {
         const {
           silent = false,
@@ -2546,8 +2722,25 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           publicationOwner = { kind: "other" },
           unknownOutcomeExpectation = null,
           lifecycleAuthority = null,
-          structuralAdmission = null
+          structuralAdmission = null,
         } = options;
+        const deferred = entry.deferredKeyboardInsertionSettlement;
+        const queuedInsertion = keyboardInsertion
+          ? entry.optimisticKeyboardInsertions.get(
+              keyboardInsertion.pending.intent.expectedNodeId,
+            )
+          : undefined;
+        const continuesDeferredChain =
+          deferred !== null &&
+          entry.sessions.size === 1 &&
+          keyboardInsertion?.pending.ownerSessionId ===
+            deferred.owner.frontendSessionId &&
+          keyboardInsertion.pending.ownerPaneId === deferred.ownerPaneId &&
+          keyboardInsertion.pending.intent.postcondition.kind === "split" &&
+          queuedInsertion?.dependencyId === deferred.insertionIds.at(-1);
+        if (deferred && !continuesDeferredChain) {
+          flushDeferredKeyboardInsertionSettlement(entry);
+        }
         if (!session.active && !retainAfterOwnerClose) {
           return Promise.resolve("skipped");
         }
@@ -2583,7 +2776,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               settleFailure,
               entry.writeAuthority.kind === "unknown"
                 ? entry.writeAuthority.error
-                : AUTHORITY_RECOVERY_INSTRUCTION
+                : AUTHORITY_RECOVERY_INSTRUCTION,
             );
             return Promise.resolve("skipped");
           }
@@ -2612,7 +2805,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           retainAfterOwnerClose,
           work,
           sourceScope: snapshotWorkspaceScope(
-            session.getScope?.() ?? { kind: "active" }
+            session.getScope?.() ?? { kind: "active" },
           ),
           silent,
           observer,
@@ -2623,7 +2816,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           publicationOwner,
           unknownOutcomeExpectation,
           canceled: false,
-          ...completion
+          ...completion,
         };
         // Silent (draft autosave) work must not surface as loading: skip the
         // pendingWork bump and the "pending" event so aria-busy stays put. Its
@@ -2637,7 +2830,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           setOptimisticInsertionStatus(
             entry,
             keyboardInsertion.pending.intent.expectedNodeId,
-            "queued"
+            "queued",
           );
         }
         if (!silent) {
@@ -2647,18 +2840,17 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             showLoading:
               keyboardInsertion === null ||
               entry.optimisticKeyboardInsertions.get(
-                keyboardInsertion.pending.intent.expectedNodeId
-              )?.pending !== keyboardInsertion.pending
+                keyboardInsertion.pending.intent.expectedNodeId,
+              )?.pending !== keyboardInsertion.pending,
           });
         }
         pump(entry);
         return item.completion;
       };
-      let coordinatorSession!:
-        & NotesWorkspaceCoordinatorSession
-        & InternalCoordinatorSession;
+      let coordinatorSession!: NotesWorkspaceCoordinatorSession &
+        InternalCoordinatorSession;
       const executeLifecycleDrain = async (
-        lifecycle: NonNullable<CoordinatorEntry["lifecycleDrain"]>
+        lifecycle: NonNullable<CoordinatorEntry["lifecycleDrain"]>,
       ): Promise<boolean> => {
         await activationCompletion;
         if (
@@ -2696,24 +2888,22 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           return false;
         }
 
-        const participants = captureDraftBarrierParticipants(
-          entry,
-          () => ({ kind: "other" })
-        );
+        const participants = captureDraftBarrierParticipants(entry, () => ({
+          kind: "other",
+        }));
         try {
           for (const participant of participants) {
             const drainEnqueue = (
-              participant.participant
-                .coordinatorSession as
-                  | (NotesWorkspaceCoordinatorSession &
-                      InternalCoordinatorSession)
-                  | null
+              participant.participant.coordinatorSession as
+                | (NotesWorkspaceCoordinatorSession &
+                    InternalCoordinatorSession)
+                | null
             )?.[LIFECYCLE_DRAIN_ENQUEUE](lifecycle.authority);
             if (
               participant.beforeStructural &&
               !(await participant.beforeStructural(
                 participant.cutoff,
-                drainEnqueue
+                drainEnqueue,
               ))
             ) {
               return false;
@@ -2724,7 +2914,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         }
 
         let observerRan = false;
-        await enqueueCommand(() => {
+        await enqueueCommand(
+          () => {
             observerRan = true;
             return { kind: "skipped" };
           },
@@ -2733,8 +2924,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             selectionPolicy: "preserve",
             retainAfterOwnerClose: true,
             observer: true,
-            lifecycleAuthority: lifecycle.authority
-          }
+            lifecycleAuthority: lifecycle.authority,
+          },
         );
         if (
           !observerRan ||
@@ -2749,7 +2940,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       };
       coordinatorSession = {
         [LIFECYCLE_DRAIN_ENQUEUE](
-          authority: object
+          authority: object,
         ): NotesWorkspaceDrainEnqueue {
           return (work, options) =>
             enqueueCommand(work, {
@@ -2758,7 +2949,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               publicationOwner: options?.publicationOwner,
               unknownOutcomeExpectation:
                 options?.unknownOutcomeExpectation ?? null,
-              lifecycleAuthority: authority
+              lifecycleAuthority: authority,
             });
         },
         activation: activationCompletion,
@@ -2772,7 +2963,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             authority: Object.freeze({}),
             generation: ++entry.nextLifecycleDrainGeneration,
             completion: terminal.completion,
-            settled: false
+            settled: false,
           };
           entry.lifecycleDrain = lifecycle;
           void executeLifecycleDrain(lifecycle).then(
@@ -2791,7 +2982,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               }
               terminal.resolveCompletion(false);
               maybeDeleteEntry(entry);
-            }
+            },
           );
           return terminal.completion;
         },
@@ -2806,7 +2997,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           return entry.lifecycleDrain !== null;
         },
         prepareKeyboardInsertion(
-          input: NotesKeyboardInsertionRequest
+          input: NotesKeyboardInsertionRequest,
         ): NotesKeyboardInsertionPreparation | null {
           if (
             !session.active ||
@@ -2815,9 +3006,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             entry.owner !== session ||
             !session.outlinePanes.has(input.ownerPaneId) ||
             entry.lifecycleDrain !== null ||
-            entry.optimisticKeyboardInsertions.has(
-              input.intent.expectedNodeId
-            )
+            entry.optimisticKeyboardInsertions.has(input.intent.expectedNodeId)
           ) {
             return null;
           }
@@ -2830,14 +3019,12 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           entry.reservedHistoryEntryIds.push(input.intent.expectedNodeId);
           try {
             historyContext = entry.history.beginStructuralEntry(
-              input.intent.postcondition.kind === "split"
-                ? "split"
-                : "create",
-              before
+              input.intent.postcondition.kind === "split" ? "split" : "create",
+              before,
             );
           } catch {
             const reservedIndex = entry.reservedHistoryEntryIds.indexOf(
-              input.intent.expectedNodeId
+              input.intent.expectedNodeId,
             );
             if (reservedIndex >= 0) {
               entry.reservedHistoryEntryIds.splice(reservedIndex, 1);
@@ -2847,7 +3034,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           const pending: PendingKeyboardInsertion = {
             intent: {
               ...input.intent,
-              ownerSessionGeneration: session.frontendSessionGeneration
+              ownerSessionGeneration: session.frontendSessionGeneration,
             },
             ownerSessionId: session.frontendSessionId,
             ownerPaneId: input.ownerPaneId,
@@ -2855,16 +3042,16 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               ? {}
               : {
                   navigationVersionAtDispatch:
-                    input.navigationVersionAtDispatch
+                    input.navigationVersionAtDispatch,
                 }),
             ...(input.userInteractionRevisionAtDispatch === undefined
               ? {}
               : {
                   userInteractionRevisionAtDispatch:
-                    input.userInteractionRevisionAtDispatch
+                    input.userInteractionRevisionAtDispatch,
                 }),
             expectedStructuralHistoryEpoch: historyContext.historyEpoch,
-            expectedStructuralHistoryEntryId: historyContext.entryId
+            expectedStructuralHistoryEntryId: historyContext.entryId,
           };
           const preparation = { pending, historyContext };
           const optimistic: OptimisticKeyboardInsertion = {
@@ -2874,20 +3061,20 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             sourceSelection: input.optimistic.sourceSelection,
             sourceTitle: input.optimistic.sourceTitle,
             insertedTitle: input.optimistic.insertedTitle,
+            createdAt: new Date().toISOString(),
             status: "prepared",
-            undoRequested: false
+            undoRequested: false,
           };
           entry.optimisticKeyboardInsertions.set(
             pending.intent.expectedNodeId,
-            optimistic
+            optimistic,
           );
           notifyOptimisticInsertion(entry, optimistic);
           return preparation;
         },
         cancelKeyboardInsertion(preparation): void {
           if (
-            preparation.pending.ownerSessionId ===
-            session.frontendSessionId
+            preparation.pending.ownerSessionId === session.frontendSessionId
           ) {
             cancelKeyboardInsertion(entry, preparation);
           }
@@ -2912,9 +3099,14 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           ) {
             backspaceGesture.draftLease.updateOptimisticInsertionTitle?.(
               expectedNodeId,
-              title
+              title,
             );
           }
+        },
+        setKeyboardInsertionGestureActive(active): void {
+          if (!session.active) return;
+          session.keyboardInsertionGestureActive = active;
+          if (!active) flushDeferredKeyboardInsertionSettlement(entry);
         },
         dismissOptimisticInsertionFailure(): void {
           const failure = entry.optimisticInsertionFailure;
@@ -2965,7 +3157,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           const focus = {
             nodeId: input.nodeId,
             field: "title" as const,
-            primarySelection: { ...input.selection }
+            primarySelection: { ...input.selection },
           };
           const before =
             input.ownerPaneId === "secondary"
@@ -2976,15 +3168,15 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                     secondaryPane: {
                       ...captured.secondaryPane,
                       selectedId: input.nodeId,
-                      focus
-                    }
+                      focus,
+                    },
                   }
                 : null
               : {
                   ...captured,
                   activePaneId: input.ownerPaneId,
                   selectedId: input.nodeId,
-                  focus
+                  focus,
                 };
           if (!before) {
             releaseHistorySnapshot(captured);
@@ -2994,7 +3186,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           try {
             historyContext = entry.history.beginStructuralEntry(
               "backspaceGesture",
-              before
+              before,
             );
           } catch {
             releaseHistorySnapshot(captured);
@@ -3021,22 +3213,23 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               removedNodeIds: [],
               titleUpdate: null,
               focusNodeId: input.nodeId,
-              status: "active"
+              status: "active",
             },
             owner: session,
             historyContext,
             draftLease,
             work,
+            expectedTitlesByNodeId: new Map(),
             afterSnapshot: null,
             draftCommit: null,
             finishing: null,
-            resolveFinishing: null
+            resolveFinishing: null,
           };
           entry.backspaceGesture = state;
           notifyOptimisticBackspaceGesture(state);
           return token;
         },
-        touchBackspaceGesture(token, nodeId): void {
+        touchBackspaceGesture(token, nodeId, renderedTitle): void {
           const state = entry.backspaceGesture;
           if (
             !state ||
@@ -3046,26 +3239,32 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           ) {
             return;
           }
+          if (!state.expectedTitlesByNodeId.has(nodeId)) {
+            const expectedTitle =
+              state.draftLease.touch(nodeId) ??
+              entry.optimisticKeyboardInsertions.get(nodeId)?.pending.intent
+                .postcondition.expectedInsertedTitle ??
+              renderedTitle;
+            state.expectedTitlesByNodeId.set(nodeId, expectedTitle);
+            return;
+          }
           state.draftLease.touch(nodeId);
         },
-        removeEmptyNodeInBackspaceGesture(
-          token,
-          nodeId,
-          focusNodeId
-        ): boolean {
+        removeEmptyNodeInBackspaceGesture(token, nodeId, focusNodeId): boolean {
           const state = entry.backspaceGesture;
           if (
             !state ||
             state.owner !== session ||
             state.snapshot.token !== token ||
-            state.snapshot.status !== "active"
+            state.snapshot.status !== "active" ||
+            !state.expectedTitlesByNodeId.has(nodeId)
           ) {
             return false;
           }
           const snapshot = appendBackspaceRemoval(state.snapshot, {
             nodeId,
             focusNodeId,
-            titleUpdate: null
+            titleUpdate: null,
           });
           if (snapshot === state.snapshot) return false;
           updateOptimisticBackspaceGesture(state, snapshot);
@@ -3073,9 +3272,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         },
         finishBackspaceGesture(reason): Promise<NotesWorkspaceCommandOutcome> {
           const requestedLifecycleAuthority =
-            reason === "drain"
-              ? session.lifecycleBackspaceAuthority
-              : null;
+            reason === "drain" ? session.lifecycleBackspaceAuthority : null;
           const lifecycleAuthority =
             requestedLifecycleAuthority !== null &&
             entry.lifecycleDrain?.authority === requestedLifecycleAuthority
@@ -3095,16 +3292,19 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           const queued = Object.freeze({
             ...state.snapshot,
             removedNodeIds: Object.freeze([...state.snapshot.removedNodeIds]),
-            status: "queued" as const
+            status: "queued" as const,
           });
           updateOptimisticBackspaceGesture(state, queued);
-          const rollback = (outcome: "failed" | "cancelled", restore: boolean) => {
+          const rollback = (
+            outcome: "failed" | "cancelled",
+            restore: boolean,
+          ) => {
             entry.history.discard(state.historyContext.entryId);
             state.draftLease.settle(outcome);
             clearOptimisticBackspaceGesture(
               state,
               restore,
-              outcome === "failed" ? "failed" : "skipped"
+              outcome === "failed" ? "failed" : "skipped",
             );
           };
           let after = session.captureHistoryLocation?.() ?? null;
@@ -3120,7 +3320,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           };
           const fail = (
             outcome: "failed" | "cancelled",
-            restore: boolean
+            restore: boolean,
           ): void => {
             releaseAfter();
             rollback(outcome, restore);
@@ -3130,10 +3330,19 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               fail("failed", true);
               return;
             }
+            const expectedTitles: string[] = [];
+            for (const nodeId of queued.removedNodeIds) {
+              const expectedTitle = state.expectedTitlesByNodeId.get(nodeId);
+              if (expectedTitle === undefined) {
+                fail("failed", true);
+                return;
+              }
+              expectedTitles.push(expectedTitle);
+            }
             let draftCommit: NotesBackspaceDraftCommit;
             try {
               draftCommit = await state.draftLease.prepare(
-                queued.removedNodeIds
+                queued.removedNodeIds,
               );
             } catch {
               fail("failed", true);
@@ -3155,28 +3364,29 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               ...queued,
               titleUpdate: draftCommit.titleUpdate
                 ? Object.freeze({ ...draftCommit.titleUpdate })
-                : null
+                : null,
             });
             updateOptimisticBackspaceGesture(state, prepared);
             const outcome = await coordinatorSession.enqueueStructural(
               async (context) => {
                 const running = Object.freeze({
                   ...prepared,
-                  status: "running" as const
+                  status: "running" as const,
                 });
                 updateOptimisticBackspaceGesture(state, running);
                 let result;
                 try {
                   result = await state.work(context, {
                     gesture: running,
+                    expectedTitles,
                     historyContext: state.historyContext,
-                    draftCommit
+                    draftCommit,
                   });
                 } catch (cause) {
                   if (isNotesMutationOutcomeUnknown(cause)) {
                     updateOptimisticBackspaceGesture(state, {
                       ...running,
-                      status: "checking"
+                      status: "checking",
                     });
                   }
                   throw cause;
@@ -3189,28 +3399,28 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                     error: "Backspace history location is unavailable.",
                     workspace: result.workspace,
                     historyStatus: result.historyStatus,
-                    committedHistoryEntryIds: result.committedHistoryEntryIds
+                    committedHistoryEntryIds: result.committedHistoryEntryIds,
                   };
                 }
                 if (result.historyStatus) {
                   const accepted = entry.history.acceptMutationResult(
                     state.historyContext.entryId,
                     acceptedAfter,
-                    result.historyStatus
+                    result.historyStatus,
                   );
                   if (!accepted.accepted) {
                     updateOptimisticBackspaceGesture(state, {
                       ...running,
-                      status: "checking"
+                      status: "checking",
                     });
                     throw Object.assign(
                       new Error(
-                        "Backspace history acknowledgement was rejected."
+                        "Backspace history acknowledgement was rejected.",
                       ),
                       {
                         notesMutationOutcome: "unknown" as const,
-                        mutationCommitted: true as const
-                      }
+                        mutationCommitted: true as const,
+                      },
                     );
                   }
                   for (const entryId of accepted.unreachableEntryIds) {
@@ -3219,7 +3429,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                 } else {
                   entry.history.rememberAfter(
                     state.historyContext.entryId,
-                    acceptedAfter
+                    acceptedAfter,
                   );
                 }
                 replaceAuthoritativePresentation(
@@ -3227,7 +3437,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                   normalizeWorkspace(result.workspace),
                   acceptedAfter,
                   false,
-                  false
+                  false,
                 );
                 state.afterSnapshot = null;
                 return result;
@@ -3237,16 +3447,16 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                 requireAllBarriers: true,
                 unknownOutcomeExpectation: {
                   kind: "unclassified",
-                  historyContext: state.historyContext
+                  historyContext: state.historyContext,
                 },
                 ...(lifecycleAuthority
                   ? { [LIFECYCLE_DRAIN_AUTHORITY]: lifecycleAuthority }
-                  : {})
+                  : {}),
               } as NonNullable<
                 Parameters<
                   NotesWorkspaceCoordinatorSession["enqueueStructural"]
                 >[1]
-              >
+              >,
             );
             if (outcome === "committed") {
               const recoveredAfter = state.afterSnapshot;
@@ -3259,16 +3469,16 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                 const accepted = entry.history.acceptMutationResult(
                   state.historyContext.entryId,
                   recoveredAfter,
-                  historyStatus
+                  historyStatus,
                 );
                 if (!accepted.accepted) {
                   updateOptimisticBackspaceGesture(state, {
                     ...state.snapshot,
-                    status: "checking"
+                    status: "checking",
                   });
                   setWriteAuthority(entry, {
                     kind: "unknown",
-                    error: AUTHORITY_RECOVERY_INSTRUCTION
+                    error: AUTHORITY_RECOVERY_INSTRUCTION,
                   });
                   return;
                 }
@@ -3280,7 +3490,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                   normalizeWorkspace(entry.confirmedWorkspace),
                   recoveredAfter,
                   false,
-                  false
+                  false,
                 );
                 state.afterSnapshot = null;
               }
@@ -3318,13 +3528,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         },
         publishOutlinePaneState(input): void {
           if (!session.active) return;
-          const snapshot = clonePaneSnapshot(
-            session.frontendSessionId,
-            input
-          );
+          const snapshot = clonePaneSnapshot(session.frontendSessionId, input);
           session.outlinePanes.set(input.paneId, { snapshot });
         },
         unregisterOutlinePane(paneId): void {
+          flushDeferredKeyboardInsertionSettlement(entry);
           const invalidate = (item: QueueItem | null): void => {
             if (
               item?.kind !== "command" ||
@@ -3339,11 +3547,12 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           invalidate(entry.running);
           for (const item of entry.queue) invalidate(item);
           session.outlinePanes.delete(paneId);
-          for (const [expectedNodeId, insertion] of
-            entry.optimisticKeyboardInsertions) {
+          for (const [
+            expectedNodeId,
+            insertion,
+          ] of entry.optimisticKeyboardInsertions) {
             if (
-              insertion.pending.ownerSessionId !==
-                session.frontendSessionId ||
+              insertion.pending.ownerSessionId !== session.frontendSessionId ||
               insertion.pending.ownerPaneId !== paneId
             ) {
               continue;
@@ -3358,18 +3567,19 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         retryAuthorityRecovery(): Promise<boolean> {
           const expectation = entry.unknownOutcomeExpectation;
           if (!expectation) return Promise.resolve(false);
-          const publish =
-            entry.writeAuthority.kind === "unknown";
-          return recoverUnknownOutcomeForEntry(entry, expectation, session).then(
-            (decision) => {
-              if (decision.kind === "authorityUnknown") return false;
-              if (publish) publishManualAuthorityRecovery(entry, decision);
-              return true;
-            }
-          );
+          const publish = entry.writeAuthority.kind === "unknown";
+          return recoverUnknownOutcomeForEntry(
+            entry,
+            expectation,
+            session,
+          ).then((decision) => {
+            if (decision.kind === "authorityUnknown") return false;
+            if (publish) publishManualAuthorityRecovery(entry, decision);
+            return true;
+          });
         },
         reserveImageImportInsertion(
-          anchor: ImageNodeInsertionAnchor
+          anchor: ImageNodeInsertionAnchor,
         ): NotesWorkspaceImageImportReservation {
           return reserveImageImportInsertion(entry, anchor);
         },
@@ -3380,14 +3590,14 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             observer?: boolean;
             publicationOwner?: NotesProjectionPublicationOwner;
             unknownOutcomeExpectation?: NotesUnknownOutcomeExpectation;
-          }
+          },
         ): Promise<NotesWorkspaceCommandOutcome> {
           return enqueueCommand(work, {
             silent: options?.silent ?? false,
             observer: options?.observer ?? false,
             publicationOwner: options?.publicationOwner,
             unknownOutcomeExpectation:
-              options?.unknownOutcomeExpectation ?? null
+              options?.unknownOutcomeExpectation ?? null,
           });
         },
         enqueueStructural(
@@ -3399,7 +3609,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             settleFailure?: (error: string) => void;
             keyboardInsertion?: NotesKeyboardInsertionPreparation;
             unknownOutcomeExpectation?: NotesUnknownOutcomeExpectation;
-          }
+          },
         ): Promise<NotesWorkspaceCommandOutcome> {
           if (session.presentation === "background") {
             return Promise.resolve("skipped");
@@ -3415,16 +3625,14 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               ? Object.freeze({
                   entry,
                   owner: session,
-                  generation: entry.nextLifecycleDrainGeneration + 1
+                  generation: entry.nextLifecycleDrainGeneration + 1,
                 })
               : null;
           const lifecycleAdmitted =
             entry.lifecycleDrain === null ||
-            (
-              lifecycleAuthority !== undefined &&
+            (lifecycleAuthority !== undefined &&
               entry.lifecycleDrain.owner === session &&
-              entry.lifecycleDrain.authority === lifecycleAuthority
-            );
+              entry.lifecycleDrain.authority === lifecycleAuthority);
           if (!lifecycleAdmitted) {
             return Promise.resolve("skipped");
           }
@@ -3444,7 +3652,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             setOptimisticInsertionStatus(
               entry,
               pending.intent.expectedNodeId,
-              "queued"
+              "queued",
             );
           }
           const participants = captureDraftBarrierParticipants(
@@ -3454,11 +3662,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                 participant === session && keyboardInsertion
                   ? {
                       kind: "keyboard-draft",
-                      intentToken: keyboardInsertion.pending.intent.token
+                      intentToken: keyboardInsertion.pending.intent.token,
                     }
                   : { kind: "other" };
               return publicationOwner;
-            }
+            },
           );
           const finalizeParticipants = (): void => {
             finalizeDraftBarrierParticipants(participants);
@@ -3481,8 +3689,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                   ) {
                     if (
                       requireAllBarriers ||
-                      (participant.active &&
-                        (intent.isCurrent?.() ?? true))
+                      (participant.active && (intent.isCurrent?.() ?? true))
                     ) {
                       // The draft-flush barrier failed for a still-current
                       // participant: drop the structural command rather than
@@ -3506,16 +3713,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                   unknownOutcomeExpectation:
                     options?.unknownOutcomeExpectation ?? null,
                   lifecycleAuthority,
-                  structuralAdmission
+                  structuralAdmission,
                 });
                 finalizeParticipants();
                 return await structural;
               } catch (cause) {
                 if (!options?.settleFailure) throw cause;
-                settleFailureSafely(
-                  options.settleFailure,
-                  errorMessage(cause)
-                );
+                settleFailureSafely(options.settleFailure, errorMessage(cause));
                 return "skipped";
               } finally {
                 finalizeParticipants();
@@ -3528,17 +3732,17 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           entry.structuralTail = completion
             .then(
               () => undefined,
-              () => undefined
+              () => undefined,
             )
             .finally(() => {
               entry.pendingStructuralBarriers = Math.max(
                 0,
-                entry.pendingStructuralBarriers - 1
+                entry.pendingStructuralBarriers - 1,
               );
               maybeDeleteEntry(entry);
             });
           const settlePreparedInsertion = (
-            outcome: NotesWorkspaceCommandOutcome
+            outcome: NotesWorkspaceCommandOutcome,
           ): NotesWorkspaceCommandOutcome => {
             if (
               keyboardInsertion &&
@@ -3557,8 +3761,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           return Promise.race([
             completion,
             session.closeCompletion.then(
-              (): NotesWorkspaceCommandOutcome => "skipped"
-            )
+              (): NotesWorkspaceCommandOutcome => "skipped",
+            ),
           ]).then(settlePreparedInsertion);
         },
         ownerToken(): number {
@@ -3575,7 +3779,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         },
         reserveAdmittedNavigation(
           before?: NotesHistorySnapshot,
-          originPaneId: NotesPaneId = "primary"
+          originPaneId: NotesPaneId = "primary",
         ): NotesNavigationPresentationLease {
           const canonicalBefore =
             before ?? entry.authoritativePresentation?.snapshot ?? null;
@@ -3593,7 +3797,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               replaceBefore() {},
               setDestination() {},
               commit: () => [],
-              cancel() {}
+              cancel() {},
             };
           }
           retainHistorySnapshot(canonicalBefore);
@@ -3603,7 +3807,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             before: canonicalBefore,
             after: null,
             workspace: null,
-            active: true
+            active: true,
           };
           entry.leases.add(state);
           return {
@@ -3638,13 +3842,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               const cleanupIds = entry.history.appendNavigation(
                 state.before,
                 destination,
-                state.originPaneId
+                state.originPaneId,
               );
               replaceAuthoritativePresentation(
                 entry,
                 destinationWorkspace,
                 destination,
-                false
+                false,
               );
               const candidate = entry.owner;
               if (!candidate || !applyPresentationTo(entry, candidate)) {
@@ -3669,7 +3873,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             },
             cancel() {
               cancelNavigationLease(state);
-            }
+            },
           };
         },
         settleAuthoritativePresentation(workspace, snapshot, options): void {
@@ -3714,7 +3918,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         },
         close(): void {
           closeSession(session);
-        }
+        },
       };
       session.coordinatorSession = coordinatorSession;
       return coordinatorSession;
@@ -3722,7 +3926,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
 
     hasCoordinator(repository: NotesStore, vaultRoot: string): boolean {
       return entries.get(repository)?.has(vaultRoot) ?? false;
-    }
+    },
   };
 }
 

@@ -1,9 +1,9 @@
-import type { NoteId, NotesStore } from "../../domain/notes";
+import type { NoteId, NoteNode, NotesStore } from "../../domain/notes";
 import type {
   NotesWorkspaceCoordinatorEvent,
   NotesWorkspaceCoordinatorSession,
   NotesWorkspaceQueueSettlement,
-  NotesWorkspaceUiUpdate
+  NotesWorkspaceUiUpdate,
 } from "./notesWorkspaceCoordinator";
 import type { OptimisticInsertionSnapshot } from "./notesLocalStructure";
 import type { NotesWorkspaceSessionRecord } from "./notesDraftEngine";
@@ -14,18 +14,65 @@ export interface RoutedKeyboardInsertionNavigation {
   readonly secondaryNavigation: NotesWorkspaceUiUpdate | null;
 }
 
+export function observeKeyboardInsertionGesture(
+  session: NotesWorkspaceCoordinatorSession,
+): () => void {
+  const end = (): void => {
+    session.setKeyboardInsertionGestureActive(false);
+  };
+  const keyDown = (event: globalThis.KeyboardEvent): void => {
+    const title =
+      event.target instanceof Element
+        ? event.target.closest<HTMLElement>("[data-notes-bullet-title]")
+        : null;
+    if (
+      !event.isTrusted ||
+      event.key !== "Enter" ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey ||
+      event.isComposing ||
+      !title ||
+      title.getAttribute("aria-expanded") === "true"
+    ) {
+      return;
+    }
+    session.setKeyboardInsertionGestureActive(true);
+  };
+  const keyUp = (event: globalThis.KeyboardEvent): void => {
+    if (event.isTrusted && event.key === "Enter") {
+      end();
+    }
+  };
+  const visibilityChange = (): void => {
+    if (document.visibilityState === "hidden") end();
+  };
+  window.addEventListener("keydown", keyDown, true);
+  window.addEventListener("keyup", keyUp, true);
+  window.addEventListener("blur", end);
+  document.addEventListener("visibilitychange", visibilityChange);
+  return () => {
+    window.removeEventListener("keydown", keyDown, true);
+    window.removeEventListener("keyup", keyUp, true);
+    window.removeEventListener("blur", end);
+    document.removeEventListener("visibilitychange", visibilityChange);
+    end();
+  };
+}
+
 export function recordPendingOptimisticTitles(
   previous: OptimisticInsertionSnapshot,
   event: Extract<
     NotesWorkspaceCoordinatorEvent,
     { type: "optimisticInsertion" }
   >,
-  pending: Map<NoteId, string>
+  pending: Map<NoteId, string>,
 ): void {
   const nextIds = new Set(
     event.snapshot.insertions.map(
-      (insertion) => insertion.pending.intent.expectedNodeId
-    )
+      (insertion) => insertion.pending.intent.expectedNodeId,
+    ),
   );
   for (const insertion of previous.insertions) {
     const expectedNodeId = insertion.pending.intent.expectedNodeId;
@@ -34,9 +81,13 @@ export function recordPendingOptimisticTitles(
       insertion.pending.intent.postcondition.kind === "split"
         ? insertion.pending.intent.postcondition.expectedInsertedTitle
         : "";
-    const consumedByDependent = event.snapshot.insertions.some(
-      (candidate) => candidate.dependencyId === expectedNodeId
-    );
+    const consumedByDependent =
+      event.snapshot.insertions.some(
+        (candidate) => candidate.dependencyId === expectedNodeId,
+      ) ||
+      previous.insertions.some(
+        (candidate) => candidate.dependencyId === expectedNodeId,
+      );
     const failedInsertionId =
       event.snapshot.failure?.insertion.pending.intent.expectedNodeId;
     if (
@@ -56,16 +107,13 @@ export interface ConfirmedOptimisticTitleUpdate {
   readonly imageOffsetUtf16: number;
 }
 
-export function confirmedOptimisticTitleUpdates(
-  result: NotesWorkspaceQueueSettlement,
-  pending: Map<NoteId, string>
+function takeConfirmedOptimisticTitleUpdates(
+  nodeForId: (nodeId: NoteId) => NoteNode | undefined,
+  pending: Map<NoteId, string>,
 ): readonly ConfirmedOptimisticTitleUpdate[] {
-  if (result.kind !== "authoritative") return [];
   const updates: ConfirmedOptimisticTitleUpdate[] = [];
   for (const [nodeId, title] of pending) {
-    const node = result.workspace.nodes.find(
-      (candidate) => candidate.id === nodeId
-    );
+    const node = nodeForId(nodeId);
     if (!node) continue;
     pending.delete(nodeId);
     if (node.title !== title) {
@@ -73,16 +121,39 @@ export function confirmedOptimisticTitleUpdates(
         nodeId,
         title,
         note: node.note,
-        imageOffsetUtf16: node.imageOffsetUtf16
+        imageOffsetUtf16: node.imageOffsetUtf16,
       });
     }
   }
   return updates;
 }
 
+export function confirmedOptimisticTitleUpdates(
+  result: NotesWorkspaceQueueSettlement,
+  pending: Map<NoteId, string>,
+): readonly ConfirmedOptimisticTitleUpdate[] {
+  return result.kind === "authoritative"
+    ? takeConfirmedOptimisticTitleUpdates(
+        (nodeId) =>
+          result.workspace.nodes.find((candidate) => candidate.id === nodeId),
+        pending,
+      )
+    : [];
+}
+
+export function confirmedOptimisticTitleUpdatesFromNodesById(
+  nodesById: Readonly<Record<NoteId, NoteNode>>,
+  pending: Map<NoteId, string>,
+): readonly ConfirmedOptimisticTitleUpdate[] {
+  return takeConfirmedOptimisticTitleUpdates(
+    (nodeId) => nodesById[nodeId],
+    pending,
+  );
+}
+
 export function routeKeyboardInsertionNavigation(
   result: NotesWorkspaceQueueSettlement,
-  navigationOwned = true
+  navigationOwned = true,
 ): RoutedKeyboardInsertionNavigation {
   if (result.kind === "skipped") {
     return { primaryResult: result, secondaryNavigation: null };
@@ -107,9 +178,9 @@ export function routeKeyboardInsertionNavigation(
         uiUpdate:
           Object.keys(retainedUiUpdate).length === 0
             ? undefined
-            : retainedUiUpdate
+            : retainedUiUpdate,
       },
-      secondaryNavigation: null
+      secondaryNavigation: null,
     };
   }
   if (
@@ -130,22 +201,21 @@ export function routeKeyboardInsertionNavigation(
     editingNoteId,
     pendingFocusId,
     pendingFocusField:
-      pendingFocusId == null ? pendingFocusField : (pendingFocusField ?? "title")
+      pendingFocusId == null
+        ? pendingFocusField
+        : (pendingFocusField ?? "title"),
   };
   return {
     primaryResult: {
       ...result,
       uiUpdate:
-        Object.keys(primaryUiUpdate).length === 0
-          ? undefined
-          : primaryUiUpdate
+        Object.keys(primaryUiUpdate).length === 0 ? undefined : primaryUiUpdate,
     },
-    secondaryNavigation
+    secondaryNavigation,
   };
 }
 
-export interface RoutedKeyboardInsertionSettlement
-  extends RoutedKeyboardInsertionNavigation {
+export interface RoutedKeyboardInsertionSettlement extends RoutedKeyboardInsertionNavigation {
   readonly focusRequest: {
     readonly paneId: "primary" | "secondary";
     readonly nodeId: NoteId;
@@ -159,7 +229,7 @@ export function routeKeyboardInsertionSettlement(
   result: NotesWorkspaceQueueSettlement,
   primaryNavigationVersion: number,
   secondaryNavigationVersion: number,
-  userInteractionRevision: number
+  userInteractionRevision: number,
 ): RoutedKeyboardInsertionSettlement {
   const publication =
     result.kind === "skipped" ? undefined : result.projectionPublication;
@@ -198,19 +268,22 @@ export function routeKeyboardInsertionSettlement(
       : result.kind === "failure"
         ? result.workspace
         : undefined;
+  const focusNode =
+    (result.kind === "authoritative"
+      ? result.delta?.changedNodes.find((candidate) => candidate.id === nodeId)
+      : undefined) ??
+    workspace?.nodes.find((candidate) => candidate.id === nodeId);
   return {
     ...routed,
     focusRequest: {
       paneId,
       nodeId,
-      titleLength:
-        workspace?.nodes.find((candidate) => candidate.id === nodeId)?.title
-          .length ?? 0,
+      titleLength: focusNode?.title.length ?? 0,
       expectedNavigationVersion,
       ...(expectedUserInteractionRevision === undefined
         ? {}
-        : { expectedUserInteractionRevision })
-    }
+        : { expectedUserInteractionRevision }),
+    },
   };
 }
 
@@ -219,7 +292,7 @@ export function unregisterOwnedOutlinePane(
   session: NotesWorkspaceCoordinatorSession | null,
   repository: NotesStore,
   vaultRoot: string,
-  paneId: string
+  paneId: string,
 ): void {
   if (
     record?.repository === repository &&
@@ -232,7 +305,8 @@ export function unregisterOwnedOutlinePane(
 
 export function settledLocalExpansions(
   current: ReadonlySet<NoteId>,
-  result: NotesWorkspaceQueueSettlement
+  result: NotesWorkspaceQueueSettlement,
+  paneId: "primary" | "secondary" = "primary",
 ): ReadonlySet<NoteId> {
   if (result.kind === "skipped") return current;
   const workspace = result.workspace;
@@ -241,9 +315,15 @@ export function settledLocalExpansions(
       ? expansionsOutsideSubtree(
           current,
           workspace,
-          result.clearLocalExpansionSubtreeId
+          result.clearLocalExpansionSubtreeId,
         )
       : current;
-  next = result.projectionPublication?.locallyExpandedNodeIds ?? next;
+  const publication = result.projectionPublication;
+  if (
+    (publication?.targetPaneId ?? "primary") === paneId &&
+    publication?.locallyExpandedNodeIds
+  ) {
+    next = publication.locallyExpandedNodeIds;
+  }
   return next;
 }

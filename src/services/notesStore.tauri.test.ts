@@ -3365,6 +3365,7 @@ describe("notesStore in Tauri", () => {
     const input = {
       op: "backspaceGesture",
       nodeIds: [secondNodeId, attachmentId],
+      expectedTitles: ["consumed second", "consumed attachment"],
       titleUpdate: { id: nodeId, title: "sur" }
     } as const satisfies ApplyNotesBatchInput;
     invokeMock.mockResolvedValue(unjournaledMutationResult);
@@ -3385,6 +3386,7 @@ describe("notesStore in Tauri", () => {
     const input = {
       op: "backspaceGesture",
       nodeIds: [],
+      expectedTitles: [],
       titleUpdate: { id: nodeId, title: "sur" }
     } as const satisfies ApplyNotesBatchInput;
     invokeMock.mockResolvedValue(unjournaledMutationResult);
@@ -3399,6 +3401,34 @@ describe("notesStore in Tauri", () => {
       input,
       historyContext
     });
+  });
+
+  it("rejects misaligned or duplicate backspace removals before native code", async () => {
+    await expect(
+      notesApplyBatch(
+        vaultPath,
+        {
+          op: "backspaceGesture",
+          nodeIds: [nodeId],
+          expectedTitles: [],
+          titleUpdate: null
+        },
+        historyContext
+      )
+    ).rejects.toThrow("one expected title");
+    await expect(
+      notesApplyBatch(
+        vaultPath,
+        {
+          op: "backspaceGesture",
+          nodeIds: [nodeId, nodeId],
+          expectedTitles: ["", ""],
+          titleUpdate: null
+        },
+        historyContext
+      )
+    ).rejects.toThrow("same node twice");
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it("preserves duplicated root ids without fabricating them when omitted", async () => {

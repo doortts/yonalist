@@ -13,7 +13,7 @@ import type {
   NotesHistoryContext,
   NotesMutationResponse,
   NotesStore,
-  NotesWorkspace
+  NotesWorkspace,
 } from "../../domain/notes";
 import {
   NotesActionsContext,
@@ -34,7 +34,7 @@ import {
 import {
   useNotesWorkspace,
   type UseNotesWorkspaceHookResult,
-  type UseNotesWorkspaceResult
+  type UseNotesWorkspaceResult,
 } from "./useNotesWorkspace";
 import type { NotesPaneRuntimeSlice } from "./notesWorkspaceTypes";
 
@@ -42,7 +42,7 @@ const createNoteIdMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../domain/notes", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../domain/notes")>()),
-  createNoteId: createNoteIdMock
+  createNoteId: createNoteIdMock,
 }));
 
 vi.mock("./NotesOutlinePane", () => ({
@@ -83,7 +83,7 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     imageOffsetUtf16: 0,
     ...overrides,
     markerKind: overrides.markerKind ?? "bullet",
-    markdownImageWidth: overrides.markdownImageWidth ?? null
+    markdownImageWidth: overrides.markdownImageWidth ?? null,
   };
 }
 
@@ -107,7 +107,7 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     historyEpoch: "history-epoch",
     nextUndoEntryId: null,
     nextRedoEntryId: null,
-    prunedEntryIds: []
+    prunedEntryIds: [],
   };
   return {
     initialize: vi.fn().mockResolvedValue(initialHistoryState),
@@ -142,26 +142,26 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
       workspace: workspace([]),
       replayedEntryId: null,
       canUndo: false,
-      canRedo: false
+      canRedo: false,
     }),
     redo: vi.fn().mockResolvedValue({
       workspace: workspace([]),
       replayedEntryId: null,
       canUndo: false,
-      canRedo: false
+      canRedo: false,
     }),
     lookupImageAtomOperation: vi.fn<NotesStore["lookupImageAtomOperation"]>(
       async (_vaultPath, _sessionId, historyEpoch) => ({
         kind: "missing",
-        historyEpoch
-      })
+        historyEpoch,
+      }),
     ),
     ackImageAtomOperation: vi.fn<NotesStore["ackImageAtomOperation"]>(
-      async () => undefined
+      async () => undefined,
     ),
     clearHistory: vi.fn().mockResolvedValue({
       ...initialHistoryState,
-      historyReset: true
+      historyReset: true,
     }),
     pruneHistoryEntries: vi.fn().mockResolvedValue(initialHistoryState),
     prepareNavigation: vi.fn().mockResolvedValue(initialHistoryState),
@@ -170,10 +170,12 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     search: vi.fn().mockResolvedValue([]),
     listTags: vi.fn().mockResolvedValue([]),
     listTagsWithCounts: vi.fn().mockResolvedValue([]),
-    deleteDatabase: vi.fn().mockResolvedValue({ attachmentCleanupFailed: false }),
+    deleteDatabase: vi
+      .fn()
+      .mockResolvedValue({ attachmentCleanupFailed: false }),
     importAttachmentPaths: vi.fn().mockResolvedValue(workspace([])),
     importAttachmentBytes: vi.fn().mockResolvedValue(workspace([])),
-    ...overrides
+    ...overrides,
   };
 }
 
@@ -189,7 +191,7 @@ describe("notes workspace context split", () => {
   it("keeps the actions object referentially stable across a draft keystroke", async () => {
     const store = repository();
     const { result } = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store }),
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
@@ -200,8 +202,9 @@ describe("notes workspace context split", () => {
     await act(async () => {
       result.current.actions.updateNodeDraft("root", {
         title: "typed",
-        note: ""
-      , imageOffsetUtf16: 0});
+        note: "",
+        imageOffsetUtf16: 0,
+      });
     });
 
     // The keystroke must actually mutate the draft slice, otherwise the
@@ -234,7 +237,10 @@ describe("notes workspace context split", () => {
     });
 
     function Harness() {
-      const value = useNotesWorkspace({ vaultRoot: "/vault", repository: store });
+      const value = useNotesWorkspace({
+        vaultRoot: "/vault",
+        repository: store,
+      });
       captured = value;
       return (
         <NotesActionsContext.Provider value={value.actionsSlice ?? value}>
@@ -255,7 +261,11 @@ describe("notes workspace context split", () => {
     const draftsRendersBefore = draftsRenders;
 
     await act(async () => {
-      captured!.actions.updateNodeDraft("root", { title: "typed", note: "" , imageOffsetUtf16: 0});
+      captured!.actions.updateNodeDraft("root", {
+        title: "typed",
+        note: "",
+        imageOffsetUtf16: 0,
+      });
     });
 
     // The drafts consumer must re-render (proving the keystroke propagated)...
@@ -268,7 +278,7 @@ describe("notes workspace context split", () => {
     createNoteIdMock.mockReturnValue("created-root");
     const store = repository();
     const { result } = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store }),
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
@@ -298,25 +308,27 @@ describe("notes workspace context split", () => {
 
   it("keeps pane navigation and selection independent over shared data", async () => {
     const store = repository({
-      loadWorkspace: vi.fn().mockResolvedValue(
-        workspace([
-          node({ id: "root" }),
-          node({ id: "other", sortKey: 2048 })
-        ])
-      )
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(
+          workspace([
+            node({ id: "root" }),
+            node({ id: "other", sortKey: 2048 }),
+          ]),
+        ),
     });
     const { result } = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store }),
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     const panes = () => result.current.paneRegistrySlice.panes;
     await act(async () => panes().primary.actionsSlice.actions.zoomTo("root"));
     await act(async () =>
-      panes().secondary.actionsSlice.actions.zoomTo("other")
+      panes().secondary.actionsSlice.actions.zoomTo("other"),
     );
     act(() =>
-      panes().secondary.actionsSlice.actions.setSelectionAnchor("other")
+      panes().secondary.actionsSlice.actions.setSelectionAnchor("other"),
     );
 
     expect(panes().primary.stateSlice.state.zoomRootId).toBe("root");
@@ -324,22 +336,22 @@ describe("notes workspace context split", () => {
     expect(panes().primary.draftsSlice.selection).toBeNull();
     expect(panes().secondary.draftsSlice.selection).toEqual({
       anchorId: "other",
-      headId: "other"
+      headId: "other",
     });
     expect(panes().primary.stateSlice.state.nodesById).toBe(
-      panes().secondary.stateSlice.state.nodesById
+      panes().secondary.stateSlice.state.nodesById,
     );
   });
 
   it("routes a secondary split focus only to the secondary pane", async () => {
     const initial = workspace([
       node({ id: "root", title: "Root", sortKey: 1024 }),
-      node({ id: "other", title: "Other", sortKey: 2048 })
+      node({ id: "other", title: "Other", sortKey: 2048 }),
     ]);
     const settled = workspace([
       node({ id: "root", title: "Ro", sortKey: 1024 }),
       node({ id: "split", title: "ot", sortKey: 1536 }),
-      node({ id: "other", title: "Other", sortKey: 2048 })
+      node({ id: "other", title: "Other", sortKey: 2048 }),
     ]);
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(initial),
@@ -347,7 +359,7 @@ describe("notes workspace context split", () => {
         async (
           _vaultRoot: string,
           _input: unknown,
-          context: NotesHistoryContext
+          context: NotesHistoryContext,
         ): Promise<NotesMutationResponse> => ({
           workspace: settled,
           historyEntryId: context.entryId,
@@ -356,15 +368,15 @@ describe("notes workspace context split", () => {
           historyEpoch: context.historyEpoch,
           nextUndoEntryId: context.entryId,
           nextRedoEntryId: null,
-          prunedEntryIds: []
-        })
-      )
+          prunedEntryIds: [],
+        }),
+      ),
     });
     const { result } = renderHook(() =>
       useNotesWorkspace({
         vaultRoot: "/secondary-insertion-routing",
-        repository: store
-      })
+        repository: store,
+      }),
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const panes = () => result.current.paneRegistrySlice.panes;
@@ -375,7 +387,7 @@ describe("notes workspace context split", () => {
     });
     expect(panes().primary.stateSlice.state).toMatchObject({
       selectedId: "other",
-      pendingFocusId: null
+      pendingFocusId: null,
     });
     result.current.actions.publishOutlinePaneState?.({
       paneId: "primary",
@@ -383,7 +395,7 @@ describe("notes workspace context split", () => {
       zoomedNodeId: "other",
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set()
+      locallyExpandedNodeIds: new Set(),
     });
     result.current.actions.publishOutlinePaneState?.({
       paneId: "secondary",
@@ -391,48 +403,42 @@ describe("notes workspace context split", () => {
       zoomedNodeId: null,
       showCompleted: true,
       collapsedNodeIds: new Set(),
-      locallyExpandedNodeIds: new Set()
+      locallyExpandedNodeIds: new Set(),
     });
     let preparation: ReturnType<
-      NonNullable<
-        typeof result.current.actions.prepareKeyboardInsertion
-      >
+      NonNullable<typeof result.current.actions.prepareKeyboardInsertion>
     > = null;
     act(() => {
       preparation =
         panes().secondary.actionsSlice.actions.prepareKeyboardInsertion?.({
-        ownerPaneId: "secondary",
-        intent: {
-          token: 41,
-          sourceId: "root",
-          expectedNodeId: "split",
-          postcondition: {
-            kind: "split",
-            expectedSourceTitle: "Ro",
-            expectedInsertedTitle: "ot"
-          }
-        },
-        optimistic: {
-          sourceSelection: { anchorUtf16: 2, focusUtf16: 2 },
-          sourceTitle: "Ro",
-          insertedTitle: "ot"
-        }
-      }) ?? null;
+          ownerPaneId: "secondary",
+          intent: {
+            token: 41,
+            sourceId: "root",
+            expectedNodeId: "split",
+            postcondition: {
+              kind: "split",
+              expectedSourceTitle: "Ro",
+              expectedInsertedTitle: "ot",
+            },
+          },
+          optimistic: {
+            sourceSelection: { anchorUtf16: 2, focusUtf16: 2 },
+            sourceTitle: "Ro",
+            insertedTitle: "ot",
+          },
+        }) ?? null;
     });
     expect(preparation).not.toBeNull();
+    expect(panes().primary.draftsSlice.optimisticKeyboardInsertions).toEqual(
+      [],
+    );
     expect(
-      panes().primary.draftsSlice.optimisticKeyboardInsertions
-    ).toEqual([]);
-    expect(
-      panes().secondary.draftsSlice.optimisticKeyboardInsertions?.[0]
-        .pending.intent.expectedNodeId
+      panes().secondary.draftsSlice.optimisticKeyboardInsertions?.[0].pending
+        .intent.expectedNodeId,
     ).toBe("split");
-    expect(
-      panes().primary.stateSlice.state.nodesById.split
-    ).toBeUndefined();
-    expect(
-      panes().secondary.stateSlice.state.nodesById.split
-    ).toBeUndefined();
+    expect(panes().primary.stateSlice.state.nodesById.split).toBeUndefined();
+    expect(panes().secondary.stateSlice.state.nodesById.split).toBeUndefined();
 
     await act(async () => {
       await panes().secondary.actionsSlice.actions.splitNode(
@@ -440,19 +446,19 @@ describe("notes workspace context split", () => {
         "split",
         "Ro",
         "ot",
-        { keyboardInsertion: preparation! }
+        { keyboardInsertion: preparation! },
       );
     });
 
     expect(panes().primary.stateSlice.state).toMatchObject({
       selectedId: "other",
-      pendingFocusId: null
+      pendingFocusId: null,
     });
     expect(panes().secondary.stateSlice.state).toMatchObject({
       selectedId: "split",
       editingNoteId: "split",
       pendingFocusId: "split",
-      pendingFocusField: "title"
+      pendingFocusField: "title",
     });
     await act(async () => {
       await panes().secondary.actionsSlice.actions.acknowledgeFocus("split");
@@ -488,7 +494,7 @@ describe("notes workspace context split", () => {
         useNotesWorkspace({
           vaultRoot,
           repository: store,
-        })
+        }),
       );
       await waitFor(() => expect(result.current.status).toBe("ready"));
       render(
@@ -500,12 +506,12 @@ describe("notes workspace context split", () => {
               <NotesDetailSplitHost />
             </NotesPaneRegistryContext.Provider>
           </NotesWorkspaceContext.Provider>
-        </VaultRootContext.Provider>
+        </VaultRootContext.Provider>,
       );
       await waitFor(() =>
         expect(
-          document.querySelector('[data-notes-pane-id="secondary"]')
-        ).not.toBeNull()
+          document.querySelector('[data-notes-pane-id="secondary"]'),
+        ).not.toBeNull(),
       );
       const panes = () => result.current.paneRegistrySlice.panes;
       const actions = () => panes()[paneId].actionsSlice.actions;
@@ -519,9 +525,7 @@ describe("notes workspace context split", () => {
         locallyExpandedNodeIds: new Set(),
       });
       await act(async () => {
-        expect(
-          await actions().claimEditingFocus?.("root", "title")
-        ).toBe(true);
+        expect(await actions().claimEditingFocus?.("root", "title")).toBe(true);
       });
       let preparation: ReturnType<
         NonNullable<typeof result.current.actions.prepareKeyboardInsertion>
@@ -566,11 +570,10 @@ describe("notes workspace context split", () => {
             note: "",
             imageOffsetUtf16: 0,
           },
-          "title"
+          "title",
         );
       });
-      const historyContext =
-        splitNode.mock.lastCall![2] as NotesHistoryContext;
+      const historyContext = splitNode.mock.lastCall![2] as NotesHistoryContext;
       await act(async () =>
         split.resolve({
           workspace: settled,
@@ -581,7 +584,7 @@ describe("notes workspace context split", () => {
           nextUndoEntryId: historyContext.entryId,
           nextRedoEntryId: null,
           prunedEntryIds: [],
-        })
+        }),
       );
       await act(async () => splitCommand);
       const pendingSelection =
@@ -595,7 +598,7 @@ describe("notes workspace context split", () => {
       act(() => {
         acknowledgement = actions().acknowledgeFocus(
           "split",
-          pendingSelection!.requestId
+          pendingSelection!.requestId,
         );
       });
       await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
@@ -607,31 +610,29 @@ describe("notes workspace context split", () => {
             note: "",
             imageOffsetUtf16: 0,
           },
-          "title"
+          "title",
         );
       });
       expect(result.current.draftsByNodeId.split).toBeUndefined();
       const editor = document
         .querySelector<HTMLElement>(`[data-notes-pane-id="${paneId}"]`)
         ?.querySelector<HTMLTextAreaElement>(
-          "textarea[data-notes-provisional-insertion='true']"
+          "textarea[data-notes-provisional-insertion='true']",
         );
       expect(editor).not.toBeNull();
-      const interactionRevision =
-        actions().getUserInteractionRevision?.();
+      const interactionRevision = actions().getUserInteractionRevision?.();
       editor!.setSelectionRange(1, 1);
       expect(fireEvent.keyDown(editor!, { key: "Backspace" })).toBe(true);
       expect(actions().getUserInteractionRevision?.()).toBe(
-        interactionRevision
+        interactionRevision,
       );
       editor!.value = "";
       editor!.setSelectionRange(0, 0);
       expect(fireEvent.keyDown(editor!, { key: "Backspace" })).toBe(false);
       expect(actions().getUserInteractionRevision?.()).toBe(
-        interactionRevision! + 1
+        interactionRevision! + 1,
       );
-      const interveningPaneId =
-        paneId === "primary" ? "secondary" : "primary";
+      const interveningPaneId = paneId === "primary" ? "secondary" : "primary";
       act(() => {
         result.current.paneRegistrySlice.setActivePaneId(interveningPaneId);
       });
@@ -640,17 +641,15 @@ describe("notes workspace context split", () => {
           workspace([
             node({ id: "root", title: "Root dirty", sortKey: 1024 }),
             node({ id: "split", title: "", sortKey: 2048 }),
-          ])
-        )
+          ]),
+        ),
       );
       await act(async () => acknowledgement);
 
       expect(result.current.paneRegistrySlice.activePaneId).toBe(
-        interveningPaneId
+        interveningPaneId,
       );
-      expect(
-        panes()[paneId].stateSlice.pendingPrimarySelection
-      ).toBeNull();
+      expect(panes()[paneId].stateSlice.pendingPrimarySelection).toBeNull();
       expect(panes()[paneId].stateSlice.state.pendingFocusId).toBeNull();
       act(() => {
         actions().updateNodeDraft(
@@ -660,7 +659,7 @@ describe("notes workspace context split", () => {
             note: "",
             imageOffsetUtf16: 0,
           },
-          "title"
+          "title",
         );
       });
       expect(result.current.draftsByNodeId.split).toBeUndefined();
@@ -672,13 +671,13 @@ describe("notes workspace context split", () => {
             note: "",
             imageOffsetUtf16: 0,
           },
-          "title"
+          "title",
         );
       });
       expect(result.current.draftsByNodeId.root?.title).toBe(
-        "Root still owns editing"
+        "Root still owns editing",
       );
-    }
+    },
   );
 
   it.each(["primary", "secondary"] as const)(
@@ -699,7 +698,7 @@ describe("notes workspace context split", () => {
         useNotesWorkspace({
           vaultRoot: `/same-revision-${paneId}-focus-replacement`,
           repository: store,
-        })
+        }),
       );
       await waitFor(() => expect(result.current.status).toBe("ready"));
       const panes = () => result.current.paneRegistrySlice.panes;
@@ -713,9 +712,7 @@ describe("notes workspace context split", () => {
         locallyExpandedNodeIds: new Set(),
       });
       await act(async () => {
-        expect(
-          await actions().claimEditingFocus?.("root", "title")
-        ).toBe(true);
+        expect(await actions().claimEditingFocus?.("root", "title")).toBe(true);
       });
       act(() => {
         actions().updateNodeDraft(
@@ -725,19 +722,17 @@ describe("notes workspace context split", () => {
             note: "",
             imageOffsetUtf16: 0,
           },
-          "title"
+          "title",
         );
       });
-      const interactionRevision =
-        actions().getUserInteractionRevision?.();
+      const interactionRevision = actions().getUserInteractionRevision?.();
       await act(async () =>
         actions().focusNode("first", {
           anchorUtf16: 1,
           focusUtf16: 1,
-        })
+        }),
       );
-      const firstRequest =
-        panes()[paneId].stateSlice.pendingPrimarySelection;
+      const firstRequest = panes()[paneId].stateSlice.pendingPrimarySelection;
       expect(firstRequest).toMatchObject({
         nodeId: "first",
         selection: { anchorUtf16: 1, focusUtf16: 1 },
@@ -747,7 +742,7 @@ describe("notes workspace context split", () => {
       act(() => {
         acknowledgement = actions().acknowledgeFocus(
           "first",
-          firstRequest!.requestId
+          firstRequest!.requestId,
         );
       });
       await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
@@ -759,7 +754,7 @@ describe("notes workspace context split", () => {
             note: "",
             imageOffsetUtf16: 0,
           },
-          "title"
+          "title",
         );
       });
       expect(result.current.draftsByNodeId.first).toBeUndefined();
@@ -767,7 +762,7 @@ describe("notes workspace context split", () => {
         actions().focusNode("replacement", {
           anchorUtf16: 2,
           focusUtf16: 2,
-        })
+        }),
       );
       const replacementRequest =
         panes()[paneId].stateSlice.pendingPrimarySelection;
@@ -777,12 +772,11 @@ describe("notes workspace context split", () => {
       });
       expect(replacementRequest?.requestId).not.toBe(firstRequest?.requestId);
       expect(actions().getUserInteractionRevision?.()).toBe(
-        interactionRevision
+        interactionRevision,
       );
-      const interveningPaneId =
-        paneId === "primary" ? "secondary" : "primary";
+      const interveningPaneId = paneId === "primary" ? "secondary" : "primary";
       act(() =>
-        result.current.paneRegistrySlice.setActivePaneId(interveningPaneId)
+        result.current.paneRegistrySlice.setActivePaneId(interveningPaneId),
       );
 
       await act(async () =>
@@ -795,19 +789,19 @@ describe("notes workspace context split", () => {
               title: "Replacement",
               sortKey: 3072,
             }),
-          ])
-        )
+          ]),
+        ),
       );
       await act(async () => acknowledgement);
 
       expect(result.current.paneRegistrySlice.activePaneId).toBe(
-        interveningPaneId
+        interveningPaneId,
       );
-      expect(
-        panes()[paneId].stateSlice.pendingPrimarySelection
-      ).toEqual(replacementRequest);
+      expect(panes()[paneId].stateSlice.pendingPrimarySelection).toEqual(
+        replacementRequest,
+      );
       expect(panes()[paneId].stateSlice.state.pendingFocusId).toBe(
-        "replacement"
+        "replacement",
       );
       act(() => {
         actions().updateNodeDraft(
@@ -817,7 +811,7 @@ describe("notes workspace context split", () => {
             note: "",
             imageOffsetUtf16: 0,
           },
-          "title"
+          "title",
         );
       });
       expect(result.current.draftsByNodeId.first).toBeUndefined();
@@ -829,13 +823,183 @@ describe("notes workspace context split", () => {
             note: "",
             imageOffsetUtf16: 0,
           },
-          "title"
+          "title",
         );
       });
       expect(result.current.draftsByNodeId.root?.title).toBe(
-        "Root still owns editing"
+        "Root still owns editing",
       );
-    }
+    },
+  );
+
+  it("keeps a newer secondary focus request when the prior shared acknowledgement settles", async () => {
+    const store = repository({
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(
+          workspace([
+            node({ id: "first", title: "First", sortKey: 1024 }),
+            node({ id: "replacement", title: "Replacement", sortKey: 2048 }),
+          ]),
+        ),
+    });
+    const sharedAcknowledgement = deferred<void>();
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/secondary-focus-replacement-after-claim",
+        repository: store,
+      }),
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const secondary = () =>
+      result.current.paneRegistrySlice.panes.secondary.actionsSlice.actions;
+
+    await act(async () =>
+      secondary().focusNode("first", {
+        anchorUtf16: 1,
+        focusUtf16: 1,
+      }),
+    );
+    const firstRequest =
+      result.current.paneRegistrySlice.panes.secondary.stateSlice
+        .pendingPrimarySelection;
+    const originalAcknowledgeFocus =
+      result.current.actionsSlice.actions.acknowledgeFocus;
+    const acknowledgeFocus = vi
+      .spyOn(result.current.actionsSlice.actions, "acknowledgeFocus")
+      .mockImplementation(async (...args) => {
+        await originalAcknowledgeFocus(...args);
+        await sharedAcknowledgement.promise;
+      });
+    let acknowledgement!: Promise<void>;
+    act(() => {
+      acknowledgement = secondary().acknowledgeFocus(
+        "first",
+        firstRequest!.requestId,
+      );
+    });
+    await waitFor(() => expect(acknowledgeFocus).toHaveBeenCalledOnce());
+
+    await act(async () =>
+      secondary().focusNode("replacement", {
+        anchorUtf16: 2,
+        focusUtf16: 2,
+      }),
+    );
+    const replacementRequest =
+      result.current.paneRegistrySlice.panes.secondary.stateSlice
+        .pendingPrimarySelection;
+    expect(replacementRequest).toMatchObject({
+      nodeId: "replacement",
+      selection: { anchorUtf16: 2, focusUtf16: 2 },
+    });
+
+    await act(async () => sharedAcknowledgement.resolve());
+    await act(async () => acknowledgement);
+
+    expect(
+      result.current.paneRegistrySlice.panes.secondary.stateSlice
+        .pendingPrimarySelection,
+    ).toEqual(replacementRequest);
+    expect(
+      result.current.paneRegistrySlice.panes.secondary.stateSlice.state,
+    ).toMatchObject({
+      selectedId: "replacement",
+      editingNoteId: "replacement",
+      pendingFocusId: "replacement",
+      pendingFocusField: "title",
+    });
+    acknowledgeFocus.mockRestore();
+  });
+
+  it.each([
+    ["with a selection", { anchorUtf16: 2, focusUtf16: 2 }],
+    ["without a selection", undefined],
+  ] as const)(
+    "keeps a newer secondary focus request %s when an earlier editing claim finishes flushing",
+    async (_label, replacementSelection) => {
+      const save = deferred<NotesWorkspace>();
+      const updateNode = vi.fn().mockReturnValue(save.promise);
+      const store = repository({
+        loadWorkspace: vi
+          .fn()
+          .mockResolvedValue(
+            workspace([
+              node({ id: "root", title: "Root", sortKey: 1024 }),
+              node({ id: "first", title: "First", sortKey: 2048 }),
+              node({ id: "replacement", title: "Replacement", sortKey: 3072 }),
+            ]),
+          ),
+        updateNode,
+      });
+      const { result } = renderHook(() =>
+        useNotesWorkspace({
+          vaultRoot: "/secondary-focus-replacement-during-claim",
+          repository: store,
+        }),
+      );
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      const primary = () =>
+        result.current.paneRegistrySlice.panes.primary.actionsSlice.actions;
+      const secondary = () =>
+        result.current.paneRegistrySlice.panes.secondary.actionsSlice.actions;
+
+      await act(async () => {
+        expect(await primary().claimEditingFocus?.("root", "title")).toBe(true);
+      });
+      act(() => {
+        primary().updateNodeDraft(
+          "root",
+          { title: "Root dirty", note: "", imageOffsetUtf16: 0 },
+          "title",
+        );
+      });
+
+      let claim!: Promise<boolean>;
+      act(() => {
+        claim = secondary().claimEditingFocus!("first", "title");
+      });
+      await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
+
+      await act(async () =>
+        secondary().focusNode("replacement", replacementSelection),
+      );
+      const replacementRequest =
+        result.current.paneRegistrySlice.panes.secondary.stateSlice
+          .pendingPrimarySelection;
+      if (replacementSelection) {
+        expect(replacementRequest).toMatchObject({
+          nodeId: "replacement",
+          selection: replacementSelection,
+        });
+      } else {
+        expect(replacementRequest).toBeNull();
+      }
+
+      await act(async () =>
+        save.resolve(
+          workspace([
+            node({ id: "root", title: "Root dirty", sortKey: 1024 }),
+            node({ id: "first", title: "First", sortKey: 2048 }),
+            node({ id: "replacement", title: "Replacement", sortKey: 3072 }),
+          ]),
+        ),
+      );
+      await expect(claim).resolves.toBe(false);
+
+      expect(
+        result.current.paneRegistrySlice.panes.secondary.stateSlice
+          .pendingPrimarySelection,
+      ).toEqual(replacementRequest);
+      expect(
+        result.current.paneRegistrySlice.panes.secondary.stateSlice.state,
+      ).toMatchObject({
+        selectedId: "replacement",
+        editingNoteId: "replacement",
+        pendingFocusId: "replacement",
+        pendingFocusField: "title",
+      });
+    },
   );
 
   it("keeps a secondary Enter from committing the inactive primary outline first", async () => {
@@ -858,11 +1022,7 @@ describe("notes workspace context split", () => {
         </output>
       );
     });
-    const Pane = memo(function Pane({
-      pane,
-    }: {
-      pane: NotesPaneRuntimeSlice;
-    }) {
+    const Pane = memo(function Pane({ pane }: { pane: NotesPaneRuntimeSlice }) {
       return (
         <NotesPaneSliceScope pane={pane}>
           <Profiler
@@ -889,12 +1049,8 @@ describe("notes workspace context split", () => {
       const registry = value.paneRegistrySlice;
       return (
         <>
-          <Pane
-            pane={registry.panes.primary}
-          />
-          <Pane
-            pane={registry.panes.secondary}
-          />
+          <Pane pane={registry.panes.primary} />
+          <Pane pane={registry.panes.secondary} />
         </>
       );
     }
@@ -925,12 +1081,11 @@ describe("notes workspace context split", () => {
       });
     });
     commits.length = 0;
-    const inactivePaneBefore =
-      captured!.paneRegistrySlice.panes.primary;
+    const inactivePaneBefore = captured!.paneRegistrySlice.panes.primary;
 
     act(() => {
-      captured!.paneRegistrySlice.panes.secondary.actionsSlice.actions
-        .prepareKeyboardInsertion?.({
+      captured!.paneRegistrySlice.panes.secondary.actionsSlice.actions.prepareKeyboardInsertion?.(
+        {
           ownerPaneId: "secondary",
           intent: {
             token: 42,
@@ -947,7 +1102,8 @@ describe("notes workspace context split", () => {
             sourceTitle: "Ro",
             insertedTitle: "ot",
           },
-        });
+        },
+      );
     });
 
     expect({
@@ -966,34 +1122,38 @@ describe("notes workspace context split", () => {
 
   it("keeps the inactive pane slice stable across 50 opposite-pane focus moves", async () => {
     const store = repository({
-      loadWorkspace: vi.fn().mockResolvedValue(
-        workspace([
-          node({ id: "root", sortKey: 1024 }),
-          node({ id: "other", sortKey: 2048 })
-        ])
-      )
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(
+          workspace([
+            node({ id: "root", sortKey: 1024 }),
+            node({ id: "other", sortKey: 2048 }),
+          ]),
+        ),
     });
     const { result } = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/pane-identity", repository: store })
+      useNotesWorkspace({ vaultRoot: "/pane-identity", repository: store }),
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     const secondaryBefore = result.current.paneRegistrySlice.panes.secondary;
     for (let index = 0; index < 50; index += 1) {
       await act(async () => {
-        await result.current.paneRegistrySlice.panes.primary.actionsSlice.actions
-          .focusNode(index % 2 === 0 ? "other" : "root");
+        await result.current.paneRegistrySlice.panes.primary.actionsSlice.actions.focusNode(
+          index % 2 === 0 ? "other" : "root",
+        );
       });
     }
     expect(result.current.paneRegistrySlice.panes.secondary).toBe(
-      secondaryBefore
+      secondaryBefore,
     );
 
     const primaryBefore = result.current.paneRegistrySlice.panes.primary;
     for (let index = 0; index < 50; index += 1) {
       await act(async () => {
-        await result.current.paneRegistrySlice.panes.secondary.actionsSlice.actions
-          .focusNode(index % 2 === 0 ? "other" : "root");
+        await result.current.paneRegistrySlice.panes.secondary.actionsSlice.actions.focusNode(
+          index % 2 === 0 ? "other" : "root",
+        );
       });
     }
     expect(result.current.paneRegistrySlice.panes.primary).toBe(primaryBefore);
@@ -1006,14 +1166,15 @@ describe("notes workspace context split", () => {
     const { result, rerender } = renderHook(
       ({ vaultRoot, repository: currentRepository }) =>
         useNotesWorkspace({ vaultRoot, repository: currentRepository }),
-      { initialProps: { vaultRoot: "/first", repository: firstStore } }
+      { initialProps: { vaultRoot: "/first", repository: firstStore } },
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     const retainedPrimary = result.current.paneRegistrySlice.panes.primary;
     await act(async () => {
-      await result.current.paneRegistrySlice.panes.secondary.actionsSlice.actions
-        .focusNode("root");
+      await result.current.paneRegistrySlice.panes.secondary.actionsSlice.actions.focusNode(
+        "root",
+      );
     });
     rerender({ vaultRoot: "/second", repository: secondStore });
     await waitFor(() => expect(secondStore.loadWorkspace).toHaveBeenCalled());
@@ -1029,7 +1190,7 @@ describe("notes workspace context split", () => {
   it("moves a node across panes with one mutation and focuses the destination", async () => {
     const moved = [
       node({ id: "page", sortKey: 1 }),
-      node({ id: "root", parentId: "page", sortKey: 1 })
+      node({ id: "root", parentId: "page", sortKey: 1 }),
     ];
     const moveNode = vi.fn().mockResolvedValue(workspace(moved));
     const store = repository({
@@ -1038,26 +1199,26 @@ describe("notes workspace context split", () => {
         .mockResolvedValue(
           workspace([
             node({ id: "root", sortKey: 1 }),
-            node({ id: "page", sortKey: 2 })
-          ])
+            node({ id: "page", sortKey: 2 }),
+          ]),
         ),
-      moveNode
+      moveNode,
     });
     const { result } = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store }),
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const panes = () => result.current.paneRegistrySlice.panes;
 
     await act(async () =>
-      panes().secondary.actionsSlice.actions.zoomTo("page")
+      panes().secondary.actionsSlice.actions.zoomTo("page"),
     );
     act(() => panes().primary.actionsSlice.actions.setSelectionAnchor("root"));
     await act(async () => {
       await panes().primary.actionsSlice.actions.moveNodeAcrossPanes?.(
         { id: "root", parentId: "page", afterId: null },
         "primary",
-        "secondary"
+        "secondary",
       );
     });
 
@@ -1066,7 +1227,7 @@ describe("notes workspace context split", () => {
     expect(panes().secondary.stateSlice.state).toMatchObject({
       selectedId: "root",
       editingNoteId: "root",
-      pendingFocusId: "root"
+      pendingFocusId: "root",
     });
     expect(result.current.paneRegistrySlice.activePaneId).toBe("secondary");
   });
@@ -1075,20 +1236,20 @@ describe("notes workspace context split", () => {
     const initial = [
       node({ id: "first", sortKey: 1 }),
       node({ id: "second", sortKey: 2 }),
-      node({ id: "page", sortKey: 3 })
+      node({ id: "page", sortKey: 3 }),
     ];
     const moved = [
       node({ id: "page", sortKey: 1 }),
       node({ id: "first", parentId: "page", sortKey: 1 }),
-      node({ id: "second", parentId: "page", sortKey: 2 })
+      node({ id: "second", parentId: "page", sortKey: 2 }),
     ];
     const applyBatch = vi.fn().mockResolvedValue(workspace(moved));
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(workspace(initial)),
-      applyBatch
+      applyBatch,
     });
     const { result } = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store }),
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const panes = () => result.current.paneRegistrySlice.panes;
@@ -1100,7 +1261,7 @@ describe("notes workspace context split", () => {
     const authority =
       await result.current.actionsSlice.prepareSelectionAuthority?.([
         "first",
-        "second"
+        "second",
       ]);
     expect(authority).toBeDefined();
     await act(async () => {
@@ -1108,7 +1269,7 @@ describe("notes workspace context split", () => {
         authority!,
         { type: "move", parentId: "page", afterId: null },
         "primary",
-        "secondary"
+        "secondary",
       );
     });
 
@@ -1120,22 +1281,24 @@ describe("notes workspace context split", () => {
 
   it("undoes secondary navigation without changing the primary page", async () => {
     const store = repository({
-      loadWorkspace: vi.fn().mockResolvedValue(
-        workspace([
-          node({ id: "root" }),
-          node({ id: "other", sortKey: 2048 })
-        ])
-      )
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(
+          workspace([
+            node({ id: "root" }),
+            node({ id: "other", sortKey: 2048 }),
+          ]),
+        ),
     });
     const { result } = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store }),
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const panes = () => result.current.paneRegistrySlice.panes;
 
     await act(async () => panes().primary.actionsSlice.actions.zoomTo("root"));
     await act(async () =>
-      panes().secondary.actionsSlice.actions.zoomTo("other")
+      panes().secondary.actionsSlice.actions.zoomTo("other"),
     );
     await act(async () => panes().primary.actionsSlice.actions.undo?.());
 
@@ -1145,23 +1308,25 @@ describe("notes workspace context split", () => {
 
   it("undoes primary navigation without changing the secondary page", async () => {
     const store = repository({
-      loadWorkspace: vi.fn().mockResolvedValue(
-        workspace([
-          node({ id: "root" }),
-          node({ id: "other", sortKey: 2048 }),
-          node({ id: "third", sortKey: 3072 })
-        ])
-      )
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(
+          workspace([
+            node({ id: "root" }),
+            node({ id: "other", sortKey: 2048 }),
+            node({ id: "third", sortKey: 3072 }),
+          ]),
+        ),
     });
     const { result } = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store }),
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const panes = () => result.current.paneRegistrySlice.panes;
 
     await act(async () => panes().primary.actionsSlice.actions.zoomTo("root"));
     await act(async () =>
-      panes().secondary.actionsSlice.actions.zoomTo("other")
+      panes().secondary.actionsSlice.actions.zoomTo("other"),
     );
     await act(async () => panes().primary.actionsSlice.actions.zoomTo("third"));
     await act(async () => panes().primary.actionsSlice.actions.undo?.());
@@ -1173,7 +1338,7 @@ describe("notes workspace context split", () => {
   it("lets only the latest pane editing claimant write the shared draft", async () => {
     const store = repository();
     const { result } = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store }),
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const panes = () => result.current.paneRegistrySlice.panes;
@@ -1182,26 +1347,26 @@ describe("notes workspace context split", () => {
       expect(
         await panes().primary.actionsSlice.actions.claimEditingFocus?.(
           "root",
-          "title"
-        )
+          "title",
+        ),
       ).toBe(true);
       expect(
         await panes().secondary.actionsSlice.actions.claimEditingFocus?.(
           "root",
-          "title"
-        )
+          "title",
+        ),
       ).toBe(true);
     });
     act(() => {
       panes().primary.actionsSlice.actions.updateNodeDraft(
         "root",
         { title: "blocked", note: "", imageOffsetUtf16: 0 },
-        "title"
+        "title",
       );
       panes().secondary.actionsSlice.actions.updateNodeDraft(
         "root",
         { title: "secondary", note: "", imageOffsetUtf16: 0 },
-        "title"
+        "title",
       );
     });
 

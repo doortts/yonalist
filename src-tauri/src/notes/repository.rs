@@ -97,6 +97,7 @@ thread_local! {
     static READONLY_DESCENDANT_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
     static READONLY_DESCENDANT_VISITED_ROW_COUNT: Cell<usize> = const { Cell::new(0) };
     static SEARCH_PARENT_TRAIL_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
+    static LOAD_WORKSPACE_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
     static GITHUB_NOTIFICATION_LOOKUP_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
     static GITHUB_NOTIFICATION_VISITED_ROW_COUNT: Cell<usize> = const { Cell::new(0) };
     static SIBLING_ORDER_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
@@ -281,6 +282,16 @@ fn reset_search_parent_trail_query_count() {
 #[cfg(test)]
 fn search_parent_trail_query_count() -> usize {
     SEARCH_PARENT_TRAIL_QUERY_COUNT.with(Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn reset_load_workspace_query_count() {
+    LOAD_WORKSPACE_QUERY_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn load_workspace_query_count() -> usize {
+    LOAD_WORKSPACE_QUERY_COUNT.with(Cell::get)
 }
 
 #[cfg(test)]
@@ -2401,6 +2412,8 @@ pub(crate) fn load_workspace(
     connection: &Connection,
     scope: NotesWorkspaceScope,
 ) -> Result<NotesWorkspace, String> {
+    #[cfg(test)]
+    LOAD_WORKSPACE_QUERY_COUNT.with(|count| count.set(count.get() + 1));
     const COLUMNS: &str = "node.id, CASE WHEN node.parent_id IS NULL OR EXISTS (\
            SELECT 1 FROM included parent WHERE parent.id = node.parent_id\
          ) THEN node.parent_id ELSE NULL END, \
@@ -3282,10 +3295,10 @@ pub(crate) fn search_nodes_structured(
         .collect()
 }
 
-fn with_workspace_transaction(
+fn with_transaction<T>(
     connection: &mut Connection,
-    operation: impl FnOnce(&Transaction<'_>) -> Result<(), String>,
-) -> Result<NotesWorkspace, String> {
+    operation: impl FnOnce(&Transaction<'_>) -> Result<T, String>,
+) -> Result<T, String> {
     let journaled = history::has_active_context(connection)?;
     // Every workspace mutation runs in an IMMEDIATE transaction, including the
     // non-journaled branch. A DEFERRED transaction starts read-only and only
@@ -3295,15 +3308,24 @@ fn with_workspace_transaction(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start the Notes transaction: {error}"))?;
-    operation(&transaction)?;
-    let workspace = load_workspace(&transaction, NotesWorkspaceScope::Active)?;
+    let result = operation(&transaction)?;
     if journaled {
         history::finalize_transaction(&transaction)?;
     }
     transaction
         .commit()
         .map_err(|error| format!("Could not commit the Notes transaction: {error}"))?;
-    Ok(workspace)
+    Ok(result)
+}
+
+fn with_workspace_transaction(
+    connection: &mut Connection,
+    operation: impl FnOnce(&Transaction<'_>) -> Result<(), String>,
+) -> Result<NotesWorkspace, String> {
+    with_transaction(connection, |transaction| {
+        operation(transaction)?;
+        load_workspace(transaction, NotesWorkspaceScope::Active)
+    })
 }
 
 fn node_by_id(transaction: &Transaction<'_>, node_id: &str) -> Result<Option<StoredNode>, String> {
@@ -5380,6 +5402,7 @@ pub(crate) fn split_node(
     split_node_at(connection, input, today)
 }
 
+#[cfg(test)]
 pub(crate) fn split_node_at(
     connection: &mut Connection,
     input: SplitNodeInput,
@@ -5387,64 +5410,82 @@ pub(crate) fn split_node_at(
 ) -> Result<NotesWorkspace, String> {
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
-        let source = require_active_node(transaction, &input.id)?;
-        require_content_mutable(&source)?;
-        ensure_generic_parent_allowed(source.parent_id.as_deref())?;
-        if source.node_kind == NoteNodeKind::Image {
-            return Err("An image node cannot be split.".to_string());
-        }
-        ensure_fresh_id(transaction, &input.new_node_id)?;
-        let sort_key = next_sort_key(
-            transaction,
-            source.parent_id.as_deref(),
-            Some(source.id.as_str()),
-        )?;
-        transaction
-            .execute(
-                "UPDATE notes_nodes SET title = ?1, \
-                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id = ?2 AND deleted_at IS NULL AND archived_at IS NULL",
-                params![input.prefix, source.id],
-            )
-            .map_err(|error| format!("Could not update the split Note node: {error}"))?;
-        replace_derived_content(
-            transaction,
-            &source.id,
-            NoteNodeKind::Text,
-            &input.prefix,
-            0,
-            &source.note,
-            today,
-        )?;
-        transaction
-            .execute(
-                "INSERT INTO notes_nodes (\
-                   id, parent_id, sort_key, title, node_kind, marker_kind, created_at, updated_at\
-                 ) VALUES (\
-                   ?1, ?2, ?3, ?4, 'text', ?5, \
-                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
-                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
-                 )",
-                params![
-                    input.new_node_id,
-                    source.parent_id,
-                    sort_key,
-                    input.suffix,
-                    source.marker_kind.as_str()
-                ],
-            )
-            .map_err(|error| format!("Could not create the split Note node: {error}"))?;
-        replace_derived_content(
-            transaction,
-            &input.new_node_id,
-            NoteNodeKind::Text,
-            &input.suffix,
-            0,
-            "",
-            today,
-        )?;
-        Ok(())
+        split_node_in_transaction(transaction, &input, today)
     })
+}
+
+pub(crate) fn split_node_delta_at(
+    connection: &mut Connection,
+    input: SplitNodeInput,
+    today: LocalDate,
+) -> Result<(), String> {
+    input.validate()?;
+    with_transaction(connection, |transaction| {
+        split_node_in_transaction(transaction, &input, today)
+    })
+}
+
+fn split_node_in_transaction(
+    transaction: &Transaction<'_>,
+    input: &SplitNodeInput,
+    today: LocalDate,
+) -> Result<(), String> {
+    let source = require_active_node(transaction, &input.id)?;
+    require_content_mutable(&source)?;
+    ensure_generic_parent_allowed(source.parent_id.as_deref())?;
+    if source.node_kind == NoteNodeKind::Image {
+        return Err("An image node cannot be split.".to_string());
+    }
+    ensure_fresh_id(transaction, &input.new_node_id)?;
+    let sort_key = next_sort_key(
+        transaction,
+        source.parent_id.as_deref(),
+        Some(source.id.as_str()),
+    )?;
+    transaction
+        .execute(
+            "UPDATE notes_nodes SET title = ?1, \
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+             WHERE id = ?2 AND deleted_at IS NULL AND archived_at IS NULL",
+            params![input.prefix, source.id],
+        )
+        .map_err(|error| format!("Could not update the split Note node: {error}"))?;
+    replace_derived_content(
+        transaction,
+        &source.id,
+        NoteNodeKind::Text,
+        &input.prefix,
+        0,
+        &source.note,
+        today,
+    )?;
+    transaction
+        .execute(
+            "INSERT INTO notes_nodes (\
+               id, parent_id, sort_key, title, node_kind, marker_kind, created_at, updated_at\
+             ) VALUES (\
+               ?1, ?2, ?3, ?4, 'text', ?5, \
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
+             )",
+            params![
+                input.new_node_id,
+                source.parent_id,
+                sort_key,
+                input.suffix,
+                source.marker_kind.as_str()
+            ],
+        )
+        .map_err(|error| format!("Could not create the split Note node: {error}"))?;
+    replace_derived_content(
+        transaction,
+        &input.new_node_id,
+        NoteNodeKind::Text,
+        &input.suffix,
+        0,
+        "",
+        today,
+    )
 }
 
 fn revalidate_image_atom_target(
@@ -7059,7 +7100,7 @@ pub(crate) fn remove_empty_node(
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
         let deletion_batch_id = fresh_deletion_batch_id(transaction)?;
-        remove_empty_node_in_transaction(transaction, node_id, &deletion_batch_id)
+        remove_empty_node_in_transaction(transaction, node_id, &deletion_batch_id, None)
     })
 }
 
@@ -7067,10 +7108,14 @@ fn remove_empty_node_in_transaction(
     transaction: &Transaction<'_>,
     node_id: &str,
     deletion_batch_id: &str,
+    expected_consumed_title: Option<&str>,
 ) -> Result<(), String> {
     let source = require_active_node(transaction, node_id)?;
     require_provider_mutable(&source)?;
     require_content_mutable(&source)?;
+    if expected_consumed_title.is_some_and(|title| source.title != title) {
+        return Err("The Backspace gesture node title changed before deletion.".to_string());
+    }
     ensure_generic_parent_allowed(source.parent_id.as_deref())?;
     if !readonly_descendants(transaction, &[node_id.to_string()])?.is_empty() {
         return Err(
@@ -7087,7 +7132,10 @@ fn remove_empty_node_in_transaction(
         .map_err(|error| {
             format!("Could not inspect attachments on the empty Note node: {error}")
         })?;
-    if !source.title.trim().is_empty() || !source.note.trim().is_empty() || has_attachments {
+    if (expected_consumed_title.is_none() && !source.title.trim().is_empty())
+        || !source.note.trim().is_empty()
+        || has_attachments
+    {
         return Err("Only an empty Note node can be removed.".to_string());
     }
     let children = sibling_keys(transaction, Some(node_id), None)?;
@@ -7438,10 +7486,18 @@ pub(crate) fn apply_batch_at(
         }
         BatchOp::AddTag { tag } => batch_add_tag(transaction, &node_ids, tag, today),
         BatchOp::RemoveTag { tag } => batch_remove_tag(transaction, &node_ids, tag, today),
-        BatchOp::BackspaceGesture { title_update } => {
+        BatchOp::BackspaceGesture {
+            expected_titles,
+            title_update,
+        } => {
             let deletion_batch_id = fresh_deletion_batch_id(transaction)?;
-            for node_id in &node_ids {
-                remove_empty_node_in_transaction(transaction, node_id, &deletion_batch_id)?;
+            for (node_id, expected_title) in node_ids.iter().zip(expected_titles) {
+                remove_empty_node_in_transaction(
+                    transaction,
+                    node_id,
+                    &deletion_batch_id,
+                    Some(expected_title),
+                )?;
             }
             if let Some(update) = title_update {
                 update_backspace_survivor_title(transaction, update, today)?;
@@ -18273,7 +18329,10 @@ mod tests {
                     FOURTH_ID.to_string(),
                     SEVENTH_ID.to_string(),
                 ],
-                op: BatchOp::BackspaceGesture { title_update: None },
+                op: BatchOp::BackspaceGesture {
+                    expected_titles: vec![String::new(), String::new(), String::new()],
+                    title_update: None,
+                },
             },
         )
         .expect("atomic backspace gesture");
@@ -18301,6 +18360,34 @@ mod tests {
             .iter()
             .all(|batch_id| batch_id == &deletion_batch_ids[0]));
         assert_tree_invariants(&actual);
+    }
+
+    #[test]
+    fn backspace_gesture_rejects_a_title_changed_after_the_gesture_started() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "starting title");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET title = 'synced title' WHERE id = ?1",
+                [NODE_ID],
+            )
+            .expect("apply concurrent title");
+        let before = persistent_state(&connection);
+
+        let error = apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![NODE_ID.to_string()],
+                op: BatchOp::BackspaceGesture {
+                    expected_titles: vec!["starting title".to_string()],
+                    title_update: None,
+                },
+            },
+        )
+        .expect_err("stale backspace gesture");
+
+        assert!(error.contains("title changed"), "unexpected error: {error}");
+        assert_eq!(persistent_state(&connection), before);
     }
 
     #[test]

@@ -3,7 +3,7 @@ import {
   createNoteId,
   isDeleteReadonlyPreflight,
   isImageAtomOperationReceiptResult,
-  notesErrorHasCode
+  notesErrorHasCode,
 } from "../../domain/notes";
 import type {
   ApplyImageAtomEditInput,
@@ -25,7 +25,7 @@ import type {
   NotesHistoryStatus,
   NotesWorkspace,
   NotesWorkspaceScope,
-  NoteTagFilter
+  NoteTagFilter,
 } from "../../domain/notes";
 import { GITHUB_NOTIFICATIONS_ROOT_ID } from "../../services/githubNotificationsProvider";
 import type { ParsedImageAtomPaste } from "./notesImageAtomClipboard";
@@ -34,13 +34,13 @@ import { isSupportedClipboardImageMime } from "./notesClipboardImages";
 import {
   notesExpansionSnapshotPool,
   type NotesHistoryFocus,
-  type NotesHistorySnapshot
+  type NotesHistorySnapshot,
 } from "./notesHistory";
 import {
   normalizeWorkspace,
   settledUiState,
   settleWorkspaceStore,
-  type NormalizedNotesWorkspace
+  type NormalizedNotesWorkspace,
 } from "./notesWorkspaceReducer";
 import type {
   NotesBackspaceGestureCommitInput,
@@ -48,14 +48,14 @@ import type {
   NotesWorkspaceCoordinatorSession,
   NotesWorkspaceQueueContext,
   NotesWorkspaceQueueResult,
-  NotesWorkspaceUiUpdate
+  NotesWorkspaceUiUpdate,
 } from "./notesWorkspaceCoordinator";
 import type { NotesWorkspaceSessionRecord } from "./notesDraftEngine";
 import { buildNotesMoveNodeInput } from "./notesMoveTargets";
 import { markSplitPhase } from "./notesSplitLatencyProbe";
 import {
   authoritative,
-  type UnwrappedNotesMutation
+  type UnwrappedNotesMutation,
 } from "./notesWorkspaceProjection";
 import {
   confirmedState,
@@ -72,7 +72,7 @@ import {
   runCompoundQueueWork,
   samePreparedMoveNode,
   unwrapNotesMutationForContext,
-  workspaceForScope
+  workspaceForScope,
 } from "./notesWorkspaceCommandSupport";
 import { sameScope } from "./notesWorkspaceScope";
 import type {
@@ -93,7 +93,7 @@ import type {
   NotesWorkspaceCompoundOptions,
   NotesWorkspaceQueueStep,
   StructuralCommandOptions,
-  TagFilterOrigin
+  TagFilterOrigin,
 } from "./notesWorkspaceTypes";
 
 function errorMessage(cause: unknown): string {
@@ -102,7 +102,7 @@ function errorMessage(cause: unknown): string {
 
 function imageAtomOperationMatches(
   result: ImageAtomMutationResult,
-  historyContext: NotesHistoryContext
+  historyContext: NotesHistoryContext,
 ): boolean {
   return (
     result.operation.operationId === historyContext.entryId &&
@@ -118,7 +118,10 @@ interface ImageAtomDirectResultExpectation {
 }
 
 function sameIds(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((id, index) => id === right[index]);
+  return (
+    left.length === right.length &&
+    left.every((id, index) => id === right[index])
+  );
 }
 
 function isUtf16Boundary(title: string, offset: number): boolean {
@@ -134,13 +137,13 @@ function isUtf16Boundary(title: string, offset: number): boolean {
 
 function imageAtomFocusMatchesWorkspace(
   workspace: NotesWorkspace,
-  receipt: ImageAtomOperationReceiptResult
+  receipt: ImageAtomOperationReceiptResult,
 ): boolean {
   const node = workspace.nodes.find(
     (candidate) =>
       candidate.id === receipt.focus.nodeId &&
       candidate.deletedAt === null &&
-      candidate.archivedAt === null
+      candidate.archivedAt === null,
   );
   if (!node) return false;
   const logicalLength = node.title.length + (node.nodeKind === "image" ? 1 : 0);
@@ -173,7 +176,7 @@ function imageAtomFocusMatchesWorkspace(
 function imageAtomReceiptMatchesExpectation(
   receipt: ImageAtomOperationReceiptResult,
   historyContext: NotesHistoryContext,
-  expectation: ImageAtomDirectResultExpectation
+  expectation: ImageAtomDirectResultExpectation,
 ): boolean {
   return (
     receipt.operationId === historyContext.entryId &&
@@ -186,7 +189,7 @@ function imageAtomReceiptMatchesExpectation(
 
 function sameImageAtomReceipt(
   left: ImageAtomOperationReceiptResult,
-  right: ImageAtomOperationReceiptResult
+  right: ImageAtomOperationReceiptResult,
 ): boolean {
   return (
     left.operationId === right.operationId &&
@@ -202,7 +205,7 @@ function sameImageAtomReceipt(
 async function imageAtomDirectResultMatches(
   result: ImageAtomMutationResult,
   historyContext: NotesHistoryContext,
-  expectation: ImageAtomDirectResultExpectation
+  expectation: ImageAtomDirectResultExpectation,
 ): Promise<boolean> {
   const receipt = result.operation;
   if (result.workspace === undefined) {
@@ -218,7 +221,7 @@ async function imageAtomDirectResultMatches(
   const activeNodes = new Map(
     result.workspace.nodes
       .filter((node) => node.deletedAt === null && node.archivedAt === null)
-      .map((node) => [node.id, node])
+      .map((node) => [node.id, node]),
   );
   if (
     !receipt.affectedRootIds.every((id) => activeNodes.has(id)) ||
@@ -230,7 +233,7 @@ async function imageAtomDirectResultMatches(
     (await imageAtomPostconditionDigest(
       result.workspace,
       receipt.affectedRootIds,
-      expectation.kind
+      expectation.kind,
     )) === receipt.postconditionDigest
   );
 }
@@ -239,7 +242,7 @@ function imageAtomFailureAfterApply(
   cause: unknown,
   workspace: NotesWorkspace,
   historyContext: NotesHistoryContext,
-  historyStatus: NotesHistoryStatus | undefined
+  historyStatus: NotesHistoryStatus | undefined,
 ): NotesWorkspaceQueueResult {
   return {
     kind: "failure",
@@ -247,7 +250,7 @@ function imageAtomFailureAfterApply(
     workspace,
     ...(historyStatus ? { historyStatus } : {}),
     committedHistoryEntryIds: [historyContext.entryId],
-    invalidatesTagSummaries: true
+    invalidatesTagSummaries: true,
   };
 }
 
@@ -261,10 +264,13 @@ function unresolvedImageAtomOperation(
     readonly workspace: NotesWorkspace;
     readonly historyContext: NotesHistoryContext;
     readonly historyStatus: NotesHistoryStatus | undefined;
-  }
+  },
 ): NotesWorkspaceQueueResult {
   if (!record?.closing) {
-    ctx.publishFeedback?.({ kind: "error", message: imageAtomUnacknowledgedMessage });
+    ctx.publishFeedback?.({
+      kind: "error",
+      message: imageAtomUnacknowledgedMessage,
+    });
   }
   if (!postAuthority) {
     return { kind: "failure", error: imageAtomUnacknowledgedMessage };
@@ -273,7 +279,7 @@ function unresolvedImageAtomOperation(
     new Error(imageAtomUnacknowledgedMessage),
     postAuthority.workspace,
     postAuthority.historyContext,
-    postAuthority.historyStatus
+    postAuthority.historyStatus,
   );
 }
 
@@ -300,7 +306,7 @@ export interface NotesCommandContext {
   readonly captureHistorySnapshot: () => NotesHistorySnapshot;
   readonly resolveHistoryLocation: (
     snapshot: NotesHistorySnapshot,
-    workspace?: NotesWorkspace
+    workspace?: NotesWorkspace,
   ) => Promise<{
     workspace: NormalizedNotesWorkspace;
     snapshot: NotesHistorySnapshot;
@@ -328,13 +334,13 @@ export interface NotesCommandContext {
     nodeId: NoteId,
     context: NotesWorkspaceQueueContext,
     record: NotesWorkspaceSessionRecord,
-    workspace: NormalizedNotesWorkspace
+    workspace: NormalizedNotesWorkspace,
   ) => boolean;
   readonly isImageAtomPasteAuthorityCurrentAtQueueTurn: (
     authority: NotesImageAtomPasteAuthority,
     context: NotesWorkspaceQueueContext,
     record: NotesWorkspaceSessionRecord,
-    workspace: NormalizedNotesWorkspace
+    workspace: NormalizedNotesWorkspace,
   ) => boolean;
   readonly setLibraryView: (view: NotesLibraryView) => void;
   readonly setActiveTagFilters: (filters: readonly NoteTagFilter[]) => void;
@@ -343,9 +349,9 @@ export interface NotesCommandContext {
     work: (
       context: NotesWorkspaceQueueContext,
       historyContext: NotesHistoryContext | null,
-      record: NotesWorkspaceSessionRecord
+      record: NotesWorkspaceSessionRecord,
     ) => Promise<NotesWorkspaceQueueResult> | NotesWorkspaceQueueResult,
-    options?: StructuralCommandOptions
+    options?: StructuralCommandOptions,
   ) => Promise<NotesWorkspaceCommandOutcome>;
   readonly rememberHistoryAfter: (
     context: NotesHistoryContext | null | undefined,
@@ -354,7 +360,7 @@ export interface NotesCommandContext {
     focus?: NotesHistoryFocus | null,
     expandedNodeIds?: ReadonlySet<NoteId>,
     returnedHistoryState?: NotesHistoryStatus,
-    historyRejectionState?: NotesHistoryStatus
+    historyRejectionState?: NotesHistoryStatus,
   ) => Promise<NotesWorkspaceQueueResult | null>;
   readonly settleAtomicMutation: (
     context: NotesHistoryContext | null | undefined,
@@ -371,23 +377,23 @@ export interface NotesCommandContext {
         "repository" | "vaultRoot"
       >;
       applyToCurrentOwner?: boolean;
-    }
+    },
   ) => Promise<NotesWorkspaceQueueResult | null>;
   readonly consumeRecoveredHistoryResult: (entryId: string) => void;
   readonly replaceLocalExpansions: (nodeIds: ReadonlySet<NoteId>) => void;
   readonly beginTextEntry: (
     record: NotesWorkspaceSessionRecord,
     nodeId: NoteId,
-    focus: NotesHistoryFocus
+    focus: NotesHistoryFocus,
   ) => NotesHistoryContext | null;
   readonly settleInlineTextEntry: (
     record: NotesWorkspaceSessionRecord,
     context: NotesHistoryContext | null,
-    result: NotesWorkspaceQueueResult
+    result: NotesWorkspaceQueueResult,
   ) => void;
   readonly closeTextBurst: () => void;
   readonly cancelKeyboardInsertion: (
-    preparation: NotesKeyboardInsertionPreparation
+    preparation: NotesKeyboardInsertionPreparation,
   ) => void;
 }
 
@@ -400,7 +406,7 @@ export interface NotesCommandContext {
  */
 export function ownerStillActive(
   ctx: NotesCommandContext,
-  record: NotesWorkspaceSessionRecord
+  record: NotesWorkspaceSessionRecord,
 ): boolean {
   return (
     !record.closing &&
@@ -425,19 +431,19 @@ function activateAllLibraryView(ctx: NotesCommandContext): void {
 }
 
 function imageAtomUiUpdate(
-  receipt: ImageAtomOperationReceiptResult
+  receipt: ImageAtomOperationReceiptResult,
 ): NotesWorkspaceUiUpdate {
   return {
     selectedId: receipt.focus.nodeId,
     editingNoteId: receipt.focus.nodeId,
     pendingFocusId: receipt.focus.nodeId,
-    pendingFocusField: "title"
+    pendingFocusField: "title",
   };
 }
 
 function receiptMatchesHistory(
   receipt: ImageAtomOperationReceiptResult,
-  historyContext: NotesHistoryContext
+  historyContext: NotesHistoryContext,
 ): boolean {
   return (
     receipt.operationId === historyContext.entryId &&
@@ -473,9 +479,13 @@ async function captureImageAtomPreAuthority(
   node: NoteNode,
   kind: ImageAtomOperationKind,
   generatedNodeIds: readonly NoteId[],
-  generatedAttachmentIds: readonly string[]
+  generatedAttachmentIds: readonly string[],
 ): Promise<ImageAtomPreAuthority | null> {
-  const subtreeDigest = await imageAtomPostconditionDigest(workspace, [node.id], kind);
+  const subtreeDigest = await imageAtomPostconditionDigest(
+    workspace,
+    [node.id],
+    kind,
+  );
   if (!subtreeDigest) return null;
   return {
     rootId: node.id,
@@ -483,29 +493,31 @@ async function captureImageAtomPreAuthority(
     expectedUpdatedAt: node.updatedAt,
     subtreeDigest,
     generatedNodeIds: [...generatedNodeIds],
-    generatedAttachmentIds: [...generatedAttachmentIds]
+    generatedAttachmentIds: [...generatedAttachmentIds],
   };
 }
 
 async function matchesImageAtomPreAuthority(
   workspace: NotesWorkspace,
-  authority: ImageAtomPreAuthority
+  authority: ImageAtomPreAuthority,
 ): Promise<boolean> {
-  const node = workspace.nodes.find((candidate) => candidate.id === authority.rootId);
+  const node = workspace.nodes.find(
+    (candidate) => candidate.id === authority.rootId,
+  );
   if (node?.updatedAt !== authority.expectedUpdatedAt) return false;
   const nodeIds = new Set(workspace.nodes.map((candidate) => candidate.id));
   if (authority.generatedNodeIds.some((id) => nodeIds.has(id))) return false;
   const attachmentIds = new Set(
     Object.values(workspace.attachmentsByNodeId ?? {}).flatMap((attachments) =>
-      attachments.map((attachment) => attachment.id)
-    )
+      attachments.map((attachment) => attachment.id),
+    ),
   );
   return (
     !authority.generatedAttachmentIds.some((id) => attachmentIds.has(id)) &&
     (await imageAtomPostconditionDigest(
       workspace,
       [authority.rootId],
-      authority.kind
+      authority.kind,
     )) === authority.subtreeDigest
   );
 }
@@ -516,7 +528,7 @@ function compareOrdinalStrings(left: string, right: string): number {
 
 function imageAtomPasteIsInPlace(
   source: NoteNode,
-  selection: LogicalSelection
+  selection: LogicalSelection,
 ): boolean {
   if (source.nodeKind === "text") return true;
   const start = Math.min(selection.anchorUtf16, selection.focusUtf16);
@@ -538,14 +550,14 @@ function imageAtomAttachmentAuthority(attachment: NoteAttachment): object {
     intrinsicHeight: attachment.intrinsicHeight,
     displayWidth: attachment.displayWidth,
     createdAt: attachment.createdAt,
-    updatedAt: attachment.updatedAt
+    updatedAt: attachment.updatedAt,
   };
 }
 
 function sameImageAtomTargetAuthority(
   expected: NoteNode,
   expectedAttachments: readonly NoteAttachment[],
-  activeWorkspace: NotesWorkspace
+  activeWorkspace: NotesWorkspace,
 ): boolean {
   const active = activeWorkspace.nodes.find((node) => node.id === expected.id);
   if (
@@ -557,7 +569,8 @@ function sameImageAtomTargetAuthority(
   ) {
     return false;
   }
-  const activeAttachments = activeWorkspace.attachmentsByNodeId?.[expected.id] ?? [];
+  const activeAttachments =
+    activeWorkspace.attachmentsByNodeId?.[expected.id] ?? [];
   return (
     activeAttachments.length === expectedAttachments.length &&
     JSON.stringify(activeAttachments.map(imageAtomAttachmentAuthority)) ===
@@ -569,15 +582,18 @@ async function workspaceForImageAtomPreAuthority(
   context: NotesWorkspaceQueueContext,
   confirmedWorkspace: NormalizedNotesWorkspace,
   source: NoteNode,
-  attachments: readonly NoteAttachment[]
+  attachments: readonly NoteAttachment[],
 ): Promise<NotesWorkspace | null> {
-  const confirmed = imageAtomWorkspaceFromRecoveredPresentation(confirmedWorkspace);
+  const confirmed =
+    imageAtomWorkspaceFromRecoveredPresentation(confirmedWorkspace);
   if (context.sourceScope.kind === "active") return confirmed;
   try {
     const active = await context.repository.loadWorkspace(context.vaultRoot, {
-      kind: "active"
+      kind: "active",
     });
-    return sameImageAtomTargetAuthority(source, attachments, active) ? active : null;
+    return sameImageAtomTargetAuthority(source, attachments, active)
+      ? active
+      : null;
   } catch {
     return null;
   }
@@ -585,15 +601,17 @@ async function workspaceForImageAtomPreAuthority(
 
 function compareBySortKeyAndId(
   left: { sortKey: number; id: string },
-  right: { sortKey: number; id: string }
+  right: { sortKey: number; id: string },
 ): number {
-  return left.sortKey - right.sortKey || compareOrdinalStrings(left.id, right.id);
+  return (
+    left.sortKey - right.sortKey || compareOrdinalStrings(left.id, right.id)
+  );
 }
 
 export async function imageAtomPostconditionDigest(
   workspace: NotesWorkspace,
   affectedRootIds: readonly NoteId[],
-  kind: ImageAtomOperationKind
+  kind: ImageAtomOperationKind,
 ): Promise<string | null> {
   const nodes: NoteNode[] = [];
   const nodesById = new Map<NoteId, (typeof nodes)[number]>();
@@ -621,7 +639,7 @@ export async function imageAtomPostconditionDigest(
     orderedRoots.sort(
       (left, right) =>
         (workspaceIndexes.get(left.id) ?? 0) -
-        (workspaceIndexes.get(right.id) ?? 0)
+        (workspaceIndexes.get(right.id) ?? 0),
     );
   }
   const pending = [...orderedRoots].reverse();
@@ -644,7 +662,7 @@ export async function imageAtomPostconditionDigest(
         byte_size: attachment.byteSize,
         intrinsic_width: attachment.intrinsicWidth,
         intrinsic_height: attachment.intrinsicHeight,
-        display_width: attachment.displayWidth
+        display_width: attachment.displayWidth,
       }));
     projection.push({
       id: node.id,
@@ -658,7 +676,7 @@ export async function imageAtomPostconditionDigest(
       is_collapsed: node.isCollapsed,
       is_starred: node.isStarred,
       completed_at: node.completedAt,
-      attachments
+      attachments,
     });
     const children = childrenByParent.get(node.id);
     if (children) pending.push(...[...children].reverse());
@@ -672,10 +690,10 @@ export async function imageAtomPostconditionDigest(
   try {
     const digest = await subtle.digest(
       "SHA-256",
-      new TextEncoder().encode(JSON.stringify([domain, projection]))
+      new TextEncoder().encode(JSON.stringify([domain, projection])),
     );
     return Array.from(new Uint8Array(digest), (byte) =>
-      byte.toString(16).padStart(2, "0")
+      byte.toString(16).padStart(2, "0"),
     ).join("");
   } catch {
     return null;
@@ -692,26 +710,30 @@ interface ImageAtomAcknowledgementAuthority {
 }
 
 function imageAtomWorkspaceFromRecoveredPresentation(
-  workspace: NormalizedNotesWorkspace
+  workspace: NormalizedNotesWorkspace,
 ): NotesWorkspace {
   return {
     nodes: Object.values(workspace.nodesById),
-    attachmentsByNodeId: workspace.attachmentsByNodeId
+    attachmentsByNodeId: workspace.attachmentsByNodeId,
   };
 }
 
-function historyLossState(historyContext: NotesHistoryContext): NotesHistoryStatus {
+function historyLossState(
+  historyContext: NotesHistoryContext,
+): NotesHistoryStatus {
   return {
     canUndo: false,
     canRedo: false,
     historyEpoch: historyContext.historyEpoch,
     nextUndoEntryId: null,
     nextRedoEntryId: null,
-    prunedEntryIds: []
+    prunedEntryIds: [],
   };
 }
 
-function hasPostconditionDigest(receipt: ImageAtomOperationReceiptResult): boolean {
+function hasPostconditionDigest(
+  receipt: ImageAtomOperationReceiptResult,
+): boolean {
   return /^[0-9a-f]{64}$/.test(receipt.postconditionDigest);
 }
 
@@ -730,40 +752,45 @@ async function recoverImageAtomHistoryGeneration(
   knownPost: {
     readonly receipt: ImageAtomOperationReceiptResult;
     readonly workspace: NotesWorkspace;
-  } | null
+  } | null,
 ): Promise<NotesWorkspaceQueueResult> {
   const location = ctx.captureHistorySnapshot();
   let reloadedWorkspace: NotesWorkspace | null = null;
   try {
     const recovered = await (
       authority.record.session as NotesWorkspaceCoordinatorSession
-    ).recoverHistoryMismatch(
-      historyLossState(historyContext),
-      async () => {
-        reloadedWorkspace = await context.repository.loadWorkspace(context.vaultRoot, {
-          kind: "active"
-        });
-        const resolved = await ctx.resolveHistoryLocation(location, reloadedWorkspace);
-        if (!resolved) {
-          throw new Error("Notes image operation could not reload its history location.");
-        }
-        return resolved;
+    ).recoverHistoryMismatch(historyLossState(historyContext), async () => {
+      reloadedWorkspace = await context.repository.loadWorkspace(
+        context.vaultRoot,
+        {
+          kind: "active",
+        },
+      );
+      const resolved = await ctx.resolveHistoryLocation(
+        location,
+        reloadedWorkspace,
+      );
+      if (!resolved) {
+        throw new Error(
+          "Notes image operation could not reload its history location.",
+        );
       }
-    );
+      return resolved;
+    });
     if (!recovered || !reloadedWorkspace) {
       ctx.publishFeedback?.({
         kind: "error",
         message:
-          "Notes image operation history could not be synchronized. Close and reopen this Vault."
+          "Notes image operation history could not be synchronized. Close and reopen this Vault.",
       });
       return {
         kind: "failure",
         error:
-          "Notes image operation history could not be synchronized. Close and reopen this Vault."
+          "Notes image operation history could not be synchronized. Close and reopen this Vault.",
       };
     }
     const recoveredWorkspace = imageAtomWorkspaceFromRecoveredPresentation(
-      recovered.workspace
+      recovered.workspace,
     );
     const matchesKnownPost =
       knownPost !== null &&
@@ -772,25 +799,31 @@ async function recoverImageAtomHistoryGeneration(
       (await imageAtomPostconditionDigest(
         knownPost.workspace,
         knownPost.receipt.affectedRootIds,
-        authority.kind
+        authority.kind,
       )) === knownPost.receipt.postconditionDigest &&
       (await imageAtomPostconditionDigest(
         reloadedWorkspace,
         knownPost.receipt.affectedRootIds,
-        authority.kind
+        authority.kind,
       )) === knownPost.receipt.postconditionDigest;
     if (matchesKnownPost) {
       ctx.publishFeedback?.({
         kind: "status",
-        message: "Notes image operation history was reset after acknowledgement loss."
+        message:
+          "Notes image operation history was reset after acknowledgement loss.",
       });
-      return authoritative(recoveredWorkspace, imageAtomUiUpdate(knownPost!.receipt), undefined, {
-        invalidatesTagSummaries: true
-      });
+      return authoritative(
+        recoveredWorkspace,
+        imageAtomUiUpdate(knownPost!.receipt),
+        undefined,
+        {
+          invalidatesTagSummaries: true,
+        },
+      );
     }
     const matchesPreAuthority = await matchesImageAtomPreAuthority(
       reloadedWorkspace,
-      authority.preAuthority
+      authority.preAuthority,
     );
     const error = matchesPreAuthority
       ? "Notes image operation acknowledgement lost its history generation; the active workspace is still the exact pre-state."
@@ -800,7 +833,7 @@ async function recoverImageAtomHistoryGeneration(
       kind: "failure",
       workspace: recoveredWorkspace,
       error,
-      invalidatesTagSummaries: true
+      invalidatesTagSummaries: true,
     };
   } finally {
     ctx.releaseHistorySnapshot(location);
@@ -815,20 +848,20 @@ async function reconcileImageAtomAcknowledgementFailure(
   mutation: UnwrappedNotesMutation,
   projection: ProjectedNotesMutation,
   uiUpdate: NotesWorkspaceUiUpdate,
-  authority: ImageAtomAcknowledgementAuthority
+  authority: ImageAtomAcknowledgementAuthority,
 ): Promise<NotesWorkspaceQueueResult> {
   const failedAcknowledgement = (): NotesWorkspaceQueueResult =>
     unresolvedImageAtomOperation(ctx, authority.record, {
       workspace: projection.workspace,
       historyContext,
-      historyStatus: mutation.historyStatus
+      historyStatus: mutation.historyStatus,
     });
   const lookup = async () => {
     return context.repository.lookupImageAtomOperation(
       context.vaultRoot,
       historyContext.sessionId,
       historyContext.historyEpoch,
-      historyContext.entryId
+      historyContext.entryId,
     );
   };
   let firstLookup;
@@ -847,7 +880,7 @@ async function reconcileImageAtomAcknowledgementFailure(
       context,
       historyContext,
       authority,
-      { receipt, workspace: mutation.workspace }
+      { receipt, workspace: mutation.workspace },
     );
   }
   if (!ownerStillActive(ctx, authority.record)) {
@@ -870,7 +903,7 @@ async function reconcileImageAtomAcknowledgementFailure(
       context.vaultRoot,
       historyContext.sessionId,
       historyContext.historyEpoch,
-      historyContext.entryId
+      historyContext.entryId,
     );
     return directMutationResult(mutation, projection, uiUpdate);
   } catch {
@@ -890,7 +923,7 @@ async function reconcileImageAtomAcknowledgementFailure(
         context,
         historyContext,
         authority,
-        { receipt, workspace: mutation.workspace }
+        { receipt, workspace: mutation.workspace },
       );
     }
     if (finalLookup.kind === "missing") {
@@ -906,12 +939,12 @@ async function settleImageAtomMutation(
   historyContext: NotesHistoryContext,
   receipt: ImageAtomOperationReceiptResult,
   mutation: UnwrappedNotesMutation,
-  acknowledgementAuthority?: ImageAtomAcknowledgementAuthority
+  acknowledgementAuthority?: ImageAtomAcknowledgementAuthority,
 ): Promise<NotesWorkspaceQueueResult> {
   const projection = await projectNotesMutation(
     context,
     mutation,
-    ctx.activeScopeRef.current
+    ctx.activeScopeRef.current,
   );
   const uiUpdate = imageAtomUiUpdate(receipt);
   const settlement = await ctx.settleAtomicMutation(
@@ -925,11 +958,11 @@ async function settleImageAtomMutation(
         field: "title",
         primarySelection: {
           anchorUtf16: receipt.focus.anchorUtf16,
-          focusUtf16: receipt.focus.focusUtf16
-        }
+          focusUtf16: receipt.focus.focusUtf16,
+        },
       },
-      applyToCurrentOwner: true
-    }
+      applyToCurrentOwner: true,
+    },
   );
   if (settlement) return settlement;
   try {
@@ -937,7 +970,7 @@ async function settleImageAtomMutation(
       context.vaultRoot,
       historyContext.sessionId,
       historyContext.historyEpoch,
-      historyContext.entryId
+      historyContext.entryId,
     );
   } catch (cause) {
     if (acknowledgementAuthority) {
@@ -945,11 +978,15 @@ async function settleImageAtomMutation(
         acknowledgementAuthority.lookupDerived &&
         !ownerStillActive(ctx, acknowledgementAuthority.record)
       ) {
-        return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record, {
-          workspace: projection.workspace,
-          historyContext,
-          historyStatus: mutation.historyStatus
-        });
+        return unresolvedImageAtomOperation(
+          ctx,
+          acknowledgementAuthority.record,
+          {
+            workspace: projection.workspace,
+            historyContext,
+            historyStatus: mutation.historyStatus,
+          },
+        );
       }
       return reconcileImageAtomAcknowledgementFailure(
         ctx,
@@ -959,14 +996,14 @@ async function settleImageAtomMutation(
         mutation,
         projection,
         uiUpdate,
-        acknowledgementAuthority
+        acknowledgementAuthority,
       );
     }
     return imageAtomFailureAfterApply(
       cause,
       projection.workspace,
       historyContext,
-      mutation.historyStatus
+      mutation.historyStatus,
     );
   }
   return directMutationResult(mutation, projection, uiUpdate);
@@ -977,7 +1014,7 @@ async function materializeImageAtomReceipt(
   context: NotesWorkspaceQueueContext,
   historyContext: NotesHistoryContext,
   receipt: ImageAtomOperationReceiptResult,
-  acknowledgementAuthority: ImageAtomAcknowledgementAuthority
+  acknowledgementAuthority: ImageAtomAcknowledgementAuthority,
 ): Promise<NotesWorkspaceQueueResult> {
   if (!receiptMatchesHistory(receipt, historyContext)) {
     return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record);
@@ -986,7 +1023,7 @@ async function materializeImageAtomReceipt(
     !imageAtomReceiptMatchesExpectation(
       receipt,
       historyContext,
-      acknowledgementAuthority.directExpectation
+      acknowledgementAuthority.directExpectation,
     )
   ) {
     return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record);
@@ -994,7 +1031,7 @@ async function materializeImageAtomReceipt(
   let workspace: NotesWorkspace;
   try {
     workspace = await context.repository.loadWorkspace(context.vaultRoot, {
-      kind: "active"
+      kind: "active",
     });
   } catch {
     return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record);
@@ -1006,7 +1043,7 @@ async function materializeImageAtomReceipt(
   try {
     historyStatus = await context.repository.historyStatus(
       context.vaultRoot,
-      historyContext.sessionId
+      historyContext.sessionId,
     );
   } catch {
     return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record);
@@ -1024,7 +1061,7 @@ async function materializeImageAtomReceipt(
     (await imageAtomPostconditionDigest(
       workspace,
       receipt.affectedRootIds,
-      acknowledgementAuthority.kind
+      acknowledgementAuthority.kind,
     )) !== receipt.postconditionDigest
   ) {
     return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record);
@@ -1032,21 +1069,18 @@ async function materializeImageAtomReceipt(
   if (!imageAtomFocusMatchesWorkspace(workspace, receipt)) {
     return unresolvedImageAtomOperation(ctx, acknowledgementAuthority.record);
   }
-  const mutation = await unwrapNotesMutationForContext(
-    context,
-    {
-      workspace,
-      historyEntryId: historyContext.entryId,
-      ...historyStatus
-    }
-  );
+  const mutation = await unwrapNotesMutationForContext(context, {
+    workspace,
+    historyEntryId: historyContext.entryId,
+    ...historyStatus,
+  });
   return settleImageAtomMutation(
     ctx,
     context,
     historyContext,
     receipt,
     mutation,
-    { ...acknowledgementAuthority, lookupDerived: true }
+    { ...acknowledgementAuthority, lookupDerived: true },
   );
 }
 
@@ -1058,19 +1092,22 @@ async function applyImageAtomMutation(
   kind: ImageAtomOperationKind,
   preAuthority: ImageAtomPreAuthority,
   directExpectation: ImageAtomDirectResultExpectation,
-  send: (history: NotesHistoryContext) => Promise<ImageAtomMutationResult>
+  send: (history: NotesHistoryContext) => Promise<ImageAtomMutationResult>,
 ): Promise<NotesWorkspaceQueueResult> {
   if (!historyContext) {
-    return { kind: "failure", error: "Notes image operation history is unavailable." };
+    return {
+      kind: "failure",
+      error: "Notes image operation history is unavailable.",
+    };
   }
   const settleDirect = async (
-    result: ImageAtomMutationResult
+    result: ImageAtomMutationResult,
   ): Promise<NotesWorkspaceQueueResult> => {
     if (
       !(await imageAtomDirectResultMatches(
         result,
         historyContext,
-        directExpectation
+        directExpectation,
       ))
     ) {
       return unresolvedImageAtomOperation(ctx, record);
@@ -1082,11 +1119,11 @@ async function applyImageAtomMutation(
       historyContext,
       operation,
       await unwrapNotesMutationForContext(context, response),
-      { record, kind, preAuthority, directExpectation }
+      { record, kind, preAuthority, directExpectation },
     );
   };
   const reconcileUnknown = async (
-    retried: boolean
+    retried: boolean,
   ): Promise<NotesWorkspaceQueueResult> => {
     let lookup;
     try {
@@ -1094,7 +1131,7 @@ async function applyImageAtomMutation(
         context.vaultRoot,
         historyContext.sessionId,
         historyContext.historyEpoch,
-        historyContext.entryId
+        historyContext.entryId,
       );
     } catch {
       return unresolvedImageAtomOperation(ctx, record);
@@ -1105,19 +1142,20 @@ async function applyImageAtomMutation(
         context,
         historyContext,
         lookup.receipt,
-        { record, kind, preAuthority, directExpectation }
+        { record, kind, preAuthority, directExpectation },
       );
     }
     if (
       lookup.kind === "epochMismatch" ||
-      (lookup.kind === "missing" && lookup.historyEpoch !== historyContext.historyEpoch)
+      (lookup.kind === "missing" &&
+        lookup.historyEpoch !== historyContext.historyEpoch)
     ) {
       return recoverImageAtomHistoryGeneration(
         ctx,
         context,
         historyContext,
         { record, kind, preAuthority, directExpectation },
-        null
+        null,
       );
     }
     if (
@@ -1127,7 +1165,7 @@ async function applyImageAtomMutation(
     ) {
       return {
         kind: "failure",
-        error: "Notes image operation did not commit after its one retry."
+        error: "Notes image operation did not commit after its one retry.",
       };
     }
     if (
@@ -1168,7 +1206,7 @@ export function applyImageAtomEditCommand(
   nodeId: NoteId,
   selection: LogicalSelection,
   edit: ImageAtomEdit,
-  cutAuthority?: NotesImageAtomCutAuthority
+  cutAuthority?: NotesImageAtomCutAuthority,
 ): Promise<NotesWorkspaceCommandOutcome> {
   const frozenSelection = { ...selection };
   const frozenEdit =
@@ -1187,7 +1225,7 @@ export function applyImageAtomEditCommand(
             nodeId,
             context,
             record,
-            workspace
+            workspace,
           ))
       ) {
         return { kind: "skipped" };
@@ -1203,21 +1241,22 @@ export function applyImageAtomEditCommand(
           expectedUpdatedAt: source.updatedAt,
           expectedTitle: source.title,
           expectedImageOffsetUtf16: source.imageOffsetUtf16,
-          expectedPrimaryAttachmentId: attachments[0]!.id
+          expectedPrimaryAttachmentId: attachments[0]!.id,
         },
         selection: normalizeLogicalSelection(source, frozenSelection),
-        edit: frozenEdit
+        edit: frozenEdit,
       };
       const preWorkspace = await workspaceForImageAtomPreAuthority(
         context,
         workspace,
         source,
-        attachments
+        attachments,
       );
       if (!preWorkspace) {
         return {
           kind: "failure",
-          error: "Notes image operation active precondition could not be verified."
+          error:
+            "Notes image operation active precondition could not be verified.",
         };
       }
       const preAuthority = await captureImageAtomPreAuthority(
@@ -1225,12 +1264,12 @@ export function applyImageAtomEditCommand(
         source,
         "edit",
         frozenEdit.kind === "enter" ? [frozenEdit.siblingId] : [],
-        []
+        [],
       );
       if (!preAuthority) {
         return {
           kind: "failure",
-          error: "Notes image operation could not establish its precondition."
+          error: "Notes image operation could not establish its precondition.",
         };
       }
       if (
@@ -1240,7 +1279,7 @@ export function applyImageAtomEditCommand(
           nodeId,
           context,
           record,
-          confirmedState(context)
+          confirmedState(context),
         )
       ) {
         return { kind: "skipped" };
@@ -1259,14 +1298,14 @@ export function applyImageAtomEditCommand(
               ? [nodeId, frozenEdit.siblingId]
               : [nodeId],
           focusNodeId:
-            frozenEdit.kind === "enter" ? frozenEdit.siblingId : nodeId
+            frozenEdit.kind === "enter" ? frozenEdit.siblingId : nodeId,
         },
         (history) =>
           context.repository.applyImageAtomEdit(
             context.vaultRoot,
             input,
-            ...historyArguments(history)
-          )
+            ...historyArguments(history),
+          ),
       );
     },
     {
@@ -1274,14 +1313,14 @@ export function applyImageAtomEditCommand(
       historyFocus: {
         nodeId,
         field: "title",
-        primarySelection: { ...frozenSelection }
-      }
-    }
+        primarySelection: { ...frozenSelection },
+      },
+    },
   );
 }
 
 function freezeImageAtomPasteFragment(
-  fragment: ParsedImageAtomPaste
+  fragment: ParsedImageAtomPaste,
 ): ImageAtomPasteFragmentItem[] | null {
   const imageIds = fragment.fragment
     .filter((item) => item.kind === "image")
@@ -1303,7 +1342,7 @@ function freezeImageAtomPasteFragment(
       attachmentId: ids.attachmentId,
       originalName: item.source.originalName,
       mimeType: item.source.mimeType,
-      blob: item.source.blob
+      blob: item.source.blob,
     });
   }
   return frozen;
@@ -1314,7 +1353,7 @@ export function applyImageAtomPasteCommand(
   nodeId: NoteId,
   selection: LogicalSelection,
   fragment: ParsedImageAtomPaste,
-  authority?: NotesImageAtomPasteAuthority
+  authority?: NotesImageAtomPasteAuthority,
 ): Promise<NotesWorkspaceCommandOutcome> {
   const frozenSelection = { ...selection };
   const frozenFragment = freezeImageAtomPasteFragment(fragment);
@@ -1327,7 +1366,8 @@ export function applyImageAtomPasteCommand(
       ) {
         return {
           kind: "failure",
-          error: "Notes image atom paste requires at least one supported image."
+          error:
+            "Notes image atom paste requires at least one supported image.",
         };
       }
       const workspace = confirmedState(context);
@@ -1337,7 +1377,7 @@ export function applyImageAtomPasteCommand(
           authority,
           context,
           record,
-          workspace
+          workspace,
         )
       ) {
         return { kind: "skipped" };
@@ -1380,33 +1420,35 @@ export function applyImageAtomPasteCommand(
           expectedTitle: source.title,
           expectedImageOffsetUtf16: source.imageOffsetUtf16,
           expectedPrimaryAttachmentId:
-            source.nodeKind === "image" ? attachments[0]!.id : null
+            source.nodeKind === "image" ? attachments[0]!.id : null,
         },
         selection: normalizedSelection,
         version: 1,
         fragment: inputFragment,
-        initialMaxDisplayWidth
+        initialMaxDisplayWidth,
       };
       const generatedImages = inputFragment.filter(
-        (item): item is ImageAtomPasteImageItem => item.kind === "image"
+        (item): item is ImageAtomPasteImageItem => item.kind === "image",
       );
       const firstGeneratedImage = generatedImages[0];
       if (!firstGeneratedImage) {
         return {
           kind: "failure",
-          error: "Notes image atom paste requires at least one supported image."
+          error:
+            "Notes image atom paste requires at least one supported image.",
         };
       }
       const preWorkspace = await workspaceForImageAtomPreAuthority(
         context,
         workspace,
         source,
-        attachments
+        attachments,
       );
       if (!preWorkspace) {
         return {
           kind: "failure",
-          error: "Notes image operation active precondition could not be verified."
+          error:
+            "Notes image operation active precondition could not be verified.",
         };
       }
       const preAuthority = await captureImageAtomPreAuthority(
@@ -1416,12 +1458,12 @@ export function applyImageAtomPasteCommand(
         generatedImages
           .map((item) => item.nodeId)
           .filter((generatedNodeId) => generatedNodeId !== source.id),
-        generatedImages.map((item) => item.attachmentId)
+        generatedImages.map((item) => item.attachmentId),
       );
       if (!preAuthority) {
         return {
           kind: "failure",
-          error: "Notes image operation could not establish its precondition."
+          error: "Notes image operation could not establish its precondition.",
         };
       }
       return applyImageAtomMutation(
@@ -1434,14 +1476,14 @@ export function applyImageAtomPasteCommand(
         {
           kind: "paste",
           affectedRootIds: generatedImages.map((item) => item.nodeId),
-          focusNodeId: firstGeneratedImage.nodeId
+          focusNodeId: firstGeneratedImage.nodeId,
         },
         (history) =>
           context.repository.applyImageAtomPaste(
             context.vaultRoot,
             input,
-            ...historyArguments(history)
-          )
+            ...historyArguments(history),
+          ),
       );
     },
     {
@@ -1449,14 +1491,14 @@ export function applyImageAtomPasteCommand(
       historyFocus: {
         nodeId,
         field: "title",
-        primarySelection: { ...frozenSelection }
-      }
-    }
+        primarySelection: { ...frozenSelection },
+      },
+    },
   );
 }
 
 export async function createRootCommand(
-  ctx: NotesCommandContext
+  ctx: NotesCommandContext,
 ): Promise<NotesWorkspaceCommandOutcome> {
   const transitionToAll = ctx.libraryViewRef.current !== "all";
   let created = false;
@@ -1464,95 +1506,96 @@ export async function createRootCommand(
   const outcome = await ctx.runStructuralCommand(
     "create",
     async (context, historyContext) => {
-    const ownerRecord = ctx.sessionRecordRef.current;
-    if (!ownerRecord) {
-      return { kind: "skipped" };
-    }
-    const before = normalizeWorkspace(
-      transitionToAll
-        ? await context.repository.loadWorkspace(context.vaultRoot, {
-            kind: "active"
-          })
-        : context.confirmedWorkspace
-    );
-    if (!ownerStillActive(ctx, ownerRecord)) {
-      return { kind: "skipped" };
-    }
-    const id = createNoteId();
-    const commandLocation = ctx.captureHistorySnapshot();
-    try {
-      const mutation = await unwrapNotesMutationForContext(
-        context,
-        await context.repository.createNode(
-          context.vaultRoot,
-          {
-            id,
-            parentId: null,
-            afterId: before.rootIds.at(-1) ?? null,
-            title: "",
-            note: "",
-            markerKind: "bullet"
-          },
-          ...historyArguments(historyContext)
-        )
-      );
-      const uiUpdate = {
-        selectedId: id,
-        editingNoteId: id,
-        pendingFocusId: id,
-        pendingFocusField: "title" as const,
-        zoomRootId: null
-      };
-      const requestedLocation: NotesHistorySnapshot = {
-        ...commandLocation,
-        scope: { kind: "active" },
-        libraryView: "all",
-        activeTagFilters: [],
-        selectedId: id,
-        zoomRootId: null,
-        expansion: notesExpansionSnapshotPool.acquire(
-          transitionToAll ? [] : commandLocation.expansion.nodeIds
-        ),
-        focus: { nodeId: id, field: "title" },
-        tagFilterOrigin: null
-      };
-      const projection = { workspace: mutation.workspace };
-      try {
-        const settlement = await ctx.settleAtomicMutation(
-          historyContext,
-          mutation,
-          projection,
-          {
-            uiUpdate,
-            expandedNodeIds: transitionToAll
-              ? new Set()
-              : new Set(commandLocation.expansion.nodeIds),
-            requestedLocation,
-            recoveryLocation: commandLocation
-          }
-        );
-        if (settlement) return settlement;
-        if (ownerStillActive(ctx, ownerRecord)) {
-          created = true;
-          creation.record = ownerRecord;
-          ctx.activeScopeRef.current = { kind: "active" };
-        }
-        const result = directMutationResult(mutation, projection, uiUpdate);
-        return result.kind === "authoritative"
-          ? {
-              ...result,
-              projectionScope: transitionToAll
-                ? { kind: "active" as const }
-                : ctx.activeScopeRef.current
-            }
-          : result;
-      } finally {
-        ctx.releaseHistorySnapshot(requestedLocation);
+      const ownerRecord = ctx.sessionRecordRef.current;
+      if (!ownerRecord) {
+        return { kind: "skipped" };
       }
-    } finally {
-      ctx.releaseHistorySnapshot(commandLocation);
-    }
-  });
+      const before = normalizeWorkspace(
+        transitionToAll
+          ? await context.repository.loadWorkspace(context.vaultRoot, {
+              kind: "active",
+            })
+          : context.confirmedWorkspace,
+      );
+      if (!ownerStillActive(ctx, ownerRecord)) {
+        return { kind: "skipped" };
+      }
+      const id = createNoteId();
+      const commandLocation = ctx.captureHistorySnapshot();
+      try {
+        const mutation = await unwrapNotesMutationForContext(
+          context,
+          await context.repository.createNode(
+            context.vaultRoot,
+            {
+              id,
+              parentId: null,
+              afterId: before.rootIds.at(-1) ?? null,
+              title: "",
+              note: "",
+              markerKind: "bullet",
+            },
+            ...historyArguments(historyContext),
+          ),
+        );
+        const uiUpdate = {
+          selectedId: id,
+          editingNoteId: id,
+          pendingFocusId: id,
+          pendingFocusField: "title" as const,
+          zoomRootId: null,
+        };
+        const requestedLocation: NotesHistorySnapshot = {
+          ...commandLocation,
+          scope: { kind: "active" },
+          libraryView: "all",
+          activeTagFilters: [],
+          selectedId: id,
+          zoomRootId: null,
+          expansion: notesExpansionSnapshotPool.acquire(
+            transitionToAll ? [] : commandLocation.expansion.nodeIds,
+          ),
+          focus: { nodeId: id, field: "title" },
+          tagFilterOrigin: null,
+        };
+        const projection = { workspace: mutation.workspace };
+        try {
+          const settlement = await ctx.settleAtomicMutation(
+            historyContext,
+            mutation,
+            projection,
+            {
+              uiUpdate,
+              expandedNodeIds: transitionToAll
+                ? new Set()
+                : new Set(commandLocation.expansion.nodeIds),
+              requestedLocation,
+              recoveryLocation: commandLocation,
+            },
+          );
+          if (settlement) return settlement;
+          if (ownerStillActive(ctx, ownerRecord)) {
+            created = true;
+            creation.record = ownerRecord;
+            ctx.activeScopeRef.current = { kind: "active" };
+          }
+          const result = directMutationResult(mutation, projection, uiUpdate);
+          return result.kind === "authoritative"
+            ? {
+                ...result,
+                projectionScope: transitionToAll
+                  ? { kind: "active" as const }
+                  : ctx.activeScopeRef.current,
+              }
+            : result;
+        } finally {
+          ctx.releaseHistorySnapshot(requestedLocation);
+        }
+      } finally {
+        ctx.releaseHistorySnapshot(commandLocation);
+      }
+    },
+  );
   if (
     created &&
     creation.record &&
@@ -1571,7 +1614,7 @@ export async function createChildCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId,
   placement: NotesChildPlacement = "last",
-  options: NotesCreateChildOptions = {}
+  options: NotesCreateChildOptions = {},
 ): Promise<NotesWorkspaceCommandOutcome> {
   const id = options.newNodeId ?? createNoteId();
   const keyboardInsertion = options.keyboardInsertion;
@@ -1601,9 +1644,9 @@ export async function createChildCommand(
       const before = normalizeWorkspace(
         transitionToAll
           ? await context.repository.loadWorkspace(context.vaultRoot, {
-              kind: "active"
+              kind: "active",
             })
-          : context.confirmedWorkspace
+          : context.confirmedWorkspace,
       );
       if (!ownerStillActive(ctx, ownerRecord) || !before.nodesById[nodeId]) {
         return { kind: "skipped" };
@@ -1621,15 +1664,15 @@ export async function createChildCommand(
             afterId:
               placement === "first"
                 ? null
-                : before.childIdsByParent[nodeId]?.at(-1) ?? null,
+                : (before.childIdsByParent[nodeId]?.at(-1) ?? null),
             ...(placement === "first" && firstChildId !== null
               ? { beforeId: firstChildId }
               : {}),
             title: "",
             note: "",
-            markerKind: "bullet"
+            markerKind: "bullet",
           },
-          ...historyArguments(historyContext)
+          ...historyArguments(historyContext),
         );
         if (keyboardInsertion) markSplitPhase(id, "ipc-done");
         const mutation = await unwrapNotesMutationForContext(context, response);
@@ -1638,13 +1681,13 @@ export async function createChildCommand(
           : await projectNotesMutation(
               context,
               mutation,
-              ctx.activeScopeRef.current
+              ctx.activeScopeRef.current,
             );
         const uiUpdate = {
           selectedId: id,
           editingNoteId: id,
           pendingFocusId: id,
-          pendingFocusField: "title" as const
+          pendingFocusField: "title" as const,
         };
         const requestedLocation = commandLocation
           ? {
@@ -1654,14 +1697,14 @@ export async function createChildCommand(
               activeTagFilters: [],
               selectedId: id,
               expansion: notesExpansionSnapshotPool.acquire(
-                commandLocation.expansion.nodeIds
+                commandLocation.expansion.nodeIds,
               ),
               focus: {
                 nodeId: id,
                 field: "title" as const,
-                primarySelection: { anchorUtf16: 0, focusUtf16: 0 }
+                primarySelection: { anchorUtf16: 0, focusUtf16: 0 },
               },
-              tagFilterOrigin: null
+              tagFilterOrigin: null,
             }
           : null;
         try {
@@ -1674,10 +1717,10 @@ export async function createChildCommand(
               ...(requestedLocation && commandLocation
                 ? {
                     requestedLocation,
-                    recoveryLocation: commandLocation
+                    recoveryLocation: commandLocation,
                   }
-                : {})
-            }
+                : {}),
+            },
           );
           if (settlement) return settlement;
           if (transitionToAll && ownerStillActive(ctx, ownerRecord)) {
@@ -1695,10 +1738,10 @@ export async function createChildCommand(
                 ...(!mutation.atomic
                   ? {
                       nonAtomicHistoryEntryIds: [
-                        keyboardInsertion.historyContext.entryId
-                      ]
+                        keyboardInsertion.historyContext.entryId,
+                      ],
                     }
-                  : {})
+                  : {}),
               }
             : result;
         } finally {
@@ -1715,9 +1758,9 @@ export async function createChildCommand(
     keyboardInsertion
       ? {
           historyContext: keyboardInsertion.historyContext,
-          keyboardInsertion
+          keyboardInsertion,
         }
-      : undefined
+      : undefined,
   );
   if (
     created &&
@@ -1727,13 +1770,15 @@ export async function createChildCommand(
   ) {
     activateAllLibraryView(ctx);
   }
-  if (keyboardInsertion) markSplitPhase(id, "settled");
+  if (keyboardInsertion && outcome === "committed") {
+    markSplitPhase(id, "settled");
+  }
   return outcome;
 }
 
 export async function createNextTextSiblingCommand(
   ctx: NotesCommandContext,
-  nodeId: NoteId
+  nodeId: NoteId,
 ): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand("create", async (context, historyContext) => {
     const before = confirmedState(context);
@@ -1752,15 +1797,15 @@ export async function createNextTextSiblingCommand(
           afterId: source.id,
           title: "",
           note: "",
-          markerKind: source.markerKind
+          markerKind: source.markerKind,
         },
-        ...historyArguments(historyContext)
-      )
+        ...historyArguments(historyContext),
+      ),
     );
     const projection = await projectNotesMutation(
       context,
       mutation,
-      ctx.activeScopeRef.current
+      ctx.activeScopeRef.current,
     );
     const uiUpdate = {
       selectedId: id,
@@ -1769,13 +1814,13 @@ export async function createNextTextSiblingCommand(
       pendingFocusField: "title" as const,
       ...(ctx.currentNavigation().zoomRootId === nodeId
         ? { zoomRootId: source.parentId }
-        : {})
+        : {}),
     };
     const settlement = await ctx.settleAtomicMutation(
       historyContext,
       mutation,
       projection,
-      { uiUpdate }
+      { uiUpdate },
     );
     if (settlement) return settlement;
     return directMutationResult(mutation, projection, uiUpdate);
@@ -1785,7 +1830,7 @@ export async function createNextTextSiblingCommand(
 export async function materializeGithubNotificationCommand(
   ctx: NotesCommandContext,
   snapshot: GithubNotificationSnapshotInput,
-  target: MaterializeGithubNotificationIntent
+  target: MaterializeGithubNotificationIntent,
 ): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand(
     target.kind === "children"
@@ -1797,60 +1842,61 @@ export async function materializeGithubNotificationCommand(
       if (!confirmedState(context).nodesById[GITHUB_NOTIFICATIONS_ROOT_ID]) {
         return { kind: "skipped" };
       }
-      const siblingId =
-        target.kind === "sibling" ? createNoteId() : null;
+      const siblingId = target.kind === "sibling" ? createNoteId() : null;
       let response;
       if (target.kind === "reparent") {
-        response = await context.repository.materializeGithubNotificationAndReparent(
-          context.vaultRoot,
-          {
-            rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
-            nodeId: target.nodeId,
-            snapshot
-          },
-          ...historyArguments(historyContext)
-        );
+        response =
+          await context.repository.materializeGithubNotificationAndReparent(
+            context.vaultRoot,
+            {
+              rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
+              nodeId: target.nodeId,
+              snapshot,
+            },
+            ...historyArguments(historyContext),
+          );
       } else {
-        response = await context.repository.materializeGithubNotificationAndCreateSibling(
-          context.vaultRoot,
-          {
-            rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
-            snapshot,
-            target:
-              target.kind === "sibling"
-                ? { kind: "sibling", siblingId: siblingId! }
-                : target
-          },
-          ...historyArguments(historyContext)
-        );
+        response =
+          await context.repository.materializeGithubNotificationAndCreateSibling(
+            context.vaultRoot,
+            {
+              rootId: GITHUB_NOTIFICATIONS_ROOT_ID,
+              snapshot,
+              target:
+                target.kind === "sibling"
+                  ? { kind: "sibling", siblingId: siblingId! }
+                  : target,
+            },
+            ...historyArguments(historyContext),
+          );
       }
       const mutation = await unwrapNotesMutationForContext(context, response);
       const projection = await projectNotesMutation(
         context,
         mutation,
-        ctx.activeScopeRef.current
+        ctx.activeScopeRef.current,
       );
       const focusId =
         target.kind === "reparent"
           ? target.nodeId
-          : siblingId ?? mutation.importedRootIds?.[0] ?? null;
+          : (siblingId ?? mutation.importedRootIds?.[0] ?? null);
       const uiUpdate = focusId
         ? {
             selectedId: focusId,
             editingNoteId: focusId,
             pendingFocusId: focusId,
-            pendingFocusField: "title" as const
+            pendingFocusField: "title" as const,
           }
         : undefined;
       const settlement = await ctx.settleAtomicMutation(
         historyContext,
         mutation,
         projection,
-        { uiUpdate }
+        { uiUpdate },
       );
       if (settlement) return settlement;
       return directMutationResult(mutation, projection, uiUpdate);
-    }
+    },
   );
 }
 
@@ -1860,7 +1906,7 @@ export async function splitNodeCommand(
   newNodeId: NoteId,
   prefix: string,
   suffix: string,
-  options?: NotesWorkspaceCompoundOptions
+  options?: NotesWorkspaceCompoundOptions,
 ): Promise<NotesWorkspaceCommandOutcome> {
   const keyboardInsertion = options?.keyboardInsertion;
   if (
@@ -1890,13 +1936,16 @@ export async function splitNodeCommand(
       // Post-barrier: the coordinator has flushed the draft-flush barrier and
       // handed this callback the run turn (plan Phase L0 instrumentation).
       markSplitPhase(newNodeId, "barrier");
-      if (!confirmedState(context).nodesById[nodeId]) {
+      const source = context.confirmedWorkspace.nodes.find(
+        (node) => node.id === nodeId,
+      );
+      if (!source) {
         return { kind: "skipped" };
       }
       const inlineTextContext = inlineDraft
         ? ctx.beginTextEntry(executionRecord, nodeId, {
             nodeId,
-            field: "title"
+            field: "title",
           })
         : null;
       let inlineRecovery: NotesWorkspaceQueueResult | null = null;
@@ -1910,21 +1959,19 @@ export async function splitNodeCommand(
               {
                 id: nodeId,
                 ...inlineDraft,
-                markerKind:
-                  confirmedState(context).nodesById[nodeId]?.markerKind ??
-                  "bullet"
+                markerKind: source.markerKind,
               },
-              ...historyArguments(inlineTextContext)
+              ...historyArguments(inlineTextContext),
             );
             const mutation = await unwrapNotesMutationForContext(
               context,
-              response
+              response,
             );
             const settlement = await ctx.settleAtomicMutation(
               inlineTextContext,
               mutation,
               { workspace: mutation.workspace },
-              { focus: { nodeId, field: "title" } }
+              { focus: { nodeId, field: "title" } },
             );
             if (settlement) {
               inlineRecovery = settlement;
@@ -1934,7 +1981,7 @@ export async function splitNodeCommand(
               return settlement;
             }
             return response;
-          }
+          },
         });
       }
       steps.push({
@@ -1946,13 +1993,13 @@ export async function splitNodeCommand(
               id: nodeId,
               newNodeId,
               prefix,
-              suffix
+              suffix,
             },
-            ...historyArguments(historyContext)
+            ...historyArguments(historyContext),
           );
           markSplitPhase(newNodeId, "ipc-done");
           return response;
-        }
+        },
       });
       const result = await runCompoundQueueWork(
         context,
@@ -1960,9 +2007,9 @@ export async function splitNodeCommand(
         {
           selectedId: newNodeId,
           editingNoteId: newNodeId,
-          pendingFocusId: newNodeId
+          pendingFocusId: newNodeId,
         },
-        ctx.activeScopeRef.current
+        ctx.activeScopeRef.current,
       );
       ctx.settleInlineTextEntry(executionRecord, inlineTextContext, result);
       if (inlineRecovery) {
@@ -1978,7 +2025,7 @@ export async function splitNodeCommand(
           result.uiUpdate,
           undefined,
           undefined,
-          result.historyStatus
+          result.historyStatus,
         );
       } else if (
         historyContext &&
@@ -1993,7 +2040,7 @@ export async function splitNodeCommand(
           undefined,
           undefined,
           result.historyStatus,
-          result.historyRejectionState
+          result.historyRejectionState,
         );
       }
       succeeded = result.kind === "authoritative";
@@ -2002,14 +2049,16 @@ export async function splitNodeCommand(
     keyboardInsertion
       ? {
           historyContext: keyboardInsertion.historyContext,
-          keyboardInsertion
+          keyboardInsertion,
         }
-      : undefined
+      : undefined,
   );
   return completion.then((outcome) => {
     // The structural command has resolved, i.e. the authoritative settle was
     // dispatched; the caret still lands on a later paint (plan Phase L0).
-    markSplitPhase(newNodeId, "settled");
+    if (outcome === "committed") {
+      markSplitPhase(newNodeId, "settled");
+    }
     if (succeeded) {
       notifySuccess(options?.onSuccess);
     }
@@ -2021,7 +2070,7 @@ export async function updateNodeCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId,
   patch: Pick<NoteNode, "title" | "note"> &
-    Partial<Pick<NoteNode, "markerKind">>
+    Partial<Pick<NoteNode, "markerKind">>,
 ): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand("update", async (context, historyContext) => {
     const source = confirmedState(context).nodesById[nodeId];
@@ -2036,20 +2085,20 @@ export async function updateNodeCommand(
           id: nodeId,
           ...patch,
           imageOffsetUtf16: source.imageOffsetUtf16,
-          markerKind: patch.markerKind ?? source.markerKind
+          markerKind: patch.markerKind ?? source.markerKind,
         },
-        ...historyArguments(historyContext)
-      )
+        ...historyArguments(historyContext),
+      ),
     );
     const projection = await projectNotesMutation(
       context,
       mutation,
-      ctx.activeScopeRef.current
+      ctx.activeScopeRef.current,
     );
     const settlement = await ctx.settleAtomicMutation(
       historyContext,
       mutation,
-      projection
+      projection,
     );
     if (settlement) return settlement;
     return directMutationResult(mutation, projection);
@@ -2060,7 +2109,7 @@ export async function moveNodeCommand(
   ctx: NotesCommandContext,
   input: MoveNoteNodeInput,
   focusNodeId?: NoteId | null,
-  options?: NotesWorkspaceCompoundOptions
+  options?: NotesWorkspaceCompoundOptions,
 ): Promise<NotesWorkspaceCommandOutcome> {
   const hadCentralDraft =
     ctx.sessionRecordRef.current?.drafts.has(input.id) ?? false;
@@ -2069,121 +2118,126 @@ export async function moveNodeCommand(
   const hasCentralDraft = centralDraft !== undefined;
   const inlineDraft =
     hadCentralDraft || hasCentralDraft ? undefined : options?.draft;
-  return ctx.runStructuralCommand("move", async (context, historyContext, executionRecord) => {
-    const before = confirmedState(context);
-    const expandNodeId = options?.expandNodeId;
-    if (
-      !hasMoveDependencies(before, input) ||
-      (expandNodeId !== undefined && !before.nodesById[expandNodeId])
-    ) {
-      return { kind: "skipped" };
-    }
-    const inlineTextContext = inlineDraft
-      ? ctx.beginTextEntry(executionRecord, input.id, {
-          nodeId: input.id,
-          field: "title"
-        })
-      : null;
-    let inlineRecovery: NotesWorkspaceQueueResult | null = null;
-    const steps: NotesWorkspaceQueueStep[] = [];
-    if (inlineDraft) {
-      steps.push({
-        historyEntryId: inlineTextContext?.entryId,
-        run: async () => {
-          const response = await context.repository.updateNode(
-            context.vaultRoot,
-            {
-              id: input.id,
-              ...inlineDraft,
-              markerKind:
-                confirmedState(context).nodesById[input.id]?.markerKind ??
-                "bullet"
-            },
-            ...historyArguments(inlineTextContext)
-          );
-          const mutation = await unwrapNotesMutationForContext(
-            context,
-            response
-          );
-          const settlement = await ctx.settleAtomicMutation(
-            inlineTextContext,
-            mutation,
-            { workspace: mutation.workspace },
-            { focus: { nodeId: input.id, field: "title" } }
-          );
-          if (settlement) {
-            inlineRecovery = settlement;
-            if (inlineTextContext) {
-              ctx.consumeRecoveredHistoryResult(inlineTextContext.entryId);
+  return ctx.runStructuralCommand(
+    "move",
+    async (context, historyContext, executionRecord) => {
+      const before = confirmedState(context);
+      const expandNodeId = options?.expandNodeId;
+      if (
+        !hasMoveDependencies(before, input) ||
+        (expandNodeId !== undefined && !before.nodesById[expandNodeId])
+      ) {
+        return { kind: "skipped" };
+      }
+      const inlineTextContext = inlineDraft
+        ? ctx.beginTextEntry(executionRecord, input.id, {
+            nodeId: input.id,
+            field: "title",
+          })
+        : null;
+      let inlineRecovery: NotesWorkspaceQueueResult | null = null;
+      const steps: NotesWorkspaceQueueStep[] = [];
+      if (inlineDraft) {
+        steps.push({
+          historyEntryId: inlineTextContext?.entryId,
+          run: async () => {
+            const response = await context.repository.updateNode(
+              context.vaultRoot,
+              {
+                id: input.id,
+                ...inlineDraft,
+                markerKind:
+                  confirmedState(context).nodesById[input.id]?.markerKind ??
+                  "bullet",
+              },
+              ...historyArguments(inlineTextContext),
+            );
+            const mutation = await unwrapNotesMutationForContext(
+              context,
+              response,
+            );
+            const settlement = await ctx.settleAtomicMutation(
+              inlineTextContext,
+              mutation,
+              { workspace: mutation.workspace },
+              { focus: { nodeId: input.id, field: "title" } },
+            );
+            if (settlement) {
+              inlineRecovery = settlement;
+              if (inlineTextContext) {
+                ctx.consumeRecoveredHistoryResult(inlineTextContext.entryId);
+              }
+              return settlement;
             }
-            return settlement;
-          }
-          return response;
-        }
-      });
-    }
-    if (
-      expandNodeId !== undefined &&
-      before.nodesById[expandNodeId].isCollapsed
-    ) {
+            return response;
+          },
+        });
+      }
+      if (
+        expandNodeId !== undefined &&
+        before.nodesById[expandNodeId].isCollapsed
+      ) {
+        steps.push({
+          historyEntryId: historyContext?.entryId,
+          run: () =>
+            context.repository.toggleCollapsed(
+              context.vaultRoot,
+              expandNodeId,
+              ...historyArguments(historyContext),
+            ),
+        });
+      }
       steps.push({
         historyEntryId: historyContext?.entryId,
-        run: () => context.repository.toggleCollapsed(
+        run: () =>
+          context.repository.moveNode(
             context.vaultRoot,
-            expandNodeId,
-            ...historyArguments(historyContext)
-          )
+            input,
+            ...historyArguments(historyContext),
+          ),
       });
-    }
-    steps.push({
-      historyEntryId: historyContext?.entryId,
-      run: () => context.repository.moveNode(
-        context.vaultRoot,
-        input,
-        ...historyArguments(historyContext)
-      )
-    });
-    const result = await runCompoundQueueWork(
-      context,
-      steps,
-      focusedUiUpdate(focusNodeId),
-      ctx.activeScopeRef.current
-    );
-    ctx.settleInlineTextEntry(executionRecord, inlineTextContext, result);
-    if (inlineRecovery) {
-      return inlineRecovery;
-    }
-    if (result.kind === "authoritative") {
-      options?.beforeHistoryCapture?.();
-      await ctx.rememberHistoryAfter(
+      const result = await runCompoundQueueWork(
+        context,
+        steps,
+        focusedUiUpdate(focusNodeId),
+        ctx.activeScopeRef.current,
+      );
+      ctx.settleInlineTextEntry(executionRecord, inlineTextContext, result);
+      if (inlineRecovery) {
+        return inlineRecovery;
+      }
+      if (result.kind === "authoritative") {
+        options?.beforeHistoryCapture?.();
+        await ctx.rememberHistoryAfter(
+          historyContext &&
+            result.committedHistoryEntryIds?.includes(historyContext.entryId)
+            ? historyContext
+            : null,
+          result.workspace,
+          result.uiUpdate,
+          undefined,
+          undefined,
+          result.historyStatus,
+        );
+      } else if (
         historyContext &&
-          result.committedHistoryEntryIds?.includes(historyContext.entryId)
-          ? historyContext
-          : null,
-        result.workspace,
-        result.uiUpdate,
-        undefined,
-        undefined,
-        result.historyStatus
-      );
-    } else if (
-      historyContext &&
-      result.kind === "failure" &&
-      result.workspace &&
-      result.committedHistoryEntryIds?.includes(historyContext.entryId)
-    ) {
-      await ctx.rememberHistoryAfter(
-        historyContext,
-        result.workspace,
-        undefined,
-        undefined,
-        undefined,
-        result.historyStatus,
-        result.historyRejectionState
-      );
-    }
-    return result;
-  });
+        result.kind === "failure" &&
+        result.workspace &&
+        result.committedHistoryEntryIds?.includes(historyContext.entryId)
+      ) {
+        await ctx.rememberHistoryAfter(
+          historyContext,
+          result.workspace,
+          undefined,
+          undefined,
+          undefined,
+          result.historyStatus,
+          result.historyRejectionState,
+        );
+      }
+      return result;
+    },
+  );
 }
 
 /**
@@ -2212,14 +2266,14 @@ export type NotesBatchOp =
  */
 function buildApplyBatchInput(
   nodeIds: readonly NoteId[],
-  op: NotesBatchOp
+  op: NotesBatchOp,
 ): ApplyNotesBatchInput {
   switch (op.type) {
     case "complete":
       return {
         op: "complete",
         nodeIds,
-        completed: op.completed ?? false
+        completed: op.completed ?? false,
       };
     case "delete":
       return { op: "delete", nodeIds };
@@ -2239,7 +2293,7 @@ function buildApplyBatchInput(
         nodeIds,
         parentId: op.parentId,
         afterId: op.afterId,
-        beforeId: op.beforeId ?? null
+        beforeId: op.beforeId ?? null,
       };
   }
 }
@@ -2275,14 +2329,14 @@ export interface NotesBatchCommandSettlement {
 function resolvedBatchOp(
   workspace: NormalizedNotesWorkspace,
   nodeIds: readonly NoteId[],
-  op: NotesBatchOp
+  op: NotesBatchOp,
 ): NotesBatchOp {
   return op.type === "complete"
     ? {
         type: "complete",
         completed: nodeIds.some(
-          (nodeId) => workspace.nodesById[nodeId].completedAt === null
-        )
+          (nodeId) => workspace.nodesById[nodeId].completedAt === null,
+        ),
       }
     : op;
 }
@@ -2290,7 +2344,7 @@ function resolvedBatchOp(
 function isInsideSelectedForest(
   nodeId: NoteId,
   selectedIds: ReadonlySet<NoteId>,
-  workspace: NormalizedNotesWorkspace
+  workspace: NormalizedNotesWorkspace,
 ): boolean {
   const visited = new Set<NoteId>();
   let currentId: NoteId | null = nodeId;
@@ -2307,7 +2361,7 @@ function isInsideSelectedForest(
 function isPreparedBatchMoveSafe(
   workspace: NormalizedNotesWorkspace,
   nodeIds: readonly NoteId[],
-  op: NotesBatchOp
+  op: NotesBatchOp,
 ): boolean {
   if (op.type !== "move") {
     return true;
@@ -2329,7 +2383,8 @@ function isPreparedBatchMoveSafe(
       return false;
     }
   }
-  const after = op.afterId === null ? undefined : workspace.nodesById[op.afterId];
+  const after =
+    op.afterId === null ? undefined : workspace.nodesById[op.afterId];
   const before =
     op.beforeId == null ? undefined : workspace.nodesById[op.beforeId];
   return (
@@ -2347,9 +2402,7 @@ function sameAuthorityValue(left: unknown, right: unknown): boolean {
       Array.isArray(left) &&
       Array.isArray(right) &&
       left.length === right.length &&
-      left.every((value, index) =>
-        sameAuthorityValue(value, right[index])
-      )
+      left.every((value, index) => sameAuthorityValue(value, right[index]))
     );
   }
   if (
@@ -2369,7 +2422,7 @@ function sameAuthorityValue(left: unknown, right: unknown): boolean {
     leftKeys.every(
       (key, index) =>
         key === rightKeys[index] &&
-        sameAuthorityValue(leftRecord[key], rightRecord[key])
+        sameAuthorityValue(leftRecord[key], rightRecord[key]),
     )
   );
 }
@@ -2378,7 +2431,7 @@ function preparedSelectionOwnerIsCurrent(
   ctx: NotesCommandContext,
   prepared: NotesPreparedSelectionAuthority,
   context: NotesWorkspaceQueueContext,
-  record: NotesWorkspaceSessionRecord
+  record: NotesWorkspaceSessionRecord,
 ): boolean {
   return (
     prepared.token === ctx.selectionPreparationTokenRef.current &&
@@ -2394,7 +2447,7 @@ function preparedSelectionOwnerIsCurrent(
 }
 
 function preparedSelectionForestRootIds(
-  prepared: NotesPreparedSelectionAuthority
+  prepared: NotesPreparedSelectionAuthority,
 ): readonly NoteId[] {
   const selected = new Set(prepared.selectedNodeIds);
   return prepared.selectedNodeIds.filter((nodeId) => {
@@ -2411,7 +2464,7 @@ function preparedSelectionForestRootIds(
 
 function retainedFocusAfterNavigationLoss(
   navigation: LiveNotesNavigation,
-  workspace: NotesWorkspace
+  workspace: NotesWorkspace,
 ): NotesHistoryFocus | null {
   const nodeId = navigation.editingNoteId;
   if (nodeId === null || !workspace.nodes.some((node) => node.id === nodeId)) {
@@ -2419,14 +2472,14 @@ function retainedFocusAfterNavigationLoss(
   }
   return {
     nodeId,
-    field: navigation.pendingFocusField ?? "title"
+    field: navigation.pendingFocusField ?? "title",
   };
 }
 
 function settledNavigationAfterNavigationLoss(
   navigation: LiveNotesNavigation,
   editingFocus: NotesHistoryFocus | null,
-  workspace: NotesWorkspace
+  workspace: NotesWorkspace,
 ): NotesWorkspaceUiUpdate {
   const normalized = normalizeWorkspace(workspace);
   const retained = settledUiState(normalized, navigation);
@@ -2443,22 +2496,22 @@ function settledNavigationAfterNavigationLoss(
     // The editor already owns real DOM focus. A pending focus would replay the
     // stale command postcondition and could move the caret away again.
     pendingFocusId: null,
-    pendingFocusField: null
+    pendingFocusField: null,
   };
 }
 
 function projectedSettlementWorkspace(
   ctx: NotesCommandContext,
-  result: Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>
+  result: Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>,
 ): NormalizedNotesWorkspace {
   const workspace = settleWorkspaceStore(
     ctx.stateRef.current,
     result.workspace,
-    result.delta
+    result.delta,
   );
   return {
     ...workspace,
-    ...settledUiState(workspace, ctx.stateRef.current, result.uiUpdate)
+    ...settledUiState(workspace, ctx.stateRef.current, result.uiUpdate),
   };
 }
 
@@ -2466,7 +2519,7 @@ export async function applyBatchCommand(
   ctx: NotesCommandContext,
   nodeIds: readonly NoteId[],
   op: NotesBatchOp,
-  uiUpdate?: NotesWorkspaceUiUpdate
+  uiUpdate?: NotesWorkspaceUiUpdate,
 ): Promise<NotesBatchCommandSettlement> {
   const preserveSelection = op.type === "indent" || op.type === "outdent";
   let mutationCommitted = false;
@@ -2489,8 +2542,8 @@ export async function applyBatchCommand(
         await context.repository.applyBatch(
           context.vaultRoot,
           buildApplyBatchInput(ids, resolvedOp),
-          ...historyArguments(historyContext)
-        )
+          ...historyArguments(historyContext),
+        ),
       );
       mutationCommitted = true;
       duplicatedRootIds = mutation.duplicatedRootIds
@@ -2499,7 +2552,7 @@ export async function applyBatchCommand(
       const projection = await projectNotesMutation(
         context,
         mutation,
-        ctx.activeScopeRef.current
+        ctx.activeScopeRef.current,
       );
       const result = directMutationResult(mutation, projection, uiUpdate);
       if (result.kind === "authoritative") {
@@ -2509,24 +2562,24 @@ export async function applyBatchCommand(
         historyContext,
         mutation,
         projection,
-        { uiUpdate }
+        { uiUpdate },
       );
       if (settlement) return settlement;
       return result;
     },
-    { selectionPolicy: preserveSelection ? "preserve" : "clear" }
+    { selectionPolicy: preserveSelection ? "preserve" : "clear" },
   );
   return {
     outcome,
     mutationCommitted,
     ...(duplicatedRootIds ? { duplicatedRootIds } : {}),
-    ...(projectedWorkspace ? { projectedWorkspace } : {})
+    ...(projectedWorkspace ? { projectedWorkspace } : {}),
   };
 }
 
 export async function applyBackspaceGestureCommand(
   context: NotesWorkspaceQueueContext,
-  input: NotesBackspaceGestureCommitInput
+  input: NotesBackspaceGestureCommitInput,
 ): Promise<NotesWorkspaceQueueResult> {
   const mutation = await unwrapNotesMutationForContext(
     context,
@@ -2535,17 +2588,18 @@ export async function applyBackspaceGestureCommand(
       {
         op: "backspaceGesture",
         nodeIds: [...input.gesture.removedNodeIds],
-        titleUpdate: input.draftCommit.titleUpdate
+        expectedTitles: [...input.expectedTitles],
+        titleUpdate: input.draftCommit.titleUpdate,
       },
-      input.historyContext
-    )
+      input.historyContext,
+    ),
   );
   let projection: ProjectedNotesMutation;
   try {
     projection = await projectNotesMutation(
       context,
       mutation,
-      context.sourceScope
+      context.sourceScope,
     );
   } catch (cause) {
     throw Object.assign(
@@ -2554,14 +2608,14 @@ export async function applyBackspaceGestureCommand(
         : new Error("Backspace projection is unavailable."),
       {
         notesMutationOutcome: "unknown" as const,
-        mutationCommitted: true as const
-      }
+        mutationCommitted: true as const,
+      },
     );
   }
   if (projection.projectionError) {
     throw Object.assign(new Error(projection.projectionError), {
       notesMutationOutcome: "unknown" as const,
-      mutationCommitted: true as const
+      mutationCommitted: true as const,
     });
   }
   const result = directMutationResult(
@@ -2569,7 +2623,7 @@ export async function applyBackspaceGestureCommand(
     projection,
     input.gesture.ownerPaneId === "primary"
       ? focusedUiUpdate(input.gesture.focusNodeId)
-      : undefined
+      : undefined,
   );
   if (result.kind !== "authoritative") return result;
   let historyStatus = mutation.historyStatus;
@@ -2577,7 +2631,7 @@ export async function applyBackspaceGestureCommand(
     try {
       historyStatus = await context.repository.historyStatus(
         context.vaultRoot,
-        input.historyContext.sessionId
+        input.historyContext.sessionId,
       );
     } catch (cause) {
       throw Object.assign(
@@ -2586,8 +2640,8 @@ export async function applyBackspaceGestureCommand(
           : new Error("Backspace history status is unavailable."),
         {
           notesMutationOutcome: "unknown" as const,
-          mutationCommitted: true as const
-        }
+          mutationCommitted: true as const,
+        },
       );
     }
   }
@@ -2597,7 +2651,7 @@ export async function applyBackspaceGestureCommand(
     committedHistoryEntryIds: [input.historyContext.entryId],
     ...(mutation.atomic
       ? {}
-      : { nonAtomicHistoryEntryIds: [input.historyContext.entryId] })
+      : { nonAtomicHistoryEntryIds: [input.historyContext.entryId] }),
   };
 }
 
@@ -2614,7 +2668,7 @@ export async function applyPreparedSelectionBatchCommand(
   uiUpdate?: NotesWorkspaceUiUpdate,
   expandNodeId?: NoteId,
   expectedNavigationVersion = ctx.navigationVersionRef.current,
-  beforeHistoryCapture?: () => void
+  beforeHistoryCapture?: () => void,
 ): Promise<NotesBatchCommandSettlement> {
   let mutationCommitted = false;
   let navigationOwned = false;
@@ -2628,8 +2682,8 @@ export async function applyPreparedSelectionBatchCommand(
       }
       const activeWorkspace = normalizeWorkspace(
         await context.repository.loadWorkspace(context.vaultRoot, {
-          kind: "active"
-        })
+          kind: "active",
+        }),
       );
       if (!preparedSelectionOwnerIsCurrent(ctx, prepared, context, record)) {
         return { kind: "skipped" };
@@ -2640,7 +2694,7 @@ export async function applyPreparedSelectionBatchCommand(
         ids.some(
           (nodeId) =>
             prepared.workspace.nodesById[nodeId] === undefined ||
-            activeWorkspace.nodesById[nodeId] === undefined
+            activeWorkspace.nodesById[nodeId] === undefined,
         ) ||
         (expandNodeId !== undefined &&
           (op.type !== "move" ||
@@ -2656,12 +2710,9 @@ export async function applyPreparedSelectionBatchCommand(
         context,
         await context.repository.applyBatch(
           context.vaultRoot,
-          buildApplyBatchInput(
-            ids,
-            resolvedBatchOp(activeWorkspace, ids, op)
-          ),
-          ...historyArguments(historyContext)
-        )
+          buildApplyBatchInput(ids, resolvedBatchOp(activeWorkspace, ids, op)),
+          ...historyArguments(historyContext),
+        ),
       );
       mutationCommitted = true;
       duplicatedRootIds = mutation.duplicatedRootIds
@@ -2670,7 +2721,7 @@ export async function applyPreparedSelectionBatchCommand(
       const projection = await projectNotesMutation(
         context,
         mutation,
-        ctx.activeScopeRef.current
+        ctx.activeScopeRef.current,
       );
       navigationOwned =
         preparedSelectionOwnerIsCurrent(ctx, prepared, context, record) &&
@@ -2682,12 +2733,12 @@ export async function applyPreparedSelectionBatchCommand(
         : settledNavigationAfterNavigationLoss(
             latestNavigation,
             latestEditingFocus,
-            projection.workspace
+            projection.workspace,
           );
       const result = directMutationResult(
         mutation,
         projection,
-        settlementUiUpdate
+        settlementUiUpdate,
       );
       if (result.kind === "authoritative") {
         projectedWorkspace = projectedSettlementWorkspace(ctx, result);
@@ -2720,20 +2771,20 @@ export async function applyPreparedSelectionBatchCommand(
             ? undefined
             : retainedFocusAfterNavigationLoss(
                 latestNavigation,
-                projection.workspace
+                projection.workspace,
               ),
-          expandedNodeIds
-        }
+          expandedNodeIds,
+        },
       );
       const projectionResult = settlement ?? result;
       return expandedNodeIds && projectionResult.kind === "authoritative"
         ? {
             ...projectionResult,
-            projectionLocallyExpandedNodeIds: expandedNodeIds
+            projectionLocallyExpandedNodeIds: expandedNodeIds,
           }
         : projectionResult;
     },
-    { selectionPolicy: "preserve" }
+    { selectionPolicy: "preserve" },
   );
   // Catch a caret/navigation move that landed after projection but before the
   // structural queue settled back to the semantic command.
@@ -2745,7 +2796,7 @@ export async function applyPreparedSelectionBatchCommand(
     mutationCommitted,
     navigationOwned,
     ...(duplicatedRootIds ? { duplicatedRootIds } : {}),
-    ...(projectedWorkspace ? { projectedWorkspace } : {})
+    ...(projectedWorkspace ? { projectedWorkspace } : {}),
   };
 }
 
@@ -2759,7 +2810,7 @@ export async function applyPreparedSelectionBatchCommand(
  */
 export async function importSubtreeCommand(
   ctx: NotesCommandContext,
-  input: ImportSubtreeInput
+  input: ImportSubtreeInput,
 ): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand("import", async (context, historyContext) => {
     const before = confirmedState(context);
@@ -2774,28 +2825,28 @@ export async function importSubtreeCommand(
       await context.repository.importSubtree(
         context.vaultRoot,
         input,
-        ...historyArguments(historyContext)
-      )
+        ...historyArguments(historyContext),
+      ),
     );
     const importedRootId = mutation.importedRootIds?.[0] ?? null;
     const projection = await projectNotesMutation(
       context,
       mutation,
-      ctx.activeScopeRef.current
+      ctx.activeScopeRef.current,
     );
     const uiUpdate = importedRootId
       ? {
           selectedId: importedRootId,
           editingNoteId: importedRootId,
           pendingFocusId: importedRootId,
-          pendingFocusField: "title" as const
+          pendingFocusField: "title" as const,
         }
       : undefined;
     const settlement = await ctx.settleAtomicMutation(
       historyContext,
       mutation,
       projection,
-      { uiUpdate }
+      { uiUpdate },
     );
     if (settlement) return settlement;
     return directMutationResult(mutation, projection, uiUpdate);
@@ -2804,38 +2855,41 @@ export async function importSubtreeCommand(
 
 export async function toggleCompleteCommand(
   ctx: NotesCommandContext,
-  nodeId: NoteId
+  nodeId: NoteId,
 ): Promise<NotesWorkspaceCommandOutcome> {
-  return ctx.runStructuralCommand("complete", async (context, historyContext) => {
-    if (!confirmedState(context).nodesById[nodeId]) {
-      return { kind: "skipped" };
-    }
-    const mutation = await unwrapNotesMutationForContext(
-      context,
-      await context.repository.toggleComplete(
-        context.vaultRoot,
-        nodeId,
-        ...historyArguments(historyContext)
-      )
-    );
-    const projection = await projectNotesMutation(
-      context,
-      mutation,
-      ctx.activeScopeRef.current
-    );
-    const settlement = await ctx.settleAtomicMutation(
-      historyContext,
-      mutation,
-      projection
-    );
-    if (settlement) return settlement;
-    return directMutationResult(mutation, projection);
-  });
+  return ctx.runStructuralCommand(
+    "complete",
+    async (context, historyContext) => {
+      if (!confirmedState(context).nodesById[nodeId]) {
+        return { kind: "skipped" };
+      }
+      const mutation = await unwrapNotesMutationForContext(
+        context,
+        await context.repository.toggleComplete(
+          context.vaultRoot,
+          nodeId,
+          ...historyArguments(historyContext),
+        ),
+      );
+      const projection = await projectNotesMutation(
+        context,
+        mutation,
+        ctx.activeScopeRef.current,
+      );
+      const settlement = await ctx.settleAtomicMutation(
+        historyContext,
+        mutation,
+        projection,
+      );
+      if (settlement) return settlement;
+      return directMutationResult(mutation, projection);
+    },
+  );
 }
 
 export async function toggleCollapsedCommand(
   ctx: NotesCommandContext,
-  nodeId: NoteId
+  nodeId: NoteId,
 ): Promise<NotesWorkspaceCommandOutcome> {
   ctx.closeTextBurst();
   if (ctx.locallyExpandedNodeIdsRef.current.has(nodeId)) {
@@ -2846,31 +2900,34 @@ export async function toggleCollapsedCommand(
     // it commits immediately without touching the write queue.
     return "committed";
   }
-  return ctx.runStructuralCommand("collapse", async (context, historyContext) => {
-    if (!confirmedState(context).nodesById[nodeId]) {
-      return { kind: "skipped" };
-    }
-    const mutation = await unwrapNotesMutationForContext(
-      context,
-      await context.repository.toggleCollapsed(
-        context.vaultRoot,
-        nodeId,
-        ...historyArguments(historyContext)
-      )
-    );
-    const projection = await projectNotesMutation(
-      context,
-      mutation,
-      ctx.activeScopeRef.current
-    );
-    const settlement = await ctx.settleAtomicMutation(
-      historyContext,
-      mutation,
-      projection
-    );
-    if (settlement) return settlement;
-    return directMutationResult(mutation, projection);
-  });
+  return ctx.runStructuralCommand(
+    "collapse",
+    async (context, historyContext) => {
+      if (!confirmedState(context).nodesById[nodeId]) {
+        return { kind: "skipped" };
+      }
+      const mutation = await unwrapNotesMutationForContext(
+        context,
+        await context.repository.toggleCollapsed(
+          context.vaultRoot,
+          nodeId,
+          ...historyArguments(historyContext),
+        ),
+      );
+      const projection = await projectNotesMutation(
+        context,
+        mutation,
+        ctx.activeScopeRef.current,
+      );
+      const settlement = await ctx.settleAtomicMutation(
+        historyContext,
+        mutation,
+        projection,
+      );
+      if (settlement) return settlement;
+      return directMutationResult(mutation, projection);
+    },
+  );
 }
 
 export async function runAtomicSubtreeCommand(
@@ -2882,7 +2939,7 @@ export async function runAtomicSubtreeCommand(
     | "sortSubtreeAscending"
     | "sortSubtreeDescending",
   nodeId: NoteId,
-  reconcileExpansions: boolean
+  reconcileExpansions: boolean,
 ): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand(
     commandKind,
@@ -2897,20 +2954,20 @@ export async function runAtomicSubtreeCommand(
         await repositoryCommand(
           context.vaultRoot,
           nodeId,
-          ...historyArguments(historyContext)
-        )
+          ...historyArguments(historyContext),
+        ),
       );
       const projection = await projectNotesMutation(
         context,
         mutation,
-        ctx.activeScopeRef.current
+        ctx.activeScopeRef.current,
       );
       let expandedNodeIds: ReadonlySet<NoteId> | undefined;
       if (reconcileExpansions) {
         const next = expansionsOutsideSubtree(
           ctx.locallyExpandedNodeIdsRef.current,
           mutation.workspace,
-          nodeId
+          nodeId,
         );
         ctx.replaceLocalExpansions(next);
         expandedNodeIds = next;
@@ -2919,20 +2976,20 @@ export async function runAtomicSubtreeCommand(
         historyContext,
         mutation,
         projection,
-        { expandedNodeIds }
+        { expandedNodeIds },
       );
       if (settlement) return settlement;
       const result = directMutationResult(mutation, projection);
       return reconcileExpansions
         ? { ...result, clearLocalExpansionSubtreeId: nodeId }
         : result;
-    }
+    },
   );
 }
 
 export async function toggleStarCommand(
   ctx: NotesCommandContext,
-  nodeId: NoteId
+  nodeId: NoteId,
 ): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand("star", async (context, historyContext) => {
     if (!confirmedState(context).nodesById[nodeId]) {
@@ -2943,18 +3000,18 @@ export async function toggleStarCommand(
       await context.repository.toggleStar(
         context.vaultRoot,
         nodeId,
-        ...historyArguments(historyContext)
-      )
+        ...historyArguments(historyContext),
+      ),
     );
     const projection = await projectNotesMutation(
       context,
       mutation,
-      ctx.activeScopeRef.current
+      ctx.activeScopeRef.current,
     );
     const settlement = await ctx.settleAtomicMutation(
       historyContext,
       mutation,
-      projection
+      projection,
     );
     if (settlement) return settlement;
     return directMutationResult(mutation, projection);
@@ -2963,50 +3020,53 @@ export async function toggleStarCommand(
 
 export async function duplicateNodeCommand(
   ctx: NotesCommandContext,
-  nodeId: NoteId
+  nodeId: NoteId,
 ): Promise<NotesWorkspaceCommandOutcome> {
-  return ctx.runStructuralCommand("duplicate", async (context, historyContext) => {
-    const before = confirmedState(context);
-    if (!before.nodesById[nodeId]) {
-      return { kind: "skipped" };
-    }
-    const mutation = await unwrapNotesMutationForContext(
-      context,
-      await context.repository.duplicateNode(
-        context.vaultRoot,
-        nodeId,
-        ...historyArguments(historyContext)
-      )
-    );
-    const duplicateId = duplicateRootId(before, mutation.workspace, nodeId);
-    const projection = await projectNotesMutation(
-      context,
-      mutation,
-      ctx.activeScopeRef.current
-    );
-    const uiUpdate = duplicateId
-      ? {
-          selectedId: duplicateId,
-          editingNoteId: duplicateId,
-          pendingFocusId: duplicateId,
-          pendingFocusField: "title" as const
-        }
-      : undefined;
-    const settlement = await ctx.settleAtomicMutation(
-      historyContext,
-      mutation,
-      projection,
-      { uiUpdate }
-    );
-    if (settlement) return settlement;
-    return directMutationResult(mutation, projection, uiUpdate);
-  });
+  return ctx.runStructuralCommand(
+    "duplicate",
+    async (context, historyContext) => {
+      const before = confirmedState(context);
+      if (!before.nodesById[nodeId]) {
+        return { kind: "skipped" };
+      }
+      const mutation = await unwrapNotesMutationForContext(
+        context,
+        await context.repository.duplicateNode(
+          context.vaultRoot,
+          nodeId,
+          ...historyArguments(historyContext),
+        ),
+      );
+      const duplicateId = duplicateRootId(before, mutation.workspace, nodeId);
+      const projection = await projectNotesMutation(
+        context,
+        mutation,
+        ctx.activeScopeRef.current,
+      );
+      const uiUpdate = duplicateId
+        ? {
+            selectedId: duplicateId,
+            editingNoteId: duplicateId,
+            pendingFocusId: duplicateId,
+            pendingFocusField: "title" as const,
+          }
+        : undefined;
+      const settlement = await ctx.settleAtomicMutation(
+        historyContext,
+        mutation,
+        projection,
+        { uiUpdate },
+      );
+      if (settlement) return settlement;
+      return directMutationResult(mutation, projection, uiUpdate);
+    },
+  );
 }
 
 export async function runRootLifecycle(
   ctx: NotesCommandContext,
   nodeId: NoteId,
-  mutation: "archive" | "unarchive" | "trash"
+  mutation: "archive" | "unarchive" | "trash",
 ): Promise<NotesWorkspaceCommandOutcome> {
   const ownerRecord = ctx.sessionRecordRef.current;
   if (!ownerRecord) {
@@ -3025,7 +3085,7 @@ export async function runRootLifecycle(
     pendingFocusId: liveNavigation.pendingFocusId,
     pendingFocusField: liveNavigation.pendingFocusField,
     locallyExpandedNodeIds: new Set(ctx.locallyExpandedNodeIdsRef.current),
-    scope: ctx.activeScopeRef.current
+    scope: ctx.activeScopeRef.current,
   };
   const beforeNavigationVersion = ctx.navigationVersionRef.current;
   const isLifecycleOwnerActive = (): boolean =>
@@ -3037,7 +3097,7 @@ export async function runRootLifecycle(
   } = {
     transition: null,
     recoveredToActive: false,
-    resolvedNavigationVersion: null
+    resolvedNavigationVersion: null,
   };
 
   const outcome = await ctx.runStructuralCommand(
@@ -3056,19 +3116,19 @@ export async function runRootLifecycle(
             ? context.repository.archiveNode(
                 context.vaultRoot,
                 nodeId,
-                ...historyArguments(historyContext)
+                ...historyArguments(historyContext),
               )
             : mutation === "unarchive"
               ? context.repository.unarchiveNode(
                   context.vaultRoot,
                   nodeId,
-                  ...historyArguments(historyContext)
+                  ...historyArguments(historyContext),
                 )
               : context.repository.softDeleteNode(
                   context.vaultRoot,
                   nodeId,
-                  ...historyArguments(historyContext)
-                ))
+                  ...historyArguments(historyContext),
+                )),
         );
         const navigationVersion = ctx.navigationVersionRef.current;
         const activeOwner = isLifecycleOwnerActive();
@@ -3082,9 +3142,9 @@ export async function runRootLifecycle(
                 pendingFocusId: latestNavigation.pendingFocusId,
                 pendingFocusField: latestNavigation.pendingFocusField,
                 locallyExpandedNodeIds: new Set(
-                  ctx.locallyExpandedNodeIdsRef.current
+                  ctx.locallyExpandedNodeIdsRef.current,
                 ),
-                scope: ctx.activeScopeRef.current
+                scope: ctx.activeScopeRef.current,
               }
             : beforeNavigation;
         let projection;
@@ -3092,14 +3152,16 @@ export async function runRootLifecycle(
           projection = await projectNotesMutation(
             context,
             mutationResult,
-            navigation.scope
+            navigation.scope,
           );
         } catch {
           lifecycleResult.recoveredToActive = true;
           const projectedWorkspace = activeOwner
-            ? await context.repository.loadWorkspace(context.vaultRoot, {
-                kind: "active"
-              }).catch(() => mutationResult.workspace)
+            ? await context.repository
+                .loadWorkspace(context.vaultRoot, {
+                  kind: "active",
+                })
+                .catch(() => mutationResult.workspace)
             : mutationResult.workspace;
           projection = { workspace: projectedWorkspace };
         }
@@ -3107,13 +3169,13 @@ export async function runRootLifecycle(
           beforeWorkspace,
           normalizeWorkspace(projection.workspace),
           nodeId,
-          navigation
+          navigation,
         );
         lifecycleResult.transition = {
           before: beforeNavigation,
           after: lifecycleResult.recoveredToActive
             ? { ...transition.after, scope: { kind: "active" } }
-            : transition.after
+            : transition.after,
         };
         lifecycleResult.resolvedNavigationVersion = navigationVersion;
         const after = lifecycleResult.transition.after;
@@ -3122,7 +3184,7 @@ export async function runRootLifecycle(
           zoomRootId: after.zoomRootId,
           editingNoteId: after.editingNoteId,
           pendingFocusId: after.pendingFocusId,
-          pendingFocusField: after.pendingFocusField
+          pendingFocusField: after.pendingFocusField,
         };
         const requestedLocation: NotesHistorySnapshot = {
           ...commandLocation,
@@ -3130,22 +3192,22 @@ export async function runRootLifecycle(
           selectedId: after.selectedId,
           zoomRootId: after.zoomRootId,
           expansion: notesExpansionSnapshotPool.acquire([
-            ...after.locallyExpandedNodeIds
+            ...after.locallyExpandedNodeIds,
           ]),
           focus: after.editingNoteId
             ? {
                 nodeId: after.editingNoteId,
-                field: after.pendingFocusField ?? "title"
+                field: after.pendingFocusField ?? "title",
               }
             : null,
           tagFilterOrigin: commandLocation.tagFilterOrigin
             ? {
                 ...commandLocation.tagFilterOrigin,
                 expansion: notesExpansionSnapshotPool.acquire(
-                  commandLocation.tagFilterOrigin.expansion.nodeIds
-                )
+                  commandLocation.tagFilterOrigin.expansion.nodeIds,
+                ),
               }
-            : null
+            : null,
         };
         try {
           const settlement = await ctx.settleAtomicMutation(
@@ -3156,15 +3218,15 @@ export async function runRootLifecycle(
               uiUpdate,
               expandedNodeIds: after.locallyExpandedNodeIds,
               requestedLocation,
-              recoveryLocation: commandLocation
-            }
+              recoveryLocation: commandLocation,
+            },
           );
           if (settlement) return settlement;
           return directMutationResult(
             mutationResult,
             projection,
             uiUpdate,
-            navigation.scope
+            navigation.scope,
           );
         } finally {
           ctx.releaseHistorySnapshot(requestedLocation);
@@ -3172,7 +3234,7 @@ export async function runRootLifecycle(
       } finally {
         ctx.releaseHistorySnapshot(commandLocation);
       }
-    }
+    },
   );
 
   if (!ownerStillActive(ctx, ownerRecord)) {
@@ -3185,7 +3247,7 @@ export async function runRootLifecycle(
       ctx.navigationVersionRef.current
     ) {
       ctx.replaceLocalExpansions(
-        lifecycleResult.transition.after.locallyExpandedNodeIds
+        lifecycleResult.transition.after.locallyExpandedNodeIds,
       );
     }
   }
@@ -3199,7 +3261,7 @@ export async function removeEmptyNodeCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId,
   focusNodeId?: NoteId | null,
-  options?: NotesWorkspaceCompoundOptions
+  options?: NotesWorkspaceCompoundOptions,
 ): Promise<NotesWorkspaceCommandOutcome> {
   const hadCentralDraft =
     ctx.sessionRecordRef.current?.drafts.has(nodeId) ?? false;
@@ -3211,107 +3273,108 @@ export async function removeEmptyNodeCommand(
   return ctx.runStructuralCommand(
     "remove",
     async (context, historyContext, executionRecord) => {
-    if (!confirmedState(context).nodesById[nodeId]) {
-      return { kind: "skipped" };
-    }
-    const inlineTextContext = inlineDraft
-      ? ctx.beginTextEntry(executionRecord, nodeId, {
-          nodeId,
-          field: "title"
-        })
-      : null;
-    let inlineRecovery: NotesWorkspaceQueueResult | null = null;
-    const steps: NotesWorkspaceQueueStep[] = [];
-    if (inlineDraft) {
-      steps.push({
-        historyEntryId: inlineTextContext?.entryId,
-        run: async () => {
-          const response = await context.repository.updateNode(
-            context.vaultRoot,
-            {
-              id: nodeId,
-              ...inlineDraft,
-              markerKind:
-                confirmedState(context).nodesById[nodeId]?.markerKind ??
-                "bullet"
-            },
-            ...historyArguments(inlineTextContext)
-          );
-          const mutation = await unwrapNotesMutationForContext(
-            context,
-            response
-          );
-          const settlement = await ctx.settleAtomicMutation(
-            inlineTextContext,
-            mutation,
-            { workspace: mutation.workspace },
-            { focus: { nodeId, field: "title" } }
-          );
-          if (settlement) {
-            inlineRecovery = settlement;
-            if (inlineTextContext) {
-              ctx.consumeRecoveredHistoryResult(inlineTextContext.entryId);
+      if (!confirmedState(context).nodesById[nodeId]) {
+        return { kind: "skipped" };
+      }
+      const inlineTextContext = inlineDraft
+        ? ctx.beginTextEntry(executionRecord, nodeId, {
+            nodeId,
+            field: "title",
+          })
+        : null;
+      let inlineRecovery: NotesWorkspaceQueueResult | null = null;
+      const steps: NotesWorkspaceQueueStep[] = [];
+      if (inlineDraft) {
+        steps.push({
+          historyEntryId: inlineTextContext?.entryId,
+          run: async () => {
+            const response = await context.repository.updateNode(
+              context.vaultRoot,
+              {
+                id: nodeId,
+                ...inlineDraft,
+                markerKind:
+                  confirmedState(context).nodesById[nodeId]?.markerKind ??
+                  "bullet",
+              },
+              ...historyArguments(inlineTextContext),
+            );
+            const mutation = await unwrapNotesMutationForContext(
+              context,
+              response,
+            );
+            const settlement = await ctx.settleAtomicMutation(
+              inlineTextContext,
+              mutation,
+              { workspace: mutation.workspace },
+              { focus: { nodeId, field: "title" } },
+            );
+            if (settlement) {
+              inlineRecovery = settlement;
+              if (inlineTextContext) {
+                ctx.consumeRecoveredHistoryResult(inlineTextContext.entryId);
+              }
+              return settlement;
             }
-            return settlement;
-          }
-          return response;
-        }
+            return response;
+          },
+        });
+      }
+      steps.push({
+        historyEntryId: historyContext?.entryId,
+        run: () =>
+          context.repository.removeEmptyNode(
+            context.vaultRoot,
+            nodeId,
+            ...historyArguments(historyContext),
+          ),
       });
-    }
-    steps.push({
-      historyEntryId: historyContext?.entryId,
-      run: () => context.repository.removeEmptyNode(
-        context.vaultRoot,
-        nodeId,
-        ...historyArguments(historyContext)
-      )
-    });
-    const result = await runCompoundQueueWork(
-      context,
-      steps,
-      focusedUiUpdate(focusNodeId),
-      ctx.activeScopeRef.current
-    );
-    ctx.settleInlineTextEntry(executionRecord, inlineTextContext, result);
-    if (inlineRecovery) {
-      return inlineRecovery;
-    }
-    if (result.kind === "authoritative") {
+      const result = await runCompoundQueueWork(
+        context,
+        steps,
+        focusedUiUpdate(focusNodeId),
+        ctx.activeScopeRef.current,
+      );
+      ctx.settleInlineTextEntry(executionRecord, inlineTextContext, result);
+      if (inlineRecovery) {
+        return inlineRecovery;
+      }
+      if (result.kind === "authoritative") {
         await ctx.rememberHistoryAfter(
+          historyContext &&
+            result.committedHistoryEntryIds?.includes(historyContext.entryId)
+            ? historyContext
+            : null,
+          result.workspace,
+          result.uiUpdate,
+          undefined,
+          undefined,
+          result.historyStatus,
+        );
+      } else if (
         historyContext &&
-          result.committedHistoryEntryIds?.includes(historyContext.entryId)
-          ? historyContext
-          : null,
-        result.workspace,
-        result.uiUpdate,
-        undefined,
-        undefined,
-        result.historyStatus
-      );
-    } else if (
-      historyContext &&
-      result.kind === "failure" &&
-      result.workspace &&
-      result.committedHistoryEntryIds?.includes(historyContext.entryId)
-    ) {
-      await ctx.rememberHistoryAfter(
-        historyContext,
-        result.workspace,
-        undefined,
-        undefined,
-        undefined,
-        result.historyStatus,
-        result.historyRejectionState
-      );
-    }
-    return result;
-    }
+        result.kind === "failure" &&
+        result.workspace &&
+        result.committedHistoryEntryIds?.includes(historyContext.entryId)
+      ) {
+        await ctx.rememberHistoryAfter(
+          historyContext,
+          result.workspace,
+          undefined,
+          undefined,
+          undefined,
+          result.historyStatus,
+          result.historyRejectionState,
+        );
+      }
+      return result;
+    },
   );
 }
 
 export async function deleteNodeCommand(
   ctx: NotesCommandContext,
-  nodeId: NoteId
+  nodeId: NoteId,
 ): Promise<NotesWorkspaceCommandOutcome> {
   if (ctx.stateRef.current.nodesById[nodeId]?.parentId === null) {
     return runRootLifecycle(ctx, nodeId, "trash");
@@ -3325,18 +3388,18 @@ export async function deleteNodeCommand(
       await context.repository.softDeleteNode(
         context.vaultRoot,
         nodeId,
-        ...historyArguments(historyContext)
-      )
+        ...historyArguments(historyContext),
+      ),
     );
     const projection = await projectNotesMutation(
       context,
       mutation,
-      ctx.activeScopeRef.current
+      ctx.activeScopeRef.current,
     );
     const settlement = await ctx.settleAtomicMutation(
       historyContext,
       mutation,
-      projection
+      projection,
     );
     if (settlement) return settlement;
     return directMutationResult(mutation, projection);
@@ -3348,7 +3411,7 @@ export async function deleteNodesCommand(
   nodeIds: readonly NoteId[],
   expectedReadonlyDescendantIds?: readonly NoteId[],
   prepared?: NotesPreparedSelectionAuthority,
-  options?: NotesPreparedSelectionBatchOptions
+  options?: NotesPreparedSelectionBatchOptions,
 ): Promise<NotesDeleteNodesCommandResult> {
   let readonlyDescendantIds: readonly NoteId[] | null = null;
   let mutationCommitted = false;
@@ -3365,8 +3428,8 @@ export async function deleteNodesCommand(
         }
         const activeWorkspace = normalizeWorkspace(
           await context.repository.loadWorkspace(context.vaultRoot, {
-            kind: "active"
-          })
+            kind: "active",
+          }),
         );
         if (
           !preparedSelectionOwnerIsCurrent(ctx, prepared, context, record) ||
@@ -3394,11 +3457,11 @@ export async function deleteNodesCommand(
               ? {}
               : {
                   expectedReadonlyDescendantIds: [
-                    ...expectedReadonlyDescendantIds
-                  ]
-                })
+                    ...expectedReadonlyDescendantIds,
+                  ],
+                }),
           },
-          ...historyArguments(historyContext)
+          ...historyArguments(historyContext),
         );
       } catch (cause) {
         if (
@@ -3410,12 +3473,12 @@ export async function deleteNodesCommand(
         response = await context.repository.deleteNodes(
           context.vaultRoot,
           { nodeIds: [...nodeIds] },
-          ...historyArguments(historyContext)
+          ...historyArguments(historyContext),
         );
       }
       if (isDeleteReadonlyPreflight(response)) {
         readonlyDescendantIds = Object.freeze([
-          ...response.readonlyDescendantIds
+          ...response.readonlyDescendantIds,
         ]);
         return { kind: "skipped" };
       }
@@ -3424,7 +3487,7 @@ export async function deleteNodesCommand(
       const projection = await projectNotesMutation(
         context,
         mutation,
-        ctx.activeScopeRef.current
+        ctx.activeScopeRef.current,
       );
       navigationOwned =
         prepared !== undefined
@@ -3438,7 +3501,7 @@ export async function deleteNodesCommand(
           ? settledNavigationAfterNavigationLoss(
               latestNavigation,
               latestEditingFocus,
-              projection.workspace
+              projection.workspace,
             )
           : focusedUiUpdate(options?.focusNodeId);
       const result = directMutationResult(mutation, projection, uiUpdate);
@@ -3449,12 +3512,12 @@ export async function deleteNodesCommand(
         historyContext,
         mutation,
         projection,
-        { uiUpdate }
+        { uiUpdate },
       );
       if (settlement) return settlement;
       return result;
     },
-    { selectionPolicy: prepared ? "preserve" : undefined }
+    { selectionPolicy: prepared ? "preserve" : undefined },
   );
   if (navigationOwned !== undefined) {
     navigationOwned =
@@ -3467,7 +3530,7 @@ export async function deleteNodesCommand(
         outcome,
         mutationCommitted,
         ...(navigationOwned === undefined ? {} : { navigationOwned }),
-        ...(projectedWorkspace ? { projectedWorkspace } : {})
+        ...(projectedWorkspace ? { projectedWorkspace } : {}),
       }
     : { kind: "confirmationRequired", readonlyDescendantIds };
 }
@@ -3475,159 +3538,172 @@ export async function deleteNodesCommand(
 export async function setReadonlyCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId,
-  isReadonly: boolean
+  isReadonly: boolean,
 ): Promise<NotesWorkspaceCommandOutcome> {
-  return ctx.runStructuralCommand("set-readonly", async (context, historyContext) => {
-    const mutation = await unwrapNotesMutationForContext(
-      context,
-      await context.repository.setReadonly(
-        context.vaultRoot,
-        { nodeId, isReadonly },
-        ...historyArguments(historyContext)
-      )
-    );
-    const projection = await projectNotesMutation(
-      context,
-      mutation,
-      ctx.activeScopeRef.current
-    );
-    const settlement = await ctx.settleAtomicMutation(
-      historyContext,
-      mutation,
-      projection
-    );
-    if (settlement) return settlement;
-    return directMutationResult(mutation, projection);
-  });
+  return ctx.runStructuralCommand(
+    "set-readonly",
+    async (context, historyContext) => {
+      const mutation = await unwrapNotesMutationForContext(
+        context,
+        await context.repository.setReadonly(
+          context.vaultRoot,
+          { nodeId, isReadonly },
+          ...historyArguments(historyContext),
+        ),
+      );
+      const projection = await projectNotesMutation(
+        context,
+        mutation,
+        ctx.activeScopeRef.current,
+      );
+      const settlement = await ctx.settleAtomicMutation(
+        historyContext,
+        mutation,
+        projection,
+      );
+      if (settlement) return settlement;
+      return directMutationResult(mutation, projection);
+    },
+  );
 }
 
 export async function refreshMaterializedGithubNotificationsCommand(
   ctx: NotesCommandContext,
-  notifications: readonly GithubNotificationSnapshotInput[]
+  notifications: readonly GithubNotificationSnapshotInput[],
 ): Promise<NotesWorkspaceCommandOutcome> {
-  return ctx.runStructuralCommand("refresh-github-notifications", async (context) => {
-    return authoritative(
-      await context.repository.refreshMaterializedGithubNotifications(
-        context.vaultRoot,
-        { rootId: GITHUB_NOTIFICATIONS_ROOT_ID, notifications }
-      )
-    );
-  });
+  return ctx.runStructuralCommand(
+    "refresh-github-notifications",
+    async (context) => {
+      return authoritative(
+        await context.repository.refreshMaterializedGithubNotifications(
+          context.vaultRoot,
+          { rootId: GITHUB_NOTIFICATIONS_ROOT_ID, notifications },
+        ),
+      );
+    },
+  );
 }
 
 export async function markMaterializedGithubNotificationReadCommand(
   ctx: NotesCommandContext,
   notificationKey: string,
-  updatedAt: string
+  updatedAt: string,
 ): Promise<NotesWorkspaceCommandOutcome> {
-  return ctx.runStructuralCommand("mark-github-notification-read", async (context) => {
-    if (!confirmedState(context).nodesById[GITHUB_NOTIFICATIONS_ROOT_ID]) {
-      return { kind: "skipped" };
-    }
-    return authoritative(
-      await context.repository.markMaterializedGithubNotificationRead(
-        context.vaultRoot,
-        { rootId: GITHUB_NOTIFICATIONS_ROOT_ID, notificationKey, updatedAt }
-      )
-    );
-  });
+  return ctx.runStructuralCommand(
+    "mark-github-notification-read",
+    async (context) => {
+      if (!confirmedState(context).nodesById[GITHUB_NOTIFICATIONS_ROOT_ID]) {
+        return { kind: "skipped" };
+      }
+      return authoritative(
+        await context.repository.markMaterializedGithubNotificationRead(
+          context.vaultRoot,
+          { rootId: GITHUB_NOTIFICATIONS_ROOT_ID, notificationKey, updatedAt },
+        ),
+      );
+    },
+  );
 }
 
 export async function setGithubGroupCollapsedCommand(
   ctx: NotesCommandContext,
   groupKey: string,
-  collapsed: boolean
+  collapsed: boolean,
 ): Promise<NotesWorkspaceCommandOutcome> {
-  return ctx.runStructuralCommand("set-github-group-collapsed", async (context, historyContext) => {
-    const mutation = await unwrapNotesMutationForContext(
-      context,
-      await context.repository.setGithubGroupCollapsed(
-        context.vaultRoot,
-        { rootId: GITHUB_NOTIFICATIONS_ROOT_ID, groupKey, collapsed },
-        ...historyArguments(historyContext)
-      )
-    );
-    const projection = await projectNotesMutation(
-      context,
-      mutation,
-      ctx.activeScopeRef.current
-    );
-    const settlement = await ctx.settleAtomicMutation(
-      historyContext,
-      mutation,
-      projection
-    );
-    if (settlement) return settlement;
-    return directMutationResult(mutation, projection);
-  });
+  return ctx.runStructuralCommand(
+    "set-github-group-collapsed",
+    async (context, historyContext) => {
+      const mutation = await unwrapNotesMutationForContext(
+        context,
+        await context.repository.setGithubGroupCollapsed(
+          context.vaultRoot,
+          { rootId: GITHUB_NOTIFICATIONS_ROOT_ID, groupKey, collapsed },
+          ...historyArguments(historyContext),
+        ),
+      );
+      const projection = await projectNotesMutation(
+        context,
+        mutation,
+        ctx.activeScopeRef.current,
+      );
+      const settlement = await ctx.settleAtomicMutation(
+        historyContext,
+        mutation,
+        projection,
+      );
+      if (settlement) return settlement;
+      return directMutationResult(mutation, projection);
+    },
+  );
 }
 
 export async function restoreNodeCommand(
   ctx: NotesCommandContext,
-  nodeId: NoteId
+  nodeId: NoteId,
 ): Promise<NotesWorkspaceCommandOutcome> {
   ctx.closeTextBurst();
   const ownerRecord = ctx.sessionRecordRef.current;
   const beforeNavigationVersion = ctx.navigationVersionRef.current;
   const followsViewedTrashRoot =
     ctx.activeScopeRef.current.kind === "trash" &&
-    rootIdForNode(
-      ctx.stateRef.current,
-      ctx.currentNavigation().zoomRootId
-    ) === nodeId;
+    rootIdForNode(ctx.stateRef.current, ctx.currentNavigation().zoomRootId) ===
+      nodeId;
   let followedIntoActive = false;
-  const outcome = await ctx.runStructuralCommand("restore", async (context, historyContext) => {
-    const mutation = await unwrapNotesMutationForContext(
-      context,
-      await context.repository.restoreNode(
-        context.vaultRoot,
-        nodeId,
-        ...historyArguments(historyContext)
-      )
-    );
-    const canFollowIntoActive =
-      followsViewedTrashRoot &&
-      ownerRecord !== null &&
-      ownerStillActive(ctx, ownerRecord) &&
-      ctx.navigationVersionRef.current === beforeNavigationVersion &&
-      ctx.activeScopeRef.current.kind === "trash";
-    const nextScope: NotesWorkspaceScope = canFollowIntoActive
-      ? { kind: "active" }
-      : ctx.activeScopeRef.current;
-    const projection = await projectNotesMutation(
-      context,
-      mutation,
-      nextScope
-    );
-    const restoredNode = projection.workspace.nodes.find(
-      (candidate) => candidate.id === nodeId && candidate.deletedAt === null
-    );
-    followedIntoActive = canFollowIntoActive && restoredNode !== undefined;
-    if (followedIntoActive) {
-      ctx.activeScopeRef.current = nextScope;
-    }
-    const uiUpdate = followedIntoActive
-      ? {
-          selectedId: nodeId,
-          zoomRootId: nodeId,
-          editingNoteId: nodeId,
-          pendingFocusId: nodeId,
-          pendingFocusField: "title" as const
-        }
-      : undefined;
-    const settlement = await ctx.settleAtomicMutation(
-      historyContext,
-      mutation,
-      projection,
-      {
-        uiUpdate,
-        focus: followedIntoActive ? { nodeId, field: "title" } : undefined,
-        expandedNodeIds: followedIntoActive ? new Set() : undefined
+  const outcome = await ctx.runStructuralCommand(
+    "restore",
+    async (context, historyContext) => {
+      const mutation = await unwrapNotesMutationForContext(
+        context,
+        await context.repository.restoreNode(
+          context.vaultRoot,
+          nodeId,
+          ...historyArguments(historyContext),
+        ),
+      );
+      const canFollowIntoActive =
+        followsViewedTrashRoot &&
+        ownerRecord !== null &&
+        ownerStillActive(ctx, ownerRecord) &&
+        ctx.navigationVersionRef.current === beforeNavigationVersion &&
+        ctx.activeScopeRef.current.kind === "trash";
+      const nextScope: NotesWorkspaceScope = canFollowIntoActive
+        ? { kind: "active" }
+        : ctx.activeScopeRef.current;
+      const projection = await projectNotesMutation(
+        context,
+        mutation,
+        nextScope,
+      );
+      const restoredNode = projection.workspace.nodes.find(
+        (candidate) => candidate.id === nodeId && candidate.deletedAt === null,
+      );
+      followedIntoActive = canFollowIntoActive && restoredNode !== undefined;
+      if (followedIntoActive) {
+        ctx.activeScopeRef.current = nextScope;
       }
-    );
-    if (settlement) return settlement;
-    return directMutationResult(mutation, projection, uiUpdate);
-  });
+      const uiUpdate = followedIntoActive
+        ? {
+            selectedId: nodeId,
+            zoomRootId: nodeId,
+            editingNoteId: nodeId,
+            pendingFocusId: nodeId,
+            pendingFocusField: "title" as const,
+          }
+        : undefined;
+      const settlement = await ctx.settleAtomicMutation(
+        historyContext,
+        mutation,
+        projection,
+        {
+          uiUpdate,
+          focus: followedIntoActive ? { nodeId, field: "title" } : undefined,
+          expandedNodeIds: followedIntoActive ? new Set() : undefined,
+        },
+      );
+      if (settlement) return settlement;
+      return directMutationResult(mutation, projection, uiUpdate);
+    },
+  );
   if (
     !followedIntoActive ||
     ownerRecord === null ||
@@ -3642,7 +3718,7 @@ export async function restoreNodeCommand(
 }
 
 export function emptyTrashCommand(
-  ctx: NotesCommandContext
+  ctx: NotesCommandContext,
 ): Promise<NotesWorkspaceCommandOutcome> {
   ctx.closeTextBurst();
   const record = ctx.sessionRecordRef.current;
@@ -3657,7 +3733,7 @@ export function emptyTrashCommand(
     try {
       const reset = await context.repository.emptyTrash(context.vaultRoot, {
         sessionId: record.session.history.sessionId,
-        historyEpoch: record.session.history.historyEpoch
+        historyEpoch: record.session.history.historyEpoch,
       });
       if (reset.historyReset !== true) {
         const error = "Empty Trash did not acknowledge the history reset.";
@@ -3667,33 +3743,33 @@ export function emptyTrashCommand(
       const projectedWorkspace = await workspaceForScope(
         context,
         reset.workspace,
-        current.scope
+        current.scope,
       );
       resolved = await ctx.resolveHistoryLocation(current, projectedWorkspace);
       if (!resolved) {
-        const error = "Empty Trash could not restore the current Notes location.";
+        const error =
+          "Empty Trash could not restore the current Notes location.";
         ctx.publishFeedback?.({ kind: "error", message: error });
         return { kind: "failure", error };
       }
       // The coordinator owns the all-or-nothing timeline/canonical reset. Do
       // not clear snapshots or drafts here: a rejected reset must leave both
       // intact for the caller to retry safely.
-      (record.session as unknown as NotesWorkspaceCoordinatorSession).resetHistory(
-        reset.historyEpoch,
-        resolved
-      );
+      (
+        record.session as unknown as NotesWorkspaceCoordinatorSession
+      ).resetHistory(reset.historyEpoch, resolved);
       ctx.publishFeedback?.({
         kind: "status",
-        message: "Trash emptied and Notes history reset."
+        message: "Trash emptied and Notes history reset.",
       });
       return authoritative(
         {
           nodes: Object.values(resolved.workspace.nodesById),
-          attachmentsByNodeId: resolved.workspace.attachmentsByNodeId
+          attachmentsByNodeId: resolved.workspace.attachmentsByNodeId,
         },
         undefined,
         reset,
-        { invalidatesTagSummaries: true }
+        { invalidatesTagSummaries: true },
       );
     } catch (cause) {
       if (resolved) {
@@ -3711,7 +3787,7 @@ export function emptyTrashCommand(
 export async function commitPreparedMoveCommand(
   ctx: NotesCommandContext,
   prepared: NotesPreparedMove,
-  destinationId: NoteId | null
+  destinationId: NoteId | null,
 ): Promise<NotesPreparedMoveCommitResult> {
   const staleError =
     "Notes changed while Move To was open. Refresh Move To and try again.";
@@ -3737,7 +3813,7 @@ export async function commitPreparedMoveCommand(
       try {
         activeWorkspace = await context.repository.loadWorkspace(
           context.vaultRoot,
-          { kind: "active" }
+          { kind: "active" },
         );
       } catch {
         specificError = "Could not refresh move destinations. Try again.";
@@ -3748,20 +3824,20 @@ export async function commitPreparedMoveCommand(
       }
 
       const preparedNodesById = Object.fromEntries(
-        prepared.nodes.map((node) => [node.id, node])
+        prepared.nodes.map((node) => [node.id, node]),
       ) as Record<NoteId, NoteNode>;
       const currentNodesById = Object.fromEntries(
-        activeWorkspace.nodes.map((node) => [node.id, node])
+        activeWorkspace.nodes.map((node) => [node.id, node]),
       ) as Record<NoteId, NoteNode>;
       if (
         !samePreparedMoveNode(
           preparedNodesById[prepared.sourceId],
-          currentNodesById[prepared.sourceId]
+          currentNodesById[prepared.sourceId],
         ) ||
         (destinationId !== null &&
           !samePreparedMoveNode(
             preparedNodesById[destinationId],
-            currentNodesById[destinationId]
+            currentNodesById[destinationId],
           ))
       ) {
         return { kind: "skipped" };
@@ -3770,7 +3846,7 @@ export async function commitPreparedMoveCommand(
       const input = buildNotesMoveNodeInput(
         currentNodesById,
         prepared.sourceId,
-        destinationId
+        destinationId,
       );
       if (!input) {
         return { kind: "skipped" };
@@ -3783,8 +3859,8 @@ export async function commitPreparedMoveCommand(
           await context.repository.moveNode(
             context.vaultRoot,
             input,
-            ...historyArguments(historyContext)
-          )
+            ...historyArguments(historyContext),
+          ),
         );
       } catch (cause) {
         specificError =
@@ -3794,13 +3870,13 @@ export async function commitPreparedMoveCommand(
       const projection = await projectNotesMutation(
         context,
         mutation,
-        ctx.activeScopeRef.current
+        ctx.activeScopeRef.current,
       );
       const historySettlement = await ctx.settleAtomicMutation(
         historyContext,
         mutation,
         projection,
-        { uiUpdate: focusedUiUpdate(prepared.sourceId) }
+        { uiUpdate: focusedUiUpdate(prepared.sourceId) },
       );
       if (historySettlement) return historySettlement;
       if (!mutation.atomic || mutation.historyEntryId !== null) {
@@ -3809,9 +3885,9 @@ export async function commitPreparedMoveCommand(
       return directMutationResult(
         mutation,
         projection,
-        focusedUiUpdate(prepared.sourceId)
+        focusedUiUpdate(prepared.sourceId),
       );
-    }
+    },
   );
   if (specificError !== null) {
     return { ok: false, error: specificError };
