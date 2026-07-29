@@ -465,6 +465,10 @@ export const previewNotesApi: NotesApi = {
   readImage: (request) => previewImages.read(request),
   viewImageOriginal: (request) => previewImages.viewOriginal(request),
   downloadImage: (request) => previewImages.download(request),
+  async exportNotes(request) {
+    const { exportPreviewNotes } = await import("./previewExport");
+    return exportPreviewNotes(request, { sessionId, revision, nodes });
+  },
   async undo(request) {
     if (request.baseRevision !== revision) throw new Error("Preview revision is stale.");
     const entry = undoStack.pop();

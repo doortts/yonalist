@@ -82,6 +82,7 @@ export function appApi(): NotesApi {
     readImage: vi.fn(),
     viewImageOriginal: vi.fn(),
     downloadImage: vi.fn(),
+    exportNotes: vi.fn(),
     undo: vi.fn(),
     redo: vi.fn(),
     search: vi.fn().mockResolvedValue({ hits: [], nextCursor: null }),

@@ -3,6 +3,7 @@ import type {
   buildSelectionMovePlans,
   SelectionMovePlan
 } from "./selectionMoves";
+import type { ReactNode } from "react";
 
 interface OutlineSelectionActionBarProps {
   readonly count: number;
@@ -17,6 +18,7 @@ interface OutlineSelectionActionBarProps {
   readonly onDelete: () => void;
   readonly onDuplicate: () => void;
   readonly onMove: (plan: SelectionMovePlan) => void;
+  readonly trailingAction?: ReactNode;
 }
 
 export function OutlineSelectionActionBar({
@@ -31,7 +33,8 @@ export function OutlineSelectionActionBar({
   onCut,
   onDelete,
   onDuplicate,
-  onMove
+  onMove,
+  trailingAction
 }: OutlineSelectionActionBarProps) {
   return (
     <SelectionActionBar
@@ -54,6 +57,7 @@ export function OutlineSelectionActionBar({
       onMoveDown={() => onMove(plans.down)}
       onDuplicate={onDuplicate}
       onDelete={onDelete}
+      trailingAction={trailingAction}
     />
   );
 }

@@ -29,6 +29,7 @@ export function OutlineHeader({
   onTagClick,
   onClose,
   selectionToolbar,
+  exportMenu,
   imageDropTarget,
   onPickImage
 }: {
@@ -47,6 +48,7 @@ export function OutlineHeader({
   readonly onTagClick: (token: OutlineTagToken) => void;
   readonly onClose?: () => void;
   readonly selectionToolbar?: ReactNode;
+  readonly exportMenu?: ReactNode;
   readonly imageDropTarget: boolean;
   readonly onPickImage: () => void;
 }) {
@@ -61,6 +63,7 @@ export function OutlineHeader({
             {pageTitle}
           </button>
         ) : <span className="eyebrow">Notes</span>}
+        {exportMenu}
         <button
           className="notes-completed-toggle"
           type="button"

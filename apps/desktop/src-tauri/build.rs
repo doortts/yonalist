@@ -7,6 +7,7 @@ const APP_COMMANDS: &[&str] = &[
     "notes_redo",
     "notes_search",
     "notes_close_session",
+    "notes_export",
     "notes_import_image_bytes",
     "notes_import_image_paths",
     "notes_read_image",

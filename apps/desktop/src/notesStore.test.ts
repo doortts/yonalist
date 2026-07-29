@@ -55,6 +55,7 @@ function api(queryViewport: NotesApi["queryViewport"]): NotesApi {
     undo: vi.fn(),
     redo: vi.fn(),
     search: vi.fn(),
+    exportNotes: vi.fn(),
     closeSession: vi.fn()
   };
 }

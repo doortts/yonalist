@@ -56,6 +56,7 @@ function api(): NotesApi {
     undo: vi.fn(),
     redo: vi.fn(),
     search: vi.fn().mockResolvedValue({ hits: [], nextCursor: null }),
+    exportNotes: vi.fn(),
     closeSession: vi.fn()
   };
 }

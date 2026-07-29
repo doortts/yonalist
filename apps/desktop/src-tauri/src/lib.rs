@@ -1,3 +1,4 @@
+mod export_ipc;
 mod image_file_actions;
 mod image_ipc;
 mod image_replace_ipc;
@@ -14,6 +15,7 @@ use notes_application::{
     ImageAssetPort, MutationReceipt, NotesError, NotesErrorCode, NotesService, SearchPage,
     SearchQuery, ViewportPage, ViewportRequest,
 };
+use notes_export::{NativeExportPublisher, NativeExportRenderer};
 use notes_sqlite::{LocalImageAssets, SqliteStorage};
 use tauri::{Manager, State};
 
@@ -26,6 +28,8 @@ struct DesktopRuntime {
     data_directory: PathBuf,
     original_directory: PathBuf,
     service: Arc<NotesService<Arc<SqliteStorage>>>,
+    export_renderer: Arc<NativeExportRenderer>,
+    export_publisher: Arc<NativeExportPublisher>,
     initial_boot: Mutex<Option<BootSnapshot>>,
 }
 
@@ -186,7 +190,7 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 impl DesktopRuntime {
-    fn initialize(data_directory: PathBuf) -> Result<Self, NotesError> {
+    fn initialize(data_directory: PathBuf, font_path: PathBuf) -> Result<Self, NotesError> {
         std::fs::create_dir_all(&data_directory).map_err(|error| NotesError {
             code: NotesErrorCode::StorageUnavailable,
             message: error.to_string(),
@@ -209,6 +213,12 @@ impl DesktopRuntime {
             initial_boot.revision,
         ));
         let original_directory = data_directory.join("original-views").join(&session_id);
+        let export_renderer = Arc::new(NativeExportRenderer::new(font_path));
+        let export_publisher = Arc::new(NativeExportPublisher::new(vec![
+            data_directory.clone(),
+            data_directory.join("images"),
+            original_directory.clone(),
+        ]));
         Ok(Self {
             session_id,
             storage,
@@ -216,6 +226,8 @@ impl DesktopRuntime {
             data_directory,
             original_directory,
             service,
+            export_renderer,
+            export_publisher,
             initial_boot: Mutex::new(Some(initial_boot)),
         })
     }
@@ -294,6 +306,11 @@ pub fn run() {
                 app.path().app_data_dir()?,
                 std::env::var_os("YONALIST_V2_DATA_DIR"),
             );
+            let font_path = app
+                .path()
+                .resource_dir()?
+                .join("resources")
+                .join("NanumGothic-Regular.ttf");
             let runtime = Arc::new(StartupGate::pending());
             app.manage(DesktopState {
                 runtime: Arc::clone(&runtime),
@@ -301,7 +318,9 @@ pub fn run() {
             });
             std::thread::Builder::new()
                 .name("notes-v2-startup".into())
-                .spawn(move || runtime.complete(DesktopRuntime::initialize(data_directory)))?;
+                .spawn(move || {
+                    runtime.complete(DesktopRuntime::initialize(data_directory, font_path))
+                })?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -313,6 +332,7 @@ pub fn run() {
             notes_redo,
             notes_search,
             notes_close_session,
+            export_ipc::notes_export,
             image_ipc::notes_import_image_bytes,
             image_ipc::notes_import_image_paths,
             image_ipc::notes_read_image,

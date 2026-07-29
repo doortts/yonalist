@@ -33,6 +33,7 @@ function api(execute: NotesApi["execute"]): NotesApi {
     undo: vi.fn(),
     redo: vi.fn(),
     search: vi.fn(),
+    exportNotes: vi.fn(),
     closeSession: vi.fn()
   };
 }

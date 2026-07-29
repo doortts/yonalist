@@ -1,15 +1,23 @@
-use std::collections::BTreeSet;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+mod assets;
+mod capability;
+mod destination;
+mod rollback;
+#[cfg(test)]
+mod tests;
+
+use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use notes_application::{ExportAsset, ExportError, ExportPublicationPort, RenderedExport};
-use serde::{Deserialize, Serialize};
+use cap_std::fs::Dir;
+use notes_application::{ExportError, ExportPublicationPort, RenderedExport};
 use uuid::Uuid;
 
+use self::assets::HeldAssets;
+use self::capability::{HeldFile, rename_noreplace, write_new};
+use self::destination::ValidatedDestination;
+use self::rollback::{append_rollback_errors, rollback_document, rollback_markdown};
+
 pub const EXPORT_ASSET_MARKER_NAME: &str = ".yonalist-notes-export.json";
-const EXPORT_ASSET_MARKER_CREATED_BY: &str = "yonalist-notes-export";
-const EXPORT_ASSET_MARKER_VERSION: u32 = 1;
 
 pub struct NativeExportPublisher {
     forbidden_roots: Vec<PathBuf>,
@@ -28,370 +36,336 @@ impl ExportPublicationPort for NativeExportPublisher {
         rendered: &RenderedExport,
         overwrite: bool,
     ) -> Result<(), ExportError> {
-        let parent = validate_destination(destination, rendered, &self.forbidden_roots)?;
+        let validated =
+            ValidatedDestination::acquire(destination, rendered, &self.forbidden_roots)?;
+        validated.revalidate()?;
+        let revalidate = || validated.revalidate();
         match rendered {
-            RenderedExport::Pdf { document } => {
-                publish_document(&parent, destination, document, overwrite)
-            }
+            RenderedExport::Pdf { document } => publish_document(
+                &validated.parent.directory,
+                &validated.name,
+                document,
+                overwrite,
+                &revalidate,
+            ),
             RenderedExport::Markdown {
                 document,
                 asset_directory_name,
                 assets,
             } => publish_markdown(
-                &parent,
-                destination,
+                &validated.parent.directory,
+                &validated.name,
                 document,
                 asset_directory_name,
                 assets,
                 overwrite,
+                &revalidate,
             ),
         }
     }
 }
 
-#[derive(Deserialize, Serialize)]
-struct AssetMarker {
-    created_by: String,
-    version: u32,
-    files: Vec<String>,
-}
-
-fn validate_destination(
+fn publish_document(
+    parent: &Dir,
     destination: &Path,
-    rendered: &RenderedExport,
-    forbidden_roots: &[PathBuf],
-) -> Result<PathBuf, ExportError> {
-    if !destination.is_absolute() || destination.file_name().is_none() {
-        return Err(invalid("Export destination must be an absolute file path."));
+    document: &[u8],
+    overwrite: bool,
+    revalidate: &dyn Fn() -> Result<(), ExportError>,
+) -> Result<(), ExportError> {
+    revalidate()?;
+    let original = existing_file(parent, destination)?;
+    if !overwrite && original.is_some() {
+        return Err(ExportError::DestinationExists);
     }
-    let expected_extension = match rendered {
-        RenderedExport::Markdown { .. } => "md",
-        RenderedExport::Pdf { .. } => "pdf",
-    };
-    if !destination
-        .extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| value.eq_ignore_ascii_case(expected_extension))
-    {
-        return Err(invalid(format!(
-            "Export destination must use the .{expected_extension} extension."
-        )));
-    }
-    let parent = destination
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .ok_or_else(|| invalid("Export destination must have a parent directory."))?;
-    let metadata = fs::symlink_metadata(parent).map_err(failed_io)?;
-    if !metadata.is_dir() || metadata_is_link(&metadata) {
-        return Err(invalid(
-            "Export destination parent must be a regular directory.",
+    maybe_inject_before_staging();
+    revalidate()?;
+    let stage_name = unique_name(parent, "document-stage")?;
+    let staged = write_new(parent, &stage_name, document).map_err(failed_io)?;
+    let backup_name = original
+        .as_ref()
+        .map(|_| unique_name(parent, "document-backup"))
+        .transpose()?;
+    let mut old_displaced = false;
+    let mut new_published = false;
+    let publication = (|| {
+        maybe_inject_before_publication();
+        revalidate()?;
+        if let (Some(original), Some(backup)) = (&original, &backup_name) {
+            original.verify_at(parent, destination).map_err(failed_io)?;
+            rename_noreplace(parent, destination, parent, backup).map_err(map_publication_error)?;
+            old_displaced = true;
+            original.verify_at(parent, backup).map_err(failed_io)?;
+        }
+        staged.verify_at(parent, &stage_name).map_err(failed_io)?;
+        rename_noreplace(parent, &stage_name, parent, destination)
+            .map_err(map_publication_error)?;
+        new_published = true;
+        staged.verify_at(parent, destination).map_err(failed_io)
+    })()
+    .and_then(|_| revalidate());
+    if let Err(error) = publication {
+        return Err(rollback_document(
+            parent,
+            destination,
+            &stage_name,
+            staged,
+            backup_name.as_deref(),
+            original.as_ref(),
+            new_published,
+            old_displaced,
+            error,
         ));
     }
-    reject_link_ancestors(parent)?;
-    let canonical_parent = fs::canonicalize(parent).map_err(failed_io)?;
-    for root in forbidden_roots {
-        if let Ok(canonical_root) = fs::canonicalize(root)
-            && canonical_parent.starts_with(&canonical_root)
-        {
-            return Err(invalid(
-                "Export destination is inside Yonalist application data.",
-            ));
-        }
-    }
-    validate_optional_file(destination)?;
-    Ok(parent.to_path_buf())
-}
-
-fn validate_optional_file(path: &Path) -> Result<(), ExportError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() && !metadata_is_link(&metadata) => Ok(()),
-        Ok(_) => Err(invalid(
-            "Export destination must be a regular file and must not be a link.",
-        )),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(failed_io(error)),
-    }
-}
-
-fn reject_link_ancestors(path: &Path) -> Result<(), ExportError> {
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        current.push(component.as_os_str());
-        if !matches!(component, Component::Normal(_)) {
-            continue;
-        }
-        let metadata = fs::symlink_metadata(&current).map_err(failed_io)?;
-        if metadata_is_link(&metadata) {
-            return Err(invalid(
-                "Export destination ancestors must not be links or reparse points.",
-            ));
-        }
+    if let (Some(original), Some(backup)) = (original, backup_name.as_deref()) {
+        original
+            .remove_verified(parent, backup)
+            .map_err(failed_io)?;
     }
     Ok(())
 }
 
-fn publish_document(
-    parent: &Path,
-    destination: &Path,
-    document: &[u8],
-    overwrite: bool,
-) -> Result<(), ExportError> {
-    let stage = unique_sibling(parent, "document-stage");
-    write_staged_file(&stage, document)?;
-    let result = if overwrite {
-        replace_staged_path(&stage, destination, false)
-    } else {
-        rename_noreplace(&stage, destination).map_err(map_publication_error)
-    };
-    if result.is_err() {
-        remove_file_if_exists(&stage);
-    }
-    result
-}
-
 fn publish_markdown(
-    parent: &Path,
+    parent: &Dir,
     destination: &Path,
     document: &[u8],
     asset_directory_name: &str,
-    assets: &[ExportAsset],
+    assets: &[notes_application::ExportAsset],
     overwrite: bool,
+    revalidate: &dyn Fn() -> Result<(), ExportError>,
 ) -> Result<(), ExportError> {
+    revalidate()?;
     validate_single_name(asset_directory_name)?;
-    let expected_name = destination
+    let expected = destination
         .file_stem()
         .and_then(|value| value.to_str())
         .map(|stem| format!("{stem}_assets"))
         .ok_or_else(|| invalid("Markdown destination must have a UTF-8 file stem."))?;
-    if asset_directory_name != expected_name {
+    if asset_directory_name != expected {
         return Err(invalid(
             "Markdown asset directory does not match its document name.",
         ));
     }
-    let asset_destination = parent.join(asset_directory_name);
-    validate_optional_asset_directory(&asset_destination, overwrite)?;
-    if !overwrite && (destination.exists() || fs::symlink_metadata(&asset_destination).is_ok()) {
+    let asset_destination = Path::new(asset_directory_name);
+    let original_document = existing_file(parent, destination)?;
+    let original_assets = existing_assets(parent, asset_destination, overwrite)?;
+    if !overwrite && (original_document.is_some() || path_exists(parent, asset_destination)?) {
         return Err(ExportError::DestinationExists);
     }
-
-    let document_stage = unique_sibling(parent, "markdown-stage");
-    write_staged_file(&document_stage, document)?;
-    let asset_stage = if assets.is_empty() {
-        None
-    } else {
-        let stage = unique_sibling(parent, "assets-stage");
-        if let Err(error) = stage_assets(&stage, assets) {
-            remove_file_if_exists(&document_stage);
-            remove_directory_if_exists(&stage);
-            return Err(error);
-        }
-        Some(stage)
-    };
-
-    let document_backup = if overwrite {
-        displace_existing(destination, parent, "document-backup", false)?
-    } else {
-        None
-    };
-    let asset_backup = if overwrite {
-        match displace_existing(&asset_destination, parent, "assets-backup", true) {
-            Ok(backup) => backup,
+    maybe_inject_before_staging();
+    revalidate()?;
+    let document_stage_name = unique_name(parent, "markdown-stage")?;
+    let staged_document = write_new(parent, &document_stage_name, document).map_err(failed_io)?;
+    let asset_stage_name = (!assets.is_empty())
+        .then(|| unique_name(parent, "assets-stage"))
+        .transpose()?;
+    let staged_assets = match asset_stage_name.as_deref() {
+        Some(name) => match HeldAssets::stage(parent, name, assets) {
+            Ok(staged) => Some(staged),
             Err(error) => {
-                restore_backup(document_backup.as_deref(), destination);
-                remove_file_if_exists(&document_stage);
-                if let Some(stage) = &asset_stage {
-                    remove_directory_if_exists(stage);
-                }
-                return Err(error);
+                let cleanup = staged_document.remove_verified(parent, &document_stage_name);
+                return combine(error, cleanup, "document stage cleanup");
             }
-        }
-    } else {
-        None
+        },
+        None => None,
     };
+    publish_markdown_stages(
+        parent,
+        destination,
+        asset_destination,
+        &document_stage_name,
+        asset_stage_name.as_deref(),
+        staged_document,
+        staged_assets,
+        original_document,
+        original_assets,
+        revalidate,
+    )
+}
 
-    let mut published_assets = false;
-    if let Some(stage) = &asset_stage {
-        if let Err(error) = rename_noreplace(stage, &asset_destination) {
-            restore_backup(asset_backup.as_deref(), &asset_destination);
-            restore_backup(document_backup.as_deref(), destination);
-            remove_file_if_exists(&document_stage);
-            remove_directory_if_exists(stage);
-            return Err(map_publication_error(error));
+#[allow(clippy::too_many_arguments)]
+fn publish_markdown_stages(
+    parent: &Dir,
+    destination: &Path,
+    asset_destination: &Path,
+    document_stage_name: &Path,
+    asset_stage_name: Option<&Path>,
+    staged_document: HeldFile,
+    staged_assets: Option<HeldAssets>,
+    original_document: Option<HeldFile>,
+    original_assets: Option<HeldAssets>,
+    revalidate: &dyn Fn() -> Result<(), ExportError>,
+) -> Result<(), ExportError> {
+    let document_backup = original_document
+        .as_ref()
+        .map(|_| unique_name(parent, "document-backup"))
+        .transpose()?;
+    let asset_backup = original_assets
+        .as_ref()
+        .map(|_| unique_name(parent, "assets-backup"))
+        .transpose()?;
+    let mut old_document_displaced = false;
+    let mut old_assets_displaced = false;
+    let mut new_assets_published = false;
+    let mut new_document_published = false;
+    let publication = (|| {
+        maybe_inject_before_publication();
+        revalidate()?;
+        if let (Some(original), Some(backup)) = (&original_document, &document_backup) {
+            original.verify_at(parent, destination).map_err(failed_io)?;
+            rename_noreplace(parent, destination, parent, backup).map_err(map_publication_error)?;
+            old_document_displaced = true;
+            original.verify_at(parent, backup).map_err(failed_io)?;
         }
-        published_assets = true;
-    }
-    if let Err(error) = rename_noreplace(&document_stage, destination) {
-        if published_assets {
-            remove_directory_if_exists(&asset_destination);
+        if let (Some(original), Some(backup)) = (&original_assets, &asset_backup) {
+            original
+                .verify_at(parent, asset_destination)
+                .map_err(failed_io)?;
+            rename_noreplace(parent, asset_destination, parent, backup)
+                .map_err(map_publication_error)?;
+            old_assets_displaced = true;
+            original.verify_at(parent, backup).map_err(failed_io)?;
         }
-        restore_backup(asset_backup.as_deref(), &asset_destination);
-        restore_backup(document_backup.as_deref(), destination);
-        remove_file_if_exists(&document_stage);
-        return Err(map_publication_error(error));
+        if let (Some(staged), Some(stage_name)) = (&staged_assets, asset_stage_name) {
+            staged.verify_at(parent, stage_name).map_err(failed_io)?;
+            rename_noreplace(parent, stage_name, parent, asset_destination)
+                .map_err(map_publication_error)?;
+            new_assets_published = true;
+            staged
+                .verify_at(parent, asset_destination)
+                .map_err(failed_io)?;
+        }
+        staged_document
+            .verify_at(parent, document_stage_name)
+            .map_err(failed_io)?;
+        rename_noreplace(parent, document_stage_name, parent, destination)
+            .map_err(map_publication_error)?;
+        new_document_published = true;
+        staged_document
+            .verify_at(parent, destination)
+            .map_err(failed_io)
+    })()
+    .and_then(|_| revalidate());
+    if let Err(error) = publication {
+        let mut failure = rollback_markdown(
+            parent,
+            destination,
+            asset_destination,
+            document_stage_name,
+            asset_stage_name,
+            &staged_document,
+            staged_assets.as_ref(),
+            document_backup.as_deref(),
+            asset_backup.as_deref(),
+            original_document.as_ref(),
+            original_assets.as_ref(),
+            new_document_published,
+            new_assets_published,
+            old_document_displaced,
+            old_assets_displaced,
+            error,
+        );
+        if let Err(error) = staged_document.remove_verified(parent, document_stage_name) {
+            failure = append_rollback_errors(
+                failure,
+                vec![format!("document stage cleanup failed: {error}")],
+            );
+        }
+        if let (Some(stage), Some(staged)) = (asset_stage_name, staged_assets)
+            && let Err(error) = staged.remove_verified(parent, stage)
+        {
+            failure = append_rollback_errors(
+                failure,
+                vec![format!("asset stage cleanup failed: {error}")],
+            );
+        }
+        return Err(failure);
     }
-
-    remove_backup(document_backup.as_deref(), false);
-    remove_backup(asset_backup.as_deref(), true);
+    if let (Some(original), Some(backup)) = (original_document, document_backup.as_deref()) {
+        original
+            .remove_verified(parent, backup)
+            .map_err(failed_io)?;
+    }
+    if let (Some(original), Some(backup)) = (original_assets, asset_backup.as_deref()) {
+        original
+            .remove_verified(parent, backup)
+            .map_err(failed_io)?;
+    }
     Ok(())
 }
 
-fn validate_optional_asset_directory(path: &Path, overwrite: bool) -> Result<(), ExportError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() && !metadata_is_link(&metadata) => {
-            if overwrite {
-                validate_asset_marker(path)
-            } else {
-                Ok(())
-            }
+fn existing_file(parent: &Dir, name: &Path) -> Result<Option<HeldFile>, ExportError> {
+    match parent.symlink_metadata(name) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            HeldFile::open(parent, name).map(Some).map_err(failed_io)
         }
         Ok(_) => Err(invalid(
-            "Markdown asset destination must be a regular directory and must not be a link.",
+            "Export destination must be a regular file and must not be a link.",
         )),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(failed_io(error)),
-    }
-}
-
-fn validate_asset_marker(directory: &Path) -> Result<(), ExportError> {
-    let marker_path = directory.join(EXPORT_ASSET_MARKER_NAME);
-    let metadata = fs::symlink_metadata(&marker_path)
-        .map_err(|_| invalid("Existing Markdown asset directory is not owned by Yonalist."))?;
-    if !metadata.is_file() || metadata_is_link(&metadata) || metadata.len() > 64 * 1024 {
-        return Err(invalid(
-            "Existing Markdown asset ownership marker is invalid.",
-        ));
-    }
-    let marker: AssetMarker =
-        serde_json::from_slice(&fs::read(&marker_path).map_err(failed_io)?)
-            .map_err(|_| invalid("Existing Markdown asset ownership marker is invalid."))?;
-    if marker.created_by != EXPORT_ASSET_MARKER_CREATED_BY
-        || marker.version != EXPORT_ASSET_MARKER_VERSION
-    {
-        return Err(invalid(
-            "Existing Markdown asset directory is not owned by Yonalist.",
-        ));
-    }
-    Ok(())
-}
-
-fn stage_assets(stage: &Path, assets: &[ExportAsset]) -> Result<(), ExportError> {
-    fs::create_dir(stage).map_err(failed_io)?;
-    let mut names = BTreeSet::new();
-    for asset in assets {
-        validate_single_name(&asset.file_name)?;
-        if asset.file_name == EXPORT_ASSET_MARKER_NAME || !names.insert(asset.file_name.clone()) {
-            return Err(ExportError::Failed(
-                "Markdown export contains duplicate or reserved asset names.".into(),
-            ));
-        }
-        write_staged_file(&stage.join(&asset.file_name), &asset.bytes)?;
-    }
-    let marker = serde_json::to_vec(&AssetMarker {
-        created_by: EXPORT_ASSET_MARKER_CREATED_BY.into(),
-        version: EXPORT_ASSET_MARKER_VERSION,
-        files: names.into_iter().collect(),
-    })
-    .map_err(|error| ExportError::Failed(error.to_string()))?;
-    write_staged_file(&stage.join(EXPORT_ASSET_MARKER_NAME), &marker)
-}
-
-fn validate_single_name(value: &str) -> Result<(), ExportError> {
-    let components = Path::new(value).components().collect::<Vec<_>>();
-    if components.len() != 1
-        || !matches!(components[0], Component::Normal(_))
-        || value.contains(['/', '\\'])
-        || value.chars().any(char::is_control)
-    {
-        return Err(invalid("Export asset name is unsafe."));
-    }
-    Ok(())
-}
-
-fn write_staged_file(path: &Path, bytes: &[u8]) -> Result<(), ExportError> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(failed_io)?;
-    file.write_all(bytes).map_err(failed_io)?;
-    file.sync_all().map_err(failed_io)
-}
-
-fn displace_existing(
-    destination: &Path,
-    parent: &Path,
-    prefix: &str,
-    directory: bool,
-) -> Result<Option<PathBuf>, ExportError> {
-    match fs::symlink_metadata(destination) {
-        Ok(metadata)
-            if !metadata_is_link(&metadata)
-                && ((directory && metadata.is_dir()) || (!directory && metadata.is_file())) =>
-        {
-            let backup = unique_sibling(parent, prefix);
-            rename_noreplace(destination, &backup).map_err(map_publication_error)?;
-            Ok(Some(backup))
-        }
-        Ok(_) => Err(invalid("Export overwrite destination changed identity.")),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(failed_io(error)),
     }
 }
 
-fn replace_staged_path(
-    stage: &Path,
-    destination: &Path,
-    directory: bool,
-) -> Result<(), ExportError> {
-    let parent = destination
-        .parent()
-        .ok_or_else(|| invalid("Export destination has no parent."))?;
-    let backup = displace_existing(destination, parent, "document-backup", directory)?;
-    if let Err(error) = rename_noreplace(stage, destination) {
-        restore_backup(backup.as_deref(), destination);
-        return Err(map_publication_error(error));
+fn existing_assets(
+    parent: &Dir,
+    name: &Path,
+    overwrite: bool,
+) -> Result<Option<HeldAssets>, ExportError> {
+    match parent.symlink_metadata(name) {
+        Ok(_) if overwrite => HeldAssets::open_owned(parent, name).map(Some),
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(failed_io(error)),
     }
-    remove_backup(backup.as_deref(), directory);
+}
+
+fn path_exists(parent: &Dir, name: &Path) -> Result<bool, ExportError> {
+    match parent.symlink_metadata(name) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(failed_io(error)),
+    }
+}
+
+fn validate_relative_name(value: &Path) -> Result<(), ExportError> {
+    let mut components = value.components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return Err(invalid("Export file name is unsafe."));
+    }
     Ok(())
 }
 
-fn restore_backup(backup: Option<&Path>, destination: &Path) {
-    let Some(backup) = backup else {
-        return;
-    };
-    if !destination.exists() {
-        let _ = rename_noreplace(backup, destination);
+fn validate_single_name(value: &str) -> Result<(), ExportError> {
+    let path = Path::new(value);
+    validate_relative_name(path)?;
+    if value.contains(['/', '\\']) || value.chars().any(char::is_control) {
+        return Err(invalid("Export asset name is unsafe."));
     }
+    Ok(())
 }
 
-fn remove_backup(backup: Option<&Path>, directory: bool) {
-    let Some(backup) = backup else {
-        return;
-    };
-    if directory {
-        remove_directory_if_exists(backup);
-    } else {
-        remove_file_if_exists(backup);
+fn unique_name(parent: &Dir, prefix: &str) -> Result<PathBuf, ExportError> {
+    for _ in 0..128 {
+        let name = PathBuf::from(format!(".yonalist-{prefix}-{}", Uuid::new_v4()));
+        if !path_exists(parent, &name)? {
+            return Ok(name);
+        }
     }
+    Err(ExportError::Failed(
+        "Could not allocate an export staging path.".into(),
+    ))
 }
 
-fn unique_sibling(parent: &Path, prefix: &str) -> PathBuf {
-    parent.join(format!(".yonalist-{prefix}-{}", Uuid::new_v4()))
-}
-
-fn remove_file_if_exists(path: &Path) {
-    if let Err(error) = fs::remove_file(path)
-        && error.kind() != io::ErrorKind::NotFound
-    {
-        let _ = error;
-    }
-}
-
-fn remove_directory_if_exists(path: &Path) {
-    if let Err(error) = fs::remove_dir_all(path)
-        && error.kind() != io::ErrorKind::NotFound
-    {
-        let _ = error;
+fn combine(
+    failure: ExportError,
+    cleanup: io::Result<()>,
+    context: &str,
+) -> Result<(), ExportError> {
+    match cleanup {
+        Ok(()) => Err(failure),
+        Err(error) => Err(ExportError::Failed(format!(
+            "{failure} {context} also failed: {error}"
+        ))),
     }
 }
 
@@ -411,76 +385,54 @@ fn invalid(message: impl Into<String>) -> ExportError {
     ExportError::InvalidDestination(message.into())
 }
 
-#[cfg(windows)]
-fn metadata_is_link(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    metadata.file_type().is_symlink() || metadata.file_attributes() & 0x400 != 0
+#[cfg(test)]
+thread_local! {
+    static BEFORE_STAGING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static BEFORE_PUBLICATION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static FORCE_PARENT_REVALIDATION_FAILURE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
 }
 
-#[cfg(not(windows))]
-fn metadata_is_link(metadata: &fs::Metadata) -> bool {
-    metadata.file_type().is_symlink()
+#[cfg(test)]
+fn maybe_inject_before_staging() {
+    BEFORE_STAGING.with(|injection| {
+        if let Some(injection) = injection.borrow_mut().take() {
+            injection();
+        }
+    });
 }
 
-#[cfg(windows)]
-fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS};
-    use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
+#[cfg(not(test))]
+fn maybe_inject_before_staging() {}
 
-    let from = from
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let to = to
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let moved = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_WRITE_THROUGH) };
-    if moved != 0 {
-        return Ok(());
-    }
-    let error = io::Error::last_os_error();
-    if matches!(
-        error.raw_os_error().map(|code| code as u32),
-        Some(ERROR_ALREADY_EXISTS) | Some(ERROR_FILE_EXISTS)
-    ) {
-        Err(io::Error::new(io::ErrorKind::AlreadyExists, error))
-    } else {
-        Err(error)
-    }
+#[cfg(test)]
+fn maybe_inject_before_publication() {
+    BEFORE_PUBLICATION.with(|injection| {
+        if let Some(injection) = injection.borrow_mut().take() {
+            injection();
+        }
+    });
 }
 
-#[cfg(any(
-    target_vendor = "apple",
-    target_os = "linux",
-    target_os = "android",
-    target_os = "redox"
-))]
-fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
-    rustix::fs::renameat_with(
-        rustix::fs::CWD,
-        from,
-        rustix::fs::CWD,
-        to,
-        rustix::fs::RenameFlags::NOREPLACE,
-    )
-    .map_err(io::Error::from)
+#[cfg(not(test))]
+fn maybe_inject_before_publication() {}
+
+#[cfg(test)]
+fn maybe_fail_parent_revalidation() -> Result<(), ExportError> {
+    FORCE_PARENT_REVALIDATION_FAILURE.with(|failure| {
+        if failure.replace(false) {
+            Err(invalid(
+                "Export destination parent changed during publication.",
+            ))
+        } else {
+            Ok(())
+        }
+    })
 }
 
-#[cfg(not(any(
-    windows,
-    target_vendor = "apple",
-    target_os = "linux",
-    target_os = "android",
-    target_os = "redox"
-)))]
-fn rename_noreplace(_from: &Path, _to: &Path) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "Atomic no-replace rename is unsupported on this platform.",
-    ))
+#[cfg(not(test))]
+fn maybe_fail_parent_revalidation() -> Result<(), ExportError> {
+    Ok(())
 }

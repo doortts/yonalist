@@ -21,6 +21,7 @@ import {
 import { OutlineIndex } from "./outlineIndex";
 import type { PaneFocusSnapshot } from "./appNavigation";
 import { useImageIngest } from "./useImageIngest";
+import { NotesExportBoundary } from "./NotesExportBoundary";
 
 const OutlineSelectionActionBar = lazy(() =>
   import("./OutlineSelectionActionBar").then((module) => ({
@@ -247,6 +248,18 @@ export function NotesOutline({
     return <section className="notes-outline"><p className="notes-pane-state">No outline yet.</p></section>;
   }
   const header = zoomRoot ?? { id: page.id, text: page.title };
+  const selectedExportNode = selection.selectedIds.length === 1
+    ? selection.selectedNodes[0]
+    : undefined;
+  const exportMenu = (
+    <NotesExportBoundary
+      store={store}
+      currentRoot={{ id: header.id, title: header.text }}
+      selectedNode={selectedExportNode
+        ? { id: selectedExportNode.id, title: selectedExportNode.text }
+        : null}
+    />
+  );
   return (
     <section
       ref={scopeRef}
@@ -310,9 +323,13 @@ export function NotesOutline({
               onMove={executeMovePlan}
               onDuplicate={() => runSelectionAction(duplicateSelection)}
               onDelete={() => runSelectionAction(deleteSelection)}
+              trailingAction={exportMenu}
             />
           </Suspense>
         ) : undefined}
+        exportMenu={selection.selectedIds.length === 0
+          ? exportMenu
+          : undefined}
         imageDropTarget={imageIngest.dropTargetId === header.id}
         onPickImage={() => void imageIngest.openPicker(header.id)}
       />

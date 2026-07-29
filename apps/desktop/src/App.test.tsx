@@ -1,4 +1,6 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act, fireEvent, render, screen, waitFor, within
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "./App";
 import {
@@ -385,6 +387,59 @@ describe("Yonalist v2 desktop shell", () => {
       expect(first.closest(".notes-node")).not.toHaveAttribute("data-selected");
       expect(second.closest(".notes-node")).not.toHaveAttribute("data-selected");
     });
+  });
+
+  it("keeps the export target pane-local across ordinary and selection toolbars", async () => {
+    render(<App api={api()} />);
+    const first = await screen.findByDisplayValue("First thought");
+    const second = screen.getByDisplayValue("Second thought");
+
+    const ordinaryExport = await screen.findByRole("button", { name: "Export" });
+    fireEvent.click(ordinaryExport);
+    let menu = await screen.findByRole("menu", { name: "Export notes" });
+    expect(within(menu).getByRole("menuitem", {
+      name: "Selected node as Markdown"
+    })).toBeDisabled();
+    expect(within(menu).getByRole("menuitem", {
+      name: "Current page as Markdown"
+    })).toBeEnabled();
+    fireEvent.click(ordinaryExport);
+
+    fireEvent.pointerDown(first, {
+      button: 0,
+      pointerId: 31,
+      ctrlKey: true
+    });
+    expect(await screen.findByRole("toolbar", {
+      name: "Actions for 1 selected notes"
+    })).toBeVisible();
+    const selectionExport = await screen.findByRole("button", { name: "Export" });
+    fireEvent.click(selectionExport);
+    menu = await screen.findByRole("menu", { name: "Export notes" });
+    expect(within(menu).getByRole("menuitem", {
+      name: "Selected node as Markdown"
+    })).toBeEnabled();
+    fireEvent.click(selectionExport);
+
+    fireEvent.pointerDown(second, {
+      button: 0,
+      pointerId: 32,
+      ctrlKey: true
+    });
+    expect(await screen.findByRole("toolbar", {
+      name: "Actions for 2 selected notes"
+    })).toBeVisible();
+    const multiSelectionExport = await screen.findByRole("button", {
+      name: "Export"
+    });
+    fireEvent.click(multiSelectionExport);
+    menu = await screen.findByRole("menu", { name: "Export notes" });
+    expect(within(menu).getByRole("menuitem", {
+      name: "Selected node as Markdown"
+    })).toBeDisabled();
+    expect(within(menu).getByRole("menuitem", {
+      name: "Current page as Markdown"
+    })).toBeEnabled();
   });
 
   it("hides a collapsed subtree and restores it through the current arrow slot", async () => {

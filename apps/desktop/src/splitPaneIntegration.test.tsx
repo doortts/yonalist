@@ -1,10 +1,13 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent, render, screen, waitFor, within
+} from "@testing-library/react";
 import { App } from "./App";
 import { appApi } from "./test/appApiFixture";
 
 describe("split pane integration", () => {
   it("opens, resizes, focuses, and closes a second outline pane", async () => {
-    render(<App api={appApi()} />);
+    const notesApi = appApi();
+    render(<App api={notesApi} />);
     await screen.findByDisplayValue("First thought");
 
     fireEvent.click(screen.getAllByRole("button", {
@@ -21,6 +24,23 @@ describe("split pane integration", () => {
     splitTitle.focus();
     splitTitle.setSelectionRange(2, 4);
     expect(splitTitle).toHaveFocus();
+
+    const exportButtons = await screen.findAllByRole("button", {
+      name: "Export"
+    });
+    fireEvent.click(exportButtons[1]);
+    const secondaryMenu = await screen.findByRole("menu", {
+      name: "Export notes"
+    });
+    fireEvent.click(within(secondaryMenu).getByRole("menuitem", {
+      name: "Current page as Markdown"
+    }));
+    await waitFor(() => expect(notesApi.exportNotes).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rootNodeId: "bullet-1",
+        format: "markdown"
+      })
+    ));
 
     const divider = screen.getByRole("separator", { name: "Resize split" });
     expect(divider).toHaveAttribute("aria-valuenow", "50");

@@ -9,6 +9,8 @@ import type { ImageDownloadRequest } from "../../../packages/contracts/generated
 import type { ImageReadRequest } from "../../../packages/contracts/generated/ImageReadRequest";
 import type { ImageReplacePathRequest } from "../../../packages/contracts/generated/ImageReplacePathRequest";
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
+import type { NotesExportRequest } from "../../../packages/contracts/generated/NotesExportRequest";
+import type { NotesExportResult } from "../../../packages/contracts/generated/NotesExportResult";
 import type { SearchPage } from "../../../packages/contracts/generated/SearchPage";
 import type { SearchQuery } from "../../../packages/contracts/generated/SearchQuery";
 import type { ViewportPage } from "../../../packages/contracts/generated/ViewportPage";
@@ -31,6 +33,7 @@ export interface NotesApi {
   readImage(request: ImageReadRequest): Promise<Uint8Array>;
   viewImageOriginal(request: ImageReadRequest): Promise<void>;
   downloadImage(request: ImageDownloadRequest): Promise<void>;
+  exportNotes(request: NotesExportRequest): Promise<NotesExportResult>;
   undo(request: HistoryRequest): Promise<MutationReceipt>;
   redo(request: HistoryRequest): Promise<MutationReceipt>;
   search(query: SearchQuery): Promise<SearchPage>;
@@ -71,6 +74,7 @@ export const tauriNotesApi: NotesApi = {
     invoke("notes_view_image_original", { request }),
   downloadImage: (request) =>
     invoke("notes_download_image", { request }),
+  exportNotes: (request) => invoke("notes_export", { request }),
   undo: (request) => invoke("notes_undo", { request }),
   redo: (request) => invoke("notes_redo", { request }),
   search: (query) => invoke("notes_search", { query }),

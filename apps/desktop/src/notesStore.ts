@@ -1,5 +1,7 @@
 import type { IpcNotesCommand } from "../../../packages/contracts/generated/IpcNotesCommand";
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
+import type { ExportFormat } from "../../../packages/contracts/generated/ExportFormat";
+import type { NotesExportResult } from "../../../packages/contracts/generated/NotesExportResult";
 import type { SearchPage } from "../../../packages/contracts/generated/SearchPage";
 import type { ForestSnapshot } from "../../../packages/contracts/generated/ForestSnapshot";
 import type { NotesApi } from "./api";
@@ -166,6 +168,24 @@ export class NotesStore {
 
   async flushAllDrafts(): Promise<void> {
     await this.drafts.flushAll();
+  }
+
+  async exportNotes(input: {
+    readonly rootNodeId: string;
+    readonly format: ExportFormat;
+    readonly destinationPath: string;
+    readonly overwrite: boolean;
+  }): Promise<NotesExportResult> {
+    const { sessionId, revision } = this.state;
+    if (!sessionId) throw new Error("The Notes session is not ready.");
+    return this.api.exportNotes({
+      sessionId,
+      baseRevision: revision,
+      rootNodeId: input.rootNodeId,
+      format: input.format,
+      destinationPath: input.destinationPath,
+      overwrite: input.overwrite
+    });
   }
 
   async createPage(): Promise<string> {

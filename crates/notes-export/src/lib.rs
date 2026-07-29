@@ -1,6 +1,7 @@
 //! Deterministic Notes export renderers and native publication adapters.
 
 mod markdown;
+mod pdf;
 mod publication;
 
 use std::path::PathBuf;
@@ -30,10 +31,7 @@ impl ExportRendererPort for NativeExportRenderer {
     ) -> Result<RenderedExport, ExportError> {
         match format {
             ExportFormat::Markdown => markdown::render(snapshot, asset_directory_name),
-            ExportFormat::Pdf => Err(ExportError::Failed(format!(
-                "PDF export is unavailable because renderer {} has not been initialized.",
-                self.font_path.display()
-            ))),
+            ExportFormat::Pdf => pdf::render(snapshot, &self.font_path),
         }
     }
 }

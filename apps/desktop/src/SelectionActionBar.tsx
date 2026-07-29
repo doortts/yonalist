@@ -58,6 +58,7 @@ interface SelectionActionBarProps {
   readonly onMoveDown: () => void;
   readonly onDuplicate: () => void;
   readonly onDelete: () => void;
+  readonly trailingAction?: ReactNode;
 }
 
 export function SelectionActionBar({
@@ -79,7 +80,8 @@ export function SelectionActionBar({
   onMoveUp,
   onMoveDown,
   onDuplicate,
-  onDelete
+  onDelete,
+  trailingAction
 }: SelectionActionBarProps) {
   const toolbarRef = useRef<HTMLDivElement>(null);
   const compact = useCompactActions(toolbarRef);
@@ -296,6 +298,7 @@ export function SelectionActionBar({
         mutationDisabled,
         "notes-selection-action-danger"
       )}
+      {trailingAction}
     </div>
   );
 }

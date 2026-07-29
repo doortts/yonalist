@@ -53,6 +53,7 @@ export async function readyRealStore(): Promise<NotesStore> {
     undo: vi.fn(),
     redo: vi.fn(),
     search: vi.fn(),
+    exportNotes: vi.fn(),
     closeSession: vi.fn()
   };
   const store = new NotesStore(api);
