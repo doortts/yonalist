@@ -418,3 +418,100 @@ git diff --check
 - Architecture budgets, ESLint, TypeScript, and whitespace checks passed.
 - `notesWorkspaceRuntime.ts` remains 1,500/1,500 lines and all-test-order
   observations remain 283/283.
+
+## Final whole-branch review follow-up
+
+### Root causes and fixes
+
+- A handled boundary Backspace inside the provisional editor was absent from
+  the split host's post-handler interaction keys. It now advances the shared
+  interaction revision after the editor prevents the event, invalidating a
+  deferred insertion focus claim in either pane while leaving native text
+  Backspace uncounted.
+- The mounted outline prefix sampled viewport height only on page changes and
+  scroll. The scroll host now publishes `clientHeight` from a border-box
+  `ResizeObserver`, with the existing window-resize fallback and cleanup.
+  Border-box observation avoids a content-box feedback loop when a horizontal
+  scrollbar appears at a deep prefix boundary.
+- Held-key benchmark completion canceled a pending animation frame before
+  recording its elapsed interval. The shared finish path now includes that
+  terminal interval before computing frame p95 and the over-34 ms count.
+
+### Red-green evidence
+
+```sh
+npm test -- src/features/notes/notesWorkspaceContextSplit.test.tsx -t "handled Backspace"
+```
+
+- RED: both panes kept interaction revision `0` instead of advancing to `1`.
+- GREEN: 2 tests passed; the deferred claim kept the previous editing lease.
+
+```sh
+npm test -- src/features/notes/NotesWorkspace.test.tsx -t "remeasures the mounted prefix from outline border-box height changes"
+```
+
+- RED: viewport growth kept 10 mounted rows instead of 30.
+- A content-box observation mutation then changed 11 rows to 10, and a
+  `contentRect.height` mutation mounted 28 rows instead of 30.
+- GREEN: border-box growth/shrink mounted 30/5 rows from `clientHeight`, while
+  content-box-only scrollbar changes left the prefix stable.
+
+```sh
+npm test -- src/features/notes/notesSplitLatencyProbe.test.ts -t "samples a slow terminal frame when keyup ends a held Enter gesture"
+```
+
+- RED: the result contained `[16, 18]`, p95 `18`, and zero slow frames.
+- GREEN: it contains `[16, 18, 40]`, p95 `40`, and one over-34 ms frame.
+
+Each fix received an independent code review. The combined focused run passed
+3 files and 358 tests.
+
+### Automated verification
+
+```sh
+npm test
+npm run lint
+npm run test:architecture
+npm run build
+git diff --check
+```
+
+- 183 files passed and one was skipped.
+- 4,197 tests passed and 27 were skipped after the whole-range follow-up.
+- ESLint, architecture budgets, TypeScript, the production build, and
+  whitespace checks passed.
+- The build retains only the existing warning for a minified chunk larger than
+  500 kB.
+
+The isolated benchmark fixture was restored to `5000|50|5`. The first fresh
+desktop run built and started successfully, but macOS reported
+`CGSSessionScreenIsLocked=Yes` and refused frontmost activation before native
+samples could be captured.
+
+### Whole-range review follow-up
+
+The subsequent full-range review found one ordinary Markdown-title date path
+that still opened the picker from rendered text. Date token offsets came from
+the exact source, so changing `# Due 07/29/2026` produced the corrupted
+`Due 0707/11/2026`.
+
+The ordinary row now passes the live editor snapshot as the picker source and
+reuses the existing focus-restorer hook to return the DOM-owned editor to the
+source-relative caret.
+
+```sh
+npm test -- src/features/notes/NotesWorkspace.test.tsx -t "edits a rendered Markdown date against its exact title source"
+```
+
+- First RED: the Markdown prefix was lost and the date slice was corrupted.
+- Second RED: after source replacement was corrected, the rendered editor
+  remained out of edit mode with focus on `document.body`.
+- GREEN: the persisted title is `# Due 07/11/2026`; the live editor regains
+  focus with selection `{16,16}`.
+- The complete owning file passed 303 tests. ESLint, TypeScript, and whitespace
+  checks passed, and the final re-review approved the fix.
+- The final full suite passed 183 files and 4,197 tests, with one file and 27
+  tests skipped. Architecture budgets, ESLint, the production build, and
+  whitespace checks passed again.
+- The final whole-range review from `502af65c` through the follow-up commit
+  returned `APPROVE` with no remaining Critical or Important finding.

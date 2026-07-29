@@ -343,9 +343,13 @@ export function NotesDetailSplitHost() {
         !insertionEditor ||
         insertionEditor.getAttribute("aria-expanded") === "true" ||
         !event.defaultPrevented ||
-        !["ArrowDown", "ArrowLeft", "ArrowRight", "ArrowUp"].includes(
-          event.key,
-        )
+        ![
+          "ArrowDown",
+          "ArrowLeft",
+          "ArrowRight",
+          "ArrowUp",
+          "Backspace",
+        ].includes(event.key)
       ) {
         return;
       }

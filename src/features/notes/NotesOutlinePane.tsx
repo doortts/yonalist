@@ -2318,10 +2318,26 @@ export function NotesOutlinePane({
   useLayoutEffect(() => {
     const surface = dropSurfaceRef.current;
     if (!surface) return;
+    const publishViewportHeight = () => {
+      const viewportHeight = surface.clientHeight || window.innerHeight;
+      setOutlineViewportHeight((current) =>
+        current === viewportHeight ? current : viewportHeight,
+      );
+    };
     surface.scrollTop = 0;
     setDeferredDirectFocusId(null);
     setOutlineScrollTop(0);
-    setOutlineViewportHeight(surface.clientHeight || window.innerHeight);
+    publishViewportHeight();
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(publishViewportHeight);
+    resizeObserver?.observe(surface, { box: "border-box" });
+    window.addEventListener("resize", publishViewportHeight);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", publishViewportHeight);
+    };
   }, [outlinePageKey]);
   const handleOutlineScroll = useCallback(
     (event: ReactUIEvent<HTMLDivElement>) => {

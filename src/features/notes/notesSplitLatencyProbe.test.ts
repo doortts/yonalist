@@ -332,7 +332,7 @@ describe("notesSplitLatencyProbe", () => {
     dispose();
   });
 
-  it("keeps held Enter repeats in one contenteditable gesture with frame evidence", () => {
+  it("samples a slow terminal frame when keyup ends a held Enter gesture", () => {
     const frames: FrameRequestCallback[] = [];
     let clock = 0;
     vi.spyOn(performance, "now").mockImplementation(() => clock);
@@ -366,6 +366,7 @@ describe("notesSplitLatencyProbe", () => {
       press(field, { key: "Enter", repeat: true });
       press(field, { key: "Enter", repeat: true });
       press(field, { key: "Enter", repeat: true });
+      clock = 74;
       release(field, { key: "Enter" });
 
       expect(benchmarkSamples()).toEqual([
@@ -373,9 +374,9 @@ describe("notesSplitLatencyProbe", () => {
           operation: "enter",
           paneId: "primary",
           deliveredKeydowns: 5,
-          frameDurationsMs: [16, 18],
-          frameP95Ms: 18,
-          framesOver34Ms: 0,
+          frameDurationsMs: [16, 18, 40],
+          frameP95Ms: 40,
+          framesOver34Ms: 1,
           finalFocusNodeId: "first",
           mountedOrdinaryRows: 2,
           invalidOverlap: false

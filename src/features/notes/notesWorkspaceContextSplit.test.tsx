@@ -1,6 +1,13 @@
-import { act, render, renderHook, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  renderHook,
+  waitFor,
+} from "@testing-library/react";
 import { memo, Profiler } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { VaultRootContext } from "../../VaultRootContext";
 import type {
   NoteNode,
   NotesHistoryContext,
@@ -11,12 +18,19 @@ import type {
 import {
   NotesActionsContext,
   NotesDraftsContext,
+  NotesPaneRegistryContext,
   NotesStateContext,
+  NotesWorkspaceContext,
   useNotesActions,
   useNotesDrafts,
   useNotesState,
 } from "./NotesWorkspaceContext";
+import { NotesDetailSplitHost } from "./NotesDetailSplitHost";
 import { NotesPaneSliceScope } from "./NotesPaneScope";
+import {
+  defaultNotesSplitLayout,
+  saveNotesSplitLayout,
+} from "./notesSplitLayoutStore";
 import {
   useNotesWorkspace,
   type UseNotesWorkspaceHookResult,
@@ -29,6 +43,25 @@ const createNoteIdMock = vi.hoisted(() => vi.fn());
 vi.mock("../../domain/notes", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../domain/notes")>()),
   createNoteId: createNoteIdMock
+}));
+
+vi.mock("./NotesOutlinePane", () => ({
+  NotesOutlinePane: () => (
+    <textarea
+      aria-label="Provisional insertion"
+      data-notes-provisional-insertion="true"
+      defaultValue="x"
+      onKeyDown={(event) => {
+        if (
+          event.key === "Backspace" &&
+          event.currentTarget.selectionStart === 0 &&
+          event.currentTarget.selectionEnd === 0
+        ) {
+          event.preventDefault();
+        }
+      }}
+    />
+  ),
 }));
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
@@ -428,7 +461,7 @@ describe("notes workspace context split", () => {
   });
 
   it.each(["primary", "secondary"] as const)(
-    "keeps the previous %s editing lease when interaction invalidates a deferred insertion focus claim",
+    "keeps the previous %s editing lease when handled Backspace invalidates a deferred insertion focus claim",
     async (paneId) => {
       const initial = workspace([
         node({ id: "root", title: "Root", sortKey: 1024 }),
@@ -446,13 +479,34 @@ describe("notes workspace context split", () => {
         updateNode,
         splitNode,
       });
+      const vaultRoot = `/deferred-${paneId}-focus-claim`;
+      saveNotesSplitLayout(localStorage, vaultRoot, {
+        ...defaultNotesSplitLayout(),
+        splitOpen: true,
+      });
       const { result } = renderHook(() =>
         useNotesWorkspace({
-          vaultRoot: `/deferred-${paneId}-focus-claim`,
+          vaultRoot,
           repository: store,
         })
       );
       await waitFor(() => expect(result.current.status).toBe("ready"));
+      render(
+        <VaultRootContext.Provider value={vaultRoot}>
+          <NotesWorkspaceContext.Provider value={result.current}>
+            <NotesPaneRegistryContext.Provider
+              value={result.current.paneRegistrySlice}
+            >
+              <NotesDetailSplitHost />
+            </NotesPaneRegistryContext.Provider>
+          </NotesWorkspaceContext.Provider>
+        </VaultRootContext.Provider>
+      );
+      await waitFor(() =>
+        expect(
+          document.querySelector('[data-notes-pane-id="secondary"]')
+        ).not.toBeNull()
+      );
       const panes = () => result.current.paneRegistrySlice.panes;
       const actions = () => panes()[paneId].actionsSlice.actions;
 
@@ -557,10 +611,28 @@ describe("notes workspace context split", () => {
         );
       });
       expect(result.current.draftsByNodeId.split).toBeUndefined();
+      const editor = document
+        .querySelector<HTMLElement>(`[data-notes-pane-id="${paneId}"]`)
+        ?.querySelector<HTMLTextAreaElement>(
+          "textarea[data-notes-provisional-insertion='true']"
+        );
+      expect(editor).not.toBeNull();
+      const interactionRevision =
+        actions().getUserInteractionRevision?.();
+      editor!.setSelectionRange(1, 1);
+      expect(fireEvent.keyDown(editor!, { key: "Backspace" })).toBe(true);
+      expect(actions().getUserInteractionRevision?.()).toBe(
+        interactionRevision
+      );
+      editor!.value = "";
+      editor!.setSelectionRange(0, 0);
+      expect(fireEvent.keyDown(editor!, { key: "Backspace" })).toBe(false);
+      expect(actions().getUserInteractionRevision?.()).toBe(
+        interactionRevision! + 1
+      );
       const interveningPaneId =
         paneId === "primary" ? "secondary" : "primary";
       act(() => {
-        actions().recordUserInteraction?.();
         result.current.paneRegistrySlice.setActivePaneId(interveningPaneId);
       });
       await act(async () =>

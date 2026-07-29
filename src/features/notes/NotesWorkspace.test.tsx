@@ -1467,6 +1467,82 @@ describe("Notes workspace", () => {
     expect(primaryRows.scrollTop).toBe(700);
   });
 
+  it("remeasures the mounted prefix from outline border-box height changes", async () => {
+    const rows = Array.from({ length: 101 }, (_, index) =>
+      node({
+        id: `row-${index}`,
+        sortKey: index + 1,
+        title: `Row ${String(index).padStart(3, "0")}`,
+      }),
+    );
+    let resizeOutlineCallback: ResizeObserverCallback | undefined;
+    let observedOutlineBox: ResizeObserverBoxOptions | undefined;
+    let viewportHeight = 281;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        observe(target: Element, options?: ResizeObserverOptions) {
+          if (!target.classList.contains("notes-outline-rows")) return;
+          resizeOutlineCallback = this.callback;
+          observedOutlineBox = options?.box ?? "content-box";
+        }
+        disconnect() {}
+      },
+    );
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+      function (this: HTMLElement) {
+        return this.classList.contains("notes-outline-rows")
+          ? viewportHeight
+          : 0;
+      },
+    );
+    configureRepository(rows);
+    renderNotesWorkspace();
+    const outline = await screen.findByLabelText("Notes outline");
+    const scroller = outline.querySelector<HTMLElement>(
+      ".notes-outline-rows",
+    )!;
+    const resizeOutline = (
+      height: number,
+      changedBox: ResizeObserverBoxOptions = "border-box",
+    ) => {
+      viewportHeight = height;
+      if (
+        changedBox === "content-box" &&
+        observedOutlineBox === "border-box"
+      ) {
+        return;
+      }
+      act(() =>
+        resizeOutlineCallback?.(
+          [
+            {
+              target: scroller,
+              contentRect: { height: height - 68 },
+            } as unknown as ResizeObserverEntry,
+          ],
+          {} as ResizeObserver,
+        ),
+      );
+    };
+
+    expect(scroller.scrollTop).toBe(0);
+    expect(outline.querySelectorAll("[data-outline-id]")).toHaveLength(11);
+
+    resizeOutline(266, "content-box");
+    expect(outline.querySelectorAll("[data-outline-id]")).toHaveLength(11);
+    resizeOutline(281, "content-box");
+    expect(outline.querySelectorAll("[data-outline-id]")).toHaveLength(11);
+
+    resizeOutline(840);
+    expect(outline.querySelectorAll("[data-outline-id]")).toHaveLength(30);
+
+    resizeOutline(140);
+    expect(outline.querySelectorAll("[data-outline-id]")).toHaveLength(5);
+    expect(scroller.scrollTop).toBe(0);
+  });
+
   it("uses the state-focus fallback when the target has no live title editor", async () => {
     const workspace: UseNotesWorkspaceResult = rowReplayWorkspace();
     const state = normalizeWorkspace({
@@ -1778,6 +1854,44 @@ describe("Notes workspace", () => {
       normalizeWhitespace: false,
     });
     expect(titleEditorSource(textarea)).toBe(source);
+  });
+
+  it("edits a rendered Markdown date against its exact title source", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({ id: "markdown-date", title: "# Due 07/29/2026" }),
+    ]);
+    renderNotesWorkspace(undefined, { year: 2026, month: 7, day: 11 });
+
+    await user.click(
+      await screen.findByRole("button", { name: "Edit date 07/29/2026" }),
+    );
+    const picker = await screen.findByRole("dialog", { name: "Choose date" });
+    await user.click(within(picker).getByRole("button", { name: "Today" }));
+    await user.keyboard("{Enter}");
+
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith(
+        "/vault",
+        expect.objectContaining({
+          id: "markdown-date",
+          title: "# Due 07/11/2026",
+        }),
+        expect.objectContaining({ commandKind: "text" }),
+      ),
+    );
+    await waitFor(() => {
+      const title = document.querySelector<HTMLDivElement>(
+        '[data-outline-id="markdown-date"] [data-notes-bullet-title]',
+      )!;
+      expect(title).toHaveFocus();
+      expect(title).toHaveAttribute("data-editing", "true");
+      expect(readPlainText(title)).toBe("# Due 07/11/2026");
+      expect(readPlainTextSelection(title)).toEqual({
+        anchorUtf16: 16,
+        focusUtf16: 16,
+      });
+    });
   });
 
   it("renders, edits, and persists resize for a remote Markdown image bullet", async () => {

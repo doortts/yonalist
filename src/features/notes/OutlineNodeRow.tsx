@@ -421,7 +421,12 @@ function OutlineNodeEditorComponent({
           title: (selection) =>
             imageEditorRef.current?.focus(selection) ?? false,
         }
-      : undefined,
+      : usesLiveTitle
+        ? {
+            title: (selection) =>
+              liveTitleRef.current?.focus(selection) ?? false,
+          }
+        : undefined,
     onCommit: (field, value, replacement) => {
       const nextImageOffsetUtf16 =
         node?.nodeKind === "image" &&
@@ -2535,6 +2540,7 @@ function OutlineNodeEditorComponent({
                           token,
                           anchor,
                           liveTitleRef.current?.element ?? undefined,
+                          liveTitleRef.current?.snapshot()?.source ?? titleValue,
                         )
                 }
                 onDateTrigger={

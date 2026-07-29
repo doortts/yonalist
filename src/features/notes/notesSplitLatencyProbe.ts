@@ -527,6 +527,7 @@ export function installNotesSplitInputBenchmarkCollector(
     if (!gesture) return;
     if (gesture.frameRequestId !== null) {
       window.cancelAnimationFrame(gesture.frameRequestId);
+      gesture.frameDurationsMs.push(now() - gesture.priorFrameAt);
     }
     const active = document.activeElement;
     collector.completeHeldGesture(gesture.operationId, {
