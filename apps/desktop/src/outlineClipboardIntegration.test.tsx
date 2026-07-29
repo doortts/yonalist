@@ -30,7 +30,6 @@ const snapshot: BootSnapshot = {
   },
   history: { canUndo: false, canRedo: false, undoDepth: 0, redoDepth: 0 }
 };
-
 function api(): NotesApi {
   return {
     bootstrap: vi.fn().mockResolvedValue(snapshot),
@@ -48,6 +47,7 @@ function api(): NotesApi {
       history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
     }),
     importImageBytes: vi.fn(),
+    importImagePaths: vi.fn(),
     readImage: vi.fn(),
     undo: vi.fn(),
     redo: vi.fn(),
@@ -625,7 +625,17 @@ describe("outline clipboard integration", () => {
     const source = {
       ...snapshot.viewport!.nodes[2],
       id: "source",
-      text: "Source"
+      kind: "image" as const,
+      image: {
+        contentHash: "c".repeat(64),
+        originalName: "source.png",
+        mimeType: "image/png",
+        byteLength: 1,
+        pixelWidth: 1,
+        pixelHeight: 1,
+        displayWidth: 320
+      },
+      text: "source.png"
     };
     notesApi.bootstrap = vi.fn().mockResolvedValue({
       ...snapshot,
@@ -634,8 +644,9 @@ describe("outline clipboard integration", () => {
         nodes: [parent, child, source]
       }
     });
+    notesApi.readImage = vi.fn().mockResolvedValue(Uint8Array.from([1]));
     render(<App api={notesApi} />);
-    await screen.findByDisplayValue("Source");
+    await screen.findByRole("group", { name: "Image: source.png" });
     fireEvent.click(screen.getAllByRole("button", {
       name: "Zoom to item"
     })[0], { shiftKey: true });
@@ -668,7 +679,6 @@ describe("outline clipboard integration", () => {
         clientX: 80,
         clientY: 100
       });
-
       expect(panes[1].querySelector(".notes-outline-drop-preview"))
         .toBeVisible();
       expect(panes[0].querySelector(".notes-outline-drop-preview")).toBeNull();

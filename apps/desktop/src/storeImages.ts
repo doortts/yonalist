@@ -15,8 +15,17 @@ interface RetryableImport {
   readonly requestId: string;
 }
 
+interface RetryablePathImport {
+  readonly parentId: string;
+  readonly beforeId: string | null;
+  readonly paths: readonly string[];
+  readonly images: readonly { readonly nodeId: string; readonly path: string }[];
+  readonly requestId: string;
+}
+
 export class StoreImages {
   private retryableImport: RetryableImport | null = null;
+  private retryablePathImport: RetryablePathImport | null = null;
 
   constructor(
     private readonly api: NotesApi,
@@ -66,6 +75,38 @@ export class StoreImages {
     return this.api.readImage({ sessionId, nodeId });
   }
 
+  async importPathsAfter(
+    parentId: string,
+    beforeId: string | null,
+    paths: readonly string[]
+  ): Promise<string> {
+    const retry = this.matchesPathRetry(parentId, beforeId, paths)
+      ? this.retryablePathImport
+      : null;
+    const operation = retry ?? {
+      parentId,
+      beforeId,
+      paths: [...paths],
+      requestId: freshId(),
+      images: paths.map((path) => ({ nodeId: freshId(), path }))
+    };
+    this.retryablePathImport = operation;
+    await this.commands.executeExternal(
+      (context) => this.api.importImagePaths({
+        ...context,
+        parentId: operation.parentId,
+        beforeId: operation.beforeId,
+        images: [...operation.images]
+      }),
+      "images:batch",
+      operation.requestId
+    );
+    if (this.retryablePathImport === operation) {
+      this.retryablePathImport = null;
+    }
+    return operation.images[0]!.nodeId;
+  }
+
   private matchesRetry(
     parentId: string,
     beforeId: string | null,
@@ -86,6 +127,21 @@ export class StoreImages {
           candidate.declaredMimeType === next.declaredMimeType
         );
       })
+    );
+  }
+
+  private matchesPathRetry(
+    parentId: string,
+    beforeId: string | null,
+    paths: readonly string[]
+  ): boolean {
+    const retry = this.retryablePathImport;
+    return Boolean(
+      retry &&
+      retry.parentId === parentId &&
+      retry.beforeId === beforeId &&
+      retry.paths.length === paths.length &&
+      retry.paths.every((path, index) => path === paths[index])
     );
   }
 }

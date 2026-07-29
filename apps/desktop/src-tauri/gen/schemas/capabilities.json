@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Yonalist v2 main window capability","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-destroy","main-window-notes-commands"]}}
+{"default":{"identifier":"default","description":"Yonalist v2 main window capability","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-destroy","dialog:allow-open","main-window-notes-commands"]}}

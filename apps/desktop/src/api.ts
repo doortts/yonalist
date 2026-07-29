@@ -14,7 +14,8 @@ import type { ViewportRequest } from "../../../packages/contracts/generated/View
 import {
   encodeImageEnvelope,
   normalizeImageBytes,
-  type ImageImportRequest
+  type ImageImportRequest,
+  type ImagePathImportRequest
 } from "./imageApi";
 
 export interface NotesApi {
@@ -23,6 +24,7 @@ export interface NotesApi {
   queryForest(request: ForestRequest): Promise<ForestSnapshot>;
   execute(envelope: CommandEnvelope): Promise<MutationReceipt>;
   importImageBytes(request: ImageImportRequest): Promise<MutationReceipt>;
+  importImagePaths(request: ImagePathImportRequest): Promise<MutationReceipt>;
   readImage(request: ImageReadRequest): Promise<Uint8Array>;
   undo(request: HistoryRequest): Promise<MutationReceipt>;
   redo(request: HistoryRequest): Promise<MutationReceipt>;
@@ -37,6 +39,8 @@ export const tauriNotesApi: NotesApi = {
   execute: (envelope) => invoke("notes_execute", { envelope }),
   importImageBytes: async (request) =>
     invoke("notes_import_image_bytes", await encodeImageEnvelope(request)),
+  importImagePaths: (request) =>
+    invoke("notes_import_image_paths", { request }),
   readImage: async (request) =>
     normalizeImageBytes(await invoke<unknown>("notes_read_image", { request })),
   undo: (request) => invoke("notes_undo", { request }),

@@ -263,6 +263,7 @@ async fn run_blocking<T: Send + 'static>(
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             #[cfg(desktop)]
             app.handle().plugin(tauri_plugin_single_instance::init(
@@ -297,6 +298,7 @@ pub fn run() {
             notes_search,
             notes_close_session,
             image_ipc::notes_import_image_bytes,
+            image_ipc::notes_import_image_paths,
             image_ipc::notes_read_image,
             open_external_url
         ])

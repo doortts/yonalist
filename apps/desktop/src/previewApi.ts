@@ -124,6 +124,10 @@ async function importImageBytes(
   return nextReceipt;
 }
 
+async function importImagePaths(): Promise<never> {
+  throw new Error("Native image paths are unavailable in browser preview.");
+}
+
 async function readImage(
   request: { readonly sessionId: string; readonly nodeId: string }
 ): Promise<Uint8Array> {
@@ -582,6 +586,7 @@ export const previewNotesApi: NotesApi = {
     previewForest(nodes, request.rootIds, request.limit, revision),
   execute,
   importImageBytes,
+  importImagePaths,
   readImage,
   async undo(request) {
     if (request.baseRevision !== revision) throw new Error("Preview revision is stale.");

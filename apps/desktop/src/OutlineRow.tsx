@@ -1,6 +1,6 @@
 import {
   Check, ChevronDown, ChevronRight, Circle, Copy, MessageSquareText,
-  MoreHorizontal, SquareCheckBig, Star, Trash2
+  ImagePlus, MoreHorizontal, SquareCheckBig, Star, Trash2
 } from "lucide-react";
 import {
   lazy, Suspense, useEffect, useRef, useState, type CSSProperties,
@@ -43,7 +43,8 @@ export function OutlineRow({
   store, selected, onZoom,
   onZoomOut, selectionHeadId, hasSelection, onExtendSelection,
   onClearSelection, onTagClick, todoProgress, selectionActions, dragSource,
-  onDragHandlePointerDown, onDragHandleKeyDown, consumeDragHandleClick
+  onDragHandlePointerDown, onDragHandleKeyDown, consumeDragHandleClick,
+  imageDropTarget, onPickImage
 }: {
   readonly node: NoteView;
   readonly pageId: string;
@@ -60,6 +61,8 @@ export function OutlineRow({
   readonly onClearSelection: () => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
   readonly todoProgress: TodoProgress | null;
+  readonly imageDropTarget: boolean;
+  readonly onPickImage: () => void;
   readonly selectionActions: SelectionKeyboardActions;
   readonly dragSource: boolean;
   readonly onDragHandlePointerDown: (
@@ -184,6 +187,14 @@ export function OutlineRow({
                       node.parentId ?? pageId,
                       nextSiblingId
                     );
+                  }}
+                />
+                <RowMenuItem
+                  icon={<ImagePlus size={14} aria-hidden="true" />}
+                  label="Upload image"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onPickImage();
                   }}
                 />
                 <RowMenuItem
@@ -435,6 +446,7 @@ export function OutlineRow({
           />
         )}
         <TodoProgressIndicator value={todoProgress} />
+        {imageDropTarget && <div className="notes-image-drop-position" />}
       </div>
       {slashMenu && editorRef.current && (
         <Suspense fallback={null}>

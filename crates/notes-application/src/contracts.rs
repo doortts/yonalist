@@ -291,6 +291,28 @@ pub struct ImageReadRequest {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
+pub struct ImagePathImportItem {
+    pub node_id: String,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ImagePathImportRequest {
+    pub session_id: String,
+    pub request_id: String,
+    #[ts(type = "number")]
+    pub base_revision: u64,
+    pub history_group: Option<String>,
+    pub parent_id: String,
+    pub before_id: Option<String>,
+    pub images: Vec<ImagePathImportItem>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct HistoryRequest {
     pub session_id: String,
     #[ts(type = "number")]

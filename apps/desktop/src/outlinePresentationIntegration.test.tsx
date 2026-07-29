@@ -42,6 +42,7 @@ function markdownApi(): NotesApi {
     })),
     execute: vi.fn(),
     importImageBytes: vi.fn(),
+    importImagePaths: vi.fn(),
     readImage: vi.fn(),
     undo: vi.fn(),
     redo: vi.fn(),

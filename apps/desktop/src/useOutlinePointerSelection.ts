@@ -19,7 +19,7 @@ type OutlineSelection = ReturnType<typeof useOutlineSelection>;
 const INTERACTIVE_SELECTOR =
   "button, a, [role='button'], [role='separator']";
 const TEXT_SURFACE_SELECTOR =
-  ".notes-node-title-field, .notes-node-note-field";
+  ".notes-node-title-field, .notes-node-note-field, .notes-image-node-content";
 
 function rowIdFromTarget(target: EventTarget | null): string | null {
   return target instanceof Element

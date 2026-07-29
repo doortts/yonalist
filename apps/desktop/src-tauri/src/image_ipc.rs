@@ -1,6 +1,6 @@
 use notes_application::{
-    ImageImportContext, ImageImportSource, ImageSource, MAX_IMAGE_BATCH_BYTES,
-    MAX_IMAGE_BATCH_ITEMS, MutationReceipt, NotesError, NotesErrorCode,
+    ImageImportContext, ImageImportItem, ImageImportSource, ImagePathImportRequest, ImageSource,
+    MAX_IMAGE_BATCH_BYTES, MAX_IMAGE_BATCH_ITEMS, MutationReceipt, NotesError, NotesErrorCode,
 };
 use notes_core::{MAX_IMAGE_BYTES, NodeId};
 use tauri::State;
@@ -109,6 +109,23 @@ pub(crate) async fn notes_import_image_bytes(
 }
 
 #[tauri::command]
+pub(crate) async fn notes_import_image_paths(
+    state: State<'_, DesktopState>,
+    request: ImagePathImportRequest,
+) -> Result<MutationReceipt, NotesError> {
+    let gate = std::sync::Arc::clone(&state.runtime);
+    run_blocking(move || {
+        let (context, sources) = path_import_sources(request)?;
+        let runtime = gate.wait()?;
+        runtime.clear_initial_boot()?;
+        runtime
+            .service
+            .import_images(context, sources, runtime.assets.as_ref())
+    })
+    .await
+}
+
+#[tauri::command]
 pub(crate) async fn notes_read_image(
     state: State<'_, DesktopState>,
     request: notes_application::ImageReadRequest,
@@ -120,6 +137,71 @@ pub(crate) async fn notes_read_image(
     })
     .await?;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+fn path_import_sources(
+    request: ImagePathImportRequest,
+) -> Result<(ImageImportContext, Vec<ImageImportSource>), NotesError> {
+    if request.images.is_empty() || request.images.len() > MAX_IMAGE_BATCH_ITEMS {
+        return Err(invalid(
+            "An image path batch must contain between 1 and 128 images.",
+        ));
+    }
+    let mut items = Vec::with_capacity(request.images.len());
+    let mut sources = Vec::with_capacity(request.images.len());
+    let mut aggregate = 0_u64;
+    for image in request.images {
+        let path = std::path::PathBuf::from(&image.path);
+        if !path.is_absolute() {
+            return Err(invalid("Notes image paths must be absolute."));
+        }
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|error| unavailable(format!("The image path is unavailable: {error}")))?;
+        if !metadata.is_file() {
+            return Err(invalid("The selected image is not a regular file."));
+        }
+        let byte_length = metadata.len();
+        if !(1..=MAX_IMAGE_BYTES).contains(&byte_length) {
+            return Err(invalid("An image must be between 1 byte and 20 MiB."));
+        }
+        aggregate = aggregate
+            .checked_add(byte_length)
+            .ok_or_else(|| invalid("The image path batch length overflowed."))?;
+        if aggregate > MAX_IMAGE_BATCH_BYTES {
+            return Err(invalid("The image path batch exceeds 64 MiB."));
+        }
+        let original_name = path
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| invalid("The image filename is invalid."))?
+            .to_owned();
+        let node_id = NodeId::try_from(image.node_id.as_str()).map_err(NotesError::from)?;
+        items.push(ImageImportItem {
+            node_id: image.node_id,
+            original_name: original_name.clone(),
+            declared_mime_type: None,
+            byte_length,
+        });
+        sources.push(ImageImportSource {
+            node_id,
+            original_name,
+            declared_mime_type: None,
+            source: ImageSource::Path(path),
+        });
+    }
+    Ok((
+        ImageImportContext {
+            session_id: request.session_id,
+            request_id: request.request_id,
+            base_revision: request.base_revision,
+            history_group: request.history_group,
+            parent_id: request.parent_id,
+            before_id: request.before_id,
+            items,
+        },
+        sources,
+    ))
 }
 
 fn read_u16(body: &[u8], offset: usize) -> Result<u16, NotesError> {
@@ -144,11 +226,24 @@ fn invalid(message: impl Into<String>) -> NotesError {
     }
 }
 
+fn unavailable(message: impl Into<String>) -> NotesError {
+    NotesError {
+        code: NotesErrorCode::StorageUnavailable,
+        message: message.into(),
+        retryable: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use notes_application::{ImageImportContext, ImageImportItem, ImageSource};
+    use std::fs;
 
-    use super::decode_raw_envelope;
+    use notes_application::{
+        ImageImportContext, ImageImportItem, ImagePathImportItem, ImagePathImportRequest,
+        ImageSource,
+    };
+
+    use super::{decode_raw_envelope, path_import_sources};
 
     fn metadata(lengths: &[u64]) -> ImageImportContext {
         ImageImportContext {
@@ -222,5 +317,61 @@ mod tests {
             body
         };
         assert!(decode_raw_envelope(&malformed_json).is_err());
+    }
+
+    #[test]
+    fn native_paths_become_owned_sources_in_request_order() {
+        let root =
+            std::env::temp_dir().join(format!("yonalist-v2-path-import-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).expect("create path import fixture");
+        let first = root.join("cat.png");
+        let second = root.join("dog.webp");
+        fs::write(&first, [1, 2, 3]).expect("write first fixture");
+        fs::write(&second, [4, 5]).expect("write second fixture");
+        let request = ImagePathImportRequest {
+            session_id: "session".into(),
+            request_id: "request".into(),
+            base_revision: 7,
+            history_group: Some("images:batch".into()),
+            parent_id: "page".into(),
+            before_id: Some("next".into()),
+            images: vec![
+                ImagePathImportItem {
+                    node_id: "cat".into(),
+                    path: first.to_string_lossy().into_owned(),
+                },
+                ImagePathImportItem {
+                    node_id: "dog".into(),
+                    path: second.to_string_lossy().into_owned(),
+                },
+            ],
+        };
+
+        let (context, sources) = path_import_sources(request).expect("convert native paths");
+
+        assert_eq!(context.items[0].original_name, "cat.png");
+        assert_eq!(context.items[0].byte_length, 3);
+        assert_eq!(context.items[1].original_name, "dog.webp");
+        assert!(matches!(&sources[0].source, ImageSource::Path(path) if path == &first));
+        assert!(matches!(&sources[1].source, ImageSource::Path(path) if path == &second));
+        fs::remove_dir_all(root).expect("remove path import fixture");
+    }
+
+    #[test]
+    fn native_path_import_rejects_relative_paths() {
+        let request = ImagePathImportRequest {
+            session_id: "session".into(),
+            request_id: "request".into(),
+            base_revision: 7,
+            history_group: None,
+            parent_id: "page".into(),
+            before_id: None,
+            images: vec![ImagePathImportItem {
+                node_id: "cat".into(),
+                path: "cat.png".into(),
+            }],
+        };
+
+        assert!(path_import_sources(request).is_err());
     }
 }

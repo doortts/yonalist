@@ -1,4 +1,8 @@
 import type { ImageImportContext } from "../../../packages/contracts/generated/ImageImportContext";
+import type { ImagePathImportItem } from "../../../packages/contracts/generated/ImagePathImportItem";
+import type {
+  ImagePathImportRequest as GeneratedImagePathImportRequest
+} from "../../../packages/contracts/generated/ImagePathImportRequest";
 
 export const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 export const MAX_IMAGE_BATCH_BYTES = 64 * 1024 * 1024;
@@ -29,6 +33,9 @@ export interface ImageImportRequest {
   readonly beforeId: string | null;
   readonly images: readonly ImageInput[];
 }
+
+export type ImagePathInput = ImagePathImportItem;
+export type ImagePathImportRequest = GeneratedImagePathImportRequest;
 
 export async function encodeImageEnvelope(
   request: ImageImportRequest

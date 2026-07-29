@@ -22,6 +22,7 @@ import {
 } from "./selectionMoves";
 import { OutlineIndex } from "./outlineIndex";
 import type { PaneFocusSnapshot } from "./appNavigation";
+import { useImageIngest } from "./useImageIngest";
 
 export interface PaneRestoreRequest {
   readonly epoch: number;
@@ -69,6 +70,12 @@ export function NotesOutline({
     [index, state.nodes, zoomRoot]
   );
   const outlineRootId = zoomRoot?.id ?? page?.id ?? "";
+  const imageIngest = useImageIngest({
+    store,
+    outlineRootId,
+    index,
+    scopeRef
+  });
   const expandedBodyNodes = useMemo(
     () => hideCollapsedSubtrees(allBodyNodes, outlineRootId, index),
     [allBodyNodes, index, outlineRootId]
@@ -258,6 +265,7 @@ export function NotesOutline({
           setSelectionFeedback("Copied, but couldn't remove the selected outline.");
         }));
       }}
+      {...imageIngest.sectionProps}
     >
       <OutlineHeader
         store={store}
@@ -294,7 +302,14 @@ export function NotesOutline({
             onDelete={() => runSelectionAction(deleteSelection)}
           />
         ) : undefined}
+        imageDropTarget={imageIngest.dropTargetId === header.id}
+        onPickImage={() => void imageIngest.openPicker(header.id)}
       />
+      {imageIngest.error && (
+        <div className="notes-inline-error" role="alert">
+          {imageIngest.error}
+        </div>
+      )}
       {selectionFeedback && (
         <span className="notes-selection-visually-hidden" role="status">
           {selectionFeedback}
@@ -333,6 +348,8 @@ export function NotesOutline({
                 onClearSelection={clearSelection}
                 onTagClick={onTagClick}
                 todoProgress={todoProgress.get(node.id) ?? null}
+                imageDropTarget={imageIngest.dropTargetId === node.id}
+                onPickImage={() => void imageIngest.openPicker(node.id)}
                 selectionActions={{
                   indent: () => executeMovePlan(movePlans.indent),
                   outdent: () => executeMovePlan(movePlans.outdent),

@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { NotesApi } from "./api";
-import type { ImageCandidate, ImageImportRequest } from "./imageApi";
+import type {
+  ImageCandidate,
+  ImageImportRequest,
+  ImagePathImportRequest
+} from "./imageApi";
 import { NotesStore } from "./notesStore";
 import { snapshot } from "./test/appApiFixture";
 
@@ -50,13 +54,17 @@ function receiptFor(request: ImageImportRequest): MutationReceipt {
   };
 }
 
-function api(importImageBytes: NotesApi["importImageBytes"]): NotesApi {
+function api(
+  importImageBytes: NotesApi["importImageBytes"],
+  importImagePaths: NotesApi["importImagePaths"] = vi.fn()
+): NotesApi {
   return {
     bootstrap: vi.fn().mockResolvedValue(snapshot),
     queryViewport: vi.fn(),
     queryForest: vi.fn(),
     execute: vi.fn(),
     importImageBytes,
+    importImagePaths,
     readImage: vi.fn(),
     undo: vi.fn(),
     redo: vi.fn(),
@@ -120,5 +128,53 @@ describe("StoreImages", () => {
       firstAttempt.images.map((image) => image.nodeId)
     );
     expect(firstId).toBe(firstAttempt.images[0]!.nodeId);
+  });
+
+  it("imports native paths as one ordered request with stable node IDs", async () => {
+    const importImagePaths = vi.fn(async (
+      request: ImagePathImportRequest
+    ): Promise<MutationReceipt> => ({
+      revision: 8,
+      changedNodes: request.images.map((image, index) => ({
+        id: image.nodeId,
+        parentId: request.parentId,
+        sortKey: 1_500 + index,
+        kind: "image",
+        image: {
+          contentHash: (index === 0 ? "a" : "b").repeat(64),
+          originalName: image.path.split(/[\\/]/u).at(-1)!,
+          mimeType: "image/png",
+          byteLength: 1,
+          pixelWidth: 1,
+          pixelHeight: 1,
+          displayWidth: 320
+        },
+        text: image.path,
+        note: "",
+        marker: "bullet",
+        collapsed: false,
+        completed: false,
+        starred: false,
+        deleted: false
+      })),
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    }));
+    const store = new NotesStore(api(vi.fn(), importImagePaths));
+    await store.bootstrap();
+
+    const firstId = await store.images.importPathsAfter(
+      "page-1",
+      "bullet-2",
+      ["C:\\images\\cat.png", "/images/dog.png"]
+    );
+
+    expect(importImagePaths).toHaveBeenCalledOnce();
+    const request = importImagePaths.mock.calls[0]![0];
+    expect(request.images.map((image) => image.path)).toEqual([
+      "C:\\images\\cat.png",
+      "/images/dog.png"
+    ]);
+    expect(request.images[0]!.nodeId).toBe(firstId);
   });
 });

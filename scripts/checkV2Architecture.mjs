@@ -159,6 +159,7 @@ const mainWindowCapability = JSON.parse(readFileSync(
 const requiredPermissions = [
   "core:default",
   "core:window:allow-destroy",
+  "dialog:allow-open",
   "main-window-notes-commands"
 ].sort();
 const actualPermissions = [...mainWindowCapability.permissions].sort();
