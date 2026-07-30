@@ -25,8 +25,6 @@ export interface NotesDetailPanesProps {
   readonly onOpenSplit: (nodeId: string) => void;
   readonly onCloseSplit: () => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
-  readonly onUndo: () => Promise<void>;
-  readonly onRedo: () => Promise<void>;
 }
 
 export const NotesDetailPanes = memo(function NotesDetailPanes({
@@ -44,9 +42,7 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
   onSecondaryZoomChange,
   onOpenSplit,
   onCloseSplit,
-  onTagClick,
-  onUndo,
-  onRedo
+  onTagClick
 }: NotesDetailPanesProps) {
   const splitResize = useSplitResize(splitOpen);
   return (
@@ -80,8 +76,6 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
               restoreRequest={primaryRestore}
               onOpenSplit={onOpenSplit}
               onTagClick={onTagClick}
-              onUndo={onUndo}
-              onRedo={onRedo}
             />
           </div>
           {splitOpen && (
@@ -112,8 +106,6 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
                   onOpenSplit={onOpenSplit}
                   onTagClick={onTagClick}
                   onClose={onCloseSplit}
-                  onUndo={onUndo}
-                  onRedo={onRedo}
                 />
               </div>
             </>

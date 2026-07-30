@@ -32,10 +32,7 @@ const OutlineDragVisuals = lazy(() =>
   import("./OutlineDragVisuals").then((module) => ({
     default: module.OutlineDragVisuals
   })));
-const MonacoOutlineSurface = lazy(() =>
-  import("./MonacoOutlineSurface").then((module) => ({
-    default: module.MonacoOutlineSurface
-  })));
+const MonacoOutlineSurface = lazy(() => import("./MonacoOutlineSurface"));
 
 export interface PaneRestoreRequest {
   readonly epoch: number;
@@ -45,7 +42,7 @@ export interface PaneRestoreRequest {
 
 export function NotesOutline({
   store, status, error, pendingWrites, page, zoomRootId, onZoomRootChange,
-  onOpenSplit, onTagClick, onClose, paneId, restoreRequest, onUndo, onRedo
+  onOpenSplit, onTagClick, onClose, paneId, restoreRequest
 }: {
   readonly store: NotesStore;
   readonly status: NotesShellSnapshot["status"];
@@ -59,8 +56,6 @@ export function NotesOutline({
   readonly onClose?: () => void;
   readonly paneId: "primary" | "secondary";
   readonly restoreRequest: PaneRestoreRequest | null;
-  readonly onUndo: () => Promise<void>;
-  readonly onRedo: () => Promise<void>;
 }) {
   const state = useSyncExternalStore(
     store.subscribeOutline,
@@ -251,9 +246,7 @@ export function NotesOutline({
     () => new Set(selection.selectedIds),
     [selection.selectedIds]
   );
-  const outlineSurface = outlineSurfaceFromSearch(
-    typeof location === "undefined" ? "" : location.search
-  );
+  const outlineSurface = outlineSurfaceFromSearch(location.search);
   if (status === "loading" && !page) {
     return <section className="notes-outline"><p className="notes-pane-state">Loading notes...</p></section>;
   }
@@ -406,7 +399,7 @@ export function NotesOutline({
             <p className="notes-pane-state">Completed items are hidden.</p>
           )}
           {outlineSurface === "monaco" ? (
-            <Suspense fallback={<div className="notes-monaco-outline" />}>
+            <Suspense fallback={null}>
               <MonacoOutlineSurface
                 nodes={bodyNodes}
                 index={index}
@@ -414,8 +407,6 @@ export function NotesOutline({
                 paneId={paneId}
                 store={store}
                 structuralContextComplete={structuralContextComplete}
-                onUndo={onUndo}
-                onRedo={onRedo}
               />
             </Suspense>
           ) : (

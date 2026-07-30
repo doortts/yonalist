@@ -37,15 +37,13 @@ monacoGlobal.MonacoEnvironment ??= {
   getWorker: () => new EditorWorker()
 };
 
-export function MonacoOutlineSurface({
+export default function MonacoOutlineSurface({
   nodes,
   index,
   rootId,
   paneId,
   store,
-  structuralContextComplete,
-  onUndo,
-  onRedo
+  structuralContextComplete
 }: {
   readonly nodes: readonly NoteView[];
   readonly index: OutlineIndex;
@@ -53,8 +51,6 @@ export function MonacoOutlineSurface({
   readonly paneId: "primary" | "secondary";
   readonly store: NotesStore;
   readonly structuralContextComplete: boolean;
-  readonly onUndo: () => Promise<void>;
-  readonly onRedo: () => Promise<void>;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const runtimeRef = useRef<MonacoRuntime | null>(null);
@@ -89,16 +85,12 @@ export function MonacoOutlineSurface({
   const latestContextRef = useRef<MonacoOutlineCommandContext>({
     index,
     rootId,
-    structuralContextComplete,
-    onUndo,
-    onRedo
+    structuralContextComplete
   });
   latestContextRef.current = {
     index,
     rootId,
-    structuralContextComplete,
-    onUndo,
-    onRedo
+    structuralContextComplete
   };
 
   useEffect(() => {
@@ -225,6 +217,16 @@ export function MonacoOutlineSurface({
       });
       if (gesture.kind === "native") return;
       event.preventDefault();
+      if (gesture.kind === "undo" || gesture.kind === "redo") {
+        event.stopPropagation();
+        window.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "z",
+          ctrlKey: browserEvent.ctrlKey,
+          metaKey: browserEvent.metaKey,
+          shiftKey: gesture.kind === "redo"
+        }));
+        return;
+      }
       event.stopPropagation();
       executeMonacoOutlineGesture(
         gesture,

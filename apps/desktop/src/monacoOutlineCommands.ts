@@ -16,8 +16,6 @@ export interface MonacoOutlineCommandContext {
   readonly index: OutlineIndex;
   readonly rootId: string;
   readonly structuralContextComplete: boolean;
-  readonly onUndo: () => Promise<void>;
-  readonly onRedo: () => Promise<void>;
 }
 
 interface EnterSplitGesture {
@@ -51,12 +49,8 @@ export function executeMonacoOutlineGesture(
   switch (gesture.kind) {
     case "native":
     case "consume":
-      return;
     case "undo":
-      void context.onUndo();
-      return;
     case "redo":
-      void context.onRedo();
       return;
     case "split":
       executeSplit(gesture, repeated, runtime, store, context);
