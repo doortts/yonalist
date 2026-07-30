@@ -10,7 +10,7 @@ interface OutlineSelectionActionBarProps {
   readonly allCompleted: boolean;
   readonly canCut: boolean;
   readonly busy: boolean;
-  readonly plans: ReturnType<typeof buildSelectionMovePlans>;
+  readonly plans: ReturnType<typeof buildSelectionMovePlans> | null;
   readonly onClear: () => void;
   readonly onComplete: () => void;
   readonly onCopy: () => void;
@@ -41,20 +41,20 @@ export function OutlineSelectionActionBar({
       count={count}
       allCompleted={allCompleted}
       canCut={canCut}
-      canIndent={plans.indent.available}
-      canOutdent={plans.outdent.available}
-      canMoveUp={plans.up.available}
-      canMoveDown={plans.down.available}
-      canDuplicate={plans.duplicate.available}
+      canIndent={plans?.indent.available ?? false}
+      canOutdent={plans?.outdent.available ?? false}
+      canMoveUp={plans?.up.available ?? false}
+      canMoveDown={plans?.down.available ?? false}
+      canDuplicate={plans?.duplicate.available ?? false}
       busy={busy}
       onClear={onClear}
       onComplete={onComplete}
       onCopy={onCopy}
       onCut={onCut}
-      onIndent={() => onMove(plans.indent)}
-      onOutdent={() => onMove(plans.outdent)}
-      onMoveUp={() => onMove(plans.up)}
-      onMoveDown={() => onMove(plans.down)}
+      onIndent={() => plans && onMove(plans.indent)}
+      onOutdent={() => plans && onMove(plans.outdent)}
+      onMoveUp={() => plans && onMove(plans.up)}
+      onMoveDown={() => plans && onMove(plans.down)}
       onDuplicate={onDuplicate}
       onDelete={onDelete}
       trailingAction={trailingAction}

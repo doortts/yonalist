@@ -8,26 +8,12 @@ import {
 } from "react";
 import type { NotesStore } from "./notesStore";
 import type { OutlineIndex } from "./outlineIndex";
+import type { ImageIngestBoundary } from "./imageIngestTypes";
 
-export type NativeImageDropEvent =
-  | {
-      readonly type: "enter" | "drop";
-      readonly paths: readonly string[];
-      readonly position: { readonly x: number; readonly y: number };
-    }
-  | {
-      readonly type: "over";
-      readonly position: { readonly x: number; readonly y: number };
-    }
-  | { readonly type: "leave" };
-
-export interface ImageIngestBoundary {
-  readonly native: boolean;
-  pickPaths(): Promise<readonly string[]>;
-  listenNativeDrops(
-    listener: (event: NativeImageDropEvent) => void
-  ): Promise<() => void>;
-}
+export type {
+  ImageIngestBoundary,
+  NativeImageDropEvent
+} from "./imageIngestTypes";
 
 interface UseImageIngestInput {
   readonly store: NotesStore;
@@ -42,7 +28,7 @@ export function useImageIngest({
   outlineRootId,
   index,
   scopeRef,
-  boundary = defaultImageIngestBoundary
+  boundary
 }: UseImageIngestInput) {
   const latest = useRef({ store, outlineRootId, index });
   latest.current = { store, outlineRootId, index };
@@ -54,19 +40,9 @@ export function useImageIngest({
     paths: readonly string[]
   ) => {
     const current = latest.current;
-    const { imageInsertionAnchor } = await import("./imageInsertion");
-    const anchor = imageInsertionAnchor(
-      targetId,
-      current.outlineRootId,
-      current.index
-    );
-    if (!anchor || paths.length === 0) return;
+    const runtime = await import("./imageIngestRuntime");
     setError(null);
-    await current.store.images.importPathsAfter(
-      anchor.parentId,
-      anchor.beforeId,
-      paths
-    );
+    await runtime.importImagePaths(current, targetId, paths);
   }, []);
 
   const importFiles = useCallback(async (
@@ -74,29 +50,17 @@ export function useImageIngest({
     files: readonly File[]
   ) => {
     const current = latest.current;
-    const [{ imageInsertionAnchor }, { imageCandidates }] = await Promise.all([
-      import("./imageInsertion"),
-      import("./imagePicker")
-    ]);
-    const anchor = imageInsertionAnchor(
-      targetId,
-      current.outlineRootId,
-      current.index
-    );
-    const candidates = imageCandidates(files);
-    if (!anchor || candidates.length === 0) return;
+    const runtime = await import("./imageIngestRuntime");
     setError(null);
-    await current.store.images.importAfter(
-      anchor.parentId,
-      anchor.beforeId,
-      candidates
-    );
+    await runtime.importImageFiles(current, targetId, files);
   }, []);
 
   const openPicker = useCallback(async (targetId: string) => {
     try {
-      if (boundary.native) {
-        const paths = await boundary.pickPaths();
+      const runtime = await import("./imageIngestRuntime");
+      const activeBoundary = boundary ?? runtime.defaultImageIngestBoundary;
+      if (activeBoundary.native) {
+        const paths = await activeBoundary.pickPaths();
         await importPaths(targetId, paths);
       } else {
         const { pickImageFiles } = await import("./imagePicker");
@@ -109,30 +73,33 @@ export function useImageIngest({
   }, [boundary, importFiles, importPaths]);
 
   useEffect(() => {
-    if (!boundary.native) return;
+    if (!(boundary?.native ?? "__TAURI_INTERNALS__" in window)) return;
     let active = true;
     let unlisten: (() => void) | null = null;
-    void boundary.listenNativeDrops((event) => {
-      if (!active) return;
-      if (event.type === "leave") {
+    void import("./imageIngestRuntime").then(async (runtime) => {
+      const activeBoundary = boundary ?? runtime.defaultImageIngestBoundary;
+      if (!active || !activeBoundary.native) return;
+      const dispose = await activeBoundary.listenNativeDrops((event) => {
+        if (!active) return;
+        if (event.type === "leave") {
+          setDropTargetId(null);
+          return;
+        }
+        const targetId = runtime.targetAtPosition(
+          scopeRef.current,
+          event.position,
+          latest.current.outlineRootId
+        );
+        if (event.type !== "drop") {
+          setDropTargetId(targetId);
+          return;
+        }
         setDropTargetId(null);
-        return;
-      }
-      const targetId = targetAtPosition(
-        scopeRef.current,
-        event.position,
-        latest.current.outlineRootId
-      );
-      if (event.type !== "drop") {
-        setDropTargetId(targetId);
-        return;
-      }
-      setDropTargetId(null);
-      if (!targetId) return;
-      void importPaths(targetId, event.paths)
-        .catch((cause) => setError(messageFrom(cause)))
-        .finally(() => setDropTargetId(null));
-    }).then((dispose) => {
+        if (!targetId) return;
+        void importPaths(targetId, event.paths)
+          .catch((cause) => setError(messageFrom(cause)))
+          .finally(() => setDropTargetId(null));
+      });
       if (active) unlisten = dispose;
       else dispose();
     }).catch((cause) => {
@@ -188,19 +155,6 @@ export function useImageIngest({
   };
 }
 
-function targetAtPosition(
-  scope: HTMLElement | null,
-  position: { readonly x: number; readonly y: number },
-  outlineRootId: string
-): string | null {
-  if (!scope) return null;
-  const pointed = typeof document.elementFromPoint === "function"
-    ? document.elementFromPoint(position.x, position.y)
-    : null;
-  if (!pointed || !scope.contains(pointed)) return null;
-  return targetFromElement(pointed, scope, outlineRootId);
-}
-
 function targetFromElement(
   target: EventTarget | null,
   scope: HTMLElement,
@@ -218,36 +172,6 @@ function targetFromElement(
 function messageFrom(cause: unknown): string {
   return cause instanceof Error ? cause.message : "The image could not be imported.";
 }
-
-const defaultImageIngestBoundary: ImageIngestBoundary = {
-  native: "__TAURI_INTERNALS__" in window,
-  pickPaths: async () => {
-    const { pickImagePaths } = await import("./imagePicker");
-    return pickImagePaths(true);
-  },
-  async listenNativeDrops(listener) {
-    if (!("__TAURI_INTERNALS__" in window)) return () => undefined;
-    const [{ getCurrentWebview }, { getCurrentWindow }] = await Promise.all([
-      import("@tauri-apps/api/webview"),
-      import("@tauri-apps/api/window")
-    ]);
-    const scaleFactor = await getCurrentWindow().scaleFactor();
-    return getCurrentWebview().onDragDropEvent(({ payload }) => {
-      if (payload.type === "leave") {
-        listener({ type: "leave" });
-        return;
-      }
-      const position = payload.position.toLogical(scaleFactor);
-      listener(payload.type === "over"
-        ? { type: "over", position }
-        : {
-            type: payload.type,
-            paths: payload.paths,
-            position
-          });
-    });
-  }
-};
 
 function hasSupportedImage(files: readonly File[]): boolean {
   return files.some((file) =>

@@ -1,5 +1,5 @@
 import {
-  lazy, Suspense, useEffect, useMemo, useRef, useState,
+  lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState,
   useSyncExternalStore
 } from "react";
 import { NotesStore } from "./notesStore";
@@ -15,13 +15,13 @@ import { OutlineRow, OutlineRowRuntime } from "./OutlineRow";
 import { NotesChildComposer } from "./NotesChildComposer";
 import { buildTodoProgressMap } from "./outlineTodo";
 import type { OutlineTagToken } from "./OutlineTextField";
-import {
-  buildSelectionMovePlans, selectedCompletion, type SelectionMovePlan
-} from "./selectionMoves";
+import type { SelectionMovePlan } from "./selectionMoves";
 import { OutlineIndex } from "./outlineIndex";
 import type { PaneFocusSnapshot } from "./appNavigation";
 import { useImageIngest } from "./useImageIngest";
 import { NotesExportBoundary } from "./NotesExportBoundary";
+import { useProgressiveOutlineWindow } from "./useProgressiveOutlineWindow";
+import { materializeOutlineNode } from "./outlineFocus";
 
 const OutlineSelectionActionBar = lazy(() =>
   import("./OutlineSelectionActionBar").then((module) => ({
@@ -31,6 +31,16 @@ const OutlineDragVisuals = lazy(() =>
   import("./OutlineDragVisuals").then((module) => ({
     default: module.OutlineDragVisuals
   })));
+type SelectionMovesRuntime = typeof import("./selectionMoves");
+let selectionMovesRuntime: SelectionMovesRuntime | null = null;
+let selectionMovesRuntimeLoad: Promise<SelectionMovesRuntime> | null = null;
+function loadSelectionMoves(): Promise<SelectionMovesRuntime> {
+  selectionMovesRuntimeLoad ??= import("./selectionMoves").then((runtime) => {
+    selectionMovesRuntime = runtime;
+    return runtime;
+  });
+  return selectionMovesRuntimeLoad;
+}
 
 export interface PaneRestoreRequest {
   readonly epoch: number;
@@ -66,6 +76,8 @@ export function NotesOutline({
   const [selectionFeedback, setSelectionFeedback] = useState("");
   const selectionOperation = useRef(false);
   const [selectionOperationBusy, setSelectionOperationBusy] = useState(false);
+  const [selectionMoves, setSelectionMoves] =
+    useState<SelectionMovesRuntime | null>(() => selectionMovesRuntime);
   const index = useMemo(() => new OutlineIndex(state.nodes), [state.nodes]);
   const zoomRoot = zoomRootId
     ? index.node(zoomRootId)
@@ -111,24 +123,46 @@ export function NotesOutline({
     selectedRootIds
   } = selection;
   useEffect(() => {
+    let active = true;
+    void loadSelectionMoves().then((runtime) => {
+      if (active) setSelectionMoves(runtime);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
     if (!restoreRequest) return;
     restoreSelectionRef.current(restoreRequest.selectedIds);
-    const frame = requestAnimationFrame(() => {
-      if (!restoreRequest.focus || !scopeRef.current) return;
-      const editor = [...scopeRef.current.querySelectorAll<
-        HTMLTextAreaElement
-      >("textarea[data-node-id][data-outline-field]")].find((candidate) =>
-        candidate.dataset.nodeId === restoreRequest.focus?.nodeId &&
-        candidate.dataset.outlineField === restoreRequest.focus?.field
+    if (!restoreRequest.focus) return;
+    const focus = restoreRequest.focus;
+    let active = true;
+    let retries = 0;
+    let frame = requestAnimationFrame(restore);
+    function restore() {
+      const scope = scopeRef.current;
+      if (!active || !scope) return;
+      const editor = [...scope.querySelectorAll<HTMLTextAreaElement>(
+        "textarea[data-node-id][data-outline-field]"
+      )].find((candidate) =>
+        candidate.dataset.nodeId === focus.nodeId &&
+        candidate.dataset.outlineField === focus.field
       );
-      if (!editor) return;
-      editor.focus();
-      editor.setSelectionRange(
-        restoreRequest.focus.selectionStart,
-        restoreRequest.focus.selectionEnd
-      );
-    });
-    return () => cancelAnimationFrame(frame);
+      if (editor) {
+        editor.focus();
+        editor.setSelectionRange(focus.selectionStart, focus.selectionEnd);
+      } else if (
+        retries < 2 &&
+        materializeOutlineNode(scope, focus.nodeId)
+      ) {
+        retries += 1;
+        frame = requestAnimationFrame(restore);
+      }
+    }
+    return () => {
+      active = false;
+      cancelAnimationFrame(frame);
+    };
   }, [restoreRequest]);
   useEffect(() => {
     if (!rootKey) return;
@@ -161,26 +195,19 @@ export function NotesOutline({
     moveNodes: (moves) => store.moveNodes(moves),
     labelForId: (id) => store.getNodeSnapshot(id).title
   });
-  const allSelectedCompleted = selectedCompletion(
-    selection.selectedNodes,
-    selection.selectedIds
-  );
-  const movePlans = selection.selectedRootIds.length === 0
-    ? buildSelectionMovePlans([], [], [], outlineRootId)
-    : structuralContextComplete
-    ? buildSelectionMovePlans(
+  const allSelectedCompleted = selection.selectedNodes.length > 0 &&
+    selection.selectedNodes.every((node) => node.completed);
+  const movePlans =
+    selection.selectedRootIds.length > 0 &&
+    structuralContextComplete &&
+    selectionMoves
+      ? selectionMoves.buildSelectionMovePlans(
       state.nodes,
       bodyNodes.map((node) => node.id),
       selection.selectedRootIds,
       outlineRootId
     )
-    : {
-      indent: { available: false, reason: "Load the complete outline first." },
-      outdent: { available: false, reason: "Load the complete outline first." },
-      up: { available: false, reason: "Load the complete outline first." },
-      down: { available: false, reason: "Load the complete outline first." },
-      duplicate: { available: false, reason: "Load the complete outline first." }
-    } as const;
+      : null;
   const runSelectionAction = (
     action: () => Promise<unknown> | unknown
   ) => {
@@ -196,8 +223,8 @@ export function NotesOutline({
       setSelectionOperationBusy(false);
     });
   };
-  const executeMovePlan = (plan: SelectionMovePlan) => {
-    if (plan.available) runSelectionAction(() => store.moveNodes(plan.moves));
+  const executeMovePlan = (plan: SelectionMovePlan | undefined) => {
+    if (plan?.available) runSelectionAction(() => store.moveNodes(plan.moves));
   };
   const clearSelection = () => {
     selection.clear();
@@ -231,8 +258,8 @@ export function NotesOutline({
     }
   };
   const duplicateSelection = async () => {
-    const plan = movePlans.duplicate;
-    if (!plan.available) return;
+    const plan = movePlans?.duplicate;
+    if (!plan?.available) return;
     selection.replace(await store.duplicateNodes(
       selection.selectedRootIds, plan.parentId, plan.beforeId));
   };
@@ -244,6 +271,15 @@ export function NotesOutline({
     () => new Set(selection.selectedIds),
     [selection.selectedIds]
   );
+  const loadMore = useCallback(() => store.loadMore(), [store]);
+  const outlineWindow = useProgressiveOutlineWindow({
+    nodes: bodyNodes,
+    scopeKey: `${paneId}:${outlineRootId}`,
+    scopeRef,
+    afterCursor: state.afterCursor,
+    onLoadMore: loadMore,
+    pinnedIds: selection.selectedIds
+  });
   if (status === "loading" && !page) {
     return <section className="notes-outline"><p className="notes-pane-state">Loading notes...</p></section>;
   }
@@ -268,9 +304,9 @@ export function NotesOutline({
     onTagClick,
     onPickImage: (nodeId) => void imageIngest.openPicker(nodeId),
     selectionActions: {
-      indent: () => executeMovePlan(movePlans.indent),
-      outdent: () => executeMovePlan(movePlans.outdent),
-      move: (direction) => executeMovePlan(movePlans[direction]),
+      indent: () => executeMovePlan(movePlans?.indent),
+      outdent: () => executeMovePlan(movePlans?.outdent),
+      move: (direction) => executeMovePlan(movePlans?.[direction]),
       toggleComplete: () => runSelectionAction(() =>
         store.setCompletedMany(
           selection.selectedIds, !allSelectedCompleted
@@ -348,6 +384,7 @@ export function NotesOutline({
               canCut={selection.canCut}
               busy={pendingWrites > 0 ||
                 selectionOperationBusy ||
+                !selectionMoves ||
                 !selection.forestComplete}
               plans={movePlans}
               onClear={clearSelection}
@@ -392,8 +429,13 @@ export function NotesOutline({
           {!showCompleted && bodyNodes.length < allBodyNodes.length && (
             <p className="notes-pane-state">Completed items are hidden.</p>
           )}
-          <ol className="notes-outline-list" role="list" {...pointerSelection}>
-            {bodyNodes.map((node) => (
+          <ol
+            ref={outlineWindow.listRef}
+            className="notes-outline-list"
+            role="list"
+            {...pointerSelection}
+          >
+            {outlineWindow.renderedNodes.map((node) => (
               <OutlineRow
                 key={node.id}
                 node={node}
@@ -407,6 +449,15 @@ export function NotesOutline({
                 runtime={rowRuntime}
               />
             ))}
+            {outlineWindow.hasTail && (
+              <li
+                ref={outlineWindow.sentinelRef}
+                className="notes-outline-window-spacer"
+                data-outline-window-spacer
+                aria-hidden="true"
+                style={{ height: `${outlineWindow.spacerHeight}px` }}
+              />
+            )}
           </ol>
           {(outlineDrag.dropTarget || outlineDrag.preview) && (
             <Suspense fallback={null}>
@@ -422,7 +473,11 @@ export function NotesOutline({
             hasChildren={allBodyNodes.length > 0}
           />
           {state.afterCursor && (
-            <button className="text-button" type="button" onClick={() => void store.loadMore()}>
+            <button
+              className="text-button"
+              type="button"
+              onClick={outlineWindow.advance}
+            >
               Load more
             </button>
           )}

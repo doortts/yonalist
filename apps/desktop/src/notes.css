@@ -1567,6 +1567,11 @@ button.notes-date-token:hover {
   min-width: 0;
 }
 
+.notes-outline-window-spacer {
+  min-height: 0;
+  pointer-events: none;
+}
+
 /* A moved row lifts above the flow while it animates so it reads as the
    subject of the change rather than sliding beneath its neighbours. The class
    is added/removed imperatively by the FLIP motion hook. */
