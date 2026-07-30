@@ -1195,6 +1195,48 @@
   margin-inline-start: var(--notes-page-child-offset);
 }
 
+.notes-outline-rows[data-outline-surface="monaco"] {
+  display: flex;
+  overflow: hidden;
+}
+
+.notes-outline-rows[data-outline-surface="monaco"]
+  > .notes-outline-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.notes-monaco-outline {
+  flex: 1;
+  width: calc(100% - var(--notes-page-child-offset));
+  min-height: 260px;
+  margin-inline-start: var(--notes-page-child-offset);
+  overflow: hidden;
+  background: transparent;
+}
+
+.notes-monaco-outline .monaco-editor,
+.notes-monaco-outline .monaco-editor-background,
+.notes-monaco-outline .monaco-editor .margin {
+  background: transparent;
+}
+
+.notes-monaco-bullet-prefix,
+.notes-monaco-image-prefix {
+  color: var(--text-2);
+}
+
+.notes-monaco-image-prefix {
+  opacity: 0.72;
+}
+
+.notes-monaco-image-line {
+  color: var(--text-3);
+  font-style: italic;
+}
+
 .notes-page-header {
   position: relative;
   width: 100%;

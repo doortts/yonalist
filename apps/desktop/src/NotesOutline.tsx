@@ -22,6 +22,7 @@ import { OutlineIndex } from "./outlineIndex";
 import type { PaneFocusSnapshot } from "./appNavigation";
 import { useImageIngest } from "./useImageIngest";
 import { NotesExportBoundary } from "./NotesExportBoundary";
+import { outlineSurfaceFromSearch } from "./outlineSurface";
 
 const OutlineSelectionActionBar = lazy(() =>
   import("./OutlineSelectionActionBar").then((module) => ({
@@ -30,6 +31,10 @@ const OutlineSelectionActionBar = lazy(() =>
 const OutlineDragVisuals = lazy(() =>
   import("./OutlineDragVisuals").then((module) => ({
     default: module.OutlineDragVisuals
+  })));
+const MonacoOutlineSurface = lazy(() =>
+  import("./MonacoOutlineSurface").then((module) => ({
+    default: module.MonacoOutlineSurface
   })));
 
 export interface PaneRestoreRequest {
@@ -244,6 +249,9 @@ export function NotesOutline({
     () => new Set(selection.selectedIds),
     [selection.selectedIds]
   );
+  const outlineSurface = outlineSurfaceFromSearch(
+    typeof location === "undefined" ? "" : location.search
+  );
   if (status === "loading" && !page) {
     return <section className="notes-outline"><p className="notes-pane-state">Loading notes...</p></section>;
   }
@@ -386,41 +394,58 @@ export function NotesOutline({
           {outlineDrag.announcement}
         </span>
       )}
-      <div className="notes-outline-rows">
+      <div
+        className="notes-outline-rows"
+        data-outline-surface={outlineSurface}
+      >
         <div className="notes-outline-content" data-zoomed-page="true">
           {allBodyNodes.length === 0 && <p className="notes-pane-state">No outline yet.</p>}
           {!showCompleted && bodyNodes.length < allBodyNodes.length && (
             <p className="notes-pane-state">Completed items are hidden.</p>
           )}
-          <ol className="notes-outline-list" role="list" {...pointerSelection}>
-            {bodyNodes.map((node) => (
-              <OutlineRow
-                key={node.id}
-                node={node}
+          {outlineSurface === "monaco" ? (
+            <Suspense fallback={<div className="notes-monaco-outline" />}>
+              <MonacoOutlineSurface
+                nodes={bodyNodes}
+                index={index}
+                rootId={outlineRootId}
+                paneId={paneId}
                 store={store}
-                selected={selectedIds.has(node.id)}
-                depth={index.depthOf(node.id, zoomRoot?.id ?? page.id)}
-                hasChildren={index.hasChildren(node.id)}
-                todoProgress={todoProgress.get(node.id) ?? null}
-                imageDropTarget={imageIngest.dropTargetId === node.id}
-                dragSource={outlineDrag.rowProps(node.id).dragSource}
-                runtime={rowRuntime}
-              />
-            ))}
-          </ol>
-          {(outlineDrag.dropTarget || outlineDrag.preview) && (
-            <Suspense fallback={null}>
-              <OutlineDragVisuals
-                dropTarget={outlineDrag.dropTarget}
-                preview={outlineDrag.preview}
               />
             </Suspense>
+          ) : (
+            <>
+              <ol className="notes-outline-list" role="list" {...pointerSelection}>
+                {bodyNodes.map((node) => (
+                  <OutlineRow
+                    key={node.id}
+                    node={node}
+                    store={store}
+                    selected={selectedIds.has(node.id)}
+                    depth={index.depthOf(node.id, zoomRoot?.id ?? page.id)}
+                    hasChildren={index.hasChildren(node.id)}
+                    todoProgress={todoProgress.get(node.id) ?? null}
+                    imageDropTarget={imageIngest.dropTargetId === node.id}
+                    dragSource={outlineDrag.rowProps(node.id).dragSource}
+                    runtime={rowRuntime}
+                  />
+                ))}
+              </ol>
+              {(outlineDrag.dropTarget || outlineDrag.preview) && (
+                <Suspense fallback={null}>
+                  <OutlineDragVisuals
+                    dropTarget={outlineDrag.dropTarget}
+                    preview={outlineDrag.preview}
+                  />
+                </Suspense>
+              )}
+              <NotesChildComposer
+                store={store}
+                parentId={outlineRootId}
+                hasChildren={allBodyNodes.length > 0}
+              />
+            </>
           )}
-          <NotesChildComposer
-            store={store}
-            parentId={outlineRootId}
-            hasChildren={allBodyNodes.length > 0}
-          />
           {state.afterCursor && (
             <button className="text-button" type="button" onClick={() => void store.loadMore()}>
               Load more

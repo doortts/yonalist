@@ -9,6 +9,7 @@
     "test": "vitest run --config vite.config.ts"
   },
   "dependencies": {
-    "@tauri-apps/plugin-dialog": "2.7.1"
+    "@tauri-apps/plugin-dialog": "2.7.1",
+    "monaco-editor": "^0.53.0"
   }
 }

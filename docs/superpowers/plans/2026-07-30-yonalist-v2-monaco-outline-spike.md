@@ -6,7 +6,7 @@
 
 **Architecture:** Keep the existing NotesStore, Rust commands, SQLite, IPC, history, header, and React outline as the control. Add a pure node-to-line projection and a lazy Monaco adapter that owns the immediate text model while routing structural gestures and Undo/Redo back through existing Yonalist authorities.
 
-**Tech Stack:** React 19, TypeScript 6, Vite 8, Vitest 4, `monaco-editor` 0.56, existing Yonalist NotesStore and generated contracts.
+**Tech Stack:** React 19, TypeScript 6, Vite 8, Vitest 4, `monaco-editor` 0.53, existing Yonalist NotesStore and generated contracts.
 
 ## Global Constraints
 
@@ -129,7 +129,7 @@ Expected: FAIL because `outlineSurface.ts` does not exist.
 
 - [ ] **Step 3: Add Monaco and the lazy host**
 
-Install exactly `monaco-editor@0.56.0` in `apps/desktop`. Dynamically import the
+Install exactly `monaco-editor@0.53.0` in `apps/desktop`. Dynamically import the
 Monaco surface only when selected. Create and dispose one editor and one model
 per mounted pane, set the initial projection once, apply later Task 1 edits
 with `executeEdits`, and restore selection by node ID after reconciliation.
@@ -361,4 +361,3 @@ budgets.
 git add apps/desktop/src/monacoOutlinePerformance.test.ts docs/v2/performance.md docs/superpowers/reports/2026-07-30-yonalist-v2-monaco-outline-spike.md
 git commit -m "docs(v2): record Monaco outline spike"
 ```
-
