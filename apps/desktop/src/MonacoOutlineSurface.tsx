@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore
+} from "react";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
@@ -9,6 +15,7 @@ import {
   planMonacoProjectionEdit,
   type MonacoOutlineProjection
 } from "./monacoOutlineProjection";
+import { MonacoOutlineController } from "./monacoOutlineController";
 
 type MonacoGlobal = typeof globalThis & {
   MonacoEnvironment?: {
@@ -36,6 +43,20 @@ export function MonacoOutlineSurface({
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const runtimeRef = useRef<MonacoRuntime | null>(null);
+  const nodeIds = useMemo(() => nodes.map((node) => node.id), [nodes]);
+  const subscribeNodes = useCallback(
+    (listener: () => void) => store.subscribeNodes(nodeIds, listener),
+    [nodeIds, store]
+  );
+  const getNodeEpoch = useCallback(
+    () => store.getNodeEpoch(nodeIds),
+    [nodeIds, store]
+  );
+  const nodeEpoch = useSyncExternalStore(
+    subscribeNodes,
+    getNodeEpoch,
+    getNodeEpoch
+  );
   const projection = useMemo(
     () => buildMonacoOutlineProjection(
       nodes,
@@ -43,14 +64,15 @@ export function MonacoOutlineSurface({
       rootId,
       (nodeId) => store.getNodeSnapshot(nodeId).title
     ),
-    [index, nodes, rootId, store]
+    [index, nodeEpoch, nodes, rootId, store]
   );
-  const initialProjectionRef = useRef(projection);
+  const latestProjectionRef = useRef(projection);
+  latestProjectionRef.current = projection;
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    const initialProjection = initialProjectionRef.current;
+    const initialProjection = latestProjectionRef.current;
     const model = monaco.editor.createModel(
       initialProjection.value,
       "plaintext",
@@ -104,20 +126,52 @@ export function MonacoOutlineSurface({
       fixedOverflowWidgets: true
     });
     const decorations = editor.createDecorationsCollection();
-    runtimeRef.current = {
+    const controller = new MonacoOutlineController(
+      initialProjection,
+      (nodeId, text) => store.setDraft(nodeId, text)
+    );
+    const runtime: MonacoRuntime = {
       editor,
       model,
       decorations,
-      projection: initialProjection
+      projection: initialProjection,
+      controller,
+      applyingProjection: false
     };
+    runtimeRef.current = runtime;
+    const contentListener = model.onDidChangeContent((event) => {
+      if (runtime.applyingProjection) return;
+      const result = controller.applyContentChange(
+        event.changes.map((change) => ({
+          startLineNumber: change.range.startLineNumber,
+          endLineNumber: change.range.endLineNumber,
+          text: change.text
+        })),
+        (lineNumber) => model.getLineContent(lineNumber)
+      );
+      if (result === "structural" || result === "rejected") {
+        reconcileModel(runtime, runtime.projection);
+      }
+    });
+    const compositionStartListener = editor.onDidCompositionStart(() => {
+      controller.beginComposition();
+    });
+    const compositionEndListener = editor.onDidCompositionEnd(() => {
+      controller.endComposition(
+        (lineNumber) => model.getLineContent(lineNumber)
+      );
+    });
     updateDecorations(decorations, initialProjection);
     return () => {
       runtimeRef.current = null;
+      compositionEndListener.dispose();
+      compositionStartListener.dispose();
+      contentListener.dispose();
       decorations.clear();
       editor.dispose();
       model.dispose();
     };
-  }, [paneId, rootId]);
+  }, [paneId, rootId, store]);
 
   useEffect(() => {
     const runtime = runtimeRef.current;
@@ -127,19 +181,8 @@ export function MonacoOutlineSurface({
       ? runtime.projection.nodeIdByLine[selection.positionLineNumber - 1]
       : undefined;
     const selectedColumn = selection?.positionColumn ?? 1;
-    const edit = planMonacoProjectionEdit(runtime.projection, projection);
-    if (edit) {
-      runtime.model.applyEdits([{
-        range: new monaco.Range(
-          edit.startLineNumber,
-          edit.startColumn,
-          edit.endLineNumber,
-          edit.endColumn
-        ),
-        text: edit.text
-      }]);
-    }
-    runtime.projection = projection;
+    reconcileModel(runtime, projection);
+    runtime.controller.setProjection(projection);
     updateDecorations(runtime.decorations, projection);
     const nextLine = selectedNodeId
       ? projection.lineByNodeId.get(selectedNodeId)
@@ -168,7 +211,36 @@ interface MonacoRuntime {
   readonly editor: monaco.editor.IStandaloneCodeEditor;
   readonly model: monaco.editor.ITextModel;
   readonly decorations: monaco.editor.IEditorDecorationsCollection;
+  readonly controller: MonacoOutlineController;
   projection: MonacoOutlineProjection;
+  applyingProjection: boolean;
+}
+
+function reconcileModel(
+  runtime: MonacoRuntime,
+  projection: MonacoOutlineProjection
+): void {
+  const edit = planMonacoProjectionEdit({
+    ...runtime.projection,
+    value: runtime.model.getValue()
+  }, projection);
+  runtime.applyingProjection = true;
+  try {
+    if (edit) {
+      runtime.model.applyEdits([{
+        range: new monaco.Range(
+          edit.startLineNumber,
+          edit.startColumn,
+          edit.endLineNumber,
+          edit.endColumn
+        ),
+        text: edit.text
+      }]);
+    }
+    runtime.projection = projection;
+  } finally {
+    runtime.applyingProjection = false;
+  }
 }
 
 function updateDecorations(
