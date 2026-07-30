@@ -25,6 +25,8 @@ import {
   type MonacoOutlineCommandContext,
   type MonacoOutlineCommandRuntime
 } from "./monacoOutlineCommands";
+import { shouldRestoreMonacoOutlineFocus } from "./monacoOutlineFocus";
+import { shouldSeedMonacoOutline } from "./monacoOutlineSeed";
 
 type MonacoGlobal = typeof globalThis & {
   MonacoEnvironment?: {
@@ -242,6 +244,15 @@ export default function MonacoOutlineSurface({
       if (event.browserEvent.key === "Backspace") store.endBackspaceGesture();
     });
     updateDecorations(decorations, initialProjection);
+    if (shouldSeedMonacoOutline(
+      initialProjection.lines.length,
+      store.getSnapshot().nodes,
+      rootId
+    )) {
+      const pending = store.beginCreateNode(rootId);
+      runtime.pendingCaret = { nodeId: pending.id, column: 1 };
+      void pending.committed.catch(() => undefined);
+    }
     return () => {
       runtimeRef.current = null;
       keyUpListener.dispose();
@@ -263,10 +274,14 @@ export default function MonacoOutlineSurface({
       ? runtime.projection.nodeIdByLine[selection.positionLineNumber - 1]
       : undefined;
     const selectedColumn = selection?.positionColumn ?? 1;
+    const pendingCaret = runtime.pendingCaret;
+    const restoreFocus = shouldRestoreMonacoOutlineFocus(
+      runtime.editor.hasTextFocus(),
+      pendingCaret !== null
+    );
     reconcileModel(runtime, projection);
     runtime.controller.setProjection(projection);
     updateDecorations(runtime.decorations, projection);
-    const pendingCaret = runtime.pendingCaret;
     runtime.pendingCaret = null;
     const nextLine = pendingCaret
       ? projection.lineByNodeId.get(pendingCaret.nodeId)
@@ -283,11 +298,13 @@ export default function MonacoOutlineSurface({
         )
       };
       runtime.editor.setPosition(position);
-      runtime.editor.focus();
-      runtime.editor.revealPositionInCenterIfOutsideViewport(
-        position,
-        monaco.editor.ScrollType.Immediate
-      );
+      if (restoreFocus) {
+        runtime.editor.focus();
+        runtime.editor.revealPositionInCenterIfOutsideViewport(
+          position,
+          monaco.editor.ScrollType.Immediate
+        );
+      }
     }
   }, [projection]);
 

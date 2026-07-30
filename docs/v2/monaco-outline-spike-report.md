@@ -41,7 +41,8 @@ Open the two variants with:
 Fresh browser verification on 2026-07-30 covered eight consecutive Enter
 events, eight consecutive Backspace events, a middle-of-line split and
 merge, Tab/Shift+Tab, and structural Undo. The final fixture returned to its
-single original bullet.
+single original bullet. This is a smoke test, not the specification's required
+20-event, Korean IME, split-focus, or frame/memory acceptance run.
 
 ## Fast sample
 
@@ -56,7 +57,9 @@ planning, not Monaco paint, IPC, SQLite, or process startup.
 | 100 middle insertions | 58.06ms | 0.58ms |
 
 Every sampled update produced one bounded edit. No update replaced the full
-5,000-line model.
+5,000-line model. This supports only the projection/diff implementation; it
+does not measure or validate Monaco model application, paint, scroll, memory,
+or cold-editable performance.
 
 ## Bundle comparison
 
@@ -64,16 +67,16 @@ Production Vite builds:
 
 | Asset | React control | Monaco experiment |
 |---|---:|---:|
-| Query-free initial JS | 295.93KB raw / 89.99KB gzip | 296.44KB raw / 90.15KB gzip |
-| Monaco lazy JS | none | 2,516.38KB raw / 645.90KB gzip |
+| Query-free initial JS | 295.93KB raw / 89.99KB gzip | 296.44KB raw / 90.14KB gzip |
+| Monaco lazy JS | none | 2,517.07KB raw / 646.09KB gzip |
 | Monaco CSS | none | 74.22KB raw / 11.68KB gzip |
 | Editor worker | none | 281.29KB raw |
 
-The complete statically reachable editable graph is 92,201 bytes gzip, 41
-bytes over its 90KiB budget, even before Monaco is selected. Selecting Monaco then adds a much
-larger parse and memory cost. `monaco-editor@0.53.0` was chosen because the
-newer evaluated package introduced a vulnerable nested dependency; the final
-dependency graph reports zero audit findings.
+The complete statically reachable editable graph is 92,191 bytes gzip, 31
+bytes over its 90KiB budget, even before Monaco is selected. Selecting Monaco
+then adds a much larger parse and memory cost. `monaco-editor@0.53.0` was
+chosen because the newer evaluated package introduced a vulnerable nested
+dependency; the final dependency graph reports zero audit findings.
 
 ## Differences from the current app
 
@@ -100,12 +103,12 @@ overlay widgets, which would reintroduce a parallel layout system.
 
 Do not replace the production outline with Monaco yet.
 
-The spike validates the main performance hypothesis: a single virtualized
-text model can update a large outline with bounded work and gives reliable
-native editor key processing. It does not validate the product hypothesis:
-full Yonalist parity requires rebuilding images, selection, drag/drop, zoom,
-clipboard, notes, and accessibility around Monaco, while paying roughly
-646KB gzip plus a worker when the editor is opened.
+The spike validates only the narrow projection hypothesis: a 5,000-line
+projection can be built quickly and reconciled with bounded text edits. It
+does not yet validate Monaco renderer performance or the product hypothesis.
+Full Yonalist parity requires rebuilding images, selection, drag/drop, zoom,
+clipboard, notes, and accessibility around Monaco, while paying roughly 646KB
+gzip plus a worker when the editor is opened.
 
 The useful parts to carry back are:
 

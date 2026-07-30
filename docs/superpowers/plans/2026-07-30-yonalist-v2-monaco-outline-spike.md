@@ -138,7 +138,8 @@ with `executeEdits`, and restore selection by node ID after reconciliation.
 
 Configure public options with no line numbers, minimap, glyph margin chrome,
 overview ruler, code suggestions, bracket behavior, smooth scrolling, or extra
-bottom space. Use the existing Notes font stack and a 26px outline line height.
+bottom space. Use the existing Notes font stack and the current row's 28px
+minimum line geometry.
 Add scoped bullet and depth decorations without changing shell CSS.
 
 - [ ] **Step 5: Run focused tests, build, and inspect the chunks**

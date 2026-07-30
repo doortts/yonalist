@@ -65,11 +65,11 @@ A branch-only, one-editor-per-pane Monaco experiment was sampled on
 200 single-line projection/diff updates took 137.45ms total, and 100 middle
 insertions took 58.06ms total. All changes stayed bounded to one minimal edit.
 
-The tradeoff is substantial: opening the experiment loads 645.91KB gzip of
+The tradeoff is substantial: opening the experiment loads 646.09KB gzip of
 lazy Monaco JavaScript, 11.68KB gzip of Monaco CSS, and a 281.29KB raw editor
-worker. The query-free main chunk also rises from 89.99KB to 90.15KB gzip;
-the complete editable graph is 41 bytes over the current 90KiB budget. It is therefore not recommended
-as the production replacement. See
+worker. The query-free main chunk also rises from 89.99KB to 90.14KB gzip;
+the complete editable graph is 31 bytes over the current 90KiB budget. It is
+therefore not recommended as the production replacement. See
 [`monaco-outline-spike-report.md`](./monaco-outline-spike-report.md) for the
 behavior matrix, browser evidence, and recommendation.
 

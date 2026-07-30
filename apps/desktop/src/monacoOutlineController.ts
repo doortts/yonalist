@@ -14,7 +14,7 @@ export type MonacoContentChangeResult =
 
 export class MonacoOutlineController {
   private composing = false;
-  private readonly compositionLines = new Set<number>();
+  private readonly compositionNodeIds = new Set<string>();
 
   constructor(
     private projection: MonacoOutlineProjection,
@@ -27,15 +27,16 @@ export class MonacoOutlineController {
 
   beginComposition(): void {
     this.composing = true;
-    this.compositionLines.clear();
+    this.compositionNodeIds.clear();
   }
 
   endComposition(lineContent: (lineNumber: number) => string): void {
     this.composing = false;
-    for (const lineNumber of this.compositionLines) {
-      this.publishLine(lineNumber, lineContent);
+    for (const nodeId of this.compositionNodeIds) {
+      const lineNumber = this.projection.lineByNodeId.get(nodeId);
+      if (lineNumber) this.publishNode(nodeId, lineNumber, lineContent);
     }
-    this.compositionLines.clear();
+    this.compositionNodeIds.clear();
   }
 
   applyContentChange(
@@ -58,9 +59,10 @@ export class MonacoOutlineController {
       if (!line?.editable) return "rejected";
     }
     if (this.composing) {
-      lineNumbers.forEach((lineNumber) =>
-        this.compositionLines.add(lineNumber)
-      );
+      lineNumbers.forEach((lineNumber) => {
+        const nodeId = this.projection.nodeIdByLine[lineNumber - 1];
+        if (nodeId) this.compositionNodeIds.add(nodeId);
+      });
       return "deferred";
     }
     lineNumbers.forEach((lineNumber) =>
@@ -75,6 +77,16 @@ export class MonacoOutlineController {
   ): void {
     const line = this.projection.lines[lineNumber - 1];
     if (!line?.editable) return;
-    this.publishDraft(line.nodeId, lineContent(lineNumber));
+    this.publishNode(line.nodeId, lineNumber, lineContent);
+  }
+
+  private publishNode(
+    nodeId: string,
+    lineNumber: number,
+    lineContent: (lineNumber: number) => string
+  ): void {
+    const line = this.projection.lines[lineNumber - 1];
+    if (line?.nodeId !== nodeId || !line.editable) return;
+    this.publishDraft(nodeId, lineContent(lineNumber));
   }
 }

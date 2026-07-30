@@ -74,6 +74,33 @@ describe("Monaco outline controller", () => {
     expect(drafts).toEqual([{ nodeId: "korean", text: "한" }]);
   });
 
+  it("keeps IME ownership by node when another pane inserts a line above", () => {
+    const drafts: Array<{ nodeId: string; text: string }> = [];
+    const controller = new MonacoOutlineController(
+      projection([
+        ["first", "First", true],
+        ["korean", "", true]
+      ]),
+      (nodeId, text) => drafts.push({ nodeId, text })
+    );
+
+    controller.beginComposition();
+    controller.applyContentChange(
+      [{ startLineNumber: 2, endLineNumber: 2, text: "한" }],
+      () => "한"
+    );
+    controller.setProjection(projection([
+      ["inserted", "Inserted", true],
+      ["first", "First", true],
+      ["korean", "한", true]
+    ]));
+    controller.endComposition((lineNumber) =>
+      lineNumber === 3 ? "한" : "wrong node"
+    );
+
+    expect(drafts).toEqual([{ nodeId: "korean", text: "한" }]);
+  });
+
   it("uses the replacement projection after structural reconciliation", () => {
     const drafts: Array<{ nodeId: string; text: string }> = [];
     const controller = new MonacoOutlineController(

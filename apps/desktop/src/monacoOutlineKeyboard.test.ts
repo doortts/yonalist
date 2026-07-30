@@ -77,6 +77,10 @@ describe("Monaco outline keyboard gestures", () => {
       key: "Backspace",
       lineNumber: 1
     }))).toEqual({ kind: "consume" });
+    expect(resolveMonacoOutlineGesture(input(
+      projection([["only", "", true]]),
+      { key: "Backspace" }
+    ))).toEqual({ kind: "consume" });
   });
 
   it("routes indentation without allowing Monaco to insert tabs", () => {

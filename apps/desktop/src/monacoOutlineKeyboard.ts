@@ -104,6 +104,7 @@ export function resolveMonacoOutlineGesture(
   ) {
     const previousId = input.projection.nodeIdByLine[input.lineNumber - 2];
     if (line.text.length === 0) {
+      if (input.projection.lines.length === 1) return { kind: "consume" };
       return {
         kind: "removeEmpty",
         nodeId: line.nodeId,
