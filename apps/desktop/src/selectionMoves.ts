@@ -145,6 +145,19 @@ export function buildSelectionMovePlans(
   rootIds: readonly string[],
   outlineRootId: string
 ) {
+  if (rootIds.length === 0) {
+    const unavailable = {
+      available: false,
+      reason: "Nothing is selected."
+    } as const;
+    return {
+      indent: unavailable,
+      outdent: unavailable,
+      up: unavailable,
+      down: unavailable,
+      duplicate: unavailable
+    };
+  }
   return {
     indent: planSelectionIndent(nodes, visibleIds, rootIds),
     outdent: planSelectionOutdent(nodes, rootIds, outlineRootId),

@@ -5,6 +5,18 @@ export type OutlineFocusEdge = "start" | "end" | "preserve";
 // Frames to wait for a revealed row to mount before giving up on it.
 const REVEAL_FRAMES = 3;
 
+function revealInLocalOutline(target: HTMLElement): void {
+  const rows = target.closest<HTMLElement>(".notes-outline-rows");
+  if (!rows) return;
+  const rowsRect = rows.getBoundingClientRect();
+  const targetRect = target.getBoundingClientRect();
+  if (targetRect.top < rowsRect.top) {
+    rows.scrollTop += targetRect.top - rowsRect.top;
+  } else if (targetRect.bottom > rowsRect.bottom) {
+    rows.scrollTop += targetRect.bottom - rowsRect.bottom;
+  }
+}
+
 function editorById(
   scope: HTMLElement,
   nodeId: string
@@ -48,13 +60,15 @@ function focusWhenReady(
 
 function caretPlacement(offset: (value: string) => number) {
   return (target: HTMLElement) => {
-    if (!(target instanceof HTMLTextAreaElement)) {
-      target.focus();
-      return;
+    // preventScroll stops an ancestor from yanking the whole pane around; the
+    // outline's own scroller does the revealing instead.
+    target.focus({ preventScroll: true });
+    if (target instanceof HTMLTextAreaElement) {
+      const caret = Math.max(
+        0, Math.min(offset(target.value), target.value.length));
+      target.setSelectionRange(caret, caret);
     }
-    const caret = Math.max(0, Math.min(offset(target.value), target.value.length));
-    target.focus();
-    target.setSelectionRange(caret, caret);
+    revealInLocalOutline(target);
   };
 }
 

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{NodeId, NoteImage};
 
-pub const SORT_KEY_STEP: i64 = 1_024;
+pub const SORT_KEY_STEP: i64 = 4_294_967_296;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

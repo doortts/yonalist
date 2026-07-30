@@ -1,4 +1,5 @@
 use notes_application::StorageError;
+use notes_core::SORT_KEY_STEP;
 use rusqlite::{Connection, TransactionBehavior, params};
 
 use crate::repository::internal;
@@ -20,14 +21,14 @@ pub(crate) fn load_performance_fixture(
         .execute(
             "INSERT INTO notes_nodes(
                 id, parent_id, sort_key, kind, text, completed, starred, deleted
-             ) VALUES ('fixture-page', NULL, 1024, 'page', 'Performance fixture', 0, 0, 0)",
-            [],
+             ) VALUES ('fixture-page', NULL, ?1, 'page', 'Performance fixture', 0, 0, 0)",
+            [SORT_KEY_STEP],
         )
         .map_err(internal)?;
     for index in 0..node_count {
         let sort_key = i64::try_from(index + 1)
             .ok()
-            .and_then(|ordinal| ordinal.checked_mul(1_024))
+            .and_then(|ordinal| ordinal.checked_mul(SORT_KEY_STEP))
             .ok_or_else(|| StorageError::Internal("fixture sort key overflowed".into()))?;
         let text = if index % 100 == 0 {
             format!("Fixture node {index} #benchmark 2026-07-27")

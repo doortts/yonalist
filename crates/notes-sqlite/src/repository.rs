@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use notes_application::StorageError;
-use notes_core::{NodeId, NoteNode, NotesCommand, NotesTree, Position, TreeMutation};
+use notes_core::{
+    NodeId, NoteNode, NotesCommand, NotesTree, Position, SORT_KEY_STEP, TreeMutation,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub(crate) use crate::row_mapping::{internal, kind_name, parse_node, parse_revision};
@@ -274,7 +276,7 @@ fn collect_remove_context(
             .checked_sub(source.sort_key())
             .is_none_or(|gap| gap <= child_count),
         None => child_count
-            .checked_mul(1_024)
+            .checked_mul(SORT_KEY_STEP)
             .and_then(|offset| source.sort_key().checked_add(offset))
             .is_none(),
     };
@@ -404,7 +406,7 @@ fn collect_position_context(
                 .optional()
                 .map_err(internal)?;
             if let Some(last) = last {
-                let needs_rebalance = last.sort_key().checked_add(1_024).is_none();
+                let needs_rebalance = last.sort_key().checked_add(SORT_KEY_STEP).is_none();
                 nodes.insert(last.id().clone(), last);
                 if needs_rebalance {
                     collect_children(connection, parent_id, nodes)?;
@@ -442,7 +444,7 @@ fn collect_position_context(
                     .sort_key()
                     .checked_sub(previous.sort_key())
                     .is_none_or(|gap| gap <= 1),
-                None => sibling.sort_key().checked_sub(1_024).is_none(),
+                None => sibling.sort_key().checked_sub(SORT_KEY_STEP).is_none(),
             };
             nodes.insert(sibling.id().clone(), sibling);
             if let Some(previous) = previous {
