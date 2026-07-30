@@ -82,6 +82,95 @@ describe("Monaco outline command execution", () => {
       column: 6
     });
   });
+
+  it("keeps repeated Enter attached to the newest optimistic tail", () => {
+    const sourceNodes = [node("first", "Alpha")];
+    const storeNodes = [
+      ...sourceNodes,
+      node("created-1", "pha", 1_536)
+    ];
+    const beginSplitNode = vi.fn()
+      .mockReturnValueOnce({
+        id: "created-1",
+        committed: Promise.resolve()
+      })
+      .mockReturnValueOnce({
+        id: "created-2",
+        committed: Promise.resolve()
+      });
+    const store = {
+      beginSplitNode,
+      getSnapshot: () => ({ nodes: storeNodes }),
+      getNodeSnapshot: (id: string) => ({
+        title: id === "created-1" ? "pha" : "Alpha"
+      })
+    } as unknown as NotesStore;
+    const runtime = commandRuntime(projection(sourceNodes));
+    const executionContext = context(sourceNodes);
+
+    executeMonacoOutlineGesture(
+      { kind: "split", nodeId: "first", startOffset: 2, endOffset: 2 },
+      false,
+      null,
+      runtime,
+      store,
+      executionContext
+    );
+    executeMonacoOutlineGesture(
+      { kind: "split", nodeId: "first", startOffset: 0, endOffset: 0 },
+      true,
+      null,
+      runtime,
+      store,
+      executionContext
+    );
+
+    expect(beginSplitNode).toHaveBeenNthCalledWith(2, {
+      id: "created-1",
+      parentId: "page",
+      beforeId: null,
+      prefix: "",
+      suffix: "pha"
+    });
+    expect(runtime.pendingCaret).toEqual({
+      nodeId: "created-2",
+      column: 1
+    });
+  });
+
+  it("removes an empty node in the active Backspace history group", () => {
+    const nodes = [
+      node("previous", "Alpha", 1_024),
+      node("empty", "", 2_048)
+    ];
+    const beginRemoveEmptyNode = vi.fn(() => ({
+      committed: Promise.resolve()
+    }));
+    const store = {
+      beginRemoveEmptyNode,
+      getSnapshot: () => ({ noteDrafts: {} }),
+      getNodeSnapshot: (id: string) => ({
+        title: id === "previous" ? "Alpha" : ""
+      })
+    } as unknown as NotesStore;
+    const runtime = commandRuntime(projection(nodes));
+
+    executeMonacoOutlineGesture(
+      { kind: "removeEmpty", nodeId: "empty", focusId: "previous" },
+      true,
+      "backspace-group",
+      runtime,
+      store,
+      context(nodes)
+    );
+
+    expect(beginRemoveEmptyNode)
+      .toHaveBeenCalledWith("empty", "backspace-group");
+    expect(runtime.pendingCaret).toEqual({
+      nodeId: "previous",
+      column: 6
+    });
+  });
 });
 
 function commandRuntime(

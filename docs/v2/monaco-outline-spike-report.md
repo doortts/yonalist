@@ -67,12 +67,12 @@ Production Vite builds:
 
 | Asset | React control | Monaco experiment |
 |---|---:|---:|
-| Query-free initial JS | 295.93KB raw / 89.99KB gzip | 296.44KB raw / 90.14KB gzip |
-| Monaco lazy JS | none | 2,517.07KB raw / 646.09KB gzip |
+| Query-free initial JS | 295.93KB raw / 89.99KB gzip | 296.44KB raw / 90.15KB gzip |
+| Monaco lazy JS | none | 2,517.30KB raw / 646.17KB gzip |
 | Monaco CSS | none | 74.22KB raw / 11.68KB gzip |
 | Editor worker | none | 281.29KB raw |
 
-The complete statically reachable editable graph is 92,191 bytes gzip, 31
+The complete statically reachable editable graph is 92,197 bytes gzip, 37
 bytes over its 90KiB budget, even before Monaco is selected. Selecting Monaco
 then adds a much larger parse and memory cost. `monaco-editor@0.53.0` was
 chosen because the newer evaluated package introduced a vulnerable nested

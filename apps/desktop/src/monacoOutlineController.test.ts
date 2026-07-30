@@ -74,7 +74,7 @@ describe("Monaco outline controller", () => {
     expect(drafts).toEqual([{ nodeId: "korean", text: "한" }]);
   });
 
-  it("keeps IME ownership by node when another pane inserts a line above", () => {
+  it("keeps IME ownership by node until deferred reconciliation", () => {
     const drafts: Array<{ nodeId: string; text: string }> = [];
     const controller = new MonacoOutlineController(
       projection([
@@ -89,14 +89,14 @@ describe("Monaco outline controller", () => {
       [{ startLineNumber: 2, endLineNumber: 2, text: "한" }],
       () => "한"
     );
+    controller.endComposition((lineNumber) =>
+      lineNumber === 2 ? "한" : "wrong node"
+    );
     controller.setProjection(projection([
       ["inserted", "Inserted", true],
       ["first", "First", true],
       ["korean", "한", true]
     ]));
-    controller.endComposition((lineNumber) =>
-      lineNumber === 3 ? "한" : "wrong node"
-    );
 
     expect(drafts).toEqual([{ nodeId: "korean", text: "한" }]);
   });

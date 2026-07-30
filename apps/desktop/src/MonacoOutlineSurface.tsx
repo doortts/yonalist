@@ -4,6 +4,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
   useSyncExternalStore
 } from "react";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
@@ -26,6 +27,7 @@ import {
   type MonacoOutlineCommandRuntime
 } from "./monacoOutlineCommands";
 import { shouldRestoreMonacoOutlineFocus } from "./monacoOutlineFocus";
+import { runMonacoOutlineReconciliation } from "./monacoOutlineReconciliation";
 import { shouldSeedMonacoOutline } from "./monacoOutlineSeed";
 
 type MonacoGlobal = typeof globalThis & {
@@ -56,6 +58,7 @@ export default function MonacoOutlineSurface({
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const runtimeRef = useRef<MonacoRuntime | null>(null);
+  const [compositionEpoch, setCompositionEpoch] = useState(0);
   const nodeIds = useMemo(() => nodes.map((node) => node.id), [nodes]);
   const subscribeNodes = useCallback(
     (listener: () => void) => store.subscribeNodes(nodeIds, listener),
@@ -188,6 +191,7 @@ export default function MonacoOutlineSurface({
       controller.endComposition(
         (lineNumber) => model.getLineContent(lineNumber)
       );
+      setCompositionEpoch((epoch) => epoch + 1);
     });
     const keyDownListener = editor.onKeyDown((event) => {
       const selection = editor.getSelection();
@@ -244,15 +248,7 @@ export default function MonacoOutlineSurface({
       if (event.browserEvent.key === "Backspace") store.endBackspaceGesture();
     });
     updateDecorations(decorations, initialProjection);
-    if (shouldSeedMonacoOutline(
-      initialProjection.lines.length,
-      store.getSnapshot().nodes,
-      rootId
-    )) {
-      const pending = store.beginCreateNode(rootId);
-      runtime.pendingCaret = { nodeId: pending.id, column: 1 };
-      void pending.committed.catch(() => undefined);
-    }
+    seedEmptyOutline(runtime, initialProjection, store, rootId);
     return () => {
       runtimeRef.current = null;
       keyUpListener.dispose();
@@ -269,44 +265,50 @@ export default function MonacoOutlineSurface({
   useLayoutEffect(() => {
     const runtime = runtimeRef.current;
     if (!runtime || runtime.projection === projection) return;
-    const selection = runtime.editor.getSelection();
-    const selectedNodeId = selection
-      ? runtime.projection.nodeIdByLine[selection.positionLineNumber - 1]
-      : undefined;
-    const selectedColumn = selection?.positionColumn ?? 1;
-    const pendingCaret = runtime.pendingCaret;
-    const restoreFocus = shouldRestoreMonacoOutlineFocus(
-      runtime.editor.hasTextFocus(),
-      pendingCaret !== null
-    );
-    reconcileModel(runtime, projection);
-    runtime.controller.setProjection(projection);
-    updateDecorations(runtime.decorations, projection);
-    runtime.pendingCaret = null;
-    const nextLine = pendingCaret
-      ? projection.lineByNodeId.get(pendingCaret.nodeId)
-      : selectedNodeId
-        ? projection.lineByNodeId.get(selectedNodeId)
-        : undefined;
-    const nextColumn = pendingCaret?.column ?? selectedColumn;
-    if (nextLine) {
-      const position = {
-        lineNumber: nextLine,
-        column: Math.min(
-          nextColumn,
-          runtime.model.getLineMaxColumn(nextLine)
-        )
-      };
-      runtime.editor.setPosition(position);
-      if (restoreFocus) {
-        runtime.editor.focus();
-        runtime.editor.revealPositionInCenterIfOutsideViewport(
-          position,
-          monaco.editor.ScrollType.Immediate
+    runMonacoOutlineReconciliation(
+      runtime.controller.isCompositionActive(),
+      () => {
+        if (seedEmptyOutline(runtime, projection, store, rootId)) return;
+        const selection = runtime.editor.getSelection();
+        const selectedNodeId = selection
+          ? runtime.projection.nodeIdByLine[selection.positionLineNumber - 1]
+          : undefined;
+        const selectedColumn = selection?.positionColumn ?? 1;
+        const pendingCaret = runtime.pendingCaret;
+        const restoreFocus = shouldRestoreMonacoOutlineFocus(
+          runtime.editor.hasTextFocus(),
+          pendingCaret !== null
         );
+        reconcileModel(runtime, projection);
+        runtime.controller.setProjection(projection);
+        updateDecorations(runtime.decorations, projection);
+        runtime.pendingCaret = null;
+        const nextLine = pendingCaret
+          ? projection.lineByNodeId.get(pendingCaret.nodeId)
+          : selectedNodeId
+            ? projection.lineByNodeId.get(selectedNodeId)
+            : undefined;
+        const nextColumn = pendingCaret?.column ?? selectedColumn;
+        if (nextLine) {
+          const position = {
+            lineNumber: nextLine,
+            column: Math.min(
+              nextColumn,
+              runtime.model.getLineMaxColumn(nextLine)
+            )
+          };
+          runtime.editor.setPosition(position);
+          if (restoreFocus) {
+            runtime.editor.focus();
+            runtime.editor.revealPositionInCenterIfOutsideViewport(
+              position,
+              monaco.editor.ScrollType.Immediate
+            );
+          }
+        }
       }
-    }
-  }, [projection]);
+    );
+  }, [compositionEpoch, projection, rootId, store]);
 
   return (
     <div
@@ -330,6 +332,25 @@ function outlinePlatform(): "mac" | "other" {
   return /Mac|iPhone|iPad|iPod/iu.test(globalThis.navigator?.platform ?? "")
     ? "mac"
     : "other";
+}
+
+function seedEmptyOutline(
+  runtime: MonacoRuntime,
+  projection: MonacoOutlineProjection,
+  store: NotesStore,
+  rootId: string
+): boolean {
+  if (!shouldSeedMonacoOutline(
+    projection.lines.length,
+    store.getSnapshot().nodes,
+    rootId
+  )) {
+    return false;
+  }
+  const pending = store.beginCreateNode(rootId);
+  runtime.pendingCaret = { nodeId: pending.id, column: 1 };
+  void pending.committed.catch(() => undefined);
+  return true;
 }
 
 function reconcileModel(

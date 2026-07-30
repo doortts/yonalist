@@ -25,6 +25,10 @@ export class MonacoOutlineController {
     this.projection = projection;
   }
 
+  isCompositionActive(): boolean {
+    return this.composing;
+  }
+
   beginComposition(): void {
     this.composing = true;
     this.compositionNodeIds.clear();
