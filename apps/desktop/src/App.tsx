@@ -395,6 +395,8 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
         onOpenSplit={openSplit}
         onCloseSplit={closeSplit}
         onTagClick={handleTagClick}
+        onUndo={() => interactionHistory.undo()}
+        onRedo={() => interactionHistory.redo()}
       />
       <footer className="app-statusbar" aria-label="Status bar">
         <div className="statusbar-feedback">

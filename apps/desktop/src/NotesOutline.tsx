@@ -45,7 +45,7 @@ export interface PaneRestoreRequest {
 
 export function NotesOutline({
   store, status, error, pendingWrites, page, zoomRootId, onZoomRootChange,
-  onOpenSplit, onTagClick, onClose, paneId, restoreRequest
+  onOpenSplit, onTagClick, onClose, paneId, restoreRequest, onUndo, onRedo
 }: {
   readonly store: NotesStore;
   readonly status: NotesShellSnapshot["status"];
@@ -59,6 +59,8 @@ export function NotesOutline({
   readonly onClose?: () => void;
   readonly paneId: "primary" | "secondary";
   readonly restoreRequest: PaneRestoreRequest | null;
+  readonly onUndo: () => Promise<void>;
+  readonly onRedo: () => Promise<void>;
 }) {
   const state = useSyncExternalStore(
     store.subscribeOutline,
@@ -411,6 +413,9 @@ export function NotesOutline({
                 rootId={outlineRootId}
                 paneId={paneId}
                 store={store}
+                structuralContextComplete={structuralContextComplete}
+                onUndo={onUndo}
+                onRedo={onRedo}
               />
             </Suspense>
           ) : (
