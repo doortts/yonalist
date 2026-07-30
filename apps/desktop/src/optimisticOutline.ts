@@ -3,7 +3,8 @@ import type { NotesState } from "./notesState";
 import { orderOutline } from "./outlineModel";
 import {
   allocateSiblingSortKey,
-  applyRebalancedSortKeys
+  applyRebalancedSortKeys,
+  SORT_KEY_STEP
 } from "./outlineSortKeys";
 import { omitKeys } from "./storeState";
 
@@ -136,7 +137,7 @@ export function projectRemoveEmptyNode(
         parentId: source.parentId,
         sortKey: next
           ? source.sortKey + (next.sortKey - source.sortKey) * ratio
-          : source.sortKey + (childIndex + 1) * 1_024
+          : source.sortKey + (childIndex + 1) * SORT_KEY_STEP
       };
     });
   return {

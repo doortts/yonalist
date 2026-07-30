@@ -37,6 +37,18 @@ const nodes = [
 ];
 
 describe("outline clipboard", () => {
+  it("short-circuits empty selections without traversing the outline", () => {
+    const unreadableNodes = new Proxy([] as NoteView[], {
+      get: () => {
+        throw new Error("outline traversal is not allowed");
+      }
+    });
+
+    expect(normalizeSelectedRoots(unreadableNodes, [])).toEqual([]);
+    expect(serializeSelectedOutline(unreadableNodes, {}, [])).toBeNull();
+    expect(canCutSelectedOutline(unreadableNodes, {}, {}, [])).toBe(false);
+  });
+
   it("normalizes selected rows to forest roots in outline order", () => {
     expect(normalizeSelectedRoots(nodes, [
       "child",

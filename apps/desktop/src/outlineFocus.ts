@@ -1,5 +1,21 @@
 export type OutlineFocusEdge = "start" | "end" | "preserve";
 
+function focusWithoutAncestorScroll(target: HTMLElement): void {
+  target.focus({ preventScroll: true });
+}
+
+function revealInLocalOutline(target: HTMLElement): void {
+  const rows = target.closest<HTMLElement>(".notes-outline-rows");
+  if (!rows) return;
+  const rowsRect = rows.getBoundingClientRect();
+  const targetRect = target.getBoundingClientRect();
+  if (targetRect.top < rowsRect.top) {
+    rows.scrollTop += targetRect.top - rowsRect.top;
+  } else if (targetRect.bottom > rowsRect.bottom) {
+    rows.scrollTop += targetRect.bottom - rowsRect.bottom;
+  }
+}
+
 function editorById(
   scope: HTMLElement,
   nodeId: string
@@ -21,12 +37,14 @@ export function focusOutlineEditorAt(
   const target = editorById(scope, nodeId);
   if (!target) return false;
   if (!(target instanceof HTMLTextAreaElement)) {
-    target.focus();
+    focusWithoutAncestorScroll(target);
+    revealInLocalOutline(target);
     return true;
   }
   const offset = Math.max(0, Math.min(requestedOffset, target.value.length));
-  target.focus();
+  focusWithoutAncestorScroll(target);
   target.setSelectionRange(offset, offset);
+  revealInLocalOutline(target);
   return true;
 }
 
@@ -43,7 +61,8 @@ export function focusOutlineEditor(
   const target = editorById(scope, nodeId);
   if (!target) return false;
   if (!(target instanceof HTMLTextAreaElement)) {
-    target.focus();
+    focusWithoutAncestorScroll(target);
+    revealInLocalOutline(target);
     return true;
   }
 
@@ -52,7 +71,8 @@ export function focusOutlineEditor(
     : edge === "end"
       ? target.value.length
       : Math.min(preservedOffset, target.value.length);
-  target.focus();
+  focusWithoutAncestorScroll(target);
   target.setSelectionRange(offset, offset);
+  revealInLocalOutline(target);
   return true;
 }

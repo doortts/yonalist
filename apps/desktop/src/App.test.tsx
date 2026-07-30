@@ -173,6 +173,56 @@ describe("Yonalist v2 desktop shell", () => {
     expect(suffix.selectionEnd).toBe(0);
   });
 
+  it("moves the Enter caret before the next animation frame", async () => {
+    const notesApi = api();
+    notesApi.execute = vi.fn().mockImplementation(() => new Promise(() => undefined));
+    render(<App api={notesApi} />);
+    const first = await screen.findByDisplayValue<HTMLTextAreaElement>(
+      "First thought"
+    );
+    first.setSelectionRange(first.value.length, first.value.length);
+    const animationFrame = vi.spyOn(window, "requestAnimationFrame")
+      .mockImplementation(() => 1);
+
+    try {
+      fireEvent.keyDown(first, { key: "Enter" });
+      await act(async () => undefined);
+
+      const blank = screen.getAllByLabelText<HTMLTextAreaElement>("Note text")
+        .find((editor) => editor.value === "");
+      expect(blank).toHaveFocus();
+    } finally {
+      animationFrame.mockRestore();
+    }
+  });
+
+  it("does not rerender unchanged rows when Enter inserts a sibling", async () => {
+    const notesApi = api();
+    const boot = structuredClone(snapshot);
+    let unchangedTextReads = 0;
+    Object.defineProperty(boot.viewport!.nodes[0]!, "text", {
+      configurable: true,
+      enumerable: true,
+      get: () => {
+        unchangedTextReads += 1;
+        return "First thought";
+      }
+    });
+    notesApi.bootstrap = vi.fn().mockResolvedValue(boot);
+    notesApi.execute = vi.fn().mockImplementation(() => new Promise(() => undefined));
+    render(<App api={notesApi} />);
+    const second = await screen.findByDisplayValue<HTMLTextAreaElement>(
+      "Second thought"
+    );
+    second.setSelectionRange(second.value.length, second.value.length);
+    unchangedTextReads = 0;
+
+    fireEvent.keyDown(second, { key: "Enter" });
+    await act(async () => undefined);
+
+    expect(unchangedTextReads).toBe(0);
+  });
+
   it("keeps accepting repeated Enter while earlier split commits are pending", async () => {
     const notesApi = api();
     notesApi.execute = vi.fn().mockImplementation(() => new Promise(() => undefined));

@@ -32,6 +32,10 @@ interface EnterSplitGesture {
 }
 
 const enterSplitGestures = new WeakMap<HTMLElement, EnterSplitGesture>();
+const pendingOutlineFocus = new WeakMap<HTMLElement, {
+  readonly nodeId: string;
+  readonly edge: OutlineFocusEdge;
+}>();
 
 export function endOutlineEnterGesture(target: HTMLElement): void {
   const scope = target.closest<HTMLElement>(".notes-outline");
@@ -315,7 +319,13 @@ function focusAfter(
   nodeId: string,
   edge: OutlineFocusEdge
 ): void {
-  requestAnimationFrame(() => focusOutlineEditor(scope, nodeId, edge));
+  const request = { nodeId, edge };
+  pendingOutlineFocus.set(scope, request);
+  queueMicrotask(() => {
+    if (pendingOutlineFocus.get(scope) !== request) return;
+    pendingOutlineFocus.delete(scope);
+    focusOutlineEditor(scope, nodeId, edge);
+  });
 }
 
 function createFirstChild(

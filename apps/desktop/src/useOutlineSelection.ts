@@ -100,6 +100,7 @@ export function useOutlineSelection(
     [allNodes, directIds]
   );
   const localSelectedIds = useMemo(() => {
+    if (selectedRootIds.length === 0) return [];
     const roots = new Set(selectedRootIds);
     const byId = new Map(allNodes.map((node) => [node.id, node]));
     return allNodes.filter((node) => {
@@ -134,6 +135,7 @@ export function useOutlineSelection(
   );
   const selectedContentNodes = useMemo(() => {
     void selectedEpoch;
+    if (selectedIds.length === 0) return [];
     const currentById = new Map(
       store.getSnapshot().nodes.map((node) => [node.id, node])
     );
@@ -143,6 +145,7 @@ export function useOutlineSelection(
     allNodes,
     authoritativeNodes,
     forestComplete,
+    selectedIds.length,
     selectedEpoch,
     store
   ]);

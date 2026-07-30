@@ -122,6 +122,41 @@ fn sibling_positions_are_rebalanced_without_changing_visible_order() {
 }
 
 #[test]
+fn held_enter_insertions_keep_existing_sibling_keys_stable() {
+    let mut tree = NotesTree::default();
+    tree.apply(&[TreeMutation::upsert(NoteNode::page(id("page"), "Page"))])
+        .unwrap();
+    for value in ["source", "anchor"] {
+        let patch = tree
+            .plan(NotesCommand::CreateNode {
+                id: id(value),
+                parent_id: id("page"),
+                position: Position::at_end(),
+                text: value.into(),
+            })
+            .unwrap();
+        tree.apply(&patch.forward).unwrap();
+    }
+    let anchor_sort_key = tree.node(&id("anchor")).unwrap().sort_key();
+
+    for index in 0..24 {
+        let patch = tree
+            .plan(NotesCommand::CreateNode {
+                id: id(&format!("inserted-{index}")),
+                parent_id: id("page"),
+                position: Position::before(id("anchor")),
+                text: String::new(),
+            })
+            .unwrap();
+        tree.apply(&patch.forward).unwrap();
+        assert_eq!(
+            tree.node(&id("anchor")).unwrap().sort_key(),
+            anchor_sort_key
+        );
+    }
+}
+
+#[test]
 fn duplicating_a_bullet_copies_content_and_flags_without_sharing_identity() {
     let page_id = id("page");
     let source_id = id("source");

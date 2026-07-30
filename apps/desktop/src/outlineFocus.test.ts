@@ -81,4 +81,32 @@ describe("pane-scoped outline focus", () => {
     expect(focusOutlineEditor(scope, "image", "end")).toBe(true);
     expect(image).toHaveFocus();
   });
+
+  it("prevents browser ancestor scrolling and reveals only the local outline", () => {
+    const outer = document.createElement("div");
+    const scope = document.createElement("section");
+    const rows = document.createElement("div");
+    rows.className = "notes-outline-rows";
+    outer.append(scope);
+    scope.append(rows);
+    document.body.append(outer);
+    const target = editor(rows, "target", "");
+    outer.scrollTop = 75;
+    rows.scrollTop = 40;
+    vi.spyOn(rows, "getBoundingClientRect").mockReturnValue({
+      top: 10,
+      bottom: 110
+    } as DOMRect);
+    vi.spyOn(target, "getBoundingClientRect").mockReturnValue({
+      top: 110,
+      bottom: 138
+    } as DOMRect);
+    const focus = vi.spyOn(target, "focus");
+
+    expect(focusOutlineEditor(scope, "target", "start")).toBe(true);
+
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(rows.scrollTop).toBe(68);
+    expect(outer.scrollTop).toBe(75);
+  });
 });

@@ -242,6 +242,7 @@ export function useOutlineDrag(input: UseOutlineDragInput) {
   }, []);
 
   const dragSourceIds = useMemo(() => {
+    if (draggedRootIds.length === 0) return new Set<string>();
     const roots = new Set(draggedRootIds);
     const byId = new Map(input.nodes.map((node) => [node.id, node]));
     return new Set(input.nodes

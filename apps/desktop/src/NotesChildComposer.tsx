@@ -1,6 +1,7 @@
 import { Plus } from "lucide-react";
 import { useRef, useState } from "react";
 import { NotesStore } from "./notesStore";
+import { focusOutlineEditor } from "./outlineFocus";
 
 export function NotesChildComposer({
   store, parentId, hasChildren
@@ -10,6 +11,7 @@ export function NotesChildComposer({
   readonly hasChildren: boolean;
 }) {
   const creatingRef = useRef(false);
+  const composerRef = useRef<HTMLDivElement>(null);
   const [creating, setCreating] = useState(false);
 
   const createChild = async () => {
@@ -17,12 +19,13 @@ export function NotesChildComposer({
     creatingRef.current = true;
     setCreating(true);
     try {
-      const id = await store.createNode(parentId);
-      requestAnimationFrame(() => {
-        [...document.querySelectorAll<HTMLTextAreaElement>("[data-node-id]")]
-          .find((editor) => editor.dataset.nodeId === id)
-          ?.focus();
-      });
+      const pending = store.beginCreateNode(parentId);
+      const scope = composerRef.current?.closest<HTMLElement>(".notes-outline");
+      if (scope) {
+        requestAnimationFrame(() =>
+          focusOutlineEditor(scope, pending.id, "start"));
+      }
+      await pending.committed;
     } finally {
       creatingRef.current = false;
       setCreating(false);
@@ -31,6 +34,7 @@ export function NotesChildComposer({
 
   return (
     <div
+      ref={composerRef}
       className="notes-child-composer"
       data-has-children={hasChildren ? "true" : "false"}
     >

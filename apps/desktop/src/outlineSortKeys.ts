@@ -1,6 +1,6 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 
-const SORT_KEY_STEP = 1_024;
+export const SORT_KEY_STEP = 4_294_967_296;
 
 export interface SortKeyAllocation {
   readonly sortKey: number;
