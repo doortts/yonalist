@@ -456,21 +456,31 @@ describe("NotesBulletTitleEditor", () => {
     },
   );
 
-  it("flushes before forwarding a structural key with its captured snapshot", () => {
+  it("reuses one structural snapshot through publish and clean barrier flush", () => {
     const order: string[] = [];
+    let adapter: NotesEditorFlushAdapter | null = null;
     const onEditorKeyDown = vi.fn((_event, snapshot) => {
+      void adapter!.flush();
       order.push(`key:${snapshot.source}:${snapshot.selection.focusUtf16}`);
     });
     const { root } = renderEditor({
       onPublish: (source) => order.push(`publish:${source}`),
       onEditorKeyDown,
+      registerFlushAdapter: (next) => {
+        adapter = next;
+        return () => {
+          if (adapter === next) adapter = null;
+        };
+      },
     });
     activate(root);
     inputSource(root, "next");
+    const getSelection = vi.spyOn(root.ownerDocument, "getSelection");
 
     fireEvent.keyDown(root, { key: "Enter" });
 
     expect(order).toEqual(["publish:next", "key:next:4"]);
+    expect(getSelection).toHaveBeenCalledOnce();
   });
 
   it("publishes before forwarding Ctrl+Y redo", () => {

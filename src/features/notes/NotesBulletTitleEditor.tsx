@@ -299,19 +299,22 @@ export const NotesBulletTitleEditor = forwardRef<
     };
   }, []);
 
-  const publishNow = useCallback((): PlainTextSnapshot | null => {
-    clearPublishTimer();
-    if (composingRef.current || unmountedRef.current) return null;
-    const snapshot = currentSnapshot();
-    if (!snapshot) return null;
-    dirtyRef.current = false;
-    if (snapshot.source !== lastPublishedSourceRef.current) {
-      lastPublishedSourceRef.current = snapshot.source;
-      setPublishedSource(snapshot.source);
-      onPublishRef.current(snapshot.source);
-    }
-    return snapshot;
-  }, [clearPublishTimer, currentSnapshot]);
+  const publishNow = useCallback(
+    (capturedSnapshot?: PlainTextSnapshot): PlainTextSnapshot | null => {
+      clearPublishTimer();
+      if (composingRef.current || unmountedRef.current) return null;
+      const snapshot = capturedSnapshot ?? currentSnapshot();
+      if (!snapshot) return null;
+      dirtyRef.current = false;
+      if (snapshot.source !== lastPublishedSourceRef.current) {
+        lastPublishedSourceRef.current = snapshot.source;
+        setPublishedSource(snapshot.source);
+        onPublishRef.current(snapshot.source);
+      }
+      return snapshot;
+    },
+    [clearPublishTimer, currentSnapshot],
+  );
 
   const flush = useCallback(async (): Promise<NotesEditorFlushResult> => {
     if (unmountedRef.current) {
@@ -322,6 +325,7 @@ export const NotesBulletTitleEditor = forwardRef<
         compositionWaitersRef.current.push(resolve);
       });
     }
+    if (!dirtyRef.current) return "flushed";
     publishNow();
     return "flushed";
   }, [publishNow]);
@@ -634,7 +638,7 @@ export const NotesBulletTitleEditor = forwardRef<
     }
     let snapshot = snapshotFromDom(event.currentTarget);
     if (needsSynchronousPublish(event, snapshot)) {
-      snapshot = publishNow() ?? snapshot;
+      snapshot = publishNow(snapshot) ?? snapshot;
     }
     onEditorKeyDown?.(event, snapshot);
   };
