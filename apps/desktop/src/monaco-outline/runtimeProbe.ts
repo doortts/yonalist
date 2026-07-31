@@ -9,7 +9,10 @@ export interface MonacoOutlineBenchmarkResult {
   readonly longTasks: number | null;
   readonly lineCount: number;
   readonly modelSetValueCount: number;
+  readonly sourceCounts: Readonly<Record<BenchmarkSampleSource, number>>;
 }
+
+export type BenchmarkSampleSource = "keydown" | "model" | "cursor";
 
 export interface MonacoOutlineBenchmarkController {
   result(): MonacoOutlineBenchmarkResult | null;
@@ -36,13 +39,22 @@ export function attachBenchmarkRun(
   session: MonacoOutlineSession,
   options: MonacoOutlineBenchmarkOptions = DEFAULT_OPTIONS
 ): monaco.IDisposable {
+  const host = editor.getDomNode();
+  host?.setAttribute("data-monaco-outline-ready", String(performance.now()));
   const samples: number[] = [];
   let completedSamples = 0;
   let finalResult: MonacoOutlineBenchmarkResult | null = null;
   let active = true;
   let longTasks: number | null =
     typeof PerformanceObserver === "undefined" ? null : 0;
-  let keyDownSubscription: monaco.IDisposable | null = null;
+  const subscriptions: monaco.IDisposable[] = [];
+  const sourceCounts: Record<BenchmarkSampleSource, number> = {
+    keydown: 0,
+    model: 0,
+    cursor: 0
+  };
+  let fallbackFramePending = false;
+  let keydownInCurrentTask = false;
   let observer: PerformanceObserver | null = null;
 
   const controller: MonacoOutlineBenchmarkController = Object.freeze({
@@ -53,8 +65,9 @@ export function attachBenchmarkRun(
   const stopListening = () => {
     if (!active) return;
     active = false;
-    keyDownSubscription?.dispose();
-    keyDownSubscription = null;
+    subscriptions.splice(0).forEach((subscription) =>
+      subscription.dispose()
+    );
     observer?.disconnect();
     observer = null;
   };
@@ -66,23 +79,48 @@ export function attachBenchmarkRun(
       p95: percentile(sorted, 0.95),
       longTasks,
       lineCount: session.model.getLineCount(),
-      modelSetValueCount: session.metrics.fullModelReplacementCount
+      modelSetValueCount: session.metrics.fullModelReplacementCount,
+      sourceCounts: Object.freeze({ ...sourceCounts })
     });
+    host?.setAttribute(
+      "data-monaco-outline-benchmark",
+      JSON.stringify(finalResult)
+    );
     stopListening();
   };
-  const onKeyDown = () => {
+  const capture = (source: BenchmarkSampleSource, fallback: boolean) => {
     if (!active) return;
+    if (fallback) fallbackFramePending = true;
     const startedAt = performance.now();
     requestAnimationFrame(() => {
+      if (fallback) fallbackFramePending = false;
       if (!active) return;
       completedSamples += 1;
       if (completedSamples <= options.warmupSamples) return;
       samples.push(performance.now() - startedAt);
+      sourceCounts[source] += 1;
       if (samples.length === options.recordedSamples) finish();
     });
   };
+  const captureFallback = (source: "model" | "cursor") => {
+    if (keydownInCurrentTask || fallbackFramePending) return;
+    capture(source, true);
+  };
+  const onKeyDown = () => {
+    keydownInCurrentTask = true;
+    queueMicrotask(() => {
+      keydownInCurrentTask = false;
+    });
+    capture("keydown", false);
+  };
 
-  keyDownSubscription = editor.onKeyDown(onKeyDown);
+  subscriptions.push(
+    editor.onKeyDown(onKeyDown),
+    session.model.onDidChangeContent(() => captureFallback("model")),
+    editor.onDidChangeCursorPosition((event) => {
+      if (event.source !== "mouse") captureFallback("cursor");
+    })
+  );
   if (longTasks !== null) {
     observer = new PerformanceObserver((entries) => {
       longTasks! += entries.getEntries().filter(
@@ -104,6 +142,8 @@ export function attachBenchmarkRun(
       if (window.__YONALIST_MONACO_BENCHMARK__ === controller) {
         delete window.__YONALIST_MONACO_BENCHMARK__;
       }
+      host?.removeAttribute("data-monaco-outline-benchmark");
+      host?.removeAttribute("data-monaco-outline-ready");
     }
   };
 }
