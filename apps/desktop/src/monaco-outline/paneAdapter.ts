@@ -10,6 +10,12 @@ export interface OutlinePaneNavigation {
   openSecondary(nodeId: string): void;
 }
 
+export interface MonacoOutlinePaneDiagnostics {
+  readonly disposed: boolean;
+  readonly savedViewStates: number;
+  readonly liveSubscriptions: number;
+}
+
 export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
   private readonly viewStates =
     new Map<string, monaco.editor.ICodeEditorViewState | null>();
@@ -17,6 +23,7 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
   private readonly hiddenAreaSource: string;
   private zoomRootId: string | null;
   private showCompleted: boolean;
+  private disposed = false;
 
   constructor(private readonly input: {
     readonly paneId: "primary" | "secondary";
@@ -67,7 +74,17 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
     );
   }
 
+  diagnostics(): MonacoOutlinePaneDiagnostics {
+    return Object.freeze({
+      disposed: this.disposed,
+      savedViewStates: this.viewStates.size,
+      liveSubscriptions: this.disposed ? 0 : 1
+    });
+  }
+
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.unsubscribeMetadata();
     this.input.editor.getDomNode()?.removeAttribute("data-empty-zoom");
     setEditorHiddenAreas(

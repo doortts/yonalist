@@ -45,6 +45,19 @@ export interface MonacoOutlineSessionMetrics {
   readonly maxDecorationLinesPerEdit: number;
 }
 
+export interface MonacoOutlineSessionDiagnostics {
+  readonly boundEditors: number;
+  readonly metadataListeners: number;
+  readonly forwardTransitions: number;
+  readonly reverseTransitions: number;
+  readonly metadataVersions: number;
+  readonly modelDecorations: number;
+  readonly pendingPersistenceCommands: number;
+  readonly persistenceKind: EditorPersistenceState["kind"];
+  readonly fullModelReplacementCount: number;
+  readonly maxDecorationLinesPerEdit: number;
+}
+
 export class MonacoOutlineSession {
   readonly pageId: string;
   readonly model: monaco.editor.ITextModel;
@@ -126,6 +139,24 @@ export class MonacoOutlineSession {
 
   get metrics(): MonacoOutlineSessionMetrics {
     return this.metricState;
+  }
+
+  diagnostics(): MonacoOutlineSessionDiagnostics {
+    return Object.freeze({
+      boundEditors: this.boundEditors.size,
+      metadataListeners: this.metadataListeners.size,
+      forwardTransitions: this.transitionsFrom.size,
+      reverseTransitions: this.transitionsTo.size,
+      metadataVersions: this.metadata.versionCount,
+      modelDecorations: this.decorations.size,
+      pendingPersistenceCommands:
+        this.persistenceQueue.pendingCommandCount,
+      persistenceKind: this.persistenceQueue.getSnapshot().kind,
+      fullModelReplacementCount:
+        this.metricState.fullModelReplacementCount,
+      maxDecorationLinesPerEdit:
+        this.metricState.maxDecorationLinesPerEdit
+    });
   }
 
   ensureEditableLine(): void {
@@ -489,6 +520,7 @@ export class MonacoOutlineSession {
     while (transition) {
       this.transitionsFrom.delete(transition.fromAlternativeVersionId);
       this.transitionsTo.delete(transition.toAlternativeVersionId);
+      this.metadata.deleteVersion(transition.toAlternativeVersionId);
       transition = this.transitionsFrom.get(transition.toAlternativeVersionId);
     }
   }

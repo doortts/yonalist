@@ -51,6 +51,10 @@ export class OutlineDecorationSet {
     this.update(allLineNumbers(metadata()));
   }
 
+  get size(): number {
+    return this.entries.size;
+  }
+
   update(affectedLineNumbers: readonly number[]): void {
     const snapshot = this.metadata();
     const activeNodeIds = new Set(

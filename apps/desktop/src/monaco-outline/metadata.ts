@@ -35,6 +35,10 @@ export class OutlineMetadataTimeline {
     return this.#active;
   }
 
+  get versionCount(): number {
+    return this.#versions.size;
+  }
+
   record(
     alternativeVersionId: number,
     lines: readonly OutlineLineMetadata[]
@@ -84,6 +88,13 @@ export class OutlineMetadataTimeline {
     this.#versions.set(snapshot.alternativeVersionId, snapshot);
     this.#active = snapshot;
     return snapshot;
+  }
+
+  deleteVersion(alternativeVersionId: number): void {
+    if (this.#active.alternativeVersionId === alternativeVersionId) {
+      throw new Error("The active outline metadata version cannot be deleted.");
+    }
+    this.#versions.delete(alternativeVersionId);
   }
 }
 

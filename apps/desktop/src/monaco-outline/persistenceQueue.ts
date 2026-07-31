@@ -122,6 +122,10 @@ export class MonacoOutlinePersistenceQueue {
     return this.state;
   }
 
+  get pendingCommandCount(): number {
+    return this.pendingCount();
+  }
+
   private coalesceTextCommand(command: IpcEditorCommand): void {
     if (command.kind !== "updateText") {
       this.pendingCommands.push(command);

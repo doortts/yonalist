@@ -115,8 +115,20 @@ describe("Monaco outline pane adapter", () => {
       true
     );
     expect(right.host).toHaveAttribute("data-empty-zoom", "true");
+    expect(leftAdapter.diagnostics()).toEqual({
+      disposed: false,
+      savedViewStates: 2,
+      liveSubscriptions: 1
+    });
+    leftAdapter.dispose();
     leftAdapter.dispose();
     rightAdapter.dispose();
+    expect(leftAdapter.diagnostics()).toEqual({
+      disposed: true,
+      savedViewStates: 0,
+      liveSubscriptions: 0
+    });
+    expect(listeners.size).toBe(0);
   });
 });
 

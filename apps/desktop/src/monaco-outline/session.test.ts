@@ -206,4 +206,73 @@ describe("MonacoOutlineSession", () => {
     expect(session.metrics.fullModelReplacementCount).toBe(1);
     await session.dispose();
   });
+
+  it("reports editor and listener lifetimes without retaining their objects", async () => {
+    const { session } = createSession(
+      "diagnostics",
+      [node("first", "before", "diagnostics")]
+    );
+    const editor = {
+      getModel: () => session.model,
+      hasTextFocus: () => false
+    } as unknown as monaco.editor.ICodeEditor;
+
+    expect(session.diagnostics()).toEqual({
+      boundEditors: 0,
+      metadataListeners: 0,
+      forwardTransitions: 0,
+      reverseTransitions: 0,
+      metadataVersions: 1,
+      modelDecorations: 1,
+      pendingPersistenceCommands: 0,
+      persistenceKind: "saved",
+      fullModelReplacementCount: 0,
+      maxDecorationLinesPerEdit: 0
+    });
+
+    const unbind = session.bindEditor(editor);
+    const unsubscribe = session.subscribeMetadata(() => undefined);
+    expect(session.diagnostics()).toEqual(expect.objectContaining({
+      boundEditors: 1,
+      metadataListeners: 1
+    }));
+
+    unsubscribe();
+    unbind();
+    expect(session.diagnostics()).toEqual(expect.objectContaining({
+      boundEditors: 0,
+      metadataListeners: 0
+    }));
+    await session.dispose();
+  });
+
+  it("prunes unreachable metadata when an undone edit gets a new branch", async () => {
+    const { session } = createSession(
+      "prune-diagnostics",
+      [node("first", "before", "prune-diagnostics")]
+    );
+    const endColumn = session.model.getLineMaxColumn(1);
+    session.model.pushEditOperations([], [{
+      range: new monaco.Range(1, endColumn, 1, endColumn),
+      text: "!"
+    }], () => null);
+    expect(session.diagnostics()).toEqual(expect.objectContaining({
+      forwardTransitions: 1,
+      reverseTransitions: 1,
+      metadataVersions: 2
+    }));
+
+    await session.model.undo();
+    session.model.pushEditOperations([], [{
+      range: new monaco.Range(1, endColumn, 1, endColumn),
+      text: "?"
+    }], () => null);
+
+    expect(session.diagnostics()).toEqual(expect.objectContaining({
+      forwardTransitions: 1,
+      reverseTransitions: 1,
+      metadataVersions: 2
+    }));
+    await session.dispose();
+  });
 });
