@@ -19,15 +19,15 @@ export default defineConfig(({ command }) => ({
       load(id) {
         if (id !== resolvedRuntimeProbeModuleId) return null;
         if (command !== "serve") {
-          return "export function attachDevelopmentRuntimeProbe() { return null; }";
+          return "export function attachDevelopmentBenchmarkRun() { return null; }";
         }
         return `
-          import { attachRuntimeProbe } from "/src/monaco-outline/runtimeProbe.ts";
-          export function attachDevelopmentRuntimeProbe(editor, session) {
-            if (new URLSearchParams(location.search).get("probe") !== "monaco") {
+          import { attachBenchmarkRun } from "/src/monaco-outline/runtimeProbe.ts";
+          export function attachDevelopmentBenchmarkRun(editor, session) {
+            if (new URLSearchParams(location.search).get("benchmark") !== "monaco") {
               return null;
             }
-            return attachRuntimeProbe(editor, session);
+            return attachBenchmarkRun(editor, session);
           }
         `;
       }

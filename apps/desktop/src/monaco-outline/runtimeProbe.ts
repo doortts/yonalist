@@ -2,87 +2,107 @@ import type * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 
 import type { MonacoOutlineSession } from "./session";
 
-export interface MonacoOutlineProbeResult {
+export interface MonacoOutlineBenchmarkResult {
   readonly samples: readonly number[];
-  readonly p50: number;
+  readonly median: number;
   readonly p95: number;
-  readonly longTasks: number;
+  readonly longTasks: number | null;
   readonly lineCount: number;
   readonly modelSetValueCount: number;
 }
 
-export interface MonacoOutlineRuntimeProbe {
-  snapshot(): MonacoOutlineProbeResult;
+export interface MonacoOutlineBenchmarkController {
+  result(): MonacoOutlineBenchmarkResult | null;
+}
+
+export interface MonacoOutlineBenchmarkOptions {
+  readonly warmupSamples: number;
+  readonly recordedSamples: number;
 }
 
 declare global {
   interface Window {
-    __YONALIST_MONACO_PROBE__?: MonacoOutlineRuntimeProbe;
+    __YONALIST_MONACO_BENCHMARK__?: MonacoOutlineBenchmarkController;
   }
 }
 
-const MAX_SAMPLES = 500;
+const DEFAULT_OPTIONS: MonacoOutlineBenchmarkOptions = Object.freeze({
+  warmupSamples: 3,
+  recordedSamples: 31
+});
 
-export function attachRuntimeProbe(
+export function attachBenchmarkRun(
   editor: monaco.editor.IStandaloneCodeEditor,
-  session: MonacoOutlineSession
+  session: MonacoOutlineSession,
+  options: MonacoOutlineBenchmarkOptions = DEFAULT_OPTIONS
 ): monaco.IDisposable {
   const samples: number[] = [];
-  let longTasks = 0;
-  let disposed = false;
-  const host = editor.getDomNode();
-  const snapshot = (): MonacoOutlineProbeResult => {
+  let completedSamples = 0;
+  let finalResult: MonacoOutlineBenchmarkResult | null = null;
+  let active = true;
+  let longTasks: number | null =
+    typeof PerformanceObserver === "undefined" ? null : 0;
+  let keyDownSubscription: monaco.IDisposable | null = null;
+  let observer: PerformanceObserver | null = null;
+
+  const controller: MonacoOutlineBenchmarkController = Object.freeze({
+    result: () => finalResult
+  });
+  window.__YONALIST_MONACO_BENCHMARK__ = controller;
+
+  const stopListening = () => {
+    if (!active) return;
+    active = false;
+    keyDownSubscription?.dispose();
+    keyDownSubscription = null;
+    observer?.disconnect();
+    observer = null;
+  };
+  const finish = () => {
     const sorted = [...samples].sort((left, right) => left - right);
-    return Object.freeze({
+    finalResult = Object.freeze({
       samples: Object.freeze([...samples]),
-      p50: percentile(sorted, 0.5),
+      median: percentile(sorted, 0.5),
       p95: percentile(sorted, 0.95),
       longTasks,
       lineCount: session.model.getLineCount(),
       modelSetValueCount: session.metrics.fullModelReplacementCount
     });
-  };
-  const publish = () => {
-    host?.setAttribute(
-      "data-monaco-outline-probe",
-      JSON.stringify(snapshot())
-    );
+    stopListening();
   };
   const onKeyDown = () => {
-    const started = performance.now();
+    if (!active) return;
+    const startedAt = performance.now();
     requestAnimationFrame(() => {
-      if (disposed) return;
-      samples.push(performance.now() - started);
-      if (samples.length > MAX_SAMPLES) samples.shift();
-      publish();
+      if (!active) return;
+      completedSamples += 1;
+      if (completedSamples <= options.warmupSamples) return;
+      samples.push(performance.now() - startedAt);
+      if (samples.length === options.recordedSamples) finish();
     });
   };
-  const keyDownSubscription = editor.onKeyDown(onKeyDown);
-  const observer = typeof PerformanceObserver === "undefined"
-    ? null
-    : new PerformanceObserver((entries) => {
-        longTasks += entries.getEntries().filter(
-          (entry) => entry.duration >= 50
-        ).length;
-      });
-  try {
-    observer?.observe({ entryTypes: ["longtask"] });
-  } catch {
-    observer?.disconnect();
+
+  keyDownSubscription = editor.onKeyDown(onKeyDown);
+  if (longTasks !== null) {
+    observer = new PerformanceObserver((entries) => {
+      longTasks! += entries.getEntries().filter(
+        (entry) => entry.duration >= 50
+      ).length;
+    });
+    try {
+      observer.observe({ entryTypes: ["longtask"] });
+    } catch {
+      observer.disconnect();
+      observer = null;
+      longTasks = null;
+    }
   }
-  const probe: MonacoOutlineRuntimeProbe = Object.freeze({
-    snapshot
-  });
-  window.__YONALIST_MONACO_PROBE__ = probe;
-  publish();
+
   return {
     dispose: () => {
-      disposed = true;
-      keyDownSubscription.dispose();
-      observer?.disconnect();
-      host?.removeAttribute("data-monaco-outline-probe");
-      if (window.__YONALIST_MONACO_PROBE__ === probe) {
-        delete window.__YONALIST_MONACO_PROBE__;
+      stopListening();
+      if (window.__YONALIST_MONACO_BENCHMARK__ === controller) {
+        delete window.__YONALIST_MONACO_BENCHMARK__;
       }
     }
   };

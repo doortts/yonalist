@@ -7,7 +7,7 @@ declare module "virtual:yonalist-monaco-runtime-probe" {
   ).IDisposable;
   type OutlineSession = import("./session").MonacoOutlineSession;
 
-  export function attachDevelopmentRuntimeProbe(
+  export function attachDevelopmentBenchmarkRun(
     editor: MonacoEditor,
     session: OutlineSession
   ): MonacoDisposable | null;

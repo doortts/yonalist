@@ -7,7 +7,7 @@ import {
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
 import {
-  attachDevelopmentRuntimeProbe
+  attachDevelopmentBenchmarkRun
 } from "virtual:yonalist-monaco-runtime-probe";
 
 import {
@@ -148,12 +148,12 @@ export default function MonacoOutlineSurface({
 
   useEffect(() => {
     if (!session || !editorRef.current) return;
-    const probe = attachDevelopmentRuntimeProbe(
+    const benchmark = attachDevelopmentBenchmarkRun(
       editorRef.current,
       session
     );
     return () => {
-      probe?.dispose();
+      benchmark?.dispose();
     };
   }, [session]);
 
