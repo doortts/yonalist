@@ -33,7 +33,30 @@ describe("Monaco outline keyboard gestures", () => {
     });
   });
 
-  it("leaves composition and ordinary caret movement native", () => {
+  it("routes plain collapsed vertical movement through caret normalization", () => {
+    const current = projection([
+      ["first", "first", true],
+      ["empty", "", true]
+    ]);
+
+    expect(resolveMonacoOutlineGesture(input(current, {
+      key: "ArrowUp",
+      lineNumber: 2
+    }))).toEqual({ kind: "moveVertical", direction: "up" });
+    expect(resolveMonacoOutlineGesture(input(current, {
+      key: "ArrowDown"
+    }))).toEqual({ kind: "moveVertical", direction: "down" });
+    expect(resolveMonacoOutlineGesture(input(current, {
+      key: "ArrowUp",
+      shiftKey: true
+    }))).toEqual({ kind: "native" });
+    expect(resolveMonacoOutlineGesture(input(current, {
+      key: "ArrowDown",
+      endColumn: 2
+    }))).toEqual({ kind: "native" });
+  });
+
+  it("leaves composition and horizontal caret movement native", () => {
     const current = projection([["first", "한글", true]]);
 
     expect(resolveMonacoOutlineGesture(input(current, {
@@ -41,7 +64,7 @@ describe("Monaco outline keyboard gestures", () => {
       isComposing: true
     }))).toEqual({ kind: "native" });
     expect(resolveMonacoOutlineGesture(input(current, {
-      key: "ArrowDown"
+      key: "ArrowLeft"
     }))).toEqual({ kind: "native" });
     expect(resolveMonacoOutlineGesture(input(current, {
       key: "Backspace",

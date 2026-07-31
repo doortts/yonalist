@@ -1223,6 +1223,10 @@
   background: transparent;
 }
 
+.notes-monaco-outline[data-caret-normalizing="true"] .cursor {
+  visibility: hidden !important;
+}
+
 .notes-monaco-bullet-prefix,
 .notes-monaco-image-prefix {
   color: var(--text-2);

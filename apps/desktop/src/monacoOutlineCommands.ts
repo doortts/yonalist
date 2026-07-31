@@ -48,6 +48,7 @@ export function executeMonacoOutlineGesture(
   }
   switch (gesture.kind) {
     case "native":
+    case "moveVertical":
     case "consume":
     case "undo":
     case "redo":

@@ -22,6 +22,11 @@ import {
   resolveMonacoOutlineGesture
 } from "./monacoOutlineKeyboard";
 import {
+  buildMonacoOutlineDecorations,
+  isMonacoCaretOnTextSide,
+  scheduleMonacoOutlineCaretNormalization
+} from "./monacoOutlineCaret";
+import {
   executeMonacoOutlineGesture,
   type MonacoOutlineCommandContext,
   type MonacoOutlineCommandRuntime
@@ -167,7 +172,8 @@ export default function MonacoOutlineSurface({
       controller,
       applyingProjection: false,
       enterGesture: null,
-      pendingCaret: null
+      pendingCaret: null,
+      caretNormalizationEpoch: 0
     };
     runtimeRef.current = runtime;
     const contentListener = model.onDidChangeContent((event) => {
@@ -233,6 +239,16 @@ export default function MonacoOutlineSurface({
         }));
         return;
       }
+      if (gesture.kind === "moveVertical") {
+        event.stopPropagation();
+        moveCaretVertically(
+          runtime,
+          hostRef.current,
+          gesture.direction,
+          () => runtimeRef.current === runtime
+        );
+        return;
+      }
       event.stopPropagation();
       executeMonacoOutlineGesture(
         gesture,
@@ -279,12 +295,23 @@ export default function MonacoOutlineSurface({
           runtime.editor.hasTextFocus(),
           pendingCaret !== null
         );
+        const pendingLine = pendingCaret
+          ? projection.lineByNodeId.get(pendingCaret.nodeId)
+          : undefined;
+        const host = hostRef.current;
+        const normalizationEpoch =
+          pendingCaret?.column === 1 && pendingLine
+            ? ++runtime.caretNormalizationEpoch
+            : null;
+        if (normalizationEpoch !== null) {
+          host?.setAttribute("data-caret-normalizing", "true");
+        }
         reconcileModel(runtime, projection);
         runtime.controller.setProjection(projection);
         updateDecorations(runtime.decorations, projection);
         runtime.pendingCaret = null;
         const nextLine = pendingCaret
-          ? projection.lineByNodeId.get(pendingCaret.nodeId)
+          ? pendingLine
           : selectedNodeId
             ? projection.lineByNodeId.get(selectedNodeId)
             : undefined;
@@ -305,6 +332,26 @@ export default function MonacoOutlineSurface({
               monaco.editor.ScrollType.Immediate
             );
           }
+          if (normalizationEpoch !== null) {
+            scheduleMonacoOutlineCaretNormalization({
+              editor: runtime.editor,
+              position,
+              isCurrent: () =>
+                runtimeRef.current === runtime &&
+                runtime.caretNormalizationEpoch === normalizationEpoch,
+              isCaretOnTextSide: () =>
+                host !== null && isMonacoCaretOnTextSide(host),
+              hideCaret: () =>
+                host?.setAttribute("data-caret-normalizing", "true"),
+              showCaret: () =>
+                host?.removeAttribute("data-caret-normalizing")
+            });
+          }
+        } else if (
+          normalizationEpoch !== null &&
+          runtime.caretNormalizationEpoch === normalizationEpoch
+        ) {
+          host?.removeAttribute("data-caret-normalizing");
         }
       }
     );
@@ -326,6 +373,7 @@ interface MonacoRuntime extends MonacoOutlineCommandRuntime {
   readonly controller: MonacoOutlineController;
   projection: MonacoOutlineProjection;
   applyingProjection: boolean;
+  caretNormalizationEpoch: number;
 }
 
 function outlinePlatform(): "mac" | "other" {
@@ -384,19 +432,51 @@ function updateDecorations(
   collection: monaco.editor.IEditorDecorationsCollection,
   projection: MonacoOutlineProjection
 ): void {
-  collection.set(projection.lines.map((line, position) => ({
-    range: new monaco.Range(position + 1, 1, position + 1, 1),
-    options: {
-      before: {
-        content: `${"\u00a0".repeat(line.depth * 4)}\u2022\u00a0\u00a0`,
-        inlineClassName: line.editable
-          ? "notes-monaco-bullet-prefix"
-          : "notes-monaco-image-prefix",
-        cursorStops: monaco.editor.InjectedTextCursorStops.None
-      },
-      showIfCollapsed: true,
-      isWholeLine: true,
-      className: line.editable ? undefined : "notes-monaco-image-line"
+  collection.set(buildMonacoOutlineDecorations(projection));
+}
+
+function moveCaretVertically(
+  runtime: MonacoRuntime,
+  host: HTMLElement | null,
+  direction: "up" | "down",
+  isMounted: () => boolean
+): void {
+  runtime.editor.trigger(
+    "yonalist-outline",
+    direction === "up" ? "cursorUp" : "cursorDown",
+    undefined
+  );
+  if (!host) return;
+  const position = runtime.editor.getPosition();
+  if (!position || position.column !== 1) {
+    host.removeAttribute("data-caret-normalizing");
+    return;
+  }
+  const normalizationEpoch = ++runtime.caretNormalizationEpoch;
+  scheduleMonacoOutlineCaretNormalization({
+    editor: runtime.editor,
+    position,
+    isCurrent: () =>
+      isMounted() &&
+      runtime.caretNormalizationEpoch === normalizationEpoch,
+    isCaretOnTextSide: () => isMonacoCaretOnTextSide(host),
+    hideCaret: () =>
+      host.setAttribute("data-caret-normalizing", "true"),
+    showCaret: () =>
+      host.removeAttribute("data-caret-normalizing"),
+    moveCaretToTextSide: () => {
+      runtime.editor.trigger(
+        "yonalist-outline",
+        "cursorRight",
+        undefined
+      );
+      if (runtime.model.getLineMaxColumn(position.lineNumber) > 1) {
+        runtime.editor.trigger(
+          "yonalist-outline",
+          "cursorLeft",
+          undefined
+        );
+      }
     }
-  })));
+  });
 }

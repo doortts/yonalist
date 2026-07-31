@@ -19,6 +19,10 @@ export interface MonacoOutlineGestureInput {
 export type MonacoOutlineGesture =
   | { readonly kind: "native" }
   | {
+      readonly kind: "moveVertical";
+      readonly direction: "up" | "down";
+    }
+  | {
       readonly kind: "split";
       readonly nodeId: string;
       readonly startOffset: number;
@@ -58,6 +62,20 @@ export function resolveMonacoOutlineGesture(
   }
   const line = input.projection.lines[input.lineNumber - 1];
   if (!line) return { kind: "consume" };
+  if (
+    (input.key === "ArrowUp" || input.key === "ArrowDown") &&
+    !input.altKey &&
+    !input.ctrlKey &&
+    !input.metaKey &&
+    !input.shiftKey &&
+    input.lineNumber === input.endLineNumber &&
+    input.startColumn === input.endColumn
+  ) {
+    return {
+      kind: "moveVertical",
+      direction: input.key === "ArrowUp" ? "up" : "down"
+    };
+  }
   if (input.key === "Enter") {
     if (
       input.altKey ||
