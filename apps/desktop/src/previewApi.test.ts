@@ -70,6 +70,87 @@ describe("browser-only preview adapter", () => {
       .not.toContainEqual(expect.objectContaining({ id: "preview-split" }));
   });
 
+  it("applies editor batches atomically with one revision and session history", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    const envelope = {
+      sessionId: boot.sessionId,
+      requestId: "preview-editor-batch",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: {
+        kind: "applyEditorBatch" as const,
+        commands: [
+          {
+            kind: "createNode" as const,
+            id: "preview-editor-batch-node",
+            parent_id: pageId,
+            before_id: null,
+            text: "draft"
+          },
+          {
+            kind: "updateText" as const,
+            id: "preview-editor-batch-node",
+            text: "committed"
+          }
+        ]
+      }
+    };
+
+    const applied = await previewNotesApi.execute(envelope);
+    const replayed = await previewNotesApi.execute(envelope);
+
+    expect(applied.revision).toBe(boot.revision + 1);
+    expect(applied.changedNodes).toContainEqual(expect.objectContaining({
+      id: "preview-editor-batch-node",
+      text: "committed"
+    }));
+    expect(applied.history).toEqual({
+      canUndo: false,
+      canRedo: false,
+      undoDepth: 0,
+      redoDepth: 0
+    });
+    expect(replayed).toEqual(applied);
+  });
+
+  it("rolls back every editor command when a later command fails", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+
+    await expect(previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-editor-batch-rollback",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: {
+        kind: "applyEditorBatch",
+        commands: [
+          {
+            kind: "createNode",
+            id: "preview-editor-rolled-back",
+            parent_id: pageId,
+            before_id: null,
+            text: "must disappear"
+          },
+          {
+            kind: "mergeNodeBackward",
+            id: "missing-current",
+            previous_id: "missing-previous",
+            previous_text: "",
+            current_text: ""
+          }
+        ]
+      }
+    })).rejects.toThrow("Preview batch contains a stale node.");
+
+    const after = await previewNotesApi.bootstrap();
+    expect(after.revision).toBe(boot.revision);
+    expect(after.viewport?.nodes).not.toContainEqual(expect.objectContaining({
+      id: "preview-editor-rolled-back"
+    }));
+  });
+
   it("deletes rows that disappear when a repeated split is undone", async () => {
     const boot = await previewNotesApi.bootstrap();
     const pageId = boot.activePageId!;

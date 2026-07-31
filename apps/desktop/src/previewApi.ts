@@ -122,6 +122,9 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
   if (envelope.baseRevision !== revision) {
     throw { code: "revision_conflict", message: "Preview revision is stale.", retryable: true };
   }
+  if (envelope.command.kind === "applyEditorBatch") {
+    return executeEditorBatch(envelope, envelope.command);
+  }
   validatePreviewBatch(nodes, envelope.command);
   const previousNodes = copyNodes();
   redoStack.length = 0;
@@ -401,6 +404,78 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
   const nextReceipt = receipt(forwardChangedNodes, forwardDeletedIds);
   recordReceipt(envelope.requestId, nextReceipt);
   return nextReceipt;
+}
+
+async function executeEditorBatch(
+  envelope: CommandEnvelope,
+  commandBatch: Extract<
+    CommandEnvelope["command"],
+    { readonly kind: "applyEditorBatch" }
+  >
+): Promise<MutationReceipt> {
+  if (
+    envelope.historyGroup !== null ||
+    commandBatch.commands.length === 0 ||
+    commandBatch.commands.length > 256
+  ) {
+    throw {
+      code: "invalid_command",
+      message: "Preview editor batch is invalid.",
+      retryable: false
+    };
+  }
+  const previousNodes = copyNodes();
+  const previousRevision = revision;
+  const previousActivePageId = activePageId;
+  const previousUndo = [...undoStack];
+  const previousRedo = [...redoStack];
+  const internalRequestIds: string[] = [];
+  const clearInternalReceipts = () => {
+    const internal = new Set(internalRequestIds);
+    internalRequestIds.forEach((requestId) =>
+      receiptsByRequest.delete(requestId));
+    const retained = completedRequestOrder.filter(
+      (requestId) => !internal.has(requestId)
+    );
+    completedRequestOrder.splice(
+      0,
+      completedRequestOrder.length,
+      ...retained
+    );
+  };
+
+  try {
+    for (const [index, command] of commandBatch.commands.entries()) {
+      const requestId = `${envelope.requestId}:editor:${index}`;
+      internalRequestIds.push(requestId);
+      await execute({
+        sessionId: envelope.sessionId,
+        requestId,
+        baseRevision: revision,
+        historyGroup: null,
+        command
+      });
+    }
+    const delta = createPreviewHistoryEntry(previousNodes, nodes).forward;
+    revision = previousRevision + 1;
+    undoStack.length = 0;
+    redoStack.length = 0;
+    clearInternalReceipts();
+    const nextReceipt = receipt(
+      [...delta.upserts],
+      [...delta.receiptDeletedIds]
+    );
+    recordReceipt(envelope.requestId, nextReceipt);
+    return nextReceipt;
+  } catch (cause) {
+    nodes = previousNodes;
+    revision = previousRevision;
+    activePageId = previousActivePageId;
+    undoStack.splice(0, undoStack.length, ...previousUndo);
+    redoStack.splice(0, redoStack.length, ...previousRedo);
+    clearInternalReceipts();
+    throw cause;
+  }
 }
 
 const previewImages = new PreviewImages({

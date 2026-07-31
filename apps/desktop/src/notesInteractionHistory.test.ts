@@ -14,6 +14,7 @@ function store() {
   >();
   const value: InteractionHistoryStore & {
     readonly emitMutation: () => void;
+    readonly resetMutations: () => void;
   } = {
     flushAllDrafts: vi.fn().mockResolvedValue(undefined),
     undo: vi.fn().mockResolvedValue(undefined),
@@ -31,6 +32,9 @@ function store() {
       kind: "recordMutation",
       undoDepth: 1,
       redoDepth: 0
+    })),
+    resetMutations: () => listeners.forEach((listener) => listener({
+      kind: "resetMutations"
     }))
   };
   return value;
@@ -93,5 +97,27 @@ describe("notes interaction history", () => {
     await history.undo();
 
     expect(notesStore.undo).toHaveBeenCalledOnce();
+  });
+
+  it("drops mutation entries but retains navigation when Monaco owns history", async () => {
+    const notesStore = store();
+    const apply = vi.fn().mockResolvedValue(undefined);
+    const history = new NotesInteractionHistory<Location>(notesStore, apply);
+    const before = { pageId: "page", zoomRootId: null };
+    const after = { pageId: "page", zoomRootId: "child" };
+    notesStore.emitMutation();
+    history.recordNavigation(before, after);
+    notesStore.emitMutation();
+
+    notesStore.resetMutations();
+    await history.undo();
+    await history.undo();
+    await history.redo();
+    await history.redo();
+
+    expect(apply).toHaveBeenNthCalledWith(1, before);
+    expect(apply).toHaveBeenNthCalledWith(2, after);
+    expect(notesStore.undo).not.toHaveBeenCalled();
+    expect(notesStore.redo).not.toHaveBeenCalled();
   });
 });

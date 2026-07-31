@@ -1,4 +1,5 @@
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
+import type { IpcEditorCommand } from "../../../packages/contracts/generated/IpcEditorCommand";
 import type { NotesApi } from "./api";
 import { initialNotesState, type NotesState } from "./notesState";
 import { StoreCommands } from "./storeCommands";
@@ -107,5 +108,44 @@ describe("StoreCommands", () => {
     await commands.execute({ kind: "createPage", id: "c", text: "C" }, "typing");
 
     expect(history).toHaveBeenCalledTimes(2);
+  });
+
+  it("executes a session-owned editor batch without recording Rust history", async () => {
+    let state: NotesState = {
+      ...initialNotesState,
+      status: "ready",
+      sessionId: "session-1",
+      revision: 7
+    };
+    const execute = vi.fn().mockResolvedValue(receipt(8));
+    const commands = new StoreCommands(api(execute), {
+      read: () => state,
+      write: (patch) => {
+        state = { ...state, ...patch };
+      },
+      applyReceipt: (next) => {
+        state = { ...state, revision: next.revision };
+      }
+    });
+    const history = vi.fn();
+    commands.subscribeHistory(history);
+    const editorCommands: readonly IpcEditorCommand[] = [
+      { kind: "updateText", id: "node-1", text: "updated" }
+    ];
+
+    await commands.executeSessionOwned(editorCommands, "editor-request-1");
+
+    expect(execute).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      requestId: "editor-request-1",
+      baseRevision: 7,
+      historyGroup: null,
+      command: {
+        kind: "applyEditorBatch",
+        commands: editorCommands
+      }
+    });
+    expect(history).toHaveBeenCalledOnce();
+    expect(history).toHaveBeenCalledWith({ kind: "resetMutations" });
   });
 });

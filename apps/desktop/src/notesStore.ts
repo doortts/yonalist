@@ -1,4 +1,5 @@
 import type { IpcNotesCommand } from "../../../packages/contracts/generated/IpcNotesCommand";
+import type { IpcEditorCommand } from "../../../packages/contracts/generated/IpcEditorCommand";
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { ExportFormat } from "../../../packages/contracts/generated/ExportFormat";
 import type { NotesExportResult } from "../../../packages/contracts/generated/NotesExportResult";
@@ -25,12 +26,18 @@ import {
   invalidationForPatch,
   type StoreInvalidation
 } from "./storeSubscriptions";
+import {
+  StoreMonaco,
+  type MonacoPageSnapshot
+} from "./storeMonaco";
+export { MonacoPageUnsupportedError } from "./storeMonaco";
 
 export class NotesStore {
   private state: NotesState = initialNotesState;
   private readonly listeners = new Set<() => void>();
   private readonly subscriptions: StoreSubscriptions;
   private readonly commands: StoreCommands;
+  private readonly monaco: StoreMonaco;
   readonly images: LazyStoreImages;
   private readonly drafts: StoreDrafts;
   private readonly outlineMutations: StoreOutlineMutations;
@@ -42,6 +49,7 @@ export class NotesStore {
       write: (patch, invalidation) => this.update(patch, invalidation),
       applyReceipt: (receipt) => this.applyReceipt(receipt)
     });
+    this.monaco = new StoreMonaco(api, this.commands, this.getSnapshot);
     this.images = new LazyStoreImages(api, this.commands, this.getSnapshot);
     this.drafts = new StoreDrafts({
       read: this.getSnapshot,
@@ -148,6 +156,17 @@ export class NotesStore {
 
   queryForest(rootIds: readonly string[]): Promise<ForestSnapshot> {
     return this.api.queryForest({ rootIds: [...rootIds], limit: 2_000 });
+  }
+
+  executeEditorBatch(
+    requestId: string,
+    commands: readonly IpcEditorCommand[]
+  ): Promise<MutationReceipt> {
+    return this.monaco.executeEditorBatch(requestId, commands);
+  }
+
+  async loadMonacoPage(pageId: string): Promise<MonacoPageSnapshot> {
+    return this.monaco.loadPage(pageId);
   }
 
   setDraft(id: string, text: string): void {

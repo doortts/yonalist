@@ -32,14 +32,22 @@ export class NotesInteractionHistory<Location> {
   private readonly future: InteractionEntry<Location>[] = [];
   private readonly unsubscribe: () => void;
   private busy = false;
+  private mutationFallbackEnabled = true;
 
   constructor(
     private readonly store: InteractionHistoryStore,
     private readonly applyNavigation: (location: Location) => Promise<void>
   ) {
-    this.unsubscribe = store.subscribeHistory(() => {
-      pushBounded(this.past, { kind: "mutation" });
-      this.future.length = 0;
+    this.unsubscribe = store.subscribeHistory((event) => {
+      if (event.kind === "resetMutations") {
+        this.removeMutationEntries(this.past);
+        this.removeMutationEntries(this.future);
+        this.mutationFallbackEnabled = false;
+      } else {
+        this.mutationFallbackEnabled = true;
+        pushBounded(this.past, { kind: "mutation" });
+        this.future.length = 0;
+      }
     });
   }
 
@@ -59,7 +67,9 @@ export class NotesInteractionHistory<Location> {
     try {
       await this.store.flushAllDrafts();
       const entry = this.past.at(-1) ??
-        (this.store.getSnapshot().canUndo ? { kind: "mutation" } : null);
+        (this.mutationFallbackEnabled && this.store.getSnapshot().canUndo
+          ? { kind: "mutation" }
+          : null);
       if (!entry) return;
       if (entry.kind === "navigation") {
         await this.applyNavigation(entry.before);
@@ -79,7 +89,9 @@ export class NotesInteractionHistory<Location> {
     try {
       await this.store.flushAllDrafts();
       const entry = this.future.at(-1) ??
-        (this.store.getSnapshot().canRedo ? { kind: "mutation" } : null);
+        (this.mutationFallbackEnabled && this.store.getSnapshot().canRedo
+          ? { kind: "mutation" }
+          : null);
       if (!entry) return;
       if (entry.kind === "navigation") {
         await this.applyNavigation(entry.after);
@@ -91,5 +103,12 @@ export class NotesInteractionHistory<Location> {
     } finally {
       this.busy = false;
     }
+  }
+
+  private removeMutationEntries(entries: InteractionEntry<Location>[]): void {
+    const navigationEntries = entries.filter(
+      (entry) => entry.kind === "navigation"
+    );
+    entries.splice(0, entries.length, ...navigationEntries);
   }
 }

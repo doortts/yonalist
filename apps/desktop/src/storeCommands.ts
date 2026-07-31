@@ -1,4 +1,5 @@
 import type { IpcNotesCommand } from "../../../packages/contracts/generated/IpcNotesCommand";
+import type { IpcEditorCommand } from "../../../packages/contracts/generated/IpcEditorCommand";
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { NotesApi } from "./api";
 import type { NotesState } from "./notesState";
@@ -92,6 +93,29 @@ export class StoreCommands {
         previousUndoDepth,
         receipt
       );
+      return receipt;
+    });
+  }
+
+  executeSessionOwned(
+    commands: readonly IpcEditorCommand[],
+    requestId: string
+  ): Promise<MutationReceipt> {
+    return this.enqueue(async () => {
+      const state = this.host.read();
+      if (!state.sessionId) throw new Error("Notes session is not ready.");
+      const receipt = await this.api.execute({
+        sessionId: state.sessionId,
+        requestId,
+        baseRevision: state.revision,
+        historyGroup: null,
+        command: {
+          kind: "applyEditorBatch",
+          commands: [...commands]
+        }
+      });
+      this.host.applyReceipt(receipt);
+      this.historyEvents.resetMutations();
       return receipt;
     });
   }

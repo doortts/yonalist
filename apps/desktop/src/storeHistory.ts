@@ -1,10 +1,12 @@
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 
-export interface NotesMutationHistoryEvent {
-  readonly kind: "recordMutation";
-  readonly undoDepth: number;
-  readonly redoDepth: number;
-}
+export type NotesMutationHistoryEvent =
+  | {
+      readonly kind: "recordMutation";
+      readonly undoDepth: number;
+      readonly redoDepth: number;
+    }
+  | { readonly kind: "resetMutations" };
 
 export class StoreHistoryEvents {
   private readonly listeners =
@@ -45,5 +47,12 @@ export class StoreHistoryEvents {
       }));
     }
     this.lastCommittedGroup = group;
+  }
+
+  resetMutations(): void {
+    this.breakGroup();
+    this.listeners.forEach((listener) => listener({
+      kind: "resetMutations"
+    }));
   }
 }
