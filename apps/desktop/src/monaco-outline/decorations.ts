@@ -1,14 +1,6 @@
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 
-import type {
-  OutlineLineMetadata,
-  OutlineMetadataSnapshot
-} from "./metadata";
-
-interface DecorationEntry {
-  readonly decorationId: string;
-  readonly lineNumber: number;
-}
+import type { OutlineLineMetadata } from "./metadata";
 
 export function buildOutlineDecorations(
   lines: readonly OutlineLineMetadata[],
@@ -39,75 +31,4 @@ export function buildOutlineDecorations(
       }
     }];
   });
-}
-
-export class OutlineDecorationSet {
-  private readonly entries = new Map<string, DecorationEntry>();
-
-  constructor(
-    private readonly model: monaco.editor.ITextModel,
-    private readonly metadata: () => OutlineMetadataSnapshot
-  ) {
-    this.update(allLineNumbers(metadata()));
-  }
-
-  get size(): number {
-    return this.entries.size;
-  }
-
-  update(affectedLineNumbers: readonly number[]): void {
-    const snapshot = this.metadata();
-    const activeNodeIds = new Set(
-      snapshot.lines.map(({ nodeId }) => nodeId)
-    );
-    const affected = new Set(affectedLineNumbers);
-    const removedIds: string[] = [];
-    for (const [nodeId, entry] of this.entries) {
-      const trackedLineNumber =
-        this.model.getDecorationRange(entry.decorationId)?.startLineNumber ??
-        entry.lineNumber;
-      if (
-        !activeNodeIds.has(nodeId) ||
-        affected.has(trackedLineNumber)
-      ) {
-        removedIds.push(entry.decorationId);
-        this.entries.delete(nodeId);
-      } else if (trackedLineNumber !== entry.lineNumber) {
-        this.entries.set(nodeId, {
-          decorationId: entry.decorationId,
-          lineNumber: trackedLineNumber
-        });
-      }
-    }
-
-    const refreshedLineNumbers = [...affected]
-      .filter((lineNumber) =>
-        lineNumber >= 1 && lineNumber <= snapshot.lines.length)
-      .sort((left, right) => left - right);
-    const decorationIds = this.model.deltaDecorations(
-      removedIds,
-      buildOutlineDecorations(snapshot.lines, refreshedLineNumbers)
-    );
-    refreshedLineNumbers.forEach((lineNumber, index) => {
-      const line = snapshot.lines[lineNumber - 1];
-      const decorationId = decorationIds[index];
-      if (line && decorationId) {
-        this.entries.set(line.nodeId, { decorationId, lineNumber });
-      }
-    });
-  }
-
-  dispose(): void {
-    this.model.deltaDecorations(
-      [...this.entries.values()].map(({ decorationId }) => decorationId),
-      []
-    );
-    this.entries.clear();
-  }
-}
-
-function allLineNumbers(
-  snapshot: OutlineMetadataSnapshot
-): readonly number[] {
-  return snapshot.lines.map((_, index) => index + 1);
 }

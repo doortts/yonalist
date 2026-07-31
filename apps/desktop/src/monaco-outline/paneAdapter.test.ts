@@ -74,10 +74,10 @@ describe("Monaco outline pane adapter", () => {
       line("a-child", "a", 1),
       line("b", "page", 0)
     ]);
-    const listeners = new Set<() => void>();
+    const listeners = new Set<(structural: boolean) => void>();
     const session = {
       metadata: { current: () => metadata },
-      subscribeMetadata: (listener: () => void) => {
+      subscribeMetadata: (listener: (structural: boolean) => void) => {
         listeners.add(listener);
         return () => listeners.delete(listener);
       }
@@ -115,10 +115,24 @@ describe("Monaco outline pane adapter", () => {
       true
     );
     expect(right.host).toHaveAttribute("data-empty-zoom", "true");
+    expect(left.collectionSet).toHaveBeenCalledOnce();
+    expect(right.collectionSet).toHaveBeenCalledOnce();
+    const leftHiddenUpdates = left.setHiddenAreas.mock.calls.length;
+    const rightHiddenUpdates = right.setHiddenAreas.mock.calls.length;
+    listeners.forEach((listener) => listener(false));
+    expect(left.setHiddenAreas).toHaveBeenCalledTimes(leftHiddenUpdates);
+    expect(right.setHiddenAreas).toHaveBeenCalledTimes(rightHiddenUpdates);
+    expect(left.collectionSet).toHaveBeenCalledOnce();
+    expect(right.collectionSet).toHaveBeenCalledOnce();
+
+    listeners.forEach((listener) => listener(true));
+    expect(left.collectionSet).toHaveBeenCalledTimes(2);
+    expect(right.collectionSet).toHaveBeenCalledTimes(2);
     expect(leftAdapter.diagnostics()).toEqual({
       disposed: false,
       savedViewStates: 2,
-      liveSubscriptions: 1
+      viewDecorations: 3,
+      liveSubscriptions: 3
     });
     leftAdapter.dispose();
     leftAdapter.dispose();
@@ -126,6 +140,7 @@ describe("Monaco outline pane adapter", () => {
     expect(leftAdapter.diagnostics()).toEqual({
       disposed: true,
       savedViewStates: 0,
+      viewDecorations: 0,
       liveSubscriptions: 0
     });
     expect(listeners.size).toBe(0);
@@ -137,20 +152,32 @@ function fakeEditor(viewState: unknown): {
   readonly host: HTMLDivElement;
   readonly restoreViewState: ReturnType<typeof vi.fn>;
   readonly setHiddenAreas: ReturnType<typeof vi.fn>;
+  readonly collectionSet: ReturnType<typeof vi.fn>;
 } {
   const host = document.createElement("div");
   const restoreViewState = vi.fn();
   const setHiddenAreas = vi.fn();
+  const collectionSet = vi.fn();
   return {
     editor: {
       saveViewState: vi.fn().mockReturnValue(viewState),
       restoreViewState,
       getSelection: vi.fn().mockReturnValue(null),
       getDomNode: vi.fn().mockReturnValue(host),
-      setHiddenAreas
+      setHiddenAreas,
+      getVisibleRanges: vi.fn().mockReturnValue([new monaco.Range(1, 1, 3, 1)]),
+      getPosition: vi.fn().mockReturnValue({ lineNumber: 1, column: 1 }),
+      getLayoutInfo: vi.fn().mockReturnValue({ height: 75 }),
+      createDecorationsCollection: vi.fn().mockReturnValue({
+        set: collectionSet,
+        clear: vi.fn()
+      }),
+      onDidScrollChange: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+      onDidLayoutChange: vi.fn().mockReturnValue({ dispose: vi.fn() })
     } as unknown as monaco.editor.IStandaloneCodeEditor,
     host,
     restoreViewState,
-    setHiddenAreas
+    setHiddenAreas,
+    collectionSet
   };
 }

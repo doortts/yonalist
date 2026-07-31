@@ -151,18 +151,7 @@ describe("MonacoOutlineSession", () => {
       { nodeId: "existing", parentId: "parent", depth: 1 },
       { nodeId: "sibling", parentId: "first-child", depth: 0 }
     ]);
-    expect(session.model.getAllDecorations().map((decoration) => ({
-      lineNumber: decoration.range.startLineNumber,
-      nodeId: (
-        decoration.options.before?.attachedData as
-          { readonly nodeId?: string } | undefined
-      )?.nodeId
-    }))).toEqual([
-      { lineNumber: 1, nodeId: "parent" },
-      { lineNumber: 2, nodeId: "inserted-child" },
-      { lineNumber: 3, nodeId: "existing" },
-      { lineNumber: 4, nodeId: "sibling" }
-    ]);
+    expect(session.model.getAllDecorations()).toEqual([]);
 
     await session.flush("navigation");
     expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([{
@@ -223,7 +212,6 @@ describe("MonacoOutlineSession", () => {
       forwardTransitions: 0,
       reverseTransitions: 0,
       metadataVersions: 1,
-      modelDecorations: 1,
       pendingPersistenceCommands: 0,
       persistenceKind: "saved",
       fullModelReplacementCount: 0,

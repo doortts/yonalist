@@ -2,7 +2,6 @@ import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 
 import type { IpcEditorCommand } from "../../../../packages/contracts/generated/IpcEditorCommand";
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
-import { OutlineDecorationSet } from "./decorations";
 import {
   pushMetadataUndo,
   type MetadataUndoElement
@@ -51,7 +50,6 @@ export interface MonacoOutlineSessionDiagnostics {
   readonly forwardTransitions: number;
   readonly reverseTransitions: number;
   readonly metadataVersions: number;
-  readonly modelDecorations: number;
   readonly pendingPersistenceCommands: number;
   readonly persistenceKind: EditorPersistenceState["kind"];
   readonly fullModelReplacementCount: number;
@@ -62,7 +60,6 @@ export class MonacoOutlineSession {
   readonly pageId: string;
   readonly model: monaco.editor.ITextModel;
   readonly metadata: OutlineMetadataTimeline;
-  readonly decorations: OutlineDecorationSet;
   private readonly metricState = {
     fullModelReplacementCount: 0,
     maxDecorationLinesPerEdit: 0
@@ -72,7 +69,8 @@ export class MonacoOutlineSession {
   private readonly transitionsFrom = new Map<number, VersionTransition>();
   private readonly transitionsTo = new Map<number, VersionTransition>();
   private readonly boundEditors = new Set<monaco.editor.ICodeEditor>();
-  private readonly metadataListeners = new Set<() => void>();
+  private readonly metadataListeners =
+    new Set<(structural: boolean) => void>();
   private readonly contentListener: monaco.IDisposable;
   private lineTexts: string[];
   private suppressContentListener = false;
@@ -106,10 +104,6 @@ export class MonacoOutlineSession {
     this.metadata = OutlineMetadataTimeline.hydrate(
       this.model.getAlternativeVersionId(),
       seeded
-    );
-    this.decorations = new OutlineDecorationSet(
-      this.model,
-      () => this.metadata.current()
     );
     this.contentListener = this.model.onDidChangeContent((event) => {
       if (event.isFlush) {
@@ -148,7 +142,6 @@ export class MonacoOutlineSession {
       forwardTransitions: this.transitionsFrom.size,
       reverseTransitions: this.transitionsTo.size,
       metadataVersions: this.metadata.versionCount,
-      modelDecorations: this.decorations.size,
       pendingPersistenceCommands:
         this.persistenceQueue.pendingCommandCount,
       persistenceKind: this.persistenceQueue.getSnapshot().kind,
@@ -182,7 +175,9 @@ export class MonacoOutlineSession {
     return () => this.boundEditors.delete(editor);
   }
 
-  subscribeMetadata(listener: () => void): () => void {
+  subscribeMetadata(
+    listener: (structural: boolean) => void
+  ): () => void {
     this.metadataListeners.add(listener);
     return () => this.metadataListeners.delete(listener);
   }
@@ -304,8 +299,7 @@ export class MonacoOutlineSession {
     this.transitionsFrom.set(recorded.fromAlternativeVersionId, recorded);
     this.transitionsTo.set(recorded.toAlternativeVersionId, recorded);
     this.recordDecorationMetric(1);
-    this.decorations.update([insertionIndex + 1]);
-    this.emitMetadata();
+    this.emitMetadata(true);
     this.persistenceQueue.enqueue(recorded.forward, "structural");
     return nodeId;
   }
@@ -420,8 +414,7 @@ export class MonacoOutlineSession {
     this.transitionsFrom.set(recorded.fromAlternativeVersionId, recorded);
     this.transitionsTo.set(recorded.toAlternativeVersionId, recorded);
     this.recordDecorationMetric(transition.affectedLineNumbers.length);
-    this.decorations.update(transition.affectedLineNumbers);
-    this.emitMetadata();
+    this.emitMetadata(transition.structural);
     this.persistenceQueue.enqueue(
       recorded.forward,
       transition.structural ? "structural" : "text"
@@ -466,8 +459,9 @@ export class MonacoOutlineSession {
     }
     if (commands.length > 0) {
       this.recordDecorationMetric(affectedLineNumbers.size);
-      this.decorations.update([...affectedLineNumbers]);
-      this.emitMetadata();
+      this.emitMetadata(
+        commands.some((command) => command.kind !== "updateText")
+      );
       this.persistenceQueue.enqueue(
         commands,
         commands.some((command) => command.kind !== "updateText")
@@ -500,8 +494,7 @@ export class MonacoOutlineSession {
       );
       this.metadata.rewriteCurrent(lines);
       this.recordDecorationMetric(affectedLineNumbers.length);
-      this.decorations.update(affectedLineNumbers);
-      this.emitMetadata();
+      this.emitMetadata(true);
       this.persistenceQueue.enqueue(commands, "structural");
     };
     const element: MetadataUndoElement = {
@@ -530,12 +523,11 @@ export class MonacoOutlineSession {
     this.contentListener.dispose();
     this.boundEditors.clear();
     this.metadataListeners.clear();
-    this.decorations.dispose();
     this.model.dispose();
   }
 
-  private emitMetadata(): void {
-    this.metadataListeners.forEach((listener) => listener());
+  private emitMetadata(structural: boolean): void {
+    this.metadataListeners.forEach((listener) => listener(structural));
   }
 
   private recordDecorationMetric(lineCount: number): void {

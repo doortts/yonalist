@@ -2,6 +2,7 @@ import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 
 import { setEditorHiddenAreas } from "./internalAdapter";
 import type { OutlineMetadataSnapshot } from "./metadata";
+import { PaneDecorationWindow } from "./decorationWindow";
 import type { MonacoOutlinePaneBinding } from "./plugin";
 import type { MonacoOutlineSession } from "./session";
 
@@ -13,6 +14,7 @@ export interface OutlinePaneNavigation {
 export interface MonacoOutlinePaneDiagnostics {
   readonly disposed: boolean;
   readonly savedViewStates: number;
+  readonly viewDecorations: number;
   readonly liveSubscriptions: number;
 }
 
@@ -21,6 +23,7 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
     new Map<string, monaco.editor.ICodeEditorViewState | null>();
   private readonly unsubscribeMetadata: () => void;
   private readonly hiddenAreaSource: string;
+  private readonly decorationWindow: PaneDecorationWindow;
   private zoomRootId: string | null;
   private showCompleted: boolean;
   private disposed = false;
@@ -36,8 +39,12 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
     this.zoomRootId = input.zoomRootId;
     this.showCompleted = input.showCompleted;
     this.hiddenAreaSource = `yonalist-outline-${input.paneId}`;
+    this.decorationWindow = new PaneDecorationWindow({
+      editor: input.editor,
+      metadata: () => input.session.metadata.current()
+    });
     this.unsubscribeMetadata = input.session.subscribeMetadata(
-      () => this.updateHiddenAreas()
+      (change) => this.handleMetadataChange(change)
     );
     this.updateHiddenAreas();
   }
@@ -78,7 +85,8 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
     return Object.freeze({
       disposed: this.disposed,
       savedViewStates: this.viewStates.size,
-      liveSubscriptions: this.disposed ? 0 : 1
+      viewDecorations: this.decorationWindow.size,
+      liveSubscriptions: this.disposed ? 0 : 3
     });
   }
 
@@ -86,6 +94,7 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
     if (this.disposed) return;
     this.disposed = true;
     this.unsubscribeMetadata();
+    this.decorationWindow.dispose();
     this.input.editor.getDomNode()?.removeAttribute("data-empty-zoom");
     setEditorHiddenAreas(
       this.input.editor,
@@ -114,6 +123,11 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
       ),
       this.hiddenAreaSource
     );
+  }
+
+  private handleMetadataChange(structural: boolean): void {
+    if (structural) this.updateHiddenAreas();
+    this.decorationWindow.invalidate(structural);
   }
 }
 
