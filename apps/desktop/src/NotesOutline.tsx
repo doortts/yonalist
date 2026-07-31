@@ -28,6 +28,7 @@ import type { MonacoOutlineSession } from "./monaco-outline/session";
 import type {
   MonacoOutlineFocusRequest
 } from "./MonacoOutlineSurface";
+import { loadMonacoOutlineRuntime } from "./monaco-outline/runtimeLoader";
 
 const OutlineSelectionActionBar = lazy(() =>
   import("./OutlineSelectionActionBar").then((module) => ({
@@ -37,7 +38,9 @@ const OutlineDragVisuals = lazy(() =>
   import("./OutlineDragVisuals").then((module) => ({
     default: module.OutlineDragVisuals
   })));
-const MonacoOutlineSurface = lazy(() => import("./MonacoOutlineSurface"));
+const MonacoOutlineSurface = lazy(() =>
+  loadMonacoOutlineRuntime().then(({ Surface }) => ({ default: Surface }))
+);
 const NotesExportBoundary = lazy(() => import("./NotesExportBoundary"));
 const NotesChildComposer = lazy(() =>
   import("./NotesChildComposer").then((module) => ({

@@ -3,6 +3,7 @@ import type {
   MonacoSessionRegistry,
   MonacoSessionRegistryPort
 } from "./sessionRegistry";
+import { loadMonacoOutlineRuntime } from "./runtimeLoader";
 
 export class LazyMonacoOutlineSessionRegistry
 implements MonacoSessionRegistry {
@@ -38,7 +39,7 @@ implements MonacoSessionRegistry {
   }
 
   private load(): Promise<MonacoSessionRegistry> {
-    this.loading ??= import("./sessionRegistry").then(
+    this.loading ??= loadMonacoOutlineRuntime().then(
       ({ MonacoOutlineSessionRegistry }) => {
         const registry = new MonacoOutlineSessionRegistry(this.port);
         this.registry = registry;

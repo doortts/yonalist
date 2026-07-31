@@ -20,6 +20,9 @@ import type { OutlineTagToken } from "./OutlineTextField";
 import {
   LazyMonacoOutlineSessionRegistry
 } from "./monaco-outline/lazyRegistry";
+import {
+  preloadMonacoOutlineRuntime
+} from "./monaco-outline/runtimeLoader";
 const SearchPanel = lazy(() => import("./SearchPanel").then((module) =>
   ({ default: module.SearchPanel })));
 const LibraryViewButtons = lazy(() =>
@@ -75,6 +78,9 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   useEffect(() => {
     void store.bootstrap();
   }, [store]);
+  useEffect(() => {
+    preloadMonacoOutlineRuntime(window.location.search);
+  }, []);
   useEffect(
     () => () => interactionHistory.dispose(),
     [interactionHistory]
