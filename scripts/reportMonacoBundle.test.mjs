@@ -1,8 +1,7 @@
-import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { expect, test } from "vitest";
 
 import { readMonacoBundleReport } from "./reportMonacoBundle.mjs";
 
@@ -49,7 +48,7 @@ test("attributes shared entry assets once and reports Monaco worker cost", async
 
     const report = await readMonacoBundleReport({ root });
 
-    assert.deepEqual(report, {
+    expect(report).toEqual({
       initialJavaScript: { raw: 300, gzip: 48 },
       monacoJavaScript: { raw: 900, gzip: 29 },
       monacoCss: { raw: 100, gzip: 24 },

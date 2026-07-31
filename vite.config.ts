@@ -1,5 +1,10 @@
 import { configDefaults, defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import { fileURLToPath } from "node:url";
+
+const runtimeProbeTestStub = fileURLToPath(
+  new URL("./apps/desktop/src/test/runtimeProbeStub.ts", import.meta.url)
+);
 
 export default defineConfig({
   base: "./",
@@ -37,6 +42,9 @@ export default defineConfig({
     }
   },
   test: {
+    alias: {
+      "virtual:yonalist-monaco-runtime-probe": runtimeProbeTestStub
+    },
     environment: "jsdom",
     globals: true,
     setupFiles: ["src/test/browser-polyfills.ts", "src/test/setup.ts"],
