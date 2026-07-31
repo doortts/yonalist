@@ -1,5 +1,12 @@
 import { Check, ImagePlus, MoreHorizontal, X } from "lucide-react";
-import { lazy, Suspense, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  lazy,
+  Suspense,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+  type ReactNode
+} from "react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import { handlePageKeyDown, RowMenuItem } from "./outlineSupport";
 import type { NotesStore } from "./notesStore";
@@ -12,6 +19,48 @@ import { useNotesNode } from "./useNotesNode";
 const ImageNodeContent = lazy(() => import("./ImageNodeContent").then((module) => ({
   default: module.ImageNodeContent
 })));
+
+type CanonicalTitleHistoryEvent = Pick<
+  KeyboardEvent<HTMLTextAreaElement>,
+  | "key"
+  | "ctrlKey"
+  | "metaKey"
+  | "shiftKey"
+  | "preventDefault"
+  | "stopPropagation"
+>;
+
+export function blockPendingCanonicalTitleKey(
+  event: CanonicalTitleHistoryEvent,
+  pending: boolean | undefined
+): boolean {
+  if (!pending) return false;
+  if (event.key === "Enter") {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+  return true;
+}
+
+export function handleCanonicalTitleHistory(
+  event: CanonicalTitleHistoryEvent,
+  undo: (() => void) | undefined,
+  redo: (() => void) | undefined
+): boolean {
+  if (
+    (!event.ctrlKey && !event.metaKey) ||
+    event.key.toLowerCase() !== "z" ||
+    !undo ||
+    !redo
+  ) {
+    return false;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.shiftKey) redo();
+  else undo();
+  return true;
+}
 
 export function OutlineHeader({
   store,
@@ -31,7 +80,14 @@ export function OutlineHeader({
   selectionToolbar,
   exportMenu,
   imageDropTarget,
-  onPickImage
+  onPickImage,
+  titleValue,
+  titleReadOnly,
+  onTitleChange,
+  onTitleBlur,
+  onTitleUndo,
+  onTitleRedo,
+  onCreateFirstChild
 }: {
   readonly store: NotesStore;
   readonly target: { readonly id: string; readonly text: string };
@@ -51,6 +107,13 @@ export function OutlineHeader({
   readonly exportMenu?: ReactNode;
   readonly imageDropTarget: boolean;
   readonly onPickImage: () => void;
+  readonly titleValue?: string;
+  readonly titleReadOnly?: boolean;
+  readonly onTitleChange?: (value: string) => void;
+  readonly onTitleBlur?: () => void;
+  readonly onTitleUndo?: () => void;
+  readonly onTitleRedo?: () => void;
+  readonly onCreateFirstChild?: (parentId: string) => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const { title } = useNotesNode(store, target.id);
@@ -135,24 +198,49 @@ export function OutlineHeader({
                 data-outline-field="title"
                 aria-label="Page title"
                 rows={1}
-                value={title}
+                value={titleValue ?? title}
                 placeholder="Untitled page"
+                readOnly={titleReadOnly}
                 onTagClick={onTagClick}
-                onChange={(event) => store.setDraft(target.id, event.target.value)}
-                onKeyDown={(event) => handlePageKeyDown(
-                  event,
-                  store,
-                  target.id,
-                  nodes,
-                  visibleNodes,
-                  index,
-                  visibleIndex,
-                  onBack
-                )}
+                onChange={(event) => {
+                  if (titleReadOnly) return;
+                  const value = event.target.value;
+                  if (onTitleChange) onTitleChange(value);
+                  else store.setDraft(target.id, value);
+                }}
+                onKeyDown={(event) => {
+                  if (blockPendingCanonicalTitleKey(
+                    event,
+                    titleReadOnly
+                  )) {
+                    return;
+                  }
+                  if (handleCanonicalTitleHistory(
+                    event,
+                    onTitleUndo,
+                    onTitleRedo
+                  )) {
+                    return;
+                  }
+                  handlePageKeyDown(
+                    event,
+                    store,
+                    target.id,
+                    nodes,
+                    visibleNodes,
+                    index,
+                    visibleIndex,
+                    onBack,
+                    onCreateFirstChild
+                  );
+                }}
                 onKeyUp={(event) => {
                   if (event.key === "Backspace") store.endBackspaceGesture();
                 }}
-                onBlur={() => void store.flushDraft(target.id)}
+                onBlur={() => {
+                  if (onTitleBlur) onTitleBlur();
+                  else void store.flushDraft(target.id);
+                }}
               />
             </h2>}
           </div>

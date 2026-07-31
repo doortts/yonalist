@@ -20,9 +20,10 @@ describe("Yonalist v2 desktop shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Yonalist" })).toBeVisible();
     expect(screen.getByRole("group", { name: "Page title" })).toHaveTextContent("Today");
-    expect(screen.getAllByRole("group", { name: "Note text" })[0]).toHaveTextContent(
-      "First thought"
-    );
+    expect((await screen.findAllByRole(
+      "group",
+      { name: "Note text" }
+    ))[0]).toHaveTextContent("First thought");
     expect(notesApi.queryViewport).not.toHaveBeenCalled();
   });
 

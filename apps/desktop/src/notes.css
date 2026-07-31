@@ -1223,19 +1223,12 @@
   background: transparent;
 }
 
-.notes-monaco-outline .yonalist-outline-injected-bullet,
-.notes-monaco-bullet-prefix,
-.notes-monaco-image-prefix {
+.notes-monaco-outline .monaco-editor[data-empty-zoom="true"] {
+  visibility: hidden;
+}
+
+.notes-monaco-outline .yonalist-outline-injected-bullet {
   color: var(--text-2);
-}
-
-.notes-monaco-image-prefix {
-  opacity: 0.72;
-}
-
-.notes-monaco-image-line {
-  color: var(--text-3);
-  font-style: italic;
 }
 
 .notes-page-header {

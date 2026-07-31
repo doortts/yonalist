@@ -11,8 +11,7 @@ import { useOutlineSelection } from "./useOutlineSelection";
 import { useOutlinePointerSelection } from "./useOutlinePointerSelection";
 import { useOutlineDrag } from "./useOutlineDrag";
 import { OutlineHeader } from "./OutlineHeader";
-import { OutlineRow, OutlineRowRuntime } from "./OutlineRow";
-import { NotesChildComposer } from "./NotesChildComposer";
+import { OutlineRowRuntime } from "./outlineRowRuntime";
 import { buildTodoProgressMap } from "./outlineTodo";
 import type { OutlineTagToken } from "./OutlineTextField";
 import {
@@ -21,11 +20,14 @@ import {
 import { OutlineIndex } from "./outlineIndex";
 import type { PaneFocusSnapshot } from "./appNavigation";
 import { useImageIngest } from "./useImageIngest";
-import { NotesExportBoundary } from "./NotesExportBoundary";
 import { outlineSurfaceFromSearch } from "./outlineSurface";
 import type {
   MonacoSessionRegistry
 } from "./monaco-outline/sessionRegistry";
+import type { MonacoOutlineSession } from "./monaco-outline/session";
+import type {
+  MonacoOutlineFocusRequest
+} from "./MonacoOutlineSurface";
 
 const OutlineSelectionActionBar = lazy(() =>
   import("./OutlineSelectionActionBar").then((module) => ({
@@ -36,6 +38,15 @@ const OutlineDragVisuals = lazy(() =>
     default: module.OutlineDragVisuals
   })));
 const MonacoOutlineSurface = lazy(() => import("./MonacoOutlineSurface"));
+const NotesExportBoundary = lazy(() => import("./NotesExportBoundary"));
+const NotesChildComposer = lazy(() =>
+  import("./NotesChildComposer").then((module) => ({
+    default: module.NotesChildComposer
+  })));
+const OutlineRow = lazy(() =>
+  import("./OutlineRow").then((module) => ({
+    default: module.OutlineRow
+  })));
 
 export interface PaneRestoreRequest {
   readonly epoch: number;
@@ -74,10 +85,15 @@ export function NotesOutline({
   const [selectionOperationBusy, setSelectionOperationBusy] = useState(false);
   const [unsupportedMonacoPageId, setUnsupportedMonacoPageId] =
     useState<string | null>(null);
+  const [monacoSession, setMonacoSession] =
+    useState<MonacoOutlineSession | null>(null);
+  const [monacoFocusRequest, setMonacoFocusRequest] =
+    useState<MonacoOutlineFocusRequest | null>(null);
   const index = useMemo(() => new OutlineIndex(state.nodes), [state.nodes]);
   const zoomRoot = zoomRootId
     ? index.node(zoomRootId)
     : undefined;
+  const monacoZoomTitle = useMonacoNodeText(monacoSession, zoomRootId);
   const allBodyNodes = useMemo(
     () => zoomRoot
       ? state.nodes.filter((node) =>
@@ -302,17 +318,54 @@ export function NotesOutline({
       outlineDrag.rowProps(nodeId).consumeDragHandleClick()
   });
   const header = zoomRoot ?? { id: page.id, text: page.title };
+  const canonicalTitlePending =
+    useMonaco && Boolean(zoomRoot) && !monacoSession;
+  const canonicalHeaderTitle = useMonaco && zoomRoot
+    ? monacoZoomTitle ?? zoomRoot.text
+    : header.text;
+  const monacoHeader = useMonaco && zoomRoot
+    ? monacoSession
+      ? {
+        titleValue: monacoZoomTitle ?? zoomRoot.text,
+        onTitleChange: (value: string) => {
+          monacoSession.updateNodeText(zoomRoot.id, value);
+        },
+        onTitleBlur: () => {
+          void monacoSession.flush("blur").catch(() => undefined);
+        },
+        onTitleUndo: () => {
+          void monacoSession.undo();
+        },
+        onTitleRedo: () => {
+          void monacoSession.redo();
+        },
+        onCreateFirstChild: (parentId: string) => {
+          const nodeId = monacoSession.createFirstChild(parentId);
+          if (!nodeId) return;
+          setMonacoFocusRequest((current) => ({
+            epoch: (current?.epoch ?? 0) + 1,
+            nodeId
+          }));
+        }
+      }
+      : {
+          titleValue: zoomRoot.text,
+          titleReadOnly: true
+        }
+    : {};
   const selectedExportNode = selection.selectedIds.length === 1
     ? selection.selectedNodes[0]
     : undefined;
-  const exportMenu = (
-    <NotesExportBoundary
-      store={store}
-      currentRoot={{ id: header.id, title: header.text }}
-      selectedNode={selectedExportNode
-        ? { id: selectedExportNode.id, title: selectedExportNode.text }
-        : null}
-    />
+  const exportMenu = canonicalTitlePending ? undefined : (
+    <Suspense fallback={null}>
+      <NotesExportBoundary
+        store={store}
+        currentRoot={{ id: header.id, title: canonicalHeaderTitle }}
+        selectedNode={selectedExportNode
+          ? { id: selectedExportNode.id, title: selectedExportNode.text }
+          : null}
+      />
+    </Suspense>
   );
   return (
     <section
@@ -386,6 +439,7 @@ export function NotesOutline({
           : undefined}
         imageDropTarget={imageIngest.dropTargetId === header.id}
         onPickImage={() => void imageIngest.openPicker(header.id)}
+        {...monacoHeader}
       />
       {imageIngest.error && (
         <div className="notes-inline-error" role="alert">
@@ -421,6 +475,8 @@ export function NotesOutline({
                 zoomRootId={zoomRootId}
                 showCompleted={showCompleted}
                 registry={monacoSessions}
+                focusRequest={monacoFocusRequest}
+                onSessionChange={setMonacoSession}
                 onZoomRootChange={onZoomRootChange}
                 onOpenSplit={(nodeId) => onOpenSplit?.(nodeId)}
                 onUnsupported={() => setUnsupportedMonacoPageId(page.id)}
@@ -436,31 +492,33 @@ export function NotesOutline({
                   The standard outline editor is active for this page.
                 </span>
               )}
-              <ol
-                className="notes-outline-list"
-                role="list"
-                data-outline-fallback={
-                  unsupportedMonacoPageId === page.id
-                    ? "monaco-unsupported"
-                    : undefined
-                }
-                {...pointerSelection}
-              >
-                {bodyNodes.map((node) => (
-                  <OutlineRow
-                    key={node.id}
-                    node={node}
-                    store={store}
-                    selected={selectedIds.has(node.id)}
-                    depth={index.depthOf(node.id, zoomRoot?.id ?? page.id)}
-                    hasChildren={index.hasChildren(node.id)}
-                    todoProgress={todoProgress.get(node.id) ?? null}
-                    imageDropTarget={imageIngest.dropTargetId === node.id}
-                    dragSource={outlineDrag.rowProps(node.id).dragSource}
-                    runtime={rowRuntime}
-                  />
-                ))}
-              </ol>
+              <Suspense fallback={null}>
+                <ol
+                  className="notes-outline-list"
+                  role="list"
+                  data-outline-fallback={
+                    unsupportedMonacoPageId === page.id
+                      ? "monaco-unsupported"
+                      : undefined
+                  }
+                  {...pointerSelection}
+                >
+                  {bodyNodes.map((node) => (
+                    <OutlineRow
+                      key={node.id}
+                      node={node}
+                      store={store}
+                      selected={selectedIds.has(node.id)}
+                      depth={index.depthOf(node.id, zoomRoot?.id ?? page.id)}
+                      hasChildren={index.hasChildren(node.id)}
+                      todoProgress={todoProgress.get(node.id) ?? null}
+                      imageDropTarget={imageIngest.dropTargetId === node.id}
+                      dragSource={outlineDrag.rowProps(node.id).dragSource}
+                      runtime={rowRuntime}
+                    />
+                  ))}
+                </ol>
+              </Suspense>
               {(outlineDrag.dropTarget || outlineDrag.preview) && (
                 <Suspense fallback={null}>
                   <OutlineDragVisuals
@@ -469,11 +527,13 @@ export function NotesOutline({
                   />
                 </Suspense>
               )}
-              <NotesChildComposer
-                store={store}
-                parentId={outlineRootId}
-                hasChildren={allBodyNodes.length > 0}
-              />
+              <Suspense fallback={null}>
+                <NotesChildComposer
+                  store={store}
+                  parentId={outlineRootId}
+                  hasChildren={allBodyNodes.length > 0}
+                />
+              </Suspense>
             </>
           )}
           {state.afterCursor && (
@@ -484,5 +544,16 @@ export function NotesOutline({
         </div>
       </div>
     </section>
+  );
+}
+
+function useMonacoNodeText(
+  session: MonacoOutlineSession | null,
+  nodeId: string | null
+): string | null {
+  return useSyncExternalStore(
+    (listener) => session?.subscribeMetadata(listener) ?? (() => undefined),
+    () => nodeId ? session?.textForNode(nodeId) ?? null : null,
+    () => null
   );
 }

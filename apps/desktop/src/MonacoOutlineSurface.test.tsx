@@ -86,6 +86,7 @@ describe("MonacoOutlineSurface", () => {
     const onZoom = vi.fn();
     const onSplit = vi.fn();
     const onUnsupported = vi.fn();
+    const onSessionChange = vi.fn();
     const view = render(
       <MonacoOutlineSurface
         pageId="page"
@@ -93,6 +94,8 @@ describe("MonacoOutlineSurface", () => {
         zoomRootId="child"
         showCompleted
         registry={registry}
+        focusRequest={null}
+        onSessionChange={onSessionChange}
         onZoomRootChange={onZoom}
         onOpenSplit={onSplit}
         onUnsupported={onUnsupported}
@@ -101,6 +104,7 @@ describe("MonacoOutlineSurface", () => {
 
     await waitFor(() => expect(registry.acquire).toHaveBeenCalledWith("page"));
     await waitFor(() => expect(mocks.paneInputs).toHaveLength(1));
+    expect(onSessionChange).toHaveBeenCalledWith(session);
     expect(mocks.paneInputs[0]).toEqual(expect.objectContaining({
       paneId: "secondary",
       zoomRootId: "child",
@@ -108,7 +112,11 @@ describe("MonacoOutlineSurface", () => {
     }));
     expect(mocks.createEditor).toHaveBeenCalledWith(
       expect.any(HTMLElement),
-      expect.objectContaining({ model: session.model })
+      expect.objectContaining({
+        model: session.model,
+        fontSize: 16,
+        lineHeight: 25
+      })
     );
 
     view.rerender(
@@ -118,6 +126,8 @@ describe("MonacoOutlineSurface", () => {
         zoomRootId="next"
         showCompleted={false}
         registry={registry}
+        focusRequest={null}
+        onSessionChange={onSessionChange}
         onZoomRootChange={onZoom}
         onOpenSplit={onSplit}
         onUnsupported={onUnsupported}
@@ -129,5 +139,6 @@ describe("MonacoOutlineSurface", () => {
     view.unmount();
     expect(editor.dispose).toHaveBeenCalledOnce();
     expect(release).toHaveBeenCalledOnce();
+    expect(onSessionChange).toHaveBeenLastCalledWith(null);
   });
 });

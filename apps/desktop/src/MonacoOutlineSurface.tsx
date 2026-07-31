@@ -6,6 +6,9 @@ import {
 } from "react";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
+import {
+  attachDevelopmentRuntimeProbe
+} from "virtual:yonalist-monaco-runtime-probe";
 
 import {
   assertMonacoInternalCapabilities
@@ -34,12 +37,19 @@ monacoGlobal.MonacoEnvironment ??= {
   getWorker: () => new EditorWorker()
 };
 
+export interface MonacoOutlineFocusRequest {
+  readonly epoch: number;
+  readonly nodeId: string;
+}
+
 export default function MonacoOutlineSurface({
   pageId,
   paneId,
   zoomRootId,
   showCompleted,
   registry,
+  focusRequest,
+  onSessionChange,
   onZoomRootChange,
   onOpenSplit,
   onUnsupported
@@ -49,23 +59,30 @@ export default function MonacoOutlineSurface({
   readonly zoomRootId: string | null;
   readonly showCompleted: boolean;
   readonly registry: MonacoSessionRegistry;
+  readonly focusRequest: MonacoOutlineFocusRequest | null;
+  readonly onSessionChange: (session: MonacoOutlineSession | null) => void;
   readonly onZoomRootChange: (nodeId: string) => void;
   readonly onOpenSplit: (nodeId: string) => void;
   readonly onUnsupported: (cause: unknown) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const editorRef =
+    useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const paneRef = useRef<MonacoOutlinePaneAdapter | null>(null);
   const zoomRef = useRef(zoomRootId);
   const completedRef = useRef(showCompleted);
   const onZoomRef = useRef(onZoomRootChange);
   const onOpenSplitRef = useRef(onOpenSplit);
   const onUnsupportedRef = useRef(onUnsupported);
+  const onSessionChangeRef = useRef(onSessionChange);
+  const handledFocusEpochRef = useRef<number | null>(null);
   const [session, setSession] = useState<MonacoOutlineSession | null>(null);
   zoomRef.current = zoomRootId;
   completedRef.current = showCompleted;
   onZoomRef.current = onZoomRootChange;
   onOpenSplitRef.current = onOpenSplit;
   onUnsupportedRef.current = onUnsupported;
+  onSessionChangeRef.current = onSessionChange;
 
   useEffect(() => {
     let cancelled = false;
@@ -90,6 +107,7 @@ export default function MonacoOutlineSurface({
         hostRef.current,
         editorOptions(lease.session.model)
       );
+      editorRef.current = editor;
       pane = new MonacoOutlinePaneAdapter({
         paneId,
         editor,
@@ -111,12 +129,15 @@ export default function MonacoOutlineSurface({
       });
       lease.session.ensureEditableLine();
       setSession(lease.session);
+      onSessionChangeRef.current(lease.session);
     }).catch((cause) => {
       if (!cancelled) onUnsupportedRef.current(cause);
     });
     return () => {
       cancelled = true;
+      editorRef.current = null;
       paneRef.current = null;
+      onSessionChangeRef.current(null);
       blur?.dispose();
       binding?.dispose();
       pane?.dispose();
@@ -124,6 +145,35 @@ export default function MonacoOutlineSurface({
       void release?.().catch(() => undefined);
     };
   }, [pageId, paneId, registry]);
+
+  useEffect(() => {
+    if (!session || !editorRef.current) return;
+    const probe = attachDevelopmentRuntimeProbe(
+      editorRef.current,
+      session
+    );
+    return () => {
+      probe?.dispose();
+    };
+  }, [session]);
+
+  useEffect(() => {
+    if (
+      !session ||
+      !editorRef.current ||
+      !focusRequest ||
+      handledFocusEpochRef.current === focusRequest.epoch
+    ) {
+      return;
+    }
+    const lineNumber = session.metadata.current()
+      .lineByNodeId.get(focusRequest.nodeId);
+    if (lineNumber === undefined) return;
+    handledFocusEpochRef.current = focusRequest.epoch;
+    editorRef.current.setPosition({ lineNumber, column: 1 });
+    editorRef.current.revealLineInCenterIfOutsideViewport(lineNumber);
+    editorRef.current.focus();
+  }, [focusRequest, session]);
 
   useEffect(() => {
     paneRef.current?.setZoomRoot(zoomRootId);
@@ -190,7 +240,7 @@ function editorOptions(
     ].join(", "),
     fontSize: 16,
     fontWeight: "400",
-    lineHeight: 28,
+    lineHeight: 25,
     lineNumbers: "off",
     lineNumbersMinChars: 0,
     glyphMargin: false,

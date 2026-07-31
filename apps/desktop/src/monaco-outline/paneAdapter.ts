@@ -69,6 +69,7 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
 
   dispose(): void {
     this.unsubscribeMetadata();
+    this.input.editor.getDomNode()?.removeAttribute("data-empty-zoom");
     setEditorHiddenAreas(
       this.input.editor,
       [],
@@ -79,6 +80,14 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
 
   private updateHiddenAreas(): void {
     const metadata = this.input.session.metadata.current();
+    const editorHost = this.input.editor.getDomNode();
+    const emptyZoom = this.zoomRootId !== null &&
+      visibleRangesForZoom(metadata, this.zoomRootId).length === 0;
+    if (emptyZoom) {
+      editorHost?.setAttribute("data-empty-zoom", "true");
+    } else {
+      editorHost?.removeAttribute("data-empty-zoom");
+    }
     setEditorHiddenAreas(
       this.input.editor,
       hiddenRangesForPane(
@@ -110,7 +119,8 @@ export function visibleRangesForZoom(
   ) {
     endIndex += 1;
   }
-  return [new monaco.Range(lineNumber, 1, endIndex, 1)];
+  if (endIndex === startIndex + 1) return [];
+  return [new monaco.Range(lineNumber + 1, 1, endIndex, 1)];
 }
 
 export function hiddenRangesForZoom(

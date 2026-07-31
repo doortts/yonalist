@@ -128,4 +128,82 @@ describe("MonacoOutlineSession", () => {
     }]);
     await session.dispose();
   });
+
+  it("creates a first child as one model-owned command and undo step", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "first-child",
+      [
+        node("parent", "parent", "first-child"),
+        node("existing", "existing", "parent"),
+        node("sibling", "sibling", "first-child")
+      ],
+      vi.fn().mockResolvedValue(receipt()),
+      ["inserted-child"]
+    );
+
+    expect(session.createFirstChild("parent")).toBe("inserted-child");
+    expect(session.model.getValue()).toBe("parent\n\nexisting\nsibling");
+    expect(session.metadata.current().lines.map(
+      ({ nodeId, parentId, depth }) => ({ nodeId, parentId, depth })
+    )).toEqual([
+      { nodeId: "parent", parentId: "first-child", depth: 0 },
+      { nodeId: "inserted-child", parentId: "parent", depth: 1 },
+      { nodeId: "existing", parentId: "parent", depth: 1 },
+      { nodeId: "sibling", parentId: "first-child", depth: 0 }
+    ]);
+    expect(session.model.getAllDecorations().map((decoration) => ({
+      lineNumber: decoration.range.startLineNumber,
+      nodeId: (
+        decoration.options.before?.attachedData as
+          { readonly nodeId?: string } | undefined
+      )?.nodeId
+    }))).toEqual([
+      { lineNumber: 1, nodeId: "parent" },
+      { lineNumber: 2, nodeId: "inserted-child" },
+      { lineNumber: 3, nodeId: "existing" },
+      { lineNumber: 4, nodeId: "sibling" }
+    ]);
+
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([{
+      kind: "createNode",
+      id: "inserted-child",
+      parent_id: "parent",
+      before_id: "existing",
+      text: ""
+    }]);
+    await session.model.undo();
+    expect(session.metadata.current().lines.map(({ nodeId }) => nodeId))
+      .toEqual(["parent", "existing", "sibling"]);
+    await session.dispose();
+  });
+
+  it("updates a zoomed title through the canonical model", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "title-edit",
+      [node("first", "before", "title-edit")]
+    );
+
+    session.updateNodeText("first", "after");
+    expect(session.textForNode("first")).toBe("after");
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([{
+      kind: "updateText",
+      id: "first",
+      text: "after"
+    }]);
+    await session.dispose();
+  });
+
+  it("observes an actual whole-model flush instead of a constant metric", async () => {
+    const { session } = createSession(
+      "flush-metric",
+      [node("first", "before", "flush-metric")]
+    );
+
+    expect(session.metrics.fullModelReplacementCount).toBe(0);
+    session.model.setValue("after");
+    expect(session.metrics.fullModelReplacementCount).toBe(1);
+    await session.dispose();
+  });
 });

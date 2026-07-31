@@ -50,9 +50,10 @@ describe("Monaco outline pane adapter", () => {
     ]);
 
     expect(visibleRangesForZoom(metadata, "a")).toEqual([
-      new monaco.Range(1, 1, 2, 1)
+      new monaco.Range(2, 1, 2, 1)
     ]);
     expect(hiddenRangesForZoom(metadata, "a")).toEqual([
+      new monaco.Range(1, 1, 1, 1),
       new monaco.Range(3, 1, 3, 1)
     ]);
   });
@@ -109,10 +110,11 @@ describe("Monaco outline pane adapter", () => {
     expect(left.restoreViewState).toHaveBeenCalledWith(leftState);
     expect(right.restoreViewState).not.toHaveBeenCalled();
     expect(right.setHiddenAreas).toHaveBeenCalledWith(
-      [new monaco.Range(1, 1, 2, 1)],
+      [new monaco.Range(1, 1, 3, 1)],
       "yonalist-outline-secondary",
       true
     );
+    expect(right.host).toHaveAttribute("data-empty-zoom", "true");
     leftAdapter.dispose();
     rightAdapter.dispose();
   });
@@ -120,9 +122,11 @@ describe("Monaco outline pane adapter", () => {
 
 function fakeEditor(viewState: unknown): {
   readonly editor: monaco.editor.IStandaloneCodeEditor;
+  readonly host: HTMLDivElement;
   readonly restoreViewState: ReturnType<typeof vi.fn>;
   readonly setHiddenAreas: ReturnType<typeof vi.fn>;
 } {
+  const host = document.createElement("div");
   const restoreViewState = vi.fn();
   const setHiddenAreas = vi.fn();
   return {
@@ -130,8 +134,10 @@ function fakeEditor(viewState: unknown): {
       saveViewState: vi.fn().mockReturnValue(viewState),
       restoreViewState,
       getSelection: vi.fn().mockReturnValue(null),
+      getDomNode: vi.fn().mockReturnValue(host),
       setHiddenAreas
     } as unknown as monaco.editor.IStandaloneCodeEditor,
+    host,
     restoreViewState,
     setHiddenAreas
   };

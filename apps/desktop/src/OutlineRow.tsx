@@ -3,16 +3,13 @@ import {
   ImagePlus, MoreHorizontal, SquareCheckBig, Star, Trash2
 } from "lucide-react";
 import {
-  lazy, memo, Suspense, useEffect, useRef, useState, type CSSProperties,
-  type KeyboardEvent, type PointerEvent
+  lazy, memo, Suspense, useEffect, useRef, useState, type CSSProperties
 } from "react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import { NotesStore } from "./notesStore";
-import type { OutlineIndex } from "./outlineIndex";
 import {
   endOutlineEnterGesture, handleImagePrimaryKeyDown, handleMultilinePaste,
-  handleOutlineKeyDown, RowMenuItem,
-  type SelectionKeyboardActions
+  handleOutlineKeyDown, RowMenuItem
 } from "./outlineSupport";
 import { focusOutlineEditor } from "./outlineFocus";
 import {
@@ -27,8 +24,9 @@ import {
   type SlashCommandQuery
 } from "./outlineSlash";
 import {
-  OutlineTextField, type OutlineTagToken
+  OutlineTextField
 } from "./OutlineTextField";
+import type { OutlineRowRuntime } from "./outlineRowRuntime";
 import { useNotesNode } from "./useNotesNode";
 
 const SlashCommandMenu = lazy(() => import("./SlashCommandMenu").then((module) => ({
@@ -37,45 +35,6 @@ const SlashCommandMenu = lazy(() => import("./SlashCommandMenu").then((module) =
 const ImageNodeContent = lazy(() => import("./ImageNodeContent").then((module) => ({
   default: module.ImageNodeContent
 })));
-
-export interface OutlineRowRuntimeState {
-  readonly nodes: readonly NoteView[];
-  readonly visibleNodes: readonly NoteView[];
-  readonly index: OutlineIndex;
-  readonly visibleIndex: OutlineIndex;
-  readonly pageId: string;
-  readonly selectionHeadId: string | null;
-  readonly hasSelection: boolean;
-  readonly onZoom: (nodeId: string, split: boolean) => void;
-  readonly onZoomOut: () => void;
-  readonly onExtendSelection: (originId: string, headId: string) => void;
-  readonly onClearSelection: () => void;
-  readonly onTagClick: (token: OutlineTagToken) => void;
-  readonly onPickImage: (nodeId: string) => void;
-  readonly selectionActions: SelectionKeyboardActions;
-  readonly onDragHandlePointerDown: (
-    nodeId: string,
-    event: PointerEvent<HTMLButtonElement>
-  ) => void;
-  readonly onDragHandleKeyDown: (
-    nodeId: string,
-    event: KeyboardEvent<HTMLButtonElement>
-  ) => void;
-  readonly consumeDragHandleClick: (nodeId: string) => boolean;
-}
-
-export class OutlineRowRuntime {
-  private state: OutlineRowRuntimeState | null = null;
-
-  update(state: OutlineRowRuntimeState): void {
-    this.state = state;
-  }
-
-  read(): OutlineRowRuntimeState {
-    if (!this.state) throw new Error("Outline row runtime is not ready.");
-    return this.state;
-  }
-}
 
 interface OutlineRowProps {
   readonly node: NoteView;

@@ -40,11 +40,20 @@ export interface VersionTransition {
   readonly inverse: readonly IpcEditorCommand[];
 }
 
+export interface MonacoOutlineSessionMetrics {
+  readonly fullModelReplacementCount: number;
+  readonly maxDecorationLinesPerEdit: number;
+}
+
 export class MonacoOutlineSession {
   readonly pageId: string;
   readonly model: monaco.editor.ITextModel;
   readonly metadata: OutlineMetadataTimeline;
   readonly decorations: OutlineDecorationSet;
+  private readonly metricState = {
+    fullModelReplacementCount: 0,
+    maxDecorationLinesPerEdit: 0
+  };
   private readonly persistenceQueue: MonacoOutlinePersistenceQueue;
   private readonly allocateId: () => string;
   private readonly transitionsFrom = new Map<number, VersionTransition>();
@@ -53,6 +62,7 @@ export class MonacoOutlineSession {
   private readonly metadataListeners = new Set<() => void>();
   private readonly contentListener: monaco.IDisposable;
   private lineTexts: string[];
+  private suppressContentListener = false;
   private disposal: Promise<void> | null = null;
 
   private constructor(input: MonacoOutlineSessionInput) {
@@ -89,6 +99,10 @@ export class MonacoOutlineSession {
       () => this.metadata.current()
     );
     this.contentListener = this.model.onDidChangeContent((event) => {
+      if (event.isFlush) {
+        this.metricState.fullModelReplacementCount += 1;
+      }
+      if (this.suppressContentListener) return;
       if (event.isUndoing || event.isRedoing) {
         this.applyUndoRedo(event);
       } else {
@@ -108,6 +122,10 @@ export class MonacoOutlineSession {
 
   static create(input: MonacoOutlineSessionInput): MonacoOutlineSession {
     return new MonacoOutlineSession(input);
+  }
+
+  get metrics(): MonacoOutlineSessionMetrics {
+    return this.metricState;
   }
 
   ensureEditableLine(): void {
@@ -148,6 +166,117 @@ export class MonacoOutlineSession {
           node?.contains(target)
         );
     });
+  }
+
+  textForNode(nodeId: string): string | null {
+    const lineNumber = this.metadata.current().lineByNodeId.get(nodeId);
+    return lineNumber === undefined
+      ? null
+      : this.model.getLineContent(lineNumber);
+  }
+
+  updateNodeText(nodeId: string, text: string): void {
+    const lineNumber = this.metadata.current().lineByNodeId.get(nodeId);
+    if (lineNumber === undefined) return;
+    const current = this.model.getLineContent(lineNumber);
+    if (current === text) return;
+    this.model.pushEditOperations([], [{
+      range: new monaco.Range(
+        lineNumber,
+        1,
+        lineNumber,
+        this.model.getLineMaxColumn(lineNumber)
+      ),
+      text
+    }], () => null);
+  }
+
+  async undo(): Promise<void> {
+    await this.model.undo();
+  }
+
+  async redo(): Promise<void> {
+    await this.model.redo();
+  }
+
+  createFirstChild(parentId: string): string | null {
+    if (!this.canAcceptStructuralEdit()) return null;
+    const before = this.metadata.current();
+    const parentLineNumber = before.lineByNodeId.get(parentId);
+    if (parentId !== this.pageId && parentLineNumber === undefined) return null;
+    const insertionIndex = parentLineNumber ?? 0;
+    const parentDepth = parentLineNumber === undefined
+      ? -1
+      : before.lines[parentLineNumber - 1]!.depth;
+    const nextLine = before.lines[insertionIndex];
+    const beforeId = nextLine?.parentId === parentId
+      ? nextLine.nodeId
+      : null;
+    const nodeId = this.allocateId();
+    this.pruneRedoBranch(before.alternativeVersionId);
+    this.suppressContentListener = true;
+    try {
+      if (insertionIndex === this.model.getLineCount()) {
+        const lineNumber = this.model.getLineCount();
+        const column = this.model.getLineMaxColumn(lineNumber);
+        this.model.pushEditOperations([], [{
+          range: new monaco.Range(lineNumber, column, lineNumber, column),
+          text: "\n"
+        }], () => null);
+      } else {
+        const lineNumber = insertionIndex + 1;
+        this.model.pushEditOperations([], [{
+          range: new monaco.Range(lineNumber, 1, lineNumber, 1),
+          text: "\n"
+        }], () => null);
+      }
+    } finally {
+      this.suppressContentListener = false;
+    }
+    const afterLines = [...before.lines];
+    afterLines.splice(insertionIndex, 0, emptyLine(
+      nodeId,
+      parentId,
+      parentDepth + 1
+    ));
+    const after = this.metadata.record(
+      this.model.getAlternativeVersionId(),
+      afterLines
+    );
+    const textPatch: OutlineLineTextPatch = {
+      startIndex: insertionIndex,
+      deleteCount: 0,
+      insertedTexts: [""]
+    };
+    const inverseTextPatch: OutlineLineTextPatch = {
+      startIndex: insertionIndex,
+      deleteCount: 1,
+      insertedTexts: []
+    };
+    applyLineTextPatch(this.lineTexts, textPatch);
+    const recorded: VersionTransition = {
+      fromAlternativeVersionId: before.alternativeVersionId,
+      toAlternativeVersionId: after.alternativeVersionId,
+      beforeMetadata: before,
+      afterMetadata: after,
+      textPatch,
+      inverseTextPatch,
+      forward: [{
+        kind: "createNode",
+        id: nodeId,
+        parent_id: parentId,
+        before_id: beforeId,
+        text: ""
+      }],
+      inverse: [{ kind: "removeEmptyNode", id: nodeId }]
+    };
+    this.transitionsFrom.set(recorded.fromAlternativeVersionId, recorded);
+    this.transitionsTo.set(recorded.toAlternativeVersionId, recorded);
+    this.recordDecorationMetric(1);
+    this.decorations.update([insertionIndex + 1]);
+    this.emitMetadata();
+    this.persistenceQueue.enqueue(recorded.forward, "structural");
+    return nodeId;
   }
 
   indent(nodeId: string): void {
@@ -259,6 +388,7 @@ export class MonacoOutlineSession {
     };
     this.transitionsFrom.set(recorded.fromAlternativeVersionId, recorded);
     this.transitionsTo.set(recorded.toAlternativeVersionId, recorded);
+    this.recordDecorationMetric(transition.affectedLineNumbers.length);
     this.decorations.update(transition.affectedLineNumbers);
     this.emitMetadata();
     this.persistenceQueue.enqueue(
@@ -304,6 +434,7 @@ export class MonacoOutlineSession {
       }
     }
     if (commands.length > 0) {
+      this.recordDecorationMetric(affectedLineNumbers.size);
       this.decorations.update([...affectedLineNumbers]);
       this.emitMetadata();
       this.persistenceQueue.enqueue(
@@ -332,10 +463,13 @@ export class MonacoOutlineSession {
       lines: readonly OutlineLineMetadata[],
       commands: readonly IpcEditorCommand[]
     ) => {
-      this.metadata.rewriteCurrent(lines);
-      this.decorations.update(
-        this.metadata.current().lines.map((_, index) => index + 1)
+      const affectedLineNumbers = metadataChangedLineNumbers(
+        this.metadata.current().lines,
+        lines
       );
+      this.metadata.rewriteCurrent(lines);
+      this.recordDecorationMetric(affectedLineNumbers.length);
+      this.decorations.update(affectedLineNumbers);
       this.emitMetadata();
       this.persistenceQueue.enqueue(commands, "structural");
     };
@@ -371,6 +505,11 @@ export class MonacoOutlineSession {
   private emitMetadata(): void {
     this.metadataListeners.forEach((listener) => listener());
   }
+
+  private recordDecorationMetric(lineCount: number): void {
+    if (lineCount <= this.metrics.maxDecorationLinesPerEdit) return;
+    this.metricState.maxDecorationLinesPerEdit = lineCount;
+  }
 }
 
 function hydrateLines(
@@ -403,11 +542,15 @@ function hydrateLines(
   return lines;
 }
 
-function emptyLine(nodeId: string, pageId: string): OutlineLineMetadata {
+function emptyLine(
+  nodeId: string,
+  parentId: string,
+  depth = 0
+): OutlineLineMetadata {
   return {
     nodeId,
-    parentId: pageId,
-    depth: 0,
+    parentId,
+    depth,
     kind: "text",
     collapsed: false,
     completed: false
@@ -467,6 +610,30 @@ function shiftSubtree(
       depth: line.depth + depthDelta
     };
   });
+}
+
+function metadataChangedLineNumbers(
+  current: readonly OutlineLineMetadata[],
+  next: readonly OutlineLineMetadata[]
+): readonly number[] {
+  const count = Math.max(current.length, next.length);
+  const changed: number[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const before = current[index];
+    const after = next[index];
+    if (
+      !before ||
+      !after ||
+      before.nodeId !== after.nodeId ||
+      before.parentId !== after.parentId ||
+      before.depth !== after.depth ||
+      before.collapsed !== after.collapsed ||
+      before.completed !== after.completed
+    ) {
+      changed.push(index + 1);
+    }
+  }
+  return changed;
 }
 
 function defaultId(): string {

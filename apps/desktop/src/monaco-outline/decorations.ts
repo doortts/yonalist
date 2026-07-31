@@ -59,16 +59,20 @@ export class OutlineDecorationSet {
     const affected = new Set(affectedLineNumbers);
     const removedIds: string[] = [];
     for (const [nodeId, entry] of this.entries) {
+      const trackedLineNumber =
+        this.model.getDecorationRange(entry.decorationId)?.startLineNumber ??
+        entry.lineNumber;
       if (
         !activeNodeIds.has(nodeId) ||
-        affected.has(entry.lineNumber) ||
-        affected.has(
-          this.model.getDecorationRange(entry.decorationId)?.startLineNumber ??
-            -1
-        )
+        affected.has(trackedLineNumber)
       ) {
         removedIds.push(entry.decorationId);
         this.entries.delete(nodeId);
+      } else if (trackedLineNumber !== entry.lineNumber) {
+        this.entries.set(nodeId, {
+          decorationId: entry.decorationId,
+          lineNumber: trackedLineNumber
+        });
       }
     }
 

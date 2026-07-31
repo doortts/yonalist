@@ -34,7 +34,7 @@ function ExportTrigger({
   );
 }
 
-export function NotesExportBoundary({
+export default function NotesExportBoundary({
   store,
   currentRoot,
   selectedNode
