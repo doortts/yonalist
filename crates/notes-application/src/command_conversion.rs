@@ -4,7 +4,10 @@ use notes_core::{
     ImportNode, NodeDuplicate, NodeId, NodeMove, NoteMarkerKind, NotesCommand, Position,
 };
 
-use crate::{IpcMarkerKind, IpcNotesCommand, NotesError, NotesErrorCode};
+use crate::{
+    IpcEditorCommand, IpcMarkerKind, IpcNotesCommand, MAX_EDITOR_BATCH_COMMANDS, NotesError,
+    NotesErrorCode,
+};
 
 const MAX_BATCH_NODE_IDS: usize = 10_000;
 const MAX_IMPORT_NODES: usize = 2_000;
@@ -16,6 +19,88 @@ fn invalid_command(message: impl Into<String>) -> NotesError {
         code: NotesErrorCode::InvalidCommand,
         message: message.into(),
         retryable: false,
+    }
+}
+
+impl TryFrom<IpcEditorCommand> for NotesCommand {
+    type Error = NotesError;
+
+    fn try_from(command: IpcEditorCommand) -> Result<Self, Self::Error> {
+        let id = |value: String| NodeId::try_from(value).map_err(NotesError::from);
+        let position = |before_id: Option<String>| {
+            before_id
+                .map(id)
+                .transpose()
+                .map(|before_id| before_id.map_or_else(Position::at_end, Position::before))
+        };
+
+        match command {
+            IpcEditorCommand::CreateNode {
+                id: value,
+                parent_id,
+                before_id,
+                text,
+            } => Ok(Self::CreateNode {
+                id: id(value)?,
+                parent_id: id(parent_id)?,
+                position: position(before_id)?,
+                text,
+            }),
+            IpcEditorCommand::UpdateText { id: value, text } => Ok(Self::UpdateText {
+                id: id(value)?,
+                text,
+            }),
+            IpcEditorCommand::SplitNode {
+                id: value,
+                new_id,
+                parent_id,
+                before_id,
+                prefix,
+                suffix,
+            } => Ok(Self::SplitNode {
+                id: id(value)?,
+                new_id: id(new_id)?,
+                parent_id: id(parent_id)?,
+                position: position(before_id)?,
+                prefix,
+                suffix,
+            }),
+            IpcEditorCommand::MergeNodeBackward {
+                id: value,
+                previous_id,
+                previous_text,
+                current_text,
+            } => Ok(Self::MergeNodeBackward {
+                id: id(value)?,
+                previous_id: id(previous_id)?,
+                previous_text,
+                current_text,
+            }),
+            IpcEditorCommand::RemoveEmptyNode { id: value } => {
+                Ok(Self::RemoveEmptyNode { id: id(value)? })
+            }
+            IpcEditorCommand::MoveNode {
+                id: value,
+                parent_id,
+                before_id,
+            }
+            | IpcEditorCommand::Outdent {
+                id: value,
+                new_parent_id: parent_id,
+                before_id,
+            } => Ok(Self::MoveNode {
+                id: id(value)?,
+                parent_id: id(parent_id)?,
+                position: position(before_id)?,
+            }),
+            IpcEditorCommand::Indent {
+                id: value,
+                new_parent_id,
+            } => Ok(Self::IndentNode {
+                id: id(value)?,
+                parent_id: id(new_parent_id)?,
+            }),
+        }
     }
 }
 
@@ -39,6 +124,19 @@ impl TryFrom<IpcNotesCommand> for NotesCommand {
             values.into_iter().map(id).collect()
         };
         match command {
+            IpcNotesCommand::ApplyEditorBatch { commands } => {
+                if commands.is_empty() || commands.len() > MAX_EDITOR_BATCH_COMMANDS {
+                    return Err(invalid_command(format!(
+                        "An editor batch requires 1 to {MAX_EDITOR_BATCH_COMMANDS} commands."
+                    )));
+                }
+                Ok(Self::Batch {
+                    commands: commands
+                        .into_iter()
+                        .map(NotesCommand::try_from)
+                        .collect::<Result<_, NotesError>>()?,
+                })
+            }
             IpcNotesCommand::CreatePage { id: value, text } => Ok(Self::CreatePage {
                 id: id(value)?,
                 text,

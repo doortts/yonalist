@@ -142,10 +142,62 @@ pub struct IpcNodeDuplicate {
     pub before_id: Option<String>,
 }
 
+pub const MAX_EDITOR_BATCH_COMMANDS: usize = 256;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+#[ts(export)]
+pub enum IpcEditorCommand {
+    CreateNode {
+        id: String,
+        parent_id: String,
+        before_id: Option<String>,
+        text: String,
+    },
+    UpdateText {
+        id: String,
+        text: String,
+    },
+    SplitNode {
+        id: String,
+        new_id: String,
+        parent_id: String,
+        before_id: Option<String>,
+        prefix: String,
+        suffix: String,
+    },
+    MergeNodeBackward {
+        id: String,
+        previous_id: String,
+        previous_text: String,
+        current_text: String,
+    },
+    RemoveEmptyNode {
+        id: String,
+    },
+    MoveNode {
+        id: String,
+        parent_id: String,
+        before_id: Option<String>,
+    },
+    Indent {
+        id: String,
+        new_parent_id: String,
+    },
+    Outdent {
+        id: String,
+        new_parent_id: String,
+        before_id: Option<String>,
+    },
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 #[ts(export)]
 pub enum IpcNotesCommand {
+    ApplyEditorBatch {
+        commands: Vec<IpcEditorCommand>,
+    },
     CreatePage {
         id: String,
         text: String,

@@ -1,6 +1,6 @@
 use notes_application::{
-    CommandEnvelope, ForestRequest, IpcNotesCommand, NotesService, SearchQuery, StorageError,
-    ViewportRequest,
+    CommandEnvelope, ForestRequest, IpcImportNode, IpcNotesCommand, NotesService, SearchQuery,
+    StorageError, ViewportRequest,
 };
 use notes_sqlite::SqliteStorage;
 
@@ -101,6 +101,57 @@ fn bootstrap_and_viewport_are_bounded_and_cursor_revisioned() {
             actual: 7
         }
     ));
+}
+
+#[test]
+fn editor_page_returns_5000_nodes_in_one_explicit_viewport() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let service = NotesService::new(&storage, "session", 0);
+    execute(
+        &service,
+        "page",
+        0,
+        IpcNotesCommand::CreatePage {
+            id: "page".into(),
+            text: "Page".into(),
+        },
+    );
+    for batch_index in 0..3_u64 {
+        let start = usize::try_from(batch_index).unwrap() * 2_000;
+        let end = (start + 2_000).min(5_000);
+        execute(
+            &service,
+            &format!("import-{batch_index}"),
+            batch_index + 1,
+            IpcNotesCommand::ImportNodes {
+                parent_id: "page".into(),
+                before_id: None,
+                nodes: (start..end)
+                    .map(|index| IpcImportNode {
+                        id: format!("node-{index:04}"),
+                        parent_id: "page".into(),
+                        text: format!("Task {index}"),
+                    })
+                    .collect(),
+            },
+        );
+    }
+
+    let viewport = storage
+        .query_viewport(ViewportRequest {
+            page_id: "page".into(),
+            anchor_id: None,
+            before_cursor: None,
+            after_cursor: None,
+            limit: 50_000,
+        })
+        .unwrap();
+
+    assert_eq!(viewport.nodes.len(), 5_000);
+    assert!(viewport.before_cursor.is_none());
+    assert!(viewport.after_cursor.is_none());
+    assert_eq!(viewport.nodes.first().unwrap().id, "node-0000");
+    assert_eq!(viewport.nodes.last().unwrap().id, "node-4999");
 }
 
 #[test]

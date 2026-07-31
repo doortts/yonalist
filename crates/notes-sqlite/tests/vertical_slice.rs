@@ -1,6 +1,7 @@
 use notes_application::{
-    CommandEnvelope, HistoryRequest, IpcImportNode, IpcMarkerKind, IpcNodeDuplicate, IpcNodeMove,
-    IpcNotesCommand, NotesService, SearchQuery, StorageError, StoragePort,
+    CommandEnvelope, HistoryRequest, IpcEditorCommand, IpcImportNode, IpcMarkerKind,
+    IpcNodeDuplicate, IpcNodeMove, IpcNotesCommand, NotesService, SearchQuery, StorageError,
+    StoragePort, ViewportRequest,
 };
 use notes_core::{DomainPatch, NodeId, NoteNode, TreeMutation};
 use notes_sqlite::SqliteStorage;
@@ -75,6 +76,129 @@ fn page_bullet_commit_restart_and_session_undo_are_end_to_end() {
         })
         .unwrap_err();
     assert_eq!(error.code, notes_application::NotesErrorCode::HistoryEmpty);
+}
+
+#[test]
+fn editor_batch_split_and_inverse_restore_stable_ids_across_restarts() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("editor-batch.sqlite");
+    {
+        let storage = SqliteStorage::open(&database).unwrap();
+        let service = NotesService::new(&storage, "session", 0);
+        for (request_id, revision, notes_command) in [
+            (
+                "page",
+                0,
+                IpcNotesCommand::CreatePage {
+                    id: "page".into(),
+                    text: "Page".into(),
+                },
+            ),
+            (
+                "current",
+                1,
+                IpcNotesCommand::CreateNode {
+                    id: "current".into(),
+                    parent_id: "page".into(),
+                    before_id: None,
+                    text: "alphaomega".into(),
+                },
+            ),
+            (
+                "next",
+                2,
+                IpcNotesCommand::CreateNode {
+                    id: "next".into(),
+                    parent_id: "page".into(),
+                    before_id: None,
+                    text: "next".into(),
+                },
+            ),
+        ] {
+            service
+                .execute(command(request_id, revision, notes_command))
+                .unwrap();
+        }
+
+        let receipt = service
+            .execute(command(
+                "editor-split",
+                3,
+                IpcNotesCommand::ApplyEditorBatch {
+                    commands: vec![IpcEditorCommand::SplitNode {
+                        id: "current".into(),
+                        new_id: "inserted".into(),
+                        parent_id: "page".into(),
+                        before_id: Some("next".into()),
+                        prefix: "alpha".into(),
+                        suffix: "omega".into(),
+                    }],
+                },
+            ))
+            .expect("persist editor split");
+        assert_eq!(receipt.revision, 4);
+        assert_eq!(
+            (receipt.history.undo_depth, receipt.history.redo_depth),
+            (0, 0)
+        );
+    }
+
+    {
+        let storage = SqliteStorage::open(&database).unwrap();
+        assert_eq!(storage.node("current").unwrap().unwrap().text(), "alpha");
+        assert_eq!(storage.node("inserted").unwrap().unwrap().text(), "omega");
+        let viewport = storage
+            .query_viewport(ViewportRequest {
+                page_id: "page".into(),
+                anchor_id: None,
+                before_cursor: None,
+                after_cursor: None,
+                limit: 20,
+            })
+            .unwrap();
+        assert_eq!(
+            viewport
+                .nodes
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["current", "inserted", "next"]
+        );
+
+        let service = NotesService::new(&storage, "restart", 4);
+        service
+            .execute(CommandEnvelope {
+                session_id: "restart".into(),
+                request_id: "editor-inverse".into(),
+                base_revision: 4,
+                history_group: None,
+                command: IpcNotesCommand::ApplyEditorBatch {
+                    commands: vec![
+                        IpcEditorCommand::UpdateText {
+                            id: "inserted".into(),
+                            text: String::new(),
+                        },
+                        IpcEditorCommand::RemoveEmptyNode {
+                            id: "inserted".into(),
+                        },
+                        IpcEditorCommand::UpdateText {
+                            id: "current".into(),
+                            text: "alphaomega".into(),
+                        },
+                    ],
+                },
+            })
+            .expect("persist editor inverse");
+    }
+
+    let reopened = SqliteStorage::open(&database).unwrap();
+    assert_eq!(reopened.revision().unwrap(), 5);
+    assert_eq!(
+        reopened.node("current").unwrap().unwrap().text(),
+        "alphaomega"
+    );
+    assert!(reopened.node("inserted").unwrap().is_none());
+    assert_eq!(reopened.node("next").unwrap().unwrap().text(), "next");
 }
 
 #[test]

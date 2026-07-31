@@ -2,8 +2,9 @@ use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 use notes_application::{
-    CommandEnvelope, HistoryRequest, IpcMarkerKind, IpcNotesCommand, MutationReceipt,
-    NotesErrorCode, NotesService, StorageCommit, StorageError, StoragePort,
+    CommandEnvelope, HistoryRequest, IpcEditorCommand, IpcMarkerKind, IpcNotesCommand,
+    MAX_EDITOR_BATCH_COMMANDS, MutationReceipt, NotesErrorCode, NotesService, StorageCommit,
+    StorageError, StoragePort,
 };
 use notes_core::{DomainPatch, NodeId, NotesCommand, NotesTree, TreeMutation};
 
@@ -144,6 +145,210 @@ fn grouped_command(
 fn assert_history(receipt: &MutationReceipt, can_undo: bool, can_redo: bool) {
     assert_eq!(receipt.history.can_undo, can_undo);
     assert_eq!(receipt.history.can_redo, can_redo);
+}
+
+#[test]
+fn editor_batch_commits_once_and_uses_no_rust_history() {
+    let storage = FakeStorage::default();
+    let service = NotesService::new(&storage, "session", 0);
+    service
+        .execute(command(
+            "create-page",
+            0,
+            IpcNotesCommand::CreatePage {
+                id: "page".into(),
+                text: "Inbox".into(),
+            },
+        ))
+        .unwrap();
+    service
+        .execute(command(
+            "create-first",
+            1,
+            IpcNotesCommand::CreateNode {
+                id: "first".into(),
+                parent_id: "page".into(),
+                before_id: None,
+                text: "alpha".into(),
+            },
+        ))
+        .unwrap();
+    let commits_before_batch = storage.commit_count();
+
+    let receipt = service
+        .execute(command(
+            "editor-1",
+            2,
+            IpcNotesCommand::ApplyEditorBatch {
+                commands: vec![
+                    IpcEditorCommand::CreateNode {
+                        id: "second".into(),
+                        parent_id: "page".into(),
+                        before_id: None,
+                        text: "beta".into(),
+                    },
+                    IpcEditorCommand::UpdateText {
+                        id: "second".into(),
+                        text: "beta edited".into(),
+                    },
+                ],
+            },
+        ))
+        .expect("editor batch");
+
+    assert_eq!(receipt.revision, 3);
+    assert_eq!(storage.commit_count(), commits_before_batch + 1);
+    assert_eq!(storage.text("second").as_deref(), Some("beta edited"));
+    assert_eq!(
+        (receipt.history.undo_depth, receipt.history.redo_depth),
+        (0, 0)
+    );
+}
+
+#[test]
+fn editor_batch_rejects_rust_history_groups_without_committing() {
+    let storage = FakeStorage::default();
+    let service = NotesService::new(&storage, "session", 0);
+    service
+        .execute(command(
+            "create-page",
+            0,
+            IpcNotesCommand::CreatePage {
+                id: "page".into(),
+                text: "Inbox".into(),
+            },
+        ))
+        .unwrap();
+    let commits_before_batch = storage.commit_count();
+
+    let error = service
+        .execute(grouped_command(
+            "editor-grouped",
+            1,
+            "typing",
+            IpcNotesCommand::ApplyEditorBatch {
+                commands: vec![IpcEditorCommand::CreateNode {
+                    id: "first".into(),
+                    parent_id: "page".into(),
+                    before_id: None,
+                    text: "alpha".into(),
+                }],
+            },
+        ))
+        .expect_err("session-owned history must not mix with Rust history");
+
+    assert_eq!(error.code, NotesErrorCode::InvalidCommand);
+    assert_eq!(storage.commit_count(), commits_before_batch);
+    assert_eq!(storage.text("first"), None);
+}
+
+#[test]
+fn editor_batch_rejects_more_than_the_bounded_command_count() {
+    let storage = FakeStorage::default();
+    let service = NotesService::new(&storage, "session", 0);
+    service
+        .execute(command(
+            "create-page",
+            0,
+            IpcNotesCommand::CreatePage {
+                id: "page".into(),
+                text: "Inbox".into(),
+            },
+        ))
+        .unwrap();
+    service
+        .execute(command(
+            "create-first",
+            1,
+            IpcNotesCommand::CreateNode {
+                id: "first".into(),
+                parent_id: "page".into(),
+                before_id: None,
+                text: "alpha".into(),
+            },
+        ))
+        .unwrap();
+    let commits_before_batch = storage.commit_count();
+
+    let error = service
+        .execute(command(
+            "editor-oversized",
+            2,
+            IpcNotesCommand::ApplyEditorBatch {
+                commands: vec![
+                    IpcEditorCommand::UpdateText {
+                        id: "first".into(),
+                        text: "changed".into(),
+                    };
+                    MAX_EDITOR_BATCH_COMMANDS + 1
+                ],
+            },
+        ))
+        .expect_err("oversized editor batch");
+
+    assert_eq!(error.code, NotesErrorCode::InvalidCommand);
+    assert_eq!(storage.commit_count(), commits_before_batch);
+    assert_eq!(storage.text("first").as_deref(), Some("alpha"));
+}
+
+#[test]
+fn failed_editor_batch_preserves_revision_and_existing_rust_history() {
+    let storage = FakeStorage::default();
+    let service = NotesService::new(&storage, "session", 0);
+    service
+        .execute(command(
+            "create-page",
+            0,
+            IpcNotesCommand::CreatePage {
+                id: "page".into(),
+                text: "Inbox".into(),
+            },
+        ))
+        .unwrap();
+    service
+        .execute(command(
+            "create-first",
+            1,
+            IpcNotesCommand::CreateNode {
+                id: "first".into(),
+                parent_id: "page".into(),
+                before_id: None,
+                text: "alpha".into(),
+            },
+        ))
+        .unwrap();
+    let commits_before_batch = storage.commit_count();
+
+    let error = service
+        .execute(command(
+            "editor-invalid",
+            2,
+            IpcNotesCommand::ApplyEditorBatch {
+                commands: vec![
+                    IpcEditorCommand::UpdateText {
+                        id: "first".into(),
+                        text: "changed".into(),
+                    },
+                    IpcEditorCommand::UpdateText {
+                        id: "missing".into(),
+                        text: "invalid".into(),
+                    },
+                ],
+            },
+        ))
+        .expect_err("invalid editor batch");
+    assert_eq!(error.code, NotesErrorCode::NotFound);
+    assert_eq!(storage.commit_count(), commits_before_batch);
+    assert_eq!(storage.text("first").as_deref(), Some("alpha"));
+
+    let undo = service
+        .undo(HistoryRequest {
+            session_id: "session".into(),
+            base_revision: 2,
+        })
+        .expect("history survives failed batch");
+    assert_eq!(undo.revision, 3);
+    assert_eq!(storage.text("first"), None);
 }
 
 #[test]

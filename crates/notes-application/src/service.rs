@@ -18,6 +18,11 @@ const MAX_HISTORY_ENTRIES: usize = 1_000;
 const MAX_HISTORY_MUTATIONS_PER_ENTRY: usize = 256;
 const MAX_COMPLETED_REQUESTS: usize = 4_096;
 
+enum HistoryPolicy {
+    Record(Option<String>),
+    SessionOwned,
+}
+
 #[derive(Clone)]
 pub(crate) struct NotesServiceHistoryEntry {
     forward: Vec<TreeMutation>,
@@ -112,13 +117,21 @@ impl<S: StoragePort> NotesService<S> {
             return Ok(receipt.clone());
         }
         self.ensure_revision(&session, envelope.base_revision)?;
+        let history_policy = match &envelope.command {
+            crate::IpcNotesCommand::ApplyEditorBatch { .. } => {
+                if envelope.history_group.is_some() {
+                    return Err(NotesError {
+                        code: crate::NotesErrorCode::InvalidCommand,
+                        message: "Editor batches cannot use Rust history groups.".into(),
+                        retryable: false,
+                    });
+                }
+                HistoryPolicy::SessionOwned
+            }
+            _ => HistoryPolicy::Record(envelope.history_group),
+        };
         let command = envelope.command.try_into()?;
-        self.execute_checked(
-            &mut session,
-            envelope.request_id,
-            envelope.history_group,
-            command,
-        )
+        self.execute_checked(&mut session, envelope.request_id, history_policy, command)
     }
 
     pub fn import_images<A: ImageAssetPort>(
@@ -146,7 +159,7 @@ impl<S: StoragePort> NotesService<S> {
         match self.execute_checked(
             &mut session,
             context.request_id,
-            context.history_group,
+            HistoryPolicy::Record(context.history_group),
             command,
         ) {
             Ok(receipt) => Ok(receipt),
@@ -243,7 +256,7 @@ impl<S: StoragePort> NotesService<S> {
         match self.execute_checked(
             &mut session,
             context.request_id,
-            context.history_group,
+            HistoryPolicy::Record(context.history_group),
             NotesCommand::ReplaceImage {
                 id: target_id,
                 image: replacement.image.clone(),
@@ -261,19 +274,26 @@ impl<S: StoragePort> NotesService<S> {
         &self,
         session: &mut SessionState,
         request_id: String,
-        history_group: Option<String>,
+        history_policy: HistoryPolicy,
         command: NotesCommand,
     ) -> Result<MutationReceipt, NotesError> {
         let tree = self.storage.load_command_tree(&command)?;
         let patch = tree.plan(command)?;
         let commit = self.storage.commit(session.revision, &patch)?;
         session.revision = commit.revision;
-        let entry = NotesServiceHistoryEntry {
-            forward: patch.forward,
-            inverse: patch.inverse,
-            group: history_group.clone(),
-        };
-        session.record_history(entry);
+        match history_policy {
+            HistoryPolicy::Record(group) => {
+                session.record_history(NotesServiceHistoryEntry {
+                    forward: patch.forward,
+                    inverse: patch.inverse,
+                    group,
+                });
+            }
+            HistoryPolicy::SessionOwned => {
+                session.undo.clear();
+                session.redo.clear();
+            }
+        }
         let receipt = Self::receipt(session, commit);
         session.record_completed(request_id, receipt.clone());
         Ok(receipt)

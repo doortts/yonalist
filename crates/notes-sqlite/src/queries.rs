@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::repository;
 
-const MAX_VIEWPORT_LIMIT: u32 = 200;
+const MAX_VIEWPORT_LIMIT: u32 = 50_000;
 const MAX_SEARCH_LIMIT: u32 = 100;
 
 pub(crate) fn bootstrap(
