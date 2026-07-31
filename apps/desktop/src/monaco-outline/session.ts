@@ -2,6 +2,7 @@ import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 
 import type { IpcEditorCommand } from "../../../../packages/contracts/generated/IpcEditorCommand";
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
+import { OutlineDecorationSet } from "./decorations";
 import {
   pushMetadataUndo,
   type MetadataUndoElement
@@ -43,6 +44,7 @@ export class MonacoOutlineSession {
   readonly pageId: string;
   readonly model: monaco.editor.ITextModel;
   readonly metadata: OutlineMetadataTimeline;
+  readonly decorations: OutlineDecorationSet;
   private readonly persistenceQueue: MonacoOutlinePersistenceQueue;
   private readonly allocateId: () => string;
   private readonly transitionsFrom = new Map<number, VersionTransition>();
@@ -80,6 +82,10 @@ export class MonacoOutlineSession {
     this.metadata = OutlineMetadataTimeline.hydrate(
       this.model.getAlternativeVersionId(),
       seeded
+    );
+    this.decorations = new OutlineDecorationSet(
+      this.model,
+      () => this.metadata.current()
     );
     this.contentListener = this.model.onDidChangeContent((event) => {
       if (event.isUndoing || event.isRedoing) {
@@ -244,6 +250,7 @@ export class MonacoOutlineSession {
     };
     this.transitionsFrom.set(recorded.fromAlternativeVersionId, recorded);
     this.transitionsTo.set(recorded.toAlternativeVersionId, recorded);
+    this.decorations.update(transition.affectedLineNumbers);
     this.persistenceQueue.enqueue(
       recorded.forward,
       transition.structural ? "structural" : "text"
@@ -255,6 +262,7 @@ export class MonacoOutlineSession {
   ): void {
     const target = this.model.getAlternativeVersionId();
     const commands: IpcEditorCommand[] = [];
+    const affectedLineNumbers = new Set<number>();
     if (event.isUndoing) {
       while (this.metadata.current().alternativeVersionId !== target) {
         const transition = this.transitionsTo.get(
@@ -264,6 +272,10 @@ export class MonacoOutlineSession {
           throw new Error("Monaco Undo escaped the outline transition history.");
         }
         applyLineTextPatch(this.lineTexts, transition.inverseTextPatch);
+        addPatchLineNumbers(
+          affectedLineNumbers,
+          transition.inverseTextPatch
+        );
         this.metadata.replaceCurrent(transition.beforeMetadata);
         commands.push(...transition.inverse);
       }
@@ -276,11 +288,13 @@ export class MonacoOutlineSession {
           throw new Error("Monaco Redo escaped the outline transition history.");
         }
         applyLineTextPatch(this.lineTexts, transition.textPatch);
+        addPatchLineNumbers(affectedLineNumbers, transition.textPatch);
         this.metadata.replaceCurrent(transition.afterMetadata);
         commands.push(...transition.forward);
       }
     }
     if (commands.length > 0) {
+      this.decorations.update([...affectedLineNumbers]);
       this.persistenceQueue.enqueue(
         commands,
         commands.some((command) => command.kind !== "updateText")
@@ -308,6 +322,9 @@ export class MonacoOutlineSession {
       commands: readonly IpcEditorCommand[]
     ) => {
       this.metadata.rewriteCurrent(lines);
+      this.decorations.update(
+        this.metadata.current().lines.map((_, index) => index + 1)
+      );
       this.persistenceQueue.enqueue(commands, "structural");
     };
     const element: MetadataUndoElement = {
@@ -334,6 +351,7 @@ export class MonacoOutlineSession {
     await this.flush("close");
     this.contentListener.dispose();
     this.boundEditors.clear();
+    this.decorations.dispose();
     this.model.dispose();
   }
 }
@@ -388,6 +406,16 @@ function applyLineTextPatch(
     patch.deleteCount,
     ...patch.insertedTexts
   );
+}
+
+function addPatchLineNumbers(
+  target: Set<number>,
+  patch: OutlineLineTextPatch
+): void {
+  const count = Math.max(patch.deleteCount, patch.insertedTexts.length);
+  for (let index = 0; index < count; index += 1) {
+    target.add(patch.startIndex + index + 1);
+  }
 }
 
 function nextSiblingId(
