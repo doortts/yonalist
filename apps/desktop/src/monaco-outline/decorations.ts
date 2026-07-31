@@ -22,6 +22,8 @@ export function buildOutlineDecorations(
       options: {
         stickiness:
           monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+        showIfCollapsed: true,
+        isWholeLine: true,
         before: {
           content:
             "\u00a0".repeat(line.depth * 4) +

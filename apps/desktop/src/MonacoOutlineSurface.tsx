@@ -1,39 +1,27 @@
 import {
-  useCallback,
   useEffect,
-  useLayoutEffect,
-  useMemo,
   useRef,
   useState,
   useSyncExternalStore
 } from "react";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
-import type { NoteView } from "../../../packages/contracts/generated/NoteView";
-import type { NotesStore } from "./notesStore";
-import type { OutlineIndex } from "./outlineIndex";
+
 import {
-  buildMonacoOutlineProjection,
-  planMonacoProjectionEdit,
-  type MonacoOutlineProjection
-} from "./monacoOutlineProjection";
-import { MonacoOutlineController } from "./monacoOutlineController";
+  assertMonacoInternalCapabilities
+} from "./monaco-outline/internalAdapter";
 import {
-  resolveMonacoOutlineGesture
-} from "./monacoOutlineKeyboard";
+  MonacoOutlinePaneAdapter
+} from "./monaco-outline/paneAdapter";
 import {
-  buildMonacoOutlineDecorations,
-  isMonacoCaretOnTextSide,
-  scheduleMonacoOutlineCaretNormalization
-} from "./monacoOutlineCaret";
-import {
-  executeMonacoOutlineGesture,
-  type MonacoOutlineCommandContext,
-  type MonacoOutlineCommandRuntime
-} from "./monacoOutlineCommands";
-import { shouldRestoreMonacoOutlineFocus } from "./monacoOutlineFocus";
-import { runMonacoOutlineReconciliation } from "./monacoOutlineReconciliation";
-import { shouldSeedMonacoOutline } from "./monacoOutlineSeed";
+  bindYonalistOutlineEditor
+} from "./monaco-outline/plugin";
+import type {
+  MonacoOutlineSession
+} from "./monaco-outline/session";
+import type {
+  MonacoSessionRegistry
+} from "./monaco-outline/sessionRegistry";
 
 type MonacoGlobal = typeof globalThis & {
   MonacoEnvironment?: {
@@ -47,436 +35,189 @@ monacoGlobal.MonacoEnvironment ??= {
 };
 
 export default function MonacoOutlineSurface({
-  nodes,
-  index,
-  rootId,
+  pageId,
   paneId,
-  store,
-  structuralContextComplete
+  zoomRootId,
+  showCompleted,
+  registry,
+  onZoomRootChange,
+  onOpenSplit,
+  onUnsupported
 }: {
-  readonly nodes: readonly NoteView[];
-  readonly index: OutlineIndex;
-  readonly rootId: string;
+  readonly pageId: string;
   readonly paneId: "primary" | "secondary";
-  readonly store: NotesStore;
-  readonly structuralContextComplete: boolean;
+  readonly zoomRootId: string | null;
+  readonly showCompleted: boolean;
+  readonly registry: MonacoSessionRegistry;
+  readonly onZoomRootChange: (nodeId: string) => void;
+  readonly onOpenSplit: (nodeId: string) => void;
+  readonly onUnsupported: (cause: unknown) => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const runtimeRef = useRef<MonacoRuntime | null>(null);
-  const [compositionEpoch, setCompositionEpoch] = useState(0);
-  const nodeIds = useMemo(() => nodes.map((node) => node.id), [nodes]);
-  const subscribeNodes = useCallback(
-    (listener: () => void) => store.subscribeNodes(nodeIds, listener),
-    [nodeIds, store]
-  );
-  const getNodeEpoch = useCallback(
-    () => store.getNodeEpoch(nodeIds),
-    [nodeIds, store]
-  );
-  const nodeEpoch = useSyncExternalStore(
-    subscribeNodes,
-    getNodeEpoch,
-    getNodeEpoch
-  );
-  const projection = useMemo(
-    () => {
-      void nodeEpoch;
-      return buildMonacoOutlineProjection(
-        nodes,
-        index,
-        rootId,
-        (nodeId) => store.getNodeSnapshot(nodeId).title
-      );
-    },
-    [index, nodeEpoch, nodes, rootId, store]
-  );
-  const latestProjectionRef = useRef(projection);
-  latestProjectionRef.current = projection;
-  const latestContextRef = useRef<MonacoOutlineCommandContext>({
-    index,
-    rootId,
-    structuralContextComplete
-  });
-  latestContextRef.current = {
-    index,
-    rootId,
-    structuralContextComplete
-  };
+  const paneRef = useRef<MonacoOutlinePaneAdapter | null>(null);
+  const zoomRef = useRef(zoomRootId);
+  const completedRef = useRef(showCompleted);
+  const onZoomRef = useRef(onZoomRootChange);
+  const onOpenSplitRef = useRef(onOpenSplit);
+  const onUnsupportedRef = useRef(onUnsupported);
+  const [session, setSession] = useState<MonacoOutlineSession | null>(null);
+  zoomRef.current = zoomRootId;
+  completedRef.current = showCompleted;
+  onZoomRef.current = onZoomRootChange;
+  onOpenSplitRef.current = onOpenSplit;
+  onUnsupportedRef.current = onUnsupported;
 
   useEffect(() => {
-    const host = hostRef.current;
-    if (!host) return;
-    const initialProjection = latestProjectionRef.current;
-    const model = monaco.editor.createModel(
-      initialProjection.value,
-      "plaintext",
-      monaco.Uri.parse(
-        `inmemory://yonalist/${paneId}/${encodeURIComponent(rootId)}`
-      )
-    );
-    const editor = monaco.editor.create(host, {
-      model,
-      ariaLabel: "Notes outline editor",
-      automaticLayout: true,
-      fontFamily: [
-        "Inter",
-        "ui-sans-serif",
-        "system-ui",
-        "-apple-system",
-        "BlinkMacSystemFont",
-        "\"Segoe UI\"",
-        "sans-serif"
-      ].join(", "),
-      fontSize: 16,
-      fontWeight: "400",
-      lineHeight: 28,
-      lineNumbers: "off",
-      lineNumbersMinChars: 0,
-      glyphMargin: false,
-      folding: false,
-      lineDecorationsWidth: 0,
-      minimap: { enabled: false },
-      overviewRulerLanes: 0,
-      overviewRulerBorder: false,
-      hideCursorInOverviewRuler: true,
-      renderLineHighlight: "none",
-      renderWhitespace: "none",
-      scrollBeyondLastLine: false,
-      scrollBeyondLastColumn: 0,
-      smoothScrolling: false,
-      cursorSmoothCaretAnimation: "off",
-      wordWrap: "on",
-      wrappingIndent: "none",
-      links: false,
-      matchBrackets: "never",
-      occurrencesHighlight: "off",
-      selectionHighlight: false,
-      quickSuggestions: false,
-      suggestOnTriggerCharacters: false,
-      wordBasedSuggestions: "off",
-      formatOnPaste: false,
-      formatOnType: false,
-      padding: { top: 0, bottom: 0 },
-      fixedOverflowWidgets: true
-    });
-    const decorations = editor.createDecorationsCollection();
-    const controller = new MonacoOutlineController(
-      initialProjection,
-      (nodeId, text) => store.setDraft(nodeId, text)
-    );
-    const runtime: MonacoRuntime = {
-      editor,
-      model,
-      decorations,
-      projection: initialProjection,
-      controller,
-      applyingProjection: false,
-      enterGesture: null,
-      pendingCaret: null,
-      caretNormalizationEpoch: 0
-    };
-    runtimeRef.current = runtime;
-    const contentListener = model.onDidChangeContent((event) => {
-      if (runtime.applyingProjection) return;
-      const result = controller.applyContentChange(
-        event.changes.map((change) => ({
-          startLineNumber: change.range.startLineNumber,
-          endLineNumber: change.range.endLineNumber,
-          text: change.text
-        })),
-        (lineNumber) => model.getLineContent(lineNumber)
-      );
-      if (result === "structural" || result === "rejected") {
-        reconcileModel(runtime, runtime.projection);
+    let cancelled = false;
+    let release: (() => Promise<void>) | null = null;
+    let editor: monaco.editor.IStandaloneCodeEditor | null = null;
+    let pane: MonacoOutlinePaneAdapter | null = null;
+    let binding: monaco.IDisposable | null = null;
+    let blur: monaco.IDisposable | null = null;
+    try {
+      assertMonacoInternalCapabilities();
+    } catch (cause) {
+      onUnsupportedRef.current(cause);
+      return;
+    }
+    void registry.acquire(pageId).then((lease) => {
+      if (cancelled || !hostRef.current) {
+        void lease.release();
+        return;
       }
-    });
-    const compositionStartListener = editor.onDidCompositionStart(() => {
-      controller.beginComposition();
-    });
-    const compositionEndListener = editor.onDidCompositionEnd(() => {
-      controller.endComposition(
-        (lineNumber) => model.getLineContent(lineNumber)
+      release = lease.release;
+      editor = monaco.editor.create(
+        hostRef.current,
+        editorOptions(lease.session.model)
       );
-      setCompositionEpoch((epoch) => epoch + 1);
-    });
-    const keyDownListener = editor.onKeyDown((event) => {
-      const selection = editor.getSelection();
-      if (!selection) return;
-      const browserEvent = event.browserEvent;
-      const plainBackspace = browserEvent.key === "Backspace" &&
-        !browserEvent.altKey &&
-        !browserEvent.ctrlKey &&
-        !browserEvent.metaKey &&
-        !browserEvent.shiftKey &&
-        !browserEvent.isComposing;
-      const backspaceGroup = plainBackspace
-        ? store.beginBackspaceGesture(browserEvent.repeat)
-        : (store.endBackspaceGesture(), null);
-      const gesture = resolveMonacoOutlineGesture({
-        key: browserEvent.key,
-        altKey: browserEvent.altKey,
-        ctrlKey: browserEvent.ctrlKey,
-        metaKey: browserEvent.metaKey,
-        shiftKey: browserEvent.shiftKey,
-        isComposing: browserEvent.isComposing,
-        repeat: browserEvent.repeat,
-        platform: outlinePlatform(),
-        lineNumber: selection.startLineNumber,
-        endLineNumber: selection.endLineNumber,
-        startColumn: selection.startColumn,
-        endColumn: selection.endColumn,
-        projection: runtime.projection
+      pane = new MonacoOutlinePaneAdapter({
+        paneId,
+        editor,
+        session: lease.session,
+        zoomRootId: zoomRef.current,
+        showCompleted: completedRef.current,
+        navigation: {
+          zoomSamePane: (nodeId) => onZoomRef.current(nodeId),
+          openSecondary: (nodeId) => onOpenSplitRef.current(nodeId)
+        }
       });
-      if (gesture.kind === "native") return;
-      event.preventDefault();
-      if (gesture.kind === "undo" || gesture.kind === "redo") {
-        event.stopPropagation();
-        window.dispatchEvent(new KeyboardEvent("keydown", {
-          key: "z",
-          ctrlKey: browserEvent.ctrlKey,
-          metaKey: browserEvent.metaKey,
-          shiftKey: gesture.kind === "redo"
-        }));
-        return;
-      }
-      if (gesture.kind === "moveVertical") {
-        event.stopPropagation();
-        moveCaretVertically(
-          runtime,
-          hostRef.current,
-          gesture.direction,
-          () => runtimeRef.current === runtime
-        );
-        return;
-      }
-      event.stopPropagation();
-      executeMonacoOutlineGesture(
-        gesture,
-        browserEvent.repeat,
-        backspaceGroup,
-        runtime,
-        store,
-        latestContextRef.current
-      );
+      paneRef.current = pane;
+      binding = bindYonalistOutlineEditor(editor, {
+        session: lease.session,
+        pane
+      });
+      blur = editor.onDidBlurEditorText(() => {
+        void lease.session.flush("blur").catch(() => undefined);
+      });
+      lease.session.ensureEditableLine();
+      setSession(lease.session);
+    }).catch((cause) => {
+      if (!cancelled) onUnsupportedRef.current(cause);
     });
-    const keyUpListener = editor.onKeyUp((event) => {
-      if (event.browserEvent.key === "Enter") runtime.enterGesture = null;
-      if (event.browserEvent.key === "Backspace") store.endBackspaceGesture();
-    });
-    updateDecorations(decorations, initialProjection);
-    seedEmptyOutline(runtime, initialProjection, store, rootId);
     return () => {
-      runtimeRef.current = null;
-      keyUpListener.dispose();
-      keyDownListener.dispose();
-      compositionEndListener.dispose();
-      compositionStartListener.dispose();
-      contentListener.dispose();
-      decorations.clear();
-      editor.dispose();
-      model.dispose();
+      cancelled = true;
+      paneRef.current = null;
+      blur?.dispose();
+      binding?.dispose();
+      pane?.dispose();
+      editor?.dispose();
+      void release?.().catch(() => undefined);
     };
-  }, [paneId, rootId, store]);
+  }, [pageId, paneId, registry]);
 
-  useLayoutEffect(() => {
-    const runtime = runtimeRef.current;
-    if (!runtime || runtime.projection === projection) return;
-    runMonacoOutlineReconciliation(
-      runtime.controller.isCompositionActive(),
-      () => {
-        if (seedEmptyOutline(runtime, projection, store, rootId)) return;
-        const selection = runtime.editor.getSelection();
-        const selectedNodeId = selection
-          ? runtime.projection.nodeIdByLine[selection.positionLineNumber - 1]
-          : undefined;
-        const selectedColumn = selection?.positionColumn ?? 1;
-        const pendingCaret = runtime.pendingCaret;
-        const restoreFocus = shouldRestoreMonacoOutlineFocus(
-          runtime.editor.hasTextFocus(),
-          pendingCaret !== null
-        );
-        const pendingLine = pendingCaret
-          ? projection.lineByNodeId.get(pendingCaret.nodeId)
-          : undefined;
-        const host = hostRef.current;
-        const normalizationEpoch =
-          pendingCaret?.column === 1 && pendingLine
-            ? ++runtime.caretNormalizationEpoch
-            : null;
-        if (normalizationEpoch !== null) {
-          host?.setAttribute("data-caret-normalizing", "true");
-        }
-        reconcileModel(runtime, projection);
-        runtime.controller.setProjection(projection);
-        updateDecorations(runtime.decorations, projection);
-        runtime.pendingCaret = null;
-        const nextLine = pendingCaret
-          ? pendingLine
-          : selectedNodeId
-            ? projection.lineByNodeId.get(selectedNodeId)
-            : undefined;
-        const nextColumn = pendingCaret?.column ?? selectedColumn;
-        if (nextLine) {
-          const position = {
-            lineNumber: nextLine,
-            column: Math.min(
-              nextColumn,
-              runtime.model.getLineMaxColumn(nextLine)
-            )
-          };
-          runtime.editor.setPosition(position);
-          if (restoreFocus) {
-            runtime.editor.focus();
-            runtime.editor.revealPositionInCenterIfOutsideViewport(
-              position,
-              monaco.editor.ScrollType.Immediate
-            );
-          }
-          if (normalizationEpoch !== null) {
-            scheduleMonacoOutlineCaretNormalization({
-              editor: runtime.editor,
-              position,
-              isCurrent: () =>
-                runtimeRef.current === runtime &&
-                runtime.caretNormalizationEpoch === normalizationEpoch,
-              isCaretOnTextSide: () =>
-                host !== null && isMonacoCaretOnTextSide(host),
-              hideCaret: () =>
-                host?.setAttribute("data-caret-normalizing", "true"),
-              showCaret: () =>
-                host?.removeAttribute("data-caret-normalizing")
-            });
-          }
-        } else if (
-          normalizationEpoch !== null &&
-          runtime.caretNormalizationEpoch === normalizationEpoch
-        ) {
-          host?.removeAttribute("data-caret-normalizing");
-        }
-      }
-    );
-  }, [compositionEpoch, projection, rootId, store]);
+  useEffect(() => {
+    paneRef.current?.setZoomRoot(zoomRootId);
+  }, [zoomRootId]);
+
+  useEffect(() => {
+    paneRef.current?.setShowCompleted(showCompleted);
+  }, [showCompleted]);
 
   return (
-    <div
-      ref={hostRef}
-      className="notes-monaco-outline"
-      data-outline-pane-id={paneId}
-    />
+    <>
+      <div
+        ref={hostRef}
+        className="notes-monaco-outline"
+        data-outline-pane-id={paneId}
+      />
+      {session && <PersistenceStatus session={session} />}
+    </>
   );
 }
 
-interface MonacoRuntime extends MonacoOutlineCommandRuntime {
-  readonly editor: monaco.editor.IStandaloneCodeEditor;
-  readonly model: monaco.editor.ITextModel;
-  readonly decorations: monaco.editor.IEditorDecorationsCollection;
-  readonly controller: MonacoOutlineController;
-  projection: MonacoOutlineProjection;
-  applyingProjection: boolean;
-  caretNormalizationEpoch: number;
-}
-
-function outlinePlatform(): "mac" | "other" {
-  return /Mac|iPhone|iPad|iPod/iu.test(globalThis.navigator?.platform ?? "")
-    ? "mac"
-    : "other";
-}
-
-function seedEmptyOutline(
-  runtime: MonacoRuntime,
-  projection: MonacoOutlineProjection,
-  store: NotesStore,
-  rootId: string
-): boolean {
-  if (!shouldSeedMonacoOutline(
-    projection.lines.length,
-    store.getSnapshot().nodes,
-    rootId
-  )) {
-    return false;
-  }
-  const pending = store.beginCreateNode(rootId);
-  runtime.pendingCaret = { nodeId: pending.id, column: 1 };
-  void pending.committed.catch(() => undefined);
-  return true;
-}
-
-function reconcileModel(
-  runtime: MonacoRuntime,
-  projection: MonacoOutlineProjection
-): void {
-  const edit = planMonacoProjectionEdit({
-    ...runtime.projection,
-    value: runtime.model.getValue()
-  }, projection);
-  runtime.applyingProjection = true;
-  try {
-    if (edit) {
-      runtime.model.applyEdits([{
-        range: new monaco.Range(
-          edit.startLineNumber,
-          edit.startColumn,
-          edit.endLineNumber,
-          edit.endColumn
-        ),
-        text: edit.text
-      }]);
-    }
-    runtime.projection = projection;
-  } finally {
-    runtime.applyingProjection = false;
-  }
-}
-
-function updateDecorations(
-  collection: monaco.editor.IEditorDecorationsCollection,
-  projection: MonacoOutlineProjection
-): void {
-  collection.set(buildMonacoOutlineDecorations(projection));
-}
-
-function moveCaretVertically(
-  runtime: MonacoRuntime,
-  host: HTMLElement | null,
-  direction: "up" | "down",
-  isMounted: () => boolean
-): void {
-  runtime.editor.trigger(
-    "yonalist-outline",
-    direction === "up" ? "cursorUp" : "cursorDown",
-    undefined
+function PersistenceStatus({
+  session
+}: {
+  readonly session: MonacoOutlineSession;
+}) {
+  const state = useSyncExternalStore(
+    session.subscribePersistence,
+    session.persistenceState.bind(session),
+    session.persistenceState.bind(session)
   );
-  if (!host) return;
-  const position = runtime.editor.getPosition();
-  if (!position || position.column !== 1) {
-    host.removeAttribute("data-caret-normalizing");
-    return;
+  if (state.kind === "unsaved" || state.kind === "saving") {
+    return (
+      <span className="notes-selection-visually-hidden" role="status">
+        {state.kind === "saving" ? "Saving outline." : "Outline has unsaved changes."}
+      </span>
+    );
   }
-  const normalizationEpoch = ++runtime.caretNormalizationEpoch;
-  scheduleMonacoOutlineCaretNormalization({
-    editor: runtime.editor,
-    position,
-    isCurrent: () =>
-      isMounted() &&
-      runtime.caretNormalizationEpoch === normalizationEpoch,
-    isCaretOnTextSide: () => isMonacoCaretOnTextSide(host),
-    hideCaret: () =>
-      host.setAttribute("data-caret-normalizing", "true"),
-    showCaret: () =>
-      host.removeAttribute("data-caret-normalizing"),
-    moveCaretToTextSide: () => {
-      runtime.editor.trigger(
-        "yonalist-outline",
-        "cursorRight",
-        undefined
-      );
-      if (runtime.model.getLineMaxColumn(position.lineNumber) > 1) {
-        runtime.editor.trigger(
-          "yonalist-outline",
-          "cursorLeft",
-          undefined
-        );
-      }
-    }
-  });
+  if (state.kind === "conflict" || state.kind === "fatal") {
+    return (
+      <span className="notes-inline-error" role="alert">
+        {state.message}
+      </span>
+    );
+  }
+  return null;
+}
+
+function editorOptions(
+  model: monaco.editor.ITextModel
+): monaco.editor.IStandaloneEditorConstructionOptions {
+  return {
+    model,
+    ariaLabel: "Notes outline editor",
+    automaticLayout: true,
+    fontFamily: [
+      "Inter",
+      "ui-sans-serif",
+      "system-ui",
+      "-apple-system",
+      "BlinkMacSystemFont",
+      "\"Segoe UI\"",
+      "sans-serif"
+    ].join(", "),
+    fontSize: 16,
+    fontWeight: "400",
+    lineHeight: 28,
+    lineNumbers: "off",
+    lineNumbersMinChars: 0,
+    glyphMargin: false,
+    folding: false,
+    lineDecorationsWidth: 0,
+    minimap: { enabled: false },
+    overviewRulerLanes: 0,
+    overviewRulerBorder: false,
+    hideCursorInOverviewRuler: true,
+    renderLineHighlight: "none",
+    renderWhitespace: "none",
+    scrollBeyondLastLine: false,
+    scrollBeyondLastColumn: 0,
+    smoothScrolling: false,
+    cursorSmoothCaretAnimation: "off",
+    wordWrap: "on",
+    wrappingIndent: "none",
+    links: false,
+    matchBrackets: "never",
+    occurrencesHighlight: "off",
+    selectionHighlight: false,
+    quickSuggestions: false,
+    suggestOnTriggerCharacters: false,
+    wordBasedSuggestions: "off",
+    formatOnPaste: false,
+    formatOnType: false,
+    padding: { top: 0, bottom: 0 },
+    fixedOverflowWidgets: true
+  };
 }

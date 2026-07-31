@@ -7,9 +7,7 @@ import "./styles.css";
 import "./notes.css";
 import { tauriNotesApi, type NotesApi } from "./api";
 import { NotesStore } from "./notesStore";
-import { WindowChrome } from "./WindowChrome";
-import { LibraryViewButtons, type LibraryView } from "./LibraryViewButtons";
-import { LibraryPageRow } from "./LibraryPageRow";
+import type { LibraryView } from "./LibraryViewButtons";
 import type { PaneRestoreRequest } from "./NotesOutline";
 import { NotesInteractionHistory } from "./notesInteractionHistory";
 import {
@@ -19,11 +17,34 @@ import {
 } from "./appNavigation";
 import { NotesDetailPanes } from "./NotesDetailPanes";
 import type { OutlineTagToken } from "./OutlineTextField";
+import {
+  LazyMonacoOutlineSessionRegistry
+} from "./monaco-outline/lazyRegistry";
 const SearchPanel = lazy(() => import("./SearchPanel").then((module) =>
   ({ default: module.SearchPanel })));
+const LibraryViewButtons = lazy(() =>
+  import("./LibraryViewButtons").then((module) => ({
+    default: module.LibraryViewButtons
+  })));
+const LibraryPageRow = lazy(() =>
+  import("./LibraryPageRow").then((module) => ({
+    default: module.LibraryPageRow
+  })));
+const WindowChrome = lazy(() =>
+  import("./WindowChrome").then((module) => ({
+    default: module.WindowChrome
+  })));
 
 export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   const store = useMemo(() => new NotesStore(api), [api]);
+  const monacoSessions = useMemo(
+    () => new LazyMonacoOutlineSessionRegistry({
+      loadMonacoPage: (pageId) => store.loadMonacoPage(pageId),
+      executeEditorBatch: (requestId, commands) =>
+        store.executeEditorBatch(requestId, commands)
+    }),
+    [store]
+  );
   const state = useSyncExternalStore(
     store.subscribeShell,
     store.getShellSnapshot,
@@ -58,6 +79,12 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     () => () => interactionHistory.dispose(),
     [interactionHistory]
   );
+  useEffect(
+    () => () => {
+      void monacoSessions.dispose().catch(() => undefined);
+    },
+    [monacoSessions]
+  );
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
     let unlisten: (() => void) | undefined;
@@ -72,7 +99,10 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       if (!active) return;
       const appWindow = getCurrentWindow();
       unlisten = await appWindow.onCloseRequested(createCloseRequestHandler(
-        () => store.close(),
+        async () => {
+          await monacoSessions.flushAll("close");
+          await store.close();
+        },
         () => appWindow.destroy()
       ));
     });
@@ -80,18 +110,25 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       active = false;
       unlisten?.();
     };
-  }, [store]);
+  }, [monacoSessions, store]);
   useEffect(() => {
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       const modifier = navigator.platform.includes("Mac") ? event.metaKey : event.ctrlKey;
       if (!modifier || event.key.toLowerCase() !== "z") return;
+      if (!shouldRouteUndoToApplication(
+        event.target,
+        modifier,
+        monacoSessions.hasFocusedEditor(event.target)
+      )) {
+        return;
+      }
       event.preventDefault();
       if (event.shiftKey) void interactionHistory.redo();
       else void interactionHistory.undo();
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [interactionHistory]);
+  }, [interactionHistory, monacoSessions]);
   useEffect(() => {
     const move = (event: PointerEvent) => {
       if (!resizeStart.current) return;
@@ -136,6 +173,10 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       location.pageId &&
       location.pageId !== store.getSnapshot().activePageId
     ) {
+      const currentPageId = store.getSnapshot().activePageId;
+      if (currentPageId) {
+        await monacoSessions.flushPage(currentPageId, "navigation");
+      }
       await store.openPage(location.pageId);
     }
     setPrimaryZoomRootId(location.primaryZoomRootId);
@@ -152,7 +193,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       selectedIds: location.secondarySelectedIds,
       focus: location.secondaryFocus
     });
-  }, [store]);
+  }, [monacoSessions, store]);
   applyNavigationRef.current = applyNavigation;
   const recordNavigation = useCallback((
     before: AppNavigationLocation,
@@ -173,13 +214,23 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   }, [store]);
   const openPage = useCallback(async (pageId: string) => {
     if (pageId === store.getSnapshot().activePageId) return;
+    const currentPageId = store.getSnapshot().activePageId;
+    if (currentPageId) {
+      await monacoSessions.flushPage(currentPageId, "navigation");
+    }
     await store.flushAllDrafts();
     const before = captureNavigation();
     await store.openPage(pageId);
     const after = emptyPaneLocation(pageId);
     await applyNavigation(after);
     recordNavigation(before, after);
-  }, [applyNavigation, captureNavigation, recordNavigation, store]);
+  }, [
+    applyNavigation,
+    captureNavigation,
+    monacoSessions,
+    recordNavigation,
+    store
+  ]);
   const updatePrimaryZoom = useCallback((nodeId: string | null) => {
     if (nodeId === primaryZoomRootId) return;
     const before = captureNavigation();
@@ -266,12 +317,14 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       data-sidebar-collapsed={sidebarCollapsed ? "true" : undefined}
       data-detail-maximized={detailMaximized ? "true" : undefined}
     >
-      <WindowChrome
-        sidebarCollapsed={sidebarCollapsed}
-        detailMaximized={detailMaximized}
-        onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
-        onToggleDetail={() => setDetailMaximized((value) => !value)}
-      />
+      <Suspense fallback={null}>
+        <WindowChrome
+          sidebarCollapsed={sidebarCollapsed}
+          detailMaximized={detailMaximized}
+          onToggleSidebar={() => setSidebarCollapsed((value) => !value)}
+          onToggleDetail={() => setDetailMaximized((value) => !value)}
+        />
+      </Suspense>
       <nav className="yonalist-navigation-pane" aria-label="Navigation" data-active-feature="notes">
         <div className="pane-titlebar-spacer" />
         <header className="yonalist-navigation-header">
@@ -328,13 +381,15 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
               <section className="notes-navigation-section" aria-labelledby="library-title">
                 <h2 id="library-title" className="eyebrow">Library</h2>
                 <div className="notes-library-views" role="group" aria-label="Yonalist library views">
-                  <LibraryViewButtons
-                    active={libraryView}
-                    onSelect={(view) => {
-                      setLibraryView(view);
-                      setQuery("");
-                    }}
-                  />
+                  <Suspense fallback={null}>
+                    <LibraryViewButtons
+                      active={libraryView}
+                      onSelect={(view) => {
+                        setLibraryView(view);
+                        setQuery("");
+                      }}
+                    />
+                  </Suspense>
                 </div>
               </section>
             </div>
@@ -345,15 +400,17 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             >
               <h2 id="pages-title" className="eyebrow">Pages</h2>
               <div className="notes-library-list">
-                {state.pages.map((page) => (
-                  <LibraryPageRow
-                    key={page.id}
-                    page={page}
-                    active={page.id === state.activePageId}
-                    store={store}
-                    onOpen={() => void openPage(page.id)}
-                  />
-                ))}
+                <Suspense fallback={null}>
+                  {state.pages.map((page) => (
+                    <LibraryPageRow
+                      key={page.id}
+                      page={page}
+                      active={page.id === state.activePageId}
+                      store={store}
+                      onOpen={() => void openPage(page.id)}
+                    />
+                  ))}
+                </Suspense>
               </div>
             </section>
           </section>
@@ -395,6 +452,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
         onOpenSplit={openSplit}
         onCloseSplit={closeSplit}
         onTagClick={handleTagClick}
+        monacoSessions={monacoSessions}
       />
       <footer className="app-statusbar" aria-label="Status bar">
         <div className="statusbar-feedback">
@@ -404,5 +462,17 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
         <div className="statusbar-actions"><span className="statusbar-state">Online</span></div>
       </footer>
     </main>
+  );
+}
+
+export function shouldRouteUndoToApplication(
+  target: EventTarget | null,
+  modifierPressed: boolean,
+  hasFocusedMonaco = false
+): boolean {
+  if (!modifierPressed || hasFocusedMonaco) return false;
+  return !(
+    target instanceof Element &&
+    target.closest(".notes-monaco-outline")
   );
 }

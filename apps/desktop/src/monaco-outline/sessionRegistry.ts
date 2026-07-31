@@ -19,13 +19,24 @@ export interface MonacoSessionLease {
   release(): Promise<void>;
 }
 
+export interface MonacoSessionRegistry {
+  acquire(pageId: string): Promise<MonacoSessionLease>;
+  flushPage(
+    pageId: string,
+    reason: "navigation" | "close"
+  ): Promise<void>;
+  flushAll(reason: "close"): Promise<void>;
+  hasFocusedEditor(target: EventTarget | null): boolean;
+  dispose(): Promise<void>;
+}
+
 interface RegistryEntry {
   readonly session: Promise<MonacoOutlineSession>;
   references: number;
   resolved: MonacoOutlineSession | null;
 }
 
-export class MonacoOutlineSessionRegistry {
+export class MonacoOutlineSessionRegistry implements MonacoSessionRegistry {
   private readonly entries = new Map<string, RegistryEntry>();
   private disposed = false;
 

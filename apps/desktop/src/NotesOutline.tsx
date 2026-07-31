@@ -23,6 +23,9 @@ import type { PaneFocusSnapshot } from "./appNavigation";
 import { useImageIngest } from "./useImageIngest";
 import { NotesExportBoundary } from "./NotesExportBoundary";
 import { outlineSurfaceFromSearch } from "./outlineSurface";
+import type {
+  MonacoSessionRegistry
+} from "./monaco-outline/sessionRegistry";
 
 const OutlineSelectionActionBar = lazy(() =>
   import("./OutlineSelectionActionBar").then((module) => ({
@@ -42,7 +45,7 @@ export interface PaneRestoreRequest {
 
 export function NotesOutline({
   store, status, error, pendingWrites, page, zoomRootId, onZoomRootChange,
-  onOpenSplit, onTagClick, onClose, paneId, restoreRequest
+  onOpenSplit, onTagClick, onClose, paneId, restoreRequest, monacoSessions
 }: {
   readonly store: NotesStore;
   readonly status: NotesShellSnapshot["status"];
@@ -56,6 +59,7 @@ export function NotesOutline({
   readonly onClose?: () => void;
   readonly paneId: "primary" | "secondary";
   readonly restoreRequest: PaneRestoreRequest | null;
+  readonly monacoSessions: MonacoSessionRegistry;
 }) {
   const state = useSyncExternalStore(
     store.subscribeOutline,
@@ -68,6 +72,8 @@ export function NotesOutline({
   const [selectionFeedback, setSelectionFeedback] = useState("");
   const selectionOperation = useRef(false);
   const [selectionOperationBusy, setSelectionOperationBusy] = useState(false);
+  const [unsupportedMonacoPageId, setUnsupportedMonacoPageId] =
+    useState<string | null>(null);
   const index = useMemo(() => new OutlineIndex(state.nodes), [state.nodes]);
   const zoomRoot = zoomRootId
     ? index.node(zoomRootId)
@@ -253,6 +259,13 @@ export function NotesOutline({
   if (!page) {
     return <section className="notes-outline"><p className="notes-pane-state">No outline yet.</p></section>;
   }
+  const useMonaco = outlineSurface === "monaco" &&
+    unsupportedMonacoPageId !== page.id &&
+    state.nodes.every((node) =>
+      node.kind === "bullet" &&
+      node.image === null &&
+      node.note.trim().length === 0
+    );
   rowRuntime.update({
     nodes: state.nodes,
     visibleNodes: bodyNodes,
@@ -394,24 +407,45 @@ export function NotesOutline({
         data-outline-surface={outlineSurface}
       >
         <div className="notes-outline-content" data-zoomed-page="true">
-          {allBodyNodes.length === 0 && <p className="notes-pane-state">No outline yet.</p>}
+          {!useMonaco && allBodyNodes.length === 0 && (
+            <p className="notes-pane-state">No outline yet.</p>
+          )}
           {!showCompleted && bodyNodes.length < allBodyNodes.length && (
             <p className="notes-pane-state">Completed items are hidden.</p>
           )}
-          {outlineSurface === "monaco" ? (
+          {useMonaco ? (
             <Suspense fallback={null}>
               <MonacoOutlineSurface
-                nodes={bodyNodes}
-                index={index}
-                rootId={outlineRootId}
+                pageId={page.id}
                 paneId={paneId}
-                store={store}
-                structuralContextComplete={structuralContextComplete}
+                zoomRootId={zoomRootId}
+                showCompleted={showCompleted}
+                registry={monacoSessions}
+                onZoomRootChange={onZoomRootChange}
+                onOpenSplit={(nodeId) => onOpenSplit?.(nodeId)}
+                onUnsupported={() => setUnsupportedMonacoPageId(page.id)}
               />
             </Suspense>
           ) : (
             <>
-              <ol className="notes-outline-list" role="list" {...pointerSelection}>
+              {unsupportedMonacoPageId === page.id && (
+                <span
+                  className="notes-selection-visually-hidden"
+                  role="status"
+                >
+                  The standard outline editor is active for this page.
+                </span>
+              )}
+              <ol
+                className="notes-outline-list"
+                role="list"
+                data-outline-fallback={
+                  unsupportedMonacoPageId === page.id
+                    ? "monaco-unsupported"
+                    : undefined
+                }
+                {...pointerSelection}
+              >
                 {bodyNodes.map((node) => (
                   <OutlineRow
                     key={node.id}

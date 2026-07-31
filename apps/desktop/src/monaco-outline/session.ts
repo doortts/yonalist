@@ -222,6 +222,9 @@ export class MonacoOutlineSession {
     return this.persistenceQueue.getSnapshot();
   }
 
+  readonly subscribePersistence = (listener: () => void): (() => void) =>
+    this.persistenceQueue.subscribe(listener);
+
   async dispose(): Promise<void> {
     this.disposal ??= this.disposeOnce();
     await this.disposal;

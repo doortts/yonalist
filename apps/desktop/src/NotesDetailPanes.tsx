@@ -8,6 +8,9 @@ import {
 import type { OutlineTagToken } from "./OutlineTextField";
 import type { NotesShellSnapshot } from "./storeSubscriptions";
 import { useSplitResize } from "./useSplitResize";
+import type {
+  MonacoSessionRegistry
+} from "./monaco-outline/sessionRegistry";
 
 export interface NotesDetailPanesProps {
   readonly store: NotesStore;
@@ -25,6 +28,7 @@ export interface NotesDetailPanesProps {
   readonly onOpenSplit: (nodeId: string) => void;
   readonly onCloseSplit: () => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
+  readonly monacoSessions: MonacoSessionRegistry;
 }
 
 export const NotesDetailPanes = memo(function NotesDetailPanes({
@@ -42,7 +46,8 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
   onSecondaryZoomChange,
   onOpenSplit,
   onCloseSplit,
-  onTagClick
+  onTagClick,
+  monacoSessions
 }: NotesDetailPanesProps) {
   const splitResize = useSplitResize(splitOpen);
   return (
@@ -76,6 +81,7 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
               restoreRequest={primaryRestore}
               onOpenSplit={onOpenSplit}
               onTagClick={onTagClick}
+              monacoSessions={monacoSessions}
             />
           </div>
           {splitOpen && (
@@ -106,6 +112,7 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
                   onOpenSplit={onOpenSplit}
                   onTagClick={onTagClick}
                   onClose={onCloseSplit}
+                  monacoSessions={monacoSessions}
                 />
               </div>
             </>
