@@ -76,6 +76,15 @@ export class OutlineMetadataTimeline {
     }
     this.#active = recorded;
   }
+
+  rewriteCurrent(
+    lines: readonly OutlineLineMetadata[]
+  ): OutlineMetadataSnapshot {
+    const snapshot = createSnapshot(this.#active.alternativeVersionId, lines);
+    this.#versions.set(snapshot.alternativeVersionId, snapshot);
+    this.#active = snapshot;
+    return snapshot;
+  }
 }
 
 export function validateOutlineMetadata(
