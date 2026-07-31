@@ -50,6 +50,7 @@ export class MonacoOutlineSession {
   private readonly transitionsFrom = new Map<number, VersionTransition>();
   private readonly transitionsTo = new Map<number, VersionTransition>();
   private readonly boundEditors = new Set<monaco.editor.ICodeEditor>();
+  private readonly metadataListeners = new Set<() => void>();
   private readonly contentListener: monaco.IDisposable;
   private lineTexts: string[];
   private disposal: Promise<void> | null = null;
@@ -130,6 +131,11 @@ export class MonacoOutlineSession {
     }
     this.boundEditors.add(editor);
     return () => this.boundEditors.delete(editor);
+  }
+
+  subscribeMetadata(listener: () => void): () => void {
+    this.metadataListeners.add(listener);
+    return () => this.metadataListeners.delete(listener);
   }
 
   hasFocusedEditor(target: EventTarget | null): boolean {
@@ -251,6 +257,7 @@ export class MonacoOutlineSession {
     this.transitionsFrom.set(recorded.fromAlternativeVersionId, recorded);
     this.transitionsTo.set(recorded.toAlternativeVersionId, recorded);
     this.decorations.update(transition.affectedLineNumbers);
+    this.emitMetadata();
     this.persistenceQueue.enqueue(
       recorded.forward,
       transition.structural ? "structural" : "text"
@@ -295,6 +302,7 @@ export class MonacoOutlineSession {
     }
     if (commands.length > 0) {
       this.decorations.update([...affectedLineNumbers]);
+      this.emitMetadata();
       this.persistenceQueue.enqueue(
         commands,
         commands.some((command) => command.kind !== "updateText")
@@ -325,6 +333,7 @@ export class MonacoOutlineSession {
       this.decorations.update(
         this.metadata.current().lines.map((_, index) => index + 1)
       );
+      this.emitMetadata();
       this.persistenceQueue.enqueue(commands, "structural");
     };
     const element: MetadataUndoElement = {
@@ -351,8 +360,13 @@ export class MonacoOutlineSession {
     await this.flush("close");
     this.contentListener.dispose();
     this.boundEditors.clear();
+    this.metadataListeners.clear();
     this.decorations.dispose();
     this.model.dispose();
+  }
+
+  private emitMetadata(): void {
+    this.metadataListeners.forEach((listener) => listener());
   }
 }
 
