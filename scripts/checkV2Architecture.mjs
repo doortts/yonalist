@@ -89,6 +89,22 @@ const frontendSet = new Set(frontendSources.map((path) => resolve(path)));
 const dependencyGraph = new Map();
 for (const path of frontendSources) {
   const source = readFileSync(path, "utf8");
+  const monacoImports = [...source.matchAll(
+    /["'](monaco-editor\/esm\/vs\/[^"']+)["']/gu
+  )].map((match) => match[1]);
+  for (const specifier of monacoImports) {
+    const publicEntry =
+      specifier === "monaco-editor/esm/vs/editor/editor.api" ||
+      specifier === "monaco-editor/esm/vs/editor/editor.worker?worker";
+    const internalAdapter =
+      path.endsWith(join("monaco-outline", "internalAdapter.ts")) ||
+      path.endsWith(join("monaco-outline", "monacoInternal.d.ts"));
+    if (!publicEntry && !internalAdapter) {
+      throw new Error(
+        `Monaco internal import escaped adapter: ${relative(root, path)}`
+      );
+    }
+  }
   const outsideDesktopImport = [...source.matchAll(
     /(?:from\s+|import\s*(?:\(|))\s*["'](\.\.\/\.\.\/\.\.\/src\/[^"']+)["']/gu
   )];
