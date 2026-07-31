@@ -1,0 +1,375 @@
+import type { IpcEditorCommand } from "../../../../packages/contracts/generated/IpcEditorCommand";
+import type { OutlineLineMetadata } from "./metadata";
+
+export interface StructuralReplacementPlan {
+  readonly lines: readonly OutlineLineMetadata[];
+  readonly forward: readonly IpcEditorCommand[];
+  readonly inverse: readonly IpcEditorCommand[];
+}
+
+interface StructuralReplacementInput {
+  readonly allLines: readonly OutlineLineMetadata[];
+  readonly startIndex: number;
+  readonly oldLines: readonly OutlineLineMetadata[];
+  readonly oldTexts: readonly string[];
+  readonly newTexts: readonly string[];
+  readonly allocatedIds: readonly string[];
+}
+
+export function planStructuralReplacement(
+  input: StructuralReplacementInput
+): StructuralReplacementPlan {
+  if (input.oldLines.length === 1 && input.newTexts.length === 1) {
+    const source = requiredLine(input.oldLines, 0);
+    const previous = requiredText(input.oldTexts, 0);
+    const next = requiredText(input.newTexts, 0);
+    return {
+      lines: [source],
+      forward:
+        previous === next
+          ? []
+          : [{ kind: "updateText", id: source.nodeId, text: next }],
+      inverse:
+        previous === next
+          ? []
+          : [{ kind: "updateText", id: source.nodeId, text: previous }]
+    };
+  }
+  if (input.oldLines.length === 1) {
+    return planSplit(input);
+  }
+  assertReplaceableSiblings(input.allLines, input.oldLines);
+  if (input.oldLines.length === 2 && input.newTexts.length === 1) {
+    return planBackwardMerge(input);
+  }
+  return planGeneralReplacement(input);
+}
+
+function planSplit(
+  input: StructuralReplacementInput
+): StructuralReplacementPlan {
+  const source = requiredLine(input.oldLines, 0);
+  const previousText = requiredText(input.oldTexts, 0);
+  if (input.allocatedIds.length !== input.newTexts.length - 1) {
+    throw new Error("A split did not receive one stable ID per suffix line.");
+  }
+  const beforeId = nextSiblingId(
+    input.allLines,
+    input.startIndex + 1,
+    source
+  );
+  const insertedLines = input.allocatedIds.map((nodeId) => ({
+    nodeId,
+    parentId: source.parentId,
+    depth: source.depth,
+    kind: "text" as const,
+    collapsed: false,
+    completed: false
+  }));
+  const forward = input.allocatedIds.map((newId, index) => ({
+    kind: "splitNode" as const,
+    id: index === 0 ? source.nodeId : requiredText(input.allocatedIds, index - 1),
+    new_id: newId,
+    parent_id: source.parentId,
+    before_id: beforeId,
+    prefix: requiredText(input.newTexts, index),
+    suffix: requiredText(input.newTexts, index + 1)
+  }));
+  const inverse: IpcEditorCommand[] = [];
+  for (const nodeId of [...input.allocatedIds].reverse()) {
+    inverse.push({ kind: "updateText", id: nodeId, text: "" });
+    inverse.push({ kind: "removeEmptyNode", id: nodeId });
+  }
+  inverse.push({
+    kind: "updateText",
+    id: source.nodeId,
+    text: previousText
+  });
+  return {
+    lines: [source, ...insertedLines],
+    forward,
+    inverse
+  };
+}
+
+function planBackwardMerge(
+  input: StructuralReplacementInput
+): StructuralReplacementPlan {
+  const previous = requiredLine(input.oldLines, 0);
+  const current = requiredLine(input.oldLines, 1);
+  const previousText = requiredText(input.oldTexts, 0);
+  const currentText = requiredText(input.oldTexts, 1);
+  const mergedText = requiredText(input.newTexts, 0);
+  const nextId = nextSiblingId(
+    input.allLines,
+    input.startIndex + input.oldLines.length,
+    current
+  );
+
+  if (currentText.trim().length === 0) {
+    const forward: IpcEditorCommand[] = [];
+    if (mergedText !== previousText) {
+      forward.push({
+        kind: "updateText",
+        id: previous.nodeId,
+        text: mergedText
+      });
+    }
+    forward.push({ kind: "removeEmptyNode", id: current.nodeId });
+    const inverse: IpcEditorCommand[] = [
+      {
+        kind: "createNode",
+        id: current.nodeId,
+        parent_id: current.parentId,
+        before_id: nextId,
+        text: currentText
+      }
+    ];
+    if (mergedText !== previousText) {
+      inverse.push({
+        kind: "updateText",
+        id: previous.nodeId,
+        text: previousText
+      });
+    }
+    return { lines: [previous], forward, inverse };
+  }
+
+  const forward: IpcEditorCommand[] = [
+    {
+      kind: "mergeNodeBackward",
+      id: current.nodeId,
+      previous_id: previous.nodeId,
+      previous_text: previousText,
+      current_text: currentText
+    }
+  ];
+  if (mergedText !== previousText + currentText) {
+    forward.push({
+      kind: "updateText",
+      id: current.nodeId,
+      text: mergedText
+    });
+  }
+  return {
+    lines: [current],
+    forward,
+    inverse: [
+      {
+        kind: "createNode",
+        id: previous.nodeId,
+        parent_id: previous.parentId,
+        before_id: current.nodeId,
+        text: previousText
+      },
+      {
+        kind: "updateText",
+        id: current.nodeId,
+        text: currentText
+      }
+    ]
+  };
+}
+
+function planGeneralReplacement(
+  input: StructuralReplacementInput
+): StructuralReplacementPlan {
+  if (input.newTexts.length === 1) {
+    return planManyToOne(input);
+  }
+
+  const first = requiredLine(input.oldLines, 0);
+  const last = requiredLine(input.oldLines, input.oldLines.length - 1);
+  const removedLines = input.oldLines.slice(1, -1);
+  const removedTexts = input.oldTexts.slice(1, -1);
+  if (input.allocatedIds.length !== input.newTexts.length - 2) {
+    throw new Error(
+      "A multi-line replacement did not receive one ID per inserted interior line."
+    );
+  }
+  const insertedLines = input.allocatedIds.map((nodeId) => ({
+    nodeId,
+    parentId: first.parentId,
+    depth: first.depth,
+    kind: "text" as const,
+    collapsed: false,
+    completed: false
+  }));
+  const forward: IpcEditorCommand[] = [];
+  pushTextUpdate(
+    forward,
+    first.nodeId,
+    requiredText(input.oldTexts, 0),
+    requiredText(input.newTexts, 0)
+  );
+  for (const [index, line] of removedLines.entries()) {
+    const text = requiredText(removedTexts, index);
+    if (text !== "") {
+      forward.push({ kind: "updateText", id: line.nodeId, text: "" });
+    }
+    forward.push({ kind: "removeEmptyNode", id: line.nodeId });
+  }
+  pushTextUpdate(
+    forward,
+    last.nodeId,
+    requiredText(input.oldTexts, input.oldTexts.length - 1),
+    requiredText(input.newTexts, input.newTexts.length - 1)
+  );
+  for (const [index, line] of insertedLines.entries()) {
+    forward.push({
+      kind: "createNode",
+      id: line.nodeId,
+      parent_id: line.parentId,
+      before_id: last.nodeId,
+      text: requiredText(input.newTexts, index + 1)
+    });
+  }
+
+  const inverse: IpcEditorCommand[] = [];
+  for (const line of [...insertedLines].reverse()) {
+    inverse.push({ kind: "updateText", id: line.nodeId, text: "" });
+    inverse.push({ kind: "removeEmptyNode", id: line.nodeId });
+  }
+  pushTextUpdate(
+    inverse,
+    first.nodeId,
+    requiredText(input.newTexts, 0),
+    requiredText(input.oldTexts, 0)
+  );
+  pushTextUpdate(
+    inverse,
+    last.nodeId,
+    requiredText(input.newTexts, input.newTexts.length - 1),
+    requiredText(input.oldTexts, input.oldTexts.length - 1)
+  );
+  for (const [index, line] of removedLines.entries()) {
+    inverse.push({
+      kind: "createNode",
+      id: line.nodeId,
+      parent_id: line.parentId,
+      before_id: last.nodeId,
+      text: requiredText(removedTexts, index)
+    });
+  }
+  return {
+    lines: [first, ...insertedLines, last],
+    forward,
+    inverse
+  };
+}
+
+function planManyToOne(
+  input: StructuralReplacementInput
+): StructuralReplacementPlan {
+  const lastIndex = input.oldLines.length - 1;
+  const keepLast = requiredText(input.oldTexts, lastIndex).trim().length > 0;
+  const survivorIndex = keepLast ? lastIndex : 0;
+  const survivor = requiredLine(input.oldLines, survivorIndex);
+  const survivorText = requiredText(input.oldTexts, survivorIndex);
+  const replacementText = requiredText(input.newTexts, 0);
+  const removed = input.oldLines
+    .map((line, index) => ({
+      line,
+      text: requiredText(input.oldTexts, index),
+      index
+    }))
+    .filter(({ index }) => index !== survivorIndex);
+  const nextId = nextSiblingId(
+    input.allLines,
+    input.startIndex + input.oldLines.length,
+    requiredLine(input.oldLines, lastIndex)
+  );
+
+  const forward: IpcEditorCommand[] = [];
+  for (const { line, text } of removed) {
+    if (text !== "") {
+      forward.push({ kind: "updateText", id: line.nodeId, text: "" });
+    }
+    forward.push({ kind: "removeEmptyNode", id: line.nodeId });
+  }
+  pushTextUpdate(
+    forward,
+    survivor.nodeId,
+    survivorText,
+    replacementText
+  );
+
+  const inverse: IpcEditorCommand[] = [];
+  pushTextUpdate(
+    inverse,
+    survivor.nodeId,
+    replacementText,
+    survivorText
+  );
+  const beforeId = keepLast ? survivor.nodeId : nextId;
+  for (const { line, text } of removed) {
+    inverse.push({
+      kind: "createNode",
+      id: line.nodeId,
+      parent_id: line.parentId,
+      before_id: beforeId,
+      text
+    });
+  }
+  return { lines: [survivor], forward, inverse };
+}
+
+function pushTextUpdate(
+  commands: IpcEditorCommand[],
+  id: string,
+  previous: string,
+  next: string
+): void {
+  if (previous !== next) {
+    commands.push({ kind: "updateText", id, text: next });
+  }
+}
+
+function assertReplaceableSiblings(
+  allLines: readonly OutlineLineMetadata[],
+  lines: readonly OutlineLineMetadata[]
+): void {
+  const first = requiredLine(lines, 0);
+  if (
+    lines.some(
+      (line) =>
+        line.parentId !== first.parentId ||
+        line.depth !== first.depth ||
+        allLines.some((candidate) => candidate.parentId === line.nodeId)
+    )
+  ) {
+    throw new Error(
+      "A native multi-line replacement may only cross same-parent leaf bullets."
+    );
+  }
+}
+
+function nextSiblingId(
+  lines: readonly OutlineLineMetadata[],
+  startIndex: number,
+  source: OutlineLineMetadata
+): string | null {
+  for (let index = startIndex; index < lines.length; index += 1) {
+    const candidate = lines[index];
+    if (!candidate || candidate.depth < source.depth) return null;
+    if (candidate.depth === source.depth) {
+      return candidate.parentId === source.parentId ? candidate.nodeId : null;
+    }
+  }
+  return null;
+}
+
+function requiredLine(
+  lines: readonly OutlineLineMetadata[],
+  index: number
+): OutlineLineMetadata {
+  const line = lines[index];
+  if (!line) throw new Error(`Missing outline metadata at index ${index}.`);
+  return line;
+}
+
+function requiredText(texts: readonly string[], index: number): string {
+  const text = texts[index];
+  if (text === undefined) throw new Error(`Missing outline text at index ${index}.`);
+  return text;
+}
