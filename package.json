@@ -17,6 +17,7 @@
     "test:v2:architecture": "node scripts/checkV2Architecture.mjs",
     "test:v2:contracts": "node scripts/checkV2Contracts.mjs",
     "test:v2:bundle": "npm run v2:build && node scripts/checkV2BundleBudget.mjs",
+    "report:v2:monaco-bundle": "npm run v2:build && node scripts/reportMonacoBundle.mjs",
     "test:v2:performance": "cargo test -p notes-sqlite --features bench-fixtures --test performance -- --nocapture",
     "test:v2:frontend": "npm run test --prefix apps/desktop",
     "lint:v2": "eslint apps/desktop/src",
