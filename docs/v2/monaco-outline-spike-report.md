@@ -121,10 +121,10 @@ Production Vite build 기준이다.
 
 | Asset | React 기준 | 권위형 Monaco |
 |---|---:|---:|
-| query-free 초기 editable JS | 295.93KB raw / 89.99KB gzip | 288.7KB raw / 88.0KB gzip |
-| Monaco lazy JS | 없음 | 2,519.05KB raw / 646.00KB gzip |
-| Monaco CSS | 없음 | 74.22KB raw / 11.68KB gzip |
-| editor worker | 없음 | 281.29KB raw |
+| query-free 초기 editable JS | 295.93KB raw / 89.99KB gzip | 295,983B raw / 90,313B gzip |
+| Monaco lazy JS | 없음 | 2,543,329B raw / 647,103B gzip |
+| Monaco CSS | 없음 | 74,223B raw / 11,695B gzip |
+| editor worker | 없음 | 281,292B raw |
 | 개발 성능 probe | 없음 | production graph에 없음 |
 
 초기 editable graph는 300KB raw / 90KB gzip 예산 검사를 통과한다.
@@ -154,6 +154,98 @@ React fallback row와 내보내기 UI도 실제 사용 시점에 지연 로드�
 토큰을 유지했고 본문 font/line-height도 React row와 같은 16px/25px로
 맞췄다. 다만 caret, selection, IME 보조 DOM과 줄 wrapping은 Monaco
 renderer가 소유하므로 내부 DOM까지 React 버전과 동일하지는 않다.
+
+## 2026-07-31 계층형 성능 최적화 증거
+
+### 측정 대상과 환경
+
+- 동작 후보: `fdea5bf` (`perf(monaco): window pane bullet decorations`)
+- 동일 working tree의 계측 브리지: `7cdf32f`
+- 전체 frontend gate 기준: `ff2b3d3`
+- 비교 v2 core: `codex/yonalist-v2-core@c6873a5`
+- 운영체제: Windows 11 Enterprise 10.0.26200, 64-bit
+- CPU / 메모리: AMD Ryzen 9 9950X, 125.6 GiB
+- Node / npm: v24.18.0 / 11.16.0
+- 브라우저: 같은 장비의 Chromium 기반 앱 미리보기와 로그인된 Chrome
+
+새 계측기는 `benchmark=monaco`인 개발 서버에서만 연결된다. 최초 세
+프레임을 버리고 정확히 31개 표본을 한 번 발행한 뒤 key/model/cursor
+listener와 long-task observer를 해제한다. production build에서는 계측
+global, DOM marker, 구현 심벌이 모두 검색되지 않았다.
+
+### 키 입력에서 다음 프레임까지
+
+| 작업 | 1차 median / p95 | 2차 median / p95 | long task | `setValue` | 표본 source |
+|---|---:|---:|---:|---:|---|
+| Enter | 10.6 / 14.0ms | 4.5 / 11.4ms | 0 / 0 | 0 / 0 | model 31 / 31 |
+| Backspace | 7.5 / 14.9ms | 6.7 / 14.9ms | 0 / 0 | 0 / 0 | keydown 31 / 31 |
+| ArrowDown | 7.5 / 15.0ms | 8.2 / 15.2ms | 0 / 0 | 0 / 0 | keydown 31 / 31 |
+
+모든 p95가 20ms 기준 안이고 50ms 이상 long task와 전체 모델 교체는
+없었다. 2차 p95 변화는 Enter -18.6%, Backspace 0%, ArrowDown +1.3%다.
+
+Chrome 제어기의 EditContext 텍스트 입력은 Enter를 Monaco keydown으로
+전달하지 않고 model change를 직접 발생시킨다. 따라서 Enter 수치는
+명시적으로 model-change-to-frame이며, 사용자가 누른 실제 Enter의
+keydown-to-frame 수치라고 과장하지 않는다. Backspace와 ArrowDown은
+keydown-to-frame이다. 두 차수는 같은 Vite 프로세스의 warm cache를
+썼지만 editor를 reload해 새로 만들었다. 그러므로 동일 editor 수명에서
+31개 표본을 재무장해 비교한다는 계획 항목은 아직 충족하지 않았다.
+
+원시 표본은 다음과 같다.
+
+```text
+Enter 1: [11.2,10.7,10.6,10.6,11.3,9.7,4.2,4.3,6,6.3,7.5,8.6,8.9,9.8,11.1,10,10.4,11.3,10.8,10.4,9.6,10.2,11.2,13.7,14.1,12.9,12.8,13.4,14,13.9,6.9]
+Enter 2: [11.6,11.4,11,11.4,11.1,9.8,4.1,4.5,4.2,4.7,4.4,4.3,4.3,4.2,4.1,4.2,4.2,4.5,4.1,4.2,4.1,4.3,4.1,3.8,4.6,4.9,5.5,7,8.4,9.2,10.3]
+Backspace 1: [1.5,3.5,8.1,10.7,14.5,3.3,5.7,8.4,13.3,2.8,1.3,4,7.5,11.1,14.9,3.6,7.2,11.1,14.5,3.3,6.3,9.7,14.3,2.9,6.2,10.9,14.9,4.4,8.4,13.5,2.3]
+Backspace 2: [2.6,7.3,12.4,2.1,3.6,6.7,10.9,14.9,3,5.6,9.3,15,4.4,8.2,12.9,2.5,5.6,10.6,14.7,4.1,8,13,1.9,3.1,7.3,13,1.9,2.8,6.6,11.7,1.7]
+ArrowDown 1: [10.4,11.8,1.3,3.8,8.3,13.8,3.5,8,13.1,2.3,6.5,11.7,2.4,7.5,14.1,5,10.6,15.1,5.4,11.4,1.8,5.7,12,1.7,6.2,11.9,1.8,4.7,10.7,15,4.7]
+ArrowDown 2: [15.1,3.2,1.8,5.3,9,13.3,2.1,5,10.5,1.1,4.7,10.2,15.1,3.5,6.9,12.8,3,7.7,13.1,3.3,9.1,15.2,5.8,11.1,15.1,5,10.5,15.2,4.2,8.2,13.5]
+```
+
+### 편집 준비와 방향성 비교
+
+warm reload 31회는 navigation start에서 session/editor 생성 뒤 계측기가
+연결된 시점까지 측정했다. median 397.4ms, p95 485.4ms로 목표
+median 530ms 이하이며, 이전 Monaco median 665ms보다 40.2% 줄었다.
+원시 표본은 다음과 같다.
+
+```text
+[392.3,406.3,397.8,406.8,398.1,385.6,396.6,395.3,399.2,398.5,399.2,394.1,391.6,385.7,383.8,399.5,400.5,385.4,400.4,395,395,419.6,407.8,503.5,485.4,397.4,393.5,388.8,400.5,394.2,394.1]
+```
+
+아래 값은 브라우저 제어 왕복까지 포함한 빠른 3회 표본의 중앙값이다.
+정밀 key-to-frame 값이 아니라 같은 장비에서의 방향성 비교다.
+
+| 대상 | Enter ×20 | ArrowDown ×40 |
+|---|---:|---:|
+| 최적화 Monaco | 522ms `[487,522,539]` | 615ms `[562,615,663]` |
+| 최신 v2 core | 597ms `[661,577,597]` | 743ms `[563,743,778]` |
+| 로그인된 Workflowy | 533ms `[633,533,481]` | 651ms `[684,618,651]` |
+
+이 표본에서 Monaco는 최신 v2 core보다 Enter 12.6%, ArrowDown 17.2%
+짧았다. Workflowy와는 각각 2.1%, 5.5% 짧았지만 원격 서비스 상태와
+브라우저 제어 오버헤드가 섞인 값이므로 제품 우열 근거로 사용하지 않는다.
+
+### 수명·렌더 범위·번들 검증
+
+- session과 pane 진단 카운터는 반복 acquire/release 뒤 기준값으로
+  돌아왔고, metadata timeline은 보존된 Undo 분기를 제외한 이전 버전을
+  정리한다.
+- 블릿 decoration은 pane의 visible range 전후 한 viewport만 소유한다.
+  개발 미리보기에서 Enter 50회, Backspace 25회와 scroll 뒤에도 화면의
+  블릿 21개와 native edit focus가 안정적으로 유지됐다.
+- 초기 JS는 295,983B raw / 90,313B gzip으로 300KB / 90KB 예산 안이다.
+- Monaco lazy JS는 2,543,329B raw / 647,103B gzip, CSS는
+  74,223B raw / 11,695B gzip, worker는 281,292B raw다.
+- Task 3의 교정된 기준보다 lazy JS 증가는 1,653B raw / 427B gzip,
+  약 0.07%로 허용 범위다.
+
+최종 frontend gate는 `npm test` 4,581건 통과(27건 skip),
+`npm run lint:v2`, `npm run v2:build`, `git diff --check` 모두 통과했다.
+Monaco upstream 패키지에 빠진 source map 경고 두 건은 남지만 테스트와
+production build 실패는 아니다. 이 변경은 Rust, SQLite, IPC, native
+설정을 바꾸지 않아 계획대로 Cargo, rustfmt, Clippy는 실행하지 않았다.
 
 ## 후속 판단
 
