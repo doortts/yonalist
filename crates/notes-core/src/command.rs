@@ -50,6 +50,9 @@ impl Position {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum NotesCommand {
+    Batch {
+        commands: Vec<NotesCommand>,
+    },
     CreatePage {
         id: NodeId,
         text: String,
