@@ -50,6 +50,25 @@ function fail(message) {
   throw new Error(message);
 }
 
+export function resolveEvidenceHead({
+  auditedHead,
+  manifestIntroductionCommit,
+  ledgerIntroductionCommit,
+  isCommit
+}) {
+  if (isCommit(auditedHead)) return auditedHead;
+  if (
+    manifestIntroductionCommit &&
+    manifestIntroductionCommit === ledgerIntroductionCommit &&
+    isCommit(manifestIntroductionCommit)
+  ) {
+    return manifestIntroductionCommit;
+  }
+  fail(
+    `missing auditedHead ${auditedHead} and immutable reconciliation snapshot`
+  );
+}
+
 export function validatePlanReconciliation({
   manifest,
   ledger,
@@ -209,6 +228,14 @@ function gitSucceeds(args) {
   return spawnSync("git", args, { stdio: "ignore" }).status === 0;
 }
 
+function gitOutput(args) {
+  const result = spawnSync("git", args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"]
+  });
+  return result.status === 0 ? result.stdout.trim() : null;
+}
+
 function run() {
   const manifest = JSON.parse(readFileSync(resolve(manifestPath), "utf8"));
   const ledger = JSON.parse(readFileSync(resolve(ledgerPath), "utf8"));
@@ -218,6 +245,47 @@ function run() {
       readFileSync(resolve(plan.path), "utf8")
     ])
   );
+  const manifestIntroductionCommit = gitOutput([
+    "log",
+    "--diff-filter=A",
+    "-1",
+    "--format=%H",
+    "--",
+    manifestPath
+  ]);
+  const ledgerIntroductionCommit = gitOutput([
+    "log",
+    "--diff-filter=A",
+    "-1",
+    "--format=%H",
+    "--",
+    ledgerPath
+  ]);
+  const evidenceHead = resolveEvidenceHead({
+    auditedHead: manifest.auditedHead,
+    manifestIntroductionCommit,
+    ledgerIntroductionCommit,
+    isCommit: (commit) => gitSucceeds([
+      "cat-file",
+      "-e",
+      `${commit}^{commit}`
+    ])
+  });
+  if (evidenceHead !== manifest.auditedHead) {
+    if (!gitSucceeds([
+      "diff",
+      "--quiet",
+      evidenceHead,
+      "--",
+      manifestPath,
+      ledgerPath
+    ])) {
+      fail("reconciliation evidence changed after its fallback commit");
+    }
+    console.warn(
+      `historical plan auditedHead is unavailable; using immutable reconciliation snapshot ${evidenceHead}`
+    );
+  }
   const result = validatePlanReconciliation({
     manifest,
     ledger,
@@ -228,10 +296,10 @@ function run() {
         "merge-base",
         "--is-ancestor",
         commit,
-        manifest.auditedHead
+        evidenceHead
       ]),
     hasArtifact: (artifact) =>
-      gitSucceeds(["cat-file", "-e", `${manifest.auditedHead}:${artifact}`])
+      gitSucceeds(["cat-file", "-e", `${evidenceHead}:${artifact}`])
   });
   if (process.argv.includes("--summary-json")) {
     console.log(JSON.stringify(result, null, 2));

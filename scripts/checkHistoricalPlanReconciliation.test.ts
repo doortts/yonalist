@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   checkboxDigest,
+  resolveEvidenceHead,
   validatePlanReconciliation
 } from "./checkHistoricalPlanReconciliation.mjs";
 
@@ -48,6 +49,29 @@ function validate(ledger = completeLedger, source = document) {
 }
 
 describe("historical plan reconciliation", () => {
+  it("uses the reconciliation commit when a truncated clone lacks auditedHead", () => {
+    const available = new Set(["reconciliation"]);
+
+    expect(resolveEvidenceHead({
+      auditedHead: "missing-audit",
+      manifestIntroductionCommit: "reconciliation",
+      ledgerIntroductionCommit: "reconciliation",
+      isCommit: (commit) => available.has(commit)
+    })).toBe("reconciliation");
+    expect(() => resolveEvidenceHead({
+      auditedHead: "missing-audit",
+      manifestIntroductionCommit: "manifest",
+      ledgerIntroductionCommit: "ledger",
+      isCommit: () => false
+    })).toThrow("missing auditedHead missing-audit");
+    expect(() => resolveEvidenceHead({
+      auditedHead: "missing-audit",
+      manifestIntroductionCommit: "manifest",
+      ledgerIntroductionCommit: "ledger",
+      isCommit: (commit) => commit !== "missing-audit"
+    })).toThrow("immutable reconciliation snapshot");
+  });
+
   it("ignores checkbox markers when hashing plan text", () => {
     expect(checkboxDigest("- [ ] first\n- [x] second\n")).toBe(
       checkboxDigest("- [x] first\n- [ ] second\n")
