@@ -29,7 +29,7 @@ function outlineNode(index: number): NoteView {
   };
 }
 
-function bootSnapshot(count: number): BootSnapshot {
+function bootSnapshot(count: number, afterCursor: string | null = null): BootSnapshot {
   return {
     sessionId: "perf-session",
     revision: 1,
@@ -39,17 +39,26 @@ function bootSnapshot(count: number): BootSnapshot {
       pageId: "page-1",
       anchorId: null,
       beforeCursor: null,
-      afterCursor: null,
+      afterCursor,
       nodes: Array.from({ length: count }, (_, index) => outlineNode(index))
     },
     history: { canUndo: false, canRedo: false, undoDepth: 0, redoDepth: 0 }
   };
 }
 
-async function readyStore(count: number): Promise<NotesStore> {
+async function readyStore(
+  count: number,
+  afterCursor: string | null = null
+): Promise<NotesStore> {
   const api = {
-    bootstrap: vi.fn().mockResolvedValue(bootSnapshot(count)),
-    queryViewport: vi.fn(),
+    bootstrap: vi.fn().mockResolvedValue(bootSnapshot(count, afterCursor)),
+    queryViewport: vi.fn().mockResolvedValue({
+      pageId: "page-1",
+      anchorId: null,
+      beforeCursor: null,
+      afterCursor: null,
+      nodes: [outlineNode(count)]
+    }),
     queryForest: vi.fn().mockResolvedValue({
       revision: 1,
       nodes: [],
@@ -232,6 +241,61 @@ describe("outline row rendering performance", () => {
     expect(small.rows).toBeLessThan(60);
     expect(large.rows).toBe(small.rows);
     expect(large.textareas).toBeLessThan(small.rows * 2);
+  }, 240_000);
+
+  it("keeps the pagination anchor below the window and inside the scroller", async () => {
+    const observed: {
+      root: Element | Document | null;
+      target: Element | null;
+      callback: IntersectionObserverCallback;
+    }[] = [];
+    vi.stubGlobal("IntersectionObserver", class {
+      constructor(
+        callback: IntersectionObserverCallback,
+        options?: IntersectionObserverInit
+      ) {
+        this.entry = { root: options?.root ?? null, target: null, callback };
+        observed.push(this.entry);
+      }
+      private readonly entry: (typeof observed)[number];
+      observe(target: Element): void {
+        this.entry.target = target;
+      }
+      disconnect(): void {}
+    });
+    try {
+      const store = await readyStore(2_000, "cursor-1");
+      const view = render(outlineElement(store));
+      await act(async () => undefined);
+      const anchor = view.container.querySelector<HTMLElement>(
+        ".notes-outline-autoload")!;
+
+      // Windowing unmounts whatever it does not render, so the anchor has to
+      // live outside the row list; and the rows scroll in their own container,
+      // so that container has to be the observer root or the rootMargin lead
+      // is measured against the wrong box.
+      expect(anchor).not.toBeNull();
+      expect(anchor.closest(".notes-outline-list")).toBeNull();
+      expect(observed).toHaveLength(1);
+      expect(observed[0]!.target).toBe(anchor);
+      expect(observed[0]!.root).toBe(
+        view.container.querySelector(".notes-outline-rows"));
+
+      await act(async () => {
+        observed[0]!.callback(
+          [{
+            isIntersecting: true,
+            target: anchor as Element
+          } as IntersectionObserverEntry],
+          {} as IntersectionObserver
+        );
+      });
+      expect(store.getSnapshot().nodes.some(
+        (node) => node.id === `node-2000`)).toBe(true);
+      view.unmount();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   }, 240_000);
 
   it("follows the scroll position without changing the outline height", async () => {
