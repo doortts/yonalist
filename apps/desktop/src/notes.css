@@ -1316,9 +1316,10 @@
   color: var(--text-1);
 }
 
-.notes-monaco-outline .monaco-editor .cursor {
+.notes-monaco-outline .monaco-editor .cursors-layer .cursor {
   border-color: var(--text-1);
   background-color: var(--text-1);
+  color: var(--bg-detail);
 }
 
 .notes-monaco-outline .monaco-editor .selected-text {
