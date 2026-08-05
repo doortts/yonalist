@@ -12,7 +12,8 @@ function binding(): YonalistOutlineEditorBinding {
     } as unknown as YonalistOutlineEditorBinding["session"],
     pane: {
       activeNodeId: () => "child",
-      handleBullet: vi.fn()
+      handleBullet: vi.fn(),
+      handleChevron: vi.fn()
     }
   };
 }

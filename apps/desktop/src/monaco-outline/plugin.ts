@@ -1,6 +1,7 @@
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 
 import {
+  keepCaretRightOfInjectedText,
   readInjectedTextAttachment,
   registerOutlineContribution
 } from "./internalAdapter";
@@ -10,6 +11,7 @@ import { canApplyNativeBoundaryEdit } from "./structuralChanges";
 export interface MonacoOutlinePaneBinding {
   activeNodeId(): string | null;
   handleBullet(nodeId: string, shiftKey: boolean): void;
+  handleChevron(nodeId: string): void;
 }
 
 export interface YonalistOutlineEditorBinding {
@@ -100,11 +102,16 @@ export function bindYonalistOutlineEditor(
       event.stopPropagation();
     }
   });
+  const caret = keepCaretRightOfInjectedText(editor);
   const mouse = editor.onMouseDown((event) => {
     const attachment = readInjectedTextAttachment(event);
     if (!attachment) return;
     event.event.preventDefault();
     event.event.stopPropagation();
+    if (attachment.kind === "yonalist-chevron") {
+      binding.pane.handleChevron(attachment.nodeId);
+      return;
+    }
     binding.pane.handleBullet(
       attachment.nodeId,
       event.event.browserEvent.shiftKey
@@ -114,6 +121,7 @@ export function bindYonalistOutlineEditor(
   return {
     dispose: () => {
       mouse.dispose();
+      caret.dispose();
       keyboard.dispose();
       unbindSession();
       context.set(false);

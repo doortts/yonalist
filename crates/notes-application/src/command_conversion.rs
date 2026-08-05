@@ -100,6 +100,13 @@ impl TryFrom<IpcEditorCommand> for NotesCommand {
                 id: id(value)?,
                 parent_id: id(new_parent_id)?,
             }),
+            IpcEditorCommand::SetCollapsed {
+                id: value,
+                collapsed,
+            } => Ok(Self::SetCollapsed {
+                id: id(value)?,
+                collapsed,
+            }),
         }
     }
 }

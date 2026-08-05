@@ -189,6 +189,10 @@ pub enum IpcEditorCommand {
         new_parent_id: String,
         before_id: Option<String>,
     },
+    SetCollapsed {
+        id: String,
+        collapsed: bool,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]

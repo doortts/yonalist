@@ -24,6 +24,26 @@ declare module "monaco-editor/esm/vs/editor/common/standalone/standaloneEnums.js
   }
 }
 
+declare module "monaco-editor/esm/vs/editor/common/core/range.js" {
+  export { Range } from "monaco-editor/esm/vs/editor/editor.api";
+}
+
+declare module "monaco-editor/esm/vs/editor/common/cursorCommon.js" {
+  export class SingleCursorState {
+    constructor(
+      selectionStart: import("monaco-editor/esm/vs/editor/editor.api").Range,
+      selectionStartKind: number,
+      selectionStartLeftoverVisibleColumns: number,
+      position: import("monaco-editor/esm/vs/editor/editor.api").Position,
+      leftoverVisibleColumns: number
+    );
+  }
+
+  export class CursorState {
+    static fromViewState(state: SingleCursorState): unknown;
+  }
+}
+
 declare module "monaco-editor/esm/vs/platform/undoRedo/common/undoRedo.js" {
   export const IUndoRedoService: unknown;
 

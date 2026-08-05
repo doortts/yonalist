@@ -5,6 +5,11 @@ import {
   registerEditorContribution
 } from "monaco-editor/esm/vs/editor/browser/editorExtensions.js";
 import { MoveOperations } from "monaco-editor/esm/vs/editor/common/cursor/cursorMoveOperations.js";
+import { Range } from "monaco-editor/esm/vs/editor/common/core/range.js";
+import {
+  CursorState,
+  SingleCursorState
+} from "monaco-editor/esm/vs/editor/common/cursorCommon.js";
 import { PositionAffinity } from "monaco-editor/esm/vs/editor/common/standalone/standaloneEnums.js";
 import {
   IUndoRedoService,
@@ -18,10 +23,11 @@ export interface MonacoInternalCapabilities {
   readonly hiddenAreas: boolean;
   readonly injectedMouseTarget: boolean;
   readonly metadataUndo: boolean;
+  readonly cursorStateRewrite: boolean;
 }
 
 export interface YonalistInjectedBulletAttachment {
-  readonly kind: "yonalist-bullet";
+  readonly kind: "yonalist-bullet" | "yonalist-chevron";
   readonly nodeId: string;
 }
 
@@ -42,6 +48,21 @@ interface PrivateCodeEditor {
   invokeWithinContext?<T>(
     callback: (accessor: { get(service: unknown): unknown }) => T
   ): T;
+  _getViewModel?(): PrivateViewModel | null;
+}
+
+interface PrivateViewModel {
+  readonly coordinatesConverter: {
+    convertModelPositionToViewPosition(
+      position: monaco.Position,
+      affinity?: PositionAffinity
+    ): monaco.Position;
+  };
+  setCursorStates(
+    source: string,
+    reason: number,
+    states: readonly unknown[]
+  ): boolean;
 }
 
 interface UndoRedoService {
@@ -63,7 +84,10 @@ const capabilities: MonacoInternalCapabilities = Object.freeze({
   hiddenAreas: true,
   injectedMouseTarget: true,
   metadataUndo:
-    typeof UndoRedoGroup === "function" && IUndoRedoService !== undefined
+    typeof UndoRedoGroup === "function" && IUndoRedoService !== undefined,
+  cursorStateRewrite:
+    typeof SingleCursorState === "function" &&
+    typeof CursorState.fromViewState === "function"
 });
 
 export function readMonacoInternalCapabilities(): MonacoInternalCapabilities {
@@ -105,15 +129,58 @@ export function readInjectedTextAttachment(
   ]);
   if (
     !isRecord(attachedData) ||
-    attachedData.kind !== "yonalist-bullet" ||
+    (attachedData.kind !== "yonalist-bullet" &&
+      attachedData.kind !== "yonalist-chevron") ||
     typeof attachedData.nodeId !== "string"
   ) {
     return null;
   }
   return {
-    kind: "yonalist-bullet",
+    kind: attachedData.kind,
     nodeId: attachedData.nodeId
   };
+}
+
+export function keepCaretRightOfInjectedText(
+  editor: monaco.editor.ICodeEditor
+): monaco.IDisposable {
+  let rewriting = false;
+  return editor.onDidChangeCursorPosition(() => {
+    if (rewriting) return;
+    const selection = editor.getSelection();
+    if (
+      !selection ||
+      !selection.isEmpty() ||
+      selection.positionColumn !== 1
+    ) {
+      return;
+    }
+    const privateEditor = editor as unknown as PrivateCodeEditor;
+    const viewModel = privateEditor._getViewModel?.();
+    if (!viewModel) return;
+    const converter = viewModel.coordinatesConverter;
+    const position = selection.getPosition();
+    const defaultView = converter.convertModelPositionToViewPosition(position);
+    const rightView = converter.convertModelPositionToViewPosition(
+      position,
+      PositionAffinity.Right
+    );
+    if (rightView.equals(defaultView)) return;
+    rewriting = true;
+    try {
+      viewModel.setCursorStates("yonalist.outline.caret", 0, [
+        CursorState.fromViewState(new SingleCursorState(
+          Range.fromPositions(rightView, rightView),
+          0,
+          0,
+          rightView,
+          0
+        ))
+      ]);
+    } finally {
+      rewriting = false;
+    }
+  });
 }
 
 export function registerOutlineContribution(

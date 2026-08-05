@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
+import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
+
 import {
   assertMonacoInternalCapabilities,
+  keepCaretRightOfInjectedText,
   moveWithInjectedTextAffinity,
   pushMetadataUndo,
   readInjectedTextAttachment,
@@ -18,7 +21,8 @@ describe("Monaco internal adapter", () => {
       cursorAffinity: true,
       hiddenAreas: true,
       injectedMouseTarget: true,
-      metadataUndo: true
+      metadataUndo: true,
+      cursorStateRewrite: true
     });
     expect(() => assertMonacoInternalCapabilities()).not.toThrow();
   });
@@ -48,6 +52,23 @@ describe("Monaco internal adapter", () => {
             injectedText: {
               options: {
                 attachedData: {
+                  kind: "yonalist-chevron",
+                  nodeId: "node-1"
+                }
+              }
+            }
+          }
+        }
+      })
+    ).toEqual({ kind: "yonalist-chevron", nodeId: "node-1" });
+
+    expect(
+      readInjectedTextAttachment({
+        target: {
+          detail: {
+            injectedText: {
+              options: {
+                attachedData: {
                   kind: "foreign",
                   nodeId: "node-1"
                 }
@@ -57,6 +78,50 @@ describe("Monaco internal adapter", () => {
         }
       })
     ).toBeNull();
+  });
+
+  it("rewrites a column-one caret to the right of injected text", () => {
+    const listeners: Array<() => void> = [];
+    const setCursorStates = vi.fn();
+    let selection = new monaco.Selection(2, 1, 2, 1);
+    const editor = {
+      onDidChangeCursorPosition: (listener: () => void) => {
+        listeners.push(listener);
+        return { dispose: vi.fn() };
+      },
+      getSelection: () => selection,
+      _getViewModel: () => ({
+        coordinatesConverter: {
+          convertModelPositionToViewPosition: (
+            _position: monaco.Position,
+            affinity?: number
+          ) =>
+            affinity === 1
+              ? new monaco.Position(2, 8)
+              : new monaco.Position(2, 1)
+        },
+        setCursorStates
+      })
+    };
+
+    keepCaretRightOfInjectedText(
+      editor as unknown as monaco.editor.ICodeEditor
+    );
+    listeners[0]!();
+    expect(setCursorStates).toHaveBeenCalledOnce();
+    const state = setCursorStates.mock.calls[0]?.[2]?.[0] as {
+      viewState: { position: monaco.Position };
+    };
+    expect(state.viewState.position).toEqual(new monaco.Position(2, 8));
+
+    setCursorStates.mockClear();
+    selection = new monaco.Selection(2, 4, 2, 4);
+    listeners[0]!();
+    expect(setCursorStates).not.toHaveBeenCalled();
+
+    selection = new monaco.Selection(2, 1, 3, 1);
+    listeners[0]!();
+    expect(setCursorStates).not.toHaveBeenCalled();
   });
 
   it("forwards pane-local hidden ranges through the private editor capability", () => {

@@ -1190,6 +1190,11 @@
   margin-inline: auto;
 }
 
+/* Scroll anchor that pulls in the next viewport page; never occupies layout. */
+.notes-outline-autoload {
+  height: 1px;
+}
+
 .notes-outline-content[data-zoomed-page="true"] > .notes-outline-list,
 .notes-outline-content[data-zoomed-page="true"] > .notes-child-composer {
   margin-inline-start: var(--notes-page-child-offset);
@@ -1227,8 +1232,84 @@
   visibility: hidden;
 }
 
-.notes-monaco-outline .yonalist-outline-injected-bullet {
-  color: var(--text-2);
+.notes-monaco-outline {
+  --yonalist-chevron-right-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E");
+  --yonalist-chevron-down-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+
+.notes-monaco-outline .yonalist-outline-injected-bullet,
+.notes-monaco-outline .yonalist-outline-chevron {
+  position: relative;
+  color: transparent;
+  cursor: pointer;
+}
+
+.notes-monaco-outline .yonalist-outline-injected-bullet::before {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  left: 2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-2);
+  content: "";
+  transform: translateY(-50%);
+}
+
+.notes-monaco-outline .yonalist-outline-injected-bullet::after {
+  position: absolute;
+  top: 50%;
+  left: 5.5px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: transparent;
+  content: "";
+  transform: translate(-50%, -50%);
+}
+
+.notes-monaco-outline .yonalist-outline-injected-bullet:hover::after {
+  background: var(--bg-hover);
+}
+
+.notes-monaco-outline .yonalist-outline-injected-bullet--collapsed::after {
+  width: 20px;
+  height: 20px;
+  background: var(--bg-hover);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.notes-monaco-outline .yonalist-outline-injected-bullet--collapsed:hover::after {
+  background: var(--bg-active);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.notes-monaco-outline .yonalist-outline-chevron::before {
+  position: absolute;
+  top: 50%;
+  right: 1px;
+  width: 12px;
+  height: 12px;
+  background: var(--text-3);
+  content: "";
+  transform: translateY(-50%);
+  -webkit-mask: var(--yonalist-chevron-right-mask) center / 12px 12px
+    no-repeat;
+  mask: var(--yonalist-chevron-right-mask) center / 12px 12px no-repeat;
+}
+
+.notes-monaco-outline .yonalist-outline-chevron--expanded::before {
+  -webkit-mask-image: var(--yonalist-chevron-down-mask);
+  mask-image: var(--yonalist-chevron-down-mask);
+}
+
+.notes-monaco-outline .yonalist-outline-chevron:hover::before {
+  background: var(--text-1);
+}
+
+.notes-monaco-outline .yonalist-outline-chevron--leaf {
+  visibility: hidden;
 }
 
 .notes-page-header {

@@ -81,6 +81,10 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
     );
   }
 
+  handleChevron(nodeId: string): void {
+    this.input.session.toggleCollapsed(nodeId);
+  }
+
   diagnostics(): MonacoOutlinePaneDiagnostics {
     return Object.freeze({
       disposed: this.disposed,
