@@ -26,7 +26,7 @@ describe("outline decorations", () => {
     ], [1, 2]);
 
     expect(decorations[0]?.options.before).toMatchObject({
-      content: "▾ ",
+      content: "▾  ",
       inlineClassName:
         "yonalist-outline-chevron yonalist-outline-chevron--expanded",
       cursorStops: monaco.editor.InjectedTextCursorStops.Right,
@@ -37,7 +37,7 @@ describe("outline decorations", () => {
     });
     expect(decorations[1]?.range).toEqual(new monaco.Range(2, 1, 2, 1));
     expect(decorations[1]?.options.before).toMatchObject({
-      content: "    ▸ ",
+      content: "    ▸  ",
       inlineClassName:
         "yonalist-outline-chevron yonalist-outline-chevron--leaf"
     });
@@ -86,7 +86,7 @@ describe("outline decorations", () => {
     ], [1]);
 
     expect(decorations[0]?.options.before).toMatchObject({
-      content: "▸ ",
+      content: "▸  ",
       inlineClassName:
         "yonalist-outline-chevron yonalist-outline-chevron--collapsed"
     });

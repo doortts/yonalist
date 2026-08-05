@@ -30,7 +30,7 @@ export function buildOutlineDecorations(
           content:
             "\u00a0".repeat(line.depth * 4) +
             (chevronState === "expanded" ? "\u25be" : "\u25b8") +
-            "\u00a0",
+            "\u00a0\u00a0",
           inlineClassName:
             "yonalist-outline-chevron " +
             `yonalist-outline-chevron--${chevronState}`,
