@@ -196,6 +196,48 @@ describe("MonacoOutlineSession", () => {
     await session.dispose();
   });
 
+  it("outdents a node and adopts its following siblings as children", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "outdent",
+      [
+        node("parent", "Parent", "outdent"),
+        node("first", "First", "parent"),
+        node("second", "Second", "parent"),
+        node("third", "Third", "parent")
+      ]
+    );
+    const editor = {
+      getModel: () => session.model,
+      hasTextFocus: () => true,
+      invokeWithinContext: (
+        callback: (accessor: { get(service: unknown): unknown }) => unknown
+      ) => callback({ get: () => ({ pushElement: vi.fn() }) })
+    } as unknown as monaco.editor.ICodeEditor;
+    const unbind = session.bindEditor(editor);
+
+    session.outdent("first");
+
+    expect(session.metadata.current().lines).toMatchObject([
+      { nodeId: "parent", depth: 0 },
+      { nodeId: "first", parentId: "outdent", depth: 0 },
+      { nodeId: "second", parentId: "first", depth: 1 },
+      { nodeId: "third", parentId: "first", depth: 1 }
+    ]);
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      {
+        kind: "outdent",
+        id: "first",
+        new_parent_id: "outdent",
+        before_id: null
+      },
+      { kind: "moveNode", id: "second", parent_id: "first", before_id: null },
+      { kind: "moveNode", id: "third", parent_id: "first", before_id: null }
+    ]);
+    unbind();
+    await session.dispose();
+  });
+
   it("toggles collapse as one persisted metadata edit and skips leaves", async () => {
     const { session, executeEditorBatch } = createSession(
       "collapse",

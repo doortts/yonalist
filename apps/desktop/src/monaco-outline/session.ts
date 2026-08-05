@@ -393,19 +393,86 @@ export class MonacoOutlineSession {
       current.lines,
       current.lineByNodeId.get(parent.nodeId)! - 1
     );
-    const afterLines = shiftSubtree(current.lines, lineIndex, -1, {
-      parentId: parent.parentId
+    // Following siblings become children of the outdented node (Workflowy
+    // semantics); leaving them in place would break the visible preorder.
+    let subtreeEnd = lineIndex + 1;
+    while (
+      subtreeEnd < current.lines.length &&
+      current.lines[subtreeEnd]!.depth > line.depth
+    ) {
+      subtreeEnd += 1;
+    }
+    const followerIds: string[] = [];
+    for (
+      let index = subtreeEnd;
+      index < current.lines.length && current.lines[index]!.depth >= line.depth;
+      index += 1
+    ) {
+      if (current.lines[index]!.depth === line.depth) {
+        followerIds.push(current.lines[index]!.nodeId);
+      }
+    }
+    const followers = new Set(followerIds);
+    const expand = line.collapsed && followerIds.length > 0;
+    const afterLines = current.lines.map((candidate, index) => {
+      if (index === lineIndex) {
+        return {
+          ...candidate,
+          parentId: parent.parentId,
+          depth: candidate.depth - 1,
+          collapsed: expand ? false : candidate.collapsed
+        };
+      }
+      if (index > lineIndex && index < subtreeEnd) {
+        return { ...candidate, depth: candidate.depth - 1 };
+      }
+      if (followers.has(candidate.nodeId)) {
+        return { ...candidate, parentId: nodeId };
+      }
+      return candidate;
     });
+    const forward: IpcEditorCommand[] = [{
+      kind: "outdent",
+      id: nodeId,
+      new_parent_id: parent.parentId,
+      before_id: beforeId
+    }];
+    if (expand) {
+      forward.push({ kind: "setCollapsed", id: nodeId, collapsed: false });
+    }
+    for (const followerId of followerIds) {
+      forward.push({
+        kind: "moveNode",
+        id: followerId,
+        parent_id: nodeId,
+        before_id: null
+      });
+    }
+    const inverse: IpcEditorCommand[] = [];
+    let nextId: string | null = null;
+    for (const followerId of [...followerIds].reverse()) {
+      inverse.push({
+        kind: "moveNode",
+        id: followerId,
+        parent_id: line.parentId,
+        before_id: nextId
+      });
+      nextId = followerId;
+    }
+    inverse.push({
+      kind: "moveNode",
+      id: nodeId,
+      parent_id: line.parentId,
+      before_id: nextId
+    });
+    if (expand) {
+      inverse.push({ kind: "setCollapsed", id: nodeId, collapsed: true });
+    }
     this.applyMetadataEdit(
       `Outdent ${nodeId}`,
       afterLines,
-      [{
-        kind: "outdent",
-        id: nodeId,
-        new_parent_id: parent.parentId,
-        before_id: beforeId
-      }],
-      [{ kind: "indent", id: nodeId, new_parent_id: parent.nodeId }]
+      forward,
+      inverse
     );
   }
 
