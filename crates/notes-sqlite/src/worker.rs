@@ -157,13 +157,17 @@ impl SqliteStorage {
         let worker = thread::Builder::new()
             .name("notes-v2-db".into())
             .spawn(move || {
+                let seed_onboarding = matches!(location, DatabaseLocation::File(_));
                 let connection = match location {
                     DatabaseLocation::File(path) => Connection::open(path),
                     DatabaseLocation::Memory => Connection::open_in_memory(),
                 }
                 .map_err(|error| StorageError::Unavailable(error.to_string()))
-                .and_then(|connection| {
+                .and_then(|mut connection| {
                     schema::initialize(&connection)?;
+                    if seed_onboarding {
+                        crate::seed::seed_onboarding(&mut connection)?;
+                    }
                     Ok(connection)
                 });
                 let mut connection = match connection {
