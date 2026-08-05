@@ -1312,6 +1312,19 @@
   visibility: hidden;
 }
 
+.notes-monaco-outline .monaco-editor .mtk1 {
+  color: var(--text-1);
+}
+
+.notes-monaco-outline .monaco-editor .cursor {
+  border-color: var(--text-1);
+  background-color: var(--text-1);
+}
+
+.notes-monaco-outline .monaco-editor .selected-text {
+  background-color: var(--bg-active);
+}
+
 .notes-monaco-outline .yonalist-outline-completed-line {
   color: var(--text-3);
   text-decoration: line-through;
