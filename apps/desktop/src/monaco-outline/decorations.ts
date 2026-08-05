@@ -20,7 +20,7 @@ export function buildOutlineDecorations(
       range: new monaco.Range(lineNumber, 1, lineNumber, 1),
       options: {
         stickiness:
-          monaco.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+          monaco.editor.TrackedRangeStickiness.GrowsOnlyWhenTypingBefore,
         showIfCollapsed: true,
         isWholeLine: true,
         before: {

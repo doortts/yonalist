@@ -53,6 +53,20 @@ describe("outline decorations", () => {
     });
   });
 
+  it("keeps the injected prefix anchored when typing at column one", () => {
+    const model = monaco.editor.createModel("", "plaintext");
+    const [decoration] = buildOutlineDecorations([line("root", "page", 0)], [1]);
+    const [id] = model.deltaDecorations([], [decoration!]);
+
+    model.pushEditOperations([], [{
+      range: new monaco.Range(1, 1, 1, 1),
+      text: "이슈"
+    }], () => null);
+
+    expect(model.getDecorationRange(id!)).toEqual(new monaco.Range(1, 1, 1, 1));
+    model.dispose();
+  });
+
   it("marks a collapsed parent with the collapsed chevron", () => {
     const decorations = buildOutlineDecorations([
       { ...line("root", "page", 0), collapsed: true },
