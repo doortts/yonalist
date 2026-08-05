@@ -5,7 +5,10 @@ import {
 } from "react";
 import "./styles.css";
 import "./notes.css";
+import "./formControls.css";
 import { tauriNotesApi, type NotesApi } from "./api";
+import { SettingsView } from "./SettingsView";
+import { useTheme } from "./useTheme";
 import { NotesStore } from "./notesStore";
 import type { LibraryView } from "./LibraryViewButtons";
 import type { PaneRestoreRequest } from "./NotesOutline";
@@ -39,6 +42,8 @@ const WindowChrome = lazy(() =>
   })));
 
 export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
+  const theme = useTheme();
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const store = useMemo(() => new NotesStore(api), [api]);
   const monacoSessions = useMemo(
     () => new LazyMonacoOutlineSessionRegistry({
@@ -422,7 +427,12 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           </section>
         </div>
         <footer className="yonalist-navigation-footer">
-          <button className="nav-item" type="button" disabled>
+          <button
+            className="nav-item"
+            type="button"
+            aria-pressed={settingsOpen}
+            onClick={() => setSettingsOpen((open) => !open)}
+          >
             <Settings size={16} aria-hidden="true" />
             <span>Settings</span>
           </button>
@@ -442,24 +452,36 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           document.body.classList.add("is-resizing-pane");
         }}
       />
-      <NotesDetailPanes
-        store={store}
-        status={state.status}
-        error={state.error}
-        pendingWrites={state.pendingWrites}
-        page={activePage}
-        splitOpen={splitOpen}
-        primaryZoomRootId={primaryZoomRootId}
-        secondaryZoomRootId={secondaryZoomRootId}
-        primaryRestore={primaryRestore}
-        secondaryRestore={secondaryRestore}
-        onPrimaryZoomChange={updatePrimaryZoom}
-        onSecondaryZoomChange={updateSecondaryZoom}
-        onOpenSplit={openSplit}
-        onCloseSplit={closeSplit}
-        onTagClick={handleTagClick}
-        monacoSessions={monacoSessions}
-      />
+      {settingsOpen ? (
+        <SettingsView
+          themeMode={theme.mode}
+          lightTheme={theme.lightTheme}
+          darkTheme={theme.darkTheme}
+          onThemeModeChange={theme.setMode}
+          onLightThemeChange={theme.setLightTheme}
+          onDarkThemeChange={theme.setDarkTheme}
+          onClose={() => setSettingsOpen(false)}
+        />
+      ) : (
+        <NotesDetailPanes
+          store={store}
+          status={state.status}
+          error={state.error}
+          pendingWrites={state.pendingWrites}
+          page={activePage}
+          splitOpen={splitOpen}
+          primaryZoomRootId={primaryZoomRootId}
+          secondaryZoomRootId={secondaryZoomRootId}
+          primaryRestore={primaryRestore}
+          secondaryRestore={secondaryRestore}
+          onPrimaryZoomChange={updatePrimaryZoom}
+          onSecondaryZoomChange={updateSecondaryZoom}
+          onOpenSplit={openSplit}
+          onCloseSplit={closeSplit}
+          onTagClick={handleTagClick}
+          monacoSessions={monacoSessions}
+        />
+      )}
       <footer className="app-statusbar" aria-label="Status bar">
         <div className="statusbar-feedback">
           {state.error && <span className="statusbar-message" data-kind="error">{state.error}</span>}
