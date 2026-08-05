@@ -1,0 +1,30 @@
+[package]
+name = "yonalist-v2-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "yonalist_v2_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+notes-application.workspace = true
+notes-core.workspace = true
+notes-export.workspace = true
+notes-sqlite = { path = "../../../crates/notes-sqlite" }
+open = "5.4"
+serde_json = "1"
+tauri = { version = "=2.11.5", features = [] }
+tauri-plugin-dialog = "=2.7.1"
+uuid.workspace = true
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "=2.4.3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

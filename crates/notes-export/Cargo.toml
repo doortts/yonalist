@@ -1,0 +1,28 @@
+[package]
+name = "notes-export"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+cap-fs-ext = "4.0.2"
+cap-std = "4.0.2"
+notes-application.workspace = true
+notes-core.workspace = true
+image = { version = "=0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+lopdf = { version = "0.44", default-features = false }
+printpdf = { version = "=0.11.1", default-features = false, features = ["images", "text_layout"] }
+serde.workspace = true
+serde_json = "1"
+thiserror.workspace = true
+uuid.workspace = true
+
+[target.'cfg(any(target_vendor = "apple", target_os = "linux", target_os = "android", target_os = "redox"))'.dependencies]
+rustix = { version = "1.1", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tempfile = "3"

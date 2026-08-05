@@ -850,11 +850,49 @@ struct AppLockFileIdentity {
     inode: u64,
 }
 
+#[cfg(not(windows))]
 fn app_lock_file_identity(metadata: &fs::Metadata) -> AppLockFileIdentity {
     AppLockFileIdentity {
         device: CapMetadataExt::dev(metadata),
         inode: CapMetadataExt::ino(metadata),
     }
+}
+
+#[cfg(not(windows))]
+fn app_lock_path_identity(path: &Path) -> Result<AppLockFileIdentity, String> {
+    fs::symlink_metadata(path)
+        .map(|metadata| app_lock_file_identity(&metadata))
+        .map_err(|error| format!("Could not identify the Notes application-lock path: {error}"))
+}
+
+#[cfg(windows)]
+fn app_lock_path_identity(path: &Path) -> Result<AppLockFileIdentity, String> {
+    crate::file_io::windows_file_information_at(path)
+        .map(|information| AppLockFileIdentity {
+            device: information.device,
+            inode: information.inode,
+        })
+        .map_err(|error| format!("Could not identify the Notes application-lock path: {error}"))
+}
+
+#[cfg(not(windows))]
+fn app_lock_std_file_identity(file: &File) -> Result<AppLockFileIdentity, String> {
+    file.metadata()
+        .map(|metadata| app_lock_file_identity(&metadata))
+        .map_err(|error| format!("Could not identify the held Notes application lock: {error}"))
+}
+
+#[cfg(windows)]
+fn app_lock_std_file_identity(file: &File) -> Result<AppLockFileIdentity, String> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::HANDLE;
+
+    crate::file_io::windows_file_information_from_handle(file.as_raw_handle() as HANDLE)
+        .map(|information| AppLockFileIdentity {
+            device: information.device,
+            inode: information.inode,
+        })
+        .map_err(|error| format!("Could not identify the held Notes application lock: {error}"))
 }
 
 fn app_lock_capability_identity(metadata: &cap_std::fs::Metadata) -> AppLockFileIdentity {
@@ -892,7 +930,7 @@ impl HeldVaultAppLock {
         let held_vault_metadata = self.vault.dir_metadata().map_err(|error| {
             format!("The Notes vault application lock identity changed: {error}")
         })?;
-        if app_lock_file_identity(&vault_metadata) != self.vault_identity
+        if app_lock_path_identity(vault_path)? != self.vault_identity
             || app_lock_capability_identity(&held_vault_metadata) != self.vault_identity
         {
             return Err("The Notes vault application lock identity changed.".to_string());
@@ -913,16 +951,13 @@ impl HeldVaultAppLock {
         if !lock_metadata.file_type().is_file() || lock_metadata.file_type().is_symlink() {
             return Err("The Notes vault application lock identity changed.".to_string());
         }
-        let held_metadata = self.file.metadata().map_err(|error| {
-            format!("The Notes vault application lock identity changed: {error}")
-        })?;
         let held_directory_metadata = self.metadata.dir_metadata().map_err(|error| {
             format!("The Notes vault application lock identity changed: {error}")
         })?;
-        if app_lock_file_identity(&metadata) != self.metadata_identity
+        if app_lock_path_identity(metadata_path)? != self.metadata_identity
             || app_lock_capability_identity(&held_directory_metadata) != self.metadata_identity
-            || app_lock_file_identity(&lock_metadata) != self.lock_identity
-            || app_lock_file_identity(&held_metadata) != self.lock_identity
+            || app_lock_path_identity(&lock_path)? != self.lock_identity
+            || app_lock_std_file_identity(&self.file)? != self.lock_identity
         {
             return Err("The Notes vault application lock identity changed.".to_string());
         }
@@ -988,7 +1023,7 @@ impl VaultAppLockGuard {
             .metadata
             .dir_metadata()
             .map_err(|error| format!("The Notes metadata directory identity changed: {error}"))?;
-        if app_lock_file_identity(&path_metadata) != self.metadata_identity
+        if app_lock_path_identity(&self.metadata_path)? != self.metadata_identity
             || app_lock_capability_identity(&held_metadata) != self.metadata_identity
         {
             return Err("The Notes metadata directory identity changed.".to_string());
@@ -1009,7 +1044,7 @@ impl VaultAppLockGuard {
             || lock_metadata.file_type().is_symlink()
             || !held_lock_metadata.file_type().is_file()
             || held_lock_metadata.file_type().is_symlink()
-            || app_lock_file_identity(&lock_metadata) != self.lock_identity
+            || app_lock_path_identity(&lock_path)? != self.lock_identity
             || app_lock_capability_identity(&held_lock_metadata) != self.lock_identity
         {
             return Err("The Notes vault application lock identity changed.".to_string());
@@ -1027,7 +1062,7 @@ impl VaultAppLockGuard {
             .vault
             .dir_metadata()
             .map_err(|error| format!("The Notes vault directory identity changed: {error}"))?;
-        if app_lock_file_identity(&path_metadata) != self.vault_identity
+        if app_lock_path_identity(&self.vault_path)? != self.vault_identity
             || app_lock_capability_identity(&held_metadata) != self.vault_identity
         {
             return Err("The Notes vault directory identity changed.".to_string());
@@ -1088,9 +1123,6 @@ fn acquire_vault_app_lock_inner(
     } else {
         acquire_vault_app_lock_file(vault_path)?
     };
-    let metadata = fs::symlink_metadata(&key).map_err(|error| {
-        format!("Could not inspect the Notes vault application lock identity: {error}")
-    })?;
     let vault_path = key
         .parent()
         .ok_or_else(|| "Could not resolve the Notes vault directory.".to_string())?
@@ -1103,22 +1135,19 @@ fn acquire_vault_app_lock_inner(
     })?;
     if !vault_metadata.file_type().is_dir()
         || vault_metadata.file_type().is_symlink()
-        || app_lock_file_identity(&vault_metadata)
+        || app_lock_path_identity(&vault_path)?
             != app_lock_capability_identity(&held_vault_metadata)
     {
         return Err(
             "The Notes vault directory identity changed during app-lock acquisition.".to_string(),
         );
     }
-    let lock_metadata = acquired.file.metadata().map_err(|error| {
-        format!("Could not inspect the Notes vault application lock identity: {error}")
-    })?;
     let held = HeldVaultAppLock {
-        vault_identity: app_lock_file_identity(&vault_metadata),
+        vault_identity: app_lock_path_identity(&vault_path)?,
         vault: acquired.vault,
         vault_path,
-        metadata_identity: app_lock_file_identity(&metadata),
-        lock_identity: app_lock_file_identity(&lock_metadata),
+        metadata_identity: app_lock_path_identity(&key)?,
+        lock_identity: app_lock_std_file_identity(&acquired.file)?,
         file: acquired.file,
         metadata: acquired.metadata,
         metadata_path: key.clone(),

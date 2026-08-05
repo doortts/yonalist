@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-query-forest"
+description = "Enables the notes_query_forest command without any pre-configured scope."
+commands.allow = ["notes_query_forest"]
+
+[[permission]]
+identifier = "deny-notes-query-forest"
+description = "Denies the notes_query_forest command without any pre-configured scope."
+commands.deny = ["notes_query_forest"]

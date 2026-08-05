@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Yonalist",
+  "version": "0.2.0",
+  "identifier": "com.doortts.yonalist.v2",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://127.0.0.1:1421",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Yonalist",
+        "width": 1200,
+        "height": 760,
+        "minWidth": 840,
+        "minHeight": 560,
+        "decorations": false,
+        "transparent": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https: ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "resources": [
+      "resources/NanumGothic-Regular.ttf",
+      "resources/NanumGothic-OFL.txt",
+      "resources/FONT_SOURCE.md"
+    ],
+    "icon": [
+      "../../../src-tauri/icons/32x32.png",
+      "../../../src-tauri/icons/128x128.png",
+      "../../../src-tauri/icons/128x128@2x.png",
+      "../../../src-tauri/icons/icon.icns",
+      "../../../src-tauri/icons/icon.ico"
+    ]
+  }
+}

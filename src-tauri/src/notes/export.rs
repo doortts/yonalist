@@ -3757,6 +3757,7 @@ mod tests {
     use rusqlite::{params, Connection};
     use std::collections::{BTreeMap, BTreeSet};
     use std::io::Cursor;
+    use std::path::Path;
     use std::sync::Arc;
 
     const ROOT_ID: &str = "11111111-1111-4111-8111-111111111111";

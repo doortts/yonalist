@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-read-image"
+description = "Enables the notes_read_image command without any pre-configured scope."
+commands.allow = ["notes_read_image"]
+
+[[permission]]
+identifier = "deny-notes-read-image"
+description = "Denies the notes_read_image command without any pre-configured scope."
+commands.deny = ["notes_read_image"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-download-image"
+description = "Enables the notes_download_image command without any pre-configured scope."
+commands.allow = ["notes_download_image"]
+
+[[permission]]
+identifier = "deny-notes-download-image"
+description = "Denies the notes_download_image command without any pre-configured scope."
+commands.deny = ["notes_download_image"]

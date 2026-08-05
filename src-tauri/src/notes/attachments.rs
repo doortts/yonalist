@@ -2415,8 +2415,13 @@ impl AttachmentStorageLease {
             .follow(FollowSymlinks::No);
         let lock_file = metadata
             .open_with(".notes-assets.lock", &lock_options)
-            .map_err(|error| format!("Could not open the Notes attachment storage lock: {error}"))?
-            .into_std();
+            .map_err(|error| {
+                format!("Could not open the Notes attachment storage lock: {error}")
+            })?;
+        let lock_identity = file_identity(&lock_file.metadata().map_err(|error| {
+            format!("Could not inspect the Notes attachment lock identity: {error}")
+        })?)?;
+        let lock_file = lock_file.into_std();
         if !lock_file
             .metadata()
             .map_err(|error| {
@@ -2427,9 +2432,6 @@ impl AttachmentStorageLease {
             return Err("The Notes attachment storage lock must be a regular file.".to_string());
         }
         Self::lock_with_deadline(&lock_file, deadline)?;
-        let lock_identity = file_identity(&lock_file.metadata().map_err(|error| {
-            format!("Could not inspect the Notes attachment lock identity: {error}")
-        })?)?;
 
         let assets = match metadata.open_dir_nofollow("notes-assets") {
             Ok(assets) => assets,

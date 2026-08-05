@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-view-image-original"
+description = "Enables the notes_view_image_original command without any pre-configured scope."
+commands.allow = ["notes_view_image_original"]
+
+[[permission]]
+identifier = "deny-notes-view-image-original"
+description = "Denies the notes_view_image_original command without any pre-configured scope."
+commands.deny = ["notes_view_image_original"]

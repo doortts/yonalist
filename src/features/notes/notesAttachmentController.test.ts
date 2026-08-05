@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TauriEvent } from "@tauri-apps/api/event";
+import React from "react";
+import { render, renderHook } from "@testing-library/react";
 import {
   isSupportedImageFile,
   isSupportedImagePath,
   nativeNotesAttachmentUi
 } from "./notesAttachmentController";
+import { NotesFeatureProvider } from "./NotesFeature";
+import { useNotesAttachmentUi } from "./NotesAttachmentUiContext";
 
 const open = vi.hoisted(() => vi.fn());
 const save = vi.hoisted(() => vi.fn());
@@ -825,24 +829,12 @@ describe("notes attachment UI boundary", () => {
   });
 
   it("exposes the native boundary through the attachment UI context by default", async () => {
-    const [{ renderHook }, { useNotesAttachmentUi }] = await Promise.all([
-      import("@testing-library/react"),
-      import("./NotesAttachmentUiContext")
-    ]);
-
     expect(renderHook(() => useNotesAttachmentUi()).result.current).toBe(
       nativeNotesAttachmentUi
     );
   });
 
   it("provides the same attachment boundary to the workspace and descendant panes", async () => {
-    const [React, { render }, { NotesFeatureProvider }, attachmentContext] =
-      await Promise.all([
-        import("react"),
-        import("@testing-library/react"),
-        import("./NotesFeature"),
-        import("./NotesAttachmentUiContext")
-      ]);
     const attachmentUi = {
       openImageFiles: vi.fn().mockResolvedValue(null),
       saveImageFile: vi.fn().mockResolvedValue(null),
@@ -859,7 +851,7 @@ describe("notes attachment UI boundary", () => {
     });
 
     function AttachmentUiProbe() {
-      providedAttachmentUi = attachmentContext.useNotesAttachmentUi();
+      providedAttachmentUi = useNotesAttachmentUi();
       return null;
     }
 

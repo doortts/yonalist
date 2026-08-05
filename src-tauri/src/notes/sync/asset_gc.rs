@@ -6338,6 +6338,7 @@ mod tests {
         let canonical = root.path().join("assets").join(&name);
         let displaced = root.path().join("displaced-rollback-original");
         fs::write(&canonical, bytes).unwrap();
+        #[cfg(unix)]
         let metadata = fs::metadata(&canonical).unwrap();
         use std::os::unix::fs::MetadataExt;
         let identity = (metadata.dev(), metadata.ino());
@@ -6508,13 +6509,17 @@ mod tests {
         let name = format!("{expected}.png");
         let canonical = root.path().join("assets").join(&name);
         fs::write(&canonical, bytes).unwrap();
+        #[cfg(unix)]
         let metadata = fs::metadata(&canonical).unwrap();
         #[cfg(unix)]
         use std::os::unix::fs::MetadataExt;
         #[cfg(unix)]
         let identity = (metadata.dev(), metadata.ino());
-        #[cfg(not(unix))]
-        let identity = crate::file_io::capability_file_identity(&metadata).unwrap();
+        #[cfg(windows)]
+        let identity = {
+            let information = crate::file_io::windows_file_information_at(&canonical).unwrap();
+            (information.device, information.inode)
+        };
         let canonical_for_hook = canonical.clone();
         inject_after_exact_rollback_final_binding_once(move || {
             fs::write(&canonical_for_hook, replacement).unwrap();

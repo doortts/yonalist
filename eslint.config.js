@@ -9,7 +9,7 @@ export default [
     ignores: ["node_modules", "dist", "src-tauri", "docs", ".worktrees"],
   },
   {
-    files: ["src/**/*.{ts,tsx}"],
+    files: ["src/**/*.{ts,tsx}", "apps/desktop/src/**/*.{ts,tsx}"],
     languageOptions: {
       parser: tseslint.parser,
       parserOptions: {
