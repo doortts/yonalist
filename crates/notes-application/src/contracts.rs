@@ -5,6 +5,16 @@ use ts_rs::TS;
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
+pub struct UnusedAssetsReport {
+    pub count: u32,
+    #[ts(type = "number")]
+    pub total_bytes: u64,
+    pub purged: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct HistoryState {
     pub can_undo: bool,
     pub can_redo: bool,

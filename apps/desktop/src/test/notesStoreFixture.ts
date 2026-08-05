@@ -54,7 +54,9 @@ export async function readyRealStore(): Promise<NotesStore> {
     redo: vi.fn(),
     search: vi.fn(),
     exportNotes: vi.fn(),
-    closeSession: vi.fn()
+    closeSession: vi.fn(),
+    unusedAssets: vi.fn(),
+    deleteAllData: vi.fn()
   };
   const store = new NotesStore(api);
   await store.bootstrap();

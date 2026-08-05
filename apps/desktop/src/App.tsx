@@ -398,6 +398,8 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           onLightThemeChange={theme.setLightTheme}
           onDarkThemeChange={theme.setDarkTheme}
           onClose={() => setSettingsOpen(false)}
+          unusedAssets={(purge) => api.unusedAssets(purge)}
+          deleteAllData={() => api.deleteAllData()}
         />
       ) : (
         <NotesDetailPanes

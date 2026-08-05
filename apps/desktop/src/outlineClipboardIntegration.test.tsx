@@ -57,7 +57,9 @@ function api(): NotesApi {
     redo: vi.fn(),
     search: vi.fn().mockResolvedValue({ hits: [], nextCursor: null }),
     exportNotes: vi.fn(),
-    closeSession: vi.fn()
+    closeSession: vi.fn(),
+    unusedAssets: vi.fn(),
+    deleteAllData: vi.fn()
   };
 }
 describe("outline clipboard integration", () => {
