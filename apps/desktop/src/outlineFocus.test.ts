@@ -109,4 +109,32 @@ describe("pane-scoped outline focus", () => {
     expect(rows.scrollTop).toBe(68);
     expect(outer.scrollTop).toBe(75);
   });
+
+  it("re-reveals the caret after a deletion shifts the layout", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(
+      (callback) => {
+        frames.push(callback);
+        return frames.length;
+      }
+    );
+    const scope = document.createElement("section");
+    const rows = document.createElement("div");
+    rows.className = "notes-outline-rows";
+    scope.append(rows);
+    document.body.append(scope);
+    const target = editor(rows, "target", "");
+    rows.scrollTop = 120;
+    const rowsRect = vi.spyOn(rows, "getBoundingClientRect");
+    const targetRect = vi.spyOn(target, "getBoundingClientRect");
+    rowsRect.mockReturnValue({ top: 10, bottom: 110 } as DOMRect);
+    targetRect.mockReturnValue({ top: 40, bottom: 68 } as DOMRect);
+
+    expect(focusOutlineEditor(scope, "target", "start")).toBe(true);
+    expect(rows.scrollTop).toBe(120);
+
+    targetRect.mockReturnValue({ top: -18, bottom: 10 } as DOMRect);
+    frames.forEach((callback) => callback(0));
+    expect(rows.scrollTop).toBe(92);
+  });
 });
