@@ -3,6 +3,10 @@ import type { BootSnapshot } from "../../../packages/contracts/generated/BootSna
 import type { NotesApi } from "./api";
 import { App } from "./App";
 
+// These suites cover the React outline surface; pin the opt-out query
+// now that the Monaco surface is the default.
+window.history.replaceState(null, "", "/?outline=react");
+
 const markdownSnapshot: BootSnapshot = {
   sessionId: "markdown-session",
   revision: 1,

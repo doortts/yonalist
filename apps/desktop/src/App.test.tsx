@@ -9,6 +9,10 @@ import {
   snapshot
 } from "./test/appApiFixture";
 
+// These suites cover the React outline surface; pin the opt-out query
+// now that the Monaco surface is the default.
+window.history.replaceState(null, "", "/?outline=react");
+
 describe("Yonalist v2 desktop shell", () => {
   afterEach(() => {
     vi.useRealTimers();

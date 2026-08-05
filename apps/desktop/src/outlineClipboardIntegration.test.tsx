@@ -3,6 +3,10 @@ import type { BootSnapshot } from "../../../packages/contracts/generated/BootSna
 import type { NotesApi } from "./api";
 import { App } from "./App";
 import type { ImageImportRequest } from "./imageApi";
+
+// These suites cover the React outline surface; pin the opt-out query
+// now that the Monaco surface is the default.
+window.history.replaceState(null, "", "/?outline=react");
 const snapshot: BootSnapshot = {
   sessionId: "session-clipboard",
   revision: 7,

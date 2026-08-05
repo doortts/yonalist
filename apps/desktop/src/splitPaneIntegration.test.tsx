@@ -4,6 +4,10 @@ import {
 import { App } from "./App";
 import { appApi, receipt } from "./test/appApiFixture";
 
+// These suites cover the React outline surface; pin the opt-out query
+// now that the Monaco surface is the default.
+window.history.replaceState(null, "", "/?outline=react");
+
 describe("split pane integration", () => {
   it("opens, resizes, focuses, and closes a second outline pane", async () => {
     const notesApi = appApi();
