@@ -1312,6 +1312,19 @@
   visibility: hidden;
 }
 
+.notes-monaco-outline .yonalist-outline-completed-line {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
+.notes-monaco-outline
+  .yonalist-outline-completed-line.yonalist-outline-injected-bullet,
+.notes-monaco-outline
+  .yonalist-outline-completed-line.yonalist-outline-chevron {
+  color: transparent;
+  text-decoration: none;
+}
+
 .notes-page-header {
   position: relative;
   width: 100%;

@@ -21,7 +21,8 @@ export interface YonalistOutlineEditorBinding {
 
 export type OutlineCommandId =
   | "yonalist.outline.indent"
-  | "yonalist.outline.outdent";
+  | "yonalist.outline.outdent"
+  | "yonalist.outline.toggleCompleted";
 
 const CONTRIBUTION_ID = "yonalist.outline.contribution";
 const CONTEXT_KEY = "yonalistOutlineEditor";
@@ -51,8 +52,10 @@ export function runOutlineCommand(
   if (!nodeId) return false;
   if (command === "yonalist.outline.indent") {
     binding.session.indent(nodeId);
-  } else {
+  } else if (command === "yonalist.outline.outdent") {
     binding.session.outdent(nodeId);
+  } else {
+    binding.session.toggleCompleted(nodeId);
   }
   return true;
 }
@@ -73,6 +76,11 @@ export function bindYonalistOutlineEditor(
   editor.addCommand(
     monaco.KeyMod.Shift | monaco.KeyCode.Tab,
     () => runOutlineCommand("yonalist.outline.outdent", binding),
+    CONTEXT_KEY
+  );
+  editor.addCommand(
+    monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
+    () => runOutlineCommand("yonalist.outline.toggleCompleted", binding),
     CONTEXT_KEY
   );
 

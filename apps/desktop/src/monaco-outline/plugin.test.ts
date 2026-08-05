@@ -8,7 +8,8 @@ function binding(): YonalistOutlineEditorBinding {
     session: {
       canAcceptStructuralEdit: vi.fn().mockReturnValue(true),
       indent: vi.fn(),
-      outdent: vi.fn()
+      outdent: vi.fn(),
+      toggleCompleted: vi.fn()
     } as unknown as YonalistOutlineEditorBinding["session"],
     pane: {
       activeNodeId: () => "child",
@@ -24,6 +25,15 @@ describe("Yonalist Monaco outline plugin", () => {
 
     expect(runOutlineCommand("yonalist.outline.indent", active)).toBe(true);
     expect(active.session.indent).toHaveBeenCalledWith("child");
+  });
+
+  it("routes the completion shortcut to the active node", () => {
+    const active = binding();
+
+    expect(
+      runOutlineCommand("yonalist.outline.toggleCompleted", active)
+    ).toBe(true);
+    expect(active.session.toggleCompleted).toHaveBeenCalledWith("child");
   });
 
   it("leaves commands native when no outline node is active", () => {

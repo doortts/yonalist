@@ -23,6 +23,9 @@ export function buildOutlineDecorations(
           monaco.editor.TrackedRangeStickiness.GrowsOnlyWhenTypingBefore,
         showIfCollapsed: true,
         isWholeLine: true,
+        ...line.completed
+          ? { inlineClassName: "yonalist-outline-completed-line" }
+          : {},
         before: {
           content:
             "\u00a0".repeat(line.depth * 4) +

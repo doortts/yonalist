@@ -193,6 +193,10 @@ pub enum IpcEditorCommand {
         id: String,
         collapsed: bool,
     },
+    SetCompleted {
+        id: String,
+        completed: bool,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]

@@ -107,6 +107,13 @@ impl TryFrom<IpcEditorCommand> for NotesCommand {
                 id: id(value)?,
                 collapsed,
             }),
+            IpcEditorCommand::SetCompleted {
+                id: value,
+                completed,
+            } => Ok(Self::SetCompleted {
+                id: id(value)?,
+                completed,
+            }),
         }
     }
 }

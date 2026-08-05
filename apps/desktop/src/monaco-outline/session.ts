@@ -337,6 +337,26 @@ export class MonacoOutlineSession {
     );
   }
 
+  toggleCompleted(nodeId: string): void {
+    if (!this.canAcceptStructuralEdit()) return;
+    const current = this.metadata.current();
+    const lineNumber = current.lineByNodeId.get(nodeId);
+    if (lineNumber === undefined) return;
+    const lineIndex = lineNumber - 1;
+    const line = current.lines[lineIndex];
+    if (!line) return;
+    const completed = !line.completed;
+    const afterLines = current.lines.map((candidate, index) =>
+      index === lineIndex ? { ...candidate, completed } : candidate
+    );
+    this.applyMetadataEdit(
+      `${completed ? "Complete" : "Reopen"} ${nodeId}`,
+      afterLines,
+      [{ kind: "setCompleted", id: nodeId, completed }],
+      [{ kind: "setCompleted", id: nodeId, completed: !completed }]
+    );
+  }
+
   toggleCollapsed(nodeId: string): void {
     if (!this.canAcceptStructuralEdit()) return;
     const current = this.metadata.current();

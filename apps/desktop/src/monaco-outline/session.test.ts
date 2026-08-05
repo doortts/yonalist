@@ -229,6 +229,33 @@ describe("MonacoOutlineSession", () => {
     await session.dispose();
   });
 
+  it("toggles completion as one persisted metadata edit", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "complete",
+      [node("first", "Task", "complete")]
+    );
+    const editor = {
+      getModel: () => session.model,
+      hasTextFocus: () => true,
+      invokeWithinContext: (
+        callback: (accessor: { get(service: unknown): unknown }) => unknown
+      ) => callback({ get: () => ({ pushElement: vi.fn() }) })
+    } as unknown as monaco.editor.ICodeEditor;
+    const unbind = session.bindEditor(editor);
+
+    session.toggleCompleted("first");
+    expect(session.metadata.current().lines[0]?.completed).toBe(true);
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "setCompleted", id: "first", completed: true }
+    ]);
+
+    session.toggleCompleted("first");
+    expect(session.metadata.current().lines[0]?.completed).toBe(false);
+    unbind();
+    await session.dispose();
+  });
+
   it("reports editor and listener lifetimes without retaining their objects", async () => {
     const { session } = createSession(
       "diagnostics",

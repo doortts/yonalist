@@ -53,6 +53,18 @@ describe("outline decorations", () => {
     });
   });
 
+  it("marks a completed line for struck-through styling", () => {
+    const decorations = buildOutlineDecorations([
+      { ...line("done", "page", 0), completed: true },
+      line("open", "page", 0)
+    ], [1, 2]);
+
+    expect(decorations[0]?.options.inlineClassName).toBe(
+      "yonalist-outline-completed-line"
+    );
+    expect(decorations[1]?.options.inlineClassName).toBeUndefined();
+  });
+
   it("keeps the injected prefix anchored when typing at column one", () => {
     const model = monaco.editor.createModel("", "plaintext");
     const [decoration] = buildOutlineDecorations([line("root", "page", 0)], [1]);
