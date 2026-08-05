@@ -1237,8 +1237,8 @@
   --yonalist-chevron-down-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
 }
 
-.notes-monaco-outline .yonalist-outline-injected-bullet,
-.notes-monaco-outline .yonalist-outline-chevron {
+.notes-monaco-outline .monaco-editor .yonalist-outline-injected-bullet,
+.notes-monaco-outline .monaco-editor .yonalist-outline-chevron {
   position: relative;
   color: transparent;
   cursor: pointer;
@@ -1349,14 +1349,14 @@
   background-color: var(--bg-active);
 }
 
-.notes-monaco-outline .yonalist-outline-completed-line {
+.notes-monaco-outline .monaco-editor .yonalist-outline-completed-line {
   color: var(--text-3);
   text-decoration: line-through;
 }
 
-.notes-monaco-outline
+.notes-monaco-outline .monaco-editor
   .yonalist-outline-completed-line.yonalist-outline-injected-bullet,
-.notes-monaco-outline
+.notes-monaco-outline .monaco-editor
   .yonalist-outline-completed-line.yonalist-outline-chevron {
   color: transparent;
   text-decoration: none;
