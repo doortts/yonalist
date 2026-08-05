@@ -539,15 +539,53 @@ export function NotesOutline({
               </Suspense>
             </>
           )}
-          {state.afterCursor && (
-            <button className="text-button" type="button" onClick={() => void store.loadMore()}>
-              Load more
-            </button>
+          {!useMonaco && state.afterCursor && (
+            <OutlineAutoLoad
+              cursor={state.afterCursor}
+              onReached={() => void store.loadMore()}
+            />
           )}
         </div>
       </div>
     </section>
   );
+}
+
+function OutlineAutoLoad({
+  cursor,
+  onReached
+}: {
+  readonly cursor: string;
+  readonly onReached: () => void;
+}) {
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const requestedCursorRef = useRef<string | null>(null);
+  const onReachedRef = useRef(onReached);
+  onReachedRef.current = onReached;
+  useEffect(() => {
+    const anchor = anchorRef.current;
+    if (!anchor) return;
+    if (typeof IntersectionObserver !== "function") {
+      // No observer (older runtimes, jsdom): load the rest without waiting for
+      // a scroll so the outline never gets stuck at the pagination boundary.
+      if (requestedCursorRef.current !== cursor) {
+        requestedCursorRef.current = cursor;
+        onReachedRef.current();
+      }
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      // One request per cursor: the observer keeps firing while the anchor
+      // stays in view, and the next page brings a new cursor.
+      if (requestedCursorRef.current === cursor) return;
+      requestedCursorRef.current = cursor;
+      onReachedRef.current();
+    }, { rootMargin: "600px 0px" });
+    observer.observe(anchor);
+    return () => observer.disconnect();
+  }, [cursor]);
+  return <div ref={anchorRef} className="notes-outline-autoload" aria-hidden="true" />;
 }
 
 function useMonacoNodeText(
