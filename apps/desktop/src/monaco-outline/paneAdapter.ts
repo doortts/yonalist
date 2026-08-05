@@ -1,6 +1,9 @@
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 
-import { setEditorHiddenAreas } from "./internalAdapter";
+import {
+  realignCaretWithInjectedText,
+  setEditorHiddenAreas
+} from "./internalAdapter";
 import type { OutlineMetadataSnapshot } from "./metadata";
 import { PaneDecorationWindow } from "./decorationWindow";
 import type { MonacoOutlinePaneBinding } from "./plugin";
@@ -66,6 +69,7 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
     this.updateHiddenAreas();
     const saved = this.viewStates.get(viewStateKey(nodeId));
     if (saved) this.input.editor.restoreViewState(saved);
+    realignCaretWithInjectedText(this.input.editor);
   }
 
   setShowCompleted(value: boolean): void {
@@ -132,6 +136,9 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
   private handleMetadataChange(structural: boolean): void {
     if (structural) this.updateHiddenAreas();
     this.decorationWindow.invalidate(structural);
+    // Structural metadata changes can grow or shrink the injected prefix
+    // without a cursor event, so the caret must be re-derived here.
+    if (structural) realignCaretWithInjectedText(this.input.editor);
   }
 }
 

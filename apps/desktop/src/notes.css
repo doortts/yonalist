@@ -1312,7 +1312,10 @@
   visibility: hidden;
 }
 
-.notes-monaco-outline .monaco-editor .mtk1 {
+/* :where keeps this base text color below the chevron/bullet transparency
+   and completed-line rules in specificity while still beating Monaco's own
+   .mtk1 theme rule. */
+.notes-monaco-outline .monaco-editor :where(.mtk1) {
   color: var(--text-1);
 }
 

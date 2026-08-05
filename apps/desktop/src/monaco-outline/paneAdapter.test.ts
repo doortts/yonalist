@@ -58,6 +58,52 @@ describe("Monaco outline pane adapter", () => {
     ]);
   });
 
+  it("realigns the caret when structural metadata changes the prefix", () => {
+    const metadata = snapshot([line("a", "page", 0)]);
+    const listeners = new Set<(structural: boolean) => void>();
+    const session = {
+      metadata: { current: () => metadata },
+      subscribeMetadata: (listener: (structural: boolean) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      }
+    } as unknown as ConstructorParameters<
+      typeof MonacoOutlinePaneAdapter
+    >[0]["session"];
+    const setCursorStates = vi.fn();
+    const fake = fakeEditor({});
+    const editor = fake.editor as unknown as Record<string, unknown>;
+    editor.getSelection = () => new monaco.Selection(1, 1, 1, 1);
+    editor._getViewModel = () => ({
+      coordinatesConverter: {
+        convertModelPositionToViewPosition: (
+          _position: monaco.Position,
+          affinity?: number
+        ) =>
+          affinity === 1
+            ? new monaco.Position(1, 8)
+            : new monaco.Position(1, 1)
+      },
+      setCursorStates
+    });
+    const adapter = new MonacoOutlinePaneAdapter({
+      paneId: "primary",
+      editor: fake.editor,
+      session,
+      zoomRootId: null,
+      showCompleted: true,
+      navigation: navigation()
+    });
+    setCursorStates.mockClear();
+
+    listeners.forEach((listener) => listener(false));
+    expect(setCursorStates).not.toHaveBeenCalled();
+
+    listeners.forEach((listener) => listener(true));
+    expect(setCursorStates).toHaveBeenCalledOnce();
+    adapter.dispose();
+  });
+
   it("routes a normal click locally and Shift click to the secondary pane", () => {
     const target = navigation();
 

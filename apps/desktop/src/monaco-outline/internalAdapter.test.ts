@@ -9,6 +9,7 @@ import {
   pushMetadataUndo,
   readInjectedTextAttachment,
   readMonacoInternalCapabilities,
+  realignCaretWithInjectedText,
   registerOutlineContribution,
   setEditorHiddenAreas
 } from "./internalAdapter";
@@ -78,6 +79,34 @@ describe("Monaco internal adapter", () => {
         }
       })
     ).toBeNull();
+  });
+
+  it("realigns a column-one caret on demand without a cursor event", () => {
+    const setCursorStates = vi.fn();
+    const editor = {
+      getSelection: () => new monaco.Selection(3, 1, 3, 1),
+      _getViewModel: () => ({
+        coordinatesConverter: {
+          convertModelPositionToViewPosition: (
+            _position: monaco.Position,
+            affinity?: number
+          ) =>
+            affinity === 1
+              ? new monaco.Position(3, 12)
+              : new monaco.Position(3, 1)
+        },
+        setCursorStates
+      })
+    };
+
+    realignCaretWithInjectedText(
+      editor as unknown as monaco.editor.ICodeEditor
+    );
+
+    const state = setCursorStates.mock.calls[0]?.[2]?.[0] as {
+      viewState: { position: monaco.Position };
+    };
+    expect(state.viewState.position).toEqual(new monaco.Position(3, 12));
   });
 
   it("rewrites a column-one caret to the right of injected text", () => {

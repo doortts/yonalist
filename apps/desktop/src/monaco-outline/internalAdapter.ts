@@ -141,42 +141,53 @@ export function readInjectedTextAttachment(
   };
 }
 
+// The caret at model column one is ambiguous in view space: Monaco resolves
+// it BEFORE the injected outline prefix by default. Every code path that can
+// change the prefix length (typing, structural edits, indent/outdent,
+// collapse, zoom) must funnel through this one-shot realignment so the caret
+// always renders right of the bullet.
+export function realignCaretWithInjectedText(
+  editor: monaco.editor.ICodeEditor
+): void {
+  const selection = editor.getSelection();
+  if (
+    !selection ||
+    !selection.isEmpty() ||
+    selection.positionColumn !== 1
+  ) {
+    return;
+  }
+  const privateEditor = editor as unknown as PrivateCodeEditor;
+  const viewModel = privateEditor._getViewModel?.();
+  if (!viewModel) return;
+  const converter = viewModel.coordinatesConverter;
+  const position = selection.getPosition();
+  const defaultView = converter.convertModelPositionToViewPosition(position);
+  const rightView = converter.convertModelPositionToViewPosition(
+    position,
+    PositionAffinity.Right
+  );
+  if (rightView.equals(defaultView)) return;
+  viewModel.setCursorStates("yonalist.outline.caret", 0, [
+    CursorState.fromViewState(new SingleCursorState(
+      Range.fromPositions(rightView, rightView),
+      0,
+      0,
+      rightView,
+      0
+    ))
+  ]);
+}
+
 export function keepCaretRightOfInjectedText(
   editor: monaco.editor.ICodeEditor
 ): monaco.IDisposable {
   let rewriting = false;
   return editor.onDidChangeCursorPosition(() => {
     if (rewriting) return;
-    const selection = editor.getSelection();
-    if (
-      !selection ||
-      !selection.isEmpty() ||
-      selection.positionColumn !== 1
-    ) {
-      return;
-    }
-    const privateEditor = editor as unknown as PrivateCodeEditor;
-    const viewModel = privateEditor._getViewModel?.();
-    if (!viewModel) return;
-    const converter = viewModel.coordinatesConverter;
-    const position = selection.getPosition();
-    const defaultView = converter.convertModelPositionToViewPosition(position);
-    const rightView = converter.convertModelPositionToViewPosition(
-      position,
-      PositionAffinity.Right
-    );
-    if (rightView.equals(defaultView)) return;
     rewriting = true;
     try {
-      viewModel.setCursorStates("yonalist.outline.caret", 0, [
-        CursorState.fromViewState(new SingleCursorState(
-          Range.fromPositions(rightView, rightView),
-          0,
-          0,
-          rightView,
-          0
-        ))
-      ]);
+      realignCaretWithInjectedText(editor);
     } finally {
       rewriting = false;
     }
