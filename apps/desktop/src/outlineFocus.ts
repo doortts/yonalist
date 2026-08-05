@@ -6,6 +6,12 @@ export type OutlineFocusEdge = "start" | "end" | "preserve";
 const REVEAL_FRAMES = 3;
 
 function revealInLocalOutline(target: HTMLElement): void {
+  adjustLocalOutlineScroll(target);
+  globalThis.requestAnimationFrame?.(() => adjustLocalOutlineScroll(target));
+}
+
+function adjustLocalOutlineScroll(target: HTMLElement): void {
+  if (!target.isConnected) return;
   const rows = target.closest<HTMLElement>(".notes-outline-rows");
   if (!rows) return;
   const rowsRect = rows.getBoundingClientRect();
