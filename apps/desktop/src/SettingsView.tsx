@@ -1,6 +1,8 @@
 import { Radio, RadioGroup } from "@base-ui/react";
-import { X } from "lucide-react";
+import { Database, Trash2, X } from "lucide-react";
+import { useState } from "react";
 
+import type { UnusedAssetsReport } from "../../../packages/contracts/generated/UnusedAssetsReport";
 import type {
   DarkTheme,
   LightTheme,
@@ -34,7 +36,9 @@ export function SettingsView({
   onThemeModeChange,
   onLightThemeChange,
   onDarkThemeChange,
-  onClose
+  onClose,
+  unusedAssets,
+  deleteAllData
 }: {
   readonly themeMode: ThemeMode;
   readonly lightTheme: LightTheme;
@@ -43,6 +47,8 @@ export function SettingsView({
   readonly onLightThemeChange: (theme: LightTheme) => void;
   readonly onDarkThemeChange: (theme: DarkTheme) => void;
   readonly onClose: () => void;
+  readonly unusedAssets: (purge: boolean) => Promise<UnusedAssetsReport>;
+  readonly deleteAllData: () => Promise<void>;
 }) {
   return (
     <section className="settings-page" aria-label="Settings page">
@@ -85,6 +91,159 @@ export function SettingsView({
             onChange={onDarkThemeChange}
           />
         </section>
+
+        <NotesDataSection
+          unusedAssets={unusedAssets}
+          deleteAllData={deleteAllData}
+        />
+      </div>
+    </section>
+  );
+}
+
+function NotesDataSection({
+  unusedAssets,
+  deleteAllData
+}: {
+  readonly unusedAssets: (purge: boolean) => Promise<UnusedAssetsReport>;
+  readonly deleteAllData: () => Promise<void>;
+}) {
+  const [report, setReport] = useState<UnusedAssetsReport | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [confirmingPurge, setConfirmingPurge] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const runAssets = async (purge: boolean) => {
+    setBusy(true);
+    setError(null);
+    setConfirmingPurge(false);
+    try {
+      const next = await unusedAssets(purge);
+      setReport(purge ? { ...next, count: 0, totalBytes: 0 } : next);
+    } catch (cause) {
+      setError(cause instanceof Error
+        ? cause.message
+        : "Notes could not complete the request.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runDelete = async () => {
+    setConfirmingDelete(false);
+    setDeleting(true);
+    setError(null);
+    try {
+      await deleteAllData();
+    } catch (cause) {
+      setDeleting(false);
+      setError(cause instanceof Error
+        ? cause.message
+        : "Notes could not complete the request.");
+    }
+  };
+
+  return (
+    <section className="settings-section" aria-label="Yonalist data">
+      <div className="settings-section-title">
+        <Database size={18} aria-hidden="true" />
+        <h3>Yonalist data</h3>
+      </div>
+      {error && (
+        <p className="notes-inline-error" role="alert">{error}</p>
+      )}
+
+      <div className="settings-field-grid">
+        <div>
+          <strong>Unused attachment assets</strong>
+          <p className="settings-copy">
+            Check files that are no longer referenced by any Yonalist
+            attachment.
+          </p>
+          {report && !confirmingPurge && (
+            <p role="status">
+              {report.count.toLocaleString()} unused assets
+              {" "}({report.totalBytes.toLocaleString()} bytes)
+            </p>
+          )}
+          {report && report.count > 0 ? (
+            confirmingPurge ? (
+              <>
+                <button
+                  className="danger-button"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void runAssets(true)}
+                >
+                  Delete {report.count.toLocaleString()} unused assets
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setConfirmingPurge(false)}
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setConfirmingPurge(true)}
+              >
+                Delete unused assets...
+              </button>
+            )
+          ) : (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void runAssets(false)}
+            >
+              {busy ? "Checking..." : "Check unused assets"}
+            </button>
+          )}
+        </div>
+
+        <div>
+          <strong>Delete local Yonalist data</strong>
+          <p className="settings-copy">
+            Removes the local Yonalist database and attachments, then restarts
+            the app with a fresh workspace.
+          </p>
+          {confirmingDelete ? (
+            <>
+              <button
+                className="danger-button"
+                type="button"
+                disabled={deleting}
+                onClick={() => void runDelete()}
+              >
+                <Trash2 size={16} aria-hidden="true" />
+                Delete everything and restart
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setConfirmingDelete(false)}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              className="danger-button"
+              type="button"
+              disabled={deleting}
+              onClick={() => setConfirmingDelete(true)}
+            >
+              <Trash2 size={16} aria-hidden="true" />
+              {deleting ? "Deleting..." : "Delete all Yonalist data..."}
+            </button>
+          )}
+        </div>
       </div>
     </section>
   );

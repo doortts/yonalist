@@ -86,6 +86,8 @@ export function appApi(): NotesApi {
     undo: vi.fn(),
     redo: vi.fn(),
     search: vi.fn().mockResolvedValue({ hits: [], nextCursor: null }),
-    closeSession: vi.fn()
+    closeSession: vi.fn(),
+    unusedAssets: vi.fn(),
+    deleteAllData: vi.fn()
   };
 }

@@ -12,6 +12,7 @@ import type { MutationReceipt } from "../../../packages/contracts/generated/Muta
 import type { NotesExportRequest } from "../../../packages/contracts/generated/NotesExportRequest";
 import type { NotesExportResult } from "../../../packages/contracts/generated/NotesExportResult";
 import type { SearchPage } from "../../../packages/contracts/generated/SearchPage";
+import type { UnusedAssetsReport } from "../../../packages/contracts/generated/UnusedAssetsReport";
 import type { SearchQuery } from "../../../packages/contracts/generated/SearchQuery";
 import type { ViewportPage } from "../../../packages/contracts/generated/ViewportPage";
 import type { ViewportRequest } from "../../../packages/contracts/generated/ViewportRequest";
@@ -38,6 +39,8 @@ export interface NotesApi {
   redo(request: HistoryRequest): Promise<MutationReceipt>;
   search(query: SearchQuery): Promise<SearchPage>;
   closeSession(): Promise<CloseOutcome>;
+  unusedAssets(purge: boolean): Promise<UnusedAssetsReport>;
+  deleteAllData(): Promise<void>;
 }
 
 export const tauriNotesApi: NotesApi = {
@@ -78,5 +81,7 @@ export const tauriNotesApi: NotesApi = {
   undo: (request) => invoke("notes_undo", { request }),
   redo: (request) => invoke("notes_redo", { request }),
   search: (query) => invoke("notes_search", { query }),
-  closeSession: () => invoke("notes_close_session")
+  closeSession: () => invoke("notes_close_session"),
+  unusedAssets: (purge) => invoke("notes_unused_assets", { purge }),
+  deleteAllData: () => invoke("notes_delete_all_data")
 };

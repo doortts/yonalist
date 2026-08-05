@@ -577,5 +577,11 @@ export const previewNotesApi: NotesApi = {
   },
   async closeSession() {
     return "flushed";
+  },
+  async unusedAssets() {
+    return { count: 0, totalBytes: 0, purged: false };
+  },
+  async deleteAllData() {
+    // The browser preview keeps its in-memory fixture.
   }
 };
