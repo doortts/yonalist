@@ -38,11 +38,24 @@ export function planStructuralReplacement(
   if (input.oldLines.length === 1) {
     return planSplit(input);
   }
-  assertReplaceableSiblings(input.allLines, input.oldLines);
   if (input.oldLines.length === 2 && input.newTexts.length === 1) {
+    if (!isRemovableEmptyTail(input)) {
+      assertReplaceableSiblings(input.allLines, input.oldLines);
+    }
     return planBackwardMerge(input);
   }
+  assertReplaceableSiblings(input.allLines, input.oldLines);
   return planGeneralReplacement(input);
+}
+
+function isRemovableEmptyTail(
+  input: StructuralReplacementInput
+): boolean {
+  const current = requiredLine(input.oldLines, 1);
+  return (
+    requiredText(input.oldTexts, 1).trim().length === 0 &&
+    !input.allLines.some((line) => line.parentId === current.nodeId)
+  );
 }
 
 function planSplit(
@@ -52,6 +65,16 @@ function planSplit(
   const previousText = requiredText(input.oldTexts, 0);
   if (input.allocatedIds.length !== input.newTexts.length - 1) {
     throw new Error("A split did not receive one stable ID per suffix line.");
+  }
+  const firstChild = input.allLines[input.startIndex + 1];
+  if (firstChild && firstChild.parentId === source.nodeId) {
+    const lastText = requiredText(
+      input.newTexts,
+      input.newTexts.length - 1
+    );
+    return lastText === previousText
+      ? planSplitAboveParent(input, source)
+      : planSplitIntoChildren(input, source, previousText, firstChild.nodeId);
   }
   const beforeId = nextSiblingId(
     input.allLines,
@@ -87,6 +110,102 @@ function planSplit(
   });
   return {
     lines: [source, ...insertedLines],
+    forward,
+    inverse
+  };
+}
+
+function planSplitAboveParent(
+  input: StructuralReplacementInput,
+  source: OutlineLineMetadata
+): StructuralReplacementPlan {
+  const insertedLines = input.allocatedIds.map((nodeId) => ({
+    nodeId,
+    parentId: source.parentId,
+    depth: source.depth,
+    kind: "text" as const,
+    collapsed: false,
+    completed: false
+  }));
+  const forward: IpcEditorCommand[] = insertedLines.map((line, index) => ({
+    kind: "createNode",
+    id: line.nodeId,
+    parent_id: source.parentId,
+    before_id: source.nodeId,
+    text: requiredText(input.newTexts, index)
+  }));
+  const inverse: IpcEditorCommand[] = [];
+  for (const nodeId of [...input.allocatedIds].reverse()) {
+    inverse.push({ kind: "updateText", id: nodeId, text: "" });
+    inverse.push({ kind: "removeEmptyNode", id: nodeId });
+  }
+  return {
+    lines: [...insertedLines, source],
+    forward,
+    inverse
+  };
+}
+
+function planSplitIntoChildren(
+  input: StructuralReplacementInput,
+  source: OutlineLineMetadata,
+  previousText: string,
+  firstChildId: string
+): StructuralReplacementPlan {
+  const insertedLines = input.allocatedIds.map((nodeId) => ({
+    nodeId,
+    parentId: source.nodeId,
+    depth: source.depth + 1,
+    kind: "text" as const,
+    collapsed: false,
+    completed: false
+  }));
+  const forward: IpcEditorCommand[] = [];
+  const inverse: IpcEditorCommand[] = [];
+  pushTextUpdate(
+    forward,
+    source.nodeId,
+    previousText,
+    requiredText(input.newTexts, 0)
+  );
+  if (source.collapsed) {
+    forward.push({
+      kind: "setCollapsed",
+      id: source.nodeId,
+      collapsed: false
+    });
+  }
+  for (const [index, line] of insertedLines.entries()) {
+    forward.push({
+      kind: "createNode",
+      id: line.nodeId,
+      parent_id: source.nodeId,
+      before_id: firstChildId,
+      text: requiredText(input.newTexts, index + 1)
+    });
+  }
+  for (const nodeId of [...input.allocatedIds].reverse()) {
+    inverse.push({ kind: "updateText", id: nodeId, text: "" });
+    inverse.push({ kind: "removeEmptyNode", id: nodeId });
+  }
+  if (source.collapsed) {
+    inverse.push({
+      kind: "setCollapsed",
+      id: source.nodeId,
+      collapsed: true
+    });
+  }
+  pushTextUpdate(
+    inverse,
+    source.nodeId,
+    requiredText(input.newTexts, 0),
+    previousText
+  );
+  return {
+    lines: [
+      source.collapsed ? { ...source, collapsed: false } : source,
+      ...insertedLines
+    ],
     forward,
     inverse
   };

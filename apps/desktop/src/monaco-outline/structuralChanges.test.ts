@@ -220,6 +220,155 @@ describe("interpretModelChanges", () => {
     ).toEqual(["inserted-2", "inserted-1"]);
   });
 
+  it("splits the end of a parent into an empty first child", () => {
+    const transition = applyModelEditFixture({
+      value: "Parent\nChild",
+      lines: [line("parent"), line("child", "parent", 1)],
+      range: new monaco.Range(1, 7, 1, 7),
+      text: "\n",
+      allocatedIds: ["inserted"]
+    });
+
+    expect(transition.after.lines).toMatchObject([
+      { nodeId: "parent", depth: 0 },
+      { nodeId: "inserted", parentId: "parent", depth: 1 },
+      { nodeId: "child", parentId: "parent", depth: 1 }
+    ]);
+    expect(transition.forward).toEqual([
+      {
+        kind: "createNode",
+        id: "inserted",
+        parent_id: "parent",
+        before_id: "child",
+        text: ""
+      }
+    ]);
+    expect(transition.inverse).toEqual([
+      { kind: "updateText", id: "inserted", text: "" },
+      { kind: "removeEmptyNode", id: "inserted" }
+    ]);
+  });
+
+  it("moves the suffix of a mid-text parent split into the first child", () => {
+    const transition = applyModelEditFixture({
+      value: "Parent\nChild",
+      lines: [line("parent"), line("child", "parent", 1)],
+      range: new monaco.Range(1, 4, 1, 4),
+      text: "\n",
+      allocatedIds: ["inserted"]
+    });
+
+    expect(transition.after.lines).toMatchObject([
+      { nodeId: "parent", depth: 0 },
+      { nodeId: "inserted", parentId: "parent", depth: 1 },
+      { nodeId: "child", parentId: "parent", depth: 1 }
+    ]);
+    expect(transition.forward).toEqual([
+      { kind: "updateText", id: "parent", text: "Par" },
+      {
+        kind: "createNode",
+        id: "inserted",
+        parent_id: "parent",
+        before_id: "child",
+        text: "ent"
+      }
+    ]);
+    expect(transition.inverse).toEqual([
+      { kind: "updateText", id: "inserted", text: "" },
+      { kind: "removeEmptyNode", id: "inserted" },
+      { kind: "updateText", id: "parent", text: "Parent" }
+    ]);
+  });
+
+  it("splits column one of a parent into an empty sibling above", () => {
+    const transition = applyModelEditFixture({
+      value: "Parent\nChild",
+      lines: [line("parent"), line("child", "parent", 1)],
+      range: new monaco.Range(1, 1, 1, 1),
+      text: "\n",
+      allocatedIds: ["inserted"]
+    });
+
+    expect(transition.after.lines).toMatchObject([
+      { nodeId: "inserted", parentId: "page", depth: 0 },
+      { nodeId: "parent", parentId: "page", depth: 0 },
+      { nodeId: "child", parentId: "parent", depth: 1 }
+    ]);
+    expect(transition.forward).toEqual([
+      {
+        kind: "createNode",
+        id: "inserted",
+        parent_id: "page",
+        before_id: "parent",
+        text: ""
+      }
+    ]);
+  });
+
+  it("expands a collapsed parent when a split enters its children", () => {
+    const transition = applyModelEditFixture({
+      value: "Parent\nChild",
+      lines: [
+        { ...line("parent"), collapsed: true },
+        line("child", "parent", 1)
+      ],
+      range: new monaco.Range(1, 7, 1, 7),
+      text: "\n",
+      allocatedIds: ["inserted"]
+    });
+
+    expect(transition.after.lines[0]).toMatchObject({
+      nodeId: "parent",
+      collapsed: false
+    });
+    expect(transition.forward).toEqual([
+      { kind: "setCollapsed", id: "parent", collapsed: false },
+      {
+        kind: "createNode",
+        id: "inserted",
+        parent_id: "parent",
+        before_id: "child",
+        text: ""
+      }
+    ]);
+    expect(transition.inverse).toEqual([
+      { kind: "updateText", id: "inserted", text: "" },
+      { kind: "removeEmptyNode", id: "inserted" },
+      { kind: "setCollapsed", id: "parent", collapsed: true }
+    ]);
+  });
+
+  it("removes an empty child line backward into a shallower parent", () => {
+    const transition = applyModelEditFixture({
+      value: "Parent\n\nChild",
+      lines: [
+        line("parent"),
+        line("empty", "parent", 1),
+        line("child", "parent", 1)
+      ],
+      range: new monaco.Range(1, 7, 2, 1),
+      text: "",
+      allocatedIds: []
+    });
+
+    expect(transition.after.lines).toMatchObject([
+      { nodeId: "parent", depth: 0 },
+      { nodeId: "child", parentId: "parent", depth: 1 }
+    ]);
+    expect(transition.forward).toEqual([
+      { kind: "removeEmptyNode", id: "empty" }
+    ]);
+    expect(transition.inverse).toEqual([
+      {
+        kind: "createNode",
+        id: "empty",
+        parent_id: "parent",
+        before_id: "child",
+        text: ""
+      }
+    ]);
+  });
+
   it("retains eligible boundary ids for a multi-line replacement", () => {
     const transition = applyModelEditFixture({
       value: "alpha\nbeta\ngamma",
@@ -273,6 +422,36 @@ describe("canApplyNativeBoundaryEdit", () => {
         snapshot: nestedSnapshot,
         texts: ["parent", "child", "second"],
         selection: new monaco.Selection(3, 1, 3, 1),
+        command: "backspace"
+      })
+    ).toBe(false);
+  });
+
+  it("allows removing an empty current line across a depth boundary", () => {
+    const snapshot = OutlineMetadataTimeline.hydrate(1, [
+      line("parent"),
+      line("empty", "parent", 1),
+      line("child", "parent", 1)
+    ]).current();
+    expect(
+      canApplyNativeBoundaryEdit({
+        snapshot,
+        texts: ["parent", "", "child"],
+        selection: new monaco.Selection(2, 1, 2, 1),
+        command: "backspace"
+      })
+    ).toBe(true);
+
+    const emptyParentSnapshot = OutlineMetadataTimeline.hydrate(1, [
+      line("parent"),
+      line("empty", "parent", 1),
+      line("grandchild", "empty", 2)
+    ]).current();
+    expect(
+      canApplyNativeBoundaryEdit({
+        snapshot: emptyParentSnapshot,
+        texts: ["parent", "", "grandchild"],
+        selection: new monaco.Selection(2, 1, 2, 1),
         command: "backspace"
       })
     ).toBe(false);

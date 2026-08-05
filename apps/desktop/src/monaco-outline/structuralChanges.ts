@@ -306,18 +306,17 @@ function canMergeBoundary(
   const previous = snapshot.lines[previousIndex];
   const current = snapshot.lines[currentIndex];
   const currentText = texts[currentIndex];
-  if (
-    !previous ||
-    !current ||
-    currentText === undefined ||
-    previous.parentId !== current.parentId ||
-    previous.depth !== current.depth
-  ) {
+  if (!previous || !current || currentText === undefined) {
     return false;
   }
-  const removedId =
-    currentText.trim().length === 0 ? current.nodeId : previous.nodeId;
-  return !hasChildren(snapshot.lines, removedId);
+  if (currentText.trim().length === 0) {
+    return !hasChildren(snapshot.lines, current.nodeId);
+  }
+  return (
+    previous.parentId === current.parentId &&
+    previous.depth === current.depth &&
+    !hasChildren(snapshot.lines, previous.nodeId)
+  );
 }
 
 function canReplaceLineRange(
