@@ -332,24 +332,58 @@ describe("Monaco outline supporting notes", () => {
 });
 
 describe("Monaco outline image rows", () => {
-  it("saves a caption as the image node's own text", async () => {
-    const harness = await outline([picture("image-1", "cat.png", 1_024)]);
+  it("refuses every keystroke that would retype a filename", async () => {
+    const harness = await outline([
+      bullet("bullet-1", "First thought", 1_024),
+      picture("image-1", "cat.png", 2_048)
+    ]);
+    const keys = harness.keys();
+    harness.editor.setPosition({ lineNumber: 2, column: 4 });
 
-    // I7: the caption is the node's text, so it takes the ordinary updateText.
-    typeInto(harness.session, 1, " on a wall");
+    // I7: the filename is the node's text, assigned once at creation, and the
+    // tree refuses to change it — so nothing that types gets to the model.
+    for (const event of [
+      { key: "a" },
+      { key: " " },
+      { key: "Backspace" },
+      { key: "Delete" },
+      { key: "Backspace", metaKey: true },
+      { key: "Tab" },
+      { key: "Process" }
+    ]) {
+      expect(fireEvent.keyDown(keys, event)).toBe(false);
+    }
+    expect(fireEvent.paste(harness.editor.getDomNode()!, {
+      clipboardData: { items: [] }
+    })).toBe(false);
+    expect(harness.session.model.getValue()).toBe("First thought\ncat.png");
+
+    // Navigation, copy and the completion command stay on the row, and the
+    // line above it is still an ordinary editable bullet.
+    for (const event of [
+      { key: "ArrowUp" },
+      { key: "End" },
+      { key: "c", metaKey: true },
+      { key: "Enter", metaKey: true }
+    ]) {
+      expect(fireEvent.keyDown(keys, event)).toBe(true);
+    }
+    harness.editor.setPosition({ lineNumber: 1, column: 14 });
+    expect(fireEvent.keyDown(keys, { key: "a" })).toBe(true);
+
     await harness.session.flush("blur");
-
-    expect(sentCommands(harness.api)).toEqual([{
-      kind: "updateText",
-      id: "image-1",
-      text: "cat.png on a wall"
-    }]);
+    expect(sentCommands(harness.api)).not.toContainEqual(
+      expect.objectContaining({ kind: "updateText", id: "image-1" })
+    );
 
     await harness.cleanup();
   });
 
   it("commits one resize gesture after the editor queue has drained", async () => {
-    const harness = await outline([picture("image-1", "cat.png", 1_024)]);
+    const harness = await outline([
+      bullet("bullet-1", "First thought", 1_024),
+      picture("image-1", "cat.png", 2_048)
+    ]);
     // An unsaved title edit is what proves the drain: it has to reach the
     // backend before the resize claims a revision (design §5).
     typeInto(harness.session, 1, "!");
