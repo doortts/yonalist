@@ -347,6 +347,44 @@ describe("MonacoOutlineSession", () => {
     await session.dispose();
   });
 
+  it("hydrates a to-do marker onto its title and its note run", async () => {
+    const { session } = createSession("marker-hydrate", [
+      { ...noted("task", "Task", "Why", "marker-hydrate"), marker: "todo" },
+      node("plain", "Plain", "marker-hydrate")
+    ]);
+
+    expect(session.metadata.current().lines.map((line) => line.marker)).toEqual([
+      "todo",
+      "todo",
+      "bullet"
+    ]);
+    await session.dispose();
+  });
+
+  it("sets a marker as one persisted metadata edit", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "marker",
+      [noted("first", "Task", "Why", "marker")]
+    );
+    const unbind = session.bindEditor(editorStub(session));
+
+    session.setMarker("first", "todo");
+    // A note run copies its title (V3), so the marker travels with it.
+    expect(session.metadata.current().lines.map((line) => line.marker)).toEqual([
+      "todo",
+      "todo"
+    ]);
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "setMarker", id: "first", marker: "todo" }
+    ]);
+
+    session.setMarker("first", "bullet");
+    expect(session.metadata.current().lines[0]?.marker).toBe("bullet");
+    unbind();
+    await session.dispose();
+  });
+
   it("reports editor and listener lifetimes without retaining their objects", async () => {
     const { session } = createSession(
       "diagnostics",

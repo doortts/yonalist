@@ -17,6 +17,7 @@ function line(
     parentId,
     depth,
     kind: "text",
+    marker: "bullet",
     collapsed: false,
     completed: false,
     ...overrides
@@ -168,6 +169,27 @@ describe("outline line kinds", () => {
         line("first", "page", 0, { kind: "note", completed: true })
       ])
     ).toThrow("note line must copy its title line");
+
+    expect(() =>
+      validateOutlineMetadata([
+        line("first", "page", 0, { marker: "todo" }),
+        line("first", "page", 0, { kind: "note" })
+      ])
+    ).toThrow("note line must copy its title line");
+  });
+
+  it("records a marker change as its own metadata version", () => {
+    const timeline = OutlineMetadataTimeline.hydrate(1, [
+      line("first", "page", 0)
+    ]);
+    const before = timeline.current();
+    const after = timeline.record(2, [line("first", "page", 0, {
+      marker: "todo"
+    })]);
+
+    expect(before.lines[0]?.marker).toBe("bullet");
+    expect(after.lines[0]?.marker).toBe("todo");
+    expect(after.lines).not.toBe(before.lines);
   });
 
   it("rejects children under an image line", () => {

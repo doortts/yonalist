@@ -326,6 +326,8 @@ export class MonacoOutlineSession {
       parentId: input.anchor.parentId,
       depth: placement.depth,
       kind: "image" as const,
+      // An image row is never a to-do: it carries a picture, not a task.
+      marker: "bullet" as const,
       collapsed: false,
       completed: false
     })));
@@ -568,6 +570,7 @@ export class MonacoOutlineSession {
       parentId: hasChildren ? nodeId : title.parentId,
       depth: hasChildren ? title.depth + 1 : title.depth,
       kind: "text",
+      marker: "bullet",
       collapsed: false,
       completed: false
     });
@@ -769,6 +772,27 @@ export class MonacoOutlineSession {
       afterLines,
       [{ kind: "setCompleted", id: nodeId, completed }],
       [{ kind: "setCompleted", id: nodeId, completed: !completed }]
+    );
+  }
+
+  setMarker(nodeId: string, marker: "bullet" | "todo"): void {
+    if (!this.canAcceptStructuralEdit()) return;
+    const current = this.metadata.current();
+    const lineNumber = current.titleLineByNodeId.get(nodeId);
+    if (lineNumber === undefined) return;
+    const lineIndex = lineNumber - 1;
+    const line = current.lines[lineIndex];
+    if (line?.kind !== "text" || line.marker === marker) return;
+    const afterLines = current.lines.map((candidate, index) =>
+      ownsLine(line, candidate, index === lineIndex)
+        ? { ...candidate, marker }
+        : candidate
+    );
+    this.applyMetadataEdit(
+      `${marker === "todo" ? "To-do" : "Bullet"} ${nodeId}`,
+      afterLines,
+      [{ kind: "setMarker", id: nodeId, marker }],
+      [{ kind: "setMarker", id: nodeId, marker: line.marker }]
     );
   }
 
@@ -1204,6 +1228,7 @@ function hydrateLines(
       parentId,
       depth,
       kind: node.kind === "image" ? "image" : "text",
+      marker: node.marker,
       collapsed: node.collapsed,
       completed: node.completed
     };
@@ -1276,6 +1301,7 @@ function emptyLine(
     parentId,
     depth,
     kind: "text",
+    marker: "bullet",
     collapsed: false,
     completed: false
   };
@@ -1361,6 +1387,7 @@ function metadataChangedLineNumbers(
       before.nodeId !== after.nodeId ||
       before.parentId !== after.parentId ||
       before.depth !== after.depth ||
+      before.marker !== after.marker ||
       before.collapsed !== after.collapsed ||
       before.completed !== after.completed
     ) {

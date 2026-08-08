@@ -41,6 +41,7 @@ function line(
     parentId: "page",
     depth: 0,
     kind,
+    marker: "bullet",
     collapsed: false,
     completed: false
   };

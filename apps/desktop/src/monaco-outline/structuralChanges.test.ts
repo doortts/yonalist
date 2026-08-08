@@ -22,6 +22,7 @@ function line(
     parentId,
     depth,
     kind,
+    marker: "bullet",
     collapsed: false,
     completed: false
   };

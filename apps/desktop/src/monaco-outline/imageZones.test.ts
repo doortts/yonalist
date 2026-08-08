@@ -33,6 +33,7 @@ function line(
     parentId: "page",
     depth,
     kind,
+    marker: "bullet",
     collapsed: false,
     completed: false
   };

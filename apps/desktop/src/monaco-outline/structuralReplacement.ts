@@ -136,6 +136,7 @@ function planSplit(
     parentId: source.parentId,
     depth: source.depth,
     kind: "text" as const,
+    marker: "bullet" as const,
     collapsed: false,
     completed: false
   }));
@@ -174,6 +175,7 @@ function planSplitAboveParent(
     parentId: source.parentId,
     depth: source.depth,
     kind: "text" as const,
+    marker: "bullet" as const,
     collapsed: false,
     completed: false
   }));
@@ -207,6 +209,7 @@ function planSplitIntoChildren(
     parentId: source.nodeId,
     depth: source.depth + 1,
     kind: "text" as const,
+    marker: "bullet" as const,
     collapsed: false,
     completed: false
   }));
@@ -361,6 +364,7 @@ function planGeneralReplacement(
     parentId: first.parentId,
     depth: first.depth,
     kind: "text" as const,
+    marker: "bullet" as const,
     collapsed: false,
     completed: false
   }));
