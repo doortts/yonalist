@@ -28,6 +28,12 @@ vi.mock("./monaco-outline/internalAdapter", () => ({
 
 vi.mock("./monaco-outline/paneAdapter", () => ({
   MonacoOutlinePaneAdapter: class {
+    readonly slashMenu = {
+      subscribe: () => () => undefined,
+      current: () => null,
+      select: vi.fn()
+    };
+
     constructor(input: unknown) {
       mocks.paneInputs.push(input);
     }

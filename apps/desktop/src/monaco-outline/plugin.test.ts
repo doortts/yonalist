@@ -27,7 +27,8 @@ function binding(): YonalistOutlineEditorBinding {
     pane: {
       activeNodeId: () => "child",
       handleBullet: vi.fn(),
-      handleChevron: vi.fn()
+      handleChevron: vi.fn(),
+      slashMenu: { handleKeyDown: vi.fn().mockReturnValue(false) }
     }
   };
 }

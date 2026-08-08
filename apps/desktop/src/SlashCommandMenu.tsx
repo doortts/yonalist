@@ -10,7 +10,8 @@ import type {
 export function SlashCommandMenu({
   anchor, commands, activeIndex, onSelect
 }: {
-  readonly anchor: HTMLElement;
+  /** The React surface's title textarea, or Monaco's caret box. */
+  readonly anchor: Pick<HTMLElement, "getBoundingClientRect">;
   readonly commands: readonly SlashCommandDefinition[];
   readonly activeIndex: number;
   readonly onSelect: (id: SlashCommandId) => void;

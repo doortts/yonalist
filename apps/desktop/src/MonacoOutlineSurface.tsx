@@ -34,6 +34,10 @@ import type {
 import type {
   MonacoSessionRegistry
 } from "./monaco-outline/sessionRegistry";
+import type {
+  OutlineSlashMenuSource
+} from "./monaco-outline/slashMenu";
+import { SlashCommandMenu } from "./SlashCommandMenu";
 
 type MonacoGlobal = typeof globalThis & {
   MonacoEnvironment?: {
@@ -266,8 +270,27 @@ export default function MonacoOutlineSurface({
           />
         )}
       </div>
+      {pane && <MonacoSlashCommands menu={pane.slashMenu} />}
       {session && <PersistenceStatus session={session} />}
     </>
+  );
+}
+
+/** `OutlineRow`'s `/` menu, hung off the caret instead of off a row. */
+function MonacoSlashCommands({
+  menu
+}: {
+  readonly menu: OutlineSlashMenuSource;
+}) {
+  const target = useSyncExternalStore(menu.subscribe, menu.current);
+  if (!target) return null;
+  return (
+    <SlashCommandMenu
+      anchor={target}
+      commands={target.commands}
+      activeIndex={target.activeIndex}
+      onSelect={menu.select}
+    />
   );
 }
 
