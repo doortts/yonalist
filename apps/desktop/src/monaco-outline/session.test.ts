@@ -423,6 +423,45 @@ describe("MonacoOutlineSession", () => {
     ]);
     expect(session.metadata.current().noteRangeByNodeId.get("first"))
       .toEqual([2, 3]);
+    expect(session.imageByNodeId.get("picture")).toEqual(
+      expect.objectContaining({ contentHash: "hash", displayWidth: 10 })
+    );
+    expect(session.imageByNodeId.has("first")).toBe(false);
+    await session.dispose();
+  });
+
+  it("records a new image display width without touching the model", async () => {
+    const { session, executeEditorBatch } = createSession("resize", [
+      {
+        ...node("picture", "caption", "resize"),
+        kind: "image",
+        image: {
+          contentHash: "hash",
+          originalName: "shot.png",
+          mimeType: "image/png",
+          byteLength: 128,
+          pixelWidth: 800,
+          pixelHeight: 400,
+          displayWidth: 800
+        }
+      }
+    ]);
+    const changes: boolean[] = [];
+    session.subscribeMetadata((structural) => changes.push(structural));
+    const versionId = session.model.getAlternativeVersionId();
+
+    expect(session.setImageDisplayWidth("picture", 400)).toBe(true);
+
+    expect(session.imageByNodeId.get("picture")?.displayWidth).toBe(400);
+    expect(session.model.getValue()).toBe("caption");
+    expect(session.model.getAlternativeVersionId()).toBe(versionId);
+    expect(changes).toEqual([true]);
+
+    // The width is a view concern: nothing new is owed to the editor batch.
+    expect(session.setImageDisplayWidth("picture", 400)).toBe(false);
+    expect(session.setImageDisplayWidth("missing", 400)).toBe(false);
+    await session.flush("navigation");
+    expect(executeEditorBatch).not.toHaveBeenCalled();
     await session.dispose();
   });
 

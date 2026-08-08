@@ -1,5 +1,6 @@
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 
+import type { ImageView } from "../../../../packages/contracts/generated/ImageView";
 import type { IpcEditorCommand } from "../../../../packages/contracts/generated/IpcEditorCommand";
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
 import {
@@ -61,6 +62,12 @@ export class MonacoOutlineSession {
   readonly pageId: string;
   readonly model: monaco.editor.ITextModel;
   readonly metadata: OutlineMetadataTimeline;
+  /**
+   * What an image line needs beyond its caption. Line metadata stays lean so
+   * the preorder invariants keep holding; this map carries the pixels.
+   */
+  readonly imageByNodeId: ReadonlyMap<string, ImageView>;
+  private readonly images = new Map<string, ImageView>();
   private readonly metricState = {
     fullModelReplacementCount: 0,
     maxDecorationLinesPerEdit: 0
@@ -84,6 +91,8 @@ export class MonacoOutlineSession {
       input.persistence
     );
     const initial = hydrateLines(input.pageId, input.nodes);
+    this.imageByNodeId = this.images;
+    for (const [nodeId, image] of initial.images) this.images.set(nodeId, image);
     const seeded = initial.lines.length === 0
       ? [emptyLine(this.allocateId(), input.pageId)]
       : initial.lines;
@@ -216,6 +225,19 @@ export class MonacoOutlineSession {
       ),
       text
     }], () => null);
+  }
+
+  /**
+   * Records a committed resize. The width lives beside the model, not in it,
+   * so the view re-reads it through the one metadata sync point and no editor
+   * command is owed — `resizeImage` is a notes command with its own history.
+   */
+  setImageDisplayWidth(nodeId: string, displayWidth: number): boolean {
+    const image = this.images.get(nodeId);
+    if (!image || image.displayWidth === displayWidth) return false;
+    this.images.set(nodeId, { ...image, displayWidth });
+    this.emitMetadata(true);
+    return true;
   }
 
   async undo(): Promise<void> {
@@ -923,9 +945,11 @@ function hydrateLines(
 ): {
   readonly lines: readonly OutlineLineMetadata[];
   readonly texts: readonly string[];
+  readonly images: ReadonlyMap<string, ImageView>;
 } {
   const lines: OutlineLineMetadata[] = [];
   const texts: string[] = [];
+  const images = new Map<string, ImageView>();
   const byId = new Map<string, OutlineLineMetadata>();
   for (const node of nodes) {
     if (node.kind === "page") {
@@ -950,13 +974,17 @@ function hydrateLines(
     byId.set(line.nodeId, line);
     // An image caption owns no note; a bullet note becomes one line per
     // newline so Monaco can edit it natively (design D1).
-    if (line.kind === "image" || node.note.length === 0) continue;
+    if (line.kind === "image") {
+      if (node.image) images.set(line.nodeId, node.image);
+      continue;
+    }
+    if (node.note.length === 0) continue;
     for (const segment of node.note.split("\n")) {
       lines.push({ ...line, kind: "note" });
       texts.push(segment);
     }
   }
-  return { lines, texts };
+  return { lines, texts, images };
 }
 
 function emptyLine(
