@@ -33,7 +33,10 @@ function focusWhenReady(
     apply(target);
     return true;
   }
-  if (!outlinePane(scope)?.reveal(nodeId)) return false;
+  // Callers scope focus to the pane section or to the row list inside it; the
+  // pane registers itself on the section.
+  const pane = outlinePane(scope.closest<HTMLElement>(".notes-outline") ?? scope);
+  if (!pane?.reveal(nodeId)) return false;
   const retry = (remaining: number) => requestAnimationFrame(() => {
     const revealed = editorById(scope, nodeId);
     if (revealed) apply(revealed);
