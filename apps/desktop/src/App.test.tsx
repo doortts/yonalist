@@ -588,7 +588,7 @@ describe("Yonalist v2 desktop shell", () => {
     await screen.findByDisplayValue("First thought");
 
     fireEvent.click(screen.getByRole("button", { name: "Actions for First thought" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "To-do" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "To-do" }));
 
     expect(await screen.findByRole("checkbox", {
       name: "Mark complete: First thought"

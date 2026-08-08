@@ -15,13 +15,13 @@ import { OutlineRow } from "./OutlineRow";
 import { NotesChildComposer } from "./NotesChildComposer";
 import { buildTodoProgressMap } from "./outlineTodo";
 import type { OutlineTagToken } from "./OutlineTextField";
-import {
-  buildSelectionMovePlans, selectedCompletion, type SelectionMovePlan
-} from "./selectionMoves";
+import type { SelectionMovePlan } from "./selectionMoves";
 import { OutlineIndex } from "./outlineIndex";
 import type { PaneFocusSnapshot } from "./appNavigation";
 import { useImageIngest } from "./useImageIngest";
 import { NotesExportBoundary } from "./NotesExportBoundary";
+import { useOutlineWindow } from "./useOutlineWindow";
+import { registerOutlinePane } from "./outlinePaneRegistry";
 
 const OutlineSelectionActionBar = lazy(() =>
   import("./OutlineSelectionActionBar").then((module) => ({
@@ -31,6 +31,8 @@ const OutlineDragVisuals = lazy(() =>
   import("./OutlineDragVisuals").then((module) => ({
     default: module.OutlineDragVisuals
   })));
+
+type SelectionPlanner = typeof import("./selectionMoves");
 
 export interface PaneRestoreRequest {
   readonly epoch: number;
@@ -95,6 +97,13 @@ export function NotesOutline({
     [expandedBodyNodes, index, outlineRootId, showCompleted]
   );
   const visibleIndex = useMemo(() => new OutlineIndex(bodyNodes), [bodyNodes]);
+  const outlineWindow = useOutlineWindow(bodyNodes);
+  const reveal = outlineWindow.reveal;
+  useEffect(() => {
+    if (scopeRef.current) {
+      registerOutlinePane(scopeRef.current, { visibleNodes: bodyNodes, reveal });
+    }
+  }, [bodyNodes, reveal]);
   const structuralContextComplete =
     state.beforeCursor === null && state.afterCursor === null;
   const selection = useOutlineSelection(
@@ -112,6 +121,7 @@ export function NotesOutline({
   useEffect(() => {
     if (!restoreRequest) return;
     restoreSelectionRef.current(restoreRequest.selectedIds);
+    if (restoreRequest.focus) reveal(restoreRequest.focus.nodeId);
     const frame = requestAnimationFrame(() => {
       if (!restoreRequest.focus || !scopeRef.current) return;
       const editor = [...scopeRef.current.querySelectorAll<
@@ -128,7 +138,7 @@ export function NotesOutline({
       );
     });
     return () => cancelAnimationFrame(frame);
-  }, [restoreRequest]);
+  }, [restoreRequest, reveal]);
   useEffect(() => {
     if (!rootKey) return;
     let active = true;
@@ -160,12 +170,18 @@ export function NotesOutline({
     moveNodes: (moves) => store.moveNodes(moves),
     labelForId: (id) => store.getNodeSnapshot(id).title
   });
-  const allSelectedCompleted = selectedCompletion(
+  // Move planning only matters once rows are selected, so it stays out of the
+  // editable first-paint bundle and is fetched as soon as the pane is up.
+  const [planner, setPlanner] = useState<SelectionPlanner | null>(null);
+  useEffect(() => {
+    void import("./selectionMoves").then(setPlanner);
+  }, []);
+  const allSelectedCompleted = planner !== null && planner.selectedCompletion(
     selection.selectedNodes,
     selection.selectedIds
   );
-  const movePlans = structuralContextComplete
-    ? buildSelectionMovePlans(
+  const movePlans = planner && structuralContextComplete
+    ? planner.buildSelectionMovePlans(
       state.nodes,
       bodyNodes.map((node) => node.id),
       selection.selectedRootIds,
@@ -348,14 +364,31 @@ export function NotesOutline({
           {outlineDrag.announcement}
         </span>
       )}
-      <div className="notes-outline-rows">
+      <div className="notes-outline-rows" ref={outlineWindow.scrollRef}>
         <div className="notes-outline-content" data-zoomed-page="true">
           {allBodyNodes.length === 0 && <p className="notes-pane-state">No outline yet.</p>}
           {!showCompleted && bodyNodes.length < allBodyNodes.length && (
             <p className="notes-pane-state">Completed items are hidden.</p>
           )}
-          <ol className="notes-outline-list" role="list" {...pointerSelection}>
-            {bodyNodes.map((node) => (
+          <ol
+            className="notes-outline-list"
+            role="list"
+            ref={outlineWindow.listRef}
+            {...pointerSelection}
+          >
+            {outlineWindow.items.map((item) => {
+              if (item.kind === "gap") {
+                return (
+                  <li
+                    key={item.key}
+                    aria-hidden="true"
+                    role="presentation"
+                    style={{ height: item.height }}
+                  />
+                );
+              }
+              const node = item.node;
+              return (
               <OutlineRow
                 key={node.id}
                 node={node}
@@ -393,7 +426,8 @@ export function NotesOutline({
                 }}
                 {...outlineDrag.rowProps(node.id)}
               />
-            ))}
+              );
+            })}
           </ol>
           {(outlineDrag.dropTarget || outlineDrag.preview) && (
             <Suspense fallback={null}>

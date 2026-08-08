@@ -98,7 +98,8 @@ describe("image node structural parity", () => {
     fireEvent.click(screen.getByRole("button", {
       name: "Actions for cat.png"
     }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Duplicate" }));
+    fireEvent.click(await screen.findByRole(
+      "menuitem", { name: "Duplicate" }));
 
     await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
       expect.objectContaining({

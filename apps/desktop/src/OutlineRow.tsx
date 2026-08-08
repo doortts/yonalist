@@ -1,7 +1,4 @@
-import {
-  Check, ChevronDown, ChevronRight, Circle, Copy, MessageSquareText,
-  ImagePlus, MoreHorizontal, SquareCheckBig, Star, Trash2
-} from "lucide-react";
+import { ChevronDown, ChevronRight, MoreHorizontal } from "lucide-react";
 import {
   lazy, Suspense, useEffect, useRef, useState, type CSSProperties,
   type KeyboardEvent, type PointerEvent
@@ -11,8 +8,7 @@ import { NotesStore } from "./notesStore";
 import type { OutlineIndex } from "./outlineIndex";
 import {
   endOutlineEnterGesture, handleImagePrimaryKeyDown, handleMultilinePaste,
-  handleOutlineKeyDown, RowMenuItem,
-  type SelectionKeyboardActions
+  handleOutlineKeyDown, type SelectionKeyboardActions
 } from "./outlineSupport";
 import { focusOutlineEditor } from "./outlineFocus";
 import {
@@ -36,6 +32,9 @@ const SlashCommandMenu = lazy(() => import("./SlashCommandMenu").then((module) =
 })));
 const ImageNodeContent = lazy(() => import("./ImageNodeContent").then((module) => ({
   default: module.ImageNodeContent
+})));
+const OutlineRowMenu = lazy(() => import("./OutlineRowMenu").then((module) => ({
+  default: module.OutlineRowMenu
 })));
 
 export function OutlineRow({
@@ -145,84 +144,18 @@ export function OutlineRow({
               <MoreHorizontal size={15} aria-hidden="true" />
             </button>
             {menuOpen && (
-              <div
-                className="notes-bullet-menu"
-                role="menu"
-                style={{
-                  "--available-height": "420px",
-                  position: "absolute",
-                  insetInlineStart: 0,
-                  insetBlockStart: 28
-                } as CSSProperties}
-              >
-                <RowMenuItem
-                  icon={<MessageSquareText size={14} aria-hidden="true" />}
-                  label={visibleNote.trim().length > 0 ? "Edit note" : "Add note"}
-                  onClick={() => {
-                    setMenuOpen(false);
-                    openNoteAndFocus();
-                  }}
+              <Suspense fallback={null}>
+                <OutlineRowMenu
+                  node={node}
+                  store={store}
+                  index={index}
+                  pageId={pageId}
+                  hasNote={visibleNote.trim().length > 0}
+                  onClose={() => setMenuOpen(false)}
+                  onAddNote={openNoteAndFocus}
+                  onPickImage={onPickImage}
                 />
-                <RowMenuItem
-                  icon={node.marker === "todo"
-                    ? <Circle size={14} aria-hidden="true" />
-                    : <SquareCheckBig size={14} aria-hidden="true" />}
-                  label={node.marker === "todo" ? "Change to bullet" : "To-do"}
-                  onClick={() => {
-                    setMenuOpen(false);
-                    void store.setMarker(
-                      node.id,
-                      node.marker === "todo" ? "bullet" : "todo"
-                    );
-                  }}
-                />
-                <RowMenuItem
-                  icon={<Copy size={14} aria-hidden="true" />}
-                  label="Duplicate"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    const nextSiblingId = index.nextSiblingId(node.id);
-                    void store.duplicate(
-                      node.id,
-                      node.parentId ?? pageId,
-                      nextSiblingId
-                    );
-                  }}
-                />
-                <RowMenuItem
-                  icon={<ImagePlus size={14} aria-hidden="true" />}
-                  label="Upload image"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onPickImage();
-                  }}
-                />
-                <RowMenuItem
-                  icon={<Check size={14} aria-hidden="true" />}
-                  label={node.completed ? "Mark incomplete" : "Complete"}
-                  onClick={() => {
-                    setMenuOpen(false);
-                    void store.setCompleted(node.id, !node.completed);
-                  }}
-                />
-                <RowMenuItem
-                  icon={<Star size={14} aria-hidden="true" />}
-                  label={node.starred ? "Unstar" : "Star"}
-                  onClick={() => {
-                    setMenuOpen(false);
-                    void store.setStarred(node.id, !node.starred);
-                  }}
-                />
-                <RowMenuItem
-                  danger
-                  icon={<Trash2 size={14} aria-hidden="true" />}
-                  label="Move to Trash"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    void store.deleteSubtree(node.id);
-                  }}
-                />
-              </div>
+              </Suspense>
             )}
           </span>
           <span className="notes-node-arrow-slot">
