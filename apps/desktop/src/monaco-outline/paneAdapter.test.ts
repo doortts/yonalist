@@ -51,6 +51,30 @@ function stubSession(
   >[0]["session"];
 }
 
+function imagePort(): {
+  readonly port: ConstructorParameters<
+    typeof MonacoOutlinePaneAdapter
+  >[0]["images"];
+  readonly release: ReturnType<typeof vi.fn>;
+  readonly resize: ReturnType<typeof vi.fn>;
+} {
+  const release = vi.fn();
+  const resize = vi.fn().mockResolvedValue(undefined);
+  return {
+    port: {
+      residency: {
+        activate: () => release,
+        subscribe: () => () => undefined,
+        getSnapshot: () => ({ status: "idle" as const })
+      },
+      resize,
+      openLightbox: vi.fn()
+    },
+    release,
+    resize
+  };
+}
+
 function navigation(): OutlinePaneNavigation {
   return {
     zoomSamePane: vi.fn(),
@@ -201,6 +225,93 @@ describe("Monaco outline pane adapter", () => {
     adapter.dispose();
   });
 
+  it("retires an image zone that a collapsing parent hides", () => {
+    const parent = line("parent", "page", 0);
+    const picture = { ...line("picture", "parent", 1), kind: "image" as const };
+    let metadata = snapshot([parent, picture]);
+    const listeners = new Set<(structural: boolean) => void>();
+    const session = {
+      metadata: { current: () => metadata },
+      subscribeMetadata: (listener: (structural: boolean) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      imageByNodeId: new Map([["picture", {
+        contentHash: "hash",
+        originalName: "shot.png",
+        mimeType: "image/png",
+        byteLength: 64,
+        pixelWidth: 800,
+        pixelHeight: 400,
+        displayWidth: 800
+      }]])
+    } as unknown as ConstructorParameters<
+      typeof MonacoOutlinePaneAdapter
+    >[0]["session"];
+    const images = imagePort();
+    const fake = fakeEditor({});
+    const adapter = new MonacoOutlinePaneAdapter({
+      paneId: "primary",
+      editor: fake.editor,
+      session,
+      zoomRootId: null,
+      showCompleted: true,
+      navigation: navigation(),
+      images: images.port
+    });
+
+    expect(fake.addZone).toHaveBeenCalledOnce();
+    expect(fake.addZone.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ afterLineNumber: 1, heightInPx: 400 })
+    );
+
+    metadata = snapshot([{ ...parent, collapsed: true }, picture]);
+    listeners.forEach((listener) => listener(true));
+
+    expect(fake.removeZone).toHaveBeenCalledOnce();
+    expect(images.release).toHaveBeenCalledOnce();
+    adapter.dispose();
+  });
+
+  it("retires an image zone that a zoom leaves outside the pane", () => {
+    const picture = { ...line("picture", "page", 0), kind: "image" as const };
+    const metadata = snapshot([picture, line("other", "page", 0)]);
+    const session = {
+      metadata: { current: () => metadata },
+      subscribeMetadata: () => () => undefined,
+      imageByNodeId: new Map([["picture", {
+        contentHash: "hash",
+        originalName: "shot.png",
+        mimeType: "image/png",
+        byteLength: 64,
+        pixelWidth: 800,
+        pixelHeight: 400,
+        displayWidth: 800
+      }]])
+    } as unknown as ConstructorParameters<
+      typeof MonacoOutlinePaneAdapter
+    >[0]["session"];
+    const images = imagePort();
+    const fake = fakeEditor({});
+    const adapter = new MonacoOutlinePaneAdapter({
+      paneId: "primary",
+      editor: fake.editor,
+      session,
+      zoomRootId: null,
+      showCompleted: true,
+      navigation: navigation(),
+      images: images.port
+    });
+
+    expect(fake.addZone).toHaveBeenCalledOnce();
+
+    adapter.setZoomRoot("other");
+
+    expect(fake.removeZone).toHaveBeenCalledOnce();
+    expect(images.release).toHaveBeenCalledOnce();
+    adapter.dispose();
+  });
+
   it("routes a normal click locally and Shift click to the secondary pane", () => {
     const target = navigation();
 
@@ -296,13 +407,25 @@ function fakeEditor(viewState: unknown): {
   readonly restoreViewState: ReturnType<typeof vi.fn>;
   readonly setHiddenAreas: ReturnType<typeof vi.fn>;
   readonly collectionSet: ReturnType<typeof vi.fn>;
+  readonly addZone: ReturnType<typeof vi.fn>;
+  readonly removeZone: ReturnType<typeof vi.fn>;
 } {
   const host = document.createElement("div");
   const restoreViewState = vi.fn();
   const setHiddenAreas = vi.fn();
   const collectionSet = vi.fn();
+  let nextZoneId = 0;
+  const addZone = vi.fn(() => `zone-${++nextZoneId}`);
+  const removeZone = vi.fn();
   return {
     editor: {
+      changeViewZones: (
+        callback: (accessor: monaco.editor.IViewZoneChangeAccessor) => void
+      ) => callback({
+        addZone,
+        removeZone,
+        layoutZone: vi.fn()
+      } as unknown as monaco.editor.IViewZoneChangeAccessor),
       saveViewState: vi.fn().mockReturnValue(viewState),
       restoreViewState,
       getSelection: vi.fn().mockReturnValue(null),
@@ -310,7 +433,7 @@ function fakeEditor(viewState: unknown): {
       setHiddenAreas,
       getVisibleRanges: vi.fn().mockReturnValue([new monaco.Range(1, 1, 3, 1)]),
       getPosition: vi.fn().mockReturnValue({ lineNumber: 1, column: 1 }),
-      getLayoutInfo: vi.fn().mockReturnValue({ height: 75 }),
+      getLayoutInfo: vi.fn().mockReturnValue({ height: 75, contentWidth: 900 }),
       createDecorationsCollection: vi.fn().mockReturnValue({
         set: collectionSet,
         clear: vi.fn()
@@ -321,6 +444,8 @@ function fakeEditor(viewState: unknown): {
     host,
     restoreViewState,
     setHiddenAreas,
-    collectionSet
+    collectionSet,
+    addZone,
+    removeZone
   };
 }

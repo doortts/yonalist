@@ -1368,6 +1368,70 @@
   color: var(--text-3);
 }
 
+/* An image body is a view zone above its caption line. The indent repeats the
+   caption's injected prefix: four spaces per depth plus the chevron and bullet
+   slots. */
+.notes-monaco-outline .monaco-editor .yonalist-outline-image-zone {
+  display: flex;
+  padding-left: calc((var(--yonalist-outline-depth, 0) * 4 + 6) * 1ch);
+}
+
+.notes-monaco-outline .monaco-editor .yonalist-outline-image-frame {
+  position: relative;
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--bg-hover);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.notes-monaco-outline .monaco-editor .yonalist-outline-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  cursor: zoom-in;
+}
+
+.notes-monaco-outline .monaco-editor .yonalist-outline-image-placeholder {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  padding: 12px;
+  color: var(--text-3);
+  font-size: 12px;
+  text-align: center;
+}
+
+.notes-monaco-outline .monaco-editor .yonalist-outline-image[hidden],
+.notes-monaco-outline .monaco-editor
+  .yonalist-outline-image-placeholder[hidden] {
+  display: none;
+}
+
+.notes-monaco-outline .monaco-editor .yonalist-outline-image-resize {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  width: 16px;
+  height: 100%;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.notes-monaco-outline .monaco-editor .yonalist-outline-image-resize::after {
+  content: "";
+  position: absolute;
+  top: 20%;
+  right: 4px;
+  width: 2px;
+  height: 60%;
+  border-radius: 1px;
+  background: var(--border-strong);
+}
+
 .notes-page-header {
   position: relative;
   width: 100%;

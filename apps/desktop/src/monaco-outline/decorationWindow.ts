@@ -36,6 +36,8 @@ export class PaneDecorationWindow {
   constructor(private readonly input: {
     readonly editor: monaco.editor.IStandaloneCodeEditor;
     readonly metadata: () => OutlineMetadataSnapshot;
+    /** Runs on every refresh so view zones follow the same visible window. */
+    readonly onRefresh?: () => void;
   }) {
     this.collection = input.editor.createDecorationsCollection();
     this.scrollSubscription = input.editor.onDidScrollChange(
@@ -72,6 +74,10 @@ export class PaneDecorationWindow {
     );
   }
 
+  get window(): DecorationWindowRange {
+    return this.range;
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
@@ -87,14 +93,12 @@ export class PaneDecorationWindow {
       this.input.editor,
       metadata.lines.length
     );
-    if (
-      !force &&
-      range[0] === this.range[0] &&
-      range[1] === this.range[1]
-    ) {
-      return;
-    }
+    const unchanged = range[0] === this.range[0] && range[1] === this.range[1];
     this.range = range;
+    // A layout change can keep the window and still resize a view zone, so the
+    // hook runs even when the decorations themselves have nothing to redo.
+    this.input.onRefresh?.();
+    if (!force && unchanged) return;
     const lineNumbers: number[] = [];
     for (
       let line = range[0];
