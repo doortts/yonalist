@@ -126,7 +126,7 @@ Undo가 줄을 되돌리고 그 스텝이 `deleteSubtrees`를 스토어로 보�
 
 | 경로 | 커맨드 계약 | 쓰는 쪽 |
 |---|---|---|
-| 세션 소유 에디터 배치 | `IpcEditorCommand` (createNode, updateText, splitNode, mergeNodeBackward, removeEmptyNode, moveNode, indent, outdent, setCollapsed, setCompleted) | Monaco 세션. 히스토리는 프런트(Monaco undo)가 소유 |
+| 세션 소유 에디터 배치 | `IpcEditorCommand` (createNode, updateText, splitNode, mergeNodeBackward, removeEmptyNode, moveNode, indent, outdent, setCollapsed, setCompleted, setMarker) | Monaco 세션. 히스토리는 프런트(Monaco undo)가 소유 |
 | 일반 노트 커맨드 | `IpcNotesCommand` | React 표면, 라이브러리 작업(별표·보관·삭제 등). 히스토리는 Rust 세션이 소유 |
 
 Monaco에 새 제스처를 붙일 때 백엔드 변경이 필요하면 순서는 항상:

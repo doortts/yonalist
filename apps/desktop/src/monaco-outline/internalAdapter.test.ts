@@ -70,6 +70,23 @@ describe("Monaco internal adapter", () => {
             injectedText: {
               options: {
                 attachedData: {
+                  kind: "yonalist-todo",
+                  nodeId: "node-1"
+                }
+              }
+            }
+          }
+        }
+      })
+    ).toEqual({ kind: "yonalist-todo", nodeId: "node-1" });
+
+    expect(
+      readInjectedTextAttachment({
+        target: {
+          detail: {
+            injectedText: {
+              options: {
+                attachedData: {
                   kind: "foreign",
                   nodeId: "node-1"
                 }

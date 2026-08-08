@@ -27,7 +27,7 @@ export interface MonacoInternalCapabilities {
 }
 
 export interface YonalistInjectedBulletAttachment {
-  readonly kind: "yonalist-bullet" | "yonalist-chevron";
+  readonly kind: "yonalist-bullet" | "yonalist-chevron" | "yonalist-todo";
   readonly nodeId: string;
 }
 
@@ -130,7 +130,8 @@ export function readInjectedTextAttachment(
   if (
     !isRecord(attachedData) ||
     (attachedData.kind !== "yonalist-bullet" &&
-      attachedData.kind !== "yonalist-chevron") ||
+      attachedData.kind !== "yonalist-chevron" &&
+      attachedData.kind !== "yonalist-todo") ||
     typeof attachedData.nodeId !== "string"
   ) {
     return null;

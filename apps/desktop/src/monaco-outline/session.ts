@@ -330,6 +330,8 @@ export class MonacoOutlineSession {
       parentId: input.anchor.parentId,
       depth: placement.depth,
       kind: "image" as const,
+      // An image row is never a to-do: it carries a picture, not a task.
+      marker: "bullet" as const,
       collapsed: false,
       completed: false
     })));
@@ -572,6 +574,7 @@ export class MonacoOutlineSession {
       parentId: hasChildren ? nodeId : title.parentId,
       depth: hasChildren ? title.depth + 1 : title.depth,
       kind: "text",
+      marker: "bullet",
       collapsed: false,
       completed: false
     });
@@ -773,6 +776,96 @@ export class MonacoOutlineSession {
       afterLines,
       [{ kind: "setCompleted", id: nodeId, completed }],
       [{ kind: "setCompleted", id: nodeId, completed: !completed }]
+    );
+  }
+
+  /**
+   * What a slash command leaves behind: the rewritten title, and the marker
+   * `/todo` asks for. Monaco would take those as two edits and cost two Undos,
+   * so the model edit runs with the content listener suppressed and both land
+   * in one recorded transition. Returns the line the caret belongs on.
+   */
+  applySlashEdit(
+    nodeId: string,
+    text: string,
+    marker: "todo" | null
+  ): number | null {
+    if (!this.canAcceptStructuralEdit()) return null;
+    const before = this.metadata.current();
+    const lineNumber = before.titleLineByNodeId.get(nodeId);
+    const line = lineNumber === undefined
+      ? undefined
+      : before.lines[lineNumber - 1];
+    if (lineNumber === undefined || line?.kind !== "text") return null;
+    const previousText = this.lineTexts[lineNumber - 1] ?? "";
+    const nextMarker = marker !== null && marker !== line.marker
+      ? marker
+      : null;
+    if (previousText === text && nextMarker === null) return lineNumber;
+    this.pruneRedoBranch(before.alternativeVersionId);
+    this.editModelSilently([{
+      range: new monaco.Range(
+        lineNumber,
+        1,
+        lineNumber,
+        this.model.getLineMaxColumn(lineNumber)
+      ),
+      text
+    }]);
+    const afterLines = nextMarker === null
+      ? before.lines
+      : before.lines.map((candidate, index) =>
+          ownsLine(line, candidate, index === lineNumber - 1)
+            ? { ...candidate, marker: nextMarker }
+            : candidate);
+    this.recordModelTransition({
+      before,
+      afterLines,
+      textPatch: {
+        startIndex: lineNumber - 1,
+        deleteCount: 1,
+        insertedTexts: [text]
+      },
+      inverseTextPatch: {
+        startIndex: lineNumber - 1,
+        deleteCount: 1,
+        insertedTexts: [previousText]
+      },
+      forward: [
+        { kind: "updateText", id: nodeId, text },
+        ...nextMarker === null
+          ? []
+          : [{ kind: "setMarker" as const, id: nodeId, marker: nextMarker }]
+      ],
+      inverse: [
+        ...nextMarker === null
+          ? []
+          : [{ kind: "setMarker" as const, id: nodeId, marker: line.marker }],
+        { kind: "updateText", id: nodeId, text: previousText }
+      ],
+      decorationLines: 1
+    });
+    return lineNumber;
+  }
+
+  setMarker(nodeId: string, marker: "bullet" | "todo"): void {
+    if (!this.canAcceptStructuralEdit()) return;
+    const current = this.metadata.current();
+    const lineNumber = current.titleLineByNodeId.get(nodeId);
+    if (lineNumber === undefined) return;
+    const lineIndex = lineNumber - 1;
+    const line = current.lines[lineIndex];
+    if (line?.kind !== "text" || line.marker === marker) return;
+    const afterLines = current.lines.map((candidate, index) =>
+      ownsLine(line, candidate, index === lineIndex)
+        ? { ...candidate, marker }
+        : candidate
+    );
+    this.applyMetadataEdit(
+      `${marker === "todo" ? "To-do" : "Bullet"} ${nodeId}`,
+      afterLines,
+      [{ kind: "setMarker", id: nodeId, marker }],
+      [{ kind: "setMarker", id: nodeId, marker: line.marker }]
     );
   }
 
@@ -1208,6 +1301,7 @@ function hydrateLines(
       parentId,
       depth,
       kind: node.kind === "image" ? "image" : "text",
+      marker: node.marker,
       collapsed: node.collapsed,
       completed: node.completed
     };
@@ -1280,6 +1374,7 @@ function emptyLine(
     parentId,
     depth,
     kind: "text",
+    marker: "bullet",
     collapsed: false,
     completed: false
   };
@@ -1365,6 +1460,7 @@ function metadataChangedLineNumbers(
       before.nodeId !== after.nodeId ||
       before.parentId !== after.parentId ||
       before.depth !== after.depth ||
+      before.marker !== after.marker ||
       before.collapsed !== after.collapsed ||
       before.completed !== after.completed
     ) {

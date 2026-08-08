@@ -13,12 +13,15 @@ import {
 } from "./imageIngest";
 import type { OutlineMetadataSnapshot } from "./metadata";
 import type { MonacoOutlineSession } from "./session";
+import type { OutlineSlashMenuTracker } from "./slashMenu";
 import { canApplyNativeBoundaryEdit } from "./structuralChanges";
 
 export interface MonacoOutlinePaneBinding {
   activeNodeId(): string | null;
   handleBullet(nodeId: string, shiftKey: boolean): void;
   handleChevron(nodeId: string): void;
+  /** The open `/` menu, which takes Enter and the arrows before Monaco. */
+  readonly slashMenu: Pick<OutlineSlashMenuTracker, "handleKeyDown">;
 }
 
 export interface YonalistOutlineEditorBinding {
@@ -313,6 +316,12 @@ export function bindYonalistOutlineEditor(
       refuse(event);
       return;
     }
+    // The open menu owns Enter and the arrows: Monaco would split the line and
+    // walk the caret out from under it.
+    if (binding.pane.slashMenu.handleKeyDown(browser)) {
+      refuse(event);
+      return;
+    }
     const model = editor.getModel();
     const selection = editor.getSelection();
     if (!model || !selection) return;
@@ -374,6 +383,12 @@ export function bindYonalistOutlineEditor(
     event.event.stopPropagation();
     if (attachment.kind === "yonalist-chevron") {
       binding.pane.handleChevron(attachment.nodeId);
+      return;
+    }
+    // The checkbox stands where the bullet would, and clicking it is the
+    // React surface's `TodoCheckbox`: it completes the row, not zooms into it.
+    if (attachment.kind === "yonalist-todo") {
+      binding.session.toggleCompleted(attachment.nodeId);
       return;
     }
     binding.pane.handleBullet(

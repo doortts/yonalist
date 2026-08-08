@@ -1,23 +1,19 @@
-import { OutlineMetadataTimeline } from "./metadata";
+import {
+  OutlineMetadataTimeline, type OutlineLineMetadata
+} from "./metadata";
 import { OutlineRowActionTracker } from "./rowActions";
 
 function line(
   nodeId: string,
   kind: "text" | "note" | "image",
   depth = 0
-): {
-  readonly nodeId: string;
-  readonly parentId: string;
-  readonly depth: number;
-  readonly kind: "text" | "note" | "image";
-  readonly collapsed: boolean;
-  readonly completed: boolean;
-} {
+): OutlineLineMetadata {
   return {
     nodeId,
     parentId: "page",
     depth,
     kind,
+    marker: "bullet",
     collapsed: false,
     completed: false
   };

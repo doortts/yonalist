@@ -61,6 +61,11 @@ function bulletDecoration(
       ? "collapsed"
       : "expanded"
     : "leaf";
+  // A to-do takes the checkbox the React surface draws beside its hidden
+  // bullet dot; the bullet slot is the only injection either surface has, so
+  // here the checkbox stands in the bullet's place. A caption is a label for
+  // its picture, never a task.
+  const todo = line.marker === "todo" && line.kind === "text";
   // An image node never has children (V4), so its chevron slot stays a leaf and
   // the caption only takes its own class.
   const lineClasses = [
@@ -96,14 +101,18 @@ function bulletDecoration(
       },
       after: {
         content: "\u2022\u00a0\u00a0",
-        inlineClassName: chevronState === "collapsed"
-          ? "yonalist-outline-injected-bullet " +
-            "yonalist-outline-injected-bullet--collapsed"
-          : "yonalist-outline-injected-bullet",
+        inlineClassName: todo
+          ? "yonalist-outline-injected-todo" + (line.completed
+              ? " yonalist-outline-injected-todo--checked"
+              : "")
+          : chevronState === "collapsed"
+            ? "yonalist-outline-injected-bullet " +
+              "yonalist-outline-injected-bullet--collapsed"
+            : "yonalist-outline-injected-bullet",
         inlineClassNameAffectsLetterSpacing: true,
         cursorStops: monaco.editor.InjectedTextCursorStops.Right,
         attachedData: {
-          kind: "yonalist-bullet",
+          kind: todo ? "yonalist-todo" : "yonalist-bullet",
           nodeId: line.nodeId
         }
       }

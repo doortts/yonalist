@@ -347,6 +347,101 @@ describe("MonacoOutlineSession", () => {
     await session.dispose();
   });
 
+  it("hydrates a to-do marker onto its title and its note run", async () => {
+    const { session } = createSession("marker-hydrate", [
+      { ...noted("task", "Task", "Why", "marker-hydrate"), marker: "todo" },
+      node("plain", "Plain", "marker-hydrate")
+    ]);
+
+    expect(session.metadata.current().lines.map((line) => line.marker)).toEqual([
+      "todo",
+      "todo",
+      "bullet"
+    ]);
+    await session.dispose();
+  });
+
+  it("sets a marker as one persisted metadata edit", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "marker",
+      [noted("first", "Task", "Why", "marker")]
+    );
+    const unbind = session.bindEditor(editorStub(session));
+
+    session.setMarker("first", "todo");
+    // A note run copies its title (V3), so the marker travels with it.
+    expect(session.metadata.current().lines.map((line) => line.marker)).toEqual([
+      "todo",
+      "todo"
+    ]);
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "setMarker", id: "first", marker: "todo" }
+    ]);
+
+    session.setMarker("first", "bullet");
+    expect(session.metadata.current().lines[0]?.marker).toBe("bullet");
+    unbind();
+    await session.dispose();
+  });
+
+  it("lands a slash command's text and marker as one undo step", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "slash-todo",
+      [node("first", "/todo", "slash-todo")]
+    );
+
+    expect(session.applySlashEdit("first", "", "todo")).toBe(1);
+    expect(session.model.getLineContent(1)).toBe("");
+    expect(session.metadata.current().lines[0]?.marker).toBe("todo");
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "updateText", id: "first", text: "" },
+      { kind: "setMarker", id: "first", marker: "todo" }
+    ]);
+
+    await session.undo();
+    expect(session.model.getLineContent(1)).toBe("/todo");
+    expect(session.metadata.current().lines[0]?.marker).toBe("bullet");
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[1]?.[1]).toEqual([
+      { kind: "setMarker", id: "first", marker: "bullet" },
+      { kind: "updateText", id: "first", text: "/todo" }
+    ]);
+    await session.dispose();
+  });
+
+  it("lands a slash command that only rewrites text", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "slash-today",
+      [noted("first", "/today", "Why", "slash-today")]
+    );
+
+    expect(session.applySlashEdit("first", "2026-08-09", null)).toBe(1);
+    expect(session.model.getLineContent(1)).toBe("2026-08-09");
+    // The note run rides along untouched.
+    expect(session.model.getLineContent(2)).toBe("Why");
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "updateText", id: "first", text: "2026-08-09" }
+    ]);
+
+    await session.undo();
+    expect(session.model.getLineContent(1)).toBe("/today");
+    await session.dispose();
+  });
+
+  it("refuses a slash edit on a line that is not a bullet title", async () => {
+    const { session } = createSession(
+      "slash-refuse",
+      [pictured("picture", "Caption", "slash-refuse")]
+    );
+
+    expect(session.applySlashEdit("picture", "", "todo")).toBeNull();
+    expect(session.applySlashEdit("missing", "", "todo")).toBeNull();
+    await session.dispose();
+  });
+
   it("reports editor and listener lifetimes without retaining their objects", async () => {
     const { session } = createSession(
       "diagnostics",

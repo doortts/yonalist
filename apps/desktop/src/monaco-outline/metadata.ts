@@ -3,6 +3,7 @@ export interface OutlineLineMetadata {
   readonly parentId: string;
   readonly depth: number;
   readonly kind: "text" | "note" | "image";
+  readonly marker: "bullet" | "todo";
   readonly collapsed: boolean;
   readonly completed: boolean;
 }
@@ -157,6 +158,7 @@ export function validateOutlineMetadata(
       if (
         line.parentId !== title.parentId ||
         line.depth !== title.depth ||
+        line.marker !== title.marker ||
         line.collapsed !== title.collapsed ||
         line.completed !== title.completed
       ) {
@@ -249,6 +251,7 @@ function sameMetadata(
         line.parentId === candidate.parentId &&
         line.depth === candidate.depth &&
         line.kind === candidate.kind &&
+        line.marker === candidate.marker &&
         line.collapsed === candidate.collapsed &&
         line.completed === candidate.completed
       );

@@ -13,6 +13,7 @@ function line(
     parentId,
     depth,
     kind: "text",
+    marker: "bullet",
     collapsed: false,
     completed: false
   };
@@ -51,6 +52,27 @@ describe("outline decorations", () => {
         nodeId: "child"
       }
     });
+  });
+
+  it("draws a to-do line as a checkbox in place of its bullet", () => {
+    const decorations = buildOutlineDecorations([
+      { ...line("open", "page", 0), marker: "todo" as const },
+      {
+        ...line("done", "page", 0),
+        marker: "todo" as const,
+        completed: true
+      }
+    ], [1, 2]);
+
+    expect(decorations[0]?.options.after).toMatchObject({
+      content: "•  ",
+      inlineClassName: "yonalist-outline-injected-todo",
+      cursorStops: monaco.editor.InjectedTextCursorStops.Right,
+      attachedData: { kind: "yonalist-todo", nodeId: "open" }
+    });
+    expect(decorations[1]?.options.after?.inlineClassName).toBe(
+      "yonalist-outline-injected-todo yonalist-outline-injected-todo--checked"
+    );
   });
 
   it("marks a completed line for struck-through styling", () => {

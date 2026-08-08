@@ -29,7 +29,8 @@ function binding(): YonalistOutlineEditorBinding {
     pane: {
       activeNodeId: () => "child",
       handleBullet: vi.fn(),
-      handleChevron: vi.fn()
+      handleChevron: vi.fn(),
+      slashMenu: { handleKeyDown: vi.fn().mockReturnValue(false) }
     }
   };
 }
@@ -43,6 +44,7 @@ function line(
     parentId: "page",
     depth: 0,
     kind,
+    marker: "bullet",
     collapsed: false,
     completed: false
   };

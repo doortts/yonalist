@@ -87,6 +87,7 @@ function line(lineNumber: number): OutlineLineMetadata {
     parentId: "page",
     depth: 0,
     kind: "text",
+    marker: "bullet",
     collapsed: false,
     completed: false
   };
