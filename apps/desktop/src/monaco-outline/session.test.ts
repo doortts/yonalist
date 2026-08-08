@@ -510,6 +510,144 @@ describe("MonacoOutlineSession", () => {
     await session.dispose();
   });
 
+  it("inserts a whole image batch at the anchor without owing a command", async () => {
+    const { session, executeEditorBatch } = createSession("ingest", [
+      node("first", "alpha", "ingest"),
+      node("child", "child", "first"),
+      node("second", "beta", "ingest")
+    ]);
+
+    const lineNumber = session.insertImageNodes({
+      anchor: { parentId: "ingest", beforeId: "second" },
+      nodes: [
+        pictured("pic-a", "a.png", "ingest"),
+        pictured("pic-b", "b.png", "ingest")
+      ]
+    });
+
+    expect(lineNumber).toBe(3);
+    expect(session.model.getValue()).toBe("alpha\nchild\na.png\nb.png\nbeta");
+    expect(shape(session)).toEqual([
+      "first:text:ingest:0",
+      "child:text:first:1",
+      "pic-a:image:ingest:0",
+      "pic-b:image:ingest:0",
+      "second:text:ingest:0"
+    ]);
+    expect(session.imageByNodeId.get("pic-b")?.contentHash).toBe("pic-b-hash");
+
+    // The backend already owns these nodes: nothing is owed to the batch.
+    await session.flush("navigation");
+    expect(executeEditorBatch).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it("appends an image batch after the anchor node's whole block", async () => {
+    const { session } = createSession("anchor", [
+      node("first", "alpha", "anchor"),
+      node("child", "child", "first")
+    ]);
+
+    expect(session.imageInsertionAnchor("first")).toEqual({
+      parentId: "anchor",
+      beforeId: null
+    });
+    expect(session.imageInsertionAnchor("child")).toEqual({
+      parentId: "first",
+      beforeId: null
+    });
+    expect(session.imageInsertionAnchor(null)).toEqual({
+      parentId: "anchor",
+      beforeId: "first"
+    });
+
+    session.insertImageNodes({
+      anchor: session.imageInsertionAnchor("first")!,
+      nodes: [pictured("pic", "a.png", "anchor")]
+    });
+
+    expect(session.model.getValue()).toBe("alpha\nchild\na.png");
+    await session.dispose();
+  });
+
+  it("hands an image undo to the Rust history instead of the editor batch", async () => {
+    const { session, executeEditorBatch } = createSession("image-undo", [
+      node("first", "alpha", "image-undo")
+    ]);
+    const external = { undo: vi.fn(), redo: vi.fn() };
+
+    session.insertImageNodes({
+      anchor: { parentId: "image-undo", beforeId: null },
+      nodes: [pictured("pic", "a.png", "image-undo")],
+      external
+    });
+    expect(session.model.getValue()).toBe("alpha\na.png");
+
+    await session.model.undo();
+
+    expect(session.model.getValue()).toBe("alpha");
+    expect(shape(session)).toEqual(["first:text:image-undo:0"]);
+    expect(external.undo).toHaveBeenCalledOnce();
+    expect(external.redo).not.toHaveBeenCalled();
+
+    await session.model.redo();
+
+    expect(session.model.getValue()).toBe("alpha\na.png");
+    expect(shape(session)).toEqual([
+      "first:text:image-undo:0",
+      "pic:image:image-undo:0"
+    ]);
+    expect(external.redo).toHaveBeenCalledOnce();
+
+    await session.flush("navigation");
+    expect(executeEditorBatch).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it("removes image lines, metadata and pixels for a deletion receipt", async () => {
+    const { session, executeEditorBatch } = createSession("image-remove", [
+      node("first", "alpha", "image-remove"),
+      pictured("pic-a", "a.png", "image-remove"),
+      pictured("pic-b", "b.png", "image-remove"),
+      node("second", "beta", "image-remove")
+    ]);
+    const changes: boolean[] = [];
+    session.subscribeMetadata((structural) => changes.push(structural));
+
+    expect(session.removeImageNodes(["pic-a", "pic-b", "missing"])).toBe(true);
+
+    expect(session.model.getValue()).toBe("alpha\nbeta");
+    expect(shape(session)).toEqual([
+      "first:text:image-remove:0",
+      "second:text:image-remove:0"
+    ]);
+    expect(session.imageByNodeId.has("pic-a")).toBe(false);
+    expect(changes).toEqual([true]);
+    expect(session.removeImageNodes(["pic-a"])).toBe(false);
+
+    await session.flush("navigation");
+    expect(executeEditorBatch).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it("refreshes the pixels of a replaced image without editing the model", async () => {
+    const { session } = createSession("image-replace", [
+      pictured("pic", "a.png", "image-replace")
+    ]);
+    const versionId = session.model.getAlternativeVersionId();
+
+    expect(session.setImage("pic", {
+      ...session.imageByNodeId.get("pic")!,
+      contentHash: "next-hash"
+    })).toBe(true);
+
+    expect(session.imageByNodeId.get("pic")?.contentHash).toBe("next-hash");
+    expect(session.model.getAlternativeVersionId()).toBe(versionId);
+    expect(session.setImage("missing", session.imageByNodeId.get("pic")!))
+      .toBe(false);
+    await session.dispose();
+  });
+
   it("creates an empty note run as one command and undo step", async () => {
     const { session, executeEditorBatch } = createSession("note-create", [
       node("first", "alpha", "note-create"),

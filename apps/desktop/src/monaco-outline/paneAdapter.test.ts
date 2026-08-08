@@ -273,6 +273,62 @@ describe("Monaco outline pane adapter", () => {
     adapter.dispose();
   });
 
+  it("draws and retires zones as receipts add and remove image lines", () => {
+    const first = line("first", "page", 0);
+    const picture = { ...line("picture", "page", 0), kind: "image" as const };
+    let metadata = snapshot([first]);
+    const pixels = new Map<string, unknown>();
+    const listeners = new Set<(structural: boolean) => void>();
+    const session = {
+      metadata: { current: () => metadata },
+      imageByNodeId: pixels,
+      subscribeMetadata: (listener: (structural: boolean) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      }
+    } as unknown as ConstructorParameters<
+      typeof MonacoOutlinePaneAdapter
+    >[0]["session"];
+    const images = imagePort();
+    const fake = fakeEditor({});
+    const adapter = new MonacoOutlinePaneAdapter({
+      paneId: "primary",
+      editor: fake.editor,
+      session,
+      zoomRootId: null,
+      showCompleted: true,
+      navigation: navigation(),
+      images: images.port
+    });
+
+    expect(fake.addZone).not.toHaveBeenCalled();
+
+    metadata = snapshot([first, picture]);
+    pixels.set("picture", {
+      contentHash: "hash",
+      originalName: "shot.png",
+      mimeType: "image/png",
+      byteLength: 64,
+      pixelWidth: 800,
+      pixelHeight: 400,
+      displayWidth: 800
+    });
+    listeners.forEach((listener) => listener(true));
+
+    expect(fake.addZone).toHaveBeenCalledOnce();
+    expect(fake.addZone.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ afterLineNumber: 1, heightInPx: 400 })
+    );
+
+    metadata = snapshot([first]);
+    pixels.delete("picture");
+    listeners.forEach((listener) => listener(true));
+
+    expect(fake.removeZone).toHaveBeenCalledOnce();
+    expect(images.release).toHaveBeenCalledOnce();
+    adapter.dispose();
+  });
+
   it("retires an image zone that a zoom leaves outside the pane", () => {
     const picture = { ...line("picture", "page", 0), kind: "image" as const };
     const metadata = snapshot([picture, line("other", "page", 0)]);

@@ -30,6 +30,21 @@ export interface MonacoOutlineSessionInput {
   readonly allocateId?: () => string;
 }
 
+/**
+ * The half of a transition the editor batch cannot express. Image creation
+ * inverts to a subtree delete, which is a notes command, so the step hands
+ * that direction back to the store (design §5, last row of the failure table).
+ */
+export interface MonacoExternalHistoryStep {
+  undo(): void | Promise<void>;
+  redo(): void | Promise<void>;
+}
+
+export interface ImageInsertionAnchor {
+  readonly parentId: string;
+  readonly beforeId: string | null;
+}
+
 export interface VersionTransition {
   readonly fromAlternativeVersionId: number;
   readonly toAlternativeVersionId: number;
@@ -39,6 +54,7 @@ export interface VersionTransition {
   readonly inverseTextPatch: OutlineLineTextPatch;
   readonly forward: readonly IpcEditorCommand[];
   readonly inverse: readonly IpcEditorCommand[];
+  readonly external?: MonacoExternalHistoryStep;
 }
 
 export interface MonacoOutlineSessionMetrics {
@@ -234,10 +250,141 @@ export class MonacoOutlineSession {
    */
   setImageDisplayWidth(nodeId: string, displayWidth: number): boolean {
     const image = this.images.get(nodeId);
-    if (!image || image.displayWidth === displayWidth) return false;
-    this.images.set(nodeId, { ...image, displayWidth });
+    if (!image) return false;
+    return this.setImage(nodeId, { ...image, displayWidth });
+  }
+
+  /**
+   * The pixels a receipt brought back for a node the model already draws — a
+   * replaced picture keeps its node and its caption and changes only its bytes.
+   */
+  setImage(nodeId: string, image: ImageView): boolean {
+    const current = this.images.get(nodeId);
+    if (
+      !current ||
+      (current.contentHash === image.contentHash &&
+        current.displayWidth === image.displayWidth)
+    ) {
+      return false;
+    }
+    this.images.set(nodeId, image);
     this.emitMetadata(true);
     return true;
+  }
+
+  /** Where an image dropped on `nodeId` goes: after everything that node owns. */
+  imageInsertionAnchor(nodeId: string | null): ImageInsertionAnchor | null {
+    const current = this.metadata.current();
+    if (nodeId === null) {
+      return {
+        parentId: this.pageId,
+        beforeId: current.lines[0]?.nodeId ?? null
+      };
+    }
+    const lineNumber = current.titleLineByNodeId.get(nodeId);
+    const line = lineNumber === undefined
+      ? undefined
+      : current.lines[lineNumber - 1];
+    if (lineNumber === undefined || !line) return null;
+    return {
+      parentId: line.parentId,
+      beforeId: nextSiblingId(current.lines, lineNumber - 1)
+    };
+  }
+
+  /**
+   * Draws the image nodes an import receipt created. The backend already owns
+   * them, so the transition carries no editor command; its inverse is the
+   * external step, which is where the subtree delete lives.
+   */
+  insertImageNodes(input: {
+    readonly anchor: ImageInsertionAnchor;
+    readonly nodes: readonly NoteView[];
+    readonly external?: MonacoExternalHistoryStep;
+  }): number | null {
+    if (input.nodes.length === 0 || !this.canAcceptStructuralEdit()) return null;
+    const before = this.metadata.current();
+    const placement = imagePlacement(before, input.anchor, this.pageId);
+    if (!placement) return null;
+    const texts = input.nodes.map((node) => node.text);
+    this.pruneRedoBranch(before.alternativeVersionId);
+    this.insertModelLines(placement.insertionIndex, texts);
+    for (const node of input.nodes) {
+      if (node.image) this.images.set(node.id, node.image);
+    }
+    const afterLines = [...before.lines];
+    afterLines.splice(placement.insertionIndex, 0, ...input.nodes.map((node) => ({
+      nodeId: node.id,
+      parentId: input.anchor.parentId,
+      depth: placement.depth,
+      kind: "image" as const,
+      collapsed: false,
+      completed: false
+    })));
+    this.recordModelTransition({
+      before,
+      afterLines,
+      textPatch: {
+        startIndex: placement.insertionIndex,
+        deleteCount: 0,
+        insertedTexts: texts
+      },
+      inverseTextPatch: {
+        startIndex: placement.insertionIndex,
+        deleteCount: texts.length,
+        insertedTexts: []
+      },
+      forward: [],
+      inverse: [],
+      decorationLines: texts.length,
+      external: input.external
+    });
+    return placement.insertionIndex + 1;
+  }
+
+  /**
+   * Drops the rows of image nodes the backend no longer has. The caller owns
+   * the delete itself, so again no editor command is owed.
+   */
+  removeImageNodes(nodeIds: readonly string[]): boolean {
+    if (!this.canAcceptStructuralEdit()) return false;
+    const targets = new Set(nodeIds);
+    const lines = this.metadata.current().lines;
+    const indices = lines.flatMap((line, index) =>
+      line.kind === "image" && targets.has(line.nodeId) ? [index] : []
+    );
+    // An outline always keeps one editable line, so a page made only of these
+    // images is a rehydration, not a line removal.
+    if (indices.length === 0 || indices.length === lines.length) return false;
+    // Descending runs so each splice leaves the earlier indices valid.
+    for (const [start, count] of descendingRuns(indices)) {
+      const before = this.metadata.current();
+      const removedTexts = this.lineTexts.slice(start, start + count);
+      this.pruneRedoBranch(before.alternativeVersionId);
+      this.removeModelLines(start, count);
+      const afterLines = [...before.lines];
+      const removed = afterLines.splice(start, count);
+      for (const line of removed) this.images.delete(line.nodeId);
+      this.recordModelTransition({
+        before,
+        afterLines,
+        textPatch: { startIndex: start, deleteCount: count, insertedTexts: [] },
+        inverseTextPatch: {
+          startIndex: start,
+          deleteCount: 0,
+          insertedTexts: removedTexts
+        },
+        forward: [],
+        inverse: [],
+        decorationLines: count
+      });
+    }
+    return true;
+  }
+
+  /** An out-of-band image write failed; the queue is where the user sees it. */
+  reportExternalFailure(cause: unknown): void {
+    this.persistenceQueue.failExternally(cause);
   }
 
   async undo(): Promise<void> {
@@ -796,6 +943,42 @@ export class MonacoOutlineSession {
     return titleLine + 1;
   }
 
+  private insertModelLines(
+    insertionIndex: number,
+    texts: readonly string[]
+  ): void {
+    if (insertionIndex === this.model.getLineCount()) {
+      const lineNumber = this.model.getLineCount();
+      const column = this.model.getLineMaxColumn(lineNumber);
+      this.editModelSilently([{
+        range: new monaco.Range(lineNumber, column, lineNumber, column),
+        text: `\n${texts.join("\n")}`
+      }]);
+      return;
+    }
+    const lineNumber = insertionIndex + 1;
+    this.editModelSilently([{
+      range: new monaco.Range(lineNumber, 1, lineNumber, 1),
+      text: `${texts.join("\n")}\n`
+    }]);
+  }
+
+  private removeModelLines(startIndex: number, count: number): void {
+    const first = startIndex + 1;
+    const last = startIndex + count;
+    // The newline that joins the run to its neighbour is what removes it, and
+    // only the last line of the model has no following newline to take.
+    const range = last < this.model.getLineCount()
+      ? new monaco.Range(first, 1, last + 1, 1)
+      : new monaco.Range(
+          first - 1,
+          this.model.getLineMaxColumn(first - 1),
+          last,
+          this.model.getLineMaxColumn(last)
+        );
+    this.editModelSilently([{ range, text: "" }]);
+  }
+
   private editModelSilently(
     edits: readonly monaco.editor.IIdentifiedSingleEditOperation[]
   ): void {
@@ -816,6 +999,7 @@ export class MonacoOutlineSession {
     readonly forward: readonly IpcEditorCommand[];
     readonly inverse: readonly IpcEditorCommand[];
     readonly decorationLines: number;
+    readonly external?: MonacoExternalHistoryStep;
   }): void {
     const after = this.metadata.record(
       this.model.getAlternativeVersionId(),
@@ -830,7 +1014,8 @@ export class MonacoOutlineSession {
       textPatch: input.textPatch,
       inverseTextPatch: input.inverseTextPatch,
       forward: input.forward,
-      inverse: input.inverse
+      inverse: input.inverse,
+      external: input.external
     };
     this.transitionsFrom.set(recorded.fromAlternativeVersionId, recorded);
     this.transitionsTo.set(recorded.toAlternativeVersionId, recorded);
@@ -881,48 +1066,41 @@ export class MonacoOutlineSession {
   ): void {
     const target = this.model.getAlternativeVersionId();
     const commands: IpcEditorCommand[] = [];
+    const external: MonacoExternalHistoryStep[] = [];
     const affectedLineNumbers = new Set<number>();
-    if (event.isUndoing) {
-      while (this.metadata.current().alternativeVersionId !== target) {
-        const transition = this.transitionsTo.get(
-          this.metadata.current().alternativeVersionId
+    let traversed = 0;
+    while (this.metadata.current().alternativeVersionId !== target) {
+      const transition = event.isUndoing
+        ? this.transitionsTo.get(this.metadata.current().alternativeVersionId)
+        : this.transitionsFrom.get(this.metadata.current().alternativeVersionId);
+      if (!transition) {
+        throw new Error(
+          `Monaco ${event.isUndoing ? "Undo" : "Redo"} escaped the outline transition history.`
         );
-        if (!transition) {
-          throw new Error("Monaco Undo escaped the outline transition history.");
-        }
-        applyLineTextPatch(this.lineTexts, transition.inverseTextPatch);
-        addPatchLineNumbers(
-          affectedLineNumbers,
-          transition.inverseTextPatch
-        );
-        this.metadata.replaceCurrent(transition.beforeMetadata);
-        commands.push(...transition.inverse);
       }
-    } else {
-      while (this.metadata.current().alternativeVersionId !== target) {
-        const transition = this.transitionsFrom.get(
-          this.metadata.current().alternativeVersionId
-        );
-        if (!transition) {
-          throw new Error("Monaco Redo escaped the outline transition history.");
-        }
-        applyLineTextPatch(this.lineTexts, transition.textPatch);
-        addPatchLineNumbers(affectedLineNumbers, transition.textPatch);
-        this.metadata.replaceCurrent(transition.afterMetadata);
-        commands.push(...transition.forward);
-      }
+      const patch = event.isUndoing
+        ? transition.inverseTextPatch
+        : transition.textPatch;
+      applyLineTextPatch(this.lineTexts, patch);
+      addPatchLineNumbers(affectedLineNumbers, patch);
+      this.metadata.replaceCurrent(
+        event.isUndoing ? transition.beforeMetadata : transition.afterMetadata
+      );
+      commands.push(
+        ...(event.isUndoing ? transition.inverse : transition.forward)
+      );
+      if (transition.external) external.push(transition.external);
+      traversed += 1;
     }
-    if (commands.length > 0) {
-      this.recordDecorationMetric(affectedLineNumbers.size);
-      this.emitMetadata(
-        commands.some((command) => command.kind !== "updateText")
-      );
-      this.persistenceQueue.enqueue(
-        commands,
-        commands.some((command) => command.kind !== "updateText")
-          ? "structural"
-          : "text"
-      );
+    if (traversed === 0) return;
+    const structural = external.length > 0 ||
+      commands.some((command) => command.kind !== "updateText");
+    this.recordDecorationMetric(affectedLineNumbers.size);
+    this.emitMetadata(structural);
+    this.persistenceQueue.enqueue(commands, structural ? "structural" : "text");
+    for (const step of external) {
+      void Promise.resolve(event.isUndoing ? step.undo() : step.redo())
+        .catch(() => undefined);
     }
   }
 
@@ -1037,6 +1215,45 @@ function hydrateLines(
     }
   }
   return { lines, texts, images };
+}
+
+/** The line index an anchor points at, plus the depth its rows take. */
+function imagePlacement(
+  before: OutlineMetadataSnapshot,
+  anchor: ImageInsertionAnchor,
+  pageId: string
+): { readonly insertionIndex: number; readonly depth: number } | null {
+  const parentLine = anchor.parentId === pageId
+    ? undefined
+    : before.titleLineByNodeId.get(anchor.parentId);
+  if (anchor.parentId !== pageId && parentLine === undefined) return null;
+  const depth = parentLine === undefined
+    ? 0
+    : before.lines[parentLine - 1]!.depth + 1;
+  if (anchor.beforeId !== null) {
+    const beforeLine = before.titleLineByNodeId.get(anchor.beforeId);
+    if (beforeLine === undefined) return null;
+    return { insertionIndex: beforeLine - 1, depth };
+  }
+  return {
+    insertionIndex: parentLine === undefined
+      ? before.lines.length
+      : outlineBlockEnd(before.lines, parentLine - 1),
+    depth
+  };
+}
+
+/** Ascending indices as `[start, count]` runs, latest run first. */
+function descendingRuns(
+  indices: readonly number[]
+): readonly (readonly [number, number])[] {
+  const runs: [number, number][] = [];
+  for (const index of indices) {
+    const last = runs.at(-1);
+    if (last && last[0] + last[1] === index) last[1] += 1;
+    else runs.push([index, 1]);
+  }
+  return runs.reverse();
 }
 
 function emptyLine(

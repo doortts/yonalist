@@ -105,6 +105,16 @@ export class MonacoOutlinePersistenceQueue {
     }
   }
 
+  /**
+   * An out-of-band writer for this page (the image IPC) failed. The queue is
+   * the one place the outline shows a write it cannot finish, so the failure
+   * lands here with the same verdict a batch failure gets.
+   */
+  failExternally(cause: unknown): void {
+    if (this.state.kind === "closed") return;
+    this.pauseAfterFailure(cause);
+  }
+
   async retry(): Promise<void> {
     if (this.state.kind === "closed") return;
     this.paused = false;
