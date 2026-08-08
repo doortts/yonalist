@@ -27,20 +27,30 @@ export function MonacoRowActions({
   // Opening the menu takes the focus out of the editor, which drops the caret
   // target; the open menu holds its own row still until it closes.
   const [open, setOpen] = useState<OutlineRowActionTarget | null>(null);
+  // The rail sits outside the editor, so reaching for it ends the hover that
+  // revealed it. While the pointer is on the rail, the row it named stays.
+  const [pinned, setPinned] = useState<OutlineRowActionTarget | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const target = open ?? tracked;
+  const lastTracked = useRef<OutlineRowActionTarget | null>(null);
+  if (tracked) lastTracked.current = tracked;
+  const target = open ?? pinned ?? tracked;
   useEffect(() => {
     if (open) menuRef.current?.querySelector("button")?.focus();
   }, [open]);
   if (!target) return null;
   const close = () => {
     setOpen(null);
+    setPinned(null);
     onDismiss();
   };
   return (
     <span
       className="notes-node-menu-slot notes-monaco-row-actions"
       style={{ top: target.top }}
+      onPointerEnter={() => setPinned(lastTracked.current)}
+      onPointerLeave={() => {
+        if (!open) setPinned(null);
+      }}
       onKeyDown={(event) => {
         if (event.key !== "Escape") return;
         event.preventDefault();
@@ -53,6 +63,9 @@ export function MonacoRowActions({
         aria-label={`Actions for ${target.title || "Untitled"}`}
         aria-haspopup="menu"
         data-popup-open={open ? "true" : undefined}
+        // Taking the focus off the editor here would drop the row this
+        // trigger names before the click on it lands.
+        onMouseDown={(event) => event.preventDefault()}
         onClick={() => setOpen(open ? null : target)}
       >
         <MoreHorizontal size={15} aria-hidden="true" />

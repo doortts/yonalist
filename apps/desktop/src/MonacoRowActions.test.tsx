@@ -99,6 +99,28 @@ describe("MonacoRowActions", () => {
     expect(onPickImage).toHaveBeenCalledWith("image-1");
   });
 
+  it("stays put while the pointer travels from the row onto the rail", () => {
+    const rows = tracker(picture);
+    render(
+      <MonacoRowActions
+        rows={rows}
+        onPickImage={vi.fn()}
+        onDismiss={vi.fn()}
+      />
+    );
+    const rail = screen.getByRole("button").parentElement!;
+
+    // Reaching for the rail leaves the editor, which ends the hover that
+    // revealed it — the trigger has to survive the trip.
+    fireEvent.pointerEnter(rail);
+    act(() => rows.set(null));
+    expect(screen.getByRole("button", { name: "Actions for cat.png" }))
+      .not.toBeNull();
+
+    fireEvent.pointerLeave(rail);
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
   it("holds the open menu still while the editor takes the focus back", () => {
     const rows = tracker(picture);
     const onDismiss = vi.fn();
