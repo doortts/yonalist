@@ -50,6 +50,10 @@ impl TryFrom<IpcEditorCommand> for NotesCommand {
                 id: id(value)?,
                 text,
             }),
+            IpcEditorCommand::UpdateNote { id: value, note } => Ok(Self::UpdateNote {
+                id: id(value)?,
+                note,
+            }),
             IpcEditorCommand::SplitNode {
                 id: value,
                 new_id,
