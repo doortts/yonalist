@@ -151,7 +151,7 @@ describe("image ingest", () => {
     const { ref } = scopeFixture();
     const native = boundary();
     const notesStore = store();
-    const monacoIngest = vi.fn();
+    const monacoIngest = vi.fn(async () => undefined);
     vi.mocked(native.value.pickPaths).mockResolvedValue(["C:\\dog.png"]);
     const { result } = renderHook(() => useImageIngest({
       store: notesStore,
@@ -203,7 +203,7 @@ describe("image ingest", () => {
     const { ref } = scopeFixture();
     const native = boundary();
     const notesStore = store();
-    const monacoIngest = vi.fn();
+    const monacoIngest = vi.fn(async () => undefined);
     renderHook(() => useImageIngest({
       store: notesStore,
       outlineRootId: "page",
@@ -238,10 +238,39 @@ describe("image ingest", () => {
     Reflect.deleteProperty(document, "elementFromPoint");
   });
 
+  it("shows what the Monaco surface refused rather than dropping it", async () => {
+    const { ref } = scopeFixture();
+    const native = boundary();
+    const monacoIngest = vi.fn()
+      .mockRejectedValue(new Error("The image is too large."));
+    const { result } = renderHook(() => useImageIngest({
+      store: store(),
+      outlineRootId: "page",
+      index: index(),
+      scopeRef: ref,
+      boundary: native.value,
+      monacoIngest
+    }));
+    await waitFor(() => expect(
+      native.value.listenNativeDrops
+    ).toHaveBeenCalledOnce());
+
+    await act(async () => {
+      native.emit({
+        type: "drop",
+        paths: ["C:\\cat.png"],
+        position: { x: 10, y: 10 }
+      });
+    });
+
+    await waitFor(() =>
+      expect(result.current.error).toBe("The image is too large."));
+  });
+
   it("marks no row while a drag hovers the Monaco surface", async () => {
     const { scope, ref } = scopeFixture();
     const native = boundary();
-    const monacoIngest = vi.fn();
+    const monacoIngest = vi.fn(async () => undefined);
     const monacoDropPoint = vi.fn();
     const { result } = renderHook(() => useImageIngest({
       store: store(),

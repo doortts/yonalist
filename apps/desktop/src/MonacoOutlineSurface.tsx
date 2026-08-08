@@ -57,7 +57,11 @@ export interface MonacoOutlineFocusRequest {
  * surface publishes this while it is mounted; nothing else reaches the editor.
  */
 export interface MonacoOutlineImageGestures {
-  ingest(payload: MonacoImagePayload, at?: MonacoImageAnchor | null): void;
+  /** Rejects with what the import refused on, so the pane can show it. */
+  ingest(
+    payload: MonacoImagePayload,
+    at?: MonacoImageAnchor | null
+  ): Promise<void>;
   /** Marks the line a native drag is over; only the editor can find it. */
   markDropPoint(at: MonacoImageAnchor | null): void;
 }
@@ -178,7 +182,8 @@ export default function MonacoOutlineSurface({
       bindingRef.current = binding;
       if (gesturesRef) {
         gesturesRef.current = {
-          ingest: (payload, at) => bindingRef.current?.ingestImages(payload, at),
+          ingest: async (payload, at) =>
+            bindingRef.current?.ingestImages(payload, at),
           markDropPoint: (at) => bindingRef.current?.markImageDropPoint(at)
         };
       }

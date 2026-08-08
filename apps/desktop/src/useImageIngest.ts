@@ -39,12 +39,13 @@ interface UseImageIngestInput {
   /**
    * Takes an image gesture away from the React rows. The Monaco surface owns
    * its own anchor and is the page's only writer while it is up, so the
-   * payload goes to it rather than straight to the store.
+   * payload goes to it rather than straight to the store. It rejects with
+   * what the import refused on; this hook owns the only place that shows it.
    */
   readonly monacoIngest?: ((
     payload: MonacoBoundPayload,
     at?: MonacoBoundAnchor | null
-  ) => void) | null;
+  ) => Promise<void>) | null;
   /**
    * Drag feedback for the Monaco surface. The OS drop never reaches the
    * editor's DOM, so the point goes to it and it highlights the line.
@@ -153,7 +154,7 @@ export function useImageIngest({
       if (boundary.native) {
         const paths = await boundary.pickPaths();
         if (paths.length === 0) return;
-        if (monaco) monaco({ paths }, at);
+        if (monaco) await monaco({ paths }, at);
         else await importPaths(targetId, paths);
         return;
       }
@@ -164,7 +165,7 @@ export function useImageIngest({
         return;
       }
       const candidates = imageCandidates(files);
-      if (candidates.length > 0) monaco({ candidates }, at);
+      if (candidates.length > 0) await monaco({ candidates }, at);
     } catch (cause) {
       setError(messageFrom(cause));
     }
@@ -201,7 +202,9 @@ export function useImageIngest({
         // Monaco pane it answers null for every point outside the React
         // scope, while the editor resolves the point itself and falls back to
         // its own caret. Gating here is what made the drop silent.
-        monaco({ paths: event.paths }, at);
+        setError(null);
+        monaco({ paths: event.paths }, at)
+          .catch((cause) => setError(messageFrom(cause)));
         return;
       }
       if (!targetId) return;

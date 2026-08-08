@@ -61,7 +61,8 @@ export interface MonacoImageIngestSession {
  * Design §5 in one call: drain the session batch so the editor queue and the
  * image IPC never race for a revision, import, then draw what came back.
  * Returns the line the first new picture sits on, or null when the gesture was
- * refused. A validation failure propagates — the store surfaces its message.
+ * refused. A validation failure propagates to the pane that caught the
+ * gesture, which is the only layer with somewhere to show it.
  */
 export async function ingestImages(input: {
   readonly session: MonacoImageIngestSession;
@@ -72,7 +73,12 @@ export async function ingestImages(input: {
   const { session, port } = input;
   if (payloadSize(input.payload) === 0) return null;
   if (!session.canAcceptStructuralEdit()) return null;
-  let anchor = session.imageInsertionAnchor(input.nodeId);
+  // A point that resolved to no line hands over the caret's node, and that
+  // node may be one the metadata no longer titles. The gesture still has to
+  // land, so it falls back to the page anchor — where a paste would go, and
+  // the same fallback the conflict retry below takes.
+  let anchor = session.imageInsertionAnchor(input.nodeId) ??
+    session.imageInsertionAnchor(null);
   if (!anchor) return null;
 
   let result: MonacoImageImportResult;
@@ -122,8 +128,15 @@ export type MonacoImageAnchor =
   | { readonly clientX: number; readonly clientY: number };
 
 export interface BoundImageIngest {
-  /** Runs one gesture and puts the caret on the first picture it drew. */
-  run(payload: MonacoImagePayload, at?: MonacoImageAnchor | null): void;
+  /**
+   * Runs one gesture and puts the caret on the first picture it drew. The
+   * promise rejects with whatever the import refused on, so the pane that
+   * caught the gesture can show it — nothing below here has a place to.
+   */
+  run(
+    payload: MonacoImagePayload,
+    at?: MonacoImageAnchor | null
+  ): Promise<void>;
   /** Highlights the line a drag is over; null takes the highlight down. */
   markDropPoint(at: MonacoImageAnchor | null): void;
   dispose(): void;
@@ -159,8 +172,16 @@ export function bindImageIngest(
     // A drop that hits no line lands where a paste would.
     return dropped ?? deps.activeNodeId();
   };
+  const caretLine = (): number | null =>
+    editor.getPosition()?.lineNumber ?? null;
   const markDropPoint = (at: MonacoImageAnchor | null): void => {
-    const lineNumber = at ? lineAt(at) : null;
+    // The OS drop's point is window-relative and this window carries its own
+    // chrome, so it can resolve to no line at all. The gesture still lands —
+    // on the caret's line, the same node `nodeIdAt` falls back to — so the
+    // marker goes there rather than nowhere.
+    const lineNumber = !at
+      ? null
+      : lineAt(at) ?? ("nodeId" in at ? null : caretLine());
     dropTarget.set(lineNumber === null ? [] : [{
       range: {
         startLineNumber: lineNumber,
@@ -174,21 +195,21 @@ export function bindImageIngest(
       }
     }]);
   };
-  const run = (
+  const run = async (
     payload: MonacoImagePayload,
     at?: MonacoImageAnchor | null
-  ): void => {
+  ): Promise<void> => {
     markDropPoint(null);
-    void ingestImages({
+    const nodeId = nodeIdAt(at);
+    const lineNumber = await ingestImages({
       session: deps.session,
       port: deps.port,
-      nodeId: nodeIdAt(at),
+      nodeId,
       payload
-    }).then((lineNumber) => {
-      if (lineNumber === null) return;
-      editor.setPosition({ lineNumber, column: 1 });
-      editor.focus();
-    }).catch(() => undefined);
+    });
+    if (lineNumber === null) return;
+    editor.setPosition({ lineNumber, column: 1 });
+    editor.focus();
   };
   const host = editor.getDomNode();
   if (!host) return { run, markDropPoint, dispose: () => undefined };
@@ -199,7 +220,7 @@ export function bindImageIngest(
     if (candidates.length === 0) return;
     event.preventDefault();
     event.stopPropagation();
-    run({ candidates });
+    void run({ candidates }).catch(() => undefined);
   };
   const onDragOver = (event: DragEvent): void => {
     if (droppedImages(event).length === 0) return;
@@ -213,7 +234,7 @@ export function bindImageIngest(
     if (candidates.length === 0) return;
     event.preventDefault();
     event.stopPropagation();
-    run({ candidates }, pointOf(event));
+    void run({ candidates }, pointOf(event)).catch(() => undefined);
   };
 
   host.addEventListener("paste", onPaste, true);
