@@ -194,14 +194,17 @@ export function useImageIngest({
         return;
       }
       markDropTarget(null, null);
-      if (!targetId) return;
       const monaco = latest.current.monacoIngest;
       if (monaco) {
-        // The pointer picked the row, not the caret: only the editor can say
-        // which line that point is on, so the point travels with the payload.
+        // Only the editor can say which line that point is on, so the point
+        // travels with the payload. The row hit test never gates this: on a
+        // Monaco pane it answers null for every point outside the React
+        // scope, while the editor resolves the point itself and falls back to
+        // its own caret. Gating here is what made the drop silent.
         monaco({ paths: event.paths }, at);
         return;
       }
+      if (!targetId) return;
       void importPaths(targetId, event.paths)
         .catch((cause) => setError(messageFrom(cause)))
         .finally(() => setDropTargetId(null));

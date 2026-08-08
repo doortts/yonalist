@@ -199,6 +199,45 @@ describe("image ingest", () => {
     Reflect.deleteProperty(document, "elementFromPoint");
   });
 
+  it("hands a drop to Monaco even when the point hits no row", async () => {
+    const { ref } = scopeFixture();
+    const native = boundary();
+    const notesStore = store();
+    const monacoIngest = vi.fn();
+    renderHook(() => useImageIngest({
+      store: notesStore,
+      outlineRootId: "page",
+      index: index(),
+      scopeRef: ref,
+      boundary: native.value,
+      monacoIngest
+    }));
+    await waitFor(() => expect(
+      native.value.listenNativeDrops
+    ).toHaveBeenCalledOnce());
+    // The window-relative point lands outside the React scope, so the row hit
+    // test answers nothing — which must not stop the editor's own gesture.
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => null)
+    });
+
+    await act(async () => {
+      native.emit({
+        type: "drop",
+        paths: ["C:\\cat.png"],
+        position: { x: 900, y: 900 }
+      });
+    });
+
+    expect(monacoIngest).toHaveBeenCalledWith(
+      { paths: ["C:\\cat.png"] },
+      { clientX: 900, clientY: 900 }
+    );
+    expect(notesStore.images.importPathsAfter).not.toHaveBeenCalled();
+    Reflect.deleteProperty(document, "elementFromPoint");
+  });
+
   it("marks no row while a drag hovers the Monaco surface", async () => {
     const { scope, ref } = scopeFixture();
     const native = boundary();
