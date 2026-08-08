@@ -61,6 +61,13 @@ export function useImageIngest({
   latest.current = { store, outlineRootId, index, monacoIngest };
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The Monaco surface anchors the drop itself, so a row or header marker
+   * would point at a target the gesture never writes to.
+   */
+  const markDropTarget = useCallback((targetId: string | null) => {
+    setDropTargetId(latest.current.monacoIngest ? null : targetId);
+  }, []);
 
   const importPaths = useCallback(async (
     targetId: string,
@@ -145,7 +152,7 @@ export function useImageIngest({
         latest.current.outlineRootId
       );
       if (event.type !== "drop") {
-        setDropTargetId(targetId);
+        markDropTarget(targetId);
         return;
       }
       setDropTargetId(null);
@@ -169,18 +176,18 @@ export function useImageIngest({
       unlisten?.();
       setDropTargetId(null);
     };
-  }, [boundary, importPaths, scopeRef]);
+  }, [boundary, importPaths, markDropTarget, scopeRef]);
 
   const onDragOver = useCallback<DragEventHandler<HTMLElement>>((event) => {
     if (!hasSupportedImage([...event.dataTransfer.files])) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
-    setDropTargetId(targetFromElement(
+    markDropTarget(targetFromElement(
       event.target,
       event.currentTarget,
       latest.current.outlineRootId
     ));
-  }, []);
+  }, [markDropTarget]);
   const onDragLeave = useCallback<DragEventHandler<HTMLElement>>((event) => {
     if (
       event.relatedTarget instanceof Node &&

@@ -185,4 +185,63 @@ describe("image ingest", () => {
     expect(notesStore.images.importPathsAfter).not.toHaveBeenCalled();
     Reflect.deleteProperty(document, "elementFromPoint");
   });
+
+  it("marks no row while a drag hovers the Monaco surface", async () => {
+    const { scope, ref } = scopeFixture();
+    const native = boundary();
+    const monacoIngest = vi.fn();
+    const { result } = renderHook(() => useImageIngest({
+      store: store(),
+      outlineRootId: "page",
+      index: index(),
+      scopeRef: ref,
+      boundary: native.value,
+      monacoIngest
+    }));
+    await waitFor(() => expect(
+      native.value.listenNativeDrops
+    ).toHaveBeenCalledOnce());
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => scope.querySelector("[data-outline-id]"))
+    });
+
+    act(() => native.emit({ type: "over", position: { x: 10, y: 10 } }));
+    expect(result.current.dropTargetId).toBeNull();
+
+    act(() => native.emit({
+      type: "enter",
+      paths: ["C:\\cat.png"],
+      position: { x: 10, y: 10 }
+    }));
+    expect(result.current.dropTargetId).toBeNull();
+
+    // The browser surface drags over the same section rather than the webview.
+    act(() => result.current.sectionProps.onDragOver(
+      dragEvent(scope.querySelector("[data-outline-id]")!)
+    ));
+    expect(result.current.dropTargetId).toBeNull();
+
+    await act(async () => {
+      native.emit({
+        type: "drop",
+        paths: ["C:\\cat.png"],
+        position: { x: 10, y: 10 }
+      });
+    });
+    expect(monacoIngest).toHaveBeenCalledWith({ paths: ["C:\\cat.png"] });
+    Reflect.deleteProperty(document, "elementFromPoint");
+  });
 });
+
+function dragEvent(target: Element): never {
+  const files = [
+    new File([new Uint8Array([1])], "cat.png", { type: "image/png" })
+  ];
+  return {
+    target,
+    currentTarget: target.parentElement,
+    dataTransfer: { files, dropEffect: "none" },
+    preventDefault: () => undefined
+  } as never;
+}
