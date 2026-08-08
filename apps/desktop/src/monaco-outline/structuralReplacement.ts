@@ -60,11 +60,11 @@ export function planStructuralReplacement(
   }
   if (input.oldLines.length === 2 && input.newTexts.length === 1) {
     if (!isRemovableEmptyTail(input)) {
-      assertReplaceableSiblings(input.allLines, input.oldLines);
+      assertReplaceableSiblings(input);
     }
     return planBackwardMerge(input);
   }
-  assertReplaceableSiblings(input.allLines, input.oldLines);
+  assertReplaceableSiblings(input);
   return planGeneralReplacement(input);
 }
 
@@ -106,6 +106,13 @@ function planSplit(
 ): StructuralReplacementPlan {
   const source = requiredLine(input.oldLines, 0);
   const previousText = requiredText(input.oldTexts, 0);
+  // Monaco puts the split line between the title and its note run, which no
+  // plan can repair. session.splitTitleWithNote owns this gesture instead.
+  if (ownsNoteRun(input.allLines, input.startIndex, source)) {
+    throw new Error(
+      "A split of a title that owns a note run must go through the session."
+    );
+  }
   if (input.allocatedIds.length !== input.newTexts.length - 1) {
     throw new Error("A split did not receive one stable ID per suffix line.");
   }
@@ -488,12 +495,16 @@ function pushTextUpdate(
 }
 
 function assertReplaceableSiblings(
-  allLines: readonly OutlineLineMetadata[],
-  lines: readonly OutlineLineMetadata[]
+  input: StructuralReplacementInput
 ): void {
-  const first = requiredLine(lines, 0);
+  const { allLines, oldLines } = input;
+  const first = requiredLine(oldLines, 0);
+  const last = requiredLine(oldLines, oldLines.length - 1);
   if (
-    lines.some(
+    // Only the last line's run can sit outside the replaced range: an interior
+    // run would be inside it and the kind check has already refused that.
+    ownsNoteRun(allLines, input.startIndex + oldLines.length - 1, last) ||
+    oldLines.some(
       (line) =>
         line.parentId !== first.parentId ||
         line.depth !== first.depth ||
@@ -504,6 +515,16 @@ function assertReplaceableSiblings(
       "A native multi-line replacement may only cross same-parent leaf bullets."
     );
   }
+}
+
+/** A note run always follows its title line (V2), so one lookahead decides. */
+function ownsNoteRun(
+  allLines: readonly OutlineLineMetadata[],
+  lineIndex: number,
+  line: OutlineLineMetadata
+): boolean {
+  const next = allLines[lineIndex + 1];
+  return next?.kind === "note" && next.nodeId === line.nodeId;
 }
 
 function nextSiblingId(

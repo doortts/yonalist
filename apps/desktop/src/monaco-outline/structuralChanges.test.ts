@@ -574,6 +574,47 @@ describe("note and image line interpretation", () => {
     ).toBe(true);
   });
 
+  it("refuses a native split of a title that owns a note run", () => {
+    expect(() =>
+      applyModelEditFixture({
+        value: "alpha\nnote",
+        lines: [line("first"), line("first", "page", 0, "note")],
+        range: new monaco.Range(1, 6, 1, 6),
+        text: "\n",
+        allocatedIds: ["inserted"]
+      })
+    ).toThrow("note run");
+  });
+
+  it("refuses native gestures that would strand a note run", () => {
+    const snapshot = OutlineMetadataTimeline.hydrate(1, [
+      line("first"),
+      line("second"),
+      line("second", "page", 0, "note"),
+      line("third")
+    ]).current();
+    const texts = ["alpha", "", "note", "gamma"];
+
+    // Backspace at column 1 of an empty title whose note run trails it.
+    expect(
+      canApplyNativeBoundaryEdit({
+        snapshot,
+        texts,
+        selection: new monaco.Selection(2, 1, 2, 1),
+        command: "backspace"
+      })
+    ).toBe(false);
+    // A selection ending on that title would delete it and orphan the run.
+    expect(
+      canApplyNativeBoundaryEdit({
+        snapshot,
+        texts,
+        selection: new monaco.Selection(1, 1, 2, 1),
+        command: "backspace"
+      })
+    ).toBe(false);
+  });
+
   it("refuses every structural edit that touches an image line", () => {
     const snapshot = OutlineMetadataTimeline.hydrate(1, [
       line("picture", "page", 0, "image"),

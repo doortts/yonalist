@@ -380,7 +380,11 @@ function canMergeBoundary(
   if (previous.kind !== current.kind) return false;
   if (current.kind === "note") return previous.nodeId === current.nodeId;
   if (currentText.trim().length === 0) {
-    return !hasChildren(snapshot.lines, current.nodeId);
+    // Removing this title would leave its note run behind its predecessor.
+    return (
+      !hasChildren(snapshot.lines, current.nodeId) &&
+      !snapshot.noteRangeByNodeId.has(current.nodeId)
+    );
   }
   return (
     previous.parentId === current.parentId &&
@@ -405,7 +409,8 @@ function canReplaceLineRange(
     (line) =>
       line.parentId === first.parentId &&
       line.depth === first.depth &&
-      !hasChildren(snapshot.lines, line.nodeId)
+      !hasChildren(snapshot.lines, line.nodeId) &&
+      !snapshot.noteRangeByNodeId.has(line.nodeId)
   );
 }
 
