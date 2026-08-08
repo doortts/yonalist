@@ -83,19 +83,33 @@ export function useOutlineWindow(nodes: readonly NoteView[]) {
     if (!scroller || !list) return;
     let changed = false;
     let position = 0;
-    for (const child of list.children) {
-      if (!(child instanceof HTMLElement)) continue;
-      if (!child.classList.contains("notes-outline-item")) continue;
-      const id = renderedIds.current[position];
-      position += 1;
-      const height = child.offsetHeight;
-      if (id === undefined || height <= 0) continue;
+    let pendingId: string | undefined;
+    let pendingTop = 0;
+    const record = (id: string, height: number) => {
       const known = heights.current.get(id);
-      if (known === height) continue;
+      if (!(height > 0) || known === height) return;
       average.current.total += height - (known ?? 0);
       if (known === undefined) average.current.count += 1;
       heights.current.set(id, height);
       changed = true;
+    };
+    // A row is as tall as the distance to whatever follows it, which is the
+    // only measurement that carries the margins between rows; a row's own box
+    // leaves them out and the gaps would then under-reserve.
+    for (const child of list.children) {
+      if (!(child instanceof HTMLElement)) continue;
+      const top = child.getBoundingClientRect().top;
+      if (pendingId !== undefined) record(pendingId, top - pendingTop);
+      pendingId = undefined;
+      if (!child.classList.contains("notes-outline-item")) continue;
+      const id = renderedIds.current[position];
+      position += 1;
+      if (id === undefined) continue;
+      pendingId = id;
+      pendingTop = top;
+    }
+    if (pendingId !== undefined) {
+      record(pendingId, list.getBoundingClientRect().bottom - pendingTop);
     }
     if (changed) setMeasurements((value) => value + 1);
     const viewport = scroller.clientHeight;

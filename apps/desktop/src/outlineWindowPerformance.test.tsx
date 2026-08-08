@@ -80,9 +80,26 @@ async function readyStore(count: number): Promise<NotesStore> {
 }
 
 function rowHeightOf(element: HTMLElement): number {
+  if (!element.classList.contains("notes-outline-item")) {
+    return Number.parseFloat(element.style.height) || 0;
+  }
   return element.querySelector(".notes-node-note-field")
     ? NOTE_ROW_HEIGHT
     : TITLE_ROW_HEIGHT;
+}
+
+// jsdom stacks nothing, so the harness stacks the rows itself: a row sits
+// below every sibling before it, offset by the container's scroll position.
+function stackedTop(element: HTMLElement): number {
+  let top = 0;
+  for (
+    let sibling = element.previousElementSibling;
+    sibling instanceof HTMLElement;
+    sibling = sibling.previousElementSibling
+  ) {
+    top += rowHeightOf(sibling);
+  }
+  return top;
 }
 
 function stubGeometry(): () => void {
@@ -115,7 +132,15 @@ function stubGeometry(): () => void {
         return rect(0, VIEWPORT_HEIGHT);
       }
       const scroller = this.closest<HTMLElement>(".notes-outline-rows");
-      return scroller ? rect(-scroller.scrollTop, 0) : rect(0, 0);
+      const listTop = scroller ? -scroller.scrollTop : 0;
+      if (this.classList.contains("notes-outline-list")) {
+        return rect(listTop, [...this.children].reduce(
+          (total, child) => total + rowHeightOf(child as HTMLElement), 0));
+      }
+      const list = this.closest<HTMLElement>(".notes-outline-list");
+      return list
+        ? rect(listTop + stackedTop(this), rowHeightOf(this))
+        : rect(listTop, 0);
     }
   });
   return () => {
