@@ -78,6 +78,34 @@ describe("StoreDrafts", () => {
       .toEqual([firstGroup, firstGroup]);
   });
 
+  it("drops a title draft for an image node instead of writing its filename", async () => {
+    let state: NotesState = {
+      ...initialNotesState,
+      status: "ready",
+      sessionId: "session-1",
+      revision: 1,
+      activePageId: "page-1",
+      nodes: [{ ...node("picture.png"), kind: "image" as const }]
+    };
+    const execute = vi.fn();
+    const drafts = new StoreDrafts({
+      read: () => state,
+      write: (patch) => {
+        state = { ...state, ...patch };
+      },
+      execute,
+      settled: vi.fn().mockResolvedValue(undefined),
+      breakHistoryGroup: vi.fn()
+    });
+
+    drafts.setTitle("one", "renamed");
+    await drafts.flushTitle("one");
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(state.drafts).toEqual({});
+    expect(state.nodes[0]?.text).toBe("picture.png");
+  });
+
   it("flushes title and note drafts before waiting for command settlement", async () => {
     let state: NotesState = {
       ...initialNotesState,

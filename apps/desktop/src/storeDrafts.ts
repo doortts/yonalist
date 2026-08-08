@@ -58,6 +58,14 @@ export class StoreDrafts {
     ) {
       return;
     }
+    // An image node's text is its filename, which the domain refuses to
+    // change. Every surface routes its title writes through here, so this is
+    // the one place that can keep such a draft from reaching the backend.
+    if (state.nodes.find((node) => node.id === id)?.kind === "image") {
+      const { [id]: _discarded, ...drafts } = state.drafts;
+      this.host.write({ drafts }, { nodeIds: [id] });
+      return;
+    }
     const historyGroup = this.titleHistoryGroups.get(id) ?? `text:${id}`;
     await this.host.execute(
       { kind: "updateText", id, text: submittedText },
