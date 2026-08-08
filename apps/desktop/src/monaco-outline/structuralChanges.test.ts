@@ -615,48 +615,36 @@ describe("note and image line interpretation", () => {
     ).toBe(false);
   });
 
-  it("routes a caption edit to the image node's own text", () => {
-    const transition = applyModelEditFixture({
-      value: "alpha\ncaption",
-      lines: [line("first"), line("picture", "page", 0, "image")],
-      range: new monaco.Range(2, 1, 2, 8),
-      text: "a cat",
-      allocatedIds: []
-    });
-
-    expect(transition.structural).toBe(false);
-    expect(transition.forward).toEqual([
-      { kind: "updateText", id: "picture", text: "a cat" }
-    ]);
-    expect(transition.inverse).toEqual([
-      { kind: "updateText", id: "picture", text: "caption" }
-    ]);
+  it("refuses a filename edit that escaped the image line gate", () => {
+    // The filename is the node's text and the tree will not change it, so an
+    // edit that reaches here means the key gate let one through.
+    expect(() =>
+      applyModelEditFixture({
+        value: "alpha\nsample.png",
+        lines: [line("first"), line("picture", "page", 0, "image")],
+        range: new monaco.Range(2, 1, 2, 11),
+        text: "a cat",
+        allocatedIds: []
+      })
+    ).toThrow("refusesImageLineEdit");
   });
 
-  it("keeps a caption edit out of the note rewrite beside it", () => {
-    const transition = applyBatchedEditFixture({
-      value: "alpha\nnote one\ncaption",
-      lines: [
-        line("first"),
-        line("first", "page", 0, "note"),
-        line("picture", "page", 0, "image")
-      ],
-      edits: [
-        { range: new monaco.Range(2, 1, 2, 9), text: "changed" },
-        { range: new monaco.Range(3, 1, 3, 8), text: "a cat" }
-      ],
-      allocatedIds: []
-    });
-
-    expect(transition.structural).toBe(false);
-    expect(transition.forward).toEqual([
-      { kind: "updateNote", id: "first", note: "changed" },
-      { kind: "updateText", id: "picture", text: "a cat" }
-    ]);
-    expect(transition.inverse).toEqual([
-      { kind: "updateNote", id: "first", note: "note one" },
-      { kind: "updateText", id: "picture", text: "caption" }
-    ]);
+  it("refuses a filename edit batched beside a note rewrite", () => {
+    expect(() =>
+      applyBatchedEditFixture({
+        value: "alpha\nnote one\nsample.png",
+        lines: [
+          line("first"),
+          line("first", "page", 0, "note"),
+          line("picture", "page", 0, "image")
+        ],
+        edits: [
+          { range: new monaco.Range(2, 1, 2, 9), text: "changed" },
+          { range: new monaco.Range(3, 1, 3, 11), text: "a cat" }
+        ],
+        allocatedIds: []
+      })
+    ).toThrow("refusesImageLineEdit");
   });
 
   it("refuses every structural edit that touches an image line", () => {
@@ -700,5 +688,24 @@ describe("note and image line interpretation", () => {
         allocatedIds: []
       })
     ).toThrow("image line");
+  });
+
+  it("leaves an edit inside one image line to the key gate", () => {
+    // The boundary verdict only rules on edits that cross a line, so a
+    // selection inside a single image row reads clean here; refusing it is
+    // the key gate's job.
+    const snapshot = OutlineMetadataTimeline.hydrate(1, [
+      line("picture", "page", 0, "image"),
+      line("second")
+    ]).current();
+
+    expect(
+      canApplyNativeBoundaryEdit({
+        snapshot,
+        texts: ["sample.png", "beta"],
+        selection: new monaco.Selection(1, 1, 1, 11),
+        command: "backspace"
+      })
+    ).toBe(true);
   });
 });
