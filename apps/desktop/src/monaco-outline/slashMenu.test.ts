@@ -153,6 +153,23 @@ describe("OutlineSlashMenuTracker", () => {
     expect(tracker.current()?.activeIndex).toBe(1);
   });
 
+  it("keeps the highlight through a refresh that leaves the query alone", () => {
+    const { handlers, state, tracker, type } = harness();
+    type("/");
+    tracker.handleKeyDown(arrow("ArrowDown"));
+
+    // The caret and the viewport move under an open menu all the time; only
+    // new typing may send the highlight back to the first command.
+    tracker.refresh();
+    state.scrollTop = 25;
+    handlers.scroll?.();
+    expect(tracker.current()?.activeIndex).toBe(1);
+
+    // New typing is a new query, and that does start over at the first.
+    type("/tod");
+    expect(tracker.current()?.activeIndex).toBe(0);
+  });
+
   it("leaves every key alone while the menu is shut", () => {
     const { tracker } = harness();
 

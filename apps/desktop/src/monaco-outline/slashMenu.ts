@@ -94,8 +94,15 @@ export class OutlineSlashMenuTracker implements OutlineSlashMenuSource {
 
   /** The pane calls this from its metadata sync point. */
   refresh(): void {
-    const next = this.resolve();
-    if (next) this.dismissed = null;
+    const resolved = this.resolve();
+    if (resolved) this.dismissed = null;
+    // A fresh resolution always highlights the first command, but the caret
+    // and the viewport move under an open menu without changing the query —
+    // and the arrows the user pressed have to survive that.
+    const held = this.target;
+    const next = resolved && held && sameQuery(resolved, held)
+      ? { ...resolved, activeIndex: held.activeIndex }
+      : resolved;
     if (sameTarget(next, this.target)) return;
     this.publish(next);
   }
@@ -213,6 +220,14 @@ export class OutlineSlashMenuTracker implements OutlineSlashMenuSource {
       height: at.height
     };
   }
+}
+
+function sameQuery(
+  left: OutlineSlashMenuTarget,
+  right: OutlineSlashMenuTarget
+): boolean {
+  return left.lineNumber === right.lineNumber &&
+    left.query.query === right.query.query;
 }
 
 function sameTarget(

@@ -1268,10 +1268,10 @@
   position: absolute;
   z-index: 1;
   top: 50%;
-  left: -3px;
+  left: -4px;
   box-sizing: border-box;
-  width: 17px;
-  height: 17px;
+  width: 15px;
+  height: 15px;
   border: 1.5px solid var(--text-3);
   border-radius: 4px;
   content: "";
@@ -1289,14 +1289,14 @@
   position: absolute;
   z-index: 2;
   top: 50%;
-  left: -1px;
+  left: -3px;
   width: 13px;
-  height: 13px;
+  height: 15px;
   background: var(--bg-card);
   content: "";
   transform: translateY(-50%);
-  -webkit-mask: var(--yonalist-check-mask) center / 13px 13px no-repeat;
-  mask: var(--yonalist-check-mask) center / 13px 13px no-repeat;
+  -webkit-mask: var(--yonalist-check-mask) center / 11px 11px no-repeat;
+  mask: var(--yonalist-check-mask) center / 11px 11px no-repeat;
 }
 
 .notes-monaco-outline .yonalist-outline-injected-bullet::before {
