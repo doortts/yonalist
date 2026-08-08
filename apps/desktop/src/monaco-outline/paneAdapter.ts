@@ -150,7 +150,7 @@ export function visibleRangesForZoom(
   if (nodeId === null) {
     return [new monaco.Range(1, 1, metadata.lines.length, 1)];
   }
-  const lineNumber = metadata.lineByNodeId.get(nodeId);
+  const lineNumber = metadata.titleLineByNodeId.get(nodeId);
   if (lineNumber === undefined) return [];
   const startIndex = lineNumber - 1;
   const depth = metadata.lines[startIndex]!.depth;

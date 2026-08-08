@@ -206,7 +206,8 @@ function interpretTextOnly(input: {
     after: Object.freeze({
       alternativeVersionId: input.model.getAlternativeVersionId(),
       lines: input.before.lines,
-      lineByNodeId: input.before.lineByNodeId
+      titleLineByNodeId: input.before.titleLineByNodeId,
+      noteRangeByNodeId: input.before.noteRangeByNodeId
     }),
     textPatch: textPatch(
       input.windowStart,

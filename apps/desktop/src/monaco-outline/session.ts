@@ -195,14 +195,14 @@ export class MonacoOutlineSession {
   }
 
   textForNode(nodeId: string): string | null {
-    const lineNumber = this.metadata.current().lineByNodeId.get(nodeId);
+    const lineNumber = this.metadata.current().titleLineByNodeId.get(nodeId);
     return lineNumber === undefined
       ? null
       : this.model.getLineContent(lineNumber);
   }
 
   updateNodeText(nodeId: string, text: string): void {
-    const lineNumber = this.metadata.current().lineByNodeId.get(nodeId);
+    const lineNumber = this.metadata.current().titleLineByNodeId.get(nodeId);
     if (lineNumber === undefined) return;
     const current = this.model.getLineContent(lineNumber);
     if (current === text) return;
@@ -228,7 +228,7 @@ export class MonacoOutlineSession {
   createFirstChild(parentId: string): string | null {
     if (!this.canAcceptStructuralEdit()) return null;
     const before = this.metadata.current();
-    const parentLineNumber = before.lineByNodeId.get(parentId);
+    const parentLineNumber = before.titleLineByNodeId.get(parentId);
     if (parentId !== this.pageId && parentLineNumber === undefined) return null;
     const insertionIndex = parentLineNumber ?? 0;
     const parentDepth = parentLineNumber === undefined
@@ -306,7 +306,7 @@ export class MonacoOutlineSession {
 
   indent(nodeId: string): void {
     const current = this.metadata.current();
-    const index = current.lineByNodeId.get(nodeId);
+    const index = current.titleLineByNodeId.get(nodeId);
     if (index === undefined) return;
     const lineIndex = index - 1;
     const line = current.lines[lineIndex];
@@ -340,7 +340,7 @@ export class MonacoOutlineSession {
   toggleCompleted(nodeId: string): void {
     if (!this.canAcceptStructuralEdit()) return;
     const current = this.metadata.current();
-    const lineNumber = current.lineByNodeId.get(nodeId);
+    const lineNumber = current.titleLineByNodeId.get(nodeId);
     if (lineNumber === undefined) return;
     const lineIndex = lineNumber - 1;
     const line = current.lines[lineIndex];
@@ -360,7 +360,7 @@ export class MonacoOutlineSession {
   toggleCollapsed(nodeId: string): void {
     if (!this.canAcceptStructuralEdit()) return;
     const current = this.metadata.current();
-    const lineNumber = current.lineByNodeId.get(nodeId);
+    const lineNumber = current.titleLineByNodeId.get(nodeId);
     if (lineNumber === undefined) return;
     const lineIndex = lineNumber - 1;
     const line = current.lines[lineIndex];
@@ -380,7 +380,7 @@ export class MonacoOutlineSession {
 
   outdent(nodeId: string): void {
     const current = this.metadata.current();
-    const lineNumber = current.lineByNodeId.get(nodeId);
+    const lineNumber = current.titleLineByNodeId.get(nodeId);
     if (lineNumber === undefined) return;
     const lineIndex = lineNumber - 1;
     const line = current.lines[lineIndex];
@@ -391,7 +391,7 @@ export class MonacoOutlineSession {
     if (!parent) return;
     const beforeId = nextSiblingId(
       current.lines,
-      current.lineByNodeId.get(parent.nodeId)! - 1
+      current.titleLineByNodeId.get(parent.nodeId)! - 1
     );
     // Following siblings become children of the outdented node (Workflowy
     // semantics); leaving them in place would break the visible preorder.

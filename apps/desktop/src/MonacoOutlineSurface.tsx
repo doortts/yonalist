@@ -167,7 +167,7 @@ export default function MonacoOutlineSurface({
       return;
     }
     const lineNumber = session.metadata.current()
-      .lineByNodeId.get(focusRequest.nodeId);
+      .titleLineByNodeId.get(focusRequest.nodeId);
     if (lineNumber === undefined) return;
     handledFocusEpochRef.current = focusRequest.epoch;
     editorRef.current.setPosition({ lineNumber, column: 1 });
