@@ -14,13 +14,14 @@ import {
 function line(
   nodeId: string,
   parentId = "page",
-  depth = 0
+  depth = 0,
+  kind: OutlineLineMetadata["kind"] = "text"
 ): OutlineLineMetadata {
   return {
     nodeId,
     parentId,
     depth,
-    kind: "text",
+    kind,
     collapsed: false,
     completed: false
   };
@@ -455,5 +456,164 @@ describe("canApplyNativeBoundaryEdit", () => {
         command: "backspace"
       })
     ).toBe(false);
+  });
+});
+
+describe("note and image line interpretation", () => {
+  it("maps a note line text edit onto the reassembled note", () => {
+    const transition = applyModelEditFixture({
+      value: "alpha\nnote one\nnote two",
+      lines: [line("first"), line("first", "page", 0, "note"), line("first", "page", 0, "note")],
+      range: new monaco.Range(2, 1, 2, 9),
+      text: "changed",
+      allocatedIds: []
+    });
+
+    expect(transition.structural).toBe(false);
+    expect(transition.forward).toEqual([
+      { kind: "updateNote", id: "first", note: "changed\nnote two" }
+    ]);
+    expect(transition.inverse).toEqual([
+      { kind: "updateNote", id: "first", note: "note one\nnote two" }
+    ]);
+  });
+
+  it("splits a note line without allocating a node", () => {
+    const transition = applyModelEditFixture({
+      value: "alpha\nnote one",
+      lines: [line("first"), line("first", "page", 0, "note")],
+      range: new monaco.Range(2, 5, 2, 5),
+      text: "\n",
+      allocatedIds: []
+    });
+
+    expect(transition.after.lines.map(({ nodeId, kind }) => `${nodeId}:${kind}`)).toEqual([
+      "first:text",
+      "first:note",
+      "first:note"
+    ]);
+    expect(transition.forward).toEqual([
+      { kind: "updateNote", id: "first", note: "note\n one" }
+    ]);
+    expect(transition.inverse).toEqual([
+      { kind: "updateNote", id: "first", note: "note one" }
+    ]);
+  });
+
+  it("merges two note lines of one run into a single note", () => {
+    const transition = applyModelEditFixture({
+      value: "alpha\nnote one\nnote two",
+      lines: [line("first"), line("first", "page", 0, "note"), line("first", "page", 0, "note")],
+      range: new monaco.Range(2, 9, 3, 1),
+      text: "",
+      allocatedIds: []
+    });
+
+    expect(transition.after.lines).toHaveLength(2);
+    expect(transition.forward).toEqual([
+      { kind: "updateNote", id: "first", note: "note onenote two" }
+    ]);
+    expect(transition.inverse).toEqual([
+      { kind: "updateNote", id: "first", note: "note one\nnote two" }
+    ]);
+  });
+
+  it("refuses merges that cross a note boundary and allows merges inside a run", () => {
+    const snapshot = OutlineMetadataTimeline.hydrate(1, [
+      line("first"),
+      line("first", "page", 0, "note"),
+      line("first", "page", 0, "note"),
+      line("second")
+    ]).current();
+    const texts = ["alpha", "note one", "note two", "beta"];
+
+    // Note run first line, Backspace at column 1 — would merge into the title.
+    expect(
+      canApplyNativeBoundaryEdit({
+        snapshot,
+        texts,
+        selection: new monaco.Selection(2, 1, 2, 1),
+        command: "backspace"
+      })
+    ).toBe(false);
+    // Title line below a note run, Backspace at column 1.
+    expect(
+      canApplyNativeBoundaryEdit({
+        snapshot,
+        texts,
+        selection: new monaco.Selection(4, 1, 4, 1),
+        command: "backspace"
+      })
+    ).toBe(false);
+    // Delete at the end of a title that owns a note run.
+    expect(
+      canApplyNativeBoundaryEdit({
+        snapshot,
+        texts,
+        selection: new monaco.Selection(1, 6, 1, 6),
+        command: "delete"
+      })
+    ).toBe(false);
+    // Delete at the end of the last note line of a run.
+    expect(
+      canApplyNativeBoundaryEdit({
+        snapshot,
+        texts,
+        selection: new monaco.Selection(3, 9, 3, 9),
+        command: "delete"
+      })
+    ).toBe(false);
+    // Backspace inside the run stays native.
+    expect(
+      canApplyNativeBoundaryEdit({
+        snapshot,
+        texts,
+        selection: new monaco.Selection(3, 1, 3, 1),
+        command: "backspace"
+      })
+    ).toBe(true);
+  });
+
+  it("refuses every structural edit that touches an image line", () => {
+    const snapshot = OutlineMetadataTimeline.hydrate(1, [
+      line("picture", "page", 0, "image"),
+      line("second")
+    ]).current();
+    const texts = ["caption", "beta"];
+
+    expect(
+      canApplyNativeBoundaryEdit({
+        snapshot,
+        texts,
+        selection: new monaco.Selection(1, 1, 2, 5),
+        command: "backspace"
+      })
+    ).toBe(false);
+    expect(
+      canApplyNativeBoundaryEdit({
+        snapshot,
+        texts,
+        selection: new monaco.Selection(2, 1, 2, 1),
+        command: "backspace"
+      })
+    ).toBe(false);
+    expect(() =>
+      applyModelEditFixture({
+        value: "caption\nbeta",
+        lines: [line("picture", "page", 0, "image"), line("second")],
+        range: new monaco.Range(1, 8, 2, 1),
+        text: "",
+        allocatedIds: []
+      })
+    ).toThrow("image line");
+    expect(() =>
+      applyModelEditFixture({
+        value: "caption\nbeta",
+        lines: [line("picture", "page", 0, "image"), line("second")],
+        range: new monaco.Range(1, 8, 1, 8),
+        text: "\n",
+        allocatedIds: []
+      })
+    ).toThrow("image line");
   });
 });

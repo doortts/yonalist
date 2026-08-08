@@ -46,7 +46,11 @@ export function interpretModelChanges(input: {
     throw new Error("A Monaco content event must contain at least one change.");
   }
 
-  const changes = prepareChanges(input.event.changes, input.allocateId);
+  const changes = prepareChanges(
+    input.event.changes,
+    input.allocateId,
+    input.before.lines
+  );
   const windowStart = Math.min(
     ...changes.map(({ change }) => change.range.startLineNumber - 1)
   );
@@ -64,6 +68,7 @@ export function interpretModelChanges(input: {
   if (!structural) {
     return interpretTextOnly({
       before: input.before,
+      beforeTexts: input.beforeTexts,
       model: input.model,
       changes,
       windowStart,
@@ -74,6 +79,7 @@ export function interpretModelChanges(input: {
 
   const workingLines = [...input.before.lines];
   const forward: IpcEditorCommand[] = [];
+  const rewrittenNotes: string[] = [];
   let inverse: IpcEditorCommand[] = [];
   for (const { change, allocatedIds } of descendingChanges(changes)) {
     const textChange = applyTextChange(nextTexts, windowStart, change);
@@ -96,6 +102,12 @@ export function interpretModelChanges(input: {
     workingLines.splice(startIndex, oldLines.length, ...replacement.lines);
     forward.push(...replacement.forward);
     inverse = [...replacement.inverse, ...inverse];
+    if (
+      replacement.noteNodeId !== undefined &&
+      !rewrittenNotes.includes(replacement.noteNodeId)
+    ) {
+      rewrittenNotes.push(replacement.noteNodeId);
+    }
   }
 
   assertModelWindow(
@@ -104,13 +116,31 @@ export function interpretModelChanges(input: {
     nextTexts,
     input.before.lines.length - originalTexts.length + nextTexts.length
   );
+  const after = OutlineMetadataTimeline.hydrate(
+    input.model.getAlternativeVersionId(),
+    workingLines
+  ).current();
+  for (const nodeId of rewrittenNotes) {
+    forward.push({
+      kind: "updateNote",
+      id: nodeId,
+      note: joinNoteRun(after.noteRangeByNodeId.get(nodeId), (lineNumber) =>
+        input.model.getLineContent(lineNumber)
+      )
+    });
+    inverse.push({
+      kind: "updateNote",
+      id: nodeId,
+      note: joinNoteRun(
+        input.before.noteRangeByNodeId.get(nodeId),
+        (lineNumber) => input.beforeTexts[lineNumber - 1] ?? ""
+      )
+    });
+  }
   assertBatchBounds(forward, inverse);
   return {
     before: input.before,
-    after: OutlineMetadataTimeline.hydrate(
-      input.model.getAlternativeVersionId(),
-      workingLines
-    ).current(),
+    after,
     textPatch: textPatch(windowStart, originalTexts.length, nextTexts),
     inverseTextPatch: textPatch(windowStart, nextTexts.length, originalTexts),
     forward,
@@ -171,6 +201,7 @@ export function canApplyNativeBoundaryEdit(input: {
 
 function interpretTextOnly(input: {
   readonly before: OutlineMetadataSnapshot;
+  readonly beforeTexts: readonly string[];
   readonly model: monaco.editor.ITextModel;
   readonly changes: readonly PreparedChange[];
   readonly windowStart: number;
@@ -189,6 +220,7 @@ function interpretTextOnly(input: {
   const forward: IpcEditorCommand[] = [];
   const inverse: IpcEditorCommand[] = [];
   const affectedLineNumbers: number[] = [];
+  const rewrittenNotes = new Set<string>();
   for (const [index, next] of input.nextTexts.entries()) {
     const previous = input.originalTexts[index];
     if (previous === next) continue;
@@ -196,9 +228,31 @@ function interpretTextOnly(input: {
     if (!line || previous === undefined) {
       throw new Error("A text-only edit escaped its source line.");
     }
+    affectedLineNumbers.push(input.windowStart + index + 1);
+    // A note line owns no text of its own — the whole run is the note.
+    if (line.kind === "note") {
+      if (rewrittenNotes.has(line.nodeId)) continue;
+      rewrittenNotes.add(line.nodeId);
+      const range = input.before.noteRangeByNodeId.get(line.nodeId);
+      forward.push({
+        kind: "updateNote",
+        id: line.nodeId,
+        note: joinNoteRun(range, (lineNumber) =>
+          input.model.getLineContent(lineNumber)
+        )
+      });
+      inverse.push({
+        kind: "updateNote",
+        id: line.nodeId,
+        note: joinNoteRun(
+          range,
+          (lineNumber) => input.beforeTexts[lineNumber - 1] ?? ""
+        )
+      });
+      continue;
+    }
     forward.push({ kind: "updateText", id: line.nodeId, text: next });
     inverse.push({ kind: "updateText", id: line.nodeId, text: previous });
-    affectedLineNumbers.push(input.windowStart + index + 1);
   }
   assertBatchBounds(forward, inverse);
   return {
@@ -228,23 +282,33 @@ function interpretTextOnly(input: {
 
 function prepareChanges(
   changes: readonly monaco.editor.IModelContentChange[],
-  allocateId: () => string
+  allocateId: () => string,
+  lines: readonly OutlineLineMetadata[]
 ): readonly PreparedChange[] {
   return [...changes].sort(compareChangesAscending).map((change) => {
-    const oldLineCount =
-      change.range.endLineNumber - change.range.startLineNumber + 1;
-    const newLineCount = splitLines(change.text).length;
+    // Reshaping a note run creates no node, and an image row never splits at
+    // all, so neither one takes an identity from the allocator.
+    const startKind = lines[change.range.startLineNumber - 1]?.kind;
     const allocationCount =
-      oldLineCount === 1 && newLineCount > 1
-        ? newLineCount - 1
-        : oldLineCount > 1 && newLineCount > 2
-          ? newLineCount - 2
-          : 0;
+      startKind === "note" || startKind === "image"
+        ? 0
+        : allocationsForSplit(
+            change.range.endLineNumber - change.range.startLineNumber + 1,
+            splitLines(change.text).length
+          );
     return {
       change,
       allocatedIds: Array.from({ length: allocationCount }, allocateId)
     };
   });
+}
+
+function allocationsForSplit(
+  oldLineCount: number,
+  newLineCount: number
+): number {
+  if (oldLineCount === 1) return Math.max(newLineCount - 1, 0);
+  return newLineCount > 2 ? newLineCount - 2 : 0;
 }
 
 function descendingChanges(
@@ -310,6 +374,11 @@ function canMergeBoundary(
   if (!previous || !current || currentText === undefined) {
     return false;
   }
+  // A merge across a title/note edge or into an image row has no plan
+  // (design §2b-4, §2b-6); inside one note run it is plain text (§2b-1).
+  if (previous.kind === "image" || current.kind === "image") return false;
+  if (previous.kind !== current.kind) return false;
+  if (current.kind === "note") return previous.nodeId === current.nodeId;
   if (currentText.trim().length === 0) {
     return !hasChildren(snapshot.lines, current.nodeId);
   }
@@ -327,15 +396,29 @@ function canReplaceLineRange(
 ): boolean {
   const lines = snapshot.lines.slice(startIndex, endIndex + 1);
   const first = lines[0];
-  return (
-    first !== undefined &&
-    lines.every(
-      (line) =>
-        line.parentId === first.parentId &&
-        line.depth === first.depth &&
-        !hasChildren(snapshot.lines, line.nodeId)
-    )
+  if (!first || lines.some((line) => line.kind !== first.kind)) return false;
+  if (first.kind === "image") return false;
+  if (first.kind === "note") {
+    return lines.every((line) => line.nodeId === first.nodeId);
+  }
+  return lines.every(
+    (line) =>
+      line.parentId === first.parentId &&
+      line.depth === first.depth &&
+      !hasChildren(snapshot.lines, line.nodeId)
   );
+}
+
+function joinNoteRun(
+  range: readonly [number, number] | undefined,
+  readLine: (lineNumber: number) => string
+): string {
+  if (!range) return "";
+  const parts: string[] = [];
+  for (let lineNumber = range[0]; lineNumber <= range[1]; lineNumber += 1) {
+    parts.push(readLine(lineNumber));
+  }
+  return parts.join("\n");
 }
 
 function hasChildren(
