@@ -77,8 +77,7 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
   activeNodeId(): string | null {
     const lineNumber = this.input.editor.getSelection()?.positionLineNumber;
     if (!lineNumber) return null;
-    return this.input.session.metadata.current()
-      .lines[lineNumber - 1]?.nodeId ?? null;
+    return this.input.session.nodeIdAtLine(lineNumber);
   }
 
   setZoomRoot(nodeId: string | null): void {

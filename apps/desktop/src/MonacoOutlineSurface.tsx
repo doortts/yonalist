@@ -58,6 +58,8 @@ export interface MonacoOutlineFocusRequest {
  */
 export interface MonacoOutlineImageGestures {
   ingest(payload: MonacoImagePayload, at?: MonacoImageAnchor | null): void;
+  /** Marks the line a native drag is over; only the editor can find it. */
+  markDropPoint(at: MonacoImageAnchor | null): void;
 }
 
 /** Everything the outline's image rows need from the store, in one object. */
@@ -176,7 +178,8 @@ export default function MonacoOutlineSurface({
       bindingRef.current = binding;
       if (gesturesRef) {
         gesturesRef.current = {
-          ingest: (payload, at) => bindingRef.current?.ingestImages(payload, at)
+          ingest: (payload, at) => bindingRef.current?.ingestImages(payload, at),
+          markDropPoint: (at) => bindingRef.current?.markImageDropPoint(at)
         };
       }
       blur = editor.onDidBlurEditorText(() => {

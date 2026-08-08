@@ -246,31 +246,63 @@ function clipboardEvent(files: readonly File[]): Event {
   return event;
 }
 
-function dragEvent(type: string, files: readonly File[]): Event {
+function dragEvent(
+  type: string,
+  files: readonly File[],
+  clientY = 0
+): Event {
   const event = new Event(type, { cancelable: true, bubbles: true });
   Object.defineProperty(event, "dataTransfer", {
     value: { files, dropEffect: "none" },
     writable: true
   });
+  Object.defineProperty(event, "clientX", { value: 40 });
+  Object.defineProperty(event, "clientY", { value: clientY });
   return event;
 }
+
+/** A page of four lines: a title, its two note lines, a picture caption. */
+const lineNodeIds = ["bullet-1", "bullet-1", "bullet-1", "image-1"];
 
 function boundHarness() {
   const base = harness();
   const host = document.createElement("div");
   document.body.append(host);
   const setPosition = vi.fn();
+  const decorations: unknown[][] = [];
+  // 25px lines, so y 60 is line 3 and y 90 is past the end.
   const editor = {
     getDomNode: () => host,
     setPosition,
-    focus: vi.fn()
+    focus: vi.fn(),
+    getTargetAtClientPoint: (_x: number, y: number) => {
+      const lineNumber = Math.floor(y / 25) + 1;
+      return lineNumber > lineNodeIds.length
+        ? { position: null }
+        : { position: { lineNumber, column: 1 } };
+    },
+    createDecorationsCollection: () => ({
+      set: (value: unknown[]) => decorations.push(value),
+      clear: () => decorations.push([])
+    })
   } as unknown as Parameters<typeof bindImageIngest>[0];
   const bound = bindImageIngest(editor, {
-    session: base.session as unknown as MonacoImageIngestSession,
+    session: {
+      ...base.session,
+      nodeIdAtLine: (lineNumber: number) =>
+        lineNodeIds[lineNumber - 1] ?? null
+    } as unknown as MonacoImageIngestSession,
     port: base.port as unknown as MonacoImageIngestPort,
     activeNodeId: () => "first"
   });
-  return { ...base, host, setPosition, bound, dispose: bound.dispose };
+  return {
+    ...base,
+    host,
+    setPosition,
+    bound,
+    decorations,
+    dispose: bound.dispose
+  };
 }
 
 describe("bindImageIngest", () => {
@@ -306,19 +338,67 @@ describe("bindImageIngest", () => {
     dispose();
   });
 
-  it("imports an OS file drop at the active node's anchor", async () => {
-    const { host, session, port, dispose } = boundHarness();
-    const over = dragEvent("dragover", [pngFile()]);
+  it("imports a file drop at the line it was dropped on", async () => {
+    const { host, session, port, decorations, dispose } = boundHarness();
+    // y 60 is line 3, a note line, which answers with its title's node.
+    const over = dragEvent("dragover", [pngFile()], 60);
 
     host.dispatchEvent(over);
     expect(over.defaultPrevented).toBe(true);
+    expect(decorations.at(-1)).toEqual([expect.objectContaining({
+      range: expect.objectContaining({ startLineNumber: 3, endLineNumber: 3 }),
+      options: expect.objectContaining({
+        isWholeLine: true,
+        className: "yonalist-outline-drop-target"
+      })
+    })]);
 
-    const drop = dragEvent("drop", [pngFile("cat.png")]);
+    const drop = dragEvent("drop", [pngFile("cat.png")], 80);
     host.dispatchEvent(drop);
 
     expect(drop.defaultPrevented).toBe(true);
+    expect(decorations.at(-1)).toEqual([]);
+    await vi.waitFor(() => expect(port.import).toHaveBeenCalledOnce());
+    // y 80 is line 4, the picture: the caret's node never came into it.
+    expect(session.imageInsertionAnchor).toHaveBeenCalledWith("image-1");
+    dispose();
+  });
+
+  it("drops the drag highlight when the pointer leaves", () => {
+    const { host, decorations, dispose } = boundHarness();
+
+    host.dispatchEvent(dragEvent("dragover", [pngFile()], 0));
+    expect(decorations.at(-1)).toHaveLength(1);
+
+    host.dispatchEvent(dragEvent("dragleave", [pngFile()], 0));
+
+    expect(decorations.at(-1)).toEqual([]);
+    dispose();
+  });
+
+  it("falls back to the active node when the point hits no line", async () => {
+    const { host, session, port, decorations, dispose } = boundHarness();
+
+    host.dispatchEvent(dragEvent("dragover", [pngFile()], 400));
+    expect(decorations.at(-1)).toEqual([]);
+    host.dispatchEvent(dragEvent("drop", [pngFile("cat.png")], 400));
+
     await vi.waitFor(() => expect(port.import).toHaveBeenCalledOnce());
     expect(session.imageInsertionAnchor).toHaveBeenCalledWith("first");
+    dispose();
+  });
+
+  it("anchors a native path drop at the point the pane reports", async () => {
+    const { session, port, bound, decorations, dispose } = boundHarness();
+
+    bound.markDropPoint({ clientX: 40, clientY: 0 });
+    expect(decorations.at(-1)).toHaveLength(1);
+    bound.run({ paths: ["/tmp/cat.png"] }, { clientX: 40, clientY: 80 });
+
+    await vi.waitFor(() => expect(port.importPaths).toHaveBeenCalledOnce());
+    // Running the gesture takes the drag feedback down with it.
+    expect(decorations.at(-1)).toEqual([]);
+    expect(session.imageInsertionAnchor).toHaveBeenCalledWith("image-1");
     dispose();
   });
 

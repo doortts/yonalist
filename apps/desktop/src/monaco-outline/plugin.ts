@@ -233,6 +233,8 @@ export interface BoundYonalistOutlineEditor extends monaco.IDisposable {
    * the header's picker, a row menu's. It anchors where the gesture says, or
    * at the active node when it says nothing. */
   ingestImages(payload: MonacoImagePayload, at?: MonacoImageAnchor | null): void;
+  /** Drag feedback for the OS drop the editor's own DOM never sees. */
+  markImageDropPoint(at: MonacoImageAnchor | null): void;
 }
 
 export function bindYonalistOutlineEditor(
@@ -318,6 +320,7 @@ export function bindYonalistOutlineEditor(
 
   return {
     ingestImages: (payload, at) => ingest?.run(payload, at),
+    markImageDropPoint: (at) => ingest?.markDropPoint(at),
     dispose: () => {
       mouse.dispose();
       caret.dispose();

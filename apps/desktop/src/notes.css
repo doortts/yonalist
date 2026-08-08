@@ -1379,6 +1379,15 @@
   text-decoration: none;
 }
 
+/* Where the picture would land, drawn like the React surface's
+   .notes-image-drop-position band. */
+.notes-monaco-outline .monaco-editor .yonalist-outline-drop-target {
+  box-sizing: border-box;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: var(--accent-soft);
+}
+
 /* The supporting note's muted color, matching .notes-node-note. Its 14px size
    does not carry over: one Monaco model has one line height. */
 .notes-monaco-outline .monaco-editor .yonalist-outline-note-line {

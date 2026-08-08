@@ -156,6 +156,9 @@ export function NotesOutline({
     // straight to the store here would make the page's second writer.
     monacoIngest: useMonaco
       ? (payload, at) => monacoGestures.current?.ingest(payload, at)
+      : null,
+    monacoDropPoint: useMonaco
+      ? (at) => monacoGestures.current?.markDropPoint(at)
       : null
   });
   const expandedBodyNodes = useMemo(
