@@ -4,7 +4,8 @@ import {
   bindImageIngest,
   ingestImages,
   type MonacoImageIngestPort,
-  type MonacoImageIngestSession
+  type MonacoImageIngestSession,
+  type MonacoImagePayload
 } from "./imageIngest";
 
 function imported(id: string): NoteView {
@@ -66,20 +67,29 @@ function harness() {
       order.push("import");
       return { nodeIds: ["pic"], nodes: [imported("pic"), imported("other")] };
     }),
+    importPaths: vi.fn(async (
+      _input: Parameters<MonacoImageIngestPort["importPaths"]>[0]
+    ) => {
+      order.push("importPaths");
+      return { nodeIds: ["pic"], nodes: [imported("pic")] };
+    }),
     remove: vi.fn().mockResolvedValue(undefined),
     restore: vi.fn().mockResolvedValue(undefined)
   };
+  const ingest = (nodeId: string | null, payload: MonacoImagePayload) =>
+    ingestImages({
+      session: session as unknown as MonacoImageIngestSession,
+      port: port as unknown as MonacoImageIngestPort,
+      nodeId,
+      payload
+    });
   return {
     session,
     port,
     order,
+    ingest,
     run: (nodeId: string | null, images: readonly ImageCandidate[]) =>
-      ingestImages({
-        session: session as unknown as MonacoImageIngestSession,
-        port: port as unknown as MonacoImageIngestPort,
-        nodeId,
-        candidates: images
-      })
+      ingest(nodeId, { candidates: images })
   };
 }
 
@@ -215,12 +225,12 @@ function boundHarness() {
     setPosition,
     focus: vi.fn()
   } as unknown as Parameters<typeof bindImageIngest>[0];
-  const dispose = bindImageIngest(editor, {
+  const bound = bindImageIngest(editor, {
     session: base.session as unknown as MonacoImageIngestSession,
     port: base.port as unknown as MonacoImageIngestPort,
     activeNodeId: () => "first"
   });
-  return { ...base, host, setPosition, dispose };
+  return { ...base, host, setPosition, bound, dispose: bound.dispose };
 }
 
 describe("bindImageIngest", () => {
@@ -269,6 +279,25 @@ describe("bindImageIngest", () => {
     expect(drop.defaultPrevented).toBe(true);
     await vi.waitFor(() => expect(port.import).toHaveBeenCalledOnce());
     expect(session.imageInsertionAnchor).toHaveBeenCalledWith("first");
+    dispose();
+  });
+
+  it("runs a native path drop through the same anchor and caret", async () => {
+    const { session, port, order, bound, setPosition, dispose } =
+      boundHarness();
+
+    bound.run({ paths: ["/tmp/cat.png", "/tmp/dog.webp"] });
+
+    await vi.waitFor(() => expect(port.importPaths).toHaveBeenCalledOnce());
+    expect(order).toEqual(["flush", "importPaths", "insert"]);
+    expect(session.imageInsertionAnchor).toHaveBeenCalledWith("first");
+    expect(port.importPaths).toHaveBeenCalledWith({
+      parentId: "page",
+      beforeId: null,
+      paths: ["/tmp/cat.png", "/tmp/dog.webp"]
+    });
+    expect(port.import).not.toHaveBeenCalled();
+    expect(setPosition).toHaveBeenCalledWith({ lineNumber: 2, column: 1 });
     dispose();
   });
 

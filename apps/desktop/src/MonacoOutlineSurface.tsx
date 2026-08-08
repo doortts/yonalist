@@ -21,7 +21,8 @@ import {
   MonacoOutlinePaneAdapter
 } from "./monaco-outline/paneAdapter";
 import {
-  bindYonalistOutlineEditor
+  bindYonalistOutlineEditor,
+  type BoundYonalistOutlineEditor
 } from "./monaco-outline/plugin";
 import type {
   MonacoOutlineSession
@@ -46,6 +47,16 @@ export interface MonacoOutlineFocusRequest {
   readonly nodeId: string;
 }
 
+/**
+ * One OS file drop the pane's native listener caught. The drop position never
+ * picks a row — the import lands after everything the active node owns, the
+ * same anchor the clipboard path uses.
+ */
+export interface MonacoOutlineDropRequest {
+  readonly epoch: number;
+  readonly paths: readonly string[];
+}
+
 /** Everything the outline's image rows need from the store, in one object. */
 export type MonacoOutlineImagePort = ImageZonePort & MonacoImageIngestPort;
 
@@ -56,6 +67,7 @@ export default function MonacoOutlineSurface({
   showCompleted,
   registry,
   focusRequest,
+  dropRequest,
   images,
   onSessionChange,
   onZoomRootChange,
@@ -68,6 +80,7 @@ export default function MonacoOutlineSurface({
   readonly showCompleted: boolean;
   readonly registry: MonacoSessionRegistry;
   readonly focusRequest: MonacoOutlineFocusRequest | null;
+  readonly dropRequest?: MonacoOutlineDropRequest | null;
   /** Bytes, image writes and the lightbox host, all owned by NotesOutline. */
   readonly images?: MonacoOutlineImagePort;
   readonly onSessionChange: (session: MonacoOutlineSession | null) => void;
@@ -79,6 +92,7 @@ export default function MonacoOutlineSurface({
   const editorRef =
     useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const paneRef = useRef<MonacoOutlinePaneAdapter | null>(null);
+  const bindingRef = useRef<BoundYonalistOutlineEditor | null>(null);
   const zoomRef = useRef(zoomRootId);
   const completedRef = useRef(showCompleted);
   const onZoomRef = useRef(onZoomRootChange);
@@ -87,6 +101,7 @@ export default function MonacoOutlineSurface({
   const onSessionChangeRef = useRef(onSessionChange);
   const imagesRef = useRef(images);
   const handledFocusEpochRef = useRef<number | null>(null);
+  const handledDropEpochRef = useRef<number | null>(null);
   const [session, setSession] = useState<MonacoOutlineSession | null>(null);
   zoomRef.current = zoomRootId;
   completedRef.current = showCompleted;
@@ -101,7 +116,7 @@ export default function MonacoOutlineSurface({
     let release: (() => Promise<void>) | null = null;
     let editor: monaco.editor.IStandaloneCodeEditor | null = null;
     let pane: MonacoOutlinePaneAdapter | null = null;
-    let binding: monaco.IDisposable | null = null;
+    let binding: BoundYonalistOutlineEditor | null = null;
     let blur: monaco.IDisposable | null = null;
     try {
       assertMonacoInternalCapabilities();
@@ -144,10 +159,12 @@ export default function MonacoOutlineSurface({
         pane,
         images: imagesRef.current && {
           import: (request) => imagesRef.current!.import(request),
+          importPaths: (request) => imagesRef.current!.importPaths(request),
           remove: (nodeIds) => imagesRef.current!.remove(nodeIds),
           restore: (nodeIds) => imagesRef.current!.restore(nodeIds)
         }
       });
+      bindingRef.current = binding;
       blur = editor.onDidBlurEditorText(() => {
         void lease.session.flush("blur").catch(() => undefined);
       });
@@ -161,6 +178,7 @@ export default function MonacoOutlineSurface({
       cancelled = true;
       editorRef.current = null;
       paneRef.current = null;
+      bindingRef.current = null;
       onSessionChangeRef.current(null);
       blur?.dispose();
       binding?.dispose();
@@ -198,6 +216,18 @@ export default function MonacoOutlineSurface({
     editorRef.current.revealLineInCenterIfOutsideViewport(lineNumber);
     editorRef.current.focus();
   }, [focusRequest, session]);
+
+  useEffect(() => {
+    if (
+      !session ||
+      !dropRequest ||
+      handledDropEpochRef.current === dropRequest.epoch
+    ) {
+      return;
+    }
+    handledDropEpochRef.current = dropRequest.epoch;
+    bindingRef.current?.ingestImagePaths(dropRequest.paths);
+  }, [dropRequest, session]);
 
   useEffect(() => {
     paneRef.current?.setZoomRoot(zoomRootId);

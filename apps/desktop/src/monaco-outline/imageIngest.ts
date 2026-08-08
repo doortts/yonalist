@@ -27,9 +27,20 @@ export interface MonacoImageIngestPort {
     readonly beforeId: string | null;
     readonly candidates: readonly ImageCandidate[];
   }): Promise<MonacoImageImportResult>;
+  /** The packaged app's OS drop, which hands over paths rather than bytes. */
+  importPaths(input: {
+    readonly parentId: string;
+    readonly beforeId: string | null;
+    readonly paths: readonly string[];
+  }): Promise<MonacoImageImportResult>;
   remove(nodeIds: readonly string[]): Promise<void>;
   restore(nodeIds: readonly string[]): Promise<void>;
 }
+
+/** One gesture's payload: clipboard/DOM bytes, or native file paths. */
+export type MonacoImagePayload =
+  | { readonly candidates: readonly ImageCandidate[] }
+  | { readonly paths: readonly string[] };
 
 /** The part of the session an ingest touches. */
 export interface MonacoImageIngestSession {
@@ -54,10 +65,10 @@ export async function ingestImages(input: {
   readonly session: MonacoImageIngestSession;
   readonly port: MonacoImageIngestPort;
   readonly nodeId: string | null;
-  readonly candidates: readonly ImageCandidate[];
+  readonly payload: MonacoImagePayload;
 }): Promise<number | null> {
   const { session, port } = input;
-  if (input.candidates.length === 0) return null;
+  if (payloadSize(input.payload) === 0) return null;
   if (!session.canAcceptStructuralEdit()) return null;
   const anchor = session.imageInsertionAnchor(input.nodeId);
   if (!anchor) return null;
@@ -91,10 +102,17 @@ export async function ingestImages(input: {
   });
 }
 
+export interface BoundImageIngest {
+  /** Runs one gesture and puts the caret on the first picture it drew. */
+  run(payload: MonacoImagePayload): void;
+  dispose(): void;
+}
+
 /**
  * Clipboard and OS drops on the editor host. Monaco owns paste and drop, so an
  * image payload is taken away from it the way a blocked key gesture is; every
- * other payload falls through untouched.
+ * other payload falls through untouched. The packaged app's file drop arrives
+ * as a native window event instead, so `run` is exposed for that caller.
  */
 export function bindImageIngest(
   editor: monaco.editor.ICodeEditor,
@@ -103,22 +121,21 @@ export function bindImageIngest(
     readonly port: MonacoImageIngestPort;
     readonly activeNodeId: () => string | null;
   }
-): () => void {
-  const host = editor.getDomNode();
-  if (!host) return () => undefined;
-
-  const run = (candidates: readonly ImageCandidate[]): void => {
+): BoundImageIngest {
+  const run = (payload: MonacoImagePayload): void => {
     void ingestImages({
       session: deps.session,
       port: deps.port,
       nodeId: deps.activeNodeId(),
-      candidates
+      payload
     }).then((lineNumber) => {
       if (lineNumber === null) return;
       editor.setPosition({ lineNumber, column: 1 });
       editor.focus();
     }).catch(() => undefined);
   };
+  const host = editor.getDomNode();
+  if (!host) return { run, dispose: () => undefined };
 
   const onPaste = (event: ClipboardEvent): void => {
     if (!event.clipboardData) return;
@@ -126,7 +143,7 @@ export function bindImageIngest(
     if (candidates.length === 0) return;
     event.preventDefault();
     event.stopPropagation();
-    run(candidates);
+    run({ candidates });
   };
   const onDragOver = (event: DragEvent): void => {
     if (droppedImages(event).length === 0) return;
@@ -138,32 +155,49 @@ export function bindImageIngest(
     if (candidates.length === 0) return;
     event.preventDefault();
     event.stopPropagation();
-    run(candidates);
+    run({ candidates });
   };
 
   host.addEventListener("paste", onPaste, true);
   host.addEventListener("dragover", onDragOver, true);
   host.addEventListener("drop", onDrop, true);
-  return () => {
-    host.removeEventListener("paste", onPaste, true);
-    host.removeEventListener("dragover", onDragOver, true);
-    host.removeEventListener("drop", onDrop, true);
+  return {
+    run,
+    dispose: () => {
+      host.removeEventListener("paste", onPaste, true);
+      host.removeEventListener("dragover", onDragOver, true);
+      host.removeEventListener("drop", onDrop, true);
+    }
   };
+}
+
+function payloadSize(payload: MonacoImagePayload): number {
+  return "paths" in payload
+    ? payload.paths.length
+    : payload.candidates.length;
 }
 
 function importOnce(
   input: {
     readonly session: MonacoImageIngestSession;
     readonly port: MonacoImageIngestPort;
-    readonly candidates: readonly ImageCandidate[];
+    readonly payload: MonacoImagePayload;
   },
   anchor: ImageInsertionAnchor
 ): Promise<MonacoImageImportResult> {
-  return input.session.flush("blur").then(() => input.port.import({
-    parentId: anchor.parentId,
-    beforeId: anchor.beforeId,
-    candidates: input.candidates
-  }));
+  const { parentId, beforeId } = anchor;
+  return input.session.flush("blur").then(() =>
+    "paths" in input.payload
+      ? input.port.importPaths({
+          parentId,
+          beforeId,
+          paths: input.payload.paths
+        })
+      : input.port.import({
+          parentId,
+          beforeId,
+          candidates: input.payload.candidates
+        }));
 }
 
 function droppedImages(event: DragEvent): readonly ImageCandidate[] {

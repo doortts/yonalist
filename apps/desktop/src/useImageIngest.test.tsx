@@ -146,4 +146,38 @@ describe("image ingest", () => {
       .toBeDefined();
     Reflect.deleteProperty(document, "elementFromPoint");
   });
+
+  it("hands a native drop over to the Monaco surface instead of the rows", async () => {
+    const { ref } = scopeFixture();
+    const native = boundary();
+    const notesStore = store();
+    const nativeDrop = vi.fn();
+    renderHook(() => useImageIngest({
+      store: notesStore,
+      outlineRootId: "page",
+      index: index(),
+      scopeRef: ref,
+      boundary: native.value,
+      nativeDrop
+    }));
+    await waitFor(() => expect(
+      native.value.listenNativeDrops
+    ).toHaveBeenCalledOnce());
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => ref.current!.querySelector("[data-outline-id]"))
+    });
+
+    await act(async () => {
+      native.emit({
+        type: "drop",
+        paths: ["C:\\cat.png"],
+        position: { x: 10, y: 10 }
+      });
+    });
+
+    expect(nativeDrop).toHaveBeenCalledWith(["C:\\cat.png"]);
+    expect(notesStore.images.importPathsAfter).not.toHaveBeenCalled();
+    Reflect.deleteProperty(document, "elementFromPoint");
+  });
 });

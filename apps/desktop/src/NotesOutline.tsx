@@ -26,7 +26,7 @@ import type {
 } from "./monaco-outline/sessionRegistry";
 import type { MonacoOutlineSession } from "./monaco-outline/session";
 import type {
-  MonacoOutlineFocusRequest, MonacoOutlineImagePort
+  MonacoOutlineDropRequest, MonacoOutlineFocusRequest, MonacoOutlineImagePort
 } from "./MonacoOutlineSurface";
 import { loadMonacoOutlineRuntime } from "./monaco-outline/runtimeLoader";
 import type {
@@ -102,12 +102,26 @@ export function NotesOutline({
     useState<MonacoOutlineFocusRequest | null>(null);
   const [monacoLightbox, setMonacoLightbox] =
     useState<ImageZoneLightboxRequest | null>(null);
+  const [monacoDropRequest, setMonacoDropRequest] =
+    useState<MonacoOutlineDropRequest | null>(null);
+  const outlineSurface = outlineSurfaceFromSearch(location.search);
+  // Notes and image nodes are Monaco rows now, so nothing about the page's
+  // content sends it back to React; only a page the session refused does.
+  const useMonaco = outlineSurface === "monaco" &&
+    page !== undefined &&
+    unsupportedMonacoPageId !== page.id;
   const monacoImages = useMemo<MonacoOutlineImagePort>(() => ({
     residency: imageResidencyForStore(store),
     resize: (nodeId, displayWidth) => store.images.resize(nodeId, displayWidth),
     openLightbox: setMonacoLightbox,
     import: ({ parentId, beforeId, candidates }) =>
       store.images.importAfter(parentId, beforeId, candidates)
+        .then(({ nodeIds, receipt }) => ({
+          nodeIds,
+          nodes: receipt.changedNodes
+        })),
+    importPaths: ({ parentId, beforeId, paths }) =>
+      store.images.importPathsAfter(parentId, beforeId, paths)
         .then(({ nodeIds, receipt }) => ({
           nodeIds,
           nodes: receipt.changedNodes
@@ -137,7 +151,15 @@ export function NotesOutline({
     store,
     outlineRootId,
     index,
-    scopeRef
+    scopeRef,
+    // An OS drop on a Monaco pane is the editor's gesture, not a row's: the
+    // session anchors it and the ingest port writes it.
+    nativeDrop: useMonaco
+      ? (paths) => setMonacoDropRequest((current) => ({
+          epoch: (current?.epoch ?? 0) + 1,
+          paths
+        }))
+      : null
   });
   const expandedBodyNodes = useMemo(
     () => hideCollapsedSubtrees(allBodyNodes, outlineRootId, index),
@@ -298,17 +320,12 @@ export function NotesOutline({
     () => new Set(selection.selectedIds),
     [selection.selectedIds]
   );
-  const outlineSurface = outlineSurfaceFromSearch(location.search);
   if (status === "loading" && !page) {
     return <section className="notes-outline"><p className="notes-pane-state">Loading notes...</p></section>;
   }
   if (!page) {
     return <section className="notes-outline"><p className="notes-pane-state">No outline yet.</p></section>;
   }
-  // Notes and image nodes are Monaco rows now, so nothing about the page's
-  // content sends it back to React; only a page the session refused does.
-  const useMonaco = outlineSurface === "monaco" &&
-    unsupportedMonacoPageId !== page.id;
   rowRuntime.update({
     nodes: state.nodes,
     visibleNodes: bodyNodes,
@@ -503,6 +520,7 @@ export function NotesOutline({
                 showCompleted={showCompleted}
                 registry={monacoSessions}
                 focusRequest={monacoFocusRequest}
+                dropRequest={monacoDropRequest}
                 images={monacoImages}
                 onSessionChange={setMonacoSession}
                 onZoomRootChange={onZoomRootChange}

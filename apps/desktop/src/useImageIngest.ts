@@ -35,6 +35,11 @@ interface UseImageIngestInput {
   readonly index: OutlineIndex;
   readonly scopeRef: RefObject<HTMLElement | null>;
   readonly boundary?: ImageIngestBoundary;
+  /**
+   * Takes the OS drop away from the React rows. The Monaco surface owns its
+   * own anchor and its own write path, so it only needs the paths.
+   */
+  readonly nativeDrop?: ((paths: readonly string[]) => void) | null;
 }
 
 export function useImageIngest({
@@ -42,10 +47,11 @@ export function useImageIngest({
   outlineRootId,
   index,
   scopeRef,
-  boundary = defaultImageIngestBoundary
+  boundary = defaultImageIngestBoundary,
+  nativeDrop = null
 }: UseImageIngestInput) {
-  const latest = useRef({ store, outlineRootId, index });
-  latest.current = { store, outlineRootId, index };
+  const latest = useRef({ store, outlineRootId, index, nativeDrop });
+  latest.current = { store, outlineRootId, index, nativeDrop };
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -129,6 +135,11 @@ export function useImageIngest({
       }
       setDropTargetId(null);
       if (!targetId) return;
+      const monaco = latest.current.nativeDrop;
+      if (monaco) {
+        monaco(event.paths);
+        return;
+      }
       void importPaths(targetId, event.paths)
         .catch((cause) => setError(messageFrom(cause)))
         .finally(() => setDropTargetId(null));

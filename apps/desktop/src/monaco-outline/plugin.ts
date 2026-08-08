@@ -226,10 +226,15 @@ export function applyOutlineNoteGesture(
   );
 }
 
+export interface BoundYonalistOutlineEditor extends monaco.IDisposable {
+  /** The packaged app's native file drop, anchored at the active node. */
+  ingestImagePaths(paths: readonly string[]): void;
+}
+
 export function bindYonalistOutlineEditor(
   editor: monaco.editor.IStandaloneCodeEditor,
   binding: YonalistOutlineEditorBinding
-): monaco.IDisposable {
+): BoundYonalistOutlineEditor {
   registerYonalistOutlinePlugin();
   bindings.set(editor, binding);
   const context = editor.createContextKey<boolean>(CONTEXT_KEY, true);
@@ -284,13 +289,13 @@ export function bindYonalistOutlineEditor(
       refuse(event);
     }
   });
-  const unbindIngest = binding.images
+  const ingest = binding.images
     ? bindImageIngest(editor, {
         session: binding.session,
         port: binding.images,
         activeNodeId: () => binding.pane.activeNodeId()
       })
-    : () => undefined;
+    : null;
   const caret = keepCaretRightOfInjectedText(editor);
   const mouse = editor.onMouseDown((event) => {
     const attachment = readInjectedTextAttachment(event);
@@ -308,10 +313,13 @@ export function bindYonalistOutlineEditor(
   });
 
   return {
+    ingestImagePaths: (paths) => {
+      if (paths.length > 0) ingest?.run({ paths });
+    },
     dispose: () => {
       mouse.dispose();
       caret.dispose();
-      unbindIngest();
+      ingest?.dispose();
       keyboard.dispose();
       unbindSession();
       context.set(false);
