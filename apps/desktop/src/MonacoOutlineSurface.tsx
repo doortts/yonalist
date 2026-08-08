@@ -2,7 +2,8 @@ import {
   useEffect,
   useRef,
   useState,
-  useSyncExternalStore
+  useSyncExternalStore,
+  type MutableRefObject
 } from "react";
 import * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 import EditorWorker from "monaco-editor/esm/vs/editor/editor.worker?worker";
@@ -14,9 +15,11 @@ import {
   assertMonacoInternalCapabilities
 } from "./monaco-outline/internalAdapter";
 import type {
+  MonacoImageAnchor,
   MonacoImageIngestPort,
   MonacoImagePayload
 } from "./monaco-outline/imageIngest";
+import { MonacoRowActions } from "./MonacoRowActions";
 import type { ImageZonePort } from "./monaco-outline/imageZones";
 import {
   MonacoOutlinePaneAdapter
@@ -49,13 +52,12 @@ export interface MonacoOutlineFocusRequest {
 }
 
 /**
- * One image gesture the pane caught outside the editor: an OS file drop or the
- * header's picker. Drop coordinates never pick a row — the import lands after
- * everything the active node owns, the same anchor a paste uses.
+ * The image gestures a pane catches outside the editor — an OS file drop, the
+ * header's picker, a row menu's — handed to the editor that anchors them. The
+ * surface publishes this while it is mounted; nothing else reaches the editor.
  */
-export interface MonacoOutlineIngestRequest {
-  readonly epoch: number;
-  readonly payload: MonacoImagePayload;
+export interface MonacoOutlineImageGestures {
+  ingest(payload: MonacoImagePayload, at?: MonacoImageAnchor | null): void;
 }
 
 /** Everything the outline's image rows need from the store, in one object. */
@@ -68,8 +70,9 @@ export default function MonacoOutlineSurface({
   showCompleted,
   registry,
   focusRequest,
-  ingestRequest,
+  gesturesRef,
   images,
+  onPickImage,
   onSessionChange,
   onZoomRootChange,
   onOpenSplit,
@@ -81,9 +84,12 @@ export default function MonacoOutlineSurface({
   readonly showCompleted: boolean;
   readonly registry: MonacoSessionRegistry;
   readonly focusRequest: MonacoOutlineFocusRequest | null;
-  readonly ingestRequest?: MonacoOutlineIngestRequest | null;
+  /** Filled while the surface is mounted, so the pane can reach the editor. */
+  readonly gesturesRef?: MutableRefObject<MonacoOutlineImageGestures | null>;
   /** Bytes, image writes and the lightbox host, all owned by NotesOutline. */
   readonly images?: MonacoOutlineImagePort;
+  /** Opens the file picker for one row; absent hides the row action rail. */
+  readonly onPickImage?: (nodeId: string) => void;
   readonly onSessionChange: (session: MonacoOutlineSession | null) => void;
   readonly onZoomRootChange: (nodeId: string) => void;
   readonly onOpenSplit: (nodeId: string) => void;
@@ -101,9 +107,10 @@ export default function MonacoOutlineSurface({
   const onUnsupportedRef = useRef(onUnsupported);
   const onSessionChangeRef = useRef(onSessionChange);
   const imagesRef = useRef(images);
+  const onPickImageRef = useRef(onPickImage);
   const handledFocusEpochRef = useRef<number | null>(null);
-  const handledIngestEpochRef = useRef<number | null>(null);
   const [session, setSession] = useState<MonacoOutlineSession | null>(null);
+  const [pane, setPane] = useState<MonacoOutlinePaneAdapter | null>(null);
   zoomRef.current = zoomRootId;
   completedRef.current = showCompleted;
   onZoomRef.current = onZoomRootChange;
@@ -111,6 +118,7 @@ export default function MonacoOutlineSurface({
   onUnsupportedRef.current = onUnsupported;
   onSessionChangeRef.current = onSessionChange;
   imagesRef.current = images;
+  onPickImageRef.current = onPickImage;
 
   useEffect(() => {
     let cancelled = false;
@@ -166,11 +174,17 @@ export default function MonacoOutlineSurface({
         }
       });
       bindingRef.current = binding;
+      if (gesturesRef) {
+        gesturesRef.current = {
+          ingest: (payload, at) => bindingRef.current?.ingestImages(payload, at)
+        };
+      }
       blur = editor.onDidBlurEditorText(() => {
         void lease.session.flush("blur").catch(() => undefined);
       });
       lease.session.ensureEditableLine();
       setSession(lease.session);
+      setPane(pane);
       onSessionChangeRef.current(lease.session);
     }).catch((cause) => {
       if (!cancelled) onUnsupportedRef.current(cause);
@@ -180,6 +194,8 @@ export default function MonacoOutlineSurface({
       editorRef.current = null;
       paneRef.current = null;
       bindingRef.current = null;
+      setPane(null);
+      if (gesturesRef) gesturesRef.current = null;
       onSessionChangeRef.current(null);
       blur?.dispose();
       binding?.dispose();
@@ -187,7 +203,7 @@ export default function MonacoOutlineSurface({
       editor?.dispose();
       void release?.().catch(() => undefined);
     };
-  }, [pageId, paneId, registry]);
+  }, [gesturesRef, pageId, paneId, registry]);
 
   useEffect(() => {
     if (!session || !editorRef.current) return;
@@ -219,18 +235,6 @@ export default function MonacoOutlineSurface({
   }, [focusRequest, session]);
 
   useEffect(() => {
-    if (
-      !session ||
-      !ingestRequest ||
-      handledIngestEpochRef.current === ingestRequest.epoch
-    ) {
-      return;
-    }
-    handledIngestEpochRef.current = ingestRequest.epoch;
-    bindingRef.current?.ingestImages(ingestRequest.payload);
-  }, [ingestRequest, session]);
-
-  useEffect(() => {
     paneRef.current?.setZoomRoot(zoomRootId);
   }, [zoomRootId]);
 
@@ -240,11 +244,20 @@ export default function MonacoOutlineSurface({
 
   return (
     <>
-      <div
-        ref={hostRef}
-        className="notes-monaco-outline"
-        data-outline-pane-id={paneId}
-      />
+      <div className="notes-monaco-outline-shell">
+        <div
+          ref={hostRef}
+          className="notes-monaco-outline"
+          data-outline-pane-id={paneId}
+        />
+        {pane && onPickImage && (
+          <MonacoRowActions
+            rows={pane.rowActions}
+            onPickImage={(nodeId) => onPickImageRef.current?.(nodeId)}
+            onDismiss={() => editorRef.current?.focus()}
+          />
+        )}
+      </div>
       {session && <PersistenceStatus session={session} />}
     </>
   );

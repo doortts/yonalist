@@ -41,13 +41,19 @@ interface UseImageIngestInput {
    * its own anchor and is the page's only writer while it is up, so the
    * payload goes to it rather than straight to the store.
    */
-  readonly monacoIngest?: ((payload: MonacoBoundPayload) => void) | null;
+  readonly monacoIngest?: ((
+    payload: MonacoBoundPayload,
+    at?: MonacoBoundAnchor | null
+  ) => void) | null;
 }
 
 /** Structurally the Monaco surface's payload, without importing its module. */
 type MonacoBoundPayload =
   | { readonly paths: readonly string[] }
   | { readonly candidates: readonly ImageCandidate[] };
+
+/** Structurally the Monaco surface's anchor, same reason. */
+type MonacoBoundAnchor = { readonly nodeId: string };
 
 export function useImageIngest({
   store,
@@ -113,13 +119,20 @@ export function useImageIngest({
     );
   }, []);
 
-  const openPicker = useCallback(async (targetId: string) => {
+  /**
+   * `at` is the Monaco surface's anchor: a row menu names its own node, while
+   * the page header names none and lands where a paste would.
+   */
+  const openPicker = useCallback(async (
+    targetId: string,
+    at?: MonacoBoundAnchor | null
+  ) => {
     try {
       const monaco = latest.current.monacoIngest;
       if (boundary.native) {
         const paths = await boundary.pickPaths();
         if (paths.length === 0) return;
-        if (monaco) monaco({ paths });
+        if (monaco) monaco({ paths }, at);
         else await importPaths(targetId, paths);
         return;
       }
@@ -130,7 +143,7 @@ export function useImageIngest({
         return;
       }
       const candidates = imageCandidates(files);
-      if (candidates.length > 0) monaco({ candidates });
+      if (candidates.length > 0) monaco({ candidates }, at);
     } catch (cause) {
       setError(messageFrom(cause));
     }

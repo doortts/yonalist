@@ -577,7 +577,16 @@ function fakeEditor(viewState: unknown): {
         clear: vi.fn()
       }),
       onDidScrollChange: vi.fn().mockReturnValue({ dispose: vi.fn() }),
-      onDidLayoutChange: vi.fn().mockReturnValue({ dispose: vi.fn() })
+      onDidLayoutChange: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+      onMouseMove: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+      onMouseLeave: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+      onDidChangeCursorPosition: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+      onDidFocusEditorText: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+      onDidBlurEditorText: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+      hasTextFocus: vi.fn().mockReturnValue(false),
+      getScrollTop: vi.fn().mockReturnValue(0),
+      getTopForLineNumber: vi.fn((lineNumber: number) => (lineNumber - 1) * 25),
+      getModel: vi.fn().mockReturnValue(null)
     } as unknown as monaco.editor.IStandaloneCodeEditor,
     host,
     restoreViewState,

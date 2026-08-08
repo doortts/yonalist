@@ -416,6 +416,96 @@ describe("Monaco outline image rows", () => {
   });
 });
 
+describe("Monaco outline row actions", () => {
+  /** The trigger the pointer or the caret currently reveals, if any. */
+  function trigger(harness: { readonly view: { readonly container: Element } }) {
+    return harness.view.container.querySelector<HTMLButtonElement>(
+      ".notes-monaco-row-actions .notes-bullet-menu-trigger"
+    );
+  }
+
+  async function caretOn(
+    harness: Awaited<ReturnType<typeof outline>>,
+    lineNumber: number
+  ): Promise<void> {
+    await act(async () => {
+      harness.editor.setPosition({ lineNumber, column: 1 });
+      harness.editor.focus();
+      await frame();
+    });
+  }
+
+  it("names the caret row's trigger and skips the note lines", async () => {
+    const harness = await outline();
+
+    await caretOn(harness, 1);
+    expect(trigger(harness)).toHaveAttribute(
+      "aria-label",
+      "Actions for First thought"
+    );
+
+    // A note line has no node of its own, so it gets no rail (§1).
+    await caretOn(harness, 2);
+    expect(trigger(harness)).toBeNull();
+
+    // An image row is a node too, so attaching relative to it is legal.
+    await caretOn(harness, 4);
+    expect(trigger(harness)).toHaveAttribute("aria-label", "Actions for cat.png");
+
+    await harness.cleanup();
+  });
+
+  it("uploads through the row menu, anchored at that row's node", async () => {
+    const harness = await outline();
+    vi.mocked(harness.api.importImageBytes).mockImplementation(
+      async (request) => receipt(8, [{
+        ...picture("image-new", "dog.png", 2_048),
+        id: request.images[0]!.nodeId
+      }])
+    );
+    await caretOn(harness, 1);
+
+    fireEvent.click(trigger(harness)!);
+    // The caret moves away while the menu is open — the anchor has to be the
+    // row the menu belongs to, not wherever the caret ended up.
+    await caretOn(harness, 5);
+    const item = [...harness.view.container.querySelectorAll<HTMLButtonElement>(
+      ".notes-bullet-menu .notes-bullet-menu-item"
+    )].find((button) => button.textContent === "Upload image")!;
+    expect(item).not.toBeUndefined();
+    fireEvent.click(item);
+
+    // The browser picker is a hidden file input; settle it with one file.
+    const input = await waitFor(() => {
+      const found = document.querySelector<HTMLInputElement>(
+        "input[type='file'][hidden]"
+      );
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    Object.defineProperty(input, "files", {
+      value: [new File([Uint8Array.from([1, 2, 3])], "dog.png", {
+        type: "image/png"
+      })]
+    });
+    fireEvent.change(input);
+
+    await waitFor(() => expect(harness.api.importImageBytes)
+      .toHaveBeenCalledOnce());
+    // First thought owns lines 1-3, so its picture lands before the next
+    // sibling rather than at the end of the page.
+    expect(vi.mocked(harness.api.importImageBytes).mock.calls[0]?.[0])
+      .toEqual(expect.objectContaining({
+        parentId: "page-1",
+        beforeId: "image-1"
+      }));
+    await waitFor(() => expect(harness.kinds())
+      .toEqual(["text", "note", "note", "image", "image", "text"]));
+
+    await harness.cleanup();
+  });
+});
+
 describe("Monaco outline fallback boundary", () => {
   it("falls back to React for a page the viewport query could not finish", async () => {
     const api = outlineApi([bullet("bullet-1", "First thought", 1_024)]);

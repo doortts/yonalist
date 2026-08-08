@@ -179,9 +179,19 @@ describe("image ingest", () => {
 
     expect(monacoIngest).toHaveBeenCalledWith({ paths: ["C:\\cat.png"] });
 
+    // The page header's picker names no row, so the surface anchors it itself.
     await act(() => result.current.openPicker("first"));
+    expect(monacoIngest).toHaveBeenLastCalledWith(
+      { paths: ["C:\\dog.png"] },
+      undefined
+    );
 
-    expect(monacoIngest).toHaveBeenLastCalledWith({ paths: ["C:\\dog.png"] });
+    // A row menu's picker names the row it was opened on.
+    await act(() => result.current.openPicker("first", { nodeId: "first" }));
+    expect(monacoIngest).toHaveBeenLastCalledWith(
+      { paths: ["C:\\dog.png"] },
+      { nodeId: "first" }
+    );
     expect(notesStore.images.importPathsAfter).not.toHaveBeenCalled();
     Reflect.deleteProperty(document, "elementFromPoint");
   });

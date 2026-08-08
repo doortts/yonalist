@@ -8,6 +8,7 @@ import { outlineBlockEnd, type OutlineMetadataSnapshot } from "./metadata";
 import { PaneDecorationWindow } from "./decorationWindow";
 import { PaneImageZones, type ImageZonePort } from "./imageZones";
 import type { MonacoOutlinePaneBinding } from "./plugin";
+import { OutlineRowActionTracker } from "./rowActions";
 import type { MonacoOutlineSession } from "./session";
 
 export interface OutlinePaneNavigation {
@@ -23,6 +24,8 @@ export interface MonacoOutlinePaneDiagnostics {
 }
 
 export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
+  /** The row the action rail belongs to; the surface's overlay reads it. */
+  readonly rowActions: OutlineRowActionTracker;
   private readonly viewStates =
     new Map<string, monaco.editor.ICodeEditorViewState | null>();
   private readonly unsubscribeMetadata: () => void;
@@ -61,6 +64,10 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
           }
         })
       : null;
+    this.rowActions = new OutlineRowActionTracker({
+      editor: input.editor,
+      metadata: () => input.session.metadata.current()
+    });
     this.unsubscribeMetadata = input.session.subscribeMetadata(
       (change) => this.handleMetadataChange(change)
     );
@@ -117,6 +124,7 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
     if (this.disposed) return;
     this.disposed = true;
     this.unsubscribeMetadata();
+    this.rowActions.dispose();
     this.imageZones?.dispose();
     this.decorationWindow.dispose();
     this.input.editor.getDomNode()?.removeAttribute("data-empty-zoom");
@@ -178,6 +186,9 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
   private handleMetadataChange(structural: boolean): void {
     if (structural) this.updateHiddenAreas();
     this.decorationWindow.invalidate(structural);
+    // The rail rides this one sync point: a structural change moves the line
+    // it points at, and a text edit rewrites the row title it is named after.
+    this.rowActions.refresh();
     // Structural metadata changes can grow or shrink the injected prefix
     // without a cursor event, so the caret must be re-derived here.
     if (structural) realignCaretWithInjectedText(this.input.editor);

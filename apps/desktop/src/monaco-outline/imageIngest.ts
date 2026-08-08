@@ -111,9 +111,12 @@ export async function ingestImages(input: {
   });
 }
 
+/** Where a gesture wants its picture; absent means the caret's node. */
+export type MonacoImageAnchor = { readonly nodeId: string };
+
 export interface BoundImageIngest {
   /** Runs one gesture and puts the caret on the first picture it drew. */
-  run(payload: MonacoImagePayload): void;
+  run(payload: MonacoImagePayload, at?: MonacoImageAnchor | null): void;
   dispose(): void;
 }
 
@@ -131,11 +134,14 @@ export function bindImageIngest(
     readonly activeNodeId: () => string | null;
   }
 ): BoundImageIngest {
-  const run = (payload: MonacoImagePayload): void => {
+  const run = (
+    payload: MonacoImagePayload,
+    at?: MonacoImageAnchor | null
+  ): void => {
     void ingestImages({
       session: deps.session,
       port: deps.port,
-      nodeId: deps.activeNodeId(),
+      nodeId: at?.nodeId ?? deps.activeNodeId(),
       payload
     }).then((lineNumber) => {
       if (lineNumber === null) return;
