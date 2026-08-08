@@ -1431,6 +1431,7 @@
   right: 0;
   width: 16px;
   height: 100%;
+  outline-offset: -3px;
   cursor: ew-resize;
   touch-action: none;
 }

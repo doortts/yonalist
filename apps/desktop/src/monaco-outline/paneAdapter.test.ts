@@ -368,7 +368,33 @@ describe("Monaco outline pane adapter", () => {
     adapter.dispose();
   });
 
-  it("drains the session queue before a resize reaches the image IPC", async () => {
+  it.each([
+    ["a pointer release", (handle: HTMLElement) => {
+      handle.dispatchEvent(
+        new MouseEvent("pointerdown", { button: 0, clientX: 500 })
+      );
+      handle.dispatchEvent(
+        new MouseEvent("pointermove", { button: 0, clientX: 200 })
+      );
+      handle.dispatchEvent(
+        new MouseEvent("pointerup", { button: 0, clientX: 200 })
+      );
+    }],
+    // Six coarse steps down from the original 800 pixels land on the same
+    // width the pointer drag does, and commit once at the end of the gesture.
+    ["a keyboard gesture", (handle: HTMLElement) => {
+      for (let step = 0; step < 6; step += 1) {
+        handle.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "ArrowLeft",
+          shiftKey: true
+        }));
+      }
+      handle.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowLeft" }));
+    }]
+  ])("drains the session queue before %s reaches the image IPC", async (
+    _gesture,
+    resizeWith
+  ) => {
     const picture = { ...line("picture", "page", 0), kind: "image" as const };
     const metadata = snapshot([picture]);
     const order: string[] = [];
@@ -413,15 +439,7 @@ describe("Monaco outline pane adapter", () => {
       readonly domNode: HTMLElement;
     }).domNode.querySelector<HTMLElement>(".yonalist-outline-image-resize")!;
 
-    handle.dispatchEvent(
-      new MouseEvent("pointerdown", { button: 0, clientX: 500 })
-    );
-    handle.dispatchEvent(
-      new MouseEvent("pointermove", { button: 0, clientX: 200 })
-    );
-    handle.dispatchEvent(
-      new MouseEvent("pointerup", { button: 0, clientX: 200 })
-    );
+    resizeWith(handle);
 
     await vi.waitFor(() => expect(order).toEqual(["flush", "ipc", "session"]));
     expect(images.resize).toHaveBeenCalledExactlyOnceWith("picture", 500);

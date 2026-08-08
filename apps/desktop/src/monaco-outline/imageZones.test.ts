@@ -104,6 +104,15 @@ function pointer(type: string, clientX: number): MouseEvent {
   return new MouseEvent(type, { bubbles: true, button: 0, clientX });
 }
 
+function arrow(type: string, key: string, shiftKey = false): KeyboardEvent {
+  return new KeyboardEvent(type, {
+    key,
+    shiftKey,
+    bubbles: true,
+    cancelable: true
+  });
+}
+
 function syncInput(
   overrides: Partial<ImageZoneSyncInput> = {}
 ): ImageZoneSyncInput {
@@ -262,6 +271,62 @@ describe("pane image zones", () => {
     handle.dispatchEvent(pointer("pointerup", 5_000));
 
     expect(port.resize).toHaveBeenCalledExactlyOnceWith("picture", 800);
+    zones.dispose();
+  });
+
+  it("resizes from the keyboard in the same steps the rows use", async () => {
+    const fake = fakeEditor();
+    const port = fakePort();
+    const zones = new PaneImageZones({ editor: fake.editor, port: port.port });
+    zones.sync(syncInput({
+      images: new Map([["picture", image({ displayWidth: 600 })]])
+    }));
+    const frame = fake.zones.get("zone-1")!.domNode
+      .querySelector<HTMLElement>(".yonalist-outline-image-frame")!;
+    const handle = frame.querySelector<HTMLElement>(
+      ".yonalist-outline-image-resize"
+    )!;
+
+    expect(handle.tabIndex).toBe(0);
+    expect(handle.getAttribute("aria-label")).toBe("Resize shot.png");
+    expect(handle.getAttribute("aria-valuemin")).toBe("120");
+    expect(handle.getAttribute("aria-valuemax")).toBe("800");
+
+    const step = arrow("keydown", "ArrowLeft");
+    handle.dispatchEvent(step);
+    // The caret must not travel with the arrow key.
+    expect(step.defaultPrevented).toBe(true);
+    handle.dispatchEvent(arrow("keydown", "ArrowLeft", true));
+
+    expect(frame.style.width).toBe("540px");
+    expect(handle.getAttribute("aria-valuenow")).toBe("540");
+    expect(fake.zones.get("zone-1")!.heightInPx).toBe(270);
+    expect(port.resize).not.toHaveBeenCalled();
+
+    handle.dispatchEvent(arrow("keyup", "ArrowLeft"));
+
+    expect(port.resize).toHaveBeenCalledExactlyOnceWith("picture", 540);
+    await vi.waitFor(() => expect(frame.style.width).toBe("600px"));
+    zones.dispose();
+  });
+
+  it("commits a keyboard resize on blur, and only when it moved", () => {
+    const fake = fakeEditor();
+    const port = fakePort();
+    const zones = new PaneImageZones({ editor: fake.editor, port: port.port });
+    zones.sync(syncInput());
+    const handle = fake.zones.get("zone-1")!.domNode
+      .querySelector<HTMLElement>(".yonalist-outline-image-resize")!;
+
+    // Already at the original pixels: the step clamps away to nothing.
+    handle.dispatchEvent(arrow("keydown", "ArrowRight"));
+    handle.dispatchEvent(new FocusEvent("blur"));
+    expect(port.resize).not.toHaveBeenCalled();
+
+    handle.dispatchEvent(arrow("keydown", "ArrowLeft", true));
+    handle.dispatchEvent(new FocusEvent("blur"));
+
+    expect(port.resize).toHaveBeenCalledExactlyOnceWith("picture", 750);
     zones.dispose();
   });
 

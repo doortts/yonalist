@@ -2,7 +2,11 @@ import type * as monaco from "monaco-editor/esm/vs/editor/editor.api";
 
 import type { ImageView } from "../../../../packages/contracts/generated/ImageView";
 import type { ImageLease, ResidentImageIdentity } from "../imageResidency";
-import { clampImageWidth } from "../imageResize";
+import {
+  clampImageWidth,
+  imageKeyboardResizeWidth,
+  MIN_IMAGE_DISPLAY_WIDTH
+} from "../imageResize";
 import type { DecorationWindowRange } from "./decorationWindow";
 import type { OutlineLineMetadata } from "./metadata";
 
@@ -49,6 +53,7 @@ interface ZoneEntry {
   readonly nodeId: string;
   readonly identity: ResidentImageIdentity;
   readonly frame: HTMLDivElement;
+  readonly handle: HTMLDivElement;
   readonly picture: HTMLImageElement;
   readonly placeholder: HTMLDivElement;
   readonly zone: MutableViewZone;
@@ -182,6 +187,8 @@ export class PaneImageZones {
     handle.setAttribute("role", "separator");
     handle.setAttribute("aria-orientation", "vertical");
     handle.setAttribute("aria-label", `Resize ${image.originalName}`);
+    handle.setAttribute("aria-valuemin", String(MIN_IMAGE_DISPLAY_WIDTH));
+    handle.tabIndex = 0;
     frame.append(picture, placeholder, handle);
     domNode.append(frame);
     const identity: ResidentImageIdentity = {
@@ -193,6 +200,7 @@ export class PaneImageZones {
       nodeId,
       identity,
       frame,
+      handle,
       picture,
       placeholder,
       zone: { afterLineNumber: 0, heightInPx: 0, domNode },
@@ -213,7 +221,7 @@ export class PaneImageZones {
         pixelHeight: entry.image.pixelHeight
       });
     });
-    this.bindResize(entry, handle);
+    this.bindResize(entry);
     entry.unsubscribe = this.input.port.residency.subscribe(
       identity,
       () => this.paint(entry)
@@ -223,22 +231,51 @@ export class PaneImageZones {
     return entry;
   }
 
-  /** Width only, ratio kept, one commit per pointer release (contract I4). */
-  private bindResize(entry: ZoneEntry, handle: HTMLDivElement): void {
+  /**
+   * Width only, ratio kept, one commit per gesture (contract I4). The arrow
+   * keys move the same width the pointer does, in the steps the React rows
+   * use, and commit when the gesture ends rather than per keypress.
+   */
+  private bindResize(entry: ZoneEntry): void {
+    const handle = entry.handle;
     let drag: {
       readonly pointerId: number;
       readonly startX: number;
       readonly startWidth: number;
       width: number;
     } | null = null;
+    let keyboardStart: number | null = null;
+    const finishKeyboard = (): void => {
+      const start = keyboardStart;
+      keyboardStart = null;
+      const width = entry.pendingWidth;
+      if (start === null || width === null || width === start) return;
+      this.commit(entry, width);
+    };
+    handle.addEventListener("keydown", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      event.stopPropagation();
+      const width = this.currentWidth(entry);
+      keyboardStart ??= width;
+      entry.pendingWidth = imageKeyboardResizeWidth(
+        width,
+        event.key,
+        event.shiftKey,
+        this.maximumWidth(entry)
+      );
+      this.applyPendingWidth(entry);
+    });
+    handle.addEventListener("keyup", (event) => {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      finishKeyboard();
+    });
+    handle.addEventListener("blur", finishKeyboard);
     handle.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
       event.preventDefault();
       event.stopPropagation();
-      const width = entry.pendingWidth ?? imageZoneSize(
-        entry.image,
-        this.input.editor.getLayoutInfo().contentWidth
-      ).width;
+      const width = this.currentWidth(entry);
       drag = {
         pointerId: event.pointerId,
         startX: event.clientX,
@@ -272,11 +309,17 @@ export class PaneImageZones {
     });
   }
 
+  private currentWidth(entry: ZoneEntry): number {
+    return entry.pendingWidth ?? imageZoneSize(
+      entry.image,
+      this.input.editor.getLayoutInfo().contentWidth
+    ).width;
+  }
+
   private maximumWidth(entry: ZoneEntry): number {
-    return Math.min(
-      entry.image.pixelWidth,
-      Math.floor(this.input.editor.getLayoutInfo().contentWidth) ||
-        entry.image.pixelWidth
+    return zoneMaximumWidth(
+      entry.image,
+      this.input.editor.getLayoutInfo().contentWidth
     );
   }
 
@@ -346,6 +389,10 @@ function layoutEntry(
         { ...target.image, displayWidth: entry.pendingWidth },
         contentWidth
       );
+  entry.handle.setAttribute(
+    "aria-valuemax",
+    String(zoneMaximumWidth(target.image, contentWidth))
+  );
   const afterLineNumber = target.lineNumber - 1;
   const changed = entry.zone.afterLineNumber !== afterLineNumber ||
     entry.zone.heightInPx !== size.height;
@@ -362,6 +409,15 @@ function applySize(entry: ZoneEntry, width: number, height: number): void {
   entry.zone.heightInPx = height;
   entry.frame.style.width = `${width}px`;
   entry.frame.style.height = `${height}px`;
+  entry.handle.setAttribute("aria-valuenow", String(width));
+}
+
+/** The widest a picture may be drawn: its own pixels, or the content area. */
+function zoneMaximumWidth(image: ImageView, contentWidth: number): number {
+  return Math.min(
+    image.pixelWidth,
+    Math.floor(contentWidth) || image.pixelWidth
+  );
 }
 
 /** Hidden ranges arrive sorted, so the first range past the line settles it. */
