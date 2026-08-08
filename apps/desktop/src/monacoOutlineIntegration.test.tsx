@@ -377,6 +377,39 @@ describe("Monaco outline image rows", () => {
     await harness.cleanup();
   });
 
+  it("pastes at the caret's own node rather than at the end of the page", async () => {
+    const harness = await outline();
+    vi.mocked(harness.api.importImageBytes).mockImplementation(
+      async (request) => receipt(8, [{
+        ...picture("image-new", "dog.png", 2_048),
+        id: request.images[0]!.nodeId
+      }])
+    );
+    // Line 2 is First thought's note: a note belongs to the title above it, so
+    // the paste anchors at that node's block, not at the page end.
+    harness.editor.setPosition({ lineNumber: 2, column: 1 });
+
+    fireEvent.paste(harness.editor.getDomNode()!, {
+      clipboardData: clipboard("dog.png")
+    });
+
+    await waitFor(() => expect(harness.api.importImageBytes)
+      .toHaveBeenCalledOnce());
+    expect(vi.mocked(harness.api.importImageBytes).mock.calls[0]?.[0])
+      .toEqual(expect.objectContaining({
+        parentId: "page-1",
+        beforeId: "image-1"
+      }));
+    await waitFor(() => expect(harness.kinds())
+      .toEqual(["text", "note", "note", "image", "image", "text"]));
+    expect(harness.session.model.getValue()).toBe(
+      "First thought\nalpha\nbeta\ndog.png\ncat.png\nSecond thought"
+    );
+    expect(harness.editor.getPosition()?.lineNumber).toBe(4);
+
+    await harness.cleanup();
+  });
+
   it("pastes an image into the editor and undoes it through the store", async () => {
     const harness = await outline([bullet("bullet-1", "First thought", 1_024)]);
     vi.mocked(harness.api.importImageBytes).mockImplementation(
