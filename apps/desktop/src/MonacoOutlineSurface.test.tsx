@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   paneCompleted: vi.fn(),
   paneDispose: vi.fn(),
   bind: vi.fn(),
+  ingestImages: vi.fn(),
   assertCapabilities: vi.fn()
 }));
 
@@ -59,7 +60,72 @@ describe("MonacoOutlineSurface", () => {
     mocks.paneCompleted.mockReset();
     mocks.paneDispose.mockReset();
     mocks.bind.mockReset();
+    mocks.ingestImages.mockReset();
     mocks.assertCapabilities.mockReset();
+  });
+
+  it("routes one out-of-editor image gesture to the binding per epoch", async () => {
+    const editor = {
+      onDidBlurEditorText: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+      dispose: vi.fn()
+    };
+    mocks.createEditor.mockReturnValue(editor);
+    mocks.bind.mockReturnValue({
+      dispose: vi.fn(),
+      ingestImages: mocks.ingestImages
+    });
+    const session = {
+      model: { id: "shared-model" },
+      ensureEditableLine: vi.fn(),
+      flush: vi.fn().mockResolvedValue(undefined),
+      subscribePersistence: vi.fn().mockReturnValue(() => undefined),
+      persistenceState: vi.fn().mockReturnValue({ kind: "saved", pending: 0 })
+    };
+    const registry = {
+      acquire: vi.fn().mockResolvedValue({
+        session,
+        release: vi.fn().mockResolvedValue(undefined)
+      })
+    } as unknown as MonacoSessionRegistry;
+    const props = {
+      pageId: "page",
+      paneId: "primary" as const,
+      zoomRootId: null,
+      showCompleted: true,
+      registry,
+      focusRequest: null,
+      onSessionChange: vi.fn(),
+      onZoomRootChange: vi.fn(),
+      onOpenSplit: vi.fn(),
+      onUnsupported: vi.fn()
+    };
+    const view = render(
+      <MonacoOutlineSurface
+        {...props}
+        ingestRequest={{ epoch: 1, payload: { paths: ["/tmp/cat.png"] } }}
+      />
+    );
+
+    await waitFor(() => expect(mocks.ingestImages)
+      .toHaveBeenCalledWith({ paths: ["/tmp/cat.png"] }));
+
+    view.rerender(
+      <MonacoOutlineSurface
+        {...props}
+        ingestRequest={{ epoch: 1, payload: { paths: ["/tmp/cat.png"] } }}
+      />
+    );
+    expect(mocks.ingestImages).toHaveBeenCalledOnce();
+
+    view.rerender(
+      <MonacoOutlineSurface
+        {...props}
+        ingestRequest={{ epoch: 2, payload: { paths: ["/tmp/dog.png"] } }}
+      />
+    );
+    expect(mocks.ingestImages)
+      .toHaveBeenLastCalledWith({ paths: ["/tmp/dog.png"] });
+    view.unmount();
   });
 
   it("leases one page session and keeps zoom changes pane-local", async () => {

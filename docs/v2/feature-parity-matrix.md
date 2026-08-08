@@ -31,7 +31,7 @@ helper must be ported.
 | Collapse | Collapse/expand, hidden subtree navigation, collapsed-halo behavior | `src/features/notes/NotesWorkspace.test.tsx` | complete |
 | Zoom | Bullet zoom, breadcrumb back, Workflowy shortcuts | `apps/desktop/src/splitPaneIntegration.test.tsx`, `apps/desktop/src/navigationHistoryIntegration.test.tsx` | complete |
 | Split panes | Open/close/resize, independent scroll/focus, cross-pane consistency | `apps/desktop/src/splitPaneIntegration.test.tsx`, `apps/desktop/src/navigationHistoryIntegration.test.tsx`, `apps/desktop/src/outlineClipboardIntegration.test.tsx` | complete |
-| Supporting notes | Edit, auto-collapse, Shift+Enter and arrow navigation | `src/features/notes/NoteTextField.test.tsx` | complete |
+| Supporting notes | Edit, auto-collapse, Shift+Enter and arrow navigation | `src/features/notes/NoteTextField.test.tsx`, `apps/desktop/src/monacoOutlineIntegration.test.tsx` | complete |
 | Completion | Single-row complete/incomplete and hidden completed subtrees | `src/features/notes/NotesWorkspace.test.tsx` | complete |
 | Todo | Marker conversion, checkbox, direct-child progress | `src/features/notes/notesTodoProgress.test.ts` | complete |
 | Markdown presentation | Inline Markdown, links, remote image width contract | `src/features/notes/noteMarkdown.test.ts` | partial |
@@ -45,9 +45,9 @@ helper must be ported.
 | Undo/Redo | Text/structure/session history and restart reset | `apps/desktop/src/notesInteractionHistory.test.ts`, `apps/desktop/src/outlineClipboardIntegration.test.tsx`, `crates/notes-application/tests/session_service.rs` | complete |
 | Navigation history | Zoom, pane, selection and focus undo/redo restoration | `apps/desktop/src/navigationHistoryIntegration.test.tsx` | complete |
 | Attachments | Picker, clipboard, filesystem drop, list actions and limits | `src/features/notes/NotesAttachmentIngest.test.tsx`, `apps/desktop/src/imageIngest.test.ts` | partial |
-| Image nodes | Atomic multi-import, independent image rows, restart restore | `apps/desktop/src/imageNodeIntegration.test.tsx`, `crates/notes-sqlite/tests/image_persistence.rs` | complete |
+| Image nodes | Atomic multi-import, independent image rows, restart restore | `apps/desktop/src/imageNodeIntegration.test.tsx`, `apps/desktop/src/monacoOutlineIntegration.test.tsx`, `crates/notes-sqlite/tests/image_persistence.rs` | complete |
 | Image atom editor | Caret, edit, copy/cut/paste, IME, keyboard navigation | `src/features/notes/ImageAtomEditor.test.tsx`, independent v2 image-node contract | partial |
-| Image display | Resize, lightbox, remote Markdown image, progress/recovery | `apps/desktop/src/ImageNodeContent.test.tsx`, `apps/desktop/src/imagePerformance.test.tsx` | partial |
+| Image display | Resize, lightbox, remote Markdown image, progress/recovery | `apps/desktop/src/ImageNodeContent.test.tsx`, `apps/desktop/src/monacoOutlineIntegration.test.tsx`, `apps/desktop/src/imagePerformance.test.tsx` | partial |
 | Export | Shared snapshot, frontmatter Markdown, Korean PDF, atomic overwrite | `src/features/notes/NotesExportMenu.test.tsx` | missing |
 | Data controls | Explicit Notes deletion, confirmation, local repair feedback | `src/features/notes/NotesDataSettingsDialog.test.tsx` | missing |
 | Failure recovery | Stale revisions/cursors, dropped commands, retryable feedback | `src/features/notes/notesAuthorityRecovery.test.ts` | partial |
@@ -56,6 +56,19 @@ helper must be ported.
 | Vault synchronization | Markdown SSOT, reconciliation, sync retry/outbox | approved exclusion | excluded |
 | GitHub Notifications | External read-only tree, viewed state, plugin settings | approved exclusion | excluded |
 | v1 data compatibility | Migrations, legacy repair/readers | original v2 exclusion | excluded |
+
+## Outline surfaces
+
+The three rows above hold on both outline surfaces since the Monaco notes and
+images slice: a note is its own run of model lines under the title it belongs
+to, and an image is a view zone above its caption line. A page no longer drops
+to the React outline because of what it contains — only a page too large for
+one viewport query does.
+
+What is still React-only, and why the two image rows stay `partial`: the image
+row menu (replace, view original, download, delete), keyboard resizing, and
+the legacy in-text image atom. The Monaco image row offers a pointer resize
+and a click-to-lightbox, nothing else.
 
 ## Planned slices
 

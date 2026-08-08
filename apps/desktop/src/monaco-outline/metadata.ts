@@ -2,7 +2,7 @@ export interface OutlineLineMetadata {
   readonly nodeId: string;
   readonly parentId: string;
   readonly depth: number;
-  readonly kind: "text";
+  readonly kind: "text" | "note" | "image";
   readonly collapsed: boolean;
   readonly completed: boolean;
 }
@@ -10,7 +10,10 @@ export interface OutlineLineMetadata {
 export interface OutlineMetadataSnapshot {
   readonly alternativeVersionId: number;
   readonly lines: readonly OutlineLineMetadata[];
-  readonly lineByNodeId: ReadonlyMap<string, number>;
+  /** Line number of each node's title line — note run lines are excluded. */
+  readonly titleLineByNodeId: ReadonlyMap<string, number>;
+  /** Inclusive 1-based line numbers of each node's note run, when it has one. */
+  readonly noteRangeByNodeId: ReadonlyMap<string, readonly [number, number]>;
 }
 
 export class OutlineMetadataTimeline {
@@ -55,7 +58,8 @@ export class OutlineMetadataTimeline {
       ? Object.freeze({
           alternativeVersionId,
           lines: this.#active.lines,
-          lineByNodeId: this.#active.lineByNodeId
+          titleLineByNodeId: this.#active.titleLineByNodeId,
+          noteRangeByNodeId: this.#active.noteRangeByNodeId
         })
       : createSnapshot(alternativeVersionId, lines);
     this.#versions.set(alternativeVersionId, snapshot);
@@ -98,22 +102,77 @@ export class OutlineMetadataTimeline {
   }
 }
 
+/**
+ * Exclusive end index of the block a line owns: its subtree plus every note run
+ * inside it. A note run copies its title's depth (V3), so the plain
+ * "strictly deeper" subtree scan would stop on the node's own note.
+ */
+export function outlineBlockEnd(
+  lines: readonly OutlineLineMetadata[],
+  lineIndex: number
+): number {
+  const source = lines[lineIndex];
+  if (!source) return lineIndex + 1;
+  let end = lineIndex + 1;
+  while (end < lines.length) {
+    const line = lines[end]!;
+    // Any note line reached here trails the block: a following sibling's run
+    // never comes before that sibling's own title line (V2).
+    if (line.depth <= source.depth && line.kind !== "note") break;
+    end += 1;
+  }
+  return end;
+}
+
 export function validateOutlineMetadata(
   lines: readonly OutlineLineMetadata[]
 ): void {
   const nodeIds = new Set<string>();
+  const imageIds = new Set<string>();
   const preorderParents: string[] = [];
   let rootParentId: string | null = null;
   let previousDepth = 0;
+  let previousLine: OutlineLineMetadata | null = null;
+  let title: OutlineLineMetadata | null = null;
 
   for (const [index, line] of lines.entries()) {
     if (!line.nodeId || !line.parentId) {
       throw new Error("Outline node and parent IDs must be nonempty.");
     }
+
+    // A note line borrows its owner's identity, so it skips the preorder chain
+    // and only has to stay welded to the title line it follows.
+    if (line.kind === "note") {
+      if (index === 0) {
+        throw new Error("The first outline line must be a text or image line.");
+      }
+      if (
+        !previousLine ||
+        !title ||
+        previousLine.nodeId !== line.nodeId ||
+        previousLine.kind === "image"
+      ) {
+        throw new Error("An outline note line must follow its own title line.");
+      }
+      if (
+        line.parentId !== title.parentId ||
+        line.depth !== title.depth ||
+        line.collapsed !== title.collapsed ||
+        line.completed !== title.completed
+      ) {
+        throw new Error("An outline note line must copy its title line metadata.");
+      }
+      previousLine = line;
+      continue;
+    }
+
     if (nodeIds.has(line.nodeId)) {
       throw new Error("Outline node IDs must be unique.");
     }
     nodeIds.add(line.nodeId);
+    if (line.kind === "image") {
+      imageIds.add(line.nodeId);
+    }
 
     if (!Number.isSafeInteger(line.depth) || line.depth < 0) {
       throw new Error("Outline depth must be a nonnegative integer.");
@@ -123,6 +182,9 @@ export function validateOutlineMetadata(
     }
     if (index > 0 && line.depth > previousDepth + 1) {
       throw new Error("Outline depth may increase by at most one.");
+    }
+    if (imageIds.has(line.parentId)) {
+      throw new Error("An outline image line cannot have children.");
     }
 
     if (line.depth === 0) {
@@ -137,6 +199,8 @@ export function validateOutlineMetadata(
     preorderParents[line.depth] = line.nodeId;
     preorderParents.length = line.depth + 1;
     previousDepth = line.depth;
+    previousLine = line;
+    title = line;
   }
 }
 
@@ -149,13 +213,25 @@ function createSnapshot(
   const frozenLines = Object.freeze(
     lines.map((line) => Object.freeze({ ...line }))
   );
-  const lineByNodeId = new Map(
-    frozenLines.map((line, index) => [line.nodeId, index + 1])
-  );
+  const titleLineByNodeId = new Map<string, number>();
+  const noteRangeByNodeId = new Map<string, readonly [number, number]>();
+  for (const [index, line] of frozenLines.entries()) {
+    const lineNumber = index + 1;
+    if (line.kind !== "note") {
+      titleLineByNodeId.set(line.nodeId, lineNumber);
+      continue;
+    }
+    const range = noteRangeByNodeId.get(line.nodeId);
+    noteRangeByNodeId.set(
+      line.nodeId,
+      Object.freeze([range?.[0] ?? lineNumber, lineNumber] as const)
+    );
+  }
   return Object.freeze({
     alternativeVersionId,
     lines: frozenLines,
-    lineByNodeId
+    titleLineByNodeId,
+    noteRangeByNodeId
   });
 }
 

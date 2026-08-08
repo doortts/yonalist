@@ -24,6 +24,55 @@ function node(id: string, text: string, parentId = "page"): NoteView {
   };
 }
 
+function noted(
+  id: string,
+  text: string,
+  note: string,
+  parentId = "page"
+): NoteView {
+  return { ...node(id, text, parentId), note };
+}
+
+function pictured(
+  id: string,
+  caption: string,
+  parentId = "page",
+  contentHash = `${id}-hash`
+): NoteView {
+  return {
+    ...node(id, caption, parentId),
+    kind: "image",
+    image: {
+      contentHash,
+      originalName: `${id}.png`,
+      mimeType: "image/png",
+      byteLength: 128,
+      pixelWidth: 800,
+      pixelHeight: 400,
+      displayWidth: 800
+    }
+  };
+}
+
+function editorStub(session: MonacoOutlineSession): monaco.editor.ICodeEditor {
+  return {
+    getModel: () => session.model,
+    hasTextFocus: () => true,
+    invokeWithinContext: (
+      callback: (accessor: { get(service: unknown): unknown }) => unknown
+    ) => callback({ get: () => ({ pushElement: vi.fn() }) })
+  } as unknown as monaco.editor.ICodeEditor;
+}
+
+function shape(
+  session: MonacoOutlineSession
+): readonly string[] {
+  return session.metadata.current().lines.map(
+    ({ nodeId, kind, parentId, depth }) =>
+      `${nodeId}:${kind}:${parentId}:${depth}`
+  );
+}
+
 function receipt(revision = 2): MutationReceipt {
   return {
     revision,
@@ -363,6 +412,551 @@ describe("MonacoOutlineSession", () => {
       reverseTransitions: 1,
       metadataVersions: 2
     }));
+    await session.dispose();
+  });
+
+  it("hydrates note runs and image captions as their own lines", async () => {
+    const { session } = createSession("rich", [
+      { ...node("first", "alpha", "rich"), note: "a\nb" },
+      {
+        ...node("picture", "caption", "rich"),
+        kind: "image",
+        image: {
+          contentHash: "hash",
+          originalName: "shot.png",
+          mimeType: "image/png",
+          byteLength: 128,
+          pixelWidth: 10,
+          pixelHeight: 10,
+          displayWidth: 10
+        }
+      }
+    ]);
+
+    expect(session.model.getValue()).toBe("alpha\na\nb\ncaption");
+    expect(session.metadata.current().lines.map(
+      ({ nodeId, kind, depth }) => ({ nodeId, kind, depth })
+    )).toEqual([
+      { nodeId: "first", kind: "text", depth: 0 },
+      { nodeId: "first", kind: "note", depth: 0 },
+      { nodeId: "first", kind: "note", depth: 0 },
+      { nodeId: "picture", kind: "image", depth: 0 }
+    ]);
+    expect(session.metadata.current().noteRangeByNodeId.get("first"))
+      .toEqual([2, 3]);
+    expect(session.imageByNodeId.get("picture")).toEqual(
+      expect.objectContaining({ contentHash: "hash", displayWidth: 10 })
+    );
+    expect(session.imageByNodeId.has("first")).toBe(false);
+    await session.dispose();
+  });
+
+  it("records a new image display width without touching the model", async () => {
+    const { session, executeEditorBatch } = createSession("resize", [
+      {
+        ...node("picture", "caption", "resize"),
+        kind: "image",
+        image: {
+          contentHash: "hash",
+          originalName: "shot.png",
+          mimeType: "image/png",
+          byteLength: 128,
+          pixelWidth: 800,
+          pixelHeight: 400,
+          displayWidth: 800
+        }
+      }
+    ]);
+    const changes: boolean[] = [];
+    session.subscribeMetadata((structural) => changes.push(structural));
+    const versionId = session.model.getAlternativeVersionId();
+
+    expect(session.setImageDisplayWidth("picture", 400)).toBe(true);
+
+    expect(session.imageByNodeId.get("picture")?.displayWidth).toBe(400);
+    expect(session.model.getValue()).toBe("caption");
+    expect(session.model.getAlternativeVersionId()).toBe(versionId);
+    expect(changes).toEqual([true]);
+
+    // The width is a view concern: nothing new is owed to the editor batch.
+    expect(session.setImageDisplayWidth("picture", 400)).toBe(false);
+    expect(session.setImageDisplayWidth("missing", 400)).toBe(false);
+    await session.flush("navigation");
+    expect(executeEditorBatch).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it("coalesces caption edits into the one updateText a title would get", async () => {
+    const { session, executeEditorBatch } = createSession("caption", [
+      pictured("picture", "caption", "caption")
+    ]);
+
+    session.model.pushEditOperations(
+      [],
+      [{ range: new monaco.Range(1, 8, 1, 8), text: "!" }],
+      () => null
+    );
+    session.model.pushEditOperations(
+      [],
+      [{ range: new monaco.Range(1, 9, 1, 9), text: "?" }],
+      () => null
+    );
+
+    await session.flush("navigation");
+    expect(executeEditorBatch).toHaveBeenCalledOnce();
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "updateText", id: "picture", text: "caption!?" }
+    ]);
+    await session.dispose();
+  });
+
+  it("inserts a whole image batch at the anchor without owing a command", async () => {
+    const { session, executeEditorBatch } = createSession("ingest", [
+      node("first", "alpha", "ingest"),
+      node("child", "child", "first"),
+      node("second", "beta", "ingest")
+    ]);
+
+    const lineNumber = session.insertImageNodes({
+      anchor: { parentId: "ingest", beforeId: "second" },
+      nodes: [
+        pictured("pic-a", "a.png", "ingest"),
+        pictured("pic-b", "b.png", "ingest")
+      ]
+    });
+
+    expect(lineNumber).toBe(3);
+    expect(session.model.getValue()).toBe("alpha\nchild\na.png\nb.png\nbeta");
+    expect(shape(session)).toEqual([
+      "first:text:ingest:0",
+      "child:text:first:1",
+      "pic-a:image:ingest:0",
+      "pic-b:image:ingest:0",
+      "second:text:ingest:0"
+    ]);
+    expect(session.imageByNodeId.get("pic-b")?.contentHash).toBe("pic-b-hash");
+
+    // The backend already owns these nodes: nothing is owed to the batch.
+    await session.flush("navigation");
+    expect(executeEditorBatch).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it("appends an image batch after the anchor node's whole block", async () => {
+    const { session } = createSession("anchor", [
+      node("first", "alpha", "anchor"),
+      node("child", "child", "first")
+    ]);
+
+    expect(session.imageInsertionAnchor("first")).toEqual({
+      parentId: "anchor",
+      beforeId: null
+    });
+    expect(session.imageInsertionAnchor("child")).toEqual({
+      parentId: "first",
+      beforeId: null
+    });
+    expect(session.imageInsertionAnchor(null)).toEqual({
+      parentId: "anchor",
+      beforeId: "first"
+    });
+
+    session.insertImageNodes({
+      anchor: session.imageInsertionAnchor("first")!,
+      nodes: [pictured("pic", "a.png", "anchor")]
+    });
+
+    expect(session.model.getValue()).toBe("alpha\nchild\na.png");
+    await session.dispose();
+  });
+
+  it("falls back to the parent's end when the anchor sibling is gone", async () => {
+    const { session } = createSession("vanished", [
+      node("first", "alpha", "vanished"),
+      node("child", "child", "first")
+    ]);
+
+    // The node the anchor named was deleted between the anchor and the insert.
+    expect(session.insertImageNodes({
+      anchor: { parentId: "first", beforeId: "removed" },
+      nodes: [pictured("pic", "a.png", "first")]
+    })).toBe(3);
+    expect(session.insertImageNodes({
+      anchor: { parentId: "vanished", beforeId: "removed" },
+      nodes: [pictured("tail", "b.png", "vanished")]
+    })).toBe(4);
+
+    expect(shape(session)).toEqual([
+      "first:text:vanished:0",
+      "child:text:first:1",
+      "pic:image:first:1",
+      "tail:image:vanished:0"
+    ]);
+    await session.dispose();
+  });
+
+  it("hands an image undo to the Rust history instead of the editor batch", async () => {
+    const { session, executeEditorBatch } = createSession("image-undo", [
+      node("first", "alpha", "image-undo")
+    ]);
+    const external = { undo: vi.fn(), redo: vi.fn() };
+
+    session.insertImageNodes({
+      anchor: { parentId: "image-undo", beforeId: null },
+      nodes: [pictured("pic", "a.png", "image-undo")],
+      external
+    });
+    expect(session.model.getValue()).toBe("alpha\na.png");
+
+    await session.model.undo();
+
+    expect(session.model.getValue()).toBe("alpha");
+    expect(shape(session)).toEqual(["first:text:image-undo:0"]);
+    expect(external.undo).toHaveBeenCalledOnce();
+    expect(external.redo).not.toHaveBeenCalled();
+
+    await session.model.redo();
+
+    expect(session.model.getValue()).toBe("alpha\na.png");
+    expect(shape(session)).toEqual([
+      "first:text:image-undo:0",
+      "pic:image:image-undo:0"
+    ]);
+    expect(external.redo).toHaveBeenCalledOnce();
+
+    await session.flush("navigation");
+    expect(executeEditorBatch).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it("removes image lines, metadata and pixels for a deletion receipt", async () => {
+    const { session, executeEditorBatch } = createSession("image-remove", [
+      node("first", "alpha", "image-remove"),
+      pictured("pic-a", "a.png", "image-remove"),
+      pictured("pic-b", "b.png", "image-remove"),
+      node("second", "beta", "image-remove")
+    ]);
+    const changes: boolean[] = [];
+    session.subscribeMetadata((structural) => changes.push(structural));
+
+    expect(session.removeImageNodes(["pic-a", "pic-b", "missing"])).toBe(true);
+
+    expect(session.model.getValue()).toBe("alpha\nbeta");
+    expect(shape(session)).toEqual([
+      "first:text:image-remove:0",
+      "second:text:image-remove:0"
+    ]);
+    expect(session.imageByNodeId.has("pic-a")).toBe(false);
+    expect(changes).toEqual([true]);
+    expect(session.removeImageNodes(["pic-a"])).toBe(false);
+
+    await session.flush("navigation");
+    expect(executeEditorBatch).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it("refreshes the pixels of a replaced image without editing the model", async () => {
+    const { session } = createSession("image-replace", [
+      pictured("pic", "a.png", "image-replace")
+    ]);
+    const versionId = session.model.getAlternativeVersionId();
+
+    expect(session.setImage("pic", {
+      ...session.imageByNodeId.get("pic")!,
+      contentHash: "next-hash"
+    })).toBe(true);
+
+    expect(session.imageByNodeId.get("pic")?.contentHash).toBe("next-hash");
+    expect(session.model.getAlternativeVersionId()).toBe(versionId);
+    expect(session.setImage("missing", session.imageByNodeId.get("pic")!))
+      .toBe(false);
+    await session.dispose();
+  });
+
+  it("creates an empty note run as one command and undo step", async () => {
+    const { session, executeEditorBatch } = createSession("note-create", [
+      node("first", "alpha", "note-create"),
+      node("second", "beta", "note-create")
+    ]);
+
+    expect(session.createNote("first")).toBe(2);
+    expect(session.model.getValue()).toBe("alpha\n\nbeta");
+    expect(session.metadata.current().lines.map(({ nodeId, kind }) => (
+      `${nodeId}:${kind}`
+    ))).toEqual(["first:text", "first:note", "second:text"]);
+
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "updateNote", id: "first", note: "" }
+    ]);
+
+    await session.model.undo();
+    expect(session.model.getValue()).toBe("alpha\nbeta");
+    expect(session.metadata.current().lines.map(({ nodeId }) => nodeId))
+      .toEqual(["first", "second"]);
+    await session.dispose();
+  });
+
+  it("removes a note run as one command and undo step", async () => {
+    const { session, executeEditorBatch } = createSession("note-remove", [
+      { ...node("first", "alpha", "note-remove"), note: "kept" },
+      node("second", "beta", "note-remove")
+    ]);
+
+    expect(session.removeNote("first")).toBe(true);
+    expect(session.model.getValue()).toBe("alpha\nbeta");
+    expect(session.metadata.current().lines).toHaveLength(2);
+
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "updateNote", id: "first", note: "" }
+    ]);
+
+    await session.model.undo();
+    expect(session.model.getValue()).toBe("alpha\nkept\nbeta");
+    expect(session.metadata.current().lines).toHaveLength(3);
+    await session.dispose();
+  });
+
+  it("carries a note run through indent", async () => {
+    const { session, executeEditorBatch } = createSession("indent-note", [
+      noted("first", "alpha", "a1\na2", "indent-note"),
+      noted("second", "beta", "b1", "indent-note")
+    ]);
+    const unbind = session.bindEditor(editorStub(session));
+
+    session.indent("second");
+
+    expect(shape(session)).toEqual([
+      "first:text:indent-note:0",
+      "first:note:indent-note:0",
+      "first:note:indent-note:0",
+      "second:text:first:1",
+      "second:note:first:1"
+    ]);
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "indent", id: "second", new_parent_id: "first" }
+    ]);
+    unbind();
+    await session.dispose();
+  });
+
+  it("carries note runs through outdent and adopts each follower once", async () => {
+    const { session, executeEditorBatch } = createSession("outdent-note", [
+      node("parent", "Parent", "outdent-note"),
+      noted("first", "First", "n1\nn2", "parent"),
+      noted("second", "Second", "s1", "parent")
+    ]);
+    const unbind = session.bindEditor(editorStub(session));
+
+    session.outdent("first");
+
+    expect(shape(session)).toEqual([
+      "parent:text:outdent-note:0",
+      "first:text:outdent-note:0",
+      "first:note:outdent-note:0",
+      "first:note:outdent-note:0",
+      "second:text:first:1",
+      "second:note:first:1"
+    ]);
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      {
+        kind: "outdent",
+        id: "first",
+        new_parent_id: "outdent-note",
+        before_id: null
+      },
+      { kind: "moveNode", id: "second", parent_id: "first", before_id: null }
+    ]);
+    unbind();
+    await session.dispose();
+  });
+
+  it("rewrites a note run with its title on completion and collapse", async () => {
+    const { session } = createSession("flags-note", [
+      noted("parent", "Parent", "p1\np2", "flags-note"),
+      node("child", "Child", "parent"),
+      noted("leaf", "Leaf", "l1", "flags-note")
+    ]);
+    const unbind = session.bindEditor(editorStub(session));
+
+    session.toggleCompleted("parent");
+    expect(session.metadata.current().lines.map(({ completed }) => completed))
+      .toEqual([true, true, true, false, false, false]);
+
+    session.toggleCollapsed("parent");
+    expect(session.metadata.current().lines.map(({ collapsed }) => collapsed))
+      .toEqual([true, true, true, false, false, false]);
+
+    // A note run is not a child, so a bullet that owns only a note stays a leaf.
+    session.toggleCollapsed("leaf");
+    expect(session.metadata.current().lines[4]?.collapsed).toBe(false);
+    unbind();
+    await session.dispose();
+  });
+
+  it("creates a first child after the parent's note run", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "child-note",
+      [
+        noted("parent", "Parent", "p1\np2", "child-note"),
+        node("existing", "Existing", "parent")
+      ],
+      vi.fn().mockResolvedValue(receipt()),
+      ["inserted"]
+    );
+
+    expect(session.createFirstChild("parent")).toBe("inserted");
+    expect(session.model.getValue()).toBe("Parent\np1\np2\n\nExisting");
+    expect(shape(session)).toEqual([
+      "parent:text:child-note:0",
+      "parent:note:child-note:0",
+      "parent:note:child-note:0",
+      "inserted:text:parent:1",
+      "existing:text:parent:1"
+    ]);
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([{
+      kind: "createNode",
+      id: "inserted",
+      parent_id: "parent",
+      before_id: "existing",
+      text: ""
+    }]);
+    await session.dispose();
+  });
+
+  it("splits a note-owning title into a sibling placed after the run", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "split-note",
+      [
+        noted("first", "alpha", "n1\nn2", "split-note"),
+        node("second", "beta", "split-note")
+      ],
+      vi.fn().mockResolvedValue(receipt()),
+      ["inserted"]
+    );
+
+    expect(session.splitTitleWithNote("first", 6)).toBe(4);
+    expect(session.model.getValue()).toBe("alpha\nn1\nn2\n\nbeta");
+    expect(shape(session)).toEqual([
+      "first:text:split-note:0",
+      "first:note:split-note:0",
+      "first:note:split-note:0",
+      "inserted:text:split-note:0",
+      "second:text:split-note:0"
+    ]);
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([{
+      kind: "createNode",
+      id: "inserted",
+      parent_id: "split-note",
+      before_id: "second",
+      text: ""
+    }]);
+
+    await session.model.undo();
+    expect(session.model.getValue()).toBe("alpha\nn1\nn2\nbeta");
+    await session.dispose();
+  });
+
+  it("moves the split suffix into a first child below the run", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "split-child",
+      [
+        noted("parent", "alphabeta", "n1", "split-child"),
+        node("child", "Child", "parent")
+      ],
+      vi.fn().mockResolvedValue(receipt()),
+      ["inserted"]
+    );
+
+    expect(session.splitTitleWithNote("parent", 6)).toBe(3);
+    expect(session.model.getValue()).toBe("alpha\nn1\nbeta\nChild");
+    expect(shape(session)).toEqual([
+      "parent:text:split-child:0",
+      "parent:note:split-child:0",
+      "inserted:text:parent:1",
+      "child:text:parent:1"
+    ]);
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "updateText", id: "parent", text: "alpha" },
+      {
+        kind: "createNode",
+        id: "inserted",
+        parent_id: "parent",
+        before_id: "child",
+        text: "beta"
+      }
+    ]);
+    await session.dispose();
+  });
+
+  it("splits at column one into an empty bullet above the note owner", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "split-above",
+      [noted("first", "alpha", "n1", "split-above")],
+      vi.fn().mockResolvedValue(receipt()),
+      ["inserted"]
+    );
+
+    expect(session.splitTitleWithNote("first", 1)).toBe(2);
+    expect(session.model.getValue()).toBe("\nalpha\nn1");
+    expect(shape(session)).toEqual([
+      "inserted:text:split-above:0",
+      "first:text:split-above:0",
+      "first:note:split-above:0"
+    ]);
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([{
+      kind: "createNode",
+      id: "inserted",
+      parent_id: "split-above",
+      before_id: "first",
+      text: ""
+    }]);
+    await session.dispose();
+  });
+
+  it("keeps the text mirror in step after a note-owning split", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "split-mirror",
+      [noted("first", "alphabeta", "n1", "split-mirror")],
+      vi.fn().mockResolvedValue(receipt()),
+      ["inserted"]
+    );
+
+    session.splitTitleWithNote("first", 6);
+    // A native edit right after would throw if the line mirror had drifted.
+    session.model.pushEditOperations([], [{
+      range: new monaco.Range(2, 3, 2, 3),
+      text: "!"
+    }], () => null);
+
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "updateText", id: "first", text: "alpha" },
+      {
+        kind: "createNode",
+        id: "inserted",
+        parent_id: "split-mirror",
+        before_id: null,
+        text: "beta"
+      },
+      { kind: "updateNote", id: "first", note: "n1!" }
+    ]);
+    await session.dispose();
+  });
+
+  it("refuses a note-owning split when the node has no run", async () => {
+    const { session } = createSession("split-plain", [
+      node("first", "alpha", "split-plain")
+    ]);
+
+    expect(session.splitTitleWithNote("first", 3)).toBeNull();
     await session.dispose();
   });
 });

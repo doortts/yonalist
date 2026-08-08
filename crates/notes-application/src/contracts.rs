@@ -168,6 +168,10 @@ pub enum IpcEditorCommand {
         id: String,
         text: String,
     },
+    UpdateNote {
+        id: String,
+        note: String,
+    },
     SplitNode {
         id: String,
         new_id: String,

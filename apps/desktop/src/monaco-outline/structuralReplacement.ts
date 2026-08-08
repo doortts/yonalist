@@ -5,6 +5,11 @@ export interface StructuralReplacementPlan {
   readonly lines: readonly OutlineLineMetadata[];
   readonly forward: readonly IpcEditorCommand[];
   readonly inverse: readonly IpcEditorCommand[];
+  /**
+   * Set when the plan rewrote a note run. The caller reassembles the whole run
+   * into one updateNote, because only it can read the lines outside this range.
+   */
+  readonly noteNodeId?: string;
 }
 
 interface StructuralReplacementInput {
@@ -19,6 +24,21 @@ interface StructuralReplacementInput {
 export function planStructuralReplacement(
   input: StructuralReplacementInput
 ): StructuralReplacementPlan {
+  // An image row is an indivisible node, and a split or merge that spans two
+  // kinds has no meaning to plan (design §2b-5, §2b-6). The native gestures
+  // are refused upstream; these guard the paths that bypass them.
+  if (input.oldLines.some((line) => line.kind === "image")) {
+    throw new Error(
+      "An outline image line cannot take part in a split or merge."
+    );
+  }
+  const first = requiredLine(input.oldLines, 0);
+  if (input.oldLines.some((line) => line.kind !== first.kind)) {
+    throw new Error("A structural outline edit cannot cross line kinds.");
+  }
+  if (first.kind === "note") {
+    return planNoteRunReplacement(input, first);
+  }
   if (input.oldLines.length === 1 && input.newTexts.length === 1) {
     const source = requiredLine(input.oldLines, 0);
     const previous = requiredText(input.oldTexts, 0);
@@ -40,12 +60,35 @@ export function planStructuralReplacement(
   }
   if (input.oldLines.length === 2 && input.newTexts.length === 1) {
     if (!isRemovableEmptyTail(input)) {
-      assertReplaceableSiblings(input.allLines, input.oldLines);
+      assertReplaceableSiblings(input);
     }
     return planBackwardMerge(input);
   }
-  assertReplaceableSiblings(input.allLines, input.oldLines);
+  assertReplaceableSiblings(input);
   return planGeneralReplacement(input);
+}
+
+/**
+ * Splitting or merging inside a note run only reshapes the run's newlines: no
+ * node is born and none dies, so the plan is metadata plus a caller-side
+ * updateNote (design §2b-1, §2b-2).
+ */
+function planNoteRunReplacement(
+  input: StructuralReplacementInput,
+  source: OutlineLineMetadata
+): StructuralReplacementPlan {
+  if (input.oldLines.some((line) => line.nodeId !== source.nodeId)) {
+    throw new Error("A note run edit cannot cross two note owners.");
+  }
+  if (input.newTexts.length === 0) {
+    throw new Error("A note run edit must leave at least one note line.");
+  }
+  return {
+    lines: input.newTexts.map(() => source),
+    forward: [],
+    inverse: [],
+    noteNodeId: source.nodeId
+  };
 }
 
 function isRemovableEmptyTail(
@@ -63,6 +106,13 @@ function planSplit(
 ): StructuralReplacementPlan {
   const source = requiredLine(input.oldLines, 0);
   const previousText = requiredText(input.oldTexts, 0);
+  // Monaco puts the split line between the title and its note run, which no
+  // plan can repair. session.splitTitleWithNote owns this gesture instead.
+  if (ownsNoteRun(input.allLines, input.startIndex, source)) {
+    throw new Error(
+      "A split of a title that owns a note run must go through the session."
+    );
+  }
   if (input.allocatedIds.length !== input.newTexts.length - 1) {
     throw new Error("A split did not receive one stable ID per suffix line.");
   }
@@ -445,12 +495,16 @@ function pushTextUpdate(
 }
 
 function assertReplaceableSiblings(
-  allLines: readonly OutlineLineMetadata[],
-  lines: readonly OutlineLineMetadata[]
+  input: StructuralReplacementInput
 ): void {
-  const first = requiredLine(lines, 0);
+  const { allLines, oldLines } = input;
+  const first = requiredLine(oldLines, 0);
+  const last = requiredLine(oldLines, oldLines.length - 1);
   if (
-    lines.some(
+    // Only the last line's run can sit outside the replaced range: an interior
+    // run would be inside it and the kind check has already refused that.
+    ownsNoteRun(allLines, input.startIndex + oldLines.length - 1, last) ||
+    oldLines.some(
       (line) =>
         line.parentId !== first.parentId ||
         line.depth !== first.depth ||
@@ -461,6 +515,16 @@ function assertReplaceableSiblings(
       "A native multi-line replacement may only cross same-parent leaf bullets."
     );
   }
+}
+
+/** A note run always follows its title line (V2), so one lookahead decides. */
+function ownsNoteRun(
+  allLines: readonly OutlineLineMetadata[],
+  lineIndex: number,
+  line: OutlineLineMetadata
+): boolean {
+  const next = allLines[lineIndex + 1];
+  return next?.kind === "note" && next.nodeId === line.nodeId;
 }
 
 function nextSiblingId(

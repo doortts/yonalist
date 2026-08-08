@@ -174,6 +174,29 @@ Monaco로 열리고, 레거시 계약(아래 인벤토리)이 Monaco 위에서 �
   분할 페인 동시 편집, ingest 중 세션 충돌
 - 발견 항목은 재작업 지시서로 Opus 5에 위임, 게이트 재통과까지 반복
 
+### 진행 기록 (§6 규칙에 따른 Phase별 결과)
+
+브랜치 `feature/monaco-notes-images`, 워크트리 `.worktrees/monaco-notes-images`.
+게이트 수치는 각 Phase 마지막 커밋에서 `vitest run --maxWorkers=2`를 다시
+돌려 측정했다. tsc 0 / eslint 0은 모든 Phase에서 통과했다.
+
+| Phase | 커밋 | 프런트 테스트 |
+|---|---|---|
+| 0 설계 | 2bc23237 | — |
+| 1 노트 데이터 계층 | 9a392a3e, e06e0a0f, 14ed569b, 33b777e5, 1e1bb67e, 8646fcab, 1f9e8ec3 | 65 files / 337 |
+| 2 노트 UI | 89b267d0, 535e537c, ac040ce8, 6c70c330 | 65 files / 355 |
+| 3 이미지 노드 표시 | 97eac1ea, b11dc87c, 58905ed9, 408d7aa5, e0370e41 | 66 files / 373 |
+| 4 이미지 편집 흐름 | 0511b977, 62f903d2, 1c7944e8, e6227421 | 67 files / 392 |
+| 5 게이팅 제거 + 통합 | ba916843, 9a116681, 5557a030, b8bace46, e22bf116, ea65133f | 68 files / 406 |
+
+Phase 5 종료 시점 전체 게이트: tsc 0, eslint 0, vitest 68 files / 406 tests,
+`cargo test -p notes-application -p notes-sqlite -p notes-core` 130 passed,
+`test:v2:contracts` PASS (37 files), `test:v2:architecture` PASS.
+
+Phase 5에서 계획 밖으로 추가한 것 하나: 헤더의 "Upload image" 픽커도 세션
+경로로 돌렸다(ea65133f). 네이티브 드롭과 같은 구멍의 다른 호출자였고
+게이팅을 걷어낸 뒤에는 실제로 도달 가능한 경로가 됐기 때문이다.
+
 ## 5. 리스크와 완화
 
 | 리스크 | 완화 |

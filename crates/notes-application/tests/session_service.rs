@@ -206,6 +206,54 @@ fn editor_batch_commits_once_and_uses_no_rust_history() {
 }
 
 #[test]
+fn editor_batch_update_note_writes_the_node_note() {
+    let storage = FakeStorage::default();
+    let service = NotesService::new(&storage, "session", 0);
+    for (request_id, revision, notes_command) in [
+        (
+            "create-page",
+            0,
+            IpcNotesCommand::CreatePage {
+                id: "page".into(),
+                text: "Inbox".into(),
+            },
+        ),
+        (
+            "create-first",
+            1,
+            IpcNotesCommand::CreateNode {
+                id: "first".into(),
+                parent_id: "page".into(),
+                before_id: None,
+                text: "alpha".into(),
+            },
+        ),
+    ] {
+        service
+            .execute(command(request_id, revision, notes_command))
+            .unwrap();
+    }
+
+    service
+        .execute(command(
+            "editor-note",
+            2,
+            IpcNotesCommand::ApplyEditorBatch {
+                commands: vec![IpcEditorCommand::UpdateNote {
+                    id: "first".into(),
+                    note: "first line\nsecond line".into(),
+                }],
+            },
+        ))
+        .expect("editor batch");
+
+    assert_eq!(
+        storage.editor_fields("first").map(|fields| fields.0),
+        Some("first line\nsecond line".into())
+    );
+}
+
+#[test]
 fn editor_batch_rejects_rust_history_groups_without_committing() {
     let storage = FakeStorage::default();
     let service = NotesService::new(&storage, "session", 0);

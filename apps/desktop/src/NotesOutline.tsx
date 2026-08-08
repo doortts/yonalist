@@ -26,9 +26,13 @@ import type {
 } from "./monaco-outline/sessionRegistry";
 import type { MonacoOutlineSession } from "./monaco-outline/session";
 import type {
-  MonacoOutlineFocusRequest
+  MonacoOutlineFocusRequest, MonacoOutlineImagePort, MonacoOutlineIngestRequest
 } from "./MonacoOutlineSurface";
 import { loadMonacoOutlineRuntime } from "./monaco-outline/runtimeLoader";
+import type {
+  ImageZoneLightboxRequest
+} from "./monaco-outline/imageZones";
+import { imageResidencyForStore } from "./imageResidency";
 
 const OutlineSelectionActionBar = lazy(() =>
   import("./OutlineSelectionActionBar").then((module) => ({
@@ -42,6 +46,10 @@ const MonacoOutlineSurface = lazy(() =>
   loadMonacoOutlineRuntime().then(({ Surface }) => ({ default: Surface }))
 );
 const NotesExportBoundary = lazy(() => import("./NotesExportBoundary"));
+const ImageLightbox = lazy(() =>
+  import("./ImageLightbox").then((module) => ({
+    default: module.ImageLightbox
+  })));
 const NotesChildComposer = lazy(() =>
   import("./NotesChildComposer").then((module) => ({
     default: module.NotesChildComposer
@@ -92,6 +100,39 @@ export function NotesOutline({
     useState<MonacoOutlineSession | null>(null);
   const [monacoFocusRequest, setMonacoFocusRequest] =
     useState<MonacoOutlineFocusRequest | null>(null);
+  const [monacoLightbox, setMonacoLightbox] =
+    useState<ImageZoneLightboxRequest | null>(null);
+  const [monacoIngestRequest, setMonacoIngestRequest] =
+    useState<MonacoOutlineIngestRequest | null>(null);
+  const outlineSurface = outlineSurfaceFromSearch(location.search);
+  // Notes and image nodes are Monaco rows now, so nothing about the page's
+  // content sends it back to React; only a page the session refused does.
+  const useMonaco = outlineSurface === "monaco" &&
+    page !== undefined &&
+    unsupportedMonacoPageId !== page.id;
+  const monacoImages = useMemo<MonacoOutlineImagePort>(() => ({
+    residency: imageResidencyForStore(store),
+    resize: (nodeId, displayWidth) => store.images.resize(nodeId, displayWidth),
+    openLightbox: setMonacoLightbox,
+    import: ({ parentId, beforeId, candidates }) =>
+      store.images.importAfter(parentId, beforeId, candidates)
+        .then(({ nodeIds, receipt }) => ({
+          nodeIds,
+          nodes: receipt.changedNodes
+        })),
+    importPaths: ({ parentId, beforeId, paths }) =>
+      store.images.importPathsAfter(parentId, beforeId, paths)
+        .then(({ nodeIds, receipt }) => ({
+          nodeIds,
+          nodes: receipt.changedNodes
+        })),
+    remove: (nodeIds) => store.deleteSubtrees(nodeIds),
+    // Restoring the trashed subtrees is what makes an image undo reversible;
+    // the bytes outlive the delete for exactly this (contract I6).
+    restore: async (nodeIds) => {
+      for (const nodeId of nodeIds) await store.restoreSubtree(nodeId);
+    }
+  }), [store]);
   const index = useMemo(() => new OutlineIndex(state.nodes), [state.nodes]);
   const zoomRoot = zoomRootId
     ? index.node(zoomRootId)
@@ -110,7 +151,16 @@ export function NotesOutline({
     store,
     outlineRootId,
     index,
-    scopeRef
+    scopeRef,
+    // A drop or a picker on a Monaco pane is the editor's gesture, not a
+    // row's: the session anchors it and the ingest port writes it. Going
+    // straight to the store here would make the page's second writer.
+    monacoIngest: useMonaco
+      ? (payload) => setMonacoIngestRequest((current) => ({
+          epoch: (current?.epoch ?? 0) + 1,
+          payload
+        }))
+      : null
   });
   const expandedBodyNodes = useMemo(
     () => hideCollapsedSubtrees(allBodyNodes, outlineRootId, index),
@@ -271,20 +321,12 @@ export function NotesOutline({
     () => new Set(selection.selectedIds),
     [selection.selectedIds]
   );
-  const outlineSurface = outlineSurfaceFromSearch(location.search);
   if (status === "loading" && !page) {
     return <section className="notes-outline"><p className="notes-pane-state">Loading notes...</p></section>;
   }
   if (!page) {
     return <section className="notes-outline"><p className="notes-pane-state">No outline yet.</p></section>;
   }
-  const useMonaco = outlineSurface === "monaco" &&
-    unsupportedMonacoPageId !== page.id &&
-    state.nodes.every((node) =>
-      node.kind === "bullet" &&
-      node.image === null &&
-      node.note.trim().length === 0
-    );
   rowRuntime.update({
     nodes: state.nodes,
     visibleNodes: bodyNodes,
@@ -479,11 +521,22 @@ export function NotesOutline({
                 showCompleted={showCompleted}
                 registry={monacoSessions}
                 focusRequest={monacoFocusRequest}
+                ingestRequest={monacoIngestRequest}
+                images={monacoImages}
                 onSessionChange={setMonacoSession}
                 onZoomRootChange={onZoomRootChange}
                 onOpenSplit={(nodeId) => onOpenSplit?.(nodeId)}
                 onUnsupported={() => setUnsupportedMonacoPageId(page.id)}
               />
+              {monacoLightbox && (
+                <ImageLightbox
+                  originalName={monacoLightbox.originalName}
+                  sourceUrl={monacoLightbox.sourceUrl}
+                  pixelWidth={monacoLightbox.pixelWidth}
+                  pixelHeight={monacoLightbox.pixelHeight}
+                  onClose={() => setMonacoLightbox(null)}
+                />
+              )}
             </Suspense>
           ) : (
             <>

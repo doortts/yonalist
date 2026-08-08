@@ -105,6 +105,16 @@ export class MonacoOutlinePersistenceQueue {
     }
   }
 
+  /**
+   * An out-of-band writer for this page (the image IPC) failed. The queue is
+   * the one place the outline shows a write it cannot finish, so the failure
+   * lands here with the same verdict a batch failure gets.
+   */
+  failExternally(cause: unknown): void {
+    if (this.state.kind === "closed") return;
+    this.pauseAfterFailure(cause);
+  }
+
   async retry(): Promise<void> {
     if (this.state.kind === "closed") return;
     this.paused = false;
@@ -127,12 +137,14 @@ export class MonacoOutlinePersistenceQueue {
   }
 
   private coalesceTextCommand(command: IpcEditorCommand): void {
-    if (command.kind !== "updateText") {
+    // A note rewrite carries the node's whole note, so it supersedes an
+    // earlier pending one exactly the way a title rewrite does.
+    if (command.kind !== "updateText" && command.kind !== "updateNote") {
       this.pendingCommands.push(command);
       return;
     }
     const index = this.pendingCommands.findIndex((candidate) =>
-      candidate.kind === "updateText" && candidate.id === command.id
+      candidate.kind === command.kind && candidate.id === command.id
     );
     if (index === -1) {
       this.pendingCommands.push(command);

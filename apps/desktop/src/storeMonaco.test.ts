@@ -86,13 +86,44 @@ describe("NotesStore Monaco page bridge", () => {
     expect(page).toEqual({ revision: 1, viewport });
   });
 
-  it("rejects pages that need unsupported rich node rendering", async () => {
+  it("loads a page whose nodes carry notes and images", async () => {
     const viewport: ViewportPage = {
       pageId: "page-1",
       anchorId: null,
       beforeCursor: null,
       afterCursor: null,
-      nodes: [{ ...bullet("one", 1_024), note: "supporting note" }]
+      nodes: [
+        { ...bullet("one", 1_024), note: "supporting note" },
+        {
+          ...bullet("two", 2_048),
+          kind: "image",
+          text: "cat.png",
+          image: {
+            contentHash: "a".repeat(64),
+            originalName: "cat.png",
+            mimeType: "image/png",
+            byteLength: 4,
+            pixelWidth: 800,
+            pixelHeight: 400,
+            displayWidth: 800
+          }
+        }
+      ]
+    };
+    const store = new NotesStore(api(vi.fn().mockResolvedValue(viewport)));
+    await store.bootstrap();
+
+    await expect(store.loadMonacoPage("page-1"))
+      .resolves.toEqual({ revision: 1, viewport });
+  });
+
+  it("still refuses a page the single viewport query could not hold", async () => {
+    const viewport: ViewportPage = {
+      pageId: "page-1",
+      anchorId: null,
+      beforeCursor: null,
+      afterCursor: "cursor-50000",
+      nodes: [bullet("one", 1_024)]
     };
     const store = new NotesStore(api(vi.fn().mockResolvedValue(viewport)));
     await store.bootstrap();

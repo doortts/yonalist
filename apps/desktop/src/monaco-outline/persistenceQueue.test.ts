@@ -47,6 +47,8 @@ describe("MonacoOutlinePersistenceQueue", () => {
     queue.enqueue([update("a", "A")], "text");
     queue.enqueue([update("a", "AB")], "text");
     queue.enqueue([update("b", "B")], "text");
+    queue.enqueue([{ kind: "updateNote", id: "a", note: "N" }], "text");
+    queue.enqueue([{ kind: "updateNote", id: "a", note: "NO" }], "text");
 
     await vi.advanceTimersByTimeAsync(299);
     expect(executeEditorBatch).not.toHaveBeenCalled();
@@ -57,7 +59,8 @@ describe("MonacoOutlinePersistenceQueue", () => {
     expect(executeEditorBatch).toHaveBeenCalledOnce();
     expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
       update("a", "AB"),
-      update("b", "B")
+      update("b", "B"),
+      { kind: "updateNote", id: "a", note: "NO" }
     ]);
     expect(queue.getSnapshot()).toEqual({ kind: "saved", pending: 0 });
   });

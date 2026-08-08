@@ -9,6 +9,25 @@ describe("browser-only preview adapter", () => {
     );
   });
 
+  it("seeds a note and an image row for the Monaco surface to draw", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const nodes = boot.viewport!.nodes;
+
+    expect(nodes.find((node) => node.note.length > 0)?.note)
+      .toContain("\n");
+    const image = nodes.find((node) => node.kind === "image");
+    expect(image?.image).toEqual(expect.objectContaining({
+      originalName: "sample.png",
+      pixelWidth: 640
+    }));
+    // No bytes are seeded with it, so the row has to fail into its
+    // placeholder rather than take the preview down.
+    await expect(previewNotesApi.readImage({
+      sessionId: boot.sessionId,
+      nodeId: image!.id
+    })).rejects.toThrow();
+  });
+
   it("boots a bounded editable outline and applies command patches", async () => {
     const boot = await previewNotesApi.bootstrap();
     expect(boot.activePageId).not.toBeNull();

@@ -82,10 +82,12 @@ export function handleMultilinePaste(
     const position = siblings.findIndex((candidate) => candidate.id === node.id);
     const beforeId = position >= 0 ? siblings[position + 1]?.id ?? null : null;
     const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
-    void store.images.importAfter(node.parentId, beforeId, images).then((id) => {
-      if (scope) requestAnimationFrame(() =>
-        focusOutlineEditor(scope, id, "start"));
-    });
+    void store.images.importAfter(node.parentId, beforeId, images)
+      .then(({ nodeIds }) => {
+        const id = nodeIds[0];
+        if (scope && id) requestAnimationFrame(() =>
+          focusOutlineEditor(scope, id, "start"));
+      });
     return;
   }
   const roots = parsePastedOutline(event.clipboardData.getData("text/plain"));

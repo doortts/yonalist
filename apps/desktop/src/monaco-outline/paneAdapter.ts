@@ -4,8 +4,9 @@ import {
   realignCaretWithInjectedText,
   setEditorHiddenAreas
 } from "./internalAdapter";
-import type { OutlineMetadataSnapshot } from "./metadata";
+import { outlineBlockEnd, type OutlineMetadataSnapshot } from "./metadata";
 import { PaneDecorationWindow } from "./decorationWindow";
+import { PaneImageZones, type ImageZonePort } from "./imageZones";
 import type { MonacoOutlinePaneBinding } from "./plugin";
 import type { MonacoOutlineSession } from "./session";
 
@@ -27,6 +28,8 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
   private readonly unsubscribeMetadata: () => void;
   private readonly hiddenAreaSource: string;
   private readonly decorationWindow: PaneDecorationWindow;
+  private readonly imageZones: PaneImageZones | null;
+  private hiddenRanges: readonly monaco.Range[] = [];
   private zoomRootId: string | null;
   private showCompleted: boolean;
   private disposed = false;
@@ -38,14 +41,26 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
     readonly zoomRootId: string | null;
     readonly showCompleted: boolean;
     readonly navigation: OutlinePaneNavigation;
+    readonly images?: ImageZonePort;
   }) {
     this.zoomRootId = input.zoomRootId;
     this.showCompleted = input.showCompleted;
     this.hiddenAreaSource = `yonalist-outline-${input.paneId}`;
     this.decorationWindow = new PaneDecorationWindow({
       editor: input.editor,
-      metadata: () => input.session.metadata.current()
+      metadata: () => input.session.metadata.current(),
+      onRefresh: () => this.syncImageZones()
     });
+    const images = input.images;
+    this.imageZones = images
+      ? new PaneImageZones({
+          editor: input.editor,
+          port: {
+            ...images,
+            resize: (nodeId, width) => this.commitImageWidth(nodeId, width)
+          }
+        })
+      : null;
     this.unsubscribeMetadata = input.session.subscribeMetadata(
       (change) => this.handleMetadataChange(change)
     );
@@ -102,6 +117,7 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
     if (this.disposed) return;
     this.disposed = true;
     this.unsubscribeMetadata();
+    this.imageZones?.dispose();
     this.decorationWindow.dispose();
     this.input.editor.getDomNode()?.removeAttribute("data-empty-zoom");
     setEditorHiddenAreas(
@@ -122,15 +138,41 @@ export class MonacoOutlinePaneAdapter implements MonacoOutlinePaneBinding {
     } else {
       editorHost?.removeAttribute("data-empty-zoom");
     }
+    this.hiddenRanges = hiddenRangesForPane(
+      metadata,
+      this.zoomRootId,
+      this.showCompleted
+    );
     setEditorHiddenAreas(
       this.input.editor,
-      hiddenRangesForPane(
-        metadata,
-        this.zoomRootId,
-        this.showCompleted
-      ),
+      this.hiddenRanges,
       this.hiddenAreaSource
     );
+    this.syncImageZones();
+  }
+
+  /**
+   * Design §5: the session batch is the single writer, so its queue drains
+   * before the image IPC claims a revision, and the width lands in the session
+   * only once the backend has it.
+   */
+  private async commitImageWidth(
+    nodeId: string,
+    displayWidth: number
+  ): Promise<void> {
+    await this.input.session.flush("blur");
+    await this.input.images!.resize(nodeId, displayWidth);
+    this.input.session.setImageDisplayWidth(nodeId, displayWidth);
+  }
+
+  private syncImageZones(): void {
+    if (!this.imageZones || this.disposed) return;
+    this.imageZones.sync({
+      lines: this.input.session.metadata.current().lines,
+      images: this.input.session.imageByNodeId,
+      window: this.decorationWindow.window,
+      hidden: this.hiddenRanges
+    });
   }
 
   private handleMetadataChange(structural: boolean): void {
@@ -150,17 +192,12 @@ export function visibleRangesForZoom(
   if (nodeId === null) {
     return [new monaco.Range(1, 1, metadata.lines.length, 1)];
   }
-  const lineNumber = metadata.lineByNodeId.get(nodeId);
+  const lineNumber = metadata.titleLineByNodeId.get(nodeId);
   if (lineNumber === undefined) return [];
   const startIndex = lineNumber - 1;
-  const depth = metadata.lines[startIndex]!.depth;
-  let endIndex = startIndex + 1;
-  while (
-    endIndex < metadata.lines.length &&
-    metadata.lines[endIndex]!.depth > depth
-  ) {
-    endIndex += 1;
-  }
+  // The zoom shows what hangs off the title: its note run as much as its
+  // subtree, so a bullet carrying only a note is not an empty zoom.
+  const endIndex = outlineBlockEnd(metadata.lines, startIndex);
   if (endIndex === startIndex + 1) return [];
   return [new monaco.Range(lineNumber + 1, 1, endIndex, 1)];
 }

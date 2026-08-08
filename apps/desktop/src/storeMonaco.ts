@@ -13,12 +13,8 @@ export interface MonacoPageSnapshot {
 export class MonacoPageUnsupportedError extends Error {
   readonly code = "monaco_page_unsupported";
 
-  constructor(
-    readonly reason: "partial-viewport" | "rich-node"
-  ) {
-    super(reason === "partial-viewport"
-      ? "The page is too large to open in the Monaco outline."
-      : "The page contains nodes that the Monaco outline cannot render.");
+  constructor() {
+    super("The page is too large to open in the Monaco outline.");
     this.name = "MonacoPageUnsupportedError";
   }
 }
@@ -56,15 +52,14 @@ export class StoreMonaco {
     throw new Error("The Notes revision changed while loading the Monaco page.");
   }
 
+  /**
+   * Notes and image nodes render on the Monaco surface since Phase 5, so the
+   * only page it still refuses is one the single viewport query cannot hold —
+   * incremental loading is an explicit non-goal of that plan.
+   */
   private assertPageSupported(viewport: ViewportPage): void {
     if (viewport.beforeCursor !== null || viewport.afterCursor !== null) {
-      throw new MonacoPageUnsupportedError("partial-viewport");
+      throw new MonacoPageUnsupportedError();
     }
-    const hasRichNode = viewport.nodes.some((node) =>
-      node.kind !== "bullet" ||
-      node.image !== null ||
-      node.note.length > 0
-    );
-    if (hasRichNode) throw new MonacoPageUnsupportedError("rich-node");
   }
 }

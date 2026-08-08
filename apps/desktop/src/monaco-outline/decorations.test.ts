@@ -65,6 +65,28 @@ describe("outline decorations", () => {
     expect(decorations[1]?.options.inlineClassName).toBeUndefined();
   });
 
+  it("marks an image caption and leaves its chevron slot a leaf", () => {
+    const decorations = buildOutlineDecorations([
+      { ...line("picture", "page", 0), kind: "image" as const },
+      { ...line("done", "page", 0), kind: "image" as const, completed: true }
+    ], [1, 2]);
+
+    expect(decorations[0]?.options.inlineClassName).toBe(
+      "yonalist-outline-image-caption"
+    );
+    expect(decorations[0]?.options.before).toMatchObject({
+      content: "▸  ",
+      inlineClassName:
+        "yonalist-outline-chevron yonalist-outline-chevron--leaf"
+    });
+    expect(decorations[0]?.options.after?.inlineClassName).toBe(
+      "yonalist-outline-injected-bullet"
+    );
+    expect(decorations[1]?.options.inlineClassName).toBe(
+      "yonalist-outline-completed-line yonalist-outline-image-caption"
+    );
+  });
+
   it("keeps the injected prefix anchored when typing at column one", () => {
     const model = monaco.editor.createModel("", "plaintext");
     const [decoration] = buildOutlineDecorations([line("root", "page", 0)], [1]);
@@ -76,6 +98,62 @@ describe("outline decorations", () => {
     }], () => null);
 
     expect(model.getDecorationRange(id!)).toEqual(new monaco.Range(1, 1, 1, 1));
+    model.dispose();
+  });
+
+  it("renders a note line as bare indent aligned with the title body", () => {
+    const title = { ...line("first", "page", 1), kind: "note" as const };
+    const decorations = buildOutlineDecorations([
+      line("first", "page", 1),
+      title
+    ], [1, 2]);
+    const titleOptions = decorations[0]!.options;
+    const noteOptions = decorations[1]!.options;
+
+    expect(noteOptions.before?.content).toBe(" ".repeat(10));
+    // The note text starts where the title text starts, at the same depth.
+    expect(noteOptions.before?.content).toHaveLength(
+      (titleOptions.before?.content?.length ?? 0) +
+        (titleOptions.after?.content?.length ?? 0)
+    );
+    expect(noteOptions.inlineClassName).toBe("yonalist-outline-note-line");
+    expect(noteOptions.after).toBeUndefined();
+    expect(noteOptions.before?.attachedData).toBeUndefined();
+    expect(noteOptions.stickiness).toBe(
+      monaco.editor.TrackedRangeStickiness.GrowsOnlyWhenTypingBefore
+    );
+  });
+
+  it("keeps a chevron on a parent whose note run precedes its children", () => {
+    const decorations = buildOutlineDecorations([
+      line("root", "page", 0),
+      { ...line("root", "page", 0), kind: "note" as const },
+      line("child", "root", 1)
+    ], [1]);
+
+    expect(decorations[0]?.options.before).toMatchObject({
+      content: "▾  ",
+      attachedData: { kind: "yonalist-chevron", nodeId: "root" }
+    });
+  });
+
+  it("keeps a note indent anchored when typing at column one", () => {
+    const model = monaco.editor.createModel("alpha\n", "plaintext");
+    const [decoration] = buildOutlineDecorations(
+      [
+        line("root", "page", 0),
+        { ...line("root", "page", 0), kind: "note" as const }
+      ],
+      [2]
+    );
+    const [id] = model.deltaDecorations([], [decoration!]);
+
+    model.pushEditOperations([], [{
+      range: new monaco.Range(2, 1, 2, 1),
+      text: "메모"
+    }], () => null);
+
+    expect(model.getDecorationRange(id!)).toEqual(new monaco.Range(2, 1, 2, 1));
     model.dispose();
   });
 

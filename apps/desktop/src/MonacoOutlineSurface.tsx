@@ -13,11 +13,17 @@ import {
 import {
   assertMonacoInternalCapabilities
 } from "./monaco-outline/internalAdapter";
+import type {
+  MonacoImageIngestPort,
+  MonacoImagePayload
+} from "./monaco-outline/imageIngest";
+import type { ImageZonePort } from "./monaco-outline/imageZones";
 import {
   MonacoOutlinePaneAdapter
 } from "./monaco-outline/paneAdapter";
 import {
-  bindYonalistOutlineEditor
+  bindYonalistOutlineEditor,
+  type BoundYonalistOutlineEditor
 } from "./monaco-outline/plugin";
 import type {
   MonacoOutlineSession
@@ -42,6 +48,19 @@ export interface MonacoOutlineFocusRequest {
   readonly nodeId: string;
 }
 
+/**
+ * One image gesture the pane caught outside the editor: an OS file drop or the
+ * header's picker. Drop coordinates never pick a row — the import lands after
+ * everything the active node owns, the same anchor a paste uses.
+ */
+export interface MonacoOutlineIngestRequest {
+  readonly epoch: number;
+  readonly payload: MonacoImagePayload;
+}
+
+/** Everything the outline's image rows need from the store, in one object. */
+export type MonacoOutlineImagePort = ImageZonePort & MonacoImageIngestPort;
+
 export default function MonacoOutlineSurface({
   pageId,
   paneId,
@@ -49,6 +68,8 @@ export default function MonacoOutlineSurface({
   showCompleted,
   registry,
   focusRequest,
+  ingestRequest,
+  images,
   onSessionChange,
   onZoomRootChange,
   onOpenSplit,
@@ -60,6 +81,9 @@ export default function MonacoOutlineSurface({
   readonly showCompleted: boolean;
   readonly registry: MonacoSessionRegistry;
   readonly focusRequest: MonacoOutlineFocusRequest | null;
+  readonly ingestRequest?: MonacoOutlineIngestRequest | null;
+  /** Bytes, image writes and the lightbox host, all owned by NotesOutline. */
+  readonly images?: MonacoOutlineImagePort;
   readonly onSessionChange: (session: MonacoOutlineSession | null) => void;
   readonly onZoomRootChange: (nodeId: string) => void;
   readonly onOpenSplit: (nodeId: string) => void;
@@ -69,13 +93,16 @@ export default function MonacoOutlineSurface({
   const editorRef =
     useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const paneRef = useRef<MonacoOutlinePaneAdapter | null>(null);
+  const bindingRef = useRef<BoundYonalistOutlineEditor | null>(null);
   const zoomRef = useRef(zoomRootId);
   const completedRef = useRef(showCompleted);
   const onZoomRef = useRef(onZoomRootChange);
   const onOpenSplitRef = useRef(onOpenSplit);
   const onUnsupportedRef = useRef(onUnsupported);
   const onSessionChangeRef = useRef(onSessionChange);
+  const imagesRef = useRef(images);
   const handledFocusEpochRef = useRef<number | null>(null);
+  const handledIngestEpochRef = useRef<number | null>(null);
   const [session, setSession] = useState<MonacoOutlineSession | null>(null);
   zoomRef.current = zoomRootId;
   completedRef.current = showCompleted;
@@ -83,13 +110,14 @@ export default function MonacoOutlineSurface({
   onOpenSplitRef.current = onOpenSplit;
   onUnsupportedRef.current = onUnsupported;
   onSessionChangeRef.current = onSessionChange;
+  imagesRef.current = images;
 
   useEffect(() => {
     let cancelled = false;
     let release: (() => Promise<void>) | null = null;
     let editor: monaco.editor.IStandaloneCodeEditor | null = null;
     let pane: MonacoOutlinePaneAdapter | null = null;
-    let binding: monaco.IDisposable | null = null;
+    let binding: BoundYonalistOutlineEditor | null = null;
     let blur: monaco.IDisposable | null = null;
     try {
       assertMonacoInternalCapabilities();
@@ -117,13 +145,27 @@ export default function MonacoOutlineSurface({
         navigation: {
           zoomSamePane: (nodeId) => onZoomRef.current(nodeId),
           openSecondary: (nodeId) => onOpenSplitRef.current(nodeId)
+        },
+        images: imagesRef.current && {
+          residency: imagesRef.current.residency,
+          resize: (nodeId, width) =>
+            imagesRef.current!.resize(nodeId, width),
+          openLightbox: (request) =>
+            imagesRef.current?.openLightbox(request)
         }
       });
       paneRef.current = pane;
       binding = bindYonalistOutlineEditor(editor, {
         session: lease.session,
-        pane
+        pane,
+        images: imagesRef.current && {
+          import: (request) => imagesRef.current!.import(request),
+          importPaths: (request) => imagesRef.current!.importPaths(request),
+          remove: (nodeIds) => imagesRef.current!.remove(nodeIds),
+          restore: (nodeIds) => imagesRef.current!.restore(nodeIds)
+        }
       });
+      bindingRef.current = binding;
       blur = editor.onDidBlurEditorText(() => {
         void lease.session.flush("blur").catch(() => undefined);
       });
@@ -137,6 +179,7 @@ export default function MonacoOutlineSurface({
       cancelled = true;
       editorRef.current = null;
       paneRef.current = null;
+      bindingRef.current = null;
       onSessionChangeRef.current(null);
       blur?.dispose();
       binding?.dispose();
@@ -167,13 +210,25 @@ export default function MonacoOutlineSurface({
       return;
     }
     const lineNumber = session.metadata.current()
-      .lineByNodeId.get(focusRequest.nodeId);
+      .titleLineByNodeId.get(focusRequest.nodeId);
     if (lineNumber === undefined) return;
     handledFocusEpochRef.current = focusRequest.epoch;
     editorRef.current.setPosition({ lineNumber, column: 1 });
     editorRef.current.revealLineInCenterIfOutsideViewport(lineNumber);
     editorRef.current.focus();
   }, [focusRequest, session]);
+
+  useEffect(() => {
+    if (
+      !session ||
+      !ingestRequest ||
+      handledIngestEpochRef.current === ingestRequest.epoch
+    ) {
+      return;
+    }
+    handledIngestEpochRef.current = ingestRequest.epoch;
+    bindingRef.current?.ingestImages(ingestRequest.payload);
+  }, [ingestRequest, session]);
 
   useEffect(() => {
     paneRef.current?.setZoomRoot(zoomRootId);
