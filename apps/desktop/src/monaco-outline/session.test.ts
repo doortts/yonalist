@@ -33,6 +33,27 @@ function noted(
   return { ...node(id, text, parentId), note };
 }
 
+function pictured(
+  id: string,
+  caption: string,
+  parentId = "page",
+  contentHash = `${id}-hash`
+): NoteView {
+  return {
+    ...node(id, caption, parentId),
+    kind: "image",
+    image: {
+      contentHash,
+      originalName: `${id}.png`,
+      mimeType: "image/png",
+      byteLength: 128,
+      pixelWidth: 800,
+      pixelHeight: 400,
+      displayWidth: 800
+    }
+  };
+}
+
 function editorStub(session: MonacoOutlineSession): monaco.editor.ICodeEditor {
   return {
     getModel: () => session.model,
@@ -462,6 +483,30 @@ describe("MonacoOutlineSession", () => {
     expect(session.setImageDisplayWidth("missing", 400)).toBe(false);
     await session.flush("navigation");
     expect(executeEditorBatch).not.toHaveBeenCalled();
+    await session.dispose();
+  });
+
+  it("coalesces caption edits into the one updateText a title would get", async () => {
+    const { session, executeEditorBatch } = createSession("caption", [
+      pictured("picture", "caption", "caption")
+    ]);
+
+    session.model.pushEditOperations(
+      [],
+      [{ range: new monaco.Range(1, 8, 1, 8), text: "!" }],
+      () => null
+    );
+    session.model.pushEditOperations(
+      [],
+      [{ range: new monaco.Range(1, 9, 1, 9), text: "?" }],
+      () => null
+    );
+
+    await session.flush("navigation");
+    expect(executeEditorBatch).toHaveBeenCalledOnce();
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "updateText", id: "picture", text: "caption!?" }
+    ]);
     await session.dispose();
   });
 
