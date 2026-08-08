@@ -3,6 +3,10 @@ import type { BootSnapshot } from "../../../packages/contracts/generated/BootSna
 import { App } from "./App";
 import { appApi, snapshot } from "./test/appApiFixture";
 
+// Image rows used to force this suite onto the React surface on their own;
+// Monaco draws them now, so the opt-out has to be explicit.
+window.history.replaceState(null, "", "/?outline=react");
+
 const imageNode = {
   id: "image",
   parentId: "page-1",

@@ -305,13 +305,10 @@ export function NotesOutline({
   if (!page) {
     return <section className="notes-outline"><p className="notes-pane-state">No outline yet.</p></section>;
   }
+  // Notes and image nodes are Monaco rows now, so nothing about the page's
+  // content sends it back to React; only a page the session refused does.
   const useMonaco = outlineSurface === "monaco" &&
-    unsupportedMonacoPageId !== page.id &&
-    state.nodes.every((node) =>
-      node.kind === "bullet" &&
-      node.image === null &&
-      node.note.trim().length === 0
-    );
+    unsupportedMonacoPageId !== page.id;
   rowRuntime.update({
     nodes: state.nodes,
     visibleNodes: bodyNodes,
