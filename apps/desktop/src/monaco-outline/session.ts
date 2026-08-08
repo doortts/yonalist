@@ -775,6 +775,75 @@ export class MonacoOutlineSession {
     );
   }
 
+  /**
+   * What a slash command leaves behind: the rewritten title, and the marker
+   * `/todo` asks for. Monaco would take those as two edits and cost two Undos,
+   * so the model edit runs with the content listener suppressed and both land
+   * in one recorded transition. Returns the line the caret belongs on.
+   */
+  applySlashEdit(
+    nodeId: string,
+    text: string,
+    marker: "todo" | null
+  ): number | null {
+    if (!this.canAcceptStructuralEdit()) return null;
+    const before = this.metadata.current();
+    const lineNumber = before.titleLineByNodeId.get(nodeId);
+    const line = lineNumber === undefined
+      ? undefined
+      : before.lines[lineNumber - 1];
+    if (lineNumber === undefined || line?.kind !== "text") return null;
+    const previousText = this.lineTexts[lineNumber - 1] ?? "";
+    const nextMarker = marker !== null && marker !== line.marker
+      ? marker
+      : null;
+    if (previousText === text && nextMarker === null) return lineNumber;
+    this.pruneRedoBranch(before.alternativeVersionId);
+    this.editModelSilently([{
+      range: new monaco.Range(
+        lineNumber,
+        1,
+        lineNumber,
+        this.model.getLineMaxColumn(lineNumber)
+      ),
+      text
+    }]);
+    const afterLines = nextMarker === null
+      ? before.lines
+      : before.lines.map((candidate, index) =>
+          ownsLine(line, candidate, index === lineNumber - 1)
+            ? { ...candidate, marker: nextMarker }
+            : candidate);
+    this.recordModelTransition({
+      before,
+      afterLines,
+      textPatch: {
+        startIndex: lineNumber - 1,
+        deleteCount: 1,
+        insertedTexts: [text]
+      },
+      inverseTextPatch: {
+        startIndex: lineNumber - 1,
+        deleteCount: 1,
+        insertedTexts: [previousText]
+      },
+      forward: [
+        { kind: "updateText", id: nodeId, text },
+        ...nextMarker === null
+          ? []
+          : [{ kind: "setMarker" as const, id: nodeId, marker: nextMarker }]
+      ],
+      inverse: [
+        ...nextMarker === null
+          ? []
+          : [{ kind: "setMarker" as const, id: nodeId, marker: line.marker }],
+        { kind: "updateText", id: nodeId, text: previousText }
+      ],
+      decorationLines: 1
+    });
+    return lineNumber;
+  }
+
   setMarker(nodeId: string, marker: "bullet" | "todo"): void {
     if (!this.canAcceptStructuralEdit()) return;
     const current = this.metadata.current();
