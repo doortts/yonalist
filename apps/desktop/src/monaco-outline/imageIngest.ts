@@ -182,6 +182,7 @@ export function bindImageIngest(
     const lineNumber = !at
       ? null
       : lineAt(at) ?? ("nodeId" in at ? null : caretLine());
+    traceDrop(at ? "over" : "leave", at, lineNumber);
     dropTarget.set(lineNumber === null ? [] : [{
       range: {
         startLineNumber: lineNumber,
@@ -201,6 +202,7 @@ export function bindImageIngest(
   ): Promise<void> => {
     markDropPoint(null);
     const nodeId = nodeIdAt(at);
+    traceDrop("drop", at ?? null, at ? lineAt(at) : null, nodeId);
     const lineNumber = await ingestImages({
       session: deps.session,
       port: deps.port,
@@ -220,7 +222,7 @@ export function bindImageIngest(
     if (candidates.length === 0) return;
     event.preventDefault();
     event.stopPropagation();
-    void run({ candidates }).catch(() => undefined);
+    void run({ candidates }).catch(traceFailure);
   };
   const onDragOver = (event: DragEvent): void => {
     if (droppedImages(event).length === 0) return;
@@ -234,7 +236,7 @@ export function bindImageIngest(
     if (candidates.length === 0) return;
     event.preventDefault();
     event.stopPropagation();
-    void run({ candidates }, pointOf(event)).catch(() => undefined);
+    void run({ candidates }, pointOf(event)).catch(traceFailure);
   };
 
   host.addEventListener("paste", onPaste, true);
@@ -252,6 +254,37 @@ export function bindImageIngest(
       host.removeEventListener("drop", onDrop, true);
     }
   };
+}
+
+/**
+ * The one breadcrumb the packaged app's drop leaves. That gesture never
+ * touches the editor's DOM and its point is window-relative, so a point that
+ * resolves to the wrong line — or to none — is otherwise invisible.
+ * Development only; the branch folds away in a production build.
+ */
+let tracedLine: number | null = null;
+function traceDrop(
+  type: "over" | "leave" | "drop",
+  at: MonacoImageAnchor | null,
+  resolvedLine: number | null,
+  anchorNodeId: string | null = null
+): void {
+  if (!import.meta.env.DEV) return;
+  // `over` repeats for every pointer move; only a new line is news.
+  if (type === "over" && resolvedLine === tracedLine) return;
+  tracedLine = type === "over" ? resolvedLine : null;
+  const point = at && "clientX" in at ? at : null;
+  console.debug("[yonalist] image drop", {
+    type,
+    x: point?.clientX ?? null,
+    y: point?.clientY ?? null,
+    resolvedLine,
+    anchorNodeId
+  });
+}
+
+function traceFailure(cause: unknown): void {
+  if (import.meta.env.DEV) console.debug("[yonalist] image drop failed", cause);
 }
 
 function payloadSize(payload: MonacoImagePayload): number {
