@@ -228,8 +228,12 @@ export class MonacoOutlineSession {
   }
 
   updateNodeText(nodeId: string, text: string): void {
-    const lineNumber = this.metadata.current().titleLineByNodeId.get(nodeId);
+    const snapshot = this.metadata.current();
+    const lineNumber = snapshot.titleLineByNodeId.get(nodeId);
     if (lineNumber === undefined) return;
+    // An image node's text is the filename it was created with, and the tree
+    // refuses to change it, so there is nothing here to write.
+    if (snapshot.lines[lineNumber - 1]?.kind === "image") return;
     const current = this.model.getLineContent(lineNumber);
     if (current === text) return;
     this.model.pushEditOperations([], [{
