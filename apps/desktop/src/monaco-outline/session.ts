@@ -83,12 +83,12 @@ export class MonacoOutlineSession {
       input.persistence
     );
     const initial = hydrateLines(input.pageId, input.nodes);
-    const seeded = initial.length === 0
+    const seeded = initial.lines.length === 0
       ? [emptyLine(this.allocateId(), input.pageId)]
-      : initial;
-    this.lineTexts = input.nodes.length === 0
+      : initial.lines;
+    this.lineTexts = initial.texts.length === 0
       ? [""]
-      : input.nodes.map((node) => node.text);
+      : [...initial.texts];
     const uri = monaco.Uri.parse(
       `inmemory://yonalist/page/${encodeURIComponent(input.pageId)}`
     );
@@ -116,7 +116,7 @@ export class MonacoOutlineSession {
         this.applyNormalEdit(event);
       }
     });
-    if (initial.length === 0) {
+    if (initial.lines.length === 0) {
       this.persistenceQueue.enqueue([{
         kind: "createNode",
         id: seeded[0]!.nodeId,
@@ -240,24 +240,19 @@ export class MonacoOutlineSession {
       : null;
     const nodeId = this.allocateId();
     this.pruneRedoBranch(before.alternativeVersionId);
-    this.suppressContentListener = true;
-    try {
-      if (insertionIndex === this.model.getLineCount()) {
-        const lineNumber = this.model.getLineCount();
-        const column = this.model.getLineMaxColumn(lineNumber);
-        this.model.pushEditOperations([], [{
-          range: new monaco.Range(lineNumber, column, lineNumber, column),
-          text: "\n"
-        }], () => null);
-      } else {
-        const lineNumber = insertionIndex + 1;
-        this.model.pushEditOperations([], [{
-          range: new monaco.Range(lineNumber, 1, lineNumber, 1),
-          text: "\n"
-        }], () => null);
-      }
-    } finally {
-      this.suppressContentListener = false;
+    if (insertionIndex === this.model.getLineCount()) {
+      const lineNumber = this.model.getLineCount();
+      const column = this.model.getLineMaxColumn(lineNumber);
+      this.editModelSilently(
+        new monaco.Range(lineNumber, column, lineNumber, column),
+        "\n"
+      );
+    } else {
+      const lineNumber = insertionIndex + 1;
+      this.editModelSilently(
+        new monaco.Range(lineNumber, 1, lineNumber, 1),
+        "\n"
+      );
     }
     const afterLines = [...before.lines];
     afterLines.splice(insertionIndex, 0, emptyLine(
@@ -265,28 +260,19 @@ export class MonacoOutlineSession {
       parentId,
       parentDepth + 1
     ));
-    const after = this.metadata.record(
-      this.model.getAlternativeVersionId(),
-      afterLines
-    );
-    const textPatch: OutlineLineTextPatch = {
-      startIndex: insertionIndex,
-      deleteCount: 0,
-      insertedTexts: [""]
-    };
-    const inverseTextPatch: OutlineLineTextPatch = {
-      startIndex: insertionIndex,
-      deleteCount: 1,
-      insertedTexts: []
-    };
-    applyLineTextPatch(this.lineTexts, textPatch);
-    const recorded: VersionTransition = {
-      fromAlternativeVersionId: before.alternativeVersionId,
-      toAlternativeVersionId: after.alternativeVersionId,
-      beforeMetadata: before,
-      afterMetadata: after,
-      textPatch,
-      inverseTextPatch,
+    this.recordModelTransition({
+      before,
+      afterLines,
+      textPatch: {
+        startIndex: insertionIndex,
+        deleteCount: 0,
+        insertedTexts: [""]
+      },
+      inverseTextPatch: {
+        startIndex: insertionIndex,
+        deleteCount: 1,
+        insertedTexts: []
+      },
       forward: [{
         kind: "createNode",
         id: nodeId,
@@ -294,14 +280,94 @@ export class MonacoOutlineSession {
         before_id: beforeId,
         text: ""
       }],
-      inverse: [{ kind: "removeEmptyNode", id: nodeId }]
-    };
-    this.transitionsFrom.set(recorded.fromAlternativeVersionId, recorded);
-    this.transitionsTo.set(recorded.toAlternativeVersionId, recorded);
-    this.recordDecorationMetric(1);
-    this.emitMetadata(true);
-    this.persistenceQueue.enqueue(recorded.forward, "structural");
+      inverse: [{ kind: "removeEmptyNode", id: nodeId }],
+      decorationLines: 1
+    });
     return nodeId;
+  }
+
+  /** Opens an empty note run under a bullet and returns its first line. */
+  createNote(nodeId: string): number | null {
+    if (!this.canAcceptStructuralEdit()) return null;
+    const before = this.metadata.current();
+    const existing = before.noteRangeByNodeId.get(nodeId);
+    if (existing) return existing[0];
+    const titleLine = before.titleLineByNodeId.get(nodeId);
+    const title = titleLine === undefined
+      ? undefined
+      : before.lines[titleLine - 1];
+    if (titleLine === undefined || title?.kind !== "text") return null;
+    this.pruneRedoBranch(before.alternativeVersionId);
+    this.editModelSilently(
+      new monaco.Range(
+        titleLine,
+        this.model.getLineMaxColumn(titleLine),
+        titleLine,
+        this.model.getLineMaxColumn(titleLine)
+      ),
+      "\n"
+    );
+    const afterLines = [...before.lines];
+    afterLines.splice(titleLine, 0, { ...title, kind: "note" });
+    this.recordModelTransition({
+      before,
+      afterLines,
+      textPatch: { startIndex: titleLine, deleteCount: 0, insertedTexts: [""] },
+      inverseTextPatch: {
+        startIndex: titleLine,
+        deleteCount: 1,
+        insertedTexts: []
+      },
+      forward: [{ kind: "updateNote", id: nodeId, note: "" }],
+      inverse: [{ kind: "updateNote", id: nodeId, note: "" }],
+      decorationLines: 1
+    });
+    return titleLine + 1;
+  }
+
+  removeNote(nodeId: string): boolean {
+    if (!this.canAcceptStructuralEdit()) return false;
+    const before = this.metadata.current();
+    const range = before.noteRangeByNodeId.get(nodeId);
+    if (!range) return false;
+    const [start, end] = range;
+    const removedTexts = this.lineTexts.slice(start - 1, end);
+    this.pruneRedoBranch(before.alternativeVersionId);
+    // A note run always trails its title line, so the newline that joins them
+    // is what makes the run disappear.
+    this.editModelSilently(
+      new monaco.Range(
+        start - 1,
+        this.model.getLineMaxColumn(start - 1),
+        end,
+        this.model.getLineMaxColumn(end)
+      ),
+      ""
+    );
+    const afterLines = [...before.lines];
+    afterLines.splice(start - 1, removedTexts.length);
+    this.recordModelTransition({
+      before,
+      afterLines,
+      textPatch: {
+        startIndex: start - 1,
+        deleteCount: removedTexts.length,
+        insertedTexts: []
+      },
+      inverseTextPatch: {
+        startIndex: start - 1,
+        deleteCount: 0,
+        insertedTexts: removedTexts
+      },
+      forward: [{ kind: "updateNote", id: nodeId, note: "" }],
+      inverse: [{
+        kind: "updateNote",
+        id: nodeId,
+        note: removedTexts.join("\n")
+      }],
+      decorationLines: removedTexts.length
+    });
+    return true;
   }
 
   indent(nodeId: string): void {
@@ -492,6 +558,47 @@ export class MonacoOutlineSession {
     await this.disposal;
   }
 
+  private editModelSilently(range: monaco.Range, text: string): void {
+    this.suppressContentListener = true;
+    try {
+      this.model.pushEditOperations([], [{ range, text }], () => null);
+    } finally {
+      this.suppressContentListener = false;
+    }
+  }
+
+  /** Records a session-authored model edit as one undoable transition. */
+  private recordModelTransition(input: {
+    readonly before: OutlineMetadataSnapshot;
+    readonly afterLines: readonly OutlineLineMetadata[];
+    readonly textPatch: OutlineLineTextPatch;
+    readonly inverseTextPatch: OutlineLineTextPatch;
+    readonly forward: readonly IpcEditorCommand[];
+    readonly inverse: readonly IpcEditorCommand[];
+    readonly decorationLines: number;
+  }): void {
+    const after = this.metadata.record(
+      this.model.getAlternativeVersionId(),
+      input.afterLines
+    );
+    applyLineTextPatch(this.lineTexts, input.textPatch);
+    const recorded: VersionTransition = {
+      fromAlternativeVersionId: input.before.alternativeVersionId,
+      toAlternativeVersionId: after.alternativeVersionId,
+      beforeMetadata: input.before,
+      afterMetadata: after,
+      textPatch: input.textPatch,
+      inverseTextPatch: input.inverseTextPatch,
+      forward: input.forward,
+      inverse: input.inverse
+    };
+    this.transitionsFrom.set(recorded.fromAlternativeVersionId, recorded);
+    this.transitionsTo.set(recorded.toAlternativeVersionId, recorded);
+    this.recordDecorationMetric(input.decorationLines);
+    this.emitMetadata(true);
+    this.persistenceQueue.enqueue(recorded.forward, "structural");
+  }
+
   private applyNormalEdit(
     event: monaco.editor.IModelContentChangedEvent
   ): void {
@@ -647,12 +754,16 @@ export class MonacoOutlineSession {
 function hydrateLines(
   pageId: string,
   nodes: readonly NoteView[]
-): readonly OutlineLineMetadata[] {
+): {
+  readonly lines: readonly OutlineLineMetadata[];
+  readonly texts: readonly string[];
+} {
   const lines: OutlineLineMetadata[] = [];
+  const texts: string[] = [];
   const byId = new Map<string, OutlineLineMetadata>();
   for (const node of nodes) {
-    if (node.kind !== "bullet" || node.image !== null || node.note.length > 0) {
-      throw new Error("A Monaco outline session requires text-only bullets.");
+    if (node.kind === "page") {
+      throw new Error("A Monaco outline session cannot hold a page node.");
     }
     const parentId = node.parentId ?? pageId;
     const depth = parentId === pageId
@@ -664,14 +775,22 @@ function hydrateLines(
       nodeId: node.id,
       parentId,
       depth,
-      kind: "text",
+      kind: node.kind === "image" ? "image" : "text",
       collapsed: node.collapsed,
       completed: node.completed
     };
     lines.push(line);
+    texts.push(node.text);
     byId.set(line.nodeId, line);
+    // An image caption owns no note; a bullet note becomes one line per
+    // newline so Monaco can edit it natively (design D1).
+    if (line.kind === "image" || node.note.length === 0) continue;
+    for (const segment of node.note.split("\n")) {
+      lines.push({ ...line, kind: "note" });
+      texts.push(segment);
+    }
   }
-  return lines;
+  return { lines, texts };
 }
 
 function emptyLine(

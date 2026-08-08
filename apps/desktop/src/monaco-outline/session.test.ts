@@ -365,4 +365,81 @@ describe("MonacoOutlineSession", () => {
     }));
     await session.dispose();
   });
+
+  it("hydrates note runs and image captions as their own lines", async () => {
+    const { session } = createSession("rich", [
+      { ...node("first", "alpha", "rich"), note: "a\nb" },
+      {
+        ...node("picture", "caption", "rich"),
+        kind: "image",
+        image: {
+          contentHash: "hash",
+          originalName: "shot.png",
+          mimeType: "image/png",
+          byteLength: 128,
+          pixelWidth: 10,
+          pixelHeight: 10,
+          displayWidth: 10
+        }
+      }
+    ]);
+
+    expect(session.model.getValue()).toBe("alpha\na\nb\ncaption");
+    expect(session.metadata.current().lines.map(
+      ({ nodeId, kind, depth }) => ({ nodeId, kind, depth })
+    )).toEqual([
+      { nodeId: "first", kind: "text", depth: 0 },
+      { nodeId: "first", kind: "note", depth: 0 },
+      { nodeId: "first", kind: "note", depth: 0 },
+      { nodeId: "picture", kind: "image", depth: 0 }
+    ]);
+    expect(session.metadata.current().noteRangeByNodeId.get("first"))
+      .toEqual([2, 3]);
+    await session.dispose();
+  });
+
+  it("creates an empty note run as one command and undo step", async () => {
+    const { session, executeEditorBatch } = createSession("note-create", [
+      node("first", "alpha", "note-create"),
+      node("second", "beta", "note-create")
+    ]);
+
+    expect(session.createNote("first")).toBe(2);
+    expect(session.model.getValue()).toBe("alpha\n\nbeta");
+    expect(session.metadata.current().lines.map(({ nodeId, kind }) => (
+      `${nodeId}:${kind}`
+    ))).toEqual(["first:text", "first:note", "second:text"]);
+
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "updateNote", id: "first", note: "" }
+    ]);
+
+    await session.model.undo();
+    expect(session.model.getValue()).toBe("alpha\nbeta");
+    expect(session.metadata.current().lines.map(({ nodeId }) => nodeId))
+      .toEqual(["first", "second"]);
+    await session.dispose();
+  });
+
+  it("removes a note run as one command and undo step", async () => {
+    const { session, executeEditorBatch } = createSession("note-remove", [
+      { ...node("first", "alpha", "note-remove"), note: "kept" },
+      node("second", "beta", "note-remove")
+    ]);
+
+    expect(session.removeNote("first")).toBe(true);
+    expect(session.model.getValue()).toBe("alpha\nbeta");
+    expect(session.metadata.current().lines).toHaveLength(2);
+
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "updateNote", id: "first", note: "" }
+    ]);
+
+    await session.model.undo();
+    expect(session.model.getValue()).toBe("alpha\nkept\nbeta");
+    expect(session.metadata.current().lines).toHaveLength(3);
+    await session.dispose();
+  });
 });
