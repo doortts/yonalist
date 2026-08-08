@@ -160,6 +160,21 @@ describe("outline note key routing", () => {
     ).toEqual({ kind: "block" });
   });
 
+  it("turns Enter in a caption into a new sibling below the image", () => {
+    // The caption never splits: the caret lands on a fresh empty bullet.
+    expect(gesture("Enter", new monaco.Selection(5, 4, 5, 4))).toEqual({
+      kind: "siblingBelow",
+      nodeId: "picture"
+    });
+    expect(gesture("Enter", new monaco.Selection(5, 1, 5, 1))).toEqual({
+      kind: "siblingBelow",
+      nodeId: "picture"
+    });
+    expect(gesture("Enter", new monaco.Selection(5, 1, 5, 4))).toEqual({
+      kind: "block"
+    });
+  });
+
   it("sends Enter on a note-owning title to the session split", () => {
     expect(gesture("Enter", new monaco.Selection(1, 4, 1, 4))).toEqual({
       kind: "splitTitle",
@@ -274,6 +289,45 @@ describe("outline note gesture application", () => {
       lineNumber: 2,
       column: 1
     });
+    await session.dispose();
+  });
+
+  it("puts a caption's new sibling below the image and undoes in one step", async () => {
+    const session = createSession("apply-caption", [
+      {
+        ...node("picture", "caption", "", "apply-caption"),
+        kind: "image",
+        image: {
+          contentHash: "hash",
+          originalName: "shot.png",
+          mimeType: "image/png",
+          byteLength: 64,
+          pixelWidth: 10,
+          pixelHeight: 10,
+          displayWidth: 10
+        }
+      },
+      node("tail", "beta", "", "apply-caption")
+    ]);
+    const target = caret();
+
+    applyOutlineNoteGesture(
+      { kind: "siblingBelow", nodeId: "picture" },
+      session,
+      target
+    );
+
+    expect(session.model.getValue()).toBe("caption\n\nbeta");
+    expect(session.metadata.current().lines.map(({ nodeId, kind }) => (
+      `${nodeId}:${kind}`
+    ))).toEqual(["picture:image", "inserted:text", "tail:text"]);
+    expect(target.setPosition).toHaveBeenLastCalledWith({
+      lineNumber: 2,
+      column: 1
+    });
+
+    await session.model.undo();
+    expect(session.model.getValue()).toBe("caption\nbeta");
     await session.dispose();
   });
 

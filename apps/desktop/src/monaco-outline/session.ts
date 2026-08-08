@@ -463,6 +463,58 @@ export class MonacoOutlineSession {
     return runEnd + 1;
   }
 
+  /**
+   * Enter on an image caption. A caption is never split — the whole gesture is
+   * a fresh empty sibling under the same parent, placed after everything the
+   * node owns. Returns the line the caret belongs on.
+   */
+  createSiblingBelow(nodeId: string): number | null {
+    if (!this.canAcceptStructuralEdit()) return null;
+    const before = this.metadata.current();
+    const lineNumber = before.titleLineByNodeId.get(nodeId);
+    if (lineNumber === undefined) return null;
+    const line = before.lines[lineNumber - 1];
+    if (!line) return null;
+    const insertionIndex = outlineBlockEnd(before.lines, lineNumber - 1);
+    const newId = this.allocateId();
+    this.pruneRedoBranch(before.alternativeVersionId);
+    const column = this.model.getLineMaxColumn(insertionIndex);
+    this.editModelSilently([{
+      range: new monaco.Range(insertionIndex, column, insertionIndex, column),
+      text: "\n"
+    }]);
+    const afterLines = [...before.lines];
+    afterLines.splice(
+      insertionIndex,
+      0,
+      emptyLine(newId, line.parentId, line.depth)
+    );
+    this.recordModelTransition({
+      before,
+      afterLines,
+      textPatch: {
+        startIndex: insertionIndex,
+        deleteCount: 0,
+        insertedTexts: [""]
+      },
+      inverseTextPatch: {
+        startIndex: insertionIndex,
+        deleteCount: 1,
+        insertedTexts: []
+      },
+      forward: [{
+        kind: "createNode",
+        id: newId,
+        parent_id: line.parentId,
+        before_id: nextSiblingId(before.lines, lineNumber - 1),
+        text: ""
+      }],
+      inverse: [{ kind: "removeEmptyNode", id: newId }],
+      decorationLines: 1
+    });
+    return insertionIndex + 1;
+  }
+
   removeNote(nodeId: string): boolean {
     if (!this.canAcceptStructuralEdit()) return false;
     const before = this.metadata.current();

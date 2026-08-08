@@ -49,6 +49,7 @@ export type OutlineNoteGesture =
       readonly column: number;
     }
   | { readonly kind: "removeNote"; readonly nodeId: string }
+  | { readonly kind: "siblingBelow"; readonly nodeId: string }
   | { readonly kind: "block" };
 
 export interface OutlineNoteCaret {
@@ -120,7 +121,13 @@ export function resolveOutlineNoteGesture(input: {
   const run = snapshot.noteRangeByNodeId.get(line.nodeId);
 
   if (event.key === "Enter") {
-    if (line.kind === "image") return { kind: "block" };
+    if (line.kind === "image") {
+      // An image node owns no note, and its caption never splits: plain Enter
+      // is a new empty sibling below it (design §2a).
+      return event.shiftKey || !selection.isEmpty()
+        ? { kind: "block" }
+        : { kind: "siblingBelow", nodeId: line.nodeId };
+    }
     if (event.shiftKey) {
       return line.kind === "note"
         ? { kind: "nextTitle", nodeId: line.nodeId, create: true }
@@ -177,6 +184,10 @@ export function applyOutlineNoteGesture(
       caret,
       session.splitTitleWithNote(gesture.nodeId, gesture.column)
     );
+    return;
+  }
+  if (gesture.kind === "siblingBelow") {
+    placeCaret(caret, session.createSiblingBelow(gesture.nodeId));
     return;
   }
   if (gesture.kind === "removeNote") {
