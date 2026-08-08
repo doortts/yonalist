@@ -24,6 +24,34 @@ function node(id: string, text: string, parentId = "page"): NoteView {
   };
 }
 
+function noted(
+  id: string,
+  text: string,
+  note: string,
+  parentId = "page"
+): NoteView {
+  return { ...node(id, text, parentId), note };
+}
+
+function editorStub(session: MonacoOutlineSession): monaco.editor.ICodeEditor {
+  return {
+    getModel: () => session.model,
+    hasTextFocus: () => true,
+    invokeWithinContext: (
+      callback: (accessor: { get(service: unknown): unknown }) => unknown
+    ) => callback({ get: () => ({ pushElement: vi.fn() }) })
+  } as unknown as monaco.editor.ICodeEditor;
+}
+
+function shape(
+  session: MonacoOutlineSession
+): readonly string[] {
+  return session.metadata.current().lines.map(
+    ({ nodeId, kind, parentId, depth }) =>
+      `${nodeId}:${kind}:${parentId}:${depth}`
+  );
+}
+
 function receipt(revision = 2): MutationReceipt {
   return {
     revision,
@@ -440,6 +468,218 @@ describe("MonacoOutlineSession", () => {
     await session.model.undo();
     expect(session.model.getValue()).toBe("alpha\nkept\nbeta");
     expect(session.metadata.current().lines).toHaveLength(3);
+    await session.dispose();
+  });
+
+  it("carries a note run through indent", async () => {
+    const { session, executeEditorBatch } = createSession("indent-note", [
+      noted("first", "alpha", "a1\na2", "indent-note"),
+      noted("second", "beta", "b1", "indent-note")
+    ]);
+    const unbind = session.bindEditor(editorStub(session));
+
+    session.indent("second");
+
+    expect(shape(session)).toEqual([
+      "first:text:indent-note:0",
+      "first:note:indent-note:0",
+      "first:note:indent-note:0",
+      "second:text:first:1",
+      "second:note:first:1"
+    ]);
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "indent", id: "second", new_parent_id: "first" }
+    ]);
+    unbind();
+    await session.dispose();
+  });
+
+  it("carries note runs through outdent and adopts each follower once", async () => {
+    const { session, executeEditorBatch } = createSession("outdent-note", [
+      node("parent", "Parent", "outdent-note"),
+      noted("first", "First", "n1\nn2", "parent"),
+      noted("second", "Second", "s1", "parent")
+    ]);
+    const unbind = session.bindEditor(editorStub(session));
+
+    session.outdent("first");
+
+    expect(shape(session)).toEqual([
+      "parent:text:outdent-note:0",
+      "first:text:outdent-note:0",
+      "first:note:outdent-note:0",
+      "first:note:outdent-note:0",
+      "second:text:first:1",
+      "second:note:first:1"
+    ]);
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      {
+        kind: "outdent",
+        id: "first",
+        new_parent_id: "outdent-note",
+        before_id: null
+      },
+      { kind: "moveNode", id: "second", parent_id: "first", before_id: null }
+    ]);
+    unbind();
+    await session.dispose();
+  });
+
+  it("rewrites a note run with its title on completion and collapse", async () => {
+    const { session } = createSession("flags-note", [
+      noted("parent", "Parent", "p1\np2", "flags-note"),
+      node("child", "Child", "parent"),
+      noted("leaf", "Leaf", "l1", "flags-note")
+    ]);
+    const unbind = session.bindEditor(editorStub(session));
+
+    session.toggleCompleted("parent");
+    expect(session.metadata.current().lines.map(({ completed }) => completed))
+      .toEqual([true, true, true, false, false, false]);
+
+    session.toggleCollapsed("parent");
+    expect(session.metadata.current().lines.map(({ collapsed }) => collapsed))
+      .toEqual([true, true, true, false, false, false]);
+
+    // A note run is not a child, so a bullet that owns only a note stays a leaf.
+    session.toggleCollapsed("leaf");
+    expect(session.metadata.current().lines[4]?.collapsed).toBe(false);
+    unbind();
+    await session.dispose();
+  });
+
+  it("creates a first child after the parent's note run", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "child-note",
+      [
+        noted("parent", "Parent", "p1\np2", "child-note"),
+        node("existing", "Existing", "parent")
+      ],
+      vi.fn().mockResolvedValue(receipt()),
+      ["inserted"]
+    );
+
+    expect(session.createFirstChild("parent")).toBe("inserted");
+    expect(session.model.getValue()).toBe("Parent\np1\np2\n\nExisting");
+    expect(shape(session)).toEqual([
+      "parent:text:child-note:0",
+      "parent:note:child-note:0",
+      "parent:note:child-note:0",
+      "inserted:text:parent:1",
+      "existing:text:parent:1"
+    ]);
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([{
+      kind: "createNode",
+      id: "inserted",
+      parent_id: "parent",
+      before_id: "existing",
+      text: ""
+    }]);
+    await session.dispose();
+  });
+
+  it("splits a note-owning title into a sibling placed after the run", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "split-note",
+      [
+        noted("first", "alpha", "n1\nn2", "split-note"),
+        node("second", "beta", "split-note")
+      ],
+      vi.fn().mockResolvedValue(receipt()),
+      ["inserted"]
+    );
+
+    expect(session.splitTitleWithNote("first", 6)).toBe(4);
+    expect(session.model.getValue()).toBe("alpha\nn1\nn2\n\nbeta");
+    expect(shape(session)).toEqual([
+      "first:text:split-note:0",
+      "first:note:split-note:0",
+      "first:note:split-note:0",
+      "inserted:text:split-note:0",
+      "second:text:split-note:0"
+    ]);
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([{
+      kind: "createNode",
+      id: "inserted",
+      parent_id: "split-note",
+      before_id: "second",
+      text: ""
+    }]);
+
+    await session.model.undo();
+    expect(session.model.getValue()).toBe("alpha\nn1\nn2\nbeta");
+    await session.dispose();
+  });
+
+  it("moves the split suffix into a first child below the run", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "split-child",
+      [
+        noted("parent", "alphabeta", "n1", "split-child"),
+        node("child", "Child", "parent")
+      ],
+      vi.fn().mockResolvedValue(receipt()),
+      ["inserted"]
+    );
+
+    expect(session.splitTitleWithNote("parent", 6)).toBe(3);
+    expect(session.model.getValue()).toBe("alpha\nn1\nbeta\nChild");
+    expect(shape(session)).toEqual([
+      "parent:text:split-child:0",
+      "parent:note:split-child:0",
+      "inserted:text:parent:1",
+      "child:text:parent:1"
+    ]);
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "updateText", id: "parent", text: "alpha" },
+      {
+        kind: "createNode",
+        id: "inserted",
+        parent_id: "parent",
+        before_id: "child",
+        text: "beta"
+      }
+    ]);
+    await session.dispose();
+  });
+
+  it("splits at column one into an empty bullet above the note owner", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "split-above",
+      [noted("first", "alpha", "n1", "split-above")],
+      vi.fn().mockResolvedValue(receipt()),
+      ["inserted"]
+    );
+
+    expect(session.splitTitleWithNote("first", 1)).toBe(2);
+    expect(session.model.getValue()).toBe("\nalpha\nn1");
+    expect(shape(session)).toEqual([
+      "inserted:text:split-above:0",
+      "first:text:split-above:0",
+      "first:note:split-above:0"
+    ]);
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([{
+      kind: "createNode",
+      id: "inserted",
+      parent_id: "split-above",
+      before_id: "first",
+      text: ""
+    }]);
+    await session.dispose();
+  });
+
+  it("refuses a note-owning split when the node has no run", async () => {
+    const { session } = createSession("split-plain", [
+      node("first", "alpha", "split-plain")
+    ]);
+
+    expect(session.splitTitleWithNote("first", 3)).toBeNull();
     await session.dispose();
   });
 });

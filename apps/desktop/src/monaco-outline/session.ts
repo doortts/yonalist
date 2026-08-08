@@ -7,6 +7,7 @@ import {
   type MetadataUndoElement
 } from "./internalAdapter";
 import {
+  outlineBlockEnd,
   OutlineMetadataTimeline,
   type OutlineLineMetadata,
   type OutlineMetadataSnapshot
@@ -230,7 +231,10 @@ export class MonacoOutlineSession {
     const before = this.metadata.current();
     const parentLineNumber = before.titleLineByNodeId.get(parentId);
     if (parentId !== this.pageId && parentLineNumber === undefined) return null;
-    const insertionIndex = parentLineNumber ?? 0;
+    // A note run belongs to its title, so the first child goes below the run.
+    const insertionIndex = parentLineNumber === undefined
+      ? 0
+      : before.noteRangeByNodeId.get(parentId)?.[1] ?? parentLineNumber;
     const parentDepth = parentLineNumber === undefined
       ? -1
       : before.lines[parentLineNumber - 1]!.depth;
@@ -243,16 +247,16 @@ export class MonacoOutlineSession {
     if (insertionIndex === this.model.getLineCount()) {
       const lineNumber = this.model.getLineCount();
       const column = this.model.getLineMaxColumn(lineNumber);
-      this.editModelSilently(
-        new monaco.Range(lineNumber, column, lineNumber, column),
-        "\n"
-      );
+      this.editModelSilently([{
+        range: new monaco.Range(lineNumber, column, lineNumber, column),
+        text: "\n"
+      }]);
     } else {
       const lineNumber = insertionIndex + 1;
-      this.editModelSilently(
-        new monaco.Range(lineNumber, 1, lineNumber, 1),
-        "\n"
-      );
+      this.editModelSilently([{
+        range: new monaco.Range(lineNumber, 1, lineNumber, 1),
+        text: "\n"
+      }]);
     }
     const afterLines = [...before.lines];
     afterLines.splice(insertionIndex, 0, emptyLine(
@@ -298,15 +302,15 @@ export class MonacoOutlineSession {
       : before.lines[titleLine - 1];
     if (titleLine === undefined || title?.kind !== "text") return null;
     this.pruneRedoBranch(before.alternativeVersionId);
-    this.editModelSilently(
-      new monaco.Range(
+    this.editModelSilently([{
+      range: new monaco.Range(
         titleLine,
         this.model.getLineMaxColumn(titleLine),
         titleLine,
         this.model.getLineMaxColumn(titleLine)
       ),
-      "\n"
-    );
+      text: "\n"
+    }]);
     const afterLines = [...before.lines];
     afterLines.splice(titleLine, 0, { ...title, kind: "note" });
     this.recordModelTransition({
@@ -325,6 +329,118 @@ export class MonacoOutlineSession {
     return titleLine + 1;
   }
 
+  /**
+   * Enter on a title that owns a note run. Monaco's native split would drop
+   * the new line between the title and its run, so the session performs the
+   * edit itself: at column one the new empty bullet goes above the title,
+   * otherwise the suffix moves to a bullet placed below the whole run — a
+   * first child when the title has children, a sibling when it does not.
+   * Returns the line the caret belongs on.
+   */
+  splitTitleWithNote(nodeId: string, column: number): number | null {
+    if (!this.canAcceptStructuralEdit()) return null;
+    const before = this.metadata.current();
+    const titleLine = before.titleLineByNodeId.get(nodeId);
+    const range = before.noteRangeByNodeId.get(nodeId);
+    const title = titleLine === undefined
+      ? undefined
+      : before.lines[titleLine - 1];
+    if (titleLine === undefined || !range || title?.kind !== "text") return null;
+    const text = this.lineTexts[titleLine - 1] ?? "";
+    const newId = this.allocateId();
+    this.pruneRedoBranch(before.alternativeVersionId);
+    if (column === 1 && text.length > 0) {
+      return this.insertBulletAbove(before, title, titleLine, newId);
+    }
+
+    const prefix = text.slice(0, column - 1);
+    const suffix = text.slice(column - 1);
+    const runEnd = range[1];
+    const following = before.lines[runEnd];
+    const hasChildren = following?.parentId === nodeId;
+    const expand = hasChildren && title.collapsed;
+    const runTexts = this.lineTexts.slice(titleLine, runEnd);
+    this.editModelSilently([
+      {
+        range: new monaco.Range(
+          titleLine,
+          column,
+          titleLine,
+          this.model.getLineMaxColumn(titleLine)
+        ),
+        text: ""
+      },
+      {
+        range: new monaco.Range(
+          runEnd,
+          this.model.getLineMaxColumn(runEnd),
+          runEnd,
+          this.model.getLineMaxColumn(runEnd)
+        ),
+        text: `\n${suffix}`
+      }
+    ]);
+    const afterLines = [...before.lines];
+    if (expand) {
+      for (let index = titleLine - 1; index < runEnd; index += 1) {
+        afterLines[index] = { ...afterLines[index]!, collapsed: false };
+      }
+    }
+    afterLines.splice(runEnd, 0, {
+      nodeId: newId,
+      parentId: hasChildren ? nodeId : title.parentId,
+      depth: hasChildren ? title.depth + 1 : title.depth,
+      kind: "text",
+      collapsed: false,
+      completed: false
+    });
+    const forward: IpcEditorCommand[] = [];
+    if (prefix !== text) {
+      forward.push({ kind: "updateText", id: nodeId, text: prefix });
+    }
+    if (expand) {
+      forward.push({ kind: "setCollapsed", id: nodeId, collapsed: false });
+    }
+    forward.push({
+      kind: "createNode",
+      id: newId,
+      parent_id: hasChildren ? nodeId : title.parentId,
+      before_id: hasChildren
+        ? following!.nodeId
+        : nextSiblingId(before.lines, titleLine - 1),
+      text: suffix
+    });
+    const inverse: IpcEditorCommand[] = [];
+    if (suffix !== "") {
+      inverse.push({ kind: "updateText", id: newId, text: "" });
+    }
+    inverse.push({ kind: "removeEmptyNode", id: newId });
+    if (expand) {
+      inverse.push({ kind: "setCollapsed", id: nodeId, collapsed: true });
+    }
+    if (prefix !== text) {
+      inverse.push({ kind: "updateText", id: nodeId, text });
+    }
+    this.recordModelTransition({
+      before,
+      afterLines,
+      textPatch: {
+        startIndex: titleLine - 1,
+        deleteCount: runTexts.length + 1,
+        insertedTexts: [prefix, ...runTexts, suffix]
+      },
+      inverseTextPatch: {
+        startIndex: titleLine - 1,
+        deleteCount: runTexts.length + 2,
+        insertedTexts: [text, ...runTexts]
+      },
+      forward,
+      inverse,
+      decorationLines: runTexts.length + 2
+    });
+    return runEnd + 1;
+  }
+
   removeNote(nodeId: string): boolean {
     if (!this.canAcceptStructuralEdit()) return false;
     const before = this.metadata.current();
@@ -335,15 +451,15 @@ export class MonacoOutlineSession {
     this.pruneRedoBranch(before.alternativeVersionId);
     // A note run always trails its title line, so the newline that joins them
     // is what makes the run disappear.
-    this.editModelSilently(
-      new monaco.Range(
+    this.editModelSilently([{
+      range: new monaco.Range(
         start - 1,
         this.model.getLineMaxColumn(start - 1),
         end,
         this.model.getLineMaxColumn(end)
       ),
-      ""
-    );
+      text: ""
+    }]);
     const afterLines = [...before.lines];
     afterLines.splice(start - 1, removedTexts.length);
     this.recordModelTransition({
@@ -380,12 +496,14 @@ export class MonacoOutlineSession {
     let previousIndex = lineIndex - 1;
     while (
       previousIndex >= 0 &&
-      current.lines[previousIndex]!.depth > line.depth
+      (current.lines[previousIndex]!.depth > line.depth ||
+        current.lines[previousIndex]!.kind === "note")
     ) {
       previousIndex -= 1;
     }
     const previous = current.lines[previousIndex];
     if (!previous || previous.depth !== line.depth) return;
+    if (previous.kind === "image") return;
     const beforeId = nextSiblingId(current.lines, lineIndex);
     const afterLines = shiftSubtree(current.lines, lineIndex, 1, {
       parentId: previous.nodeId
@@ -413,7 +531,9 @@ export class MonacoOutlineSession {
     if (!line) return;
     const completed = !line.completed;
     const afterLines = current.lines.map((candidate, index) =>
-      index === lineIndex ? { ...candidate, completed } : candidate
+      ownsLine(line, candidate, index === lineIndex)
+        ? { ...candidate, completed }
+        : candidate
     );
     this.applyMetadataEdit(
       `${completed ? "Complete" : "Reopen"} ${nodeId}`,
@@ -430,11 +550,17 @@ export class MonacoOutlineSession {
     if (lineNumber === undefined) return;
     const lineIndex = lineNumber - 1;
     const line = current.lines[lineIndex];
-    const next = current.lines[lineIndex + 1];
-    if (!line || next?.parentId !== nodeId) return;
+    if (!line) return;
+    // Children sit below the note run, so a run alone never makes a parent.
+    const next = current.lines[
+      current.noteRangeByNodeId.get(nodeId)?.[1] ?? lineIndex + 1
+    ];
+    if (next?.parentId !== nodeId) return;
     const collapsed = !line.collapsed;
     const afterLines = current.lines.map((candidate, index) =>
-      index === lineIndex ? { ...candidate, collapsed } : candidate
+      ownsLine(line, candidate, index === lineIndex)
+        ? { ...candidate, collapsed }
+        : candidate
     );
     this.applyMetadataEdit(
       `${collapsed ? "Collapse" : "Expand"} ${nodeId}`,
@@ -461,27 +587,23 @@ export class MonacoOutlineSession {
     );
     // Following siblings become children of the outdented node (Workflowy
     // semantics); leaving them in place would break the visible preorder.
-    let subtreeEnd = lineIndex + 1;
-    while (
-      subtreeEnd < current.lines.length &&
-      current.lines[subtreeEnd]!.depth > line.depth
-    ) {
-      subtreeEnd += 1;
-    }
+    const subtreeEnd = outlineBlockEnd(current.lines, lineIndex);
     const followerIds: string[] = [];
     for (
       let index = subtreeEnd;
       index < current.lines.length && current.lines[index]!.depth >= line.depth;
       index += 1
     ) {
-      if (current.lines[index]!.depth === line.depth) {
-        followerIds.push(current.lines[index]!.nodeId);
+      const candidate = current.lines[index]!;
+      // A follower's note run repeats its node ID; the move is per node.
+      if (candidate.depth === line.depth && candidate.kind !== "note") {
+        followerIds.push(candidate.nodeId);
       }
     }
     const followers = new Set(followerIds);
     const expand = line.collapsed && followerIds.length > 0;
     const afterLines = current.lines.map((candidate, index) => {
-      if (index === lineIndex) {
+      if (ownsLine(line, candidate, index === lineIndex)) {
         return {
           ...candidate,
           parentId: parent.parentId,
@@ -558,10 +680,54 @@ export class MonacoOutlineSession {
     await this.disposal;
   }
 
-  private editModelSilently(range: monaco.Range, text: string): void {
+  private insertBulletAbove(
+    before: OutlineMetadataSnapshot,
+    title: OutlineLineMetadata,
+    titleLine: number,
+    newId: string
+  ): number {
+    this.editModelSilently([{
+      range: new monaco.Range(titleLine, 1, titleLine, 1),
+      text: "\n"
+    }]);
+    const afterLines = [...before.lines];
+    afterLines.splice(
+      titleLine - 1,
+      0,
+      emptyLine(newId, title.parentId, title.depth)
+    );
+    this.recordModelTransition({
+      before,
+      afterLines,
+      textPatch: {
+        startIndex: titleLine - 1,
+        deleteCount: 0,
+        insertedTexts: [""]
+      },
+      inverseTextPatch: {
+        startIndex: titleLine - 1,
+        deleteCount: 1,
+        insertedTexts: []
+      },
+      forward: [{
+        kind: "createNode",
+        id: newId,
+        parent_id: title.parentId,
+        before_id: title.nodeId,
+        text: ""
+      }],
+      inverse: [{ kind: "removeEmptyNode", id: newId }],
+      decorationLines: 1
+    });
+    return titleLine + 1;
+  }
+
+  private editModelSilently(
+    edits: readonly monaco.editor.IIdentifiedSingleEditOperation[]
+  ): void {
     this.suppressContentListener = true;
     try {
-      this.model.pushEditOperations([], [{ range, text }], () => null);
+      this.model.pushEditOperations([], [...edits], () => null);
     } finally {
       this.suppressContentListener = false;
     }
@@ -835,9 +1001,7 @@ function nextSiblingId(
 ): string | null {
   const line = lines[lineIndex];
   if (!line) return null;
-  let index = lineIndex + 1;
-  while (index < lines.length && lines[index]!.depth > line.depth) index += 1;
-  const next = lines[index];
+  const next = lines[outlineBlockEnd(lines, lineIndex)];
   return next?.depth === line.depth && next.parentId === line.parentId
     ? next.nodeId
     : null;
@@ -851,16 +1015,28 @@ function shiftSubtree(
 ): readonly OutlineLineMetadata[] {
   const source = lines[lineIndex];
   if (!source) return lines;
-  let end = lineIndex + 1;
-  while (end < lines.length && lines[end]!.depth > source.depth) end += 1;
+  const end = outlineBlockEnd(lines, lineIndex);
   return lines.map((line, index) => {
     if (index < lineIndex || index >= end) return line;
     return {
       ...line,
-      parentId: index === lineIndex ? root.parentId : line.parentId,
+      // The moved node's own note run copies its title (V3), so it takes the
+      // new parent with it.
+      parentId: ownsLine(source, line, index === lineIndex)
+        ? root.parentId
+        : line.parentId,
       depth: line.depth + depthDelta
     };
   });
+}
+
+/** True for a moved title line and for the note lines welded to it. */
+function ownsLine(
+  source: OutlineLineMetadata,
+  line: OutlineLineMetadata,
+  isSource: boolean
+): boolean {
+  return isSource || (line.kind === "note" && line.nodeId === source.nodeId);
 }
 
 function metadataChangedLineNumbers(

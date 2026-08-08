@@ -102,6 +102,28 @@ export class OutlineMetadataTimeline {
   }
 }
 
+/**
+ * Exclusive end index of the block a line owns: its subtree plus every note run
+ * inside it. A note run copies its title's depth (V3), so the plain
+ * "strictly deeper" subtree scan would stop on the node's own note.
+ */
+export function outlineBlockEnd(
+  lines: readonly OutlineLineMetadata[],
+  lineIndex: number
+): number {
+  const source = lines[lineIndex];
+  if (!source) return lineIndex + 1;
+  let end = lineIndex + 1;
+  while (end < lines.length) {
+    const line = lines[end]!;
+    // Any note line reached here trails the block: a following sibling's run
+    // never comes before that sibling's own title line (V2).
+    if (line.depth <= source.depth && line.kind !== "note") break;
+    end += 1;
+  }
+  return end;
+}
+
 export function validateOutlineMetadata(
   lines: readonly OutlineLineMetadata[]
 ): void {
