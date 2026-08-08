@@ -229,6 +229,13 @@ function interpretTextOnly(input: {
       throw new Error("A text-only edit escaped its source line.");
     }
     affectedLineNumbers.push(input.windowStart + index + 1);
+    // An image node's text is its filename and the tree refuses to change it
+    // (design §2b-6), so no keystroke may reach this line.
+    if (line.kind === "image") {
+      throw new Error(
+        "An outline image line is read-only: refusesImageLineEdit must take the gesture."
+      );
+    }
     // A note line owns no text of its own — the whole run is the note.
     if (line.kind === "note") {
       if (rewrittenNotes.has(line.nodeId)) continue;

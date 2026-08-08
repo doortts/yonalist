@@ -74,6 +74,8 @@ const NOTE_GESTURE_KEYS = new Set([
   "Backspace",
   "Tab"
 ]);
+/** Named keys that rewrite a line; Enter belongs to the note gesture above. */
+const TEXT_EDIT_KEYS = new Set(["Backspace", "Delete", "Tab"]);
 let registered = false;
 const bindings =
   new WeakMap<monaco.editor.ICodeEditor, YonalistOutlineEditorBinding>();
@@ -177,6 +179,46 @@ export function resolveOutlineNoteGesture(input: {
   return null;
 }
 
+/**
+ * An image node's text is its filename, assigned once at creation, and
+ * notes-core refuses `UpdateText` on one — so an image line is read-only here.
+ * True for every gesture that would rewrite a line the caret or selection
+ * touches; navigation, selection, copy and the outline commands read false.
+ * Enter is absent on purpose: the note gesture already turns it into the new
+ * sibling below, which leaves the caption alone.
+ */
+export function refusesImageLineEdit(input: {
+  readonly event: OutlineNoteKeyEvent;
+  readonly snapshot: OutlineMetadataSnapshot;
+  readonly selection: monaco.Selection;
+}): boolean {
+  return writesText(input.event) &&
+    touchesImageLine(input.snapshot, input.selection);
+}
+
+function writesText(event: OutlineNoteKeyEvent): boolean {
+  // A composition types through the IME rather than through the key itself,
+  // and refusing this keydown is the only moment that can stop it opening.
+  if (event.isComposing || event.key === "Process") return true;
+  if (TEXT_EDIT_KEYS.has(event.key)) return true;
+  return !event.altKey && !event.ctrlKey && !event.metaKey &&
+    event.key.length === 1;
+}
+
+function touchesImageLine(
+  snapshot: OutlineMetadataSnapshot,
+  selection: monaco.Selection
+): boolean {
+  for (
+    let lineNumber = selection.startLineNumber;
+    lineNumber <= selection.endLineNumber;
+    lineNumber += 1
+  ) {
+    if (snapshot.lines[lineNumber - 1]?.kind === "image") return true;
+  }
+  return false;
+}
+
 export function applyOutlineNoteGesture(
   gesture: OutlineNoteGesture,
   session: MonacoOutlineSession,
@@ -274,10 +316,11 @@ export function bindYonalistOutlineEditor(
     const model = editor.getModel();
     const selection = editor.getSelection();
     if (!model || !selection) return;
+    const snapshot = binding.session.metadata.current();
     if (NOTE_GESTURE_KEYS.has(browser.key)) {
       const gesture = resolveOutlineNoteGesture({
         event: browser,
-        snapshot: binding.session.metadata.current(),
+        snapshot,
         selection,
         lineText: model.getLineContent(selection.positionLineNumber)
       });
@@ -287,10 +330,14 @@ export function bindYonalistOutlineEditor(
         return;
       }
     }
+    if (refusesImageLineEdit({ event: browser, snapshot, selection })) {
+      refuse(event);
+      return;
+    }
     if (!replacesLineRange(model, selection, browser)) return;
     if (
       !canApplyNativeBoundaryEdit({
-        snapshot: binding.session.metadata.current(),
+        snapshot,
         texts: readModelLines(model),
         selection,
         command: browser.key === "Backspace" ? "backspace" : "delete"
@@ -306,6 +353,19 @@ export function bindYonalistOutlineEditor(
         activeNodeId: () => binding.pane.activeNodeId()
       })
     : null;
+  // The clipboard never passes the key gate — a menu paste carries no keydown
+  // at all — so an image line refuses these directly. An image payload was
+  // already taken by the ingest above, which creates a row instead of typing.
+  const host = editor.getDomNode();
+  const refuseClipboardWrite = (event: Event): void => {
+    const selection = editor.getSelection();
+    if (!selection) return;
+    if (!touchesImageLine(binding.session.metadata.current(), selection)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  };
+  host?.addEventListener("paste", refuseClipboardWrite, true);
+  host?.addEventListener("cut", refuseClipboardWrite, true);
   const caret = keepCaretRightOfInjectedText(editor);
   const mouse = editor.onMouseDown((event) => {
     const attachment = readInjectedTextAttachment(event);
@@ -326,6 +386,8 @@ export function bindYonalistOutlineEditor(
     ingestImages: async (payload, at) => ingest?.run(payload, at),
     markImageDropPoint: (at) => ingest?.markDropPoint(at),
     dispose: () => {
+      host?.removeEventListener("paste", refuseClipboardWrite, true);
+      host?.removeEventListener("cut", refuseClipboardWrite, true);
       mouse.dispose();
       caret.dispose();
       ingest?.dispose();

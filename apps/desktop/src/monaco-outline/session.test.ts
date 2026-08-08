@@ -486,27 +486,26 @@ describe("MonacoOutlineSession", () => {
     await session.dispose();
   });
 
-  it("coalesces caption edits into the one updateText a title would get", async () => {
+  it("refuses a filename edit however it reaches the session", async () => {
     const { session, executeEditorBatch } = createSession("caption", [
-      pictured("picture", "caption", "caption")
+      pictured("picture", "sample.png", "caption")
     ]);
 
+    // An image node's text is its filename, which the tree refuses to change,
+    // so the API the zoom header writes through leaves the model alone.
+    session.updateNodeText("picture", "renamed.png");
+    expect(session.model.getValue()).toBe("sample.png");
+    expect(session.textForNode("picture")).toBe("sample.png");
+
+    // An edit that got past the key gate owes no command either.
     session.model.pushEditOperations(
       [],
-      [{ range: new monaco.Range(1, 8, 1, 8), text: "!" }],
-      () => null
-    );
-    session.model.pushEditOperations(
-      [],
-      [{ range: new monaco.Range(1, 9, 1, 9), text: "?" }],
+      [{ range: new monaco.Range(1, 11, 1, 11), text: "!" }],
       () => null
     );
 
     await session.flush("navigation");
-    expect(executeEditorBatch).toHaveBeenCalledOnce();
-    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
-      { kind: "updateText", id: "picture", text: "caption!?" }
-    ]);
+    expect(executeEditorBatch).not.toHaveBeenCalled();
     await session.dispose();
   });
 

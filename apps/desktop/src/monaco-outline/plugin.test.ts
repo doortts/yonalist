@@ -9,9 +9,11 @@ import {
 } from "./metadata";
 import {
   applyOutlineNoteGesture,
+  refusesImageLineEdit,
   resolveOutlineNoteGesture,
   runOutlineCommand,
   type OutlineNoteGesture,
+  type OutlineNoteKeyEvent,
   type YonalistOutlineEditorBinding
 } from "./plugin";
 import { MonacoOutlineSession } from "./session";
@@ -262,6 +264,84 @@ describe("outline note key routing", () => {
     expect(
       gesture("Enter", new monaco.Selection(1, 3, 1, 3), { metaKey: true })
     ).toBeNull();
+  });
+});
+
+describe("image line read-only gate", () => {
+  const onImage = new monaco.Selection(5, 2, 5, 2);
+
+  function refuses(
+    key: string,
+    selection: monaco.Selection,
+    overrides: Partial<OutlineNoteKeyEvent> = {}
+  ): boolean {
+    return refusesImageLineEdit({
+      event: {
+        key,
+        shiftKey: false,
+        altKey: false,
+        ctrlKey: false,
+        metaKey: false,
+        isComposing: false,
+        ...overrides
+      },
+      snapshot: notedSnapshot(),
+      selection
+    });
+  }
+
+  it("refuses anything that would type into an image line", () => {
+    expect(refuses("a", onImage)).toBe(true);
+    expect(refuses(" ", onImage)).toBe(true);
+    expect(refuses("A", onImage, { shiftKey: true })).toBe(true);
+    expect(refuses("Backspace", onImage)).toBe(true);
+    expect(refuses("Delete", onImage)).toBe(true);
+    expect(refuses("Tab", onImage)).toBe(true);
+    // Word- and line-wise deletion carries a modifier and still types.
+    expect(refuses("Backspace", onImage, { metaKey: true })).toBe(true);
+    expect(refuses("Delete", onImage, { altKey: true })).toBe(true);
+  });
+
+  it("refuses a composition that would open on an image line", () => {
+    expect(refuses("Process", onImage)).toBe(true);
+    expect(refuses("ㄱ", onImage, { isComposing: true })).toBe(true);
+  });
+
+  it("refuses a selection that only reaches an image line", () => {
+    expect(refuses("a", new monaco.Selection(4, 1, 5, 3))).toBe(true);
+    expect(refuses("a", new monaco.Selection(5, 3, 4, 1))).toBe(true);
+  });
+
+  it("keeps navigation, copy and the outline commands on an image line", () => {
+    for (const key of [
+      "ArrowUp",
+      "ArrowDown",
+      "ArrowLeft",
+      "ArrowRight",
+      "Home",
+      "End",
+      "PageUp",
+      "PageDown",
+      "Escape"
+    ]) {
+      expect(refuses(key, onImage)).toBe(false);
+    }
+    expect(refuses("c", onImage, { metaKey: true })).toBe(false);
+    expect(refuses("Enter", onImage, { metaKey: true })).toBe(false);
+  });
+
+  it("leaves Enter to the gesture that makes the sibling below", () => {
+    expect(refuses("Enter", onImage)).toBe(false);
+    expect(gesture("Enter", onImage)).toEqual({
+      kind: "siblingBelow",
+      nodeId: "picture"
+    });
+  });
+
+  it("leaves every other line editable", () => {
+    expect(refuses("a", new monaco.Selection(1, 2, 1, 2))).toBe(false);
+    expect(refuses("Backspace", new monaco.Selection(2, 1, 2, 1))).toBe(false);
+    expect(refuses("Process", new monaco.Selection(4, 1, 4, 1))).toBe(false);
   });
 });
 
