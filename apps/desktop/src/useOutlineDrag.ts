@@ -10,6 +10,7 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { OutlineDropPlan } from "./outlineDragPlan";
 import type { SelectionNodeMove } from "./selectionMoves";
 import type { useOutlineSelection } from "./useOutlineSelection";
+import { outlinePane } from "./outlinePaneRegistry";
 
 interface DragGesture {
   readonly pointerId: number;
@@ -64,8 +65,7 @@ function loadOutlineDragPlanner(): Promise<OutlineDragPlanner> {
 }
 
 function pointerDestination(
-  event: globalThis.PointerEvent,
-  nodes: readonly NoteView[]
+  event: globalThis.PointerEvent
 ): PointerDestination | null {
   const pointed = typeof document.elementFromPoint === "function"
     ? document.elementFromPoint(event.clientX, event.clientY)
@@ -76,20 +76,20 @@ function pointerDestination(
   const scope = target?.closest<HTMLElement>(
     ".notes-outline[data-outline-root-id]"
   );
+  // Hit testing is a question about pixels, so it reads the DOM; the row list
+  // is a question about the outline, so it comes from the pane's own model.
+  // Reading it back out of the DOM would silently shrink to whatever rows
+  // happen to be within the rendered window.
   const overId = target?.closest<HTMLElement>("[data-outline-id]")
     ?.dataset.outlineId ?? null;
   const outlineRootId = scope?.dataset.outlineRootId;
   if (!scope || !outlineRootId) return null;
-  const byId = new Map(nodes.map((node) => [node.id, node]));
-  const visibleNodes = [...scope.querySelectorAll<HTMLElement>(
-    "[data-outline-id]"
-  )].flatMap((row) => {
-    const node = row.dataset.outlineId
-      ? byId.get(row.dataset.outlineId)
-      : undefined;
-    return node ? [node] : [];
-  });
-  return { scope, outlineRootId, visibleNodes, overId };
+  return {
+    scope,
+    outlineRootId,
+    visibleNodes: outlinePane(scope)?.visibleNodes ?? [],
+    overId
+  };
 }
 
 function isInSubtree(
@@ -172,7 +172,7 @@ export function useOutlineDrag(input: UseOutlineDragInput) {
       }
       setPointer({ x: event.clientX, y: event.clientY });
       const current = inputRef.current;
-      const destination = pointerDestination(event, current.nodes);
+      const destination = pointerDestination(event);
       const planner = outlineDragPlanner;
       if (!planner) {
         void loadOutlineDragPlanner();
