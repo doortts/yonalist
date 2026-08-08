@@ -254,6 +254,54 @@ fn editor_batch_update_note_writes_the_node_note() {
 }
 
 #[test]
+fn editor_batch_set_marker_writes_the_node_marker() {
+    let storage = FakeStorage::default();
+    let service = NotesService::new(&storage, "session", 0);
+    for (request_id, revision, notes_command) in [
+        (
+            "create-page",
+            0,
+            IpcNotesCommand::CreatePage {
+                id: "page".into(),
+                text: "Inbox".into(),
+            },
+        ),
+        (
+            "create-first",
+            1,
+            IpcNotesCommand::CreateNode {
+                id: "first".into(),
+                parent_id: "page".into(),
+                before_id: None,
+                text: "alpha".into(),
+            },
+        ),
+    ] {
+        service
+            .execute(command(request_id, revision, notes_command))
+            .unwrap();
+    }
+
+    service
+        .execute(command(
+            "editor-marker",
+            2,
+            IpcNotesCommand::ApplyEditorBatch {
+                commands: vec![IpcEditorCommand::SetMarker {
+                    id: "first".into(),
+                    marker: IpcMarkerKind::Todo,
+                }],
+            },
+        ))
+        .expect("editor batch");
+
+    assert_eq!(
+        storage.editor_fields("first").map(|fields| fields.2),
+        Some(notes_core::NoteMarkerKind::Todo)
+    );
+}
+
+#[test]
 fn editor_batch_rejects_rust_history_groups_without_committing() {
     let storage = FakeStorage::default();
     let service = NotesService::new(&storage, "session", 0);

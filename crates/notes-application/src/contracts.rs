@@ -211,6 +211,10 @@ pub enum IpcEditorCommand {
         id: String,
         completed: bool,
     },
+    SetMarker {
+        id: String,
+        marker: IpcMarkerKind,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]

@@ -118,6 +118,13 @@ impl TryFrom<IpcEditorCommand> for NotesCommand {
                 id: id(value)?,
                 completed,
             }),
+            IpcEditorCommand::SetMarker { id: value, marker } => Ok(Self::SetMarker {
+                id: id(value)?,
+                marker: match marker {
+                    IpcMarkerKind::Bullet => NoteMarkerKind::Bullet,
+                    IpcMarkerKind::Todo => NoteMarkerKind::Todo,
+                },
+            }),
         }
     }
 }
