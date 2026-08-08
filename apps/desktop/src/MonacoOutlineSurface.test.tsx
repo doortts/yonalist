@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   paneCompleted: vi.fn(),
   paneDispose: vi.fn(),
   bind: vi.fn(),
-  ingestImagePaths: vi.fn(),
+  ingestImages: vi.fn(),
   assertCapabilities: vi.fn()
 }));
 
@@ -60,11 +60,11 @@ describe("MonacoOutlineSurface", () => {
     mocks.paneCompleted.mockReset();
     mocks.paneDispose.mockReset();
     mocks.bind.mockReset();
-    mocks.ingestImagePaths.mockReset();
+    mocks.ingestImages.mockReset();
     mocks.assertCapabilities.mockReset();
   });
 
-  it("routes one native file drop to the editor binding once per epoch", async () => {
+  it("routes one out-of-editor image gesture to the binding per epoch", async () => {
     const editor = {
       onDidBlurEditorText: vi.fn().mockReturnValue({ dispose: vi.fn() }),
       dispose: vi.fn()
@@ -72,7 +72,7 @@ describe("MonacoOutlineSurface", () => {
     mocks.createEditor.mockReturnValue(editor);
     mocks.bind.mockReturnValue({
       dispose: vi.fn(),
-      ingestImagePaths: mocks.ingestImagePaths
+      ingestImages: mocks.ingestImages
     });
     const session = {
       model: { id: "shared-model" },
@@ -102,28 +102,29 @@ describe("MonacoOutlineSurface", () => {
     const view = render(
       <MonacoOutlineSurface
         {...props}
-        dropRequest={{ epoch: 1, paths: ["/tmp/cat.png"] }}
+        ingestRequest={{ epoch: 1, payload: { paths: ["/tmp/cat.png"] } }}
       />
     );
 
-    await waitFor(() => expect(mocks.ingestImagePaths)
-      .toHaveBeenCalledWith(["/tmp/cat.png"]));
-
-    view.rerender(
-      <MonacoOutlineSurface
-        {...props}
-        dropRequest={{ epoch: 1, paths: ["/tmp/cat.png"] }}
-      />
-    );
-    expect(mocks.ingestImagePaths).toHaveBeenCalledOnce();
+    await waitFor(() => expect(mocks.ingestImages)
+      .toHaveBeenCalledWith({ paths: ["/tmp/cat.png"] }));
 
     view.rerender(
       <MonacoOutlineSurface
         {...props}
-        dropRequest={{ epoch: 2, paths: ["/tmp/dog.png"] }}
+        ingestRequest={{ epoch: 1, payload: { paths: ["/tmp/cat.png"] } }}
       />
     );
-    expect(mocks.ingestImagePaths).toHaveBeenLastCalledWith(["/tmp/dog.png"]);
+    expect(mocks.ingestImages).toHaveBeenCalledOnce();
+
+    view.rerender(
+      <MonacoOutlineSurface
+        {...props}
+        ingestRequest={{ epoch: 2, payload: { paths: ["/tmp/dog.png"] } }}
+      />
+    );
+    expect(mocks.ingestImages)
+      .toHaveBeenLastCalledWith({ paths: ["/tmp/dog.png"] });
     view.unmount();
   });
 

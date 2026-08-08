@@ -7,7 +7,8 @@ import {
 } from "./internalAdapter";
 import {
   bindImageIngest,
-  type MonacoImageIngestPort
+  type MonacoImageIngestPort,
+  type MonacoImagePayload
 } from "./imageIngest";
 import type { OutlineMetadataSnapshot } from "./metadata";
 import type { MonacoOutlineSession } from "./session";
@@ -227,8 +228,9 @@ export function applyOutlineNoteGesture(
 }
 
 export interface BoundYonalistOutlineEditor extends monaco.IDisposable {
-  /** The packaged app's native file drop, anchored at the active node. */
-  ingestImagePaths(paths: readonly string[]): void;
+  /** An image gesture the pane caught outside the editor, anchored at the
+   * active node: the OS file drop and the header's picker. */
+  ingestImages(payload: MonacoImagePayload): void;
 }
 
 export function bindYonalistOutlineEditor(
@@ -313,9 +315,7 @@ export function bindYonalistOutlineEditor(
   });
 
   return {
-    ingestImagePaths: (paths) => {
-      if (paths.length > 0) ingest?.run({ paths });
-    },
+    ingestImages: (payload) => ingest?.run(payload),
     dispose: () => {
       mouse.dispose();
       caret.dispose();

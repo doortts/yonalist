@@ -6,6 +6,7 @@ import {
   type DragEventHandler,
   type RefObject
 } from "react";
+import type { ImageCandidate } from "./imageApi";
 import type { NotesStore } from "./notesStore";
 import type { OutlineIndex } from "./outlineIndex";
 
@@ -36,11 +37,17 @@ interface UseImageIngestInput {
   readonly scopeRef: RefObject<HTMLElement | null>;
   readonly boundary?: ImageIngestBoundary;
   /**
-   * Takes the OS drop away from the React rows. The Monaco surface owns its
-   * own anchor and its own write path, so it only needs the paths.
+   * Takes an image gesture away from the React rows. The Monaco surface owns
+   * its own anchor and is the page's only writer while it is up, so the
+   * payload goes to it rather than straight to the store.
    */
-  readonly nativeDrop?: ((paths: readonly string[]) => void) | null;
+  readonly monacoIngest?: ((payload: MonacoBoundPayload) => void) | null;
 }
+
+/** Structurally the Monaco surface's payload, without importing its module. */
+type MonacoBoundPayload =
+  | { readonly paths: readonly string[] }
+  | { readonly candidates: readonly ImageCandidate[] };
 
 export function useImageIngest({
   store,
@@ -48,10 +55,10 @@ export function useImageIngest({
   index,
   scopeRef,
   boundary = defaultImageIngestBoundary,
-  nativeDrop = null
+  monacoIngest = null
 }: UseImageIngestInput) {
-  const latest = useRef({ store, outlineRootId, index, nativeDrop });
-  latest.current = { store, outlineRootId, index, nativeDrop };
+  const latest = useRef({ store, outlineRootId, index, monacoIngest });
+  latest.current = { store, outlineRootId, index, monacoIngest };
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -101,14 +108,22 @@ export function useImageIngest({
 
   const openPicker = useCallback(async (targetId: string) => {
     try {
+      const monaco = latest.current.monacoIngest;
       if (boundary.native) {
         const paths = await boundary.pickPaths();
-        await importPaths(targetId, paths);
-      } else {
-        const { pickImageFiles } = await import("./imagePicker");
-        const files = await pickImageFiles(true);
-        await importFiles(targetId, files);
+        if (paths.length === 0) return;
+        if (monaco) monaco({ paths });
+        else await importPaths(targetId, paths);
+        return;
       }
+      const { pickImageFiles, imageCandidates } = await import("./imagePicker");
+      const files = await pickImageFiles(true);
+      if (!monaco) {
+        await importFiles(targetId, files);
+        return;
+      }
+      const candidates = imageCandidates(files);
+      if (candidates.length > 0) monaco({ candidates });
     } catch (cause) {
       setError(messageFrom(cause));
     }
@@ -135,9 +150,9 @@ export function useImageIngest({
       }
       setDropTargetId(null);
       if (!targetId) return;
-      const monaco = latest.current.nativeDrop;
+      const monaco = latest.current.monacoIngest;
       if (monaco) {
-        monaco(event.paths);
+        monaco({ paths: event.paths });
         return;
       }
       void importPaths(targetId, event.paths)

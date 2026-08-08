@@ -14,7 +14,8 @@ import {
   assertMonacoInternalCapabilities
 } from "./monaco-outline/internalAdapter";
 import type {
-  MonacoImageIngestPort
+  MonacoImageIngestPort,
+  MonacoImagePayload
 } from "./monaco-outline/imageIngest";
 import type { ImageZonePort } from "./monaco-outline/imageZones";
 import {
@@ -48,13 +49,13 @@ export interface MonacoOutlineFocusRequest {
 }
 
 /**
- * One OS file drop the pane's native listener caught. The drop position never
- * picks a row — the import lands after everything the active node owns, the
- * same anchor the clipboard path uses.
+ * One image gesture the pane caught outside the editor: an OS file drop or the
+ * header's picker. Drop coordinates never pick a row — the import lands after
+ * everything the active node owns, the same anchor a paste uses.
  */
-export interface MonacoOutlineDropRequest {
+export interface MonacoOutlineIngestRequest {
   readonly epoch: number;
-  readonly paths: readonly string[];
+  readonly payload: MonacoImagePayload;
 }
 
 /** Everything the outline's image rows need from the store, in one object. */
@@ -67,7 +68,7 @@ export default function MonacoOutlineSurface({
   showCompleted,
   registry,
   focusRequest,
-  dropRequest,
+  ingestRequest,
   images,
   onSessionChange,
   onZoomRootChange,
@@ -80,7 +81,7 @@ export default function MonacoOutlineSurface({
   readonly showCompleted: boolean;
   readonly registry: MonacoSessionRegistry;
   readonly focusRequest: MonacoOutlineFocusRequest | null;
-  readonly dropRequest?: MonacoOutlineDropRequest | null;
+  readonly ingestRequest?: MonacoOutlineIngestRequest | null;
   /** Bytes, image writes and the lightbox host, all owned by NotesOutline. */
   readonly images?: MonacoOutlineImagePort;
   readonly onSessionChange: (session: MonacoOutlineSession | null) => void;
@@ -101,7 +102,7 @@ export default function MonacoOutlineSurface({
   const onSessionChangeRef = useRef(onSessionChange);
   const imagesRef = useRef(images);
   const handledFocusEpochRef = useRef<number | null>(null);
-  const handledDropEpochRef = useRef<number | null>(null);
+  const handledIngestEpochRef = useRef<number | null>(null);
   const [session, setSession] = useState<MonacoOutlineSession | null>(null);
   zoomRef.current = zoomRootId;
   completedRef.current = showCompleted;
@@ -220,14 +221,14 @@ export default function MonacoOutlineSurface({
   useEffect(() => {
     if (
       !session ||
-      !dropRequest ||
-      handledDropEpochRef.current === dropRequest.epoch
+      !ingestRequest ||
+      handledIngestEpochRef.current === ingestRequest.epoch
     ) {
       return;
     }
-    handledDropEpochRef.current = dropRequest.epoch;
-    bindingRef.current?.ingestImagePaths(dropRequest.paths);
-  }, [dropRequest, session]);
+    handledIngestEpochRef.current = ingestRequest.epoch;
+    bindingRef.current?.ingestImages(ingestRequest.payload);
+  }, [ingestRequest, session]);
 
   useEffect(() => {
     paneRef.current?.setZoomRoot(zoomRootId);

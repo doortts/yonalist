@@ -147,18 +147,19 @@ describe("image ingest", () => {
     Reflect.deleteProperty(document, "elementFromPoint");
   });
 
-  it("hands a native drop over to the Monaco surface instead of the rows", async () => {
+  it("hands a drop and a picker over to the Monaco surface, not the rows", async () => {
     const { ref } = scopeFixture();
     const native = boundary();
     const notesStore = store();
-    const nativeDrop = vi.fn();
-    renderHook(() => useImageIngest({
+    const monacoIngest = vi.fn();
+    vi.mocked(native.value.pickPaths).mockResolvedValue(["C:\\dog.png"]);
+    const { result } = renderHook(() => useImageIngest({
       store: notesStore,
       outlineRootId: "page",
       index: index(),
       scopeRef: ref,
       boundary: native.value,
-      nativeDrop
+      monacoIngest
     }));
     await waitFor(() => expect(
       native.value.listenNativeDrops
@@ -176,7 +177,11 @@ describe("image ingest", () => {
       });
     });
 
-    expect(nativeDrop).toHaveBeenCalledWith(["C:\\cat.png"]);
+    expect(monacoIngest).toHaveBeenCalledWith({ paths: ["C:\\cat.png"] });
+
+    await act(() => result.current.openPicker("first"));
+
+    expect(monacoIngest).toHaveBeenLastCalledWith({ paths: ["C:\\dog.png"] });
     expect(notesStore.images.importPathsAfter).not.toHaveBeenCalled();
     Reflect.deleteProperty(document, "elementFromPoint");
   });
