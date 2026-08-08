@@ -674,6 +674,36 @@ describe("MonacoOutlineSession", () => {
     await session.dispose();
   });
 
+  it("keeps the text mirror in step after a note-owning split", async () => {
+    const { session, executeEditorBatch } = createSession(
+      "split-mirror",
+      [noted("first", "alphabeta", "n1", "split-mirror")],
+      vi.fn().mockResolvedValue(receipt()),
+      ["inserted"]
+    );
+
+    session.splitTitleWithNote("first", 6);
+    // A native edit right after would throw if the line mirror had drifted.
+    session.model.pushEditOperations([], [{
+      range: new monaco.Range(2, 3, 2, 3),
+      text: "!"
+    }], () => null);
+
+    await session.flush("navigation");
+    expect(executeEditorBatch.mock.calls[0]?.[1]).toEqual([
+      { kind: "updateText", id: "first", text: "alpha" },
+      {
+        kind: "createNode",
+        id: "inserted",
+        parent_id: "split-mirror",
+        before_id: null,
+        text: "beta"
+      },
+      { kind: "updateNote", id: "first", note: "n1!" }
+    ]);
+    await session.dispose();
+  });
+
   it("refuses a note-owning split when the node has no run", async () => {
     const { session } = createSession("split-plain", [
       node("first", "alpha", "split-plain")
