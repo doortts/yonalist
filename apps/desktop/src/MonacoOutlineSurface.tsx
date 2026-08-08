@@ -13,6 +13,9 @@ import {
 import {
   assertMonacoInternalCapabilities
 } from "./monaco-outline/internalAdapter";
+import type {
+  MonacoImageIngestPort
+} from "./monaco-outline/imageIngest";
 import type { ImageZonePort } from "./monaco-outline/imageZones";
 import {
   MonacoOutlinePaneAdapter
@@ -43,6 +46,9 @@ export interface MonacoOutlineFocusRequest {
   readonly nodeId: string;
 }
 
+/** Everything the outline's image rows need from the store, in one object. */
+export type MonacoOutlineImagePort = ImageZonePort & MonacoImageIngestPort;
+
 export default function MonacoOutlineSurface({
   pageId,
   paneId,
@@ -62,8 +68,8 @@ export default function MonacoOutlineSurface({
   readonly showCompleted: boolean;
   readonly registry: MonacoSessionRegistry;
   readonly focusRequest: MonacoOutlineFocusRequest | null;
-  /** Bytes, resize writes and the lightbox host, all owned by NotesOutline. */
-  readonly images?: ImageZonePort;
+  /** Bytes, image writes and the lightbox host, all owned by NotesOutline. */
+  readonly images?: MonacoOutlineImagePort;
   readonly onSessionChange: (session: MonacoOutlineSession | null) => void;
   readonly onZoomRootChange: (nodeId: string) => void;
   readonly onOpenSplit: (nodeId: string) => void;
@@ -135,7 +141,12 @@ export default function MonacoOutlineSurface({
       paneRef.current = pane;
       binding = bindYonalistOutlineEditor(editor, {
         session: lease.session,
-        pane
+        pane,
+        images: imagesRef.current && {
+          import: (request) => imagesRef.current!.import(request),
+          remove: (nodeIds) => imagesRef.current!.remove(nodeIds),
+          restore: (nodeIds) => imagesRef.current!.restore(nodeIds)
+        }
       });
       blur = editor.onDidBlurEditorText(() => {
         void lease.session.flush("blur").catch(() => undefined);

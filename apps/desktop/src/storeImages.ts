@@ -1,3 +1,4 @@
+import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { NotesApi } from "./api";
 import type { ImageCandidate, ImageInput } from "./imageApi";
 import type { NotesState } from "./notesState";
@@ -23,6 +24,12 @@ interface RetryablePathImport {
   readonly requestId: string;
 }
 
+export interface ImageImportResult {
+  /** The node ids the batch created, in the order the request listed them. */
+  readonly nodeIds: readonly string[];
+  readonly receipt: MutationReceipt;
+}
+
 export class StoreImages {
   private retryableImport: RetryableImport | null = null;
   private retryablePathImport: RetryablePathImport | null = null;
@@ -42,7 +49,7 @@ export class StoreImages {
     parentId: string,
     beforeId: string | null,
     candidates: readonly ImageCandidate[]
-  ): Promise<string> {
+  ): Promise<ImageImportResult> {
     const retry = this.matchesRetry(parentId, beforeId, candidates)
       ? this.retryableImport
       : null;
@@ -57,19 +64,18 @@ export class StoreImages {
       }))
     };
     this.retryableImport = operation;
-    try {
-      await this.commands.executeExternal(
-        (context) => this.api.importImageBytes(
-          importRequest(context, operation)
-        ),
-        "images:batch",
-        operation.requestId
-      );
-      if (this.retryableImport === operation) this.retryableImport = null;
-      return operation.images[0]!.nodeId;
-    } catch (error) {
-      throw error;
-    }
+    const receipt = await this.commands.executeExternal(
+      (context) => this.api.importImageBytes(
+        importRequest(context, operation)
+      ),
+      "images:batch",
+      operation.requestId
+    );
+    if (this.retryableImport === operation) this.retryableImport = null;
+    return {
+      nodeIds: operation.images.map((image) => image.nodeId),
+      receipt
+    };
   }
 
   read(nodeId: string): Promise<Uint8Array> {
@@ -145,7 +151,7 @@ export class StoreImages {
     parentId: string,
     beforeId: string | null,
     paths: readonly string[]
-  ): Promise<string> {
+  ): Promise<ImageImportResult> {
     const retry = this.matchesPathRetry(parentId, beforeId, paths)
       ? this.retryablePathImport
       : null;
@@ -157,7 +163,7 @@ export class StoreImages {
       images: paths.map((path) => ({ nodeId: freshId(), path }))
     };
     this.retryablePathImport = operation;
-    await this.commands.executeExternal(
+    const receipt = await this.commands.executeExternal(
       (context) => this.api.importImagePaths({
         ...context,
         parentId: operation.parentId,
@@ -170,7 +176,10 @@ export class StoreImages {
     if (this.retryablePathImport === operation) {
       this.retryablePathImport = null;
     }
-    return operation.images[0]!.nodeId;
+    return {
+      nodeIds: operation.images.map((image) => image.nodeId),
+      receipt
+    };
   }
 
   private matchesRetry(

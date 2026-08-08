@@ -74,7 +74,15 @@ describe("image ingest", () => {
     vi.mocked(native.value.pickPaths)
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce(["C:\\cat.png", "C:\\dog.webp"]);
-    vi.mocked(notesStore.images.importPathsAfter).mockResolvedValue("cat");
+    vi.mocked(notesStore.images.importPathsAfter).mockResolvedValue({
+      nodeIds: ["cat"],
+      receipt: {
+        revision: 2,
+        changedNodes: [],
+        deletedIds: [],
+        history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+      }
+    });
     const { result } = renderHook(() => useImageIngest({
       store: notesStore,
       outlineRootId: "page",

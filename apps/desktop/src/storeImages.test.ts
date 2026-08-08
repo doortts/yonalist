@@ -89,7 +89,7 @@ describe("StoreImages", () => {
     const history = vi.fn();
     store.subscribeHistory(history);
 
-    const firstId = await store.images.importAfter(
+    const { nodeIds } = await store.images.importAfter(
       "page-1",
       "bullet-2",
       candidates()
@@ -102,7 +102,7 @@ describe("StoreImages", () => {
       "dog.png"
     ]);
     expect(request.images.map((image) => image.nodeId)).toEqual([
-      firstId,
+      nodeIds[0],
       store.getSnapshot().nodes.find((node) =>
         node.image?.originalName === "dog.png")?.id
     ]);
@@ -127,14 +127,14 @@ describe("StoreImages", () => {
       store.images.importAfter("page-1", null, images)
     ).rejects.toThrow("response lost");
     const firstAttempt = attempted!;
-    const firstId = await store.images.importAfter("page-1", null, images);
+    const retried = await store.images.importAfter("page-1", null, images);
     const secondAttempt = importImageBytes.mock.calls[1]![0];
 
     expect(secondAttempt.requestId).toBe(firstAttempt.requestId);
     expect(secondAttempt.images.map((image) => image.nodeId)).toEqual(
       firstAttempt.images.map((image) => image.nodeId)
     );
-    expect(firstId).toBe(firstAttempt.images[0]!.nodeId);
+    expect(retried.nodeIds[0]).toBe(firstAttempt.images[0]!.nodeId);
   });
 
   it("imports native paths as one ordered request with stable node IDs", async () => {
@@ -170,7 +170,7 @@ describe("StoreImages", () => {
     const store = new NotesStore(api(vi.fn(), importImagePaths));
     await store.bootstrap();
 
-    const firstId = await store.images.importPathsAfter(
+    const pathImport = await store.images.importPathsAfter(
       "page-1",
       "bullet-2",
       ["C:\\images\\cat.png", "/images/dog.png"]
@@ -182,7 +182,8 @@ describe("StoreImages", () => {
       "C:\\images\\cat.png",
       "/images/dog.png"
     ]);
-    expect(request.images[0]!.nodeId).toBe(firstId);
+    expect(request.images.map((image) => image.nodeId))
+      .toEqual(pathImport.nodeIds);
   });
 
   it("resizes through the shared revision and history command path", async () => {

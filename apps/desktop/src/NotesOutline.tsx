@@ -26,11 +26,11 @@ import type {
 } from "./monaco-outline/sessionRegistry";
 import type { MonacoOutlineSession } from "./monaco-outline/session";
 import type {
-  MonacoOutlineFocusRequest
+  MonacoOutlineFocusRequest, MonacoOutlineImagePort
 } from "./MonacoOutlineSurface";
 import { loadMonacoOutlineRuntime } from "./monaco-outline/runtimeLoader";
 import type {
-  ImageZoneLightboxRequest, ImageZonePort
+  ImageZoneLightboxRequest
 } from "./monaco-outline/imageZones";
 import { imageResidencyForStore } from "./imageResidency";
 
@@ -102,10 +102,22 @@ export function NotesOutline({
     useState<MonacoOutlineFocusRequest | null>(null);
   const [monacoLightbox, setMonacoLightbox] =
     useState<ImageZoneLightboxRequest | null>(null);
-  const monacoImages = useMemo<ImageZonePort>(() => ({
+  const monacoImages = useMemo<MonacoOutlineImagePort>(() => ({
     residency: imageResidencyForStore(store),
     resize: (nodeId, displayWidth) => store.images.resize(nodeId, displayWidth),
-    openLightbox: setMonacoLightbox
+    openLightbox: setMonacoLightbox,
+    import: ({ parentId, beforeId, candidates }) =>
+      store.images.importAfter(parentId, beforeId, candidates)
+        .then(({ nodeIds, receipt }) => ({
+          nodeIds,
+          nodes: receipt.changedNodes
+        })),
+    remove: (nodeIds) => store.deleteSubtrees(nodeIds),
+    // Restoring the trashed subtrees is what makes an image undo reversible;
+    // the bytes outlive the delete for exactly this (contract I6).
+    restore: async (nodeIds) => {
+      for (const nodeId of nodeIds) await store.restoreSubtree(nodeId);
+    }
   }), [store]);
   const index = useMemo(() => new OutlineIndex(state.nodes), [state.nodes]);
   const zoomRoot = zoomRootId

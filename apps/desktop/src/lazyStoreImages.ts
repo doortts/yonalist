@@ -2,7 +2,7 @@ import type { NotesApi } from "./api";
 import type { ImageCandidate } from "./imageApi";
 import type { NotesState } from "./notesState";
 import type { StoreCommands } from "./storeCommands";
-import type { StoreImages } from "./storeImages";
+import type { ImageImportResult, StoreImages } from "./storeImages";
 
 export class LazyStoreImages {
   private loaded: Promise<StoreImages> | null = null;
@@ -17,7 +17,7 @@ export class LazyStoreImages {
     parentId: string,
     beforeId: string | null,
     candidates: readonly ImageCandidate[]
-  ): Promise<string> {
+  ): Promise<ImageImportResult> {
     return this.load().then((images) =>
       images.importAfter(parentId, beforeId, candidates));
   }
@@ -26,7 +26,7 @@ export class LazyStoreImages {
     parentId: string,
     beforeId: string | null,
     paths: readonly string[]
-  ): Promise<string> {
+  ): Promise<ImageImportResult> {
     return this.load().then((images) =>
       images.importPathsAfter(parentId, beforeId, paths));
   }
