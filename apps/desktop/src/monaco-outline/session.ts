@@ -272,6 +272,14 @@ export class MonacoOutlineSession {
     return true;
   }
 
+  /**
+   * The node a line belongs to. A note line copies its title's id (design §1),
+   * so a gesture that lands on one acts on the node it hangs off.
+   */
+  nodeIdAtLine(lineNumber: number): string | null {
+    return this.metadata.current().lines[lineNumber - 1]?.nodeId ?? null;
+  }
+
   /** Where an image dropped on `nodeId` goes: after everything that node owns. */
   imageInsertionAnchor(nodeId: string | null): ImageInsertionAnchor | null {
     const current = this.metadata.current();

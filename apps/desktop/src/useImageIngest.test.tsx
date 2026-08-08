@@ -177,11 +177,24 @@ describe("image ingest", () => {
       });
     });
 
-    expect(monacoIngest).toHaveBeenCalledWith({ paths: ["C:\\cat.png"] });
+    expect(monacoIngest).toHaveBeenCalledWith(
+      { paths: ["C:\\cat.png"] },
+      { clientX: 10, clientY: 10 }
+    );
 
+    // The page header's picker names no row, so the surface anchors it itself.
     await act(() => result.current.openPicker("first"));
+    expect(monacoIngest).toHaveBeenLastCalledWith(
+      { paths: ["C:\\dog.png"] },
+      undefined
+    );
 
-    expect(monacoIngest).toHaveBeenLastCalledWith({ paths: ["C:\\dog.png"] });
+    // A row menu's picker names the row it was opened on.
+    await act(() => result.current.openPicker("first", { nodeId: "first" }));
+    expect(monacoIngest).toHaveBeenLastCalledWith(
+      { paths: ["C:\\dog.png"] },
+      { nodeId: "first" }
+    );
     expect(notesStore.images.importPathsAfter).not.toHaveBeenCalled();
     Reflect.deleteProperty(document, "elementFromPoint");
   });
@@ -190,13 +203,15 @@ describe("image ingest", () => {
     const { scope, ref } = scopeFixture();
     const native = boundary();
     const monacoIngest = vi.fn();
+    const monacoDropPoint = vi.fn();
     const { result } = renderHook(() => useImageIngest({
       store: store(),
       outlineRootId: "page",
       index: index(),
       scopeRef: ref,
       boundary: native.value,
-      monacoIngest
+      monacoIngest,
+      monacoDropPoint
     }));
     await waitFor(() => expect(
       native.value.listenNativeDrops
@@ -208,6 +223,12 @@ describe("image ingest", () => {
 
     act(() => native.emit({ type: "over", position: { x: 10, y: 10 } }));
     expect(result.current.dropTargetId).toBeNull();
+    // The editor never sees the OS drag, so the point goes to it instead of a
+    // row marker: only the editor knows which line is under it.
+    expect(monacoDropPoint).toHaveBeenLastCalledWith({
+      clientX: 10,
+      clientY: 10
+    });
 
     act(() => native.emit({
       type: "enter",
@@ -222,14 +243,21 @@ describe("image ingest", () => {
     ));
     expect(result.current.dropTargetId).toBeNull();
 
+    act(() => native.emit({ type: "leave" }));
+    expect(monacoDropPoint).toHaveBeenLastCalledWith(null);
+
     await act(async () => {
       native.emit({
         type: "drop",
         paths: ["C:\\cat.png"],
-        position: { x: 10, y: 10 }
+        position: { x: 24, y: 48 }
       });
     });
-    expect(monacoIngest).toHaveBeenCalledWith({ paths: ["C:\\cat.png"] });
+    expect(monacoIngest).toHaveBeenCalledWith(
+      { paths: ["C:\\cat.png"] },
+      { clientX: 24, clientY: 48 }
+    );
+    expect(monacoDropPoint).toHaveBeenLastCalledWith(null);
     Reflect.deleteProperty(document, "elementFromPoint");
   });
 });

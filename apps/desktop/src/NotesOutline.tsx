@@ -26,7 +26,7 @@ import type {
 } from "./monaco-outline/sessionRegistry";
 import type { MonacoOutlineSession } from "./monaco-outline/session";
 import type {
-  MonacoOutlineFocusRequest, MonacoOutlineImagePort, MonacoOutlineIngestRequest
+  MonacoOutlineFocusRequest, MonacoOutlineImageGestures, MonacoOutlineImagePort
 } from "./MonacoOutlineSurface";
 import { loadMonacoOutlineRuntime } from "./monaco-outline/runtimeLoader";
 import type {
@@ -102,8 +102,7 @@ export function NotesOutline({
     useState<MonacoOutlineFocusRequest | null>(null);
   const [monacoLightbox, setMonacoLightbox] =
     useState<ImageZoneLightboxRequest | null>(null);
-  const [monacoIngestRequest, setMonacoIngestRequest] =
-    useState<MonacoOutlineIngestRequest | null>(null);
+  const monacoGestures = useRef<MonacoOutlineImageGestures | null>(null);
   const outlineSurface = outlineSurfaceFromSearch(location.search);
   // Notes and image nodes are Monaco rows now, so nothing about the page's
   // content sends it back to React; only a page the session refused does.
@@ -156,10 +155,10 @@ export function NotesOutline({
     // row's: the session anchors it and the ingest port writes it. Going
     // straight to the store here would make the page's second writer.
     monacoIngest: useMonaco
-      ? (payload) => setMonacoIngestRequest((current) => ({
-          epoch: (current?.epoch ?? 0) + 1,
-          payload
-        }))
+      ? (payload, at) => monacoGestures.current?.ingest(payload, at)
+      : null,
+    monacoDropPoint: useMonaco
+      ? (at) => monacoGestures.current?.markDropPoint(at)
       : null
   });
   const expandedBodyNodes = useMemo(
@@ -521,8 +520,10 @@ export function NotesOutline({
                 showCompleted={showCompleted}
                 registry={monacoSessions}
                 focusRequest={monacoFocusRequest}
-                ingestRequest={monacoIngestRequest}
+                gesturesRef={monacoGestures}
                 images={monacoImages}
+                onPickImage={(nodeId) =>
+                  void imageIngest.openPicker(nodeId, { nodeId })}
                 onSessionChange={setMonacoSession}
                 onZoomRootChange={onZoomRootChange}
                 onOpenSplit={(nodeId) => onOpenSplit?.(nodeId)}

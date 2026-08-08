@@ -41,7 +41,15 @@ interface UseImageIngestInput {
    * its own anchor and is the page's only writer while it is up, so the
    * payload goes to it rather than straight to the store.
    */
-  readonly monacoIngest?: ((payload: MonacoBoundPayload) => void) | null;
+  readonly monacoIngest?: ((
+    payload: MonacoBoundPayload,
+    at?: MonacoBoundAnchor | null
+  ) => void) | null;
+  /**
+   * Drag feedback for the Monaco surface. The OS drop never reaches the
+   * editor's DOM, so the point goes to it and it highlights the line.
+   */
+  readonly monacoDropPoint?: ((at: MonacoDropPoint | null) => void) | null;
 }
 
 /** Structurally the Monaco surface's payload, without importing its module. */
@@ -49,24 +57,43 @@ type MonacoBoundPayload =
   | { readonly paths: readonly string[] }
   | { readonly candidates: readonly ImageCandidate[] };
 
+/** Structurally the Monaco surface's anchor, same reason. */
+type MonacoBoundAnchor = { readonly nodeId: string } | MonacoDropPoint;
+
+type MonacoDropPoint = {
+  readonly clientX: number;
+  readonly clientY: number;
+};
+
 export function useImageIngest({
   store,
   outlineRootId,
   index,
   scopeRef,
   boundary = defaultImageIngestBoundary,
-  monacoIngest = null
+  monacoIngest = null,
+  monacoDropPoint = null
 }: UseImageIngestInput) {
-  const latest = useRef({ store, outlineRootId, index, monacoIngest });
-  latest.current = { store, outlineRootId, index, monacoIngest };
+  const latest = useRef({
+    store, outlineRootId, index, monacoIngest, monacoDropPoint
+  });
+  latest.current = {
+    store, outlineRootId, index, monacoIngest, monacoDropPoint
+  };
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   /**
    * The Monaco surface anchors the drop itself, so a row or header marker
-   * would point at a target the gesture never writes to.
+   * would point at a target the gesture never writes to: the editor takes the
+   * point instead and highlights the line it lands on.
    */
-  const markDropTarget = useCallback((targetId: string | null) => {
-    setDropTargetId(latest.current.monacoIngest ? null : targetId);
+  const markDropTarget = useCallback((
+    targetId: string | null,
+    at: MonacoDropPoint | null
+  ) => {
+    const monaco = latest.current.monacoDropPoint;
+    if (monaco) monaco(at);
+    setDropTargetId(monaco || latest.current.monacoIngest ? null : targetId);
   }, []);
 
   const importPaths = useCallback(async (
@@ -113,13 +140,20 @@ export function useImageIngest({
     );
   }, []);
 
-  const openPicker = useCallback(async (targetId: string) => {
+  /**
+   * `at` is the Monaco surface's anchor: a row menu names its own node, while
+   * the page header names none and lands where a paste would.
+   */
+  const openPicker = useCallback(async (
+    targetId: string,
+    at?: MonacoBoundAnchor | null
+  ) => {
     try {
       const monaco = latest.current.monacoIngest;
       if (boundary.native) {
         const paths = await boundary.pickPaths();
         if (paths.length === 0) return;
-        if (monaco) monaco({ paths });
+        if (monaco) monaco({ paths }, at);
         else await importPaths(targetId, paths);
         return;
       }
@@ -130,7 +164,7 @@ export function useImageIngest({
         return;
       }
       const candidates = imageCandidates(files);
-      if (candidates.length > 0) monaco({ candidates });
+      if (candidates.length > 0) monaco({ candidates }, at);
     } catch (cause) {
       setError(messageFrom(cause));
     }
@@ -143,23 +177,29 @@ export function useImageIngest({
     void boundary.listenNativeDrops((event) => {
       if (!active) return;
       if (event.type === "leave") {
-        setDropTargetId(null);
+        markDropTarget(null, null);
         return;
       }
+      const at = {
+        clientX: event.position.x,
+        clientY: event.position.y
+      };
       const targetId = targetAtPosition(
         scopeRef.current,
         event.position,
         latest.current.outlineRootId
       );
       if (event.type !== "drop") {
-        markDropTarget(targetId);
+        markDropTarget(targetId, at);
         return;
       }
-      setDropTargetId(null);
+      markDropTarget(null, null);
       if (!targetId) return;
       const monaco = latest.current.monacoIngest;
       if (monaco) {
-        monaco({ paths: event.paths });
+        // The pointer picked the row, not the caret: only the editor can say
+        // which line that point is on, so the point travels with the payload.
+        monaco({ paths: event.paths }, at);
         return;
       }
       void importPaths(targetId, event.paths)
@@ -182,11 +222,14 @@ export function useImageIngest({
     if (!hasSupportedImage([...event.dataTransfer.files])) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
-    markDropTarget(targetFromElement(
-      event.target,
-      event.currentTarget,
-      latest.current.outlineRootId
-    ));
+    markDropTarget(
+      targetFromElement(
+        event.target,
+        event.currentTarget,
+        latest.current.outlineRootId
+      ),
+      { clientX: event.clientX, clientY: event.clientY }
+    );
   }, [markDropTarget]);
   const onDragLeave = useCallback<DragEventHandler<HTMLElement>>((event) => {
     if (
@@ -195,8 +238,8 @@ export function useImageIngest({
     ) {
       return;
     }
-    setDropTargetId(null);
-  }, []);
+    markDropTarget(null, null);
+  }, [markDropTarget]);
   const onDrop = useCallback<DragEventHandler<HTMLElement>>((event) => {
     const files = [...event.dataTransfer.files];
     if (!hasSupportedImage(files)) return;
@@ -206,12 +249,12 @@ export function useImageIngest({
       event.currentTarget,
       latest.current.outlineRootId
     );
-    setDropTargetId(null);
+    markDropTarget(null, null);
     if (!targetId) return;
     void importFiles(targetId, files)
       .catch((cause) => setError(messageFrom(cause)))
       .finally(() => setDropTargetId(null));
-  }, [importFiles]);
+  }, [importFiles, markDropTarget]);
 
   return {
     dropTargetId,

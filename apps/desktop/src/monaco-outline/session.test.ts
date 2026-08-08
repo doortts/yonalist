@@ -542,6 +542,22 @@ describe("MonacoOutlineSession", () => {
     await session.dispose();
   });
 
+  it("reads the node a line belongs to, note lines included", async () => {
+    const { session } = createSession("lines", [
+      noted("first", "alpha", "why\nit matters", "lines"),
+      pictured("pic", "a.png", "lines")
+    ]);
+
+    // A note line has no node of its own: it answers with the title's, which
+    // is what a drop on it should anchor at.
+    expect([1, 2, 3, 4].map((line) => session.nodeIdAtLine(line)))
+      .toEqual(["first", "first", "first", "pic"]);
+    expect(session.nodeIdAtLine(5)).toBeNull();
+    expect(session.nodeIdAtLine(0)).toBeNull();
+
+    await session.dispose();
+  });
+
   it("appends an image batch after the anchor node's whole block", async () => {
     const { session } = createSession("anchor", [
       node("first", "alpha", "anchor"),

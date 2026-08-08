@@ -377,6 +377,39 @@ describe("Monaco outline image rows", () => {
     await harness.cleanup();
   });
 
+  it("pastes at the caret's own node rather than at the end of the page", async () => {
+    const harness = await outline();
+    vi.mocked(harness.api.importImageBytes).mockImplementation(
+      async (request) => receipt(8, [{
+        ...picture("image-new", "dog.png", 2_048),
+        id: request.images[0]!.nodeId
+      }])
+    );
+    // Line 2 is First thought's note: a note belongs to the title above it, so
+    // the paste anchors at that node's block, not at the page end.
+    harness.editor.setPosition({ lineNumber: 2, column: 1 });
+
+    fireEvent.paste(harness.editor.getDomNode()!, {
+      clipboardData: clipboard("dog.png")
+    });
+
+    await waitFor(() => expect(harness.api.importImageBytes)
+      .toHaveBeenCalledOnce());
+    expect(vi.mocked(harness.api.importImageBytes).mock.calls[0]?.[0])
+      .toEqual(expect.objectContaining({
+        parentId: "page-1",
+        beforeId: "image-1"
+      }));
+    await waitFor(() => expect(harness.kinds())
+      .toEqual(["text", "note", "note", "image", "image", "text"]));
+    expect(harness.session.model.getValue()).toBe(
+      "First thought\nalpha\nbeta\ndog.png\ncat.png\nSecond thought"
+    );
+    expect(harness.editor.getPosition()?.lineNumber).toBe(4);
+
+    await harness.cleanup();
+  });
+
   it("pastes an image into the editor and undoes it through the store", async () => {
     const harness = await outline([bullet("bullet-1", "First thought", 1_024)]);
     vi.mocked(harness.api.importImageBytes).mockImplementation(
@@ -411,6 +444,96 @@ describe("Monaco outline image rows", () => {
     expect(vi.mocked(harness.api.execute).mock.calls.map(
       ([envelope]) => envelope.command.kind
     )).toContain("restoreSubtree");
+
+    await harness.cleanup();
+  });
+});
+
+describe("Monaco outline row actions", () => {
+  /** The trigger the pointer or the caret currently reveals, if any. */
+  function trigger(harness: { readonly view: { readonly container: Element } }) {
+    return harness.view.container.querySelector<HTMLButtonElement>(
+      ".notes-monaco-row-actions .notes-bullet-menu-trigger"
+    );
+  }
+
+  async function caretOn(
+    harness: Awaited<ReturnType<typeof outline>>,
+    lineNumber: number
+  ): Promise<void> {
+    await act(async () => {
+      harness.editor.setPosition({ lineNumber, column: 1 });
+      harness.editor.focus();
+      await frame();
+    });
+  }
+
+  it("names the caret row's trigger and skips the note lines", async () => {
+    const harness = await outline();
+
+    await caretOn(harness, 1);
+    expect(trigger(harness)).toHaveAttribute(
+      "aria-label",
+      "Actions for First thought"
+    );
+
+    // A note line has no node of its own, so it gets no rail (§1).
+    await caretOn(harness, 2);
+    expect(trigger(harness)).toBeNull();
+
+    // An image row is a node too, so attaching relative to it is legal.
+    await caretOn(harness, 4);
+    expect(trigger(harness)).toHaveAttribute("aria-label", "Actions for cat.png");
+
+    await harness.cleanup();
+  });
+
+  it("uploads through the row menu, anchored at that row's node", async () => {
+    const harness = await outline();
+    vi.mocked(harness.api.importImageBytes).mockImplementation(
+      async (request) => receipt(8, [{
+        ...picture("image-new", "dog.png", 2_048),
+        id: request.images[0]!.nodeId
+      }])
+    );
+    await caretOn(harness, 1);
+
+    fireEvent.click(trigger(harness)!);
+    // The caret moves away while the menu is open — the anchor has to be the
+    // row the menu belongs to, not wherever the caret ended up.
+    await caretOn(harness, 5);
+    const item = [...harness.view.container.querySelectorAll<HTMLButtonElement>(
+      ".notes-bullet-menu .notes-bullet-menu-item"
+    )].find((button) => button.textContent === "Upload image")!;
+    expect(item).not.toBeUndefined();
+    fireEvent.click(item);
+
+    // The browser picker is a hidden file input; settle it with one file.
+    const input = await waitFor(() => {
+      const found = document.querySelector<HTMLInputElement>(
+        "input[type='file'][hidden]"
+      );
+      expect(found).not.toBeNull();
+      return found!;
+    });
+    Object.defineProperty(input, "files", {
+      value: [new File([Uint8Array.from([1, 2, 3])], "dog.png", {
+        type: "image/png"
+      })]
+    });
+    fireEvent.change(input);
+
+    await waitFor(() => expect(harness.api.importImageBytes)
+      .toHaveBeenCalledOnce());
+    // First thought owns lines 1-3, so its picture lands before the next
+    // sibling rather than at the end of the page.
+    expect(vi.mocked(harness.api.importImageBytes).mock.calls[0]?.[0])
+      .toEqual(expect.objectContaining({
+        parentId: "page-1",
+        beforeId: "image-1"
+      }));
+    await waitFor(() => expect(harness.kinds())
+      .toEqual(["text", "note", "note", "image", "image", "text"]));
 
     await harness.cleanup();
   });

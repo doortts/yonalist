@@ -1,4 +1,5 @@
 import { render, waitFor } from "@testing-library/react";
+import { createRef, type MutableRefObject } from "react";
 
 const mocks = vi.hoisted(() => ({
   createEditor: vi.fn(),
@@ -50,7 +51,9 @@ vi.mock("./monaco-outline/plugin", () => ({
 }));
 
 import type { MonacoSessionRegistry } from "./monaco-outline/sessionRegistry";
-import MonacoOutlineSurface from "./MonacoOutlineSurface";
+import MonacoOutlineSurface, {
+  type MonacoOutlineImageGestures
+} from "./MonacoOutlineSurface";
 
 describe("MonacoOutlineSurface", () => {
   beforeEach(() => {
@@ -64,7 +67,7 @@ describe("MonacoOutlineSurface", () => {
     mocks.assertCapabilities.mockReset();
   });
 
-  it("routes one out-of-editor image gesture to the binding per epoch", async () => {
+  it("publishes the editor's image gestures while it is mounted", async () => {
     const editor = {
       onDidBlurEditorText: vi.fn().mockReturnValue({ dispose: vi.fn() }),
       dispose: vi.fn()
@@ -87,6 +90,8 @@ describe("MonacoOutlineSurface", () => {
         release: vi.fn().mockResolvedValue(undefined)
       })
     } as unknown as MonacoSessionRegistry;
+    const gesturesRef = createRef<MonacoOutlineImageGestures | null>() as
+      MutableRefObject<MonacoOutlineImageGestures | null>;
     const props = {
       pageId: "page",
       paneId: "primary" as const,
@@ -94,38 +99,30 @@ describe("MonacoOutlineSurface", () => {
       showCompleted: true,
       registry,
       focusRequest: null,
+      gesturesRef,
       onSessionChange: vi.fn(),
       onZoomRootChange: vi.fn(),
       onOpenSplit: vi.fn(),
       onUnsupported: vi.fn()
     };
-    const view = render(
-      <MonacoOutlineSurface
-        {...props}
-        ingestRequest={{ epoch: 1, payload: { paths: ["/tmp/cat.png"] } }}
-      />
+    const view = render(<MonacoOutlineSurface {...props} />);
+
+    await waitFor(() => expect(gesturesRef.current).not.toBeNull());
+
+    // A row menu names its node; the page header names none.
+    gesturesRef.current!.ingest({ paths: ["/tmp/cat.png"] }, { nodeId: "row" });
+    expect(mocks.ingestImages).toHaveBeenCalledWith(
+      { paths: ["/tmp/cat.png"] },
+      { nodeId: "row" }
+    );
+    gesturesRef.current!.ingest({ paths: ["/tmp/dog.png"] });
+    expect(mocks.ingestImages).toHaveBeenLastCalledWith(
+      { paths: ["/tmp/dog.png"] },
+      undefined
     );
 
-    await waitFor(() => expect(mocks.ingestImages)
-      .toHaveBeenCalledWith({ paths: ["/tmp/cat.png"] }));
-
-    view.rerender(
-      <MonacoOutlineSurface
-        {...props}
-        ingestRequest={{ epoch: 1, payload: { paths: ["/tmp/cat.png"] } }}
-      />
-    );
-    expect(mocks.ingestImages).toHaveBeenCalledOnce();
-
-    view.rerender(
-      <MonacoOutlineSurface
-        {...props}
-        ingestRequest={{ epoch: 2, payload: { paths: ["/tmp/dog.png"] } }}
-      />
-    );
-    expect(mocks.ingestImages)
-      .toHaveBeenLastCalledWith({ paths: ["/tmp/dog.png"] });
     view.unmount();
+    expect(gesturesRef.current).toBeNull();
   });
 
   it("leases one page session and keeps zoom changes pane-local", async () => {

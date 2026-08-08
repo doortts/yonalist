@@ -1213,6 +1213,15 @@
   min-height: 0;
 }
 
+/* The editor's left margin is the row action rail's gutter, so the shell is
+   what the rail positions against. */
+.notes-monaco-outline-shell {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
 .notes-monaco-outline {
   flex: 1;
   width: calc(100% - var(--notes-page-child-offset));
@@ -1220,6 +1229,14 @@
   margin-inline-start: var(--notes-page-child-offset);
   overflow: hidden;
   background: transparent;
+}
+
+.notes-monaco-row-actions {
+  position: absolute;
+  z-index: 5;
+  inset-inline-start: 0;
+  /* The 28px trigger, centred on Monaco's 25px line. */
+  margin-block-start: -1.5px;
 }
 
 .notes-monaco-outline .monaco-editor,
@@ -1360,6 +1377,15 @@
   .yonalist-outline-completed-line.yonalist-outline-chevron {
   color: transparent;
   text-decoration: none;
+}
+
+/* Where the picture would land, drawn like the React surface's
+   .notes-image-drop-position band. */
+.notes-monaco-outline .monaco-editor .yonalist-outline-drop-target {
+  box-sizing: border-box;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: var(--accent-soft);
 }
 
 /* The supporting note's muted color, matching .notes-node-note. Its 14px size

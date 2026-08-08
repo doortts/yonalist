@@ -45,6 +45,8 @@ export type MonacoImagePayload =
 /** The part of the session an ingest touches. */
 export interface MonacoImageIngestSession {
   canAcceptStructuralEdit(): boolean;
+  /** The node a line belongs to; a note line reports its title's (design §1). */
+  nodeIdAtLine(lineNumber: number): string | null;
   imageInsertionAnchor(nodeId: string | null): ImageInsertionAnchor | null;
   flush(reason: "blur" | "navigation" | "close"): Promise<void>;
   insertImageNodes(input: {
@@ -111,9 +113,19 @@ export async function ingestImages(input: {
   });
 }
 
+/**
+ * Where a gesture wants its picture: the row a menu was opened on, or the
+ * point a drop landed at. Absent means the caret's node.
+ */
+export type MonacoImageAnchor =
+  | { readonly nodeId: string }
+  | { readonly clientX: number; readonly clientY: number };
+
 export interface BoundImageIngest {
   /** Runs one gesture and puts the caret on the first picture it drew. */
-  run(payload: MonacoImagePayload): void;
+  run(payload: MonacoImagePayload, at?: MonacoImageAnchor | null): void;
+  /** Highlights the line a drag is over; null takes the highlight down. */
+  markDropPoint(at: MonacoImageAnchor | null): void;
   dispose(): void;
 }
 
@@ -131,11 +143,46 @@ export function bindImageIngest(
     readonly activeNodeId: () => string | null;
   }
 ): BoundImageIngest {
-  const run = (payload: MonacoImagePayload): void => {
+  const dropTarget = editor.createDecorationsCollection();
+  const lineAt = (at: MonacoImageAnchor): number | null =>
+    "nodeId" in at
+      ? null
+      : editor.getTargetAtClientPoint(at.clientX, at.clientY)
+          ?.position?.lineNumber ?? null;
+  const nodeIdAt = (at?: MonacoImageAnchor | null): string | null => {
+    if (!at) return deps.activeNodeId();
+    if ("nodeId" in at) return at.nodeId;
+    const lineNumber = lineAt(at);
+    const dropped = lineNumber === null
+      ? null
+      : deps.session.nodeIdAtLine(lineNumber);
+    // A drop that hits no line lands where a paste would.
+    return dropped ?? deps.activeNodeId();
+  };
+  const markDropPoint = (at: MonacoImageAnchor | null): void => {
+    const lineNumber = at ? lineAt(at) : null;
+    dropTarget.set(lineNumber === null ? [] : [{
+      range: {
+        startLineNumber: lineNumber,
+        startColumn: 1,
+        endLineNumber: lineNumber,
+        endColumn: 1
+      },
+      options: {
+        isWholeLine: true,
+        className: "yonalist-outline-drop-target"
+      }
+    }]);
+  };
+  const run = (
+    payload: MonacoImagePayload,
+    at?: MonacoImageAnchor | null
+  ): void => {
+    markDropPoint(null);
     void ingestImages({
       session: deps.session,
       port: deps.port,
-      nodeId: deps.activeNodeId(),
+      nodeId: nodeIdAt(at),
       payload
     }).then((lineNumber) => {
       if (lineNumber === null) return;
@@ -144,7 +191,7 @@ export function bindImageIngest(
     }).catch(() => undefined);
   };
   const host = editor.getDomNode();
-  if (!host) return { run, dispose: () => undefined };
+  if (!host) return { run, markDropPoint, dispose: () => undefined };
 
   const onPaste = (event: ClipboardEvent): void => {
     if (!event.clipboardData) return;
@@ -158,23 +205,29 @@ export function bindImageIngest(
     if (droppedImages(event).length === 0) return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    markDropPoint(pointOf(event));
   };
+  const onDragLeave = (): void => markDropPoint(null);
   const onDrop = (event: DragEvent): void => {
     const candidates = droppedImages(event);
     if (candidates.length === 0) return;
     event.preventDefault();
     event.stopPropagation();
-    run({ candidates });
+    run({ candidates }, pointOf(event));
   };
 
   host.addEventListener("paste", onPaste, true);
   host.addEventListener("dragover", onDragOver, true);
+  host.addEventListener("dragleave", onDragLeave, true);
   host.addEventListener("drop", onDrop, true);
   return {
     run,
+    markDropPoint,
     dispose: () => {
+      dropTarget.clear();
       host.removeEventListener("paste", onPaste, true);
       host.removeEventListener("dragover", onDragOver, true);
+      host.removeEventListener("dragleave", onDragLeave, true);
       host.removeEventListener("drop", onDrop, true);
     }
   };
@@ -205,6 +258,10 @@ function importOnce(
         beforeId,
         candidates: input.payload.candidates
       });
+}
+
+function pointOf(event: DragEvent): MonacoImageAnchor {
+  return { clientX: event.clientX, clientY: event.clientY };
 }
 
 function droppedImages(event: DragEvent): readonly ImageCandidate[] {
