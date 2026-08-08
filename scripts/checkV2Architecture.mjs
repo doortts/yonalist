@@ -136,7 +136,9 @@ const expectedCommands = [
   "notes_undo",
   "notes_redo",
   "notes_search",
-  "notes_close_session"
+  "notes_close_session",
+  "notes_unused_assets",
+  "notes_delete_all_data"
 ].sort();
 const tauriSource = readFileSync(
   join(root, "apps", "desktop", "src-tauri", "src", "lib.rs"),
