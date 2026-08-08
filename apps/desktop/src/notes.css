@@ -1252,13 +1252,51 @@
 .notes-monaco-outline {
   --yonalist-chevron-right-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 18 6-6-6-6'/%3E%3C/svg%3E");
   --yonalist-chevron-down-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  --yonalist-check-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
 }
 
 .notes-monaco-outline .monaco-editor .yonalist-outline-injected-bullet,
+.notes-monaco-outline .monaco-editor .yonalist-outline-injected-todo,
 .notes-monaco-outline .monaco-editor .yonalist-outline-chevron {
   position: relative;
   color: transparent;
   cursor: pointer;
+}
+
+/* The React surface's .notes-todo-checkbox, drawn in the bullet's slot. */
+.notes-monaco-outline .monaco-editor .yonalist-outline-injected-todo::before {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  left: -3px;
+  box-sizing: border-box;
+  width: 17px;
+  height: 17px;
+  border: 1.5px solid var(--text-3);
+  border-radius: 4px;
+  content: "";
+  transform: translateY(-50%);
+}
+
+.notes-monaco-outline .monaco-editor
+  .yonalist-outline-injected-todo--checked::before {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.notes-monaco-outline .monaco-editor
+  .yonalist-outline-injected-todo--checked::after {
+  position: absolute;
+  z-index: 2;
+  top: 50%;
+  left: -1px;
+  width: 13px;
+  height: 13px;
+  background: var(--bg-card);
+  content: "";
+  transform: translateY(-50%);
+  -webkit-mask: var(--yonalist-check-mask) center / 13px 13px no-repeat;
+  mask: var(--yonalist-check-mask) center / 13px 13px no-repeat;
 }
 
 .notes-monaco-outline .yonalist-outline-injected-bullet::before {
@@ -1373,6 +1411,8 @@
 
 .notes-monaco-outline .monaco-editor
   .yonalist-outline-completed-line.yonalist-outline-injected-bullet,
+.notes-monaco-outline .monaco-editor
+  .yonalist-outline-completed-line.yonalist-outline-injected-todo,
 .notes-monaco-outline .monaco-editor
   .yonalist-outline-completed-line.yonalist-outline-chevron {
   color: transparent;

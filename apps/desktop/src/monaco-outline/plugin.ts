@@ -316,6 +316,12 @@ export function bindYonalistOutlineEditor(
       binding.pane.handleChevron(attachment.nodeId);
       return;
     }
+    // The checkbox stands where the bullet would, and clicking it is the
+    // React surface's `TodoCheckbox`: it completes the row, not zooms into it.
+    if (attachment.kind === "yonalist-todo") {
+      binding.session.toggleCompleted(attachment.nodeId);
+      return;
+    }
     binding.pane.handleBullet(
       attachment.nodeId,
       event.event.browserEvent.shiftKey
