@@ -4,7 +4,7 @@ import {
   realignCaretWithInjectedText,
   setEditorHiddenAreas
 } from "./internalAdapter";
-import type { OutlineMetadataSnapshot } from "./metadata";
+import { outlineBlockEnd, type OutlineMetadataSnapshot } from "./metadata";
 import { PaneDecorationWindow } from "./decorationWindow";
 import type { MonacoOutlinePaneBinding } from "./plugin";
 import type { MonacoOutlineSession } from "./session";
@@ -153,14 +153,9 @@ export function visibleRangesForZoom(
   const lineNumber = metadata.titleLineByNodeId.get(nodeId);
   if (lineNumber === undefined) return [];
   const startIndex = lineNumber - 1;
-  const depth = metadata.lines[startIndex]!.depth;
-  let endIndex = startIndex + 1;
-  while (
-    endIndex < metadata.lines.length &&
-    metadata.lines[endIndex]!.depth > depth
-  ) {
-    endIndex += 1;
-  }
+  // The zoom shows what hangs off the title: its note run as much as its
+  // subtree, so a bullet carrying only a note is not an empty zoom.
+  const endIndex = outlineBlockEnd(metadata.lines, startIndex);
   if (endIndex === startIndex + 1) return [];
   return [new monaco.Range(lineNumber + 1, 1, endIndex, 1)];
 }

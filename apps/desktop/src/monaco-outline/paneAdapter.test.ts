@@ -28,10 +28,27 @@ function line(
   };
 }
 
+function noteLine(
+  title: OutlineLineMetadata
+): OutlineLineMetadata {
+  return { ...title, kind: "note" };
+}
+
 function snapshot(
   lines: readonly OutlineLineMetadata[]
 ): OutlineMetadataSnapshot {
   return OutlineMetadataTimeline.hydrate(1, lines).current();
+}
+
+function stubSession(
+  metadata: OutlineMetadataSnapshot
+): ConstructorParameters<typeof MonacoOutlinePaneAdapter>[0]["session"] {
+  return {
+    metadata: { current: () => metadata },
+    subscribeMetadata: () => () => undefined
+  } as unknown as ConstructorParameters<
+    typeof MonacoOutlinePaneAdapter
+  >[0]["session"];
 }
 
 function navigation(): OutlinePaneNavigation {
@@ -56,6 +73,86 @@ describe("Monaco outline pane adapter", () => {
       new monaco.Range(1, 1, 1, 1),
       new monaco.Range(3, 1, 3, 1)
     ]);
+  });
+
+  it("keeps a zoom root's note run inside the zoomed range", () => {
+    const root = line("a", "page", 0);
+    const withChild = snapshot([
+      root,
+      noteLine(root),
+      line("a-child", "a", 1),
+      line("b", "page", 0)
+    ]);
+
+    expect(visibleRangesForZoom(withChild, "a")).toEqual([
+      new monaco.Range(2, 1, 3, 1)
+    ]);
+
+    // A note is content of its own, so zooming a noted leaf is not empty.
+    const notedLeaf = snapshot([root, noteLine(root), line("b", "page", 0)]);
+    expect(visibleRangesForZoom(notedLeaf, "a")).toEqual([
+      new monaco.Range(2, 1, 2, 1)
+    ]);
+  });
+
+  it("hides the note run of every line a collapsed parent hides", () => {
+    const parent = { ...line("parent", "page", 0), collapsed: true };
+    const child = line("child", "parent", 1);
+    const metadata = snapshot([
+      parent,
+      noteLine(parent),
+      child,
+      noteLine(child),
+      line("tail", "page", 0)
+    ]);
+    const fake = fakeEditor({});
+    const adapter = new MonacoOutlinePaneAdapter({
+      paneId: "primary",
+      editor: fake.editor,
+      session: stubSession(metadata),
+      zoomRootId: null,
+      showCompleted: true,
+      navigation: navigation()
+    });
+
+    expect(fake.setHiddenAreas).toHaveBeenCalledWith(
+      [new monaco.Range(3, 1, 4, 1)],
+      "yonalist-outline-primary",
+      true
+    );
+    adapter.dispose();
+  });
+
+  it("realigns the caret when the caret sits on a note line", () => {
+    const title = line("a", "page", 0);
+    const metadata = snapshot([title, noteLine(title)]);
+    const setCursorStates = vi.fn();
+    const fake = fakeEditor({});
+    const editor = fake.editor as unknown as Record<string, unknown>;
+    editor.getSelection = () => new monaco.Selection(2, 1, 2, 1);
+    editor._getViewModel = () => ({
+      coordinatesConverter: {
+        convertModelPositionToViewPosition: (
+          _position: monaco.Position,
+          affinity?: number
+        ) => affinity === 1
+          ? new monaco.Position(2, 7)
+          : new monaco.Position(2, 1)
+      },
+      setCursorStates
+    });
+    const adapter = new MonacoOutlinePaneAdapter({
+      paneId: "primary",
+      editor: fake.editor,
+      session: stubSession(metadata),
+      zoomRootId: null,
+      showCompleted: true,
+      navigation: navigation()
+    });
+
+    adapter.setZoomRoot("a");
+    expect(setCursorStates).toHaveBeenCalled();
+    adapter.dispose();
   });
 
   it("realigns the caret when structural metadata changes the prefix", () => {
