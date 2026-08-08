@@ -5,6 +5,10 @@ import {
   readInjectedTextAttachment,
   registerOutlineContribution
 } from "./internalAdapter";
+import {
+  bindImageIngest,
+  type MonacoImageIngestPort
+} from "./imageIngest";
 import type { OutlineMetadataSnapshot } from "./metadata";
 import type { MonacoOutlineSession } from "./session";
 import { canApplyNativeBoundaryEdit } from "./structuralChanges";
@@ -18,6 +22,8 @@ export interface MonacoOutlinePaneBinding {
 export interface YonalistOutlineEditorBinding {
   readonly session: MonacoOutlineSession;
   readonly pane: MonacoOutlinePaneBinding;
+  /** Absent until the host wires the store's image writes to the pane. */
+  readonly images?: MonacoImageIngestPort;
 }
 
 export type OutlineCommandId =
@@ -278,6 +284,13 @@ export function bindYonalistOutlineEditor(
       refuse(event);
     }
   });
+  const unbindIngest = binding.images
+    ? bindImageIngest(editor, {
+        session: binding.session,
+        port: binding.images,
+        activeNodeId: () => binding.pane.activeNodeId()
+      })
+    : () => undefined;
   const caret = keepCaretRightOfInjectedText(editor);
   const mouse = editor.onMouseDown((event) => {
     const attachment = readInjectedTextAttachment(event);
@@ -298,6 +311,7 @@ export function bindYonalistOutlineEditor(
     dispose: () => {
       mouse.dispose();
       caret.dispose();
+      unbindIngest();
       keyboard.dispose();
       unbindSession();
       context.set(false);
