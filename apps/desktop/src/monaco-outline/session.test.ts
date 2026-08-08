@@ -570,6 +570,31 @@ describe("MonacoOutlineSession", () => {
     await session.dispose();
   });
 
+  it("falls back to the parent's end when the anchor sibling is gone", async () => {
+    const { session } = createSession("vanished", [
+      node("first", "alpha", "vanished"),
+      node("child", "child", "first")
+    ]);
+
+    // The node the anchor named was deleted between the anchor and the insert.
+    expect(session.insertImageNodes({
+      anchor: { parentId: "first", beforeId: "removed" },
+      nodes: [pictured("pic", "a.png", "first")]
+    })).toBe(3);
+    expect(session.insertImageNodes({
+      anchor: { parentId: "vanished", beforeId: "removed" },
+      nodes: [pictured("tail", "b.png", "vanished")]
+    })).toBe(4);
+
+    expect(shape(session)).toEqual([
+      "first:text:vanished:0",
+      "child:text:first:1",
+      "pic:image:first:1",
+      "tail:image:vanished:0"
+    ]);
+    await session.dispose();
+  });
+
   it("hands an image undo to the Rust history instead of the editor batch", async () => {
     const { session, executeEditorBatch } = createSession("image-undo", [
       node("first", "alpha", "image-undo")

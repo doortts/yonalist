@@ -1230,11 +1230,13 @@ function imagePlacement(
   const depth = parentLine === undefined
     ? 0
     : before.lines[parentLine - 1]!.depth + 1;
-  if (anchor.beforeId !== null) {
-    const beforeLine = before.titleLineByNodeId.get(anchor.beforeId);
-    if (beforeLine === undefined) return null;
-    return { insertionIndex: beforeLine - 1, depth };
-  }
+  const beforeLine = anchor.beforeId === null
+    ? undefined
+    : before.titleLineByNodeId.get(anchor.beforeId);
+  if (beforeLine !== undefined) return { insertionIndex: beforeLine - 1, depth };
+  // A sibling a racing write already removed leaves the anchor pointing at
+  // nothing, so the rows land where a null `beforeId` puts them: the end of
+  // the parent's block, or the end of the page.
   return {
     insertionIndex: parentLine === undefined
       ? before.lines.length

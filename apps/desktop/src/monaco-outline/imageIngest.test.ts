@@ -163,6 +163,46 @@ describe("ingestImages", () => {
     expect(session.insertImageNodes).not.toHaveBeenCalled();
   });
 
+  it("takes the anchor again when the conflicting write moved it", async () => {
+    const conflict = Object.assign(new Error("stale"), {
+      code: "revision_conflict"
+    });
+    const { session, port, order, run } = harness();
+    // The write that won the revision deleted the node the first anchor
+    // pointed at, so the second attempt must not aim at it again.
+    session.imageInsertionAnchor.mockImplementation((nodeId: string | null) => {
+      order.push(`anchor:${nodeId ?? "page"}`);
+      if (nodeId === null) return { parentId: "page", beforeId: null };
+      return session.imageInsertionAnchor.mock.calls.length === 1
+        ? { parentId: "page", beforeId: "gone" }
+        : null;
+    });
+    port.import.mockImplementationOnce(async () => {
+      order.push("import");
+      throw conflict;
+    });
+
+    expect(await run("first", candidates())).toBe(2);
+
+    expect(order).toEqual([
+      "anchor:first",
+      "flush",
+      "import",
+      "flush",
+      "anchor:first",
+      "anchor:page",
+      "import",
+      "insert"
+    ]);
+    expect(port.import).toHaveBeenLastCalledWith(
+      expect.objectContaining({ parentId: "page", beforeId: null })
+    );
+    expect(session.insertImageNodes.mock.calls[0]?.[0].anchor).toEqual({
+      parentId: "page",
+      beforeId: null
+    });
+  });
+
   it("leaves the session untouched when the import fails validation", async () => {
     const { session, port, run } = harness();
     port.import.mockRejectedValue(

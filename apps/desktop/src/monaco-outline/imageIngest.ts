@@ -70,16 +70,25 @@ export async function ingestImages(input: {
   const { session, port } = input;
   if (payloadSize(input.payload) === 0) return null;
   if (!session.canAcceptStructuralEdit()) return null;
-  const anchor = session.imageInsertionAnchor(input.nodeId);
+  let anchor = session.imageInsertionAnchor(input.nodeId);
   if (!anchor) return null;
 
   let result: MonacoImageImportResult;
   try {
+    await session.flush("blur");
     result = await importOnce(input, anchor);
   } catch (cause) {
     if (!hasErrorCode(cause, "revision_conflict")) throw cause;
     // One retry: the flush above raced a write the queue had not yet drained.
+    // That write may have moved or deleted the node the anchor named, so the
+    // anchor is taken again from the metadata the second drain leaves behind —
+    // and a node that is gone falls back the way no active node does.
     try {
+      await session.flush("blur");
+      const fresh = session.imageInsertionAnchor(input.nodeId) ??
+        session.imageInsertionAnchor(null);
+      if (!fresh) return null;
+      anchor = fresh;
       result = await importOnce(input, anchor);
     } catch (retryCause) {
       session.reportExternalFailure(retryCause);
@@ -179,25 +188,23 @@ function payloadSize(payload: MonacoImagePayload): number {
 
 function importOnce(
   input: {
-    readonly session: MonacoImageIngestSession;
     readonly port: MonacoImageIngestPort;
     readonly payload: MonacoImagePayload;
   },
   anchor: ImageInsertionAnchor
 ): Promise<MonacoImageImportResult> {
   const { parentId, beforeId } = anchor;
-  return input.session.flush("blur").then(() =>
-    "paths" in input.payload
-      ? input.port.importPaths({
-          parentId,
-          beforeId,
-          paths: input.payload.paths
-        })
-      : input.port.import({
-          parentId,
-          beforeId,
-          candidates: input.payload.candidates
-        }));
+  return "paths" in input.payload
+    ? input.port.importPaths({
+        parentId,
+        beforeId,
+        paths: input.payload.paths
+      })
+    : input.port.import({
+        parentId,
+        beforeId,
+        candidates: input.payload.candidates
+      });
 }
 
 function droppedImages(event: DragEvent): readonly ImageCandidate[] {
