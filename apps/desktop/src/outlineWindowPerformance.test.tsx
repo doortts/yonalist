@@ -172,6 +172,20 @@ async function measureOutline(count: number): Promise<OutlineMetrics> {
   return { rows, textareas, renderMs, keystrokeMs };
 }
 
+function report(count: number, metrics: OutlineMetrics): void {
+  console.log(
+    `outline ${count} nodes: ${metrics.rows} rows, ` +
+    `${metrics.textareas} textareas, ` +
+    `${metrics.renderMs.toFixed(0)}ms initial render, ` +
+    `${metrics.keystrokeMs.toFixed(1)}ms keystroke`
+  );
+}
+
+function outlineExtent(list: HTMLElement): number {
+  return [...list.children].reduce(
+    (total, child) => total + (child as HTMLElement).offsetHeight, 0);
+}
+
 describe("outline row rendering performance", () => {
   let restoreGeometry = () => undefined as void;
 
@@ -183,17 +197,46 @@ describe("outline row rendering performance", () => {
     restoreGeometry();
   });
 
-  for (const count of [2_000, 5_000]) {
-    it(`keeps the mounted row count bounded for ${count} nodes`, async () => {
-      const metrics = await measureOutline(count);
-      console.log(
-        `outline ${count} nodes: ${metrics.rows} rows, ` +
-        `${metrics.textareas} textareas, ` +
-        `${metrics.renderMs.toFixed(0)}ms initial render, ` +
-        `${metrics.keystrokeMs.toFixed(1)}ms keystroke`
-      );
-      expect(metrics.rows).toBe(count);
-      expect(metrics.textareas).toBeGreaterThanOrEqual(count);
-    }, 240_000);
-  }
+  it("mounts a bounded row count whatever the outline size", async () => {
+    const small = await measureOutline(2_000);
+    report(2_000, small);
+    const large = await measureOutline(5_000);
+    report(5_000, large);
+
+    // Three screenfuls of 32px and 68px rows cannot hold sixty of them.
+    expect(small.rows).toBeLessThan(60);
+    expect(large.rows).toBe(small.rows);
+    expect(large.textareas).toBeLessThan(small.rows * 2);
+  }, 240_000);
+
+  it("follows the scroll position without changing the outline height", async () => {
+    const store = await readyStore(2_000);
+    const view = render(outlineElement(store));
+    await act(async () => undefined);
+    const scroller = view.container.querySelector<HTMLElement>(
+      ".notes-outline-rows")!;
+    const list = view.container.querySelector<HTMLElement>(
+      ".notes-outline-list")!;
+    const firstRow = () => list.querySelector<HTMLElement>("[data-outline-id]")
+      ?.dataset.outlineId;
+    const restingExtent = outlineExtent(list);
+    expect(firstRow()).toBe("node-0");
+
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      value: 20_000,
+      writable: true
+    });
+    await act(async () => {
+      fireEvent.scroll(scroller);
+    });
+
+    // 20,000px in at an average row height of 39.2px, less one screenful of
+    // overscan, lands around row 494.
+    const rowIndex = Number(firstRow()?.slice("node-".length));
+    expect(rowIndex).toBeGreaterThan(450);
+    expect(rowIndex).toBeLessThan(520);
+    expect(outlineExtent(list)).toBeCloseTo(restingExtent, -1);
+    view.unmount();
+  }, 240_000);
 });
