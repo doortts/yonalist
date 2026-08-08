@@ -127,12 +127,14 @@ export class MonacoOutlinePersistenceQueue {
   }
 
   private coalesceTextCommand(command: IpcEditorCommand): void {
-    if (command.kind !== "updateText") {
+    // A note rewrite carries the node's whole note, so it supersedes an
+    // earlier pending one exactly the way a title rewrite does.
+    if (command.kind !== "updateText" && command.kind !== "updateNote") {
       this.pendingCommands.push(command);
       return;
     }
     const index = this.pendingCommands.findIndex((candidate) =>
-      candidate.kind === "updateText" && candidate.id === command.id
+      candidate.kind === command.kind && candidate.id === command.id
     );
     if (index === -1) {
       this.pendingCommands.push(command);
