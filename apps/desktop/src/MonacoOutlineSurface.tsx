@@ -13,6 +13,7 @@ import {
 import {
   assertMonacoInternalCapabilities
 } from "./monaco-outline/internalAdapter";
+import type { ImageZonePort } from "./monaco-outline/imageZones";
 import {
   MonacoOutlinePaneAdapter
 } from "./monaco-outline/paneAdapter";
@@ -49,6 +50,7 @@ export default function MonacoOutlineSurface({
   showCompleted,
   registry,
   focusRequest,
+  images,
   onSessionChange,
   onZoomRootChange,
   onOpenSplit,
@@ -60,6 +62,8 @@ export default function MonacoOutlineSurface({
   readonly showCompleted: boolean;
   readonly registry: MonacoSessionRegistry;
   readonly focusRequest: MonacoOutlineFocusRequest | null;
+  /** Bytes, resize writes and the lightbox host, all owned by NotesOutline. */
+  readonly images?: ImageZonePort;
   readonly onSessionChange: (session: MonacoOutlineSession | null) => void;
   readonly onZoomRootChange: (nodeId: string) => void;
   readonly onOpenSplit: (nodeId: string) => void;
@@ -75,6 +79,7 @@ export default function MonacoOutlineSurface({
   const onOpenSplitRef = useRef(onOpenSplit);
   const onUnsupportedRef = useRef(onUnsupported);
   const onSessionChangeRef = useRef(onSessionChange);
+  const imagesRef = useRef(images);
   const handledFocusEpochRef = useRef<number | null>(null);
   const [session, setSession] = useState<MonacoOutlineSession | null>(null);
   zoomRef.current = zoomRootId;
@@ -83,6 +88,7 @@ export default function MonacoOutlineSurface({
   onOpenSplitRef.current = onOpenSplit;
   onUnsupportedRef.current = onUnsupported;
   onSessionChangeRef.current = onSessionChange;
+  imagesRef.current = images;
 
   useEffect(() => {
     let cancelled = false;
@@ -117,6 +123,13 @@ export default function MonacoOutlineSurface({
         navigation: {
           zoomSamePane: (nodeId) => onZoomRef.current(nodeId),
           openSecondary: (nodeId) => onOpenSplitRef.current(nodeId)
+        },
+        images: imagesRef.current && {
+          residency: imagesRef.current.residency,
+          resize: (nodeId, width) =>
+            imagesRef.current!.resize(nodeId, width),
+          openLightbox: (request) =>
+            imagesRef.current?.openLightbox(request)
         }
       });
       paneRef.current = pane;

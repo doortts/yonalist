@@ -312,6 +312,70 @@ describe("Monaco outline pane adapter", () => {
     adapter.dispose();
   });
 
+  it("drains the session queue before a resize reaches the image IPC", async () => {
+    const picture = { ...line("picture", "page", 0), kind: "image" as const };
+    const metadata = snapshot([picture]);
+    const order: string[] = [];
+    const setImageDisplayWidth = vi.fn(() => {
+      order.push("session");
+      return true;
+    });
+    const session = {
+      metadata: { current: () => metadata },
+      subscribeMetadata: () => () => undefined,
+      imageByNodeId: new Map([["picture", {
+        contentHash: "hash",
+        originalName: "shot.png",
+        mimeType: "image/png",
+        byteLength: 64,
+        pixelWidth: 800,
+        pixelHeight: 400,
+        displayWidth: 800
+      }]]),
+      flush: vi.fn(async () => {
+        order.push("flush");
+      }),
+      setImageDisplayWidth
+    } as unknown as ConstructorParameters<
+      typeof MonacoOutlinePaneAdapter
+    >[0]["session"];
+    const images = imagePort();
+    images.resize.mockImplementation(async () => {
+      order.push("ipc");
+    });
+    const fake = fakeEditor({});
+    const adapter = new MonacoOutlinePaneAdapter({
+      paneId: "primary",
+      editor: fake.editor,
+      session,
+      zoomRootId: null,
+      showCompleted: true,
+      navigation: navigation(),
+      images: images.port
+    });
+    const handle = (fake.addZone.mock.calls[0]?.[0] as {
+      readonly domNode: HTMLElement;
+    }).domNode.querySelector<HTMLElement>(".yonalist-outline-image-resize")!;
+
+    handle.dispatchEvent(
+      new MouseEvent("pointerdown", { button: 0, clientX: 500 })
+    );
+    handle.dispatchEvent(
+      new MouseEvent("pointermove", { button: 0, clientX: 200 })
+    );
+    handle.dispatchEvent(
+      new MouseEvent("pointerup", { button: 0, clientX: 200 })
+    );
+
+    await vi.waitFor(() => expect(order).toEqual(["flush", "ipc", "session"]));
+    expect(images.resize).toHaveBeenCalledExactlyOnceWith("picture", 500);
+    expect(setImageDisplayWidth).toHaveBeenCalledExactlyOnceWith(
+      "picture",
+      500
+    );
+    adapter.dispose();
+  });
+
   it("routes a normal click locally and Shift click to the secondary pane", () => {
     const target = navigation();
 

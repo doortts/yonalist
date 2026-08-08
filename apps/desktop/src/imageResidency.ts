@@ -1,3 +1,5 @@
+import type { NotesStore } from "./notesStore";
+
 export type ImageLease =
   | { readonly status: "idle" }
   | { readonly status: "loading" }
@@ -202,4 +204,15 @@ export class ImageResidency {
 
 function imageIdentity(image: ResidentImageIdentity): string {
   return `${image.contentHash}:${image.mimeType}`;
+}
+
+const workspaceResidencies = new WeakMap<NotesStore, ImageResidency>();
+
+/** One residency per workspace, so both outline surfaces share the URL cap. */
+export function imageResidencyForStore(store: NotesStore): ImageResidency {
+  const existing = workspaceResidencies.get(store);
+  if (existing) return existing;
+  const residency = new ImageResidency((nodeId) => store.images.read(nodeId));
+  workspaceResidencies.set(store, residency);
+  return residency;
 }

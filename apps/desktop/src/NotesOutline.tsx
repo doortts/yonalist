@@ -29,6 +29,10 @@ import type {
   MonacoOutlineFocusRequest
 } from "./MonacoOutlineSurface";
 import { loadMonacoOutlineRuntime } from "./monaco-outline/runtimeLoader";
+import type {
+  ImageZoneLightboxRequest, ImageZonePort
+} from "./monaco-outline/imageZones";
+import { imageResidencyForStore } from "./imageResidency";
 
 const OutlineSelectionActionBar = lazy(() =>
   import("./OutlineSelectionActionBar").then((module) => ({
@@ -42,6 +46,10 @@ const MonacoOutlineSurface = lazy(() =>
   loadMonacoOutlineRuntime().then(({ Surface }) => ({ default: Surface }))
 );
 const NotesExportBoundary = lazy(() => import("./NotesExportBoundary"));
+const ImageLightbox = lazy(() =>
+  import("./ImageLightbox").then((module) => ({
+    default: module.ImageLightbox
+  })));
 const NotesChildComposer = lazy(() =>
   import("./NotesChildComposer").then((module) => ({
     default: module.NotesChildComposer
@@ -92,6 +100,13 @@ export function NotesOutline({
     useState<MonacoOutlineSession | null>(null);
   const [monacoFocusRequest, setMonacoFocusRequest] =
     useState<MonacoOutlineFocusRequest | null>(null);
+  const [monacoLightbox, setMonacoLightbox] =
+    useState<ImageZoneLightboxRequest | null>(null);
+  const monacoImages = useMemo<ImageZonePort>(() => ({
+    residency: imageResidencyForStore(store),
+    resize: (nodeId, displayWidth) => store.images.resize(nodeId, displayWidth),
+    openLightbox: setMonacoLightbox
+  }), [store]);
   const index = useMemo(() => new OutlineIndex(state.nodes), [state.nodes]);
   const zoomRoot = zoomRootId
     ? index.node(zoomRootId)
@@ -479,11 +494,21 @@ export function NotesOutline({
                 showCompleted={showCompleted}
                 registry={monacoSessions}
                 focusRequest={monacoFocusRequest}
+                images={monacoImages}
                 onSessionChange={setMonacoSession}
                 onZoomRootChange={onZoomRootChange}
                 onOpenSplit={(nodeId) => onOpenSplit?.(nodeId)}
                 onUnsupported={() => setUnsupportedMonacoPageId(page.id)}
               />
+              {monacoLightbox && (
+                <ImageLightbox
+                  originalName={monacoLightbox.originalName}
+                  sourceUrl={monacoLightbox.sourceUrl}
+                  pixelWidth={monacoLightbox.pixelWidth}
+                  pixelHeight={monacoLightbox.pixelHeight}
+                  onClose={() => setMonacoLightbox(null)}
+                />
+              )}
             </Suspense>
           ) : (
             <>

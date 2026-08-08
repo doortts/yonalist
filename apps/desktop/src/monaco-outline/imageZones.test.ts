@@ -100,6 +100,10 @@ function fakePort(lease: ImageLease = { status: "idle" }): {
   };
 }
 
+function pointer(type: string, clientX: number): MouseEvent {
+  return new MouseEvent(type, { bubbles: true, button: 0, clientX });
+}
+
 function syncInput(
   overrides: Partial<ImageZoneSyncInput> = {}
 ): ImageZoneSyncInput {
@@ -214,6 +218,50 @@ describe("pane image zones", () => {
     const zone = fake.zones.get("zone-1")!;
     expect(zone.afterLineNumber).toBe(2);
     expect(zone.heightInPx).toBe(200);
+    zones.dispose();
+  });
+
+  it("follows the pointer while resizing and commits once on release", async () => {
+    const fake = fakeEditor();
+    const port = fakePort();
+    const zones = new PaneImageZones({ editor: fake.editor, port: port.port });
+    zones.sync(syncInput({
+      images: new Map([["picture", image({ displayWidth: 600 })]])
+    }));
+    const frame = fake.zones.get("zone-1")!.domNode
+      .querySelector<HTMLElement>(".yonalist-outline-image-frame")!;
+    const handle = frame.querySelector<HTMLElement>(
+      ".yonalist-outline-image-resize"
+    )!;
+
+    handle.dispatchEvent(pointer("pointerdown", 500));
+    handle.dispatchEvent(pointer("pointermove", 400));
+
+    expect(frame.style.width).toBe("500px");
+    expect(fake.zones.get("zone-1")!.heightInPx).toBe(250);
+    expect(port.resize).not.toHaveBeenCalled();
+
+    handle.dispatchEvent(pointer("pointermove", 300));
+    handle.dispatchEvent(pointer("pointerup", 300));
+
+    expect(port.resize).toHaveBeenCalledExactlyOnceWith("picture", 400);
+    await vi.waitFor(() => expect(frame.style.width).toBe("600px"));
+    zones.dispose();
+  });
+
+  it("keeps a released width no wider than the original pixels", () => {
+    const fake = fakeEditor();
+    const port = fakePort();
+    const zones = new PaneImageZones({ editor: fake.editor, port: port.port });
+    zones.sync(syncInput());
+    const handle = fake.zones.get("zone-1")!.domNode
+      .querySelector<HTMLElement>(".yonalist-outline-image-resize")!;
+
+    handle.dispatchEvent(pointer("pointerdown", 500));
+    handle.dispatchEvent(pointer("pointermove", 5_000));
+    handle.dispatchEvent(pointer("pointerup", 5_000));
+
+    expect(port.resize).toHaveBeenCalledExactlyOnceWith("picture", 800);
     zones.dispose();
   });
 

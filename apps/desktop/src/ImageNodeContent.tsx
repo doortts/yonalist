@@ -15,7 +15,8 @@ import {
 } from "lucide-react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import {
-  ImageResidency,
+  imageResidencyForStore,
+  type ImageResidency,
   type ResidentImageIdentity
 } from "./imageResidency";
 import type { NotesStore } from "./notesStore";
@@ -31,19 +32,10 @@ import {
   viewImageOriginal
 } from "./imageActions";
 
-const workspaceResidencies = new WeakMap<NotesStore, ImageResidency>();
 const unavailableLease = {
   status: "error",
   message: "Image unavailable"
 } as const;
-
-export function imageResidencyForStore(store: NotesStore): ImageResidency {
-  const existing = workspaceResidencies.get(store);
-  if (existing) return existing;
-  const residency = new ImageResidency((nodeId) => store.images.read(nodeId));
-  workspaceResidencies.set(store, residency);
-  return residency;
-}
 
 export function ImageNodeContent({
   node,
