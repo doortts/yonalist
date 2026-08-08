@@ -2,6 +2,7 @@ import {
   focusOutlineEditor,
   focusOutlineEditorAt
 } from "./outlineFocus";
+import { registerOutlinePane } from "./outlinePaneRegistry";
 
 function editor(scope: HTMLElement, nodeId: string, value: string) {
   const textarea = document.createElement("textarea");
@@ -67,6 +68,36 @@ describe("pane-scoped outline focus", () => {
     expect(focusOutlineEditorAt(scope, "target", 99)).toBe(true);
     expect(target.selectionStart).toBe(9);
     expect(target.selectionEnd).toBe(9);
+  });
+
+  it("reveals a row outside the rendered window before focusing it", async () => {
+    const scope = document.createElement("section");
+    document.body.append(scope);
+    let revealed: HTMLTextAreaElement | null = null;
+    registerOutlinePane(scope, {
+      visibleNodes: [],
+      reveal: (nodeId) => {
+        if (nodeId !== "offscreen") return false;
+        revealed = editor(scope, nodeId, "windowed");
+        return true;
+      }
+    });
+
+    expect(focusOutlineEditor(scope, "offscreen", "end")).toBe(true);
+    expect(revealed).not.toHaveFocus();
+
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+
+    expect(revealed).toHaveFocus();
+    expect(revealed!.selectionStart).toBe(8);
+  });
+
+  it("refuses to reveal a node the pane does not hold", () => {
+    const scope = document.createElement("section");
+    document.body.append(scope);
+    registerOutlinePane(scope, { visibleNodes: [], reveal: () => false });
+
+    expect(focusOutlineEditor(scope, "missing", "start")).toBe(false);
   });
 
   it("focuses image primary content without applying textarea selection", () => {
