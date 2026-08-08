@@ -274,6 +274,7 @@ function boundHarness() {
   const editor = {
     getDomNode: () => host,
     setPosition,
+    getPosition: () => ({ lineNumber: 1, column: 1 }),
     focus: vi.fn(),
     getTargetAtClientPoint: (_x: number, y: number) => {
       const lineNumber = Math.floor(y / 25) + 1;
@@ -380,11 +381,43 @@ describe("bindImageIngest", () => {
     const { host, session, port, decorations, dispose } = boundHarness();
 
     host.dispatchEvent(dragEvent("dragover", [pngFile()], 400));
-    expect(decorations.at(-1)).toEqual([]);
+    // The gesture still lands, so the marker shows the caret's line rather
+    // than leaving the user with nothing to read.
+    expect(decorations.at(-1)).toEqual([expect.objectContaining({
+      range: expect.objectContaining({ startLineNumber: 1, endLineNumber: 1 })
+    })]);
     host.dispatchEvent(dragEvent("drop", [pngFile("cat.png")], 400));
 
     await vi.waitFor(() => expect(port.import).toHaveBeenCalledOnce());
     expect(session.imageInsertionAnchor).toHaveBeenCalledWith("first");
+    dispose();
+  });
+
+  it("still imports when neither the point nor the node has an anchor", async () => {
+    const { session, port, bound, dispose } = boundHarness();
+    // Nothing resolves: the point is off the editor and the caret's node is
+    // one the metadata no longer titles. The page anchor takes the drop.
+    session.imageInsertionAnchor.mockImplementation((nodeId: string | null) =>
+      nodeId === null ? { parentId: "page", beforeId: null } : null);
+
+    await bound.run({ paths: ["/tmp/cat.png"] }, { clientX: 40, clientY: 400 });
+
+    expect(session.imageInsertionAnchor).toHaveBeenCalledWith("first");
+    expect(session.imageInsertionAnchor).toHaveBeenCalledWith(null);
+    expect(port.importPaths).toHaveBeenCalledWith({
+      parentId: "page",
+      beforeId: null,
+      paths: ["/tmp/cat.png"]
+    });
+    dispose();
+  });
+
+  it("hands a refused import back to the caller instead of eating it", async () => {
+    const { port, bound, dispose } = boundHarness();
+    port.importPaths.mockRejectedValue(new Error("The image is too large."));
+
+    await expect(bound.run({ paths: ["/tmp/cat.png"] }))
+      .rejects.toThrow("The image is too large.");
     dispose();
   });
 

@@ -155,7 +155,7 @@ export function NotesOutline({
     // row's: the session anchors it and the ingest port writes it. Going
     // straight to the store here would make the page's second writer.
     monacoIngest: useMonaco
-      ? (payload, at) => monacoGestures.current?.ingest(payload, at)
+      ? async (payload, at) => monacoGestures.current?.ingest(payload, at)
       : null,
     monacoDropPoint: useMonaco
       ? (at) => monacoGestures.current?.markDropPoint(at)

@@ -231,8 +231,12 @@ export function applyOutlineNoteGesture(
 export interface BoundYonalistOutlineEditor extends monaco.IDisposable {
   /** An image gesture the pane caught outside the editor: the OS file drop,
    * the header's picker, a row menu's. It anchors where the gesture says, or
-   * at the active node when it says nothing. */
-  ingestImages(payload: MonacoImagePayload, at?: MonacoImageAnchor | null): void;
+   * at the active node when it says nothing. Rejects with what the import
+   * refused on, so the pane can show it. */
+  ingestImages(
+    payload: MonacoImagePayload,
+    at?: MonacoImageAnchor | null
+  ): Promise<void>;
   /** Drag feedback for the OS drop the editor's own DOM never sees. */
   markImageDropPoint(at: MonacoImageAnchor | null): void;
 }
@@ -319,7 +323,7 @@ export function bindYonalistOutlineEditor(
   });
 
   return {
-    ingestImages: (payload, at) => ingest?.run(payload, at),
+    ingestImages: async (payload, at) => ingest?.run(payload, at),
     markImageDropPoint: (at) => ingest?.markDropPoint(at),
     dispose: () => {
       mouse.dispose();
