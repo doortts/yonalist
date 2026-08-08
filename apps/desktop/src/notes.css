@@ -1368,6 +1368,20 @@
   color: var(--text-3);
 }
 
+/* The caption reads as the image's label, not as a bullet of its own. The
+   glyph spans carry every whole-line class, so they take the same
+   double-class exception the completed line already needs. */
+.notes-monaco-outline .monaco-editor .yonalist-outline-image-caption {
+  color: var(--text-3);
+}
+
+.notes-monaco-outline .monaco-editor
+  .yonalist-outline-image-caption.yonalist-outline-injected-bullet,
+.notes-monaco-outline .monaco-editor
+  .yonalist-outline-image-caption.yonalist-outline-chevron {
+  color: transparent;
+}
+
 /* An image body is a view zone above its caption line. The indent repeats the
    caption's injected prefix: four spaces per depth plus the chevron and bullet
    slots. */

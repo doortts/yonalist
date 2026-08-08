@@ -61,6 +61,12 @@ function bulletDecoration(
       ? "collapsed"
       : "expanded"
     : "leaf";
+  // An image node never has children (V4), so its chevron slot stays a leaf and
+  // the caption only takes its own class.
+  const lineClasses = [
+    line.completed ? "yonalist-outline-completed-line" : null,
+    line.kind === "image" ? "yonalist-outline-image-caption" : null
+  ].filter((name): name is string => name !== null).join(" ");
   return {
     range: new monaco.Range(lineNumber, 1, lineNumber, 1),
     options: {
@@ -68,9 +74,7 @@ function bulletDecoration(
         monaco.editor.TrackedRangeStickiness.GrowsOnlyWhenTypingBefore,
       showIfCollapsed: true,
       isWholeLine: true,
-      ...line.completed
-        ? { inlineClassName: "yonalist-outline-completed-line" }
-        : {},
+      ...lineClasses ? { inlineClassName: lineClasses } : {},
       before: {
         content:
           INDENT.repeat(line.depth * INDENT_PER_DEPTH) +

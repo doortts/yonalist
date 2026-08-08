@@ -65,6 +65,28 @@ describe("outline decorations", () => {
     expect(decorations[1]?.options.inlineClassName).toBeUndefined();
   });
 
+  it("marks an image caption and leaves its chevron slot a leaf", () => {
+    const decorations = buildOutlineDecorations([
+      { ...line("picture", "page", 0), kind: "image" as const },
+      { ...line("done", "page", 0), kind: "image" as const, completed: true }
+    ], [1, 2]);
+
+    expect(decorations[0]?.options.inlineClassName).toBe(
+      "yonalist-outline-image-caption"
+    );
+    expect(decorations[0]?.options.before).toMatchObject({
+      content: "▸  ",
+      inlineClassName:
+        "yonalist-outline-chevron yonalist-outline-chevron--leaf"
+    });
+    expect(decorations[0]?.options.after?.inlineClassName).toBe(
+      "yonalist-outline-injected-bullet"
+    );
+    expect(decorations[1]?.options.inlineClassName).toBe(
+      "yonalist-outline-completed-line yonalist-outline-image-caption"
+    );
+  });
+
   it("keeps the injected prefix anchored when typing at column one", () => {
     const model = monaco.editor.createModel("", "plaintext");
     const [decoration] = buildOutlineDecorations([line("root", "page", 0)], [1]);
