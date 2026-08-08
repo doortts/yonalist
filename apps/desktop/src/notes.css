@@ -1362,6 +1362,12 @@
   text-decoration: none;
 }
 
+/* The supporting note's muted color, matching .notes-node-note. Its 14px size
+   does not carry over: one Monaco model has one line height. */
+.notes-monaco-outline .monaco-editor .yonalist-outline-note-line {
+  color: var(--text-3);
+}
+
 .notes-page-header {
   position: relative;
   width: 100%;
