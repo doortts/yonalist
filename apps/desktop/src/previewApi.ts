@@ -233,10 +233,13 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
     case "removeEmptyNode": {
       const source = nodes.find((candidate) => candidate.id === command.id);
       if (
-        source?.parentId &&
-        source.text.trim().length === 0 &&
-        source.note.trim().length === 0
+        source &&
+        (source.text.trim().length > 0 || source.note.trim().length > 0)
       ) {
+        // notes-core answers DomainError::NodeNotEmpty here
+        throw new Error(`node is not empty: ${command.id}`);
+      }
+      if (source?.parentId) {
         const children = previewSiblings(nodes, source.id);
         const parentId = source.parentId;
         const siblings = previewSiblings(nodes, parentId);

@@ -14,6 +14,16 @@ export interface PendingOutlineMutation {
   readonly committed: Promise<void>;
 }
 
+// The draft the user just blanked, when the backend still holds non-blank
+// text: the debounce has not flushed it and removeEmptyNode would reject.
+function blankedDraft(
+  draft: string | undefined,
+  committed: string | undefined
+): string | null {
+  if (draft === undefined || draft.trim().length > 0) return null;
+  return (committed ?? "").trim().length > 0 ? draft : null;
+}
+
 export interface PendingCreatedNode extends PendingOutlineMutation {
   readonly id: string;
 }
@@ -141,6 +151,36 @@ export class StoreOutlineMutations {
   beginRemoveEmptyNode(
     id: string,
     historyGroup: string | null = null
+  ): PendingOutlineMutation {
+    const entry = this.host.read();
+    const node = entry.nodes.find((candidate) => candidate.id === id);
+    const blankedText = blankedDraft(entry.drafts[id], node?.text);
+    const blankedNote = blankedDraft(entry.noteDrafts[id], node?.note);
+    if (blankedText === null && blankedNote === null) {
+      return this.commitRemoveEmptyNode(id, historyGroup);
+    }
+    this.host.cancelDrafts([id]);
+    const committed = (async () => {
+      if (blankedText !== null) {
+        await this.host.execute(
+          { kind: "updateText", id, text: blankedText },
+          historyGroup
+        );
+      }
+      if (blankedNote !== null) {
+        await this.host.execute(
+          { kind: "updateNote", id, note: blankedNote },
+          historyGroup
+        );
+      }
+      await this.commitRemoveEmptyNode(id, historyGroup).committed;
+    })();
+    return { committed };
+  }
+
+  private commitRemoveEmptyNode(
+    id: string,
+    historyGroup: string | null
   ): PendingOutlineMutation {
     const state = this.host.read();
     const previousDraft = state.drafts[id];

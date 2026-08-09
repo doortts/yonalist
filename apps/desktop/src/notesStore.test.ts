@@ -1,4 +1,5 @@
 import type { BootSnapshot } from "../../../packages/contracts/generated/BootSnapshot";
+import type { CommandEnvelope } from "../../../packages/contracts/generated/CommandEnvelope";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "./api";
 import type { ViewportPage } from "../../../packages/contracts/generated/ViewportPage";
@@ -793,5 +794,119 @@ describe("NotesStore viewport recovery", () => {
     }));
     expect(store.getSnapshot().noteDrafts.one).toBeUndefined();
     expect(store.getSnapshot().nodes[0].note).toBe("Supporting context");
+  });
+});
+
+describe("NotesStore empty-row removal", () => {
+  function backend(options: { readonly rejectRemoval?: boolean } = {}) {
+    const nodes = new Map<string, NoteView>(
+      [bullet("one", 1_024), bullet("two", 2_048)].map((node) => [
+        node.id,
+        node
+      ])
+    );
+    const envelopes: CommandEnvelope[] = [];
+    let revision = boot.revision;
+    let undoDepth = 0;
+    let lastGroup: string | null = null;
+    const notesApi = api(vi.fn());
+    notesApi.execute = vi.fn(async (envelope) => {
+      envelopes.push(envelope);
+      const command = envelope.command;
+      const changedNodes: NoteView[] = [];
+      const deletedIds: string[] = [];
+      const target = "id" in command ? nodes.get(command.id) : undefined;
+      if (!target) throw new Error(`node not found: ${JSON.stringify(command)}`);
+      if (command.kind === "updateText") {
+        const node = { ...target, text: command.text };
+        nodes.set(node.id, node);
+        changedNodes.push(node);
+      } else if (command.kind === "updateNote") {
+        const node = { ...target, note: command.note };
+        nodes.set(node.id, node);
+        changedNodes.push(node);
+      } else if (command.kind === "removeEmptyNode") {
+        // mirrors notes-core remove_empty_node
+        if (
+          options.rejectRemoval ||
+          target.text.trim().length > 0 ||
+          target.note.trim().length > 0
+        ) {
+          throw new Error(`node is not empty: ${command.id}`);
+        }
+        nodes.delete(command.id);
+        deletedIds.push(command.id);
+      } else {
+        throw new Error(`unexpected command: ${command.kind}`);
+      }
+      revision += 1;
+      // notes-application folds same-group mutations into one undo entry
+      if (envelope.historyGroup === null || envelope.historyGroup !== lastGroup) {
+        undoDepth += 1;
+      }
+      lastGroup = envelope.historyGroup;
+      return {
+        revision,
+        changedNodes,
+        deletedIds,
+        history: { canUndo: true, canRedo: false, undoDepth, redoDepth: 0 }
+      };
+    });
+    return {
+      notesApi,
+      commands: () => envelopes.map((envelope) => envelope.command),
+      groups: () => envelopes.map((envelope) => envelope.historyGroup)
+    };
+  }
+
+  it("commits the blanking edit before removing the row it emptied", async () => {
+    const backspace = backend();
+    const store = new NotesStore(backspace.notesApi);
+    await store.bootstrap();
+    const history = vi.fn();
+    store.subscribeHistory(history);
+
+    // the 300ms title debounce has not fired: SQLite still holds "two"
+    store.setDraft("two", "");
+    await store.beginRemoveEmptyNode("two", "backspace:1").committed;
+
+    expect(backspace.commands()).toEqual([
+      { kind: "updateText", id: "two", text: "" },
+      { kind: "removeEmptyNode", id: "two" }
+    ]);
+    expect(backspace.groups()).toEqual(["backspace:1", "backspace:1"]);
+    expect(history).toHaveBeenCalledOnce();
+    expect(store.getSnapshot().nodes.map((node) => node.id)).toEqual(["one"]);
+    expect(store.getSnapshot().error).toBeNull();
+  });
+
+  it("restores a row whose text matches what it renders when removal fails", async () => {
+    const backspace = backend({ rejectRemoval: true });
+    const store = new NotesStore(backspace.notesApi);
+    await store.bootstrap();
+
+    store.setDraft("two", "");
+    await expect(
+      store.beginRemoveEmptyNode("two", "backspace:1").committed
+    ).rejects.toThrow(/node is not empty/);
+
+    const restored = store.getSnapshot().nodes.find((node) => node.id === "two");
+    expect(restored).toBeDefined();
+    expect(store.getNodeSnapshot("two").title).toBe(restored?.text);
+  });
+
+  it("sends only the removal when the row is already committed empty", async () => {
+    const backspace = backend();
+    const store = new NotesStore(backspace.notesApi);
+    await store.bootstrap();
+    store.setDraft("two", "");
+    await store.flushDraft("two");
+    expect(backspace.commands()).toHaveLength(1);
+
+    await store.beginRemoveEmptyNode("two", "backspace:1").committed;
+
+    expect(backspace.commands().slice(1)).toEqual([
+      { kind: "removeEmptyNode", id: "two" }
+    ]);
   });
 });
