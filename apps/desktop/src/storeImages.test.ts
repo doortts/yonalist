@@ -208,6 +208,111 @@ describe("StoreImages", () => {
     }));
   });
 
+  it("keeps two consecutive inserts as two undo steps", async () => {
+    // Mirrors the Rust coalescer: an entry folds into the previous one when
+    // the history group matches, with no time component.
+    const entries: string[][] = [];
+    let lastGroup: string | null = null;
+    const importImageBytes = vi.fn(async (request: ImageImportRequest) => {
+      const ids = request.images.map((image) => image.nodeId);
+      if (request.historyGroup !== null && request.historyGroup === lastGroup) {
+        entries.at(-1)!.push(...ids);
+      } else {
+        entries.push(ids);
+      }
+      lastGroup = request.historyGroup;
+      return {
+        ...receiptFor(request),
+        history: {
+          canUndo: true,
+          canRedo: false,
+          undoDepth: entries.length,
+          redoDepth: 0
+        }
+      };
+    });
+    const notesApi = api(importImageBytes);
+    notesApi.undo = vi.fn(async () => ({
+      revision: 20,
+      changedNodes: [],
+      deletedIds: entries.pop() ?? [],
+      history: {
+        canUndo: entries.length > 0,
+        canRedo: true,
+        undoDepth: entries.length,
+        redoDepth: 1
+      }
+    }));
+    const store = new NotesStore(notesApi);
+    await store.bootstrap();
+    const history = vi.fn();
+    store.subscribeHistory(history);
+    const [cat, dog] = candidates();
+
+    await store.images.importAfter("page-1", null, [cat!]);
+    await store.images.importAfter("page-1", null, [dog!]);
+
+    expect(store.getSnapshot().undoDepth).toBe(2);
+    expect(history).toHaveBeenCalledTimes(2);
+    await store.undo();
+    expect(store.getSnapshot().nodes
+      .filter((node) => node.image)
+      .map((node) => node.image!.originalName)).toEqual(["cat.png"]);
+  });
+
+  it("keeps the group stable across a retry so it still pairs the request", async () => {
+    let attempted: ImageImportRequest | null = null;
+    const importImageBytes = vi.fn(async (request: ImageImportRequest) => {
+      if (!attempted) {
+        attempted = request;
+        throw new Error("response lost");
+      }
+      return receiptFor(request);
+    });
+    const store = new NotesStore(api(importImageBytes));
+    await store.bootstrap();
+    const images = candidates();
+
+    await expect(
+      store.images.importAfter("page-1", null, images)
+    ).rejects.toThrow("response lost");
+    await store.images.importAfter("page-1", null, images);
+
+    const [first, second] = importImageBytes.mock.calls.map((call) => call[0]);
+    expect(second!.historyGroup).toBe(first!.historyGroup);
+  });
+
+  it("gives each image replacement its own undo step", async () => {
+    const notesApi = api(vi.fn());
+    notesApi.replaceImageBytes = vi.fn().mockImplementation(async () => ({
+      revision: 8,
+      changedNodes: [],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    }));
+    notesApi.replaceImagePath = vi.fn().mockImplementation(async () => ({
+      revision: 9,
+      changedNodes: [],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 2, redoDepth: 0 }
+    }));
+    const store = new NotesStore(notesApi);
+    await store.bootstrap();
+    const [cat, dog] = candidates();
+
+    await store.images.replace("image-a", cat!);
+    await store.images.replace("image-b", dog!);
+    await store.images.replacePath("image-c", "/images/fox.png");
+    await store.images.replacePath("image-d", "/images/owl.png");
+
+    const groups = [
+      ...(notesApi.replaceImageBytes as ReturnType<typeof vi.fn>).mock.calls,
+      ...(notesApi.replaceImagePath as ReturnType<typeof vi.fn>).mock.calls
+    ].map((call) => call[0].historyGroup);
+    expect(groups.every((group) => typeof group === "string")).toBe(true);
+    expect(new Set(groups).size).toBe(4);
+  });
+
   it("replaces bytes without changing the target node identity", async () => {
     const notesApi = api(vi.fn());
     notesApi.replaceImageBytes = vi.fn().mockImplementation(async (request) => ({

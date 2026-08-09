@@ -23,6 +23,15 @@ interface RetryablePathImport {
   readonly requestId: string;
 }
 
+/**
+ * One group per operation, not one per kind. The group exists only to pair a
+ * retry with the request it repeats, and the coalescer merges same-group
+ * entries with no time component -- a constant here folded two drops, pastes,
+ * or picks into a single Undo.
+ */
+const batchGroup = (requestId: string) => `images:batch:${requestId}`;
+const replaceGroup = (requestId: string) => `images:replace:${requestId}`;
+
 export class StoreImages {
   private retryableImport: RetryableImport | null = null;
   private retryablePathImport: RetryablePathImport | null = null;
@@ -62,7 +71,7 @@ export class StoreImages {
         (context) => this.api.importImageBytes(
           importRequest(context, operation)
         ),
-        "images:batch",
+        batchGroup(operation.requestId),
         operation.requestId
       );
       if (this.retryableImport === operation) this.retryableImport = null;
@@ -106,7 +115,7 @@ export class StoreImages {
         targetId,
         image: { ...candidate, nodeId: targetId }
       }),
-      "images:replace",
+      replaceGroup(operation.requestId),
       operation.requestId
     );
     if (this.retryableReplacement === operation) {
@@ -115,13 +124,15 @@ export class StoreImages {
   }
 
   async replacePath(targetId: string, path: string): Promise<void> {
+    const requestId = freshId();
     await this.commands.executeExternal(
       (context) => this.api.replaceImagePath({
         ...context,
         targetId,
         path
       }),
-      "images:replace"
+      replaceGroup(requestId),
+      requestId
     );
   }
 
@@ -164,7 +175,7 @@ export class StoreImages {
         beforeId: operation.beforeId,
         images: [...operation.images]
       }),
-      "images:batch",
+      batchGroup(operation.requestId),
       operation.requestId
     );
     if (this.retryablePathImport === operation) {
