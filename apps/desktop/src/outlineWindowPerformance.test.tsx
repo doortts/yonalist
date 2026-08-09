@@ -222,6 +222,93 @@ describe("outline row rendering performance", () => {
     }
   }, 240_000);
 
+  it("gives back exactly the removed row's height", async () => {
+    // Small enough that scrolling to the end and back measures every row, so
+    // the reserved height is the sum of real measurements with no estimate
+    // left in it and the arithmetic below is exact.
+    const store = await readyStore(60);
+    const view = render(outlineElement(store));
+    await act(async () => undefined);
+    const scroller = view.container.querySelector<HTMLElement>(
+      ".notes-outline-rows")!;
+    const list = view.container.querySelector<HTMLElement>(
+      ".notes-outline-list")!;
+    const scrollTo = async (position: number) => {
+      Object.defineProperty(scroller, "scrollTop", {
+        configurable: true,
+        value: position,
+        writable: true
+      });
+      await act(async () => {
+        fireEvent.scroll(scroller);
+      });
+    };
+    await scrollTo(1_400);
+    await scrollTo(600);
+
+    const rows = () => [...list.querySelectorAll<HTMLElement>(
+      "[data-outline-id]")].map((row) => row.dataset.outlineId);
+    const mounted = rows();
+    const victim = mounted[Math.floor(mounted.length / 2)]!;
+    const victimHeight = list.querySelector<HTMLElement>(
+      `[data-outline-id='${victim}']`)!
+      .closest<HTMLElement>(".notes-outline-item")!.offsetHeight;
+    const restingExtent = outlineExtent(list);
+
+    await act(async () => {
+      fireEvent.focus(list.querySelector(
+        `[data-outline-id='${victim}'] textarea`)!);
+      await store.beginRemoveEmptyNode(victim).committed;
+    });
+
+    // The removed row's height is the only thing the outline may give back,
+    // and no gap spacer may open between two rows that are now neighbours.
+    expect(rows()).not.toContain(victim);
+    expect(outlineExtent(list)).toBeCloseTo(restingExtent - victimHeight, 5);
+    for (const child of [...list.children]) {
+      if (child.classList.contains("notes-outline-item")) continue;
+      expect(child.previousElementSibling === null ||
+        child.nextElementSibling === null).toBe(true);
+    }
+    view.unmount();
+  }, 240_000);
+
+  it("measures only the rows it rendered itself", async () => {
+    const store = await readyStore(2_000);
+    const view = render(outlineElement(store));
+    await act(async () => undefined);
+    const scroller = view.container.querySelector<HTMLElement>(
+      ".notes-outline-rows")!;
+    const list = view.container.querySelector<HTMLElement>(
+      ".notes-outline-list")!;
+    Object.defineProperty(scroller, "scrollTop", {
+      configurable: true,
+      value: 8_000,
+      writable: true
+    });
+    await act(async () => {
+      fireEvent.scroll(scroller);
+    });
+    const restingExtent = outlineExtent(list);
+
+    // A row the outline did not put there — the shape a removal leaves behind
+    // when a measurement pass and the rendered window fall out of step. Every
+    // row after it must still be measured as itself, not as its neighbour.
+    const intruder = document.createElement("li");
+    intruder.className = "notes-outline-item";
+    intruder.append(Object.assign(document.createElement("span"), {
+      className: "notes-node-note-field"
+    }));
+    list.insertBefore(intruder, list.children[1]!);
+    await act(async () => {
+      fireEvent.scroll(scroller);
+    });
+    list.removeChild(intruder);
+
+    expect(outlineExtent(list)).toBeCloseTo(restingExtent, -1);
+    view.unmount();
+  }, 240_000);
+
   it("follows the scroll position without changing the outline height", async () => {
     const store = await readyStore(2_000);
     const view = render(outlineElement(store));

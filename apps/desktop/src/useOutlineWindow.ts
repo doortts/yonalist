@@ -82,7 +82,6 @@ export function useOutlineWindow(nodes: readonly NoteView[]) {
     // what stops a mount from briefly rendering the whole outline.
     if (!scroller || !list) return;
     let changed = false;
-    let position = 0;
     let pendingId: string | undefined;
     let pendingTop = 0;
     const record = (id: string, height: number) => {
@@ -102,8 +101,11 @@ export function useOutlineWindow(nodes: readonly NoteView[]) {
       if (pendingId !== undefined) record(pendingId, top - pendingTop);
       pendingId = undefined;
       if (!child.classList.contains("notes-outline-item")) continue;
-      const id = renderedIds.current[position];
-      position += 1;
+      // The row names itself. Counting rows off against a parallel array of
+      // ids instead would hand every row after a removal its neighbour's
+      // height the one time the two fall out of step.
+      const id = child.querySelector<HTMLElement>("[data-outline-id]")
+        ?.dataset.outlineId;
       if (id === undefined) continue;
       pendingId = id;
       pendingTop = top;
@@ -125,6 +127,22 @@ export function useOutlineWindow(nodes: readonly NoteView[]) {
         ? current
         : next);
   }, [list, scroller]);
+
+  // A node that has gone takes its measurement with it. Left behind, it keeps
+  // pulling the average that every row nobody has scrolled past is drawn at.
+  useLayoutEffect(() => {
+    if (heights.current.size === 0) return;
+    const live = new Set(nodes.map((node) => node.id));
+    let dropped = false;
+    for (const [id, height] of heights.current) {
+      if (live.has(id)) continue;
+      heights.current.delete(id);
+      average.current.total -= height;
+      average.current.count -= 1;
+      dropped = true;
+    }
+    if (dropped) setMeasurements((value) => value + 1);
+  }, [nodes]);
 
   useLayoutEffect(() => {
     if (!scroller || !list) return;
