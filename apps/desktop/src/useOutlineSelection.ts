@@ -5,8 +5,8 @@ import {
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
 import {
-  canCutSelectedOutline,
   normalizeSelectedRoots,
+  outlineCutRefusal,
   serializeSelectedOutline,
   writeOutlineClipboard,
   writeOutlineClipboardEvent
@@ -180,13 +180,15 @@ export function useOutlineSelection(
       selectionComplete
     ]
   );
-  const canCut = useMemo(
-    () => selectionComplete && canCutSelectedOutline(
-      selectedContentNodes,
-      drafts,
-      noteDrafts,
-      selectedIds
-    ),
+  const cutRefusal = useMemo(
+    () => selectionComplete
+      ? outlineCutRefusal(
+        selectedContentNodes,
+        drafts,
+        noteDrafts,
+        selectedIds
+      )
+      : "The complete selection is not available yet.",
     [
       selectedContentNodes,
       drafts,
@@ -195,6 +197,7 @@ export function useOutlineSelection(
       selectionComplete
     ]
   );
+  const canCut = cutRefusal === null;
   const writeToEvent = (event: ClipboardEvent<HTMLElement>) => {
     if (selectedIds.length === 0 || !clipboardText) return false;
     event.preventDefault();
@@ -215,6 +218,7 @@ export function useOutlineSelection(
     rootKey,
     headId,
     canCut,
+    cutRefusal,
     forestComplete: selectionComplete,
     select,
     extend,

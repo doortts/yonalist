@@ -1,10 +1,13 @@
 import {
-  ArrowDown, ArrowUp, Check, Circle, CopyPlus, ImagePlus, IndentDecrease,
-  IndentIncrease, MessageSquareText, SquareCheckBig, Star, Trash2,
+  ArrowDown, ArrowUp, Check, Circle, Copy, CopyPlus, ImagePlus, IndentDecrease,
+  IndentIncrease, MessageSquareText, Scissors, SquareCheckBig, Star, Trash2,
   type LucideIcon
 } from "lucide-react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
+import {
+  serializeSelectedOutline, writeOutlineClipboard
+} from "./outlineClipboard";
 import type { SelectionKeyboardActions } from "./outlineSupport";
 import type { SelectionMovePlan, SelectionMovePlans } from "./selectionMoves";
 
@@ -13,7 +16,7 @@ export type OutlinePlatform = "mac" | "other";
 
 export type OutlineMenuCommandId =
   | "addNote" | "marker" | "duplicate" | "uploadImage" | "complete" | "star"
-  | "delete" | "moveUp" | "moveDown" | "indent" | "outdent";
+  | "delete" | "moveUp" | "moveDown" | "indent" | "outdent" | "copy" | "cut";
 
 /**
  * What the row menu needs to know to draw and run one command. `plans` is
@@ -29,6 +32,12 @@ export interface OutlineMenuContext {
   readonly hasNote: boolean;
   /** Selection mode: every selected node is complete. Row mode: this node is. */
   readonly allCompleted: boolean;
+  /**
+   * `outlineCutRefusal` over whatever Cut would delete, or `null` when the
+   * round trip is lossless. Precomputed by the caller the way `plans` is, so
+   * both modes answer from the one guard.
+   */
+  readonly cutRefusal: string | null;
   readonly plans: SelectionMovePlans;
   readonly row: {
     readonly addNote: () => void;
@@ -75,6 +84,15 @@ const ALWAYS = (): OutlineMenuEligibility => ({ available: true });
 /** Row mode routes a one-node plan through the same batch move as a selection. */
 function runMove(context: OutlineMenuContext, plan: SelectionMovePlan): void {
   if (plan.available) void context.store.moveNodes(plan.moves);
+}
+
+/**
+ * The clicked row's subtree as clipboard text: the one-root case of the very
+ * serializer the multi-row selection uses, so both paths emit the same bytes.
+ */
+function rowSubtreeText(context: OutlineMenuContext): string | null {
+  const { nodes, drafts } = context.store.getSnapshot();
+  return serializeSelectedOutline(nodes, drafts, [context.node.id]);
 }
 
 /**
@@ -199,6 +217,39 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
     execute: (context) => context.mode === "selection"
       ? context.selection.outdent()
       : runMove(context, context.plans.outdent)
+  },
+  {
+    id: "copy",
+    icon: () => Copy,
+    label: () => "Copy",
+    binding: binding("⌘C", "Ctrl+C", "Meta+C", "Control+C"),
+    // Copy never deletes, so a title-only serialization loses nothing that was
+    // not already on screen. It stays reachable when everything else is not.
+    eligibility: ALWAYS,
+    execute: (context) => {
+      if (context.mode === "selection") return context.selection.copy();
+      const text = rowSubtreeText(context);
+      if (text) void writeOutlineClipboard(text).catch(() => undefined);
+    }
+  },
+  {
+    id: "cut",
+    icon: () => Scissors,
+    label: () => "Cut",
+    binding: binding("⌘X", "Ctrl+X", "Meta+X", "Control+X"),
+    eligibility: (context) => context.cutRefusal === null
+      ? { available: true }
+      : { available: false, reason: context.cutRefusal },
+    execute: (context) => {
+      if (context.mode === "selection") return context.selection.cut();
+      const text = rowSubtreeText(context);
+      if (!text) return;
+      // Delete only once the clipboard actually holds the subtree; a rejected
+      // write must leave the row where it is rather than lose it.
+      void writeOutlineClipboard(text)
+        .then(() => context.store.deleteSubtree(context.node.id))
+        .catch(() => undefined);
+    }
   }
 ];
 
@@ -207,13 +258,14 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
 // landing on it when they overshoot.
 const ROW_ORDER: readonly OutlineMenuCommandId[] = [
   "addNote", "marker", "duplicate", "uploadImage", "complete", "star",
-  "moveUp", "moveDown", "indent", "outdent", "delete"
+  "moveUp", "moveDown", "indent", "outdent", "copy", "cut", "delete"
 ];
 
-// The legacy selection menu's order, minus the four commands that have no
-// implementation yet (Move To..., Tags) or that phase 3 owns (Copy, Cut).
+// The legacy selection menu's order, minus the two commands that have no
+// implementation yet: Move To... after Complete, and Tags before Copy.
 const SELECTION_ORDER: readonly OutlineMenuCommandId[] = [
-  "complete", "moveUp", "moveDown", "indent", "outdent", "duplicate", "delete"
+  "complete", "moveUp", "moveDown", "indent", "outdent", "duplicate",
+  "copy", "cut", "delete"
 ];
 
 export function outlineMenuCommands(

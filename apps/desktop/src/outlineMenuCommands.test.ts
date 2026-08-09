@@ -8,6 +8,7 @@ import {
   type OutlineMenuMode,
   type OutlinePlatform
 } from "./outlineMenuCommands";
+import { serializeSelectedOutline } from "./outlineClipboard";
 import { buildSelectionMovePlans } from "./selectionMoves";
 
 const ROOT = "page-1";
@@ -57,6 +58,7 @@ function context(overrides: {
   readonly nodes?: readonly NoteView[];
   readonly rootIds?: readonly string[];
   readonly allCompleted?: boolean;
+  readonly cutRefusal?: string | null;
 } = {}): OutlineMenuContext {
   const nodes = overrides.nodes ?? TREE;
   const rootIds = overrides.rootIds ?? ["a"];
@@ -67,6 +69,7 @@ function context(overrides: {
     store: {} as NotesStore,
     hasNote: false,
     allCompleted: overrides.allCompleted ?? false,
+    cutRefusal: overrides.cutRefusal ?? null,
     plans: buildSelectionMovePlans(
       nodes,
       nodes.map((entry) => entry.id),
@@ -80,8 +83,26 @@ function context(overrides: {
       move: vi.fn(),
       toggleComplete: vi.fn(),
       duplicate: vi.fn(),
-      delete: vi.fn()
+      delete: vi.fn(),
+      copy: vi.fn(),
+      cut: vi.fn()
     }
+  };
+}
+
+/** A store stub whose snapshot is all the clipboard commands read. */
+function clipboardStore(nodes: readonly NoteView[], writeText: unknown) {
+  Object.defineProperty(navigator, "clipboard", {
+    value: { writeText },
+    configurable: true
+  });
+  const deleteSubtree = vi.fn().mockResolvedValue(undefined);
+  return {
+    deleteSubtree,
+    store: {
+      getSnapshot: () => ({ nodes, drafts: {}, noteDrafts: {} }),
+      deleteSubtree
+    } as unknown as NotesStore
   };
 }
 
@@ -101,15 +122,25 @@ describe("the outline menu command table", () => {
   it("orders selection mode the way the parity spec documents", () => {
     expect(outlineMenuCommands("selection").map((entry) => entry.id)).toEqual([
       "complete", "moveUp", "moveDown", "indent", "outdent", "duplicate",
-      "delete"
+      "copy", "cut", "delete"
     ]);
   });
 
-  it("keeps today's row items and slots the four new ones before Delete", () => {
+  it("keeps today's row items and slots the new ones before Delete", () => {
     expect(outlineMenuCommands("row").map((entry) => entry.id)).toEqual([
       "addNote", "marker", "duplicate", "uploadImage", "complete", "star",
-      "moveUp", "moveDown", "indent", "outdent", "delete"
+      "moveUp", "moveDown", "indent", "outdent", "copy", "cut", "delete"
     ]);
+  });
+
+  it("puts Copy and Cut after Duplicate and before Delete in both modes", () => {
+    for (const mode of ["row", "selection"] as const) {
+      const ids = outlineMenuCommands(mode).map((entry) => entry.id);
+
+      expect(ids.indexOf("copy"), mode).toBeGreaterThan(ids.indexOf("duplicate"));
+      expect(ids.indexOf("cut"), mode).toBe(ids.indexOf("copy") + 1);
+      expect(ids.indexOf("delete"), mode).toBe(ids.indexOf("cut") + 1);
+    }
   });
 
   it("ends on delete in both modes, it being the only destructive one", () => {
@@ -188,7 +219,9 @@ describe("outline menu shortcut hints", () => {
     moveUp: ["⌃⇧↑", "Alt+Shift+↑"],
     moveDown: ["⌃⇧↓", "Alt+Shift+↓"],
     indent: ["Tab", "Tab"],
-    outdent: ["⇧Tab", "Shift+Tab"]
+    outdent: ["⇧Tab", "Shift+Tab"],
+    copy: ["⌘C", "Ctrl+C"],
+    cut: ["⌘X", "Ctrl+X"]
   };
   const expectedKeys: Record<string, readonly [string, string]> = {
     complete: ["Meta+Enter", "Control+Enter"],
@@ -197,7 +230,9 @@ describe("outline menu shortcut hints", () => {
     moveUp: ["Control+Shift+ArrowUp", "Alt+Shift+ArrowUp"],
     moveDown: ["Control+Shift+ArrowDown", "Alt+Shift+ArrowDown"],
     indent: ["Tab", "Tab"],
-    outdent: ["Shift+Tab", "Shift+Tab"]
+    outdent: ["Shift+Tab", "Shift+Tab"],
+    copy: ["Meta+C", "Control+C"],
+    cut: ["Meta+X", "Control+X"]
   };
 
   it("resolves a hint and an aria-keyshortcuts string for both platforms", () => {
@@ -270,6 +305,27 @@ describe("outline menu eligibility", () => {
       expect(command(id).eligibility(ctx).available, id).toBe(true);
     }
   });
+
+  it("hands Cut's refusal straight through from the clipboard guard", () => {
+    expect(command("cut").eligibility(context({ cutRefusal: null })).available)
+      .toBe(true);
+    expect(unavailable("cut", context({
+      cutRefusal: "Cut is unavailable because the moon is full."
+    }))).toBe("Cut is unavailable because the moon is full.");
+  });
+
+  // Copy never deletes, so a title-only serialization loses nothing that was
+  // not already on screen; it stays reachable when every mutation is refused.
+  it("keeps Copy available even where Cut and every move are refused", () => {
+    const ctx = context({
+      rootIds: ["a", "x"],
+      cutRefusal: "Cut is unavailable because the selection holds an image."
+    });
+
+    expect(command("copy").eligibility(ctx).available).toBe(true);
+    expect(command("cut").eligibility(ctx).available).toBe(false);
+    expect(command("moveUp").eligibility(ctx).available).toBe(false);
+  });
 });
 
 describe("outline menu execution", () => {
@@ -287,6 +343,16 @@ describe("outline menu execution", () => {
     expect(ctx.selection.delete).toHaveBeenCalledOnce();
     expect(ctx.selection.indent).toHaveBeenCalledOnce();
     expect(ctx.selection.move).toHaveBeenCalledWith("up");
+  });
+
+  it("routes Copy and Cut to the selection thunks in selection mode", () => {
+    const ctx = context({ rootIds: ["b"] });
+
+    command("copy").execute(ctx);
+    command("cut").execute(ctx);
+
+    expect(ctx.selection.copy).toHaveBeenCalledOnce();
+    expect(ctx.selection.cut).toHaveBeenCalledOnce();
   });
 
   it("runs the row callbacks and the store in row mode", () => {
@@ -323,5 +389,61 @@ describe("outline menu execution", () => {
     command("moveUp").execute(ctx);
 
     expect(moveNodes).not.toHaveBeenCalled();
+  });
+});
+
+// page-1 > a > x > deep, plus a sibling b: deep enough that a row-scoped
+// serialization that ignored descendants or mis-indented them would show.
+const DEEP: readonly NoteView[] = [
+  bullet("a", ROOT, 1024),
+  bullet("b", ROOT, 2048),
+  bullet("x", "a", 1024),
+  bullet("deep", "x", 1024)
+];
+
+describe("single-row Copy and Cut", () => {
+  function rowContext(writeText: unknown) {
+    const { store, deleteSubtree } = clipboardStore(DEEP, writeText);
+    return {
+      deleteSubtree,
+      ctx: {
+        ...context({ mode: "row", nodes: DEEP, node: DEEP[0], rootIds: ["a"] }),
+        store
+      } as OutlineMenuContext
+    };
+  }
+
+  it("copies the clicked row's whole subtree, matching the selection path", () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const { ctx } = rowContext(writeText);
+
+    command("copy").execute(ctx);
+
+    expect(writeText).toHaveBeenCalledWith("- a\n  - x\n    - deep");
+    // The one-row menu path and a one-row selection must agree byte for byte.
+    expect(writeText).toHaveBeenCalledWith(
+      serializeSelectedOutline(DEEP, {}, ["a"])
+    );
+  });
+
+  it("cuts a row by writing the subtree first and deleting only after", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const { ctx, deleteSubtree } = rowContext(writeText);
+
+    command("cut").execute(ctx);
+
+    expect(writeText).toHaveBeenCalledWith("- a\n  - x\n    - deep");
+    expect(deleteSubtree).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(deleteSubtree).toHaveBeenCalledWith("a"));
+  });
+
+  it("keeps the row when the clipboard write fails", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+    const { ctx, deleteSubtree } = rowContext(writeText);
+
+    command("cut").execute(ctx);
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalled());
+
+    expect(deleteSubtree).not.toHaveBeenCalled();
   });
 });

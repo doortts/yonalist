@@ -49,6 +49,8 @@ export interface OutlineRowRuntimeState {
   readonly selectionRootCount: number;
   readonly selectionPlans: SelectionMovePlans;
   readonly allSelectedCompleted: boolean;
+  /** Why Cut would lose data across the selection, or `null` when it is safe. */
+  readonly selectionCutRefusal: string | null;
   readonly onZoom: (nodeId: string, split: boolean) => void;
   readonly onZoomOut: () => void;
   readonly onExtendSelection: (originId: string, headId: string) => void;

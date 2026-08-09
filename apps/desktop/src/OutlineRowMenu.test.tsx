@@ -134,7 +134,7 @@ describe("OutlineRowMenu items", () => {
 
       expect(labels()).toEqual([
         "Add note", "To-do", "Duplicate", "Upload image", "Complete", "Star",
-        "Move up", "Move down", "Indent", "Outdent", "Delete"
+        "Move up", "Move down", "Indent", "Outdent", "Copy", "Cut", "Delete"
       ]);
     });
 
@@ -150,7 +150,7 @@ describe("OutlineRowMenu items", () => {
 
     expect(labels()).toEqual([
       "Complete", "Move up", "Move down", "Indent", "Outdent", "Duplicate",
-      "Delete"
+      "Copy", "Cut", "Delete"
     ]);
   });
 

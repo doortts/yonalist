@@ -23,6 +23,8 @@ export interface SelectionKeyboardActions {
   readonly toggleComplete: () => void;
   readonly duplicate: () => void;
   readonly delete: () => void;
+  readonly copy: () => void;
+  readonly cut: () => void;
 }
 
 interface EnterSplitGesture {

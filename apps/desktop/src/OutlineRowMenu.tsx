@@ -3,6 +3,7 @@ import {
 } from "react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
+import { outlineCutRefusal } from "./outlineClipboard";
 import {
   outlineMenuCommands, type OutlineMenuContext, type OutlineMenuMode
 } from "./outlineMenuCommands";
@@ -24,6 +25,7 @@ interface OutlineMenuRuntime {
     readonly pageId: string;
     readonly selectionPlans: SelectionMovePlans;
     readonly allSelectedCompleted: boolean;
+    readonly selectionCutRefusal: string | null;
     readonly selectionActions: SelectionKeyboardActions;
   };
 }
@@ -75,6 +77,7 @@ export function OutlineRowMenu({
   }, []);
   const state = runtime.state;
   const platform = outlinePlatform();
+  const snapshot = store.getSnapshot();
   const context: OutlineMenuContext = {
     mode,
     platform,
@@ -84,10 +87,20 @@ export function OutlineRowMenu({
     allCompleted: mode === "selection"
       ? state.allSelectedCompleted
       : node.completed,
+    // Row mode is the one-root case of the selection guard, so a subtree with
+    // an image below the clicked row refuses Cut here exactly as it would there.
+    cutRefusal: mode === "selection"
+      ? state.selectionCutRefusal
+      : outlineCutRefusal(
+        snapshot.nodes,
+        snapshot.drafts,
+        snapshot.noteDrafts,
+        [node.id]
+      ),
     plans: mode === "selection"
       ? state.selectionPlans
       : buildSelectionMovePlans(
-        store.getSnapshot().nodes,
+        snapshot.nodes,
         state.visibleNodes.map((visible) => visible.id),
         [node.id],
         state.pageId

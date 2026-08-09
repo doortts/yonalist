@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import {
-  canCutSelectedOutline,
   normalizeSelectedRoots,
+  outlineCutRefusal,
   serializeSelectedOutline,
   writeOutlineClipboardEvent
 } from "./outlineClipboard";
@@ -11,7 +11,8 @@ function node(
   id: string,
   parentId: string,
   text: string,
-  sortKey: number
+  sortKey: number,
+  extra: Partial<NoteView> = {}
 ): NoteView {
   return {
     id,
@@ -24,7 +25,8 @@ function node(
     collapsed: false,
     completed: false,
     starred: false,
-    deleted: false
+    deleted: false,
+    ...extra
   };
 }
 
@@ -46,7 +48,7 @@ describe("outline clipboard", () => {
 
     expect(normalizeSelectedRoots(unreadableNodes, [])).toEqual([]);
     expect(serializeSelectedOutline(unreadableNodes, {}, [])).toBeNull();
-    expect(canCutSelectedOutline(unreadableNodes, {}, {}, [])).toBe(false);
+    expect(outlineCutRefusal(unreadableNodes, {}, {}, [])).toBeTruthy();
   });
 
   it("normalizes selected rows to forest roots in outline order", () => {
@@ -84,29 +86,70 @@ describe("outline clipboard", () => {
   });
 
   it("blocks lossy Cut when a selected subtree has a note or embedded title newline", () => {
-    expect(canCutSelectedOutline(
+    expect(outlineCutRefusal(
       nodes.map((candidate) => candidate.id === "grandchild"
         ? { ...candidate, note: "Keep this context" }
         : candidate),
       {},
       {},
       ["parent"]
-    )).toBe(false);
-    expect(canCutSelectedOutline(
+    )).toContain("supporting notes");
+    expect(outlineCutRefusal(
       nodes,
       { child: "line one\nline two" },
       {},
       ["parent"]
-    )).toBe(false);
-    expect(canCutSelectedOutline(
+    )).toContain("supporting notes");
+    expect(outlineCutRefusal(
       nodes.map((candidate) => candidate.id === "child"
         ? { ...candidate, note: "   " }
         : candidate),
       {},
       {},
       ["parent"]
-    )).toBe(false);
-    expect(canCutSelectedOutline(nodes, {}, {}, ["parent"])).toBe(true);
+    )).toContain("supporting notes");
+    expect(outlineCutRefusal(nodes, {}, {}, ["parent"])).toBeNull();
+  });
+
+  // An image node's title is its filename and its bytes live outside the text,
+  // so serializing one yields `- photo.png` and the cut's delete would discard
+  // the image with nothing on the clipboard to paste it back from.
+  it("blocks Cut when an image node sits anywhere in a selected subtree", () => {
+    const withDeepImage = nodes.map((candidate) => candidate.id === "grandchild"
+      ? { ...candidate, kind: "image" as const, text: "photo.png" }
+      : candidate);
+
+    expect(outlineCutRefusal(withDeepImage, {}, {}, ["parent"]))
+      .toContain("an image");
+    expect(outlineCutRefusal(withDeepImage, {}, {}, ["child"]))
+      .toContain("an image");
+    expect(outlineCutRefusal(withDeepImage, {}, {}, ["grandchild"]))
+      .toContain("an image");
+    // A sibling subtree that holds no image is still cuttable.
+    expect(outlineCutRefusal(withDeepImage, {}, {}, ["sibling"])).toBeNull();
+  });
+
+  it("names Move To as the lossless alternative in every Cut refusal", () => {
+    const refusals = [
+      outlineCutRefusal(
+        nodes.map((candidate) => candidate.id === "grandchild"
+          ? { ...candidate, kind: "image" as const }
+          : candidate),
+        {},
+        {},
+        ["parent"]
+      ),
+      outlineCutRefusal(
+        nodes.map((candidate) => candidate.id === "grandchild"
+          ? { ...candidate, note: "Keep this context" }
+          : candidate),
+        {},
+        {},
+        ["parent"]
+      )
+    ];
+
+    for (const refusal of refusals) expect(refusal).toContain("Move To");
   });
 
   it("writes the identical structural value to plain text and Markdown", () => {

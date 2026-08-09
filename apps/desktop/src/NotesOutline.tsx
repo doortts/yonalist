@@ -278,6 +278,7 @@ export function NotesOutline({
     selectionRootCount: selection.selectedRootIds.length,
     selectionPlans: movePlans,
     allSelectedCompleted,
+    selectionCutRefusal: selection.cutRefusal,
     onZoom: (nodeId, split) => {
       if (split && onOpenSplit) onOpenSplit(nodeId);
       else onZoomRootChange(nodeId);
@@ -296,7 +297,9 @@ export function NotesOutline({
           selection.selectedIds, !allSelectedCompleted
         )),
       duplicate: () => runSelectionAction(duplicateSelection),
-      delete: () => runSelectionAction(deleteSelection)
+      delete: () => runSelectionAction(deleteSelection),
+      copy: () => runSelectionAction(copySelection),
+      cut: () => runSelectionAction(cutSelection)
     },
     onDragHandlePointerDown: (nodeId, event) =>
       outlineDrag.rowProps(nodeId).onDragHandlePointerDown(event),
@@ -328,11 +331,9 @@ export function NotesOutline({
       onCopy={selection.copy}
       onCut={(event) => {
         if (selection.selectedIds.length === 0) return;
-        if (!selection.canCut) {
+        if (selection.cutRefusal) {
           event.preventDefault();
-          setSelectionFeedback(
-            "Cut is unavailable because the selection contains a note or multiline title."
-          );
+          setSelectionFeedback(selection.cutRefusal);
           return;
         }
         if (!selection.writeToEvent(event)) {
