@@ -202,9 +202,12 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
   }
 ];
 
+// `delete` sits last in both orders because it is the only destructive
+// command here: trailing it keeps a keyboard user roving toward Indent from
+// landing on it when they overshoot.
 const ROW_ORDER: readonly OutlineMenuCommandId[] = [
   "addNote", "marker", "duplicate", "uploadImage", "complete", "star",
-  "delete", "moveUp", "moveDown", "indent", "outdent"
+  "moveUp", "moveDown", "indent", "outdent", "delete"
 ];
 
 // The legacy selection menu's order, minus the four commands that have no

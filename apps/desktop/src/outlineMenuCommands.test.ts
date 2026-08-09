@@ -105,11 +105,17 @@ describe("the outline menu command table", () => {
     ]);
   });
 
-  it("keeps today's seven row items and appends the four new ones", () => {
+  it("keeps today's row items and slots the four new ones before Delete", () => {
     expect(outlineMenuCommands("row").map((entry) => entry.id)).toEqual([
       "addNote", "marker", "duplicate", "uploadImage", "complete", "star",
-      "delete", "moveUp", "moveDown", "indent", "outdent"
+      "moveUp", "moveDown", "indent", "outdent", "delete"
     ]);
+  });
+
+  it("ends on delete in both modes, it being the only destructive one", () => {
+    for (const mode of ["row", "selection"] as const) {
+      expect(outlineMenuCommands(mode).at(-1)?.id, mode).toBe("delete");
+    }
   });
 
   it("draws every ordered command from the table itself", () => {

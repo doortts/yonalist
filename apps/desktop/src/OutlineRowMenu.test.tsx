@@ -14,9 +14,16 @@ async function openMenu(row: string, name: string) {
   const items = () => within(menu).getAllByRole("menuitem");
   await waitFor(() => expect(items()[0]).toHaveFocus());
   const labels = () => items().map(
-    (item) => item.querySelector("span")?.textContent
+    (entry) => entry.querySelector("span")?.textContent
   );
-  return { trigger, menu, items, labels };
+  // Looked up by label rather than by index, so reordering the menu does not
+  // silently repoint these assertions at a different command.
+  const item = (label: string) => {
+    const found = items()[labels().indexOf(label)];
+    if (!found) throw new Error(`no menu item labelled ${label}`);
+    return found;
+  };
+  return { trigger, menu, items, labels, item };
 }
 
 async function openRowMenu() {
@@ -121,13 +128,13 @@ describe("OutlineRowMenu shell", () => {
 });
 
 describe("OutlineRowMenu items", () => {
-  it("renders today's seven row items with the four new ones appended",
+  it("renders today's row items with the four new ones before Delete",
     async () => {
       const { labels } = await openRowMenu();
 
       expect(labels()).toEqual([
         "Add note", "To-do", "Duplicate", "Upload image", "Complete", "Star",
-        "Delete", "Move up", "Move down", "Indent", "Outdent"
+        "Move up", "Move down", "Indent", "Outdent", "Delete"
       ]);
     });
 
@@ -149,10 +156,9 @@ describe("OutlineRowMenu items", () => {
 
   it("puts the platform's shortcut hint in the menu's third column",
     async () => {
-      const { items } = await openRowMenu();
-      const hint = (label: string) => items()
-        .find((item) => item.querySelector("span")?.textContent === label)
-        ?.querySelector(".notes-bullet-menu-shortcut")
+      const { item } = await openRowMenu();
+      const hint = (label: string) => item(label)
+        .querySelector(".notes-bullet-menu-shortcut")
         ?.textContent;
 
       expect(hint("Complete")).toBe("Ctrl+Enter");
@@ -168,11 +174,12 @@ describe("OutlineRowMenu items", () => {
       configurable: true
     });
     try {
-      const { items } = await openRowMenu();
+      const { item } = await openRowMenu();
 
-      expect(items()[4].querySelector(".notes-bullet-menu-shortcut"))
+      expect(item("Complete").querySelector(".notes-bullet-menu-shortcut"))
         .toHaveTextContent("⌘↩");
-      expect(items()[4]).toHaveAttribute("aria-keyshortcuts", "Meta+Enter");
+      expect(item("Complete"))
+        .toHaveAttribute("aria-keyshortcuts", "Meta+Enter");
     } finally {
       Object.defineProperty(globalThis.navigator, "platform", {
         value: "",
@@ -186,38 +193,38 @@ describe("OutlineRowMenu disabled items", () => {
   // The first row has no preceding sibling and sits at the outline root, so
   // its move commands are exactly the unavailable plans from selectionMoves.
   it("dims an unavailable item and explains why", async () => {
-    const { items } = await openRowMenu();
-    const moveUp = items()[7];
+    const { item } = await openRowMenu();
 
-    expect(moveUp).toHaveTextContent("Move up");
-    expect(moveUp).toHaveAttribute("data-disabled", "true");
-    expect(moveUp).toHaveAttribute("aria-disabled", "true");
-    expect(moveUp).toHaveAccessibleDescription(
+    expect(item("Move up")).toHaveAttribute("data-disabled", "true");
+    expect(item("Move up")).toHaveAttribute("aria-disabled", "true");
+    expect(item("Move up")).toHaveAccessibleDescription(
       "The selection is already at that boundary."
     );
-    expect(items()[10]).toHaveAccessibleDescription(
+    expect(item("Outdent")).toHaveAccessibleDescription(
       "The selection cannot move outside this outline."
     );
   });
 
   it("stays put when an unavailable item is clicked", async () => {
-    const { items } = await openRowMenu();
+    const { item } = await openRowMenu();
 
-    fireEvent.click(items()[7]);
+    fireEvent.click(item("Move up"));
 
     expect(screen.getByRole("menu", { name: "Row actions" })).toBeVisible();
   });
 
   it("still roves onto an unavailable item so its reason can be read",
     async () => {
-      const { menu, items } = await openRowMenu();
+      const { menu, items, labels, item } = await openRowMenu();
+      const steps = labels().indexOf("Move up");
 
-      for (let step = 0; step < 7; step += 1) {
+      for (let step = 0; step < steps; step += 1) {
         fireEvent.keyDown(menu, { key: "ArrowDown" });
       }
 
-      expect(items()[7]).toHaveFocus();
-      expect(items()[7]).toHaveAttribute("data-disabled", "true");
+      expect(items()[steps]).toBe(item("Move up"));
+      expect(item("Move up")).toHaveFocus();
+      expect(item("Move up")).toHaveAttribute("data-disabled", "true");
     });
 });
 
