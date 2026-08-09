@@ -5,6 +5,13 @@ export type OutlineFocusEdge = "start" | "end" | "preserve";
 // Frames to wait for a revealed row to mount before giving up on it.
 const REVEAL_FRAMES = 3;
 
+// Newest focus request per pane wins. A revealed row can mount frames after it
+// was asked for, and by then a newer request may already have placed the caret
+// elsewhere -- letting the older retry land would pull it back to a row the
+// caller has moved past. Same last-request-wins guard focusAfter applies to its
+// own microtask.
+const pendingReveal = new WeakMap<HTMLElement, object>();
+
 function revealInLocalOutline(target: HTMLElement): void {
   adjustLocalOutlineScroll(target);
   globalThis.requestAnimationFrame?.(() => adjustLocalOutlineScroll(target));
@@ -46,16 +53,23 @@ function focusWhenReady(
   nodeId: string,
   apply: (target: HTMLElement) => void
 ): boolean {
+  // Callers scope focus to the pane section or to the row list inside it; the
+  // pane registers itself on the section.
+  const paneScope = scope.closest<HTMLElement>(".notes-outline") ?? scope;
+  const request = {};
   const target = editorById(scope, nodeId);
   if (target) {
+    pendingReveal.set(paneScope, request);
     apply(target);
     return true;
   }
-  // Callers scope focus to the pane section or to the row list inside it; the
-  // pane registers itself on the section.
-  const pane = outlinePane(scope.closest<HTMLElement>(".notes-outline") ?? scope);
+  const pane = outlinePane(paneScope);
+  // A pane that does not hold the row is only being probed, so it must not
+  // cancel a retry some other request is still waiting on.
   if (!pane?.reveal(nodeId)) return false;
+  pendingReveal.set(paneScope, request);
   const retry = (remaining: number) => requestAnimationFrame(() => {
+    if (pendingReveal.get(paneScope) !== request) return;
     const revealed = editorById(scope, nodeId);
     if (revealed) apply(revealed);
     else if (remaining > 0) retry(remaining - 1);
