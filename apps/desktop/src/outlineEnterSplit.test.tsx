@@ -129,6 +129,94 @@ async function pressEnterAt(
   });
 }
 
+describe("Enter inside a bullet that has children", () => {
+  it("leaves the two halves adjacent, children still under the source", async () => {
+    const { store, view, commands } = await outline([
+      bullet("one", "page-1", SORT_KEY_STEP, "AAA BBB"),
+      bullet("child-1", "one", SORT_KEY_STEP, "child1"),
+      bullet("child-2", "one", SORT_KEY_STEP * 2, "child2"),
+      bullet("two", "page-1", SORT_KEY_STEP * 2, "Next")
+    ]);
+
+    await pressEnterAt(view.container, "one", 4);
+
+    expect(titles(view.container))
+      .toEqual(["AAA ", "BBB", "child1", "child2", "Next"]);
+    const state = store.getSnapshot();
+    // The source keeps its id, its children, and the half after the caret.
+    expect(state.nodes.filter((node) => node.parentId === "one")
+      .map((node) => node.id)).toEqual(["child-1", "child-2"]);
+    const split = commands[0] as Extract<
+      IpcNotesCommand, { kind: "splitNode" }
+    >;
+    expect(split.kind).toBe("splitNode");
+    expect(split.id).toBe("one");
+    expect(split.before_id).toBe("one");
+    expect(split.prefix).toBe("BBB");
+    expect(split.suffix).toBe("AAA ");
+    view.unmount();
+  });
+
+  it("puts the caret at the start of the suffix, on the source row", async () => {
+    const { view } = await outline([
+      bullet("one", "page-1", SORT_KEY_STEP, "AAA BBB"),
+      bullet("child-1", "one", SORT_KEY_STEP, "child1")
+    ]);
+
+    await pressEnterAt(view.container, "one", 4);
+
+    await waitFor(() => {
+      const active = document.activeElement as HTMLTextAreaElement;
+      expect(active.dataset.nodeId).toBe("one");
+      expect(active.value).toBe("BBB");
+      expect([active.selectionStart, active.selectionEnd]).toEqual([0, 0]);
+    });
+    view.unmount();
+  });
+
+  // The source is the row that survives a split here, so the held-Enter gesture
+  // tracks the same id across the whole burst instead of following a new row.
+  it("stacks one blank row per repeat above the row it keeps splitting", async () => {
+    const { view } = await outline([
+      bullet("one", "page-1", SORT_KEY_STEP, "AAA BBB"),
+      bullet("child-1", "one", SORT_KEY_STEP, "child1")
+    ]);
+    const field = view.container.querySelector<HTMLTextAreaElement>(
+      "textarea[data-node-id='one']"
+    )!;
+    act(() => {
+      field.focus();
+      field.setSelectionRange(4, 4);
+    });
+
+    for (let index = 0; index < 4; index += 1) {
+      await act(async () => {
+        fireEvent.keyDown(
+          document.activeElement!, { key: "Enter", repeat: index > 0 });
+      });
+    }
+
+    expect(titles(view.container))
+      .toEqual(["AAA ", "", "", "", "BBB", "child1"]);
+    await waitFor(() => expect(document.activeElement)
+      .toHaveAttribute("data-node-id", "one"));
+    view.unmount();
+  });
+
+  it("still starts a first child when the caret sits at the end", async () => {
+    const { view, commands } = await outline([
+      bullet("one", "page-1", SORT_KEY_STEP, "AAA"),
+      bullet("child-1", "one", SORT_KEY_STEP, "child1")
+    ]);
+
+    await pressEnterAt(view.container, "one", 3);
+
+    expect(commands.map((command) => command.kind)).toEqual(["createNode"]);
+    expect(titles(view.container)).toEqual(["AAA", "", "child1"]);
+    view.unmount();
+  });
+});
+
 describe("Enter inside a childless bullet", () => {
   // One visible structural action has to cost exactly one undo, so the split
   // command must be the only thing the keystroke sends. The optimistic draft it

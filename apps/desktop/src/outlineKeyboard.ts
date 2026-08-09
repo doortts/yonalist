@@ -34,6 +34,10 @@ export type OutlineKeyIntent =
       readonly suffix: string;
       readonly parentId: string;
       readonly beforeId: string | null;
+      // A row with children stays put and takes the suffix while the prefix
+      // arrives as a new row ahead of it, so the two halves of one sentence
+      // land on adjacent lines instead of straddling the subtree.
+      readonly keepChildren: boolean;
     }
   | { readonly kind: "createFirstChild"; readonly parentId: string }
   | {
@@ -301,7 +305,8 @@ export function resolveOutlineKey(
       prefix: input.value.slice(0, input.selectionStart!),
       suffix: input.value.slice(input.selectionEnd!),
       parentId: node.parentId ?? input.pageId,
-      beforeId: nextSiblingId(structureNodes, node, input.structureIndex)
+      beforeId: nextSiblingId(structureNodes, node, input.structureIndex),
+      keepChildren: hasChildren
     };
   }
 

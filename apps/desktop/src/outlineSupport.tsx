@@ -28,9 +28,13 @@ export interface SelectionKeyboardActions {
 }
 
 interface EnterSplitGesture {
+  // The row holding the caret and the text after it, which is what the next
+  // repeat splits again. It is the new row when the new row took the suffix,
+  // and the source itself when the source kept it along with its children.
   readonly tailId: string;
   readonly parentId: string;
   readonly beforeId: string | null;
+  readonly keepChildren: boolean;
 }
 
 const enterSplitGestures = new WeakMap<HTMLElement, EnterSplitGesture>();
@@ -399,25 +403,30 @@ function executeRowIntent(
               (candidate) => candidate.id === activeGesture.tailId
             )
           : undefined;
-        const pending = store.beginSplitNode(activeTail && activeGesture ? {
+        const split = activeTail && activeGesture ? {
           id: activeTail.id,
           parentId: activeGesture.parentId,
           beforeId: activeGesture.beforeId,
           prefix: "",
-          suffix: store.getSnapshot().drafts[activeTail.id] ?? activeTail.text
+          suffix: store.getSnapshot().drafts[activeTail.id] ?? activeTail.text,
+          keepChildren: activeGesture.keepChildren
         } : {
           id: node.id,
           parentId: intent.parentId,
           beforeId: intent.beforeId,
           prefix: intent.prefix,
-          suffix: intent.suffix
-        });
+          suffix: intent.suffix,
+          keepChildren: intent.keepChildren
+        };
+        const pending = store.beginSplitNode(split);
+        const tailId = split.keepChildren ? split.id : pending.id;
         enterSplitGestures.set(scope, {
-          tailId: pending.id,
-          parentId: activeGesture?.parentId ?? intent.parentId,
-          beforeId: activeGesture?.beforeId ?? intent.beforeId
+          tailId,
+          parentId: split.parentId,
+          beforeId: split.beforeId,
+          keepChildren: split.keepChildren
         });
-        focusAfter(scope, pending.id, "start");
+        focusAfter(scope, tailId, "start");
         void pending.committed.catch(() => undefined);
       }
       return;
@@ -435,7 +444,8 @@ function executeRowIntent(
         enterSplitGestures.set(scope, {
           tailId: pending.id,
           parentId,
-          beforeId
+          beforeId,
+          keepChildren: false
         });
         focusAfter(scope, pending.id, "start");
         void pending.committed.catch(() => undefined);

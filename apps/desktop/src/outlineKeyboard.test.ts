@@ -89,7 +89,24 @@ describe("v2 outline keyboard intent resolver", () => {
       prefix: "alpha",
       suffix: "omega",
       parentId: "page",
-      beforeId: null
+      beforeId: null,
+      keepChildren: false
+    });
+  });
+
+  it("marks a split of a row with children so the source keeps them", () => {
+    expect(resolveOutlineKey(input({
+      nodeId: "parent",
+      value: "AAA BBB",
+      selectionStart: 4,
+      selectionEnd: 4
+    }))).toEqual({
+      kind: "split",
+      prefix: "AAA ",
+      suffix: "BBB",
+      parentId: "page",
+      beforeId: "next",
+      keepChildren: true
     });
   });
 
@@ -112,7 +129,8 @@ describe("v2 outline keyboard intent resolver", () => {
       prefix: "Next",
       suffix: "",
       parentId: "page",
-      beforeId: null
+      beforeId: null,
+      keepChildren: false
     });
   });
 
