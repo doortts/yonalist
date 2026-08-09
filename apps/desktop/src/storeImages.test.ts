@@ -313,6 +313,32 @@ describe("StoreImages", () => {
     expect(new Set(groups).size).toBe(4);
   });
 
+  it("commits text still in the debounce before the image that follows it", async () => {
+    const order: string[] = [];
+    const importImageBytes = vi.fn(async (request: ImageImportRequest) => {
+      order.push("image");
+      return receiptFor(request);
+    });
+    const notesApi = api(importImageBytes);
+    notesApi.execute = vi.fn(async () => {
+      order.push("text");
+      return {
+        revision: 9,
+        changedNodes: [],
+        deletedIds: [],
+        history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+      };
+    });
+    const store = new NotesStore(notesApi);
+    await store.bootstrap();
+
+    // Typed, then an image pasted inside the 300ms debounce.
+    store.setDraft("bullet-1", "typed");
+    await store.images.importAfter("page-1", null, [candidates()[0]!]);
+
+    expect(order).toEqual(["text", "image"]);
+  });
+
   it("replaces bytes without changing the target node identity", async () => {
     const notesApi = api(vi.fn());
     notesApi.replaceImageBytes = vi.fn().mockImplementation(async (request) => ({

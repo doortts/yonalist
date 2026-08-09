@@ -98,8 +98,14 @@ export class StoreCommands {
     historyGroup: string | null = null,
     requestId: string = freshId()
   ): Promise<MutationReceipt> {
+    // Same choke point as `execute`, for the same reason: an image dropped
+    // inside the text debounce would otherwise land ahead of the keystrokes
+    // that preceded it and put the two in the wrong order in history. Nothing
+    // here owns text, so none of it is exempt and a flush cannot recurse.
+    const flushed = this.host.flushDrafts();
     const scopedHistoryGroup = this.historyEvents.scopedGroup(historyGroup);
     return this.enqueue(async () => {
+      await flushed;
       const state = this.host.read();
       if (!state.sessionId) throw new Error("Notes session is not ready.");
       const previousUndoDepth = state.undoDepth;
