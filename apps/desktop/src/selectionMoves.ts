@@ -139,12 +139,20 @@ export function planSelectionDuplicate(
   };
 }
 
+export interface SelectionMovePlans {
+  readonly indent: SelectionMovePlan;
+  readonly outdent: SelectionMovePlan;
+  readonly up: SelectionMovePlan;
+  readonly down: SelectionMovePlan;
+  readonly duplicate: SelectionDuplicatePlan;
+}
+
 export function buildSelectionMovePlans(
   nodes: readonly NoteView[],
   visibleIds: readonly string[],
   rootIds: readonly string[],
   outlineRootId: string
-) {
+): SelectionMovePlans {
   if (rootIds.length === 0) {
     const unavailable = {
       available: false,

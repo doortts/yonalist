@@ -275,6 +275,9 @@ export function NotesOutline({
     pageId: zoomRoot?.id ?? page.id,
     selectionHeadId: selection.headId,
     hasSelection: selection.selectedIds.length > 0,
+    selectionRootCount: selection.selectedRootIds.length,
+    selectionPlans: movePlans,
+    allSelectedCompleted,
     onZoom: (nodeId, split) => {
       if (split && onOpenSplit) onOpenSplit(nodeId);
       else onZoomRootChange(nodeId);

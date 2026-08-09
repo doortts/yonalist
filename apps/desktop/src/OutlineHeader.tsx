@@ -1,7 +1,10 @@
 import { Check, ImagePlus, MoreHorizontal, X } from "lucide-react";
-import { lazy, Suspense, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  lazy, Suspense, useRef, useState, type CSSProperties, type ReactNode
+} from "react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import { handlePageKeyDown, RowMenuItem } from "./outlineSupport";
+import { useMenuDismiss } from "./useMenuDismiss";
 import type { NotesStore } from "./notesStore";
 import type { OutlineIndex } from "./outlineIndex";
 import {
@@ -53,6 +56,11 @@ export function OutlineHeader({
   readonly onPickImage: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const onMenuKeyDown = useMenuDismiss(
+    menuOpen, menuRef, menuTriggerRef, () => setMenuOpen(false)
+  );
   const { title } = useNotesNode(store, target.id);
   const targetNode = nodes.find((node) => node.id === target.id);
   return (
@@ -87,9 +95,12 @@ export function OutlineHeader({
         <div className="notes-page-title-row">
           <span className="notes-page-menu-slot">
             <button
+              ref={menuTriggerRef}
               className="notes-bullet-menu-trigger"
               type="button"
               aria-label={`Actions for ${target.text || "Untitled"}`}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
               data-popup-open={menuOpen ? "true" : undefined}
               onClick={() => setMenuOpen((value) => !value)}
             >
@@ -97,8 +108,11 @@ export function OutlineHeader({
             </button>
             {menuOpen && (
               <div
+                ref={menuRef}
                 className="notes-bullet-menu"
                 role="menu"
+                aria-label="Page actions"
+                onKeyDown={onMenuKeyDown}
                 style={{
                   "--available-height": "420px",
                   position: "absolute",

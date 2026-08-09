@@ -26,6 +26,7 @@ import {
   OutlineTextField, type OutlineTagToken
 } from "./OutlineTextField";
 import { useNotesNode } from "./useNotesNode";
+import type { SelectionMovePlans } from "./selectionMoves";
 
 const SlashCommandMenu = lazy(() => import("./SlashCommandMenu").then((module) => ({
   default: module.SlashCommandMenu
@@ -44,6 +45,10 @@ export interface OutlineRowRuntimeState {
   readonly pageId: string;
   readonly selectionHeadId: string | null;
   readonly hasSelection: boolean;
+  /** Roots the selection commands act on; more than one opens selection mode. */
+  readonly selectionRootCount: number;
+  readonly selectionPlans: SelectionMovePlans;
+  readonly allSelectedCompleted: boolean;
   readonly onZoom: (nodeId: string, split: boolean) => void;
   readonly onZoomOut: () => void;
   readonly onExtendSelection: (originId: string, headId: string) => void;
@@ -167,6 +172,13 @@ export const OutlineRow = memo(function OutlineRow({
                   node={node}
                   store={store}
                   hasNote={visibleNote.trim().length > 0}
+                  // The legacy menu's eleven-item variant is the selection
+                  // one: it shows when the clicked row is inside a live
+                  // multi-row selection, and acts on the selection, not the row.
+                  mode={selected && runtime.state.selectionRootCount > 1
+                    ? "selection"
+                    : "row"}
+                  runtime={runtime}
                   triggerRef={menuTriggerRef}
                   onClose={() => setMenuOpen(false)}
                   onAddNote={openNoteAndFocus}

@@ -5,16 +5,35 @@ import { App } from "./App";
 import { appApi } from "./test/appApiFixture";
 import { menuPlacement } from "./useMenuDismiss";
 
-async function openRowMenu() {
-  render(<App api={appApi()} />);
+async function openMenu(row: string, name: string) {
   const trigger = await screen.findByRole("button", {
-    name: "Actions for First thought"
+    name: `Actions for ${row}`
   });
   fireEvent.click(trigger);
-  const menu = await screen.findByRole("menu", { name: "Row actions" });
+  const menu = await screen.findByRole("menu", { name });
   const items = () => within(menu).getAllByRole("menuitem");
   await waitFor(() => expect(items()[0]).toHaveFocus());
-  return { trigger, menu, items };
+  const labels = () => items().map(
+    (item) => item.querySelector("span")?.textContent
+  );
+  return { trigger, menu, items, labels };
+}
+
+async function openRowMenu() {
+  render(<App api={appApi()} />);
+  return openMenu("First thought", "Row actions");
+}
+
+/** Two rows selected by a shift range, then the first row's own menu. */
+async function openSelectionMenu() {
+  render(<App api={appApi()} />);
+  const first = await screen.findByDisplayValue("First thought");
+  fireEvent.pointerDown(first);
+  fireEvent.pointerDown(screen.getByDisplayValue("Second thought"), {
+    shiftKey: true
+  });
+  await screen.findByRole("toolbar", { name: "Actions for 2 selected notes" });
+  return openMenu("First thought", "Selection actions");
 }
 
 describe("OutlineRowMenu shell", () => {
@@ -99,6 +118,107 @@ describe("OutlineRowMenu shell", () => {
         .not.toBeInTheDocument();
     });
   });
+});
+
+describe("OutlineRowMenu items", () => {
+  it("renders today's seven row items with the four new ones appended",
+    async () => {
+      const { labels } = await openRowMenu();
+
+      expect(labels()).toEqual([
+        "Add note", "To-do", "Duplicate", "Upload image", "Complete", "Star",
+        "Delete", "Move up", "Move down", "Indent", "Outdent"
+      ]);
+    });
+
+  it("says Delete rather than Move to Trash", async () => {
+    const { labels } = await openRowMenu();
+
+    expect(labels()).toContain("Delete");
+    expect(labels()).not.toContain("Move to Trash");
+  });
+
+  it("renders the documented selection commands in order", async () => {
+    const { labels } = await openSelectionMenu();
+
+    expect(labels()).toEqual([
+      "Complete", "Move up", "Move down", "Indent", "Outdent", "Duplicate",
+      "Delete"
+    ]);
+  });
+
+  it("puts the platform's shortcut hint in the menu's third column",
+    async () => {
+      const { items } = await openRowMenu();
+      const hint = (label: string) => items()
+        .find((item) => item.querySelector("span")?.textContent === label)
+        ?.querySelector(".notes-bullet-menu-shortcut")
+        ?.textContent;
+
+      expect(hint("Complete")).toBe("Ctrl+Enter");
+      expect(hint("Delete")).toBe("Ctrl+Shift+Backspace");
+      expect(hint("Move up")).toBe("Alt+Shift+↑");
+      expect(hint("Outdent")).toBe("Shift+Tab");
+      expect(hint("Star")).toBeUndefined();
+    });
+
+  it("switches the hints to the mac bindings on a mac", async () => {
+    Object.defineProperty(globalThis.navigator, "platform", {
+      value: "MacIntel",
+      configurable: true
+    });
+    try {
+      const { items } = await openRowMenu();
+
+      expect(items()[4].querySelector(".notes-bullet-menu-shortcut"))
+        .toHaveTextContent("⌘↩");
+      expect(items()[4]).toHaveAttribute("aria-keyshortcuts", "Meta+Enter");
+    } finally {
+      Object.defineProperty(globalThis.navigator, "platform", {
+        value: "",
+        configurable: true
+      });
+    }
+  });
+});
+
+describe("OutlineRowMenu disabled items", () => {
+  // The first row has no preceding sibling and sits at the outline root, so
+  // its move commands are exactly the unavailable plans from selectionMoves.
+  it("dims an unavailable item and explains why", async () => {
+    const { items } = await openRowMenu();
+    const moveUp = items()[7];
+
+    expect(moveUp).toHaveTextContent("Move up");
+    expect(moveUp).toHaveAttribute("data-disabled", "true");
+    expect(moveUp).toHaveAttribute("aria-disabled", "true");
+    expect(moveUp).toHaveAccessibleDescription(
+      "The selection is already at that boundary."
+    );
+    expect(items()[10]).toHaveAccessibleDescription(
+      "The selection cannot move outside this outline."
+    );
+  });
+
+  it("stays put when an unavailable item is clicked", async () => {
+    const { items } = await openRowMenu();
+
+    fireEvent.click(items()[7]);
+
+    expect(screen.getByRole("menu", { name: "Row actions" })).toBeVisible();
+  });
+
+  it("still roves onto an unavailable item so its reason can be read",
+    async () => {
+      const { menu, items } = await openRowMenu();
+
+      for (let step = 0; step < 7; step += 1) {
+        fireEvent.keyDown(menu, { key: "ArrowDown" });
+      }
+
+      expect(items()[7]).toHaveFocus();
+      expect(items()[7]).toHaveAttribute("data-disabled", "true");
+    });
 });
 
 // jsdom has no layout, so the flip and clamp decisions live in a pure
