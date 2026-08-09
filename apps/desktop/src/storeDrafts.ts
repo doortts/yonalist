@@ -104,12 +104,21 @@ export class StoreDrafts {
     }
   }
 
-  async flushAll(): Promise<void> {
+  /**
+   * Submits every pending draft without waiting on the command queue. The
+   * command choke point calls this, and the queue by then already holds the
+   * command that asked for the flush -- waiting on it here would deadlock.
+   */
+  flushPending(): Promise<void> {
     const state = this.host.read();
-    await Promise.all([
+    return Promise.all([
       ...Object.keys(state.drafts).map((id) => this.flushTitle(id)),
       ...Object.keys(state.noteDrafts).map((id) => this.flushNote(id))
-    ]);
+    ]).then(() => undefined);
+  }
+
+  async flushAll(): Promise<void> {
+    await this.flushPending();
     await this.host.settled();
   }
 

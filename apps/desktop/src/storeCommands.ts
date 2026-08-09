@@ -16,7 +16,23 @@ export interface StoreCommandHost {
     invalidation: StoreInvalidation
   ) => void;
   readonly applyReceipt: (receipt: MutationReceipt) => void;
+  readonly flushDrafts: () => Promise<void>;
 }
+
+/**
+ * Commands that carry the text they mean to write, so nothing may be flushed
+ * ahead of them: the split and the two merges spell out both halves, and
+ * `removeEmptyNode` is preceded by its own blanking edit under the same history
+ * group. This is also what keeps the flush from recursing -- a flush IS an
+ * `updateText`/`updateNote`, and both sit in here.
+ */
+const TEXT_OWNING_COMMANDS: ReadonlySet<IpcNotesCommand["kind"]> = new Set([
+  "updateText",
+  "updateNote",
+  "splitNode",
+  "mergeNodeBackward",
+  "removeEmptyNode"
+]);
 
 export interface ExternalCommandContext {
   readonly sessionId: string;
@@ -46,8 +62,15 @@ export class StoreCommands {
     command: IpcNotesCommand,
     historyGroup: string | null = null
   ): Promise<MutationReceipt> {
+    // Kicked off synchronously, before this command is queued, so the drafts'
+    // own `updateText`/`updateNote` take the earlier slots and the queue runs
+    // them first. Awaiting it inside the operation only propagates its failure.
+    const flushed = TEXT_OWNING_COMMANDS.has(command.kind)
+      ? null
+      : this.host.flushDrafts();
     const scopedHistoryGroup = this.historyEvents.scopedGroup(historyGroup);
     return this.enqueue(async () => {
+      await flushed;
       const state = this.host.read();
       if (!state.sessionId) throw new Error("Notes session is not ready.");
       const previousUndoDepth = state.undoDepth;

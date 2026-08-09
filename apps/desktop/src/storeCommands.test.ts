@@ -62,7 +62,8 @@ describe("StoreCommands", () => {
       },
       applyReceipt: (next) => {
         state = { ...state, revision: next.revision };
-      }
+      },
+      flushDrafts: () => Promise.resolve()
     });
 
     const first = commands.execute({ kind: "createPage", id: "a", text: "A" });
@@ -98,7 +99,8 @@ describe("StoreCommands", () => {
           revision: next.revision,
           undoDepth: next.history.undoDepth
         };
-      }
+      },
+      flushDrafts: () => Promise.resolve()
     });
     const history = vi.fn();
     commands.subscribeHistory(history);

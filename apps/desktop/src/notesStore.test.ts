@@ -1078,3 +1078,134 @@ describe("NotesStore tag edits", () => {
     expect(titles(store)).toEqual(["buy milk", "call mum", "pay rent"]);
   });
 });
+
+// A command that lands while the 300 ms draft debounce is still holding the
+// user's typing used to commit first, so the typing committed second and the
+// first undo wiped the typing instead of reversing the action. Every command
+// that does not carry its own text now waits behind the pending drafts.
+describe("NotesStore draft flushing before commands", () => {
+  function recording(nodes: readonly NoteView[] = boot.viewport!.nodes) {
+    const notesApi = api(vi.fn());
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...boot,
+      viewport: { ...boot.viewport!, nodes: [...nodes] }
+    });
+    let revision = 1;
+    notesApi.execute = vi.fn().mockImplementation(async (envelope) => {
+      revision += 1;
+      const command = envelope.command;
+      const target = nodes.find((node) => node.id === command.id);
+      const changedNodes = !target
+        ? []
+        : command.kind === "updateText"
+          ? [{ ...target, text: command.text }]
+          : command.kind === "updateNote"
+            ? [{ ...target, note: command.note }]
+            : [];
+      return {
+        revision,
+        changedNodes,
+        deletedIds: [],
+        history: {
+          canUndo: true,
+          canRedo: false,
+          undoDepth: revision - 1,
+          redoDepth: 0
+        }
+      };
+    });
+    return notesApi;
+  }
+
+  function sent(notesApi: NotesApi) {
+    return vi.mocked(notesApi.execute).mock.calls
+      .map(([envelope]) => envelope.command);
+  }
+
+  it.each([
+    ["setCompleted", (store: NotesStore) => store.setCompleted("one", true)],
+    ["setStarred", (store: NotesStore) => store.setStarred("one", true)],
+    ["setCollapsed", (store: NotesStore) => store.setCollapsed("one", true)],
+    ["setMarker", (store: NotesStore) => store.setMarker("one", "todo")],
+    ["restoreSubtree", (store: NotesStore) => store.restoreSubtree("one")],
+    ["deleteSubtree", (store: NotesStore) => store.deleteSubtree("one")],
+    [
+      "createNode",
+      (store: NotesStore) => store.beginCreateNode("one", "", null).committed
+    ]
+  ])("commits pending typing before %s", async (kind, run) => {
+    const notesApi = recording();
+    const store = new NotesStore(notesApi);
+    await store.bootstrap();
+    store.setDraft("one", "typed");
+
+    await run(store);
+
+    expect(sent(notesApi).map((command) => command.kind))
+      .toEqual(["updateText", kind]);
+    // The delete path used to discard this instead of sending it, so undo
+    // brought the row back carrying the pre-typing text.
+    expect(sent(notesApi)[0])
+      .toEqual({ kind: "updateText", id: "one", text: "typed" });
+  });
+
+  it("copies the current text of an unflushed descendant and note", async () => {
+    const child = { ...bullet("child", 1_024), parentId: "one" };
+    const notesApi = recording([bullet("one", 1_024), child, bullet("two", 2_048)]);
+    const store = new NotesStore(notesApi);
+    await store.bootstrap();
+    store.setDraft("child", "Draft child");
+    store.setNoteDraft("child", "Draft context");
+
+    await store.duplicate("one", "page-1", null);
+
+    expect(sent(notesApi).map((command) => command.kind))
+      .toEqual(["updateText", "updateNote", "duplicate"]);
+  });
+
+  it("flushes a pending note draft before indenting", async () => {
+    const notesApi = recording();
+    const store = new NotesStore(notesApi);
+    await store.bootstrap();
+    store.setNoteDraft("two", "Draft context");
+
+    await store.indent("two", "one");
+
+    expect(sent(notesApi).map((command) => command.kind))
+      .toEqual(["updateNote", "indent"]);
+  });
+
+  it("leaves a split as the only command the keystroke sends", async () => {
+    const notesApi = recording();
+    const store = new NotesStore(notesApi);
+    await store.bootstrap();
+    store.setDraft("one", "AAABBB");
+
+    await store.beginSplitNode({
+      id: "one",
+      parentId: "page-1",
+      beforeId: "two",
+      prefix: "AAA",
+      suffix: "BBB"
+    }).committed;
+
+    expect(sent(notesApi).map((command) => command.kind)).toEqual(["splitNode"]);
+  });
+
+  it("keeps the blanking edit first and alone under the removal group", async () => {
+    const notesApi = recording();
+    const store = new NotesStore(notesApi);
+    await store.bootstrap();
+    store.setDraft("one", "");
+
+    await store.beginRemoveEmptyNode("one", "backspace:1").committed;
+
+    expect(vi.mocked(notesApi.execute).mock.calls.map(([envelope]) => [
+      envelope.command.kind,
+      envelope.historyGroup
+    ])).toEqual([
+      ["updateText", "backspace:1"],
+      ["removeEmptyNode", "backspace:1"]
+    ]);
+  });
+});

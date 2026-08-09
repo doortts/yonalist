@@ -8,7 +8,7 @@ import type { NotesApi } from "./api";
 import { initialNotesState, type NotesState } from "./notesState";
 import { freshId, messageFrom } from "./storeSupport";
 import { flattenPastedOutline, type PastedOutlineNode } from "./outlinePaste";
-import { omitKeys, receiptState, subtreeIds, viewportState } from "./storeState";
+import { receiptState, subtreeIds, viewportState } from "./storeState";
 import { runSlashEdit } from "./storeSlash";
 import type { NotesMutationHistoryEvent } from "./storeHistory";
 import { StoreViewport } from "./storeViewport";
@@ -41,7 +41,8 @@ export class NotesStore {
     this.commands = new StoreCommands(api, {
       read: this.getSnapshot,
       write: (patch, invalidation) => this.update(patch, invalidation),
-      applyReceipt: (receipt) => this.applyReceipt(receipt)
+      applyReceipt: (receipt) => this.applyReceipt(receipt),
+      flushDrafts: () => this.drafts.flushPending()
     });
     this.images = new LazyStoreImages(api, this.commands, this.getSnapshot);
     this.drafts = new StoreDrafts({
@@ -276,12 +277,10 @@ export class NotesStore {
   }
 
   async indent(id: string, newParentId: string): Promise<void> {
-    await this.flushDraft(id);
     await this.executeCommand({ kind: "indent", id, new_parent_id: newParentId });
   }
 
   async moveNode(id: string, parentId: string, beforeId: string | null): Promise<void> {
-    await this.flushDraft(id);
     await this.executeCommand({
       kind: "moveNode",
       id,
@@ -294,7 +293,6 @@ export class NotesStore {
     moves: readonly { id: string; parentId: string; beforeId: string | null }[]
   ): Promise<void> {
     if (moves.length === 0) return;
-    await Promise.all(moves.map(({ id }) => this.flushDraft(id)));
     await this.executeCommand({ kind: "moveNodes", moves: [...moves] });
   }
 
@@ -306,8 +304,10 @@ export class NotesStore {
    * `MAX_HISTORY_MUTATIONS_PER_ENTRY` (256) mutations, so callers bound the
    * batch themselves rather than letting it split without saying so.
    *
-   * Drafts are flushed first: a debounce still in flight would otherwise land
-   * after these writes and put the pre-edit text back.
+   * Drafts are flushed here rather than at the command choke point, which
+   * exempts `updateText`/`updateNote` so a flush cannot recurse into itself.
+   * Without this a debounce still in flight would land after these writes and
+   * put the pre-edit text back.
    */
   async applyTextEdits(
     edits: readonly {
@@ -339,7 +339,6 @@ export class NotesStore {
   }
 
   async outdent(id: string, newParentId: string, beforeId: string | null): Promise<void> {
-    await this.flushDraft(id);
     await this.executeCommand({
       kind: "outdent",
       id,
@@ -353,7 +352,6 @@ export class NotesStore {
     parentId: string,
     beforeId: string | null = null
   ): Promise<string> {
-    await this.flushDraft(id);
     const newId = freshId();
     await this.executeCommand({
       kind: "duplicate",
@@ -371,11 +369,6 @@ export class NotesStore {
     beforeId: string | null
   ): Promise<readonly string[]> {
     if (ids.length === 0) return [];
-    const affectedIds = subtreeIds(this.state.nodes, ids);
-    await Promise.all(affectedIds.flatMap((id) => [
-      this.flushDraft(id),
-      this.flushNoteDraft(id)
-    ]));
     const newIds = ids.map(() => freshId());
     await this.executeCommand({
       kind: "duplicateNodes",
@@ -389,7 +382,6 @@ export class NotesStore {
     await this.executeCommand({ kind: "setCompleted", id, completed }); }
   async setCompletedMany(ids: readonly string[], completed: boolean): Promise<void> {
     if (ids.length === 0) return;
-    await Promise.all(ids.map((id) => this.flushDraft(id)));
     await this.executeCommand({
       kind: "setCompletedMany",
       ids: [...ids],
@@ -420,11 +412,6 @@ export class NotesStore {
 
   async deleteSubtree(id: string): Promise<void> {
     const deletesPage = this.state.pages.some((page) => page.id === id);
-    this.drafts.cancel([id]);
-    this.update({
-      drafts: omitKeys(this.state.drafts, [id]),
-      noteDrafts: omitKeys(this.state.noteDrafts, [id])
-    });
     await this.executeCommand({ kind: "deleteSubtree", id });
     if (deletesPage) {
       const nextPage = this.state.pages[0];
@@ -440,11 +427,6 @@ export class NotesStore {
 
   async deleteSubtrees(ids: readonly string[]): Promise<void> {
     if (ids.length === 0) return;
-    const affectedIds = subtreeIds(this.state.nodes, ids);
-    await Promise.all(affectedIds.flatMap((id) => [
-      this.flushDraft(id),
-      this.flushNoteDraft(id)
-    ]));
     await this.executeCommand({ kind: "deleteSubtrees", ids: [...ids] });
   }
 
