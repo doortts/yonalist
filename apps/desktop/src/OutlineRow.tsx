@@ -112,6 +112,9 @@ export const OutlineRow = memo(function OutlineRow({
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
+  // The menu item and `⌃⌘M` open the one chooser mounted below by flipping
+  // this: a second mount point would mean two dialogs racing for the same row.
+  const openMoveChooser = () => setMoveOpen(true);
   const [slashMenu, setSlashMenu] = useState<{
     readonly query: SlashCommandQuery;
     readonly commands: ReturnType<typeof filterSlashCommands>;
@@ -201,7 +204,7 @@ export const OutlineRow = memo(function OutlineRow({
                     );
                   }}
                   onPickImage={() => runtime.state.onPickImage(node.id)}
-                  onMoveTo={() => setMoveOpen(true)}
+                  onMoveTo={openMoveChooser}
                 />
               </Suspense>
             )}
@@ -296,6 +299,7 @@ export const OutlineRow = memo(function OutlineRow({
                     current.onExtendSelection,
                     current.onClearSelection,
                     openNoteAndFocus,
+                    openMoveChooser,
                     current.selectionActions
                   );
                 }}
@@ -380,6 +384,7 @@ export const OutlineRow = memo(function OutlineRow({
                 current.onExtendSelection,
                 current.onClearSelection,
                 openNoteAndFocus,
+                openMoveChooser,
                 visibleNote,
                 current.selectionActions
               );

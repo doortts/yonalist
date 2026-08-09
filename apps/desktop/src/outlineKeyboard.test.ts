@@ -416,6 +416,52 @@ describe("v2 outline keyboard intent resolver", () => {
     }))).toBeNull();
   });
 
+  // ⌃⌘M is the one binding here that wants BOTH control and meta on a mac,
+  // which is exactly what `primaryModifier` refuses, so it carries its own
+  // predicate and this test is what keeps the two apart.
+  it("opens the move chooser on the platform's Move To combination", () => {
+    expect(resolveOutlineKey(input({
+      key: "m",
+      ctrlKey: true,
+      metaKey: true,
+      platform: "mac"
+    }))).toEqual({ kind: "moveTo" });
+    expect(resolveOutlineKey(input({
+      key: "M",
+      ctrlKey: true,
+      altKey: true
+    }))).toEqual({ kind: "moveTo" });
+  });
+
+  it("swallows a held Move To combination after the first press", () => {
+    expect(resolveOutlineKey(input({
+      key: "m",
+      ctrlKey: true,
+      altKey: true,
+      repeat: true
+    }))).toEqual({ kind: "consume" });
+  });
+
+  it("ignores the other platform's Move To combination and either half", () => {
+    for (const platform of ["mac", "other"] as const) {
+      // The combination the other platform uses.
+      expect(resolveOutlineKey(input({
+        key: "m",
+        ctrlKey: platform === "mac",
+        altKey: platform === "mac",
+        metaKey: platform !== "mac",
+        platform
+      })), platform).toBeNull();
+      // One modifier short on either side.
+      expect(resolveOutlineKey(input({ key: "m", ctrlKey: true, platform })))
+        .toBeNull();
+      expect(resolveOutlineKey(input({ key: "m", metaKey: true, platform })))
+        .toBeNull();
+      expect(resolveOutlineKey(input({ key: "m", altKey: true, platform })))
+        .toBeNull();
+    }
+  });
+
   it("maps existing single-row shortcuts per platform", () => {
     expect(resolveOutlineKey(input({
       key: "Enter",

@@ -62,6 +62,7 @@ export type OutlineKeyIntent =
   | { readonly kind: "toggleComplete" }
   | { readonly kind: "duplicate" }
   | { readonly kind: "trash" }
+  | { readonly kind: "moveTo" }
   | { readonly kind: "move"; readonly direction: "up" | "down" }
   | { readonly kind: "zoom"; readonly direction: "in" | "out" }
   | { readonly kind: "focusNote" }
@@ -189,6 +190,18 @@ export function resolveOutlineKey(
       primaryModifier(input)
     ) {
       return input.repeat ? { kind: "consume" } : { kind: "trash" };
+    }
+    // The one binding here that wants BOTH control and meta on a mac, which is
+    // exactly what `primaryModifier` rules out, so it carries its own test.
+    const moveToModifier = input.platform === "mac"
+      ? input.ctrlKey && input.metaKey && !input.altKey
+      : input.ctrlKey && input.altKey && !input.metaKey;
+    if (
+      input.key.toLowerCase() === "m" &&
+      !input.shiftKey &&
+      moveToModifier
+    ) {
+      return input.repeat ? { kind: "consume" } : { kind: "moveTo" };
     }
     const duplicateModifier = input.platform === "mac"
       ? input.metaKey && !input.altKey && !input.ctrlKey

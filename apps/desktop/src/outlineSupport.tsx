@@ -139,6 +139,7 @@ export function handleOutlineKeyDown(
   onExtendSelection: (originId: string, headId: string) => void,
   onClearSelection: () => void,
   onFocusNote: () => void,
+  onMoveTo: () => void,
   supportingNote: string,
   selectionActions: SelectionKeyboardActions
 ) {
@@ -196,6 +197,7 @@ export function handleOutlineKeyDown(
     onExtendSelection,
     onClearSelection,
     onFocusNote,
+    onMoveTo,
     backspaceGroup,
     event.repeat
   );
@@ -217,6 +219,7 @@ export function handleImagePrimaryKeyDown(
   onExtendSelection: (originId: string, headId: string) => void,
   onClearSelection: () => void,
   onFocusNote: () => void,
+  onMoveTo: () => void,
   selectionActions: SelectionKeyboardActions
 ) {
   const intent = handleImageNodeKeyDown({
@@ -267,6 +270,7 @@ export function handleImagePrimaryKeyDown(
     onExtendSelection,
     onClearSelection,
     onFocusNote,
+    onMoveTo,
     null,
     event.repeat
   );
@@ -378,6 +382,7 @@ function executeRowIntent(
   onExtendSelection: (originId: string, headId: string) => void,
   onClearSelection: () => void,
   onFocusNote: () => void,
+  onMoveTo: () => void,
   backspaceGroup: string | null,
   repeated: boolean
 ): void {
@@ -500,6 +505,12 @@ function executeRowIntent(
       return;
     case "trash":
       void store.deleteSubtree(node.id);
+      return;
+    // The chooser is mounted by the row and already scopes itself to the live
+    // selection, so the key needs no diversion of its own: it flips the same
+    // state the menu item flips.
+    case "moveTo":
+      onMoveTo();
       return;
     case "duplicate": {
       const siblings = node.parentId

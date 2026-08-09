@@ -175,6 +175,37 @@ describe("OutlineRowMenu items", () => {
       .toBeVisible();
   });
 
+  // A printed hint is a promise: the same dialog the menu item opens has to
+  // open from the keys the item advertises, with no menu in the way.
+  it("opens the same chooser from the shortcut the menu prints", async () => {
+    render(<App api={appApi()} />);
+    const editor = await screen.findByDisplayValue("First thought");
+
+    fireEvent.keyDown(editor, { key: "m", ctrlKey: true, altKey: true });
+
+    expect(await screen.findByRole("dialog", { name: "Move item" }))
+      .toBeVisible();
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("opens the chooser over the selection when the shortcut has one",
+    async () => {
+      render(<App api={appApi()} />);
+      const first = await screen.findByDisplayValue("First thought");
+      fireEvent.pointerDown(first);
+      fireEvent.pointerDown(screen.getByDisplayValue("Second thought"), {
+        shiftKey: true
+      });
+      await screen.findByRole("toolbar", {
+        name: "Actions for 2 selected notes"
+      });
+
+      fireEvent.keyDown(first, { key: "m", ctrlKey: true, altKey: true });
+
+      expect(await screen.findByRole("dialog", { name: "Move selection" }))
+        .toBeVisible();
+    });
+
   it("puts the platform's shortcut hint in the menu's third column",
     async () => {
       const { item } = await openRowMenu();
