@@ -96,6 +96,7 @@ export const OutlineRow = memo(function OutlineRow({
   const node = confirmedNode ?? outlineNode;
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [slashMenu, setSlashMenu] = useState<{
     readonly query: SlashCommandQuery;
@@ -149,9 +150,12 @@ export const OutlineRow = memo(function OutlineRow({
         <div className="notes-node-main">
           <span className="notes-node-menu-slot">
             <button
+              ref={menuTriggerRef}
               className="notes-bullet-menu-trigger"
               type="button"
               aria-label={`Actions for ${(draft ?? node.text) || "Untitled"}`}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
               data-popup-open={menuOpen ? "true" : undefined}
               onClick={() => setMenuOpen((value) => !value)}
             >
@@ -163,6 +167,7 @@ export const OutlineRow = memo(function OutlineRow({
                   node={node}
                   store={store}
                   hasNote={visibleNote.trim().length > 0}
+                  triggerRef={menuTriggerRef}
                   onClose={() => setMenuOpen(false)}
                   onAddNote={openNoteAndFocus}
                   onDuplicate={() => {

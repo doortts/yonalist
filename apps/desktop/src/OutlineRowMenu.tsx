@@ -2,10 +2,15 @@ import {
   Check, Circle, Copy, ImagePlus, MessageSquareText, SquareCheckBig, Star,
   Trash2
 } from "lucide-react";
-import type { CSSProperties } from "react";
+import {
+  useLayoutEffect, useRef, useState, type CSSProperties, type RefObject
+} from "react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
 import { RowMenuItem } from "./outlineSupport";
+import {
+  MENU_BLOCK_INSET, menuPlacement, outlineMenuBounds, useMenuDismiss
+} from "./useMenuDismiss";
 
 /**
  * The per-row action menu. It is only ever reached by clicking a row's
@@ -13,30 +18,50 @@ import { RowMenuItem } from "./outlineSupport";
  * bundle — the same arrangement the slash-command menu already uses.
  */
 export function OutlineRowMenu({
-  node, store, hasNote, onClose, onAddNote, onDuplicate, onPickImage
+  node, store, hasNote, triggerRef, onClose, onAddNote, onDuplicate, onPickImage
 }: {
   readonly node: NoteView;
   readonly store: NotesStore;
   readonly hasNote: boolean;
+  readonly triggerRef: RefObject<HTMLButtonElement | null>;
   readonly onClose: () => void;
   readonly onAddNote: () => void;
   readonly onDuplicate: () => void;
   readonly onPickImage: () => void;
 }) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const onKeyDown = useMenuDismiss(true, menuRef, triggerRef, onClose);
+  const [placement, setPlacement] = useState({
+    insetBlockStart: MENU_BLOCK_INSET,
+    insetInlineStart: 0
+  });
+  // Measured once, at the default placement: the row unmounts when it scrolls
+  // out of the virtualized window, which closes the menu anyway.
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (menu) {
+      setPlacement(menuPlacement(
+        menu.getBoundingClientRect(),
+        outlineMenuBounds(menu)
+      ));
+    }
+  }, []);
   const run = (action: () => void) => () => {
     onClose();
     action();
   };
   return (
     <div
+      ref={menuRef}
       className="notes-bullet-menu"
       role="menu"
+      aria-label="Row actions"
       style={{
         "--available-height": "420px",
         position: "absolute",
-        insetInlineStart: 0,
-        insetBlockStart: 28
+        ...placement
       } as CSSProperties}
+      onKeyDown={onKeyDown}
     >
       <RowMenuItem
         icon={<MessageSquareText size={14} aria-hidden="true" />}

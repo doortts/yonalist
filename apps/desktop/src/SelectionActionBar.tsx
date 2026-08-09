@@ -8,6 +8,7 @@ import {
   useRef,
   useState
 } from "react";
+import { useMenuDismiss } from "./useMenuDismiss";
 
 const COMPACT_ACTIONS_QUERY = "(max-width: 720px)";
 
@@ -89,23 +90,12 @@ export function SelectionActionBar({
   const moreTriggerRef = useRef<HTMLButtonElement>(null);
   const menuRootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!moreOpen) return;
-    const frame = requestAnimationFrame(() => {
-      menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')
-        ?.focus();
-    });
-    const dismiss = (event: PointerEvent) => {
-      if (!menuRootRef.current?.contains(event.target as Node)) {
-        setMoreOpen(false);
-      }
-    };
-    document.addEventListener("pointerdown", dismiss, true);
-    return () => {
-      cancelAnimationFrame(frame);
-      document.removeEventListener("pointerdown", dismiss, true);
-    };
-  }, [moreOpen]);
+  const onMenuKeyDown = useMenuDismiss(
+    moreOpen,
+    menuRef,
+    moreTriggerRef,
+    () => setMoreOpen(false)
+  );
   const mutationDisabled = busy;
   const action = (
     label: string,
@@ -243,30 +233,7 @@ export function SelectionActionBar({
             className="notes-selection-action-menu"
             role="menu"
             aria-label="More selection actions"
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setMoreOpen(false);
-                moreTriggerRef.current?.focus();
-                return;
-              }
-              if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
-                return;
-              }
-              event.preventDefault();
-              const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>(
-                '[role="menuitem"]'
-              )];
-              const current = items.indexOf(document.activeElement as HTMLButtonElement);
-              const next = event.key === "Home"
-                ? 0
-                : event.key === "End"
-                  ? items.length - 1
-                  : event.key === "ArrowDown"
-                    ? (current + 1) % items.length
-                    : (current - 1 + items.length) % items.length;
-              items[next]?.focus();
-            }}
+            onKeyDown={onMenuKeyDown}
           >
             {moreActions.map((item) => (
               <button

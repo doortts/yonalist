@@ -24,6 +24,7 @@ import {
   imageKeyboardResizeWidth
 } from "./imageResize";
 import { RowMenuItem } from "./outlineSupport";
+import { useMenuDismiss } from "./useMenuDismiss";
 import { ImageLightbox } from "./ImageLightbox";
 import {
   downloadImage,
@@ -60,6 +61,7 @@ export function ImageNodeContent({
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const pointerResize = useRef<{
     readonly pointerId: number;
     readonly startX: number;
@@ -68,6 +70,12 @@ export function ImageNodeContent({
   } | null>(null);
   const keyboardResizeStart = useRef<number | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const onMenuKeyDown = useMenuDismiss(
+    menuOpen,
+    menuRef,
+    menuTriggerRef,
+    () => setMenuOpen(false)
+  );
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [previewWidth, setPreviewWidth] = useState(
@@ -298,6 +306,8 @@ export function ImageNodeContent({
               type="button"
               className="notes-image-menu-trigger"
               aria-label={`Image actions for ${originalName}`}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
               data-popup-open={menuOpen ? "true" : undefined}
               onPointerDown={(event) => event.stopPropagation()}
               onClick={() => setMenuOpen((open) => !open)}
@@ -306,8 +316,10 @@ export function ImageNodeContent({
             </button>
             {menuOpen && (
               <div
+                ref={menuRef}
                 className="notes-bullet-menu notes-image-menu"
                 role="menu"
+                aria-label={`Image actions for ${originalName}`}
                 style={{
                   position: "absolute",
                   zIndex: 5,
@@ -315,27 +327,7 @@ export function ImageNodeContent({
                   right: 24,
                   "--available-height": "420px"
                 } as CSSProperties}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") {
-                    event.preventDefault();
-                    setMenuOpen(false);
-                    menuTriggerRef.current?.focus();
-                    return;
-                  }
-                  if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
-                    return;
-                  }
-                  event.preventDefault();
-                  const items = [...event.currentTarget.querySelectorAll<
-                    HTMLButtonElement
-                  >("[role=menuitem]")];
-                  const current = items.indexOf(
-                    document.activeElement as HTMLButtonElement
-                  );
-                  const delta = event.key === "ArrowDown" ? 1 : -1;
-                  items[(current + delta + items.length) % items.length]
-                    ?.focus();
-                }}
+                onKeyDown={onMenuKeyDown}
               >
                 <RowMenuItem
                   icon={<Maximize2 size={16} aria-hidden="true" />}
