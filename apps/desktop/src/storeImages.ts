@@ -89,12 +89,16 @@ export class StoreImages {
     return this.api.readImage({ sessionId, nodeId });
   }
 
-  async resize(nodeId: string, displayWidth: number): Promise<void> {
+  async resize(
+    nodeId: string,
+    displayWidth: number,
+    historyGroup: string | null = null
+  ): Promise<void> {
     await this.commands.execute({
       kind: "resizeImage",
       id: nodeId,
       display_width: displayWidth
-    });
+    }, historyGroup);
   }
 
   async replace(

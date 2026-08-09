@@ -24,6 +24,7 @@ import {
   imageKeyboardResizeWidth
 } from "./imageResize";
 import { RowMenuItem } from "./outlineSupport";
+import { freshId } from "./storeSupport";
 import { useMenuDismiss } from "./useMenuDismiss";
 import { ImageLightbox } from "./ImageLightbox";
 import {
@@ -69,6 +70,11 @@ export function ImageNodeContent({
     proposedWidth: number;
   } | null>(null);
   const keyboardResizeStart = useRef<number | null>(null);
+  // A drag commits once; a keyboard run commits per key-up, so the run needs a
+  // shared history group for the coalescer to fold those into one undo step.
+  // It outlives each commit on purpose -- the receipt that comes back resets
+  // `keyboardResizeStart` -- and ends when the handle loses focus.
+  const keyboardResizeGroup = useRef<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const onMenuKeyDown = useMenuDismiss(
     menuOpen,
@@ -153,11 +159,18 @@ export function ImageNodeContent({
     120,
     Math.floor(rootRef.current?.clientWidth || image?.pixelWidth || 320)
   );
-  const commitWidth = (width: number) => {
+  const commitWidth = (width: number, historyGroup: string | null = null) => {
     if (!store || !image || width === image.displayWidth) return;
-    void store.images.resize(node.id, width).catch(() => {
+    void store.images.resize(node.id, width, historyGroup).catch(() => {
       setPreviewWidth(image.displayWidth);
     });
+  };
+  const endKeyboardResize = () => {
+    const start = keyboardResizeStart.current;
+    keyboardResizeStart.current = null;
+    if (start !== null && start !== previewWidth) {
+      commitWidth(previewWidth, keyboardResizeGroup.current);
+    }
   };
   const runAction = (action: () => Promise<void>) => {
     setMenuOpen(false);
@@ -271,6 +284,7 @@ export function ImageNodeContent({
               event.preventDefault();
               event.stopPropagation();
               keyboardResizeStart.current ??= previewWidth;
+              keyboardResizeGroup.current ??= `image-resize:${freshId()}`;
               setPreviewWidth((width) => imageKeyboardResizeWidth(
                 width,
                 key,
@@ -282,18 +296,11 @@ export function ImageNodeContent({
               if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
                 return;
               }
-              const start = keyboardResizeStart.current;
-              keyboardResizeStart.current = null;
-              if (start !== null && start !== previewWidth) {
-                commitWidth(previewWidth);
-              }
+              endKeyboardResize();
             }}
             onBlur={() => {
-              const start = keyboardResizeStart.current;
-              keyboardResizeStart.current = null;
-              if (start !== null && start !== previewWidth) {
-                commitWidth(previewWidth);
-              }
+              endKeyboardResize();
+              keyboardResizeGroup.current = null;
             }}
           >
             <span aria-hidden="true" style={resizeHandleLineStyle} />

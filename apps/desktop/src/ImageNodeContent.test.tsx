@@ -108,8 +108,48 @@ describe("ImageNodeContent", () => {
     expect(resize).not.toHaveBeenCalled();
     fireEvent.pointerUp(handle, { pointerId: 7, clientX: 400 });
 
-    await waitFor(() => expect(resize).toHaveBeenCalledWith("image-1", 400));
+    // One commit, and ungrouped: a drag is already a single undo step.
+    await waitFor(() =>
+      expect(resize).toHaveBeenCalledWith("image-1", 400, null));
     expect(resize).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a run of keyboard nudges in one undo step", async () => {
+    const residency = new ImageResidency(
+      vi.fn().mockResolvedValue(Uint8Array.from([1])),
+      {
+        createObjectURL: vi.fn(() => "blob:cat"),
+        revokeObjectURL: vi.fn()
+      }
+    );
+    const resize = vi.fn().mockResolvedValue(undefined);
+    const store = {
+      images: { resize },
+      deleteSubtree: vi.fn()
+    } as unknown as NotesStore;
+    render(
+      <ImageNodeContent node={node()} residency={residency} store={store} />
+    );
+    const handle = await screen.findByRole("separator", {
+      name: "Resize cat.png"
+    });
+
+    for (let press = 0; press < 3; press += 1) {
+      fireEvent.keyDown(handle, { key: "ArrowRight" });
+      fireEvent.keyUp(handle, { key: "ArrowRight" });
+    }
+    await waitFor(() => expect(resize).toHaveBeenCalledTimes(3));
+    const runGroups = resize.mock.calls.map((call) => call[2]);
+    expect(runGroups.every((group) => typeof group === "string")).toBe(true);
+    expect(new Set(runGroups).size).toBe(1);
+
+    // Leaving the handle ends the run, so the next nudge undoes on its own.
+    fireEvent.blur(handle);
+    fireEvent.keyDown(handle, { key: "ArrowRight" });
+    fireEvent.keyUp(handle, { key: "ArrowRight" });
+
+    await waitFor(() => expect(resize).toHaveBeenCalledTimes(4));
+    expect(resize.mock.calls[3]![2]).not.toBe(runGroups[0]);
   });
 
   it("opens full-screen with the resident URL and deletes through the node command", async () => {

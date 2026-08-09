@@ -35,8 +35,13 @@ export class LazyStoreImages {
     return this.load().then((images) => images.read(nodeId));
   }
 
-  resize(nodeId: string, displayWidth: number): Promise<void> {
-    return this.load().then((images) => images.resize(nodeId, displayWidth));
+  resize(
+    nodeId: string,
+    displayWidth: number,
+    historyGroup: string | null = null
+  ): Promise<void> {
+    return this.load().then((images) =>
+      images.resize(nodeId, displayWidth, historyGroup));
   }
 
   replace(nodeId: string, candidate: ImageCandidate): Promise<void> {

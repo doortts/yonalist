@@ -339,6 +339,24 @@ describe("StoreImages", () => {
     expect(order).toEqual(["text", "image"]);
   });
 
+  it("carries a history group through resize", async () => {
+    const notesApi = api(vi.fn());
+    notesApi.execute = vi.fn().mockResolvedValue({
+      revision: 8,
+      changedNodes: [],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    });
+    const store = new NotesStore(notesApi);
+    await store.bootstrap();
+
+    await store.images.resize("image", 480, "resize:run-1");
+
+    expect(notesApi.execute).toHaveBeenCalledWith(expect.objectContaining({
+      historyGroup: "resize:run-1"
+    }));
+  });
+
   it("replaces bytes without changing the target node identity", async () => {
     const notesApi = api(vi.fn());
     notesApi.replaceImageBytes = vi.fn().mockImplementation(async (request) => ({
