@@ -7,7 +7,6 @@ import "./styles.css";
 import "./notes.css";
 import "./formControls.css";
 import { tauriNotesApi, type NotesApi } from "./api";
-import { SettingsView } from "./SettingsView";
 import { useTheme } from "./useTheme";
 import { NotesStore } from "./notesStore";
 import { WindowChrome } from "./WindowChrome";
@@ -24,6 +23,10 @@ import { NotesDetailPanes } from "./NotesDetailPanes";
 import type { OutlineTagToken } from "./OutlineTextField";
 const SearchPanel = lazy(() => import("./SearchPanel").then((module) =>
   ({ default: module.SearchPanel })));
+// Settings pulls in @base-ui/react, which costs ~12KB gzip of first paint the
+// outline never needs. It stays out of the entry chunk like the row menus do.
+const SettingsView = lazy(() => import("./SettingsView").then((module) =>
+  ({ default: module.SettingsView })));
 
 export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   const theme = useTheme();
@@ -390,17 +393,19 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
         }}
       />
       {settingsOpen ? (
-        <SettingsView
-          themeMode={theme.mode}
-          lightTheme={theme.lightTheme}
-          darkTheme={theme.darkTheme}
-          onThemeModeChange={theme.setMode}
-          onLightThemeChange={theme.setLightTheme}
-          onDarkThemeChange={theme.setDarkTheme}
-          onClose={() => setSettingsOpen(false)}
-          unusedAssets={(purge) => api.unusedAssets(purge)}
-          deleteAllData={() => api.deleteAllData()}
-        />
+        <Suspense fallback={<p className="notes-pane-state">Loading settings...</p>}>
+          <SettingsView
+            themeMode={theme.mode}
+            lightTheme={theme.lightTheme}
+            darkTheme={theme.darkTheme}
+            onThemeModeChange={theme.setMode}
+            onLightThemeChange={theme.setLightTheme}
+            onDarkThemeChange={theme.setDarkTheme}
+            onClose={() => setSettingsOpen(false)}
+            unusedAssets={(purge) => api.unusedAssets(purge)}
+            deleteAllData={() => api.deleteAllData()}
+          />
+        </Suspense>
       ) : (
         <NotesDetailPanes
           store={store}
