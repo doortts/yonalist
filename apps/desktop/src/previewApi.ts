@@ -17,7 +17,8 @@ import {
 import { validatePreviewBatch } from "./previewValidation";
 import {
   allocateSiblingSortKey,
-  applyRebalancedSortKeys
+  applyRebalancedSortKeys,
+  SORT_KEY_STEP
 } from "./outlineSortKeys";
 import {
   applyPreviewDelta,
@@ -130,7 +131,9 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
   switch (command.kind) {
     case "createPage": {
       const node: NoteView = {
-        id: command.id, parentId: null, sortKey: nodes.length * 1024 + 1024,
+        id: command.id,
+        parentId: null,
+        sortKey: (nodes.length + 1) * SORT_KEY_STEP,
         kind: "page", image: null, text: command.text, note: "", marker: "bullet",
         collapsed: false, completed: false, starred: false, deleted: false
       };
@@ -242,7 +245,7 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
         children.forEach((child, index) => {
           child.parentId = parentId;
           child.sortKey = nextKey === undefined
-            ? source.sortKey + (index + 1) * 1024
+            ? source.sortKey + (index + 1) * SORT_KEY_STEP
             : source.sortKey +
               Math.trunc((nextKey - source.sortKey) * (index + 1) / (children.length + 1));
         });

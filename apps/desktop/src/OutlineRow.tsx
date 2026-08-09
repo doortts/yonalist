@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronRight, MoreHorizontal } from "lucide-react";
 import {
-  lazy, Suspense, useEffect, useRef, useState, type CSSProperties,
+  lazy, memo, Suspense, useEffect, useRef, useState, type CSSProperties,
   type KeyboardEvent, type PointerEvent
 } from "react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
@@ -37,41 +37,57 @@ const OutlineRowMenu = lazy(() => import("./OutlineRowMenu").then((module) => ({
   default: module.OutlineRowMenu
 })));
 
-export function OutlineRow({
-  node: outlineNode, pageId, visibleNodes, index, visibleIndex,
-  store, selected, onZoom,
-  onZoomOut, selectionHeadId, hasSelection, onExtendSelection,
-  onClearSelection, onTagClick, todoProgress, selectionActions, dragSource,
-  onDragHandlePointerDown, onDragHandleKeyDown, consumeDragHandleClick,
-  imageDropTarget, onPickImage
-}: {
-  readonly node: NoteView;
-  readonly pageId: string;
+export interface OutlineRowRuntimeState {
   readonly visibleNodes: readonly NoteView[];
   readonly index: OutlineIndex;
   readonly visibleIndex: OutlineIndex;
-  readonly store: NotesStore;
-  readonly selected: boolean;
-  readonly onZoom: (split: boolean) => void;
-  readonly onZoomOut: () => void;
+  readonly pageId: string;
   readonly selectionHeadId: string | null;
   readonly hasSelection: boolean;
+  readonly onZoom: (nodeId: string, split: boolean) => void;
+  readonly onZoomOut: () => void;
   readonly onExtendSelection: (originId: string, headId: string) => void;
   readonly onClearSelection: () => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
-  readonly todoProgress: TodoProgress | null;
-  readonly imageDropTarget: boolean;
-  readonly onPickImage: () => void;
+  readonly onPickImage: (nodeId: string) => void;
   readonly selectionActions: SelectionKeyboardActions;
-  readonly dragSource: boolean;
   readonly onDragHandlePointerDown: (
+    nodeId: string,
     event: PointerEvent<HTMLButtonElement>
   ) => void;
   readonly onDragHandleKeyDown: (
+    nodeId: string,
     event: KeyboardEvent<HTMLButtonElement>
   ) => void;
-  readonly consumeDragHandleClick: () => boolean;
-}) {
+  readonly consumeDragHandleClick: (nodeId: string) => boolean;
+}
+
+/**
+ * The mutable box a memoized row reads at event time. Rows cannot take the
+ * pane's per-render closures as props without re-rendering on every keystroke,
+ * so the pane refreshes this before the rows render and the rows read it when
+ * an event actually fires.
+ */
+export class OutlineRowRuntime {
+  state!: OutlineRowRuntimeState;
+}
+
+interface OutlineRowProps {
+  readonly node: NoteView;
+  readonly store: NotesStore;
+  readonly selected: boolean;
+  readonly depth: number;
+  readonly hasChildren: boolean;
+  readonly todoProgress: TodoProgress | null;
+  readonly imageDropTarget: boolean;
+  readonly dragSource: boolean;
+  readonly runtime: OutlineRowRuntime;
+}
+
+export const OutlineRow = memo(function OutlineRow({
+  node: outlineNode, store, selected, depth, hasChildren, todoProgress,
+  imageDropTarget, dragSource, runtime
+}: OutlineRowProps) {
   const {
     node: confirmedNode,
     titleDraft: draft,
@@ -89,8 +105,6 @@ export function OutlineRow({
   const [noteOpen, setNoteOpen] = useState(
     () => (noteDraft ?? node.note).trim().length > 0
   );
-  const depth = index.depthOf(node.id, pageId);
-  const hasChildren = index.hasChildren(node.id);
   const visibleNote = noteDraft ?? node.note;
   const openNoteAndFocus = () => {
     setNoteOpen(true);
@@ -148,12 +162,18 @@ export function OutlineRow({
                 <OutlineRowMenu
                   node={node}
                   store={store}
-                  index={index}
-                  pageId={pageId}
                   hasNote={visibleNote.trim().length > 0}
                   onClose={() => setMenuOpen(false)}
                   onAddNote={openNoteAndFocus}
-                  onPickImage={onPickImage}
+                  onDuplicate={() => {
+                    const current = runtime.state;
+                    void store.duplicate(
+                      node.id,
+                      node.parentId ?? current.pageId,
+                      current.index.nextSiblingId(node.id)
+                    );
+                  }}
+                  onPickImage={() => runtime.state.onPickImage(node.id)}
                 />
               </Suspense>
             )}
@@ -182,14 +202,16 @@ export function OutlineRow({
             aria-label="Zoom to item"
             data-sortable-activator="true"
             data-collapsed={hasChildren && node.collapsed ? "true" : undefined}
-            onPointerDown={onDragHandlePointerDown}
-            onKeyDown={onDragHandleKeyDown}
+            onPointerDown={(event) =>
+              runtime.state.onDragHandlePointerDown(node.id, event)}
+            onKeyDown={(event) =>
+              runtime.state.onDragHandleKeyDown(node.id, event)}
             onClick={(event) => {
-              if (consumeDragHandleClick()) {
+              if (runtime.state.consumeDragHandleClick(node.id)) {
                 event.preventDefault();
                 return;
               }
-              onZoom(event.shiftKey);
+              runtime.state.onZoom(node.id, event.shiftKey);
             }}
           >
             <span className="notes-node-bullet-dot" />
@@ -213,24 +235,27 @@ export function OutlineRow({
                 node={node}
                 store={store}
                 onPaste={(event) => handleMultilinePaste(event, store, node)}
-                onKeyDown={(event) => handleImagePrimaryKeyDown(
-                  event,
-                  store,
-                  node,
-                  store.getSnapshot().nodes,
-                  visibleNodes,
-                  index,
-                  visibleIndex,
-                  pageId,
-                  () => onZoom(false),
-                  onZoomOut,
-                  selectionHeadId,
-                  hasSelection,
-                  onExtendSelection,
-                  onClearSelection,
-                  openNoteAndFocus,
-                  selectionActions
-                )}
+                onKeyDown={(event) => {
+                  const current = runtime.state;
+                  handleImagePrimaryKeyDown(
+                    event,
+                    store,
+                    node,
+                    store.getSnapshot().nodes,
+                    current.visibleNodes,
+                    current.index,
+                    current.visibleIndex,
+                    current.pageId,
+                    () => current.onZoom(node.id, false),
+                    current.onZoomOut,
+                    current.selectionHeadId,
+                    current.hasSelection,
+                    current.onExtendSelection,
+                    current.onClearSelection,
+                    openNoteAndFocus,
+                    current.selectionActions
+                  );
+                }}
               />
             </Suspense>
           ) : <OutlineTextField
@@ -244,7 +269,7 @@ export function OutlineRow({
             rows={1}
             value={draft ?? node.text}
             aria-expanded={slashMenu ? true : undefined}
-            onTagClick={onTagClick}
+            onTagClick={(token) => runtime.state.onTagClick(token)}
             onChange={(event) => {
               const value = event.currentTarget.value;
               const rawCaret = event.currentTarget.selectionStart;
@@ -288,11 +313,12 @@ export function OutlineRow({
                   return;
                 }
               }
+              const current = runtime.state;
               const latestNodes = store.getSnapshot().nodes;
               const latestById = new Map(
                 latestNodes.map((candidate) => [candidate.id, candidate])
               );
-              const latestVisibleNodes = visibleNodes.map(
+              const latestVisibleNodes = current.visibleNodes.map(
                 (candidate) => latestById.get(candidate.id) ?? candidate
               );
               handleOutlineKeyDown(
@@ -301,18 +327,18 @@ export function OutlineRow({
                 latestById.get(node.id) ?? node,
                 latestNodes,
                 latestVisibleNodes,
-                index,
-                visibleIndex,
-                pageId,
-                () => onZoom(false),
-                onZoomOut,
-                selectionHeadId,
-                hasSelection,
-                onExtendSelection,
-                onClearSelection,
+                current.index,
+                current.visibleIndex,
+                current.pageId,
+                () => current.onZoom(node.id, false),
+                current.onZoomOut,
+                current.selectionHeadId,
+                current.hasSelection,
+                current.onExtendSelection,
+                current.onClearSelection,
                 openNoteAndFocus,
                 visibleNote,
-                selectionActions
+                current.selectionActions
               );
             }}
             onKeyUp={(event) => {
@@ -334,7 +360,7 @@ export function OutlineRow({
             rows={1}
             value={visibleNote}
             placeholder="Add a supporting note"
-            onTagClick={onTagClick}
+            onTagClick={(token) => runtime.state.onTagClick(token)}
             onChange={(event) => store.setNoteDraft(node.id, event.target.value)}
             onKeyDown={(event) => {
               const resolution = resolveSupportingNoteKey({
@@ -353,14 +379,17 @@ export function OutlineRow({
               event.preventDefault();
               const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
               if (!scope) return;
+              const current = runtime.state;
               const focusId = supportingNoteFocusTarget(
                 resolution,
                 node.id,
-                visibleNodes.map((candidate) => candidate.id)
+                current.visibleNodes.map((candidate) => candidate.id)
               );
               if (resolution === "nextTitleOrCreate" && focusId === node.id) {
                 void store.flushNoteDraft(node.id)
-                  .then(() => store.createNode(node.parentId ?? pageId))
+                  .then(() => store.createNode(
+                    node.parentId ?? current.pageId
+                  ))
                   .then((id) => requestAnimationFrame(
                     () => focusOutlineEditor(scope, id, "start")
                   ));
@@ -393,4 +422,4 @@ export function OutlineRow({
       )}
     </li>
   );
-}
+});

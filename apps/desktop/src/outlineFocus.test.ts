@@ -92,6 +92,40 @@ describe("pane-scoped outline focus", () => {
     expect(revealed!.selectionStart).toBe(8);
   });
 
+  it("lets a newer focus request cancel a pending reveal retry", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(
+      (callback) => {
+        frames.push(callback);
+        return frames.length;
+      }
+    );
+    const scope = document.createElement("section");
+    document.body.append(scope);
+    let older: HTMLTextAreaElement | null = null;
+    registerOutlinePane(scope, {
+      visibleNodes: [],
+      reveal: (nodeId) => {
+        if (nodeId !== "older") return false;
+        // The row mounts right away but the caret only lands a frame later,
+        // which is the window a newer request can arrive in.
+        older = editor(scope, nodeId, "older");
+        return true;
+      }
+    });
+    const newer = editor(scope, "newer", "newer");
+
+    expect(focusOutlineEditor(scope, "older", "end")).toBe(true);
+    expect(older).not.toHaveFocus();
+    expect(focusOutlineEditor(scope, "newer", "end")).toBe(true);
+    expect(newer).toHaveFocus();
+
+    frames.forEach((callback) => callback(0));
+
+    expect(newer).toHaveFocus();
+    expect(older).not.toHaveFocus();
+  });
+
   it("refuses to reveal a node the pane does not hold", () => {
     const scope = document.createElement("section");
     document.body.append(scope);
@@ -111,5 +145,61 @@ describe("pane-scoped outline focus", () => {
 
     expect(focusOutlineEditor(scope, "image", "end")).toBe(true);
     expect(image).toHaveFocus();
+  });
+
+  it("prevents browser ancestor scrolling and reveals only the local outline", () => {
+    const outer = document.createElement("div");
+    const scope = document.createElement("section");
+    const rows = document.createElement("div");
+    rows.className = "notes-outline-rows";
+    outer.append(scope);
+    scope.append(rows);
+    document.body.append(outer);
+    const target = editor(rows, "target", "");
+    outer.scrollTop = 75;
+    rows.scrollTop = 40;
+    vi.spyOn(rows, "getBoundingClientRect").mockReturnValue({
+      top: 10,
+      bottom: 110
+    } as DOMRect);
+    vi.spyOn(target, "getBoundingClientRect").mockReturnValue({
+      top: 110,
+      bottom: 138
+    } as DOMRect);
+    const focus = vi.spyOn(target, "focus");
+
+    expect(focusOutlineEditor(scope, "target", "start")).toBe(true);
+
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(rows.scrollTop).toBe(68);
+    expect(outer.scrollTop).toBe(75);
+  });
+
+  it("re-reveals the caret after a deletion shifts the layout", () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(
+      (callback) => {
+        frames.push(callback);
+        return frames.length;
+      }
+    );
+    const scope = document.createElement("section");
+    const rows = document.createElement("div");
+    rows.className = "notes-outline-rows";
+    scope.append(rows);
+    document.body.append(scope);
+    const target = editor(rows, "target", "");
+    rows.scrollTop = 120;
+    const rowsRect = vi.spyOn(rows, "getBoundingClientRect");
+    const targetRect = vi.spyOn(target, "getBoundingClientRect");
+    rowsRect.mockReturnValue({ top: 10, bottom: 110 } as DOMRect);
+    targetRect.mockReturnValue({ top: 40, bottom: 68 } as DOMRect);
+
+    expect(focusOutlineEditor(scope, "target", "start")).toBe(true);
+    expect(rows.scrollTop).toBe(120);
+
+    targetRect.mockReturnValue({ top: -18, bottom: 10 } as DOMRect);
+    frames.forEach((callback) => callback(0));
+    expect(rows.scrollTop).toBe(92);
   });
 });

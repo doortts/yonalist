@@ -8,6 +8,7 @@ export function normalizeSelectedRoots(
   nodes: readonly NoteView[],
   selectedIds: readonly string[]
 ): readonly string[] {
+  if (selectedIds.length === 0) return [];
   const selected = new Set(selectedIds);
   const byId = new Map(nodes.map((node) => [node.id, node]));
   return nodes

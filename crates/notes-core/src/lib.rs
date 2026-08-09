@@ -17,5 +17,5 @@ pub use command::{
 pub use error::DomainError;
 pub use id::NodeId;
 pub use image::{MAX_IMAGE_BYTES, MAX_IMAGE_PIXELS, MIN_IMAGE_DISPLAY_WIDTH, NoteImage};
-pub use node::{NoteMarkerKind, NoteNode, NoteNodeKind};
+pub use node::{NoteMarkerKind, NoteNode, NoteNodeKind, SORT_KEY_STEP};
 pub use tree::NotesTree;

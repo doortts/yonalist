@@ -11,7 +11,7 @@ import { useOutlineSelection } from "./useOutlineSelection";
 import { useOutlinePointerSelection } from "./useOutlinePointerSelection";
 import { useOutlineDrag } from "./useOutlineDrag";
 import { OutlineHeader } from "./OutlineHeader";
-import { OutlineRow } from "./OutlineRow";
+import { OutlineRow, OutlineRowRuntime } from "./OutlineRow";
 import { NotesChildComposer } from "./NotesChildComposer";
 import { buildTodoProgressMap } from "./outlineTodo";
 import type { OutlineTagToken } from "./OutlineTextField";
@@ -63,6 +63,7 @@ export function NotesOutline({
     store.getOutlineSnapshot
   );
   const scopeRef = useRef<HTMLElement>(null);
+  const [rowRuntime] = useState(() => new OutlineRowRuntime());
   const [showCompleted, setShowCompleted] = useState(true);
   const [selectionFeedback, setSelectionFeedback] = useState("");
   const selectionOperation = useRef(false);
@@ -183,7 +184,11 @@ export function NotesOutline({
   const movePlans = planner && structuralContextComplete
     ? planner.buildSelectionMovePlans(
       state.nodes,
-      bodyNodes.map((node) => node.id),
+      // With nothing selected the planner short-circuits, so the id list it
+      // would read is not worth building on every keystroke.
+      selection.selectedRootIds.length === 0
+        ? []
+        : bodyNodes.map((node) => node.id),
       selection.selectedRootIds,
       outlineRootId
     )
@@ -263,6 +268,40 @@ export function NotesOutline({
   if (!page) {
     return <section className="notes-outline"><p className="notes-pane-state">No outline yet.</p></section>;
   }
+  rowRuntime.state = {
+    visibleNodes: bodyNodes,
+    index,
+    visibleIndex,
+    pageId: zoomRoot?.id ?? page.id,
+    selectionHeadId: selection.headId,
+    hasSelection: selection.selectedIds.length > 0,
+    onZoom: (nodeId, split) => {
+      if (split && onOpenSplit) onOpenSplit(nodeId);
+      else onZoomRootChange(nodeId);
+    },
+    onZoomOut: () => onZoomRootChange(null),
+    onExtendSelection: selection.extend,
+    onClearSelection: clearSelection,
+    onTagClick,
+    onPickImage: (nodeId) => void imageIngest.openPicker(nodeId),
+    selectionActions: {
+      indent: () => executeMovePlan(movePlans.indent),
+      outdent: () => executeMovePlan(movePlans.outdent),
+      move: (direction) => executeMovePlan(movePlans[direction]),
+      toggleComplete: () => runSelectionAction(() =>
+        store.setCompletedMany(
+          selection.selectedIds, !allSelectedCompleted
+        )),
+      duplicate: () => runSelectionAction(duplicateSelection),
+      delete: () => runSelectionAction(deleteSelection)
+    },
+    onDragHandlePointerDown: (nodeId, event) =>
+      outlineDrag.rowProps(nodeId).onDragHandlePointerDown(event),
+    onDragHandleKeyDown: (nodeId, event) =>
+      outlineDrag.rowProps(nodeId).onDragHandleKeyDown(event),
+    consumeDragHandleClick: (nodeId) =>
+      outlineDrag.rowProps(nodeId).consumeDragHandleClick()
+  };
   const header = zoomRoot ?? { id: page.id, text: page.title };
   const selectedExportNode = selection.selectedIds.length === 1
     ? selection.selectedNodes[0]
@@ -392,39 +431,14 @@ export function NotesOutline({
               <OutlineRow
                 key={node.id}
                 node={node}
-                pageId={zoomRoot?.id ?? page.id}
-                visibleNodes={bodyNodes}
-                index={index}
-                visibleIndex={visibleIndex}
                 store={store}
                 selected={selectedIds.has(node.id)}
-                onZoom={(split) => {
-                  if (split && onOpenSplit) onOpenSplit(node.id);
-                  else onZoomRootChange(node.id);
-                }}
-                onZoomOut={() => onZoomRootChange(null)}
-                selectionHeadId={selection.headId}
-                hasSelection={selection.selectedIds.length > 0}
-                onExtendSelection={selection.extend}
-                onClearSelection={clearSelection}
-                onTagClick={onTagClick}
+                depth={index.depthOf(node.id, zoomRoot?.id ?? page.id)}
+                hasChildren={index.hasChildren(node.id)}
                 todoProgress={todoProgress.get(node.id) ?? null}
                 imageDropTarget={imageIngest.dropTargetId === node.id}
-                onPickImage={() => void imageIngest.openPicker(node.id)}
-                selectionActions={{
-                  indent: () => executeMovePlan(movePlans.indent),
-                  outdent: () => executeMovePlan(movePlans.outdent),
-                  move: (direction) => executeMovePlan(
-                    movePlans[direction]
-                  ),
-                  toggleComplete: () => runSelectionAction(() =>
-                    store.setCompletedMany(
-                      selection.selectedIds, !allSelectedCompleted
-                    )),
-                  duplicate: () => runSelectionAction(duplicateSelection),
-                  delete: () => runSelectionAction(deleteSelection)
-                }}
-                {...outlineDrag.rowProps(node.id)}
+                dragSource={outlineDrag.rowProps(node.id).dragSource}
+                runtime={rowRuntime}
               />
               );
             })}
@@ -443,12 +457,59 @@ export function NotesOutline({
             hasChildren={allBodyNodes.length > 0}
           />
           {state.afterCursor && (
-            <button className="text-button" type="button" onClick={() => void store.loadMore()}>
-              Load more
-            </button>
+            <OutlineAutoLoad
+              cursor={state.afterCursor}
+              onReached={() => void store.loadMore()}
+            />
           )}
         </div>
       </div>
     </section>
   );
+}
+
+function OutlineAutoLoad({
+  cursor,
+  onReached
+}: {
+  readonly cursor: string;
+  readonly onReached: () => void;
+}) {
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const requestedCursorRef = useRef<string | null>(null);
+  const onReachedRef = useRef(onReached);
+  onReachedRef.current = onReached;
+  useEffect(() => {
+    const anchor = anchorRef.current;
+    if (!anchor) return;
+    if (typeof IntersectionObserver !== "function") {
+      // No observer (older runtimes, jsdom): load the rest without waiting for
+      // a scroll so the outline never gets stuck at the pagination boundary.
+      if (requestedCursorRef.current !== cursor) {
+        requestedCursorRef.current = cursor;
+        onReachedRef.current();
+      }
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      // One request per cursor: the observer keeps firing while the anchor
+      // stays in view, and the next page brings a new cursor.
+      if (requestedCursorRef.current === cursor) return;
+      requestedCursorRef.current = cursor;
+      onReachedRef.current();
+    }, {
+      // The rows scroll in their own container, and rootMargin only offsets
+      // the observer's own root: measured against the document it would buy no
+      // lead time at all, because the pane clips the anchor first.
+      root: anchor.closest(".notes-outline-rows"),
+      rootMargin: "600px 0px"
+    });
+    observer.observe(anchor);
+    return () => observer.disconnect();
+  }, [cursor]);
+  // The anchor sits below the windowed list, past the gap standing in for the
+  // rows outside the window, so it is only reachable at the real end of the
+  // outline and the window never unmounts it.
+  return <div ref={anchorRef} className="notes-outline-autoload" aria-hidden="true" />;
 }

@@ -1,11 +1,12 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
+import { SORT_KEY_STEP } from "./outlineSortKeys";
 
 export function createInitialPreviewNodes(): NoteView[] {
   return [
     {
       id: "preview-page",
       parentId: null,
-      sortKey: 1024,
+      sortKey: SORT_KEY_STEP,
       kind: "page", image: null,
       text: "Welcome to Yonalist",
       note: "",
@@ -18,7 +19,7 @@ export function createInitialPreviewNodes(): NoteView[] {
     {
       id: "preview-first",
       parentId: "preview-page",
-      sortKey: 1024,
+      sortKey: SORT_KEY_STEP,
       kind: "bullet", image: null,
       text: "Start writing. Changes appear instantly.",
       note: "",

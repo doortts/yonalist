@@ -5,7 +5,6 @@ import {
 import type { CSSProperties } from "react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
-import type { OutlineIndex } from "./outlineIndex";
 import { RowMenuItem } from "./outlineSupport";
 
 /**
@@ -14,15 +13,14 @@ import { RowMenuItem } from "./outlineSupport";
  * bundle — the same arrangement the slash-command menu already uses.
  */
 export function OutlineRowMenu({
-  node, store, index, pageId, hasNote, onClose, onAddNote, onPickImage
+  node, store, hasNote, onClose, onAddNote, onDuplicate, onPickImage
 }: {
   readonly node: NoteView;
   readonly store: NotesStore;
-  readonly index: OutlineIndex;
-  readonly pageId: string;
   readonly hasNote: boolean;
   readonly onClose: () => void;
   readonly onAddNote: () => void;
+  readonly onDuplicate: () => void;
   readonly onPickImage: () => void;
 }) {
   const run = (action: () => void) => () => {
@@ -58,11 +56,7 @@ export function OutlineRowMenu({
       <RowMenuItem
         icon={<Copy size={14} aria-hidden="true" />}
         label="Duplicate"
-        onClick={run(() => void store.duplicate(
-          node.id,
-          node.parentId ?? pageId,
-          index.nextSiblingId(node.id)
-        ))}
+        onClick={run(onDuplicate)}
       />
       <RowMenuItem
         icon={<ImagePlus size={14} aria-hidden="true" />}

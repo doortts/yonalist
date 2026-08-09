@@ -1,8 +1,8 @@
 import {
-  fireEvent, render, screen, waitFor, within
+  act, fireEvent, render, screen, waitFor, within
 } from "@testing-library/react";
 import { App } from "./App";
-import { appApi } from "./test/appApiFixture";
+import { appApi, receipt } from "./test/appApiFixture";
 
 describe("split pane integration", () => {
   it("opens, resizes, focuses, and closes a second outline pane", async () => {
@@ -82,5 +82,68 @@ describe("split pane integration", () => {
       "Page title"
     );
     expect(notesApi.queryViewport).not.toHaveBeenCalled();
+  });
+
+  it("keeps repeated Enter focus in the right pane while Add child commits", async () => {
+    const notesApi = appApi();
+    let resolveCreate!: (value: ReturnType<typeof receipt>) => void;
+    notesApi.execute = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveCreate = resolve;
+      }))
+      .mockImplementation(() => new Promise(() => undefined));
+    render(<App api={notesApi} />);
+    await screen.findByDisplayValue("First thought");
+
+    fireEvent.click(screen.getAllByRole("button", {
+      name: "Zoom to item"
+    })[0], { shiftKey: true });
+    const panes = screen.getAllByRole("region", { name: "Notes outline" });
+    const secondary = panes[1]!;
+    fireEvent.click(within(secondary).getByRole("button", {
+      name: "Add child"
+    }));
+
+    const focusedBlank = () => {
+      const active = document.activeElement as HTMLElement | null;
+      expect(secondary).toContainElement(active);
+      expect(active).toBeInstanceOf(HTMLTextAreaElement);
+      expect((active as HTMLTextAreaElement).value).toBe("");
+      return active as HTMLTextAreaElement;
+    };
+    let latestBlank = await waitFor(focusedBlank);
+    for (let index = 0; index < 4; index += 1) {
+      const previousBlank = latestBlank;
+      fireEvent.keyDown(latestBlank, {
+        key: "Enter",
+        repeat: index > 0
+      });
+      latestBlank = await waitFor(() => {
+        const active = focusedBlank();
+        const blanks = [...secondary.querySelectorAll<HTMLTextAreaElement>(
+          "textarea.notes-node-title"
+        )].filter((editor) => editor.value === "");
+        expect(blanks).toHaveLength(index + 2);
+        expect(active).not.toBe(previousBlank);
+        return active;
+      });
+    }
+
+    await waitFor(() => {
+      const blanks = [...secondary.querySelectorAll<HTMLTextAreaElement>(
+        "textarea.notes-node-title"
+      )].filter((editor) => editor.value === "");
+      expect(blanks).toHaveLength(5);
+      expect(blanks[4]).toBe(latestBlank);
+    });
+    await act(async () => {
+      resolveCreate(receipt("First thought"));
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(latestBlank).toHaveFocus());
+    expect(panes[0]).not.toContainElement(
+      document.activeElement as HTMLElement | null
+    );
   });
 });

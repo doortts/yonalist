@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import {
+  buildSelectionMovePlans,
   planSelectionDuplicate,
   planSelectionIndent,
   planSelectionOutdent,
@@ -34,6 +35,27 @@ describe("selection move plans", () => {
     node("c", "page", 3),
     node("d", "page", 4)
   ];
+
+  it("short-circuits planning when no rows are selected", () => {
+    const unreadableNodes = new Proxy([] as NoteView[], {
+      get: () => {
+        throw new Error("outline traversal is not allowed");
+      }
+    });
+
+    expect(buildSelectionMovePlans(
+      unreadableNodes,
+      [],
+      [],
+      "page"
+    )).toEqual({
+      indent: { available: false, reason: "Nothing is selected." },
+      outdent: { available: false, reason: "Nothing is selected." },
+      up: { available: false, reason: "Nothing is selected." },
+      down: { available: false, reason: "Nothing is selected." },
+      duplicate: { available: false, reason: "Nothing is selected." }
+    });
+  });
 
   it("indents every selected root below the preceding outside sibling", () => {
     expect(planSelectionIndent(
