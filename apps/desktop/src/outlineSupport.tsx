@@ -449,6 +449,26 @@ function executeRowIntent(
       void pending.committed.catch(() => undefined);
       return;
     }
+    case "mergeIntoParent": {
+      const state = store.getSnapshot();
+      const parent = state.nodes.find(
+        (candidate) => candidate.id === intent.parentId
+      );
+      if (!parent) return;
+      const parentText = state.drafts[parent.id] ?? parent.text;
+      const pending = store.beginMergeNodeIntoParent({
+        id: node.id,
+        parentId: parent.id,
+        parentText,
+        currentText: state.drafts[node.id] ?? node.text,
+        historyGroup: backspaceGroup
+      });
+      requestAnimationFrame(() => {
+        focusOutlineEditorAt(scope, parent.id, parentText.length);
+      });
+      void pending.committed.catch(() => undefined);
+      return;
+    }
     case "toggleComplete":
       void store.setCompleted(node.id, !node.completed);
       return;

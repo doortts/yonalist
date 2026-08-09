@@ -800,18 +800,45 @@ describe("NotesStore viewport recovery", () => {
 });
 
 describe("NotesStore empty-row removal", () => {
-  function backend(options: { readonly rejectRemoval?: boolean } = {}) {
+  function backend(options: {
+    readonly rejectRemoval?: boolean;
+    readonly seed?: readonly NoteView[];
+  } = {}) {
+    const seed = options.seed ?? [bullet("one", 1_024), bullet("two", 2_048)];
     const nodes = new Map<string, NoteView>(
-      [bullet("one", 1_024), bullet("two", 2_048)].map((node) => [
-        node.id,
-        node
-      ])
+      seed.map((node) => [node.id, node])
     );
     const envelopes: CommandEnvelope[] = [];
+    // notes-application undoes one history group at a time
+    const undoStack: Map<string, NoteView>[] = [];
     let revision = boot.revision;
     let undoDepth = 0;
     let lastGroup: string | null = null;
     const notesApi = api(vi.fn());
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...boot,
+      viewport: { ...boot.viewport!, nodes: seed.map((node) => ({ ...node })) }
+    });
+    notesApi.undo = vi.fn(async () => {
+      const restored = undoStack.pop() ?? new Map(nodes);
+      const deletedIds = [...nodes.keys()].filter((id) => !restored.has(id));
+      nodes.clear();
+      restored.forEach((node, id) => nodes.set(id, node));
+      revision += 1;
+      undoDepth = Math.max(0, undoDepth - 1);
+      lastGroup = null;
+      return {
+        revision,
+        changedNodes: [...nodes.values()],
+        deletedIds,
+        history: {
+          canUndo: undoDepth > 0,
+          canRedo: true,
+          undoDepth,
+          redoDepth: 1
+        }
+      };
+    });
     notesApi.execute = vi.fn(async (envelope) => {
       envelopes.push(envelope);
       const command = envelope.command;
@@ -819,6 +846,9 @@ describe("NotesStore empty-row removal", () => {
       const deletedIds: string[] = [];
       const target = "id" in command ? nodes.get(command.id) : undefined;
       if (!target) throw new Error(`node not found: ${JSON.stringify(command)}`);
+      if (envelope.historyGroup === null || envelope.historyGroup !== lastGroup) {
+        undoStack.push(new Map(nodes));
+      }
       if (command.kind === "updateText") {
         const node = { ...target, text: command.text };
         nodes.set(node.id, node);
@@ -836,6 +866,17 @@ describe("NotesStore empty-row removal", () => {
         ) {
           throw new Error(`node is not empty: ${command.id}`);
         }
+        [...nodes.values()]
+          .filter((node) => node.parentId === command.id)
+          .forEach((child, index) => {
+            const promoted = {
+              ...child,
+              parentId: target.parentId,
+              sortKey: target.sortKey + index + 1
+            };
+            nodes.set(child.id, promoted);
+            changedNodes.push(promoted);
+          });
         nodes.delete(command.id);
         deletedIds.push(command.id);
       } else {
@@ -909,6 +950,67 @@ describe("NotesStore empty-row removal", () => {
 
     expect(backspace.commands().slice(1)).toEqual([
       { kind: "removeEmptyNode", id: "two" }
+    ]);
+  });
+
+  it("merges a first child into its parent as one undoable step", async () => {
+    const backspace = backend({
+      seed: [
+        { ...bullet("parent", 1_024), text: "뭔가" },
+        { ...bullet("current", 1_024), parentId: "parent", text: "하지만" },
+        { ...bullet("child-a", 1_024), parentId: "current", text: "첫째" },
+        { ...bullet("child-b", 2_048), parentId: "current", text: "둘째" },
+        { ...bullet("sibling", 2_048), parentId: "parent", text: "이런것이" }
+      ]
+    });
+    const store = new NotesStore(backspace.notesApi);
+    await store.bootstrap();
+    const outline = () => store.getSnapshot().nodes
+      .map((node) => [node.id, node.text, node.parentId]);
+
+    const merge = store.beginMergeNodeIntoParent({
+      id: "current",
+      parentId: "parent",
+      parentText: "뭔가",
+      currentText: "하지만",
+      historyGroup: "backspace:1"
+    });
+    // the row is gone before the first command settles
+    expect(outline()).toEqual([
+      ["parent", "뭔가하지만", "page-1"],
+      ["child-a", "첫째", "parent"],
+      ["child-b", "둘째", "parent"],
+      ["sibling", "이런것이", "parent"]
+    ]);
+    await merge.committed;
+
+    expect(backspace.commands()).toEqual([
+      { kind: "updateText", id: "parent", text: "뭔가하지만" },
+      { kind: "updateText", id: "current", text: "" },
+      { kind: "removeEmptyNode", id: "current" }
+    ]);
+    expect(backspace.groups()).toEqual([
+      "backspace:1",
+      "backspace:1",
+      "backspace:1"
+    ]);
+    expect(store.getSnapshot().undoDepth).toBe(1);
+    expect(store.getSnapshot().drafts.parent).toBeUndefined();
+    expect(outline()).toEqual([
+      ["parent", "뭔가하지만", "page-1"],
+      ["child-a", "첫째", "parent"],
+      ["child-b", "둘째", "parent"],
+      ["sibling", "이런것이", "parent"]
+    ]);
+
+    await store.undo();
+
+    expect(outline()).toEqual([
+      ["parent", "뭔가", "page-1"],
+      ["current", "하지만", "parent"],
+      ["child-a", "첫째", "current"],
+      ["child-b", "둘째", "current"],
+      ["sibling", "이런것이", "parent"]
     ]);
   });
 });

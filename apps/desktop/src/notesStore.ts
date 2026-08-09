@@ -17,6 +17,7 @@ import { StoreDrafts } from "./storeDrafts";
 import { LazyStoreImages } from "./lazyStoreImages";
 import {
   StoreOutlineMutations,
+  type MergeIntoParentInput,
   type PendingCreatedNode,
   type PendingOutlineMutation
 } from "./storeOutlineMutations";
@@ -266,6 +267,12 @@ export class NotesStore {
     readonly historyGroup?: string | null;
   }): PendingOutlineMutation {
     return this.outlineMutations.beginMergeNodeBackward(input);
+  }
+
+  beginMergeNodeIntoParent(
+    input: MergeIntoParentInput
+  ): PendingOutlineMutation {
+    return this.outlineMutations.beginMergeNodeIntoParent(input);
   }
 
   async indent(id: string, newParentId: string): Promise<void> {

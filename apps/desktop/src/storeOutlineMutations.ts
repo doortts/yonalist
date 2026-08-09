@@ -53,6 +53,14 @@ interface MergeNodeInput {
   readonly historyGroup?: string | null;
 }
 
+export interface MergeIntoParentInput {
+  readonly id: string;
+  readonly parentId: string;
+  readonly parentText: string;
+  readonly currentText: string;
+  readonly historyGroup: string | null;
+}
+
 export class StoreOutlineMutations {
   constructor(private readonly host: StoreOutlineMutationHost) {}
 
@@ -215,6 +223,68 @@ export class StoreOutlineMutations {
       });
       throw cause;
     });
+    return { committed };
+  }
+
+  // Backspace at the head of a first child folds it into the parent above it.
+  // There is no single backend command for that, so three run under one
+  // history group: the parent takes the merged text, the row is blanked, and
+  // removeEmptyNode drops it while lifting its children into its place.
+  beginMergeNodeIntoParent(
+    input: MergeIntoParentInput
+  ): PendingOutlineMutation {
+    const state = this.host.read();
+    const node = state.nodes.find((candidate) => candidate.id === input.id);
+    const mergedText = input.parentText + input.currentText;
+    const blankedNote = blankedDraft(state.noteDrafts[input.id], node?.note);
+    this.host.cancelTitle(input.parentId);
+    this.host.cancelDrafts([input.id]);
+    const removal = projectRemoveEmptyNode(state, input.id);
+    this.host.write({
+      nodes: removal.nodes.map((candidate) => candidate.id === input.parentId
+        ? { ...candidate, text: mergedText }
+        : candidate),
+      drafts: { ...removal.drafts, [input.parentId]: mergedText },
+      noteDrafts: removal.noteDrafts
+    });
+    const committed = (async () => {
+      try {
+        await this.host.execute(
+          { kind: "updateText", id: input.parentId, text: mergedText },
+          input.historyGroup
+        );
+        await this.host.execute(
+          { kind: "updateText", id: input.id, text: "" },
+          input.historyGroup
+        );
+        if (blankedNote !== null) {
+          await this.host.execute(
+            { kind: "updateNote", id: input.id, note: blankedNote },
+            input.historyGroup
+          );
+        }
+        await this.host.execute(
+          { kind: "removeEmptyNode", id: input.id },
+          input.historyGroup
+        );
+      } catch (cause) {
+        // ponytail: the whole optimistic tree goes back, which would clobber
+        // an edit landed since. The command queue serializes writes, so that
+        // window is one failed round trip; per-node restore if it ever bites.
+        this.host.write({
+          nodes: state.nodes,
+          drafts: state.drafts,
+          noteDrafts: state.noteDrafts
+        });
+        throw cause;
+      }
+      const current = this.host.read();
+      if (current.drafts[input.parentId] === mergedText) {
+        const drafts = { ...current.drafts };
+        delete drafts[input.parentId];
+        this.host.write({ drafts });
+      }
+    })();
     return { committed };
   }
 

@@ -355,11 +355,62 @@ describe("v2 outline keyboard intent resolver", () => {
       visibleNodes: parentWithChild,
       structureNodes: parentWithChild
     }))).toBeNull();
+  });
 
+  it("merges a first child into the parent row above it", () => {
     expect(resolveOutlineKey(input({
       key: "Backspace",
       nodeId: "child",
       value: "Child",
+      selectionStart: 0,
+      selectionEnd: 0
+    }))).toEqual({ kind: "mergeIntoParent", parentId: "parent" });
+
+    // the merge drops the row, so its note would go with it
+    expect(resolveOutlineKey(input({
+      key: "Backspace",
+      nodeId: "child",
+      value: "Child",
+      selectionStart: 0,
+      selectionEnd: 0,
+      supportingNote: "supporting note"
+    }))).toBeNull();
+
+    const notedChild = [
+      visibleNodes[0],
+      { ...visibleNodes[1], note: "supporting note" },
+      visibleNodes[2]
+    ];
+    expect(resolveOutlineKey(input({
+      key: "Backspace",
+      nodeId: "child",
+      value: "Child",
+      selectionStart: 0,
+      selectionEnd: 0,
+      visibleNodes: notedChild,
+      structureNodes: notedChild
+    }))).toBeNull();
+
+    // an image row's filename can never take the child's text
+    const imageParent = [
+      { ...visibleNodes[0], kind: "image" as const },
+      visibleNodes[1]
+    ];
+    expect(resolveOutlineKey(input({
+      key: "Backspace",
+      nodeId: "child",
+      value: "Child",
+      selectionStart: 0,
+      selectionEnd: 0,
+      visibleNodes: imageParent,
+      structureNodes: imageParent
+    }))).toBeNull();
+
+    // the first visible row has nothing above it to merge into
+    expect(resolveOutlineKey(input({
+      key: "Backspace",
+      nodeId: "parent",
+      value: "Parent",
       selectionStart: 0,
       selectionEnd: 0
     }))).toBeNull();

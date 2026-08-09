@@ -58,6 +58,7 @@ export type OutlineKeyIntent =
       readonly previousId: string;
       readonly joinOffset: number;
     }
+  | { readonly kind: "mergeIntoParent"; readonly parentId: string }
   | { readonly kind: "toggleComplete" }
   | { readonly kind: "duplicate" }
   | { readonly kind: "trash" }
@@ -362,6 +363,18 @@ export function resolveOutlineKey(
       input.structureIndex
     );
     const previous = index > 0 ? input.visibleNodes[index - 1] : undefined;
+    // The row above a first child is its own parent. Workflowy no-ops here;
+    // we fold the text up instead. The row goes away, so a note on it would
+    // go with it, and an image row can never take the text.
+    if (
+      current &&
+      previous &&
+      previous.id === current.parentId &&
+      previous.kind === "bullet" &&
+      (input.supportingNote ?? current.note).trim().length === 0
+    ) {
+      return { kind: "mergeIntoParent", parentId: previous.id };
+    }
     if (
       current &&
       previous &&
