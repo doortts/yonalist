@@ -187,6 +187,61 @@ describe("a mutation that moves the view", () => {
   });
 });
 
+describe("who owns the Undo shortcut", () => {
+  /** Leaves one outline mutation behind, so a stray Undo would be visible. */
+  async function withSomethingToUndo(notesApi: NotesApi) {
+    notesApi.undo = vi.fn().mockResolvedValue({
+      ...receipt("First thought"),
+      revision: 9,
+      history: { canUndo: false, canRedo: true, undoDepth: 0, redoDepth: 1 }
+    });
+    render(<App api={notesApi} />);
+    const row = await screen.findByDisplayValue<HTMLTextAreaElement>(
+      "First thought"
+    );
+    fireEvent.change(row, { target: { value: "Changed title" } });
+    fireEvent.blur(row);
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalled());
+    return row;
+  }
+
+  it("leaves the library search field to its own native undo", async () => {
+    const notesApi = api();
+    await withSomethingToUndo(notesApi);
+
+    const search = screen.getByRole("searchbox", { name: "Search Yonalist" });
+    const delivered = fireEvent.keyDown(search, { key: "z", ctrlKey: true });
+
+    expect(delivered).toBe(true);
+    expect(notesApi.undo).not.toHaveBeenCalled();
+  });
+
+  it("leaves a chooser filter to its own native undo", async () => {
+    const notesApi = api();
+    await withSomethingToUndo(notesApi);
+    fireEvent.click(screen.getByRole("button", {
+      name: "Actions for Changed title"
+    }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Tags" }));
+    const filter = await screen.findByRole("combobox", { name: "Add a tag" });
+
+    const delivered = fireEvent.keyDown(filter, { key: "z", ctrlKey: true });
+
+    expect(delivered).toBe(true);
+    expect(notesApi.undo).not.toHaveBeenCalled();
+  });
+
+  it("still routes an outline row textarea to the outline history", async () => {
+    const notesApi = api();
+    const row = await withSomethingToUndo(notesApi);
+
+    const delivered = fireEvent.keyDown(row, { key: "z", ctrlKey: true });
+
+    expect(delivered).toBe(false);
+    await waitFor(() => expect(notesApi.undo).toHaveBeenCalledOnce());
+  });
+});
+
 describe("navigation history integration", () => {
   it("undoes and redoes zoom locally without replaying SQLite", async () => {
     const notesApi = api();

@@ -93,6 +93,16 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       const modifier = navigator.platform.includes("Mac") ? event.metaKey : event.ctrlKey;
       if (!modifier || event.key.toLowerCase() !== "z") return;
+      // Every other text field on screen -- the library search, the Move To
+      // and Tags filters -- keeps its own native undo. The outline's row and
+      // note textareas deliberately do not, and `data-outline-field` is what
+      // marks them: the choosers render inside `.notes-outline`, so the class
+      // scope cannot tell the two apart.
+      const target = event.target as HTMLElement | null;
+      if (
+        (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") &&
+        !target.hasAttribute("data-outline-field")
+      ) return;
       event.preventDefault();
       if (event.shiftKey) void interactionHistory.redo();
       else void interactionHistory.undo();
