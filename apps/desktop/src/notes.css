@@ -2271,6 +2271,8 @@ button.notes-date-token:hover {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
+  /* The items are buttons, and a button centers its text by default. */
+  text-align: start;
   gap: 7px;
   min-height: 32px;
   padding: 5px 8px;

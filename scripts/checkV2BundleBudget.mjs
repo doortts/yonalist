@@ -29,12 +29,15 @@ for (const file of files) {
   gzip += gzipSync(bytes).length;
 }
 
-const rawLimit = 300 * 1024;
-// Raised from 90KB when the Settings page landed. SettingsView itself is a
-// lazy chunk, but the theme hook has to run before first paint to set
-// data-theme, and that eager remainder costs ~650 gzip bytes against the
-// ~200 the old ceiling had left. Raw still passes with room to spare.
-const gzipLimit = 91 * 1024;
+// Raised from 300KB/91KB for the bullet menu parity work. The menus this
+// budget guards are all lazy chunks, but every lazy boundary still leaves
+// import machinery in the entry chunk, so a feature spread across several
+// menus costs the entry a few hundred gzip bytes it cannot shed. The old
+// ceiling had 75 gzip bytes left, which is a tripwire, not a budget. These
+// limits keep roughly 5KB of gzip headroom: enough to finish the menu work,
+// tight enough that an accidental eager import still trips the gate.
+const rawLimit = 312 * 1024;
+const gzipLimit = 96 * 1024;
 if (raw > rawLimit || gzip > gzipLimit) {
   throw new Error(
     `v2 editable JS ${raw} raw / ${gzip} gzip exceeds ` +
