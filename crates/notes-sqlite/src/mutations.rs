@@ -29,7 +29,11 @@ pub(crate) fn commit(
         });
     }
 
-    let inserted_ids = patch
+    // A node the inverse deletes is one this patch creates. The set is
+    // consumed: a coalesced history group can carry several upserts of the
+    // same id (undoing blank-then-remove replays the row twice), so only the
+    // first one inserts and the rest update the row it just put back.
+    let mut inserted_ids = patch
         .inverse
         .iter()
         .filter_map(|mutation| match mutation {
@@ -41,7 +45,7 @@ pub(crate) fn commit(
         match mutation {
             TreeMutation::Upsert(node) => {
                 validate_image_ownership(node)?;
-                if inserted_ids.contains(node.id()) {
+                if inserted_ids.remove(node.id()) {
                     insert_node(&transaction, node)?;
                 } else {
                     update_node(&transaction, node)?;
