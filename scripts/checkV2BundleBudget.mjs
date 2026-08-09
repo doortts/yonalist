@@ -30,7 +30,11 @@ for (const file of files) {
 }
 
 const rawLimit = 300 * 1024;
-const gzipLimit = 90 * 1024;
+// Raised from 90KB when the Settings page landed. SettingsView itself is a
+// lazy chunk, but the theme hook has to run before first paint to set
+// data-theme, and that eager remainder costs ~650 gzip bytes against the
+// ~200 the old ceiling had left. Raw still passes with room to spare.
+const gzipLimit = 91 * 1024;
 if (raw > rawLimit || gzip > gzipLimit) {
   throw new Error(
     `v2 editable JS ${raw} raw / ${gzip} gzip exceeds ` +
