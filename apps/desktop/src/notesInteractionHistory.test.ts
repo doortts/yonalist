@@ -25,7 +25,8 @@ function store() {
     },
     getSnapshot: () => ({
       canUndo: true,
-      canRedo: true
+      canRedo: true,
+      nodes: []
     }),
     emitMutation: () => listeners.forEach((listener) => listener({
       kind: "recordMutation",

@@ -16,13 +16,19 @@ export interface AppNavigationLocation {
   readonly secondaryFocus: PaneFocusSnapshot | null;
 }
 
+export function paneScope(
+  paneId: "primary" | "secondary"
+): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    `[data-outline-pane-id="${paneId}"]`
+  );
+}
+
 export function capturePane(paneId: "primary" | "secondary"): {
   readonly selectedIds: readonly string[];
   readonly focus: PaneFocusSnapshot | null;
 } {
-  const scope = document.querySelector<HTMLElement>(
-    `[data-outline-pane-id="${paneId}"]`
-  );
+  const scope = paneScope(paneId);
   const selectedIds = scope
     ? [...scope.querySelectorAll<HTMLElement>(
         "[data-outline-id][data-selected='true']"
