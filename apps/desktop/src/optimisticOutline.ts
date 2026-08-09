@@ -91,11 +91,18 @@ export function projectSplitNode(
     input.suffix
   );
   return {
+    // The source's half goes onto the node itself and not only into its draft,
+    // the way the merge projections already do it. A draft the node's text
+    // disagrees with looks unsent to the blur that follows the caret out of the
+    // row, and the `updateText` it would flush is a second undo step for one
+    // Enter -- the split command already carries this text.
     nodes: orderOutline([
       ...applyRebalancedSortKeys(
         state.nodes,
         allocation.rebalancedSortKeys
-      ),
+      ).map((node) => node.id === input.id
+        ? { ...node, text: input.prefix }
+        : node),
       created
     ], state.activePageId),
     drafts: { ...state.drafts, [input.id]: input.prefix },

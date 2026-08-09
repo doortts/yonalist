@@ -113,7 +113,10 @@ export class StoreOutlineMutations {
   }
 
   beginSplitNode(input: SplitNodeInput): PendingCreatedNode {
-    const previousDraft = this.host.read().drafts[input.id];
+    const state = this.host.read();
+    const previousDraft = state.drafts[input.id];
+    const previousText = state.nodes
+      .find((node) => node.id === input.id)?.text;
     const newId = freshId();
     this.host.cancelTitle(input.id);
     this.host.write(projectSplitNode(this.host.read(), { ...input, newId }));
@@ -140,9 +143,11 @@ export class StoreOutlineMutations {
         if (previousDraft === undefined) delete drafts[input.id];
         else drafts[input.id] = previousDraft;
         this.host.write({
-          nodes: current.nodes.filter(
-            (node) => !removedIds.includes(node.id)
-          ),
+          nodes: current.nodes
+            .filter((node) => !removedIds.includes(node.id))
+            .map((node) => node.id === input.id && previousText !== undefined
+              ? { ...node, text: previousText }
+              : node),
           drafts,
           noteDrafts: omitKeys(current.noteDrafts, removedIds)
         });
