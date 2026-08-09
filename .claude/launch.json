@@ -20,6 +20,17 @@
       "port": 1422
     },
     {
+      "name": "yonalist-v2-drop-check",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run", "dev",
+        "--prefix",
+        "/Users/doortts/repos/yonalist/.worktrees/monaco-drop-fix/apps/desktop",
+        "--", "--port", "1443"
+      ],
+      "port": 1443
+    },
+    {
       "name": "yonalist-dist",
       "runtimeExecutable": "npx",
       "runtimeArgs": ["vite", "preview", "--port", "1424"],

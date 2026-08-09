@@ -28,9 +28,12 @@
     "v2:tauri:build": "node scripts/tauriV2.mjs build",
     "test:plans": "node scripts/checkHistoricalPlanReconciliation.mjs",
     "test:watch": "vitest",
-    "tauri": "node scripts/tauri.mjs",
-    "tauri:dev": "node scripts/tauri.mjs dev",
-    "tauri:build": "node scripts/tauri.mjs build"
+    "tauri": "node scripts/tauriV2.mjs",
+    "tauri:dev": "node scripts/tauriV2.mjs dev",
+    "tauri:build": "node scripts/tauriV2.mjs build",
+    "legacy:tauri": "node scripts/tauri.mjs",
+    "legacy:tauri:dev": "node scripts/tauri.mjs dev",
+    "legacy:tauri:build": "node scripts/tauri.mjs build"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

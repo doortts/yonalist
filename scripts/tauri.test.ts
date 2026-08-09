@@ -49,8 +49,12 @@ describe("Tauri command runner", () => {
 
     const scripts = JSON.parse(readFileSync(join(root, "package.json"), "utf8"))
       .scripts;
-    expect(scripts["tauri:dev"]).toBe("node scripts/tauri.mjs dev");
-    expect(scripts["tauri:build"]).toBe("node scripts/tauri.mjs build");
+    // The Monaco outline app is the default target; the v1 app keeps its own
+    // launcher under the legacy prefix.
+    expect(scripts["tauri:dev"]).toBe("node scripts/tauriV2.mjs dev");
+    expect(scripts["tauri:build"]).toBe("node scripts/tauriV2.mjs build");
+    expect(scripts["legacy:tauri:dev"]).toBe("node scripts/tauri.mjs dev");
+    expect(scripts["legacy:tauri:build"]).toBe("node scripts/tauri.mjs build");
 
     const toolchain = readFileSync(join(root, "rust-toolchain.toml"), "utf8");
     expect(toolchain).toContain('channel = "1.97.0"');
