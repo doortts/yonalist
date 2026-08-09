@@ -5,6 +5,7 @@ import type { NotesApi } from "./api";
 import type { ViewportPage } from "../../../packages/contracts/generated/ViewportPage";
 import { NotesStore } from "./notesStore";
 import { parseSingleTag, planTagEdits } from "./outlineTagEdits";
+import { DRAFT_DEBOUNCE_MS } from "./storeSupport";
 
 function bullet(id: string, sortKey: number): NoteView {
   return {
@@ -147,18 +148,22 @@ describe("NotesStore viewport recovery", () => {
     store.subscribeHistory(historyListener);
     await store.bootstrap();
 
+    // The debounce rather than flushDraft: an explicit flush is a blur, which
+    // closes the typing run the two bursts are here to share.
+    vi.useFakeTimers();
     store.setDraft("one", "First");
-    await store.flushDraft("one");
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
     store.setDraft("one", "Second");
-    await store.flushDraft("one");
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
     store.breakHistoryGroup();
     store.setDraft("one", "Third");
-    await store.flushDraft("one");
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+    vi.useRealTimers();
 
     expect(historyListener).toHaveBeenCalledTimes(2);
     expect(vi.mocked(notesApi.execute).mock.calls.map(
       ([envelope]) => envelope.historyGroup
-    )).toEqual(["text:one", "text:one", "text:one:1"]);
+    )).toEqual(["text:one:1", "text:one:1", "text:one:2"]);
   });
 
   it("keeps every native deletion from one held Backspace gesture in one history group", async () => {
@@ -924,7 +929,9 @@ describe("NotesStore empty-row removal", () => {
       { kind: "updateText", id: "two", text: "" },
       { kind: "removeEmptyNode", id: "two" }
     ]);
-    expect(backspace.groups()).toEqual(["backspace:1", "backspace:1"]);
+    const [group] = backspace.groups();
+    expect(group).toMatch(/^backspace:1(:\d+)?$/);
+    expect(backspace.groups()).toEqual([group, group]);
     expect(history).toHaveBeenCalledOnce();
     expect(store.getSnapshot().nodes.map((node) => node.id)).toEqual(["one"]);
     expect(store.getSnapshot().error).toBeNull();
@@ -1200,12 +1207,15 @@ describe("NotesStore draft flushing before commands", () => {
 
     await store.beginRemoveEmptyNode("one", "backspace:1").committed;
 
-    expect(vi.mocked(notesApi.execute).mock.calls.map(([envelope]) => [
+    const calls = vi.mocked(notesApi.execute).mock.calls;
+    const group = calls[0][0].historyGroup;
+    expect(group).toMatch(/^backspace:1(:\d+)?$/);
+    expect(calls.map(([envelope]) => [
       envelope.command.kind,
       envelope.historyGroup
     ])).toEqual([
-      ["updateText", "backspace:1"],
-      ["removeEmptyNode", "backspace:1"]
+      ["updateText", group],
+      ["removeEmptyNode", group]
     ]);
   });
 });

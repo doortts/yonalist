@@ -5,7 +5,8 @@ import {
   cancelTimer,
   confirmedNote,
   confirmedText,
-  DRAFT_DEBOUNCE_MS
+  DRAFT_DEBOUNCE_MS,
+  TYPING_IDLE_MS
 } from "./storeSupport";
 
 export interface StoreDraftHost {
@@ -25,16 +26,41 @@ export class StoreDrafts {
   private readonly noteTimers =
     new Map<string, ReturnType<typeof setTimeout>>();
   private readonly titleHistoryGroups = new Map<string, string>();
+  private readonly typingRuns = new Map<string, number>();
   private activeBackspaceGroup: string | null = null;
   private backspaceSequence = 0;
 
   constructor(private readonly host: StoreDraftHost) {}
+
+  /**
+   * One typing run is one undo step. The run stays open while the keystrokes
+   * keep coming and closes on the first long pause, so ⌘Z gives back the last
+   * thing typed rather than everything typed since the row was opened.
+   */
+  private continueTypingRun(key: string): void {
+    const now = Date.now();
+    const last = this.typingRuns.get(key);
+    this.typingRuns.set(key, now);
+    if (last !== undefined && now - last <= TYPING_IDLE_MS) return;
+    this.host.breakHistoryGroup();
+  }
+
+  /**
+   * Leaving the field closes the run too. Forgetting it is enough -- the fence
+   * only has to move before the next commit, and moving it here would split a
+   * Backspace gesture, whose focus hop fires blur in the middle of the run.
+   */
+  endTypingRun(id: string): void {
+    this.typingRuns.delete(`text:${id}`);
+    this.typingRuns.delete(`note:${id}`);
+  }
 
   setTitle(id: string, text: string): void {
     if (this.activeBackspaceGroup) {
       this.titleHistoryGroups.set(id, this.activeBackspaceGroup);
     } else {
       this.titleHistoryGroups.delete(id);
+      this.continueTypingRun(`text:${id}`);
     }
     const state = this.host.read();
     this.host.write(
@@ -73,6 +99,7 @@ export class StoreDrafts {
   }
 
   setNote(id: string, note: string): void {
+    this.continueTypingRun(`note:${id}`);
     const state = this.host.read();
     this.host.write(
       { noteDrafts: { ...state.noteDrafts, [id]: note } },
@@ -148,6 +175,7 @@ export class StoreDrafts {
       this.cancelTitle(id);
       this.cancelNote(id);
       this.titleHistoryGroups.delete(id);
+      this.endTypingRun(id);
     });
   }
 }

@@ -38,6 +38,13 @@ export function confirmedNote(
 import type { NotesState } from "./notesState";
 
 export const DRAFT_DEBOUNCE_MS = 300;
+/**
+ * How long a typing run stays open between keystrokes. CodeMirror and
+ * ProseMirror both open a new undo group after a 500ms pause; the 300ms draft
+ * debounce sits inside every pause here, so the same felt gap needs the
+ * headroom.
+ */
+export const TYPING_IDLE_MS = 750;
 export const VIEWPORT_LIMIT = 80;
 
 export function cancelTimer<Key>(

@@ -156,7 +156,13 @@ export class NotesStore {
     this.drafts.setTitle(id, text);
   }
 
+  /**
+   * The explicit flush, as opposed to the debounce: blur, an arrow key that
+   * moves focus to another row, zooming, a batch rewrite. Each of those ends
+   * the typing run, so what comes next undoes on its own.
+   */
   async flushDraft(id: string): Promise<void> {
+    this.drafts.endTypingRun(id);
     await this.drafts.flushTitle(id);
   }
 
@@ -165,6 +171,7 @@ export class NotesStore {
   }
 
   async flushNoteDraft(id: string): Promise<void> {
+    this.drafts.endTypingRun(id);
     await this.drafts.flushNote(id);
   }
 

@@ -723,8 +723,8 @@ describe("Yonalist v2 desktop shell", () => {
     const calls = vi.mocked(notesApi.execute).mock.calls.map(
       ([envelope]) => envelope
     );
-    expect(calls.at(-2)?.historyGroup).toBe(`slash:bullet-1`);
-    expect(calls.at(-1)?.historyGroup).toBe(`slash:bullet-1`);
+    expect(calls.at(-2)?.historyGroup).toMatch(/^slash:/);
+    expect(calls.at(-1)?.historyGroup).toBe(calls.at(-2)?.historyGroup);
     expect(calls.at(-2)?.command).toEqual({
       kind: "updateText",
       id: "bullet-1",

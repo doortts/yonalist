@@ -2,9 +2,12 @@ import type { BootSnapshot } from "../../../packages/contracts/generated/BootSna
 import type { CommandEnvelope } from "../../../packages/contracts/generated/CommandEnvelope";
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
+import type { IpcNotesCommand } from "../../../packages/contracts/generated/IpcNotesCommand";
 import type { NotesApi } from "./api";
+import { initialNotesState } from "./notesState";
 import { NotesStore } from "./notesStore";
-import { DRAFT_DEBOUNCE_MS } from "./storeSupport";
+import { runSlashEdit } from "./storeSlash";
+import { DRAFT_DEBOUNCE_MS, TYPING_IDLE_MS } from "./storeSupport";
 
 interface HistoryEntry {
   readonly group: string | null;
@@ -195,5 +198,115 @@ describe("drafts left behind by a flush", () => {
     await store.undo();
 
     expect(store.getNodeSnapshot("one").note).toBe("");
+  });
+});
+
+describe("how much typing one undo step covers", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("keeps an uninterrupted run of keystrokes in one step", async () => {
+    const { store } = await harness();
+
+    store.setDraft("one", "one a");
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+    store.setDraft("one", "one ab");
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+
+    expect(store.getSnapshot().undoDepth).toBe(1);
+    await store.undo();
+    expect(store.getSnapshot().nodes[0].text).toBe("one");
+  });
+
+  it("starts a new step when the typing pauses", async () => {
+    const { store } = await harness();
+
+    store.setDraft("one", "one a");
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(TYPING_IDLE_MS);
+    store.setDraft("one", "one ab");
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+
+    expect(store.getSnapshot().undoDepth).toBe(2);
+    await store.undo();
+    expect(store.getSnapshot().nodes[0].text).toBe("one a");
+  });
+
+  it("starts a new step when the field loses focus", async () => {
+    const { store } = await harness();
+
+    store.setDraft("one", "one a");
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+    await store.flushDraft("one");
+    store.setDraft("one", "one ab");
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+
+    expect(store.getSnapshot().undoDepth).toBe(2);
+    await store.undo();
+    expect(store.getSnapshot().nodes[0].text).toBe("one a");
+  });
+
+  it("splits a note the same way a title splits", async () => {
+    const { store } = await harness();
+
+    store.setNoteDraft("one", "note a");
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+    store.setNoteDraft("one", "note ab");
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+    expect(store.getSnapshot().undoDepth).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(TYPING_IDLE_MS);
+    store.setNoteDraft("one", "note abc");
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+    expect(store.getSnapshot().undoDepth).toBe(2);
+
+    await store.undo();
+    expect(store.getSnapshot().nodes[0].note).toBe("note ab");
+  });
+
+  it("still folds a held Backspace run into one step across a pause", async () => {
+    const { store } = await harness();
+
+    store.beginBackspaceGesture(false);
+    store.setDraft("one", "on");
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(TYPING_IDLE_MS);
+    store.beginBackspaceGesture(true);
+    store.setDraft("one", "o");
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+    store.endBackspaceGesture();
+
+    expect(store.getSnapshot().undoDepth).toBe(1);
+    await store.undo();
+    expect(store.getSnapshot().nodes[0].text).toBe("one");
+  });
+
+  it("gives each slash command on a row its own group", async () => {
+    const groups: string[] = [];
+    const state = {
+      ...initialNotesState,
+      status: "ready" as const,
+      sessionId: "session-1",
+      activePageId: "page-1",
+      nodes: [bullet("one")]
+    };
+    const port = {
+      getState: () => state,
+      cancelDraft: vi.fn(),
+      setDraft: vi.fn(),
+      setDrafts: vi.fn(),
+      execute: async (_command: IpcNotesCommand, group: string) => {
+        groups.push(group);
+      }
+    };
+
+    await runSlashEdit(port, "one", "first", "todo");
+    await runSlashEdit(port, "one", "second", "todo");
+
+    // Each invocation binds its own text and marker edit, and the two
+    // invocations do not share.
+    expect(groups).toHaveLength(4);
+    expect(new Set(groups).size).toBe(2);
   });
 });

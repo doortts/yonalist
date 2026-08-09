@@ -1,6 +1,6 @@
 import type { IpcNotesCommand } from "../../../packages/contracts/generated/IpcNotesCommand";
 import type { NotesState } from "./notesState";
-import { confirmedText } from "./storeSupport";
+import { confirmedText, freshId } from "./storeSupport";
 import { omitKeys } from "./storeState";
 
 interface SlashEditPort {
@@ -20,7 +20,10 @@ export async function runSlashEdit(
   text: string,
   marker: "todo" | null
 ): Promise<void> {
-  const historyGroup = `slash:${id}`;
+  // Per invocation, not per row: the group is here to bind this command's text
+  // and marker edits together, and a group keyed by the row alone folds the
+  // next slash command on that row into the same undo step.
+  const historyGroup = `slash:${freshId()}`;
   port.cancelDraft();
   port.setDraft(text);
   if (text !== confirmedText(port.getState(), id)) {
