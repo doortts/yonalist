@@ -2,6 +2,7 @@ import { act, fireEvent, render } from "@testing-library/react";
 import type { BootSnapshot } from "../../../packages/contracts/generated/BootSnapshot";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "./api";
+import { focusOutlineEditor } from "./outlineFocus";
 import { NotesOutline } from "./NotesOutline";
 import { NotesStore } from "./notesStore";
 import { stubGeometry } from "./test/outlineGeometry";
@@ -144,6 +145,33 @@ function outlineExtent(list: HTMLElement): number {
     (total, child) => total + (child as HTMLElement).offsetHeight, 0);
 }
 
+function mountedRows(list: HTMLElement): (string | undefined)[] {
+  return [...list.querySelectorAll<HTMLElement>("[data-outline-id]")]
+    .map((row) => row.dataset.outlineId);
+}
+
+async function scrollTo(scroller: HTMLElement, position: number): Promise<void> {
+  Object.defineProperty(scroller, "scrollTop", {
+    configurable: true,
+    value: position,
+    writable: true
+  });
+  await act(async () => {
+    fireEvent.scroll(scroller);
+  });
+}
+
+// A spacer stands in for the rows the window left out, so it belongs at one
+// end of the list or the other. One with rows on both sides of it is the blank
+// band a stranded row leaves behind.
+function expectNoInnerSpacer(list: HTMLElement): void {
+  for (const child of [...list.children]) {
+    if (child.classList.contains("notes-outline-item")) continue;
+    expect(child.previousElementSibling === null ||
+      child.nextElementSibling === null).toBe(true);
+  }
+}
+
 describe("outline row rendering performance", () => {
   let restoreGeometry = () => undefined as void;
 
@@ -233,22 +261,10 @@ describe("outline row rendering performance", () => {
       ".notes-outline-rows")!;
     const list = view.container.querySelector<HTMLElement>(
       ".notes-outline-list")!;
-    const scrollTo = async (position: number) => {
-      Object.defineProperty(scroller, "scrollTop", {
-        configurable: true,
-        value: position,
-        writable: true
-      });
-      await act(async () => {
-        fireEvent.scroll(scroller);
-      });
-    };
-    await scrollTo(1_400);
-    await scrollTo(600);
+    await scrollTo(scroller, 1_400);
+    await scrollTo(scroller, 600);
 
-    const rows = () => [...list.querySelectorAll<HTMLElement>(
-      "[data-outline-id]")].map((row) => row.dataset.outlineId);
-    const mounted = rows();
+    const mounted = mountedRows(list);
     const victim = mounted[Math.floor(mounted.length / 2)]!;
     const victimHeight = list.querySelector<HTMLElement>(
       `[data-outline-id='${victim}']`)!
@@ -263,13 +279,9 @@ describe("outline row rendering performance", () => {
 
     // The removed row's height is the only thing the outline may give back,
     // and no gap spacer may open between two rows that are now neighbours.
-    expect(rows()).not.toContain(victim);
+    expect(mountedRows(list)).not.toContain(victim);
     expect(outlineExtent(list)).toBeCloseTo(restingExtent - victimHeight, 5);
-    for (const child of [...list.children]) {
-      if (child.classList.contains("notes-outline-item")) continue;
-      expect(child.previousElementSibling === null ||
-        child.nextElementSibling === null).toBe(true);
-    }
+    expectNoInnerSpacer(list);
     view.unmount();
   }, 240_000);
 
@@ -281,14 +293,7 @@ describe("outline row rendering performance", () => {
       ".notes-outline-rows")!;
     const list = view.container.querySelector<HTMLElement>(
       ".notes-outline-list")!;
-    Object.defineProperty(scroller, "scrollTop", {
-      configurable: true,
-      value: 8_000,
-      writable: true
-    });
-    await act(async () => {
-      fireEvent.scroll(scroller);
-    });
+    await scrollTo(scroller, 8_000);
     const restingExtent = outlineExtent(list);
 
     // A row the outline did not put there — the shape a removal leaves behind
@@ -322,14 +327,7 @@ describe("outline row rendering performance", () => {
     const restingExtent = outlineExtent(list);
     expect(firstRow()).toBe("node-0");
 
-    Object.defineProperty(scroller, "scrollTop", {
-      configurable: true,
-      value: 20_000,
-      writable: true
-    });
-    await act(async () => {
-      fireEvent.scroll(scroller);
-    });
+    await scrollTo(scroller, 20_000);
 
     // 20,000px in at an average row height of 39.2px, less one screenful of
     // overscan, lands around row 494.
@@ -339,4 +337,88 @@ describe("outline row rendering performance", () => {
     expect(outlineExtent(list)).toBeCloseTo(restingExtent, -1);
     view.unmount();
   }, 240_000);
+
+  it("keeps the focused row mounted, and lets it go when focus does",
+    async () => {
+      const store = await readyStore(2_000);
+      const view = render(outlineElement(store));
+      await act(async () => undefined);
+      const scroller = view.container.querySelector<HTMLElement>(
+        ".notes-outline-rows")!;
+      const list = view.container.querySelector<HTMLElement>(
+        ".notes-outline-list")!;
+      const editor = list.querySelector<HTMLTextAreaElement>(
+        "[data-outline-id='node-3'] textarea")!;
+      await act(async () => {
+        fireEvent.focusIn(editor);
+      });
+      await scrollTo(scroller, 20_000);
+
+      // The caret is in it, so it stays even though the window has left it
+      // thousands of pixels behind.
+      expect(mountedRows(list)).toContain("node-3");
+
+      // The section wraps the scroller, so it stands for anywhere outside it.
+      await act(async () => {
+        fireEvent.focusOut(editor, {
+          relatedTarget: view.container.querySelector(".notes-outline")
+        });
+      });
+
+      expect(mountedRows(list)).not.toContain("node-3");
+      expectNoInnerSpacer(list);
+      view.unmount();
+    }, 240_000);
+
+  it("drops the pin with the row it was on", async () => {
+    const store = await readyStore(2_000);
+    const view = render(outlineElement(store));
+    await act(async () => undefined);
+    const scroller = view.container.querySelector<HTMLElement>(
+      ".notes-outline-rows")!;
+    const list = view.container.querySelector<HTMLElement>(
+      ".notes-outline-list")!;
+    await act(async () => {
+      fireEvent.focusIn(list.querySelector(
+        "[data-outline-id='node-3'] textarea")!);
+      await store.beginRemoveEmptyNode("node-3").committed;
+    });
+    await scrollTo(scroller, 20_000);
+
+    expect(mountedRows(list)).not.toContain("node-3");
+    expectNoInnerSpacer(list);
+    view.unmount();
+  }, 240_000);
+
+  it("holds a revealed row until the focus it was revealed for arrives",
+    async () => {
+      const store = await readyStore(2_000);
+      const view = render(outlineElement(store));
+      await act(async () => undefined);
+      const list = view.container.querySelector<HTMLElement>(
+        ".notes-outline-list")!;
+      const scope = view.container.querySelector<HTMLElement>(
+        ".notes-outline")!;
+      const leaving = list.querySelector<HTMLTextAreaElement>(
+        "[data-outline-id='node-0'] textarea")!;
+      await act(async () => {
+        fireEvent.focusIn(leaving);
+      });
+
+      // The reveal pins node-900 and scrolls to it, which unmounts the row the
+      // caret is leaving. That row's parting focusout must not take the new
+      // pin down with it before the reveal's own focus lands.
+      await act(async () => {
+        focusOutlineEditor(scope, "node-900", "end");
+        fireEvent.focusOut(leaving, { relatedTarget: null });
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      });
+
+      expect(mountedRows(list)).toContain("node-900");
+      expect(document.activeElement).toBe(list.querySelector(
+        "[data-outline-id='node-900'] textarea"));
+      view.unmount();
+    }, 240_000);
 });

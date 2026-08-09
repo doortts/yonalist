@@ -129,10 +129,12 @@ export function useOutlineWindow(nodes: readonly NoteView[]) {
   }, [list, scroller]);
 
   // A node that has gone takes its measurement with it. Left behind, it keeps
-  // pulling the average that every row nobody has scrolled past is drawn at.
+  // pulling the average that every row nobody has scrolled past is drawn at,
+  // and a pin on it would hold a row the outline no longer has.
   useLayoutEffect(() => {
-    if (heights.current.size === 0) return;
     const live = new Set(nodes.map((node) => node.id));
+    setPinnedId((current) =>
+      current === null || live.has(current) ? current : null);
     let dropped = false;
     for (const [id, height] of heights.current) {
       if (live.has(id)) continue;
@@ -151,19 +153,34 @@ export function useOutlineWindow(nodes: readonly NoteView[]) {
       : null;
     observer?.observe(scroller);
     observer?.observe(list);
-    const remember = (event: FocusEvent) => {
-      const id = event.target instanceof Element
-        ? event.target.closest<HTMLElement>("[data-outline-id]")
-          ?.dataset.outlineId
+    const rowIdOf = (target: EventTarget | null) =>
+      target instanceof Element
+        ? target.closest<HTMLElement>("[data-outline-id]")?.dataset.outlineId
         : undefined;
+    const remember = (event: FocusEvent) => {
+      const id = rowIdOf(event.target);
       if (id !== undefined) setPinnedId(id);
+    };
+    // The pin follows focus, so it has to be let go when focus leaves for good
+    // -- otherwise every row that ever held the caret stays mounted, and each
+    // one strands itself below a blank band once it scrolls out of the window.
+    // Only the row that is losing focus may release the pin: a reveal pins the
+    // row it is about to focus, and the row it takes focus away from must not
+    // cancel that on its way out.
+    const forget = (event: FocusEvent) => {
+      if (event.relatedTarget instanceof Node &&
+        scroller.contains(event.relatedTarget)) return;
+      const id = rowIdOf(event.target);
+      setPinnedId((current) => current === id ? null : current);
     };
     scroller.addEventListener("scroll", sync, { passive: true });
     scroller.addEventListener("focusin", remember);
+    scroller.addEventListener("focusout", forget);
     return () => {
       observer?.disconnect();
       scroller.removeEventListener("scroll", sync);
       scroller.removeEventListener("focusin", remember);
+      scroller.removeEventListener("focusout", forget);
     };
   }, [list, scroller, sync]);
 
