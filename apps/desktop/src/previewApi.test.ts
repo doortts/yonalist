@@ -9,7 +9,7 @@ describe("browser-only preview adapter", () => {
     );
   });
 
-  it("seeds a note and an image row for the Monaco surface to draw", async () => {
+  it("seeds a note and an image row for the outline to draw", async () => {
     const boot = await previewNotesApi.bootstrap();
     const nodes = boot.viewport!.nodes;
 
