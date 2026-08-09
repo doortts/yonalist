@@ -1,7 +1,7 @@
 import {
-  ArrowDown, ArrowUp, Check, Circle, Copy, CopyPlus, ImagePlus, IndentDecrease,
-  IndentIncrease, MessageSquareText, Scissors, SquareCheckBig, Star, Trash2,
-  type LucideIcon
+  ArrowDown, ArrowUp, Check, Circle, Copy, CopyPlus, CornerUpRight, ImagePlus,
+  IndentDecrease, IndentIncrease, MessageSquareText, Scissors, SquareCheckBig,
+  Star, Trash2, type LucideIcon
 } from "lucide-react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
@@ -16,7 +16,8 @@ export type OutlinePlatform = "mac" | "other";
 
 export type OutlineMenuCommandId =
   | "addNote" | "marker" | "duplicate" | "uploadImage" | "complete" | "star"
-  | "delete" | "moveUp" | "moveDown" | "indent" | "outdent" | "copy" | "cut";
+  | "delete" | "moveTo" | "moveUp" | "moveDown" | "indent" | "outdent"
+  | "copy" | "cut";
 
 /**
  * What the row menu needs to know to draw and run one command. `plans` is
@@ -38,6 +39,12 @@ export interface OutlineMenuContext {
    * both modes answer from the one guard.
    */
   readonly cutRefusal: string | null;
+  /**
+   * Whether the whole forest has loaded. Move To lists every destination in
+   * the outline, so it waits on the very gate the mutating selection commands
+   * already wait on rather than opening on a subset of the tree.
+   */
+  readonly forestComplete: boolean;
   readonly plans: SelectionMovePlans;
   readonly row: {
     readonly addNote: () => void;
@@ -45,6 +52,8 @@ export interface OutlineMenuContext {
     readonly pickImage: () => void;
   };
   readonly selection: SelectionKeyboardActions;
+  /** Opens the destination chooser. Both modes hand off to the same dialog. */
+  readonly openMoveTo: () => void;
 }
 
 export type OutlineMenuEligibility =
@@ -175,6 +184,18 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
       : void context.store.deleteSubtree(context.node.id)
   },
   {
+    id: "moveTo",
+    icon: () => CornerUpRight,
+    // Workflowy's own spelling, three literal dots: the item opens a chooser
+    // rather than moving anything by itself.
+    label: () => "Move To...",
+    binding: binding("⌃⌘M", "Ctrl+Alt+M", "Control+Meta+M", "Control+Alt+M"),
+    eligibility: (context) => context.forestComplete
+      ? { available: true }
+      : { available: false, reason: "Load the complete outline first." },
+    execute: (context) => context.openMoveTo()
+  },
+  {
     id: "moveUp",
     icon: () => ArrowUp,
     label: () => "Move up",
@@ -258,13 +279,13 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
 // landing on it when they overshoot.
 const ROW_ORDER: readonly OutlineMenuCommandId[] = [
   "addNote", "marker", "duplicate", "uploadImage", "complete", "star",
-  "moveUp", "moveDown", "indent", "outdent", "copy", "cut", "delete"
+  "moveTo", "moveUp", "moveDown", "indent", "outdent", "copy", "cut", "delete"
 ];
 
-// The legacy selection menu's order, minus the two commands that have no
-// implementation yet: Move To... after Complete, and Tags before Copy.
+// The legacy selection menu's order, minus the one command that has no
+// implementation yet: Tags, which belongs before Copy.
 const SELECTION_ORDER: readonly OutlineMenuCommandId[] = [
-  "complete", "moveUp", "moveDown", "indent", "outdent", "duplicate",
+  "complete", "moveTo", "moveUp", "moveDown", "indent", "outdent", "duplicate",
   "copy", "cut", "delete"
 ];
 

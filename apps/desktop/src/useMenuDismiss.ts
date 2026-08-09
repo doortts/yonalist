@@ -1,4 +1,7 @@
-import { useEffect, useRef, type KeyboardEvent, type RefObject } from "react";
+import {
+  useEffect, useLayoutEffect, useRef, useState,
+  type KeyboardEvent, type RefObject
+} from "react";
 
 const ROVING_KEYS = ["ArrowDown", "ArrowUp", "Home", "End"];
 
@@ -102,6 +105,28 @@ export function menuPlacement(
       bounds.left - menu.left
     )
   };
+}
+
+/**
+ * The flip and clamp an anchored outline popup runs once, on mount. Measuring
+ * again would buy nothing: the row unmounts when it scrolls out of the
+ * virtualized window, which closes the popup with it.
+ */
+export function useMenuPlacement(menuRef: RefObject<HTMLElement | null>) {
+  const [placement, setPlacement] = useState({
+    insetBlockStart: MENU_BLOCK_INSET,
+    insetInlineStart: 0
+  });
+  useLayoutEffect(() => {
+    const menu = menuRef.current;
+    if (menu) {
+      setPlacement(menuPlacement(
+        menu.getBoundingClientRect(),
+        outlineMenuBounds(menu)
+      ));
+    }
+  }, [menuRef]);
+  return placement;
 }
 
 /** The box a menu anchored inside the outline has to stay within. */

@@ -134,7 +134,8 @@ describe("OutlineRowMenu items", () => {
 
       expect(labels()).toEqual([
         "Add note", "To-do", "Duplicate", "Upload image", "Complete", "Star",
-        "Move up", "Move down", "Indent", "Outdent", "Copy", "Cut", "Delete"
+        "Move To...", "Move up", "Move down", "Indent", "Outdent", "Copy",
+        "Cut", "Delete"
       ]);
     });
 
@@ -149,9 +150,29 @@ describe("OutlineRowMenu items", () => {
     const { labels } = await openSelectionMenu();
 
     expect(labels()).toEqual([
-      "Complete", "Move up", "Move down", "Indent", "Outdent", "Duplicate",
-      "Copy", "Cut", "Delete"
+      "Complete", "Move To...", "Move up", "Move down", "Indent", "Outdent",
+      "Duplicate", "Copy", "Cut", "Delete"
     ]);
+  });
+
+  // The wiring the chooser's own unit test cannot see: the menu item hands off
+  // to the dialog, scoped to the mode the menu was opened in.
+  it("opens the destination chooser from Move To... in both modes", async () => {
+    const { item } = await openRowMenu();
+
+    fireEvent.click(item("Move To..."));
+
+    expect(await screen.findByRole("dialog", { name: "Move item" }))
+      .toBeVisible();
+  });
+
+  it("opens the chooser scoped to the selection from selection mode", async () => {
+    const { item } = await openSelectionMenu();
+
+    fireEvent.click(item("Move To..."));
+
+    expect(await screen.findByRole("dialog", { name: "Move selection" }))
+      .toBeVisible();
   });
 
   it("puts the platform's shortcut hint in the menu's third column",

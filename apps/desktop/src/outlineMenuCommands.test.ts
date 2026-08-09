@@ -59,6 +59,8 @@ function context(overrides: {
   readonly rootIds?: readonly string[];
   readonly allCompleted?: boolean;
   readonly cutRefusal?: string | null;
+  readonly forestComplete?: boolean;
+  readonly openMoveTo?: () => void;
 } = {}): OutlineMenuContext {
   const nodes = overrides.nodes ?? TREE;
   const rootIds = overrides.rootIds ?? ["a"];
@@ -70,6 +72,8 @@ function context(overrides: {
     hasNote: false,
     allCompleted: overrides.allCompleted ?? false,
     cutRefusal: overrides.cutRefusal ?? null,
+    forestComplete: overrides.forestComplete ?? true,
+    openMoveTo: overrides.openMoveTo ?? vi.fn(),
     plans: buildSelectionMovePlans(
       nodes,
       nodes.map((entry) => entry.id),
@@ -121,16 +125,28 @@ describe("the outline menu command table", () => {
 
   it("orders selection mode the way the parity spec documents", () => {
     expect(outlineMenuCommands("selection").map((entry) => entry.id)).toEqual([
-      "complete", "moveUp", "moveDown", "indent", "outdent", "duplicate",
-      "copy", "cut", "delete"
+      "complete", "moveTo", "moveUp", "moveDown", "indent", "outdent",
+      "duplicate", "copy", "cut", "delete"
     ]);
   });
 
   it("keeps today's row items and slots the new ones before Delete", () => {
     expect(outlineMenuCommands("row").map((entry) => entry.id)).toEqual([
       "addNote", "marker", "duplicate", "uploadImage", "complete", "star",
-      "moveUp", "moveDown", "indent", "outdent", "copy", "cut", "delete"
+      "moveTo", "moveUp", "moveDown", "indent", "outdent", "copy", "cut",
+      "delete"
     ]);
+  });
+
+  it("heads the move commands with Move To in both modes", () => {
+    for (const mode of ["row", "selection"] as const) {
+      const ids = outlineMenuCommands(mode).map((entry) => entry.id);
+
+      expect(ids, mode).toContain("moveTo");
+      expect(ids.indexOf("moveUp"), mode).toBe(ids.indexOf("moveTo") + 1);
+    }
+    // Selection mode follows the legacy order exactly: Move To after Complete.
+    expect(outlineMenuCommands("selection")[1].id).toBe("moveTo");
   });
 
   it("puts Copy and Cut after Duplicate and before Delete in both modes", () => {
@@ -203,6 +219,13 @@ describe("outline menu labels", () => {
     expect(command("delete").label(context())).toBe("Delete");
   });
 
+  // Workflowy spells it with three literal dots, which signal that the item
+  // opens a chooser rather than moving anything by itself.
+  it("spells Move To... with Workflowy's three dots", () => {
+    expect(command("moveTo").label(context())).toBe("Move To...");
+    expect(command("moveTo").label(context({ mode: "row" }))).toBe("Move To...");
+  });
+
   it("uses Workflowy's own names for the four new commands", () => {
     expect(command("moveUp").label(context())).toBe("Move up");
     expect(command("moveDown").label(context())).toBe("Move down");
@@ -216,6 +239,7 @@ describe("outline menu shortcut hints", () => {
     complete: ["⌘↩", "Ctrl+Enter"],
     duplicate: ["⌘⇧D", "Alt+Shift+D"],
     delete: ["⌘⇧⌫", "Ctrl+Shift+Backspace"],
+    moveTo: ["⌃⌘M", "Ctrl+Alt+M"],
     moveUp: ["⌃⇧↑", "Alt+Shift+↑"],
     moveDown: ["⌃⇧↓", "Alt+Shift+↓"],
     indent: ["Tab", "Tab"],
@@ -227,6 +251,7 @@ describe("outline menu shortcut hints", () => {
     complete: ["Meta+Enter", "Control+Enter"],
     duplicate: ["Meta+Shift+D", "Alt+Shift+D"],
     delete: ["Meta+Shift+Backspace", "Control+Shift+Backspace"],
+    moveTo: ["Control+Meta+M", "Control+Alt+M"],
     moveUp: ["Control+Shift+ArrowUp", "Alt+Shift+ArrowUp"],
     moveDown: ["Control+Shift+ArrowDown", "Alt+Shift+ArrowDown"],
     indent: ["Tab", "Tab"],
@@ -306,6 +331,18 @@ describe("outline menu eligibility", () => {
     }
   });
 
+  // The chooser lists every destination in the workspace, so it cannot open
+  // until the same forest the mutating selection commands wait for has loaded.
+  it("refuses Move To until the complete forest is loaded", () => {
+    for (const mode of ["row", "selection"] as const) {
+      expect(unavailable("moveTo", context({ mode, forestComplete: false })))
+        .toBe("Load the complete outline first.");
+      expect(
+        command("moveTo").eligibility(context({ mode })).available, mode
+      ).toBe(true);
+    }
+  });
+
   it("hands Cut's refusal straight through from the clipboard guard", () => {
     expect(command("cut").eligibility(context({ cutRefusal: null })).available)
       .toBe(true);
@@ -343,6 +380,19 @@ describe("outline menu execution", () => {
     expect(ctx.selection.delete).toHaveBeenCalledOnce();
     expect(ctx.selection.indent).toHaveBeenCalledOnce();
     expect(ctx.selection.move).toHaveBeenCalledWith("up");
+  });
+
+  // The menu item opens the chooser and nothing more; the move itself is the
+  // chooser's business, in both modes.
+  it("only opens the chooser for Move To", () => {
+    for (const mode of ["row", "selection"] as const) {
+      const openMoveTo = vi.fn();
+      const ctx = context({ mode, openMoveTo });
+
+      command("moveTo").execute(ctx);
+
+      expect(openMoveTo, mode).toHaveBeenCalledOnce();
+    }
   });
 
   it("routes Copy and Cut to the selection thunks in selection mode", () => {

@@ -1,6 +1,4 @@
-import {
-  useLayoutEffect, useRef, useState, type CSSProperties, type RefObject
-} from "react";
+import { useRef, type CSSProperties, type RefObject } from "react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
 import { outlineCutRefusal } from "./outlineClipboard";
@@ -26,12 +24,11 @@ interface OutlineMenuRuntime {
     readonly selectionPlans: SelectionMovePlans;
     readonly allSelectedCompleted: boolean;
     readonly selectionCutRefusal: string | null;
+    readonly forestComplete: boolean;
     readonly selectionActions: SelectionKeyboardActions;
   };
 }
-import {
-  MENU_BLOCK_INSET, menuPlacement, outlineMenuBounds, useMenuDismiss
-} from "./useMenuDismiss";
+import { useMenuDismiss, useMenuPlacement } from "./useMenuDismiss";
 
 /**
  * The per-row action menu. It is only ever reached by clicking a row's
@@ -45,7 +42,7 @@ import {
  */
 export function OutlineRowMenu({
   node, store, hasNote, mode, runtime, triggerRef, onClose, onAddNote,
-  onDuplicate, onPickImage
+  onDuplicate, onPickImage, onMoveTo
 }: {
   readonly node: NoteView;
   readonly store: NotesStore;
@@ -57,24 +54,11 @@ export function OutlineRowMenu({
   readonly onAddNote: () => void;
   readonly onDuplicate: () => void;
   readonly onPickImage: () => void;
+  readonly onMoveTo: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const onKeyDown = useMenuDismiss(true, menuRef, triggerRef, onClose);
-  const [placement, setPlacement] = useState({
-    insetBlockStart: MENU_BLOCK_INSET,
-    insetInlineStart: 0
-  });
-  // Measured once, at the default placement: the row unmounts when it scrolls
-  // out of the virtualized window, which closes the menu anyway.
-  useLayoutEffect(() => {
-    const menu = menuRef.current;
-    if (menu) {
-      setPlacement(menuPlacement(
-        menu.getBoundingClientRect(),
-        outlineMenuBounds(menu)
-      ));
-    }
-  }, []);
+  const placement = useMenuPlacement(menuRef);
   const state = runtime.state;
   const platform = outlinePlatform();
   const snapshot = store.getSnapshot();
@@ -97,6 +81,7 @@ export function OutlineRowMenu({
         snapshot.noteDrafts,
         [node.id]
       ),
+    forestComplete: state.forestComplete,
     plans: mode === "selection"
       ? state.selectionPlans
       : buildSelectionMovePlans(
@@ -110,7 +95,8 @@ export function OutlineRowMenu({
       duplicate: onDuplicate,
       pickImage: onPickImage
     },
-    selection: state.selectionActions
+    selection: state.selectionActions,
+    openMoveTo: onMoveTo
   };
   return (
     <div

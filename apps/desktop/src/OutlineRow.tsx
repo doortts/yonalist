@@ -37,6 +37,10 @@ const ImageNodeContent = lazy(() => import("./ImageNodeContent").then((module) =
 const OutlineRowMenu = lazy(() => import("./OutlineRowMenu").then((module) => ({
   default: module.OutlineRowMenu
 })));
+const OutlineMoveChooser = lazy(() =>
+  import("./OutlineMoveChooser").then((module) => ({
+    default: module.OutlineMoveChooser
+  })));
 
 export interface OutlineRowRuntimeState {
   readonly visibleNodes: readonly NoteView[];
@@ -46,11 +50,13 @@ export interface OutlineRowRuntimeState {
   readonly selectionHeadId: string | null;
   readonly hasSelection: boolean;
   /** Roots the selection commands act on; more than one opens selection mode. */
-  readonly selectionRootCount: number;
+  readonly selectionRootIds: readonly string[];
   readonly selectionPlans: SelectionMovePlans;
   readonly allSelectedCompleted: boolean;
   /** Why Cut would lose data across the selection, or `null` when it is safe. */
   readonly selectionCutRefusal: string | null;
+  /** Whether the whole forest has loaded; Move To waits on it. */
+  readonly forestComplete: boolean;
   readonly onZoom: (nodeId: string, split: boolean) => void;
   readonly onZoomOut: () => void;
   readonly onExtendSelection: (originId: string, headId: string) => void;
@@ -105,6 +111,7 @@ export const OutlineRow = memo(function OutlineRow({
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [moveOpen, setMoveOpen] = useState(false);
   const [slashMenu, setSlashMenu] = useState<{
     readonly query: SlashCommandQuery;
     readonly commands: ReturnType<typeof filterSlashCommands>;
@@ -138,6 +145,12 @@ export const OutlineRow = memo(function OutlineRow({
   useEffect(() => {
     if (visibleNote.trim().length > 0) setNoteOpen(true);
   }, [visibleNote]);
+  // The legacy menu's eleven-item variant is the selection one: it shows when
+  // the clicked row is inside a live multi-row selection, and acts on the
+  // selection, not the row. The chooser inherits the same scope.
+  const menuMode = selected && runtime.state.selectionRootIds.length > 1
+    ? "selection"
+    : "row";
   return (
     <li
       className="notes-outline-item"
@@ -174,12 +187,7 @@ export const OutlineRow = memo(function OutlineRow({
                   node={node}
                   store={store}
                   hasNote={visibleNote.trim().length > 0}
-                  // The legacy menu's eleven-item variant is the selection
-                  // one: it shows when the clicked row is inside a live
-                  // multi-row selection, and acts on the selection, not the row.
-                  mode={selected && runtime.state.selectionRootCount > 1
-                    ? "selection"
-                    : "row"}
+                  mode={menuMode}
                   runtime={runtime}
                   triggerRef={menuTriggerRef}
                   onClose={() => setMenuOpen(false)}
@@ -193,6 +201,22 @@ export const OutlineRow = memo(function OutlineRow({
                     );
                   }}
                   onPickImage={() => runtime.state.onPickImage(node.id)}
+                  onMoveTo={() => setMoveOpen(true)}
+                />
+              </Suspense>
+            )}
+            {moveOpen && (
+              <Suspense fallback={null}>
+                <OutlineMoveChooser
+                  mode={menuMode}
+                  nodes={store.getSnapshot().nodes}
+                  movingRootIds={menuMode === "selection"
+                    ? runtime.state.selectionRootIds
+                    : [node.id]}
+                  rootId={runtime.state.pageId}
+                  store={store}
+                  triggerRef={menuTriggerRef}
+                  onClose={() => setMoveOpen(false)}
                 />
               </Suspense>
             )}
