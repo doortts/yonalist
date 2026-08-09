@@ -298,6 +298,46 @@ export class NotesStore {
     await this.executeCommand({ kind: "moveNodes", moves: [...moves] });
   }
 
+  /**
+   * A batch of title and note rewrites that undo together. There is no batch
+   * command for text, so each edit runs as its own `updateText`/`updateNote`
+   * under one history group and the Rust coalescer folds them into a single
+   * entry — one `⌘Z` for the whole batch. It stops folding past
+   * `MAX_HISTORY_MUTATIONS_PER_ENTRY` (256) mutations, so callers bound the
+   * batch themselves rather than letting it split without saying so.
+   *
+   * Drafts are flushed first: a debounce still in flight would otherwise land
+   * after these writes and put the pre-edit text back.
+   */
+  async applyTextEdits(
+    edits: readonly {
+      readonly id: string;
+      readonly text?: string;
+      readonly note?: string;
+    }[]
+  ): Promise<void> {
+    if (edits.length === 0) return;
+    await Promise.all(edits.flatMap(({ id }) => [
+      this.flushDraft(id),
+      this.flushNoteDraft(id)
+    ]));
+    const historyGroup = `edits:${freshId()}`;
+    for (const edit of edits) {
+      if (edit.text !== undefined) {
+        await this.executeCommand(
+          { kind: "updateText", id: edit.id, text: edit.text },
+          historyGroup
+        );
+      }
+      if (edit.note !== undefined) {
+        await this.executeCommand(
+          { kind: "updateNote", id: edit.id, note: edit.note },
+          historyGroup
+        );
+      }
+    }
+  }
+
   async outdent(id: string, newParentId: string, beforeId: string | null): Promise<void> {
     await this.flushDraft(id);
     await this.executeCommand({

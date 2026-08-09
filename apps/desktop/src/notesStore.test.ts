@@ -4,6 +4,7 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "./api";
 import type { ViewportPage } from "../../../packages/contracts/generated/ViewportPage";
 import { NotesStore } from "./notesStore";
+import { parseSingleTag, planTagEdits } from "./outlineTagEdits";
 
 function bullet(id: string, sortKey: number): NoteView {
   return {
@@ -799,108 +800,114 @@ describe("NotesStore viewport recovery", () => {
   });
 });
 
-describe("NotesStore empty-row removal", () => {
-  function backend(options: {
-    readonly rejectRemoval?: boolean;
-    readonly seed?: readonly NoteView[];
-  } = {}) {
-    const seed = options.seed ?? [bullet("one", 1_024), bullet("two", 2_048)];
-    const nodes = new Map<string, NoteView>(
-      seed.map((node) => [node.id, node])
-    );
-    const envelopes: CommandEnvelope[] = [];
-    // notes-application undoes one history group at a time
-    const undoStack: Map<string, NoteView>[] = [];
-    let revision = boot.revision;
-    let undoDepth = 0;
-    let lastGroup: string | null = null;
-    const notesApi = api(vi.fn());
-    notesApi.bootstrap = vi.fn().mockResolvedValue({
-      ...boot,
-      viewport: { ...boot.viewport!, nodes: seed.map((node) => ({ ...node })) }
-    });
-    notesApi.undo = vi.fn(async () => {
-      const restored = undoStack.pop() ?? new Map(nodes);
-      const deletedIds = [...nodes.keys()].filter((id) => !restored.has(id));
-      nodes.clear();
-      restored.forEach((node, id) => nodes.set(id, node));
-      revision += 1;
-      undoDepth = Math.max(0, undoDepth - 1);
-      lastGroup = null;
-      return {
-        revision,
-        changedNodes: [...nodes.values()],
-        deletedIds,
-        history: {
-          canUndo: undoDepth > 0,
-          canRedo: true,
-          undoDepth,
-          redoDepth: 1
-        }
-      };
-    });
-    notesApi.execute = vi.fn(async (envelope) => {
-      envelopes.push(envelope);
-      const command = envelope.command;
-      const changedNodes: NoteView[] = [];
-      const deletedIds: string[] = [];
-      const target = "id" in command ? nodes.get(command.id) : undefined;
-      if (!target) throw new Error(`node not found: ${JSON.stringify(command)}`);
-      if (envelope.historyGroup === null || envelope.historyGroup !== lastGroup) {
-        undoStack.push(new Map(nodes));
-      }
-      if (command.kind === "updateText") {
-        const node = { ...target, text: command.text };
-        nodes.set(node.id, node);
-        changedNodes.push(node);
-      } else if (command.kind === "updateNote") {
-        const node = { ...target, note: command.note };
-        nodes.set(node.id, node);
-        changedNodes.push(node);
-      } else if (command.kind === "removeEmptyNode") {
-        // mirrors notes-core remove_empty_node
-        if (
-          options.rejectRemoval ||
-          target.text.trim().length > 0 ||
-          target.note.trim().length > 0
-        ) {
-          throw new Error(`node is not empty: ${command.id}`);
-        }
-        [...nodes.values()]
-          .filter((node) => node.parentId === command.id)
-          .forEach((child, index) => {
-            const promoted = {
-              ...child,
-              parentId: target.parentId,
-              sortKey: target.sortKey + index + 1
-            };
-            nodes.set(child.id, promoted);
-            changedNodes.push(promoted);
-          });
-        nodes.delete(command.id);
-        deletedIds.push(command.id);
-      } else {
-        throw new Error(`unexpected command: ${command.kind}`);
-      }
-      revision += 1;
-      // notes-application folds same-group mutations into one undo entry
-      if (envelope.historyGroup === null || envelope.historyGroup !== lastGroup) {
-        undoDepth += 1;
-      }
-      lastGroup = envelope.historyGroup;
-      return {
-        revision,
-        changedNodes,
-        deletedIds,
-        history: { canUndo: true, canRedo: false, undoDepth, redoDepth: 0 }
-      };
-    });
+/**
+ * A fake backend that behaves the way notes-application does about history:
+ * commands sharing one group fold into a single undo entry, and `undo`
+ * restores the tree as it stood before that whole entry.
+ */
+function backend(options: {
+  readonly rejectRemoval?: boolean;
+  readonly seed?: readonly NoteView[];
+} = {}) {
+  const seed = options.seed ?? [bullet("one", 1_024), bullet("two", 2_048)];
+  const nodes = new Map<string, NoteView>(
+    seed.map((node) => [node.id, node])
+  );
+  const envelopes: CommandEnvelope[] = [];
+  // notes-application undoes one history group at a time
+  const undoStack: Map<string, NoteView>[] = [];
+  let revision = boot.revision;
+  let undoDepth = 0;
+  let lastGroup: string | null = null;
+  const notesApi = api(vi.fn());
+  notesApi.bootstrap = vi.fn().mockResolvedValue({
+    ...boot,
+    viewport: { ...boot.viewport!, nodes: seed.map((node) => ({ ...node })) }
+  });
+  notesApi.undo = vi.fn(async () => {
+    const restored = undoStack.pop() ?? new Map(nodes);
+    const deletedIds = [...nodes.keys()].filter((id) => !restored.has(id));
+    nodes.clear();
+    restored.forEach((node, id) => nodes.set(id, node));
+    revision += 1;
+    undoDepth = Math.max(0, undoDepth - 1);
+    lastGroup = null;
     return {
-      notesApi,
-      commands: () => envelopes.map((envelope) => envelope.command),
-      groups: () => envelopes.map((envelope) => envelope.historyGroup)
+      revision,
+      changedNodes: [...nodes.values()],
+      deletedIds,
+      history: {
+        canUndo: undoDepth > 0,
+        canRedo: true,
+        undoDepth,
+        redoDepth: 1
+      }
     };
-  }
+  });
+  notesApi.execute = vi.fn(async (envelope) => {
+    envelopes.push(envelope);
+    const command = envelope.command;
+    const changedNodes: NoteView[] = [];
+    const deletedIds: string[] = [];
+    const target = "id" in command ? nodes.get(command.id) : undefined;
+    if (!target) throw new Error(`node not found: ${JSON.stringify(command)}`);
+    if (envelope.historyGroup === null || envelope.historyGroup !== lastGroup) {
+      undoStack.push(new Map(nodes));
+    }
+    if (command.kind === "updateText") {
+      const node = { ...target, text: command.text };
+      nodes.set(node.id, node);
+      changedNodes.push(node);
+    } else if (command.kind === "updateNote") {
+      const node = { ...target, note: command.note };
+      nodes.set(node.id, node);
+      changedNodes.push(node);
+    } else if (command.kind === "removeEmptyNode") {
+      // mirrors notes-core remove_empty_node
+      if (
+        options.rejectRemoval ||
+        target.text.trim().length > 0 ||
+        target.note.trim().length > 0
+      ) {
+        throw new Error(`node is not empty: ${command.id}`);
+      }
+      [...nodes.values()]
+        .filter((node) => node.parentId === command.id)
+        .forEach((child, index) => {
+          const promoted = {
+            ...child,
+            parentId: target.parentId,
+            sortKey: target.sortKey + index + 1
+          };
+          nodes.set(child.id, promoted);
+          changedNodes.push(promoted);
+        });
+      nodes.delete(command.id);
+      deletedIds.push(command.id);
+    } else {
+      throw new Error(`unexpected command: ${command.kind}`);
+    }
+    revision += 1;
+    // notes-application folds same-group mutations into one undo entry
+    if (envelope.historyGroup === null || envelope.historyGroup !== lastGroup) {
+      undoDepth += 1;
+    }
+    lastGroup = envelope.historyGroup;
+    return {
+      revision,
+      changedNodes,
+      deletedIds,
+      history: { canUndo: true, canRedo: false, undoDepth, redoDepth: 0 }
+    };
+  });
+  return {
+    notesApi,
+    commands: () => envelopes.map((envelope) => envelope.command),
+    groups: () => envelopes.map((envelope) => envelope.historyGroup)
+  };
+}
+
+describe("NotesStore empty-row removal", () => {
 
   it("commits the blanking edit before removing the row it emptied", async () => {
     const backspace = backend();
@@ -1012,5 +1019,62 @@ describe("NotesStore empty-row removal", () => {
       ["child-b", "둘째", "current"],
       ["sibling", "이런것이", "parent"]
     ]);
+  });
+});
+
+describe("NotesStore tag edits", () => {
+  const errand = parseSingleTag("#errand")!;
+  const seed = [
+    { ...bullet("one", 1_024), text: "buy milk" },
+    { ...bullet("two", 2_048), text: "call mum" },
+    { ...bullet("three", 3_072), text: "pay rent" }
+  ];
+
+  function titles(store: NotesStore): readonly string[] {
+    return store.getSnapshot().nodes.map((node) => node.text);
+  }
+
+  it("tags three rows under one history group that one undo reverts", async () => {
+    const tagging = backend({ seed });
+    const store = new NotesStore(tagging.notesApi);
+    await store.bootstrap();
+    const history = vi.fn();
+    store.subscribeHistory(history);
+
+    await store.applyTextEdits(planTagEdits(
+      store.getSnapshot().nodes, {}, {},
+      ["one", "two", "three"],
+      errand,
+      "add"
+    ));
+
+    expect(tagging.commands()).toEqual([
+      { kind: "updateText", id: "one", text: "buy milk #errand" },
+      { kind: "updateText", id: "two", text: "call mum #errand" },
+      { kind: "updateText", id: "three", text: "pay rent #errand" }
+    ]);
+    expect(new Set(tagging.groups()).size).toBe(1);
+    // Three writes, one entry: the coalescer folded them, so the toolbar sees
+    // one new undo step rather than three.
+    expect(history).toHaveBeenCalledOnce();
+
+    await store.undo();
+
+    expect(titles(store)).toEqual(["buy milk", "call mum", "pay rent"]);
+  });
+
+  it("keeps a later tag operation out of the previous undo entry", async () => {
+    const tagging = backend({ seed });
+    const store = new NotesStore(tagging.notesApi);
+    await store.bootstrap();
+
+    const plan = (mode: "add" | "remove") => planTagEdits(
+      store.getSnapshot().nodes, {}, {}, ["one"], errand, mode
+    );
+    await store.applyTextEdits(plan("add"));
+    await store.applyTextEdits(plan("remove"));
+
+    expect(new Set(tagging.groups()).size).toBe(2);
+    expect(titles(store)).toEqual(["buy milk", "call mum", "pay rent"]);
   });
 });

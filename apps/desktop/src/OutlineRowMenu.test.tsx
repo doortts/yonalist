@@ -134,8 +134,8 @@ describe("OutlineRowMenu items", () => {
 
       expect(labels()).toEqual([
         "Add note", "To-do", "Duplicate", "Upload image", "Complete", "Star",
-        "Move To...", "Move up", "Move down", "Indent", "Outdent", "Copy",
-        "Cut", "Delete"
+        "Move To...", "Move up", "Move down", "Indent", "Outdent", "Tags",
+        "Copy", "Cut", "Delete"
       ]);
     });
 
@@ -151,7 +151,7 @@ describe("OutlineRowMenu items", () => {
 
     expect(labels()).toEqual([
       "Complete", "Move To...", "Move up", "Move down", "Indent", "Outdent",
-      "Duplicate", "Copy", "Cut", "Delete"
+      "Duplicate", "Tags", "Copy", "Cut", "Delete"
     ]);
   });
 
@@ -172,6 +172,24 @@ describe("OutlineRowMenu items", () => {
     fireEvent.click(item("Move To..."));
 
     expect(await screen.findByRole("dialog", { name: "Move selection" }))
+      .toBeVisible();
+  });
+
+  it("opens the tag editor from Tags in both modes", async () => {
+    const row = await openRowMenu();
+
+    fireEvent.click(row.item("Tags"));
+
+    expect(await screen.findByRole("dialog", { name: "Edit tags" }))
+      .toBeVisible();
+  });
+
+  it("opens the tag editor from a selection menu too", async () => {
+    const selection = await openSelectionMenu();
+
+    fireEvent.click(selection.item("Tags"));
+
+    expect(await screen.findByRole("dialog", { name: "Edit tags" }))
       .toBeVisible();
   });
 

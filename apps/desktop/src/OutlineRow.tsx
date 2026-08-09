@@ -41,6 +41,10 @@ const OutlineMoveChooser = lazy(() =>
   import("./OutlineMoveChooser").then((module) => ({
     default: module.OutlineMoveChooser
   })));
+const OutlineTagChooser = lazy(() =>
+  import("./OutlineTagChooser").then((module) => ({
+    default: module.OutlineTagChooser
+  })));
 
 export interface OutlineRowRuntimeState {
   readonly visibleNodes: readonly NoteView[];
@@ -115,6 +119,7 @@ export const OutlineRow = memo(function OutlineRow({
   // The menu item and `⌃⌘M` open the one chooser mounted below by flipping
   // this: a second mount point would mean two dialogs racing for the same row.
   const openMoveChooser = () => setMoveOpen(true);
+  const [tagsOpen, setTagsOpen] = useState(false);
   const [slashMenu, setSlashMenu] = useState<{
     readonly query: SlashCommandQuery;
     readonly commands: ReturnType<typeof filterSlashCommands>;
@@ -205,6 +210,7 @@ export const OutlineRow = memo(function OutlineRow({
                   }}
                   onPickImage={() => runtime.state.onPickImage(node.id)}
                   onMoveTo={openMoveChooser}
+                  onTags={() => setTagsOpen(true)}
                 />
               </Suspense>
             )}
@@ -220,6 +226,19 @@ export const OutlineRow = memo(function OutlineRow({
                   store={store}
                   triggerRef={menuTriggerRef}
                   onClose={() => setMoveOpen(false)}
+                />
+              </Suspense>
+            )}
+            {tagsOpen && (
+              <Suspense fallback={null}>
+                <OutlineTagChooser
+                  nodes={store.getSnapshot().nodes}
+                  targetIds={menuMode === "selection"
+                    ? runtime.state.selectionRootIds
+                    : [node.id]}
+                  store={store}
+                  triggerRef={menuTriggerRef}
+                  onClose={() => setTagsOpen(false)}
                 />
               </Suspense>
             )}

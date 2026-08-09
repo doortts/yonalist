@@ -9,6 +9,7 @@ import {
   type OutlinePlatform
 } from "./outlineMenuCommands";
 import { serializeSelectedOutline } from "./outlineClipboard";
+import { OUTLINE_TAG_MAX_ROWS } from "./outlineTagEdits";
 import { buildSelectionMovePlans } from "./selectionMoves";
 
 const ROOT = "page-1";
@@ -61,6 +62,7 @@ function context(overrides: {
   readonly cutRefusal?: string | null;
   readonly forestComplete?: boolean;
   readonly openMoveTo?: () => void;
+  readonly openTags?: () => void;
 } = {}): OutlineMenuContext {
   const nodes = overrides.nodes ?? TREE;
   const rootIds = overrides.rootIds ?? ["a"];
@@ -73,7 +75,9 @@ function context(overrides: {
     allCompleted: overrides.allCompleted ?? false,
     cutRefusal: overrides.cutRefusal ?? null,
     forestComplete: overrides.forestComplete ?? true,
+    targetCount: overrides.mode === "row" ? 1 : rootIds.length,
     openMoveTo: overrides.openMoveTo ?? vi.fn(),
+    openTags: overrides.openTags ?? vi.fn(),
     plans: buildSelectionMovePlans(
       nodes,
       nodes.map((entry) => entry.id),
@@ -126,16 +130,25 @@ describe("the outline menu command table", () => {
   it("orders selection mode the way the parity spec documents", () => {
     expect(outlineMenuCommands("selection").map((entry) => entry.id)).toEqual([
       "complete", "moveTo", "moveUp", "moveDown", "indent", "outdent",
-      "duplicate", "copy", "cut", "delete"
+      "duplicate", "tags", "copy", "cut", "delete"
     ]);
   });
 
   it("keeps today's row items and slots the new ones before Delete", () => {
     expect(outlineMenuCommands("row").map((entry) => entry.id)).toEqual([
       "addNote", "marker", "duplicate", "uploadImage", "complete", "star",
-      "moveTo", "moveUp", "moveDown", "indent", "outdent", "copy", "cut",
-      "delete"
+      "moveTo", "moveUp", "moveDown", "indent", "outdent", "tags", "copy",
+      "cut", "delete"
     ]);
+  });
+
+  it("puts Tags after Duplicate and before Copy in both modes", () => {
+    for (const mode of ["row", "selection"] as const) {
+      const ids = outlineMenuCommands(mode).map((entry) => entry.id);
+
+      expect(ids.indexOf("tags"), mode).toBeGreaterThan(ids.indexOf("duplicate"));
+      expect(ids.indexOf("copy"), mode).toBe(ids.indexOf("tags") + 1);
+    }
   });
 
   it("heads the move commands with Move To in both modes", () => {
@@ -222,6 +235,7 @@ describe("outline menu labels", () => {
   // Workflowy spells it with three literal dots, which signal that the item
   // opens a chooser rather than moving anything by itself.
   it("spells Move To... with Workflowy's three dots", () => {
+    expect(command("tags").label(context())).toBe("Tags");
     expect(command("moveTo").label(context())).toBe("Move To...");
     expect(command("moveTo").label(context({ mode: "row" }))).toBe("Move To...");
   });
@@ -274,7 +288,9 @@ describe("outline menu shortcut hints", () => {
   });
 
   it("leaves the commands Workflowy never bound without a hint", () => {
-    for (const id of ["addNote", "marker", "uploadImage", "star"] as const) {
+    for (const id of [
+      "addNote", "marker", "uploadImage", "star", "tags"
+    ] as const) {
       expect(command(id).binding, id).toBeUndefined();
     }
   });
@@ -343,6 +359,19 @@ describe("outline menu eligibility", () => {
     }
   });
 
+  // Past the coalescer's cap one tag operation would quietly become several
+  // undo steps, so the menu refuses the batch instead of splitting it.
+  it("bounds Tags at the rows one history entry can hold", () => {
+    const rootIds = TREE.map((node) => node.id);
+
+    expect(command("tags").eligibility({
+      ...context({ rootIds }), targetCount: OUTLINE_TAG_MAX_ROWS
+    }).available).toBe(true);
+    expect(unavailable("tags", {
+      ...context({ rootIds }), targetCount: OUTLINE_TAG_MAX_ROWS + 1
+    })).toBe(`Tag up to ${OUTLINE_TAG_MAX_ROWS} rows at a time.`);
+  });
+
   it("hands Cut's refusal straight through from the clipboard guard", () => {
     expect(command("cut").eligibility(context({ cutRefusal: null })).available)
       .toBe(true);
@@ -392,6 +421,17 @@ describe("outline menu execution", () => {
       command("moveTo").execute(ctx);
 
       expect(openMoveTo, mode).toHaveBeenCalledOnce();
+    }
+  });
+
+  it("only opens the chooser for Tags", () => {
+    for (const mode of ["row", "selection"] as const) {
+      const openTags = vi.fn();
+      const ctx = context({ mode, openTags });
+
+      command("tags").execute(ctx);
+
+      expect(openTags, mode).toHaveBeenCalledOnce();
     }
   });
 

@@ -1,13 +1,14 @@
 import {
   ArrowDown, ArrowUp, Check, Circle, Copy, CopyPlus, CornerUpRight, ImagePlus,
   IndentDecrease, IndentIncrease, MessageSquareText, Scissors, SquareCheckBig,
-  Star, Trash2, type LucideIcon
+  Star, Tag, Trash2, type LucideIcon
 } from "lucide-react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
 import {
   serializeSelectedOutline, writeOutlineClipboard
 } from "./outlineClipboard";
+import { OUTLINE_TAG_MAX_ROWS } from "./outlineTagEdits";
 import type { SelectionKeyboardActions } from "./outlineSupport";
 import type { SelectionMovePlan, SelectionMovePlans } from "./selectionMoves";
 
@@ -17,7 +18,7 @@ export type OutlinePlatform = "mac" | "other";
 export type OutlineMenuCommandId =
   | "addNote" | "marker" | "duplicate" | "uploadImage" | "complete" | "star"
   | "delete" | "moveTo" | "moveUp" | "moveDown" | "indent" | "outdent"
-  | "copy" | "cut";
+  | "tags" | "copy" | "cut";
 
 /**
  * What the row menu needs to know to draw and run one command. `plans` is
@@ -45,6 +46,8 @@ export interface OutlineMenuContext {
    * already wait on rather than opening on a subset of the tree.
    */
   readonly forestComplete: boolean;
+  /** Rows the command acts on: the selected roots, or 1 in row mode. */
+  readonly targetCount: number;
   readonly plans: SelectionMovePlans;
   readonly row: {
     readonly addNote: () => void;
@@ -54,6 +57,8 @@ export interface OutlineMenuContext {
   readonly selection: SelectionKeyboardActions;
   /** Opens the destination chooser. Both modes hand off to the same dialog. */
   readonly openMoveTo: () => void;
+  /** Opens the tag editor. Both modes hand off to the same dialog. */
+  readonly openTags: () => void;
 }
 
 export type OutlineMenuEligibility =
@@ -240,6 +245,22 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
       : runMove(context, context.plans.outdent)
   },
   {
+    id: "tags",
+    icon: () => Tag,
+    // Workflowy has no Tags command, so there is no shortcut hint to match.
+    label: () => "Tags",
+    // N rows means N text writes under one history group, and the Rust
+    // coalescer stops folding past MAX_HISTORY_MUTATIONS_PER_ENTRY. Refusing
+    // is better than splitting one tag operation into several silent undos.
+    eligibility: (context) => context.targetCount <= OUTLINE_TAG_MAX_ROWS
+      ? { available: true }
+      : {
+        available: false,
+        reason: `Tag up to ${OUTLINE_TAG_MAX_ROWS} rows at a time.`
+      },
+    execute: (context) => context.openTags()
+  },
+  {
     id: "copy",
     icon: () => Copy,
     label: () => "Copy",
@@ -279,14 +300,15 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
 // landing on it when they overshoot.
 const ROW_ORDER: readonly OutlineMenuCommandId[] = [
   "addNote", "marker", "duplicate", "uploadImage", "complete", "star",
-  "moveTo", "moveUp", "moveDown", "indent", "outdent", "copy", "cut", "delete"
+  "moveTo", "moveUp", "moveDown", "indent", "outdent", "tags", "copy", "cut",
+  "delete"
 ];
 
-// The legacy selection menu's order, minus the one command that has no
-// implementation yet: Tags, which belongs before Copy.
+// The legacy selection menu's order, Tags included: after Duplicate, before
+// Copy.
 const SELECTION_ORDER: readonly OutlineMenuCommandId[] = [
   "complete", "moveTo", "moveUp", "moveDown", "indent", "outdent", "duplicate",
-  "copy", "cut", "delete"
+  "tags", "copy", "cut", "delete"
 ];
 
 export function outlineMenuCommands(

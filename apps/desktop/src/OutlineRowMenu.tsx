@@ -21,6 +21,7 @@ interface OutlineMenuRuntime {
   readonly state: {
     readonly visibleNodes: readonly NoteView[];
     readonly pageId: string;
+    readonly selectionRootIds: readonly string[];
     readonly selectionPlans: SelectionMovePlans;
     readonly allSelectedCompleted: boolean;
     readonly selectionCutRefusal: string | null;
@@ -42,7 +43,7 @@ import { useMenuDismiss, useMenuPlacement } from "./useMenuDismiss";
  */
 export function OutlineRowMenu({
   node, store, hasNote, mode, runtime, triggerRef, onClose, onAddNote,
-  onDuplicate, onPickImage, onMoveTo
+  onDuplicate, onPickImage, onMoveTo, onTags
 }: {
   readonly node: NoteView;
   readonly store: NotesStore;
@@ -55,6 +56,7 @@ export function OutlineRowMenu({
   readonly onDuplicate: () => void;
   readonly onPickImage: () => void;
   readonly onMoveTo: () => void;
+  readonly onTags: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const onKeyDown = useMenuDismiss(true, menuRef, triggerRef, onClose);
@@ -82,6 +84,7 @@ export function OutlineRowMenu({
         [node.id]
       ),
     forestComplete: state.forestComplete,
+    targetCount: mode === "selection" ? state.selectionRootIds.length : 1,
     plans: mode === "selection"
       ? state.selectionPlans
       : buildSelectionMovePlans(
@@ -96,7 +99,8 @@ export function OutlineRowMenu({
       pickImage: onPickImage
     },
     selection: state.selectionActions,
-    openMoveTo: onMoveTo
+    openMoveTo: onMoveTo,
+    openTags: onTags
   };
   return (
     <div
