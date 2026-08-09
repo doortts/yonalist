@@ -76,4 +76,51 @@ describe("receipt state", () => {
     expect(result.changedNodeIds).toEqual(["one"]);
     expect(result.outlineChanged).toBe(true);
   });
+
+  it("drops drafts the receipt made stale and keeps unflushed typing", () => {
+    const one = { ...bullet("one", "page"), text: "one", note: "note one" };
+    const two = { ...bullet("two", "page"), text: "two", note: "note two" };
+    const three = { ...bullet("three", "page"), text: "three", note: "" };
+    const result = receiptState({
+      ...initialNotesState,
+      status: "ready",
+      sessionId: "session",
+      activePageId: "page",
+      nodes: [one, two, three],
+      drafts: { one: "one", two: "renamed", three: "still typing" },
+      noteDrafts: { one: "note one", two: "renote", three: "still typing" }
+    }, {
+      revision: 2,
+      changedNodes: [
+        // Undo puts a text back that neither draft knows about.
+        { ...one, text: "older", note: "older note" },
+        // The commit that matches the draft the user already stopped touching.
+        { ...two, text: "renamed", note: "renote" }
+      ],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    });
+
+    expect(result.patch.drafts).toEqual({ three: "still typing" });
+    expect(result.patch.noteDrafts).toEqual({ three: "still typing" });
+  });
+
+  it("keeps a draft the user typed past the text the receipt carries", () => {
+    const one = { ...bullet("one", "page"), text: "one" };
+    const result = receiptState({
+      ...initialNotesState,
+      status: "ready",
+      sessionId: "session",
+      activePageId: "page",
+      nodes: [one],
+      drafts: { one: "one and more" }
+    }, {
+      revision: 2,
+      changedNodes: [{ ...one, text: "older" }],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    });
+
+    expect(result.patch.drafts).toEqual({ one: "one and more" });
+  });
 });

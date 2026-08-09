@@ -52,17 +52,17 @@ export class StoreDrafts {
     this.cancelTitle(id);
     const state = this.host.read();
     const submittedText = state.drafts[id];
-    if (
-      submittedText === undefined ||
-      submittedText === confirmedText(state, id)
-    ) {
-      return;
+    if (submittedText === undefined) return;
+    // A draft equal to the committed text needs no command, but it still has
+    // to go: the row renders the draft over the node, so one left behind here
+    // outlives the next undo and the keystroke after it commits it back.
+    if (submittedText !== confirmedText(state, id)) {
+      const historyGroup = this.titleHistoryGroups.get(id) ?? `text:${id}`;
+      await this.host.execute(
+        { kind: "updateText", id, text: submittedText },
+        historyGroup
+      );
     }
-    const historyGroup = this.titleHistoryGroups.get(id) ?? `text:${id}`;
-    await this.host.execute(
-      { kind: "updateText", id, text: submittedText },
-      historyGroup
-    );
     const current = this.host.read();
     if (current.drafts[id] === submittedText) {
       const drafts = { ...current.drafts };

@@ -3,6 +3,7 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { ViewportPage } from "../../../packages/contracts/generated/ViewportPage";
 import type { NotesState } from "./notesState";
 import { mergeViewport, orderOutline } from "./outlineModel";
+import { confirmedNote, confirmedText } from "./storeSupport";
 
 export function omitKeys<T>(
   record: Readonly<Record<string, T>>,
@@ -93,8 +94,27 @@ export function receiptState(
     ...receipt.deletedIds,
     ...receipt.changedNodes.filter((node) => node.deleted).map((node) => node.id)
   ];
-  const drafts = omitKeys(state.drafts, removedDraftIds);
-  const noteDrafts = omitKeys(state.noteDrafts, removedDraftIds);
+  // A draft equal to the text on either side of the receipt is one the user
+  // has not touched since it was committed, so the receipt -- an undo above
+  // all -- outranks it. A draft that matches neither is typing still in
+  // flight; dropping that would throw the work away.
+  const staleDraft = (
+    draft: string | undefined,
+    committed: string,
+    previous: string | undefined
+  ): boolean =>
+    draft !== undefined && (draft === committed || draft === previous);
+  const staleTextIds = receipt.changedNodes.filter((node) => staleDraft(
+    state.drafts[node.id], node.text, confirmedText(state, node.id)
+  )).map((node) => node.id);
+  const staleNoteIds = receipt.changedNodes.filter((node) => staleDraft(
+    state.noteDrafts[node.id], node.note, confirmedNote(state, node.id)
+  )).map((node) => node.id);
+  const drafts = omitKeys(state.drafts, [...removedDraftIds, ...staleTextIds]);
+  const noteDrafts = omitKeys(
+    state.noteDrafts,
+    [...removedDraftIds, ...staleNoteIds]
+  );
   const changedNodeIds = [
     ...new Set([
       ...receipt.changedNodes.map((node) => node.id),
