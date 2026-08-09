@@ -2166,9 +2166,13 @@ button.notes-date-token:hover {
   min-height: 28px;
 }
 
+/* No z-index here. A grid item with one is a stacking context even sitting
+   static, and the row menu opens inside this slot: its z-index would be
+   trapped at the slot's, tying with the title and the bullet dot of every row
+   below and losing to them on document order. The slot needs no lift of its
+   own — it sits in the arrow's column, clear of the bullet. */
 .notes-node-main:has(> .notes-node-arrow-slot:empty)
   > .notes-node-menu-slot {
-  z-index: 1;
   grid-column: 2;
 }
 
