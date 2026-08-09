@@ -29,6 +29,19 @@ describe("browser-only preview adapter", () => {
     );
   });
 
+  it("rejects removing a row that still holds text, as notes-core does", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const target = boot.viewport!.nodes.find((node) => node.text.trim())!;
+
+    await expect(previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-remove-nonempty",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: { kind: "removeEmptyNode", id: target.id }
+    })).rejects.toThrow(`node is not empty: ${target.id}`);
+  });
+
   it("supports atomic split and empty-row removal in browser preview", async () => {
     const boot = await previewNotesApi.bootstrap();
     const target = boot.viewport!.nodes[0];
