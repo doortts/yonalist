@@ -5,7 +5,7 @@ mod image_replace_ipc;
 mod startup;
 
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use notes_application::{
     BootSnapshot, CloseOutcome, CommandEnvelope, ForestRequest, ForestSnapshot, HistoryRequest,
     ImageAssetPort, MutationReceipt, NotesError, NotesErrorCode, NotesService, SearchPage,
-    SearchQuery, ViewportPage, ViewportRequest,
+    SearchQuery, UnusedAssetsReport, ViewportPage, ViewportRequest,
 };
 use notes_export::{NativeExportPublisher, NativeExportRenderer};
 use notes_sqlite::{LocalImageAssets, SqliteStorage};
@@ -175,6 +175,110 @@ async fn notes_close_session(state: State<'_, DesktopState>) -> Result<CloseOutc
     .await
 }
 
+const DELETE_DATA_MARKER: &str = "delete-notes-data-on-start";
+
+#[tauri::command]
+async fn notes_unused_assets(
+    state: State<'_, DesktopState>,
+    purge: bool,
+) -> Result<UnusedAssetsReport, NotesError> {
+    let gate = Arc::clone(&state.runtime);
+    run_blocking(move || {
+        let runtime = gate.wait()?;
+        let live_hashes = runtime
+            .storage
+            .live_image_hashes()
+            .map_err(NotesError::from)?;
+        let images = runtime.data_directory.join("images");
+        let mut count: u32 = 0;
+        let mut total_bytes: u64 = 0;
+        if images.is_dir() {
+            let entries = std::fs::read_dir(&images).map_err(|error| NotesError {
+                code: NotesErrorCode::StorageUnavailable,
+                message: error.to_string(),
+                retryable: true,
+            })?;
+            for entry in entries {
+                let entry = entry.map_err(|error| NotesError {
+                    code: NotesErrorCode::StorageUnavailable,
+                    message: error.to_string(),
+                    retryable: true,
+                })?;
+                let metadata = std::fs::symlink_metadata(entry.path()).map_err(|error| {
+                    NotesError {
+                        code: NotesErrorCode::StorageUnavailable,
+                        message: error.to_string(),
+                        retryable: true,
+                    }
+                })?;
+                if !metadata.is_file() {
+                    continue;
+                }
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                let hash = name.split_once('.').map(|(hash, _)| hash);
+                if hash.is_none_or(|hash| !live_hashes.contains(hash)) {
+                    count += 1;
+                    total_bytes = total_bytes.saturating_add(metadata.len());
+                }
+            }
+        }
+        if purge && count > 0 {
+            runtime
+                .assets
+                .reconcile(&live_hashes)
+                .map_err(NotesError::from)?;
+        }
+        Ok(UnusedAssetsReport {
+            count,
+            total_bytes,
+            purged: purge,
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn notes_delete_all_data(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<(), NotesError> {
+    let gate = Arc::clone(&state.runtime);
+    let marker = run_blocking(move || {
+        let runtime = gate.wait()?;
+        let marker = runtime.data_directory.join(DELETE_DATA_MARKER);
+        std::fs::write(&marker, b"1").map_err(|error| NotesError {
+            code: NotesErrorCode::StorageUnavailable,
+            message: error.to_string(),
+            retryable: true,
+        })?;
+        Ok(marker)
+    })
+    .await?;
+    let _ = marker;
+    app.restart();
+}
+
+fn apply_pending_data_deletion(data_directory: &Path) -> std::io::Result<()> {
+    let marker = data_directory.join(DELETE_DATA_MARKER);
+    if !marker.exists() {
+        return Ok(());
+    }
+    for database_file in ["notes-v2.sqlite", "notes-v2.sqlite-wal", "notes-v2.sqlite-shm"] {
+        let path = data_directory.join(database_file);
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+    }
+    for directory in ["images", "original-views"] {
+        let path = data_directory.join(directory);
+        if path.exists() {
+            std::fs::remove_dir_all(path)?;
+        }
+    }
+    std::fs::remove_file(marker)
+}
+
 fn parse_http_url(value: &str) -> Result<tauri::Url, String> {
     let parsed = tauri::Url::parse(value).map_err(|error| error.to_string())?;
     match parsed.scheme() {
@@ -192,6 +296,11 @@ fn open_external_url(url: String) -> Result<(), String> {
 impl DesktopRuntime {
     fn initialize(data_directory: PathBuf, font_path: PathBuf) -> Result<Self, NotesError> {
         std::fs::create_dir_all(&data_directory).map_err(|error| NotesError {
+            code: NotesErrorCode::StorageUnavailable,
+            message: error.to_string(),
+            retryable: true,
+        })?;
+        apply_pending_data_deletion(&data_directory).map_err(|error| NotesError {
             code: NotesErrorCode::StorageUnavailable,
             message: error.to_string(),
             retryable: true,
@@ -332,6 +441,8 @@ pub fn run() {
             notes_redo,
             notes_search,
             notes_close_session,
+            notes_unused_assets,
+            notes_delete_all_data,
             export_ipc::notes_export,
             image_ipc::notes_import_image_bytes,
             image_ipc::notes_import_image_paths,

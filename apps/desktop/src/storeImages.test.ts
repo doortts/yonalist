@@ -74,7 +74,9 @@ function api(
     redo: vi.fn(),
     search: vi.fn(),
     exportNotes: vi.fn(),
-    closeSession: vi.fn()
+    closeSession: vi.fn(),
+    unusedAssets: vi.fn(),
+    deleteAllData: vi.fn()
   };
 }
 

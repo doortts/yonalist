@@ -12,7 +12,10 @@ function snapshot(directory) {
     readdirSync(directory)
       .filter((name) => name.endsWith(".ts"))
       .sort()
-      .map((name) => [name, readFileSync(join(directory, name), "utf8")])
+      .map((name) => [
+        name,
+        readFileSync(join(directory, name), "utf8").replaceAll("\r\n", "\n")
+      ])
   );
 }
 

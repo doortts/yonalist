@@ -11,6 +11,22 @@ use super::NotesTree;
 impl NotesTree {
     pub(super) fn execute(&mut self, command: NotesCommand) -> Result<(), DomainError> {
         match command {
+            NotesCommand::Batch { commands } => {
+                if commands.is_empty() {
+                    return Err(DomainError::Invariant(
+                        "an editor batch must contain at least one command".into(),
+                    ));
+                }
+                for command in commands {
+                    if matches!(&command, NotesCommand::Batch { .. }) {
+                        return Err(DomainError::Invariant(
+                            "nested editor batches are not allowed".into(),
+                        ));
+                    }
+                    self.execute(command)?;
+                }
+                Ok(())
+            }
             NotesCommand::CreatePage { id, text } => self.create_page(id, text),
             NotesCommand::CreateNode {
                 id,

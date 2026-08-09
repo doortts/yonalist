@@ -14,6 +14,101 @@ fn plan_and_apply(tree: &mut NotesTree, command: NotesCommand) {
 }
 
 #[test]
+fn editor_batch_plans_against_one_candidate_tree() {
+    let mut tree = NotesTree::default();
+    tree.apply(&[
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("first"), id("page"), 1_024, "alpha")),
+    ])
+    .unwrap();
+
+    let patch = tree
+        .plan(NotesCommand::Batch {
+            commands: vec![
+                NotesCommand::CreateNode {
+                    id: id("second"),
+                    parent_id: id("page"),
+                    position: Position::at_end(),
+                    text: "beta".into(),
+                },
+                NotesCommand::UpdateText {
+                    id: id("second"),
+                    text: "beta edited".into(),
+                },
+            ],
+        })
+        .expect("batch");
+
+    tree.apply(&patch.forward).expect("apply batch");
+    assert_eq!(
+        tree.node(&id("second")).expect("created node").text(),
+        "beta edited"
+    );
+}
+
+#[test]
+fn invalid_editor_batch_does_not_mutate_the_source_tree() {
+    let mut tree = NotesTree::default();
+    tree.apply(&[
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("first"), id("page"), 1_024, "alpha")),
+    ])
+    .unwrap();
+    let before = tree.clone();
+
+    let result = tree.plan(NotesCommand::Batch {
+        commands: vec![
+            NotesCommand::UpdateText {
+                id: id("first"),
+                text: "changed".into(),
+            },
+            NotesCommand::UpdateText {
+                id: id("missing"),
+                text: "invalid".into(),
+            },
+        ],
+    });
+
+    assert_eq!(result, Err(DomainError::NodeNotFound(id("missing"))));
+    assert_eq!(tree, before);
+}
+
+#[test]
+fn empty_editor_batch_is_rejected() {
+    let tree = NotesTree::default();
+
+    let result = tree.plan(NotesCommand::Batch { commands: vec![] });
+
+    assert_eq!(
+        result,
+        Err(DomainError::Invariant(
+            "an editor batch must contain at least one command".into()
+        ))
+    );
+}
+
+#[test]
+fn nested_editor_batch_is_rejected() {
+    let tree = NotesTree::default();
+
+    let result = tree.plan(NotesCommand::Batch {
+        commands: vec![NotesCommand::Batch {
+            commands: vec![NotesCommand::CreatePage {
+                id: id("page"),
+                text: "Page".into(),
+            }],
+        }],
+    });
+
+    assert_eq!(
+        result,
+        Err(DomainError::Invariant(
+            "nested editor batches are not allowed".into()
+        ))
+    );
+}
+
+#[test]
 fn page_and_bullet_commands_produce_reversible_patches() {
     let mut tree = NotesTree::default();
 

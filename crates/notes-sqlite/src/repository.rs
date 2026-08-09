@@ -44,10 +44,30 @@ pub(crate) fn load_command_tree(
     command: &NotesCommand,
 ) -> Result<NotesTree, StorageError> {
     let mut nodes = BTreeMap::new();
+    collect_command_context(connection, command, &mut nodes)?;
+    let mut tree = NotesTree::default();
+    let mutations = nodes
+        .into_values()
+        .map(TreeMutation::upsert)
+        .collect::<Vec<_>>();
+    tree.apply(&mutations).map_err(StorageError::Domain)?;
+    Ok(tree)
+}
+
+fn collect_command_context(
+    connection: &Connection,
+    command: &NotesCommand,
+    nodes: &mut BTreeMap<NodeId, NoteNode>,
+) -> Result<(), StorageError> {
     match command {
+        NotesCommand::Batch { commands } => {
+            for command in commands {
+                collect_command_context(connection, command, nodes)?;
+            }
+        }
         NotesCommand::CreatePage { id, .. } => {
-            collect_node(connection, id, &mut nodes)?;
-            collect_root_pages(connection, &mut nodes)?;
+            collect_node(connection, id, nodes)?;
+            collect_root_pages(connection, nodes)?;
         }
         NotesCommand::CreateNode {
             id,
@@ -55,19 +75,19 @@ pub(crate) fn load_command_tree(
             position,
             ..
         } => {
-            collect_node(connection, id, &mut nodes)?;
-            collect_ancestors(connection, parent_id, &mut nodes)?;
-            collect_position_context(connection, parent_id, position, None, &mut nodes)?;
+            collect_node(connection, id, nodes)?;
+            collect_ancestors(connection, parent_id, nodes)?;
+            collect_position_context(connection, parent_id, position, None, nodes)?;
         }
         NotesCommand::ImportNodes {
             parent_id,
             nodes: imported,
             ..
         } => {
-            collect_ancestors(connection, parent_id, &mut nodes)?;
-            collect_children(connection, parent_id, &mut nodes)?;
+            collect_ancestors(connection, parent_id, nodes)?;
+            collect_children(connection, parent_id, nodes)?;
             for node in imported {
-                collect_node(connection, &node.id, &mut nodes)?;
+                collect_node(connection, &node.id, nodes)?;
             }
         }
         NotesCommand::ImportImages {
@@ -75,10 +95,10 @@ pub(crate) fn load_command_tree(
             nodes: imported,
             ..
         } => {
-            collect_ancestors(connection, parent_id, &mut nodes)?;
-            collect_children(connection, parent_id, &mut nodes)?;
+            collect_ancestors(connection, parent_id, nodes)?;
+            collect_children(connection, parent_id, nodes)?;
             for node in imported {
-                collect_node(connection, &node.id, &mut nodes)?;
+                collect_node(connection, &node.id, nodes)?;
             }
         }
         NotesCommand::UpdateText { id, .. }
@@ -89,11 +109,11 @@ pub(crate) fn load_command_tree(
         | NotesCommand::SetStarred { id, .. }
         | NotesCommand::SetCollapsed { id, .. }
         | NotesCommand::SetMarker { id, .. } => {
-            collect_ancestors(connection, id, &mut nodes)?;
+            collect_ancestors(connection, id, nodes)?;
         }
         NotesCommand::SetCompletedMany { ids, .. } => {
             for id in ids {
-                collect_ancestors(connection, id, &mut nodes)?;
+                collect_ancestors(connection, id, nodes)?;
             }
         }
         NotesCommand::SplitNode {
@@ -103,30 +123,30 @@ pub(crate) fn load_command_tree(
             position,
             ..
         } => {
-            collect_node(connection, new_id, &mut nodes)?;
-            collect_ancestors(connection, id, &mut nodes)?;
-            collect_ancestors(connection, parent_id, &mut nodes)?;
-            collect_position_context(connection, parent_id, position, None, &mut nodes)?;
+            collect_node(connection, new_id, nodes)?;
+            collect_ancestors(connection, id, nodes)?;
+            collect_ancestors(connection, parent_id, nodes)?;
+            collect_position_context(connection, parent_id, position, None, nodes)?;
         }
         NotesCommand::MergeNodeBackward {
             id, previous_id, ..
         } => {
-            collect_ancestors(connection, id, &mut nodes)?;
-            collect_ancestors(connection, previous_id, &mut nodes)?;
+            collect_ancestors(connection, id, nodes)?;
+            collect_ancestors(connection, previous_id, nodes)?;
             if let Some(parent_id) = nodes.get(id).and_then(NoteNode::parent_id).cloned() {
-                collect_children(connection, &parent_id, &mut nodes)?;
+                collect_children(connection, &parent_id, nodes)?;
             }
-            collect_children(connection, previous_id, &mut nodes)?;
+            collect_children(connection, previous_id, nodes)?;
         }
         NotesCommand::RemoveEmptyNode { id } => {
-            collect_remove_context(connection, id, &mut nodes)?;
+            collect_remove_context(connection, id, nodes)?;
         }
         NotesCommand::MoveNode {
             id,
             parent_id,
             position,
         } => {
-            collect_move_context(connection, id, parent_id, position, &mut nodes)?;
+            collect_move_context(connection, id, parent_id, position, nodes)?;
         }
         NotesCommand::MoveNodes { moves } => {
             let target_parents = moves
@@ -134,7 +154,7 @@ pub(crate) fn load_command_tree(
                 .map(|node_move| &node_move.parent_id)
                 .collect::<BTreeSet<_>>();
             for parent_id in target_parents {
-                collect_children(connection, parent_id, &mut nodes)?;
+                collect_children(connection, parent_id, nodes)?;
             }
             for node_move in moves {
                 collect_move_context(
@@ -142,21 +162,15 @@ pub(crate) fn load_command_tree(
                     &node_move.id,
                     &node_move.parent_id,
                     &node_move.position,
-                    &mut nodes,
+                    nodes,
                 )?;
             }
         }
         NotesCommand::IndentNode { id, parent_id } => {
-            collect_ancestors(connection, id, &mut nodes)?;
-            collect_ancestors(connection, parent_id, &mut nodes)?;
-            collect_descendants(connection, id, &mut nodes)?;
-            collect_position_context(
-                connection,
-                parent_id,
-                &Position::at_end(),
-                Some(id),
-                &mut nodes,
-            )?;
+            collect_ancestors(connection, id, nodes)?;
+            collect_ancestors(connection, parent_id, nodes)?;
+            collect_descendants(connection, id, nodes)?;
+            collect_position_context(connection, parent_id, &Position::at_end(), Some(id), nodes)?;
         }
         NotesCommand::DuplicateNode {
             source_id,
@@ -164,9 +178,7 @@ pub(crate) fn load_command_tree(
             parent_id,
             position,
         } => {
-            collect_duplicate_context(
-                connection, source_id, new_id, parent_id, position, &mut nodes,
-            )?;
+            collect_duplicate_context(connection, source_id, new_id, parent_id, position, nodes)?;
         }
         NotesCommand::DuplicateNodes { duplicates } => {
             let target_parents = duplicates
@@ -174,7 +186,7 @@ pub(crate) fn load_command_tree(
                 .map(|duplicate| &duplicate.parent_id)
                 .collect::<BTreeSet<_>>();
             for parent_id in target_parents {
-                collect_children(connection, parent_id, &mut nodes)?;
+                collect_children(connection, parent_id, nodes)?;
             }
             for duplicate in duplicates {
                 collect_duplicate_context(
@@ -183,28 +195,22 @@ pub(crate) fn load_command_tree(
                     &duplicate.new_id,
                     &duplicate.parent_id,
                     &duplicate.position,
-                    &mut nodes,
+                    nodes,
                 )?;
             }
         }
         NotesCommand::DeleteSubtree { id } | NotesCommand::RestoreSubtree { id } => {
-            collect_ancestors(connection, id, &mut nodes)?;
-            collect_descendants(connection, id, &mut nodes)?;
+            collect_ancestors(connection, id, nodes)?;
+            collect_descendants(connection, id, nodes)?;
         }
         NotesCommand::DeleteSubtrees { ids } => {
             for id in ids {
-                collect_ancestors(connection, id, &mut nodes)?;
-                collect_descendants(connection, id, &mut nodes)?;
+                collect_ancestors(connection, id, nodes)?;
+                collect_descendants(connection, id, nodes)?;
             }
         }
     }
-    let mut tree = NotesTree::default();
-    let mutations = nodes
-        .into_values()
-        .map(TreeMutation::upsert)
-        .collect::<Vec<_>>();
-    tree.apply(&mutations).map_err(StorageError::Domain)?;
-    Ok(tree)
+    Ok(())
 }
 
 fn collect_move_context(

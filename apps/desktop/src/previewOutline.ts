@@ -22,11 +22,35 @@ export function createInitialPreviewNodes(): NoteView[] {
       sortKey: SORT_KEY_STEP,
       kind: "bullet", image: null,
       text: "Start writing. Changes appear instantly.",
-      note: "",
+      note: "Shift+Enter opens a note like this one.\nIt can hold several lines.",
       marker: "bullet",
       collapsed: false,
       completed: false,
       starred: true,
+      deleted: false
+    },
+    {
+      // The preview keeps no bytes for a seeded picture, so this row renders
+      // its placeholder. That is the state a real image shows while it loads.
+      id: "preview-picture",
+      parentId: "preview-page",
+      sortKey: SORT_KEY_STEP * 2,
+      kind: "image",
+      image: {
+        contentHash: "0".repeat(64),
+        originalName: "sample.png",
+        mimeType: "image/png",
+        byteLength: 0,
+        pixelWidth: 640,
+        pixelHeight: 360,
+        displayWidth: 480
+      },
+      text: "sample.png",
+      note: "",
+      marker: "bullet",
+      collapsed: false,
+      completed: false,
+      starred: false,
       deleted: false
     }
   ];
@@ -51,9 +75,11 @@ export function previewPageNodes(
       }
     }
   }
+  // Image rows are page content too — filtering them out here left an
+  // imported picture visible only until the next viewport query.
   const visible = nodes.filter(
     (node) =>
-      node.kind === "bullet" &&
+      node.kind !== "page" &&
       !node.deleted &&
       descendants.has(node.id)
   );
