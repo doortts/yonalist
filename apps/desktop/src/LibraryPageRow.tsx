@@ -8,12 +8,14 @@ export function LibraryPageRow({
   page,
   active,
   store,
-  onOpen
+  onOpen,
+  onDelete
 }: {
   readonly page: PageSummary;
   readonly active: boolean;
   readonly store: NotesStore;
   readonly onOpen: () => void;
+  readonly onDelete: () => void;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const { title } = useNotesNode(store, page.id);
@@ -59,7 +61,7 @@ export function LibraryPageRow({
             style={{ width: "100%", border: 0, background: "transparent" }}
             onClick={() => {
               setMenuOpen(false);
-              void store.deleteSubtree(page.id);
+              onDelete();
             }}
           >
             <Trash2 size={14} aria-hidden="true" />

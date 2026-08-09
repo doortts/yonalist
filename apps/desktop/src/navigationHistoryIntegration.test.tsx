@@ -83,6 +83,110 @@ function api(): NotesApi {
   };
 }
 
+function pageNode(id: string, text: string, deleted: boolean) {
+  return {
+    id,
+    parentId: null,
+    sortKey: 1_024,
+    kind: "page" as const,
+    image: null,
+    text,
+    note: "",
+    marker: "bullet" as const,
+    collapsed: false,
+    completed: false,
+    starred: false,
+    deleted
+  };
+}
+
+/**
+ * A backend that keeps the page list, so "did that page come back" is a real
+ * question rather than a mocked answer.
+ */
+function pageApi(): NotesApi {
+  const notesApi = api();
+  const undone: (() => MutationReceipt)[] = [];
+  let revision = 8;
+  const receiptFor = (
+    node: ReturnType<typeof pageNode>
+  ): MutationReceipt => ({
+    revision: (revision += 1),
+    changedNodes: [node],
+    deletedIds: [],
+    history: {
+      canUndo: true,
+      canRedo: false,
+      undoDepth: undone.length + 1,
+      redoDepth: 0
+    }
+  });
+  notesApi.execute = vi.fn().mockImplementation(async (envelope) => {
+    const { command } = envelope;
+    if (command.kind === "createPage") {
+      undone.push(() => receiptFor(pageNode(command.id, command.text, true)));
+      return receiptFor(pageNode(command.id, command.text, false));
+    }
+    if (command.kind === "deleteSubtree") {
+      undone.push(() => receiptFor(pageNode(command.id, "Today", false)));
+      return receiptFor(pageNode(command.id, "Today", true));
+    }
+    return receipt("First thought");
+  });
+  notesApi.queryViewport = vi.fn().mockImplementation(async (request) => ({
+    pageId: request.pageId,
+    anchorId: null,
+    beforeCursor: null,
+    afterCursor: null,
+    nodes: request.pageId === "page" ? snapshot.viewport!.nodes : []
+  }));
+  notesApi.undo = vi.fn().mockImplementation(async () => undone.pop()!());
+  return notesApi;
+}
+
+describe("a mutation that moves the view", () => {
+  it("takes one undo press to create a page and give it back", async () => {
+    const notesApi = pageApi();
+    render(<App api={notesApi} />);
+    await screen.findByDisplayValue("First thought");
+
+    fireEvent.click(screen.getByRole("button", { name: "New page" }));
+    await waitFor(() => expect(screen.getByDisplayValue("Untitled page"))
+      .toHaveAttribute("aria-label", "Page title"));
+
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+
+    await waitFor(() => expect(screen.getByDisplayValue("Today"))
+      .toHaveAttribute("aria-label", "Page title"));
+    expect(notesApi.undo).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", {
+      name: "Page actions for Untitled page"
+    })).toBeNull();
+  });
+
+  it("takes one undo press to trash a page and give it back", async () => {
+    const notesApi = pageApi();
+    render(<App api={notesApi} />);
+    await screen.findByDisplayValue("First thought");
+
+    fireEvent.click(screen.getByRole("button", {
+      name: "Page actions for Today"
+    }));
+    fireEvent.click(screen.getByRole("menuitem", {
+      name: "Move page to Trash"
+    }));
+    await waitFor(() => expect(screen.queryByRole("button", {
+      name: "Page actions for Today"
+    })).toBeNull());
+
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+
+    await waitFor(() => expect(screen.getByDisplayValue("Today"))
+      .toHaveAttribute("aria-label", "Page title"));
+    expect(notesApi.undo).toHaveBeenCalledOnce();
+  });
+});
+
 describe("navigation history integration", () => {
   it("undoes and redoes zoom locally without replaying SQLite", async () => {
     const notesApi = api();

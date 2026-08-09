@@ -79,6 +79,58 @@ describe("notes interaction history", () => {
     expect(apply).toHaveBeenNthCalledWith(2, after);
   });
 
+  it("folds the mutation that moved the view into one entry", async () => {
+    const notesStore = store();
+    const apply = vi.fn().mockResolvedValue(undefined);
+    const history = new NotesInteractionHistory<Location>(notesStore, apply);
+    const before = { pageId: "page", zoomRootId: null };
+    const after = { pageId: "new-page", zoomRootId: null };
+    // "New page": the command lands first and the view follows it.
+    notesStore.emitMutation();
+    history.recordMutationNavigation(before, after);
+
+    await history.undo();
+
+    expect(notesStore.undo).toHaveBeenCalledOnce();
+    expect(apply).toHaveBeenCalledWith(before);
+    // Nothing left behind for a second press.
+    await history.undo();
+    expect(apply).toHaveBeenCalledOnce();
+  });
+
+  it("replays the store before the view when redoing that entry", async () => {
+    const notesStore = store();
+    const apply = vi.fn().mockResolvedValue(undefined);
+    const history = new NotesInteractionHistory<Location>(notesStore, apply);
+    const before = { pageId: "page", zoomRootId: null };
+    const after = { pageId: "new-page", zoomRootId: null };
+    notesStore.emitMutation();
+    history.recordMutationNavigation(before, after);
+    await history.undo();
+
+    await history.redo();
+
+    expect(notesStore.redo).toHaveBeenCalledOnce();
+    expect(apply).toHaveBeenLastCalledWith(after);
+  });
+
+  it("leaves an unrelated mutation of its own alone", async () => {
+    const notesStore = store();
+    const apply = vi.fn().mockResolvedValue(undefined);
+    const history = new NotesInteractionHistory<Location>(notesStore, apply);
+    const before = { pageId: "page", zoomRootId: null };
+    const after = { pageId: "new-page", zoomRootId: null };
+    // A draft flushed on the way out, then the page creation itself.
+    notesStore.emitMutation();
+    notesStore.emitMutation();
+    history.recordMutationNavigation(before, after);
+
+    await history.undo();
+    await history.undo();
+
+    expect(notesStore.undo).toHaveBeenCalledTimes(2);
+  });
+
   it("records a draft flushed immediately before Undo as the newest entry", async () => {
     const notesStore = store();
     notesStore.flushAllDrafts = vi.fn(async () => notesStore.emitMutation());

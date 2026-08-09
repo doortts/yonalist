@@ -27,6 +27,8 @@ type InteractionEntry<Location> =
       readonly kind: "navigation";
       readonly before: Location;
       readonly after: Location;
+      /** Also replay the store step that moved the view. */
+      readonly replaysStore?: boolean;
     };
 
 const HISTORY_LIMIT = 1_000;
@@ -74,8 +76,24 @@ export class NotesInteractionHistory<Location> {
   }
 
   recordNavigation(before: Location, after: Location): void {
+    this.record({ kind: "navigation", before, after });
+  }
+
+  /**
+   * For the mutations that move the view themselves -- creating a page, moving
+   * one to Trash. Those are one action, so the mutation entry the command has
+   * already pushed folds into this one and a single Undo does both. Only the
+   * caller knows the pair belongs together: a draft flushed on the way out
+   * leaves the same mutation-then-navigation shape and must stay two steps.
+   */
+  recordMutationNavigation(before: Location, after: Location): void {
+    if (this.past.at(-1)?.kind === "mutation") this.past.pop();
+    this.record({ kind: "navigation", before, after, replaysStore: true });
+  }
+
+  private record(entry: InteractionEntry<Location>): void {
     this.store.breakHistoryGroup();
-    pushBounded(this.past, { kind: "navigation", before, after });
+    pushBounded(this.past, entry);
     this.future.length = 0;
   }
 
@@ -88,6 +106,10 @@ export class NotesInteractionHistory<Location> {
         (this.store.getSnapshot().canUndo ? { kind: "mutation" } : null);
       if (!entry) return;
       if (entry.kind === "navigation") {
+        // The store step runs first either way: undoing "New page" must drop
+        // the page before the view leaves it, and undoing a page deletion must
+        // bring it back before the view returns to it.
+        if (entry.replaysStore) await this.store.undo();
         await this.applyNavigation(entry.before);
       } else {
         await this.replayStore(() => this.store.undo());
@@ -108,6 +130,7 @@ export class NotesInteractionHistory<Location> {
         (this.store.getSnapshot().canRedo ? { kind: "mutation" } : null);
       if (!entry) return;
       if (entry.kind === "navigation") {
+        if (entry.replaysStore) await this.store.redo();
         await this.applyNavigation(entry.after);
       } else {
         await this.replayStore(() => this.store.redo());

@@ -168,6 +168,12 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   ) => interactionHistory.recordNavigation(before, after), [
     interactionHistory
   ]);
+  const recordMutationNavigation = useCallback((
+    before: AppNavigationLocation,
+    after: AppNavigationLocation
+  ) => interactionHistory.recordMutationNavigation(before, after), [
+    interactionHistory
+  ]);
   const afterDraftFlush = useCallback((action: () => void) => {
     const current = store.getSnapshot();
     if (
@@ -188,6 +194,40 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     await applyNavigation(after);
     recordNavigation(before, after);
   }, [applyNavigation, captureNavigation, recordNavigation, store]);
+  // Creating a page and trashing one both move the view as part of the
+  // command, so each records a single entry that replays both.
+  const createPage = useCallback(() => {
+    const before = captureNavigation();
+    afterDraftFlush(() => {
+      void store.createPage().then(async (pageId) => {
+        const after = emptyPaneLocation(pageId);
+        await applyNavigation(after);
+        recordMutationNavigation(before, after);
+      });
+    });
+  }, [
+    afterDraftFlush,
+    applyNavigation,
+    captureNavigation,
+    recordMutationNavigation,
+    store
+  ]);
+  const deletePage = useCallback((pageId: string) => {
+    const before = captureNavigation();
+    afterDraftFlush(() => {
+      void store.deleteSubtree(pageId).then(async () => {
+        const after = emptyPaneLocation(store.getSnapshot().activePageId);
+        await applyNavigation(after);
+        recordMutationNavigation(before, after);
+      });
+    });
+  }, [
+    afterDraftFlush,
+    applyNavigation,
+    captureNavigation,
+    recordMutationNavigation,
+    store
+  ]);
   const updatePrimaryZoom = useCallback((nodeId: string | null) => {
     if (nodeId === primaryZoomRootId) return;
     const before = captureNavigation();
@@ -297,16 +337,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                 className="primary-button notes-new-page"
                 type="button"
                   disabled={state.status === "loading"}
-                  onClick={() => {
-                    const before = captureNavigation();
-                    afterDraftFlush(() => {
-                      void store.createPage().then((pageId) => {
-                        const after = emptyPaneLocation(pageId);
-                        void applyNavigation(after).then(() =>
-                          recordNavigation(before, after));
-                      });
-                    });
-                  }}
+                  onClick={createPage}
               >
                 <Plus size={16} aria-hidden="true" />
                 <span>New page</span>
@@ -360,6 +391,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                     active={page.id === state.activePageId}
                     store={store}
                     onOpen={() => void openPage(page.id)}
+                    onDelete={() => deletePage(page.id)}
                   />
                 ))}
               </div>
