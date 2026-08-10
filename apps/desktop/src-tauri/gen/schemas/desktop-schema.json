@@ -189,6 +189,12 @@
           "markdownDescription": "Enables the notes_close_session command without any pre-configured scope."
         },
         {
+          "description": "Enables the notes_delete_all_data command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-delete-all-data",
+          "markdownDescription": "Enables the notes_delete_all_data command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notes_download_image command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notes-download-image",
@@ -273,10 +279,22 @@
           "markdownDescription": "Enables the notes_undo command without any pre-configured scope."
         },
         {
+          "description": "Enables the notes_unused_assets command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-unused-assets",
+          "markdownDescription": "Enables the notes_unused_assets command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notes_view_image_original command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notes-view-image-original",
           "markdownDescription": "Enables the notes_view_image_original command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_external_url command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-external-url",
+          "markdownDescription": "Enables the open_external_url command without any pre-configured scope."
         },
         {
           "description": "Denies the notes_bootstrap command without any pre-configured scope.",
@@ -289,6 +307,12 @@
           "type": "string",
           "const": "deny-notes-close-session",
           "markdownDescription": "Denies the notes_close_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_delete_all_data command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-delete-all-data",
+          "markdownDescription": "Denies the notes_delete_all_data command without any pre-configured scope."
         },
         {
           "description": "Denies the notes_download_image command without any pre-configured scope.",
@@ -375,10 +399,22 @@
           "markdownDescription": "Denies the notes_undo command without any pre-configured scope."
         },
         {
+          "description": "Denies the notes_unused_assets command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-unused-assets",
+          "markdownDescription": "Denies the notes_unused_assets command without any pre-configured scope."
+        },
+        {
           "description": "Denies the notes_view_image_original command without any pre-configured scope.",
           "type": "string",
           "const": "deny-notes-view-image-original",
           "markdownDescription": "Denies the notes_view_image_original command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_external_url command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-external-url",
+          "markdownDescription": "Denies the open_external_url command without any pre-configured scope."
         },
         {
           "description": "Allows the Yonalist v2 main window to invoke the bounded Notes API.",

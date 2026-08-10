@@ -16,6 +16,9 @@ const APP_COMMANDS: &[&str] = &[
     "notes_view_image_original",
     "notes_download_image",
     "notes_toggle_devtools",
+    "notes_unused_assets",
+    "notes_delete_all_data",
+    "open_external_url",
 ];
 
 fn main() {

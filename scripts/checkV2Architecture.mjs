@@ -155,6 +155,33 @@ if (JSON.stringify(actualCommands) !== JSON.stringify(expectedCommands)) {
   );
 }
 
+// A command missing from the ACL is denied at runtime with nothing to see at
+// build time — three shipped commands were dead this way before anyone
+// noticed. `generate_handler!` is the surface that matters, so hold the
+// permission list and the build script's manifest against it.
+const handlerBlock = /generate_handler!\[([^\]]*)\]/u.exec(tauriSource);
+if (!handlerBlock) throw new Error("v2 Tauri handler list was not found");
+const handlerCommands = handlerBlock[1]
+  .split(",")
+  .map((entry) => entry.trim().split("::").at(-1))
+  .filter((entry) => /^[a-z_]+$/u.test(entry ?? ""))
+  .sort();
+for (const [label, path] of [
+  ["permission allow-list", ["apps", "desktop", "src-tauri", "permissions", "main-window.toml"]],
+  ["build.rs app manifest", ["apps", "desktop", "src-tauri", "build.rs"]]
+]) {
+  const source = readFileSync(join(root, ...path), "utf8");
+  const declared = new Set(
+    [...source.matchAll(/"([a-z_]+)"/gu)].map((match) => match[1])
+  );
+  const missing = handlerCommands.filter((command) => !declared.has(command));
+  if (missing.length > 0) {
+    throw new Error(
+      `v2 Tauri commands missing from the ${label}: ${JSON.stringify(missing)}`
+    );
+  }
+}
+
 const mainWindowCapability = JSON.parse(readFileSync(
   join(root, "apps", "desktop", "src-tauri", "capabilities", "default.json"),
   "utf8"
