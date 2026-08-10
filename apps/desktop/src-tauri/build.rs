@@ -15,6 +15,7 @@ const APP_COMMANDS: &[&str] = &[
     "notes_replace_image_path",
     "notes_view_image_original",
     "notes_download_image",
+    "notes_toggle_devtools",
 ];
 
 fn main() {

@@ -9,6 +9,11 @@ license.workspace = true
 name = "yonalist_v2_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# Declared, deliberately not enabled: a shipped release carries no inspector
+# unless someone opts in with `--features devtools`. Debug builds get it free.
+devtools = ["tauri/devtools"]
+
 [build-dependencies]
 tauri-build = { version = "=2.6.3", features = [] }
 

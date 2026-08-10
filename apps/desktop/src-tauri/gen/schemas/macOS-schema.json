@@ -261,6 +261,12 @@
           "markdownDescription": "Enables the notes_search command without any pre-configured scope."
         },
         {
+          "description": "Enables the notes_toggle_devtools command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-toggle-devtools",
+          "markdownDescription": "Enables the notes_toggle_devtools command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notes_undo command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notes-undo",
@@ -355,6 +361,12 @@
           "type": "string",
           "const": "deny-notes-search",
           "markdownDescription": "Denies the notes_search command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_toggle_devtools command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-toggle-devtools",
+          "markdownDescription": "Denies the notes_toggle_devtools command without any pre-configured scope."
         },
         {
           "description": "Denies the notes_undo command without any pre-configured scope.",

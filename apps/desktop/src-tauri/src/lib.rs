@@ -293,6 +293,32 @@ fn open_external_url(url: String) -> Result<(), String> {
     open::that(parsed.as_str()).map_err(|error| error.to_string())
 }
 
+/// The main window draws its own chrome (`"decorations": false`), so there is no
+/// native menu bar and macOS gives a WKWebView no built-in inspector shortcut.
+/// The keyboard shortcut in the frontend is the only way in; this is what it
+/// calls. Answers the state the webview ended up in.
+#[tauri::command]
+async fn notes_toggle_devtools(webview: tauri::WebviewWindow) -> bool {
+    #[cfg(any(debug_assertions, feature = "devtools"))]
+    let open = {
+        let opening = !webview.is_devtools_open();
+        if opening {
+            webview.open_devtools();
+        } else {
+            webview.close_devtools();
+        }
+        opening
+    };
+    // A release build carries no inspector unless it opted into the `devtools`
+    // feature, so there is nothing to toggle and the shortcut does nothing.
+    #[cfg(not(any(debug_assertions, feature = "devtools")))]
+    let open = {
+        let _ = webview;
+        false
+    };
+    open
+}
+
 impl DesktopRuntime {
     fn initialize(data_directory: PathBuf, font_path: PathBuf) -> Result<Self, NotesError> {
         std::fs::create_dir_all(&data_directory).map_err(|error| NotesError {
@@ -451,6 +477,7 @@ pub fn run() {
             image_replace_ipc::notes_replace_image_path,
             image_file_actions::notes_view_image_original,
             image_file_actions::notes_download_image,
+            notes_toggle_devtools,
             open_external_url
         ])
         .run(tauri::generate_context!())

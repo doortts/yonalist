@@ -14,6 +14,7 @@ import { LibraryViewButtons, type LibraryView } from "./LibraryViewButtons";
 import { LibraryPageRow } from "./LibraryPageRow";
 import type { PaneRestoreRequest } from "./NotesOutline";
 import { NotesInteractionHistory } from "./notesInteractionHistory";
+import { isDevtoolsShortcut, toggleDevtools } from "./devtools";
 import {
   capturePane,
   emptyPaneLocation,
@@ -88,6 +89,15 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   }, [store]);
   useEffect(() => {
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      // Shares this listener with undo rather than registering a second one:
+      // the window has no menu bar, so the inspector has to be reachable from
+      // anywhere, including inside a row textarea, and the undo guard below
+      // must not apply to it.
+      if (isDevtoolsShortcut(event)) {
+        event.preventDefault();
+        void toggleDevtools();
+        return;
+      }
       const modifier = navigator.platform.includes("Mac") ? event.metaKey : event.ctrlKey;
       if (!modifier || event.key.toLowerCase() !== "z") return;
       // Every other text field on screen -- the library search, the Move To
