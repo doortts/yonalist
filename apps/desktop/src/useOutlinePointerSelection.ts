@@ -59,6 +59,7 @@ export function useOutlinePointerSelection(
       const gesture = gestureRef.current;
       if (!gesture || gesture.pointerId !== event.pointerId) return;
       gestureRef.current = null;
+      delete gesture.scope.dataset.rowSelecting;
       if (!gesture.promoted || event.type !== "pointerup") return;
       window.setTimeout(() => {
         const headId = headIdRef.current;
@@ -124,6 +125,11 @@ export function useOutlinePointerSelection(
     }
     if (!gesture.promoted) {
       window.getSelection()?.removeAllRanges();
+      // Clearing once is not enough: the browser keeps re-extending its own
+      // text selection for the rest of the drag, painting it across the row
+      // gaps and the always-present note span. Turning selection off for the
+      // duration stops it being created at all; `retire` turns it back on.
+      gesture.scope.dataset.rowSelecting = "true";
       const active = document.activeElement;
       if (active instanceof HTMLTextAreaElement && gesture.scope.contains(active)) {
         active.setSelectionRange(active.selectionStart, active.selectionStart);

@@ -245,6 +245,32 @@ describe("outline clipboard integration", () => {
     fireEvent.pointerUp(third, { button: 0, pointerId: 7 });
   });
 
+  it("suppresses native text selection while a cross-row drag is live",
+    async () => {
+      render(<App api={api()} />);
+      const first = await screen.findByDisplayValue<HTMLTextAreaElement>(
+        "First thought"
+      );
+      const third = screen.getByDisplayValue("Third thought");
+      const rows = first.closest("ol");
+
+      fireEvent.pointerDown(first, { button: 0, pointerId: 8 });
+      fireEvent.pointerMove(first, { buttons: 1, pointerId: 8 });
+      // A drag inside one row is ordinary text selection and stays native.
+      expect(rows).not.toHaveAttribute("data-row-selecting");
+
+      fireEvent.pointerMove(third, { buttons: 1, pointerId: 8 });
+      expect(rows).toHaveAttribute("data-row-selecting", "true");
+
+      // Clearing the range once is not enough — the browser re-extends it on
+      // every later move, so the attribute has to outlive the promotion.
+      fireEvent.pointerMove(third, { buttons: 1, pointerId: 8 });
+      expect(rows).toHaveAttribute("data-row-selecting", "true");
+
+      fireEvent.pointerUp(third, { button: 0, pointerId: 8 });
+      expect(rows).not.toHaveAttribute("data-row-selecting");
+    });
+
   it("copies a shift-selected row range as structural plain text and Markdown", async () => {
     render(<App api={api()} />);
     const first = await screen.findByDisplayValue("First thought");

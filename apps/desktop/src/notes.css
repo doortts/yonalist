@@ -1184,6 +1184,13 @@
   padding: 24px 28px 44px;
 }
 
+/* Set while a pointer drag is selecting whole rows. Rows paint their own
+   selection, so the browser's text selection would only add a stray band
+   across the gaps and the empty note span between them. */
+[data-row-selecting="true"] {
+  user-select: none;
+}
+
 .notes-outline-content {
   width: min(100%, 700px);
   min-width: 0;
