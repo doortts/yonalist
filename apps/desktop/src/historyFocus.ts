@@ -1,5 +1,6 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { PaneFocusSnapshot } from "./appNavigation";
+import { holdsCaret } from "./outlineModel";
 
 function liveNode(
   nodes: readonly NoteView[],
@@ -15,7 +16,7 @@ function previousSiblingId(
 ): string | null {
   return before
     .filter((node) => node.parentId === removed.parentId &&
-      liveNode(after, node.id) &&
+      holdsCaret(liveNode(after, node.id)) &&
       (node.sortKey - removed.sortKey ||
         node.id.localeCompare(removed.id)) < 0)
     .sort((left, right) =>
@@ -43,10 +44,17 @@ export function resolveHistoryFocus(
   if (liveNode(after, focus.nodeId)) return focus;
   const removed = before.find((node) => node.id === focus.nodeId);
   if (!removed) return null;
-  const target = previousSiblingId(before, after, removed) ?? removed.parentId;
+  // The page root is not one of the outline's nodes, so it is absent from
+  // `after`; a row that is present has to be one a caret can sit in.
+  const parentId = removed.parentId;
+  const parent = parentId ? liveNode(after, parentId) : undefined;
+  const target = previousSiblingId(before, after, removed) ??
+    (parentId && (parent === undefined || holdsCaret(parent))
+      ? parentId
+      : null);
   if (!target) return null;
-  // The page root is not one of the outline's nodes, so its title keeps the
-  // caret at the start rather than at an end this cannot measure.
+  // The page title keeps the caret at the start rather than at an end this
+  // cannot measure.
   const caret = liveNode(after, target)?.text.length ?? 0;
   return {
     nodeId: target,

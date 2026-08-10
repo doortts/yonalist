@@ -50,6 +50,18 @@ export function orderOutline(
   return ordered;
 }
 
+/**
+ * Whether a row is somewhere a caret can actually sit. A picture row is
+ * focusable -- arrow keys land on it deliberately -- but it renders a `div`,
+ * not a textarea, so focus put there leaves the typist with a highlighted row
+ * and nowhere to type. Anything choosing where the caret goes *after* a
+ * mutation asks this first; navigation, which means to land on the picture,
+ * does not.
+ */
+export function holdsCaret(node: NoteView | undefined): boolean {
+  return node?.kind === "bullet";
+}
+
 export function outlineDepth(
   node: NoteView,
   nodes: readonly NoteView[],

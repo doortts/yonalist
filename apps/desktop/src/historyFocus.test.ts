@@ -63,6 +63,67 @@ describe("resolveHistoryFocus", () => {
     )).toEqual(caretOn("bullet-1", "First thought".length));
   });
 
+  // Same rule the live outline follows: a picture row takes focus but holds no
+  // caret, so a step that lands one there leaves the typist with nowhere to type.
+  it("skips a previous sibling that cannot hold a caret", () => {
+    const shot: NoteView = {
+      ...bullet("shot", 1_280, "shot.png"),
+      kind: "image",
+      image: {
+        contentHash: "a".repeat(64),
+        originalName: "shot.png",
+        mimeType: "image/png",
+        byteLength: 3,
+        pixelWidth: 640,
+        pixelHeight: 480,
+        displayWidth: 320
+      }
+    };
+    expect(resolveHistoryFocus(
+      caretOn("bullet-new", 0), [first, shot, created], [first, shot]
+    )).toEqual(caretOn("bullet-1", "First thought".length));
+  });
+
+  // Same last resort the emptied-row path takes: the page title always has one.
+  it("falls through to the page title when no sibling holds a caret", () => {
+    const shot: NoteView = {
+      ...bullet("shot", 1_280, "shot.png"),
+      kind: "image",
+      image: {
+        contentHash: "a".repeat(64),
+        originalName: "shot.png",
+        mimeType: "image/png",
+        byteLength: 3,
+        pixelWidth: 640,
+        pixelHeight: 480,
+        displayWidth: 320
+      }
+    };
+    expect(resolveHistoryFocus(
+      caretOn("bullet-new", 0), [shot, created], [shot]
+    )).toEqual(caretOn("page-1", 0));
+  });
+
+  it("gives up when the only parent left holds no caret", () => {
+    const shot: NoteView = {
+      ...bullet("shot", 1_024, "shot.png"),
+      kind: "image",
+      image: {
+        contentHash: "a".repeat(64),
+        originalName: "shot.png",
+        mimeType: "image/png",
+        byteLength: 3,
+        pixelWidth: 640,
+        pixelHeight: 480,
+        displayWidth: 320
+      }
+    };
+    const inside = bullet("inside", 1_024, "", "shot");
+    expect(resolveHistoryFocus(
+      caretOn("inside", 0), [shot, inside], [shot]
+    )).toBeNull();
+  });
+
   it("treats a tombstoned row as gone", () => {
     expect(resolveHistoryFocus(
       caretOn("bullet-new", 0),

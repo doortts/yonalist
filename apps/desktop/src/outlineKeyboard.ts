@@ -1,5 +1,6 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { OutlineIndex } from "./outlineIndex";
+import { holdsCaret } from "./outlineModel";
 
 export interface OutlineKeyInput {
   readonly key: string;
@@ -130,6 +131,19 @@ function nextSiblingId(
   const siblings = siblingsOf(nodes, node.parentId, index);
   const position = siblings.findIndex((candidate) => candidate.id === node.id);
   return position >= 0 ? siblings[position + 1]?.id ?? null : null;
+}
+
+/** The nearest row from `from` in one direction that can hold a caret. */
+function caretRowNear(
+  nodes: readonly NoteView[],
+  from: number,
+  step: -1 | 1
+): string | null {
+  for (let at = from + step; at >= 0 && at < nodes.length; at += step) {
+    const node = nodes[at];
+    if (node && holdsCaret(node)) return node.id;
+  }
+  return null;
 }
 
 function validSelection(input: OutlineKeyInput): boolean {
@@ -424,15 +438,13 @@ export function resolveOutlineKey(
     const index = input.visibleIndex?.positionOf(input.nodeId) ??
       input.visibleNodes.findIndex((node) => node.id === input.nodeId);
     if (index < 0) return null;
-    const firstChildId = input.visibleIndex?.firstChildId(input.nodeId);
-    const firstChild = firstChildId
-      ? input.visibleIndex?.node(firstChildId)
-      : input.visibleNodes.find((node) => node.parentId === input.nodeId);
+    // The row above, then the rows below -- the first child of a row with
+    // children is the row below it, so one downward scan covers both. The page
+    // title is the last resort and always takes a caret.
     return {
       kind: "removeEmpty",
-      focusId: input.visibleNodes[index - 1]?.id ??
-        firstChild?.id ??
-        input.visibleNodes[index + 1]?.id ??
+      focusId: caretRowNear(input.visibleNodes, index, -1) ??
+        caretRowNear(input.visibleNodes, index, 1) ??
         input.pageId
     };
   }

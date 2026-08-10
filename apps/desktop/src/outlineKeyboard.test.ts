@@ -29,6 +29,22 @@ function node(
   };
 }
 
+function picture(id: string, parentId: string, sortKey = 1_024): NoteView {
+  return {
+    ...node(id, parentId, "shot.png", sortKey),
+    kind: "image",
+    image: {
+      contentHash: "a".repeat(64),
+      originalName: "shot.png",
+      mimeType: "image/png",
+      byteLength: 3,
+      pixelWidth: 640,
+      pixelHeight: 480,
+      displayWidth: 320
+    }
+  };
+}
+
 const visibleNodes = [
   node("parent", "page", "Parent", 1_024),
   node("child", "parent", "Child", 1_024),
@@ -329,6 +345,59 @@ describe("v2 outline keyboard intent resolver", () => {
       selectionEnd: 0,
       ctrlKey: true
     }))).toBeNull();
+  });
+
+  // A picture row is focusable but has no caret to give, so a caret sent there
+  // leaves the typist with focus and nothing to type into.
+  it("sends the emptied row's caret past rows that cannot hold one", () => {
+    const withPicture = [
+      node("above", "page", "Above", 1_024),
+      picture("shot", "page", 2_048),
+      node("blank", "page", "", 3_072),
+      node("kid", "blank", "Kid", 1_024)
+    ];
+    expect(resolveOutlineKey(input({
+      key: "Backspace",
+      nodeId: "blank",
+      value: "",
+      selectionStart: 0,
+      selectionEnd: 0,
+      visibleNodes: withPicture,
+      structureNodes: withPicture
+    }))).toEqual({ kind: "removeEmpty", focusId: "above" });
+  });
+
+  it("looks below the emptied row when nothing above can hold the caret", () => {
+    const leading = [
+      node("blank", "page", "", 1_024),
+      picture("shot", "page", 2_048),
+      node("below", "page", "Below", 3_072)
+    ];
+    expect(resolveOutlineKey(input({
+      key: "Backspace",
+      nodeId: "blank",
+      value: "",
+      selectionStart: 0,
+      selectionEnd: 0,
+      visibleNodes: leading,
+      structureNodes: leading
+    }))).toEqual({ kind: "removeEmpty", focusId: "below" });
+  });
+
+  it("falls back to the page title when no row can hold the caret", () => {
+    const pictureOnly = [
+      node("blank", "page", "", 1_024),
+      picture("shot", "page", 2_048)
+    ];
+    expect(resolveOutlineKey(input({
+      key: "Backspace",
+      nodeId: "blank",
+      value: "",
+      selectionStart: 0,
+      selectionEnd: 0,
+      visibleNodes: pictureOnly,
+      structureNodes: pictureOnly
+    }))).toEqual({ kind: "removeEmpty", focusId: "page" });
   });
 
   it("merges a title backward only into an eligible previous sibling leaf", () => {
