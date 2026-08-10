@@ -1,5 +1,6 @@
 import type { IpcNotesCommand } from "../../../packages/contracts/generated/IpcNotesCommand";
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
+import type { PaneCaret } from "./appNavigation";
 import type { NotesApi } from "./api";
 import type { NotesState } from "./notesState";
 import {
@@ -17,6 +18,11 @@ export interface StoreCommandHost {
   ) => void;
   readonly applyReceipt: (receipt: MutationReceipt) => void;
   readonly flushDrafts: () => Promise<void>;
+  /**
+   * The caret as the app layer sees it right now. Injected the same way
+   * `flushDrafts` is, so nothing in here has to reach into the DOM.
+   */
+  readonly captureCaret: () => PaneCaret | null;
 }
 
 /**
@@ -62,6 +68,10 @@ export class StoreCommands {
     command: IpcNotesCommand,
     historyGroup: string | null = null
   ): Promise<MutationReceipt> {
+    // Read before the flush below: a flush is itself a command, and its own
+    // write can re-render the row out from under the caret this entry means to
+    // remember.
+    const caret = this.host.captureCaret();
     // Kicked off synchronously, before this command is queued, so the drafts'
     // own `updateText`/`updateNote` take the earlier slots and the queue runs
     // them first. Awaiting it inside the operation only propagates its failure.
@@ -85,7 +95,8 @@ export class StoreCommands {
       this.historyEvents.record(
         scopedHistoryGroup,
         previousUndoDepth,
-        receipt
+        receipt,
+        caret
       );
       return receipt;
     });
@@ -98,6 +109,7 @@ export class StoreCommands {
     historyGroup: string | null = null,
     requestId: string = freshId()
   ): Promise<MutationReceipt> {
+    const caret = this.host.captureCaret();
     // Same choke point as `execute`, for the same reason: an image dropped
     // inside the text debounce would otherwise land ahead of the keystrokes
     // that preceded it and put the two in the wrong order in history. Nothing
@@ -119,7 +131,8 @@ export class StoreCommands {
       this.historyEvents.record(
         scopedHistoryGroup,
         previousUndoDepth,
-        receipt
+        receipt,
+        caret
       );
       return receipt;
     });

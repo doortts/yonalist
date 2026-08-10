@@ -3,6 +3,7 @@ import type { CommandEnvelope } from "../../../packages/contracts/generated/Comm
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { IpcNotesCommand } from "../../../packages/contracts/generated/IpcNotesCommand";
+import type { PaneCaret } from "./appNavigation";
 import type { NotesApi } from "./api";
 import { initialNotesState } from "./notesState";
 import { NotesStore } from "./notesStore";
@@ -231,6 +232,33 @@ describe("how much typing one undo step covers", () => {
     expect(store.getSnapshot().undoDepth).toBe(2);
     await store.undo();
     expect(store.getSnapshot().nodes[0].text).toBe("one a");
+  });
+
+  it("gives each typing run the caret that run started from", async () => {
+    const { store } = await harness();
+    const caretAt = (offset: number): PaneCaret => ({
+      paneId: "primary",
+      focus: {
+        nodeId: "one",
+        field: "title",
+        selectionStart: offset,
+        selectionEnd: offset
+      }
+    });
+    let caret = caretAt(5);
+    store.setCaretCapture(() => caret);
+    const recorded: (number | undefined)[] = [];
+    store.subscribeHistory(
+      (event) => recorded.push(event.caret?.focus.selectionStart));
+
+    store.setDraft("one", "one a");
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+    await vi.advanceTimersByTimeAsync(TYPING_IDLE_MS);
+    caret = caretAt(6);
+    store.setDraft("one", "one ab");
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+
+    expect(recorded).toEqual([5, 6]);
   });
 
   it("starts a new step when the field loses focus", async () => {

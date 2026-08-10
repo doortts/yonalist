@@ -1,3 +1,4 @@
+import type { PaneFocusSnapshot } from "./appNavigation";
 import { outlinePane } from "./outlinePaneRegistry";
 
 export type OutlineFocusEdge = "start" | "end" | "preserve";
@@ -32,14 +33,18 @@ function adjustLocalOutlineScroll(target: HTMLElement): void {
 
 function editorById(
   scope: HTMLElement,
-  nodeId: string
+  nodeId: string,
+  field: PaneFocusSnapshot["field"]
 ): HTMLElement | undefined {
   return [...scope.querySelectorAll<HTMLElement>("[data-node-id]")]
     .find((editor) => editor.dataset.nodeId === nodeId && (
-      editor.dataset.outlineField === "image" ||
-      editor instanceof HTMLTextAreaElement &&
-        (!editor.dataset.outlineField ||
-          editor.dataset.outlineField === "title")
+      field === "note"
+        ? editor instanceof HTMLTextAreaElement &&
+          editor.dataset.outlineField === "note"
+        : editor.dataset.outlineField === "image" ||
+          editor instanceof HTMLTextAreaElement &&
+            (!editor.dataset.outlineField ||
+              editor.dataset.outlineField === "title")
     ));
 }
 
@@ -51,13 +56,14 @@ function editorById(
 function focusWhenReady(
   scope: HTMLElement,
   nodeId: string,
+  field: PaneFocusSnapshot["field"],
   apply: (target: HTMLElement) => void
 ): boolean {
   // Callers scope focus to the pane section or to the row list inside it; the
   // pane registers itself on the section.
   const paneScope = scope.closest<HTMLElement>(".notes-outline") ?? scope;
   const request = {};
-  const target = editorById(scope, nodeId);
+  const target = editorById(scope, nodeId, field);
   if (target) {
     pendingReveal.set(paneScope, request);
     apply(target);
@@ -70,7 +76,7 @@ function focusWhenReady(
   pendingReveal.set(paneScope, request);
   const retry = (remaining: number) => requestAnimationFrame(() => {
     if (pendingReveal.get(paneScope) !== request) return;
-    const revealed = editorById(scope, nodeId);
+    const revealed = editorById(scope, nodeId, field);
     if (revealed) apply(revealed);
     else if (remaining > 0) retry(remaining - 1);
   });
@@ -78,15 +84,18 @@ function focusWhenReady(
   return true;
 }
 
-function caretPlacement(offset: (value: string) => number) {
+function caretPlacement(
+  range: (value: string) => readonly [number, number]
+) {
   return (target: HTMLElement) => {
     // preventScroll stops an ancestor from yanking the whole pane around; the
     // outline's own scroller does the revealing instead.
     target.focus({ preventScroll: true });
     if (target instanceof HTMLTextAreaElement) {
-      const caret = Math.max(
-        0, Math.min(offset(target.value), target.value.length));
-      target.setSelectionRange(caret, caret);
+      const clamp = (offset: number) =>
+        Math.max(0, Math.min(offset, target.value.length));
+      const [start, end] = range(target.value);
+      target.setSelectionRange(clamp(start), clamp(end));
     }
     revealInLocalOutline(target);
   };
@@ -98,7 +107,18 @@ export function focusOutlineEditorAt(
   requestedOffset: number
 ): boolean {
   return focusWhenReady(
-    scope, nodeId, caretPlacement(() => requestedOffset));
+    scope, nodeId, "title",
+    caretPlacement(() => [requestedOffset, requestedOffset]));
+}
+
+/** Puts a captured caret back, its field and its selection included. */
+export function focusOutlineSnapshot(
+  scope: HTMLElement,
+  focus: PaneFocusSnapshot
+): boolean {
+  return focusWhenReady(
+    scope, focus.nodeId, focus.field,
+    caretPlacement(() => [focus.selectionStart, focus.selectionEnd]));
 }
 
 export function focusOutlineEditor(
@@ -111,9 +131,12 @@ export function focusOutlineEditor(
     scope.contains(active)
     ? active.selectionStart
     : 0;
-  return focusWhenReady(scope, nodeId, caretPlacement((value) => edge === "start"
-    ? 0
-    : edge === "end"
-      ? value.length
-      : preservedOffset));
+  return focusWhenReady(scope, nodeId, "title", caretPlacement((value) => {
+    const caret = edge === "start"
+      ? 0
+      : edge === "end"
+        ? value.length
+        : preservedOffset;
+    return [caret, caret];
+  }));
 }

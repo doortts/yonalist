@@ -1,7 +1,20 @@
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
+import type { PaneCaret } from "./appNavigation";
 import type { NotesApi } from "./api";
 import { initialNotesState, type NotesState } from "./notesState";
 import { StoreCommands } from "./storeCommands";
+
+function caret(offset: number): PaneCaret {
+  return {
+    paneId: "primary",
+    focus: {
+      nodeId: "bullet-1",
+      field: "title",
+      selectionStart: offset,
+      selectionEnd: offset
+    }
+  };
+}
 
 function receipt(revision: number): MutationReceipt {
   return {
@@ -63,7 +76,8 @@ describe("StoreCommands", () => {
       applyReceipt: (next) => {
         state = { ...state, revision: next.revision };
       },
-      flushDrafts: () => Promise.resolve()
+      flushDrafts: () => Promise.resolve(),
+      captureCaret: () => null
     });
 
     const first = commands.execute({ kind: "createPage", id: "a", text: "A" });
@@ -100,7 +114,8 @@ describe("StoreCommands", () => {
           undoDepth: next.history.undoDepth
         };
       },
-      flushDrafts: () => Promise.resolve()
+      flushDrafts: () => Promise.resolve(),
+      captureCaret: () => null
     });
     const history = vi.fn();
     commands.subscribeHistory(history);
@@ -111,5 +126,74 @@ describe("StoreCommands", () => {
     await commands.execute({ kind: "createPage", id: "c", text: "C" }, "typing");
 
     expect(history).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads the caret before the pre-command draft flush moves it", async () => {
+    let state: NotesState = {
+      ...initialNotesState,
+      status: "ready",
+      sessionId: "session-1",
+      revision: 1
+    };
+    let live = caret(2);
+    const commands = new StoreCommands(api(vi.fn().mockResolvedValue(receipt(2))), {
+      read: () => state,
+      write: (patch) => {
+        state = { ...state, ...patch };
+      },
+      applyReceipt: (next) => {
+        state = { ...state, revision: next.revision };
+      },
+      flushDrafts: () => {
+        live = caret(9);
+        return Promise.resolve();
+      },
+      captureCaret: () => live
+    });
+    const history = vi.fn();
+    commands.subscribeHistory(history);
+
+    await commands.execute({ kind: "setStarred", id: "bullet-1", starred: true });
+
+    expect(history.mock.calls[0][0].caret).toEqual(caret(2));
+  });
+
+  it("gives a coalesced group the caret of its first command", async () => {
+    let state: NotesState = {
+      ...initialNotesState,
+      status: "ready",
+      sessionId: "session-1",
+      revision: 1
+    };
+    const execute = vi.fn()
+      .mockResolvedValueOnce(receipt(2))
+      .mockResolvedValueOnce({ ...receipt(3), history: receipt(2).history });
+    let live = caret(1);
+    const commands = new StoreCommands(api(execute), {
+      read: () => state,
+      write: (patch) => {
+        state = { ...state, ...patch };
+      },
+      applyReceipt: (next) => {
+        state = {
+          ...state,
+          revision: next.revision,
+          undoDepth: next.history.undoDepth
+        };
+      },
+      flushDrafts: () => Promise.resolve(),
+      captureCaret: () => live
+    });
+    const history = vi.fn();
+    commands.subscribeHistory(history);
+
+    await commands.execute(
+      { kind: "updateText", id: "bullet-1", text: "a" }, "typing");
+    live = caret(2);
+    await commands.execute(
+      { kind: "updateText", id: "bullet-1", text: "ab" }, "typing");
+
+    expect(history).toHaveBeenCalledOnce();
+    expect(history.mock.calls[0][0].caret).toEqual(caret(1));
   });
 });

@@ -24,13 +24,15 @@ function previousSiblingId(
 }
 
 /**
- * Where the caret belongs once undo or redo has been applied. Every other
- * mutation places its own caret, but history is driven from the window, so the
- * row that held the caret can be unmounted under it -- an Enter-created empty
- * bullet is the everyday case -- and the browser drops focus to the body.
+ * The fallback for a caret a history step cannot simply put back. Each entry
+ * records the caret its command started from, and undo restores that; this
+ * covers what recording cannot -- an entry with no caret to its name, and a
+ * recorded row the step itself removed. Guessing is why an undone Enter split
+ * used to land at the end of the row, so nothing calls this while the recorded
+ * row is still there.
  *
- * Returns the captured snapshot unchanged when its row survived, so a history
- * step that only rewrites text never disturbs a caret the DOM still holds.
+ * Returns the snapshot unchanged when its row survived, which is the caller's
+ * signal that the DOM already holds that caret.
  */
 export function resolveHistoryFocus(
   focus: PaneFocusSnapshot | null,

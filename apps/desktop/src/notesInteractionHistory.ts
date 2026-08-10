@@ -2,10 +2,10 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import {
   capturePane,
   paneScope,
-  type PaneFocusSnapshot
+  type PaneCaret
 } from "./appNavigation";
 import { resolveHistoryFocus } from "./historyFocus";
-import { focusOutlineEditorAt } from "./outlineFocus";
+import { focusOutlineSnapshot } from "./outlineFocus";
 import type { NotesMutationHistoryEvent } from "./storeHistory";
 
 export interface InteractionHistoryStore {
@@ -15,6 +15,7 @@ export interface InteractionHistoryStore {
     readonly nodes: readonly NoteView[];
   };
   subscribeHistory(listener: (event: NotesMutationHistoryEvent) => void): () => void;
+  setCaretCapture(capture: () => PaneCaret | null): void;
   flushAllDrafts(): Promise<void>;
   undo(): Promise<void>;
   redo(): Promise<void>;
@@ -22,7 +23,13 @@ export interface InteractionHistoryStore {
 }
 
 type InteractionEntry<Location> =
-  | { readonly kind: "mutation" }
+  | {
+      readonly kind: "mutation";
+      /** The caret the command started from; undo puts it back. */
+      readonly before: PaneCaret | null;
+      /** Where the caret was when this step was undone; redo puts it back. */
+      after: PaneCaret | null;
+    }
   | {
       readonly kind: "navigation";
       readonly before: Location;
@@ -37,15 +44,13 @@ const PANE_IDS = ["primary", "secondary"] as const;
 
 // Whichever pane holds the caret, if either does. capturePane already reports
 // focus only for the pane containing document.activeElement, so the first hit
-// is the one.
-function focusedPane(): {
-  readonly scope: HTMLElement;
-  readonly focus: PaneFocusSnapshot;
-} | null {
+// is the one. Every command asks for this, so the cheap answer -- nothing is
+// being edited -- comes before capturePane sweeps the panes.
+function focusedPane(): PaneCaret | null {
+  if (!(document.activeElement instanceof HTMLTextAreaElement)) return null;
   for (const paneId of PANE_IDS) {
-    const scope = paneScope(paneId);
     const { focus } = capturePane(paneId);
-    if (scope && focus) return { scope, focus };
+    if (focus) return { paneId, focus };
   }
   return null;
 }
@@ -65,10 +70,17 @@ export class NotesInteractionHistory<Location> {
     private readonly store: InteractionHistoryStore,
     private readonly applyNavigation: (location: Location) => Promise<void>
   ) {
-    this.unsubscribe = store.subscribeHistory(() => {
-      pushBounded(this.past, { kind: "mutation" });
+    this.unsubscribe = store.subscribeHistory((event) => {
+      pushBounded(this.past, {
+        kind: "mutation",
+        before: event.caret,
+        after: null
+      });
       this.future.length = 0;
     });
+    // The store asks for this at the command seam, before the mutation and
+    // before the flush that precedes it.
+    store.setCaretCapture(focusedPane);
   }
 
   dispose(): void {
@@ -102,8 +114,10 @@ export class NotesInteractionHistory<Location> {
     this.busy = true;
     try {
       await this.store.flushAllDrafts();
-      const entry = this.past.at(-1) ??
-        (this.store.getSnapshot().canUndo ? { kind: "mutation" } : null);
+      const entry: InteractionEntry<Location> | null = this.past.at(-1) ??
+        (this.store.getSnapshot().canUndo
+          ? { kind: "mutation", before: null, after: null }
+          : null);
       if (!entry) return;
       if (entry.kind === "navigation") {
         // The store step runs first either way: undoing "New page" must drop
@@ -112,7 +126,9 @@ export class NotesInteractionHistory<Location> {
         if (entry.replaysStore) await this.store.undo();
         await this.applyNavigation(entry.before);
       } else {
-        await this.replayStore(() => this.store.undo());
+        // Where the action left the caret, which is what a redo owes back.
+        entry.after = focusedPane();
+        await this.replayStore(() => this.store.undo(), entry.before);
       }
       this.past.pop();
       pushBounded(this.future, entry);
@@ -126,14 +142,16 @@ export class NotesInteractionHistory<Location> {
     this.busy = true;
     try {
       await this.store.flushAllDrafts();
-      const entry = this.future.at(-1) ??
-        (this.store.getSnapshot().canRedo ? { kind: "mutation" } : null);
+      const entry: InteractionEntry<Location> | null = this.future.at(-1) ??
+        (this.store.getSnapshot().canRedo
+          ? { kind: "mutation", before: null, after: null }
+          : null);
       if (!entry) return;
       if (entry.kind === "navigation") {
         if (entry.replaysStore) await this.store.redo();
         await this.applyNavigation(entry.after);
       } else {
-        await this.replayStore(() => this.store.redo());
+        await this.replayStore(() => this.store.redo(), entry.after);
       }
       this.future.pop();
       pushBounded(this.past, entry);
@@ -143,20 +161,30 @@ export class NotesInteractionHistory<Location> {
   }
 
   /**
-   * Runs a store history step and puts the caret back when the step unmounted
-   * the row that held it. Only the mutation branch needs this -- a navigation
-   * entry carries its own focus and applyNavigation restores it.
+   * Runs a store history step and puts the caret back where the entry recorded
+   * it. Only the mutation branch needs this -- a navigation entry carries its
+   * own focus and applyNavigation restores it.
+   *
+   * `resolveHistoryFocus` is the fallback, not the source: it covers the entry
+   * that recorded nothing (the caret was outside the outline when the command
+   * ran) and the recorded row that the step itself removed.
    */
-  private async replayStore(step: () => Promise<void>): Promise<void> {
-    const pane = focusedPane();
+  private async replayStore(
+    step: () => Promise<void>,
+    recorded: PaneCaret | null
+  ): Promise<void> {
+    const live = focusedPane();
     const before = this.store.getSnapshot().nodes;
     await step();
-    if (!pane) return;
+    const caret = recorded ?? live;
+    if (!caret) return;
     const next = resolveHistoryFocus(
-      pane.focus, before, this.store.getSnapshot().nodes);
-    // An unchanged snapshot means the row survived and the DOM still holds
-    // that caret; refocusing would drag it back out from under the typist.
-    if (!next || next === pane.focus) return;
-    focusOutlineEditorAt(pane.scope, next.nodeId, next.selectionStart);
+      caret.focus, before, this.store.getSnapshot().nodes);
+    if (!next) return;
+    // Nothing recorded and the row survived: the DOM still holds that caret,
+    // and refocusing would drag it back out from under the typist.
+    if (!recorded && next === caret.focus) return;
+    const scope = paneScope(caret.paneId);
+    if (scope) focusOutlineSnapshot(scope, next);
   }
 }

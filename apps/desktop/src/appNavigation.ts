@@ -1,8 +1,16 @@
+export type PaneId = "primary" | "secondary";
+
 export interface PaneFocusSnapshot {
   readonly nodeId: string;
   readonly field: "title" | "note";
   readonly selectionStart: number;
   readonly selectionEnd: number;
+}
+
+/** A caret, with the pane to put it back into. */
+export interface PaneCaret {
+  readonly paneId: PaneId;
+  readonly focus: PaneFocusSnapshot;
 }
 
 export interface AppNavigationLocation {
@@ -16,15 +24,13 @@ export interface AppNavigationLocation {
   readonly secondaryFocus: PaneFocusSnapshot | null;
 }
 
-export function paneScope(
-  paneId: "primary" | "secondary"
-): HTMLElement | null {
+export function paneScope(paneId: PaneId): HTMLElement | null {
   return document.querySelector<HTMLElement>(
     `[data-outline-pane-id="${paneId}"]`
   );
 }
 
-export function capturePane(paneId: "primary" | "secondary"): {
+export function capturePane(paneId: PaneId): {
   readonly selectedIds: readonly string[];
   readonly focus: PaneFocusSnapshot | null;
 } {

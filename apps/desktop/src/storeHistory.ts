@@ -1,9 +1,16 @@
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
+import type { PaneCaret } from "./appNavigation";
 
 export interface NotesMutationHistoryEvent {
   readonly kind: "recordMutation";
   readonly undoDepth: number;
   readonly redoDepth: number;
+  /**
+   * Where the caret sat before the first command of this entry ran, so undo
+   * can put it back instead of guessing. Null when nothing in the outline held
+   * it -- a menu click, a flush after blur.
+   */
+  readonly caret: PaneCaret | null;
 }
 
 export class StoreHistoryEvents {
@@ -32,16 +39,20 @@ export class StoreHistoryEvents {
   record(
     group: string | null,
     previousUndoDepth: number,
-    receipt: MutationReceipt
+    receipt: MutationReceipt,
+    caret: PaneCaret | null
   ): void {
     const coalesced = group !== null &&
       group === this.lastCommittedGroup &&
       receipt.history.undoDepth === previousUndoDepth;
+    // Only the first command of a group emits, so a coalesced typing run keeps
+    // the caret that run started from rather than the latest keystroke's.
     if (!coalesced) {
       this.listeners.forEach((listener) => listener({
         kind: "recordMutation",
         undoDepth: receipt.history.undoDepth,
-        redoDepth: receipt.history.redoDepth
+        redoDepth: receipt.history.redoDepth,
+        caret
       }));
     }
     this.lastCommittedGroup = group;
