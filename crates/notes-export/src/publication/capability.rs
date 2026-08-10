@@ -404,6 +404,11 @@ fn rename_noreplace_platform(
     ))
 }
 
+/// Windows resolves the rename through a full path it rebuilds by hand, so a
+/// multi-component name there would move the wrong file. The other platforms
+/// hand the name straight to `renameat`, which is already anchored to the
+/// directory descriptor, so only this branch needs the check.
+#[cfg(windows)]
 fn is_single_name(path: &Path) -> bool {
     let mut components = path.components();
     matches!(components.next(), Some(std::path::Component::Normal(_)))
