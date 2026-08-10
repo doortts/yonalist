@@ -63,14 +63,25 @@ function pushBounded<T>(entries: T[], entry: T): void {
 export class NotesInteractionHistory<Location> {
   private readonly past: InteractionEntry<Location>[] = [];
   private readonly future: InteractionEntry<Location>[] = [];
-  private readonly unsubscribe: () => void;
   private busy = false;
 
   constructor(
     private readonly store: InteractionHistoryStore,
     private readonly applyNavigation: (location: Location) => Promise<void>
-  ) {
-    this.unsubscribe = store.subscribeHistory((event) => {
+  ) {}
+
+  /**
+   * Subscribes, and returns the teardown. This belongs to an effect and not to
+   * the constructor: StrictMode double-invokes render, so a constructor that
+   * subscribes leaves the discarded instance listening while the one the app
+   * actually undoes through gets torn down -- deaf, with an empty `past`, and
+   * every undo falling back to guessing the caret.
+   */
+  connect(): () => void {
+    // The store asks for this at the command seam, before the mutation and
+    // before the flush that precedes it.
+    this.store.setCaretCapture(focusedPane);
+    return this.store.subscribeHistory((event) => {
       pushBounded(this.past, {
         kind: "mutation",
         before: event.caret,
@@ -78,13 +89,6 @@ export class NotesInteractionHistory<Location> {
       });
       this.future.length = 0;
     });
-    // The store asks for this at the command seam, before the mutation and
-    // before the flush that precedes it.
-    store.setCaretCapture(focusedPane);
-  }
-
-  dispose(): void {
-    this.unsubscribe();
   }
 
   recordNavigation(before: Location, after: Location): void {

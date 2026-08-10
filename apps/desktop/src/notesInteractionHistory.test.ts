@@ -57,6 +57,16 @@ function store() {
   return value;
 }
 
+/** As App.tsx wires it: constructed, then connected by an effect. */
+function connected(
+  notesStore: InteractionHistoryStore,
+  apply: (location: Location) => Promise<void>
+): NotesInteractionHistory<Location> {
+  const history = new NotesInteractionHistory<Location>(notesStore, apply);
+  history.connect();
+  return history;
+}
+
 function bullet(row: Row, index: number): NoteView {
   return {
     id: row.id,
@@ -121,7 +131,7 @@ function caretHistory(
     renderPane(next);
   };
   settle(rows);
-  const history = new NotesInteractionHistory<Location>(
+  const history = connected(
     notesStore,
     vi.fn().mockResolvedValue(undefined)
   );
@@ -132,7 +142,7 @@ describe("notes interaction history", () => {
   it("restores a navigation location locally without replaying SQLite", async () => {
     const notesStore = store();
     const apply = vi.fn().mockResolvedValue(undefined);
-    const history = new NotesInteractionHistory<Location>(notesStore, apply);
+    const history = connected(notesStore, apply);
     const before = { pageId: "page", zoomRootId: null };
     const after = { pageId: "page", zoomRootId: "child" };
 
@@ -150,7 +160,7 @@ describe("notes interaction history", () => {
   it("interleaves navigation and mutation entries in user order", async () => {
     const notesStore = store();
     const apply = vi.fn().mockResolvedValue(undefined);
-    const history = new NotesInteractionHistory<Location>(notesStore, apply);
+    const history = connected(notesStore, apply);
     const before = { pageId: "page", zoomRootId: null };
     const after = { pageId: "page", zoomRootId: "child" };
     notesStore.emitMutation();
@@ -173,7 +183,7 @@ describe("notes interaction history", () => {
   it("folds the mutation that moved the view into one entry", async () => {
     const notesStore = store();
     const apply = vi.fn().mockResolvedValue(undefined);
-    const history = new NotesInteractionHistory<Location>(notesStore, apply);
+    const history = connected(notesStore, apply);
     const before = { pageId: "page", zoomRootId: null };
     const after = { pageId: "new-page", zoomRootId: null };
     // "New page": the command lands first and the view follows it.
@@ -192,7 +202,7 @@ describe("notes interaction history", () => {
   it("replays the store before the view when redoing that entry", async () => {
     const notesStore = store();
     const apply = vi.fn().mockResolvedValue(undefined);
-    const history = new NotesInteractionHistory<Location>(notesStore, apply);
+    const history = connected(notesStore, apply);
     const before = { pageId: "page", zoomRootId: null };
     const after = { pageId: "new-page", zoomRootId: null };
     notesStore.emitMutation();
@@ -208,7 +218,7 @@ describe("notes interaction history", () => {
   it("leaves an unrelated mutation of its own alone", async () => {
     const notesStore = store();
     const apply = vi.fn().mockResolvedValue(undefined);
-    const history = new NotesInteractionHistory<Location>(notesStore, apply);
+    const history = connected(notesStore, apply);
     const before = { pageId: "page", zoomRootId: null };
     const after = { pageId: "new-page", zoomRootId: null };
     // A draft flushed on the way out, then the page creation itself.
@@ -225,7 +235,7 @@ describe("notes interaction history", () => {
   it("records a draft flushed immediately before Undo as the newest entry", async () => {
     const notesStore = store();
     notesStore.flushAllDrafts = vi.fn(async () => notesStore.emitMutation());
-    const history = new NotesInteractionHistory<Location>(
+    const history = connected(
       notesStore,
       vi.fn().mockResolvedValue(undefined)
     );

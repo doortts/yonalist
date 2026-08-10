@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import type { BootSnapshot } from "../../../packages/contracts/generated/BootSnapshot";
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
@@ -111,7 +112,10 @@ function api(firstText = "First thought"): {
 describe("history focus", () => {
   it("returns the caret to the offset Enter split the bullet at", async () => {
     const { notesApi, createdId } = api("어우우우야");
-    render(<App api={notesApi} />);
+    // StrictMode, because main.tsx renders the App inside it: it double-invokes
+    // render and simulates a remount, which is what a subscription made in a
+    // constructor and torn down in an effect does not survive.
+    render(<StrictMode><App api={notesApi} /></StrictMode>);
     const first = await screen.findByDisplayValue<HTMLTextAreaElement>(
       "어우우우야"
     );
@@ -139,7 +143,10 @@ describe("history focus", () => {
 
   it("returns the caret to the split row again on redo", async () => {
     const { notesApi, createdId } = api("어우우우야");
-    render(<App api={notesApi} />);
+    // StrictMode, because main.tsx renders the App inside it: it double-invokes
+    // render and simulates a remount, which is what a subscription made in a
+    // constructor and torn down in an effect does not survive.
+    render(<StrictMode><App api={notesApi} /></StrictMode>);
     const first = await screen.findByDisplayValue<HTMLTextAreaElement>(
       "어우우우야"
     );
@@ -171,7 +178,10 @@ describe("history focus", () => {
 
   it("returns the caret to the bullet an undone Enter split off", async () => {
     const { notesApi, createdId } = api();
-    render(<App api={notesApi} />);
+    // StrictMode, because main.tsx renders the App inside it: it double-invokes
+    // render and simulates a remount, which is what a subscription made in a
+    // constructor and torn down in an effect does not survive.
+    render(<StrictMode><App api={notesApi} /></StrictMode>);
     const first = await screen.findByDisplayValue<HTMLTextAreaElement>(
       "First thought"
     );
@@ -202,7 +212,10 @@ describe("history focus", () => {
 
   it("keeps the caret in the outline across a redo", async () => {
     const { notesApi } = api();
-    render(<App api={notesApi} />);
+    // StrictMode, because main.tsx renders the App inside it: it double-invokes
+    // render and simulates a remount, which is what a subscription made in a
+    // constructor and torn down in an effect does not survive.
+    render(<StrictMode><App api={notesApi} /></StrictMode>);
     const first = await screen.findByDisplayValue<HTMLTextAreaElement>(
       "First thought"
     );

@@ -62,10 +62,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   useEffect(() => {
     void store.bootstrap();
   }, [store]);
-  useEffect(
-    () => () => interactionHistory.dispose(),
-    [interactionHistory]
-  );
+  useEffect(() => interactionHistory.connect(), [interactionHistory]);
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
     let unlisten: (() => void) | undefined;
