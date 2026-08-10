@@ -23,7 +23,14 @@ function bullet(id: string, sortKey: number, text: string): NoteView {
   };
 }
 
-function bootSnapshot(firstText: string): BootSnapshot {
+function child(id: string, parentId: string, text: string): NoteView {
+  return { ...bullet(id, 1_024, text), parentId };
+}
+
+function bootSnapshot(
+  firstText: string,
+  extra: readonly NoteView[] = []
+): BootSnapshot {
   return {
     sessionId: "history-focus-session",
     revision: 1,
@@ -36,6 +43,7 @@ function bootSnapshot(firstText: string): BootSnapshot {
       afterCursor: null,
       nodes: [
         bullet("bullet-1", 1_024, firstText),
+        ...extra,
         bullet("bullet-2", 2_048, "Second thought")
       ]
     },
@@ -43,7 +51,7 @@ function bootSnapshot(firstText: string): BootSnapshot {
   };
 }
 
-function api(firstText = "First thought"): {
+function api(firstText = "First thought", extra: readonly NoteView[] = []): {
   readonly notesApi: NotesApi;
   createdId: () => string;
 } {
@@ -51,7 +59,7 @@ function api(firstText = "First thought"): {
   let prefix = firstText;
   let suffix = "";
   const notesApi = {
-    bootstrap: vi.fn().mockResolvedValue(bootSnapshot(firstText)),
+    bootstrap: vi.fn().mockResolvedValue(bootSnapshot(firstText, extra)),
     queryViewport: vi.fn(),
     queryForest: vi.fn().mockResolvedValue({
       revision: 1, nodes: [], complete: true
@@ -139,6 +147,41 @@ describe("history focus", () => {
       expect(restored).toHaveFocus();
       expect([restored.selectionStart, restored.selectionEnd]).toEqual([2, 2]);
     });
+  });
+
+  // The nesting split has to cost exactly one undo as well: one ⌘Z puts the
+  // bullet back whole, with the caret where the Enter found it.
+  it("undoes a split that nested the half in one step, caret restored", async () => {
+    const { notesApi, createdId } = api(
+      "어우우우야", [child("bullet-1-child", "bullet-1", "child")]);
+    // StrictMode, because main.tsx renders the App inside it: it double-invokes
+    // render and simulates a remount, which is what a subscription made in a
+    // constructor and torn down in an effect does not survive.
+    render(<StrictMode><App api={notesApi} /></StrictMode>);
+    const first = await screen.findByDisplayValue<HTMLTextAreaElement>(
+      "어우우우야"
+    );
+    act(() => {
+      first.focus();
+      first.setSelectionRange(2, 2);
+    });
+    await act(async () => {
+      fireEvent.keyDown(first, { key: "Enter" });
+    });
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledOnce());
+    await waitFor(() => expect(document.activeElement)
+      .toHaveAttribute("data-node-id", createdId()));
+
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    });
+
+    await waitFor(() => {
+      const restored = screen.getByDisplayValue<HTMLTextAreaElement>("어우우우야");
+      expect(restored).toHaveFocus();
+      expect([restored.selectionStart, restored.selectionEnd]).toEqual([2, 2]);
+    });
+    expect(notesApi.undo).toHaveBeenCalledOnce();
   });
 
   it("returns the caret to the split row again on redo", async () => {

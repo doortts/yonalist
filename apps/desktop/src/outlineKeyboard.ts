@@ -34,10 +34,6 @@ export type OutlineKeyIntent =
       readonly suffix: string;
       readonly parentId: string;
       readonly beforeId: string | null;
-      // A row with children stays put and takes the suffix while the prefix
-      // arrives as a new row ahead of it, so the two halves of one sentence
-      // land on adjacent lines instead of straddling the subtree.
-      readonly keepChildren: boolean;
     }
   | { readonly kind: "createFirstChild"; readonly parentId: string }
   | {
@@ -293,20 +289,26 @@ export function resolveOutlineKey(
     if (!validSelection(input)) return null;
     const node = nodeById(structureNodes, input.nodeId, input.structureIndex);
     if (!node) return null;
-    const terminalCaret = input.selectionStart === input.selectionEnd &&
-      input.selectionEnd === input.value.length;
-    const hasChildren = input.structureIndex?.hasChildren(input.nodeId) ??
-      structureNodes.some((candidate) => candidate.parentId === input.nodeId);
-    if (terminalCaret && hasChildren) {
-      return { kind: "createFirstChild", parentId: input.nodeId };
-    }
+    // A bullet with children always takes Enter as "make a first child": the
+    // subtree hangs off the source, so the half after the caret goes inside it
+    // rather than beside it, and a caret at the end just makes that half empty.
+    // A childless bullet has nothing to straddle, so its half becomes the next
+    // sibling as before.
+    const firstChildId = input.structureIndex
+      ? input.structureIndex.firstChildId(input.nodeId)
+      : structureNodes.find(
+          (candidate) => candidate.parentId === input.nodeId
+        )?.id ?? null;
     return {
       kind: "split",
       prefix: input.value.slice(0, input.selectionStart!),
       suffix: input.value.slice(input.selectionEnd!),
-      parentId: node.parentId ?? input.pageId,
-      beforeId: nextSiblingId(structureNodes, node, input.structureIndex),
-      keepChildren: hasChildren
+      parentId: firstChildId === null
+        ? node.parentId ?? input.pageId
+        : input.nodeId,
+      beforeId: firstChildId === null
+        ? nextSiblingId(structureNodes, node, input.structureIndex)
+        : firstChildId
     };
   }
 

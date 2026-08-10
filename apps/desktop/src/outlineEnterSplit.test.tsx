@@ -11,7 +11,8 @@ function bullet(
   id: string,
   parentId: string,
   sortKey: number,
-  text: string
+  text: string,
+  collapsed = false
 ): NoteView {
   return {
     id,
@@ -22,7 +23,7 @@ function bullet(
     text,
     note: "",
     marker: "bullet",
-    collapsed: false,
+    collapsed,
     completed: false,
     starred: false,
     deleted: false
@@ -112,6 +113,16 @@ function titles(container: HTMLElement): readonly string[] {
   )].map((field) => field.value);
 }
 
+// Children in rendered order, which is what "first child" has to mean.
+function childIds(store: NotesStore, parentId: string): readonly string[] {
+  return store.getSnapshot().nodes
+    .filter((node) => node.parentId === parentId && !node.deleted)
+    .slice()
+    .sort((left, right) =>
+      left.sortKey - right.sortKey || left.id.localeCompare(right.id))
+    .map((node) => node.id);
+}
+
 async function pressEnterAt(
   container: HTMLElement,
   nodeId: string,
@@ -129,8 +140,10 @@ async function pressEnterAt(
   });
 }
 
+// A bullet with children always takes Enter as "make a first child": empty when
+// the caret sits at the end, carrying the half after the caret when it does not.
 describe("Enter inside a bullet that has children", () => {
-  it("leaves the two halves adjacent, children still under the source", async () => {
+  it("puts the half after the caret in as the first child", async () => {
     const { store, view, commands } = await outline([
       bullet("one", "page-1", SORT_KEY_STEP, "AAA BBB"),
       bullet("child-1", "one", SORT_KEY_STEP, "child1"),
@@ -142,42 +155,120 @@ describe("Enter inside a bullet that has children", () => {
 
     expect(titles(view.container))
       .toEqual(["AAA ", "BBB", "child1", "child2", "Next"]);
-    const state = store.getSnapshot();
-    // The source keeps its id, its children, and the half after the caret.
-    expect(state.nodes.filter((node) => node.parentId === "one")
-      .map((node) => node.id)).toEqual(["child-1", "child-2"]);
     const split = commands[0] as Extract<
       IpcNotesCommand, { kind: "splitNode" }
     >;
     expect(split.kind).toBe("splitNode");
     expect(split.id).toBe("one");
-    expect(split.before_id).toBe("one");
-    expect(split.prefix).toBe("BBB");
-    expect(split.suffix).toBe("AAA ");
+    expect(split.parent_id).toBe("one");
+    expect(split.before_id).toBe("child-1");
+    expect(split.prefix).toBe("AAA ");
+    expect(split.suffix).toBe("BBB");
+    // The source keeps the prefix and every child it had; the new row goes in
+    // ahead of them rather than beside the source.
+    expect(childIds(store, "one"))
+      .toEqual([split.new_id, "child-1", "child-2"]);
+    expect(childIds(store, "page-1")).toEqual(["one", "two"]);
     view.unmount();
   });
 
-  it("puts the caret at the start of the suffix, on the source row", async () => {
-    const { view } = await outline([
+  it("puts the caret at offset 0 of the new child", async () => {
+    const { view, commands } = await outline([
       bullet("one", "page-1", SORT_KEY_STEP, "AAA BBB"),
       bullet("child-1", "one", SORT_KEY_STEP, "child1")
     ]);
 
     await pressEnterAt(view.container, "one", 4);
 
+    const split = commands[0] as Extract<
+      IpcNotesCommand, { kind: "splitNode" }
+    >;
     await waitFor(() => {
       const active = document.activeElement as HTMLTextAreaElement;
-      expect(active.dataset.nodeId).toBe("one");
+      expect(active.dataset.nodeId).toBe(split.new_id);
       expect(active.value).toBe("BBB");
       expect([active.selectionStart, active.selectionEnd]).toEqual([0, 0]);
     });
     view.unmount();
   });
 
-  // The source is the row that survives a split here, so the held-Enter gesture
-  // tracks the same id across the whole burst instead of following a new row.
-  it("stacks one blank row per repeat above the row it keeps splitting", async () => {
+  // The `14b13e36` guard, on the nesting path: one visible structural action
+  // costs exactly one undo, so the split has to be the only command the
+  // keystroke sends and the blur that follows the caret out must find nothing
+  // left to flush.
+  it("sends the split alone, with nothing left for the blur to flush", async () => {
+    const { view, commands } = await outline([
+      bullet("one", "page-1", SORT_KEY_STEP, "AAA BBB"),
+      bullet("child-1", "one", SORT_KEY_STEP, "child1")
+    ]);
+
+    await pressEnterAt(view.container, "one", 4);
+    await waitFor(() => expect(document.activeElement)
+      .not.toHaveAttribute("data-node-id", "one"));
+    await act(async () => undefined);
+
+    expect(commands.map((command) => command.kind)).toEqual(["splitNode"]);
+    view.unmount();
+  });
+
+  it("starts an empty first child when the caret sits at the end", async () => {
+    const { store, view, commands } = await outline([
+      bullet("one", "page-1", SORT_KEY_STEP, "AAA"),
+      bullet("child-1", "one", SORT_KEY_STEP, "child1")
+    ]);
+
+    await pressEnterAt(view.container, "one", 3);
+
+    // Same command as the mid-text split now, with an empty half after the
+    // caret -- the two Enter branches are one rule.
+    expect(commands.map((command) => command.kind)).toEqual(["splitNode"]);
+    expect(titles(view.container)).toEqual(["AAA", "", "child1"]);
+    const split = commands[0] as Extract<
+      IpcNotesCommand, { kind: "splitNode" }
+    >;
+    expect(childIds(store, "one")).toEqual([split.new_id, "child-1"]);
+    view.unmount();
+  });
+
+  it("opens a collapsed source so the new child is visible", async () => {
     const { view } = await outline([
+      bullet("one", "page-1", SORT_KEY_STEP, "AAA BBB", true),
+      bullet("child-1", "one", SORT_KEY_STEP, "child1")
+    ]);
+    expect(titles(view.container)).toEqual(["AAA BBB"]);
+
+    await pressEnterAt(view.container, "one", 4);
+
+    expect(titles(view.container)).toEqual(["AAA ", "BBB", "child1"]);
+    view.unmount();
+  });
+
+  // This one was already broken before the nesting rule and nobody saw it: the
+  // empty row landed under a collapsed parent and the caret chased a row that
+  // was never rendered.
+  it("opens a collapsed source for the empty first child too", async () => {
+    const { view } = await outline([
+      bullet("one", "page-1", SORT_KEY_STEP, "AAA", true),
+      bullet("child-1", "one", SORT_KEY_STEP, "child1")
+    ]);
+    expect(titles(view.container)).toEqual(["AAA"]);
+
+    await pressEnterAt(view.container, "one", 3);
+
+    expect(titles(view.container)).toEqual(["AAA", "", "child1"]);
+    await waitFor(() => {
+      const active = document.activeElement as HTMLTextAreaElement;
+      expect(active.dataset.outlineField).toBe("title");
+      expect(active.value).toBe("");
+    });
+    view.unmount();
+  });
+
+  // Each repeat splits whatever holds the caret, which is the row carrying the
+  // half after the caret. So the blanks pile up as children in order and the
+  // half stays last, right above the children the source already had.
+  it("stacks one blank child per repeat, the tail keeping the caret", async () => {
+    const { store, view } = await outline([
       bullet("one", "page-1", SORT_KEY_STEP, "AAA BBB"),
       bullet("child-1", "one", SORT_KEY_STEP, "child1")
     ]);
@@ -198,21 +289,13 @@ describe("Enter inside a bullet that has children", () => {
 
     expect(titles(view.container))
       .toEqual(["AAA ", "", "", "", "BBB", "child1"]);
-    await waitFor(() => expect(document.activeElement)
-      .toHaveAttribute("data-node-id", "one"));
-    view.unmount();
-  });
-
-  it("still starts a first child when the caret sits at the end", async () => {
-    const { view, commands } = await outline([
-      bullet("one", "page-1", SORT_KEY_STEP, "AAA"),
-      bullet("child-1", "one", SORT_KEY_STEP, "child1")
-    ]);
-
-    await pressEnterAt(view.container, "one", 3);
-
-    expect(commands.map((command) => command.kind)).toEqual(["createNode"]);
-    expect(titles(view.container)).toEqual(["AAA", "", "child1"]);
+    expect(childIds(store, "one")).toHaveLength(5);
+    expect(childIds(store, "one").at(-1)).toBe("child-1");
+    await waitFor(() => {
+      const active = document.activeElement as HTMLTextAreaElement;
+      expect(active.value).toBe("BBB");
+      expect(childIds(store, "one").at(-2)).toBe(active.dataset.nodeId);
+    });
     view.unmount();
   });
 });

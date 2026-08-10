@@ -28,13 +28,11 @@ export interface SelectionKeyboardActions {
 }
 
 interface EnterSplitGesture {
-  // The row holding the caret and the text after it, which is what the next
-  // repeat splits again. It is the new row when the new row took the suffix,
-  // and the source itself when the source kept it along with its children.
+  // The row holding the caret and the half after it, which is what the next
+  // repeat splits again. Always the row the split just created.
   readonly tailId: string;
   readonly parentId: string;
   readonly beforeId: string | null;
-  readonly keepChildren: boolean;
 }
 
 const enterSplitGestures = new WeakMap<HTMLElement, EnterSplitGesture>();
@@ -408,31 +406,26 @@ function executeRowIntent(
           parentId: activeGesture.parentId,
           beforeId: activeGesture.beforeId,
           prefix: "",
-          suffix: store.getSnapshot().drafts[activeTail.id] ?? activeTail.text,
-          keepChildren: activeGesture.keepChildren
+          suffix: store.getSnapshot().drafts[activeTail.id] ?? activeTail.text
         } : {
           id: node.id,
           parentId: intent.parentId,
           beforeId: intent.beforeId,
           prefix: intent.prefix,
-          suffix: intent.suffix,
-          keepChildren: intent.keepChildren
+          suffix: intent.suffix
         };
         const pending = store.beginSplitNode(split);
-        const tailId = split.keepChildren ? split.id : pending.id;
         enterSplitGestures.set(scope, {
-          tailId,
+          tailId: pending.id,
           parentId: split.parentId,
-          beforeId: split.beforeId,
-          keepChildren: split.keepChildren
+          beforeId: split.beforeId
         });
-        focusAfter(scope, tailId, "start");
+        focusAfter(scope, pending.id, "start");
         void pending.committed.catch(() => undefined);
       }
       return;
-    case "createFirstChild":
-      createFirstChild(scope, store, structureIndex, intent.parentId);
-      return;
+    // No `createFirstChild` here: only the page title still resolves to it, and
+    // a row with children now reaches the same result through the split.
     case "createSibling":
       {
         const activeGesture = repeated
@@ -444,8 +437,7 @@ function executeRowIntent(
         enterSplitGestures.set(scope, {
           tailId: pending.id,
           parentId,
-          beforeId,
-          keepChildren: false
+          beforeId
         });
         focusAfter(scope, pending.id, "start");
         void pending.committed.catch(() => undefined);

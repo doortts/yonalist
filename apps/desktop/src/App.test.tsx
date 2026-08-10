@@ -355,13 +355,17 @@ describe("Yonalist v2 desktop shell", () => {
 
     fireEvent.keyDown(parent, { key: "Enter" });
 
+    // The same split as a mid-text Enter on a parent, with an empty half after
+    // the caret: one rule, one command.
     await waitFor(() => {
       expect(notesApi.execute).toHaveBeenCalledWith(expect.objectContaining({
         command: expect.objectContaining({
-          kind: "createNode",
+          kind: "splitNode",
+          id: "bullet-1",
           parent_id: "bullet-1",
           before_id: "child",
-          text: ""
+          prefix: "First thought",
+          suffix: ""
         })
       }));
     });

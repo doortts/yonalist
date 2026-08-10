@@ -43,11 +43,6 @@ interface SplitNodeInput {
   readonly beforeId: string | null;
   readonly prefix: string;
   readonly suffix: string;
-  // With children the source has to stay where it is, since its subtree hangs
-  // off it: it keeps the suffix and the new row carries the prefix in ahead of
-  // it. `splitNode` says that as it stands -- the halves swap places in the
-  // command and the new row is positioned before the source.
-  readonly keepChildren?: boolean;
 }
 
 interface MergeNodeInput {
@@ -123,29 +118,19 @@ export class StoreOutlineMutations {
     const previousText = state.nodes
       .find((node) => node.id === input.id)?.text;
     const newId = freshId();
-    const sourceText = input.keepChildren ? input.suffix : input.prefix;
-    const createdText = input.keepChildren ? input.prefix : input.suffix;
-    const beforeId = input.keepChildren ? input.id : input.beforeId;
     this.host.cancelTitle(input.id);
-    this.host.write(projectSplitNode(this.host.read(), {
-      id: input.id,
-      newId,
-      parentId: input.parentId,
-      beforeId,
-      prefix: sourceText,
-      suffix: createdText
-    }));
+    this.host.write(projectSplitNode(this.host.read(), { ...input, newId }));
     const committed = this.host.execute({
       kind: "splitNode",
       id: input.id,
       new_id: newId,
       parent_id: input.parentId,
-      before_id: beforeId,
-      prefix: sourceText,
-      suffix: createdText
+      before_id: input.beforeId,
+      prefix: input.prefix,
+      suffix: input.suffix
     }).then(() => {
       const current = this.host.read();
-      if (current.drafts[input.id] === sourceText) {
+      if (current.drafts[input.id] === input.prefix) {
         const drafts = { ...current.drafts };
         delete drafts[input.id];
         this.host.write({ drafts });
@@ -153,7 +138,7 @@ export class StoreOutlineMutations {
     }).catch((cause) => {
       const current = this.host.read();
       const removedIds = subtreeIds(current.nodes, [newId]);
-      if (current.drafts[input.id] === sourceText) {
+      if (current.drafts[input.id] === input.prefix) {
         const drafts = { ...current.drafts };
         if (previousDraft === undefined) delete drafts[input.id];
         else drafts[input.id] = previousDraft;

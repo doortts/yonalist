@@ -101,7 +101,14 @@ export function projectSplitNode(
         state.nodes,
         allocation.rebalancedSortKeys
       ).map((node) => node.id === input.id
-        ? { ...node, text: input.prefix }
+        // Splitting into the source expands it, the way notes-core does, or the
+        // half that just landed inside would be hidden and the caret would
+        // chase a row that never rendered.
+        ? {
+            ...node,
+            text: input.prefix,
+            collapsed: input.parentId === input.id ? false : node.collapsed
+          }
         : node),
       created
     ], state.activePageId),

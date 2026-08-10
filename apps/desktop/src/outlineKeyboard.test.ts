@@ -89,12 +89,11 @@ describe("v2 outline keyboard intent resolver", () => {
       prefix: "alpha",
       suffix: "omega",
       parentId: "page",
-      beforeId: null,
-      keepChildren: false
+      beforeId: null
     });
   });
 
-  it("marks a split of a row with children so the source keeps them", () => {
+  it("aims a split of a row with children at its own first child slot", () => {
     expect(resolveOutlineKey(input({
       nodeId: "parent",
       value: "AAA BBB",
@@ -104,19 +103,26 @@ describe("v2 outline keyboard intent resolver", () => {
       kind: "split",
       prefix: "AAA ",
       suffix: "BBB",
-      parentId: "page",
-      beforeId: "next",
-      keepChildren: true
+      parentId: "parent",
+      beforeId: "child"
     });
   });
 
-  it("creates a first child only for terminal Enter on a row with children", () => {
+  // Terminal Enter on a row with children is the same rule with an empty half
+  // after the caret, so it resolves to the same intent rather than its own kind.
+  it("makes terminal Enter on a row with children an empty first child", () => {
     expect(resolveOutlineKey(input({
       nodeId: "parent",
       value: "Parent",
       selectionStart: 6,
       selectionEnd: 6
-    }))).toEqual({ kind: "createFirstChild", parentId: "parent" });
+    }))).toEqual({
+      kind: "split",
+      prefix: "Parent",
+      suffix: "",
+      parentId: "parent",
+      beforeId: "child"
+    });
 
     expect(resolveOutlineKey(input({
       nodeId: "next",
@@ -129,8 +135,7 @@ describe("v2 outline keyboard intent resolver", () => {
       prefix: "Next",
       suffix: "",
       parentId: "page",
-      beforeId: null,
-      keepChildren: false
+      beforeId: null
     });
   });
 
