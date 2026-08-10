@@ -61,6 +61,84 @@ describe("browser-only preview adapter", () => {
     })).rejects.toThrow(`node is not empty: ${target.id}`);
   });
 
+  // Preview is the only backend the browser dev surface ever sees, so anything
+  // it waves through that notes-core rejects shows a broken feature working.
+  it("rejects a split aimed at a parent the source has nothing to do with", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const nodes = boot.viewport!.nodes;
+    const target = nodes[0];
+    const stranger = nodes.find((node) =>
+      node.id !== target.id && node.id !== target.parentId)!;
+
+    await expect(previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-split-wrong-parent",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: {
+        kind: "splitNode",
+        id: target.id,
+        new_id: "preview-split-wrong-parent-row",
+        parent_id: stranger.id,
+        before_id: null,
+        prefix: "a",
+        suffix: "b"
+      }
+    })).rejects.toThrow(/is neither a child of/u);
+  });
+
+  it("nests a split under the source and opens it, as notes-core does", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    const source = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-split-nested-source",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: {
+        kind: "createNode",
+        id: "preview-split-nested",
+        parent_id: pageId,
+        before_id: null,
+        text: "AAABBB"
+      }
+    });
+    const collapsed = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-split-nested-collapse",
+      baseRevision: source.revision,
+      historyGroup: null,
+      command: { kind: "setCollapsed", id: "preview-split-nested", collapsed: true }
+    });
+
+    const split = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-split-nested-split",
+      baseRevision: collapsed.revision,
+      historyGroup: null,
+      command: {
+        kind: "splitNode",
+        id: "preview-split-nested",
+        new_id: "preview-split-nested-child",
+        parent_id: "preview-split-nested",
+        before_id: null,
+        prefix: "AAA",
+        suffix: "BBB"
+      }
+    });
+
+    expect(split.changedNodes).toContainEqual(expect.objectContaining({
+      id: "preview-split-nested-child",
+      parentId: "preview-split-nested",
+      text: "BBB"
+    }));
+    expect(split.changedNodes).toContainEqual(expect.objectContaining({
+      id: "preview-split-nested",
+      text: "AAA",
+      collapsed: false
+    }));
+  });
+
   it("supports atomic split and empty-row removal in browser preview", async () => {
     const boot = await previewNotesApi.bootstrap();
     const target = boot.viewport!.nodes[0];

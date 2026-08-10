@@ -197,7 +197,19 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
     case "splitNode": {
       const source = nodes.find((candidate) => candidate.id === command.id);
       if (source) {
+        // notes-core answers DomainError::Invariant here: a split may only put
+        // the new half beside the source or inside it.
+        const nested = command.parent_id === command.id;
+        if (!nested && command.parent_id !== source.parentId) {
+          throw new Error(
+            `split source ${command.id} is neither a child of ` +
+            `${command.parent_id} nor ${command.parent_id} itself`
+          );
+        }
         source.text = command.prefix;
+        // The nested half would be hidden under a collapsed source, so the same
+        // command opens it, as notes-core does.
+        if (nested) source.collapsed = false;
         const node: NoteView = {
           id: command.new_id,
           parentId: command.parent_id,

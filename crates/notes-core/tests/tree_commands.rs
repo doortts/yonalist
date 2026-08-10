@@ -705,6 +705,75 @@ fn split_node_rejects_page_sources_and_duplicate_new_ids() {
 }
 
 #[test]
+fn split_node_rejects_a_parent_that_is_neither_the_source_nor_its_parent() {
+    let mut tree = NotesTree::default();
+    tree.apply(&[
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("current"), id("page"), 1_024, "Current")),
+        TreeMutation::upsert(NoteNode::child(id("other"), id("page"), 2_048, "Other")),
+    ])
+    .unwrap();
+
+    assert!(matches!(
+        tree.plan(NotesCommand::SplitNode {
+            id: id("current"),
+            new_id: id("new"),
+            parent_id: id("other"),
+            position: Position::at_end(),
+            prefix: "Curr".into(),
+            suffix: "ent".into(),
+        }),
+        Err(DomainError::Invariant(_))
+    ));
+}
+
+#[test]
+fn split_node_can_place_the_new_half_inside_the_source_and_opens_it() {
+    let mut tree = NotesTree::default();
+    tree.apply(&[
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("one"), id("page"), 1_024, "alphaomega")),
+        TreeMutation::upsert(NoteNode::child(id("child-1"), id("one"), 1_024, "child1")),
+        TreeMutation::upsert(NoteNode::child(id("child-2"), id("one"), 2_048, "child2")),
+        TreeMutation::upsert(NoteNode::child(id("next"), id("page"), 2_048, "Next")),
+    ])
+    .unwrap();
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::SetCollapsed {
+            id: id("one"),
+            collapsed: true,
+        },
+    );
+    let original = tree.clone();
+
+    let patch = tree
+        .plan(NotesCommand::SplitNode {
+            id: id("one"),
+            new_id: id("new"),
+            parent_id: id("one"),
+            position: Position::before(id("child-1")),
+            prefix: "alpha".into(),
+            suffix: "omega".into(),
+        })
+        .unwrap();
+    tree.apply(&patch.forward).unwrap();
+
+    assert_eq!(tree.node(&id("one")).unwrap().text(), "alpha");
+    assert_eq!(tree.node(&id("new")).unwrap().text(), "omega");
+    assert_eq!(
+        tree.children_of(&id("one")),
+        vec![id("new"), id("child-1"), id("child-2")]
+    );
+    assert_eq!(tree.children_of(&id("page")), vec![id("one"), id("next")]);
+    // The half landed inside a collapsed row, so the same command opens it.
+    assert!(!tree.node(&id("one")).unwrap().is_collapsed());
+
+    tree.apply(&patch.inverse).unwrap();
+    assert_eq!(tree, original);
+}
+
+#[test]
 fn merge_backward_keeps_the_current_node_and_round_trips_all_preserved_state() {
     let mut tree = NotesTree::default();
     tree.apply(&[

@@ -272,14 +272,25 @@ impl NotesTree {
         if source.kind() != NoteNodeKind::Bullet {
             return Err(DomainError::CannotSplitPage);
         }
-        if source.parent_id() != Some(&parent_id) {
+        // `parent_id` names where the half after the caret lands, and a split may
+        // only put it beside the source or inside it: either the source's own
+        // parent, or the source itself. Nothing else, so a split can never re-home
+        // the source or reach a node it does not already touch.
+        let nested = parent_id == id;
+        if !nested && source.parent_id() != Some(&parent_id) {
             return Err(DomainError::Invariant(format!(
-                "split source {id} is not a child of {parent_id}"
+                "split source {id} is neither a child of {parent_id} nor {parent_id} itself"
             )));
         }
         self.ensure_new_id(&new_id)?;
         self.ensure_parent(&parent_id)?;
         self.node_mut(&id)?.set_text(prefix);
+        // A collapsed source would hide the half that just landed inside it, so
+        // the nested split expands it, the way MoveNodes and IndentNode expand
+        // the destination they move into. Same command, so it is one undo step.
+        if nested {
+            self.node_mut(&id)?.set_collapsed(false);
+        }
         self.nodes.insert(
             new_id.clone(),
             NoteNode::child(new_id.clone(), parent_id.clone(), SORT_KEY_STEP, suffix),
