@@ -27,7 +27,6 @@ impl NotesTree {
                 }
                 Ok(())
             }
-            NotesCommand::CreatePage { id, text } => self.create_page(id, text),
             NotesCommand::CreateNode {
                 id,
                 parent_id,
@@ -159,15 +158,6 @@ impl NotesTree {
             }
             NotesCommand::RestoreSubtree { id } => self.set_subtree_deleted(&id, false),
         }
-    }
-
-    fn create_page(&mut self, id: NodeId, text: String) -> Result<(), DomainError> {
-        self.ensure_new_id(&id)?;
-        let next_sort_key = self.next_root_sort_key()?;
-        let mut page = NoteNode::page(id.clone(), text);
-        page.set_sort_key(next_sort_key);
-        self.nodes.insert(id, page);
-        Ok(())
     }
 
     fn create_node(

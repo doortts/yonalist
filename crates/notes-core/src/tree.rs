@@ -294,17 +294,6 @@ impl NotesTree {
             .ok_or_else(|| DomainError::NodeNotFound(id.clone()))
     }
 
-    fn next_root_sort_key(&self) -> Result<i64, DomainError> {
-        self.nodes
-            .values()
-            .filter(|node| node.parent_id().is_none())
-            .map(NoteNode::sort_key)
-            .max()
-            .unwrap_or(0)
-            .checked_add(SORT_KEY_STEP)
-            .ok_or(DomainError::SortKeyOverflow)
-    }
-
     fn diff(&self, candidate: &Self) -> DomainPatch {
         let ids = self
             .nodes

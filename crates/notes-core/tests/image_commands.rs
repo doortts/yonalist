@@ -1,6 +1,6 @@
 use notes_core::{
-    DomainError, ImportImageNode, NodeId, NoteImage, NoteNodeKind, NotesCommand, NotesTree,
-    Position,
+    DomainError, ImportImageNode, NodeId, NoteImage, NoteNode, NoteNodeKind, NotesCommand,
+    NotesTree, Position, TreeMutation,
 };
 
 fn id(value: &str) -> NodeId {
@@ -23,15 +23,9 @@ fn image(seed: char, original_name: &str, display_width: u32) -> NoteImage {
 }
 
 fn page_tree() -> NotesTree {
-    let tree = NotesTree::default();
-    let patch = tree
-        .plan(NotesCommand::CreatePage {
-            id: id("page"),
-            text: "Page".into(),
-        })
-        .expect("page patch");
-    let mut tree = tree;
-    tree.apply(&patch.forward).expect("page apply");
+    let mut tree = NotesTree::default();
+    tree.apply(&[TreeMutation::upsert(NoteNode::page(id("page"), "Page"))])
+        .expect("page apply");
     tree
 }
 

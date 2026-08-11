@@ -1,5 +1,5 @@
 use notes_application::StoragePort;
-use notes_core::{NodeId, NoteNodeKind, NotesCommand, NotesTree};
+use notes_core::{DomainPatch, NodeId, NoteNode, NoteNodeKind, TreeMutation};
 use notes_sqlite::SqliteStorage;
 
 /// Opening a workspace that predates the root row has to adopt its top-level
@@ -11,13 +11,16 @@ fn reopening_a_legacy_workspace_adopts_its_pages_under_the_root() {
     let database = directory.path().join("notes-v2.sqlite");
     {
         let storage = SqliteStorage::open(&database).expect("open storage");
-        let tree = NotesTree::default();
-        let patch = tree
-            .plan(NotesCommand::CreatePage {
-                id: NodeId::try_from("page").expect("valid node id"),
-                text: "Page".into(),
-            })
-            .expect("page patch");
+        // A top-level page row, the shape this workspace predates the root row
+        // with. No command writes one any more, so the patch is written by hand.
+        let page_id = NodeId::try_from("page").expect("valid node id");
+        let patch = DomainPatch {
+            forward: vec![TreeMutation::upsert(NoteNode::page(
+                page_id.clone(),
+                "Page",
+            ))],
+            inverse: vec![TreeMutation::Delete { id: page_id }],
+        };
         storage.commit(0, &patch).expect("page commit");
     }
 

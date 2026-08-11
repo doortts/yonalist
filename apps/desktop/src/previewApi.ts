@@ -129,19 +129,6 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
   let deletedIds: string[] = [];
   const command = envelope.command;
   switch (command.kind) {
-    case "createPage": {
-      const node: NoteView = {
-        id: command.id,
-        parentId: null,
-        sortKey: (nodes.length + 1) * SORT_KEY_STEP,
-        kind: "page", image: null, text: command.text, note: "", marker: "bullet",
-        collapsed: false, completed: false, starred: false, deleted: false
-      };
-      nodes.push(node);
-      activePageId = node.id;
-      changed = [node];
-      break;
-    }
     case "createNode": {
       const node: NoteView = {
         id: command.id,
@@ -447,7 +434,11 @@ export const previewNotesApi: NotesApi = {
   async bootstrap() {
     const pages = nodes
       .filter((node) => node.kind === "page" && !node.deleted)
-      .map((node) => ({ id: node.id, title: node.text }));
+      .map((node) => ({
+        id: node.id,
+        title: node.text,
+        sortKey: node.sortKey
+      }));
     return {
       sessionId,
       revision,

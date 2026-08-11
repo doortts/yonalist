@@ -80,8 +80,8 @@ describe("StoreCommands", () => {
       captureCaret: () => null
     });
 
-    const first = commands.execute({ kind: "createPage", id: "a", text: "A" });
-    const second = commands.execute({ kind: "createPage", id: "b", text: "B" });
+    const first = commands.execute({ kind: "createNode", id: "a", parent_id: "root", before_id: null, text: "A" });
+    const second = commands.execute({ kind: "createNode", id: "b", parent_id: "root", before_id: null, text: "B" });
     await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
     releaseFirst(receipt(2));
     await Promise.all([first, second]);
@@ -120,10 +120,10 @@ describe("StoreCommands", () => {
     const history = vi.fn();
     commands.subscribeHistory(history);
 
-    await commands.execute({ kind: "createPage", id: "a", text: "A" }, "typing");
-    await commands.execute({ kind: "createPage", id: "b", text: "B" }, "typing");
+    await commands.execute({ kind: "createNode", id: "a", parent_id: "root", before_id: null, text: "A" }, "typing");
+    await commands.execute({ kind: "createNode", id: "b", parent_id: "root", before_id: null, text: "B" }, "typing");
     commands.breakHistoryGroup();
-    await commands.execute({ kind: "createPage", id: "c", text: "C" }, "typing");
+    await commands.execute({ kind: "createNode", id: "c", parent_id: "root", before_id: null, text: "C" }, "typing");
 
     expect(history).toHaveBeenCalledTimes(2);
   });

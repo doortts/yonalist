@@ -10,7 +10,7 @@ const snapshot: BootSnapshot = {
   sessionId: "navigation-session",
   revision: 7,
   activePageId: "page",
-  pages: [{ id: "page", title: "Today" }],
+  pages: [{ id: "page", title: "Today", sortKey: 1_024 }],
   viewport: {
     pageId: "page",
     anchorId: null,
@@ -125,7 +125,9 @@ function pageApi(): NotesApi {
   });
   notesApi.execute = vi.fn().mockImplementation(async (envelope) => {
     const { command } = envelope;
-    if (command.kind === "createPage") {
+    // A page is created as a child of the root outline; the store still reads
+    // its page list off kind='page' rows, so that is what comes back.
+    if (command.kind === "createNode") {
       undone.push(() => receiptFor(pageNode(command.id, command.text, true)));
       return receiptFor(pageNode(command.id, command.text, false));
     }

@@ -43,8 +43,10 @@ fn seed(
             "page",
             0,
             None,
-            IpcNotesCommand::CreatePage {
+            IpcNotesCommand::CreateNode {
                 id: "page".into(),
+                parent_id: "root".into(),
+                before_id: None,
                 text: "Page".into(),
             },
         ))

@@ -86,7 +86,13 @@ export function receiptState(
   for (const node of receipt.changedNodes) {
     if (node.kind !== "page") continue;
     if (node.deleted) pagesById.delete(node.id);
-    else pagesById.set(node.id, { id: node.id, title: node.text });
+    else {
+      pagesById.set(node.id, {
+        id: node.id,
+        title: node.text,
+        sortKey: node.sortKey
+      });
+    }
   }
   for (const id of receipt.deletedIds) pagesById.delete(id);
 

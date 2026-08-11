@@ -7,7 +7,7 @@ const snapshot: BootSnapshot = {
   sessionId: "session-clipboard",
   revision: 7,
   activePageId: "page",
-  pages: [{ id: "page", title: "Today" }],
+  pages: [{ id: "page", title: "Today", sortKey: 1_024 }],
   viewport: {
     pageId: "page",
     anchorId: null,

@@ -8,6 +8,27 @@ fn id(value: &str) -> NodeId {
     NodeId::try_from(value).unwrap()
 }
 
+/// The single root page every outline hangs from; a "page" is one of its
+/// children.
+fn root_tree() -> NotesTree {
+    let mut tree = NotesTree::default();
+    tree.apply(&[TreeMutation::upsert(NoteNode::page(id("root"), "Home"))])
+        .unwrap();
+    tree
+}
+
+fn create_page(tree: &mut NotesTree, page_id: &NodeId) {
+    plan_and_apply(
+        tree,
+        NotesCommand::CreateNode {
+            id: page_id.clone(),
+            parent_id: id("root"),
+            position: Position::at_end(),
+            text: "Page".into(),
+        },
+    );
+}
+
 fn plan_and_apply(tree: &mut NotesTree, command: NotesCommand) {
     let patch = tree.plan(command).unwrap();
     tree.apply(&patch.forward).unwrap();
@@ -93,7 +114,7 @@ fn nested_editor_batch_is_rejected() {
 
     let result = tree.plan(NotesCommand::Batch {
         commands: vec![NotesCommand::Batch {
-            commands: vec![NotesCommand::CreatePage {
+            commands: vec![NotesCommand::UpdateText {
                 id: id("page"),
                 text: "Page".into(),
             }],
@@ -110,11 +131,13 @@ fn nested_editor_batch_is_rejected() {
 
 #[test]
 fn page_and_bullet_commands_produce_reversible_patches() {
-    let mut tree = NotesTree::default();
+    let mut tree = root_tree();
 
     let create_page = tree
-        .plan(NotesCommand::CreatePage {
+        .plan(NotesCommand::CreateNode {
             id: id("page"),
+            parent_id: id("root"),
+            position: Position::at_end(),
             text: "Inbox".into(),
         })
         .unwrap();
@@ -256,14 +279,8 @@ fn duplicating_a_bullet_copies_content_and_flags_without_sharing_identity() {
     let page_id = id("page");
     let source_id = id("source");
     let copy_id = id("copy");
-    let mut tree = NotesTree::default();
-    plan_and_apply(
-        &mut tree,
-        NotesCommand::CreatePage {
-            id: page_id.clone(),
-            text: "Page".into(),
-        },
-    );
+    let mut tree = root_tree();
+    create_page(&mut tree, &page_id);
     plan_and_apply(
         &mut tree,
         NotesCommand::CreateNode {
@@ -375,14 +392,8 @@ fn restoring_a_descendant_also_restores_its_deleted_ancestor_chain() {
 
 #[test]
 fn deleted_siblings_keep_their_ordering_slot_until_restore() {
-    let mut tree = NotesTree::default();
-    plan_and_apply(
-        &mut tree,
-        NotesCommand::CreatePage {
-            id: id("page"),
-            text: "Page".into(),
-        },
-    );
+    let mut tree = root_tree();
+    create_page(&mut tree, &id("page"));
     for value in ["one", "two"] {
         plan_and_apply(
             &mut tree,

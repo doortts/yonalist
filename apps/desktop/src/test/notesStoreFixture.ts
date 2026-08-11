@@ -7,7 +7,7 @@ export async function readyRealStore(): Promise<NotesStore> {
     sessionId: "session-1",
     revision: 1,
     activePageId: "page-1",
-    pages: [{ id: "page-1", title: "Page" }],
+    pages: [{ id: "page-1", title: "Page", sortKey: 1_024 }],
     viewport: {
       pageId: "page-1",
       anchorId: null,

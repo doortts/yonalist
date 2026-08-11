@@ -26,8 +26,10 @@ fn page_bullet_commit_restart_and_session_undo_are_end_to_end() {
             .execute(command(
                 "page",
                 0,
-                IpcNotesCommand::CreatePage {
+                IpcNotesCommand::CreateNode {
                     id: "page".into(),
+                    parent_id: "root".into(),
+                    before_id: None,
                     text: "Inbox".into(),
                 },
             ))
@@ -85,8 +87,10 @@ fn batch_complete_and_delete_each_commit_as_one_history_entry() {
         (
             "page",
             0,
-            IpcNotesCommand::CreatePage {
+            IpcNotesCommand::CreateNode {
                 id: "page".into(),
+                parent_id: "root".into(),
+                before_id: None,
                 text: "Page".into(),
             },
         ),
@@ -168,8 +172,10 @@ fn outline_import_preserves_hierarchy_in_one_revision_and_one_undo() {
         .execute(command(
             "page",
             0,
-            IpcNotesCommand::CreatePage {
+            IpcNotesCommand::CreateNode {
                 id: "page".into(),
+                parent_id: "root".into(),
+                before_id: None,
                 text: "Page".into(),
             },
         ))
@@ -226,8 +232,10 @@ fn batch_move_commits_and_undoes_as_one_revision() {
         .execute(command(
             "page",
             0,
-            IpcNotesCommand::CreatePage {
+            IpcNotesCommand::CreateNode {
                 id: "page".into(),
+                parent_id: "root".into(),
+                before_id: None,
                 text: "Page".into(),
             },
         ))
@@ -292,8 +300,10 @@ fn batch_duplicate_commits_and_undoes_as_one_revision() {
         .execute(command(
             "page",
             0,
-            IpcNotesCommand::CreatePage {
+            IpcNotesCommand::CreateNode {
                 id: "page".into(),
+                parent_id: "root".into(),
+                before_id: None,
                 text: "Page".into(),
             },
         ))
@@ -354,8 +364,10 @@ fn atomic_editor_gestures_commit_and_restart_with_one_revision_each() {
             (
                 "page",
                 0,
-                IpcNotesCommand::CreatePage {
+                IpcNotesCommand::CreateNode {
                     id: "page".into(),
+                    parent_id: "root".into(),
+                    before_id: None,
                     text: "Page".into(),
                 },
             ),
@@ -469,8 +481,10 @@ fn backward_merge_commits_current_identity_and_undoes_in_one_revision() {
         (
             "page",
             0,
-            IpcNotesCommand::CreatePage {
+            IpcNotesCommand::CreateNode {
                 id: "page".into(),
+                parent_id: "root".into(),
+                before_id: None,
                 text: "Page".into(),
             },
         ),
@@ -550,8 +564,10 @@ fn node_editor_fields_restart_and_supporting_note_indexes_are_end_to_end() {
             (
                 "page",
                 0,
-                IpcNotesCommand::CreatePage {
+                IpcNotesCommand::CreateNode {
                     id: "page".into(),
+                    parent_id: "root".into(),
+                    before_id: None,
                     text: "Page".into(),
                 },
             ),
@@ -686,8 +702,10 @@ fn proposed_ids_never_overwrite_existing_nodes() {
         .execute(command(
             "page",
             0,
-            IpcNotesCommand::CreatePage {
+            IpcNotesCommand::CreateNode {
                 id: "page".into(),
+                parent_id: "root".into(),
+                before_id: None,
                 text: "Inbox".into(),
             },
         ))
@@ -708,8 +726,10 @@ fn proposed_ids_never_overwrite_existing_nodes() {
     for (request_id, attempted) in [
         (
             "colliding-page",
-            IpcNotesCommand::CreatePage {
+            IpcNotesCommand::CreateNode {
                 id: "existing".into(),
+                parent_id: "root".into(),
+                before_id: None,
                 text: "overwrite".into(),
             },
         ),

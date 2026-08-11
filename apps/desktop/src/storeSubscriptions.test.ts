@@ -25,7 +25,7 @@ function notesStateWithNodes(count: number): NotesState {
     sessionId: "session-1",
     revision: 1,
     activePageId: "page-1",
-    pages: [{ id: "page-1", title: "Page" }],
+    pages: [{ id: "page-1", title: "Page", sortKey: 1_024 }],
     nodes
   };
 }

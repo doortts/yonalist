@@ -65,17 +65,16 @@ fn collect_command_context(
                 collect_command_context(connection, command, nodes)?;
             }
         }
-        NotesCommand::CreatePage { id, .. } => {
-            collect_node(connection, id, nodes)?;
-            collect_root_pages(connection, nodes)?;
-        }
         NotesCommand::CreateNode {
             id,
             parent_id,
             position,
             ..
         } => {
-            collect_node(connection, id, nodes)?;
+            // Ancestors rather than the row alone: when the proposed id is
+            // already taken somewhere else in the tree, the domain can only
+            // report the collision if that node arrives with its parent chain.
+            collect_ancestors(connection, id, nodes)?;
             collect_ancestors(connection, parent_id, nodes)?;
             collect_position_context(connection, parent_id, position, None, nodes)?;
         }
@@ -306,26 +305,6 @@ fn collect_node(
     Ok(())
 }
 
-fn collect_root_pages(
-    connection: &Connection,
-    nodes: &mut BTreeMap<NodeId, NoteNode>,
-) -> Result<(), StorageError> {
-    let mut statement = connection
-        .prepare(
-            "SELECT *
-             FROM notes_node_records
-             WHERE kind = 'page' AND parent_id IS NULL
-             ORDER BY sort_key, id",
-        )
-        .map_err(internal)?;
-    let pages = statement.query_map([], parse_node).map_err(internal)?;
-    for page in pages {
-        let page = page.map_err(internal)?;
-        nodes.insert(page.id().clone(), page);
-    }
-    Ok(())
-}
-
 fn collect_duplicate_namespace(
     connection: &Connection,
     new_id: &NodeId,
@@ -354,15 +333,25 @@ fn collect_ancestors(
     nodes: &mut BTreeMap<NodeId, NoteNode>,
 ) -> Result<(), StorageError> {
     let mut current = Some(id.clone());
+    let mut visited = BTreeSet::new();
     while let Some(id) = current {
-        if nodes.contains_key(&id) {
+        if !visited.insert(id.clone()) {
             break;
         }
-        let Some(node) = node(connection, id.as_str())? else {
-            break;
+        // A row another collector already put in the map — an id-collision
+        // probe, say — arrives without its parents, so the walk goes through it
+        // instead of stopping: the loaded slice always reaches the root.
+        current = match nodes.get(&id) {
+            Some(node) => node.parent_id().cloned(),
+            None => {
+                let Some(node) = node(connection, id.as_str())? else {
+                    break;
+                };
+                let parent_id = node.parent_id().cloned();
+                nodes.insert(id, node);
+                parent_id
+            }
         };
-        current = node.parent_id().cloned();
-        nodes.insert(id, node);
     }
     Ok(())
 }

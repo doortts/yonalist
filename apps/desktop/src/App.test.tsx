@@ -888,7 +888,7 @@ describe("Yonalist v2 desktop shell", () => {
     const notesApi = api();
     notesApi.bootstrap = vi.fn().mockResolvedValue({
       ...snapshot,
-      pages: [...snapshot.pages, { id: "page-2", title: "Backlog" }]
+      pages: [...snapshot.pages, { id: "page-2", title: "Backlog", sortKey: 1_024 }]
     });
     notesApi.queryViewport = vi.fn().mockImplementation(async (request) => ({
       pageId: request.pageId,

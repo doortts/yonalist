@@ -6,6 +6,7 @@ use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::repository;
+use crate::schema::ROOT_ID;
 
 const MAX_VIEWPORT_LIMIT: u32 = 200;
 const MAX_SEARCH_LIMIT: u32 = 100;
@@ -18,17 +19,18 @@ pub(crate) fn bootstrap(
     let revision = repository::revision(connection)?;
     let mut statement = connection
         .prepare(
-            "SELECT id, text
+            "SELECT id, text, sort_key
              FROM notes_nodes
-             WHERE kind = 'page' AND id <> 'root' AND deleted = 0
+             WHERE parent_id = ?1 AND deleted = 0
              ORDER BY sort_key, id",
         )
         .map_err(internal)?;
     let pages = statement
-        .query_map([], |row| {
+        .query_map([ROOT_ID], |row| {
             Ok(PageSummary {
                 id: row.get(0)?,
                 title: row.get(1)?,
+                sort_key: row.get(2)?,
             })
         })
         .map_err(internal)?
@@ -42,9 +44,11 @@ pub(crate) fn bootstrap(
         )
         .optional()
         .map_err(internal)?;
+    // Home is a page like any other, so it is both the fallback and a legal
+    // stored value; anything else has to still name a live page.
     let active_page_id = preferred_page
-        .filter(|preferred| pages.iter().any(|page| page.id == *preferred))
-        .or_else(|| pages.first().map(|page| page.id.clone()));
+        .filter(|preferred| preferred == ROOT_ID || pages.iter().any(|page| page.id == *preferred))
+        .or_else(|| Some(ROOT_ID.to_owned()));
     let viewport = active_page_id
         .as_ref()
         .map(|page_id| {
@@ -109,7 +113,7 @@ pub(crate) fn viewport(
                            ELSE printf('1%019lld:%s', sort_key, id)
                        END
                 FROM notes_nodes
-                WHERE id = ?1 AND kind = 'page' AND deleted = 0
+                WHERE id = ?1 AND deleted = 0
                 UNION ALL
                 SELECT child.id,
                        outline.path || '/' ||
@@ -246,12 +250,12 @@ pub(crate) fn search(
                             FROM notes_nodes parent
                             JOIN ancestors child ON child.parent_id = parent.id
                         )
-                        SELECT id FROM ancestors WHERE parent_id IS NULL LIMIT 1
+                        SELECT id FROM ancestors WHERE parent_id = ?4 LIMIT 1
                     ) AS page_id,
                     snippet(notes_fts, -1, '', '', '…', 12)
              FROM notes_fts
              JOIN notes_node_records node ON node.id = notes_fts.node_id
-             WHERE notes_fts MATCH ?1 AND node.deleted = 0
+             WHERE notes_fts MATCH ?1 AND node.deleted = 0 AND node.id <> ?4
              ORDER BY rank, node.id
              LIMIT ?2 OFFSET ?3",
         )
@@ -263,7 +267,8 @@ pub(crate) fn search(
                 i64::from(request.limit.clamp(1, MAX_SEARCH_LIMIT)) + 1,
                 i64::try_from(offset).map_err(|_| {
                     StorageError::Internal("search offset exceeded SQLite INTEGER".into())
-                })?
+                })?,
+                ROOT_ID
             ],
             |row| {
                 Ok(SearchHit {
@@ -305,14 +310,14 @@ fn filtered_search(
                         FROM notes_nodes parent
                         JOIN ancestors child ON child.parent_id = parent.id
                     )
-                    SELECT id FROM ancestors WHERE parent_id IS NULL LIMIT 1
+                    SELECT id FROM ancestors WHERE parent_id = ?4 LIMIT 1
                 ) AS page_id,
                 CASE
                     WHEN node.note = '' THEN node.text
                     ELSE node.text || ' ' || node.note
                 END
          FROM notes_node_records node
-         WHERE {clause}
+         WHERE ({clause}) AND node.id <> ?4
          ORDER BY node.sort_key, node.id
          LIMIT ?2 OFFSET ?3"
     );
@@ -324,7 +329,8 @@ fn filtered_search(
                 i64::from(requested_limit.clamp(1, MAX_SEARCH_LIMIT)) + 1,
                 i64::try_from(offset).map_err(|_| {
                     StorageError::Internal("search offset exceeded SQLite INTEGER".into())
-                })?
+                })?,
+                ROOT_ID
             ],
             |row| {
                 Ok(SearchHit {
@@ -364,7 +370,7 @@ fn anchor_offset(
                            ELSE printf('1%019lld:%s', sort_key, id)
                        END
                 FROM notes_nodes
-                WHERE id = ?1 AND kind = 'page' AND deleted = 0
+                WHERE id = ?1 AND deleted = 0
                 UNION ALL
                 SELECT child.id,
                        outline.path || '/' ||

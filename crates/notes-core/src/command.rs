@@ -53,10 +53,6 @@ pub enum NotesCommand {
     Batch {
         commands: Vec<NotesCommand>,
     },
-    CreatePage {
-        id: NodeId,
-        text: String,
-    },
     CreateNode {
         id: NodeId,
         parent_id: NodeId,

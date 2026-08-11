@@ -25,9 +25,15 @@ fn image(original_name: &str, display_width: u32) -> NoteImage {
 }
 
 fn commit_page(storage: &SqliteStorage, tree: &mut NotesTree) {
+    // The root row is already in the database; the tree only needs to know it
+    // so the page can be planned as its child.
+    tree.apply(&[TreeMutation::upsert(NoteNode::page(id("root"), "Home"))])
+        .expect("root apply");
     let patch = tree
-        .plan(NotesCommand::CreatePage {
+        .plan(NotesCommand::CreateNode {
             id: id("page"),
+            parent_id: id("root"),
+            position: Position::at_end(),
             text: "Page".into(),
         })
         .expect("page patch");

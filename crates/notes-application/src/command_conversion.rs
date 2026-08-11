@@ -39,10 +39,6 @@ impl TryFrom<IpcNotesCommand> for NotesCommand {
             values.into_iter().map(id).collect()
         };
         match command {
-            IpcNotesCommand::CreatePage { id: value, text } => Ok(Self::CreatePage {
-                id: id(value)?,
-                text,
-            }),
             IpcNotesCommand::CreateNode {
                 id: value,
                 parent_id,

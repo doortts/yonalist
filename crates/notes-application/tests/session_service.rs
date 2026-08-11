@@ -14,9 +14,27 @@ struct FakeState {
     commit_count: usize,
 }
 
-#[derive(Default)]
 struct FakeStorage {
     state: Mutex<FakeState>,
+}
+
+/// Every workspace opens with the root page in place, so the fake starts there
+/// too: a "page" is a child of it like any other node.
+impl Default for FakeStorage {
+    fn default() -> Self {
+        let mut tree = NotesTree::default();
+        tree.apply(&[TreeMutation::upsert(notes_core::NoteNode::page(
+            NodeId::try_from("root").unwrap(),
+            "Home",
+        ))])
+        .unwrap();
+        Self {
+            state: Mutex::new(FakeState {
+                tree,
+                ..FakeState::default()
+            }),
+        }
+    }
 }
 
 impl FakeStorage {
@@ -155,8 +173,10 @@ fn create_edit_undo_redo_is_revisioned_and_request_idempotent() {
         .execute(command(
             "create-page",
             0,
-            IpcNotesCommand::CreatePage {
+            IpcNotesCommand::CreateNode {
                 id: "page".into(),
+                parent_id: "root".into(),
+                before_id: None,
                 text: "Inbox".into(),
             },
         ))
@@ -244,8 +264,10 @@ fn stale_revision_is_a_retryable_conflict() {
         .execute(command(
             "create-page",
             0,
-            IpcNotesCommand::CreatePage {
+            IpcNotesCommand::CreateNode {
                 id: "page".into(),
+                parent_id: "root".into(),
+                before_id: None,
                 text: "Inbox".into(),
             },
         ))
@@ -255,8 +277,10 @@ fn stale_revision_is_a_retryable_conflict() {
         .execute(command(
             "stale",
             0,
-            IpcNotesCommand::CreatePage {
+            IpcNotesCommand::CreateNode {
                 id: "other".into(),
+                parent_id: "root".into(),
+                before_id: None,
                 text: "Other".into(),
             },
         ))
@@ -275,8 +299,10 @@ fn consecutive_commands_in_the_same_history_group_undo_as_one_edit() {
         .execute(command(
             "page",
             0,
-            IpcNotesCommand::CreatePage {
+            IpcNotesCommand::CreateNode {
                 id: "page".into(),
+                parent_id: "root".into(),
+                before_id: None,
                 text: "Original".into(),
             },
         ))
@@ -324,8 +350,10 @@ fn node_editor_fields_share_generated_ipc_and_one_reversible_history_group() {
         (
             "page",
             0,
-            IpcNotesCommand::CreatePage {
+            IpcNotesCommand::CreateNode {
                 id: "page".into(),
+                parent_id: "root".into(),
+                before_id: None,
                 text: "Page".into(),
             },
         ),
@@ -404,8 +432,10 @@ fn atomic_editor_gesture_split_undoes_and_redoes_as_one_history_entry() {
         (
             "page",
             0,
-            IpcNotesCommand::CreatePage {
+            IpcNotesCommand::CreateNode {
                 id: "page".into(),
+                parent_id: "root".into(),
+                before_id: None,
                 text: "Page".into(),
             },
         ),
@@ -481,8 +511,10 @@ fn atomic_editor_gesture_empty_removal_lifts_children_and_undoes_once() {
         (
             "page",
             0,
-            IpcNotesCommand::CreatePage {
+            IpcNotesCommand::CreateNode {
                 id: "page".into(),
+                parent_id: "root".into(),
+                before_id: None,
                 text: "Page".into(),
             },
         ),

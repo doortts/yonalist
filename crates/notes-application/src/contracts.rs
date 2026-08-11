@@ -156,10 +156,6 @@ pub struct IpcNodeDuplicate {
 #[serde(rename_all = "camelCase", tag = "kind")]
 #[ts(export)]
 pub enum IpcNotesCommand {
-    CreatePage {
-        id: String,
-        text: String,
-    },
     CreateNode {
         id: String,
         parent_id: String,
@@ -385,6 +381,8 @@ pub struct MutationReceipt {
 pub struct PageSummary {
     pub id: String,
     pub title: String,
+    #[ts(type = "number")]
+    pub sort_key: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]

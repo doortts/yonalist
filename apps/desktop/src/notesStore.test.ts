@@ -27,7 +27,7 @@ const boot: BootSnapshot = {
   sessionId: "session-1",
   revision: 1,
   activePageId: "page-1",
-  pages: [{ id: "page-1", title: "Today" }],
+  pages: [{ id: "page-1", title: "Today", sortKey: 1_024 }],
   viewport: {
     pageId: "page-1",
     anchorId: null,
@@ -537,6 +537,40 @@ describe("NotesStore viewport recovery", () => {
     )).toEqual(["updateText", "updateNote", "duplicateNodes"]);
   });
 
+  it("creates a page as a child of the root outline and opens it", async () => {
+    const queryViewport = vi.fn().mockResolvedValue({
+      pageId: "created",
+      anchorId: null,
+      beforeCursor: null,
+      afterCursor: null,
+      nodes: []
+    });
+    const notesApi = api(queryViewport);
+    notesApi.execute = vi.fn().mockResolvedValue({
+      revision: 2,
+      changedNodes: [],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    });
+    const store = new NotesStore(notesApi);
+
+    await store.bootstrap();
+    const pageId = await store.createPage();
+
+    expect(vi.mocked(notesApi.execute).mock.calls.map(
+      ([envelope]) => envelope.command
+    )).toEqual([{
+      kind: "createNode",
+      id: pageId,
+      parent_id: "root",
+      before_id: null,
+      text: "Untitled page"
+    }]);
+    expect(queryViewport).toHaveBeenCalledWith(
+      expect.objectContaining({ pageId })
+    );
+  });
+
   it("opens the next page after the active page moves to Trash", async () => {
     const queryViewport = vi.fn().mockResolvedValue({
       pageId: "page-2",
@@ -548,7 +582,7 @@ describe("NotesStore viewport recovery", () => {
     const notesApi = api(queryViewport);
     notesApi.bootstrap = vi.fn().mockResolvedValue({
       ...boot,
-      pages: [...boot.pages, { id: "page-2", title: "Next page" }]
+      pages: [...boot.pages, { id: "page-2", title: "Next page", sortKey: 1_024 }]
     });
     notesApi.execute = vi.fn().mockResolvedValue({
       revision: 2,
@@ -592,8 +626,8 @@ describe("NotesStore viewport recovery", () => {
       ...boot,
       pages: [
         ...boot.pages,
-        { id: "page-2", title: "Second page" },
-        { id: "page-3", title: "Third page" }
+        { id: "page-2", title: "Second page", sortKey: 1_024 },
+        { id: "page-3", title: "Third page", sortKey: 1_024 }
       ]
     });
     const store = new NotesStore(notesApi);

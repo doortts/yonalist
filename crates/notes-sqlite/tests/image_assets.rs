@@ -259,8 +259,10 @@ fn close_reconciliation_keeps_final_history_state_and_restart_clears_history() {
                 request_id: "page".into(),
                 base_revision: 0,
                 history_group: None,
-                command: IpcNotesCommand::CreatePage {
+                command: IpcNotesCommand::CreateNode {
                     id: "page".into(),
+                    parent_id: "root".into(),
+                    before_id: None,
                     text: "Page".into(),
                 },
             })

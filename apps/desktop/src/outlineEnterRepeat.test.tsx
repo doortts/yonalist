@@ -32,7 +32,7 @@ function bootSnapshot(nodes: readonly NoteView[]): BootSnapshot {
     sessionId: "enter-session",
     revision: 1,
     activePageId: "page-1",
-    pages: [{ id: "page-1", title: "Today" }],
+    pages: [{ id: "page-1", title: "Today", sortKey: 1_024 }],
     viewport: {
       pageId: "page-1",
       anchorId: null,

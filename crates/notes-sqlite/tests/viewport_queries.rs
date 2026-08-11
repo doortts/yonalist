@@ -21,6 +21,279 @@ fn execute(
         .unwrap();
 }
 
+/// Pages are root children now, so "create a page" is an ordinary child
+/// creation under the root row.
+fn create_page(service: &NotesService<&SqliteStorage>, revision: u64, id: &str, text: &str) {
+    execute(
+        service,
+        id,
+        revision,
+        IpcNotesCommand::CreateNode {
+            id: id.into(),
+            parent_id: "root".into(),
+            before_id: None,
+            text: text.into(),
+        },
+    );
+}
+
+#[test]
+fn the_root_viewport_is_the_whole_forest_and_still_paginates() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let service = NotesService::new(&storage, "session", 0);
+    create_page(&service, 0, "page-a", "Inbox");
+    execute(
+        &service,
+        "child",
+        1,
+        IpcNotesCommand::CreateNode {
+            id: "child".into(),
+            parent_id: "page-a".into(),
+            before_id: None,
+            text: "Task".into(),
+        },
+    );
+    create_page(&service, 2, "page-b", "Later");
+
+    let whole = storage
+        .query_viewport(ViewportRequest {
+            page_id: "root".into(),
+            anchor_id: None,
+            before_cursor: None,
+            after_cursor: None,
+            limit: 20,
+        })
+        .unwrap();
+    assert_eq!(
+        whole
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["page-a", "child", "page-b"]
+    );
+
+    let first = storage
+        .query_viewport(ViewportRequest {
+            page_id: "root".into(),
+            anchor_id: None,
+            before_cursor: None,
+            after_cursor: None,
+            limit: 2,
+        })
+        .unwrap();
+    assert_eq!(first.nodes.len(), 2);
+    let rest = storage
+        .query_viewport(ViewportRequest {
+            page_id: "root".into(),
+            anchor_id: None,
+            before_cursor: None,
+            after_cursor: first.after_cursor,
+            limit: 2,
+        })
+        .unwrap();
+    assert_eq!(
+        rest.nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["page-b"]
+    );
+}
+
+#[test]
+fn a_page_is_an_ordinary_node_so_its_own_viewport_still_opens() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let service = NotesService::new(&storage, "session", 0);
+    create_page(&service, 0, "page", "Inbox");
+    execute(
+        &service,
+        "child",
+        1,
+        IpcNotesCommand::CreateNode {
+            id: "child".into(),
+            parent_id: "page".into(),
+            before_id: None,
+            text: "Task".into(),
+        },
+    );
+    execute(
+        &service,
+        "grandchild",
+        2,
+        IpcNotesCommand::CreateNode {
+            id: "grandchild".into(),
+            parent_id: "child".into(),
+            before_id: None,
+            text: "Detail".into(),
+        },
+    );
+
+    let page = storage
+        .query_viewport(ViewportRequest {
+            page_id: "page".into(),
+            anchor_id: None,
+            before_cursor: None,
+            after_cursor: None,
+            limit: 20,
+        })
+        .unwrap();
+
+    assert_eq!(
+        page.nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["child", "grandchild"]
+    );
+}
+
+#[test]
+fn bootstrap_pages_are_the_live_root_children_in_order() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let service = NotesService::new(&storage, "session", 0);
+    create_page(&service, 0, "z-first", "First");
+    create_page(&service, 1, "a-second", "Second");
+    create_page(&service, 2, "trashed", "Gone");
+    execute(
+        &service,
+        "trash",
+        3,
+        IpcNotesCommand::DeleteSubtree {
+            id: "trashed".into(),
+        },
+    );
+
+    let boot = storage.bootstrap("session-b", 20).unwrap();
+
+    assert_eq!(
+        boot.pages
+            .iter()
+            .map(|page| (page.id.as_str(), page.title.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("z-first", "First"), ("a-second", "Second")]
+    );
+    assert!(boot.pages[0].sort_key < boot.pages[1].sort_key);
+}
+
+#[test]
+fn bootstrap_keeps_home_and_falls_back_to_it_when_the_page_is_gone() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let service = NotesService::new(&storage, "session", 0);
+    create_page(&service, 0, "page", "Inbox");
+
+    let fresh = storage.bootstrap("session-a", 20).unwrap();
+    assert_eq!(fresh.active_page_id.as_deref(), Some("root"));
+
+    storage
+        .query_viewport(ViewportRequest {
+            page_id: "root".into(),
+            anchor_id: None,
+            before_cursor: None,
+            after_cursor: None,
+            limit: 20,
+        })
+        .unwrap();
+    assert_eq!(
+        storage
+            .bootstrap("session-b", 20)
+            .unwrap()
+            .active_page_id
+            .as_deref(),
+        Some("root")
+    );
+
+    storage
+        .query_viewport(ViewportRequest {
+            page_id: "page".into(),
+            anchor_id: None,
+            before_cursor: None,
+            after_cursor: None,
+            limit: 20,
+        })
+        .unwrap();
+    execute(
+        &service,
+        "trash",
+        1,
+        IpcNotesCommand::DeleteSubtree { id: "page".into() },
+    );
+
+    let orphaned = storage.bootstrap("session-c", 20).unwrap();
+    assert_eq!(orphaned.active_page_id.as_deref(), Some("root"));
+}
+
+#[test]
+fn a_search_hit_names_the_page_it_lives_under_not_the_root() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let service = NotesService::new(&storage, "session", 0);
+    create_page(&service, 0, "page", "Inbox alpha");
+    execute(
+        &service,
+        "child",
+        1,
+        IpcNotesCommand::CreateNode {
+            id: "child".into(),
+            parent_id: "page".into(),
+            before_id: None,
+            text: "middle".into(),
+        },
+    );
+    execute(
+        &service,
+        "grandchild",
+        2,
+        IpcNotesCommand::CreateNode {
+            id: "grandchild".into(),
+            parent_id: "child".into(),
+            before_id: None,
+            text: "buried alpha".into(),
+        },
+    );
+
+    let hits = storage
+        .search(SearchQuery {
+            text: "alpha".into(),
+            cursor: None,
+            limit: 20,
+        })
+        .unwrap()
+        .hits;
+
+    let owners = hits
+        .iter()
+        .map(|hit| (hit.node.id.as_str(), hit.page_id.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(owners.len(), 2, "{owners:?}");
+    assert!(owners.contains(&("grandchild", "page")), "{owners:?}");
+    assert!(owners.contains(&("page", "page")), "{owners:?}");
+}
+
+/// The root row carries the word "Home", and it is a row in the FTS index like
+/// any other. It is not a hit anyone can open, so it stays out of the results.
+#[test]
+fn the_root_row_never_shows_up_as_a_search_hit() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let service = NotesService::new(&storage, "session", 0);
+    create_page(&service, 0, "page", "Home away from home");
+
+    let hits = storage
+        .search(SearchQuery {
+            text: "home".into(),
+            cursor: None,
+            limit: 20,
+        })
+        .unwrap()
+        .hits;
+
+    assert_eq!(
+        hits.iter()
+            .map(|hit| hit.node.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["page"]
+    );
+}
+
 #[test]
 fn bootstrap_and_viewport_are_bounded_and_cursor_revisioned() {
     let storage = SqliteStorage::open_in_memory().unwrap();
@@ -29,8 +302,10 @@ fn bootstrap_and_viewport_are_bounded_and_cursor_revisioned() {
         &service,
         "page-a",
         0,
-        IpcNotesCommand::CreatePage {
+        IpcNotesCommand::CreateNode {
             id: "page-a".into(),
+            parent_id: "root".into(),
+            before_id: None,
             text: "Inbox".into(),
         },
     );
@@ -38,8 +313,10 @@ fn bootstrap_and_viewport_are_bounded_and_cursor_revisioned() {
         &service,
         "page-b",
         1,
-        IpcNotesCommand::CreatePage {
+        IpcNotesCommand::CreateNode {
             id: "page-b".into(),
+            parent_id: "root".into(),
+            before_id: None,
             text: "Later".into(),
         },
     );
@@ -61,8 +338,21 @@ fn bootstrap_and_viewport_are_bounded_and_cursor_revisioned() {
     assert_eq!(boot.session_id, "new-session");
     assert_eq!(boot.revision, 7);
     assert_eq!(boot.pages.len(), 2);
-    assert_eq!(boot.active_page_id.as_deref(), Some("page-a"));
-    let initial = boot.viewport.unwrap();
+    // Nothing was ever opened, so bootstrap lands on Home and bounds it too.
+    assert_eq!(boot.active_page_id.as_deref(), Some("root"));
+    let home = boot.viewport.unwrap();
+    assert_eq!(home.page_id, "root");
+    assert_eq!(home.nodes.len(), 3);
+
+    let initial = storage
+        .query_viewport(ViewportRequest {
+            page_id: "page-a".into(),
+            anchor_id: None,
+            before_cursor: None,
+            after_cursor: None,
+            limit: 3,
+        })
+        .unwrap();
     assert_eq!(initial.nodes.len(), 3);
     assert!(initial.before_cursor.is_none());
     assert!(initial.after_cursor.is_some());
@@ -111,8 +401,10 @@ fn forest_query_returns_authoritative_preorder_and_reports_its_bound() {
         &service,
         "page",
         0,
-        IpcNotesCommand::CreatePage {
+        IpcNotesCommand::CreateNode {
             id: "page".into(),
+            parent_id: "root".into(),
+            before_id: None,
             text: "Page".into(),
         },
     );
@@ -170,8 +462,10 @@ fn querying_a_page_makes_it_the_next_bootstrap_page() {
         &service,
         "first-page",
         0,
-        IpcNotesCommand::CreatePage {
+        IpcNotesCommand::CreateNode {
             id: "first-page".into(),
+            parent_id: "root".into(),
+            before_id: None,
             text: "First".into(),
         },
     );
@@ -179,8 +473,10 @@ fn querying_a_page_makes_it_the_next_bootstrap_page() {
         &service,
         "second-page",
         1,
-        IpcNotesCommand::CreatePage {
+        IpcNotesCommand::CreateNode {
             id: "second-page".into(),
+            parent_id: "root".into(),
+            before_id: None,
             text: "Second".into(),
         },
     );
@@ -208,8 +504,10 @@ fn page_navigation_preserves_creation_order_when_ids_sort_differently() {
         &service,
         "z-first",
         0,
-        IpcNotesCommand::CreatePage {
+        IpcNotesCommand::CreateNode {
             id: "z-first".into(),
+            parent_id: "root".into(),
+            before_id: None,
             text: "First".into(),
         },
     );
@@ -217,8 +515,10 @@ fn page_navigation_preserves_creation_order_when_ids_sort_differently() {
         &service,
         "a-second",
         1,
-        IpcNotesCommand::CreatePage {
+        IpcNotesCommand::CreateNode {
             id: "a-second".into(),
+            parent_id: "root".into(),
+            before_id: None,
             text: "Second".into(),
         },
     );
@@ -241,8 +541,10 @@ fn viewport_preserves_numeric_order_after_repeated_prepends_create_negative_keys
         &service,
         "page",
         0,
-        IpcNotesCommand::CreatePage {
+        IpcNotesCommand::CreateNode {
             id: "page".into(),
+            parent_id: "root".into(),
+            before_id: None,
             text: "Inbox".into(),
         },
     );
@@ -302,8 +604,10 @@ fn fts_search_tracks_text_updates_without_loading_the_workspace() {
         &service,
         "page",
         0,
-        IpcNotesCommand::CreatePage {
+        IpcNotesCommand::CreateNode {
             id: "page".into(),
+            parent_id: "root".into(),
+            before_id: None,
             text: "Inbox".into(),
         },
     );
@@ -371,8 +675,10 @@ fn search_filters_starred_trash_tags_and_dates_without_a_workspace_load() {
         &service,
         "page",
         0,
-        IpcNotesCommand::CreatePage {
+        IpcNotesCommand::CreateNode {
             id: "page".into(),
+            parent_id: "root".into(),
+            before_id: None,
             text: "Inbox".into(),
         },
     );

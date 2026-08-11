@@ -37,6 +37,9 @@ export function confirmedNote(
 }
 import type { NotesState } from "./notesState";
 
+/** The one page every outline hangs from: Home, and the parent of every page. */
+export const ROOT_ID = "root";
+
 export const DRAFT_DEBOUNCE_MS = 300;
 /**
  * How long a typing run stays open between keystrokes. CodeMirror and

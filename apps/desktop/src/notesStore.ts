@@ -7,7 +7,7 @@ import type { ForestSnapshot } from "../../../packages/contracts/generated/Fores
 import type { PaneCaret } from "./appNavigation";
 import type { NotesApi } from "./api";
 import { initialNotesState, type NotesState } from "./notesState";
-import { freshId, messageFrom } from "./storeSupport";
+import { freshId, messageFrom, ROOT_ID } from "./storeSupport";
 import { flattenPastedOutline, type PastedOutlineNode } from "./outlinePaste";
 import { receiptState, subtreeIds, viewportState } from "./storeState";
 import { runSlashEdit } from "./storeSlash";
@@ -208,9 +208,20 @@ export class NotesStore {
     });
   }
 
+  /**
+   * A page is the root's child, so a new one lands at the end of Home. The
+   * command goes out unprojected: the row belongs to a page this view is about
+   * to leave, not to the outline on screen.
+   */
   async createPage(): Promise<string> {
     const id = freshId();
-    await this.executeCommand({ kind: "createPage", id, text: "Untitled page" });
+    await this.executeCommand({
+      kind: "createNode",
+      id,
+      parent_id: ROOT_ID,
+      before_id: null,
+      text: "Untitled page"
+    });
     await this.openPage(id);
     return id;
   }
