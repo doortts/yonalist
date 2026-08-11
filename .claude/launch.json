@@ -31,6 +31,12 @@
       "port": 1443
     },
     {
+      "name": "yonalist-desktop",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "apps/desktop", "--", "--port", "1425"],
+      "port": 1425
+    },
+    {
       "name": "yonalist-dist",
       "runtimeExecutable": "npx",
       "runtimeArgs": ["vite", "preview", "--port", "1424"],
