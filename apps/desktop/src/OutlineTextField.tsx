@@ -202,7 +202,9 @@ export const OutlineTextField = forwardRef<
 ) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const composingRef = useRef(false);
+  const dragRef = useRef<{ pointerId: number; anchor: number } | null>(null);
   const [editing, setEditing] = useState(false);
+  const [selectDragging, setSelectDragging] = useState(false);
   const parsed = useMemo(
     () => parseOutlinePresentation(value, { markdown }),
     [markdown, value]
@@ -248,6 +250,49 @@ export const OutlineTextField = forwardRef<
     const textarea = textareaRef.current;
     textarea?.focus();
     textarea?.setSelectionRange(sourceOffset, sourceOffset);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    dragRef.current = { pointerId: event.pointerId, anchor: sourceOffset };
+    setSelectDragging(true);
+  };
+
+  const endSelectDrag = (event: ReactPointerEvent<HTMLSpanElement>) => {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    setSelectDragging(false);
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    }
+  };
+
+  const handlePresentationPointerMove = (
+    event: ReactPointerEvent<HTMLSpanElement>
+  ) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || event.buttons !== 1) {
+      return;
+    }
+    const textarea = textareaRef.current;
+    if (!textarea || textarea.ownerDocument.activeElement !== textarea) {
+      // the row gesture blurs the editor once the pointer crosses into another
+      // row, and from there the row band selection owns the drag
+      endSelectDrag(event);
+      return;
+    }
+    // focusing swapped the presentation to the raw source, so what is measured
+    // here is already a source offset - only the anchor needed the mapping
+    const head = pointerTextOffset(
+      event.currentTarget,
+      event.clientX,
+      event.clientY,
+      event.clientY < event.currentTarget.getBoundingClientRect().top
+        ? 0
+        : value.length
+    );
+    textarea.setSelectionRange(
+      Math.min(drag.anchor, head),
+      Math.max(drag.anchor, head),
+      head < drag.anchor ? "backward" : "forward"
+    );
   };
 
   const revealEditor = () => {
@@ -270,7 +315,7 @@ export const OutlineTextField = forwardRef<
 
   const presentationStyle: CSSProperties = {
     ...style,
-    pointerEvents: editing ? "none" : "auto",
+    pointerEvents: editing && !selectDragging ? "none" : "auto",
     whiteSpace: "pre-wrap",
     overflowWrap: "anywhere"
   };
@@ -281,7 +326,12 @@ export const OutlineTextField = forwardRef<
     whiteSpace: "pre-wrap",
     overflowWrap: "anywhere",
     opacity: editing ? (style?.opacity ?? 1) : 0,
-    pointerEvents: editing ? style?.pointerEvents : "none",
+    // during a drag the caret measurement must hit the span, not this overlay
+    pointerEvents: selectDragging
+      ? "none"
+      : editing
+        ? style?.pointerEvents
+        : "none",
     caretColor: editing
       ? "var(--notes-stable-caret-color)"
       : "transparent",
@@ -319,6 +369,10 @@ export const OutlineTextField = forwardRef<
         }
         style={presentationStyle}
         onPointerDown={handlePresentationPointerDown}
+        onPointerMove={handlePresentationPointerMove}
+        onPointerUp={endSelectDrag}
+        onPointerCancel={endSelectDrag}
+        onLostPointerCapture={endSelectDrag}
         onKeyDown={handlePresentationKeyDown}
       >
         {editing
