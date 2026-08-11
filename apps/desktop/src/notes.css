@@ -449,7 +449,6 @@
   --notes-menu-width: 24px;
   --notes-bullet-center-offset: 61px;
   --notes-content-offset: 74px;
-  --notes-page-child-offset: 24px;
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -1195,11 +1194,7 @@
   width: min(100%, 700px);
   min-width: 0;
   margin-inline: auto;
-}
-
-.notes-outline-content[data-zoomed-page="true"] > .notes-outline-list,
-.notes-outline-content[data-zoomed-page="true"] > .notes-child-composer {
-  margin-inline-start: var(--notes-page-child-offset);
+  padding-block-start: 32px;
 }
 
 .notes-page-header {
