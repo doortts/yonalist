@@ -10,7 +10,7 @@ import {
 import { useOutlineSelection } from "./useOutlineSelection";
 import { useOutlinePointerSelection } from "./useOutlinePointerSelection";
 import { useOutlineDrag } from "./useOutlineDrag";
-import { OutlineHeader } from "./OutlineHeader";
+import { OutlineHeader, OutlinePageHeading } from "./OutlineHeader";
 import { OutlineRow, OutlineRowRuntime } from "./OutlineRow";
 import { NotesChildComposer } from "./NotesChildComposer";
 import { buildTodoProgressMap } from "./outlineTodo";
@@ -352,9 +352,7 @@ export function NotesOutline({
         store={store}
         target={header}
         nodes={state.nodes}
-        visibleNodes={bodyNodes}
         index={index}
-        visibleIndex={visibleIndex}
         pageId={page.id}
         pageTitle={page.title}
         zoomed={zoomRoot !== undefined}
@@ -364,7 +362,6 @@ export function NotesOutline({
         onBack={() => onZoomRootChange(null)}
         onHome={onHome}
         onZoomTo={onZoomRootChange}
-        onTagClick={onTagClick}
         onClose={onClose}
         selectionToolbar={selection.selectedIds.length > 0 ? (
           <Suspense fallback={null}>
@@ -394,8 +391,6 @@ export function NotesOutline({
         exportMenu={selection.selectedIds.length === 0
           ? exportMenu
           : undefined}
-        imageDropTarget={imageIngest.dropTargetId === header.id}
-        onPickImage={() => void imageIngest.openPicker(header.id)}
       />
       {imageIngest.error && (
         <div className="notes-inline-error" role="alert">
@@ -414,6 +409,18 @@ export function NotesOutline({
       )}
       <div className="notes-outline-rows" ref={outlineWindow.scrollRef}>
         <div className="notes-outline-content" data-zoomed-page="true">
+          <OutlinePageHeading
+            store={store}
+            target={header}
+            nodes={state.nodes}
+            visibleNodes={bodyNodes}
+            index={index}
+            visibleIndex={visibleIndex}
+            onBack={() => onZoomRootChange(null)}
+            onTagClick={onTagClick}
+            imageDropTarget={imageIngest.dropTargetId === header.id}
+            onPickImage={() => void imageIngest.openPicker(header.id)}
+          />
           {allBodyNodes.length === 0 && <p className="notes-pane-state">No outline yet.</p>}
           {!showCompleted && bodyNodes.length < allBodyNodes.length && (
             <p className="notes-pane-state">Completed items are hidden.</p>

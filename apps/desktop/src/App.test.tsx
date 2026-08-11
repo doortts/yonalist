@@ -23,6 +23,10 @@ describe("Yonalist v2 desktop shell", () => {
     expect(screen.getAllByRole("group", { name: "Note text" })[0]).toHaveTextContent(
       "First thought"
     );
+    // The heading shares the body's centered column so it lines up with the
+    // rows and scrolls away with them, instead of being pinned above them.
+    expect(document.querySelector(".notes-outline-content .notes-page-header"))
+      .not.toBeNull();
     expect(notesApi.queryViewport).not.toHaveBeenCalled();
   });
 

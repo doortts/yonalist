@@ -71,9 +71,7 @@ export function OutlineHeader({
   store,
   target,
   nodes,
-  visibleNodes,
   index,
-  visibleIndex,
   pageId,
   pageTitle,
   zoomed,
@@ -83,19 +81,14 @@ export function OutlineHeader({
   onBack,
   onHome,
   onZoomTo,
-  onTagClick,
   onClose,
   selectionToolbar,
-  exportMenu,
-  imageDropTarget,
-  onPickImage
+  exportMenu
 }: {
   readonly store: NotesStore;
   readonly target: { readonly id: string; readonly text: string };
   readonly nodes: readonly NoteView[];
-  readonly visibleNodes: readonly NoteView[];
   readonly index: OutlineIndex;
-  readonly visibleIndex: OutlineIndex;
   readonly pageId: string;
   readonly pageTitle: string;
   readonly zoomed: boolean;
@@ -105,19 +98,10 @@ export function OutlineHeader({
   readonly onBack: () => void;
   readonly onHome: () => void;
   readonly onZoomTo: (nodeId: string) => void;
-  readonly onTagClick: (token: OutlineTagToken) => void;
   readonly onClose?: () => void;
   readonly selectionToolbar?: ReactNode;
   readonly exportMenu?: ReactNode;
-  readonly imageDropTarget: boolean;
-  readonly onPickImage: () => void;
 }) {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuTriggerRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const onMenuKeyDown = useMenuDismiss(
-    menuOpen, menuRef, menuTriggerRef, () => setMenuOpen(false)
-  );
   const { title } = useNotesNode(store, target.id);
   const targetNode = nodes.find((node) => node.id === target.id);
   const trail = zoomed ? zoomTrail(target.id, pageId, index) : null;
@@ -174,91 +158,131 @@ export function OutlineHeader({
         )}
       </div>}
       {error && <div className="notes-inline-error" role="alert">{error}</div>}
-      <header
-        className="notes-page-header"
-        data-outline-header-id={target.id}
-      >
-        <div className="notes-page-title-row">
-          <span className="notes-page-menu-slot">
-            <button
-              ref={menuTriggerRef}
-              className="notes-bullet-menu-trigger"
-              type="button"
-              aria-label={`Actions for ${target.text || "Untitled"}`}
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              data-popup-open={menuOpen ? "true" : undefined}
-              onClick={() => setMenuOpen((value) => !value)}
-            >
-              <MoreHorizontal size={15} aria-hidden="true" />
-            </button>
-            {menuOpen && (
-              <div
-                ref={menuRef}
-                className="notes-bullet-menu"
-                role="menu"
-                aria-label="Page actions"
-                onKeyDown={onMenuKeyDown}
-                style={{
-                  "--available-height": "420px",
-                  position: "absolute",
-                  insetInlineStart: 0,
-                  insetBlockStart: 28
-                } as CSSProperties}
-              >
-                <RowMenuItem
-                  icon={<ImagePlus size={14} aria-hidden="true" />}
-                  label="Upload image"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onPickImage();
-                  }}
-                />
-              </div>
-            )}
-          </span>
-          <div className="notes-page-primary">
-            {targetNode?.kind === "image" ? (
-              <Suspense fallback={
-                <div className="notes-image-attachment-placeholder" role="status">
-                  Loading image
-                </div>
-              }>
-                <ImageNodeContent node={targetNode} store={store} />
-              </Suspense>
-            ) : <h2 className="notes-page-heading">
-              <OutlineTextField
-                markdown
-                className="notes-page-title"
-                containerClassName="notes-page-title-field"
-                data-node-id={target.id}
-                data-outline-field="title"
-                aria-label="Page title"
-                rows={1}
-                value={title}
-                placeholder="Untitled page"
-                onTagClick={onTagClick}
-                onChange={(event) => store.setDraft(target.id, event.target.value)}
-                onKeyDown={(event) => handlePageKeyDown(
-                  event,
-                  store,
-                  target.id,
-                  nodes,
-                  visibleNodes,
-                  index,
-                  visibleIndex,
-                  onBack
-                )}
-                onKeyUp={(event) => {
-                  if (event.key === "Backspace") store.endBackspaceGesture();
-                }}
-                onBlur={() => void store.flushDraft(target.id)}
-              />
-            </h2>}
-          </div>
-        </div>
-        {imageDropTarget && <div className="notes-image-drop-position" />}
-      </header>
     </>
+  );
+}
+
+/**
+ * The page (or zoom root) title. It renders inside the outline's centered
+ * content column rather than beside the toolbar, so it shares the rows' left
+ * edge and scrolls away with them.
+ */
+export function OutlinePageHeading({
+  store,
+  target,
+  nodes,
+  visibleNodes,
+  index,
+  visibleIndex,
+  onBack,
+  onTagClick,
+  imageDropTarget,
+  onPickImage
+}: {
+  readonly store: NotesStore;
+  readonly target: { readonly id: string; readonly text: string };
+  readonly nodes: readonly NoteView[];
+  readonly visibleNodes: readonly NoteView[];
+  readonly index: OutlineIndex;
+  readonly visibleIndex: OutlineIndex;
+  readonly onBack: () => void;
+  readonly onTagClick: (token: OutlineTagToken) => void;
+  readonly imageDropTarget: boolean;
+  readonly onPickImage: () => void;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const onMenuKeyDown = useMenuDismiss(
+    menuOpen, menuRef, menuTriggerRef, () => setMenuOpen(false)
+  );
+  const { title } = useNotesNode(store, target.id);
+  const targetNode = nodes.find((node) => node.id === target.id);
+  return (
+    <header
+      className="notes-page-header"
+      data-outline-header-id={target.id}
+    >
+      <div className="notes-page-title-row">
+        <span className="notes-page-menu-slot">
+          <button
+            ref={menuTriggerRef}
+            className="notes-bullet-menu-trigger"
+            type="button"
+            aria-label={`Actions for ${target.text || "Untitled"}`}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            data-popup-open={menuOpen ? "true" : undefined}
+            onClick={() => setMenuOpen((value) => !value)}
+          >
+            <MoreHorizontal size={15} aria-hidden="true" />
+          </button>
+          {menuOpen && (
+            <div
+              ref={menuRef}
+              className="notes-bullet-menu"
+              role="menu"
+              aria-label="Page actions"
+              onKeyDown={onMenuKeyDown}
+              style={{
+                "--available-height": "420px",
+                position: "absolute",
+                insetInlineStart: 0,
+                insetBlockStart: 28
+              } as CSSProperties}
+            >
+              <RowMenuItem
+                icon={<ImagePlus size={14} aria-hidden="true" />}
+                label="Upload image"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onPickImage();
+                }}
+              />
+            </div>
+          )}
+        </span>
+        <div className="notes-page-primary">
+          {targetNode?.kind === "image" ? (
+            <Suspense fallback={
+              <div className="notes-image-attachment-placeholder" role="status">
+                Loading image
+              </div>
+            }>
+              <ImageNodeContent node={targetNode} store={store} />
+            </Suspense>
+          ) : <h2 className="notes-page-heading">
+            <OutlineTextField
+              markdown
+              className="notes-page-title"
+              containerClassName="notes-page-title-field"
+              data-node-id={target.id}
+              data-outline-field="title"
+              aria-label="Page title"
+              rows={1}
+              value={title}
+              placeholder="Untitled page"
+              onTagClick={onTagClick}
+              onChange={(event) => store.setDraft(target.id, event.target.value)}
+              onKeyDown={(event) => handlePageKeyDown(
+                event,
+                store,
+                target.id,
+                nodes,
+                visibleNodes,
+                index,
+                visibleIndex,
+                onBack
+              )}
+              onKeyUp={(event) => {
+                if (event.key === "Backspace") store.endBackspaceGesture();
+              }}
+              onBlur={() => void store.flushDraft(target.id)}
+            />
+          </h2>}
+        </div>
+      </div>
+      {imageDropTarget && <div className="notes-image-drop-position" />}
+    </header>
   );
 }

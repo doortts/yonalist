@@ -107,10 +107,11 @@ async function outline(nodes: readonly NoteView[]) {
   return { store, view, commands };
 }
 
-// Row titles only: the page heading carries the same field marker.
+// Row titles only: the page heading carries the same field marker, and it
+// shares the scroller with the rows, so scope to the list itself.
 function titles(container: HTMLElement): readonly string[] {
   return [...container.querySelectorAll<HTMLTextAreaElement>(
-    ".notes-outline-rows textarea[data-outline-field='title']"
+    ".notes-outline-list textarea[data-outline-field='title']"
   )].map((field) => field.value);
 }
 
