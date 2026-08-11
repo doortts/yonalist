@@ -11,6 +11,7 @@ import {
   OutlineTextField, type OutlineTagToken
 } from "./OutlineTextField";
 import { useNotesNode } from "./useNotesNode";
+import { ROOT_ID } from "./storeSupport";
 
 const ImageNodeContent = lazy(() => import("./ImageNodeContent").then((module) => ({
   default: module.ImageNodeContent
@@ -105,6 +106,9 @@ export function OutlineHeader({
   const { title } = useNotesNode(store, target.id);
   const targetNode = nodes.find((node) => node.id === target.id);
   const trail = zoomed ? zoomTrail(target.id, pageId, index) : null;
+  // Home is the house crumb, so on it the house is where a page crumb would
+  // otherwise be: the level to come back to, and nothing once you are there.
+  const atRoot = pageId === ROOT_ID;
   return (
     <>
       {selectionToolbar ?? <div className="notes-outline-toolbar">
@@ -114,16 +118,18 @@ export function OutlineHeader({
               className="notes-breadcrumb-button notes-breadcrumb-home"
               type="button"
               aria-label="All pages"
-              onClick={onHome}
+              aria-current={atRoot && !zoomed ? "page" : undefined}
+              disabled={atRoot && !zoomed}
+              onClick={atRoot ? onBack : onHome}
             >
               <House size={15} aria-hidden="true" />
             </button>
           </span>
-          <BreadcrumbCrumb
+          {!atRoot && <BreadcrumbCrumb
             label={pageTitle || "Untitled page"}
             current={!zoomed}
             onClick={zoomed ? onBack : undefined}
-          />
+          />}
           {trail && <>
             {trail.truncated && <BreadcrumbCrumb label="…" />}
             {trail.ancestors.map((ancestor) => (

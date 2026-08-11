@@ -142,7 +142,11 @@ function pageApi(): NotesApi {
     anchorId: null,
     beforeCursor: null,
     afterCursor: null,
-    nodes: request.pageId === "page" ? snapshot.viewport!.nodes : []
+    nodes: request.pageId === "page"
+      ? snapshot.viewport!.nodes
+      : request.pageId === ROOT_ID
+        ? [pageNode("page", "Today", false)]
+        : []
   }));
   notesApi.undo = vi.fn().mockImplementation(async () => undone.pop()!());
   return notesApi;
@@ -335,22 +339,24 @@ describe("navigation history integration", () => {
       .toHaveAttribute("aria-label", "Page title"));
   });
 
-  it("undoes and redoes the trip through the home outline", async () => {
-    const notesApi = api();
+  it("undoes and redoes the trip between home and a page", async () => {
+    const notesApi = pageApi();
     render(<App api={notesApi} />);
     await screen.findByDisplayValue("First thought");
     fireEvent.click(screen.getByRole("button", { name: "All" }));
-    const home = await screen.findByRole("region", { name: "Home outline" });
+    // Home has no page heading, so the page row on it is an ordinary row.
+    await waitFor(() => expect(screen.getByDisplayValue("Today"))
+      .toHaveAttribute("aria-label", "Note text"));
+    const sidebar = screen.getByRole("navigation", { name: "Navigation" });
     // The page behind home is still the active one: leaving home has to work
-    // even when the row clicked is the page already open.
-    fireEvent.click(within(home).getByRole("button", { name: "Today" }));
+    // even when the page clicked is the one already open.
+    fireEvent.click(within(sidebar).getByRole("button", { name: "Today" }));
     await waitFor(() => expect(screen.getByDisplayValue("Today"))
       .toHaveAttribute("aria-label", "Page title"));
 
     fireEvent.keyDown(window, { key: "z", ctrlKey: true });
-    expect(await screen.findByRole("region", {
-      name: "Home outline"
-    })).toBeVisible();
+    await waitFor(() => expect(screen.getByDisplayValue("Today"))
+      .toHaveAttribute("aria-label", "Note text"));
 
     fireEvent.keyDown(window, { key: "z", ctrlKey: true, shiftKey: true });
     await waitFor(() => expect(screen.getByDisplayValue("Today"))

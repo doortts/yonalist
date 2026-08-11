@@ -1,5 +1,4 @@
 import { memo, type CSSProperties } from "react";
-import type { PageSummary } from "../../../packages/contracts/generated/PageSummary";
 import type { NotesStore } from "./notesStore";
 import {
   NotesOutline,
@@ -14,7 +13,7 @@ export interface NotesDetailPanesProps {
   readonly status: NotesShellSnapshot["status"];
   readonly error: string | null;
   readonly pendingWrites: number;
-  readonly page: PageSummary | undefined;
+  readonly page: { readonly id: string; readonly title: string } | undefined;
   readonly splitOpen: boolean;
   readonly primaryZoomRootId: string | null;
   readonly secondaryZoomRootId: string | null;

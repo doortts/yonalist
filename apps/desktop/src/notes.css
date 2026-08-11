@@ -1855,29 +1855,6 @@ button.notes-date-token:hover {
   padding-left: 8px;
 }
 
-/* Home rows carry no menu, arrow, or editor, so the row grid buys nothing. */
-.notes-home-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.notes-home-row-title {
-  padding: 2px 4px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-1);
-  font-size: 16px;
-  line-height: 25px;
-  text-align: start;
-  cursor: pointer;
-}
-
-.notes-home-row-title:hover {
-  background: var(--bg-hover);
-}
-
 .notes-node-readonly-title {
   grid-column: 2;
   min-width: 0;

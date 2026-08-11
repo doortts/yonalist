@@ -3,6 +3,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "./App";
+import { ROOT_ID } from "./storeSupport";
 import {
   appApi as api,
   receipt,
@@ -883,50 +884,152 @@ describe("Yonalist v2 desktop shell", () => {
     });
   });
 
+  /** A page is a live child of the root, so home shows it as an ordinary row. */
+  function pageRow(id: string, text: string, sortKey: number) {
+    return {
+      id,
+      parentId: ROOT_ID,
+      sortKey,
+      kind: "bullet" as const,
+      image: null,
+      text,
+      note: "",
+      marker: "bullet" as const,
+      collapsed: false,
+      completed: false,
+      starred: false,
+      deleted: false
+    };
+  }
+
   /** Two pages, so "lists every page" is a real question. */
-  function twoPageApi() {
+  function homeApi() {
     const notesApi = api();
+    const rows = [
+      pageRow("page-1", "Today", 1_024),
+      pageRow("page-2", "Backlog", 2_048)
+    ];
     notesApi.bootstrap = vi.fn().mockResolvedValue({
       ...snapshot,
-      pages: [...snapshot.pages, { id: "page-2", title: "Backlog", sortKey: 1_024 }]
+      pages: [...snapshot.pages, { id: "page-2", title: "Backlog", sortKey: 2_048 }]
     });
     notesApi.queryViewport = vi.fn().mockImplementation(async (request) => ({
       pageId: request.pageId,
       anchorId: null,
       beforeCursor: null,
       afterCursor: null,
-      nodes: []
+      nodes: request.pageId === ROOT_ID ? rows : []
     }));
+    notesApi.execute = vi.fn().mockImplementation(async (envelope) => {
+      const { command } = envelope;
+      const edited = command.kind === "updateText"
+        ? rows.find((row) => row.id === command.id)
+        : undefined;
+      return {
+        revision: 9,
+        changedNodes: edited ? [{ ...edited, text: command.text }] : [],
+        deletedIds: [],
+        history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+      };
+    });
     return notesApi;
   }
 
-  it("opens All as a home outline that takes the selection off the pages", async () => {
-    render(<App api={twoPageApi()} />);
+  /**
+   * The page behind home stays on screen until its viewport is replaced, and
+   * both surfaces show "Today" -- the row is the one that is not a heading.
+   */
+  async function homeRow(text: string) {
+    await waitFor(() => expect(screen.getByDisplayValue(text))
+      .toHaveAttribute("aria-label", "Note text"));
+    return screen.getByDisplayValue<HTMLTextAreaElement>(text);
+  }
+
+  it("opens All as the root outline: editable rows, no page heading", async () => {
+    render(<App api={homeApi()} />);
     await screen.findByDisplayValue("First thought");
 
     fireEvent.click(screen.getByRole("button", { name: "All" }));
 
-    const home = await screen.findByRole("region", { name: "Home outline" });
-    expect(within(home).getByRole("button", { name: "Today" })).toBeVisible();
-    expect(within(home).getByRole("button", { name: "Backlog" })).toBeVisible();
+    await homeRow("Today");
+    expect(screen.getByDisplayValue("Backlog")).toHaveAttribute(
+      "aria-label",
+      "Note text"
+    );
+    // Workflowy's home has no title of its own, and its breadcrumb is the
+    // house alone.
+    expect(document.querySelector(".notes-page-header")).toBeNull();
+    expect(crumbLabels()).toEqual([""]);
+    const house = within(breadcrumb()).getByRole("button", {
+      name: "All pages"
+    });
+    expect(house).toBeDisabled();
+    expect(house).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
       "aria-pressed",
       "true"
     );
-    expect(screen.queryByRole("button", { current: "page" })).toBeNull();
     expect(document.querySelectorAll(
       ".notes-library-page-row[data-active='true']"
     )).toHaveLength(0);
     expect(screen.queryByDisplayValue("First thought")).toBeNull();
+    // Adding a page is adding a child of the root, so home keeps the composer.
+    expect(screen.getByRole("button", { name: "Add child" })).toBeVisible();
   });
 
-  it("leaves home for the page a home row opens", async () => {
-    render(<App api={twoPageApi()} />);
+  it("renames a page by editing its home row", async () => {
+    const notesApi = homeApi();
+    render(<App api={notesApi} />);
     await screen.findByDisplayValue("First thought");
     fireEvent.click(screen.getByRole("button", { name: "All" }));
-    const home = await screen.findByRole("region", { name: "Home outline" });
+    const row = await screen.findByDisplayValue<HTMLTextAreaElement>("Backlog");
 
-    fireEvent.click(within(home).getByRole("button", { name: "Backlog" }));
+    fireEvent.change(row, { target: { value: "Later" } });
+    fireEvent.blur(row);
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: { kind: "updateText", id: "page-2", text: "Later" }
+      })
+    ));
+    const sidebar = screen.getByRole("navigation", { name: "Navigation" });
+    await waitFor(() => expect(within(sidebar).getByRole("button", {
+      name: "Later"
+    })).toBeVisible());
+  });
+
+  it("creates the next page from Enter at the end of a home row", async () => {
+    const notesApi = homeApi();
+    render(<App api={notesApi} />);
+    await screen.findByDisplayValue("First thought");
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    const row = await homeRow("Today");
+    row.setSelectionRange(row.value.length, row.value.length);
+
+    fireEvent.keyDown(row, { key: "Enter" });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: expect.objectContaining({
+          kind: "splitNode",
+          id: "page-1",
+          parent_id: ROOT_ID,
+          before_id: "page-2",
+          prefix: "Today",
+          suffix: ""
+        })
+      })
+    ));
+  });
+
+  it("opens a page from the sidebar while home is showing", async () => {
+    render(<App api={homeApi()} />);
+    await screen.findByDisplayValue("First thought");
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    await screen.findByDisplayValue("Backlog");
+    const sidebar = screen.getByRole("navigation", { name: "Navigation" });
+
+    fireEvent.click(within(sidebar).getByRole("button", { name: "Backlog" }));
 
     await waitFor(() => expect(screen.getByDisplayValue("Backlog"))
       .toHaveAttribute("aria-label", "Page title"));
@@ -934,12 +1037,30 @@ describe("Yonalist v2 desktop shell", () => {
       "aria-pressed",
       "false"
     );
-    // The breadcrumb marks the page too, so ask the sidebar specifically.
-    const sidebar = screen.getByRole("navigation", { name: "Navigation" });
     expect(within(sidebar).getByRole("button", {
       name: "Backlog",
       current: "page"
     })).toBeVisible();
+  });
+
+  it("zooms a home row and comes back through the breadcrumb house", async () => {
+    render(<App api={homeApi()} />);
+    await screen.findByDisplayValue("First thought");
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    await homeRow("Today");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Zoom to item" })[0]);
+
+    await waitFor(() => expect(screen.getByDisplayValue("Today"))
+      .toHaveAttribute("aria-label", "Page title"));
+    expect(crumbLabels()).toEqual(["", "Today"]);
+
+    fireEvent.click(within(breadcrumb()).getByRole("button", {
+      name: "All pages"
+    }));
+
+    await homeRow("Today");
+    expect(document.querySelector(".notes-page-header")).toBeNull();
   });
 
   /** Alpha › Beta, so a two-level zoom has a real ancestor to walk. */
@@ -1012,16 +1133,19 @@ describe("Yonalist v2 desktop shell", () => {
     expect(crumbLabels()).toEqual(["", "Today"]);
   });
 
-  it("opens the home outline from the breadcrumb house", async () => {
-    render(<App api={twoPageApi()} />);
+  it("opens the root outline from the breadcrumb house", async () => {
+    render(<App api={homeApi()} />);
     await screen.findByDisplayValue("First thought");
 
     fireEvent.click(within(breadcrumb()).getByRole("button", {
       name: "All pages"
     }));
 
-    const home = await screen.findByRole("region", { name: "Home outline" });
-    expect(within(home).getByRole("button", { name: "Backlog" })).toBeVisible();
+    expect(await screen.findByDisplayValue("Backlog")).toHaveAttribute(
+      "aria-label",
+      "Note text"
+    );
+    expect(crumbLabels()).toEqual([""]);
   });
 
   it("moves a sibling with Alt+ArrowUp", async () => {

@@ -22,6 +22,7 @@ import { useImageIngest } from "./useImageIngest";
 import { NotesExportBoundary } from "./NotesExportBoundary";
 import { useOutlineWindow } from "./useOutlineWindow";
 import { registerOutlinePane } from "./outlinePaneRegistry";
+import { ROOT_ID } from "./storeSupport";
 
 const OutlineSelectionActionBar = lazy(() =>
   import("./OutlineSelectionActionBar").then((module) => ({
@@ -409,18 +410,22 @@ export function NotesOutline({
       )}
       <div className="notes-outline-rows" ref={outlineWindow.scrollRef}>
         <div className="notes-outline-content" data-zoomed-page="true">
-          <OutlinePageHeading
-            store={store}
-            target={header}
-            nodes={state.nodes}
-            visibleNodes={bodyNodes}
-            index={index}
-            visibleIndex={visibleIndex}
-            onBack={() => onZoomRootChange(null)}
-            onTagClick={onTagClick}
-            imageDropTarget={imageIngest.dropTargetId === header.id}
-            onPickImage={() => void imageIngest.openPicker(header.id)}
-          />
+          {/* Home is the root itself, and the root is nobody's title: it gets
+              a heading only once a zoom gives it one. */}
+          {(zoomRoot || page.id !== ROOT_ID) && (
+            <OutlinePageHeading
+              store={store}
+              target={header}
+              nodes={state.nodes}
+              visibleNodes={bodyNodes}
+              index={index}
+              visibleIndex={visibleIndex}
+              onBack={() => onZoomRootChange(null)}
+              onTagClick={onTagClick}
+              imageDropTarget={imageIngest.dropTargetId === header.id}
+              onPickImage={() => void imageIngest.openPicker(header.id)}
+            />
+          )}
           {allBodyNodes.length === 0 && <p className="notes-pane-state">No outline yet.</p>}
           {!showCompleted && bodyNodes.length < allBodyNodes.length && (
             <p className="notes-pane-state">Completed items are hidden.</p>
