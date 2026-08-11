@@ -1,3 +1,23 @@
+/*
+ * A metrics-only font: one empty space glyph, ascent + descent = 156.25% of the
+ * em. A line's caret is as tall as the line's content box, and the content box
+ * comes from the *first* font in the stack (the strut), not from the font that
+ * draws the glyphs. At 16px this makes the content box exactly 25px -- the row
+ * line-height -- so a wrapped row's second line gets the same caret as its
+ * first. Text is still drawn by Inter/system, the next font in the stack.
+ * Built by scripts/buildCaretStrutFont.py.
+ *
+ * font-display: swap, not block: line boxes stay 25px tall either way because
+ * line-height is fixed, so a late swap only changes the caret's height -- never
+ * worth blocking text on. If the font never loads, rows simply render as they
+ * do today.
+ */
+@font-face {
+  font-family: "Yonalist Caret Strut";
+  src: url("./assets/yonalist-caret-strut.woff2") format("woff2");
+  font-display: swap;
+}
+
 .notes-navigation-content {
   color: var(--text-1);
 }
@@ -1294,9 +1314,24 @@
   --notes-title-line-height: 25px;
   grid-column: 4;
   grid-row: 1;
+
+  /* The strut leads the stack; the textarea picks it up through `font: inherit`. */
+  font-family:
+    "Yonalist Caret Strut", Inter, ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 16px;
   font-weight: 400;
   line-height: 25px;
+}
+
+/*
+ * Heading rows run taller line-heights (32/29/27px), which one strut ratio
+ * cannot cover -- a 156.25% strut would overflow them. Back to the app stack.
+ */
+.notes-node-title-field[data-markdown-level] {
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
 }
 
 .notes-node-title-field[data-markdown-level="1"] {

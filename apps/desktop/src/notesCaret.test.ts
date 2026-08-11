@@ -43,3 +43,32 @@ describe("caret color token", () => {
     }
   });
 });
+
+const STRUT_FAMILY = '"Yonalist Caret Strut"';
+
+/** The one font-family declaration of a rule, collapsed onto a single line. */
+function fontFamily(css: string, selector: string): string {
+  const match = /font-family:([^;]*);/.exec(rule(css, selector));
+  if (match === null) throw new Error(`no font-family in: ${selector}`);
+  return match[1].replace(/\s+/g, " ").trim();
+}
+
+describe("caret strut font", () => {
+  it("registers the strut font from the bundled asset", () => {
+    const face = rule(notesStyles, "@font-face");
+    expect(fontFamily(notesStyles, "@font-face")).toBe(STRUT_FAMILY);
+    expect(face).toContain('url("./assets/yonalist-caret-strut.woff2")');
+  });
+
+  it("puts the strut first in the outline row stack", () => {
+    expect(fontFamily(notesStyles, ".notes-node-title-field")).toMatch(
+      new RegExp(`^${STRUT_FAMILY}, `)
+    );
+  });
+
+  it("keeps the strut off the markdown heading rows", () => {
+    expect(fontFamily(notesStyles, ".notes-node-title-field[data-markdown-level]")).not.toContain(
+      STRUT_FAMILY
+    );
+  });
+});
