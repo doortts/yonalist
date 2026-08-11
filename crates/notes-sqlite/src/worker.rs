@@ -168,6 +168,9 @@ impl SqliteStorage {
                     if seed_onboarding {
                         crate::seed::seed_onboarding(&mut connection)?;
                     }
+                    // After the seed so the onboarding page is adopted like any
+                    // other legacy top-level page.
+                    schema::ensure_root(&mut connection)?;
                     Ok(connection)
                 });
                 let mut connection = match connection {

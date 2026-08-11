@@ -117,8 +117,8 @@ fn forest_query_returns_authoritative_preorder_and_reports_its_bound() {
         },
     );
     for (request_id, revision, id, parent_id) in [
-        ("root", 1, "root", "page"),
-        ("child", 2, "child", "root"),
+        ("branch", 1, "branch", "page"),
+        ("child", 2, "child", "branch"),
         ("grandchild", 3, "grandchild", "child"),
         ("sibling", 4, "sibling", "page"),
     ] {
@@ -137,7 +137,7 @@ fn forest_query_returns_authoritative_preorder_and_reports_its_bound() {
 
     let complete = storage
         .query_forest(ForestRequest {
-            root_ids: vec!["root".into()],
+            root_ids: vec!["branch".into()],
             limit: 10,
         })
         .unwrap();
@@ -149,12 +149,12 @@ fn forest_query_returns_authoritative_preorder_and_reports_its_bound() {
             .iter()
             .map(|node| node.id.as_str())
             .collect::<Vec<_>>(),
-        vec!["root", "child", "grandchild"]
+        vec!["branch", "child", "grandchild"]
     );
 
     let bounded = storage
         .query_forest(ForestRequest {
-            root_ids: vec!["root".into()],
+            root_ids: vec!["branch".into()],
             limit: 2,
         })
         .unwrap();

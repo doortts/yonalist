@@ -20,7 +20,7 @@ pub(crate) fn bootstrap(
         .prepare(
             "SELECT id, text
              FROM notes_nodes
-             WHERE kind = 'page' AND deleted = 0
+             WHERE kind = 'page' AND id <> 'root' AND deleted = 0
              ORDER BY sort_key, id",
         )
         .map_err(internal)?;

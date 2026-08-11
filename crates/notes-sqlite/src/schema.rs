@@ -1,7 +1,57 @@
 use notes_application::StorageError;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 
 pub(crate) const SCHEMA_VERSION: i64 = 1;
+pub(crate) const ROOT_ID: &str = "root";
+
+/// Guarantees the single root row every outline hangs from and adopts legacy
+/// top-level pages as its children, so a "page" is only ever a root child.
+/// Idempotent and non-destructive: no schema change, no version flag, and the
+/// adopted rows keep their order and their trash flag.
+pub(crate) fn ensure_root(connection: &mut Connection) -> Result<(), StorageError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(internal)?;
+    let kind: Option<String> = transaction
+        .query_row(
+            "SELECT kind FROM notes_nodes WHERE id = ?1",
+            [ROOT_ID],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(internal)?;
+    match kind.as_deref() {
+        Some("page") => {}
+        Some(other) => {
+            return Err(StorageError::Internal(format!(
+                "notes node '{ROOT_ID}' is a {other}; expected the root page"
+            )));
+        }
+        None => {
+            transaction
+                .execute(
+                    "INSERT INTO notes_nodes(
+                         id, parent_id, sort_key, kind, text, note, marker,
+                         collapsed, completed, starred, deleted
+                     )
+                     VALUES (?1, NULL, 0, 'page', 'Home', '', 'bullet', 0, 0, 0, 0)",
+                    [ROOT_ID],
+                )
+                .map_err(internal)?;
+        }
+    }
+    // Legacy pages become collapsed root children; the deferred self-FK lets
+    // this follow the insert above inside one transaction.
+    transaction
+        .execute(
+            "UPDATE notes_nodes
+             SET parent_id = ?1, kind = 'bullet', collapsed = 1
+             WHERE parent_id IS NULL AND id <> ?1",
+            [ROOT_ID],
+        )
+        .map_err(internal)?;
+    transaction.commit().map_err(internal)
+}
 
 pub(crate) fn initialize(connection: &Connection) -> Result<(), StorageError> {
     connection
@@ -163,4 +213,168 @@ fn create_schema(connection: &Connection) -> Result<(), StorageError> {
 
 fn internal(error: rusqlite::Error) -> StorageError {
     StorageError::Internal(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::params;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct Row {
+        id: String,
+        parent_id: Option<String>,
+        kind: String,
+        sort_key: i64,
+        collapsed: i64,
+        deleted: i64,
+    }
+
+    fn open() -> Connection {
+        let connection = Connection::open_in_memory().expect("in-memory db");
+        initialize(&connection).expect("schema");
+        connection
+    }
+
+    fn insert_page(connection: &Connection, id: &str, sort_key: i64, deleted: i64) {
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, deleted)
+                 VALUES (?1, NULL, ?2, 'page', ?1, ?3)",
+                params![id, sort_key, deleted],
+            )
+            .expect("page");
+    }
+
+    fn rows(connection: &Connection) -> Vec<Row> {
+        let mut statement = connection
+            .prepare(
+                "SELECT id, parent_id, kind, sort_key, collapsed, deleted
+                 FROM notes_nodes
+                 ORDER BY sort_key, id",
+            )
+            .expect("prepare");
+        let rows = statement
+            .query_map([], |row| {
+                Ok(Row {
+                    id: row.get(0)?,
+                    parent_id: row.get(1)?,
+                    kind: row.get(2)?,
+                    sort_key: row.get(3)?,
+                    collapsed: row.get(4)?,
+                    deleted: row.get(5)?,
+                })
+            })
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("rows");
+        rows
+    }
+
+    #[test]
+    fn creates_the_root_row_in_an_empty_database() {
+        let mut connection = open();
+        ensure_root(&mut connection).expect("ensure root");
+
+        let (text, note, marker, completed, starred): (String, String, String, i64, i64) =
+            connection
+                .query_row(
+                    "SELECT text, note, marker, completed, starred
+                     FROM notes_nodes WHERE id = 'root'",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .expect("root row");
+        assert_eq!(text, "Home");
+        assert_eq!(note, "");
+        assert_eq!(marker, "bullet");
+        assert_eq!(completed, 0);
+        assert_eq!(starred, 0);
+        assert_eq!(
+            rows(&connection),
+            vec![Row {
+                id: ROOT_ID.into(),
+                parent_id: None,
+                kind: "page".into(),
+                sort_key: 0,
+                collapsed: 0,
+                deleted: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn adopts_legacy_pages_as_collapsed_root_children_including_the_trashed_one() {
+        let mut connection = open();
+        insert_page(&connection, "page-a", 1024, 0);
+        insert_page(&connection, "page-b", 2048, 0);
+        insert_page(&connection, "page-trashed", 3072, 1);
+
+        ensure_root(&mut connection).expect("ensure root");
+
+        let adopted = |id: &str, sort_key: i64, deleted: i64| Row {
+            id: id.into(),
+            parent_id: Some(ROOT_ID.into()),
+            kind: "bullet".into(),
+            sort_key,
+            collapsed: 1,
+            deleted,
+        };
+        assert_eq!(
+            rows(&connection),
+            vec![
+                Row {
+                    id: ROOT_ID.into(),
+                    parent_id: None,
+                    kind: "page".into(),
+                    sort_key: 0,
+                    collapsed: 0,
+                    deleted: 0,
+                },
+                adopted("page-a", 1024, 0),
+                adopted("page-b", 2048, 0),
+                adopted("page-trashed", 3072, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn running_twice_changes_nothing_the_second_time() {
+        let mut connection = open();
+        insert_page(&connection, "page-a", 1024, 0);
+        insert_page(&connection, "page-b", 2048, 0);
+
+        ensure_root(&mut connection).expect("ensure root");
+        let after_first = rows(&connection);
+        ensure_root(&mut connection).expect("ensure root again");
+
+        assert_eq!(rows(&connection), after_first);
+    }
+
+    #[test]
+    fn refuses_to_adopt_when_the_root_id_is_taken_by_a_bullet() {
+        let mut connection = open();
+        insert_page(&connection, "page-a", 1024, 0);
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text)
+                 VALUES ('root', 'page-a', 1024, 'bullet', 'not the root')",
+                [],
+            )
+            .expect("impostor");
+
+        let error = ensure_root(&mut connection).expect_err("kind mismatch");
+        assert!(
+            format!("{error:?}").contains("root"),
+            "unexpected error: {error:?}"
+        );
+    }
 }
