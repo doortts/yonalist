@@ -1,4 +1,6 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act, fireEvent, render, screen, waitFor, within
+} from "@testing-library/react";
 import type { BootSnapshot } from "../../../packages/contracts/generated/BootSnapshot";
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { NotesApi } from "./api";
@@ -329,6 +331,30 @@ describe("navigation history integration", () => {
     fireEvent.keyDown(window, { key: "z", ctrlKey: true });
     await waitFor(() => expect(screen.getByDisplayValue("Today"))
       .toHaveAttribute("aria-label", "Page title"));
+  });
+
+  it("undoes and redoes the trip through the home outline", async () => {
+    const notesApi = api();
+    render(<App api={notesApi} />);
+    await screen.findByDisplayValue("First thought");
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    const home = await screen.findByRole("region", { name: "Home outline" });
+    // The page behind home is still the active one: leaving home has to work
+    // even when the row clicked is the page already open.
+    fireEvent.click(within(home).getByRole("button", { name: "Today" }));
+    await waitFor(() => expect(screen.getByDisplayValue("Today"))
+      .toHaveAttribute("aria-label", "Page title"));
+
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    expect(await screen.findByRole("region", {
+      name: "Home outline"
+    })).toBeVisible();
+
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true, shiftKey: true });
+    await waitFor(() => expect(screen.getByDisplayValue("Today"))
+      .toHaveAttribute("aria-label", "Page title"));
+    expect(notesApi.undo).not.toHaveBeenCalled();
+    expect(notesApi.redo).not.toHaveBeenCalled();
   });
 
   it("restores split pane navigation", async () => {

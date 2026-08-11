@@ -14,7 +14,7 @@ const views = [
 export function LibraryViewButtons({
   active, onSelect
 }: {
-  readonly active: LibraryView;
+  readonly active: LibraryView | null;
   readonly onSelect: (view: LibraryView) => void;
 }) {
   return views.map(({ id, label, icon: Icon, available }) => (

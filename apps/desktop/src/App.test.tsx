@@ -879,6 +879,63 @@ describe("Yonalist v2 desktop shell", () => {
     });
   });
 
+  /** Two pages, so "lists every page" is a real question. */
+  function twoPageApi() {
+    const notesApi = api();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      pages: [...snapshot.pages, { id: "page-2", title: "Backlog" }]
+    });
+    notesApi.queryViewport = vi.fn().mockImplementation(async (request) => ({
+      pageId: request.pageId,
+      anchorId: null,
+      beforeCursor: null,
+      afterCursor: null,
+      nodes: []
+    }));
+    return notesApi;
+  }
+
+  it("opens All as a home outline that takes the selection off the pages", async () => {
+    render(<App api={twoPageApi()} />);
+    await screen.findByDisplayValue("First thought");
+
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+
+    const home = await screen.findByRole("region", { name: "Home outline" });
+    expect(within(home).getByRole("button", { name: "Today" })).toBeVisible();
+    expect(within(home).getByRole("button", { name: "Backlog" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(screen.queryByRole("button", { current: "page" })).toBeNull();
+    expect(document.querySelectorAll(
+      ".notes-library-page-row[data-active='true']"
+    )).toHaveLength(0);
+    expect(screen.queryByDisplayValue("First thought")).toBeNull();
+  });
+
+  it("leaves home for the page a home row opens", async () => {
+    render(<App api={twoPageApi()} />);
+    await screen.findByDisplayValue("First thought");
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    const home = await screen.findByRole("region", { name: "Home outline" });
+
+    fireEvent.click(within(home).getByRole("button", { name: "Backlog" }));
+
+    await waitFor(() => expect(screen.getByDisplayValue("Backlog"))
+      .toHaveAttribute("aria-label", "Page title"));
+    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
+      "aria-pressed",
+      "false"
+    );
+    expect(screen.getByRole("button", {
+      name: "Backlog",
+      current: "page"
+    })).toBeVisible();
+  });
+
   it("moves a sibling with Alt+ArrowUp", async () => {
     const notesApi = api();
     render(<App api={notesApi} />);

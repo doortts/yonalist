@@ -21,6 +21,7 @@ import {
   type AppNavigationLocation
 } from "./appNavigation";
 import { NotesDetailPanes } from "./NotesDetailPanes";
+import { HomeOutline } from "./HomeOutline";
 import type { OutlineTagToken } from "./OutlineTextField";
 const SearchPanel = lazy(() => import("./SearchPanel").then((module) =>
   ({ default: module.SearchPanel })));
@@ -40,6 +41,9 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   );
   const [query, setQuery] = useState("");
   const [libraryView, setLibraryView] = useState<LibraryView>("all");
+  // Home and a page are the two things the detail pane can be showing, so the
+  // library view and the page list never highlight at the same time.
+  const [homeOpen, setHomeOpen] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(336);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [detailMaximized, setDetailMaximized] = useState(false);
@@ -139,7 +143,8 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     const primary = capturePane("primary");
     const secondary = capturePane("secondary");
     return {
-      pageId: state.activePageId,
+      // A null page is home: the pane shows the page list, not a page.
+      pageId: homeOpen ? null : state.activePageId,
       primaryZoomRootId,
       splitOpen,
       secondaryZoomRootId,
@@ -149,6 +154,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       secondaryFocus: secondary.focus
     };
   }, [
+    homeOpen,
     primaryZoomRootId,
     secondaryZoomRootId,
     splitOpen,
@@ -157,6 +163,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   const applyNavigation = useCallback(async (
     location: AppNavigationLocation
   ) => {
+    setHomeOpen(location.pageId === null);
     if (
       location.pageId &&
       location.pageId !== store.getSnapshot().activePageId
@@ -203,14 +210,24 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     void store.flushAllDrafts().then(action);
   }, [store]);
   const openPage = useCallback(async (pageId: string) => {
-    if (pageId === store.getSnapshot().activePageId) return;
+    // Leaving home is a move even when the page is already the active one:
+    // only a page-to-itself click from a page view is the no-op.
+    if (!homeOpen && pageId === store.getSnapshot().activePageId) return;
     await store.flushAllDrafts();
     const before = captureNavigation();
     await store.openPage(pageId);
     const after = emptyPaneLocation(pageId);
     await applyNavigation(after);
     recordNavigation(before, after);
-  }, [applyNavigation, captureNavigation, recordNavigation, store]);
+  }, [applyNavigation, captureNavigation, homeOpen, recordNavigation, store]);
+  const openHome = useCallback(() => {
+    if (homeOpen) return;
+    const before = captureNavigation();
+    afterDraftFlush(() => {
+      setHomeOpen(true);
+      recordNavigation(before, emptyPaneLocation(null));
+    });
+  }, [afterDraftFlush, captureNavigation, homeOpen, recordNavigation]);
   // Creating a page and trashing one both move the view as part of the
   // command, so each records a single entry that replays both.
   const createPage = useCallback(() => {
@@ -233,7 +250,9 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     const before = captureNavigation();
     afterDraftFlush(() => {
       void store.deleteSubtree(pageId).then(async () => {
-        const after = emptyPaneLocation(store.getSnapshot().activePageId);
+        const after = emptyPaneLocation(
+          homeOpen ? null : store.getSnapshot().activePageId
+        );
         await applyNavigation(after);
         recordMutationNavigation(before, after);
       });
@@ -242,6 +261,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     afterDraftFlush,
     applyNavigation,
     captureNavigation,
+    homeOpen,
     recordMutationNavigation,
     store
   ]);
@@ -385,10 +405,11 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                 <h2 id="library-title" className="eyebrow">Library</h2>
                 <div className="notes-library-views" role="group" aria-label="Yonalist library views">
                   <LibraryViewButtons
-                    active={libraryView}
+                    active={homeOpen ? libraryView : null}
                     onSelect={(view) => {
                       setLibraryView(view);
                       setQuery("");
+                      openHome();
                     }}
                   />
                 </div>
@@ -405,7 +426,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                   <LibraryPageRow
                     key={page.id}
                     page={page}
-                    active={page.id === state.activePageId}
+                    active={!homeOpen && page.id === state.activePageId}
                     store={store}
                     onOpen={() => void openPage(page.id)}
                     onDelete={() => deletePage(page.id)}
@@ -455,6 +476,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             deleteAllData={() => api.deleteAllData()}
           />
         </Suspense>
+      ) : homeOpen ? (
+        <HomeOutline
+          pages={state.pages}
+          store={store}
+          status={state.status}
+          onOpenPage={(pageId) => void openPage(pageId)}
+        />
       ) : (
         <NotesDetailPanes
           store={store}
