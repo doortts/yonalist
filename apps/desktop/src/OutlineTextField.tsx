@@ -270,15 +270,16 @@ export const OutlineTextField = forwardRef<
 
   const presentationStyle: CSSProperties = {
     ...style,
-    position: "absolute",
-    inset: 0,
-    zIndex: 1,
     pointerEvents: editing ? "none" : "auto",
     whiteSpace: "pre-wrap",
     overflowWrap: "anywhere"
   };
   const textareaStyle: CSSProperties = {
     ...style,
+    position: "absolute",
+    inset: 0,
+    whiteSpace: "pre-wrap",
+    overflowWrap: "anywhere",
     opacity: editing ? (style?.opacity ?? 1) : 0,
     pointerEvents: editing ? style?.pointerEvents : "none",
     caretColor: editing
@@ -323,6 +324,8 @@ export const OutlineTextField = forwardRef<
         {editing
           ? presentationValue
           : renderPresentation(parsed, onTagClick, onOpenExternal)}
+        {/* a textarea renders the line after a trailing newline, pre-wrap does not */}
+        {value.endsWith("\n") ? "​" : null}
       </span>
       <textarea
         {...textareaProps}
