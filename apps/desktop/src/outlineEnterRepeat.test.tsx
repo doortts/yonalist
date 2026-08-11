@@ -177,6 +177,7 @@ function outlineElement(store: NotesStore) {
       page={{ id: "page-1", title: "Today" }}
       zoomRootId={null}
       onZoomRootChange={() => undefined}
+      onHome={() => undefined}
       onTagClick={() => undefined}
       paneId="primary"
       restoreRequest={null}

@@ -22,6 +22,7 @@ export interface NotesDetailPanesProps {
   readonly secondaryRestore: PaneRestoreRequest | null;
   readonly onPrimaryZoomChange: (nodeId: string | null) => void;
   readonly onSecondaryZoomChange: (nodeId: string | null) => void;
+  readonly onHome: () => void;
   readonly onOpenSplit: (nodeId: string) => void;
   readonly onCloseSplit: () => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
@@ -40,6 +41,7 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
   secondaryRestore,
   onPrimaryZoomChange,
   onSecondaryZoomChange,
+  onHome,
   onOpenSplit,
   onCloseSplit,
   onTagClick
@@ -72,6 +74,7 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
               page={page}
               zoomRootId={primaryZoomRootId}
               onZoomRootChange={onPrimaryZoomChange}
+              onHome={onHome}
               paneId="primary"
               restoreRequest={primaryRestore}
               onOpenSplit={onOpenSplit}
@@ -101,6 +104,7 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
                   page={page}
                   zoomRootId={secondaryZoomRootId}
                   onZoomRootChange={onSecondaryZoomChange}
+                  onHome={onHome}
                   paneId="secondary"
                   restoreRequest={secondaryRestore}
                   onOpenSplit={onOpenSplit}

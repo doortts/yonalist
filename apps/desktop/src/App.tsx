@@ -497,6 +497,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           secondaryRestore={secondaryRestore}
           onPrimaryZoomChange={updatePrimaryZoom}
           onSecondaryZoomChange={updateSecondaryZoom}
+          onHome={openHome}
           onOpenSplit={openSplit}
           onCloseSplit={closeSplit}
           onTagClick={handleTagClick}

@@ -930,10 +930,94 @@ describe("Yonalist v2 desktop shell", () => {
       "aria-pressed",
       "false"
     );
-    expect(screen.getByRole("button", {
+    // The breadcrumb marks the page too, so ask the sidebar specifically.
+    const sidebar = screen.getByRole("navigation", { name: "Navigation" });
+    expect(within(sidebar).getByRole("button", {
       name: "Backlog",
       current: "page"
     })).toBeVisible();
+  });
+
+  /** Alpha › Beta, so a two-level zoom has a real ancestor to walk. */
+  function nestedApi() {
+    const notesApi = api();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: {
+        ...snapshot.viewport!,
+        nodes: [
+          { ...snapshot.viewport!.nodes[0]!, text: "Alpha" },
+          {
+            ...snapshot.viewport!.nodes[1]!,
+            parentId: "bullet-1",
+            text: "Beta"
+          }
+        ]
+      }
+    });
+    return notesApi;
+  }
+
+  function breadcrumb() {
+    return screen.getByRole("navigation", { name: "Breadcrumb" });
+  }
+
+  function crumbLabels() {
+    return within(breadcrumb()).getAllByRole("button")
+      .map((crumb) => crumb.textContent);
+  }
+
+  it("shows home and the current page in the breadcrumb before a zoom", async () => {
+    render(<App api={api()} />);
+    await screen.findByDisplayValue("First thought");
+
+    expect(crumbLabels()).toEqual(["", "Today"]);
+    expect(within(breadcrumb()).getByRole("button", { name: "All pages" }))
+      .toBeEnabled();
+    const page = within(breadcrumb()).getByRole("button", { name: "Today" });
+    expect(page).toHaveAttribute("aria-current", "page");
+    expect(page).toBeDisabled();
+  });
+
+  it("walks the zoom ancestors and zooms back to the one clicked", async () => {
+    render(<App api={nestedApi()} />);
+    await screen.findByDisplayValue("Beta");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Zoom to item" })[1]);
+
+    expect(crumbLabels()).toEqual(["", "Today", "Alpha", "Beta"]);
+    expect(within(breadcrumb()).getByRole("button", { name: "Beta" }))
+      .toHaveAttribute("aria-current", "page");
+
+    fireEvent.click(within(breadcrumb()).getByRole("button", { name: "Alpha" }));
+
+    await waitFor(() => expect(screen.getByDisplayValue("Alpha"))
+      .toHaveAttribute("aria-label", "Page title"));
+    expect(crumbLabels()).toEqual(["", "Today", "Alpha"]);
+  });
+
+  it("returns to the page root from the breadcrumb page segment", async () => {
+    render(<App api={nestedApi()} />);
+    await screen.findByDisplayValue("Beta");
+    fireEvent.click(screen.getAllByRole("button", { name: "Zoom to item" })[1]);
+
+    fireEvent.click(within(breadcrumb()).getByRole("button", { name: "Today" }));
+
+    await waitFor(() => expect(screen.getByDisplayValue("Today"))
+      .toHaveAttribute("aria-label", "Page title"));
+    expect(crumbLabels()).toEqual(["", "Today"]);
+  });
+
+  it("opens the home outline from the breadcrumb house", async () => {
+    render(<App api={twoPageApi()} />);
+    await screen.findByDisplayValue("First thought");
+
+    fireEvent.click(within(breadcrumb()).getByRole("button", {
+      name: "All pages"
+    }));
+
+    const home = await screen.findByRole("region", { name: "Home outline" });
+    expect(within(home).getByRole("button", { name: "Backlog" })).toBeVisible();
   });
 
   it("moves a sibling with Alt+ArrowUp", async () => {

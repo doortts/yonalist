@@ -1,4 +1,4 @@
-import { Check, ImagePlus, MoreHorizontal, X } from "lucide-react";
+import { Check, House, ImagePlus, MoreHorizontal, X } from "lucide-react";
 import {
   lazy, Suspense, useRef, useState, type CSSProperties, type ReactNode
 } from "react";
@@ -16,6 +16,57 @@ const ImageNodeContent = lazy(() => import("./ImageNodeContent").then((module) =
   default: module.ImageNodeContent
 })));
 
+function crumbLabel(node: NoteView): string {
+  return node.kind === "image" ? "(image)" : node.text || "Untitled";
+}
+
+/**
+ * The zoom root's ancestors between it and the page, page-most first. The
+ * loaded viewport can stop short of the page, so an unknown parent truncates
+ * the trail instead of guessing at it.
+ */
+function zoomTrail(zoomRootId: string, pageId: string, index: OutlineIndex): {
+  readonly ancestors: readonly NoteView[];
+  readonly truncated: boolean;
+} {
+  const ancestors: NoteView[] = [];
+  const seen = new Set<string>([zoomRootId]);
+  let parentId = index.node(zoomRootId)?.parentId ?? null;
+  while (parentId !== null && parentId !== pageId && !seen.has(parentId)) {
+    const parent = index.node(parentId);
+    if (!parent) return { ancestors: ancestors.reverse(), truncated: true };
+    seen.add(parentId);
+    ancestors.push(parent);
+    parentId = parent.parentId;
+  }
+  return { ancestors: ancestors.reverse(), truncated: false };
+}
+
+function BreadcrumbCrumb({
+  label,
+  current,
+  onClick
+}: {
+  readonly label: string;
+  readonly current?: boolean;
+  readonly onClick?: () => void;
+}) {
+  return (
+    <span className="notes-breadcrumb-segment">
+      <span aria-hidden="true">›</span>
+      <button
+        className="notes-breadcrumb-button"
+        type="button"
+        aria-current={current ? "page" : undefined}
+        disabled={!onClick}
+        onClick={onClick}
+      >
+        {label}
+      </button>
+    </span>
+  );
+}
+
 export function OutlineHeader({
   store,
   target,
@@ -23,12 +74,15 @@ export function OutlineHeader({
   visibleNodes,
   index,
   visibleIndex,
+  pageId,
   pageTitle,
   zoomed,
   showCompleted,
   error,
   onToggleCompleted,
   onBack,
+  onHome,
+  onZoomTo,
   onTagClick,
   onClose,
   selectionToolbar,
@@ -42,12 +96,15 @@ export function OutlineHeader({
   readonly visibleNodes: readonly NoteView[];
   readonly index: OutlineIndex;
   readonly visibleIndex: OutlineIndex;
+  readonly pageId: string;
   readonly pageTitle: string;
   readonly zoomed: boolean;
   readonly showCompleted: boolean;
   readonly error: string | null;
   readonly onToggleCompleted: () => void;
   readonly onBack: () => void;
+  readonly onHome: () => void;
+  readonly onZoomTo: (nodeId: string) => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
   readonly onClose?: () => void;
   readonly selectionToolbar?: ReactNode;
@@ -63,14 +120,43 @@ export function OutlineHeader({
   );
   const { title } = useNotesNode(store, target.id);
   const targetNode = nodes.find((node) => node.id === target.id);
+  const trail = zoomed ? zoomTrail(target.id, pageId, index) : null;
   return (
     <>
       {selectionToolbar ?? <div className="notes-outline-toolbar">
-        {zoomed ? (
-          <button className="text-button" type="button" onClick={onBack}>
-            {pageTitle}
-          </button>
-        ) : <span className="eyebrow">Notes</span>}
+        <nav className="notes-breadcrumb" aria-label="Breadcrumb">
+          <span className="notes-breadcrumb-segment">
+            <button
+              className="notes-breadcrumb-button notes-breadcrumb-home"
+              type="button"
+              aria-label="All pages"
+              onClick={onHome}
+            >
+              <House size={15} aria-hidden="true" />
+            </button>
+          </span>
+          <BreadcrumbCrumb
+            label={pageTitle || "Untitled page"}
+            current={!zoomed}
+            onClick={zoomed ? onBack : undefined}
+          />
+          {trail && <>
+            {trail.truncated && <BreadcrumbCrumb label="…" />}
+            {trail.ancestors.map((ancestor) => (
+              <BreadcrumbCrumb
+                key={ancestor.id}
+                label={crumbLabel(ancestor)}
+                onClick={() => onZoomTo(ancestor.id)}
+              />
+            ))}
+            <BreadcrumbCrumb
+              current
+              label={targetNode?.kind === "image"
+                ? "(image)"
+                : title || "Untitled"}
+            />
+          </>}
+        </nav>
         {exportMenu}
         <button
           className="notes-completed-toggle"

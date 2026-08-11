@@ -97,6 +97,7 @@ async function outline(nodes: readonly NoteView[]) {
       page={{ id: "page-1", title: "Today" }}
       zoomRootId={null}
       onZoomRootChange={() => undefined}
+      onHome={() => undefined}
       onTagClick={() => undefined}
       paneId="primary"
       restoreRequest={null}

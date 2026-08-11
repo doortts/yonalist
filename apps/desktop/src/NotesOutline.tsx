@@ -42,7 +42,7 @@ export interface PaneRestoreRequest {
 
 export function NotesOutline({
   store, status, error, pendingWrites, page, zoomRootId, onZoomRootChange,
-  onOpenSplit, onTagClick, onClose, paneId, restoreRequest
+  onHome, onOpenSplit, onTagClick, onClose, paneId, restoreRequest
 }: {
   readonly store: NotesStore;
   readonly status: NotesShellSnapshot["status"];
@@ -51,6 +51,7 @@ export function NotesOutline({
   readonly page: { id: string; title: string } | undefined;
   readonly zoomRootId: string | null;
   readonly onZoomRootChange: (nodeId: string | null) => void;
+  readonly onHome: () => void;
   readonly onOpenSplit?: (nodeId: string) => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
   readonly onClose?: () => void;
@@ -354,12 +355,15 @@ export function NotesOutline({
         visibleNodes={bodyNodes}
         index={index}
         visibleIndex={visibleIndex}
+        pageId={page.id}
         pageTitle={page.title}
         zoomed={zoomRoot !== undefined}
         showCompleted={showCompleted}
         error={error}
         onToggleCompleted={() => setShowCompleted((visible) => !visible)}
         onBack={() => onZoomRootChange(null)}
+        onHome={onHome}
+        onZoomTo={onZoomRootChange}
         onTagClick={onTagClick}
         onClose={onClose}
         selectionToolbar={selection.selectedIds.length > 0 ? (
