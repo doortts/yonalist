@@ -28,6 +28,10 @@
   --text-2: #59626e;
   --text-3: #8c95a1;
 
+  /* Caret for the fields that draw one at full text strength. Dark themes
+     override it; on light themes the caret stays the text color. */
+  --caret-strong: var(--text-1);
+
   /* Accents */
   --accent: #2563eb;
   --accent-strong: #1d4ed8;
@@ -260,6 +264,8 @@
   --text-2: #a4acb9;
   --text-3: #757f8e;
 
+  --caret-strong: #0a84ff;
+
   --accent: #539bf5;
   --accent-strong: #6cb0ff;
   --accent-soft: rgb(83 155 245 / 15%);
@@ -308,6 +314,8 @@
   --text-1: #ece7f4;
   --text-2: #b0a3c4;
   --text-3: #7f7291;
+
+  --caret-strong: #0a84ff;
 
   --accent: #c07af0;
   --accent-strong: #d79bff;
@@ -442,6 +450,8 @@
   --text-2: #b3b3b3;
   --text-3: #8c8c8c;
 
+  --caret-strong: #0a84ff;
+
   --accent: #5a93ff;
   --accent-strong: #82adff;
   --accent-soft: rgb(90 147 255 / 15%);
@@ -475,6 +485,17 @@
   --shadow-modal: 0 20px 70px rgb(0 0 0 / 62%);
   --scrollbar-thumb: rgb(255 255 255 / 22%);
   --scrollbar-thumb-hover: rgb(255 255 255 / 40%);
+}
+
+/* Follow the user's real system accent, which is the caret color Safari draws
+   in its own address bar. The literal #0a84ff above is the fallback wherever
+   the engine does not support the AccentColor system color. */
+@supports (caret-color: AccentColor) {
+  :root[data-theme="dark"],
+  :root[data-theme="yona-dark"],
+  :root[data-theme="base-dark"] {
+    --caret-strong: AccentColor;
+  }
 }
 
 /* ---------- Scrollbars ----------
