@@ -15,6 +15,7 @@ describe("useTheme", () => {
       }
     });
     delete document.documentElement.dataset.theme;
+    document.documentElement.removeAttribute("style");
   });
 
   afterEach(() => {
@@ -50,5 +51,48 @@ describe("useTheme", () => {
     expect(result.current.mode).toBe("light");
     expect(result.current.resolvedTheme).toBe("yona");
     expect(document.documentElement.dataset.theme).toBe("yona");
+  });
+
+  it("leaves the caret to the theme when nothing is stored", () => {
+    const { result } = renderHook(() => useTheme());
+
+    expect(result.current.caretColor).toBe("auto");
+    expect(
+      document.documentElement.style.getPropertyValue("--caret-strong")
+    ).toBe("");
+  });
+
+  it("falls back to auto when the stored caret color is not a hex", () => {
+    window.localStorage.setItem("yonalist.caretColor.v1", "rebeccapurple");
+
+    const { result } = renderHook(() => useTheme());
+
+    expect(result.current.caretColor).toBe("auto");
+  });
+
+  it("applies and persists a picked caret color", () => {
+    const { result } = renderHook(() => useTheme());
+
+    act(() => result.current.setCaretColor("#ff375f"));
+
+    expect(result.current.caretColor).toBe("#ff375f");
+    expect(
+      document.documentElement.style.getPropertyValue("--caret-strong")
+    ).toBe("#ff375f");
+    expect(window.localStorage.getItem("yonalist.caretColor.v1")).toBe("#ff375f");
+  });
+
+  it("hands the caret back to the theme when set to auto", () => {
+    window.localStorage.setItem("yonalist.caretColor.v1", "#30d158");
+
+    const { result } = renderHook(() => useTheme());
+    expect(result.current.caretColor).toBe("#30d158");
+
+    act(() => result.current.setCaretColor("auto"));
+
+    expect(
+      document.documentElement.style.getPropertyValue("--caret-strong")
+    ).toBe("");
+    expect(window.localStorage.getItem("yonalist.caretColor.v1")).toBe("auto");
   });
 });

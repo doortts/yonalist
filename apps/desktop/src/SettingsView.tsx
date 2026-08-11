@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import type { UnusedAssetsReport } from "../../../packages/contracts/generated/UnusedAssetsReport";
 import type {
+  CaretColor,
   DarkTheme,
   LightTheme,
   ThemeMode
@@ -29,13 +30,24 @@ const darkThemeOptions: Array<{ value: DarkTheme; label: string }> = [
   { value: "base-dark", label: "Base Dark" }
 ];
 
+const caretColorOptions: Array<{ value: string; label: string }> = [
+  { value: "#0a84ff", label: "System Blue" },
+  { value: "#bf5af2", label: "Purple" },
+  { value: "#ff375f", label: "Pink" },
+  { value: "#30d158", label: "Green" },
+  { value: "#ff9f0a", label: "Orange" },
+  { value: "#ffd60a", label: "Yellow" }
+];
+
 export function SettingsView({
   themeMode,
   lightTheme,
   darkTheme,
+  caretColor,
   onThemeModeChange,
   onLightThemeChange,
   onDarkThemeChange,
+  onCaretColorChange,
   onClose,
   unusedAssets,
   deleteAllData
@@ -43,9 +55,11 @@ export function SettingsView({
   readonly themeMode: ThemeMode;
   readonly lightTheme: LightTheme;
   readonly darkTheme: DarkTheme;
+  readonly caretColor: CaretColor;
   readonly onThemeModeChange: (mode: ThemeMode) => void;
   readonly onLightThemeChange: (theme: LightTheme) => void;
   readonly onDarkThemeChange: (theme: DarkTheme) => void;
+  readonly onCaretColorChange: (color: CaretColor) => void;
   readonly onClose: () => void;
   readonly unusedAssets: (purge: boolean) => Promise<UnusedAssetsReport>;
   readonly deleteAllData: () => Promise<void>;
@@ -90,6 +104,7 @@ export function SettingsView({
             optionSuffix="dark theme"
             onChange={onDarkThemeChange}
           />
+          <CaretColorGroup value={caretColor} onChange={onCaretColorChange} />
         </section>
 
         <NotesDataSection
@@ -246,6 +261,48 @@ function NotesDataSection({
         </div>
       </div>
     </section>
+  );
+}
+
+function CaretColorGroup({
+  value,
+  onChange
+}: {
+  readonly value: CaretColor;
+  readonly onChange: (color: CaretColor) => void;
+}) {
+  return (
+    <div className="theme-settings-group">
+      <h3>Caret color</h3>
+      <div className="caret-swatch-row" role="group" aria-label="Caret color">
+        <button
+          type="button"
+          className="caret-swatch caret-swatch-auto"
+          aria-label="Auto (theme default)"
+          aria-pressed={value === "auto"}
+          onClick={() => onChange("auto")}
+        />
+        {caretColorOptions.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className="caret-swatch"
+            style={{ background: option.value }}
+            aria-label={option.label}
+            aria-pressed={value === option.value}
+            onClick={() => onChange(option.value)}
+          />
+        ))}
+        <label className="caret-custom">
+          <span>Custom</span>
+          <input
+            type="color"
+            value={value === "auto" ? "#0a84ff" : value}
+            onChange={(event) => onChange(event.target.value)}
+          />
+        </label>
+      </div>
+    </div>
   );
 }
 

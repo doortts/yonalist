@@ -9,10 +9,13 @@ export type LightTheme =
   | "base-light";
 export type DarkTheme = "dark" | "yona-dark" | "base-dark";
 export type ResolvedTheme = LightTheme | DarkTheme;
+/** "auto" leaves the caret to the theme stylesheet; anything else is a #rrggbb. */
+export type CaretColor = "auto" | string;
 
 const themeModeStorageKey = "yonalist.themeMode.v1";
 const lightThemeStorageKey = "yonalist.lightTheme.v1";
 const darkThemeStorageKey = "yonalist.darkTheme.v1";
+const caretColorStorageKey = "yonalist.caretColor.v1";
 
 function readStoredValue(key: string): string | null {
   try {
@@ -63,6 +66,11 @@ function loadDarkTheme(): DarkTheme {
   return "dark";
 }
 
+function loadCaretColor(): CaretColor {
+  const stored = readStoredValue(caretColorStorageKey);
+  return stored && /^#[0-9a-f]{6}$/i.test(stored) ? stored : "auto";
+}
+
 function systemPrefersDark(): boolean {
   return (
     typeof window.matchMedia === "function" &&
@@ -75,6 +83,7 @@ export function useTheme() {
   const [lightTheme, setLightThemeState] = useState<LightTheme>(() => loadLightTheme());
   const [darkTheme, setDarkThemeState] = useState<DarkTheme>(() => loadDarkTheme());
   const [systemDark, setSystemDark] = useState(() => systemPrefersDark());
+  const [caretColor, setCaretColorState] = useState<CaretColor>(() => loadCaretColor());
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") {
@@ -105,6 +114,14 @@ export function useTheme() {
     document.documentElement.dataset.theme = resolvedTheme;
   }, [resolvedTheme]);
 
+  useEffect(() => {
+    if (caretColor === "auto") {
+      document.documentElement.style.removeProperty("--caret-strong");
+      return;
+    }
+    document.documentElement.style.setProperty("--caret-strong", caretColor);
+  }, [caretColor]);
+
   const setMode = useCallback((next: ThemeMode) => {
     setModeState(next);
     writeStoredValue(themeModeStorageKey, next);
@@ -120,6 +137,11 @@ export function useTheme() {
     writeStoredValue(darkThemeStorageKey, next);
   }, []);
 
+  const setCaretColor = useCallback((next: CaretColor) => {
+    setCaretColorState(next);
+    writeStoredValue(caretColorStorageKey, next);
+  }, []);
+
   return {
     mode,
     setMode,
@@ -127,6 +149,8 @@ export function useTheme() {
     setLightTheme,
     darkTheme,
     setDarkTheme,
+    caretColor,
+    setCaretColor,
     resolvedTheme
   };
 }

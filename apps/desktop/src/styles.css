@@ -2279,6 +2279,56 @@ body.is-resizing-pane {
   line-height: 1.35;
 }
 
+.caret-swatch-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.caret-swatch {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.caret-swatch[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--bg-card), 0 0 0 4px var(--accent);
+}
+
+.caret-swatch-auto {
+  background: linear-gradient(
+    to bottom right,
+    var(--bg-card) calc(50% - 1px),
+    var(--text-2) calc(50% - 1px) calc(50% + 1px),
+    var(--bg-card) calc(50% + 1px)
+  );
+}
+
+.settings-section label.caret-custom {
+  display: inline-flex;
+  align-items: center;
+  flex-direction: row;
+  gap: 8px;
+  margin-left: 6px;
+  color: var(--text-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.caret-custom input[type="color"] {
+  width: 34px;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  cursor: pointer;
+}
+
 .markdown-style-section {
   gap: 18px;
 }
