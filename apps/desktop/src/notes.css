@@ -1225,14 +1225,18 @@
 
 .notes-page-title-row {
   display: grid;
-  grid-template-columns: var(--notes-content-offset) minmax(0, 1fr);
+
+  /* Workflowy alignment: the title text's left edge sits on the body rows'
+     bullet box, 22px (18px bullet + 4px gap) left of the rows' text. */
+  grid-template-columns:
+    calc(var(--notes-content-offset) - 22px) minmax(0, 1fr);
   align-items: start;
   gap: 0;
 }
 
 .notes-page-title-row[data-marker-kind="todo"] {
   grid-template-columns:
-    calc(var(--notes-content-offset) - 28px) 28px minmax(0, 1fr);
+    calc(var(--notes-content-offset) - 50px) 28px minmax(0, 1fr);
 }
 
 .notes-page-menu-slot {
@@ -1301,10 +1305,10 @@
 }
 
 .notes-page-note-field {
+  margin-block-start: 4px;
   font-size: 14px;
   line-height: 20px;
   --notes-stable-caret-color: var(--text-3);
-  --notes-stable-caret-offset: 3px;
 }
 
 .notes-node-title-field {
@@ -1405,8 +1409,10 @@
   transform: none;
 }
 
+/* The caret layer must sit exactly on the presentation glyphs; this also
+   overrides the legacy -1px edit offset above. */
 .notes-text-field[data-stable-presentation="true"] > textarea {
-  transform: translateY(var(--notes-stable-caret-offset, 0));
+  transform: none;
 }
 
 .notes-tag-token {
@@ -1565,9 +1571,9 @@ button.notes-date-token:hover {
 
 .notes-page-note {
   display: block;
-  width: calc(100% - var(--notes-content-offset));
+  width: 100%;
   min-height: 20px;
-  margin: 4px 0 0 var(--notes-content-offset);
+  margin: 0;
   padding: 0;
   overflow: hidden;
   resize: none;
@@ -2523,7 +2529,6 @@ body.is-outline-dragging * {
   font-size: 14px;
   line-height: 20px;
   --notes-stable-caret-color: var(--text-3);
-  --notes-stable-caret-offset: 3px;
 }
 
 .notes-node-note {
@@ -3027,6 +3032,13 @@ body.is-outline-dragging * {
   .notes-page-title-row .notes-bullet-menu-trigger {
     width: 28px;
     min-width: 28px;
+  }
+
+  /* The narrow rows drop the gap and widen the bullet track to 28px, so the
+     bullet box the title aligns to starts 28px left of the rows' text. */
+  .notes-page-title-row {
+    grid-template-columns:
+      calc(var(--notes-content-offset) - 28px) minmax(0, 1fr);
   }
 
   .notes-export-feedback {

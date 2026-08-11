@@ -42,6 +42,19 @@ describe("caret color token", () => {
       );
     }
   });
+
+  // The caret layer sits exactly on the glyphs; a translated textarea draws
+  // its caret below the text it belongs to.
+  it("keeps note carets level with the note text", () => {
+    for (const selector of [".notes-page-note-field", ".notes-node-note-field"]) {
+      expect(rule(notesStyles, selector)).not.toContain(
+        "--notes-stable-caret-offset"
+      );
+    }
+    expect(
+      rule(notesStyles, '.notes-text-field[data-stable-presentation="true"] > textarea')
+    ).toContain("transform: none;");
+  });
 });
 
 const STRUT_FAMILY = '"Yonalist Caret Strut"';

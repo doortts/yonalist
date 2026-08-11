@@ -1,12 +1,15 @@
 import { Check, House, ImagePlus, MoreHorizontal, X } from "lucide-react";
 import {
-  lazy, Suspense, useRef, useState, type CSSProperties, type ReactNode
+  lazy, Suspense, useEffect, useRef, useState, type CSSProperties,
+  type ReactNode
 } from "react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import { handlePageKeyDown, RowMenuItem } from "./outlineSupport";
 import { useMenuDismiss } from "./useMenuDismiss";
 import type { NotesStore } from "./notesStore";
 import type { OutlineIndex } from "./outlineIndex";
+import { resolveSupportingNoteKey } from "./outlineKeyboard";
+import { focusOutlineEditor } from "./outlineFocus";
 import {
   OutlineTextField, type OutlineTagToken
 } from "./OutlineTextField";
@@ -202,8 +205,20 @@ export function OutlinePageHeading({
   const onMenuKeyDown = useMenuDismiss(
     menuOpen, menuRef, menuTriggerRef, () => setMenuOpen(false)
   );
-  const { title } = useNotesNode(store, target.id);
+  const { title, note, noteDraft } = useNotesNode(store, target.id);
   const targetNode = nodes.find((node) => node.id === target.id);
+  const noteRef = useRef<HTMLTextAreaElement>(null);
+  const visibleNote = noteDraft ?? note;
+  const [noteOpen, setNoteOpen] = useState(
+    () => visibleNote.trim().length > 0
+  );
+  useEffect(() => {
+    if (visibleNote.trim().length > 0) setNoteOpen(true);
+  }, [visibleNote]);
+  const openNoteAndFocus = () => {
+    setNoteOpen(true);
+    requestAnimationFrame(() => noteRef.current?.focus());
+  };
   return (
     <header
       className="notes-page-header"
@@ -278,7 +293,8 @@ export function OutlinePageHeading({
                 visibleNodes,
                 index,
                 visibleIndex,
-                onBack
+                onBack,
+                openNoteAndFocus
               )}
               onKeyUp={(event) => {
                 if (event.key === "Backspace") store.endBackspaceGesture();
@@ -286,6 +302,69 @@ export function OutlinePageHeading({
               onBlur={() => void store.flushDraft(target.id)}
             />
           </h2>}
+          {noteOpen && (
+            <OutlineTextField
+              ref={noteRef}
+              className="notes-page-note"
+              containerClassName="notes-page-note-field"
+              data-node-id={target.id}
+              data-outline-field="note"
+              aria-label="Page note"
+              rows={1}
+              value={visibleNote}
+              placeholder="Add a supporting note"
+              onTagClick={onTagClick}
+              onChange={(event) =>
+                store.setNoteDraft(target.id, event.target.value)}
+              onKeyDown={(event) => {
+                const resolution = resolveSupportingNoteKey({
+                  key: event.key,
+                  altKey: event.altKey,
+                  ctrlKey: event.ctrlKey,
+                  metaKey: event.metaKey,
+                  shiftKey: event.shiftKey,
+                  isComposing: event.nativeEvent.isComposing,
+                  repeat: event.repeat,
+                  selectionStart: event.currentTarget.selectionStart,
+                  selectionEnd: event.currentTarget.selectionEnd,
+                  value: event.currentTarget.value
+                });
+                if (!resolution) return;
+                event.preventDefault();
+                const scope =
+                  event.currentTarget.closest<HTMLElement>(".notes-outline");
+                if (!scope) return;
+                if (resolution === "currentTitle") {
+                  void store.flushNoteDraft(target.id).then(() =>
+                    requestAnimationFrame(() =>
+                      focusOutlineEditor(scope, target.id, "preserve")));
+                  return;
+                }
+                // Down out of the page note lands on the first body row; with
+                // no rows left to land on, Shift+Enter starts the first child.
+                const firstRowId = visibleNodes[0]?.id;
+                if (firstRowId) {
+                  void store.flushNoteDraft(target.id).then(() =>
+                    requestAnimationFrame(() =>
+                      focusOutlineEditor(scope, firstRowId, "preserve")));
+                  return;
+                }
+                if (resolution === "nextTitleOrCreate") {
+                  void store.flushNoteDraft(target.id)
+                    .then(() => store.createNode(target.id))
+                    .then((id) => requestAnimationFrame(
+                      () => focusOutlineEditor(scope, id, "start")
+                    ));
+                }
+              }}
+              onBlur={(event) => {
+                const submittedNote = event.currentTarget.value;
+                void store.flushNoteDraft(target.id).then(() => {
+                  if (submittedNote.trim().length === 0) setNoteOpen(false);
+                });
+              }}
+            />
+          )}
         </div>
       </div>
       {imageDropTarget && <div className="notes-image-drop-position" />}

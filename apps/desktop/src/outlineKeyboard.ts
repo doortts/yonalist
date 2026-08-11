@@ -179,16 +179,19 @@ export function resolveOutlineKey(
     };
   }
 
+  // Rows and the page title alike: the page (or zoom root) is a node with its
+  // own supporting note, so Shift+Enter opens it there too.
+  if (
+    input.key === "Enter" &&
+    input.shiftKey &&
+    !input.altKey &&
+    !input.ctrlKey &&
+    !input.metaKey
+  ) {
+    return input.repeat ? { kind: "consume" } : { kind: "focusNote" };
+  }
+
   if (input.target === "row") {
-    if (
-      input.key === "Enter" &&
-      input.shiftKey &&
-      !input.altKey &&
-      !input.ctrlKey &&
-      !input.metaKey
-    ) {
-      return input.repeat ? { kind: "consume" } : { kind: "focusNote" };
-    }
     if (
       input.key === "Enter" &&
       !input.altKey &&

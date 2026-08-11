@@ -630,6 +630,52 @@ describe("Yonalist v2 desktop shell", () => {
     });
   });
 
+  it("opens and persists the page note with Shift+Enter on the title", async () => {
+    const notesApi = api();
+    render(<App api={notesApi} />);
+    const pageTitle = await screen.findByDisplayValue<HTMLTextAreaElement>(
+      "Today"
+    );
+
+    fireEvent.keyDown(pageTitle, { key: "Enter", shiftKey: true });
+    const note = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "Page note"
+    });
+    await waitFor(() => expect(note).toHaveFocus());
+    // Shift+Enter must open the note, not put a newline into the title.
+    expect(pageTitle).toHaveValue("Today");
+    fireEvent.change(note, { target: { value: "Page context" } });
+    fireEvent.blur(note);
+
+    await waitFor(() => {
+      expect(notesApi.execute).toHaveBeenCalledWith(expect.objectContaining({
+        command: {
+          kind: "updateNote",
+          id: "page-1",
+          note: "Page context"
+        }
+      }));
+    });
+  });
+
+  it("hides an untouched page note again on blur", async () => {
+    const notesApi = api();
+    render(<App api={notesApi} />);
+    const pageTitle = await screen.findByDisplayValue<HTMLTextAreaElement>(
+      "Today"
+    );
+
+    fireEvent.keyDown(pageTitle, { key: "Enter", shiftKey: true });
+    const note = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "Page note"
+    });
+    fireEvent.blur(note);
+
+    await waitFor(() => expect(
+      document.querySelector('[data-outline-field="note"][data-node-id="page-1"]')
+    ).toBeNull());
+  });
+
   it("converts a bullet to Todo and renders its stable checkbox", async () => {
     const notesApi = api();
     notesApi.execute = vi.fn().mockImplementation(async (envelope) => ({

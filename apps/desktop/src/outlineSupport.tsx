@@ -286,7 +286,8 @@ export function handlePageKeyDown(
   visibleNodes: readonly NoteView[],
   structureIndex: OutlineIndex,
   visibleIndex: OutlineIndex,
-  onZoomOut: () => void
+  onZoomOut: () => void,
+  onFocusNote: () => void
 ) {
   updateBackspaceGesture(event, store);
   const intent = resolveOutlineKey({
@@ -322,6 +323,8 @@ export function handlePageKeyDown(
     createFirstChild(scope, store, structureIndex, intent.parentId);
   } else if (intent.kind === "zoom" && intent.direction === "out") {
     void store.flushDraft(pageId).then(onZoomOut);
+  } else if (intent.kind === "focusNote") {
+    onFocusNote();
   }
 }
 

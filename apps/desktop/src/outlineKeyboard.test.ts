@@ -175,11 +175,21 @@ describe("v2 outline keyboard intent resolver", () => {
       shiftKey: true,
       repeat: true
     }))).toEqual({ kind: "consume" });
+    // The page (or zoom root) is a node with a note of its own, so the title
+    // takes the same gesture instead of letting Enter reach the textarea.
     expect(resolveOutlineKey(input({
       key: "Enter",
       shiftKey: true,
-      target: "page"
-    }))).toBeNull();
+      target: "page",
+      nodeId: "page"
+    }))).toEqual({ kind: "focusNote" });
+    expect(resolveOutlineKey(input({
+      key: "Enter",
+      shiftKey: true,
+      target: "page",
+      nodeId: "page",
+      repeat: true
+    }))).toEqual({ kind: "consume" });
   });
 
   it("indents below the previous visible sibling and outdents after the parent", () => {
