@@ -546,12 +546,18 @@ describe("NotesStore viewport recovery", () => {
       nodes: []
     });
     const notesApi = api(queryViewport);
-    notesApi.execute = vi.fn().mockResolvedValue({
+    notesApi.execute = vi.fn().mockImplementation(async (envelope) => ({
       revision: 2,
-      changedNodes: [],
+      // The backend answers with the row it wrote: a bullet under the root,
+      // which is all a page is.
+      changedNodes: [{
+        ...bullet(envelope.command.id, 4_096),
+        parentId: "root",
+        text: envelope.command.text
+      }],
       deletedIds: [],
       history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
-    });
+    }));
     const store = new NotesStore(notesApi);
 
     await store.bootstrap();
@@ -569,11 +575,16 @@ describe("NotesStore viewport recovery", () => {
     expect(queryViewport).toHaveBeenCalledWith(
       expect.objectContaining({ pageId })
     );
+    expect(store.getSnapshot().pages).toContainEqual({
+      id: pageId,
+      title: "Untitled page",
+      sortKey: 4_096
+    });
   });
 
-  it("opens the next page after the active page moves to Trash", async () => {
+  it("opens Home after the active page moves to Trash", async () => {
     const queryViewport = vi.fn().mockResolvedValue({
-      pageId: "page-2",
+      pageId: "root",
       anchorId: null,
       beforeCursor: null,
       afterCursor: null,
@@ -596,14 +607,40 @@ describe("NotesStore viewport recovery", () => {
     await store.deleteSubtree("page-1");
 
     expect(queryViewport).toHaveBeenCalledWith({
-      pageId: "page-2",
+      pageId: "root",
       anchorId: null,
       beforeCursor: null,
       afterCursor: null,
       limit: 80
     });
-    expect(store.getSnapshot().activePageId).toBe("page-2");
+    expect(store.getSnapshot().activePageId).toBe("root");
     expect(store.getSnapshot().nodes.map((node) => node.id)).toEqual(["next"]);
+  });
+
+  it("stays put when the trashed page is not the one on screen", async () => {
+    const queryViewport = vi.fn();
+    const notesApi = api(queryViewport);
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...boot,
+      pages: [
+        { id: "page-0", title: "First page", sortKey: 512 },
+        ...boot.pages,
+        { id: "page-2", title: "Next page", sortKey: 2_048 }
+      ]
+    });
+    notesApi.execute = vi.fn().mockResolvedValue({
+      revision: 2,
+      changedNodes: [],
+      deletedIds: ["page-2"],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    });
+    const store = new NotesStore(notesApi);
+
+    await store.bootstrap();
+    await store.deleteSubtree("page-2");
+
+    expect(queryViewport).not.toHaveBeenCalled();
+    expect(store.getSnapshot().activePageId).toBe("page-1");
   });
 
   it("keeps the latest page when viewport responses arrive out of order", async () => {

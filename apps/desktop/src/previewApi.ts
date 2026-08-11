@@ -15,6 +15,7 @@ import {
   previewPageNodes
 } from "./previewOutline";
 import { validatePreviewBatch } from "./previewValidation";
+import { ROOT_ID } from "./storeSupport";
 import {
   allocateSiblingSortKey,
   applyRebalancedSortKeys,
@@ -433,12 +434,14 @@ const previewImages = new PreviewImages({
 export const previewNotesApi: NotesApi = {
   async bootstrap() {
     const pages = nodes
-      .filter((node) => node.kind === "page" && !node.deleted)
+      .filter((node) => node.parentId === ROOT_ID && !node.deleted)
       .map((node) => ({
         id: node.id,
         title: node.text,
         sortKey: node.sortKey
-      }));
+      }))
+      .sort((left, right) =>
+        left.sortKey - right.sortKey || left.id.localeCompare(right.id));
     return {
       sessionId,
       revision,
@@ -500,7 +503,7 @@ export const previewNotesApi: NotesApi = {
         .slice(0, query.limit)
         .map((node) => ({
           node: { ...node },
-          pageId: node.kind === "page" ? node.id : activePageId,
+          pageId: node.parentId === ROOT_ID ? node.id : activePageId,
           snippet: node.text
         })),
       nextCursor: null

@@ -3,7 +3,7 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { ViewportPage } from "../../../packages/contracts/generated/ViewportPage";
 import type { NotesState } from "./notesState";
 import { mergeViewport, orderOutline } from "./outlineModel";
-import { confirmedNote, confirmedText } from "./storeSupport";
+import { confirmedNote, confirmedText, ROOT_ID } from "./storeSupport";
 
 export function omitKeys<T>(
   record: Readonly<Record<string, T>>,
@@ -35,7 +35,9 @@ export function changesOutlineStructure(
   previous: NoteView | undefined,
   changed: NoteView
 ): boolean {
-  if (!previous) return changed.kind !== "page" && !changed.deleted;
+  // The root row is the one node no outline ever draws: it is the surface
+  // every other row hangs from, not a row itself.
+  if (!previous) return changed.id !== ROOT_ID && !changed.deleted;
   return previous.parentId !== changed.parentId ||
     previous.sortKey !== changed.sortKey ||
     previous.kind !== changed.kind ||
@@ -63,7 +65,7 @@ export function receiptState(
     .filter((node) => !removed.has(node.id) && !node.deleted);
   const known = new Set(nodes.map((node) => node.id));
   let pending = receipt.changedNodes.filter((node) =>
-    node.kind !== "page" && !node.deleted && !known.has(node.id));
+    node.id !== ROOT_ID && !node.deleted && !known.has(node.id));
   while (pending.length > 0) {
     const remaining: NoteView[] = [];
     let attached = 0;
@@ -82,19 +84,21 @@ export function receiptState(
     pending = remaining;
   }
 
+  // A page is nothing but a live child of the root: a bullet outdented onto
+  // Home joins the list, one indented under another row leaves it.
   const pagesById = new Map(state.pages.map((page) => [page.id, page]));
   for (const node of receipt.changedNodes) {
-    if (node.kind !== "page") continue;
-    if (node.deleted) pagesById.delete(node.id);
-    else {
+    if (node.parentId === ROOT_ID && !node.deleted) {
       pagesById.set(node.id, {
         id: node.id,
         title: node.text,
         sortKey: node.sortKey
       });
-    }
+    } else pagesById.delete(node.id);
   }
   for (const id of receipt.deletedIds) pagesById.delete(id);
+  const pages = [...pagesById.values()].sort((left, right) =>
+    left.sortKey - right.sortKey || left.id.localeCompare(right.id));
 
   const removedDraftIds = [
     ...receipt.deletedIds,
@@ -128,7 +132,7 @@ export function receiptState(
     ])
   ];
   const outlineChanged = receipt.deletedIds.some((id) =>
-    previousById.get(id)?.kind !== "page"
+    id !== ROOT_ID
   ) || receipt.changedNodes.some((node) =>
     changesOutlineStructure(previousById.get(node.id), node)
   );
@@ -136,7 +140,7 @@ export function receiptState(
     patch: {
       revision: receipt.revision,
       nodes: orderOutline(nodes, state.activePageId),
-      pages: [...pagesById.values()],
+      pages,
       drafts,
       noteDrafts,
       canUndo: receipt.history.canUndo,

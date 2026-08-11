@@ -1,6 +1,9 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
+import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
+import type { NotesState } from "./notesState";
 import { initialNotesState } from "./notesState";
 import { receiptState } from "./storeState";
+import { ROOT_ID } from "./storeSupport";
 
 function bullet(id: string, parentId: string): NoteView {
   return {
@@ -122,5 +125,99 @@ describe("receipt state", () => {
     });
 
     expect(result.patch.drafts).toEqual({ one: "one and more" });
+  });
+});
+
+describe("the page list follows the root's live children", () => {
+  function ready(pages: NotesState["pages"]): NotesState {
+    return {
+      ...initialNotesState,
+      status: "ready",
+      sessionId: "session",
+      activePageId: "page",
+      pages
+    };
+  }
+
+  function receipt(changedNodes: NoteView[]): MutationReceipt {
+    return {
+      revision: 2,
+      changedNodes,
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    };
+  }
+
+  it("adds a bullet outdented onto the root", () => {
+    const result = receiptState(
+      ready([{ id: "page-1", title: "Today", sortKey: 1_024 }]),
+      receipt([{ ...bullet("promoted", ROOT_ID), text: "Promoted", sortKey: 2_048 }])
+    );
+
+    expect(result.patch.pages).toEqual([
+      { id: "page-1", title: "Today", sortKey: 1_024 },
+      { id: "promoted", title: "Promoted", sortKey: 2_048 }
+    ]);
+  });
+
+  it("drops a page indented under another node", () => {
+    const result = receiptState(
+      ready([
+        { id: "page-1", title: "Today", sortKey: 1_024 },
+        { id: "page-2", title: "Later", sortKey: 2_048 }
+      ]),
+      receipt([bullet("page-2", "page-1")])
+    );
+
+    expect(result.patch.pages?.map((page) => page.id)).toEqual(["page-1"]);
+  });
+
+  it("reorders the list when a receipt moves a page's sort key", () => {
+    const result = receiptState(
+      ready([
+        { id: "page-1", title: "Today", sortKey: 1_024 },
+        { id: "page-2", title: "Later", sortKey: 2_048 }
+      ]),
+      receipt([{ ...bullet("page-2", ROOT_ID), text: "Later", sortKey: 512 }])
+    );
+
+    expect(result.patch.pages?.map((page) => page.id)).toEqual([
+      "page-2",
+      "page-1"
+    ]);
+  });
+
+  it("brings a trashed page back when undo restores it", () => {
+    const state = ready([{ id: "page-1", title: "Today", sortKey: 1_024 }]);
+    const trashed = receiptState(state, receipt([
+      { ...bullet("page-1", ROOT_ID), text: "Today", deleted: true }
+    ]));
+    expect(trashed.patch.pages).toEqual([]);
+
+    const restored = receiptState(
+      { ...state, ...trashed.patch },
+      receipt([{ ...bullet("page-1", ROOT_ID), text: "Today" }])
+    );
+
+    expect(restored.patch.pages).toEqual([
+      { id: "page-1", title: "Today", sortKey: 1_024 }
+    ]);
+  });
+
+  it("keeps the root row out of both the outline and the page list", () => {
+    const root: NoteView = {
+      ...bullet(ROOT_ID, "unused"),
+      parentId: null,
+      kind: "page",
+      text: "Home",
+      sortKey: 0
+    };
+    const result = receiptState(
+      ready([]),
+      receipt([root, bullet("child", ROOT_ID)])
+    );
+
+    expect(result.patch.pages?.map((page) => page.id)).toEqual(["child"]);
+    expect(result.patch.nodes?.map((node) => node.id)).not.toContain(ROOT_ID);
   });
 });

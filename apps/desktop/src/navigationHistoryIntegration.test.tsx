@@ -5,6 +5,7 @@ import type { BootSnapshot } from "../../../packages/contracts/generated/BootSna
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { NotesApi } from "./api";
 import { App } from "./App";
+import { ROOT_ID } from "./storeSupport";
 
 const snapshot: BootSnapshot = {
   sessionId: "navigation-session",
@@ -85,12 +86,13 @@ function api(): NotesApi {
   };
 }
 
+/** A page is a live child of the root row, so that is what the fake writes. */
 function pageNode(id: string, text: string, deleted: boolean) {
   return {
     id,
-    parentId: null,
+    parentId: ROOT_ID,
     sortKey: 1_024,
-    kind: "page" as const,
+    kind: "bullet" as const,
     image: null,
     text,
     note: "",
@@ -125,8 +127,6 @@ function pageApi(): NotesApi {
   });
   notesApi.execute = vi.fn().mockImplementation(async (envelope) => {
     const { command } = envelope;
-    // A page is created as a child of the root outline; the store still reads
-    // its page list off kind='page' rows, so that is what comes back.
     if (command.kind === "createNode") {
       undone.push(() => receiptFor(pageNode(command.id, command.text, true)));
       return receiptFor(pageNode(command.id, command.text, false));

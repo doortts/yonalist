@@ -1,13 +1,28 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import { SORT_KEY_STEP } from "./outlineSortKeys";
+import { ROOT_ID } from "./storeSupport";
 
 export function createInitialPreviewNodes(): NoteView[] {
   return [
     {
-      id: "preview-page",
+      // The one row with no parent: Home, and every page is its child.
+      id: ROOT_ID,
       parentId: null,
-      sortKey: SORT_KEY_STEP,
+      sortKey: 0,
       kind: "page", image: null,
+      text: "Home",
+      note: "",
+      marker: "bullet",
+      collapsed: false,
+      completed: false,
+      starred: false,
+      deleted: false
+    },
+    {
+      id: "preview-page",
+      parentId: ROOT_ID,
+      sortKey: SORT_KEY_STEP,
+      kind: "bullet", image: null,
       text: "Welcome to Yonalist",
       note: "",
       marker: "bullet",
@@ -76,10 +91,11 @@ export function previewPageNodes(
     }
   }
   // Image rows are page content too — filtering them out here left an
-  // imported picture visible only until the next viewport query.
+  // imported picture visible only until the next viewport query. The seed row
+  // itself is the surface, not one of its own rows.
   const visible = nodes.filter(
     (node) =>
-      node.kind !== "page" &&
+      node.id !== pageId &&
       !node.deleted &&
       descendants.has(node.id)
   );

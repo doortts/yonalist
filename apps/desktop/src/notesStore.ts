@@ -439,19 +439,14 @@ export class NotesStore {
     }, id, text, marker);
   }
 
+  /**
+   * Trashing the page on screen leaves nothing to look at, so the view falls
+   * back to Home. Trashing any other page leaves the view where it is.
+   */
   async deleteSubtree(id: string): Promise<void> {
-    const deletesPage = this.state.pages.some((page) => page.id === id);
+    const deletesOpenPage = this.state.activePageId === id;
     await this.executeCommand({ kind: "deleteSubtree", id });
-    if (deletesPage) {
-      const nextPage = this.state.pages[0];
-      if (nextPage) await this.openPage(nextPage.id);
-      else this.update({
-        activePageId: null,
-        nodes: [],
-        beforeCursor: null,
-        afterCursor: null
-      });
-    }
+    if (deletesOpenPage) await this.openPage(ROOT_ID);
   }
 
   async deleteSubtrees(ids: readonly string[]): Promise<void> {

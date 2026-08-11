@@ -1,4 +1,5 @@
 import { previewNotesApi } from "./previewApi";
+import { SORT_KEY_STEP } from "./outlineSortKeys";
 
 describe("browser-only preview adapter", () => {
   it("does not seed instructional text as a bullet", async () => {
@@ -26,6 +27,20 @@ describe("browser-only preview adapter", () => {
       sessionId: boot.sessionId,
       nodeId: image!.id
     })).rejects.toThrow();
+  });
+
+  it("lists the root's live children as the pages", async () => {
+    const boot = await previewNotesApi.bootstrap();
+
+    expect(boot.pages).toEqual([
+      {
+        id: "preview-page",
+        title: "Welcome to Yonalist",
+        sortKey: SORT_KEY_STEP
+      }
+    ]);
+    expect(boot.viewport?.nodes.map((node) => node.id))
+      .not.toContain("preview-page");
   });
 
   it("boots a bounded editable outline and applies command patches", async () => {
