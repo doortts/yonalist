@@ -8,11 +8,10 @@ import { handlePageKeyDown, RowMenuItem } from "./outlineSupport";
 import { useMenuDismiss } from "./useMenuDismiss";
 import type { NotesStore } from "./notesStore";
 import type { OutlineIndex } from "./outlineIndex";
-import { resolveSupportingNoteKey } from "./outlineKeyboard";
-import { focusOutlineEditor } from "./outlineFocus";
 import {
   OutlineTextField, type OutlineTagToken
 } from "./OutlineTextField";
+import { SupportingNoteField } from "./SupportingNoteField";
 import { useNotesNode } from "./useNotesNode";
 import { ROOT_ID } from "./storeSupport";
 
@@ -74,7 +73,6 @@ function BreadcrumbCrumb({
 export function OutlineHeader({
   store,
   target,
-  nodes,
   index,
   pageId,
   pageTitle,
@@ -91,7 +89,6 @@ export function OutlineHeader({
 }: {
   readonly store: NotesStore;
   readonly target: { readonly id: string; readonly text: string };
-  readonly nodes: readonly NoteView[];
   readonly index: OutlineIndex;
   readonly pageId: string;
   readonly pageTitle: string;
@@ -106,8 +103,7 @@ export function OutlineHeader({
   readonly selectionToolbar?: ReactNode;
   readonly exportMenu?: ReactNode;
 }) {
-  const { title } = useNotesNode(store, target.id);
-  const targetNode = nodes.find((node) => node.id === target.id);
+  const { node: targetNode, title } = useNotesNode(store, target.id);
   const trail = zoomed ? zoomTrail(target.id, pageId, index) : null;
   // Home is the house crumb, so on it the house is where a page crumb would
   // otherwise be: the level to come back to, and nothing once you are there.
@@ -205,8 +201,8 @@ export function OutlinePageHeading({
   const onMenuKeyDown = useMenuDismiss(
     menuOpen, menuRef, menuTriggerRef, () => setMenuOpen(false)
   );
-  const { title, note, noteDraft } = useNotesNode(store, target.id);
-  const targetNode = nodes.find((node) => node.id === target.id);
+  const { node: targetNode, title, note, noteDraft } =
+    useNotesNode(store, target.id);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const visibleNote = noteDraft ?? note;
   const [noteOpen, setNoteOpen] = useState(
@@ -303,66 +299,24 @@ export function OutlinePageHeading({
             />
           </h2>}
           {noteOpen && (
-            <OutlineTextField
+            <SupportingNoteField
               ref={noteRef}
+              store={store}
+              nodeId={target.id}
+              value={visibleNote}
+              ariaLabel="Page note"
               className="notes-page-note"
               containerClassName="notes-page-note-field"
-              data-node-id={target.id}
-              data-outline-field="note"
-              aria-label="Page note"
-              rows={1}
-              value={visibleNote}
-              placeholder="Add a supporting note"
+              // Down out of the page note lands on the first body row; with no
+              // row to land on it stays put, and Shift+Enter starts the first
+              // child instead.
+              targets={() => ({
+                nextRowId: visibleNodes[0]?.id ?? null,
+                fallbackFocusId: null,
+                createParentId: target.id
+              })}
               onTagClick={onTagClick}
-              onChange={(event) =>
-                store.setNoteDraft(target.id, event.target.value)}
-              onKeyDown={(event) => {
-                const resolution = resolveSupportingNoteKey({
-                  key: event.key,
-                  altKey: event.altKey,
-                  ctrlKey: event.ctrlKey,
-                  metaKey: event.metaKey,
-                  shiftKey: event.shiftKey,
-                  isComposing: event.nativeEvent.isComposing,
-                  repeat: event.repeat,
-                  selectionStart: event.currentTarget.selectionStart,
-                  selectionEnd: event.currentTarget.selectionEnd,
-                  value: event.currentTarget.value
-                });
-                if (!resolution) return;
-                event.preventDefault();
-                const scope =
-                  event.currentTarget.closest<HTMLElement>(".notes-outline");
-                if (!scope) return;
-                if (resolution === "currentTitle") {
-                  void store.flushNoteDraft(target.id).then(() =>
-                    requestAnimationFrame(() =>
-                      focusOutlineEditor(scope, target.id, "preserve")));
-                  return;
-                }
-                // Down out of the page note lands on the first body row; with
-                // no rows left to land on, Shift+Enter starts the first child.
-                const firstRowId = visibleNodes[0]?.id;
-                if (firstRowId) {
-                  void store.flushNoteDraft(target.id).then(() =>
-                    requestAnimationFrame(() =>
-                      focusOutlineEditor(scope, firstRowId, "preserve")));
-                  return;
-                }
-                if (resolution === "nextTitleOrCreate") {
-                  void store.flushNoteDraft(target.id)
-                    .then(() => store.createNode(target.id))
-                    .then((id) => requestAnimationFrame(
-                      () => focusOutlineEditor(scope, id, "start")
-                    ));
-                }
-              }}
-              onBlur={(event) => {
-                const submittedNote = event.currentTarget.value;
-                void store.flushNoteDraft(target.id).then(() => {
-                  if (submittedNote.trim().length === 0) setNoteOpen(false);
-                });
-              }}
+              onAutoHide={() => setNoteOpen(false)}
             />
           )}
         </div>

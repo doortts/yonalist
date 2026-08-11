@@ -352,7 +352,6 @@ export function NotesOutline({
       <OutlineHeader
         store={store}
         target={header}
-        nodes={state.nodes}
         index={index}
         pageId={page.id}
         pageTitle={page.title}
@@ -414,6 +413,7 @@ export function NotesOutline({
               a heading only once a zoom gives it one. */}
           {(zoomRoot || page.id !== ROOT_ID) && (
             <OutlinePageHeading
+              key={header.id}
               store={store}
               target={header}
               nodes={state.nodes}

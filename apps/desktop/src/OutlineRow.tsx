@@ -10,10 +10,7 @@ import {
   endOutlineEnterGesture, handleImagePrimaryKeyDown, handleMultilinePaste,
   handleOutlineKeyDown, type SelectionKeyboardActions
 } from "./outlineSupport";
-import { focusOutlineEditor } from "./outlineFocus";
-import {
-  resolveSupportingNoteKey, supportingNoteFocusTarget
-} from "./outlineKeyboard";
+import { supportingNoteFocusTarget } from "./outlineKeyboard";
 import {
   TodoCheckbox, TodoProgressIndicator, type TodoProgress
 } from "./outlineTodo";
@@ -25,6 +22,7 @@ import {
 import {
   OutlineTextField, type OutlineTagToken
 } from "./OutlineTextField";
+import { SupportingNoteField } from "./SupportingNoteField";
 import { useNotesNode } from "./useNotesNode";
 import type { SelectionMovePlans } from "./selectionMoves";
 
@@ -417,61 +415,29 @@ export const OutlineRow = memo(function OutlineRow({
           />}
         </div>
         {noteOpen && (
-          <OutlineTextField
+          <SupportingNoteField
             ref={noteRef}
+            store={store}
+            nodeId={node.id}
+            value={visibleNote}
+            ariaLabel={`Supporting note: ${(draft ?? node.text) || "Untitled"}`}
             className="notes-node-note"
             containerClassName="notes-node-note-field"
-            data-node-id={node.id}
-            data-outline-field="note"
-            aria-label={`Supporting note: ${(draft ?? node.text) || "Untitled"}`}
-            rows={1}
-            value={visibleNote}
-            placeholder="Add a supporting note"
-            onTagClick={(token) => runtime.state.onTagClick(token)}
-            onChange={(event) => store.setNoteDraft(node.id, event.target.value)}
-            onKeyDown={(event) => {
-              const resolution = resolveSupportingNoteKey({
-                key: event.key,
-                altKey: event.altKey,
-                ctrlKey: event.ctrlKey,
-                metaKey: event.metaKey,
-                shiftKey: event.shiftKey,
-                isComposing: event.nativeEvent.isComposing,
-                repeat: event.repeat,
-                selectionStart: event.currentTarget.selectionStart,
-                selectionEnd: event.currentTarget.selectionEnd,
-                value: event.currentTarget.value
-              });
-              if (!resolution) return;
-              event.preventDefault();
-              const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
-              if (!scope) return;
+            targets={() => {
               const current = runtime.state;
-              const focusId = supportingNoteFocusTarget(
-                resolution,
+              const nextId = supportingNoteFocusTarget(
+                "nextTitle",
                 node.id,
                 current.visibleNodes.map((candidate) => candidate.id)
               );
-              if (resolution === "nextTitleOrCreate" && focusId === node.id) {
-                void store.flushNoteDraft(node.id)
-                  .then(() => store.createNode(
-                    node.parentId ?? current.pageId
-                  ))
-                  .then((id) => requestAnimationFrame(
-                    () => focusOutlineEditor(scope, id, "start")
-                  ));
-                return;
-              }
-              void store.flushNoteDraft(node.id).then(() => requestAnimationFrame(
-                () => focusOutlineEditor(scope, focusId, "preserve")
-              ));
+              return {
+                nextRowId: nextId === node.id ? null : nextId,
+                fallbackFocusId: node.id,
+                createParentId: node.parentId ?? current.pageId
+              };
             }}
-            onBlur={(event) => {
-              const submittedNote = event.currentTarget.value;
-              void store.flushNoteDraft(node.id).then(() => {
-                if (submittedNote.trim().length === 0) setNoteOpen(false);
-              });
-            }}
+            onTagClick={(token) => runtime.state.onTagClick(token)}
+            onAutoHide={() => setNoteOpen(false)}
           />
         )}
         <TodoProgressIndicator value={todoProgress} />

@@ -57,17 +57,15 @@ describe("split pane integration", () => {
     const { container } = render(<App api={appApi()} />);
     const first = await screen.findByDisplayValue("First thought");
 
-    fireEvent.keyDown(first, { key: ".", altKey: true });
-    const zoomTitle = container.querySelector<HTMLTextAreaElement>(
+    // The heading remounts per target, so each step reads it again.
+    const pageTitle = () => container.querySelector<HTMLTextAreaElement>(
       'textarea[aria-label="Page title"]'
     )!;
-    await waitFor(() => expect(zoomTitle).toHaveValue("First thought"));
+    fireEvent.keyDown(first, { key: ".", altKey: true });
+    await waitFor(() => expect(pageTitle()).toHaveValue("First thought"));
 
-    fireEvent.keyDown(zoomTitle, { key: ",", altKey: true });
-    expect(await screen.findByDisplayValue("Today")).toHaveAttribute(
-      "aria-label",
-      "Page title"
-    );
+    fireEvent.keyDown(pageTitle(), { key: ",", altKey: true });
+    await waitFor(() => expect(pageTitle()).toHaveValue("Today"));
   });
 
   it("zooms a bullet without querying the workspace", async () => {
