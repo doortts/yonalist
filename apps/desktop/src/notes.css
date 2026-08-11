@@ -1287,27 +1287,22 @@
   --notes-stable-caret-offset: 3px;
 }
 
-/* The line height here must stay equal to the font's own box (1.1875 x the
-   font size, so 19px at 16px). Any leading on top of that is handed to the
-   browser's caret, and a wrapped row's second line then draws a taller caret
-   than its first. Row height is held by min-height/padding on
-   .notes-node-title instead, not by the leading. */
 .notes-node-title-field {
   --notes-stable-caret-color: var(--caret-strong);
   --notes-title-font-size: 16px;
   --notes-title-font-weight: 400;
-  --notes-title-line-height: 19px;
+  --notes-title-line-height: 25px;
   grid-column: 4;
   grid-row: 1;
   font-size: 16px;
   font-weight: 400;
-  line-height: 19px;
+  line-height: 25px;
 }
 
 .notes-node-title-field[data-markdown-level="1"] {
   --notes-title-font-size: 24px;
   --notes-title-font-weight: 700;
-  --notes-title-line-height: 29px;
+  --notes-title-line-height: 32px;
   font-size: var(--notes-title-font-size);
   font-weight: var(--notes-title-font-weight);
   line-height: var(--notes-title-line-height);
@@ -1316,7 +1311,7 @@
 .notes-node-title-field[data-markdown-level="2"] {
   --notes-title-font-size: 21px;
   --notes-title-font-weight: 700;
-  --notes-title-line-height: 25px;
+  --notes-title-line-height: 29px;
   font-size: var(--notes-title-font-size);
   font-weight: var(--notes-title-font-weight);
   line-height: var(--notes-title-line-height);
@@ -1325,7 +1320,7 @@
 .notes-node-title-field[data-markdown-level="3"] {
   --notes-title-font-size: 18px;
   --notes-title-font-weight: 650;
-  --notes-title-line-height: 22px;
+  --notes-title-line-height: 27px;
   font-size: var(--notes-title-font-size);
   font-weight: var(--notes-title-font-weight);
   line-height: var(--notes-title-line-height);
@@ -2133,7 +2128,7 @@ body.is-outline-dragging * {
   font: inherit;
   font-size: 16px;
   font-weight: 400;
-  line-height: 19px;
+  line-height: 25px;
 }
 
 .notes-node-title-field[data-markdown-level] > .notes-node-title {
