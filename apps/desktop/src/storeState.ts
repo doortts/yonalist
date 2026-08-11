@@ -100,6 +100,17 @@ export function receiptState(
   const pages = [...pagesById.values()].sort((left, right) =>
     left.sortKey - right.sortKey || left.id.localeCompare(right.id));
 
+  // The page's own node stays out of `nodes` -- the outline guards, the body
+  // rendering and the drag all read that absence -- so it is reconciled here.
+  const changedPageNode = state.activePageId === null
+    ? undefined
+    : changedById.get(state.activePageId);
+  const pageNode = state.activePageId !== null && removed.has(state.activePageId)
+    ? null
+    : changedPageNode
+      ? (changedPageNode.deleted ? null : changedPageNode)
+      : state.pageNode;
+
   const removedDraftIds = [
     ...receipt.deletedIds,
     ...receipt.changedNodes.filter((node) => node.deleted).map((node) => node.id)
@@ -140,6 +151,7 @@ export function receiptState(
     patch: {
       revision: receipt.revision,
       nodes: orderOutline(nodes, state.activePageId),
+      pageNode,
       pages,
       drafts,
       noteDrafts,
@@ -163,6 +175,7 @@ export function viewportState(
     status: "ready",
     activePageId: viewport.pageId,
     nodes: append ? mergeViewport(state.nodes, viewport.nodes) : viewport.nodes,
+    pageNode: viewport.pageNode ?? (append ? state.pageNode : null),
     beforeCursor: append ? state.beforeCursor : viewport.beforeCursor,
     afterCursor: viewport.afterCursor,
     error: null

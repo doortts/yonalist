@@ -404,6 +404,11 @@ pub struct ViewportPage {
     pub anchor_id: Option<String>,
     pub before_cursor: Option<String>,
     pub after_cursor: Option<String>,
+    /// The page's own node, which the body listing deliberately leaves out.
+    /// The heading's note lives on it.
+    #[serde(default)]
+    #[ts(optional)]
+    pub page_node: Option<NoteView>,
     pub nodes: Vec<NoteView>,
 }
 

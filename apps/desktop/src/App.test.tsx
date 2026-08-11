@@ -3,12 +3,33 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { App } from "./App";
+import type { NotesApi } from "./api";
 import { ROOT_ID } from "./storeSupport";
 import {
   appApi as api,
   receipt,
   snapshot
 } from "./test/appApiFixture";
+
+/** Echoes updateNote back the way the real server does: the full changed node. */
+function echoingNoteApi(): NotesApi {
+  const notesApi = api();
+  notesApi.execute = vi.fn().mockImplementation(async (envelope) => {
+    const command = envelope.command;
+    if (command.kind !== "updateNote") return receipt("First thought");
+    const pageNode = snapshot.viewport!.pageNode!;
+    const source = command.id === pageNode.id
+      ? pageNode
+      : snapshot.viewport!.nodes.find((node) => node.id === command.id)!;
+    return {
+      revision: 8,
+      changedNodes: [{ ...source, note: command.note }],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    };
+  });
+  return notesApi;
+}
 
 describe("Yonalist v2 desktop shell", () => {
   afterEach(() => {
@@ -656,6 +677,63 @@ describe("Yonalist v2 desktop shell", () => {
         }
       }));
     });
+  });
+
+  it("keeps the page heading note across the draft flush", async () => {
+    render(<App api={echoingNoteApi()} />);
+    const heading = await screen.findByDisplayValue<HTMLTextAreaElement>("Today");
+
+    fireEvent.keyDown(heading, { key: "Enter", shiftKey: true });
+    const note = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "Page note"
+    });
+    vi.useFakeTimers();
+    fireEvent.change(note, { target: { value: "page note" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+
+    expect(note).toHaveValue("page note");
+  });
+
+  it("keeps the zoomed heading note across the draft flush", async () => {
+    render(<App api={echoingNoteApi()} />);
+    await screen.findByDisplayValue("First thought");
+    fireEvent.click(screen.getAllByRole("button", { name: "Zoom to item" })[0]!);
+    const heading = await screen.findByDisplayValue<HTMLTextAreaElement>(
+      "First thought"
+    );
+    await waitFor(() =>
+      expect(heading).toHaveAttribute("aria-label", "Page title"));
+
+    fireEvent.keyDown(heading, { key: "Enter", shiftKey: true });
+    const note = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "Page note"
+    });
+    vi.useFakeTimers();
+    fireEvent.change(note, { target: { value: "zoomed note" } });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+
+    expect(note).toHaveValue("zoomed note");
+  });
+
+  it("renders a persisted page note on load", async () => {
+    const notesApi = api();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: {
+        ...snapshot.viewport!,
+        pageNode: { ...snapshot.viewport!.pageNode!, note: "Page context" }
+      }
+    });
+    render(<App api={notesApi} />);
+
+    // A resting field renders as its presentation group; the textarea behind it
+    // is aria-hidden until the field is focused.
+    expect(await screen.findByRole("group", { name: "Page note" }))
+      .toHaveTextContent("Page context");
   });
 
   it("hides an untouched page note again on blur", async () => {

@@ -12,6 +12,19 @@ export const snapshot: BootSnapshot = {
     anchorId: null,
     beforeCursor: null,
     afterCursor: null,
+    pageNode: {
+      id: "page-1",
+      parentId: "root",
+      sortKey: 1024,
+      kind: "bullet", image: null,
+      text: "Today",
+      note: "",
+      marker: "bullet",
+      collapsed: false,
+      completed: false,
+      starred: false,
+      deleted: false
+    },
     nodes: [
       {
         id: "bullet-1",

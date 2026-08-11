@@ -166,11 +166,15 @@ pub(crate) fn viewport(
             [&request.page_id],
         )
         .map_err(internal)?;
+    let page_node = repository::node(connection, &request.page_id)?
+        .map(NoteView::from)
+        .filter(|node| !node.deleted);
     Ok(ViewportPage {
         page_id: request.page_id,
         anchor_id: request.anchor_id,
         before_cursor: (offset > 0).then(|| cursor(revision, offset)),
         after_cursor: has_more.then(|| cursor(revision, consumed)),
+        page_node,
         nodes,
     })
 }

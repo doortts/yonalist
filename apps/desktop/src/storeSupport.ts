@@ -26,14 +26,16 @@ export function confirmedText(
   id: string
 ): string | undefined {
   return state.pages.find((page) => page.id === id)?.title ??
-    state.nodes.find((node) => node.id === id)?.text;
+    state.nodes.find((node) => node.id === id)?.text ??
+    (state.pageNode?.id === id ? state.pageNode.text : undefined);
 }
 
 export function confirmedNote(
   state: NotesState,
   id: string
 ): string | undefined {
-  return state.nodes.find((node) => node.id === id)?.note;
+  return state.nodes.find((node) => node.id === id)?.note ??
+    (state.pageNode?.id === id ? state.pageNode.note : undefined);
 }
 import type { NotesState } from "./notesState";
 

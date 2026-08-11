@@ -97,6 +97,32 @@ describe("StoreSubscriptions", () => {
     });
   });
 
+  it("reads the page's own note off the page node the viewport carries", () => {
+    const state: NotesState = {
+      ...notesStateWithNodes(0),
+      pageNode: {
+        id: "page-1",
+        parentId: "root",
+        sortKey: 1_024,
+        kind: "bullet", image: null,
+        text: "Page",
+        note: "Page context",
+        marker: "bullet",
+        collapsed: false,
+        completed: false,
+        starred: false,
+        deleted: false
+      }
+    };
+    const subscriptions = new StoreSubscriptions(() => state);
+
+    expect(subscriptions.getNodeSnapshot("page-1")).toMatchObject({
+      node: state.pageNode,
+      title: "Page",
+      note: "Page context"
+    });
+  });
+
   it("deduplicates ids for multi-node subscriptions and epochs", () => {
     let state = notesStateWithNodes(2);
     const subscriptions = new StoreSubscriptions(() => state);

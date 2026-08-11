@@ -8,6 +8,8 @@ export interface NotesState {
   readonly pages: readonly PageSummary[];
   readonly activePageId: string | null;
   readonly nodes: readonly NoteView[];
+  /** The active page's own node, which `nodes` never lists. */
+  readonly pageNode: NoteView | null;
   readonly drafts: Readonly<Record<string, string>>;
   readonly noteDrafts: Readonly<Record<string, string>>;
   readonly canUndo: boolean;
@@ -27,6 +29,7 @@ export const initialNotesState: NotesState = {
   pages: [],
   activePageId: null,
   nodes: [],
+  pageNode: null,
   drafts: {},
   noteDrafts: {},
   canUndo: false,

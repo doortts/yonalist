@@ -2,7 +2,7 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { NotesState } from "./notesState";
 import { initialNotesState } from "./notesState";
-import { receiptState } from "./storeState";
+import { receiptState, viewportState } from "./storeState";
 import { ROOT_ID } from "./storeSupport";
 
 function bullet(id: string, parentId: string): NoteView {
@@ -219,5 +219,78 @@ describe("the page list follows the root's live children", () => {
 
     expect(result.patch.pages?.map((page) => page.id)).toEqual(["child"]);
     expect(result.patch.nodes?.map((node) => node.id)).not.toContain(ROOT_ID);
+  });
+});
+
+describe("the page's own node rides beside the body rows", () => {
+  const pageNode: NoteView = {
+    ...bullet("page", ROOT_ID),
+    text: "Today",
+    note: "Page context"
+  };
+
+  function viewport(page: NoteView | undefined) {
+    return {
+      pageId: "page",
+      anchorId: null,
+      beforeCursor: null,
+      afterCursor: null,
+      pageNode: page,
+      nodes: [bullet("one", "page")]
+    };
+  }
+
+  it("takes the page node on a fresh load and drops it when one is absent", () => {
+    const loaded = viewportState(initialNotesState, viewport(pageNode), false);
+    expect(loaded.pageNode).toEqual(pageNode);
+
+    const reloaded = viewportState(
+      { ...initialNotesState, pageNode },
+      viewport(undefined),
+      false
+    );
+    expect(reloaded.pageNode).toBeNull();
+  });
+
+  it("keeps the page node across an appended viewport", () => {
+    const appended = viewportState(
+      { ...initialNotesState, pageNode },
+      viewport(undefined),
+      true
+    );
+
+    expect(appended.pageNode).toEqual(pageNode);
+  });
+
+  it("follows the active page's node through a receipt", () => {
+    const state: NotesState = {
+      ...initialNotesState,
+      status: "ready",
+      activePageId: "page",
+      pageNode
+    };
+    const changed = { ...pageNode, note: "Rewritten" };
+
+    expect(receiptState(state, {
+      revision: 2,
+      changedNodes: [changed],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    }).patch.pageNode).toEqual(changed);
+    // The page node never joins the body rows: the outline guards read that
+    // absence.
+    expect(receiptState(state, {
+      revision: 2,
+      changedNodes: [changed],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    }).patch.nodes?.map((node) => node.id)).not.toContain("page");
+
+    expect(receiptState(state, {
+      revision: 2,
+      changedNodes: [],
+      deletedIds: ["page"],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    }).patch.pageNode).toBeNull();
   });
 });

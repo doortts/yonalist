@@ -751,3 +751,61 @@ fn search_filters_starred_trash_tags_and_dates_without_a_workspace_load() {
             .is_empty()
     );
 }
+
+#[test]
+fn a_viewport_carries_the_page_node_the_body_listing_leaves_out() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let service = NotesService::new(&storage, "session", 0);
+    create_page(&service, 0, "page-a", "Inbox");
+    execute(
+        &service,
+        "child",
+        1,
+        IpcNotesCommand::CreateNode {
+            id: "child".into(),
+            parent_id: "page-a".into(),
+            before_id: None,
+            text: "Task".into(),
+        },
+    );
+    execute(
+        &service,
+        "note",
+        2,
+        IpcNotesCommand::UpdateNote {
+            id: "page-a".into(),
+            note: "Page context".into(),
+        },
+    );
+
+    let page = storage
+        .query_viewport(ViewportRequest {
+            page_id: "page-a".into(),
+            anchor_id: None,
+            before_cursor: None,
+            after_cursor: None,
+            limit: 20,
+        })
+        .unwrap();
+    let page_node = page.page_node.expect("the page's own node");
+    assert_eq!(page_node.id, "page-a");
+    assert_eq!(page_node.note, "Page context");
+    assert_eq!(
+        page.nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["child"]
+    );
+
+    let root = storage
+        .query_viewport(ViewportRequest {
+            page_id: "root".into(),
+            anchor_id: None,
+            before_cursor: None,
+            after_cursor: None,
+            limit: 20,
+        })
+        .unwrap();
+    assert_eq!(root.page_node.map(|node| node.id).as_deref(), Some("root"));
+}

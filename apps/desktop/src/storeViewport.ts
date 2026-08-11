@@ -25,6 +25,7 @@ export class StoreViewport {
       status: "loading",
       activePageId: pageId,
       nodes: [],
+      pageNode: null,
       error: null
     });
     try {

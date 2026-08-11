@@ -75,6 +75,10 @@ export function invalidationForPatch(
   if (patch.nodes) {
     changedNodeIds(previous.nodes, patch.nodes).forEach((id) => ids.add(id));
   }
+  if ("pageNode" in patch && patch.pageNode !== previous.pageNode) {
+    [previous.pageNode?.id, patch.pageNode?.id]
+      .forEach((id) => id !== undefined && ids.add(id));
+  }
   if (patch.drafts) {
     changedRecordKeys(previous.drafts, patch.drafts)
       .forEach((id) => ids.add(id));
@@ -114,7 +118,8 @@ function outlineSnapshot(state: NotesState): NotesOutlineSnapshot {
 }
 
 function nodeSnapshot(state: NotesState, id: string): NotesNodeSnapshot {
-  const node = state.nodes.find((candidate) => candidate.id === id) ?? null;
+  const node = state.nodes.find((candidate) => candidate.id === id) ??
+    (state.pageNode?.id === id ? state.pageNode : null);
   const titleDraft = state.drafts[id];
   const noteDraft = state.noteDrafts[id];
   return {

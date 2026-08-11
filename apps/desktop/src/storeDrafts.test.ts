@@ -112,4 +112,36 @@ describe("StoreDrafts", () => {
 
     expect(order).toEqual(["updateText", "updateNote", "settled"]);
   });
+  it("skips the command when a page note draft matches the page node", async () => {
+    const pageNode = {
+      ...node("Today"),
+      id: "page-1",
+      parentId: "root",
+      note: "Page context"
+    };
+    let state: NotesState = {
+      ...initialNotesState,
+      status: "ready",
+      sessionId: "session-1",
+      activePageId: "page-1",
+      pageNode,
+      nodes: [node("one")]
+    };
+    const execute = vi.fn();
+    const drafts = new StoreDrafts({
+      read: () => state,
+      write: (patch) => {
+        state = { ...state, ...patch };
+      },
+      execute,
+      settled: vi.fn().mockResolvedValue(undefined),
+      breakHistoryGroup: vi.fn()
+    });
+    drafts.setNote("page-1", "Page context");
+
+    await drafts.flushNote("page-1");
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(state.noteDrafts["page-1"]).toBeUndefined();
+  });
 });

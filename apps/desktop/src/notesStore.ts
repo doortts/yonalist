@@ -129,6 +129,7 @@ export class NotesStore {
         pages: boot.pages,
         activePageId: boot.activePageId,
         nodes: boot.viewport?.nodes ?? [],
+        pageNode: boot.viewport?.pageNode ?? null,
         drafts: {},
         noteDrafts: {},
         canUndo: boot.history.canUndo,
@@ -143,7 +144,10 @@ export class NotesStore {
       this.subscriptions.publish({
         shell: true,
         outline: true,
-        nodeIds: this.state.nodes.map((node) => node.id)
+        nodeIds: [
+          ...this.state.nodes.map((node) => node.id),
+          ...(this.state.pageNode ? [this.state.pageNode.id] : [])
+        ]
       });
       this.emit();
     } catch (cause) {
