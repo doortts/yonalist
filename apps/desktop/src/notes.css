@@ -1975,12 +1975,13 @@ button.notes-date-token:hover {
 }
 
 .notes-node-bullet[data-sortable-activator="true"] {
-  cursor: grab;
+  cursor: pointer;
   touch-action: none;
 }
 
-.notes-node-bullet[data-sortable-activator="true"]:active {
-  cursor: grabbing;
+body.is-outline-dragging,
+body.is-outline-dragging * {
+  cursor: grabbing !important;
 }
 
 .notes-node-bullet:disabled {

@@ -16,6 +16,7 @@ import type {
 } from "./outlineDragEngine";
 
 const ACTIVATION_DISTANCE = 4;
+const DRAGGING_CLASS = "is-outline-dragging";
 const NO_ROOT_IDS: readonly string[] = [];
 const NO_DRAG_SOURCES: ReadonlySet<string> = new Set();
 
@@ -51,6 +52,9 @@ export function useOutlineDrag(input: UseOutlineDragInput) {
   targetScopeRef.current = targetScope;
 
   const clearVisuals = useCallback(() => {
+    // Every gesture end — drop, cancel, blur, keyboard finish — routes through
+    // here, so the grabbing cursor is dropped in one place.
+    document.body.classList.remove(DRAGGING_CLASS);
     planRef.current = null;
     targetScopeRef.current = null;
     setPlan(null);
@@ -121,6 +125,7 @@ export function useOutlineDrag(input: UseOutlineDragInput) {
         );
         if (distance < ACTIVATION_DISTANCE) return;
         gesture.dragging = true;
+        document.body.classList.add(DRAGGING_CLASS);
       }
       event.preventDefault();
       const { clientX, clientY, target } = event;
