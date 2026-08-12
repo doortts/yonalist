@@ -1,5 +1,5 @@
 import type { Ref } from "react";
-import { focusOutlineEditor, type OutlineFocusEdge } from "./outlineFocus";
+import { focusAfterCommit, type OutlineFocusEdge } from "./outlineFocus";
 import type { NotesStore } from "./notesStore";
 import { resolveSupportingNoteKey } from "./outlineKeyboard";
 import {
@@ -78,9 +78,9 @@ export function SupportingNoteField({
           id: string,
           edge: OutlineFocusEdge = "preserve"
         ): void => {
-          void store.flushNoteDraft(nodeId).then(() => requestAnimationFrame(
-            () => focusOutlineEditor(scope, id, edge)
-          ));
+          void store.flushNoteDraft(nodeId).then(
+            () => focusAfterCommit(scope, id, edge)
+          );
         };
         if (resolution === "currentTitle") {
           focusAfterFlush(nodeId);
@@ -101,9 +101,7 @@ export function SupportingNoteField({
         if (resolution === "nextTitleOrCreate") {
           void store.flushNoteDraft(nodeId)
             .then(() => store.createNode(createParentId))
-            .then((id) => requestAnimationFrame(
-              () => focusOutlineEditor(scope, id, "start")
-            ));
+            .then((id) => focusAfterCommit(scope, id, "start"));
           return;
         }
         if (fallbackFocusId) focusAfterFlush(fallbackFocusId);

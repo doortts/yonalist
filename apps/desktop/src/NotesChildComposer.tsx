@@ -1,7 +1,7 @@
 import { Plus } from "lucide-react";
 import { useRef, useState } from "react";
 import { NotesStore } from "./notesStore";
-import { focusOutlineEditor } from "./outlineFocus";
+import { focusAfterCommit } from "./outlineFocus";
 
 export function NotesChildComposer({
   store, parentId, hasChildren
@@ -21,10 +21,7 @@ export function NotesChildComposer({
     try {
       const pending = store.beginCreateNode(parentId);
       const scope = composerRef.current?.closest<HTMLElement>(".notes-outline");
-      if (scope) {
-        requestAnimationFrame(() =>
-          focusOutlineEditor(scope, pending.id, "start"));
-      }
+      if (scope) focusAfterCommit(scope, pending.id, "start");
       await pending.committed;
     } finally {
       creatingRef.current = false;

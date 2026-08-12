@@ -3,9 +3,8 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
 import type { OutlineIndex } from "./outlineIndex";
 import {
-  focusOutlineEditor,
-  focusOutlineEditorAt,
-  type OutlineFocusEdge
+  focusAfterCommit,
+  focusOutlineEditor
 } from "./outlineFocus";
 import { parsePastedOutline } from "./outlinePaste";
 import { clipboardImageCandidates } from "./imageClipboard";
@@ -36,10 +35,6 @@ interface EnterSplitGesture {
 }
 
 const enterSplitGestures = new WeakMap<HTMLElement, EnterSplitGesture>();
-const pendingOutlineFocus = new WeakMap<HTMLElement, {
-  readonly nodeId: string;
-  readonly edge: OutlineFocusEdge;
-}>();
 
 export function endOutlineEnterGesture(target: HTMLElement): void {
   const scope = target.closest<HTMLElement>(".notes-outline");
@@ -111,8 +106,7 @@ export function handleMultilinePaste(
     const beforeId = position >= 0 ? siblings[position + 1]?.id ?? null : null;
     const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
     void store.images.importAfter(node.parentId, beforeId, images).then((id) => {
-      if (scope) requestAnimationFrame(() =>
-        focusOutlineEditor(scope, id, "start"));
+      if (scope) focusAfterCommit(scope, id, "start");
     });
     return;
   }
@@ -121,7 +115,7 @@ export function handleMultilinePaste(
   event.preventDefault();
   const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
   void store.importOutline(node.id, null, roots).then((id) => {
-    if (scope) requestAnimationFrame(() => focusOutlineEditor(scope, id, "start"));
+    if (scope) focusAfterCommit(scope, id, "start");
   });
 }
 
@@ -446,20 +440,6 @@ function updateBackspaceGesture(
   return null;
 }
 
-function focusAfter(
-  scope: HTMLElement,
-  nodeId: string,
-  edge: OutlineFocusEdge
-): void {
-  const request = { nodeId, edge };
-  pendingOutlineFocus.set(scope, request);
-  queueMicrotask(() => {
-    if (pendingOutlineFocus.get(scope) !== request) return;
-    pendingOutlineFocus.delete(scope);
-    focusOutlineEditor(scope, nodeId, edge);
-  });
-}
-
 function createFirstChild(
   scope: HTMLElement,
   store: NotesStore,
@@ -468,7 +448,7 @@ function createFirstChild(
 ): void {
   const beforeId = index.firstChildId(parentId);
   const pending = store.beginCreateNode(parentId, "", beforeId);
-  focusAfter(scope, pending.id, "start");
+  focusAfterCommit(scope, pending.id, "start");
   void pending.committed.catch(() => undefined);
 }
 
@@ -523,7 +503,7 @@ function executeRowIntent(
           parentId: split.parentId,
           beforeId: split.beforeId
         });
-        focusAfter(scope, pending.id, "start");
+        focusAfterCommit(scope, pending.id, "start");
         void pending.committed.catch(() => undefined);
       }
       return;
@@ -542,17 +522,17 @@ function executeRowIntent(
           parentId,
           beforeId
         });
-        focusAfter(scope, pending.id, "start");
+        focusAfterCommit(scope, pending.id, "start");
         void pending.committed.catch(() => undefined);
       }
       return;
     case "indent":
       void store.indent(node.id, intent.previousSiblingId)
-        .then(() => focusAfter(scope, node.id, "preserve"));
+        .then(() => focusAfterCommit(scope, node.id, "preserve"));
       return;
     case "outdent":
       void store.outdent(node.id, intent.parentId, intent.beforeId)
-        .then(() => focusAfter(scope, node.id, "preserve"));
+        .then(() => focusAfterCommit(scope, node.id, "preserve"));
       return;
     case "focus":
       focusOutlineEditor(scope, intent.nodeId, intent.edge);
@@ -565,7 +545,7 @@ function executeRowIntent(
     case "removeEmpty":
       {
         const pending = store.beginRemoveEmptyNode(node.id, backspaceGroup);
-        if (intent.focusId) focusAfter(scope, intent.focusId, "end");
+        if (intent.focusId) focusAfterCommit(scope, intent.focusId, "end");
         void pending.committed.catch(() => undefined);
       }
       return;
@@ -583,9 +563,7 @@ function executeRowIntent(
         currentText: state.drafts[node.id] ?? node.text,
         historyGroup: backspaceGroup
       });
-      requestAnimationFrame(() => {
-        focusOutlineEditorAt(scope, node.id, previousText.length);
-      });
+      focusAfterCommit(scope, node.id, previousText.length);
       void pending.committed.catch(() => undefined);
       return;
     }
@@ -603,9 +581,7 @@ function executeRowIntent(
         currentText: state.drafts[node.id] ?? node.text,
         historyGroup: backspaceGroup
       });
-      requestAnimationFrame(() => {
-        focusOutlineEditorAt(scope, parent.id, parentText.length);
-      });
+      focusAfterCommit(scope, parent.id, parentText.length);
       void pending.committed.catch(() => undefined);
       return;
     }
@@ -630,7 +606,7 @@ function executeRowIntent(
         : siblings.findIndex((candidate) => candidate.id === node.id);
       const beforeId = index >= 0 ? siblings[index + 1]?.id ?? null : null;
       void store.duplicate(node.id, node.parentId ?? "", beforeId)
-        .then((id) => focusAfter(scope, id, "start"));
+        .then((id) => focusAfterCommit(scope, id, "start"));
       return;
     }
     case "move": {
@@ -645,7 +621,7 @@ function executeRowIntent(
         : siblings[index + 2]?.id ?? null;
       if (index < 0 || (intent.direction === "up" && !beforeId)) return;
       void store.moveNode(node.id, node.parentId ?? "", beforeId ?? null)
-        .then(() => focusAfter(scope, node.id, "preserve"));
+        .then(() => focusAfterCommit(scope, node.id, "preserve"));
       return;
     }
     case "zoom":

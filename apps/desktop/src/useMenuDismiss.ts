@@ -26,7 +26,10 @@ export function useMenuDismiss(
 
   useEffect(() => {
     if (!open) return;
-    const frame = requestAnimationFrame(() => {
+    // A timer, not a frame: the menu body arrives from a lazy chunk a tick or
+    // two after this effect, and an occluded window runs no frames to hand the
+    // first item its focus in.
+    const timer = setTimeout(() => {
       menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
     });
     const dismiss = (event: PointerEvent) => {
@@ -38,7 +41,7 @@ export function useMenuDismiss(
     };
     document.addEventListener("pointerdown", dismiss, true);
     return () => {
-      cancelAnimationFrame(frame);
+      clearTimeout(timer);
       document.removeEventListener("pointerdown", dismiss, true);
     };
   }, [open, menuRef, triggerRef]);

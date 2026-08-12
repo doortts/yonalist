@@ -13,6 +13,10 @@ function editor(scope: HTMLElement, nodeId: string, value: string) {
 }
 
 describe("pane-scoped outline focus", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("focuses only the matching editor inside the requested split pane", () => {
     const firstScope = document.createElement("section");
     const secondScope = document.createElement("section");
@@ -83,23 +87,26 @@ describe("pane-scoped outline focus", () => {
       }
     });
 
-    expect(focusOutlineEditor(scope, "offscreen", "end")).toBe(true);
-    expect(revealed).not.toHaveFocus();
+    // No frames at all for the whole wait: an occluded or backgrounded window
+    // paints none, and the revealed row still has to take the caret there.
+    const frames = vi
+      .spyOn(globalThis, "requestAnimationFrame")
+      .mockImplementation(() => 0);
+    try {
+      expect(focusOutlineEditor(scope, "offscreen", "end")).toBe(true);
+      expect(revealed).not.toHaveFocus();
 
-    await new Promise((resolve) => requestAnimationFrame(resolve));
+      await new Promise((resolve) => setTimeout(resolve));
 
-    expect(revealed).toHaveFocus();
-    expect(revealed!.selectionStart).toBe(8);
+      expect(revealed).toHaveFocus();
+      expect(revealed!.selectionStart).toBe(8);
+    } finally {
+      frames.mockRestore();
+    }
   });
 
   it("lets a newer focus request cancel a pending reveal retry", () => {
-    const frames: FrameRequestCallback[] = [];
-    vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(
-      (callback) => {
-        frames.push(callback);
-        return frames.length;
-      }
-    );
+    vi.useFakeTimers();
     const scope = document.createElement("section");
     document.body.append(scope);
     let older: HTMLTextAreaElement | null = null;
@@ -107,7 +114,7 @@ describe("pane-scoped outline focus", () => {
       visibleNodes: [],
       reveal: (nodeId) => {
         if (nodeId !== "older") return false;
-        // The row mounts right away but the caret only lands a frame later,
+        // The row mounts right away but the caret only lands a tick later,
         // which is the window a newer request can arrive in.
         older = editor(scope, nodeId, "older");
         return true;
@@ -120,7 +127,7 @@ describe("pane-scoped outline focus", () => {
     expect(focusOutlineEditor(scope, "newer", "end")).toBe(true);
     expect(newer).toHaveFocus();
 
-    frames.forEach((callback) => callback(0));
+    vi.runAllTimers();
 
     expect(newer).toHaveFocus();
     expect(older).not.toHaveFocus();

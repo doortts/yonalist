@@ -22,7 +22,7 @@ import { OutlineIndex } from "./outlineIndex";
 import type { PaneFocusSnapshot } from "./appNavigation";
 import { useImageIngest } from "./useImageIngest";
 import { writeImageClipboard } from "./imageClipboard";
-import { focusOutlineEditor } from "./outlineFocus";
+import { focusAfterCommit, focusOutlineSnapshot } from "./outlineFocus";
 import { subtreeIds } from "./storeState";
 import { NotesExportBoundary } from "./NotesExportBoundary";
 import { useOutlineWindow } from "./useOutlineWindow";
@@ -129,23 +129,12 @@ export function NotesOutline({
   useEffect(() => {
     if (!restoreRequest) return;
     restoreSelectionRef.current(restoreRequest.selectedIds);
-    if (restoreRequest.focus) reveal(restoreRequest.focus.nodeId);
-    const frame = requestAnimationFrame(() => {
-      if (!restoreRequest.focus || !scopeRef.current) return;
-      const editor = [...scopeRef.current.querySelectorAll<
-        HTMLTextAreaElement
-      >("textarea[data-node-id][data-outline-field]")].find((candidate) =>
-        candidate.dataset.nodeId === restoreRequest.focus?.nodeId &&
-        candidate.dataset.outlineField === restoreRequest.focus?.field
-      );
-      if (!editor) return;
-      editor.focus();
-      editor.setSelectionRange(
-        restoreRequest.focus.selectionStart,
-        restoreRequest.focus.selectionEnd
-      );
-    });
-    return () => cancelAnimationFrame(frame);
+    if (!restoreRequest.focus || !scopeRef.current) return;
+    reveal(restoreRequest.focus.nodeId);
+    // The revealed row mounts a tick or two from here, which is what
+    // focusOutlineSnapshot waits out -- and it waits on timers, so the caret
+    // still arrives in a window the browser is painting no frames for.
+    focusOutlineSnapshot(scopeRef.current, restoreRequest.focus);
   }, [restoreRequest, reveal]);
   useEffect(() => {
     if (!rootKey) return;
@@ -249,11 +238,11 @@ export function NotesOutline({
     return () => {
       const scope = scopeRef.current;
       if (!scope) return;
-      requestAnimationFrame(() => focusOutlineEditor(
+      focusAfterCommit(
         scope,
         target?.id ?? outlineRootId,
         previous ? "end" : "start"
-      ));
+      );
     };
   };
   const deleteSelection = async () => {

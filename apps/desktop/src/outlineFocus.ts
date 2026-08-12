@@ -3,15 +3,16 @@ import { outlinePane } from "./outlinePaneRegistry";
 
 export type OutlineFocusEdge = "start" | "end" | "preserve";
 
-// Frames to wait for a revealed row to mount before giving up on it.
-const REVEAL_FRAMES = 3;
+// Tries to wait for a revealed row to mount before giving up on it.
+const REVEAL_TRIES = 3;
 
-// Newest focus request per pane wins. A revealed row can mount frames after it
+// Newest focus request per pane wins. A revealed row can mount ticks after it
 // was asked for, and by then a newer request may already have placed the caret
 // elsewhere -- letting the older retry land would pull it back to a row the
-// caller has moved past. Same last-request-wins guard focusAfter applies to its
-// own microtask.
+// caller has moved past. Same last-request-wins guard focusAfterCommit applies
+// to its own microtask.
 const pendingReveal = new WeakMap<HTMLElement, object>();
+const pendingFocus = new WeakMap<HTMLElement, object>();
 
 function revealInLocalOutline(target: HTMLElement): void {
   adjustLocalOutlineScroll(target);
@@ -87,14 +88,39 @@ function focusWhenReady(
   // cancel a retry some other request is still waiting on.
   if (!pane?.reveal(nodeId)) return false;
   pendingReveal.set(paneScope, request);
-  const retry = (remaining: number) => requestAnimationFrame(() => {
+  // A timer, not a frame callback: the reveal has to be waited out on a browser
+  // that paints nothing, and an occluded or backgrounded window runs no frames
+  // at all. A timer there is throttled, never skipped.
+  const retry = (remaining: number) => setTimeout(() => {
     if (pendingReveal.get(paneScope) !== request) return;
     const revealed = editorById(scope, nodeId, field, edge);
     if (revealed) apply(revealed);
     else if (remaining > 0) retry(remaining - 1);
   });
-  retry(REVEAL_FRAMES);
+  retry(REVEAL_TRIES);
   return true;
+}
+
+/**
+ * Places the caret once the render the caller just triggered has committed --
+ * `where` is an edge, or the exact offset to land on. A microtask, not a frame
+ * callback: focus rides the commit, and the browser runs no frames while its
+ * window is occluded or backgrounded, so a frame-bound caret never arrives
+ * there at all.
+ */
+export function focusAfterCommit(
+  scope: HTMLElement,
+  nodeId: string,
+  where: OutlineFocusEdge | number
+): void {
+  const request = {};
+  pendingFocus.set(scope, request);
+  queueMicrotask(() => {
+    if (pendingFocus.get(scope) !== request) return;
+    pendingFocus.delete(scope);
+    if (typeof where === "number") focusOutlineEditorAt(scope, nodeId, where);
+    else focusOutlineEditor(scope, nodeId, where);
+  });
 }
 
 function caretPlacement(

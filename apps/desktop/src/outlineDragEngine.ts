@@ -236,7 +236,9 @@ export function createOutlineDragEngine(
     } else {
       host.setAnnouncement("No valid move target was selected.");
     }
-    requestAnimationFrame(() => gesture.sourceButton.focus());
+    // A microtask, not a frame: the move re-renders the row the handle sits on,
+    // and an occluded window runs no frames to hand the focus back in.
+    queueMicrotask(() => gesture.sourceButton.focus());
   };
   const pickUp = (activeId: string, button: HTMLButtonElement) => {
     const current = host.inputRef.current;
