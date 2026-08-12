@@ -34,6 +34,10 @@ export function ImageLightbox({
     readonly startTop: number;
   } | null>(null);
   const movedRef = useRef(0);
+  // Pointer capture retargets the click that follows a drag to the capturing
+  // container, so the click cannot see whether the press landed on the image.
+  // The press target decides instead.
+  const pressedBackdropRef = useRef(false);
   const [panning, setPanning] = useState(false);
   useEffect(() => {
     const returnFocusTarget = returnFocusRef?.current;
@@ -80,6 +84,7 @@ export function ImageLightbox({
             if (event.button !== 0) return;
             event.preventDefault();
             movedRef.current = 0;
+            pressedBackdropRef.current = event.target === event.currentTarget;
             panRef.current = {
               pointerId: event.pointerId,
               startX: event.clientX,
@@ -101,11 +106,8 @@ export function ImageLightbox({
           }}
           onPointerUp={(event) => endPan(event.pointerId)}
           onPointerCancel={(event) => endPan(event.pointerId)}
-          onClick={(event) => {
-            if (
-              event.target === event.currentTarget &&
-              movedRef.current < CLICK_SLOP
-            ) {
+          onClick={() => {
+            if (pressedBackdropRef.current && movedRef.current < CLICK_SLOP) {
               onClose();
             }
           }}
@@ -117,7 +119,6 @@ export function ImageLightbox({
             width={pixelWidth}
             height={pixelHeight}
             draggable={false}
-            onClick={(event) => event.stopPropagation()}
           />
         </div>
         <button

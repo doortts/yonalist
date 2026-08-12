@@ -44,14 +44,23 @@ describe("ImageLightbox", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("closes from the backdrop but not an image click", () => {
+  it("stays open when a click starts on the image", () => {
     const onClose = vi.fn();
     const { scroll } = lightbox(onClose);
+    const image = screen.getByRole("img", { name: "cat.png" });
 
-    fireEvent.click(screen.getByRole("img", { name: "cat.png" }));
-    expect(onClose).not.toHaveBeenCalled();
+    // Pointer capture hands the follow-up click to the capturing container, so
+    // the click alone cannot tell an image press from a backdrop press.
+    fireEvent.pointerDown(image, {
+      button: 0,
+      pointerId: 4,
+      clientX: 200,
+      clientY: 200
+    });
+    fireEvent.pointerUp(scroll, { pointerId: 4, clientX: 200, clientY: 200 });
     fireEvent.click(scroll);
-    expect(onClose).toHaveBeenCalledOnce();
+
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("shows the file name and pixel size above the image", () => {
@@ -94,6 +103,32 @@ describe("ImageLightbox", () => {
     expect(scroll).not.toHaveAttribute("data-panning");
     fireEvent.click(scroll);
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("keeps the image click guard alive across gestures", () => {
+    const onClose = vi.fn();
+    const { scroll } = lightbox(onClose);
+    const image = screen.getByRole("img", { name: "cat.png" });
+
+    fireEvent.pointerDown(scroll, {
+      button: 0,
+      pointerId: 7,
+      clientX: 200,
+      clientY: 200
+    });
+    fireEvent.pointerUp(scroll, { pointerId: 7, clientX: 200, clientY: 200 });
+    fireEvent.click(scroll);
+    expect(onClose).toHaveBeenCalledOnce();
+
+    fireEvent.pointerDown(image, {
+      button: 0,
+      pointerId: 8,
+      clientX: 200,
+      clientY: 200
+    });
+    fireEvent.pointerUp(scroll, { pointerId: 8, clientX: 200, clientY: 200 });
+    fireEvent.click(scroll);
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("still closes on a clean backdrop click", () => {
