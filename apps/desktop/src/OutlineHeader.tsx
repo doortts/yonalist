@@ -3,6 +3,7 @@ import {
   lazy, Suspense, useEffect, useRef, useState, type CSSProperties,
   type ReactNode
 } from "react";
+import { flushSync } from "react-dom";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import {
   handleImagePageKeyDown, handlePageKeyDown, RowMenuItem
@@ -214,8 +215,10 @@ export function OutlinePageHeading({
     if (visibleNote.trim().length > 0) setNoteOpen(true);
   }, [visibleNote]);
   const openNoteAndFocus = () => {
-    setNoteOpen(true);
-    requestAnimationFrame(() => noteRef.current?.focus());
+    // Same as the row's: focus rides the commit, since a frame callback never
+    // runs while the window is occluded or backgrounded.
+    flushSync(() => setNoteOpen(true));
+    noteRef.current?.focus();
   };
   return (
     <header

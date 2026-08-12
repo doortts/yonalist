@@ -3,6 +3,7 @@ import {
   lazy, memo, Suspense, useEffect, useRef, useState, type CSSProperties,
   type KeyboardEvent, type PointerEvent
 } from "react";
+import { flushSync } from "react-dom";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import { NotesStore } from "./notesStore";
 import type { OutlineIndex } from "./outlineIndex";
@@ -131,8 +132,11 @@ export const OutlineRow = memo(function OutlineRow({
   );
   const visibleNote = noteDraft ?? node.note;
   const openNoteAndFocus = () => {
-    setNoteOpen(true);
-    requestAnimationFrame(() => noteRef.current?.focus());
+    // The caret waits on the commit, not on a paint: a frame callback never
+    // runs while the window is occluded or backgrounded, and the note would
+    // mount there and never take focus.
+    flushSync(() => setNoteOpen(true));
+    noteRef.current?.focus();
   };
   const applyCurrentSlashCommand = (commandId: SlashCommandId) => {
     if (!slashMenu) return;
@@ -145,7 +149,10 @@ export const OutlineRow = memo(function OutlineRow({
     );
     setSlashMenu(null);
     void store.applySlashEdit(node.id, edit.value, edit.marker).then(() => {
-      requestAnimationFrame(() => {
+      // The caret offset belongs to the edited text, so it waits for the commit
+      // that puts that text in the field -- a microtask, since an occluded
+      // window runs no frames.
+      queueMicrotask(() => {
         editorRef.current?.focus();
         editorRef.current?.setSelectionRange(edit.caret, edit.caret);
       });

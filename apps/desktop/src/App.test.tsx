@@ -610,6 +610,33 @@ describe("Yonalist v2 desktop shell", () => {
     expect(note).toHaveValue("Supporting context");
   });
 
+  it("focuses a note opened with Shift+Enter without waiting for a frame", async () => {
+    render(<App api={api()} />);
+    const title = await screen.findByDisplayValue("First thought");
+    const pageTitle = screen.getByDisplayValue("Today");
+    // An occluded or backgrounded window runs no frame callbacks at all, so a
+    // caret that waits on one never arrives -- in the browser the field mounted
+    // and focus stayed on the title.
+    const frames = vi
+      .spyOn(globalThis, "requestAnimationFrame")
+      .mockImplementation(() => 0);
+    // Queried off the data attributes, not the accessible name: an unfocused
+    // field marks its textarea `aria-hidden`, so a role query would report the
+    // field missing instead of reporting where the caret went.
+    const noteField = (nodeId: string) => document.querySelector(
+      `textarea[data-outline-field="note"][data-node-id="${nodeId}"]`
+    );
+    try {
+      fireEvent.keyDown(title, { key: "Enter", shiftKey: true });
+      expect(noteField("bullet-1")).toHaveFocus();
+
+      fireEvent.keyDown(pageTitle, { key: "Enter", shiftKey: true });
+      expect(noteField("page-1")).toHaveFocus();
+    } finally {
+      frames.mockRestore();
+    }
+  });
+
   it("moves from a supporting note to the next visible title", async () => {
     const notesApi = api();
     render(<App api={notesApi} />);
