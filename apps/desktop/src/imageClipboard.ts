@@ -36,9 +36,13 @@ export function clipboardImageCandidates(
 /**
  * The image itself on the system clipboard, with its filename as the text
  * fallback so a plain-text target still gets an outline line back.
+ *
+ * Nothing is awaited before `write`: WebKit refuses a clipboard write once the
+ * gesture that asked for it is over, so the bytes -- still being read off disk
+ * -- go in as the item's own promises and the write leaves inside the gesture.
  */
 export async function writeImageClipboard(
-  bytes: Uint8Array,
+  bytes: Uint8Array | Promise<Uint8Array>,
   mimeType: string,
   originalName: string
 ): Promise<void> {
@@ -50,10 +54,13 @@ export async function writeImageClipboard(
   ) {
     throw new Error("Clipboard image write is unavailable.");
   }
-  const source = new Blob([bytes.slice().buffer], { type: mimeType });
+  const source = Promise.resolve(bytes).then((ready) =>
+    new Blob([ready.slice().buffer], { type: mimeType }));
   await clipboard.write([new ClipboardItem({
-    "image/png": mimeType === "image/png" ? source : await pngFrom(source),
-    "text/plain": new Blob([`- ${originalName}`], { type: "text/plain" })
+    "image/png": mimeType === "image/png" ? source : source.then(pngFrom),
+    "text/plain": Promise.resolve(
+      new Blob([`- ${originalName}`], { type: "text/plain" })
+    )
   })]);
 }
 

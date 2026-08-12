@@ -67,6 +67,8 @@ export type OutlineKeyIntent =
   | { readonly kind: "move"; readonly direction: "up" | "down" }
   | { readonly kind: "zoom"; readonly direction: "in" | "out" }
   | { readonly kind: "focusNote" }
+  | { readonly kind: "copyImage" }
+  | { readonly kind: "cutImage" }
   | { readonly kind: "extendSelection"; readonly headId: string }
   | { readonly kind: "clearSelection" }
   | { readonly kind: "consume" };
@@ -487,6 +489,18 @@ export function handleImageNodeKeyDown(
     !input.shiftKey
   ) {
     return null;
+  }
+  // A textarea gets its copy and cut as native clipboard events; WebKit sends
+  // none for a focused div, so the image reads the chord itself.
+  const clipboardKey = input.key.toLowerCase();
+  if (
+    (clipboardKey === "c" || clipboardKey === "x") &&
+    !input.shiftKey &&
+    !input.altKey &&
+    primaryModifier(input)
+  ) {
+    if (input.repeat) return { kind: "consume" };
+    return { kind: clipboardKey === "c" ? "copyImage" : "cutImage" };
   }
   // No character sits beside the station for a shifted arrow to sweep over, so
   // it takes the image itself the way the same key takes a letter.

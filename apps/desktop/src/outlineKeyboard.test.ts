@@ -123,6 +123,38 @@ describe("v2 outline keyboard intent resolver", () => {
     }
   });
 
+  // WebKit fires no clipboard event for a focused div, so the image's copy and
+  // cut have to be read off the keydown itself.
+  it("takes copy and cut off the station's own primary chord", () => {
+    for (const [key, kind] of [["c", "copyImage"], ["x", "cutImage"]]) {
+      expect(handleImageNodeKeyDown(input({ key, ctrlKey: true })))
+        .toEqual({ kind });
+      expect(handleImageNodeKeyDown(input({
+        key,
+        metaKey: true,
+        platform: "mac"
+      }))).toEqual({ kind });
+      expect(handleImageNodeKeyDown(input({
+        key,
+        ctrlKey: true,
+        repeat: true
+      }))).toEqual({ kind: "consume" });
+      // The other platform's modifier, and either one wearing shift or alt,
+      // belong to somebody else.
+      expect(handleImageNodeKeyDown(input({ key, metaKey: true }))).toBeNull();
+      expect(handleImageNodeKeyDown(input({
+        key,
+        ctrlKey: true,
+        shiftKey: true
+      }))).toBeNull();
+      expect(handleImageNodeKeyDown(input({
+        key,
+        ctrlKey: true,
+        altKey: true
+      }))).toBeNull();
+    }
+  });
+
   it("splits the selected title range into one atomic sibling gesture", () => {
     expect(resolveOutlineKey(input())).toEqual({
       kind: "split",

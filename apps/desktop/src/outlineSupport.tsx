@@ -222,7 +222,9 @@ export function handleImagePrimaryKeyDown(
   onClearSelection: () => void,
   onFocusNote: () => void,
   onMoveTo: () => void,
-  selectionActions: SelectionKeyboardActions
+  selectionActions: SelectionKeyboardActions,
+  onCopyImage: (nodeId: string) => void,
+  onCutImage: (nodeId: string) => void
 ) {
   const intent = handleImageNodeKeyDown({
     key: event.key,
@@ -259,6 +261,14 @@ export function handleImagePrimaryKeyDown(
     if (intent.kind === "toggleComplete") return selectionActions.toggleComplete();
     if (intent.kind === "duplicate") return selectionActions.duplicate();
     if (intent.kind === "trash") return selectionActions.delete();
+  }
+  // A selection already carries this image's bytes, so the chord goes to the
+  // selection commands and only a bare station falls through to the node.
+  if (intent.kind === "copyImage") {
+    return hasSelection ? selectionActions.copy() : onCopyImage(node.id);
+  }
+  if (intent.kind === "cutImage") {
+    return hasSelection ? selectionActions.cut() : onCutImage(node.id);
   }
   executeRowIntent(
     intent,
@@ -442,6 +452,9 @@ function executeRowIntent(
 ): void {
   switch (intent.kind) {
     case "consume":
+    // Only the image surface resolves these, and it routes them itself.
+    case "copyImage":
+    case "cutImage":
       return;
     case "split":
       {

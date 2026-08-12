@@ -65,6 +65,9 @@ export interface OutlineRowRuntimeState {
   readonly onClearSelection: () => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
   readonly onPickImage: (nodeId: string) => void;
+  /** Clipboard for an image row with nothing selected around it. */
+  readonly onCopyImage: (nodeId: string) => void;
+  readonly onCutImage: (nodeId: string) => void;
   readonly selectionActions: SelectionKeyboardActions;
   readonly onDragHandlePointerDown: (
     nodeId: string,
@@ -317,7 +320,9 @@ export const OutlineRow = memo(function OutlineRow({
                     current.onClearSelection,
                     openNoteAndFocus,
                     openMoveChooser,
-                    current.selectionActions
+                    current.selectionActions,
+                    current.onCopyImage,
+                    current.onCutImage
                   );
                 }}
               />

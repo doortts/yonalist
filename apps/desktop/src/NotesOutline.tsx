@@ -2,8 +2,10 @@ import {
   lazy, Suspense, useEffect, useMemo, useRef, useState,
   useSyncExternalStore
 } from "react";
+import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import { NotesStore } from "./notesStore";
 import type { NotesShellSnapshot } from "./storeSubscriptions";
+import { outlineCutRefusal } from "./outlineClipboard";
 import {
   hideCollapsedSubtrees, hideCompletedSubtrees
 } from "./outlineVisibility";
@@ -202,6 +204,15 @@ export function NotesOutline({
       down: { available: false, reason: "Load the complete outline first." },
       duplicate: { available: false, reason: "Load the complete outline first." }
     } as const;
+  const runExclusive = (action: () => Promise<unknown> | unknown) => {
+    if (selectionOperation.current) return;
+    selectionOperation.current = true;
+    setSelectionOperationBusy(true);
+    void Promise.resolve().then(action).finally(() => {
+      selectionOperation.current = false;
+      setSelectionOperationBusy(false);
+    });
+  };
   const runSelectionAction = (
     action: () => Promise<unknown> | unknown
   ) => {
@@ -210,12 +221,7 @@ export function NotesOutline({
       setSelectionFeedback("The complete selection is not available yet.");
       return;
     }
-    selectionOperation.current = true;
-    setSelectionOperationBusy(true);
-    void Promise.resolve().then(action).finally(() => {
-      selectionOperation.current = false;
-      setSelectionOperationBusy(false);
-    });
+    runExclusive(action);
   };
   const executeMovePlan = (plan: SelectionMovePlan) => {
     if (plan.available) runSelectionAction(() => store.moveNodes(plan.moves));
@@ -234,14 +240,17 @@ export function NotesOutline({
     selection.selectedNodes[0]?.kind === "image"
     ? selection.selectedNodes[0]
     : null;
-  const writeSelectionToClipboard = async () => {
-    if (!selectedImage) return selection.copyToSystem();
-    await writeImageClipboard(
-      await store.images.read(selectedImage.id),
-      selectedImage.image?.mimeType ?? "application/octet-stream",
-      selectedImage.image?.originalName ?? selectedImage.text
-    );
-  };
+  // The read promise goes straight into the write: WebKit refuses a clipboard
+  // write that starts after the gesture that asked for it, so nothing may be
+  // awaited between the key and `writeImageClipboard`.
+  const writeNodeImage = (node: NoteView) => writeImageClipboard(
+    store.images.read(node.id),
+    node.image?.mimeType ?? "application/octet-stream",
+    node.image?.originalName ?? node.text
+  );
+  const writeSelectionToClipboard = () => selectedImage
+    ? writeNodeImage(selectedImage)
+    : selection.copyToSystem();
   const reportWriteFailure = () => setSelectionFeedback(selectedImage
     ? "Could not write the image to the clipboard."
     : "Could not write the selected outline to the clipboard.");
@@ -269,6 +278,39 @@ export function NotesOutline({
     } catch {
       setSelectionFeedback("Copied, but couldn't remove the selected outline.");
     }
+  };
+  // A bullet gets its copy and cut as clipboard events; WebKit sends none to an
+  // image row, so its own keydown lands here with nothing selected. The write
+  // leaves inside that keydown -- only what follows it waits on the guard.
+  const putImageOnClipboard = (
+    nodeId: string,
+    done: () => Promise<void> | void
+  ) => {
+    const node = index.node(nodeId);
+    if (!node) return;
+    const written = writeNodeImage(node).then(() => true, () => false);
+    runExclusive(async () => {
+      if (!await written) {
+        setSelectionFeedback("Could not write the image to the clipboard.");
+        return;
+      }
+      await done();
+    });
+  };
+  const cutImageNode = (nodeId: string) => {
+    const { drafts, noteDrafts } = store.getSnapshot();
+    const refusal = outlineCutRefusal(
+      state.nodes, drafts, noteDrafts, [nodeId]
+    );
+    if (refusal) {
+      setSelectionFeedback(refusal);
+      return;
+    }
+    putImageOnClipboard(nodeId, async () => {
+      await store.deleteSubtrees([nodeId]);
+      clearSelection();
+      setSelectionFeedback("Cut image.");
+    });
   };
   const duplicateSelection = async () => {
     const plan = movePlans.duplicate;
@@ -311,6 +353,11 @@ export function NotesOutline({
     onClearSelection: clearSelection,
     onTagClick,
     onPickImage: (nodeId) => void imageIngest.openPicker(nodeId),
+    onCopyImage: (nodeId) => putImageOnClipboard(
+      nodeId,
+      () => setSelectionFeedback("Copied image.")
+    ),
+    onCutImage: cutImageNode,
     selectionActions: {
       indent: () => executeMovePlan(movePlans.indent),
       outdent: () => executeMovePlan(movePlans.outdent),
