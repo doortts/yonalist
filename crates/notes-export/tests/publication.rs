@@ -1,8 +1,17 @@
 use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use notes_application::{ExportAsset, ExportError, ExportPublicationPort, RenderedExport};
 use notes_export::{EXPORT_ASSET_MARKER_NAME, NativeExportPublisher};
+
+// macOS temp dirs sit under /var (a symlink to /private/var), which the
+// destination validation rejects by design; canonicalize before use.
+fn canonical_tempdir() -> (tempfile::TempDir, PathBuf) {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = fs::canonicalize(directory.path()).expect("canonical temporary directory");
+    (directory, path)
+}
 
 fn markdown(document: &[u8], asset: &[u8]) -> RenderedExport {
     RenderedExport::Markdown {
@@ -17,10 +26,10 @@ fn markdown(document: &[u8], asset: &[u8]) -> RenderedExport {
 
 #[test]
 fn new_pdf_and_markdown_exports_publish_complete_staged_artifacts() {
-    let directory = tempfile::tempdir().expect("temporary directory");
+    let (_directory, directory) = canonical_tempdir();
     let publisher = NativeExportPublisher::new(Vec::new());
-    let pdf_destination = directory.path().join("Page.pdf");
-    let markdown_destination = directory.path().join("Page.md");
+    let pdf_destination = directory.join("Page.pdf");
+    let markdown_destination = directory.join("Page.md");
 
     publisher
         .publish(
@@ -44,7 +53,7 @@ fn new_pdf_and_markdown_exports_publish_complete_staged_artifacts() {
         fs::read(markdown_destination).expect("read Markdown"),
         b"first document"
     );
-    let assets = directory.path().join("Page_assets");
+    let assets = directory.join("Page_assets");
     assert_eq!(
         fs::read(assets.join("0001.png")).expect("read image"),
         b"first image"
@@ -57,9 +66,9 @@ fn new_pdf_and_markdown_exports_publish_complete_staged_artifacts() {
 
 #[test]
 fn conflict_preserves_existing_content_until_explicit_owned_overwrite() {
-    let directory = tempfile::tempdir().expect("temporary directory");
+    let (_directory, directory) = canonical_tempdir();
     let publisher = NativeExportPublisher::new(Vec::new());
-    let destination = directory.path().join("Page.md");
+    let destination = directory.join("Page.md");
     publisher
         .publish(&destination, &markdown(b"old", b"old image"), false)
         .expect("initial export");
@@ -70,7 +79,7 @@ fn conflict_preserves_existing_content_until_explicit_owned_overwrite() {
     assert!(matches!(error, ExportError::DestinationExists));
     assert_eq!(fs::read(&destination).expect("old document"), b"old");
     assert_eq!(
-        fs::read(directory.path().join("Page_assets/0001.png")).expect("old image"),
+        fs::read(directory.join("Page_assets/0001.png")).expect("old image"),
         b"old image"
     );
 
@@ -79,16 +88,16 @@ fn conflict_preserves_existing_content_until_explicit_owned_overwrite() {
         .expect("owned overwrite");
     assert_eq!(fs::read(&destination).expect("new document"), b"new");
     assert_eq!(
-        fs::read(directory.path().join("Page_assets/0001.png")).expect("new image"),
+        fs::read(directory.join("Page_assets/0001.png")).expect("new image"),
         b"new image"
     );
 }
 
 #[test]
 fn foreign_asset_directories_and_forbidden_roots_fail_closed() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let destination = directory.path().join("Page.md");
-    let foreign_assets = directory.path().join("Page_assets");
+    let (_directory, directory) = canonical_tempdir();
+    let destination = directory.join("Page.md");
+    let foreign_assets = directory.join("Page_assets");
     fs::create_dir(&foreign_assets).expect("create foreign assets");
     fs::write(foreign_assets.join("keep.txt"), b"foreign").expect("write foreign file");
 
@@ -103,10 +112,10 @@ fn foreign_asset_directories_and_forbidden_roots_fail_closed() {
         b"foreign"
     );
 
-    let forbidden_publisher = NativeExportPublisher::new(vec![directory.path().to_path_buf()]);
+    let forbidden_publisher = NativeExportPublisher::new(vec![directory.clone()]);
     let error = forbidden_publisher
         .publish(
-            &directory.path().join("Blocked.pdf"),
+            &directory.join("Blocked.pdf"),
             &RenderedExport::Pdf {
                 document: b"%PDF-blocked".to_vec(),
             },
@@ -118,13 +127,10 @@ fn foreign_asset_directories_and_forbidden_roots_fail_closed() {
 
 #[test]
 fn invalid_extension_and_directory_destinations_are_rejected() {
-    let directory = tempfile::tempdir().expect("temporary directory");
+    let (_directory, directory) = canonical_tempdir();
     let publisher = NativeExportPublisher::new(Vec::new());
 
-    for destination in [
-        directory.path().join("Page.txt"),
-        directory.path().to_path_buf(),
-    ] {
+    for destination in [directory.join("Page.txt"), directory.clone()] {
         let error = publisher
             .publish(
                 &destination,

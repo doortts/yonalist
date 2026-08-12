@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::PathBuf;
 
 use notes_application::{ExportPublicationPort, RenderedExport};
 
@@ -6,11 +7,19 @@ use super::{
     BEFORE_PUBLICATION, BEFORE_STAGING, FORCE_PARENT_REVALIDATION_FAILURE, NativeExportPublisher,
 };
 
+// macOS temp dirs sit under /var (a symlink to /private/var), which the
+// destination validation rejects by design; canonicalize before use.
+fn canonical_tempdir() -> (tempfile::TempDir, PathBuf) {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = fs::canonicalize(directory.path()).expect("canonical temporary directory");
+    (directory, path)
+}
+
 #[test]
 fn destination_replacement_race_preserves_foreign_file_and_cleans_stage() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let destination = directory.path().join("race.pdf");
-    let displaced = directory.path().join("original.pdf");
+    let (_directory, directory) = canonical_tempdir();
+    let destination = directory.join("race.pdf");
+    let displaced = directory.join("original.pdf");
     let publisher = NativeExportPublisher::new(Vec::new());
     publisher
         .publish(
@@ -42,7 +51,7 @@ fn destination_replacement_race_preserves_foreign_file_and_cleans_stage() {
 
     assert_eq!(fs::read(&destination).expect("foreign file"), b"foreign");
     assert_eq!(fs::read(displaced).expect("original file"), b"original");
-    let hidden = fs::read_dir(directory.path())
+    let hidden = fs::read_dir(&directory)
         .expect("read export directory")
         .filter_map(Result::ok)
         .filter(|entry| {
@@ -57,9 +66,9 @@ fn destination_replacement_race_preserves_foreign_file_and_cleans_stage() {
 
 #[test]
 fn parent_replacement_race_never_publishes_into_the_replacement_directory() {
-    let root = tempfile::tempdir().expect("temporary root");
-    let parent = root.path().join("exports");
-    let displaced = root.path().join("displaced-exports");
+    let (_root, root) = canonical_tempdir();
+    let parent = root.join("exports");
+    let displaced = root.join("displaced-exports");
     fs::create_dir(&parent).expect("create export parent");
     let destination = parent.join("race.pdf");
     let raced_parent = parent.clone();
@@ -99,9 +108,9 @@ fn parent_replacement_race_never_publishes_into_the_replacement_directory() {
 #[test]
 #[cfg(not(windows))]
 fn parent_replacement_after_staging_cleans_the_displaced_directory() {
-    let root = tempfile::tempdir().expect("temporary root");
-    let parent = root.path().join("exports");
-    let displaced = root.path().join("displaced-exports");
+    let (_root, root) = canonical_tempdir();
+    let parent = root.join("exports");
+    let displaced = root.join("displaced-exports");
     fs::create_dir(&parent).expect("create export parent");
     let destination = parent.join("race.pdf");
     let raced_parent = parent.clone();
@@ -140,8 +149,8 @@ fn parent_replacement_after_staging_cleans_the_displaced_directory() {
 
 #[test]
 fn parent_revalidation_failure_after_staging_cleans_the_stage() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let destination = directory.path().join("race.pdf");
+    let (_directory, directory) = canonical_tempdir();
+    let destination = directory.join("race.pdf");
     BEFORE_PUBLICATION.with(|injection| {
         *injection.borrow_mut() = Some(Box::new(|| {
             FORCE_PARENT_REVALIDATION_FAILURE.with(|failure| failure.set(true));
@@ -160,7 +169,7 @@ fn parent_revalidation_failure_after_staging_cleans_the_stage() {
 
     assert!(!destination.exists());
     assert!(
-        fs::read_dir(directory.path())
+        fs::read_dir(&directory)
             .expect("cleaned export parent")
             .next()
             .is_none()
