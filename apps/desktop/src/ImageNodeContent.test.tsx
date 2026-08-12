@@ -114,6 +114,123 @@ describe("ImageNodeContent", () => {
     expect(resize).toHaveBeenCalledOnce();
   });
 
+  it("marks the handle while a pointer resize is in flight", async () => {
+    const residency = new ImageResidency(
+      vi.fn().mockResolvedValue(Uint8Array.from([1])),
+      {
+        createObjectURL: vi.fn(() => "blob:cat"),
+        revokeObjectURL: vi.fn()
+      }
+    );
+    const store = {
+      images: { resize: vi.fn().mockResolvedValue(undefined) },
+      deleteSubtree: vi.fn()
+    } as unknown as NotesStore;
+    render(
+      <ImageNodeContent node={node()} residency={residency} store={store} />
+    );
+    const handle = await screen.findByRole("separator", {
+      name: "Resize cat.png"
+    });
+
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 9, clientX: 320 });
+    expect(handle).toHaveAttribute("data-resizing", "true");
+
+    fireEvent.pointerUp(handle, { pointerId: 9, clientX: 360 });
+    expect(handle).not.toHaveAttribute("data-resizing");
+  });
+
+  it("gives the caret station a role that carries its name", async () => {
+    const residency = new ImageResidency(
+      vi.fn().mockResolvedValue(Uint8Array.from([1])),
+      {
+        createObjectURL: vi.fn(() => "blob:cat"),
+        revokeObjectURL: vi.fn()
+      }
+    );
+    render(
+      <ImageNodeContent
+        node={node()}
+        residency={residency}
+        onKeyDown={vi.fn()}
+      />
+    );
+
+    await screen.findByRole("img", { name: "cat.png" });
+
+    expect(screen.getByRole("group", { name: "Cursor after cat.png" }))
+      .toHaveClass("notes-image-caret-stop");
+  });
+
+  it("takes the node selection when the image itself is clicked", async () => {
+    const residency = new ImageResidency(
+      vi.fn().mockResolvedValue(Uint8Array.from([1])),
+      {
+        createObjectURL: vi.fn(() => "blob:cat"),
+        revokeObjectURL: vi.fn()
+      }
+    );
+    const view = render(
+      <ImageNodeContent node={node()} residency={residency} />
+    );
+
+    fireEvent.click(await screen.findByRole("img", { name: "cat.png" }));
+
+    expect(view.container.querySelector(".notes-image-node-content"))
+      .toHaveFocus();
+  });
+
+  it("keeps the caret station on a surface with no key handler", async () => {
+    const residency = new ImageResidency(
+      vi.fn().mockResolvedValue(Uint8Array.from([1])),
+      {
+        createObjectURL: vi.fn(() => "blob:cat"),
+        revokeObjectURL: vi.fn()
+      }
+    );
+    const view = render(
+      <ImageNodeContent node={node()} residency={residency} />
+    );
+    await screen.findByRole("img", { name: "cat.png" });
+
+    expect(view.container.querySelector(".notes-image-caret-stop"))
+      .toHaveAttribute("data-outline-field", "image");
+  });
+
+  it("drops the drag flag when the width changes mid-drag", async () => {
+    const residency = new ImageResidency(
+      vi.fn().mockResolvedValue(Uint8Array.from([1])),
+      {
+        createObjectURL: vi.fn(() => "blob:cat"),
+        revokeObjectURL: vi.fn()
+      }
+    );
+    const store = {
+      images: { resize: vi.fn().mockResolvedValue(undefined) },
+      deleteSubtree: vi.fn()
+    } as unknown as NotesStore;
+    const view = render(
+      <ImageNodeContent node={node()} residency={residency} store={store} />
+    );
+    const handle = await screen.findByRole("separator", {
+      name: "Resize cat.png"
+    });
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 11, clientX: 320 });
+
+    // An undo landing mid-drag replaces the width the drag started from.
+    const undone = node();
+    view.rerender(
+      <ImageNodeContent
+        node={{ ...undone, image: { ...undone.image!, displayWidth: 240 } }}
+        residency={residency}
+        store={store}
+      />
+    );
+    fireEvent.pointerUp(handle, { pointerId: 11, clientX: 360 });
+
+    expect(handle).not.toHaveAttribute("data-resizing");
+  });
+
   it("keeps a run of keyboard nudges in one undo step", async () => {
     const residency = new ImageResidency(
       vi.fn().mockResolvedValue(Uint8Array.from([1])),

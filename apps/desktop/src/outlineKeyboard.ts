@@ -24,6 +24,8 @@ export interface OutlineKeyInput {
   readonly structureIndex?: OutlineIndex;
   readonly selectionHeadId?: string | null;
   readonly hasSelection?: boolean;
+  /** Which side of an image the caret stands on, when it stands on one. */
+  readonly imageEdge?: "before" | "after";
   readonly target: "page" | "row";
   readonly platform: "mac" | "other";
 }
@@ -66,7 +68,10 @@ export type OutlineKeyIntent =
   | { readonly kind: "moveTo" }
   | { readonly kind: "move"; readonly direction: "up" | "down" }
   | { readonly kind: "zoom"; readonly direction: "in" | "out" }
+  | { readonly kind: "focusImage"; readonly nodeId: string }
   | { readonly kind: "focusNote" }
+  | { readonly kind: "copyImage" }
+  | { readonly kind: "cutImage" }
   | { readonly kind: "extendSelection"; readonly headId: string }
   | { readonly kind: "clearSelection" }
   | { readonly kind: "consume" };
@@ -86,6 +91,7 @@ export interface SupportingNoteKeyInput {
 
 export type SupportingNoteKeyResolution =
   | "currentTitle"
+  | "removeEmptyNote"
   | "nextTitle"
   | "nextTitleOrCreate";
 
@@ -487,6 +493,55 @@ export function handleImageNodeKeyDown(
   ) {
     return null;
   }
+  // A textarea gets its copy and cut as native clipboard events; WebKit sends
+  // none for a focused div, so the image reads the chord itself.
+  const clipboardKey = input.key.toLowerCase();
+  if (
+    (clipboardKey === "c" || clipboardKey === "x") &&
+    !input.shiftKey &&
+    !input.altKey &&
+    primaryModifier(input)
+  ) {
+    if (input.repeat) return { kind: "consume" };
+    return { kind: clipboardKey === "c" ? "copyImage" : "cutImage" };
+  }
+  // No character sits beside the station for a shifted arrow to sweep over, so
+  // it takes the image itself the way the same key takes a letter -- but only
+  // sweeping toward the image. The station on the far side has nothing to take.
+  if (
+    (input.key === "ArrowLeft" || input.key === "ArrowRight") &&
+    input.shiftKey &&
+    !input.altKey &&
+    !input.ctrlKey &&
+    !input.metaKey
+  ) {
+    const toward = input.key === "ArrowRight" ? "before" : "after";
+    return input.imageEdge === undefined || input.imageEdge === toward
+      ? { kind: "extendSelection", headId: input.nodeId }
+      : null;
+  }
+  // Caret, image, caret: the image is a stop between its two stations, so a
+  // plain arrow lands on it before the row boundary is even in question. The
+  // caret standing on the image itself is the stop with no station under it.
+  if (
+    (input.key === "ArrowLeft" || input.key === "ArrowRight") &&
+    !input.shiftKey &&
+    !input.altKey &&
+    !input.ctrlKey &&
+    !input.metaKey
+  ) {
+    const toward = input.key === "ArrowRight" ? "before" : "after";
+    if (input.imageEdge === toward) {
+      return { kind: "focusImage", nodeId: input.nodeId };
+    }
+    if (input.imageEdge === undefined) {
+      return {
+        kind: "focus",
+        nodeId: input.nodeId,
+        edge: input.key === "ArrowRight" ? "end" : "start"
+      };
+    }
+  }
   return resolveOutlineKey({
     ...input,
     target: "row",
@@ -516,6 +571,12 @@ export function resolveSupportingNoteKey(
     return null;
   }
   if (input.key === "Escape") return "currentTitle";
+  // Backspace past the last character takes the note away and hands the caret
+  // back to its title. A held key stops here rather than running on into the
+  // title's own text.
+  if (input.key === "Backspace" && input.value.length === 0 && !input.repeat) {
+    return "removeEmptyNote";
+  }
   if (input.key === "ArrowUp" && input.selectionStart === 0) {
     return "currentTitle";
   }

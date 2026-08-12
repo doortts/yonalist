@@ -61,6 +61,7 @@ export function ImageNodeContent({
   readonly onPaste?: ClipboardEventHandler<HTMLDivElement>;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
+  const caretStopRef = useRef<HTMLDivElement>(null);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const pointerResize = useRef<{
@@ -75,6 +76,9 @@ export function ImageNodeContent({
   // It outlives each commit on purpose -- the receipt that comes back resets
   // `keyboardResizeStart` -- and ends when the handle loses focus.
   const keyboardResizeGroup = useRef<string | null>(null);
+  // Pointer capture keeps :hover alive inconsistently across browsers, so the
+  // line's drag visibility rides an attribute instead.
+  const [resizing, setResizing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const onMenuKeyDown = useMenuDismiss(
     menuOpen,
@@ -113,6 +117,7 @@ export function ImageNodeContent({
   useEffect(() => {
     setPreviewWidth(node.image?.displayWidth ?? 320);
     pointerResize.current = null;
+    setResizing(false);
     keyboardResizeStart.current = null;
     setLightboxOpen(false);
   }, [node.image?.contentHash, node.image?.displayWidth]);
@@ -185,6 +190,7 @@ export function ImageNodeContent({
     const resize = pointerResize.current;
     if (!resize || resize.pointerId !== event.pointerId) return;
     pointerResize.current = null;
+    setResizing(false);
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -196,197 +202,235 @@ export function ImageNodeContent({
       className="notes-image-node-content"
       role="group"
       aria-label={`Image: ${originalName}`}
-      tabIndex={0}
-      data-node-id={node.id}
-      data-outline-field="image"
+      // The arrows walk onto the image, and the outline's fields are no tab
+      // stops either -- Tab has no business landing here.
+      tabIndex={-1}
       style={{ width: "100%", minWidth: 0 }}
       onKeyDown={onKeyDown}
       onPaste={onPaste}
     >
       <div
-        className="notes-image-attachment-frame"
-        style={frameStyle}
-        onDoubleClick={() => {
-          if (lease.status === "ready") setLightboxOpen(true);
+        className="notes-image-frame-row"
+        onClick={(event) => {
+          if (event.target === event.currentTarget) {
+            caretStopRef.current?.focus();
+          }
         }}
       >
-        {lease.status === "ready" ? (
-          <img
-            src={lease.url}
-            alt={originalName}
-            width={image?.pixelWidth}
-            height={image?.pixelHeight}
-            draggable={false}
-            style={{
-              display: "block",
-              width: "100%",
-              height: "100%",
-              objectFit: "contain"
-            }}
-          />
-        ) : lease.status === "error" || !image ? (
-          <div
-            role="alert"
-            aria-label={`Image unavailable: ${originalName}`}
-            style={fallbackStyle}
-          >
-            Image unavailable
-          </div>
-        ) : (
-          <div role="status" aria-label={`Loading image ${originalName}`} style={fallbackStyle}>
-            Loading image
-          </div>
-        )}
-        {store && image && (
-          <div
-            role="separator"
-            aria-label={`Resize ${originalName}`}
-            aria-orientation="vertical"
-            aria-valuemin={120}
-            aria-valuemax={maximumWidth()}
-            aria-valuenow={previewWidth}
-            tabIndex={0}
-            style={resizeHandleStyle}
-            onPointerDown={(event) => {
-              if (event.button !== 0) return;
-              event.preventDefault();
-              event.stopPropagation();
-              pointerResize.current = {
-                pointerId: event.pointerId,
-                startX: event.clientX,
-                startWidth: previewWidth,
-                proposedWidth: previewWidth
-              };
-              event.currentTarget.setPointerCapture?.(event.pointerId);
-            }}
-            onPointerMove={(event) => {
-              const resize = pointerResize.current;
-              if (!resize || resize.pointerId !== event.pointerId) return;
-              event.preventDefault();
-              resize.proposedWidth = clampImageWidth(
-                resize.startWidth + event.clientX - resize.startX,
-                maximumWidth()
-              );
-              setPreviewWidth(resize.proposedWidth);
-            }}
-            onPointerUp={finishPointerResize}
-            onPointerCancel={(event) => {
-              const resize = pointerResize.current;
-              if (!resize || resize.pointerId !== event.pointerId) return;
-              pointerResize.current = null;
-              setPreviewWidth(image.displayWidth);
-            }}
-            onKeyDown={(event) => {
-              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
-                return;
-              }
-              const key = event.key;
-              event.preventDefault();
-              event.stopPropagation();
-              keyboardResizeStart.current ??= previewWidth;
-              keyboardResizeGroup.current ??= `image-resize:${freshId()}`;
-              setPreviewWidth((width) => imageKeyboardResizeWidth(
-                width,
-                key,
-                event.shiftKey,
-                maximumWidth()
-              ));
-            }}
-            onKeyUp={(event) => {
-              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
-                return;
-              }
-              endKeyboardResize();
-            }}
-            onBlur={() => {
-              endKeyboardResize();
-              keyboardResizeGroup.current = null;
-            }}
-          >
-            <span aria-hidden="true" style={resizeHandleLineStyle} />
-          </div>
-        )}
-        {store && (
-          <>
-            <button
-              ref={menuTriggerRef}
-              type="button"
-              className="notes-image-menu-trigger"
-              aria-label={`Image actions for ${originalName}`}
-              aria-haspopup="menu"
-              aria-expanded={menuOpen}
-              data-popup-open={menuOpen ? "true" : undefined}
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={() => setMenuOpen((open) => !open)}
+        {/* One station per side: the image occupies a character's worth of the
+            line, so the caret has somewhere to stand on either end of it. Both
+            answer outline focus, which picks between them by its edge. */}
+        <div
+          className="notes-image-caret-stop"
+          role="group"
+          tabIndex={-1}
+          data-node-id={node.id}
+          data-outline-field="image"
+          data-image-edge="before"
+          aria-label={`Cursor before ${originalName}`}
+        />
+        <div
+          className="notes-image-attachment-frame"
+          style={frameStyle}
+          // WebKit leaves a plain tabindex div unfocused on click, so the node
+          // selection the ring stands for has to be taken here.
+          onClick={() => rootRef.current?.focus()}
+          onDoubleClick={() => {
+            if (lease.status === "ready") setLightboxOpen(true);
+          }}
+        >
+          {lease.status === "ready" ? (
+            <img
+              src={lease.url}
+              alt={originalName}
+              width={image?.pixelWidth}
+              height={image?.pixelHeight}
+              draggable={false}
+              style={{
+                display: "block",
+                width: "100%",
+                height: "100%",
+                objectFit: "contain"
+              }}
+            />
+          ) : lease.status === "error" || !image ? (
+            <div
+              role="alert"
+              aria-label={`Image unavailable: ${originalName}`}
+              style={fallbackStyle}
             >
-              <MoreVertical size={18} aria-hidden="true" />
-            </button>
-            {menuOpen && (
-              <div
-                ref={menuRef}
-                className="notes-bullet-menu notes-image-menu"
-                role="menu"
+              Image unavailable
+            </div>
+          ) : (
+            <div role="status" aria-label={`Loading image ${originalName}`} style={fallbackStyle}>
+              Loading image
+            </div>
+          )}
+          {store && image && (
+            <div
+              role="separator"
+              className="notes-image-resize-handle"
+              aria-label={`Resize ${originalName}`}
+              aria-orientation="vertical"
+              aria-valuemin={120}
+              aria-valuemax={maximumWidth()}
+              aria-valuenow={previewWidth}
+              tabIndex={0}
+              data-resizing={resizing ? "true" : undefined}
+              style={resizeHandleStyle}
+              onPointerDown={(event) => {
+                if (event.button !== 0) return;
+                event.preventDefault();
+                event.stopPropagation();
+                pointerResize.current = {
+                  pointerId: event.pointerId,
+                  startX: event.clientX,
+                  startWidth: previewWidth,
+                  proposedWidth: previewWidth
+                };
+                setResizing(true);
+                event.currentTarget.setPointerCapture?.(event.pointerId);
+              }}
+              onPointerMove={(event) => {
+                const resize = pointerResize.current;
+                if (!resize || resize.pointerId !== event.pointerId) return;
+                event.preventDefault();
+                resize.proposedWidth = clampImageWidth(
+                  resize.startWidth + event.clientX - resize.startX,
+                  maximumWidth()
+                );
+                setPreviewWidth(resize.proposedWidth);
+              }}
+              onPointerUp={finishPointerResize}
+              onPointerCancel={(event) => {
+                const resize = pointerResize.current;
+                if (!resize || resize.pointerId !== event.pointerId) return;
+                pointerResize.current = null;
+                setResizing(false);
+                setPreviewWidth(image.displayWidth);
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+                  return;
+                }
+                const key = event.key;
+                event.preventDefault();
+                event.stopPropagation();
+                keyboardResizeStart.current ??= previewWidth;
+                keyboardResizeGroup.current ??= `image-resize:${freshId()}`;
+                setPreviewWidth((width) => imageKeyboardResizeWidth(
+                  width,
+                  key,
+                  event.shiftKey,
+                  maximumWidth()
+                ));
+              }}
+              onKeyUp={(event) => {
+                if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+                  return;
+                }
+                endKeyboardResize();
+              }}
+              onBlur={() => {
+                endKeyboardResize();
+                keyboardResizeGroup.current = null;
+              }}
+            >
+              <span aria-hidden="true" className="notes-image-resize-line" />
+            </div>
+          )}
+          {store && (
+            <>
+              <button
+                ref={menuTriggerRef}
+                type="button"
+                className="notes-image-menu-trigger"
                 aria-label={`Image actions for ${originalName}`}
-                style={{
-                  position: "absolute",
-                  zIndex: 5,
-                  top: 44,
-                  right: 24,
-                  "--available-height": "420px"
-                } as CSSProperties}
-                onKeyDown={onMenuKeyDown}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+                data-popup-open={menuOpen ? "true" : undefined}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={() => setMenuOpen((open) => !open)}
               >
-                <RowMenuItem
-                  icon={<Maximize2 size={16} aria-hidden="true" />}
-                  label="Show full-screen"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    if (lease.status === "ready") setLightboxOpen(true);
-                  }}
-                />
-                <RowMenuItem
-                  icon={<RefreshCw size={16} aria-hidden="true" />}
-                  label="Replace image"
-                  onClick={() => runAction(() =>
-                    replaceImageFromPicker(store, node.id)
-                  )}
-                />
-                <RowMenuItem
-                  icon={<ExternalLink size={16} aria-hidden="true" />}
-                  label="View original"
-                  onClick={() => runAction(() =>
-                    viewImageOriginal(
-                      store,
-                      node.id,
-                      image?.mimeType ?? "application/octet-stream"
-                    )
-                  )}
-                />
-                <RowMenuItem
-                  icon={<Download size={16} aria-hidden="true" />}
-                  label="Download"
-                  onClick={() => runAction(() =>
-                    downloadImage(
-                      store,
-                      node.id,
-                      originalName,
-                      image?.mimeType ?? "application/octet-stream"
-                    )
-                  )}
-                />
-                <RowMenuItem
-                  danger
-                  icon={<Trash2 size={16} aria-hidden="true" />}
-                  label="Move to Trash"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    void store.deleteSubtree(node.id);
-                  }}
-                />
-              </div>
-            )}
-          </>
-        )}
+                <MoreVertical size={18} aria-hidden="true" />
+              </button>
+              {menuOpen && (
+                <div
+                  ref={menuRef}
+                  className="notes-bullet-menu notes-image-menu"
+                  role="menu"
+                  aria-label={`Image actions for ${originalName}`}
+                  style={{
+                    position: "absolute",
+                    zIndex: 5,
+                    top: 44,
+                    right: 24,
+                    "--available-height": "420px"
+                  } as CSSProperties}
+                  onKeyDown={onMenuKeyDown}
+                >
+                  <RowMenuItem
+                    icon={<Maximize2 size={16} aria-hidden="true" />}
+                    label="Show full-screen"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      if (lease.status === "ready") setLightboxOpen(true);
+                    }}
+                  />
+                  <RowMenuItem
+                    icon={<RefreshCw size={16} aria-hidden="true" />}
+                    label="Replace image"
+                    onClick={() => runAction(() =>
+                      replaceImageFromPicker(store, node.id)
+                    )}
+                  />
+                  <RowMenuItem
+                    icon={<ExternalLink size={16} aria-hidden="true" />}
+                    label="View original"
+                    onClick={() => runAction(() =>
+                      viewImageOriginal(
+                        store,
+                        node.id,
+                        image?.mimeType ?? "application/octet-stream"
+                      )
+                    )}
+                  />
+                  <RowMenuItem
+                    icon={<Download size={16} aria-hidden="true" />}
+                    label="Download"
+                    onClick={() => runAction(() =>
+                      downloadImage(
+                        store,
+                        node.id,
+                        originalName,
+                        image?.mimeType ?? "application/octet-stream"
+                      )
+                    )}
+                  />
+                  <RowMenuItem
+                    danger
+                    icon={<Trash2 size={16} aria-hidden="true" />}
+                    label="Move to Trash"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      void store.deleteSubtree(node.id);
+                    }}
+                  />
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        <div
+          ref={caretStopRef}
+          className="notes-image-caret-stop"
+          role="group"
+          tabIndex={-1}
+          data-node-id={node.id}
+          data-outline-field="image"
+          data-image-edge="after"
+          aria-label={`Cursor after ${originalName}`}
+        />
       </div>
       {actionError && (
         <div className="notes-attachment-error" role="alert">
@@ -431,13 +475,3 @@ const resizeHandleStyle: CSSProperties = {
   touchAction: "none"
 };
 
-const resizeHandleLineStyle: CSSProperties = {
-  position: "absolute",
-  top: "20%",
-  right: 4,
-  width: 2,
-  height: "60%",
-  borderRadius: 1,
-  background: "var(--border-strong)",
-  pointerEvents: "none"
-};

@@ -43,7 +43,110 @@ function imageBoot(): BootSnapshot {
   };
 }
 
+/** The image carries a child, so cutting it would strand the caption. */
+function childBoot(): BootSnapshot {
+  const boot = imageBoot();
+  return {
+    ...boot,
+    viewport: {
+      ...boot.viewport!,
+      nodes: [
+        ...boot.viewport!.nodes,
+        {
+          ...boot.viewport!.nodes[2]!,
+          id: "caption",
+          parentId: "image",
+          sortKey: 1_024,
+          text: "Caption thought"
+        }
+      ]
+    }
+  };
+}
+
+/** jsdom has no ClipboardItem, so the write is read off this one. */
+class FakeClipboardItem {
+  constructor(readonly data: Record<string, Promise<Blob>>) {}
+}
+
+function stubClipboard() {
+  const write = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("ClipboardItem", FakeClipboardItem);
+  Object.defineProperty(navigator, "clipboard", {
+    value: { write },
+    configurable: true
+  });
+  return write;
+}
+
+function selectableImageApi() {
+  const notesApi = appApi();
+  notesApi.bootstrap = vi.fn().mockResolvedValue(imageBoot());
+  notesApi.queryForest = vi.fn().mockImplementation(async (request) => ({
+    revision: 7,
+    nodes: imageBoot().viewport!.nodes.filter((node) =>
+      request.rootIds.includes(node.id)),
+    complete: true
+  }));
+  notesApi.readImage = vi.fn().mockResolvedValue(Uint8Array.from([1]));
+  return notesApi;
+}
+
 describe("image node structural parity", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+
+  it("selects the image from its caret and copies the bytes themselves",
+    async () => {
+      const notesApi = selectableImageApi();
+      const write = stubClipboard();
+      const view = render(<App api={notesApi} />);
+      await screen.findByRole("group", { name: "Image: cat.png" });
+      const station = view.container.querySelector<HTMLElement>(
+        ".notes-image-caret-stop"
+      )!;
+      station.focus();
+
+      fireEvent.keyDown(station, { key: "ArrowRight", shiftKey: true });
+
+      await waitFor(() => expect(station.closest(".notes-node"))
+        .toHaveAttribute("data-range-selected", "true"));
+      fireEvent.copy(screen.getByRole("region", { name: "Notes outline" }), {
+        clipboardData: { setData: vi.fn() }
+      });
+
+      await waitFor(() => expect(write).toHaveBeenCalledOnce());
+      const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
+      expect((await item.data["image/png"])!.type).toBe("image/png");
+      expect(notesApi.execute).not.toHaveBeenCalled();
+    });
+
+  it("cuts the selected image once its bytes are on the clipboard", async () => {
+    const notesApi = selectableImageApi();
+    const write = stubClipboard();
+    const view = render(<App api={notesApi} />);
+    await screen.findByRole("group", { name: "Image: cat.png" });
+    const station = view.container.querySelector<HTMLElement>(
+      ".notes-image-caret-stop"
+    )!;
+    station.focus();
+    fireEvent.keyDown(station, { key: "ArrowRight", shiftKey: true });
+    await waitFor(() => expect(notesApi.queryForest).toHaveBeenCalled());
+
+    fireEvent.cut(screen.getByRole("region", { name: "Notes outline" }), {
+      clipboardData: { setData: vi.fn() }
+    });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: { kind: "deleteSubtrees", ids: ["image"] }
+      })
+    ));
+    expect(write).toHaveBeenCalledOnce();
+  });
+
   it("multi-selects an image with a bullet and indents one ordered batch", async () => {
     const notesApi = appApi();
     notesApi.bootstrap = vi.fn().mockResolvedValue(imageBoot());
@@ -113,5 +216,100 @@ describe("image node structural parity", () => {
     ));
     expect(notesApi.importImageBytes).not.toHaveBeenCalled();
     expect(notesApi.importImagePaths).not.toHaveBeenCalled();
+  });
+});
+
+// WebKit sends no copy or cut event to a focused div, so the station reads the
+// chord itself. These run as a mac: the binding under test is the meta one.
+describe("image clipboard chords at the caret station", () => {
+  beforeEach(() => {
+    Object.defineProperty(globalThis.navigator, "platform", {
+      value: "MacIntel",
+      configurable: true
+    });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(globalThis.navigator, "platform", {
+      value: "",
+      configurable: true
+    });
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+
+  async function stationOf(boot: BootSnapshot = imageBoot()) {
+    const notesApi = selectableImageApi();
+    notesApi.bootstrap = vi.fn().mockResolvedValue(boot);
+    const write = stubClipboard();
+    const view = render(<App api={notesApi} />);
+    await screen.findByRole("group", { name: "Image: cat.png" });
+    const station = view.container.querySelector<HTMLElement>(
+      ".notes-image-caret-stop"
+    )!;
+    station.focus();
+    return { notesApi, write, station };
+  }
+
+  it("copies the image on its own, with nothing selected", async () => {
+    const { notesApi, write, station } = await stationOf();
+
+    fireEvent.keyDown(station, { key: "c", metaKey: true });
+
+    await waitFor(() => expect(write).toHaveBeenCalledOnce());
+    const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
+    expect((await item.data["image/png"])!.type).toBe("image/png");
+    expect(notesApi.execute).not.toHaveBeenCalled();
+  });
+
+  it("cuts a childless image on its own, with nothing selected", async () => {
+    const { notesApi, write, station } = await stationOf();
+
+    fireEvent.keyDown(station, { key: "x", metaKey: true });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: { kind: "deleteSubtrees", ids: ["image"] }
+      })
+    ));
+    expect(write).toHaveBeenCalledOnce();
+  });
+
+  // The caret was standing on the row that just went away, so it has to be
+  // handed somewhere rather than dropped on the document.
+  it("hands the caret to the row above the image it cut", async () => {
+    const { notesApi, station } = await stationOf();
+
+    fireEvent.keyDown(station, { key: "x", metaKey: true });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: { kind: "deleteSubtrees", ids: ["image"] }
+      })
+    ));
+    await waitFor(() => expect(
+      screen.getByDisplayValue("First thought")
+    ).toHaveFocus());
+  });
+
+  it("refuses to cut an image that carries a child", async () => {
+    const { notesApi, write, station } = await stationOf(childBoot());
+
+    fireEvent.keyDown(station, { key: "x", metaKey: true });
+
+    await screen.findByText(/Cut is unavailable/u);
+    expect(write).not.toHaveBeenCalled();
+    expect(notesApi.execute).not.toHaveBeenCalled();
+  });
+
+  it("hands a selected image to the selection path, writing once", async () => {
+    const { notesApi, write, station } = await stationOf();
+    fireEvent.keyDown(station, { key: "ArrowRight", shiftKey: true });
+    await waitFor(() => expect(notesApi.queryForest).toHaveBeenCalled());
+
+    fireEvent.keyDown(station, { key: "c", metaKey: true });
+
+    await screen.findByText("Copied image.");
+    expect(write).toHaveBeenCalledOnce();
   });
 });

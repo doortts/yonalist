@@ -34,10 +34,11 @@ function adjustLocalOutlineScroll(target: HTMLElement): void {
 function editorById(
   scope: HTMLElement,
   nodeId: string,
-  field: PaneFocusSnapshot["field"]
+  field: PaneFocusSnapshot["field"],
+  edge: OutlineFocusEdge
 ): HTMLElement | undefined {
-  return [...scope.querySelectorAll<HTMLElement>("[data-node-id]")]
-    .find((editor) => editor.dataset.nodeId === nodeId && (
+  const candidates = [...scope.querySelectorAll<HTMLElement>("[data-node-id]")]
+    .filter((editor) => editor.dataset.nodeId === nodeId && (
       field === "note"
         ? editor instanceof HTMLTextAreaElement &&
           editor.dataset.outlineField === "note"
@@ -46,6 +47,17 @@ function editorById(
             (!editor.dataset.outlineField ||
               editor.dataset.outlineField === "title")
     ));
+  // An image parks a caret station on each of its sides, so the edge that would
+  // place a caret inside a title picks the side here. Everything else has one.
+  if (candidates.length < 2) return candidates[0];
+  const active = scope.ownerDocument.activeElement;
+  if (edge === "preserve" && active instanceof HTMLElement &&
+    candidates.includes(active)) {
+    return active;
+  }
+  const side = edge === "start" ? "before" : "after";
+  return candidates.find((editor) => editor.dataset.imageEdge === side) ??
+    candidates[0];
 }
 
 /**
@@ -57,13 +69,14 @@ function focusWhenReady(
   scope: HTMLElement,
   nodeId: string,
   field: PaneFocusSnapshot["field"],
-  apply: (target: HTMLElement) => void
+  apply: (target: HTMLElement) => void,
+  edge: OutlineFocusEdge = "end"
 ): boolean {
   // Callers scope focus to the pane section or to the row list inside it; the
   // pane registers itself on the section.
   const paneScope = scope.closest<HTMLElement>(".notes-outline") ?? scope;
   const request = {};
-  const target = editorById(scope, nodeId, field);
+  const target = editorById(scope, nodeId, field, edge);
   if (target) {
     pendingReveal.set(paneScope, request);
     apply(target);
@@ -76,7 +89,7 @@ function focusWhenReady(
   pendingReveal.set(paneScope, request);
   const retry = (remaining: number) => requestAnimationFrame(() => {
     if (pendingReveal.get(paneScope) !== request) return;
-    const revealed = editorById(scope, nodeId, field);
+    const revealed = editorById(scope, nodeId, field, edge);
     if (revealed) apply(revealed);
     else if (remaining > 0) retry(remaining - 1);
   });
@@ -118,7 +131,8 @@ export function focusOutlineSnapshot(
 ): boolean {
   return focusWhenReady(
     scope, focus.nodeId, focus.field,
-    caretPlacement(() => [focus.selectionStart, focus.selectionEnd]));
+    caretPlacement(() => [focus.selectionStart, focus.selectionEnd]),
+    "start");
 }
 
 export function focusOutlineEditor(
@@ -138,5 +152,5 @@ export function focusOutlineEditor(
         ? value.length
         : preservedOffset;
     return [caret, caret];
-  }));
+  }), edge);
 }

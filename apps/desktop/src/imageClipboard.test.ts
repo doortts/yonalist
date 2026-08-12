@@ -1,5 +1,22 @@
-import { describe, expect, it, vi } from "vitest";
-import { clipboardImageCandidates } from "./imageClipboard";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  clipboardImageCandidates,
+  writeImageClipboard
+} from "./imageClipboard";
+
+/** jsdom has no ClipboardItem, so the write contract is read off this one. */
+class FakeClipboardItem {
+  constructor(readonly data: Record<string, Promise<Blob>>) {}
+}
+
+function stubClipboard(write = vi.fn().mockResolvedValue(undefined)) {
+  vi.stubGlobal("ClipboardItem", FakeClipboardItem);
+  Object.defineProperty(navigator, "clipboard", {
+    value: { write },
+    configurable: true
+  });
+  return write;
+}
 
 function item(
   kind: string,
@@ -47,5 +64,69 @@ describe("image clipboard routing", () => {
         item("string", "text/html", null)
       ] as unknown as DataTransferItemList
     })).toEqual([]);
+  });
+});
+
+describe("image clipboard writing", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+
+  it("carries png bytes beside a pasteable filename line", async () => {
+    const write = stubClipboard();
+
+    await writeImageClipboard(
+      Uint8Array.from([1, 2, 3]),
+      "image/png",
+      "cat.png"
+    );
+
+    const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
+    expect(Object.keys(item.data)).toEqual(["image/png", "text/plain"]);
+    const png = await item.data["image/png"]!;
+    expect(png.type).toBe("image/png");
+    expect(png.size).toBe(3);
+    expect(await (await item.data["text/plain"]!).text()).toBe("- cat.png");
+  });
+
+  // WebKit rejects a clipboard write that lands after the gesture that asked
+  // for it, so the bytes ride in as a promise and the write goes out first.
+  it("writes before the bytes arrive, still inside the gesture", () => {
+    const write = stubClipboard();
+    let deliver = (_bytes: Uint8Array) => undefined as void;
+    const pending = new Promise<Uint8Array>((resolve) => {
+      deliver = resolve;
+    });
+
+    void writeImageClipboard(pending, "image/png", "cat.png");
+
+    expect(write).toHaveBeenCalledOnce();
+    deliver(Uint8Array.from([1]));
+  });
+
+  // WebKit's ClipboardItem takes image/png alone, so anything else has to be
+  // redrawn first -- and jsdom has no decoder to redraw it with. The refusal
+  // now rides the item's own promise, which is what a real write rejects on.
+  it("refuses a format it cannot redraw as png", async () => {
+    const write = stubClipboard();
+
+    await writeImageClipboard(Uint8Array.from([1]), "image/webp", "dog.webp");
+
+    const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
+    await expect(item.data["image/png"]).rejects.toThrow(/copied/);
+  });
+
+  it("refuses when the clipboard takes no items at all", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: undefined,
+      configurable: true
+    });
+
+    await expect(writeImageClipboard(
+      Uint8Array.from([1]),
+      "image/png",
+      "cat.png"
+    )).rejects.toThrow(/unavailable/);
   });
 });

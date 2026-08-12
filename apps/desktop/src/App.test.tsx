@@ -628,6 +628,48 @@ describe("Yonalist v2 desktop shell", () => {
     await waitFor(() => expect(secondTitle).toHaveFocus());
   });
 
+  it("closes a note erased to empty and lands at the end of its title", async () => {
+    render(<App api={api()} />);
+    const title = await screen.findByDisplayValue<HTMLTextAreaElement>(
+      "First thought"
+    );
+
+    fireEvent.keyDown(title, { key: "Enter", shiftKey: true });
+    const note = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "Supporting note: First thought"
+    });
+    fireEvent.change(note, { target: { value: "Supporting context" } });
+    fireEvent.change(note, { target: { value: "" } });
+    fireEvent.keyDown(note, { key: "Backspace" });
+
+    await waitFor(() => expect(title).toHaveFocus());
+    expect(title.selectionStart).toBe("First thought".length);
+    expect(document.querySelector(
+      '[data-outline-field="note"][data-node-id="bullet-1"]'
+    )).toBeNull();
+  });
+
+  it("closes an erased page note and lands at the end of the page title", async () => {
+    render(<App api={api()} />);
+    const pageTitle = await screen.findByDisplayValue<HTMLTextAreaElement>(
+      "Today"
+    );
+
+    fireEvent.keyDown(pageTitle, { key: "Enter", shiftKey: true });
+    const note = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "Page note"
+    });
+    fireEvent.change(note, { target: { value: "Page context" } });
+    fireEvent.change(note, { target: { value: "" } });
+    fireEvent.keyDown(note, { key: "Backspace" });
+
+    await waitFor(() => expect(pageTitle).toHaveFocus());
+    expect(pageTitle.selectionStart).toBe("Today".length);
+    expect(document.querySelector(
+      '[data-outline-field="note"][data-node-id="page-1"]'
+    )).toBeNull();
+  });
+
   it("creates the next sibling from the last supporting note with Shift+Enter", async () => {
     const notesApi = api();
     render(<App api={notesApi} />);

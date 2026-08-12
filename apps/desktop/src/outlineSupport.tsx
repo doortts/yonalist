@@ -205,6 +205,13 @@ export function handleOutlineKeyDown(
   );
 }
 
+function imageEdgeOf(target: EventTarget): "before" | "after" | undefined {
+  const edge = target instanceof HTMLElement
+    ? target.dataset.imageEdge
+    : undefined;
+  return edge === "before" || edge === "after" ? edge : undefined;
+}
+
 export function handleImagePrimaryKeyDown(
   event: KeyboardEvent<HTMLDivElement>,
   store: NotesStore,
@@ -222,8 +229,32 @@ export function handleImagePrimaryKeyDown(
   onClearSelection: () => void,
   onFocusNote: () => void,
   onMoveTo: () => void,
-  selectionActions: SelectionKeyboardActions
+  selectionActions: SelectionKeyboardActions,
+  onCopyImage: (nodeId: string) => void,
+  onCutImage: (nodeId: string) => void,
+  soloSelectedId: string | null = null
 ) {
+  // A plain arrow off a selected image drops the selection and leaves the caret
+  // on the side it names, the way it collapses a selected letter.
+  if (
+    soloSelectedId === node.id &&
+    (event.key === "ArrowLeft" || event.key === "ArrowRight") &&
+    !event.shiftKey &&
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.nativeEvent.isComposing
+  ) {
+    event.preventDefault();
+    const collapseScope =
+      event.currentTarget.closest<HTMLElement>(".notes-outline");
+    if (!collapseScope) return;
+    onClearSelection();
+    focusOutlineEditor(
+      collapseScope, node.id, event.key === "ArrowLeft" ? "start" : "end"
+    );
+    return;
+  }
   const intent = handleImageNodeKeyDown({
     key: event.key,
     altKey: event.altKey,
@@ -245,6 +276,9 @@ export function handleImagePrimaryKeyDown(
     structureIndex,
     selectionHeadId,
     hasSelection,
+    // The station the key came from is the caret's side of the image; a key on
+    // the frame itself belongs to no side.
+    imageEdge: imageEdgeOf(event.target),
     target: "row",
     platform: outlinePlatform()
   });
@@ -259,6 +293,20 @@ export function handleImagePrimaryKeyDown(
     if (intent.kind === "toggleComplete") return selectionActions.toggleComplete();
     if (intent.kind === "duplicate") return selectionActions.duplicate();
     if (intent.kind === "trash") return selectionActions.delete();
+  }
+  // A selection already carries this image's bytes, so the chord goes to the
+  // selection commands and only a bare station falls through to the node.
+  if (intent.kind === "copyImage") {
+    return hasSelection ? selectionActions.copy() : onCopyImage(node.id);
+  }
+  if (intent.kind === "cutImage") {
+    return hasSelection ? selectionActions.cut() : onCutImage(node.id);
+  }
+  // The stop between the two stations is the image itself, which is the element
+  // this handler is already mounted on.
+  if (intent.kind === "focusImage") {
+    event.currentTarget.focus();
+    return;
   }
   executeRowIntent(
     intent,
@@ -290,7 +338,7 @@ export function handlePageKeyDown(
   onFocusNote: () => void
 ) {
   updateBackspaceGesture(event, store);
-  const intent = resolveOutlineKey({
+  executePageIntent(event, resolveOutlineKey({
     key: event.key,
     altKey: event.altKey,
     ctrlKey: event.ctrlKey,
@@ -311,9 +359,58 @@ export function handlePageKeyDown(
     structureIndex,
     target: "page",
     platform: outlinePlatform()
-  });
-  if (!intent) return;
+  }), store, pageId, structureIndex, onZoomOut, onFocusNote);
+}
 
+/**
+ * The same keys for the zoom header when the zoom root is an image: it has no
+ * text field to type into, so the caret station answers in its place.
+ */
+export function handleImagePageKeyDown(
+  event: KeyboardEvent<HTMLDivElement>,
+  store: NotesStore,
+  pageId: string,
+  nodes: readonly NoteView[],
+  visibleNodes: readonly NoteView[],
+  structureIndex: OutlineIndex,
+  visibleIndex: OutlineIndex,
+  onZoomOut: () => void,
+  onFocusNote: () => void
+) {
+  executePageIntent(event, resolveOutlineKey({
+    key: event.key,
+    altKey: event.altKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+    isComposing: event.nativeEvent.isComposing,
+    repeat: event.repeat,
+    nodeId: pageId,
+    pageId,
+    value: "",
+    selectionStart: 0,
+    selectionEnd: 0,
+    firstVisualLine: true,
+    lastVisualLine: true,
+    visibleNodes,
+    structureNodes: nodes,
+    visibleIndex,
+    structureIndex,
+    target: "page",
+    platform: outlinePlatform()
+  }), store, pageId, structureIndex, onZoomOut, onFocusNote);
+}
+
+function executePageIntent(
+  event: KeyboardEvent<HTMLElement>,
+  intent: OutlineKeyIntent | null,
+  store: NotesStore,
+  pageId: string,
+  structureIndex: OutlineIndex,
+  onZoomOut: () => void,
+  onFocusNote: () => void
+): void {
+  if (!intent) return;
   event.preventDefault();
   const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
   if (!scope) return;
@@ -393,6 +490,9 @@ function executeRowIntent(
 ): void {
   switch (intent.kind) {
     case "consume":
+    // Only the image surface resolves these, and it routes them itself.
+    case "copyImage":
+    case "cutImage":
       return;
     case "split":
       {

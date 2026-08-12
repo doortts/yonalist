@@ -99,6 +99,124 @@ describe("v2 outline keyboard intent resolver", () => {
     }))).toEqual({ kind: "focus", nodeId: "child", edge: "start" });
   });
 
+  // The shifted arrow sweeps the image the way it sweeps a letter, so it only
+  // takes it when the image is the thing the caret would move over.
+  it("selects the image only when the shifted arrow sweeps toward it", () => {
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowRight",
+      shiftKey: true,
+      imageEdge: "before"
+    }))).toEqual({ kind: "extendSelection", headId: "next" });
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowLeft",
+      shiftKey: true,
+      imageEdge: "after"
+    }))).toEqual({ kind: "extendSelection", headId: "next" });
+    // Away from the image there is nothing beside the caret to take.
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowRight",
+      shiftKey: true,
+      imageEdge: "after"
+    }))).toBeNull();
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowLeft",
+      shiftKey: true,
+      imageEdge: "before"
+    }))).toBeNull();
+  });
+
+  it("selects the image itself when the station takes a shifted arrow", () => {
+    for (const key of ["ArrowLeft", "ArrowRight"]) {
+      expect(handleImageNodeKeyDown(input({
+        nodeId: "next",
+        key,
+        shiftKey: true
+      }))).toEqual({ kind: "extendSelection", headId: "next" });
+      expect(handleImageNodeKeyDown(input({
+        nodeId: "next",
+        key,
+        shiftKey: true,
+        metaKey: true
+      }))).toBeNull();
+      expect(handleImageNodeKeyDown(input({
+        nodeId: "next",
+        key,
+        shiftKey: true,
+        altKey: true
+      }))).toBeNull();
+    }
+  });
+
+  // WebKit fires no clipboard event for a focused div, so the image's copy and
+  // cut have to be read off the keydown itself.
+  it("takes copy and cut off the station's own primary chord", () => {
+    for (const [key, kind] of [["c", "copyImage"], ["x", "cutImage"]]) {
+      expect(handleImageNodeKeyDown(input({ key, ctrlKey: true })))
+        .toEqual({ kind });
+      expect(handleImageNodeKeyDown(input({
+        key,
+        metaKey: true,
+        platform: "mac"
+      }))).toEqual({ kind });
+      expect(handleImageNodeKeyDown(input({
+        key,
+        ctrlKey: true,
+        repeat: true
+      }))).toEqual({ kind: "consume" });
+      // The other platform's modifier, and either one wearing shift or alt,
+      // belong to somebody else.
+      expect(handleImageNodeKeyDown(input({ key, metaKey: true }))).toBeNull();
+      expect(handleImageNodeKeyDown(input({
+        key,
+        ctrlKey: true,
+        shiftKey: true
+      }))).toBeNull();
+      expect(handleImageNodeKeyDown(input({
+        key,
+        ctrlKey: true,
+        altKey: true
+      }))).toBeNull();
+    }
+  });
+
+  // Caret, image, caret: the image is a stop of its own between its two
+  // stations, so a plain arrow takes three presses to cross the row.
+  it("steps the caret onto the image and off its far side", () => {
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowRight",
+      imageEdge: "before"
+    }))).toEqual({ kind: "focusImage", nodeId: "next" });
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowRight"
+    }))).toEqual({ kind: "focus", nodeId: "next", edge: "end" });
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowLeft",
+      imageEdge: "after"
+    }))).toEqual({ kind: "focusImage", nodeId: "next" });
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowLeft"
+    }))).toEqual({ kind: "focus", nodeId: "next", edge: "start" });
+    // The outer sides keep the row-boundary moves they always made.
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowLeft",
+      imageEdge: "before"
+    }))).toEqual({ kind: "focus", nodeId: "child", edge: "end" });
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "child",
+      key: "ArrowRight",
+      imageEdge: "after"
+    }))).toEqual({ kind: "focus", nodeId: "next", edge: "start" });
+  });
+
   it("splits the selected title range into one atomic sibling gesture", () => {
     expect(resolveOutlineKey(input())).toEqual({
       kind: "split",
@@ -676,6 +794,29 @@ describe("v2 supporting-note keyboard resolver", () => {
     expect(resolveSupportingNoteKey(noteInput({
       ...noteInput(),
       key: "ArrowUp"
+    }))).toBeNull();
+  });
+
+  it("closes an emptied note with Backspace without running into the title", () => {
+    expect(resolveSupportingNoteKey(noteInput({
+      key: "Backspace",
+      selectionStart: 0,
+      selectionEnd: 0,
+      value: ""
+    }))).toBe("removeEmptyNote");
+    // Text still in the note keeps Backspace native, caret at the start or not.
+    expect(resolveSupportingNoteKey(noteInput({
+      key: "Backspace",
+      selectionStart: 0,
+      selectionEnd: 0
+    }))).toBeNull();
+    // A held key stops at the empty note instead of eating the title's text.
+    expect(resolveSupportingNoteKey(noteInput({
+      key: "Backspace",
+      selectionStart: 0,
+      selectionEnd: 0,
+      value: "",
+      repeat: true
     }))).toBeNull();
   });
 

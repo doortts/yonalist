@@ -3133,15 +3133,123 @@ body.is-outline-dragging * {
 .notes-image-attachment-frame:focus-within .notes-image-menu-trigger,
 .notes-image-attachment-placeholder:hover .notes-image-menu-trigger,
 .notes-image-attachment-placeholder:focus-within .notes-image-menu-trigger,
-.notes-image-node-content:focus .notes-image-menu-trigger,
+.notes-image-node-content:focus-within .notes-image-menu-trigger,
 .notes-image-menu-trigger:focus-visible,
 .notes-image-menu-trigger[data-popup-open] {
   opacity: 1;
   pointer-events: auto;
 }
 
+/* Tab is not what selects an image, so the shared `.notes-node :focus-visible`
+   ring is turned off here rather than inherited -- the rules under it draw the
+   ring for the entries that do select one. Each draws on the frame, never on
+   the node content: that one is the full row width, so a ring on it wrapped
+   the bullet and the margin beside the image too. They stay apart: a browser
+   without `:has()` would drop the click ring too if they shared a block. */
 .notes-image-node-content:focus-visible {
   outline: 0;
+}
+
+/* The ring means the image itself is where the caret stands -- a caret at
+   either station is beside the image, not on it, and draws nothing. */
+.notes-image-node-content:focus .notes-image-attachment-frame {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The row-background tint a range selection paints is invisible behind an
+   image, so a selected image carries the ring instead -- otherwise a shifted
+   arrow onto one looks like nothing happened. */
+.notes-node[data-range-selected="true"] .notes-image-attachment-frame {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* A selected range paints its glyphs, and the image is one of them. */
+.notes-node[data-range-selected="true"] .notes-image-attachment-frame::after {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  content: "";
+  pointer-events: none;
+}
+
+/* One image alone in the selection is a selected character, so the band that
+   would run the row's whole width behind it gives way to the paint above. */
+.notes-node[data-solo-image-selection="true"] > .notes-node-main {
+  background: transparent;
+}
+
+/* The dual-tone cap bar: a dark pill under a light hairline, so it reads
+   against any photo. Fixed height, but never taller than the old 60% so a
+   short image keeps its handle inside the frame. */
+.notes-image-resize-line {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  width: 6px;
+  height: min(52px, 60%);
+  box-sizing: border-box;
+  border: 1.5px solid rgb(255 255 255 / 90%);
+  border-radius: 4px;
+  background: rgb(15 15 15 / 55%);
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity 120ms ease;
+  pointer-events: none;
+}
+
+.notes-image-attachment-frame:hover .notes-image-resize-line,
+.notes-image-resize-handle:focus-visible .notes-image-resize-line,
+.notes-image-resize-handle[data-resizing] .notes-image-resize-line {
+  opacity: 1;
+}
+
+/* Never `stretch` here: a stretched flex item with `height: auto` is handed a
+   definite cross size, which per css-sizing-4 beats the frame's own
+   `aspect-ratio` -- WebKit enforces that and the frame widens without growing,
+   letterboxing the image. The station bottoms out on the frame instead, which
+   stays the tallest item in the row. */
+.notes-image-frame-row {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: flex-start;
+}
+
+/* The text caret's own shape: one row line tall, sitting on the image's
+   baseline rather than running its whole height. */
+.notes-image-caret-stop {
+  width: 1px;
+  height: 25px;
+  flex: none;
+  align-self: flex-end;
+  margin-inline-start: 6px;
+  outline: 0;
+  background: transparent;
+}
+
+/* The station before the image keeps its gap on the frame side, so the row's
+   text column starts where the bullets put it. */
+.notes-image-caret-stop[data-image-edge="before"] {
+  margin-inline: 0 6px;
+}
+
+/* Beats the shared `.notes-node :focus-visible` ring: same specificity (0,2,0),
+   declared later. A bare class rule would lose. */
+.notes-image-caret-stop:focus-visible {
+  outline: 0;
+}
+
+.notes-image-caret-stop:focus {
+  background: var(--caret-strong);
+  animation: notes-image-caret-blink 1.06s steps(2, jump-none) infinite;
+}
+
+@keyframes notes-image-caret-blink {
+  50% {
+    opacity: 0;
+  }
 }
 
 .notes-image-menu-trigger:hover,
@@ -3170,25 +3278,59 @@ body.is-outline-dragging * {
   position: fixed;
   z-index: 71;
   inset: 0;
-  display: grid;
-  width: 100vw;
-  height: 100vh;
-  padding: 48px;
   border: 0;
   outline: 0;
-  place-items: center;
   background: transparent;
 }
 
+.notes-image-lightbox-scroll {
+  position: absolute;
+  display: flex;
+  padding: 48px;
+  inset: 0;
+  overflow: auto;
+  cursor: grab;
+}
+
+.notes-image-lightbox-scroll[data-panning] {
+  cursor: grabbing;
+}
+
+/* `margin: auto` centers an image smaller than the viewport and collapses to
+   zero on a larger one, so overflow scrolls from the top-left instead of
+   clipping it the way centered placement would. */
 .notes-image-lightbox-image {
   display: block;
   width: auto;
   height: auto;
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
+  max-width: none;
+  max-height: none;
+  margin: auto;
   border-radius: 4px;
   box-shadow: var(--shadow-modal);
+}
+
+.notes-image-lightbox-bar {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  padding: 12px 56px 20px 16px;
+  gap: 10px;
+  inset: 0 0 auto;
+  background: linear-gradient(rgb(12 15 20 / 70%), transparent);
+  color: rgb(255 255 255 / 88%);
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.notes-image-lightbox-name {
+  font-weight: 600;
+}
+
+.notes-image-lightbox-dims {
+  color: rgb(255 255 255 / 55%);
+  font-size: 12px;
 }
 
 .notes-image-lightbox-close {
@@ -3203,6 +3345,14 @@ body.is-outline-dragging * {
   .notes-image-menu-trigger {
     transition: none;
   }
+
+  .notes-image-caret-stop:focus {
+    animation: none;
+  }
+
+  .notes-image-resize-line {
+    transition: none;
+  }
 }
 
 @media (pointer: coarse) {
@@ -3213,7 +3363,7 @@ body.is-outline-dragging * {
 }
 
 @media (max-width: 640px) {
-  .notes-image-lightbox {
+  .notes-image-lightbox-scroll {
     padding: 44px 16px 16px;
   }
 }

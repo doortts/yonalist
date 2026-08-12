@@ -123,10 +123,35 @@ describe("outline clipboard", () => {
       .toContain("an image");
     expect(outlineCutRefusal(withDeepImage, {}, {}, ["child"]))
       .toContain("an image");
-    expect(outlineCutRefusal(withDeepImage, {}, {}, ["grandchild"]))
-      .toContain("an image");
     // A sibling subtree that holds no image is still cuttable.
     expect(outlineCutRefusal(withDeepImage, {}, {}, ["sibling"])).toBeNull();
+  });
+
+  // The one image the clipboard can carry whole: its bytes go on the clipboard
+  // instead of its filename, so the cut's delete loses nothing.
+  it("allows Cut for a lone childless image", () => {
+    const withDeepImage = nodes.map((candidate) => candidate.id === "grandchild"
+      ? { ...candidate, kind: "image" as const, text: "photo.png" }
+      : candidate);
+
+    expect(outlineCutRefusal(withDeepImage, {}, {}, ["grandchild"])).toBeNull();
+    // A note on it is still lost, and so is anything under or beside it.
+    expect(outlineCutRefusal(
+      withDeepImage.map((candidate) => candidate.id === "grandchild"
+        ? { ...candidate, note: "Keep this context" }
+        : candidate),
+      {},
+      {},
+      ["grandchild"]
+    )).toContain("supporting notes");
+    expect(outlineCutRefusal(
+      [...withDeepImage, node("caption", "grandchild", "Caption", 1_024)],
+      {},
+      {},
+      ["grandchild"]
+    )).toContain("an image");
+    expect(outlineCutRefusal(withDeepImage, {}, {}, ["grandchild", "sibling"]))
+      .toContain("an image");
   });
 
   it("names Move To as the lossless alternative in every Cut refusal", () => {

@@ -1,10 +1,14 @@
 import {
   useEffect,
   useRef,
+  useState,
   type RefObject
 } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+
+/** Below this much pointer travel a release still counts as a backdrop click. */
+const CLICK_SLOP = 4;
 
 export function ImageLightbox({
   originalName,
@@ -22,6 +26,20 @@ export function ImageLightbox({
   readonly onClose: () => void;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const panRef = useRef<{
+    readonly pointerId: number;
+    readonly startX: number;
+    readonly startY: number;
+    readonly startLeft: number;
+    readonly startTop: number;
+  } | null>(null);
+  const movedRef = useRef(0);
+  // Pointer capture retargets the click that follows a drag to the capturing
+  // container, so the click cannot see whether the press landed on the image.
+  // The press target decides instead.
+  const pressedBackdropRef = useRef(false);
+  const [panning, setPanning] = useState(false);
   useEffect(() => {
     const returnFocusTarget = returnFocusRef?.current;
     closeRef.current?.focus();
@@ -30,8 +48,12 @@ export function ImageLightbox({
         event.preventDefault();
         onClose();
       } else if (event.key === "Tab") {
+        // The scroll area is a tab stop so arrow keys can reach an image that
+        // overflows the viewport; the trap cycles between the two.
         event.preventDefault();
-        closeRef.current?.focus();
+        const close = closeRef.current;
+        const next = document.activeElement === close ? scrollRef.current : close;
+        next?.focus();
       }
     };
     document.addEventListener("keydown", keyDown);
@@ -40,6 +62,11 @@ export function ImageLightbox({
       returnFocusTarget?.focus();
     };
   }, [onClose, returnFocusRef]);
+  const endPan = (pointerId: number) => {
+    if (panRef.current?.pointerId !== pointerId) return;
+    panRef.current = null;
+    setPanning(false);
+  };
   return createPortal(
     <>
       <div className="notes-image-lightbox-backdrop" aria-hidden="true" />
@@ -48,10 +75,65 @@ export function ImageLightbox({
         role="dialog"
         aria-modal="true"
         aria-label={originalName}
-        onClick={(event) => {
-          if (event.target === event.currentTarget) onClose();
-        }}
       >
+        <div className="notes-image-lightbox-bar">
+          <span className="notes-image-lightbox-name">{originalName}</span>
+          <span className="notes-image-lightbox-dims">
+            {pixelWidth} × {pixelHeight}
+          </span>
+        </div>
+        <div
+          ref={scrollRef}
+          className="notes-image-lightbox-scroll"
+          role="group"
+          aria-label={`Scrollable view of ${originalName}`}
+          tabIndex={0}
+          data-panning={panning ? "true" : undefined}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            // The press stops image-drag selection, and with it the focus the
+            // browser would have given the area, so arrow scrolling takes it
+            // back explicitly.
+            event.preventDefault();
+            event.currentTarget.focus();
+            movedRef.current = 0;
+            pressedBackdropRef.current = event.target === event.currentTarget;
+            panRef.current = {
+              pointerId: event.pointerId,
+              startX: event.clientX,
+              startY: event.clientY,
+              startLeft: event.currentTarget.scrollLeft,
+              startTop: event.currentTarget.scrollTop
+            };
+            setPanning(true);
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            const pan = panRef.current;
+            if (!pan || pan.pointerId !== event.pointerId) return;
+            const dx = event.clientX - pan.startX;
+            const dy = event.clientY - pan.startY;
+            movedRef.current = Math.max(movedRef.current, Math.hypot(dx, dy));
+            event.currentTarget.scrollLeft = pan.startLeft - dx;
+            event.currentTarget.scrollTop = pan.startTop - dy;
+          }}
+          onPointerUp={(event) => endPan(event.pointerId)}
+          onPointerCancel={(event) => endPan(event.pointerId)}
+          onClick={() => {
+            if (pressedBackdropRef.current && movedRef.current < CLICK_SLOP) {
+              onClose();
+            }
+          }}
+        >
+          <img
+            className="notes-image-lightbox-image"
+            src={sourceUrl}
+            alt={originalName}
+            width={pixelWidth}
+            height={pixelHeight}
+            draggable={false}
+          />
+        </div>
         <button
           ref={closeRef}
           type="button"
@@ -61,15 +143,6 @@ export function ImageLightbox({
         >
           <X size={20} aria-hidden="true" />
         </button>
-        <img
-          className="notes-image-lightbox-image"
-          src={sourceUrl}
-          alt={originalName}
-          width={pixelWidth}
-          height={pixelHeight}
-          draggable={false}
-          onClick={(event) => event.stopPropagation()}
-        />
       </div>
     </>,
     document.body

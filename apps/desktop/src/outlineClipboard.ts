@@ -79,7 +79,9 @@ const CUT_REFUSED_RICH_TEXT =
 // The clipboard carries titles only, and an image node's title is just its
 // filename — the bytes live outside the text. Serializing one writes
 // `- photo.png`, so cutting it would delete the image with nothing on the
-// clipboard able to paste it back.
+// clipboard able to paste it back. The one exception is a lone childless
+// image: `writeImageClipboard` puts its bytes on the clipboard instead of its
+// filename, which is the only shape that round trip covers.
 const CUT_REFUSED_IMAGE =
   "Cut is unavailable because the selected subtrees contain an image. " +
   "Use Move To to preserve the image.";
@@ -99,6 +101,12 @@ export function outlineCutRefusal(
   const roots = new Set(normalizeSelectedRoots(nodes, selectedIds));
   if (roots.size === 0) return CUT_REFUSED_EMPTY;
   const byId = new Map(nodes.map((node) => [node.id, node]));
+  const [onlyRoot] = roots;
+  const carriedImageId = roots.size === 1 &&
+    byId.get(onlyRoot!)?.kind === "image" &&
+    !nodes.some((node) => node.parentId === onlyRoot && !node.deleted)
+    ? onlyRoot
+    : null;
   let refusal: string | null = null;
   for (const node of nodes) {
     let current: NoteView | undefined = node;
@@ -113,7 +121,9 @@ export function outlineCutRefusal(
     }
     if (!selectedSubtree) continue;
     // An image outranks a note: it is the loss the user cannot see coming.
-    if (node.kind === "image") return CUT_REFUSED_IMAGE;
+    if (node.kind === "image" && node.id !== carriedImageId) {
+      return CUT_REFUSED_IMAGE;
+    }
     const title = drafts[node.id] ?? node.text;
     const note = noteDrafts[node.id] ?? node.note;
     if (/[\r\n]/u.test(title) || note.length > 0) refusal = CUT_REFUSED_RICH_TEXT;
