@@ -22,6 +22,7 @@ import { OutlineIndex } from "./outlineIndex";
 import type { PaneFocusSnapshot } from "./appNavigation";
 import { useImageIngest } from "./useImageIngest";
 import { writeImageClipboard } from "./imageClipboard";
+import { buildOutlineClipboardFormats } from "./outlineClipboard";
 import {
   focusAfterCommit, focusOutlineEditor, focusOutlineSnapshot
 } from "./outlineFocus";
@@ -278,7 +279,16 @@ export function NotesOutline({
   const writeNodeImage = (node: NoteView) => writeImageClipboard(
     store.images.read(node.id),
     node.image?.mimeType ?? "application/octet-stream",
-    node.image?.originalName ?? node.text
+    node.image?.originalName ?? node.text,
+    // The row's own payload rides along, so pasting the image back here
+    // restores the node by hash while other apps still get the picture.
+    buildOutlineClipboardFormats(
+      [node],
+      {},
+      {},
+      [node.id],
+      store.getSnapshot().sessionId ?? ""
+    )?.html
   );
   const writeSelectionToClipboard = () => selectedImage
     ? writeNodeImage(selectedImage)

@@ -90,6 +90,25 @@ describe("image clipboard writing", () => {
     expect(await (await item.data["text/plain"]!).text()).toBe("- cat.png");
   });
 
+  // An in-app paste has to bring the row back by hash, not import the bytes
+  // again, so the rich payload rides beside the picture.
+  it("carries a rich payload beside the bytes when one is given", async () => {
+    const write = stubClipboard();
+
+    await writeImageClipboard(
+      Uint8Array.from([1, 2, 3]),
+      "image/png",
+      "cat.png",
+      "<!--yonalist-outline-clipboard:eyJ9--><ul><li>cat.png</li></ul>"
+    );
+
+    const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
+    expect(Object.keys(item.data))
+      .toEqual(["image/png", "text/plain", "text/html"]);
+    expect(await (await item.data["text/html"]!).text())
+      .toContain("yonalist-outline-clipboard");
+  });
+
   // WebKit rejects a clipboard write that lands after the gesture that asked
   // for it, so the bytes ride in as a promise and the write goes out first.
   it("writes before the bytes arrive, still inside the gesture", () => {

@@ -304,6 +304,91 @@ describe("outline clipboard integration", () => {
     }
   });
 
+  it("copies a mixed range as marked-up text and a full-fidelity payload", async () => {
+    const notesApi = api();
+    const image = {
+      contentHash: "d".repeat(64),
+      originalName: "sample.png",
+      mimeType: "image/png",
+      byteLength: 1,
+      pixelWidth: 1,
+      pixelHeight: 1,
+      displayWidth: 320
+    };
+    const rows = [
+      {
+        ...snapshot.viewport!.nodes[0],
+        id: "todo",
+        text: "Buy milk",
+        marker: "todo" as const,
+        completed: true,
+        note: "Two litres"
+      },
+      {
+        ...snapshot.viewport!.nodes[1],
+        id: "photo",
+        kind: "image" as const,
+        text: "sample.png",
+        image
+      },
+      { ...snapshot.viewport!.nodes[2], id: "plain", text: "Plain thought" }
+    ];
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: { ...snapshot.viewport!, nodes: rows }
+    });
+    notesApi.queryForest = vi.fn().mockImplementation(async (request) => ({
+      revision: snapshot.revision,
+      nodes: rows.filter((row) => request.rootIds.includes(row.id)),
+      complete: true
+    }));
+    notesApi.readImage = vi.fn().mockResolvedValue(Uint8Array.from([1]));
+    render(<App api={notesApi} />);
+    const first = await screen.findByDisplayValue("Buy milk");
+    fireEvent.pointerDown(first);
+    fireEvent.pointerDown(screen.getByDisplayValue("Plain thought"), {
+      shiftKey: true
+    });
+    await screen.findByRole("toolbar", {
+      name: "Actions for 3 selected notes"
+    });
+    const setData = vi.fn();
+
+    fireEvent.copy(screen.getByRole("region", { name: "Notes outline" }), {
+      clipboardData: { setData }
+    });
+
+    expect(setData).toHaveBeenNthCalledWith(1, "text/plain", [
+      "- [x] Buy milk",
+      "  > Two litres",
+      "- sample.png",
+      "- Plain thought"
+    ].join("\n"));
+    const [type, html] = setData.mock.calls[2]!;
+    expect(type).toBe("text/html");
+    const marker = "<!--yonalist-outline-clipboard:";
+    expect(html.startsWith(marker)).toBe(true);
+    const payload = JSON.parse(new TextDecoder().decode(Uint8Array.from(
+      atob(html.slice(marker.length, html.indexOf("-->"))),
+      (character: string) => character.charCodeAt(0)
+    )));
+    expect(payload).toEqual({
+      kind: "yonalist-outline-clipboard",
+      version: 1,
+      sessionId: "session-clipboard",
+      nodes: [
+        expect.objectContaining({
+          text: "Buy milk",
+          note: "Two litres",
+          marker: "todo",
+          completed: true
+        }),
+        expect.objectContaining({ text: "sample.png", image }),
+        expect.objectContaining({ text: "Plain thought", marker: "bullet" })
+      ]
+    });
+  });
+
   it("imports an indented outline as one child-subtree command", async () => {
     const notesApi = api();
     render(<App api={notesApi} />);

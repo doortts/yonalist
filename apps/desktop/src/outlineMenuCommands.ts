@@ -6,7 +6,8 @@ import {
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
 import {
-  serializeSelectedOutline, writeOutlineClipboard
+  buildOutlineClipboardFormats, writeOutlineClipboard,
+  type OutlineClipboardFormats
 } from "./outlineClipboard";
 import { OUTLINE_TAG_MAX_ROWS } from "./outlineTagEdits";
 import type { SelectionKeyboardActions } from "./outlineSupport";
@@ -101,12 +102,21 @@ function runMove(context: OutlineMenuContext, plan: SelectionMovePlan): void {
 }
 
 /**
- * The clicked row's subtree as clipboard text: the one-root case of the very
- * serializer the multi-row selection uses, so both paths emit the same bytes.
+ * The clicked row's subtree in every clipboard format: the one-root case of the
+ * very serializer the multi-row selection uses, so both paths emit the same
+ * bytes.
  */
-function rowSubtreeText(context: OutlineMenuContext): string | null {
-  const { nodes, drafts } = context.store.getSnapshot();
-  return serializeSelectedOutline(nodes, drafts, [context.node.id]);
+function rowSubtreeFormats(
+  context: OutlineMenuContext
+): OutlineClipboardFormats | null {
+  const { nodes, drafts, noteDrafts, sessionId } = context.store.getSnapshot();
+  return buildOutlineClipboardFormats(
+    nodes,
+    drafts,
+    noteDrafts,
+    [context.node.id],
+    sessionId ?? ""
+  );
 }
 
 /**
@@ -265,13 +275,13 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
     icon: () => Copy,
     label: () => "Copy",
     binding: binding("⌘C", "Ctrl+C", "Meta+C", "Control+C"),
-    // Copy never deletes, so a title-only serialization loses nothing that was
-    // not already on screen. It stays reachable when everything else is not.
+    // Copy never deletes, so it loses nothing that was not already on screen.
+    // It stays reachable when everything else is not.
     eligibility: ALWAYS,
     execute: (context) => {
       if (context.mode === "selection") return context.selection.copy();
-      const text = rowSubtreeText(context);
-      if (text) void writeOutlineClipboard(text).catch(() => undefined);
+      const formats = rowSubtreeFormats(context);
+      if (formats) void writeOutlineClipboard(formats).catch(() => undefined);
     }
   },
   {
@@ -284,11 +294,11 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
       : { available: false, reason: context.cutRefusal },
     execute: (context) => {
       if (context.mode === "selection") return context.selection.cut();
-      const text = rowSubtreeText(context);
-      if (!text) return;
+      const formats = rowSubtreeFormats(context);
+      if (!formats) return;
       // Delete only once the clipboard actually holds the subtree; a rejected
       // write must leave the row where it is rather than lose it.
-      void writeOutlineClipboard(text)
+      void writeOutlineClipboard(formats)
         .then(() => context.store.deleteSubtree(context.node.id))
         .catch(() => undefined);
     }

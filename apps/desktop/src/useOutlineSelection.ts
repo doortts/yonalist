@@ -5,9 +5,9 @@ import {
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
 import {
+  buildOutlineClipboardFormats,
   normalizeSelectedRoots,
   outlineCutRefusal,
-  serializeSelectedOutline,
   writeOutlineClipboard,
   writeOutlineClipboardEvent
 } from "./outlineClipboard";
@@ -156,7 +156,7 @@ export function useOutlineSelection(
   const selectedNodes = selectedContentNodes.filter(
     (node) => selectedIds.includes(node.id)
   );
-  const { drafts, noteDrafts } = store.getSnapshot();
+  const { drafts, noteDrafts, sessionId } = store.getSnapshot();
   const rootKey = selectedRootIds.join("\u0000");
   const materializeForest = useCallback((
     rootIds: readonly string[],
@@ -176,19 +176,23 @@ export function useOutlineSelection(
     setForestStatus(complete ? "complete" : "incomplete");
     setForestRevision(confirmedRevision);
   }, []);
-  const clipboardText = useMemo(
+  const clipboardFormats = useMemo(
     () => selectionComplete
-      ? serializeSelectedOutline(
+      ? buildOutlineClipboardFormats(
         selectedContentNodes,
         drafts,
-        selectedIds
+        noteDrafts,
+        selectedIds,
+        sessionId ?? ""
       )
       : null,
     [
       selectedContentNodes,
       drafts,
+      noteDrafts,
       selectedIds,
-      selectionComplete
+      selectionComplete,
+      sessionId
     ]
   );
   const cutRefusal = useMemo(
@@ -210,16 +214,18 @@ export function useOutlineSelection(
   );
   const canCut = cutRefusal === null;
   const writeToEvent = (event: ClipboardEvent<HTMLElement>) => {
-    if (selectedIds.length === 0 || !clipboardText) return false;
+    if (selectedIds.length === 0 || !clipboardFormats) return false;
     event.preventDefault();
-    return writeOutlineClipboardEvent(event.clipboardData, clipboardText);
+    return writeOutlineClipboardEvent(event.clipboardData, clipboardFormats);
   };
   const copy = (event: ClipboardEvent<HTMLElement>) => {
     writeToEvent(event);
   };
   const copyToSystem = async () => {
-    if (!clipboardText) throw new Error("The selected outline cannot be copied.");
-    await writeOutlineClipboard(clipboardText);
+    if (!clipboardFormats) {
+      throw new Error("The selected outline cannot be copied.");
+    }
+    await writeOutlineClipboard(clipboardFormats);
   };
 
   return {

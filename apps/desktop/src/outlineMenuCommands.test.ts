@@ -8,7 +8,7 @@ import {
   type OutlineMenuMode,
   type OutlinePlatform
 } from "./outlineMenuCommands";
-import { serializeSelectedOutline } from "./outlineClipboard";
+import { buildOutlineClipboardFormats } from "./outlineClipboard";
 import { OUTLINE_TAG_MAX_ROWS } from "./outlineTagEdits";
 import { buildSelectionMovePlans } from "./selectionMoves";
 
@@ -108,7 +108,12 @@ function clipboardStore(nodes: readonly NoteView[], writeText: unknown) {
   return {
     deleteSubtree,
     store: {
-      getSnapshot: () => ({ nodes, drafts: {}, noteDrafts: {} }),
+      getSnapshot: () => ({
+        nodes,
+        drafts: {},
+        noteDrafts: {},
+        sessionId: "session-1"
+      }),
       deleteSubtree
     } as unknown as NotesStore
   };
@@ -512,8 +517,32 @@ describe("single-row Copy and Cut", () => {
     expect(writeText).toHaveBeenCalledWith("- a\n  - x\n    - deep");
     // The one-row menu path and a one-row selection must agree byte for byte.
     expect(writeText).toHaveBeenCalledWith(
-      serializeSelectedOutline(DEEP, {}, ["a"])
+      buildOutlineClipboardFormats(DEEP, {}, {}, ["a"], "session-1")!.plain
     );
+  });
+
+  // jsdom has no ClipboardItem, so the row path degrades to writeText above.
+  // With one present the same copy has to carry the rich payload too.
+  it("carries the rich payload when the clipboard takes an item", async () => {
+    class FakeClipboardItem {
+      constructor(readonly data: Record<string, Blob>) {}
+    }
+    const { ctx } = rowContext(vi.fn());
+    const write = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("ClipboardItem", FakeClipboardItem);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { write },
+      configurable: true
+    });
+
+    command("copy").execute(ctx);
+
+    await vi.waitFor(() => expect(write).toHaveBeenCalledOnce());
+    const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
+    expect(await item.data["text/html"]!.text()).toBe(
+      buildOutlineClipboardFormats(DEEP, {}, {}, ["a"], "session-1")!.html
+    );
+    vi.unstubAllGlobals();
   });
 
   it("cuts a row by writing the subtree first and deleting only after", async () => {

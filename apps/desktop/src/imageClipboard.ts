@@ -35,7 +35,9 @@ export function clipboardImageCandidates(
 
 /**
  * The image itself on the system clipboard, with its filename as the text
- * fallback so a plain-text target still gets an outline line back.
+ * fallback so a plain-text target still gets an outline line back, and the row's
+ * own rich payload in `html` so pasting it back here restores the node rather
+ * than importing the bytes again.
  *
  * Nothing is awaited before `write`: WebKit refuses a clipboard write once the
  * gesture that asked for it is over, so the bytes -- still being read off disk
@@ -44,7 +46,8 @@ export function clipboardImageCandidates(
 export async function writeImageClipboard(
   bytes: Uint8Array | Promise<Uint8Array>,
   mimeType: string,
-  originalName: string
+  originalName: string,
+  html?: string
 ): Promise<void> {
   const clipboard = navigator.clipboard;
   if (
@@ -60,7 +63,10 @@ export async function writeImageClipboard(
     "image/png": mimeType === "image/png" ? source : source.then(pngFrom),
     "text/plain": Promise.resolve(
       new Blob([`- ${originalName}`], { type: "text/plain" })
-    )
+    ),
+    ...html ? {
+      "text/html": Promise.resolve(new Blob([html], { type: "text/html" }))
+    } : {}
   })]);
 }
 

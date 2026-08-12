@@ -1,8 +1,12 @@
+import type { ImageView } from "../../../packages/contracts/generated/ImageView";
+import type { IpcMarkerKind } from "../../../packages/contracts/generated/IpcMarkerKind";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 
 const MAX_CLIPBOARD_NODES = 2_000;
 const MAX_CLIPBOARD_DEPTH = 64;
-const MAX_TITLE_UTF8_BYTES = 100_000;
+const MAX_TEXT_UTF8_BYTES = 100_000;
+const PAYLOAD_KIND = "yonalist-outline-clipboard";
+const PAYLOAD_VERSION = 1;
 
 export function normalizeSelectedRoots(
   nodes: readonly NoteView[],
@@ -25,15 +29,43 @@ export function normalizeSelectedRoots(
     .map((node) => node.id);
 }
 
-export function serializeSelectedOutline(
-  nodes: readonly NoteView[],
-  drafts: Readonly<Record<string, string>>,
-  selectedIds: readonly string[]
-): string | null {
-  const roots = normalizeSelectedRoots(nodes, selectedIds);
-  if (roots.length === 0 || roots.length > MAX_CLIPBOARD_NODES) return null;
+/**
+ * One copied row, its id dropped: a paste always mints its own, which is what
+ * lets the same payload land twice or land on another page.
+ */
+export interface OutlineClipboardNode {
+  readonly text: string;
+  readonly note: string;
+  readonly marker: IpcMarkerKind;
+  readonly completed: boolean;
+  readonly collapsed: boolean;
+  readonly starred: boolean;
+  /** The bytes stay in the asset store; this references them by hash. */
+  readonly image: ImageView | null;
+  readonly children: readonly OutlineClipboardNode[];
+}
 
-  const byId = new Map(nodes.map((node) => [node.id, node]));
+export interface OutlineClipboardPayload {
+  readonly kind: typeof PAYLOAD_KIND;
+  readonly version: typeof PAYLOAD_VERSION;
+  /** Which session wrote it, so a paste can weigh how stale it is. */
+  readonly sessionId: string;
+  readonly nodes: readonly OutlineClipboardNode[];
+}
+
+/**
+ * What one copy writes: the indented text every other app reads, and the HTML
+ * that carries the whole row back to us.
+ */
+export interface OutlineClipboardFormats {
+  readonly plain: string;
+  readonly html: string;
+  readonly payload: OutlineClipboardPayload;
+}
+
+function childrenBySortKey(
+  nodes: readonly NoteView[]
+): Map<string, NoteView[]> {
   const children = new Map<string, NoteView[]>();
   for (const node of nodes) {
     if (!node.parentId || node.deleted) continue;
@@ -45,31 +77,163 @@ export function serializeSelectedOutline(
     siblings.sort((left, right) =>
       left.sortKey - right.sortKey || left.id.localeCompare(right.id));
   }
+  return children;
+}
 
-  const pending = roots
-    .slice()
-    .reverse()
-    .map((id) => ({ id, depth: 0 }));
-  const lines: string[] = [];
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    const node = byId.get(current.id);
+/**
+ * The selected subtrees as a tree, or `null` when the selection is outside the
+ * bounds a paste accepts. Both written formats render from this one walk, so
+ * the text and the payload can never disagree about the shape.
+ */
+export function buildOutlineClipboardPayload(
+  nodes: readonly NoteView[],
+  drafts: Readonly<Record<string, string>>,
+  noteDrafts: Readonly<Record<string, string>>,
+  selectedIds: readonly string[],
+  sessionId: string
+): OutlineClipboardPayload | null {
+  const roots = normalizeSelectedRoots(nodes, selectedIds);
+  if (roots.length === 0 || roots.length > MAX_CLIPBOARD_NODES) return null;
+
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const children = childrenBySortKey(nodes);
+  const encoder = new TextEncoder();
+  let visited = 0;
+  const build = (id: string, depth: number): OutlineClipboardNode | null => {
+    const node = byId.get(id);
+    visited += 1;
     if (
       !node ||
-      current.depth >= MAX_CLIPBOARD_DEPTH ||
-      lines.length >= MAX_CLIPBOARD_NODES
+      depth >= MAX_CLIPBOARD_DEPTH ||
+      visited > MAX_CLIPBOARD_NODES
     ) {
       return null;
     }
-    const title = (drafts[node.id] ?? node.text).replace(/\r\n|\r|\n/g, " ");
-    if (new TextEncoder().encode(title).byteLength > MAX_TITLE_UTF8_BYTES) return null;
-    lines.push(`${"  ".repeat(current.depth)}${title ? `- ${title}` : "-"}`);
-    const nodeChildren = children.get(node.id) ?? [];
-    for (let index = nodeChildren.length - 1; index >= 0; index -= 1) {
-      pending.push({ id: nodeChildren[index].id, depth: current.depth + 1 });
+    // A title is one line by contract; a note keeps its own.
+    const text = (drafts[id] ?? node.text).replace(/\r\n|\r|\n/g, " ");
+    const note = (noteDrafts[id] ?? node.note).replace(/\r\n|\r/g, "\n");
+    if (
+      encoder.encode(text).byteLength > MAX_TEXT_UTF8_BYTES ||
+      encoder.encode(note).byteLength > MAX_TEXT_UTF8_BYTES
+    ) {
+      return null;
     }
+    const built: OutlineClipboardNode[] = [];
+    for (const child of children.get(id) ?? []) {
+      const subtree = build(child.id, depth + 1);
+      if (!subtree) return null;
+      built.push(subtree);
+    }
+    return {
+      text,
+      note,
+      marker: node.marker,
+      completed: node.completed,
+      collapsed: node.collapsed,
+      starred: node.starred,
+      image: node.image,
+      children: built
+    };
+  };
+
+  const built: OutlineClipboardNode[] = [];
+  for (const id of roots) {
+    const subtree = build(id, 0);
+    if (!subtree) return null;
+    built.push(subtree);
   }
+  return {
+    kind: PAYLOAD_KIND,
+    version: PAYLOAD_VERSION,
+    sessionId,
+    nodes: built
+  };
+}
+
+function plainLines(
+  nodes: readonly OutlineClipboardNode[],
+  depth: number,
+  lines: string[]
+): void {
+  for (const node of nodes) {
+    const indent = "  ".repeat(depth);
+    // Only a to-do row gets a box: a completed plain bullet stays a bullet, the
+    // rule the PDF export already prints by.
+    const box = node.marker === "todo"
+      ? node.completed ? " [x]" : " [ ]"
+      : "";
+    const marker = `${indent}-${box}`;
+    lines.push(node.text ? `${marker} ${node.text}` : marker);
+    // A note sits one level in from its own row, as the Markdown export writes
+    // it, and before the children so the reading order matches the screen.
+    if (node.note.length > 0) {
+      for (const line of node.note.split("\n")) {
+        lines.push(line ? `${indent}  > ${line}` : `${indent}  >`);
+      }
+    }
+    plainLines(node.children, depth + 1, lines);
+  }
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>]/gu, (character) =>
+    character === "&" ? "&amp;" : character === "<" ? "&lt;" : "&gt;");
+}
+
+function htmlList(nodes: readonly OutlineClipboardNode[]): string {
+  const items = nodes.map((node) => {
+    const box = node.marker === "todo"
+      ? node.completed ? "[x] " : "[ ] "
+      : "";
+    const children = node.children.length > 0 ? htmlList(node.children) : "";
+    return `<li>${box}${escapeHtml(node.text)}${children}</li>`;
+  });
+  return `<ul>${items.join("")}</ul>`;
+}
+
+/**
+ * The payload as an HTML comment at the very start of the markup: base64 keeps
+ * a `--` inside the JSON from closing the comment early and needs no escaping
+ * of its own, and a consumer that truncates the markup still keeps the comment.
+ */
+function payloadComment(payload: OutlineClipboardPayload): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  // btoa reads one byte per code unit, so the UTF-8 bytes go in as a byte
+  // string -- chunked, because spreading a whole large payload into one call
+  // overflows the argument list.
+  let binary = "";
+  for (let at = 0; at < bytes.length; at += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+  }
+  return `<!--${PAYLOAD_KIND}:${btoa(binary)}-->`;
+}
+
+function serializeOutlinePayload(payload: OutlineClipboardPayload): string {
+  const lines: string[] = [];
+  plainLines(payload.nodes, 0, lines);
   return lines.join("\n");
+}
+
+export function buildOutlineClipboardFormats(
+  nodes: readonly NoteView[],
+  drafts: Readonly<Record<string, string>>,
+  noteDrafts: Readonly<Record<string, string>>,
+  selectedIds: readonly string[],
+  sessionId: string
+): OutlineClipboardFormats | null {
+  const payload = buildOutlineClipboardPayload(
+    nodes,
+    drafts,
+    noteDrafts,
+    selectedIds,
+    sessionId
+  );
+  if (!payload) return null;
+  return {
+    plain: serializeOutlinePayload(payload),
+    html: `${payloadComment(payload)}${htmlList(payload.nodes)}`,
+    payload
+  };
 }
 
 const CUT_REFUSED_EMPTY = "Select at least one row to cut.";
@@ -133,26 +297,31 @@ export function outlineCutRefusal(
 
 export function writeOutlineClipboardEvent(
   clipboardData: Pick<DataTransfer, "setData">,
-  text: string
+  formats: OutlineClipboardFormats
 ): boolean {
   try {
-    clipboardData.setData("text/plain", text);
-    clipboardData.setData("text/markdown", text);
+    clipboardData.setData("text/plain", formats.plain);
+    clipboardData.setData("text/markdown", formats.plain);
+    // The rich payload rides in the HTML: a standard type every engine writes,
+    // and a rich-text app still gets a real list out of it.
+    clipboardData.setData("text/html", formats.html);
     return true;
   } catch {
     return false;
   }
 }
 
-export async function writeOutlineClipboard(text: string): Promise<void> {
+export async function writeOutlineClipboard(
+  formats: OutlineClipboardFormats
+): Promise<void> {
   const clipboard = navigator.clipboard;
   if (!clipboard) throw new Error("Clipboard access is unavailable.");
   if (typeof ClipboardItem === "function" && typeof clipboard.write === "function") {
     try {
-      const blob = new Blob([text], { type: "text/plain" });
       await clipboard.write([new ClipboardItem({
-        "text/plain": blob,
-        "text/markdown": new Blob([text], { type: "text/markdown" })
+        "text/plain": new Blob([formats.plain], { type: "text/plain" }),
+        "text/markdown": new Blob([formats.plain], { type: "text/markdown" }),
+        "text/html": new Blob([formats.html], { type: "text/html" })
       })]);
       return;
     } catch {
@@ -160,7 +329,7 @@ export async function writeOutlineClipboard(text: string): Promise<void> {
     }
   }
   if (typeof clipboard.writeText === "function") {
-    await clipboard.writeText(text);
+    await clipboard.writeText(formats.plain);
     return;
   }
   throw new Error("Clipboard write is unavailable.");
