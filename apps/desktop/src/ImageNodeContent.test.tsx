@@ -140,6 +140,40 @@ describe("ImageNodeContent", () => {
     expect(handle).not.toHaveAttribute("data-resizing");
   });
 
+  it("drops the drag flag when the width changes mid-drag", async () => {
+    const residency = new ImageResidency(
+      vi.fn().mockResolvedValue(Uint8Array.from([1])),
+      {
+        createObjectURL: vi.fn(() => "blob:cat"),
+        revokeObjectURL: vi.fn()
+      }
+    );
+    const store = {
+      images: { resize: vi.fn().mockResolvedValue(undefined) },
+      deleteSubtree: vi.fn()
+    } as unknown as NotesStore;
+    const view = render(
+      <ImageNodeContent node={node()} residency={residency} store={store} />
+    );
+    const handle = await screen.findByRole("separator", {
+      name: "Resize cat.png"
+    });
+    fireEvent.pointerDown(handle, { button: 0, pointerId: 11, clientX: 320 });
+
+    // An undo landing mid-drag replaces the width the drag started from.
+    const undone = node();
+    view.rerender(
+      <ImageNodeContent
+        node={{ ...undone, image: { ...undone.image!, displayWidth: 240 } }}
+        residency={residency}
+        store={store}
+      />
+    );
+    fireEvent.pointerUp(handle, { pointerId: 11, clientX: 360 });
+
+    expect(handle).not.toHaveAttribute("data-resizing");
+  });
+
   it("keeps a run of keyboard nudges in one undo step", async () => {
     const residency = new ImageResidency(
       vi.fn().mockResolvedValue(Uint8Array.from([1])),

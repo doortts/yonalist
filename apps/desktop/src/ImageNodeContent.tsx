@@ -117,6 +117,7 @@ export function ImageNodeContent({
   useEffect(() => {
     setPreviewWidth(node.image?.displayWidth ?? 320);
     pointerResize.current = null;
+    setResizing(false);
     keyboardResizeStart.current = null;
     setLightboxOpen(false);
   }, [node.image?.contentHash, node.image?.displayWidth]);
