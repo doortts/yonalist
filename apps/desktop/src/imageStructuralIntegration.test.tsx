@@ -275,6 +275,23 @@ describe("image clipboard chords at the caret station", () => {
     expect(write).toHaveBeenCalledOnce();
   });
 
+  // The caret was standing on the row that just went away, so it has to be
+  // handed somewhere rather than dropped on the document.
+  it("hands the caret to the row above the image it cut", async () => {
+    const { notesApi, station } = await stationOf();
+
+    fireEvent.keyDown(station, { key: "x", metaKey: true });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: { kind: "deleteSubtrees", ids: ["image"] }
+      })
+    ));
+    await waitFor(() => expect(
+      screen.getByDisplayValue("First thought")
+    ).toHaveFocus());
+  });
+
   it("refuses to cut an image that carries a child", async () => {
     const { notesApi, write, station } = await stationOf(childBoot());
 

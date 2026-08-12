@@ -22,6 +22,8 @@ import { OutlineIndex } from "./outlineIndex";
 import type { PaneFocusSnapshot } from "./appNavigation";
 import { useImageIngest } from "./useImageIngest";
 import { writeImageClipboard } from "./imageClipboard";
+import { focusOutlineEditor } from "./outlineFocus";
+import { subtreeIds } from "./storeState";
 import { NotesExportBoundary } from "./NotesExportBoundary";
 import { useOutlineWindow } from "./useOutlineWindow";
 import { registerOutlinePane } from "./outlinePaneRegistry";
@@ -230,9 +232,35 @@ export function NotesOutline({
     selection.clear();
     setSelectionFeedback("");
   };
+  /**
+   * The caret is standing in one of the rows about to go, so removal hands it
+   * to the row above -- the row below when there is none, the heading when the
+   * outline is emptied. Read before the command, off the rows as they still
+   * stand.
+   */
+  const handOffCaret = (rootIds: readonly string[]): (() => void) => {
+    const removed = new Set(subtreeIds(state.nodes, rootIds));
+    const first = bodyNodes.findIndex((node) => removed.has(node.id));
+    const previous = first > 0 ? bodyNodes[first - 1] : undefined;
+    const next = first < 0
+      ? undefined
+      : bodyNodes.slice(first + 1).find((node) => !removed.has(node.id));
+    const target = previous ?? next;
+    return () => {
+      const scope = scopeRef.current;
+      if (!scope) return;
+      requestAnimationFrame(() => focusOutlineEditor(
+        scope,
+        target?.id ?? outlineRootId,
+        previous ? "end" : "start"
+      ));
+    };
+  };
   const deleteSelection = async () => {
+    const takeCaret = handOffCaret(selection.selectedRootIds);
     await store.deleteSubtrees(selection.selectedRootIds);
     clearSelection();
+    takeCaret();
   };
   // One image on its own goes to the clipboard as the image, not as the line
   // its filename would serialize to.
@@ -306,9 +334,11 @@ export function NotesOutline({
       setSelectionFeedback(refusal);
       return;
     }
+    const takeCaret = handOffCaret([nodeId]);
     putImageOnClipboard(nodeId, async () => {
       await store.deleteSubtrees([nodeId]);
       clearSelection();
+      takeCaret();
       setSelectionFeedback("Cut image.");
     });
   };
