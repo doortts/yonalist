@@ -1,3 +1,4 @@
+import type { IpcImportNode } from "../../../packages/contracts/generated/IpcImportNode";
 import { previewNotesApi } from "./previewApi";
 import { SORT_KEY_STEP } from "./outlineSortKeys";
 
@@ -799,7 +800,100 @@ describe("browser-only preview adapter", () => {
         }]
       }
     })).rejects.toThrow("no longer in the image store");
+    // A resident hash that lies about its length is just as stale: the bytes it
+    // names are not the bytes the row would read back.
+    await expect(previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-short-paste",
+      baseRevision: pasted.revision,
+      historyGroup: null,
+      command: {
+        kind: "importNodes",
+        parent_id: pageId,
+        before_id: null,
+        nodes: [{
+          id: "preview-paste-short",
+          parentId: pageId,
+          text: "sample.png",
+          image: { ...image, byteLength: image.byteLength + 1 }
+        }]
+      }
+    })).rejects.toThrow("no longer in the image store");
     expect((await previewNotesApi.bootstrap()).viewport?.nodes.map((node) => node.id))
       .not.toContain("preview-paste-stale");
+  });
+
+  it("leaves undo and redo alone when it refuses a paste", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    const created = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-refused-setup",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: {
+        kind: "createNode",
+        id: "preview-refused-row",
+        parent_id: pageId,
+        before_id: null,
+        text: "Undo me"
+      }
+    });
+    const undone = await previewNotesApi.undo({
+      sessionId: boot.sessionId,
+      baseRevision: created.revision
+    });
+    expect(undone.history.redoDepth).toBe(1);
+    const image = {
+      contentHash: "a".repeat(64),
+      originalName: "sample.png",
+      mimeType: "image/png",
+      byteLength: 3,
+      pixelWidth: 1,
+      pixelHeight: 1,
+      displayWidth: 320
+    };
+    const refuse = (requestId: string, node: IpcImportNode) =>
+      previewNotesApi.execute({
+        sessionId: boot.sessionId,
+        requestId,
+        baseRevision: undone.revision,
+        historyGroup: null,
+        command: {
+          kind: "importNodes",
+          parent_id: pageId,
+          before_id: null,
+          nodes: [node]
+        }
+      });
+
+    // Hash shape, the MIME allowlist and the 100KB note bound are all checks the
+    // Rust conversion runs, so the same payloads have to fail here.
+    await expect(refuse("preview-refused-hash", {
+      id: "preview-refused-hash-row",
+      parentId: pageId,
+      text: "sample.png",
+      image: { ...image, contentHash: "A".repeat(64) }
+    })).rejects.toThrow("image reference is invalid");
+    await expect(refuse("preview-refused-mime", {
+      id: "preview-refused-mime-row",
+      parentId: pageId,
+      text: "sample.png",
+      image: { ...image, mimeType: "image/svg+xml" }
+    })).rejects.toThrow("image reference is invalid");
+    await expect(refuse("preview-refused-note", {
+      id: "preview-refused-note-row",
+      parentId: pageId,
+      text: "Buy milk",
+      note: "x".repeat(100_001)
+    })).rejects.toThrow("too large");
+
+    const redone = await previewNotesApi.redo({
+      sessionId: boot.sessionId,
+      baseRevision: undone.revision
+    });
+    expect(redone.changedNodes.map((node) => node.id))
+      .toContain("preview-refused-row");
+    expect(redone.history.redoDepth).toBe(0);
   });
 });

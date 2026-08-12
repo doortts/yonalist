@@ -184,8 +184,13 @@ impl ImageAssetPort for LocalImageAssets {
 
     fn contains(&self, image: &NoteImage) -> bool {
         // The reference names the exact file a later read would open, so the
-        // path decides: a hash whose bytes were reconciled away is gone.
-        verify_regular_file(&self.root.join(image.relative_path())).is_ok()
+        // path decides: a hash whose bytes were reconciled away is gone. The
+        // claimed length has to agree as well -- a reference that lies about it
+        // would land a row whose every read fails integrity verification.
+        let path = self.root.join(image.relative_path());
+        verify_regular_file(&path).is_ok()
+            && fs::symlink_metadata(&path)
+                .is_ok_and(|metadata| metadata.len() == image.byte_length())
     }
 
     fn rollback(&self, images: &[PublishedImage]) {

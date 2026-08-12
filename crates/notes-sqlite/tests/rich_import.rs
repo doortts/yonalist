@@ -4,7 +4,7 @@ use std::io::Cursor;
 use image::{DynamicImage, ImageFormat};
 use notes_application::{
     CommandEnvelope, HistoryRequest, ImageAssetPort, ImageImportSource, ImageSource,
-    IpcImportImage, IpcImportNode, IpcMarkerKind, IpcNotesCommand, NotesService,
+    IpcImportImage, IpcImportNode, IpcMarkerKind, IpcNotesCommand, NotesErrorCode, NotesService,
 };
 use notes_core::{NodeId, NoteMarkerKind, NoteNodeKind};
 use notes_sqlite::{LocalImageAssets, SqliteStorage};
@@ -175,7 +175,7 @@ fn a_paste_whose_image_bytes_are_gone_commits_nothing() {
         .execute_with_assets(command("paste", 1, paste(Some(image))), &assets)
         .expect_err("a stale image reference must be rejected");
 
-    assert!(error.message.contains("no longer in the image store"));
+    assert_eq!(error.code, NotesErrorCode::InvalidCommand);
     assert_eq!(storage.revision().expect("revision"), 1);
     assert!(storage.node("pasted-text").expect("query").is_none());
     assert!(storage.node("pasted-image").expect("query").is_none());

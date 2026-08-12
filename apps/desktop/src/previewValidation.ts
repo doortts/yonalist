@@ -1,9 +1,61 @@
+import type { IpcImportNode } from "../../../packages/contracts/generated/IpcImportNode";
 import type { IpcNotesCommand } from "../../../packages/contracts/generated/IpcNotesCommand";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 
+const IMAGE_CONTENT_HASH = /^[0-9a-f]{64}$/u;
+// notes-core derives an asset's extension from these four and rejects the rest.
+const IMAGE_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp"
+]);
+const MAX_IMPORT_TEXT_BYTES = 100_000;
+
+/** Answers whether the asset store still holds exactly those bytes. */
+export type PreviewImageResidency = (
+  contentHash: string,
+  byteLength: number
+) => boolean;
+
+/**
+ * Every check the Rust conversion runs before a row lands, so a paste the
+ * desktop would refuse is refused here too — and refused before the caller
+ * touches history, so a rejected paste leaves undo and redo alone.
+ */
+function validateImportedNode(
+  node: IpcImportNode,
+  holdsImage: PreviewImageResidency
+): void {
+  const encoder = new TextEncoder();
+  if (
+    encoder.encode(node.text).byteLength > MAX_IMPORT_TEXT_BYTES ||
+    encoder.encode(node.note ?? "").byteLength > MAX_IMPORT_TEXT_BYTES
+  ) {
+    throw new Error("An imported title or note is too large.");
+  }
+  const image = node.image;
+  if (!image) return;
+  if (
+    !IMAGE_CONTENT_HASH.test(image.contentHash) ||
+    !IMAGE_MIME_TYPES.has(image.mimeType)
+  ) {
+    throw new Error("A pasted image reference is invalid.");
+  }
+  if (!holdsImage(image.contentHash, image.byteLength)) {
+    throw new Error("A pasted image is no longer in the image store.");
+  }
+  // notes-core answers DomainError::InvalidImage here: an image node carries
+  // its file name as text.
+  if (node.text && node.text !== image.originalName) {
+    throw new Error("an imported image node's text must be its file name");
+  }
+}
+
 export function validatePreviewBatch(
   nodes: readonly NoteView[],
-  command: IpcNotesCommand
+  command: IpcNotesCommand,
+  holdsImage: PreviewImageResidency
 ): void {
   const existing = new Set(nodes.map((node) => node.id));
   const requireIds = (ids: readonly string[]) => {
@@ -20,6 +72,7 @@ export function validatePreviewBatch(
           throw new Error("Preview import is invalid.");
         }
         available.add(node.id);
+        validateImportedNode(node, holdsImage);
       }
       break;
     }

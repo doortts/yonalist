@@ -8,7 +8,7 @@ use notes_application::{
     NotesErrorCode, NotesService,
 };
 use notes_core::MAX_IMAGE_BYTES;
-use notes_core::NodeId;
+use notes_core::{NodeId, NoteImage};
 use notes_sqlite::{LocalImageAssets, SqliteStorage};
 
 fn id(value: &str) -> NodeId {
@@ -69,6 +69,33 @@ fn valid_image_is_decoded_hashed_published_and_verified_on_read() {
         format!("{}.png", image.content_hash())
     );
     assert_eq!(assets.read(image).expect("verified read"), png());
+}
+
+// A paste references bytes it never sends, so the length it claims is the one
+// thing `contains` can still disagree with. Accepting a lying one would land a
+// row whose every later read fails integrity verification.
+#[test]
+fn a_reference_that_lies_about_its_byte_length_is_not_held() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let assets = LocalImageAssets::open(directory.path()).expect("open asset store");
+    let published = assets
+        .prepare(&[source("image-1", "cat.png", Some("image/png"))])
+        .expect("publish image");
+    let image = &published[0].image;
+    assert!(assets.contains(image));
+
+    let lying = NoteImage::try_referenced(
+        image.content_hash(),
+        image.original_name(),
+        image.mime_type(),
+        image.byte_length() + 1,
+        image.pixel_width(),
+        image.pixel_height(),
+        image.display_width(),
+    )
+    .expect("a reference may claim any length");
+
+    assert!(!assets.contains(&lying));
 }
 
 #[test]

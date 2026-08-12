@@ -131,9 +131,10 @@ export class PreviewImages {
   }
 
   // A pasted node references bytes by hash, the way the Rust asset store is
-  // asked whether they are still there.
-  holds(contentHash: string): boolean {
-    return this.blobs.has(contentHash);
+  // asked whether they are still there. The claimed length has to agree too, or
+  // a reference that lies about it lands a row every later read fails on.
+  holds(contentHash: string, byteLength: number): boolean {
+    return this.blobs.get(contentHash)?.size === byteLength;
   }
 
   async read(request: ImageReadRequest): Promise<Uint8Array> {
