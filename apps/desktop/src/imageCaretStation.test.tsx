@@ -150,6 +150,28 @@ describe("image caret station", () => {
       .toHaveAttribute("tabindex", "-1");
   });
 
+  // Taking one row anchors the band on it. A plain click leaves an anchor
+  // behind with nothing selected, and growing from that one would hand back a
+  // band reaching all the way to whichever row was clicked last.
+  it("takes only the image after a click anchored another row", async () => {
+    const { view } = await renderImageOutline();
+    const [before] = stations(view);
+    fireEvent.pointerDown(screen.getByDisplayValue("First thought"), {
+      button: 0,
+      pointerId: 21
+    });
+    fireEvent.pointerUp(screen.getByDisplayValue("First thought"), {
+      pointerId: 21
+    });
+    before!.focus();
+
+    fireEvent.keyDown(before!, { key: "ArrowRight", shiftKey: true });
+
+    expect([...view.container.querySelectorAll<HTMLElement>(
+      ".notes-node[data-range-selected='true']"
+    )].map((row) => row.dataset.outlineId)).toEqual(["image"]);
+  });
+
   it("takes the image with a shifted arrow and collapses back off it",
     async () => {
       const { view } = await renderImageOutline();
