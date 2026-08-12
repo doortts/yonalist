@@ -162,6 +162,23 @@ describe("ImageNodeContent", () => {
       .toHaveClass("notes-image-caret-stop");
   });
 
+  it("leaves out the caret station where no keys are handled", async () => {
+    const residency = new ImageResidency(
+      vi.fn().mockResolvedValue(Uint8Array.from([1])),
+      {
+        createObjectURL: vi.fn(() => "blob:cat"),
+        revokeObjectURL: vi.fn()
+      }
+    );
+    const view = render(
+      <ImageNodeContent node={node()} residency={residency} />
+    );
+    await screen.findByRole("img", { name: "cat.png" });
+
+    expect(view.container.querySelector(".notes-image-caret-stop"))
+      .toBeNull();
+  });
+
   it("drops the drag flag when the width changes mid-drag", async () => {
     const residency = new ImageResidency(
       vi.fn().mockResolvedValue(Uint8Array.from([1])),

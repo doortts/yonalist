@@ -404,15 +404,19 @@ export function ImageNodeContent({
             </>
           )}
         </div>
-        <div
-          ref={caretStopRef}
-          className="notes-image-caret-stop"
-          role="group"
-          tabIndex={-1}
-          data-node-id={node.id}
-          data-outline-field="image"
-          aria-label={`Cursor after ${originalName}`}
-        />
+        {/* The caret only belongs on a surface that answers keys: the zoomed
+            header renders the same node without one. */}
+        {onKeyDown && (
+          <div
+            ref={caretStopRef}
+            className="notes-image-caret-stop"
+            role="group"
+            tabIndex={-1}
+            data-node-id={node.id}
+            data-outline-field="image"
+            aria-label={`Cursor after ${originalName}`}
+          />
+        )}
       </div>
       {actionError && (
         <div className="notes-attachment-error" role="alert">
