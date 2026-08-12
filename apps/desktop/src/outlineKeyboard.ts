@@ -16,6 +16,12 @@ export interface OutlineKeyInput {
   readonly supportingNote?: string;
   readonly selectionStart: number | null;
   readonly selectionEnd: number | null;
+  /**
+   * Which end of a text selection the caret sits on. WebKit reports `"none"`
+   * for a span it never gave a direction; an absent or `"none"` direction is
+   * read as unknown, and a sweep over one only ever grows it.
+   */
+  readonly selectionDirection?: "forward" | "backward" | "none";
   readonly firstVisualLine: boolean;
   readonly lastVisualLine: boolean;
   readonly visibleNodes: readonly NoteView[];
@@ -73,7 +79,17 @@ export type OutlineKeyIntent =
   | { readonly kind: "focusNote" }
   | { readonly kind: "copyImage" }
   | { readonly kind: "cutImage" }
+  /**
+   * Puts the band's far end on `headId`. Naming the key's own row takes just
+   * that row: with no band up yet, the sweep anchors where it starts.
+   */
   | { readonly kind: "extendSelection"; readonly headId: string }
+  | {
+      readonly kind: "selectTextEdge";
+      readonly start: number;
+      readonly end: number;
+      readonly direction: "forward" | "backward";
+    }
   | { readonly kind: "clearSelection" }
   | { readonly kind: "consume" };
 
@@ -243,6 +259,10 @@ export function resolveOutlineKey(
         ? { kind: "consume" }
         : { kind: "move", direction };
     }
+    // Shift and an arrow sweep in three stages: over the row's own text first,
+    // then over the row itself, then over its neighbours. Each stage begins
+    // where the one before it left the caret, so holding the chord climbs them
+    // in order.
     if (
       input.shiftKey &&
       !input.altKey &&
@@ -250,15 +270,53 @@ export function resolveOutlineKey(
       !input.metaKey &&
       (input.key === "ArrowUp" || input.key === "ArrowDown")
     ) {
-      const currentId = input.selectionHeadId ?? input.nodeId;
-      const index = input.visibleIndex?.positionOf(currentId) ??
-        input.visibleNodes.findIndex((candidate) => candidate.id === currentId);
-      const target = input.visibleNodes[
-        index + (input.key === "ArrowUp" ? -1 : 1)
-      ];
-      return index >= 0 && target
-        ? { kind: "extendSelection", headId: target.id }
-        : { kind: "consume" };
+      const up = input.key === "ArrowUp";
+      if (input.hasSelection) {
+        const currentId = input.selectionHeadId ?? input.nodeId;
+        const index = input.visibleIndex?.positionOf(currentId) ??
+          input.visibleNodes.findIndex(
+            (candidate) => candidate.id === currentId
+          );
+        const target = input.visibleNodes[index + (up ? -1 : 1)];
+        return index >= 0 && target
+          ? { kind: "extendSelection", headId: target.id }
+          : { kind: "consume" };
+      }
+      if (!validSelection(input)) return null;
+      // The caret is one end of the text selection and the anchor the other; a
+      // sweep leaves the anchor where it stands and carries the caret on to the
+      // row's edge. A row with no text to sweep -- an empty bullet, an image --
+      // has both ends on the one edge, so it goes straight to taking the row.
+      //
+      // WKWebView, which is what ships, hands back `"none"` for a span it never
+      // gave a direction -- a span the mouse drew, most of the time. Guessing
+      // its caret end wrong would drop the far half of what the user had, so an
+      // undirected span keeps both ends and only grows: the anchor is the end
+      // the arrow points away from.
+      const undirected = input.selectionDirection === undefined ||
+        input.selectionDirection === "none";
+      const backward = input.selectionDirection === "backward" ||
+        (undirected && up);
+      const anchor = backward ? input.selectionEnd! : input.selectionStart!;
+      const caret = backward ? input.selectionStart! : input.selectionEnd!;
+      if (up) {
+        return caret === 0
+          ? { kind: "extendSelection", headId: input.nodeId }
+          : {
+              kind: "selectTextEdge",
+              start: 0,
+              end: anchor,
+              direction: "backward"
+            };
+      }
+      return caret === input.value.length
+        ? { kind: "extendSelection", headId: input.nodeId }
+        : {
+            kind: "selectTextEdge",
+            start: anchor,
+            end: input.value.length,
+            direction: "forward"
+          };
     }
     if (
       input.key === "Escape" &&

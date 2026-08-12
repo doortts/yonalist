@@ -393,7 +393,9 @@ describe("v2 outline keyboard intent resolver", () => {
     expect(resolveOutlineKey(input({
       key: "ArrowDown",
       shiftKey: true,
-      nodeId: "parent"
+      nodeId: "parent",
+      selectionHeadId: "parent",
+      hasSelection: true
     }))).toEqual({ kind: "extendSelection", headId: "child" });
     expect(resolveOutlineKey(input({
       key: "ArrowDown",
@@ -416,6 +418,182 @@ describe("v2 outline keyboard intent resolver", () => {
       key: "Escape",
       hasSelection: false
     }))).toBeNull();
+  });
+
+  // Text first, then the row, then its neighbours: each stage starts where the
+  // one before it left the caret, so the same chord climbs them in order.
+  it("sweeps a row's own text before it takes the row", () => {
+    // Mid-row, so the sweep only reaches the edge the arrow points at.
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      shiftKey: true,
+      selectionStart: 5,
+      selectionEnd: 5
+    }))).toEqual({
+      kind: "selectTextEdge", start: 0, end: 5, direction: "backward"
+    });
+    expect(resolveOutlineKey(input({
+      key: "ArrowDown",
+      shiftKey: true,
+      selectionStart: 5,
+      selectionEnd: 5
+    }))).toEqual({
+      kind: "selectTextEdge", start: 5, end: 13, direction: "forward"
+    });
+    // The caret standing on the edge the arrow points at has no text left to
+    // sweep, so the next one takes the row itself.
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      shiftKey: true,
+      selectionStart: 0,
+      selectionEnd: 0
+    }))).toEqual({ kind: "extendSelection", headId: "next" });
+    expect(resolveOutlineKey(input({
+      key: "ArrowDown",
+      shiftKey: true,
+      selectionStart: 13,
+      selectionEnd: 13
+    }))).toEqual({ kind: "extendSelection", headId: "next" });
+    // From the row's near edge the sweep runs the whole way across it.
+    expect(resolveOutlineKey(input({
+      key: "ArrowDown",
+      shiftKey: true,
+      selectionStart: 0,
+      selectionEnd: 0
+    }))).toEqual({
+      kind: "selectTextEdge", start: 0, end: 13, direction: "forward"
+    });
+  });
+
+  it("leaves the anchor of a swept span where it stands", () => {
+    // Swept rightwards from 5: the caret is the far end, the anchor stays at 5.
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      shiftKey: true,
+      selectionStart: 5,
+      selectionEnd: 8,
+      selectionDirection: "forward"
+    }))).toEqual({
+      kind: "selectTextEdge", start: 0, end: 5, direction: "backward"
+    });
+    // Swept leftwards to 5: the anchor is the 8 end, and the caret carries on.
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      shiftKey: true,
+      selectionStart: 5,
+      selectionEnd: 8,
+      selectionDirection: "backward"
+    }))).toEqual({
+      kind: "selectTextEdge", start: 0, end: 8, direction: "backward"
+    });
+    expect(resolveOutlineKey(input({
+      key: "ArrowDown",
+      shiftKey: true,
+      selectionStart: 5,
+      selectionEnd: 8,
+      selectionDirection: "backward"
+    }))).toEqual({
+      kind: "selectTextEdge", start: 8, end: 13, direction: "forward"
+    });
+    // A span already touching the edge the arrow points at takes the row.
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      shiftKey: true,
+      selectionStart: 0,
+      selectionEnd: 8,
+      selectionDirection: "backward"
+    }))).toEqual({ kind: "extendSelection", headId: "next" });
+    // A forward span whose anchor already sits on the start has nowhere left to
+    // carry the caret, so the press collapses it. Native does the same; the row
+    // comes on the press after.
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      shiftKey: true,
+      selectionStart: 0,
+      selectionEnd: 8,
+      selectionDirection: "forward"
+    }))).toEqual({
+      kind: "selectTextEdge", start: 0, end: 0, direction: "backward"
+    });
+    // The caret on the row's far end sweeps back to its start.
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      shiftKey: true,
+      selectionStart: 13,
+      selectionEnd: 13
+    }))).toEqual({
+      kind: "selectTextEdge", start: 0, end: 13, direction: "backward"
+    });
+  });
+
+  // WKWebView reports no direction for a span the mouse drew, and guessing its
+  // caret end wrong would drop the far half of it. An undirected span keeps both
+  // ends: the anchor is the end the arrow points away from.
+  it("only grows a span whose direction the engine never gave", () => {
+    for (const selectionDirection of ["none", undefined] as const) {
+      expect(resolveOutlineKey(input({
+        key: "ArrowUp",
+        shiftKey: true,
+        selectionStart: 5,
+        selectionEnd: 8,
+        selectionDirection
+      })), `${selectionDirection} up`).toEqual({
+        kind: "selectTextEdge", start: 0, end: 8, direction: "backward"
+      });
+      expect(resolveOutlineKey(input({
+        key: "ArrowDown",
+        shiftKey: true,
+        selectionStart: 5,
+        selectionEnd: 8,
+        selectionDirection
+      })), `${selectionDirection} down`).toEqual({
+        kind: "selectTextEdge", start: 5, end: 13, direction: "forward"
+      });
+      // An undirected span already spanning the row takes the row either way.
+      for (const key of ["ArrowUp", "ArrowDown"]) {
+        expect(resolveOutlineKey(input({
+          key,
+          shiftKey: true,
+          selectionStart: 0,
+          selectionEnd: 13,
+          selectionDirection
+        })), `${selectionDirection} ${key}`)
+          .toEqual({ kind: "extendSelection", headId: "next" });
+      }
+    }
+  });
+
+  // Nothing to sweep means the row is the only thing the chord can take.
+  it("takes the whole row when it holds no text to sweep", () => {
+    for (const key of ["ArrowUp", "ArrowDown"]) {
+      expect(resolveOutlineKey(input({
+        key,
+        shiftKey: true,
+        value: "",
+        selectionStart: 0,
+        selectionEnd: 0
+      })), key).toEqual({ kind: "extendSelection", headId: "next" });
+      expect(handleImageNodeKeyDown(input({
+        key,
+        shiftKey: true,
+        nodeId: "next"
+      })), key).toEqual({ kind: "extendSelection", headId: "next" });
+    }
+  });
+
+  // A wrapped row is still one row: the sweep runs to its edge in one press
+  // rather than climbing its visual lines.
+  it("sweeps past a wrapped row's visual lines in one press", () => {
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      shiftKey: true,
+      selectionStart: 5,
+      selectionEnd: 5,
+      firstVisualLine: false,
+      lastVisualLine: false
+    }))).toEqual({
+      kind: "selectTextEdge", start: 0, end: 5, direction: "backward"
+    });
   });
 
   it("crosses rows with Left and Right only at a collapsed caret boundary", () => {

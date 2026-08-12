@@ -163,6 +163,7 @@ export function handleOutlineKeyDown(
     supportingNote,
     selectionStart: event.currentTarget.selectionStart,
     selectionEnd: event.currentTarget.selectionEnd,
+    selectionDirection: event.currentTarget.selectionDirection ?? undefined,
     firstVisualLine: caretLines.first,
     lastVisualLine: caretLines.last,
     visibleNodes,
@@ -177,6 +178,14 @@ export function handleOutlineKeyDown(
   if (!intent) return;
 
   event.preventDefault();
+  // The sweep over a row's own text stays inside the field it started in, so it
+  // needs no outline scope and no store round trip.
+  if (intent.kind === "selectTextEdge") {
+    event.currentTarget.setSelectionRange(
+      intent.start, intent.end, intent.direction
+    );
+    return;
+  }
   const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
   if (!scope) return;
   if (hasSelection) {
@@ -493,6 +502,8 @@ function executeRowIntent(
     // Only the image surface resolves these, and it routes them itself.
     case "copyImage":
     case "cutImage":
+    // Only a text field resolves this one, and it answers before it gets here.
+    case "selectTextEdge":
       return;
     case "split":
       {
