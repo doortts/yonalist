@@ -9,6 +9,7 @@ const stillStyles = atRule(
 );
 const shownLine = ".notes-image-resize-handle[data-resizing] " +
   ".notes-image-resize-line";
+const frame = ".notes-image-attachment-frame";
 
 describe("image node styles", () => {
   it("blinks the caret bar on focus in the text caret's own shape", () => {
@@ -30,12 +31,18 @@ describe("image node styles", () => {
       .toContain("align-items: flex-start;");
   });
 
-  it("rings the image on click and caret arrival but never on Tab", () => {
+  // The ring hugs the frame, never the row: the node content is the full row
+  // width, so a ring on it wrapped the bullet and everything beside it.
+  it("rings the image on click, caret arrival, and range selection", () => {
     expect(rule(notesStyles, ".notes-image-node-content:focus-visible"))
       .toContain("outline: 0;");
+    expect(notesStyles).not.toContain(
+      ".notes-image-node-content:focus:not(:focus-visible) {"
+    );
     for (const selector of [
-      ".notes-image-node-content:focus:not(:focus-visible)",
-      ".notes-image-node-content:has(.notes-image-caret-stop:focus)"
+      ".notes-image-node-content:focus:not(:focus-visible) " + frame,
+      ".notes-image-frame-row:has(> .notes-image-caret-stop:focus) " + frame,
+      `.notes-node[data-range-selected="true"] ${frame}`
     ]) {
       const ring = rule(notesStyles, selector);
       expect(ring).toContain("outline: 2px solid var(--accent);");

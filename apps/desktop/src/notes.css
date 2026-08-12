@@ -3141,19 +3141,29 @@ body.is-outline-dragging * {
 }
 
 /* Tab is not what selects an image, so the shared `.notes-node :focus-visible`
-   ring is turned off here rather than inherited -- the two rules under it draw
-   the ring for the entries that do select one. They stay apart: a browser
+   ring is turned off here rather than inherited -- the rules under it draw the
+   ring for the entries that do select one. Each draws on the frame, never on
+   the node content: that one is the full row width, so a ring on it wrapped
+   the bullet and the margin beside the image too. They stay apart: a browser
    without `:has()` would drop the click ring too if they shared a block. */
 .notes-image-node-content:focus-visible {
   outline: 0;
 }
 
-.notes-image-node-content:focus:not(:focus-visible) {
+.notes-image-node-content:focus:not(:focus-visible) .notes-image-attachment-frame {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.notes-image-node-content:has(.notes-image-caret-stop:focus) {
+.notes-image-frame-row:has(> .notes-image-caret-stop:focus) .notes-image-attachment-frame {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The row-background tint a range selection paints is invisible behind an
+   image, so a selected image carries the ring instead -- otherwise a shifted
+   arrow onto one looks like nothing happened. */
+.notes-node[data-range-selected="true"] .notes-image-attachment-frame {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
