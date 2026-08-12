@@ -164,7 +164,14 @@ export function useOutlineSelection(
     complete: boolean,
     confirmedRevision: number
   ) => {
-    setDirectIds(rootIds);
+    // The same roots have to keep the same array. The pane asks for the forest
+    // from an effect that watches this list's identity, so answering with a
+    // fresh copy of the roots it already holds sets it asking again, forever.
+    setDirectIds((current) =>
+      current.length === rootIds.length &&
+      current.every((id, at) => id === rootIds[at])
+        ? current
+        : rootIds);
     setAuthoritativeNodes(completeNodes);
     setForestStatus(complete ? "complete" : "incomplete");
     setForestRevision(confirmedRevision);
