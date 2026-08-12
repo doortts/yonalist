@@ -96,11 +96,29 @@ describe("image node styles", () => {
     );
   });
 
-  it("lets the lightbox image render at natural size", () => {
+  // The stage carries the box a turned image occupies, so it takes the centring
+  // while the image is free to be scaled and rotated inside it.
+  it("centres the lightbox stage and turns the image inside it", () => {
+    const stage = rule(notesStyles, ".notes-image-lightbox-stage");
+    expect(stage).toContain("margin: auto;");
+    expect(stage).toContain("flex: none;");
     const image = rule(notesStyles, ".notes-image-lightbox-image");
+    expect(image).toContain("position: absolute;");
     expect(image).toContain("max-width: none;");
     expect(image).toContain("max-height: none;");
-    expect(image).toContain("margin: auto;");
+  });
+
+  it("strips the chrome off the lightbox controls", () => {
+    const control = rule(notesStyles, ".notes-image-lightbox-control");
+    expect(control).toContain("border: 0;");
+    expect(control).toContain("background: none;");
+    expect(control).toContain("padding: 0;");
+    // The bar itself lets clicks through, so the controls take their own.
+    expect(rule(notesStyles, ".notes-image-lightbox-controls"))
+      .toContain("pointer-events: auto;");
+    // Nothing to drag while the whole image is on screen.
+    expect(rule(notesStyles, ".notes-image-lightbox-scroll[data-fits]"))
+      .toContain("overflow: hidden;");
   });
 
   it("keeps the lightbox bar out of the pointer's way", () => {

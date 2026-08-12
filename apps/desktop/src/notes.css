@@ -3286,26 +3286,40 @@ body.is-outline-dragging * {
 .notes-image-lightbox-scroll {
   position: absolute;
   display: flex;
-  padding: 48px;
+  padding: 24px;
   inset: 0;
   overflow: auto;
   cursor: grab;
+}
+
+/* Nothing to drag while the whole image is on screen. */
+.notes-image-lightbox-scroll[data-fits] {
+  overflow: hidden;
+  cursor: default;
 }
 
 .notes-image-lightbox-scroll[data-panning] {
   cursor: grabbing;
 }
 
-/* `margin: auto` centers an image smaller than the viewport and collapses to
-   zero on a larger one, so overflow scrolls from the top-left instead of
-   clipping it the way centered placement would. */
+/* The box the turned image occupies. `margin: auto` centers it while it fits
+   and collapses to zero once it does not, so overflow scrolls from the
+   top-left instead of clipping the way centered placement would. */
+.notes-image-lightbox-stage {
+  position: relative;
+  flex: none;
+  margin: auto;
+}
+
+/* Turned about its own centre inside the stage, so a quarter turn needs no
+   offset of its own -- the stage already carries the swapped box. */
 .notes-image-lightbox-image {
+  position: absolute;
+  top: 50%;
+  left: 50%;
   display: block;
-  width: auto;
-  height: auto;
   max-width: none;
   max-height: none;
-  margin: auto;
   border-radius: 4px;
   box-shadow: var(--shadow-modal);
 }
@@ -3328,9 +3342,53 @@ body.is-outline-dragging * {
   font-weight: 600;
 }
 
+/* The scale rides here with the pixel size, in the same type: it says how the
+   image is being shown, which is the same kind of fact. */
 .notes-image-lightbox-dims {
   color: rgb(255 255 255 / 55%);
   font-size: 12px;
+}
+
+/* The bar lets clicks through to the image, so only the controls take them. */
+.notes-image-lightbox-controls {
+  display: flex;
+  align-items: center;
+  margin-inline-start: auto;
+  gap: 9px;
+  line-height: 1;
+  pointer-events: auto;
+}
+
+/* Bare icons, no chrome: a box around each one would read as five buttons
+   crowding the file name. Only the colour answers the pointer. */
+.notes-image-lightbox-control {
+  display: flex;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline-offset: 2px;
+  background: none;
+  box-shadow: none;
+  color: rgb(255 255 255 / 68%);
+  cursor: pointer;
+  place-items: center;
+  transition: color 100ms ease;
+}
+
+.notes-image-lightbox-control:hover:not(:disabled),
+.notes-image-lightbox-control:focus-visible {
+  background: none;
+  color: rgb(255 255 255 / 100%);
+}
+
+.notes-image-lightbox-control:disabled {
+  background: none;
+  color: rgb(255 255 255 / 22%);
+  cursor: default;
+}
+
+.notes-image-lightbox-fit {
+  font-size: 11px;
 }
 
 .notes-image-lightbox-close {
