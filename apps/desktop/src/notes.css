@@ -3140,8 +3140,11 @@ body.is-outline-dragging * {
   pointer-events: auto;
 }
 
+/* The shared ring pulls the outline inside the frame; the node-selected state
+   wants it outside, so the offset is restated rather than inherited. */
 .notes-image-node-content:focus-visible {
-  outline: 0;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .notes-image-frame-row {
