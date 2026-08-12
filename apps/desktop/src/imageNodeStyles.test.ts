@@ -32,13 +32,17 @@ describe("image node styles", () => {
       .toContain("animation: none;");
   });
 
-  it("hides the resize line until hover, drag, or handle focus", () => {
+  it("hides the resize cap bar until hover, drag, or handle focus", () => {
     const line = rule(notesStyles, ".notes-image-resize-line");
     expect(line).toContain("opacity: 0;");
-    expect(line).toContain("width: 3pt;");
-    expect(line).toContain(
-      "background: color-mix(in srgb, var(--text-1) 40%, transparent);"
-    );
+    // The dual-tone cap bar: a dark pill under a light hairline, so it reads
+    // against any photo, hugging the image's outer edge.
+    expect(line).toContain("right: 2px;");
+    expect(line).toContain("width: 6px;");
+    expect(line).toContain("height: min(52px, 60%);");
+    expect(line).toContain("border: 1.5px solid rgb(255 255 255 / 90%);");
+    expect(line).toContain("border-radius: 4px;");
+    expect(line).toContain("background: rgb(15 15 15 / 55%);");
     expect(line).toContain("transition: opacity 120ms ease;");
     // The three states share one block, so its declarations live under the
     // last selector of the group.

@@ -3147,15 +3147,21 @@ body.is-outline-dragging * {
   outline-offset: 2px;
 }
 
+/* The dual-tone cap bar: a dark pill under a light hairline, so it reads
+   against any photo. Fixed height, but never taller than the old 60% so a
+   short image keeps its handle inside the frame. */
 .notes-image-resize-line {
   position: absolute;
-  top: 20%;
-  right: 4px;
-  width: 3pt;
-  height: 60%;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--text-1) 40%, transparent);
+  top: 50%;
+  right: 2px;
+  width: 6px;
+  height: min(52px, 60%);
+  box-sizing: border-box;
+  border: 1.5px solid rgb(255 255 255 / 90%);
+  border-radius: 4px;
+  background: rgb(15 15 15 / 55%);
   opacity: 0;
+  transform: translateY(-50%);
   transition: opacity 120ms ease;
   pointer-events: none;
 }
