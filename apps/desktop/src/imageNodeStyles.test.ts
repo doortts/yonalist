@@ -47,4 +47,10 @@ describe("image node styles", () => {
       /@media \(prefers-reduced-motion: reduce\) \{[^@]*\.notes-image-resize-line/
     );
   });
+
+  it("lets the lightbox image render at natural size", () => {
+    const image = rule(notesStyles, ".notes-image-lightbox-image");
+    expect(image).toContain("max-width: none;");
+    expect(image).toContain("margin: auto;");
+  });
 });
