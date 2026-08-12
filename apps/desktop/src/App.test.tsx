@@ -827,6 +827,68 @@ describe("Yonalist v2 desktop shell", () => {
     }));
   });
 
+  // A checklist stays a checklist: the split command carries the marker, so the
+  // row Enter opens wears its own box from the first paint.
+  it("gives the row Enter opens on a Todo its own checkbox", async () => {
+    const notesApi = api();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: {
+        ...snapshot.viewport!,
+        nodes: [
+          { ...snapshot.viewport!.nodes[0]!, marker: "todo" as const },
+          snapshot.viewport!.nodes[1]!
+        ]
+      }
+    });
+    render(<App api={notesApi} />);
+    const editor = await screen.findByDisplayValue<HTMLTextAreaElement>(
+      "First thought"
+    );
+    editor.setSelectionRange(editor.value.length, editor.value.length);
+
+    fireEvent.keyDown(editor, { key: "Enter" });
+
+    await waitFor(() => expect(
+      screen.getAllByRole("checkbox", { name: /^Mark complete:/u })
+    ).toHaveLength(2));
+  });
+
+  it("takes the box off an emptied Todo before the row itself", async () => {
+    const notesApi = api();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: {
+        ...snapshot.viewport!,
+        nodes: [
+          {
+            ...snapshot.viewport!.nodes[0]!,
+            text: "",
+            marker: "todo" as const
+          },
+          snapshot.viewport!.nodes[1]!
+        ]
+      }
+    });
+    render(<App api={notesApi} />);
+    await screen.findByRole("checkbox", { name: "Mark complete: Untitled" });
+    const editor = screen.getAllByLabelText<HTMLTextAreaElement>("Note text")
+      .find((candidate) => candidate.value === "")!;
+    editor.focus();
+    editor.setSelectionRange(0, 0);
+
+    fireEvent.keyDown(editor, { key: "Backspace" });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: { kind: "setMarker", id: "bullet-1", marker: "bullet" }
+      })
+    ));
+    expect(notesApi.execute).not.toHaveBeenCalledWith(expect.objectContaining({
+      command: expect.objectContaining({ kind: "removeEmptyNode" })
+    }));
+  });
+
   it("shows progress from direct Todo children only", async () => {
     const parent = { ...snapshot.viewport!.nodes[0], marker: "todo" as const };
     const directDone = {

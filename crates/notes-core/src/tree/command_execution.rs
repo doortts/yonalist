@@ -266,6 +266,9 @@ impl NotesTree {
         // only put it beside the source or inside it: either the source's own
         // parent, or the source itself. Nothing else, so a split can never re-home
         // the source or reach a node it does not already touch.
+        // A checklist stays a checklist across Enter: the new half takes the
+        // source's marker, never its tick.
+        let marker = source.marker();
         let nested = parent_id == id;
         if !nested && source.parent_id() != Some(&parent_id) {
             return Err(DomainError::Invariant(format!(
@@ -281,10 +284,10 @@ impl NotesTree {
         if nested {
             self.node_mut(&id)?.set_collapsed(false);
         }
-        self.nodes.insert(
-            new_id.clone(),
-            NoteNode::child(new_id.clone(), parent_id.clone(), SORT_KEY_STEP, suffix),
-        );
+        let mut created =
+            NoteNode::child(new_id.clone(), parent_id.clone(), SORT_KEY_STEP, suffix);
+        created.set_marker(marker);
+        self.nodes.insert(new_id.clone(), created);
         self.place_child(&new_id, &parent_id, position)
     }
 

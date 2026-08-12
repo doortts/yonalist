@@ -18,7 +18,8 @@ function bullet(
   id: string,
   parentId: string,
   sortKey: number,
-  text: string
+  text: string,
+  marker: NoteView["marker"] = "bullet"
 ): NoteView {
   return {
     id,
@@ -27,7 +28,7 @@ function bullet(
     kind: "bullet", image: null,
     text,
     note: "",
-    marker: "bullet",
+    marker,
     collapsed: false,
     completed: false,
     starred: false,
@@ -84,11 +85,14 @@ export function projectSplitNode(
     input.parentId,
     input.beforeId
   );
+  // `splitNode` carries the source's marker onto the new half, so the row on
+  // screen wears it from the first paint rather than flashing as a bullet.
   const created = bullet(
     input.newId,
     input.parentId,
     allocation.sortKey,
-    input.suffix
+    input.suffix,
+    state.nodes.find((node) => node.id === input.id)?.marker
   );
   return {
     // The source's half goes onto the node itself and not only into its draft,

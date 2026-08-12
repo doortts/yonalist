@@ -558,6 +558,10 @@ function executeRowIntent(
       focusOutlineEditor(scope, intent.nodeId, intent.edge);
       void store.flushDraft(node.id);
       return;
+    case "clearMarker":
+      // The caret stays where it is: the row is the same row, minus its box.
+      void store.setMarker(node.id, "bullet");
+      return;
     case "removeEmpty":
       {
         const pending = store.beginRemoveEmptyNode(node.id, backspaceGroup);
