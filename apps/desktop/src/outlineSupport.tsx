@@ -133,7 +133,7 @@ export function handleOutlineKeyDown(
   selectionHeadId: string | null,
   hasSelection: boolean,
   onExtendSelection: (originId: string, headId: string) => void,
-  onClearSelection: () => void,
+  onClearSelection: (collapse?: "start" | "end") => void,
   onFocusNote: () => void,
   onMoveTo: () => void,
   supportingNote: string,
@@ -157,6 +157,7 @@ export function handleOutlineKeyDown(
     supportingNote,
     selectionStart: event.currentTarget.selectionStart,
     selectionEnd: event.currentTarget.selectionEnd,
+    selectionDirection: event.currentTarget.selectionDirection ?? undefined,
     firstVisualLine: caretLines.first,
     lastVisualLine: caretLines.last,
     visibleNodes,
@@ -171,6 +172,14 @@ export function handleOutlineKeyDown(
   if (!intent) return;
 
   event.preventDefault();
+  // The sweep over a row's own text stays inside the field it started in, so it
+  // needs no outline scope and no store round trip.
+  if (intent.kind === "selectTextEdge") {
+    event.currentTarget.setSelectionRange(
+      intent.start, intent.end, intent.direction
+    );
+    return;
+  }
   const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
   if (!scope) return;
   if (hasSelection) {
@@ -180,6 +189,9 @@ export function handleOutlineKeyDown(
     if (intent.kind === "toggleComplete") return selectionActions.toggleComplete();
     if (intent.kind === "duplicate") return selectionActions.duplicate();
     if (intent.kind === "trash") return selectionActions.delete();
+    // The note field answers to none of the band's keys, so the band goes
+    // before the caret leaves the row for it.
+    if (intent.kind === "focusNote") onClearSelection();
   }
   executeRowIntent(
     intent,
@@ -220,35 +232,13 @@ export function handleImagePrimaryKeyDown(
   selectionHeadId: string | null,
   hasSelection: boolean,
   onExtendSelection: (originId: string, headId: string) => void,
-  onClearSelection: () => void,
+  onClearSelection: (collapse?: "start" | "end") => void,
   onFocusNote: () => void,
   onMoveTo: () => void,
   selectionActions: SelectionKeyboardActions,
   onCopyImage: (nodeId: string) => void,
-  onCutImage: (nodeId: string) => void,
-  soloSelectedId: string | null = null
+  onCutImage: (nodeId: string) => void
 ) {
-  // A plain arrow off a selected image drops the selection and leaves the caret
-  // on the side it names, the way it collapses a selected letter.
-  if (
-    soloSelectedId === node.id &&
-    (event.key === "ArrowLeft" || event.key === "ArrowRight") &&
-    !event.shiftKey &&
-    !event.altKey &&
-    !event.ctrlKey &&
-    !event.metaKey &&
-    !event.nativeEvent.isComposing
-  ) {
-    event.preventDefault();
-    const collapseScope =
-      event.currentTarget.closest<HTMLElement>(".notes-outline");
-    if (!collapseScope) return;
-    onClearSelection();
-    focusOutlineEditor(
-      collapseScope, node.id, event.key === "ArrowLeft" ? "start" : "end"
-    );
-    return;
-  }
   const intent = handleImageNodeKeyDown({
     key: event.key,
     altKey: event.altKey,
@@ -287,6 +277,9 @@ export function handleImagePrimaryKeyDown(
     if (intent.kind === "toggleComplete") return selectionActions.toggleComplete();
     if (intent.kind === "duplicate") return selectionActions.duplicate();
     if (intent.kind === "trash") return selectionActions.delete();
+    // Same as a bullet: the note field answers to none of the band's keys, so
+    // the band goes before the caret leaves the row for it.
+    if (intent.kind === "focusNote") onClearSelection();
   }
   // A selection already carries this image's bytes, so the chord goes to the
   // selection commands and only a bare station falls through to the node.
@@ -462,7 +455,7 @@ function executeRowIntent(
   onZoomIn: () => void,
   onZoomOut: () => void,
   onExtendSelection: (originId: string, headId: string) => void,
-  onClearSelection: () => void,
+  onClearSelection: (collapse?: "start" | "end") => void,
   onFocusNote: () => void,
   onMoveTo: () => void,
   backspaceGroup: string | null,
@@ -473,6 +466,8 @@ function executeRowIntent(
     // Only the image surface resolves these, and it routes them itself.
     case "copyImage":
     case "cutImage":
+    // Only a text field resolves this one, and it answers before it gets here.
+    case "selectTextEdge":
       return;
     case "split":
       {
@@ -636,6 +631,6 @@ function executeRowIntent(
       onExtendSelection(node.id, intent.headId);
       return;
     case "clearSelection":
-      onClearSelection();
+      onClearSelection(intent.collapse);
   }
 }

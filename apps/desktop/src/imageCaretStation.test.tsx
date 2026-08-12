@@ -150,6 +150,28 @@ describe("image caret station", () => {
       .toHaveAttribute("tabindex", "-1");
   });
 
+  // Taking one row anchors the band on it. A plain click leaves an anchor
+  // behind with nothing selected, and growing from that one would hand back a
+  // band reaching all the way to whichever row was clicked last.
+  it("takes only the image after a click anchored another row", async () => {
+    const { view } = await renderImageOutline();
+    const [before] = stations(view);
+    fireEvent.pointerDown(screen.getByDisplayValue("First thought"), {
+      button: 0,
+      pointerId: 21
+    });
+    fireEvent.pointerUp(screen.getByDisplayValue("First thought"), {
+      pointerId: 21
+    });
+    before!.focus();
+
+    fireEvent.keyDown(before!, { key: "ArrowRight", shiftKey: true });
+
+    expect([...view.container.querySelectorAll<HTMLElement>(
+      ".notes-node[data-range-selected='true']"
+    )].map((row) => row.dataset.outlineId)).toEqual(["image"]);
+  });
+
   it("takes the image with a shifted arrow and collapses back off it",
     async () => {
       const { view } = await renderImageOutline();
@@ -170,6 +192,52 @@ describe("image caret station", () => {
 
       expect(row).not.toHaveAttribute("data-range-selected");
       expect(after).toHaveFocus();
+    });
+
+  // The station's own caret hops would otherwise walk out from under a band
+  // that reaches past the image, leaving it standing.
+  it("drops a band reaching past the image before it hops a station",
+    async () => {
+      const { view } = await renderImageOutline();
+      const [before] = stations(view);
+      before!.focus();
+
+      // Take the image, then the row below it: a band of two.
+      fireEvent.keyDown(before!, { key: "ArrowDown", shiftKey: true });
+      fireEvent.keyDown(before!, { key: "ArrowDown", shiftKey: true });
+      expect([...view.container.querySelectorAll<HTMLElement>(
+        ".notes-node[data-range-selected='true']"
+      )].map((row) => row.dataset.outlineId)).toEqual(["image", "bullet-2"]);
+
+      fireEvent.keyDown(before!, { key: "ArrowLeft" });
+
+      expect(view.container.querySelector(
+        ".notes-node[data-range-selected='true']"
+      )).toBeNull();
+      expect(before).toHaveFocus();
+    });
+
+  // The note field answers to none of the band's keys here either.
+  it("drops a band off an image row when the caret leaves for its note",
+    async () => {
+      const { view } = await renderImageOutline();
+      const [before] = stations(view);
+      before!.focus();
+
+      fireEvent.keyDown(before!, { key: "ArrowDown", shiftKey: true });
+      fireEvent.keyDown(before!, { key: "ArrowDown", shiftKey: true });
+      expect(view.container.querySelectorAll(
+        ".notes-node[data-range-selected='true']"
+      )).toHaveLength(2);
+
+      fireEvent.keyDown(before!, { key: "Enter", shiftKey: true });
+
+      expect(view.container.querySelector(
+        ".notes-node[data-range-selected='true']"
+      )).toBeNull();
+      await waitFor(() => expect(view.container.querySelector(
+        "textarea[data-node-id='image'][data-outline-field='note']"
+      )).toHaveFocus());
     });
 
   it("collapses a selected image back to the side the arrow names",

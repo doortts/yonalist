@@ -22,7 +22,9 @@ import { OutlineIndex } from "./outlineIndex";
 import type { PaneFocusSnapshot } from "./appNavigation";
 import { useImageIngest } from "./useImageIngest";
 import { writeImageClipboard } from "./imageClipboard";
-import { focusAfterCommit, focusOutlineSnapshot } from "./outlineFocus";
+import {
+  focusAfterCommit, focusOutlineEditor, focusOutlineSnapshot
+} from "./outlineFocus";
 import { subtreeIds } from "./storeState";
 import { NotesExportBoundary } from "./NotesExportBoundary";
 import { useOutlineWindow } from "./useOutlineWindow";
@@ -217,9 +219,22 @@ export function NotesOutline({
   const executeMovePlan = (plan: SelectionMovePlan) => {
     if (plan.available) runSelectionAction(() => store.moveNodes(plan.moves));
   };
-  const clearSelection = () => {
+  /**
+   * `collapse` is how an arrow key clears the band: the caret lands on the edge
+   * the key pointed at, so the row it lands in has to be read off the selection
+   * before it goes.
+   */
+  const clearSelection = (collapse?: "start" | "end") => {
+    const selected = new Set(selection.selectedIds);
+    const band = collapse
+      ? bodyNodes.filter((node) => selected.has(node.id))
+      : [];
     selection.clear();
     setSelectionFeedback("");
+    const target = collapse === "start" ? band[0] : band.at(-1);
+    const scope = scopeRef.current;
+    if (!target || !scope) return;
+    focusOutlineEditor(scope, target.id, collapse === "start" ? "start" : "end");
   };
   /**
    * The caret is standing in one of the rows about to go, so removal hands it

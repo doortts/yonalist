@@ -70,7 +70,11 @@ export function useOutlineSelection(
   };
 
   const extend = (originId: string, nextHeadId: string) => {
-    if (!anchor.current) anchor.current = originId;
+    // A band grows from its own anchor, but with no band up there is nothing to
+    // grow: the sweep starts here. A plain click leaves an anchor behind with
+    // nothing selected, and extending from that one would hand back a band
+    // reaching all the way to whichever row was last clicked.
+    if (!anchor.current || directIds.length === 0) anchor.current = originId;
     const start = nodes.findIndex((node) => node.id === anchor.current);
     const end = nodes.findIndex((node) => node.id === nextHeadId);
     if (start < 0 || end < 0) return;
@@ -160,7 +164,14 @@ export function useOutlineSelection(
     complete: boolean,
     confirmedRevision: number
   ) => {
-    setDirectIds(rootIds);
+    // The same roots have to keep the same array. The pane asks for the forest
+    // from an effect that watches this list's identity, so answering with a
+    // fresh copy of the roots it already holds sets it asking again, forever.
+    setDirectIds((current) =>
+      current.length === rootIds.length &&
+      current.every((id, at) => id === rootIds[at])
+        ? current
+        : rootIds);
     setAuthoritativeNodes(completeNodes);
     setForestStatus(complete ? "complete" : "incomplete");
     setForestRevision(confirmedRevision);

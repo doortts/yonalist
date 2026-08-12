@@ -62,6 +62,18 @@ function api(): NotesApi {
     deleteAllData: vi.fn()
   };
 }
+
+/**
+ * Shift and an arrow sweep a row's own text before they take the row, and the
+ * row before its neighbour, so a band reaching one row past the caret's own is
+ * three presses of the chord.
+ */
+function bandDownFrom(field: HTMLElement): void {
+  for (let press = 0; press < 3; press += 1) {
+    fireEvent.keyDown(field, { key: "ArrowDown", shiftKey: true });
+  }
+}
+
 describe("outline clipboard integration", () => {
   it("materializes a selected parent into its complete authoritative subtree", async () => {
     const notesApi = api();
@@ -376,7 +388,7 @@ describe("outline clipboard integration", () => {
     const notesApi = api();
     render(<App api={notesApi} />);
     const second = await screen.findByDisplayValue("Second thought");
-    fireEvent.keyDown(second, { key: "ArrowDown", shiftKey: true });
+    bandDownFrom(second);
     await screen.findByRole("toolbar", {
       name: "Actions for 2 selected notes"
     });
@@ -434,7 +446,7 @@ describe("outline clipboard integration", () => {
     const notesApi = api();
     render(<App api={notesApi} />);
     const second = await screen.findByDisplayValue("Second thought");
-    fireEvent.keyDown(second, { key: "ArrowDown", shiftKey: true });
+    bandDownFrom(second);
     await screen.findByRole("toolbar", {
       name: "Actions for 2 selected notes"
     });

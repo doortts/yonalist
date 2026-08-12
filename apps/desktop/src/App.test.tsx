@@ -450,6 +450,10 @@ describe("Yonalist v2 desktop shell", () => {
     const first = await screen.findByDisplayValue("First thought");
     const second = screen.getByDisplayValue("Second thought");
 
+    // The chord sweeps the row's own text first, then the row, then the row
+    // below it, so a band across the pair stands three presses in.
+    fireEvent.keyDown(first, { key: "ArrowDown", shiftKey: true });
+    fireEvent.keyDown(first, { key: "ArrowDown", shiftKey: true });
     fireEvent.keyDown(first, { key: "ArrowDown", shiftKey: true });
     await waitFor(() => {
       expect(first.closest(".notes-node")).toHaveAttribute(
