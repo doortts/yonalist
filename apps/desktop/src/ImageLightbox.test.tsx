@@ -174,6 +174,32 @@ describe("ImageLightbox fit and zoom", () => {
     expect(pane.scrollTop).toBeCloseTo((200 + 150) * ratio - 150, 1);
   });
 
+  // A turn swaps the axes, so the old scroll position names a different part of
+  // the image entirely -- the point being read has to be carried across.
+  it("holds the point under the centre through a quarter turn", () => {
+    // A square pane, so the turn swaps the box without changing the fit.
+    sizeWindow(200, 200);
+    const { zoomIn, rotateRight } = scaled(640, 905);
+    fireEvent.click(zoomIn);
+    const pane = document.querySelector<HTMLElement>(
+      ".notes-image-lightbox-scroll"
+    )!;
+    pane.scrollLeft = 40;
+    pane.scrollTop = 30;
+
+    fireEvent.click(rotateRight);
+
+    expect(screen.getByText("640 × 905 · 27%")).toBeInTheDocument();
+    // The centred point sat 81% across and 53% down the upright box; a right
+    // turn leaves it 47% across and 81% down the box now lying flat.
+    const upright = { width: 640 * 0.27, height: 905 * 0.27 };
+    const flat = { width: 905 * 0.27, height: 640 * 0.27 };
+    const across = (40 + 100) / upright.width;
+    const down = (30 + 100) / upright.height;
+    expect(pane.scrollLeft).toBeCloseTo((1 - down) * flat.width - 100, 1);
+    expect(pane.scrollTop).toBeCloseTo(across * flat.height - 100, 1);
+  });
+
   it("swaps between the fitted scale and full size", () => {
     sizeWindow(800, 600);
     scaled(640, 905);

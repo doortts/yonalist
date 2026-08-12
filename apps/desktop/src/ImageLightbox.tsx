@@ -39,6 +39,24 @@ function containScaleFor(pane: PaneSize, width: number, height: number): number 
   );
 }
 
+/**
+ * A point inside the shown box, in fractions of it, after so many quarter turns
+ * clockwise. One turn sends the box's top-left corner to its new top-right, so
+ * the point across becomes the point down and the old depth becomes the new
+ * distance back from the right edge.
+ */
+function turnedFraction(
+  across: number,
+  down: number,
+  quarters: number
+): { readonly across: number; readonly down: number } {
+  let point = { across, down };
+  for (let turn = ((quarters % 4) + 4) % 4; turn > 0; turn -= 1) {
+    point = { across: 1 - point.down, down: point.across };
+  }
+  return point;
+}
+
 /** The pane the fit is measured against, kept in step with its own size. */
 function usePaneSize(ref: RefObject<HTMLElement | null>): PaneSize {
   const [size, setSize] = useState<PaneSize>({ width: 0, height: 0 });
@@ -78,12 +96,13 @@ export function ImageLightbox({
   const closeRef = useRef<HTMLButtonElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
-  // Where the pane's centre sat in the image before the scale that is about to
-  // replace it -- see `holdCentre` and the layout effect that spends it.
+  // Where the pane's centre sat in the image before the scale or the turn that
+  // is about to replace it -- see `holdCentre` and the effect that spends it.
   const centreRef = useRef<{
     readonly scale: number;
-    readonly x: number;
-    readonly y: number;
+    readonly turns: number;
+    readonly across: number;
+    readonly down: number;
   } | null>(null);
   const panRef = useRef<{
     readonly pointerId: number;
@@ -131,37 +150,52 @@ export function ImageLightbox({
     setRequestedScale(readsAsFit ? null : next);
   };
 
+  const turnBy = (quarters: number) => {
+    holdCentre();
+    setQuarterTurns((current) => (current + quarters + 4) % 4);
+  };
+
   /**
-   * Remembers the image point the pane is centred on, in image coordinates at
-   * the current scale. Read here rather than in the effect that uses it: by
-   * then the stage has already been resized under the old scroll position.
+   * Remembers the image point the pane is centred on, as fractions of the box
+   * the image currently occupies -- fractions because they survive both the
+   * scale and the turn that are about to replace them. Read here and not in the
+   * effect that spends it: by then the stage has already been laid out again
+   * under the old scroll position.
    */
   const holdCentre = () => {
     const pane = scrollRef.current;
     const stage = stageRef.current;
-    if (!pane || !stage) return;
+    if (!pane || !stage || shownWidth <= 0 || shownHeight <= 0) return;
     centreRef.current = {
       scale,
-      x: pane.scrollLeft + pane.clientWidth / 2 - stage.offsetLeft,
-      y: pane.scrollTop + pane.clientHeight / 2 - stage.offsetTop
+      turns: quarterTurns,
+      across: (pane.scrollLeft + pane.clientWidth / 2 - stage.offsetLeft) /
+        (shownWidth * scale),
+      down: (pane.scrollTop + pane.clientHeight / 2 - stage.offsetTop) /
+        (shownHeight * scale)
     };
   };
 
-  // A scale change grows the stage from its top-left, which walks whatever was
-  // being looked at off toward a corner. The remembered point is put back under
-  // the centre instead -- before paint, so the view never appears to jump.
+  // The stage grows from its top-left and a turn swaps its axes outright, so
+  // either one walks whatever was being read off somewhere else. The remembered
+  // point goes back under the centre before paint, so the view never jumps.
   useLayoutEffect(() => {
     const centre = centreRef.current;
     centreRef.current = null;
     const pane = scrollRef.current;
     const stage = stageRef.current;
-    if (!centre || !pane || !stage || centre.scale === scale) return;
-    const ratio = scale / centre.scale;
-    pane.scrollLeft = stage.offsetLeft + centre.x * ratio - pane.clientWidth / 2;
-    pane.scrollTop = stage.offsetTop + centre.y * ratio - pane.clientHeight / 2;
-  }, [scale]);
-  const turnBy = (quarters: number) =>
-    setQuarterTurns((current) => (current + quarters + 4) % 4);
+    if (!centre || !pane || !stage) return;
+    if (centre.scale === scale && centre.turns === quarterTurns) return;
+    const point = turnedFraction(
+      centre.across,
+      centre.down,
+      quarterTurns - centre.turns
+    );
+    pane.scrollLeft = stage.offsetLeft +
+      point.across * shownWidth * scale - pane.clientWidth / 2;
+    pane.scrollTop = stage.offsetTop +
+      point.down * shownHeight * scale - pane.clientHeight / 2;
+  }, [quarterTurns, scale, shownHeight, shownWidth]);
 
   const liveFocusables = useCallback((): readonly HTMLElement[] => {
     const dialog = dialogRef.current;
