@@ -63,6 +63,20 @@ describe("ImageLightbox", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("cycles Tab between the close button and the scrollable image", () => {
+    const { scroll } = lightbox(vi.fn());
+    const close = screen.getByRole("button", {
+      name: "Close full-screen image"
+    });
+    expect(close).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(scroll).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(close).toHaveFocus();
+  });
+
   it("shows the file name and pixel size above the image", () => {
     render(
       <ImageLightbox

@@ -26,6 +26,7 @@ export function ImageLightbox({
   readonly onClose: () => void;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const panRef = useRef<{
     readonly pointerId: number;
     readonly startX: number;
@@ -47,8 +48,12 @@ export function ImageLightbox({
         event.preventDefault();
         onClose();
       } else if (event.key === "Tab") {
+        // The scroll area is a tab stop so arrow keys can reach an image that
+        // overflows the viewport; the trap cycles between the two.
         event.preventDefault();
-        closeRef.current?.focus();
+        const close = closeRef.current;
+        const next = document.activeElement === close ? scrollRef.current : close;
+        next?.focus();
       }
     };
     document.addEventListener("keydown", keyDown);
@@ -78,7 +83,11 @@ export function ImageLightbox({
           </span>
         </div>
         <div
+          ref={scrollRef}
           className="notes-image-lightbox-scroll"
+          role="group"
+          aria-label={`Scrollable view of ${originalName}`}
+          tabIndex={0}
           data-panning={panning ? "true" : undefined}
           onPointerDown={(event) => {
             if (event.button !== 0) return;
