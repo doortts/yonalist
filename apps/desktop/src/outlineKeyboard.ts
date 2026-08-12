@@ -63,6 +63,7 @@ export type OutlineKeyIntent =
     }
   | { readonly kind: "mergeIntoParent"; readonly parentId: string }
   | { readonly kind: "toggleComplete" }
+  | { readonly kind: "clearMarker" }
   | { readonly kind: "duplicate" }
   | { readonly kind: "trash" }
   | { readonly kind: "moveTo" }
@@ -433,6 +434,20 @@ export function resolveOutlineKey(
       };
     }
     return null;
+  }
+
+  if (
+    input.key === "Backspace" &&
+    input.target === "row" &&
+    validSelection(input) &&
+    input.selectionStart === input.selectionEnd &&
+    input.selectionStart === 0 &&
+    input.value.trim().length === 0
+  ) {
+    // The box comes off before the row does: one Backspace leaves an ordinary
+    // empty bullet, and the next takes that away as it always has.
+    const current = nodeById(structureNodes, input.nodeId, input.structureIndex);
+    if (current?.marker === "todo") return { kind: "clearMarker" };
   }
 
   if (

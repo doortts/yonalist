@@ -854,6 +854,41 @@ describe("Yonalist v2 desktop shell", () => {
     ).toHaveLength(2));
   });
 
+  it("takes the box off an emptied Todo before the row itself", async () => {
+    const notesApi = api();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: {
+        ...snapshot.viewport!,
+        nodes: [
+          {
+            ...snapshot.viewport!.nodes[0]!,
+            text: "",
+            marker: "todo" as const
+          },
+          snapshot.viewport!.nodes[1]!
+        ]
+      }
+    });
+    render(<App api={notesApi} />);
+    await screen.findByRole("checkbox", { name: "Mark complete: Untitled" });
+    const editor = screen.getAllByLabelText<HTMLTextAreaElement>("Note text")
+      .find((candidate) => candidate.value === "")!;
+    editor.focus();
+    editor.setSelectionRange(0, 0);
+
+    fireEvent.keyDown(editor, { key: "Backspace" });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: { kind: "setMarker", id: "bullet-1", marker: "bullet" }
+      })
+    ));
+    expect(notesApi.execute).not.toHaveBeenCalledWith(expect.objectContaining({
+      command: expect.objectContaining({ kind: "removeEmptyNode" })
+    }));
+  });
+
   it("shows progress from direct Todo children only", async () => {
     const parent = { ...snapshot.viewport!.nodes[0], marker: "todo" as const };
     const directDone = {

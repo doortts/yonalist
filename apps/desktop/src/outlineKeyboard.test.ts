@@ -475,6 +475,38 @@ describe("v2 outline keyboard intent resolver", () => {
     }))).toBeNull();
   });
 
+  // The box is the first thing Backspace takes off an empty checklist row; the
+  // row itself only goes on the press after that.
+  it("drops an empty Todo's box before it removes the row", () => {
+    const checklist = [
+      node("above", "page", "Above", 1_024),
+      { ...node("task", "page", "", 2_048), marker: "todo" as const }
+    ];
+    const atStart = {
+      key: "Backspace",
+      nodeId: "task",
+      value: "",
+      selectionStart: 0,
+      selectionEnd: 0,
+      visibleNodes: checklist,
+      structureNodes: checklist
+    };
+
+    expect(resolveOutlineKey(input(atStart)))
+      .toEqual({ kind: "clearMarker" });
+    // Once the box is gone the row is an ordinary empty bullet again.
+    expect(resolveOutlineKey(input({
+      ...atStart,
+      visibleNodes: [checklist[0]!, node("task", "page", "", 2_048)],
+      structureNodes: [checklist[0]!, node("task", "page", "", 2_048)]
+    }))).toEqual({ kind: "removeEmpty", focusId: "above" });
+    // A row with text keeps Backspace's ordinary meaning.
+    expect(resolveOutlineKey(input({
+      ...atStart,
+      value: "Task"
+    }))).not.toEqual({ kind: "clearMarker" });
+  });
+
   // A picture row is focusable but has no caret to give, so a caret sent there
   // leaves the typist with focus and nothing to type into.
   it("sends the emptied row's caret past rows that cannot hold one", () => {
