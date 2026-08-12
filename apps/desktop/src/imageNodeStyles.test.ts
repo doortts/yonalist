@@ -25,10 +25,17 @@ describe("image node styles", () => {
       .toContain("outline: 0;");
   });
 
-  it("shows the node-selected outline on focus-visible", () => {
-    const selected = rule(notesStyles, ".notes-image-node-content:focus-visible");
-    expect(selected).toContain("outline: 2px solid var(--accent);");
-    expect(selected).toContain("outline-offset: 2px;");
+  it("rings the image on click and caret arrival but never on Tab", () => {
+    expect(rule(notesStyles, ".notes-image-node-content:focus-visible"))
+      .toContain("outline: 0;");
+    for (const selector of [
+      ".notes-image-node-content:focus:not(:focus-visible)",
+      ".notes-image-node-content:has(.notes-image-caret-stop:focus)"
+    ]) {
+      const ring = rule(notesStyles, selector);
+      expect(ring).toContain("outline: 2px solid var(--accent);");
+      expect(ring).toContain("outline-offset: 2px;");
+    }
   });
 
   it("keeps the caret bar still under reduced motion", () => {

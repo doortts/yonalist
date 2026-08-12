@@ -162,6 +162,24 @@ describe("ImageNodeContent", () => {
       .toHaveClass("notes-image-caret-stop");
   });
 
+  it("takes the node selection when the image itself is clicked", async () => {
+    const residency = new ImageResidency(
+      vi.fn().mockResolvedValue(Uint8Array.from([1])),
+      {
+        createObjectURL: vi.fn(() => "blob:cat"),
+        revokeObjectURL: vi.fn()
+      }
+    );
+    const view = render(
+      <ImageNodeContent node={node()} residency={residency} />
+    );
+
+    fireEvent.click(await screen.findByRole("img", { name: "cat.png" }));
+
+    expect(view.container.querySelector(".notes-image-node-content"))
+      .toHaveFocus();
+  });
+
   it("keeps the caret station on a surface with no key handler", async () => {
     const residency = new ImageResidency(
       vi.fn().mockResolvedValue(Uint8Array.from([1])),

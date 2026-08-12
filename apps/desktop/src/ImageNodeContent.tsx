@@ -218,6 +218,9 @@ export function ImageNodeContent({
         <div
           className="notes-image-attachment-frame"
           style={frameStyle}
+          // WebKit leaves a plain tabindex div unfocused on click, so the node
+          // selection the ring stands for has to be taken here.
+          onClick={() => rootRef.current?.focus()}
           onDoubleClick={() => {
             if (lease.status === "ready") setLightboxOpen(true);
           }}
