@@ -505,7 +505,8 @@ export function handleImageNodeKeyDown(
     return { kind: clipboardKey === "c" ? "copyImage" : "cutImage" };
   }
   // No character sits beside the station for a shifted arrow to sweep over, so
-  // it takes the image itself the way the same key takes a letter.
+  // it takes the image itself the way the same key takes a letter -- but only
+  // sweeping toward the image. The station on the far side has nothing to take.
   if (
     (input.key === "ArrowLeft" || input.key === "ArrowRight") &&
     input.shiftKey &&
@@ -513,7 +514,10 @@ export function handleImageNodeKeyDown(
     !input.ctrlKey &&
     !input.metaKey
   ) {
-    return { kind: "extendSelection", headId: input.nodeId };
+    const toward = input.key === "ArrowRight" ? "before" : "after";
+    return input.imageEdge === undefined || input.imageEdge === toward
+      ? { kind: "extendSelection", headId: input.nodeId }
+      : null;
   }
   // The image spans one character of the line, so a plain arrow crosses to its
   // other side before the row boundary is even in question.

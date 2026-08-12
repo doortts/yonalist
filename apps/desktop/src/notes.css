@@ -3168,6 +3168,21 @@ body.is-outline-dragging * {
   outline-offset: 2px;
 }
 
+/* A selected range paints its glyphs, and the image is one of them. */
+.notes-node[data-range-selected="true"] .notes-image-attachment-frame::after {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  content: "";
+  pointer-events: none;
+}
+
+/* One image alone in the selection is a selected character, so the band that
+   would run the row's whole width behind it gives way to the paint above. */
+.notes-node[data-solo-image-selection="true"] > .notes-node-main {
+  background: transparent;
+}
+
 /* The dual-tone cap bar: a dark pill under a light hairline, so it reads
    against any photo. Fixed height, but never taller than the old 60% so a
    short image keeps its handle inside the frame. */

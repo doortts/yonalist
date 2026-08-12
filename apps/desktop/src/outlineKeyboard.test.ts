@@ -99,8 +99,36 @@ describe("v2 outline keyboard intent resolver", () => {
     }))).toEqual({ kind: "focus", nodeId: "child", edge: "start" });
   });
 
-  // There is no character beside the caret station to sweep over, so the
-  // shifted arrow takes the image itself the way a letter would be taken.
+  // The shifted arrow sweeps the image the way it sweeps a letter, so it only
+  // takes it when the image is the thing the caret would move over.
+  it("selects the image only when the shifted arrow sweeps toward it", () => {
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowRight",
+      shiftKey: true,
+      imageEdge: "before"
+    }))).toEqual({ kind: "extendSelection", headId: "next" });
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowLeft",
+      shiftKey: true,
+      imageEdge: "after"
+    }))).toEqual({ kind: "extendSelection", headId: "next" });
+    // Away from the image there is nothing beside the caret to take.
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowRight",
+      shiftKey: true,
+      imageEdge: "after"
+    }))).toBeNull();
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowLeft",
+      shiftKey: true,
+      imageEdge: "before"
+    }))).toBeNull();
+  });
+
   it("selects the image itself when the station takes a shifted arrow", () => {
     for (const key of ["ArrowLeft", "ArrowRight"]) {
       expect(handleImageNodeKeyDown(input({

@@ -172,6 +172,11 @@ export const OutlineRow = memo(function OutlineRow({
         data-completed={node.completed ? "true" : undefined}
         data-selected={selected ? "true" : undefined}
         data-range-selected={selected ? "true" : undefined}
+        // One image alone in the selection is a selected character, not a
+        // selected line, so the row band steps aside for it.
+        data-solo-image-selection={selected &&
+          node.kind === "image" &&
+          runtime.state.selectionRootIds.length === 1 ? "true" : undefined}
         data-marker-kind={node.marker}
         data-empty-bullet={(draft ?? node.text).length === 0 ? "true" : undefined}
         style={{ "--notes-depth": depth } as CSSProperties}
@@ -322,7 +327,10 @@ export const OutlineRow = memo(function OutlineRow({
                     openMoveChooser,
                     current.selectionActions,
                     current.onCopyImage,
-                    current.onCutImage
+                    current.onCutImage,
+                    current.selectionRootIds.length === 1
+                      ? current.selectionRootIds[0]!
+                      : null
                   );
                 }}
               />

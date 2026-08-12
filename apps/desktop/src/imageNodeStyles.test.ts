@@ -83,6 +83,20 @@ describe("image node styles", () => {
       .toContain("transition: none;");
   });
 
+  it("paints a lone selected image instead of banding its row", () => {
+    expect(rule(
+      notesStyles,
+      '.notes-node[data-solo-image-selection="true"] > .notes-node-main'
+    )).toContain("background: transparent;");
+    expect(rule(
+      notesStyles,
+      '.notes-node[data-range-selected="true"] ' +
+      ".notes-image-attachment-frame::after"
+    )).toContain(
+      "background: color-mix(in srgb, var(--accent) 28%, transparent);"
+    );
+  });
+
   it("lets the lightbox image render at natural size", () => {
     const image = rule(notesStyles, ".notes-image-lightbox-image");
     expect(image).toContain("max-width: none;");

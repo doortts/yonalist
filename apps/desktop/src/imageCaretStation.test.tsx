@@ -135,6 +135,46 @@ describe("image caret station", () => {
     expect(before).toHaveFocus();
   });
 
+  it("takes the image with a shifted arrow and collapses back off it",
+    async () => {
+      const { view } = await renderImageOutline();
+      const [before, after] = stations(view);
+      const row = view.container.querySelector<HTMLElement>(
+        '.notes-node[data-outline-id="image"]'
+      );
+      before!.focus();
+
+      fireEvent.keyDown(before!, { key: "ArrowRight", shiftKey: true });
+
+      expect(row).toHaveAttribute("data-range-selected", "true");
+      // The row band is the wrong shape for one image; the image itself carries
+      // the selection instead.
+      expect(row).toHaveAttribute("data-solo-image-selection", "true");
+
+      fireEvent.keyDown(before!, { key: "ArrowRight" });
+
+      expect(row).not.toHaveAttribute("data-range-selected");
+      expect(after).toHaveFocus();
+    });
+
+  it("collapses a selected image back to the side the arrow names",
+    async () => {
+      const { view } = await renderImageOutline();
+      const [before, after] = stations(view);
+      const row = view.container.querySelector<HTMLElement>(
+        '.notes-node[data-outline-id="image"]'
+      );
+      after!.focus();
+
+      fireEvent.keyDown(after!, { key: "ArrowLeft", shiftKey: true });
+      expect(row).toHaveAttribute("data-range-selected", "true");
+
+      fireEvent.keyDown(after!, { key: "ArrowLeft" });
+
+      expect(row).not.toHaveAttribute("data-range-selected");
+      expect(before).toHaveFocus();
+    });
+
   it("stops on the image caret station when arrowing down from above",
     async () => {
       const { station } = await renderImageOutline();
