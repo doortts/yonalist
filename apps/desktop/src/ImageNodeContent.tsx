@@ -407,6 +407,7 @@ export function ImageNodeContent({
         <div
           ref={caretStopRef}
           className="notes-image-caret-stop"
+          role="group"
           tabIndex={-1}
           data-node-id={node.id}
           data-outline-field="image"

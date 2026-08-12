@@ -140,6 +140,28 @@ describe("ImageNodeContent", () => {
     expect(handle).not.toHaveAttribute("data-resizing");
   });
 
+  it("gives the caret station a role that carries its name", async () => {
+    const residency = new ImageResidency(
+      vi.fn().mockResolvedValue(Uint8Array.from([1])),
+      {
+        createObjectURL: vi.fn(() => "blob:cat"),
+        revokeObjectURL: vi.fn()
+      }
+    );
+    render(
+      <ImageNodeContent
+        node={node()}
+        residency={residency}
+        onKeyDown={vi.fn()}
+      />
+    );
+
+    await screen.findByRole("img", { name: "cat.png" });
+
+    expect(screen.getByRole("group", { name: "Cursor after cat.png" }))
+      .toHaveClass("notes-image-caret-stop");
+  });
+
   it("drops the drag flag when the width changes mid-drag", async () => {
     const residency = new ImageResidency(
       vi.fn().mockResolvedValue(Uint8Array.from([1])),
