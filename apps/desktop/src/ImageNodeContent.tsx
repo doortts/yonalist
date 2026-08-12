@@ -404,19 +404,17 @@ export function ImageNodeContent({
             </>
           )}
         </div>
-        {/* The caret only belongs on a surface that answers keys: the zoomed
-            header renders the same node without one. */}
-        {onKeyDown && (
-          <div
-            ref={caretStopRef}
-            className="notes-image-caret-stop"
-            role="group"
-            tabIndex={-1}
-            data-node-id={node.id}
-            data-outline-field="image"
-            aria-label={`Cursor after ${originalName}`}
-          />
-        )}
+        {/* The station is where outline focus lands, so every surface needs
+            one: without it `editorById` has nothing to focus at all. */}
+        <div
+          ref={caretStopRef}
+          className="notes-image-caret-stop"
+          role="group"
+          tabIndex={-1}
+          data-node-id={node.id}
+          data-outline-field="image"
+          aria-label={`Cursor after ${originalName}`}
+        />
       </div>
       {actionError && (
         <div className="notes-attachment-error" role="alert">

@@ -162,7 +162,7 @@ describe("ImageNodeContent", () => {
       .toHaveClass("notes-image-caret-stop");
   });
 
-  it("leaves out the caret station where no keys are handled", async () => {
+  it("keeps the caret station on a surface with no key handler", async () => {
     const residency = new ImageResidency(
       vi.fn().mockResolvedValue(Uint8Array.from([1])),
       {
@@ -176,7 +176,7 @@ describe("ImageNodeContent", () => {
     await screen.findByRole("img", { name: "cat.png" });
 
     expect(view.container.querySelector(".notes-image-caret-stop"))
-      .toBeNull();
+      .toHaveAttribute("data-outline-field", "image");
   });
 
   it("drops the drag flag when the width changes mid-drag", async () => {

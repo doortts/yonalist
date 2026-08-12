@@ -290,7 +290,7 @@ export function handlePageKeyDown(
   onFocusNote: () => void
 ) {
   updateBackspaceGesture(event, store);
-  const intent = resolveOutlineKey({
+  executePageIntent(event, resolveOutlineKey({
     key: event.key,
     altKey: event.altKey,
     ctrlKey: event.ctrlKey,
@@ -311,9 +311,58 @@ export function handlePageKeyDown(
     structureIndex,
     target: "page",
     platform: outlinePlatform()
-  });
-  if (!intent) return;
+  }), store, pageId, structureIndex, onZoomOut, onFocusNote);
+}
 
+/**
+ * The same keys for the zoom header when the zoom root is an image: it has no
+ * text field to type into, so the caret station answers in its place.
+ */
+export function handleImagePageKeyDown(
+  event: KeyboardEvent<HTMLDivElement>,
+  store: NotesStore,
+  pageId: string,
+  nodes: readonly NoteView[],
+  visibleNodes: readonly NoteView[],
+  structureIndex: OutlineIndex,
+  visibleIndex: OutlineIndex,
+  onZoomOut: () => void,
+  onFocusNote: () => void
+) {
+  executePageIntent(event, resolveOutlineKey({
+    key: event.key,
+    altKey: event.altKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+    isComposing: event.nativeEvent.isComposing,
+    repeat: event.repeat,
+    nodeId: pageId,
+    pageId,
+    value: "",
+    selectionStart: 0,
+    selectionEnd: 0,
+    firstVisualLine: true,
+    lastVisualLine: true,
+    visibleNodes,
+    structureNodes: nodes,
+    visibleIndex,
+    structureIndex,
+    target: "page",
+    platform: outlinePlatform()
+  }), store, pageId, structureIndex, onZoomOut, onFocusNote);
+}
+
+function executePageIntent(
+  event: KeyboardEvent<HTMLElement>,
+  intent: OutlineKeyIntent | null,
+  store: NotesStore,
+  pageId: string,
+  structureIndex: OutlineIndex,
+  onZoomOut: () => void,
+  onFocusNote: () => void
+): void {
+  if (!intent) return;
   event.preventDefault();
   const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
   if (!scope) return;

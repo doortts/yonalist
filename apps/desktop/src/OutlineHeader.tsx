@@ -4,7 +4,9 @@ import {
   type ReactNode
 } from "react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
-import { handlePageKeyDown, RowMenuItem } from "./outlineSupport";
+import {
+  handleImagePageKeyDown, handlePageKeyDown, RowMenuItem
+} from "./outlineSupport";
 import { useMenuDismiss } from "./useMenuDismiss";
 import type { NotesStore } from "./notesStore";
 import type { OutlineIndex } from "./outlineIndex";
@@ -266,7 +268,21 @@ export function OutlinePageHeading({
                 Loading image
               </div>
             }>
-              <ImageNodeContent node={targetNode} store={store} />
+              <ImageNodeContent
+                node={targetNode}
+                store={store}
+                onKeyDown={(event) => handleImagePageKeyDown(
+                  event,
+                  store,
+                  target.id,
+                  nodes,
+                  visibleNodes,
+                  index,
+                  visibleIndex,
+                  onBack,
+                  openNoteAndFocus
+                )}
+              />
             </Suspense>
           ) : <h2 className="notes-page-heading">
             <OutlineTextField

@@ -43,6 +43,42 @@ function imageBoot(): BootSnapshot {
   };
 }
 
+/** The image carries a child, so a zoom into it has a body row to reach. */
+function zoomBoot(): BootSnapshot {
+  return {
+    ...snapshot,
+    viewport: {
+      ...snapshot.viewport!,
+      nodes: [
+        snapshot.viewport!.nodes[0]!,
+        imageNode,
+        {
+          ...snapshot.viewport!.nodes[1]!,
+          id: "caption",
+          parentId: "image",
+          sortKey: 1_024,
+          text: "Caption thought"
+        }
+      ]
+    }
+  };
+}
+
+async function renderZoomedImage() {
+  const notesApi = appApi();
+  notesApi.bootstrap = vi.fn().mockResolvedValue(zoomBoot());
+  notesApi.readImage = vi.fn().mockResolvedValue(Uint8Array.from([1]));
+  const view = render(<App api={notesApi} />);
+  await screen.findByRole("group", { name: "Image: cat.png" });
+
+  fireEvent.click(screen.getAllByRole("button", { name: "Zoom to item" })[1]!);
+  const headerStation = () => view.container.querySelector<HTMLElement>(
+    ".notes-page-header .notes-image-caret-stop"
+  );
+  await waitFor(() => expect(headerStation()).not.toBeNull());
+  return { notesApi, view, station: headerStation() };
+}
+
 async function renderImageOutline() {
   const notesApi = appApi();
   notesApi.bootstrap = vi.fn().mockResolvedValue(imageBoot());
@@ -102,6 +138,33 @@ describe("image caret station", () => {
           kind: "createNode",
           parent_id: "page-1",
           before_id: "bullet-2"
+        })
+      })
+    ));
+  });
+
+  it("arrows off the zoomed image header onto the first body row", async () => {
+    const { station } = await renderZoomedImage();
+    expect(station).toHaveAttribute("data-node-id", "image");
+
+    station!.focus();
+    fireEvent.keyDown(station!, { key: "ArrowDown" });
+
+    expect(screen.getByDisplayValue("Caption thought")).toHaveFocus();
+  });
+
+  it("creates a first child from the zoomed image header on Enter", async () => {
+    const { notesApi, station } = await renderZoomedImage();
+    station!.focus();
+
+    fireEvent.keyDown(station!, { key: "Enter" });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: expect.objectContaining({
+          kind: "createNode",
+          parent_id: "image",
+          before_id: "caption"
         })
       })
     ));
