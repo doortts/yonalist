@@ -86,6 +86,7 @@ export interface SupportingNoteKeyInput {
 
 export type SupportingNoteKeyResolution =
   | "currentTitle"
+  | "removeEmptyNote"
   | "nextTitle"
   | "nextTitleOrCreate";
 
@@ -516,6 +517,12 @@ export function resolveSupportingNoteKey(
     return null;
   }
   if (input.key === "Escape") return "currentTitle";
+  // Backspace past the last character takes the note away and hands the caret
+  // back to its title. A held key stops here rather than running on into the
+  // title's own text.
+  if (input.key === "Backspace" && input.value.length === 0 && !input.repeat) {
+    return "removeEmptyNote";
+  }
   if (input.key === "ArrowUp" && input.selectionStart === 0) {
     return "currentTitle";
   }

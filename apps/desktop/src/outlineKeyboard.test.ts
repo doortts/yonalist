@@ -679,6 +679,29 @@ describe("v2 supporting-note keyboard resolver", () => {
     }))).toBeNull();
   });
 
+  it("closes an emptied note with Backspace without running into the title", () => {
+    expect(resolveSupportingNoteKey(noteInput({
+      key: "Backspace",
+      selectionStart: 0,
+      selectionEnd: 0,
+      value: ""
+    }))).toBe("removeEmptyNote");
+    // Text still in the note keeps Backspace native, caret at the start or not.
+    expect(resolveSupportingNoteKey(noteInput({
+      key: "Backspace",
+      selectionStart: 0,
+      selectionEnd: 0
+    }))).toBeNull();
+    // A held key stops at the empty note instead of eating the title's text.
+    expect(resolveSupportingNoteKey(noteInput({
+      key: "Backspace",
+      selectionStart: 0,
+      selectionEnd: 0,
+      value: "",
+      repeat: true
+    }))).toBeNull();
+  });
+
   it("uses one-shot Shift+Enter to move or create outside IME", () => {
     expect(resolveSupportingNoteKey(noteInput({
       ...noteInput(),

@@ -1,5 +1,5 @@
 import type { Ref } from "react";
-import { focusOutlineEditor } from "./outlineFocus";
+import { focusOutlineEditor, type OutlineFocusEdge } from "./outlineFocus";
 import type { NotesStore } from "./notesStore";
 import { resolveSupportingNoteKey } from "./outlineKeyboard";
 import {
@@ -74,13 +74,23 @@ export function SupportingNoteField({
         event.preventDefault();
         const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
         if (!scope) return;
-        const focusAfterFlush = (id: string): void => {
+        const focusAfterFlush = (
+          id: string,
+          edge: OutlineFocusEdge = "preserve"
+        ): void => {
           void store.flushNoteDraft(nodeId).then(() => requestAnimationFrame(
-            () => focusOutlineEditor(scope, id, "preserve")
+            () => focusOutlineEditor(scope, id, edge)
           ));
         };
         if (resolution === "currentTitle") {
           focusAfterFlush(nodeId);
+          return;
+        }
+        if (resolution === "removeEmptyNote") {
+          // The field goes now rather than after the round trip; the flush it
+          // leaves behind still commits the erase.
+          onAutoHide();
+          focusAfterFlush(nodeId, "end");
           return;
         }
         const { nextRowId, fallbackFocusId, createParentId } = targets();
