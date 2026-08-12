@@ -183,18 +183,26 @@ describe("v2 outline keyboard intent resolver", () => {
     }
   });
 
-  // The image is one character wide, so the caret takes its far side before it
-  // gives up the row.
-  it("steps the caret across the image between its two stations", () => {
+  // Caret, image, caret: the image is a stop of its own between its two
+  // stations, so a plain arrow takes three presses to cross the row.
+  it("steps the caret onto the image and off its far side", () => {
     expect(handleImageNodeKeyDown(input({
       nodeId: "next",
       key: "ArrowRight",
       imageEdge: "before"
+    }))).toEqual({ kind: "focusImage", nodeId: "next" });
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowRight"
     }))).toEqual({ kind: "focus", nodeId: "next", edge: "end" });
     expect(handleImageNodeKeyDown(input({
       nodeId: "next",
       key: "ArrowLeft",
       imageEdge: "after"
+    }))).toEqual({ kind: "focusImage", nodeId: "next" });
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowLeft"
     }))).toEqual({ kind: "focus", nodeId: "next", edge: "start" });
     // The outer sides keep the row-boundary moves they always made.
     expect(handleImageNodeKeyDown(input({

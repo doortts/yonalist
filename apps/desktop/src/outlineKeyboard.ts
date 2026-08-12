@@ -68,6 +68,7 @@ export type OutlineKeyIntent =
   | { readonly kind: "moveTo" }
   | { readonly kind: "move"; readonly direction: "up" | "down" }
   | { readonly kind: "zoom"; readonly direction: "in" | "out" }
+  | { readonly kind: "focusImage"; readonly nodeId: string }
   | { readonly kind: "focusNote" }
   | { readonly kind: "copyImage" }
   | { readonly kind: "cutImage" }
@@ -519,22 +520,27 @@ export function handleImageNodeKeyDown(
       ? { kind: "extendSelection", headId: input.nodeId }
       : null;
   }
-  // The image spans one character of the line, so a plain arrow crosses to its
-  // other side before the row boundary is even in question.
-  const across = input.key === "ArrowRight" ? "before" : "after";
+  // Caret, image, caret: the image is a stop between its two stations, so a
+  // plain arrow lands on it before the row boundary is even in question. The
+  // caret standing on the image itself is the stop with no station under it.
   if (
     (input.key === "ArrowLeft" || input.key === "ArrowRight") &&
     !input.shiftKey &&
     !input.altKey &&
     !input.ctrlKey &&
-    !input.metaKey &&
-    input.imageEdge === across
+    !input.metaKey
   ) {
-    return {
-      kind: "focus",
-      nodeId: input.nodeId,
-      edge: input.key === "ArrowRight" ? "end" : "start"
-    };
+    const toward = input.key === "ArrowRight" ? "before" : "after";
+    if (input.imageEdge === toward) {
+      return { kind: "focusImage", nodeId: input.nodeId };
+    }
+    if (input.imageEdge === undefined) {
+      return {
+        kind: "focus",
+        nodeId: input.nodeId,
+        edge: input.key === "ArrowRight" ? "end" : "start"
+      };
+    }
   }
   return resolveOutlineKey({
     ...input,

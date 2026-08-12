@@ -202,7 +202,9 @@ export function ImageNodeContent({
       className="notes-image-node-content"
       role="group"
       aria-label={`Image: ${originalName}`}
-      tabIndex={0}
+      // The arrows walk onto the image, and the outline's fields are no tab
+      // stops either -- Tab has no business landing here.
+      tabIndex={-1}
       style={{ width: "100%", minWidth: 0 }}
       onKeyDown={onKeyDown}
       onPaste={onPaste}

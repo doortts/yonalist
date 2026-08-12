@@ -33,15 +33,14 @@ describe("image node styles", () => {
 
   // The ring hugs the frame, never the row: the node content is the full row
   // width, so a ring on it wrapped the bullet and everything beside it.
-  it("rings the image on click, caret arrival, and range selection", () => {
+  it("rings the image only while it holds the focus itself", () => {
     expect(rule(notesStyles, ".notes-image-node-content:focus-visible"))
       .toContain("outline: 0;");
-    expect(notesStyles).not.toContain(
-      ".notes-image-node-content:focus:not(:focus-visible) {"
-    );
+    // A caret standing beside the image is not the image being focused, so the
+    // stations draw no ring of their own.
+    expect(notesStyles).not.toContain(".notes-image-caret-stop:focus) ");
     for (const selector of [
-      ".notes-image-node-content:focus:not(:focus-visible) " + frame,
-      ".notes-image-frame-row:has(> .notes-image-caret-stop:focus) " + frame,
+      ".notes-image-node-content:focus " + frame,
       `.notes-node[data-range-selected="true"] ${frame}`
     ]) {
       const ring = rule(notesStyles, selector);

@@ -108,9 +108,10 @@ describe("image caret station", () => {
       expect(side).toHaveAttribute("data-node-id", "image"));
   });
 
-  it("steps across the image before it leaves the row", async () => {
+  it("steps caret, image, caret before it leaves the row", async () => {
     const { view } = await renderImageOutline();
     const [before, after] = stations(view);
+    const picture = screen.getByRole("group", { name: "Image: cat.png" });
     const first = screen.getByDisplayValue<HTMLTextAreaElement>(
       "First thought"
     );
@@ -123,6 +124,9 @@ describe("image caret station", () => {
     expect(before).toHaveFocus();
 
     fireEvent.keyDown(before!, { key: "ArrowRight" });
+    expect(picture).toHaveFocus();
+
+    fireEvent.keyDown(picture, { key: "ArrowRight" });
     expect(after).toHaveFocus();
 
     fireEvent.keyDown(after!, { key: "ArrowRight" });
@@ -132,7 +136,18 @@ describe("image caret station", () => {
     expect(after).toHaveFocus();
 
     fireEvent.keyDown(after!, { key: "ArrowLeft" });
+    expect(picture).toHaveFocus();
+
+    fireEvent.keyDown(picture, { key: "ArrowLeft" });
     expect(before).toHaveFocus();
+  });
+
+  // Tab belongs to the fields; the outline's own rows are not tab stops either.
+  it("keeps the image out of the tab order", async () => {
+    await renderImageOutline();
+
+    expect(screen.getByRole("group", { name: "Image: cat.png" }))
+      .toHaveAttribute("tabindex", "-1");
   });
 
   it("takes the image with a shifted arrow and collapses back off it",

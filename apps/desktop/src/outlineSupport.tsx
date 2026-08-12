@@ -302,6 +302,12 @@ export function handleImagePrimaryKeyDown(
   if (intent.kind === "cutImage") {
     return hasSelection ? selectionActions.cut() : onCutImage(node.id);
   }
+  // The stop between the two stations is the image itself, which is the element
+  // this handler is already mounted on.
+  if (intent.kind === "focusImage") {
+    event.currentTarget.focus();
+    return;
+  }
   executeRowIntent(
     intent,
     scope,

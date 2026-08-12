@@ -3150,12 +3150,9 @@ body.is-outline-dragging * {
   outline: 0;
 }
 
-.notes-image-node-content:focus:not(:focus-visible) .notes-image-attachment-frame {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.notes-image-frame-row:has(> .notes-image-caret-stop:focus) .notes-image-attachment-frame {
+/* The ring means the image itself is where the caret stands -- a caret at
+   either station is beside the image, not on it, and draws nothing. */
+.notes-image-node-content:focus .notes-image-attachment-frame {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
