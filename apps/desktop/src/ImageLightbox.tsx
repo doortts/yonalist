@@ -26,15 +26,17 @@ interface PaneSize {
 /**
  * The largest scale that keeps the whole image inside the pane, never above
  * full size -- blowing a small image up past its own pixels only blurs it. An
- * unmeasured pane (jsdom, the frame before layout) imposes no fit at all.
+ * unmeasured pane (jsdom, the frame before layout) imposes no fit at all. The
+ * result can fall below `MIN_SCALE`, which is how the caller learns that even
+ * the fitted image will not be contained.
  */
-function fitScaleFor(pane: PaneSize, width: number, height: number): number {
+function containScaleFor(pane: PaneSize, width: number, height: number): number {
   if (pane.width <= 0 || pane.height <= 0) return 1;
-  return Math.max(MIN_SCALE, Math.min(
+  return Math.min(
     1,
     (pane.width - GUTTER * 2) / width,
     (pane.height - GUTTER * 2) / height
-  ));
+  );
 }
 
 /** The pane the fit is measured against, kept in step with its own size. */
@@ -97,17 +99,28 @@ export function ImageLightbox({
   const sideways = quarterTurns % 2 === 1;
   const shownWidth = sideways ? pixelHeight : pixelWidth;
   const shownHeight = sideways ? pixelWidth : pixelHeight;
-  const fitScale = fitScaleFor(pane, shownWidth, shownHeight);
+  const containScale = containScaleFor(pane, shownWidth, shownHeight);
+  const fitScale = Math.max(MIN_SCALE, containScale);
   const scale = Math.min(
     MAX_SCALE,
     Math.max(fitScale, requestedScale ?? fitScale)
   );
-  const fitted = scale <= fitScale;
-  const fitting = requestedScale === null;
+  // The floor leaves an enormous image larger than the pane, and then there is
+  // something to pan after all -- fitting is not the same as being contained.
+  const contained = scale <= fitScale && containScale >= MIN_SCALE;
+  const followingFit = requestedScale === null;
 
-  const zoomBy = (delta: number) => setRequestedScale(
-    Math.round((scale + delta) * 100) / 100
-  );
+  /**
+   * Stepping down lands back ON the fit rather than beside it. The ladder is in
+   * whole percents and the fit rarely is, so the test is what the bar shows: a
+   * step that reads as the fitted percentage IS the fit, and goes back to
+   * following the pane instead of freezing a hundredth above it.
+   */
+  const zoomBy = (delta: number) => {
+    const next = Math.round((scale + delta) * 100) / 100;
+    const readsAsFit = Math.round(next * 100) <= Math.round(fitScale * 100);
+    setRequestedScale(readsAsFit ? null : next);
+  };
   const turnBy = (quarters: number) =>
     setQuarterTurns((current) => (current + quarters + 4) % 4);
 
@@ -135,8 +148,14 @@ export function ImageLightbox({
       const live = liveFocusables();
       if (live.length === 0) return;
       event.preventDefault();
-      const at = live.indexOf(document.activeElement as HTMLElement);
       const step = event.shiftKey ? -1 : 1;
+      // A control that disabled itself under the last press drops focus to the
+      // document; the image is the neutral place to pick the walk back up.
+      const at = live.indexOf(document.activeElement as HTMLElement);
+      if (at < 0) {
+        scrollRef.current?.focus();
+        return;
+      }
       live[(at + step + live.length) % live.length]?.focus();
     };
     document.addEventListener("keydown", keyDown);
@@ -187,7 +206,7 @@ export function ImageLightbox({
               type="button"
               className="notes-image-lightbox-control"
               aria-label="Zoom out"
-              disabled={fitted}
+              disabled={contained}
               onClick={() => zoomBy(-ZOOM_STEP)}
             >
               <Minus size={16} aria-hidden="true" />
@@ -202,15 +221,17 @@ export function ImageLightbox({
               <Plus size={16} aria-hidden="true" />
             </button>
             {/* Names the scale it switches to, so its label is its own action.
-                Nothing to switch to when the image already fits at full size. */}
+                Off only when the fit and full size are the same scale AND the
+                view is already there -- a zoomed small image still has a way
+                back. */}
             <button
               type="button"
               className="notes-image-lightbox-control notes-image-lightbox-fit"
-              title={fitting ? "View at full size" : "Fit to window"}
-              disabled={fitScale >= 1}
-              onClick={() => setRequestedScale(fitting ? 1 : null)}
+              title={followingFit ? "View at full size" : "Fit to window"}
+              disabled={fitScale >= 1 && scale <= 1}
+              onClick={() => setRequestedScale(followingFit ? 1 : null)}
             >
-              {fitting ? "100%" : "Fit"}
+              {followingFit ? "100%" : "Fit"}
             </button>
           </span>
         </div>
@@ -220,7 +241,7 @@ export function ImageLightbox({
           role="group"
           aria-label={`Scrollable view of ${originalName}`}
           tabIndex={0}
-          data-fits={fitted ? "true" : undefined}
+          data-fits={contained ? "true" : undefined}
           data-panning={panning ? "true" : undefined}
           onPointerDown={(event) => {
             if (event.button !== 0) return;
@@ -231,6 +252,8 @@ export function ImageLightbox({
             event.currentTarget.focus();
             movedRef.current = 0;
             pressedBackdropRef.current = event.target === event.currentTarget;
+            // Nothing to drag while the whole image is on screen.
+            if (contained) return;
             panRef.current = {
               pointerId: event.pointerId,
               startX: event.clientX,

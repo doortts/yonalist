@@ -3292,14 +3292,15 @@ body.is-outline-dragging * {
   cursor: grab;
 }
 
-/* Nothing to drag while the whole image is on screen. */
+.notes-image-lightbox-scroll[data-panning] {
+  cursor: grabbing;
+}
+
+/* Nothing to drag while the whole image is on screen. Declared after the drag
+   cursor so it wins at equal specificity. */
 .notes-image-lightbox-scroll[data-fits] {
   overflow: hidden;
   cursor: default;
-}
-
-.notes-image-lightbox-scroll[data-panning] {
-  cursor: grabbing;
 }
 
 /* The box the turned image occupies. `margin: auto` centers it while it fits
@@ -3369,9 +3370,9 @@ body.is-outline-dragging * {
   outline-offset: 2px;
   background: none;
   box-shadow: none;
+  align-items: center;
   color: rgb(255 255 255 / 68%);
   cursor: pointer;
-  place-items: center;
   transition: color 100ms ease;
 }
 
@@ -3387,7 +3388,11 @@ body.is-outline-dragging * {
   cursor: default;
 }
 
+/* Fixed width so flipping between "100%" and "Fit" does not shuffle the row
+   out from under the pointer. */
 .notes-image-lightbox-fit {
+  min-width: 34px;
+  justify-content: center;
   font-size: 11px;
 }
 
@@ -3420,9 +3425,11 @@ body.is-outline-dragging * {
   }
 }
 
+/* The fit reserves the same gutter on all four sides, so a narrow window may
+   only add to the top, where the bar sits. */
 @media (max-width: 640px) {
   .notes-image-lightbox-scroll {
-    padding: 44px 16px 16px;
+    padding: 44px 24px 24px;
   }
 }
 

@@ -106,6 +106,19 @@ describe("image node styles", () => {
     expect(image).toContain("position: absolute;");
     expect(image).toContain("max-width: none;");
     expect(image).toContain("max-height: none;");
+    // The turn is about the image's own centre, which is these two offsets
+    // against the translate: without them it collapses into the stage corner.
+    expect(image).toContain("top: 50%;");
+    expect(image).toContain("left: 50%;");
+  });
+
+  // The fit reserves one gutter per side, so the padding it reserves against
+  // has to be that gutter -- on the narrow layout too, bar clearance aside.
+  it("keeps the lightbox padding at the gutter the fit reserves", () => {
+    expect(rule(notesStyles, ".notes-image-lightbox-scroll"))
+      .toContain("padding: 24px;");
+    expect(atRule(notesStyles, "@media (max-width: 640px)"))
+      .toContain("padding: 44px 24px 24px;");
   });
 
   it("strips the chrome off the lightbox controls", () => {

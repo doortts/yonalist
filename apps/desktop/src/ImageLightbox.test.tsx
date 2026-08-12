@@ -85,12 +85,19 @@ describe("ImageLightbox fit and zoom", () => {
   it("turns the image a quarter at a time and refits it", () => {
     sizeWindow(800, 600);
     const { image, rotateRight, rotateLeft } = scaled(640, 905);
+    const stage = () => document.querySelector<HTMLElement>(
+      ".notes-image-lightbox-stage"
+    )!;
+    // Upright, the stage is the image: 640 × 905 at 61%.
+    expect(stage()).toHaveStyle({ width: "390px", height: "552px" });
 
     fireEvent.click(rotateRight);
 
     expect(image).toHaveStyle({
       transform: "translate(-50%, -50%) rotate(90deg)"
     });
+    // Lying down, the stage takes the swapped box: 905 × 640 at 83%.
+    expect(stage()).toHaveStyle({ width: "752px", height: "532px" });
     // Lying down, the width binds instead: (800 - 48) / 905.
     expect(screen.getByText("640 × 905 · 83%")).toBeInTheDocument();
 
@@ -100,6 +107,51 @@ describe("ImageLightbox fit and zoom", () => {
     expect(image).toHaveStyle({
       transform: "translate(-50%, -50%) rotate(270deg)"
     });
+  });
+
+  // Stepping down has to land back ON the fit rather than beside it, or the
+  // view stops following the window and the toggle offers a scale it is at.
+  it("lands zoom out back on the fitted scale in one press", () => {
+    sizeWindow(800, 600);
+    const { zoomIn, zoomOut } = scaled(640, 905);
+    fireEvent.click(zoomIn);
+
+    fireEvent.click(zoomOut);
+
+    expect(screen.getByText("640 × 905 · 61%")).toBeInTheDocument();
+    expect(zoomOut).toBeDisabled();
+    // Back on the fit means back to following it: a narrower window refits.
+    expect(screen.getByRole("button", { name: "100%" })).toBeEnabled();
+  });
+
+  it("keeps the fit toggle live for a small image that was zoomed", () => {
+    sizeWindow(800, 600);
+    const { zoomIn } = scaled(120, 80);
+
+    fireEvent.click(zoomIn);
+    fireEvent.click(zoomIn);
+
+    expect(screen.getByText("120 × 80 · 120%")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Fit" }));
+    expect(screen.getByText("120 × 80 · 100%")).toBeInTheDocument();
+  });
+
+  // The floor that keeps a huge image visible leaves it larger than the pane,
+  // and then there is something to pan after all.
+  it("still allows panning when the scale floor binds", () => {
+    sizeWindow(320, 240);
+    render(
+      <ImageLightbox
+        originalName="cat.png"
+        sourceUrl="blob:resident"
+        pixelWidth={12_000}
+        pixelHeight={9_000}
+        onClose={vi.fn()}
+      />
+    );
+
+    expect(document.querySelector(".notes-image-lightbox-scroll"))
+      .not.toHaveAttribute("data-fits");
   });
 
   it("swaps between the fitted scale and full size", () => {
@@ -116,6 +168,10 @@ describe("ImageLightbox fit and zoom", () => {
 });
 
 describe("ImageLightbox", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("uses the resident URL, closes on Escape, and restores trigger focus", () => {
     const trigger = document.createElement("button");
     document.body.append(trigger);
@@ -182,8 +238,6 @@ describe("ImageLightbox", () => {
 
     fireEvent.keyDown(document, { key: "Tab" });
     expect(close).toHaveFocus();
-
-    vi.restoreAllMocks();
   });
 
   // The press suppresses the browser's own focus to stop image-drag selection,
@@ -218,8 +272,11 @@ describe("ImageLightbox", () => {
   });
 
   it("pans the scroll area by pointer drag and stays open afterwards", () => {
+    sizeWindow(400, 300);
     const onClose = vi.fn();
     const { scroll } = lightbox(onClose);
+    // Only what overflows can be dragged, so the view is taken past the fit.
+    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
     scroll.scrollLeft = 0;
     scroll.scrollTop = 0;
 
