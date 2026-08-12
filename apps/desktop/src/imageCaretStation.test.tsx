@@ -91,7 +91,50 @@ async function renderImageOutline() {
   return { notesApi, view, station };
 }
 
+function stations(view: { container: HTMLElement }): readonly HTMLElement[] {
+  return [...view.container.querySelectorAll<HTMLElement>(
+    ".notes-outline-list .notes-image-caret-stop"
+  )];
+}
+
 describe("image caret station", () => {
+  it("parks a station on each side of the image", async () => {
+    const { view } = await renderImageOutline();
+
+    const sides = stations(view);
+    expect(sides.map((side) => side.dataset.imageEdge))
+      .toEqual(["before", "after"]);
+    sides.forEach((side) =>
+      expect(side).toHaveAttribute("data-node-id", "image"));
+  });
+
+  it("steps across the image before it leaves the row", async () => {
+    const { view } = await renderImageOutline();
+    const [before, after] = stations(view);
+    const first = screen.getByDisplayValue<HTMLTextAreaElement>(
+      "First thought"
+    );
+    const second = screen.getByDisplayValue<HTMLTextAreaElement>(
+      "Second thought"
+    );
+    first.focus();
+
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    expect(before).toHaveFocus();
+
+    fireEvent.keyDown(before!, { key: "ArrowRight" });
+    expect(after).toHaveFocus();
+
+    fireEvent.keyDown(after!, { key: "ArrowRight" });
+    expect(second).toHaveFocus();
+
+    fireEvent.keyDown(second, { key: "ArrowLeft" });
+    expect(after).toHaveFocus();
+
+    fireEvent.keyDown(after!, { key: "ArrowLeft" });
+    expect(before).toHaveFocus();
+  });
+
   it("stops on the image caret station when arrowing down from above",
     async () => {
       const { station } = await renderImageOutline();
@@ -170,15 +213,15 @@ describe("image caret station", () => {
     ));
   });
 
-  it("parks the caret at the station when the margin beside the image is clicked",
+  it("parks the caret past the image when the margin beside it is clicked",
     async () => {
-      const { view, station } = await renderImageOutline();
+      const { view } = await renderImageOutline();
       const row = view.container.querySelector<HTMLElement>(
         ".notes-image-frame-row"
       );
 
       fireEvent.click(row!);
 
-      expect(station).toHaveFocus();
+      expect(stations(view)[1]).toHaveFocus();
     });
 });

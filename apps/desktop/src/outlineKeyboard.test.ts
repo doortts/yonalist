@@ -155,6 +155,32 @@ describe("v2 outline keyboard intent resolver", () => {
     }
   });
 
+  // The image is one character wide, so the caret takes its far side before it
+  // gives up the row.
+  it("steps the caret across the image between its two stations", () => {
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowRight",
+      imageEdge: "before"
+    }))).toEqual({ kind: "focus", nodeId: "next", edge: "end" });
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowLeft",
+      imageEdge: "after"
+    }))).toEqual({ kind: "focus", nodeId: "next", edge: "start" });
+    // The outer sides keep the row-boundary moves they always made.
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "next",
+      key: "ArrowLeft",
+      imageEdge: "before"
+    }))).toEqual({ kind: "focus", nodeId: "child", edge: "end" });
+    expect(handleImageNodeKeyDown(input({
+      nodeId: "child",
+      key: "ArrowRight",
+      imageEdge: "after"
+    }))).toEqual({ kind: "focus", nodeId: "next", edge: "start" });
+  });
+
   it("splits the selected title range into one atomic sibling gesture", () => {
     expect(resolveOutlineKey(input())).toEqual({
       kind: "split",

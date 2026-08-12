@@ -3217,6 +3217,12 @@ body.is-outline-dragging * {
   background: transparent;
 }
 
+/* The station before the image keeps its gap on the frame side, so the row's
+   text column starts where the bullets put it. */
+.notes-image-caret-stop[data-image-edge="before"] {
+  margin-inline: 0 6px;
+}
+
 /* Beats the shared `.notes-node :focus-visible` ring: same specificity (0,2,0),
    declared later. A bare class rule would lose. */
 .notes-image-caret-stop:focus-visible {

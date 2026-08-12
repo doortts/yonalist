@@ -205,6 +205,13 @@ export function handleOutlineKeyDown(
   );
 }
 
+function imageEdgeOf(target: EventTarget): "before" | "after" | undefined {
+  const edge = target instanceof HTMLElement
+    ? target.dataset.imageEdge
+    : undefined;
+  return edge === "before" || edge === "after" ? edge : undefined;
+}
+
 export function handleImagePrimaryKeyDown(
   event: KeyboardEvent<HTMLDivElement>,
   store: NotesStore,
@@ -247,6 +254,9 @@ export function handleImagePrimaryKeyDown(
     structureIndex,
     selectionHeadId,
     hasSelection,
+    // The station the key came from is the caret's side of the image; a key on
+    // the frame itself belongs to no side.
+    imageEdge: imageEdgeOf(event.target),
     target: "row",
     platform: outlinePlatform()
   });

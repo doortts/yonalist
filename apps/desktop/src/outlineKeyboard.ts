@@ -24,6 +24,8 @@ export interface OutlineKeyInput {
   readonly structureIndex?: OutlineIndex;
   readonly selectionHeadId?: string | null;
   readonly hasSelection?: boolean;
+  /** Which side of an image the caret stands on, when it stands on one. */
+  readonly imageEdge?: "before" | "after";
   readonly target: "page" | "row";
   readonly platform: "mac" | "other";
 }
@@ -512,6 +514,23 @@ export function handleImageNodeKeyDown(
     !input.metaKey
   ) {
     return { kind: "extendSelection", headId: input.nodeId };
+  }
+  // The image spans one character of the line, so a plain arrow crosses to its
+  // other side before the row boundary is even in question.
+  const across = input.key === "ArrowRight" ? "before" : "after";
+  if (
+    (input.key === "ArrowLeft" || input.key === "ArrowRight") &&
+    !input.shiftKey &&
+    !input.altKey &&
+    !input.ctrlKey &&
+    !input.metaKey &&
+    input.imageEdge === across
+  ) {
+    return {
+      kind: "focus",
+      nodeId: input.nodeId,
+      edge: input.key === "ArrowRight" ? "end" : "start"
+    };
   }
   return resolveOutlineKey({
     ...input,

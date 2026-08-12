@@ -215,6 +215,18 @@ export function ImageNodeContent({
           }
         }}
       >
+        {/* One station per side: the image occupies a character's worth of the
+            line, so the caret has somewhere to stand on either end of it. Both
+            answer outline focus, which picks between them by its edge. */}
+        <div
+          className="notes-image-caret-stop"
+          role="group"
+          tabIndex={-1}
+          data-node-id={node.id}
+          data-outline-field="image"
+          data-image-edge="before"
+          aria-label={`Cursor before ${originalName}`}
+        />
         <div
           className="notes-image-attachment-frame"
           style={frameStyle}
@@ -407,8 +419,6 @@ export function ImageNodeContent({
             </>
           )}
         </div>
-        {/* The station is where outline focus lands, so every surface needs
-            one: without it `editorById` has nothing to focus at all. */}
         <div
           ref={caretStopRef}
           className="notes-image-caret-stop"
@@ -416,6 +426,7 @@ export function ImageNodeContent({
           tabIndex={-1}
           data-node-id={node.id}
           data-outline-field="image"
+          data-image-edge="after"
           aria-label={`Cursor after ${originalName}`}
         />
       </div>
