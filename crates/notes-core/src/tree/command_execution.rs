@@ -202,15 +202,13 @@ impl NotesTree {
                 root_count += 1;
             }
             let node_id = node.id.clone();
-            self.create_node(
-                node.id,
-                node.parent_id,
+            self.import_node(
+                node,
                 if is_root {
                     position.clone()
                 } else {
                     Position::at_end()
                 },
-                node.text,
             )?;
             imported_ids.insert(node_id);
         }
@@ -220,6 +218,34 @@ impl NotesTree {
             ));
         }
         Ok(())
+    }
+
+    /// One imported node arrives complete: marker, note, tick, and any image
+    /// reference land in the same patch as the row itself, so a paste stays one
+    /// undo step.
+    fn import_node(&mut self, node: ImportNode, position: Position) -> Result<(), DomainError> {
+        self.ensure_new_id(&node.id)?;
+        self.ensure_parent(&node.parent_id)?;
+        let id = node.id.clone();
+        let parent_id = node.parent_id.clone();
+        let mut created = match node.image {
+            // An image node carries its file name as text, the way `set_image`
+            // keeps it, so an import may not name it anything else.
+            Some(image) => {
+                if !node.text.is_empty() && node.text != image.original_name() {
+                    return Err(DomainError::InvalidImage(
+                        "an imported image node's text must be its file name".into(),
+                    ));
+                }
+                NoteNode::image_child(id.clone(), parent_id.clone(), SORT_KEY_STEP, image)
+            }
+            None => NoteNode::child(id.clone(), parent_id.clone(), SORT_KEY_STEP, node.text),
+        };
+        created.set_note(node.note);
+        created.set_marker(node.marker);
+        created.set_completed(node.completed);
+        self.nodes.insert(id.clone(), created);
+        self.place_child(&id, &parent_id, position)
     }
 
     fn import_images(
@@ -284,8 +310,7 @@ impl NotesTree {
         if nested {
             self.node_mut(&id)?.set_collapsed(false);
         }
-        let mut created =
-            NoteNode::child(new_id.clone(), parent_id.clone(), SORT_KEY_STEP, suffix);
+        let mut created = NoteNode::child(new_id.clone(), parent_id.clone(), SORT_KEY_STEP, suffix);
         created.set_marker(marker);
         self.nodes.insert(new_id.clone(), created);
         self.place_child(&new_id, &parent_id, position)

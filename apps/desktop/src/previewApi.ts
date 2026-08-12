@@ -143,8 +143,22 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
       break;
     }
     case "importNodes": {
+      // Every referenced hash is weighed before a row lands, so a stale paste
+      // fails whole rather than half, as the Rust command does.
+      for (const imported of command.nodes) {
+        if (!imported.image) continue;
+        if (!previewImages.holds(imported.image.contentHash)) {
+          throw new Error("A pasted image is no longer in the image store.");
+        }
+        // notes-core answers DomainError::InvalidImage here: an image node
+        // carries its file name as text.
+        if (imported.text && imported.text !== imported.image.originalName) {
+          throw new Error("an imported image node's text must be its file name");
+        }
+      }
       for (const imported of command.nodes) {
         const isRoot = imported.parentId === command.parent_id;
+        const image = imported.image ?? null;
         const node: NoteView = {
           id: imported.id,
           parentId: imported.parentId,
@@ -152,12 +166,14 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
             imported.parentId,
             isRoot ? command.before_id : null
           ),
-          kind: "bullet", image: null,
-          text: imported.text,
-          note: "",
-          marker: "bullet",
+          kind: image ? "image" : "bullet",
+          image,
+          // An image node carries its file name as text, as notes-core keeps it.
+          text: image ? image.originalName : imported.text,
+          note: imported.note ?? "",
+          marker: imported.marker ?? "bullet",
           collapsed: false,
-          completed: false,
+          completed: imported.completed ?? false,
           starred: false,
           deleted: false
         };

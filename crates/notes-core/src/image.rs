@@ -82,6 +82,35 @@ impl NoteImage {
         })
     }
 
+    /// A pasted node points at bytes the asset store already holds, so the path
+    /// is derived from the hash here instead of published again.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_referenced(
+        content_hash: impl Into<String>,
+        original_name: impl Into<String>,
+        mime_type: impl Into<String>,
+        byte_length: u64,
+        pixel_width: u32,
+        pixel_height: u32,
+        display_width: u32,
+    ) -> Result<Self, DomainError> {
+        let content_hash = content_hash.into();
+        let mime_type = mime_type.into();
+        let extension = extension_for_mime(&mime_type)
+            .ok_or_else(|| invalid_image("image MIME type is unsupported"))?;
+        let relative_path = format!("{content_hash}.{extension}");
+        Self::try_new(
+            content_hash,
+            relative_path,
+            original_name,
+            mime_type,
+            byte_length,
+            pixel_width,
+            pixel_height,
+            display_width,
+        )
+    }
+
     pub fn content_hash(&self) -> &str {
         &self.content_hash
     }

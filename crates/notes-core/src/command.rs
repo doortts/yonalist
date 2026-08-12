@@ -7,6 +7,12 @@ pub struct ImportNode {
     pub id: NodeId,
     pub parent_id: NodeId,
     pub text: String,
+    pub note: String,
+    pub marker: NoteMarkerKind,
+    pub completed: bool,
+    /// An imported node may reference an image asset that already exists; the
+    /// bytes are never carried through the command.
+    pub image: Option<NoteImage>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

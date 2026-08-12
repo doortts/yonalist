@@ -719,4 +719,87 @@ describe("browser-only preview adapter", () => {
       nodeId: "preview-image"
     })).toEqual(Uint8Array.from([1, 2, 3]));
   });
+
+  it("pastes marker, note, tick and an image reference, and refuses a stale hash", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    const source = await previewNotesApi.importImageBytes({
+      sessionId: boot.sessionId,
+      requestId: "preview-paste-source",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      parentId: pageId,
+      beforeId: null,
+      images: [{
+        nodeId: "preview-paste-source",
+        originalName: "sample.png",
+        declaredMimeType: "image/png",
+        blob: new Blob([Uint8Array.from([7, 8, 9])], { type: "image/png" })
+      }]
+    });
+    const image = source.changedNodes[0].image!;
+
+    const pasted = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-rich-paste",
+      baseRevision: source.revision,
+      historyGroup: null,
+      command: {
+        kind: "importNodes",
+        parent_id: pageId,
+        before_id: null,
+        nodes: [
+          {
+            id: "preview-paste-todo",
+            parentId: pageId,
+            text: "Buy milk",
+            note: "Two litres",
+            marker: "todo",
+            completed: true
+          },
+          {
+            id: "preview-paste-image",
+            parentId: "preview-paste-todo",
+            text: "sample.png",
+            image
+          }
+        ]
+      }
+    });
+
+    expect(pasted.changedNodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "preview-paste-todo",
+        note: "Two litres",
+        marker: "todo",
+        completed: true
+      }),
+      expect.objectContaining({
+        id: "preview-paste-image",
+        kind: "image",
+        text: "sample.png",
+        image: expect.objectContaining({ contentHash: image.contentHash })
+      })
+    ]));
+
+    await expect(previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-stale-paste",
+      baseRevision: pasted.revision,
+      historyGroup: null,
+      command: {
+        kind: "importNodes",
+        parent_id: pageId,
+        before_id: null,
+        nodes: [{
+          id: "preview-paste-stale",
+          parentId: pageId,
+          text: "gone.png",
+          image: { ...image, contentHash: "b".repeat(64) }
+        }]
+      }
+    })).rejects.toThrow("no longer in the image store");
+    expect((await previewNotesApi.bootstrap()).viewport?.nodes.map((node) => node.id))
+      .not.toContain("preview-paste-stale");
+  });
 });

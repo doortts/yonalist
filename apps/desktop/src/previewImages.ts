@@ -130,6 +130,12 @@ export class PreviewImages {
     throw new Error("Native image paths are unavailable in browser preview.");
   }
 
+  // A pasted node references bytes by hash, the way the Rust asset store is
+  // asked whether they are still there.
+  holds(contentHash: string): boolean {
+    return this.blobs.has(contentHash);
+  }
+
   async read(request: ImageReadRequest): Promise<Uint8Array> {
     if (request.sessionId !== this.host.sessionId) {
       throw new Error("Preview session does not match.");

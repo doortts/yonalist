@@ -182,6 +182,12 @@ impl ImageAssetPort for LocalImageAssets {
         Ok(bytes)
     }
 
+    fn contains(&self, image: &NoteImage) -> bool {
+        // The reference names the exact file a later read would open, so the
+        // path decides: a hash whose bytes were reconciled away is gone.
+        verify_regular_file(&self.root.join(image.relative_path())).is_ok()
+    }
+
     fn rollback(&self, images: &[PublishedImage]) {
         for published in images.iter().filter(|image| image.newly_created) {
             let path = self.root.join(published.image.relative_path());

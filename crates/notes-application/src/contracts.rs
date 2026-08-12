@@ -105,6 +105,15 @@ impl From<NoteMarkerKind> for IpcMarkerKind {
     }
 }
 
+impl From<IpcMarkerKind> for NoteMarkerKind {
+    fn from(marker: IpcMarkerKind) -> Self {
+        match marker {
+            IpcMarkerKind::Bullet => Self::Bullet,
+            IpcMarkerKind::Todo => Self::Todo,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export)]
@@ -124,13 +133,43 @@ impl From<NoteNodeKind> for IpcNodeKind {
     }
 }
 
+/// An image an import references by hash. Same fields as `ImageView` without the
+/// derived path, which the domain rebuilds from the hash and the MIME type.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct IpcImportImage {
+    pub content_hash: String,
+    pub original_name: String,
+    pub mime_type: String,
+    #[ts(type = "number")]
+    pub byte_length: u64,
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+    pub display_width: u32,
+}
+
+/// The fields past `text` all default, so a plain text paste keeps sending three
+/// of them and a rich paste fills the rest in the same command.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct IpcImportNode {
     pub id: String,
     pub parent_id: String,
     pub text: String,
+    #[serde(default)]
+    #[ts(optional)]
+    pub note: Option<String>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub marker: Option<IpcMarkerKind>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub completed: Option<bool>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub image: Option<IpcImportImage>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]

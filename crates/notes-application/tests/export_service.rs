@@ -137,6 +137,10 @@ impl ImageAssetPort for FakeAssets {
         }
     }
 
+    fn contains(&self, _image: &NoteImage) -> bool {
+        unreachable!("export never checks asset residency")
+    }
+
     fn rollback(&self, _images: &[PublishedImage]) {
         unreachable!("export never rolls assets back")
     }

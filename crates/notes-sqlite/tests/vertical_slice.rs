@@ -192,16 +192,19 @@ fn outline_import_preserves_hierarchy_in_one_revision_and_one_undo() {
                         id: "parent".into(),
                         parent_id: "page".into(),
                         text: "Parent".into(),
+                        ..IpcImportNode::default()
                     },
                     IpcImportNode {
                         id: "child".into(),
                         parent_id: "parent".into(),
                         text: "Child".into(),
+                        ..IpcImportNode::default()
                     },
                     IpcImportNode {
                         id: "sibling".into(),
                         parent_id: "page".into(),
                         text: "Sibling".into(),
+                        ..IpcImportNode::default()
                     },
                 ],
             },

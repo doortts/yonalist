@@ -102,7 +102,11 @@ async fn notes_execute(
     run_blocking(move || {
         let runtime = gate.wait()?;
         runtime.clear_initial_boot()?;
-        runtime.service.execute(envelope)
+        // A pasted image references an existing asset, so the command path needs
+        // the store to reject a hash that is no longer there.
+        runtime
+            .service
+            .execute_with_assets(envelope, runtime.assets.as_ref())
     })
     .await
 }
@@ -204,13 +208,12 @@ async fn notes_unused_assets(
                     message: error.to_string(),
                     retryable: true,
                 })?;
-                let metadata = std::fs::symlink_metadata(entry.path()).map_err(|error| {
-                    NotesError {
+                let metadata =
+                    std::fs::symlink_metadata(entry.path()).map_err(|error| NotesError {
                         code: NotesErrorCode::StorageUnavailable,
                         message: error.to_string(),
                         retryable: true,
-                    }
-                })?;
+                    })?;
                 if !metadata.is_file() {
                     continue;
                 }
@@ -264,7 +267,11 @@ fn apply_pending_data_deletion(data_directory: &Path) -> std::io::Result<()> {
     if !marker.exists() {
         return Ok(());
     }
-    for database_file in ["notes-v2.sqlite", "notes-v2.sqlite-wal", "notes-v2.sqlite-shm"] {
+    for database_file in [
+        "notes-v2.sqlite",
+        "notes-v2.sqlite-wal",
+        "notes-v2.sqlite-shm",
+    ] {
         let path = data_directory.join(database_file);
         if path.exists() {
             std::fs::remove_file(path)?;
@@ -491,7 +498,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     use super::{internal_error, parse_http_url, run_close_attempt, select_data_directory};
-    use notes_application::{CommandEnvelope, IpcNotesCommand};
+    use notes_application::{CommandEnvelope, IpcImportNode, IpcMarkerKind, IpcNotesCommand};
 
     #[test]
     fn tauri_command_envelope_accepts_the_generated_typescript_wire_shape() {
@@ -531,6 +538,66 @@ mod tests {
         assert_eq!(round_trip["command"]["kind"], "createNode");
         assert_eq!(round_trip["command"]["parent_id"], "page-1");
         assert!(round_trip.get("base_revision").is_none());
+    }
+
+    #[test]
+    fn an_import_payload_deserializes_with_and_without_the_rich_paste_fields() {
+        let import = |node: serde_json::Value| {
+            serde_json::from_value::<IpcNotesCommand>(serde_json::json!({
+                "kind": "importNodes",
+                "parent_id": "page-1",
+                "before_id": null,
+                "nodes": [node]
+            }))
+            .expect("generated TypeScript JSON must deserialize")
+        };
+
+        // The three-field shape a plain text paste still sends.
+        let plain = import(serde_json::json!({
+            "id": "node-2",
+            "parentId": "page-1",
+            "text": "Buy milk"
+        }));
+        let IpcNotesCommand::ImportNodes { nodes, .. } = plain else {
+            panic!("import must deserialize as an import command");
+        };
+        assert_eq!(
+            nodes,
+            vec![IpcImportNode {
+                id: "node-2".into(),
+                parent_id: "page-1".into(),
+                text: "Buy milk".into(),
+                ..IpcImportNode::default()
+            }]
+        );
+
+        let rich = import(serde_json::json!({
+            "id": "node-3",
+            "parentId": "page-1",
+            "text": "sample.png",
+            "note": "Two litres",
+            "marker": "todo",
+            "completed": true,
+            "image": {
+                "contentHash": "a".repeat(64),
+                "originalName": "sample.png",
+                "mimeType": "image/png",
+                "byteLength": 3,
+                "pixelWidth": 1,
+                "pixelHeight": 1,
+                "displayWidth": 320
+            }
+        }));
+        let IpcNotesCommand::ImportNodes { nodes, .. } = rich else {
+            panic!("import must deserialize as an import command");
+        };
+        assert_eq!(nodes[0].note.as_deref(), Some("Two litres"));
+        assert_eq!(nodes[0].marker, Some(IpcMarkerKind::Todo));
+        assert_eq!(nodes[0].completed, Some(true));
+        assert_eq!(
+            nodes[0].image.as_ref().map(|image| image.byte_length),
+            Some(3)
+        );
     }
 
     #[test]

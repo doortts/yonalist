@@ -33,6 +33,10 @@ pub trait ImageAssetPort: Send + Sync {
 
     fn read(&self, image: &NoteImage) -> Result<Vec<u8>, StorageError>;
 
+    /// An import can reference an asset instead of publishing one, so it has to
+    /// ask whether the referenced bytes are still there.
+    fn contains(&self, image: &NoteImage) -> bool;
+
     fn rollback(&self, images: &[PublishedImage]);
 
     fn reconcile(&self, live_hashes: &BTreeSet<String>) -> Result<(), StorageError>;
@@ -45,6 +49,10 @@ impl<T: ImageAssetPort + ?Sized> ImageAssetPort for &T {
 
     fn read(&self, image: &NoteImage) -> Result<Vec<u8>, StorageError> {
         (**self).read(image)
+    }
+
+    fn contains(&self, image: &NoteImage) -> bool {
+        (**self).contains(image)
     }
 
     fn rollback(&self, images: &[PublishedImage]) {

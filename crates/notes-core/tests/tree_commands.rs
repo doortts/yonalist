@@ -1,6 +1,6 @@
 use notes_core::{
-    DomainError, ImportNode, NodeDuplicate, NodeId, NodeMove, NoteMarkerKind, NoteNode,
-    NotesCommand, NotesTree, Position, TreeMutation,
+    DomainError, ImportNode, NodeDuplicate, NodeId, NodeMove, NoteImage, NoteMarkerKind, NoteNode,
+    NoteNodeKind, NotesCommand, NotesTree, Position, TreeMutation,
 };
 use proptest::prelude::*;
 
@@ -27,6 +27,24 @@ fn create_page(tree: &mut NotesTree, page_id: &NodeId) {
             text: "Page".into(),
         },
     );
+}
+
+/// A text-only import, the shape a plain paste sends.
+fn imported(node_id: &str, parent_id: &str, text: &str) -> ImportNode {
+    ImportNode {
+        id: id(node_id),
+        parent_id: id(parent_id),
+        text: text.into(),
+        note: String::new(),
+        marker: NoteMarkerKind::Bullet,
+        completed: false,
+        image: None,
+    }
+}
+
+fn pasted_image() -> NoteImage {
+    NoteImage::try_referenced("a".repeat(64), "sample.png", "image/png", 3, 1, 1, 320)
+        .expect("valid image reference")
 }
 
 fn plan_and_apply(tree: &mut NotesTree, command: NotesCommand) {
@@ -464,21 +482,9 @@ fn importing_an_outline_forest_is_one_atomic_reversible_patch() {
             parent_id: id("page"),
             position: Position::before(id("after")),
             nodes: vec![
-                ImportNode {
-                    id: id("parent"),
-                    parent_id: id("page"),
-                    text: "Parent".into(),
-                },
-                ImportNode {
-                    id: id("child"),
-                    parent_id: id("parent"),
-                    text: "Child".into(),
-                },
-                ImportNode {
-                    id: id("sibling"),
-                    parent_id: id("page"),
-                    text: "Sibling".into(),
-                },
+                imported("parent", "page", "Parent"),
+                imported("child", "parent", "Child"),
+                imported("sibling", "page", "Sibling"),
             ],
         })
         .unwrap();
@@ -491,6 +497,69 @@ fn importing_an_outline_forest_is_one_atomic_reversible_patch() {
     assert_eq!(tree.children_of(&id("parent")), vec![id("child")]);
     tree.apply(&patch.inverse).unwrap();
     assert_eq!(tree, original);
+}
+
+#[test]
+fn importing_carries_marker_note_tick_and_an_image_reference_in_one_patch() {
+    let mut tree = NotesTree::default();
+    tree.apply(&[TreeMutation::upsert(NoteNode::page(id("page"), "Page"))])
+        .unwrap();
+    let original = tree.clone();
+
+    let patch = tree
+        .plan(NotesCommand::ImportNodes {
+            parent_id: id("page"),
+            position: Position::at_end(),
+            nodes: vec![
+                ImportNode {
+                    note: "Two litres".into(),
+                    marker: NoteMarkerKind::Todo,
+                    completed: true,
+                    ..imported("todo", "page", "Buy milk")
+                },
+                ImportNode {
+                    image: Some(pasted_image()),
+                    ..imported("picture", "page", "")
+                },
+            ],
+        })
+        .unwrap();
+    tree.apply(&patch.forward).unwrap();
+
+    let todo = tree.node(&id("todo")).unwrap();
+    assert_eq!(todo.note(), "Two litres");
+    assert_eq!(todo.marker(), NoteMarkerKind::Todo);
+    assert!(todo.is_completed());
+    let picture = tree.node(&id("picture")).unwrap();
+    assert_eq!(picture.kind(), NoteNodeKind::Image);
+    assert_eq!(picture.text(), "sample.png");
+    assert_eq!(
+        picture.image().map(NoteImage::content_hash),
+        Some("a".repeat(64).as_str())
+    );
+    tree.apply(&patch.inverse).unwrap();
+    assert_eq!(tree, original);
+}
+
+#[test]
+fn an_imported_image_node_cannot_be_titled_anything_but_its_file_name() {
+    let mut tree = NotesTree::default();
+    tree.apply(&[TreeMutation::upsert(NoteNode::page(id("page"), "Page"))])
+        .unwrap();
+
+    let error = tree
+        .plan(NotesCommand::ImportNodes {
+            parent_id: id("page"),
+            position: Position::at_end(),
+            nodes: vec![ImportNode {
+                image: Some(pasted_image()),
+                ..imported("picture", "page", "Renamed")
+            }],
+        })
+        .unwrap_err();
+
+    assert!(matches!(error, DomainError::InvalidImage(_)));
+    assert!(tree.node(&id("picture")).is_none());
 }
 
 #[test]
@@ -713,7 +782,10 @@ fn split_node_carries_the_source_marker_onto_the_new_half() {
         .unwrap();
     tree.apply(&patch.forward).unwrap();
 
-    assert_eq!(tree.node(&id("new")).unwrap().marker(), NoteMarkerKind::Todo);
+    assert_eq!(
+        tree.node(&id("new")).unwrap().marker(),
+        NoteMarkerKind::Todo
+    );
     // Inheriting the box must not inherit the tick.
     assert!(!tree.node(&id("new")).unwrap().is_completed());
 

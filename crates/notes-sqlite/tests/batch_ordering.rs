@@ -101,6 +101,7 @@ fn batch_insert_shapes_rebalance_with_the_complete_target_sibling_set() {
                         id: id.clone(),
                         parent_id: "page".into(),
                         text: id.clone(),
+                        ..IpcImportNode::default()
                     })
                     .collect(),
             },

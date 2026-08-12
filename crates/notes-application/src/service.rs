@@ -2,8 +2,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, PoisonError};
 
 use notes_core::{
-    DomainError, DomainPatch, ImportImageNode, NodeId, NoteNodeKind, NotesCommand, Position,
-    TreeMutation,
+    DomainError, DomainPatch, ImportImageNode, NodeId, NoteImage, NoteNodeKind, NotesCommand,
+    Position, TreeMutation,
 };
 
 use crate::{
@@ -106,6 +106,42 @@ impl<S: StoragePort> NotesService<S> {
     }
 
     pub fn execute(&self, envelope: CommandEnvelope) -> Result<MutationReceipt, NotesError> {
+        self.execute_envelope(envelope, |command| {
+            // With no asset store there is nothing to weigh a referenced image
+            // hash against, so this entry point takes only commands without one.
+            if referenced_images(command).next().is_some() {
+                return Err(invalid_image_request(
+                    "An imported image reference needs the asset-aware command path.",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    pub fn execute_with_assets<A: ImageAssetPort>(
+        &self,
+        envelope: CommandEnvelope,
+        assets: &A,
+    ) -> Result<MutationReceipt, NotesError> {
+        self.execute_envelope(envelope, |command| {
+            // One stale hash rejects the whole paste: half an outline is worse
+            // than a clear failure.
+            for image in referenced_images(command) {
+                if !assets.contains(image) {
+                    return Err(invalid_image_request(
+                        "A pasted image is no longer in the image store.",
+                    ));
+                }
+            }
+            Ok(())
+        })
+    }
+
+    fn execute_envelope(
+        &self,
+        envelope: CommandEnvelope,
+        validate: impl FnOnce(&NotesCommand) -> Result<(), NotesError>,
+    ) -> Result<MutationReceipt, NotesError> {
         let mut session = self.session.lock().unwrap_or_else(PoisonError::into_inner);
         self.ensure_session(&session, &envelope.session_id)?;
         if let Some(receipt) = session.completed_requests.get(&envelope.request_id) {
@@ -113,6 +149,7 @@ impl<S: StoragePort> NotesService<S> {
         }
         self.ensure_revision(&session, envelope.base_revision)?;
         let command = envelope.command.try_into()?;
+        validate(&command)?;
         self.execute_checked(
             &mut session,
             envelope.request_id,
@@ -170,7 +207,7 @@ impl<S: StoragePort> NotesService<S> {
         &self,
         request: ImageReadRequest,
         assets: &A,
-    ) -> Result<(notes_core::NoteImage, Vec<u8>), NotesError> {
+    ) -> Result<(NoteImage, Vec<u8>), NotesError> {
         let session = self.session.lock().unwrap_or_else(PoisonError::into_inner);
         self.ensure_session(&session, &request.session_id)?;
         drop(session);
@@ -364,6 +401,14 @@ impl<S: StoragePort> NotesService<S> {
             },
         }
     }
+}
+
+fn referenced_images(command: &NotesCommand) -> impl Iterator<Item = &NoteImage> {
+    let nodes = match command {
+        NotesCommand::ImportNodes { nodes, .. } => nodes.as_slice(),
+        _ => &[],
+    };
+    nodes.iter().filter_map(|node| node.image.as_ref())
 }
 
 fn validate_image_sources(

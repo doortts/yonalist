@@ -1,10 +1,8 @@
 use std::collections::BTreeMap;
 
-use notes_core::{
-    ImportNode, NodeDuplicate, NodeId, NodeMove, NoteMarkerKind, NotesCommand, Position,
-};
+use notes_core::{ImportNode, NodeDuplicate, NodeId, NodeMove, NoteImage, NotesCommand, Position};
 
-use crate::{IpcMarkerKind, IpcNotesCommand, NotesError, NotesErrorCode};
+use crate::{IpcImportImage, IpcMarkerKind, IpcNotesCommand, NotesError, NotesErrorCode};
 
 const MAX_BATCH_NODE_IDS: usize = 10_000;
 const MAX_IMPORT_NODES: usize = 2_000;
@@ -17,6 +15,21 @@ fn invalid_command(message: impl Into<String>) -> NotesError {
         message: message.into(),
         retryable: false,
     }
+}
+
+/// A paste carries an image's metadata, not its bytes. Every field still goes
+/// through the checks a fresh upload gets, including the hash shape.
+fn import_image(image: IpcImportImage) -> Result<NoteImage, NotesError> {
+    NoteImage::try_referenced(
+        image.content_hash,
+        image.original_name,
+        image.mime_type,
+        image.byte_length,
+        image.pixel_width,
+        image.pixel_height,
+        image.display_width,
+    )
+    .map_err(NotesError::from)
 }
 
 impl TryFrom<IpcNotesCommand> for NotesCommand {
@@ -68,6 +81,11 @@ impl TryFrom<IpcNotesCommand> for NotesCommand {
                     if node.text.len() > MAX_IMPORT_TEXT_BYTES {
                         return Err(invalid_command("An imported title is too large."));
                     }
+                    let note = node.note.unwrap_or_default();
+                    if note.len() > MAX_IMPORT_TEXT_BYTES {
+                        return Err(invalid_command("An imported note is too large."));
+                    }
+                    let image = node.image.map(import_image).transpose()?;
                     let node_id = id(node.id)?;
                     let node_parent_id = id(node.parent_id)?;
                     let depth = if node_parent_id == parent_id {
@@ -91,6 +109,10 @@ impl TryFrom<IpcNotesCommand> for NotesCommand {
                         id: node_id,
                         parent_id: node_parent_id,
                         text: node.text,
+                        note,
+                        marker: node.marker.unwrap_or(IpcMarkerKind::Bullet).into(),
+                        completed: node.completed.unwrap_or_default(),
+                        image,
                     });
                 }
                 if roots == 0 {
@@ -206,10 +228,7 @@ impl TryFrom<IpcNotesCommand> for NotesCommand {
             }),
             IpcNotesCommand::SetMarker { id: value, marker } => Ok(Self::SetMarker {
                 id: id(value)?,
-                marker: match marker {
-                    IpcMarkerKind::Bullet => NoteMarkerKind::Bullet,
-                    IpcMarkerKind::Todo => NoteMarkerKind::Todo,
-                },
+                marker: marker.into(),
             }),
             IpcNotesCommand::ResizeImage {
                 id: value,
@@ -258,6 +277,110 @@ impl TryFrom<IpcNotesCommand> for NotesCommand {
                         .collect::<Result<_, NotesError>>()?,
                 })
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use notes_core::{NoteMarkerKind, NotesCommand};
+
+    use super::MAX_IMPORT_TEXT_BYTES;
+    use crate::{IpcImportImage, IpcImportNode, IpcMarkerKind, IpcNotesCommand, NotesErrorCode};
+
+    fn import(nodes: Vec<IpcImportNode>) -> Result<NotesCommand, crate::NotesError> {
+        IpcNotesCommand::ImportNodes {
+            parent_id: "page".into(),
+            before_id: None,
+            nodes,
+        }
+        .try_into()
+    }
+
+    fn node(text: &str) -> IpcImportNode {
+        IpcImportNode {
+            id: "pasted".into(),
+            parent_id: "page".into(),
+            text: text.into(),
+            ..IpcImportNode::default()
+        }
+    }
+
+    fn image(content_hash: &str) -> IpcImportImage {
+        IpcImportImage {
+            content_hash: content_hash.into(),
+            original_name: "sample.png".into(),
+            mime_type: "image/png".into(),
+            byte_length: 3,
+            pixel_width: 1,
+            pixel_height: 1,
+            display_width: 320,
+        }
+    }
+
+    #[test]
+    fn a_text_only_import_carries_the_defaults_a_plain_paste_relies_on() {
+        let command = import(vec![node("Buy milk")]).expect("convert text-only import");
+
+        let NotesCommand::ImportNodes { nodes, .. } = command else {
+            panic!("import must convert to an import command");
+        };
+        assert_eq!(nodes[0].note, "");
+        assert_eq!(nodes[0].marker, NoteMarkerKind::Bullet);
+        assert!(!nodes[0].completed);
+        assert!(nodes[0].image.is_none());
+    }
+
+    #[test]
+    fn a_rich_import_carries_marker_note_tick_and_a_derived_image_path() {
+        let command = import(vec![IpcImportNode {
+            note: Some("Two litres".into()),
+            marker: Some(IpcMarkerKind::Todo),
+            completed: Some(true),
+            image: Some(image(&"a".repeat(64))),
+            ..node("sample.png")
+        }])
+        .expect("convert rich import");
+
+        let NotesCommand::ImportNodes { nodes, .. } = command else {
+            panic!("import must convert to an import command");
+        };
+        assert_eq!(nodes[0].note, "Two litres");
+        assert_eq!(nodes[0].marker, NoteMarkerKind::Todo);
+        assert!(nodes[0].completed);
+        let image = nodes[0].image.as_ref().expect("image reference");
+        assert_eq!(image.relative_path(), format!("{}.png", "a".repeat(64)));
+    }
+
+    #[test]
+    fn an_oversized_imported_note_is_rejected_like_an_oversized_title() {
+        let oversized = "n".repeat(MAX_IMPORT_TEXT_BYTES + 1);
+
+        let error = import(vec![IpcImportNode {
+            note: Some(oversized),
+            ..node("Buy milk")
+        }])
+        .expect_err("an oversized note must be rejected");
+
+        assert_eq!(error.code, NotesErrorCode::InvalidCommand);
+    }
+
+    #[test]
+    fn an_image_reference_is_rejected_unless_its_hash_and_type_are_usable() {
+        for unusable in [
+            image("not-a-hash"),
+            image(&"A".repeat(64)),
+            IpcImportImage {
+                mime_type: "image/svg+xml".into(),
+                ..image(&"a".repeat(64))
+            },
+        ] {
+            let error = import(vec![IpcImportNode {
+                image: Some(unusable),
+                ..node("sample.png")
+            }])
+            .expect_err("an unusable image reference must be rejected");
+            assert_eq!(error.code, NotesErrorCode::InvalidCommand);
         }
     }
 }
