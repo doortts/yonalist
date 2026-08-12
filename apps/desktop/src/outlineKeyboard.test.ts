@@ -631,6 +631,35 @@ describe("v2 outline keyboard intent resolver", () => {
     }))).toEqual({ kind: "move", direction: "up" });
   });
 
+  // An image row drops a band on the same keys a bullet does. Its own caret-hop
+  // bindings would otherwise walk the caret out from under a live band.
+  it("drops a band off an image row before hopping its caret stations", () => {
+    for (const imageEdge of ["before", "after", undefined] as const) {
+      expect(handleImageNodeKeyDown(input({
+        key: "ArrowLeft",
+        nodeId: "next",
+        hasSelection: true,
+        selectionHeadId: "next",
+        imageEdge
+      })), `left ${imageEdge}`)
+        .toEqual({ kind: "clearSelection", collapse: "start" });
+      expect(handleImageNodeKeyDown(input({
+        key: "ArrowRight",
+        nodeId: "next",
+        hasSelection: true,
+        selectionHeadId: "next",
+        imageEdge
+      })), `right ${imageEdge}`)
+        .toEqual({ kind: "clearSelection", collapse: "end" });
+    }
+    // With no band the stations keep hopping as they always have.
+    expect(handleImageNodeKeyDown(input({
+      key: "ArrowRight",
+      nodeId: "next",
+      imageEdge: "before"
+    }))).toEqual({ kind: "focusImage", nodeId: "next" });
+  });
+
   it("crosses rows with Left and Right only at a collapsed caret boundary", () => {
     expect(resolveOutlineKey(input({
       key: "ArrowLeft",

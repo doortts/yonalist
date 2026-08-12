@@ -619,8 +619,11 @@ export function handleImageNodeKeyDown(
   // Caret, image, caret: the image is a stop between its two stations, so a
   // plain arrow lands on it before the row boundary is even in question. The
   // caret standing on the image itself is the stop with no station under it.
+  // A live band comes first, though -- the same key has to drop it here as it
+  // does on a bullet, rather than walking the caret out from under it.
   if (
     (input.key === "ArrowLeft" || input.key === "ArrowRight") &&
+    !input.hasSelection &&
     !input.shiftKey &&
     !input.altKey &&
     !input.ctrlKey &&

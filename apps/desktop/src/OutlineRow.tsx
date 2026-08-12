@@ -328,10 +328,7 @@ export const OutlineRow = memo(function OutlineRow({
                     openMoveChooser,
                     current.selectionActions,
                     current.onCopyImage,
-                    current.onCutImage,
-                    current.selectionRootIds.length === 1
-                      ? current.selectionRootIds[0]!
-                      : null
+                    current.onCutImage
                   );
                 }}
               />

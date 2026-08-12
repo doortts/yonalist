@@ -194,6 +194,29 @@ describe("image caret station", () => {
       expect(after).toHaveFocus();
     });
 
+  // The station's own caret hops would otherwise walk out from under a band
+  // that reaches past the image, leaving it standing.
+  it("drops a band reaching past the image before it hops a station",
+    async () => {
+      const { view } = await renderImageOutline();
+      const [before] = stations(view);
+      before!.focus();
+
+      // Take the image, then the row below it: a band of two.
+      fireEvent.keyDown(before!, { key: "ArrowDown", shiftKey: true });
+      fireEvent.keyDown(before!, { key: "ArrowDown", shiftKey: true });
+      expect([...view.container.querySelectorAll<HTMLElement>(
+        ".notes-node[data-range-selected='true']"
+      )].map((row) => row.dataset.outlineId)).toEqual(["image", "bullet-2"]);
+
+      fireEvent.keyDown(before!, { key: "ArrowLeft" });
+
+      expect(view.container.querySelector(
+        ".notes-node[data-range-selected='true']"
+      )).toBeNull();
+      expect(before).toHaveFocus();
+    });
+
   it("collapses a selected image back to the side the arrow names",
     async () => {
       const { view } = await renderImageOutline();

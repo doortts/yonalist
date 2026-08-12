@@ -240,30 +240,8 @@ export function handleImagePrimaryKeyDown(
   onMoveTo: () => void,
   selectionActions: SelectionKeyboardActions,
   onCopyImage: (nodeId: string) => void,
-  onCutImage: (nodeId: string) => void,
-  soloSelectedId: string | null = null
+  onCutImage: (nodeId: string) => void
 ) {
-  // A plain arrow off a selected image drops the selection and leaves the caret
-  // on the side it names, the way it collapses a selected letter.
-  if (
-    soloSelectedId === node.id &&
-    (event.key === "ArrowLeft" || event.key === "ArrowRight") &&
-    !event.shiftKey &&
-    !event.altKey &&
-    !event.ctrlKey &&
-    !event.metaKey &&
-    !event.nativeEvent.isComposing
-  ) {
-    event.preventDefault();
-    const collapseScope =
-      event.currentTarget.closest<HTMLElement>(".notes-outline");
-    if (!collapseScope) return;
-    onClearSelection();
-    focusOutlineEditor(
-      collapseScope, node.id, event.key === "ArrowLeft" ? "start" : "end"
-    );
-    return;
-  }
   const intent = handleImageNodeKeyDown({
     key: event.key,
     altKey: event.altKey,
