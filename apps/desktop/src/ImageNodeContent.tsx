@@ -76,6 +76,9 @@ export function ImageNodeContent({
   // It outlives each commit on purpose -- the receipt that comes back resets
   // `keyboardResizeStart` -- and ends when the handle loses focus.
   const keyboardResizeGroup = useRef<string | null>(null);
+  // Pointer capture keeps :hover alive inconsistently across browsers, so the
+  // line's drag visibility rides an attribute instead.
+  const [resizing, setResizing] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const onMenuKeyDown = useMenuDismiss(
     menuOpen,
@@ -186,6 +189,7 @@ export function ImageNodeContent({
     const resize = pointerResize.current;
     if (!resize || resize.pointerId !== event.pointerId) return;
     pointerResize.current = null;
+    setResizing(false);
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
@@ -247,12 +251,14 @@ export function ImageNodeContent({
           {store && image && (
             <div
               role="separator"
+              className="notes-image-resize-handle"
               aria-label={`Resize ${originalName}`}
               aria-orientation="vertical"
               aria-valuemin={120}
               aria-valuemax={maximumWidth()}
               aria-valuenow={previewWidth}
               tabIndex={0}
+              data-resizing={resizing ? "true" : undefined}
               style={resizeHandleStyle}
               onPointerDown={(event) => {
                 if (event.button !== 0) return;
@@ -264,6 +270,7 @@ export function ImageNodeContent({
                   startWidth: previewWidth,
                   proposedWidth: previewWidth
                 };
+                setResizing(true);
                 event.currentTarget.setPointerCapture?.(event.pointerId);
               }}
               onPointerMove={(event) => {
@@ -281,6 +288,7 @@ export function ImageNodeContent({
                 const resize = pointerResize.current;
                 if (!resize || resize.pointerId !== event.pointerId) return;
                 pointerResize.current = null;
+                setResizing(false);
                 setPreviewWidth(image.displayWidth);
               }}
               onKeyDown={(event) => {
@@ -310,7 +318,7 @@ export function ImageNodeContent({
                 keyboardResizeGroup.current = null;
               }}
             >
-              <span aria-hidden="true" style={resizeHandleLineStyle} />
+              <span aria-hidden="true" className="notes-image-resize-line" />
             </div>
           )}
           {store && (
@@ -447,13 +455,3 @@ const resizeHandleStyle: CSSProperties = {
   touchAction: "none"
 };
 
-const resizeHandleLineStyle: CSSProperties = {
-  position: "absolute",
-  top: "20%",
-  right: 4,
-  width: 2,
-  height: "60%",
-  borderRadius: 1,
-  background: "var(--border-strong)",
-  pointerEvents: "none"
-};

@@ -3147,6 +3147,25 @@ body.is-outline-dragging * {
   outline-offset: 2px;
 }
 
+.notes-image-resize-line {
+  position: absolute;
+  top: 20%;
+  right: 4px;
+  width: 3pt;
+  height: 60%;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text-1) 40%, transparent);
+  opacity: 0;
+  transition: opacity 120ms ease;
+  pointer-events: none;
+}
+
+.notes-image-attachment-frame:hover .notes-image-resize-line,
+.notes-image-resize-handle:focus-visible .notes-image-resize-line,
+.notes-image-resize-handle[data-resizing] .notes-image-resize-line {
+  opacity: 1;
+}
+
 .notes-image-frame-row {
   display: flex;
   width: 100%;
@@ -3242,6 +3261,10 @@ body.is-outline-dragging * {
 
   .notes-image-caret-stop:focus {
     animation: none;
+  }
+
+  .notes-image-resize-line {
+    transition: none;
   }
 }
 

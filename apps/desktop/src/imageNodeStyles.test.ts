@@ -24,4 +24,27 @@ describe("image node styles", () => {
       /@media \(prefers-reduced-motion: reduce\) \{[^@]*\.notes-image-caret-stop/
     );
   });
+
+  it("hides the resize line until hover, drag, or handle focus", () => {
+    const line = rule(notesStyles, ".notes-image-resize-line");
+    expect(line).toContain("opacity: 0;");
+    expect(line).toContain("width: 3pt;");
+    expect(line).toContain(
+      "background: color-mix(in srgb, var(--text-1) 40%, transparent);"
+    );
+    expect(line).toContain("transition: opacity 120ms ease;");
+    for (const selector of [
+      ".notes-image-attachment-frame:hover .notes-image-resize-line,",
+      ".notes-image-resize-handle:focus-visible .notes-image-resize-line,",
+      ".notes-image-resize-handle[data-resizing] .notes-image-resize-line {"
+    ]) {
+      expect(notesStyles).toContain(selector);
+    }
+  });
+
+  it("keeps the resize line fade off under reduced motion", () => {
+    expect(notesStyles).toMatch(
+      /@media \(prefers-reduced-motion: reduce\) \{[^@]*\.notes-image-resize-line/
+    );
+  });
 });
