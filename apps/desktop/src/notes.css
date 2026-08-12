@@ -3183,11 +3183,16 @@ body.is-outline-dragging * {
   opacity: 1;
 }
 
+/* Never `stretch` here: a stretched flex item with `height: auto` is handed a
+   definite cross size, which per css-sizing-4 beats the frame's own
+   `aspect-ratio` -- WebKit enforces that and the frame widens without growing,
+   letterboxing the image. The station bottoms out on the frame instead, which
+   stays the tallest item in the row. */
 .notes-image-frame-row {
   display: flex;
   width: 100%;
   min-width: 0;
-  align-items: stretch;
+  align-items: flex-start;
 }
 
 /* The text caret's own shape: one row line tall, sitting on the image's

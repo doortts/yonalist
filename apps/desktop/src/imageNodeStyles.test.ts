@@ -25,6 +25,11 @@ describe("image node styles", () => {
       .toContain("outline: 0;");
   });
 
+  it("never stretches the frame row, which would kill the aspect ratio", () => {
+    expect(rule(notesStyles, ".notes-image-frame-row"))
+      .toContain("align-items: flex-start;");
+  });
+
   it("rings the image on click and caret arrival but never on Tab", () => {
     expect(rule(notesStyles, ".notes-image-node-content:focus-visible"))
       .toContain("outline: 0;");
