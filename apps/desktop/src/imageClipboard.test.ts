@@ -1,5 +1,22 @@
-import { describe, expect, it, vi } from "vitest";
-import { clipboardImageCandidates } from "./imageClipboard";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  clipboardImageCandidates,
+  writeImageClipboard
+} from "./imageClipboard";
+
+/** jsdom has no ClipboardItem, so the write contract is read off this one. */
+class FakeClipboardItem {
+  constructor(readonly data: Record<string, Blob>) {}
+}
+
+function stubClipboard(write = vi.fn().mockResolvedValue(undefined)) {
+  vi.stubGlobal("ClipboardItem", FakeClipboardItem);
+  Object.defineProperty(navigator, "clipboard", {
+    value: { write },
+    configurable: true
+  });
+  return write;
+}
 
 function item(
   kind: string,
@@ -47,5 +64,54 @@ describe("image clipboard routing", () => {
         item("string", "text/html", null)
       ] as unknown as DataTransferItemList
     })).toEqual([]);
+  });
+});
+
+describe("image clipboard writing", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+
+  it("carries png bytes beside a pasteable filename line", async () => {
+    const write = stubClipboard();
+
+    await writeImageClipboard(
+      Uint8Array.from([1, 2, 3]),
+      "image/png",
+      "cat.png"
+    );
+
+    const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
+    expect(Object.keys(item.data)).toEqual(["image/png", "text/plain"]);
+    expect(item.data["image/png"]!.type).toBe("image/png");
+    expect(item.data["image/png"]!.size).toBe(3);
+    expect(await item.data["text/plain"]!.text()).toBe("- cat.png");
+  });
+
+  // WebKit's ClipboardItem takes image/png alone, so anything else has to be
+  // redrawn first -- and jsdom has no decoder to redraw it with.
+  it("refuses a format it cannot redraw as png", async () => {
+    const write = stubClipboard();
+
+    await expect(writeImageClipboard(
+      Uint8Array.from([1]),
+      "image/webp",
+      "dog.webp"
+    )).rejects.toThrow(/copied/);
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the clipboard takes no items at all", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: undefined,
+      configurable: true
+    });
+
+    await expect(writeImageClipboard(
+      Uint8Array.from([1]),
+      "image/png",
+      "cat.png"
+    )).rejects.toThrow(/unavailable/);
   });
 });

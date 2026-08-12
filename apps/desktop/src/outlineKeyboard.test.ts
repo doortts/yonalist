@@ -99,6 +99,30 @@ describe("v2 outline keyboard intent resolver", () => {
     }))).toEqual({ kind: "focus", nodeId: "child", edge: "start" });
   });
 
+  // There is no character beside the caret station to sweep over, so the
+  // shifted arrow takes the image itself the way a letter would be taken.
+  it("selects the image itself when the station takes a shifted arrow", () => {
+    for (const key of ["ArrowLeft", "ArrowRight"]) {
+      expect(handleImageNodeKeyDown(input({
+        nodeId: "next",
+        key,
+        shiftKey: true
+      }))).toEqual({ kind: "extendSelection", headId: "next" });
+      expect(handleImageNodeKeyDown(input({
+        nodeId: "next",
+        key,
+        shiftKey: true,
+        metaKey: true
+      }))).toBeNull();
+      expect(handleImageNodeKeyDown(input({
+        nodeId: "next",
+        key,
+        shiftKey: true,
+        altKey: true
+      }))).toBeNull();
+    }
+  });
+
   it("splits the selected title range into one atomic sibling gesture", () => {
     expect(resolveOutlineKey(input())).toEqual({
       kind: "split",

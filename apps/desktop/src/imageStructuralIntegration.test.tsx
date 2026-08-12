@@ -43,7 +43,89 @@ function imageBoot(): BootSnapshot {
   };
 }
 
+/** jsdom has no ClipboardItem, so the write is read off this one. */
+class FakeClipboardItem {
+  constructor(readonly data: Record<string, Blob>) {}
+}
+
+function selectableImageApi() {
+  const notesApi = appApi();
+  notesApi.bootstrap = vi.fn().mockResolvedValue(imageBoot());
+  notesApi.queryForest = vi.fn().mockImplementation(async (request) => ({
+    revision: 7,
+    nodes: imageBoot().viewport!.nodes.filter((node) =>
+      request.rootIds.includes(node.id)),
+    complete: true
+  }));
+  notesApi.readImage = vi.fn().mockResolvedValue(Uint8Array.from([1]));
+  return notesApi;
+}
+
 describe("image node structural parity", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+
+  it("selects the image from its caret and copies the bytes themselves",
+    async () => {
+      const notesApi = selectableImageApi();
+      const write = vi.fn().mockResolvedValue(undefined);
+      vi.stubGlobal("ClipboardItem", FakeClipboardItem);
+      Object.defineProperty(navigator, "clipboard", {
+        value: { write },
+        configurable: true
+      });
+      const view = render(<App api={notesApi} />);
+      await screen.findByRole("group", { name: "Image: cat.png" });
+      const station = view.container.querySelector<HTMLElement>(
+        ".notes-image-caret-stop"
+      )!;
+      station.focus();
+
+      fireEvent.keyDown(station, { key: "ArrowRight", shiftKey: true });
+
+      await waitFor(() => expect(station.closest(".notes-node"))
+        .toHaveAttribute("data-range-selected", "true"));
+      fireEvent.copy(screen.getByRole("region", { name: "Notes outline" }), {
+        clipboardData: { setData: vi.fn() }
+      });
+
+      await waitFor(() => expect(write).toHaveBeenCalledOnce());
+      const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
+      expect(item.data["image/png"]!.type).toBe("image/png");
+      expect(notesApi.execute).not.toHaveBeenCalled();
+    });
+
+  it("cuts the selected image once its bytes are on the clipboard", async () => {
+    const notesApi = selectableImageApi();
+    const write = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("ClipboardItem", FakeClipboardItem);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { write },
+      configurable: true
+    });
+    const view = render(<App api={notesApi} />);
+    await screen.findByRole("group", { name: "Image: cat.png" });
+    const station = view.container.querySelector<HTMLElement>(
+      ".notes-image-caret-stop"
+    )!;
+    station.focus();
+    fireEvent.keyDown(station, { key: "ArrowRight", shiftKey: true });
+    await waitFor(() => expect(notesApi.queryForest).toHaveBeenCalled());
+
+    fireEvent.cut(screen.getByRole("region", { name: "Notes outline" }), {
+      clipboardData: { setData: vi.fn() }
+    });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: { kind: "deleteSubtrees", ids: ["image"] }
+      })
+    ));
+    expect(write).toHaveBeenCalledOnce();
+  });
+
   it("multi-selects an image with a bullet and indents one ordered batch", async () => {
     const notesApi = appApi();
     notesApi.bootstrap = vi.fn().mockResolvedValue(imageBoot());

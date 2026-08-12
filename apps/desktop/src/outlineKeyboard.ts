@@ -488,6 +488,17 @@ export function handleImageNodeKeyDown(
   ) {
     return null;
   }
+  // No character sits beside the station for a shifted arrow to sweep over, so
+  // it takes the image itself the way the same key takes a letter.
+  if (
+    (input.key === "ArrowLeft" || input.key === "ArrowRight") &&
+    input.shiftKey &&
+    !input.altKey &&
+    !input.ctrlKey &&
+    !input.metaKey
+  ) {
+    return { kind: "extendSelection", headId: input.nodeId };
+  }
   return resolveOutlineKey({
     ...input,
     target: "row",

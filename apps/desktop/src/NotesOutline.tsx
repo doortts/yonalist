@@ -19,6 +19,7 @@ import type { SelectionMovePlan } from "./selectionMoves";
 import { OutlineIndex } from "./outlineIndex";
 import type { PaneFocusSnapshot } from "./appNavigation";
 import { useImageIngest } from "./useImageIngest";
+import { writeImageClipboard } from "./imageClipboard";
 import { NotesExportBoundary } from "./NotesExportBoundary";
 import { useOutlineWindow } from "./useOutlineWindow";
 import { registerOutlinePane } from "./outlinePaneRegistry";
@@ -227,20 +228,39 @@ export function NotesOutline({
     await store.deleteSubtrees(selection.selectedRootIds);
     clearSelection();
   };
+  // One image on its own goes to the clipboard as the image, not as the line
+  // its filename would serialize to.
+  const selectedImage = selection.selectedIds.length === 1 &&
+    selection.selectedNodes[0]?.kind === "image"
+    ? selection.selectedNodes[0]
+    : null;
+  const writeSelectionToClipboard = async () => {
+    if (!selectedImage) return selection.copyToSystem();
+    await writeImageClipboard(
+      await store.images.read(selectedImage.id),
+      selectedImage.image?.mimeType ?? "application/octet-stream",
+      selectedImage.image?.originalName ?? selectedImage.text
+    );
+  };
+  const reportWriteFailure = () => setSelectionFeedback(selectedImage
+    ? "Could not write the image to the clipboard."
+    : "Could not write the selected outline to the clipboard.");
   const copySelection = async () => {
     try {
-      await selection.copyToSystem();
-      setSelectionFeedback("Copied selected outline.");
+      await writeSelectionToClipboard();
+      setSelectionFeedback(selectedImage
+        ? "Copied image."
+        : "Copied selected outline.");
     } catch {
-      setSelectionFeedback("Could not write the selected outline to the clipboard.");
+      reportWriteFailure();
     }
   };
   const cutSelection = async () => {
     if (!selection.canCut) return;
     try {
-      await selection.copyToSystem();
+      await writeSelectionToClipboard();
     } catch {
-      setSelectionFeedback("Could not write the selected outline to the clipboard.");
+      reportWriteFailure();
       return;
     }
     try {
@@ -331,12 +351,23 @@ export function NotesOutline({
       aria-label="Notes outline"
       data-outline-root-id={outlineRootId}
       data-outline-pane-id={paneId}
-      onCopy={selection.copy}
+      onCopy={(event) => {
+        // Bytes cannot ride the event's synchronous text payload, so the image
+        // branch takes the clipboard over and writes it itself.
+        if (!selectedImage) return selection.copy(event);
+        event.preventDefault();
+        runSelectionAction(copySelection);
+      }}
       onCut={(event) => {
         if (selection.selectedIds.length === 0) return;
         if (selection.cutRefusal) {
           event.preventDefault();
           setSelectionFeedback(selection.cutRefusal);
+          return;
+        }
+        if (selectedImage) {
+          event.preventDefault();
+          runSelectionAction(cutSelection);
           return;
         }
         if (!selection.writeToEvent(event)) {

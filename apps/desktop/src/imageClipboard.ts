@@ -33,6 +33,49 @@ export function clipboardImageCandidates(
   return candidates;
 }
 
+/**
+ * The image itself on the system clipboard, with its filename as the text
+ * fallback so a plain-text target still gets an outline line back.
+ */
+export async function writeImageClipboard(
+  bytes: Uint8Array,
+  mimeType: string,
+  originalName: string
+): Promise<void> {
+  const clipboard = navigator.clipboard;
+  if (
+    !clipboard ||
+    typeof clipboard.write !== "function" ||
+    typeof ClipboardItem !== "function"
+  ) {
+    throw new Error("Clipboard image write is unavailable.");
+  }
+  const source = new Blob([bytes.slice().buffer], { type: mimeType });
+  await clipboard.write([new ClipboardItem({
+    "image/png": mimeType === "image/png" ? source : await pngFrom(source),
+    "text/plain": new Blob([`- ${originalName}`], { type: "text/plain" })
+  })]);
+}
+
+/** WebKit's `ClipboardItem` takes `image/png` and nothing else. */
+async function pngFrom(source: Blob): Promise<Blob> {
+  if (typeof createImageBitmap !== "function") {
+    throw new Error("This image format cannot be copied.");
+  }
+  const bitmap = await createImageBitmap(source);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("This image format cannot be copied.");
+  context.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  const png = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, "image/png"));
+  if (!png) throw new Error("This image format cannot be copied.");
+  return png;
+}
+
 function extension(mimeType: string): string {
   if (mimeType === "image/jpeg") return "jpg";
   return mimeType.slice("image/".length);
