@@ -11,11 +11,15 @@ const shownLine = ".notes-image-resize-handle[data-resizing] " +
   ".notes-image-resize-line";
 
 describe("image node styles", () => {
-  it("blinks the caret bar on focus with the accent color", () => {
-    expect(rule(notesStyles, ".notes-image-caret-stop"))
-      .toContain("width: 2px;");
+  it("blinks the caret bar on focus in the text caret's own shape", () => {
+    // One text line tall, parked on the image's baseline, at the width and
+    // colour the settings-driven text caret uses.
+    const bar = rule(notesStyles, ".notes-image-caret-stop");
+    expect(bar).toContain("width: 1px;");
+    expect(bar).toContain("height: 25px;");
+    expect(bar).toContain("align-self: flex-end;");
     const focused = rule(notesStyles, ".notes-image-caret-stop:focus");
-    expect(focused).toContain("background: var(--accent);");
+    expect(focused).toContain("background: var(--caret-strong);");
     expect(focused).toContain("animation: notes-image-caret-blink");
     expect(rule(notesStyles, ".notes-image-caret-stop:focus-visible"))
       .toContain("outline: 0;");

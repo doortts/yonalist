@@ -3179,11 +3179,14 @@ body.is-outline-dragging * {
   align-items: stretch;
 }
 
+/* The text caret's own shape: one row line tall, sitting on the image's
+   baseline rather than running its whole height. */
 .notes-image-caret-stop {
-  width: 2px;
+  width: 1px;
+  height: 25px;
   flex: none;
+  align-self: flex-end;
   margin-inline-start: 6px;
-  border-radius: 1px;
   outline: 0;
   background: transparent;
 }
@@ -3195,7 +3198,7 @@ body.is-outline-dragging * {
 }
 
 .notes-image-caret-stop:focus {
-  background: var(--accent);
+  background: var(--caret-strong);
   animation: notes-image-caret-blink 1.06s steps(2, jump-none) infinite;
 }
 
