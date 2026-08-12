@@ -154,6 +154,26 @@ describe("ImageLightbox fit and zoom", () => {
       .not.toHaveAttribute("data-fits");
   });
 
+  // Zooming has to keep what you were looking at where it was, or the region
+  // under inspection drifts off toward a corner with every press.
+  it("holds the point under the pane's centre through a zoom", () => {
+    sizeWindow(400, 300);
+    const { zoomIn } = scaled(640, 905);
+    const pane = document.querySelector<HTMLElement>(
+      ".notes-image-lightbox-scroll"
+    )!;
+    pane.scrollLeft = 100;
+    pane.scrollTop = 200;
+
+    fireEvent.click(zoomIn);
+
+    // The height binds: (300 - 48) / 905, and the step lands on 38%.
+    const ratio = 0.38 / (252 / 905);
+    expect(screen.getByText("640 × 905 · 38%")).toBeInTheDocument();
+    expect(pane.scrollLeft).toBeCloseTo((100 + 200) * ratio - 200, 1);
+    expect(pane.scrollTop).toBeCloseTo((200 + 150) * ratio - 150, 1);
+  });
+
   it("swaps between the fitted scale and full size", () => {
     sizeWindow(800, 600);
     scaled(640, 905);

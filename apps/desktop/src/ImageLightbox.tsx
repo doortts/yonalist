@@ -77,6 +77,14 @@ export function ImageLightbox({
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
+  // Where the pane's centre sat in the image before the scale that is about to
+  // replace it -- see `holdCentre` and the layout effect that spends it.
+  const centreRef = useRef<{
+    readonly scale: number;
+    readonly x: number;
+    readonly y: number;
+  } | null>(null);
   const panRef = useRef<{
     readonly pointerId: number;
     readonly startX: number;
@@ -119,8 +127,39 @@ export function ImageLightbox({
   const zoomBy = (delta: number) => {
     const next = Math.round((scale + delta) * 100) / 100;
     const readsAsFit = Math.round(next * 100) <= Math.round(fitScale * 100);
+    holdCentre();
     setRequestedScale(readsAsFit ? null : next);
   };
+
+  /**
+   * Remembers the image point the pane is centred on, in image coordinates at
+   * the current scale. Read here rather than in the effect that uses it: by
+   * then the stage has already been resized under the old scroll position.
+   */
+  const holdCentre = () => {
+    const pane = scrollRef.current;
+    const stage = stageRef.current;
+    if (!pane || !stage) return;
+    centreRef.current = {
+      scale,
+      x: pane.scrollLeft + pane.clientWidth / 2 - stage.offsetLeft,
+      y: pane.scrollTop + pane.clientHeight / 2 - stage.offsetTop
+    };
+  };
+
+  // A scale change grows the stage from its top-left, which walks whatever was
+  // being looked at off toward a corner. The remembered point is put back under
+  // the centre instead -- before paint, so the view never appears to jump.
+  useLayoutEffect(() => {
+    const centre = centreRef.current;
+    centreRef.current = null;
+    const pane = scrollRef.current;
+    const stage = stageRef.current;
+    if (!centre || !pane || !stage || centre.scale === scale) return;
+    const ratio = scale / centre.scale;
+    pane.scrollLeft = stage.offsetLeft + centre.x * ratio - pane.clientWidth / 2;
+    pane.scrollTop = stage.offsetTop + centre.y * ratio - pane.clientHeight / 2;
+  }, [scale]);
   const turnBy = (quarters: number) =>
     setQuarterTurns((current) => (current + quarters + 4) % 4);
 
@@ -229,7 +268,10 @@ export function ImageLightbox({
               className="notes-image-lightbox-control notes-image-lightbox-fit"
               title={followingFit ? "View at full size" : "Fit to window"}
               disabled={fitScale >= 1 && scale <= 1}
-              onClick={() => setRequestedScale(followingFit ? 1 : null)}
+              onClick={() => {
+                holdCentre();
+                setRequestedScale(followingFit ? 1 : null);
+              }}
             >
               {followingFit ? "100%" : "Fit"}
             </button>
@@ -284,6 +326,7 @@ export function ImageLightbox({
           {/* The stage is the box the turned image occupies, so the scroller
               measures the rotation rather than the file's own shape. */}
           <div
+            ref={stageRef}
             className="notes-image-lightbox-stage"
             style={{
               width: Math.round(shownWidth * scale),
