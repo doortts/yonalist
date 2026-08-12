@@ -195,6 +195,9 @@ export function handleOutlineKeyDown(
     if (intent.kind === "toggleComplete") return selectionActions.toggleComplete();
     if (intent.kind === "duplicate") return selectionActions.duplicate();
     if (intent.kind === "trash") return selectionActions.delete();
+    // The note field answers to none of the band's keys, so the band goes
+    // before the caret leaves the row for it.
+    if (intent.kind === "focusNote") onClearSelection();
   }
   executeRowIntent(
     intent,
@@ -280,6 +283,9 @@ export function handleImagePrimaryKeyDown(
     if (intent.kind === "toggleComplete") return selectionActions.toggleComplete();
     if (intent.kind === "duplicate") return selectionActions.duplicate();
     if (intent.kind === "trash") return selectionActions.delete();
+    // Same as a bullet: the note field answers to none of the band's keys, so
+    // the band goes before the caret leaves the row for it.
+    if (intent.kind === "focusNote") onClearSelection();
   }
   // A selection already carries this image's bytes, so the chord goes to the
   // selection commands and only a bare station falls through to the node.

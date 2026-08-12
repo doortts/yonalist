@@ -1,4 +1,4 @@
-import { act, fireEvent, render } from "@testing-library/react";
+import { act, fireEvent, render, waitFor } from "@testing-library/react";
 import type { BootSnapshot } from "../../../packages/contracts/generated/BootSnapshot";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "./api";
@@ -277,4 +277,19 @@ describe("A bare arrow against a live row band", () => {
     expect(bandIds(view.container)).toEqual([]);
     expect(caretOf(view.container)).toEqual(before);
   });
+  // The note field answers to none of the band's keys, so leaving the row for
+  // it has to take the band with it.
+  it("drops the band when the caret leaves the row for its note", async () => {
+    const { view } = await outline(rows);
+    const editor = await bandAcross(view.container);
+
+    await press(editor, "Enter", { shiftKey: true });
+
+    expect(bandIds(view.container)).toEqual([]);
+    // The note field takes the caret a frame later, once it is mounted.
+    await waitFor(() => expect(view.container.querySelector(
+      "textarea[data-node-id='two'][data-outline-field='note']"
+    )).toHaveFocus());
+  });
+
 });

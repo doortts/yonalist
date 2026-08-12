@@ -217,6 +217,29 @@ describe("image caret station", () => {
       expect(before).toHaveFocus();
     });
 
+  // The note field answers to none of the band's keys here either.
+  it("drops a band off an image row when the caret leaves for its note",
+    async () => {
+      const { view } = await renderImageOutline();
+      const [before] = stations(view);
+      before!.focus();
+
+      fireEvent.keyDown(before!, { key: "ArrowDown", shiftKey: true });
+      fireEvent.keyDown(before!, { key: "ArrowDown", shiftKey: true });
+      expect(view.container.querySelectorAll(
+        ".notes-node[data-range-selected='true']"
+      )).toHaveLength(2);
+
+      fireEvent.keyDown(before!, { key: "Enter", shiftKey: true });
+
+      expect(view.container.querySelector(
+        ".notes-node[data-range-selected='true']"
+      )).toBeNull();
+      await waitFor(() => expect(view.container.querySelector(
+        "textarea[data-node-id='image'][data-outline-field='note']"
+      )).toHaveFocus());
+    });
+
   it("collapses a selected image back to the side the arrow names",
     async () => {
       const { view } = await renderImageOutline();
