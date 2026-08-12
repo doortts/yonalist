@@ -91,7 +91,11 @@ export function ImageLightbox({
           data-panning={panning ? "true" : undefined}
           onPointerDown={(event) => {
             if (event.button !== 0) return;
+            // The press stops image-drag selection, and with it the focus the
+            // browser would have given the area, so arrow scrolling takes it
+            // back explicitly.
             event.preventDefault();
+            event.currentTarget.focus();
             movedRef.current = 0;
             pressedBackdropRef.current = event.target === event.currentTarget;
             panRef.current = {

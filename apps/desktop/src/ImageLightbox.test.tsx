@@ -77,6 +77,21 @@ describe("ImageLightbox", () => {
     expect(close).toHaveFocus();
   });
 
+  // The press suppresses the browser's own focus to stop image-drag selection,
+  // so arrow-key scrolling would be dead right after a click.
+  it("hands the scroll area focus on a press", () => {
+    const { scroll } = lightbox(vi.fn());
+
+    fireEvent.pointerDown(scroll, {
+      button: 0,
+      pointerId: 9,
+      clientX: 200,
+      clientY: 200
+    });
+
+    expect(scroll).toHaveFocus();
+  });
+
   it("shows the file name and pixel size above the image", () => {
     render(
       <ImageLightbox
