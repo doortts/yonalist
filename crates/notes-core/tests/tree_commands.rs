@@ -682,6 +682,45 @@ fn split_node_is_atomic_reversible_and_preserves_the_requested_sibling_slot() {
     assert_eq!(tree, original);
 }
 
+/// A checklist stays a checklist: Enter on a todo row gives the next row its
+/// own box rather than dropping back to a plain bullet.
+#[test]
+fn split_node_carries_the_source_marker_onto_the_new_half() {
+    let mut tree = NotesTree::default();
+    tree.apply(&[
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("current"), id("page"), 1_024, "Task")),
+    ])
+    .unwrap();
+    let marked = tree
+        .plan(NotesCommand::SetMarker {
+            id: id("current"),
+            marker: NoteMarkerKind::Todo,
+        })
+        .unwrap();
+    tree.apply(&marked.forward).unwrap();
+    let original = tree.clone();
+
+    let patch = tree
+        .plan(NotesCommand::SplitNode {
+            id: id("current"),
+            new_id: id("new"),
+            parent_id: id("page"),
+            position: Position::at_end(),
+            prefix: "Task".into(),
+            suffix: "".into(),
+        })
+        .unwrap();
+    tree.apply(&patch.forward).unwrap();
+
+    assert_eq!(tree.node(&id("new")).unwrap().marker(), NoteMarkerKind::Todo);
+    // Inheriting the box must not inherit the tick.
+    assert!(!tree.node(&id("new")).unwrap().is_completed());
+
+    tree.apply(&patch.inverse).unwrap();
+    assert_eq!(tree, original);
+}
+
 #[test]
 fn split_node_rejects_page_sources_and_duplicate_new_ids() {
     let mut tree = NotesTree::default();

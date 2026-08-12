@@ -827,6 +827,33 @@ describe("Yonalist v2 desktop shell", () => {
     }));
   });
 
+  // A checklist stays a checklist: the split command carries the marker, so the
+  // row Enter opens wears its own box from the first paint.
+  it("gives the row Enter opens on a Todo its own checkbox", async () => {
+    const notesApi = api();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: {
+        ...snapshot.viewport!,
+        nodes: [
+          { ...snapshot.viewport!.nodes[0]!, marker: "todo" as const },
+          snapshot.viewport!.nodes[1]!
+        ]
+      }
+    });
+    render(<App api={notesApi} />);
+    const editor = await screen.findByDisplayValue<HTMLTextAreaElement>(
+      "First thought"
+    );
+    editor.setSelectionRange(editor.value.length, editor.value.length);
+
+    fireEvent.keyDown(editor, { key: "Enter" });
+
+    await waitFor(() => expect(
+      screen.getAllByRole("checkbox", { name: /^Mark complete:/u })
+    ).toHaveLength(2));
+  });
+
   it("shows progress from direct Todo children only", async () => {
     const parent = { ...snapshot.viewport!.nodes[0], marker: "todo" as const };
     const directDone = {

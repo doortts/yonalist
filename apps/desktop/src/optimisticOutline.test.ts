@@ -47,4 +47,33 @@ describe("optimistic outline ordering", () => {
         .toBe(siblings.length);
     }
   });
+
+  // The command carries the marker over, and the row on screen must not flash
+  // as a plain bullet while the receipt is still in flight.
+  it("gives the projected half the source's marker without its tick", () => {
+    const source: NoteView = {
+      ...bullet("source", 1_024),
+      marker: "todo",
+      completed: true
+    };
+    const state: NotesState = {
+      ...initialNotesState,
+      status: "ready",
+      activePageId: "page",
+      nodes: [source]
+    };
+
+    const projected = projectSplitNode(state, {
+      id: "source",
+      newId: "new",
+      parentId: "page",
+      beforeId: null,
+      prefix: "Task",
+      suffix: ""
+    });
+
+    const created = projected.nodes.find((node) => node.id === "new");
+    expect(created?.marker).toBe("todo");
+    expect(created?.completed).toBe(false);
+  });
 });
