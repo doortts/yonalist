@@ -90,7 +90,11 @@ export type OutlineKeyIntent =
       readonly end: number;
       readonly direction: "forward" | "backward";
     }
-  | { readonly kind: "clearSelection" }
+  | {
+      readonly kind: "clearSelection";
+      /** Which end of the cleared band the caret lands on, when it moves. */
+      readonly collapse?: "start" | "end";
+    }
   | { readonly kind: "consume" };
 
 export interface SupportingNoteKeyInput {
@@ -317,6 +321,25 @@ export function resolveOutlineKey(
             end: input.value.length,
             direction: "forward"
           };
+    }
+    // A bare arrow off a row band drops the band and leaves one caret behind,
+    // the way it collapses a swept span of letters: the edge it points at is
+    // the edge the caret lands on.
+    if (
+      input.hasSelection &&
+      !input.altKey &&
+      !input.ctrlKey &&
+      !input.metaKey &&
+      !input.shiftKey &&
+      (input.key === "ArrowUp" || input.key === "ArrowDown" ||
+        input.key === "ArrowLeft" || input.key === "ArrowRight")
+    ) {
+      return {
+        kind: "clearSelection",
+        collapse: input.key === "ArrowUp" || input.key === "ArrowLeft"
+          ? "start"
+          : "end"
+      };
     }
     if (
       input.key === "Escape" &&

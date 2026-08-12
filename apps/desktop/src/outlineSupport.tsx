@@ -139,7 +139,7 @@ export function handleOutlineKeyDown(
   selectionHeadId: string | null,
   hasSelection: boolean,
   onExtendSelection: (originId: string, headId: string) => void,
-  onClearSelection: () => void,
+  onClearSelection: (collapse?: "start" | "end") => void,
   onFocusNote: () => void,
   onMoveTo: () => void,
   supportingNote: string,
@@ -235,7 +235,7 @@ export function handleImagePrimaryKeyDown(
   selectionHeadId: string | null,
   hasSelection: boolean,
   onExtendSelection: (originId: string, headId: string) => void,
-  onClearSelection: () => void,
+  onClearSelection: (collapse?: "start" | "end") => void,
   onFocusNote: () => void,
   onMoveTo: () => void,
   selectionActions: SelectionKeyboardActions,
@@ -491,7 +491,7 @@ function executeRowIntent(
   onZoomIn: () => void,
   onZoomOut: () => void,
   onExtendSelection: (originId: string, headId: string) => void,
-  onClearSelection: () => void,
+  onClearSelection: (collapse?: "start" | "end") => void,
   onFocusNote: () => void,
   onMoveTo: () => void,
   backspaceGroup: string | null,
@@ -671,6 +671,6 @@ function executeRowIntent(
       onExtendSelection(node.id, intent.headId);
       return;
     case "clearSelection":
-      onClearSelection();
+      onClearSelection(intent.collapse);
   }
 }

@@ -62,7 +62,8 @@ export interface OutlineRowRuntimeState {
   readonly onZoom: (nodeId: string, split: boolean) => void;
   readonly onZoomOut: () => void;
   readonly onExtendSelection: (originId: string, headId: string) => void;
-  readonly onClearSelection: () => void;
+  /** `collapse` names the end of the cleared band the caret lands on. */
+  readonly onClearSelection: (collapse?: "start" | "end") => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
   readonly onPickImage: (nodeId: string) => void;
   /** Clipboard for an image row with nothing selected around it. */

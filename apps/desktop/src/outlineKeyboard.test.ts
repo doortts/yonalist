@@ -596,6 +596,41 @@ describe("v2 outline keyboard intent resolver", () => {
     });
   });
 
+  it("collapses a row band to the edge a bare arrow points at", () => {
+    for (const key of ["ArrowUp", "ArrowLeft"]) {
+      expect(resolveOutlineKey(input({
+        key,
+        hasSelection: true,
+        selectionHeadId: "parent"
+      })), key).toEqual({ kind: "clearSelection", collapse: "start" });
+    }
+    for (const key of ["ArrowDown", "ArrowRight"]) {
+      expect(resolveOutlineKey(input({
+        key,
+        hasSelection: true,
+        selectionHeadId: "parent"
+      })), key).toEqual({ kind: "clearSelection", collapse: "end" });
+    }
+    // Escape drops the band and leaves the caret where it already stands.
+    expect(resolveOutlineKey(input({
+      key: "Escape",
+      hasSelection: true
+    }))).toEqual({ kind: "clearSelection" });
+    // With no band the arrows keep crossing rows as they always have.
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      nodeId: "child",
+      value: "Child"
+    }))).toEqual({ kind: "focus", nodeId: "parent", edge: "start" });
+    // A modified arrow is somebody else's binding, band or no band.
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      altKey: true,
+      shiftKey: true,
+      hasSelection: true
+    }))).toEqual({ kind: "move", direction: "up" });
+  });
+
   it("crosses rows with Left and Right only at a collapsed caret boundary", () => {
     expect(resolveOutlineKey(input({
       key: "ArrowLeft",

@@ -232,3 +232,49 @@ describe("Shift and an arrow inside a bullet", () => {
     });
   });
 });
+
+describe("A bare arrow against a live row band", () => {
+  async function bandAcross(container: HTMLElement) {
+    const editor = await placeCaret(container, "two", 0);
+    // Start, take the row, take the row above: "one" and "two" banded.
+    await press(editor, "ArrowUp", { shiftKey: true });
+    await press(editor, "ArrowUp", { shiftKey: true });
+    expect(bandIds(container)).toEqual(["one", "two"]);
+    return editor;
+  }
+
+  it("drops the band and lands the caret at the band's end", async () => {
+    const { view } = await outline(rows);
+    const editor = await bandAcross(view.container);
+
+    await press(editor, "ArrowDown");
+
+    expect(bandIds(view.container)).toEqual([]);
+    expect(caretOf(view.container)).toEqual({
+      nodeId: "two", start: 7, end: 7, direction: expect.anything()
+    });
+  });
+
+  it("drops the band and lands the caret at the band's start", async () => {
+    const { view } = await outline(rows);
+    const editor = await bandAcross(view.container);
+
+    await press(editor, "ArrowLeft");
+
+    expect(bandIds(view.container)).toEqual([]);
+    expect(caretOf(view.container)).toEqual({
+      nodeId: "one", start: 0, end: 0, direction: expect.anything()
+    });
+  });
+
+  it("leaves the caret alone when Escape drops the band", async () => {
+    const { view } = await outline(rows);
+    const editor = await bandAcross(view.container);
+    const before = caretOf(view.container);
+
+    await press(editor, "Escape");
+
+    expect(bandIds(view.container)).toEqual([]);
+    expect(caretOf(view.container)).toEqual(before);
+  });
+});
