@@ -38,39 +38,71 @@ describe("v2 slash commands", () => {
   });
 });
 
+/** The row as it stood before the space that finished its box went in. */
+function spaceUndone(value: string): string {
+  return value.replace("] ", "]");
+}
+
 describe("a task box typed at a title's start", () => {
   // The space is what GFM writes and what leaves a literal "[ ]" title
   // reachable: without it the brackets are still just characters.
   it("takes the four spellings, and only once the space is there", () => {
     for (const box of ["[ ] ", "[] "]) {
-      expect(resolveTodoBoxInput(`${box}buy milk`, box.length, box.length), box)
-        .toEqual({ value: "buy milk", caret: 0, completed: false });
+      const typed = `${box}buy milk`;
+      expect(
+        resolveTodoBoxInput(typed, box.length, box.length, spaceUndone(typed)),
+        box
+      ).toEqual({ value: "buy milk", caret: 0, completed: false });
     }
     for (const box of ["[x] ", "[X] "]) {
-      expect(resolveTodoBoxInput(`${box}shipped`, box.length, box.length), box)
-        .toEqual({ value: "shipped", caret: 0, completed: true });
+      const typed = `${box}shipped`;
+      expect(
+        resolveTodoBoxInput(typed, box.length, box.length, spaceUndone(typed)),
+        box
+      ).toEqual({ value: "shipped", caret: 0, completed: true });
     }
     for (const box of ["[ ]", "[]", "[x]", "[X]"]) {
-      expect(resolveTodoBoxInput(box, box.length, box.length), box).toBeNull();
+      expect(
+        resolveTodoBoxInput(box, box.length, box.length, box.slice(0, -1)),
+        box
+      ).toBeNull();
     }
   });
 
   it("fires only on the space that finished a box at offset 0", () => {
-    // The caret elsewhere in the row is somebody else's edit, not this one.
-    expect(resolveTodoBoxInput("[ ] buy milk", 12, 12)).toBeNull();
-    expect(resolveTodoBoxInput("[ ] buy milk", 0, 0)).toBeNull();
+    // The whole line pasted into an empty row: the caret is at its end, so the
+    // box is text somebody else wrote rather than one this keystroke finished.
+    expect(resolveTodoBoxInput("[ ] buy milk", 12, 12, "")).toBeNull();
+    expect(resolveTodoBoxInput("[ ] buy milk", 0, 0, "")).toBeNull();
     // Not at the start, so the brackets stay characters.
-    expect(resolveTodoBoxInput("buy [ ] milk", 8, 8)).toBeNull();
-    expect(resolveTodoBoxInput(" [ ] milk", 5, 5)).toBeNull();
+    expect(resolveTodoBoxInput("buy [ ] milk", 8, 8, "buy [ ]milk")).toBeNull();
+    expect(resolveTodoBoxInput(" [ ] milk", 5, 5, " [ ]milk")).toBeNull();
     // A sweep is not a keystroke.
-    expect(resolveTodoBoxInput("[ ] milk", 0, 4)).toBeNull();
+    expect(resolveTodoBoxInput("[ ] milk", 0, 4, "[ ]milk")).toBeNull();
     // Neither a box nor a bracket pair this rule knows.
-    expect(resolveTodoBoxInput("[y] milk", 4, 4)).toBeNull();
-    expect(resolveTodoBoxInput("[  ] milk", 5, 5)).toBeNull();
+    expect(resolveTodoBoxInput("[y] milk", 4, 4, "[y]milk")).toBeNull();
+    expect(resolveTodoBoxInput("[  ] milk", 5, 5, "[  ]milk")).toBeNull();
+  });
+
+  // The shape of a value is not the keystroke that made it: a row that already
+  // held a whole box keeps it as characters, and every later edit that happens
+  // to leave the caret at the box end is somebody else's.
+  it("refuses a row that already held a whole box", () => {
+    // Backspace over the `X` of `[ ] Xfoo` lands the caret at the box end.
+    expect(resolveTodoBoxInput("[ ] foo", 4, 4, "[ ] Xfoo")).toBeNull();
+    expect(resolveTodoBoxInput("[ ] ne", 4, 4, "[ ] one")).toBeNull();
+    // So does cutting a swept `one ` out of `[ ] one two`.
+    expect(resolveTodoBoxInput("[ ] two", 4, 4, "[ ] one two")).toBeNull();
+    // A box the row had no space in yet is still this rule's keystroke.
+    expect(resolveTodoBoxInput("[ ] one", 4, 4, "[ ]one")).toEqual({
+      value: "one",
+      caret: 0,
+      completed: false
+    });
   });
 
   it("leaves an empty row behind when the box is all there was", () => {
-    expect(resolveTodoBoxInput("[ ] ", 4, 4)).toEqual({
+    expect(resolveTodoBoxInput("[ ] ", 4, 4, "[ ]")).toEqual({
       value: "",
       caret: 0,
       completed: false

@@ -375,7 +375,10 @@ export const OutlineRow = memo(function OutlineRow({
               // The box goes on before the draft does: the prefix never becomes
               // text the row has to be edited back out of.
               const box = resolveTodoBoxInput(
-                value, rawCaret, event.currentTarget.selectionEnd
+                value,
+                rawCaret,
+                event.currentTarget.selectionEnd,
+                draft ?? node.text
               );
               if (box) {
                 setSlashMenu(null);

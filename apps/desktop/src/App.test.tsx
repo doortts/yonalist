@@ -1052,6 +1052,29 @@ describe("Yonalist v2 desktop shell", () => {
     expect(calls[0]?.historyGroup).toMatch(/^slash:/u);
   });
 
+  // A literal `[ ] ` title is meant to stay typeable, so the rule reads the
+  // value the row held before the keystroke, not the shape the keystroke left.
+  it("leaves a literal box title alone when a later edit ends at the box", async () => {
+    const notesApi = api();
+    render(<App api={notesApi} />);
+    const title = await screen.findByDisplayValue<HTMLTextAreaElement>("First thought");
+
+    // The whole line at once: the caret lands at its end, so no box is made.
+    fireEvent.change(title, {
+      target: { value: "[ ] one", selectionStart: 7, selectionEnd: 7 }
+    });
+    // Backspace over the `o`, which puts the caret right after the box.
+    fireEvent.change(title, {
+      target: { value: "[ ] ne", selectionStart: 4, selectionEnd: 4 }
+    });
+
+    expect(title.value).toBe("[ ] ne");
+    expect(screen.queryByRole("checkbox", { name: "Mark complete: ne" })).toBeNull();
+    expect(vi.mocked(notesApi.execute).mock.calls.map(
+      ([envelope]) => envelope.command.kind
+    )).not.toContain("setMarker");
+  });
+
   it("indents the current row below its previous sibling with Tab", async () => {
     const notesApi = api();
     render(<App api={notesApi} />);

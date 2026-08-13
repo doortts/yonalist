@@ -60,13 +60,18 @@ export interface TodoBoxEdit {
  * The space is required, so a title that has to read `[ ] something` is still
  * typeable; the caret has to stand right after it, which is what makes this the
  * keystroke that completed the box rather than an edit somewhere else in the row.
+ * `previous` is the value the row held before this change: a row that already
+ * carried a whole box carries it as characters, so no edit inside such a row can
+ * be the keystroke that finished one, whatever the caret ends up next to.
  */
 export function resolveTodoBoxInput(
   value: string,
   selectionStart: number | null,
-  selectionEnd: number | null
+  selectionEnd: number | null,
+  previous: string
 ): TodoBoxEdit | null {
   if (selectionStart === null || selectionStart !== selectionEnd) return null;
+  if (readTodoBox(previous)?.spaced) return null;
   const box = readTodoBox(value);
   if (!box?.spaced || selectionStart !== value.length - box.rest.length) {
     return null;
