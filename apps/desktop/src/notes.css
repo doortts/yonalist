@@ -1952,6 +1952,13 @@ button.notes-date-token:hover {
   border-radius: 0;
 }
 
+/* The arrow sits beside the bullet as a mark on the row, not a control of its
+   own, so it takes no plate under the pointer -- one appearing there read as a
+   button the row does not have. The brighter glyph carries the hover alone. */
+.notes-collapse-button:hover {
+  background: transparent;
+}
+
 .notes-node-bullet {
   position: relative;
   display: inline-flex;
