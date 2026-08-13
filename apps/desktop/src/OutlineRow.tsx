@@ -9,7 +9,7 @@ import { NotesStore } from "./notesStore";
 import type { OutlineIndex } from "./outlineIndex";
 import {
   endOutlineEnterGesture, handleImagePrimaryKeyDown, handleOutlineKeyDown,
-  type SelectionKeyboardActions
+  type OutlineBandState, type SelectionKeyboardActions
 } from "./outlineSupport";
 import { handleOutlinePaste } from "./outlinePasteGesture";
 import { supportingNoteFocusTarget } from "./outlineKeyboard";
@@ -17,9 +17,8 @@ import {
   TodoCheckbox, TodoProgressIndicator, type TodoProgress
 } from "./outlineTodo";
 import {
-  applySlashCommand, filterSlashCommands, localDateIso,
-  resolveSlashCommandQuery, resolveTodoBoxInput, type SlashCommandId,
-  type SlashCommandQuery
+  applySlashCommand, filterSlashCommands, localDateIso, resolveTitleInput,
+  type SlashCommandId, type SlashCommandQuery
 } from "./outlineSlash";
 import {
   OutlineTextField, type OutlineTagToken
@@ -51,10 +50,7 @@ export interface OutlineRowRuntimeState {
   readonly index: OutlineIndex;
   readonly visibleIndex: OutlineIndex;
   readonly pageId: string;
-  readonly selectionHeadId: string | null;
-  /** The end of the band that stays put while an arrow moves the other one. */
-  readonly selectionAnchorId: string | null;
-  readonly hasSelection: boolean;
+  readonly band: OutlineBandState;
   /** Roots the selection commands act on; more than one opens selection mode. */
   readonly selectionRootIds: readonly string[];
   readonly selectionPlans: SelectionMovePlans;
@@ -343,9 +339,7 @@ export const OutlineRow = memo(function OutlineRow({
                     current.pageId,
                     () => current.onZoom(node.id, false),
                     current.onZoomOut,
-                    current.selectionHeadId,
-                    current.selectionAnchorId,
-                    current.hasSelection,
+                    current.band,
                     current.onExtendSelection,
                     current.onClearSelection,
                     openNoteAndFocus,
@@ -369,34 +363,24 @@ export const OutlineRow = memo(function OutlineRow({
             value={draft ?? node.text}
             aria-expanded={slashMenu ? true : undefined}
             onTagClick={(token) => runtime.state.onTagClick(token)}
+            // No `isComposing` guard on this path: a composed character stands at
+            // the caret, so the caret is never at a box end while a composition
+            // is open, and a row that already carried a box is refused anyway.
             onChange={(event) => {
-              const value = event.currentTarget.value;
-              const rawCaret = event.currentTarget.selectionStart;
-              // The box goes on before the draft does: the prefix never becomes
-              // text the row has to be edited back out of.
-              const box = resolveTodoBoxInput(
-                value,
-                rawCaret,
-                event.currentTarget.selectionEnd,
-                draft ?? node.text
+              const input = resolveTitleInput(
+                draft ?? node.text, event.currentTarget
               );
-              if (box) {
+              if (input?.kind === "box") {
                 setSlashMenu(null);
-                commitRowEdit(box, "todo", box.completed);
+                // The box goes on before the draft does: the prefix never becomes
+                // text the row has to be edited back out of.
+                commitRowEdit(input.edit, "todo", input.edit.completed);
                 return;
               }
-              const caret = rawCaret === 0 && value.startsWith("/")
-                ? value.length
-                : rawCaret;
-              store.setDraft(node.id, value);
-              const query = resolveSlashCommandQuery(
-                value,
-                caret,
-                caret
-              );
-              const commands = query ? filterSlashCommands(query.query) : [];
-              setSlashMenu(query && commands.length > 0
-                ? { query, commands, activeIndex: 0 }
+              store.setDraft(node.id, event.currentTarget.value);
+              const commands = input ? filterSlashCommands(input.query.query) : [];
+              setSlashMenu(input && commands.length > 0
+                ? { query: input.query, commands, activeIndex: 0 }
                 : null);
             }}
             onKeyDown={(event) => {
@@ -444,9 +428,7 @@ export const OutlineRow = memo(function OutlineRow({
                 current.pageId,
                 () => current.onZoom(node.id, false),
                 current.onZoomOut,
-                current.selectionHeadId,
-                current.selectionAnchorId,
-                current.hasSelection,
+                current.band,
                 current.onExtendSelection,
                 current.onClearSelection,
                 openNoteAndFocus,

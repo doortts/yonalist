@@ -189,14 +189,19 @@ export function readTodoBox(content: string): TodoBox | null {
 
 /**
  * The Markdown task box a row carries out of the app, `""` for a plain bullet
- * still open. The tick has nowhere else to go in text, so a completed row takes
- * a box whatever its marker: reading that back through the plain path makes a
- * completed bullet a to-do, which is the price of not losing the tick. An
- * in-app paste reads the payload, which keeps the true marker.
+ * still open, and bare: each format puts the space where its own syntax wants it.
+ * The tick has nowhere else to go in text, so a completed row takes a box
+ * whatever its marker: reading that back through the plain path makes a completed
+ * bullet a to-do, which is the price of not losing the tick. An in-app paste
+ * reads the payload, which keeps the true marker.
+ *
+ * This is the clipboard's rule alone, and neither export shares it: the PDF
+ * prints a box only for a `todo` marker, so a completed bullet prints its dot
+ * and loses the tick, and the Markdown export writes a box on every row.
  */
-function textBox(node: OutlineClipboardNode): string {
-  if (node.completed) return " [x]";
-  return node.marker === "todo" ? " [ ]" : "";
+function taskBox(node: OutlineClipboardNode): string {
+  if (node.completed) return "[x]";
+  return node.marker === "todo" ? "[ ]" : "";
 }
 
 function plainLines(
@@ -206,7 +211,8 @@ function plainLines(
 ): void {
   for (const node of nodes) {
     const indent = "  ".repeat(depth);
-    const marker = `${indent}-${textBox(node)}`;
+    const box = taskBox(node);
+    const marker = `${indent}-${box ? ` ${box}` : ""}`;
     lines.push(node.text ? `${marker} ${node.text}` : marker);
     // A note sits one level in from its own row, as the Markdown export writes
     // it, and before the children so the reading order matches the screen.
@@ -230,7 +236,7 @@ function htmlList(nodes: readonly OutlineClipboardNode[]): string {
     // form controls on paste, and the tick survives today precisely because it
     // is text. `<s>` carries the screen's strike-through the same way, over the
     // title alone as the stylesheet draws it.
-    const box = textBox(node).trimStart();
+    const box = taskBox(node);
     const title = escapeHtml(node.text);
     const struck = node.completed && title.length > 0 ? `<s>${title}</s>` : title;
     // A rich-text app prefers text/html and never reads the payload comment, so

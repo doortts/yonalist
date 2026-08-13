@@ -13,6 +13,18 @@ import {
 } from "./outlineKeyboard";
 import { measureTextareaCaretLines } from "./textareaCaretLines";
 
+/**
+ * The live row band, named rather than positional: the two ids are the same type,
+ * so a swap would compile and invert the growing-or-shrinking decision the
+ * resolver makes from them.
+ */
+export interface OutlineBandState {
+  readonly headId: string | null;
+  /** The end that stays put while an arrow moves the other one. */
+  readonly anchorId: string | null;
+  readonly hasSelection: boolean;
+}
+
 export interface SelectionKeyboardActions {
   readonly indent: () => void;
   readonly outdent: () => void;
@@ -50,9 +62,7 @@ export function handleOutlineKeyDown(
   pageId: string,
   onZoomIn: () => void,
   onZoomOut: () => void,
-  selectionHeadId: string | null,
-  selectionAnchorId: string | null,
-  hasSelection: boolean,
+  band: OutlineBandState,
   onExtendSelection: (originId: string, headId: string) => void,
   onClearSelection: (collapse?: "start" | "end") => void,
   onFocusNote: () => void,
@@ -85,9 +95,9 @@ export function handleOutlineKeyDown(
     structureNodes: nodes,
     visibleIndex,
     structureIndex,
-    selectionHeadId,
-    selectionAnchorId,
-    hasSelection,
+    selectionHeadId: band.headId,
+    selectionAnchorId: band.anchorId,
+    hasSelection: band.hasSelection,
     target: "row",
     platform: outlinePlatform()
   });
@@ -104,7 +114,7 @@ export function handleOutlineKeyDown(
   }
   const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
   if (!scope) return;
-  if (hasSelection) {
+  if (band.hasSelection) {
     if (intent.kind === "indent") return selectionActions.indent();
     if (intent.kind === "outdent") return selectionActions.outdent();
     if (intent.kind === "move") return selectionActions.move(intent.direction);
@@ -151,9 +161,7 @@ export function handleImagePrimaryKeyDown(
   pageId: string,
   onZoomIn: () => void,
   onZoomOut: () => void,
-  selectionHeadId: string | null,
-  selectionAnchorId: string | null,
-  hasSelection: boolean,
+  band: OutlineBandState,
   onExtendSelection: (originId: string, headId: string) => void,
   onClearSelection: (collapse?: "start" | "end") => void,
   onFocusNote: () => void,
@@ -181,9 +189,9 @@ export function handleImagePrimaryKeyDown(
     structureNodes: nodes,
     visibleIndex,
     structureIndex,
-    selectionHeadId,
-    selectionAnchorId,
-    hasSelection,
+    selectionHeadId: band.headId,
+    selectionAnchorId: band.anchorId,
+    hasSelection: band.hasSelection,
     // The station the key came from is the caret's side of the image; a key on
     // the frame itself belongs to no side.
     imageEdge: imageEdgeOf(event.target),
@@ -194,7 +202,7 @@ export function handleImagePrimaryKeyDown(
   event.preventDefault();
   const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
   if (!scope) return;
-  if (hasSelection) {
+  if (band.hasSelection) {
     if (intent.kind === "indent") return selectionActions.indent();
     if (intent.kind === "outdent") return selectionActions.outdent();
     if (intent.kind === "move") return selectionActions.move(intent.direction);
@@ -208,10 +216,10 @@ export function handleImagePrimaryKeyDown(
   // A selection already carries this image's bytes, so the chord goes to the
   // selection commands and only a bare station falls through to the node.
   if (intent.kind === "copyImage") {
-    return hasSelection ? selectionActions.copy() : onCopyImage(node.id);
+    return band.hasSelection ? selectionActions.copy() : onCopyImage(node.id);
   }
   if (intent.kind === "cutImage") {
-    return hasSelection ? selectionActions.cut() : onCutImage(node.id);
+    return band.hasSelection ? selectionActions.cut() : onCutImage(node.id);
   }
   // The stop between the two stations is the image itself, which is the element
   // this handler is already mounted on.

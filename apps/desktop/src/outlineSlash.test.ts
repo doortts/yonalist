@@ -2,6 +2,7 @@ import {
   applySlashCommand,
   filterSlashCommands,
   resolveSlashCommandQuery,
+  resolveTitleInput,
   resolveTodoBoxInput
 } from "./outlineSlash";
 
@@ -107,5 +108,35 @@ describe("a task box typed at a title's start", () => {
       caret: 0,
       completed: false
     });
+  });
+});
+
+describe("the one question a title's own field asks of a change", () => {
+  it("answers with a box, a query, or nothing at all", () => {
+    expect(resolveTitleInput("[ ]buy milk", {
+      value: "[ ] buy milk",
+      selectionStart: 4,
+      selectionEnd: 4
+    })).toEqual({
+      kind: "box",
+      edit: { value: "buy milk", caret: 0, completed: false }
+    });
+    expect(resolveTitleInput("/to", {
+      value: "/tod",
+      selectionStart: 4,
+      selectionEnd: 4
+    })).toEqual({ kind: "slash", query: { start: 0, end: 4, query: "tod" } });
+    // A whole slash line at once reports its caret at the start, and the query
+    // runs to the end of what came in.
+    expect(resolveTitleInput("", {
+      value: "/tod",
+      selectionStart: 0,
+      selectionEnd: 0
+    })).toEqual({ kind: "slash", query: { start: 0, end: 4, query: "tod" } });
+    expect(resolveTitleInput("buy mil", {
+      value: "buy milk",
+      selectionStart: 8,
+      selectionEnd: 8
+    })).toBeNull();
   });
 });

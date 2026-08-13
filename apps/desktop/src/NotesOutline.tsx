@@ -422,9 +422,11 @@ export function NotesOutline({
     index,
     visibleIndex,
     pageId: zoomRoot?.id ?? page.id,
-    selectionHeadId: selection.headId,
-    selectionAnchorId: selection.anchorId,
-    hasSelection: selection.selectedIds.length > 0,
+    band: {
+      headId: selection.headId,
+      anchorId: selection.anchorId,
+      hasSelection: selection.selectedIds.length > 0
+    },
     selectionRootIds: selection.selectedRootIds,
     selectionPlans: movePlans,
     allSelectedCompleted,

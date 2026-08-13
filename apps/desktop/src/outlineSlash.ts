@@ -68,6 +68,40 @@ export function resolveTodoBoxInput(
   return { value: box.rest, caret: 0, completed: box.completed };
 }
 
+/** What the two policies below read off the field the change landed in. */
+export interface TitleChange {
+  readonly value: string;
+  readonly selectionStart: number | null;
+  readonly selectionEnd: number | null;
+}
+
+/** What one change to a title is, once both policies have had it. */
+export type TitleInput =
+  | { readonly kind: "box"; readonly edit: TodoBoxEdit }
+  | { readonly kind: "slash"; readonly query: SlashCommandQuery };
+
+/**
+ * The one question a title's own field asks of a change: does it finish a task
+ * box, does it stand in a slash query, or is it just text. The box goes first --
+ * a row taking a marker is not typing a command.
+ */
+export function resolveTitleInput(
+  previous: string,
+  change: TitleChange
+): TitleInput | null {
+  const edit = resolveTodoBoxInput(
+    change.value, change.selectionStart, change.selectionEnd, previous
+  );
+  if (edit) return { kind: "box", edit };
+  // A caret reported at the start of a value that already begins with `/` says
+  // nothing about where the query ends, so the whole value is the query.
+  const caret = change.selectionStart === 0 && change.value.startsWith("/")
+    ? change.value.length
+    : change.selectionStart;
+  const query = resolveSlashCommandQuery(change.value, caret, caret);
+  return query ? { kind: "slash", query } : null;
+}
+
 export function resolveSlashCommandQuery(
   value: string,
   selectionStart: number | null,
