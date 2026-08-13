@@ -268,6 +268,42 @@ describe("outline clipboard integration", () => {
     expect(notesApi.execute).not.toHaveBeenCalled();
   });
 
+  // The forest is whole here, so the completeness gate lets the cut through --
+  // but a note past the format's own bound leaves nothing to delete against.
+  it("refuses destructive Cut when the rows outrun the clipboard format", async () => {
+    const notesApi = api();
+    const oversized = {
+      ...snapshot.viewport!.nodes[0],
+      note: "x".repeat(100_001)
+    };
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: {
+        ...snapshot.viewport!,
+        nodes: [oversized, ...snapshot.viewport!.nodes.slice(1)]
+      }
+    });
+    notesApi.queryForest = vi.fn().mockResolvedValue({
+      revision: snapshot.revision,
+      nodes: [oversized],
+      complete: true
+    });
+    render(<App api={notesApi} />);
+    fireEvent.pointerDown(
+      await screen.findByDisplayValue("First thought"),
+      { button: 0, pointerId: 61, ctrlKey: true }
+    );
+    await waitFor(() => expect(notesApi.queryForest).toHaveBeenCalled());
+    const setData = vi.fn();
+
+    fireEvent.cut(screen.getByRole("region", { name: "Notes outline" }), {
+      clipboardData: { setData }
+    });
+
+    expect(setData).not.toHaveBeenCalled();
+    expect(notesApi.execute).not.toHaveBeenCalled();
+  });
+
   // Nothing is serialized until the copy gesture asks for it, so an incomplete
   // forest writes nothing at all rather than a partial outline.
   it("writes no format at all while the authoritative forest is incomplete", async () => {

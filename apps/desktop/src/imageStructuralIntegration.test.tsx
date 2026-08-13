@@ -340,6 +340,28 @@ describe("image clipboard chords at the caret station", () => {
     })]);
   });
 
+  // The payload is what brings the rows under the picture back. A subtree the
+  // clipboard format cannot carry is one the cut must not delete.
+  it("refuses to cut a subtree the clipboard cannot carry", async () => {
+    const boot = childBoot();
+    const { notesApi, station } = await stationOf({
+      ...boot,
+      viewport: {
+        ...boot.viewport!,
+        nodes: boot.viewport!.nodes.map((node) => node.id === "caption"
+          ? { ...node, note: "x".repeat(100_001) }
+          : node)
+      }
+    });
+
+    fireEvent.keyDown(station, { key: "x", metaKey: true });
+
+    await screen.findByText(
+      "Cut is unavailable because these rows are too large for the clipboard."
+    );
+    expect(notesApi.execute).not.toHaveBeenCalled();
+  });
+
   it("hands a selected image to the selection path, writing once", async () => {
     const { notesApi, write, station } = await stationOf();
     fireEvent.keyDown(station, { key: "ArrowRight", shiftKey: true });

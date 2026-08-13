@@ -42,6 +42,13 @@ const OutlineDragVisuals = lazy(() =>
 
 type SelectionPlanner = typeof import("./selectionMoves");
 
+// Cut deletes, so it may only run once the clipboard holds what it is about to
+// remove. The rich payload carries everything the old refusals used to stand in
+// for -- except a subtree past the format's own bounds, which it cannot carry
+// at all.
+const CUT_OVER_CLIPBOARD_BOUNDS =
+  "Cut is unavailable because these rows are too large for the clipboard.";
+
 export interface PaneRestoreRequest {
   readonly epoch: number;
   readonly selectedIds: readonly string[];
@@ -272,38 +279,51 @@ export function NotesOutline({
     selection.selectedNodes[0]?.kind === "image"
     ? selection.selectedNodes[0]
     : null;
+  // The whole snapshot, not the row on its own: an image row can have children
+  // and drafts of its own, and a payload built from `[node]` would paste the
+  // picture back with its subtree missing. Undefined when the subtree runs past
+  // what the clipboard format holds.
+  const nodeClipboardHtml = (node: NoteView) => {
+    const { nodes, drafts, noteDrafts, sessionId } = store.getSnapshot();
+    return buildOutlineClipboardFormats(
+      nodes,
+      drafts,
+      noteDrafts,
+      [node.id],
+      sessionId ?? ""
+    )?.html;
+  };
   // The read promise goes straight into the write: WebKit refuses a clipboard
   // write that starts after the gesture that asked for it, so nothing may be
   // awaited between the key and `writeImageClipboard`.
-  const writeNodeImage = (node: NoteView) => {
-    // The whole snapshot, not the row on its own: an image row can have
-    // children and drafts of its own, and a payload built from `[node]` would
-    // paste the picture back with its subtree missing.
-    const { nodes, drafts, noteDrafts, sessionId } = store.getSnapshot();
-    return writeImageClipboard(
-      store.images.read(node.id),
-      node.image?.mimeType ?? "application/octet-stream",
-      node.image?.originalName ?? node.text,
-      // The row's own payload rides along, so pasting the image back here
-      // restores the node by hash while other apps still get the picture.
-      buildOutlineClipboardFormats(
-        nodes,
-        drafts,
-        noteDrafts,
-        [node.id],
-        sessionId ?? ""
-      )?.html
-    );
+  const writeNodeImage = (
+    node: NoteView,
+    // The row's own payload rides along, so pasting the image back here
+    // restores the node by hash while other apps still get the picture.
+    html = nodeClipboardHtml(node)
+  ) => writeImageClipboard(
+    store.images.read(node.id),
+    node.image?.mimeType ?? "application/octet-stream",
+    node.image?.originalName ?? node.text,
+    html
+  );
+  // A copy may fall back to the picture alone -- nothing is lost either way.
+  // A cut may not: the payload is the only thing that can bring the rows under
+  // the image back, so without one there is nothing to delete against.
+  const writeSelectionToClipboard = (payloadRequired: boolean) => {
+    if (!selectedImage) return selection.copyToSystem();
+    const html = nodeClipboardHtml(selectedImage);
+    if (!html && payloadRequired) {
+      return Promise.reject(new Error(CUT_OVER_CLIPBOARD_BOUNDS));
+    }
+    return writeNodeImage(selectedImage, html);
   };
-  const writeSelectionToClipboard = () => selectedImage
-    ? writeNodeImage(selectedImage)
-    : selection.copyToSystem();
   const reportWriteFailure = () => setSelectionFeedback(selectedImage
     ? "Could not write the image to the clipboard."
     : "Could not write the selected outline to the clipboard.");
   const copySelection = async () => {
     try {
-      await writeSelectionToClipboard();
+      await writeSelectionToClipboard(false);
       setSelectionFeedback(selectedImage
         ? "Copied image."
         : "Copied selected outline.");
@@ -314,9 +334,14 @@ export function NotesOutline({
   const cutSelection = async () => {
     if (!selection.canCut) return;
     try {
-      await writeSelectionToClipboard();
-    } catch {
-      reportWriteFailure();
+      await writeSelectionToClipboard(true);
+    } catch (error) {
+      if (error instanceof Error &&
+        error.message === CUT_OVER_CLIPBOARD_BOUNDS) {
+        setSelectionFeedback(CUT_OVER_CLIPBOARD_BOUNDS);
+      } else {
+        reportWriteFailure();
+      }
       return;
     }
     try {
@@ -331,11 +356,13 @@ export function NotesOutline({
   // leaves inside that keydown -- only what follows it waits on the guard.
   const putImageOnClipboard = (
     nodeId: string,
-    done: () => Promise<void> | void
+    done: () => Promise<void> | void,
+    html?: string
   ) => {
     const node = index.node(nodeId);
     if (!node) return;
-    const written = writeNodeImage(node).then(() => true, () => false);
+    const written = writeNodeImage(node, html ?? nodeClipboardHtml(node))
+      .then(() => true, () => false);
     runExclusive(async () => {
       if (!await written) {
         setSelectionFeedback("Could not write the image to the clipboard.");
@@ -344,17 +371,25 @@ export function NotesOutline({
       await done();
     });
   };
-  // No guard left to run: the payload `writeNodeImage` puts beside the bytes
-  // carries the row's whole subtree, so a picture with a caption under it cuts
-  // and pastes back with the caption.
+  // The refusals the rich payload replaced are gone, so a picture with a
+  // caption under it cuts and pastes back with the caption. One guard survives
+  // them: the payload beside the bytes is the only thing that brings those rows
+  // back, so a subtree too big to carry is a subtree too big to delete.
   const cutImageNode = (nodeId: string) => {
+    const node = index.node(nodeId);
+    if (!node) return;
+    const html = nodeClipboardHtml(node);
+    if (!html) {
+      setSelectionFeedback(CUT_OVER_CLIPBOARD_BOUNDS);
+      return;
+    }
     const takeCaret = handOffCaret([nodeId]);
     putImageOnClipboard(nodeId, async () => {
       await store.deleteSubtrees([nodeId]);
       clearSelection();
       takeCaret();
       setSelectionFeedback("Cut image.");
-    });
+    }, html);
   };
   const duplicateSelection = async () => {
     const plan = movePlans.duplicate;
