@@ -18,7 +18,7 @@ import {
 } from "./outlineTodo";
 import {
   applySlashCommand, filterSlashCommands, localDateIso,
-  resolveSlashCommandQuery, type SlashCommandId,
+  resolveSlashCommandQuery, resolveTodoBoxInput, type SlashCommandId,
   type SlashCommandQuery
 } from "./outlineSlash";
 import {
@@ -146,6 +146,21 @@ export const OutlineRow = memo(function OutlineRow({
     flushSync(() => setNoteOpen(true));
     noteRef.current?.focus();
   };
+  const commitRowEdit = (
+    edit: { readonly value: string; readonly caret: number },
+    marker: "todo" | null,
+    completed?: boolean
+  ) => {
+    void store.applySlashEdit(node.id, edit.value, marker, completed).then(() => {
+      // The caret offset belongs to the edited text, so it waits for the commit
+      // that puts that text in the field -- a microtask, since an occluded
+      // window runs no frames.
+      queueMicrotask(() => {
+        editorRef.current?.focus();
+        editorRef.current?.setSelectionRange(edit.caret, edit.caret);
+      });
+    });
+  };
   const applyCurrentSlashCommand = (commandId: SlashCommandId) => {
     if (!slashMenu) return;
     const source = draft ?? node.text;
@@ -156,15 +171,7 @@ export const OutlineRow = memo(function OutlineRow({
       localDateIso()
     );
     setSlashMenu(null);
-    void store.applySlashEdit(node.id, edit.value, edit.marker).then(() => {
-      // The caret offset belongs to the edited text, so it waits for the commit
-      // that puts that text in the field -- a microtask, since an occluded
-      // window runs no frames.
-      queueMicrotask(() => {
-        editorRef.current?.focus();
-        editorRef.current?.setSelectionRange(edit.caret, edit.caret);
-      });
-    });
+    commitRowEdit(edit, edit.marker);
   };
   useEffect(() => {
     if (visibleNote.trim().length > 0) setNoteOpen(true);
@@ -365,6 +372,16 @@ export const OutlineRow = memo(function OutlineRow({
             onChange={(event) => {
               const value = event.currentTarget.value;
               const rawCaret = event.currentTarget.selectionStart;
+              // The box goes on before the draft does: the prefix never becomes
+              // text the row has to be edited back out of.
+              const box = resolveTodoBoxInput(
+                value, rawCaret, event.currentTarget.selectionEnd
+              );
+              if (box) {
+                setSlashMenu(null);
+                commitRowEdit(box, "todo", box.completed);
+                return;
+              }
               const caret = rawCaret === 0 && value.startsWith("/")
                 ? value.length
                 : rawCaret;

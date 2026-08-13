@@ -11,6 +11,7 @@ import {
   type OutlineClipboardNode,
   type OutlineClipboardPayload
 } from "./outlineClipboard";
+import { readTodoBox } from "./outlineSlash";
 
 /**
  * One pasted row. Everything past the title is optional: plain outside text
@@ -219,8 +220,6 @@ export function flattenPastedOutline(
 
 const MAX_SOURCE_CHARACTERS = 2_000_000;
 const MARKDOWN_ROW = /^-(?: |$)/u;
-// The Markdown task list, which is what a copy writes for a to-do row.
-const TODO_BOX = /^\[([ xX])\](?: (.*))?$/u;
 
 interface ParsedLine {
   readonly depth: number;
@@ -231,13 +230,14 @@ interface ParsedLine {
 }
 
 function markdownRow(depth: number, content: string): ParsedLine {
-  const box = TODO_BOX.exec(content);
+  // The same recogniser the typed box goes through, so the two cannot drift.
+  const box = readTodoBox(content);
   if (!box) return { depth, title: content };
   return {
     depth,
-    title: box[2] ?? "",
+    title: box.rest,
     marker: "todo",
-    completed: box[1]!.toLowerCase() === "x"
+    completed: box.completed
   };
 }
 

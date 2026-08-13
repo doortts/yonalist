@@ -23,6 +23,57 @@ export const slashCommands = [
   { id: "todo", label: "To-do", description: "Change this bullet to a To-do" }
 ] as const satisfies readonly SlashCommandDefinition[];
 
+/**
+ * The Markdown task box, which is both what a copy writes for a to-do row and
+ * what a hand used to Markdown types at a title's start. An empty pair counts:
+ * `[]` is what a hand types when it does not stop to put the space in.
+ */
+const TODO_BOX = /^\[([ xX]?)\](?: (.*))?$/u;
+
+export interface TodoBox {
+  readonly completed: boolean;
+  /** What follows the box and the one space after it. */
+  readonly rest: string;
+  /** Whether that space was there at all; a bare box ends the line. */
+  readonly spaced: boolean;
+}
+
+/** One recogniser for both halves of the round trip: typing and pasting. */
+export function readTodoBox(content: string): TodoBox | null {
+  const box = TODO_BOX.exec(content);
+  if (!box) return null;
+  return {
+    completed: box[1]!.toLowerCase() === "x",
+    rest: box[2] ?? "",
+    spaced: box[2] !== undefined
+  };
+}
+
+export interface TodoBoxEdit {
+  readonly value: string;
+  readonly caret: number;
+  readonly completed: boolean;
+}
+
+/**
+ * The box a keystroke just finished at the very start of a title, or `null`.
+ * The space is required, so a title that has to read `[ ] something` is still
+ * typeable; the caret has to stand right after it, which is what makes this the
+ * keystroke that completed the box rather than an edit somewhere else in the row.
+ */
+export function resolveTodoBoxInput(
+  value: string,
+  selectionStart: number | null,
+  selectionEnd: number | null
+): TodoBoxEdit | null {
+  if (selectionStart === null || selectionStart !== selectionEnd) return null;
+  const box = readTodoBox(value);
+  if (!box?.spaced || selectionStart !== value.length - box.rest.length) {
+    return null;
+  }
+  return { value: box.rest, caret: 0, completed: box.completed };
+}
+
 export function resolveSlashCommandQuery(
   value: string,
   selectionStart: number | null,

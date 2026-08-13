@@ -436,7 +436,8 @@ export class NotesStore {
   async applySlashEdit(
     id: string,
     text: string,
-    marker: "todo" | null
+    marker: "todo" | null,
+    completed?: boolean
   ): Promise<void> {
     await runSlashEdit({
       getState: this.getSnapshot,
@@ -446,7 +447,7 @@ export class NotesStore {
       setDrafts: (drafts) => this.update({ drafts }),
       execute: (command, group) =>
         this.executeCommand(command, group).then(() => undefined)
-    }, id, text, marker);
+    }, id, text, marker, completed);
   }
 
   /**

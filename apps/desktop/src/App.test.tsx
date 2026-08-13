@@ -1005,6 +1005,53 @@ describe("Yonalist v2 desktop shell", () => {
     });
   });
 
+  // The same seam `/todo` commits through, so the box and the text it strips
+  // undo together.
+  it("turns a task box typed at a title's start into a check box", async () => {
+    const notesApi = api();
+    let current = snapshot.viewport!.nodes[0];
+    let revision = snapshot.revision;
+    notesApi.execute = vi.fn().mockImplementation(async (envelope) => {
+      revision += 1;
+      const { command } = envelope;
+      if (command.kind === "updateText") current = { ...current, text: command.text };
+      if (command.kind === "setMarker") current = { ...current, marker: command.marker };
+      if (command.kind === "setCompleted") {
+        current = { ...current, completed: command.completed };
+      }
+      return {
+        revision,
+        changedNodes: [current],
+        deletedIds: [],
+        history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+      };
+    });
+    render(<App api={notesApi} />);
+    const title = await screen.findByDisplayValue<HTMLTextAreaElement>("First thought");
+
+    fireEvent.change(title, {
+      target: { value: "[x] Shipped", selectionStart: 4, selectionEnd: 4 }
+    });
+
+    expect(await screen.findByRole("checkbox", {
+      name: "Mark incomplete: Shipped"
+    })).toBeVisible();
+    // The prefix is off the row and the caret stands where the title now begins.
+    expect(title.value).toBe("Shipped");
+    expect(title.selectionStart).toBe(0);
+    const calls = vi.mocked(notesApi.execute).mock.calls.map(
+      ([envelope]) => envelope
+    );
+    expect(calls.map(({ command }) => command)).toEqual([
+      { kind: "updateText", id: "bullet-1", text: "Shipped" },
+      { kind: "setMarker", id: "bullet-1", marker: "todo" },
+      { kind: "setCompleted", id: "bullet-1", completed: true }
+    ]);
+    // One group across all three: one keystroke, one undo step.
+    expect(new Set(calls.map(({ historyGroup }) => historyGroup)).size).toBe(1);
+    expect(calls[0]?.historyGroup).toMatch(/^slash:/u);
+  });
+
   it("indents the current row below its previous sibling with Tab", async () => {
     const notesApi = api();
     render(<App api={notesApi} />);
