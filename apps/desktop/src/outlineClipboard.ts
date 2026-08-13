@@ -2,11 +2,14 @@ import type { ImageView } from "../../../packages/contracts/generated/ImageView"
 import type { IpcMarkerKind } from "../../../packages/contracts/generated/IpcMarkerKind";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 
-const MAX_CLIPBOARD_NODES = 2_000;
-const MAX_CLIPBOARD_DEPTH = 64;
-const MAX_TEXT_UTF8_BYTES = 100_000;
-const PAYLOAD_KIND = "yonalist-outline-clipboard";
-const PAYLOAD_VERSION = 1;
+// One set for both halves of the round trip: the read side in `outlinePaste`
+// bounds what it accepts by the very numbers a copy is written under. They live
+// here because that module already depends on this one.
+export const MAX_CLIPBOARD_NODES = 2_000;
+export const MAX_CLIPBOARD_DEPTH = 64;
+export const MAX_TEXT_UTF8_BYTES = 100_000;
+export const PAYLOAD_KIND = "yonalist-outline-clipboard";
+export const PAYLOAD_VERSION = 1;
 
 export function normalizeSelectedRoots(
   nodes: readonly NoteView[],
@@ -218,137 +221,6 @@ function payloadComment(payload: OutlineClipboardPayload): string {
     binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
   }
   return `<!--${PAYLOAD_KIND}:${btoa(binary)}-->`;
-}
-
-const PAYLOAD_COMMENT = new RegExp(
-  `<!--${PAYLOAD_KIND}:([A-Za-z0-9+/=]*)-->`,
-  "u"
-);
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-/**
- * A measurement the other side reads as a `u32`/`u64`: whole, in range, and
- * neither a fraction nor a NaN. Plain `typeof` lets all three through, and the
- * bounds further in only refuse what is too large -- so a `-5` or a `1.5` would
- * reach the browser preview and be refused only by Rust's own serde.
- */
-function isCount(value: unknown, least: number): value is number {
-  return typeof value === "number" &&
-    Number.isInteger(value) &&
-    value >= least;
-}
-
-/** `undefined` for a malformed reference; `null` is a row with no image. */
-function readClipboardImage(source: unknown): ImageView | null | undefined {
-  if (source === null) return null;
-  if (!isRecord(source)) return undefined;
-  const {
-    contentHash, originalName, mimeType, byteLength,
-    pixelWidth, pixelHeight, displayWidth
-  } = source;
-  if (
-    typeof contentHash !== "string" ||
-    typeof originalName !== "string" ||
-    typeof mimeType !== "string" ||
-    // The floors notes-core writes an image by: one byte, one pixel each way.
-    // The display width's own floor of 120 stays with the validation that
-    // refuses the whole import, so a narrow one is refused by its message.
-    !isCount(byteLength, 1) ||
-    !isCount(pixelWidth, 1) ||
-    !isCount(pixelHeight, 1) ||
-    !isCount(displayWidth, 0)
-  ) {
-    return undefined;
-  }
-  return {
-    contentHash, originalName, mimeType, byteLength,
-    pixelWidth, pixelHeight, displayWidth
-  };
-}
-
-function readClipboardNode(
-  source: unknown,
-  depth: number,
-  budget: { left: number }
-): OutlineClipboardNode | null {
-  budget.left -= 1;
-  if (!isRecord(source) || depth >= MAX_CLIPBOARD_DEPTH || budget.left < 0) {
-    return null;
-  }
-  const { text, note, marker, completed, collapsed, starred, children } = source;
-  const encoder = new TextEncoder();
-  if (
-    typeof text !== "string" ||
-    typeof note !== "string" ||
-    (marker !== "bullet" && marker !== "todo") ||
-    typeof completed !== "boolean" ||
-    typeof collapsed !== "boolean" ||
-    typeof starred !== "boolean" ||
-    !Array.isArray(children) ||
-    encoder.encode(text).byteLength > MAX_TEXT_UTF8_BYTES ||
-    encoder.encode(note).byteLength > MAX_TEXT_UTF8_BYTES
-  ) {
-    return null;
-  }
-  const image = readClipboardImage(source.image);
-  if (image === undefined) return null;
-  const built: OutlineClipboardNode[] = [];
-  for (const child of children) {
-    const subtree = readClipboardNode(child, depth + 1, budget);
-    if (!subtree) return null;
-    built.push(subtree);
-  }
-  return {
-    text, note, marker, completed, collapsed, starred, image, children: built
-  };
-}
-
-/**
- * The payload back out of a copy's HTML, or `null` when the markup carries none
- * this build can read -- a caller falls through to the plain text then. What
- * comes off the clipboard is someone else's JSON, so every field is read by
- * name into a fresh object rather than trusted as the shape it claims to be,
- * and nothing here throws.
- */
-export function extractOutlinePayload(
-  html: string
-): OutlineClipboardPayload | null {
-  const encoded = PAYLOAD_COMMENT.exec(html)?.[1];
-  if (encoded === undefined) return null;
-  try {
-    const parsed: unknown = JSON.parse(new TextDecoder().decode(
-      Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0))
-    ));
-    if (
-      !isRecord(parsed) ||
-      parsed.kind !== PAYLOAD_KIND ||
-      parsed.version !== PAYLOAD_VERSION ||
-      !Array.isArray(parsed.nodes) ||
-      // A copy never writes an empty one. Reading it as a payload would take
-      // the paste over and then import nothing, where `null` hands the gesture
-      // to the plain text behind it.
-      parsed.nodes.length === 0
-    ) {
-      return null;
-    }
-    const budget = { left: MAX_CLIPBOARD_NODES };
-    const nodes: OutlineClipboardNode[] = [];
-    for (const source of parsed.nodes) {
-      const node = readClipboardNode(source, 0, budget);
-      if (!node) return null;
-      nodes.push(node);
-    }
-    return {
-      kind: PAYLOAD_KIND,
-      version: PAYLOAD_VERSION,
-      nodes
-    };
-  } catch {
-    return null;
-  }
 }
 
 function serializeOutlinePayload(payload: OutlineClipboardPayload): string {

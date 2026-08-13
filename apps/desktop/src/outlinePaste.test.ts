@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
-import { buildOutlineClipboardFormats, extractOutlinePayload } from "./outlineClipboard";
+import { buildOutlineClipboardFormats } from "./outlineClipboard";
 import {
+  extractOutlinePayload,
   flattenPastedOutline,
   parsePastedOutline,
   pastedOutlineFromPayload

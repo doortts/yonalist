@@ -6,8 +6,9 @@ import {
   focusAfterCommit,
   focusOutlineEditor
 } from "./outlineFocus";
-import { extractOutlinePayload } from "./outlineClipboard";
-import { parsePastedOutline, pastedOutlineFromPayload } from "./outlinePaste";
+import {
+  extractOutlinePayload, parsePastedOutline, pastedOutlineFromPayload
+} from "./outlinePaste";
 import { clipboardImageCandidates } from "./imageClipboard";
 import { freshId, messageFrom } from "./storeSupport";
 import {
