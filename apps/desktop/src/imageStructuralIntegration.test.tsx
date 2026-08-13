@@ -262,6 +262,28 @@ describe("image clipboard chords at the caret station", () => {
     expect(notesApi.execute).not.toHaveBeenCalled();
   });
 
+  // The chord answers on any image row, children and all, so the payload it
+  // writes has to carry the subtree: a rich paste would otherwise bring the
+  // picture back on its own and leave the caption behind.
+  it("carries the image's own child in the payload it copies", async () => {
+    const { write, station } = await stationOf(childBoot());
+
+    fireEvent.keyDown(station, { key: "c", metaKey: true });
+
+    await waitFor(() => expect(write).toHaveBeenCalledOnce());
+    const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
+    const html = await (await item.data["text/html"]!).text();
+    const marker = "<!--yonalist-outline-clipboard:";
+    const payload = JSON.parse(new TextDecoder().decode(Uint8Array.from(
+      atob(html.slice(marker.length, html.indexOf("-->"))),
+      (character: string) => character.charCodeAt(0)
+    )));
+    expect(payload.nodes).toEqual([expect.objectContaining({
+      text: "cat.png",
+      children: [expect.objectContaining({ text: "Caption thought" })]
+    })]);
+  });
+
   it("cuts a childless image on its own, with nothing selected", async () => {
     const { notesApi, write, station } = await stationOf();
 

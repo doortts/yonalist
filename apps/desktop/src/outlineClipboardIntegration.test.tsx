@@ -229,6 +229,30 @@ describe("outline clipboard integration", () => {
     expect(notesApi.execute).not.toHaveBeenCalled();
   });
 
+  // Nothing is serialized until the copy gesture asks for it, so an incomplete
+  // forest writes nothing at all rather than a partial outline.
+  it("writes no format at all while the authoritative forest is incomplete", async () => {
+    const notesApi = api();
+    notesApi.queryForest = vi.fn().mockResolvedValue({
+      revision: snapshot.revision,
+      nodes: [snapshot.viewport!.nodes[0]],
+      complete: false
+    });
+    render(<App api={notesApi} />);
+    fireEvent.pointerDown(
+      await screen.findByDisplayValue("First thought"),
+      { button: 0, pointerId: 16, ctrlKey: true }
+    );
+    await waitFor(() => expect(notesApi.queryForest).toHaveBeenCalled());
+    const setData = vi.fn();
+
+    fireEvent.copy(screen.getByRole("region", { name: "Notes outline" }), {
+      clipboardData: { setData }
+    });
+
+    expect(setData).not.toHaveBeenCalled();
+  });
+
   it("keeps same-row text drag native and promotes a cross-row drag", async () => {
     render(<App api={api()} />);
     const first = await screen.findByDisplayValue<HTMLTextAreaElement>(

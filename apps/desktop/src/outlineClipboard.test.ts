@@ -425,6 +425,22 @@ describe("the outline clipboard HTML carrier", () => {
     // The comment carries the title unescaped, so a paste reads it back exact.
     expect(built.payload.nodes[0].text).toBe("<b>&</b> 표");
   });
+
+  // A rich-text target reads the markup and nothing else, so a note missing
+  // from it is a note that target loses.
+  it("renders a note after its title, before the children", () => {
+    const rows = [
+      node("parent", "page", "Parent", 1_024, { note: "first <b>\nsecond" }),
+      node("child", "parent", "Child", 1_024)
+    ];
+
+    const built = formats(rows, ["parent"])!;
+
+    expect(built.html.slice(built.html.indexOf("-->") + 3)).toBe(
+      "<ul><li>Parent<blockquote>first &lt;b&gt;<br>second</blockquote>" +
+      "<ul><li>Child</li></ul></li></ul>"
+    );
+  });
 });
 
 /** jsdom has no ClipboardItem, so the async write contract is read off this one. */

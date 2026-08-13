@@ -276,20 +276,26 @@ export function NotesOutline({
   // The read promise goes straight into the write: WebKit refuses a clipboard
   // write that starts after the gesture that asked for it, so nothing may be
   // awaited between the key and `writeImageClipboard`.
-  const writeNodeImage = (node: NoteView) => writeImageClipboard(
-    store.images.read(node.id),
-    node.image?.mimeType ?? "application/octet-stream",
-    node.image?.originalName ?? node.text,
-    // The row's own payload rides along, so pasting the image back here
-    // restores the node by hash while other apps still get the picture.
-    buildOutlineClipboardFormats(
-      [node],
-      {},
-      {},
-      [node.id],
-      store.getSnapshot().sessionId ?? ""
-    )?.html
-  );
+  const writeNodeImage = (node: NoteView) => {
+    // The whole snapshot, not the row on its own: an image row can have
+    // children and drafts of its own, and a payload built from `[node]` would
+    // paste the picture back with its subtree missing.
+    const { nodes, drafts, noteDrafts, sessionId } = store.getSnapshot();
+    return writeImageClipboard(
+      store.images.read(node.id),
+      node.image?.mimeType ?? "application/octet-stream",
+      node.image?.originalName ?? node.text,
+      // The row's own payload rides along, so pasting the image back here
+      // restores the node by hash while other apps still get the picture.
+      buildOutlineClipboardFormats(
+        nodes,
+        drafts,
+        noteDrafts,
+        [node.id],
+        sessionId ?? ""
+      )?.html
+    );
+  };
   const writeSelectionToClipboard = () => selectedImage
     ? writeNodeImage(selectedImage)
     : selection.copyToSystem();

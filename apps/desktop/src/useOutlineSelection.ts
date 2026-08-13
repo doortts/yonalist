@@ -176,25 +176,18 @@ export function useOutlineSelection(
     setForestStatus(complete ? "complete" : "incomplete");
     setForestRevision(confirmedRevision);
   }, []);
-  const clipboardFormats = useMemo(
-    () => selectionComplete
-      ? buildOutlineClipboardFormats(
-        selectedContentNodes,
-        drafts,
-        noteDrafts,
-        selectedIds,
-        sessionId ?? ""
-      )
-      : null,
-    [
+  // Built on the copy gesture, never on the render: serializing the payload and
+  // its base64 costs milliseconds at the 2,000-node bound, and a memo over the
+  // drafts would pay it again on every keystroke a band is live for.
+  const buildFormats = () => selectionComplete
+    ? buildOutlineClipboardFormats(
       selectedContentNodes,
       drafts,
       noteDrafts,
       selectedIds,
-      selectionComplete,
-      sessionId
-    ]
-  );
+      sessionId ?? ""
+    )
+    : null;
   const cutRefusal = useMemo(
     () => selectionComplete
       ? outlineCutRefusal(
@@ -214,18 +207,21 @@ export function useOutlineSelection(
   );
   const canCut = cutRefusal === null;
   const writeToEvent = (event: ClipboardEvent<HTMLElement>) => {
-    if (selectedIds.length === 0 || !clipboardFormats) return false;
+    if (selectedIds.length === 0) return false;
+    const formats = buildFormats();
+    if (!formats) return false;
     event.preventDefault();
-    return writeOutlineClipboardEvent(event.clipboardData, clipboardFormats);
+    return writeOutlineClipboardEvent(event.clipboardData, formats);
   };
   const copy = (event: ClipboardEvent<HTMLElement>) => {
     writeToEvent(event);
   };
   const copyToSystem = async () => {
-    if (!clipboardFormats) {
+    const formats = buildFormats();
+    if (!formats) {
       throw new Error("The selected outline cannot be copied.");
     }
-    await writeOutlineClipboard(clipboardFormats);
+    await writeOutlineClipboard(formats);
   };
 
   return {

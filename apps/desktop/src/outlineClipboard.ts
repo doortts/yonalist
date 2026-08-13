@@ -185,8 +185,13 @@ function htmlList(nodes: readonly OutlineClipboardNode[]): string {
     const box = node.marker === "todo"
       ? node.completed ? "[x] " : "[ ] "
       : "";
+    // A rich-text app prefers text/html and never reads the payload comment, so
+    // a note left out here is a note that app never sees.
+    const note = node.note.length > 0
+      ? `<blockquote>${escapeHtml(node.note).replace(/\n/gu, "<br>")}</blockquote>`
+      : "";
     const children = node.children.length > 0 ? htmlList(node.children) : "";
-    return `<li>${box}${escapeHtml(node.text)}${children}</li>`;
+    return `<li>${box}${escapeHtml(node.text)}${note}${children}</li>`;
   });
   return `<ul>${items.join("")}</ul>`;
 }
