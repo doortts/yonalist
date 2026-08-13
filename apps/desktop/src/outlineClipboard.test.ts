@@ -394,7 +394,7 @@ describe("the asynchronous outline clipboard write", () => {
     });
     const built = formats(nodes, ["parent"])!;
 
-    await writeOutlineClipboard(built);
+    await writeOutlineClipboard(built, false);
 
     const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
     expect(Object.keys(item.data))
@@ -433,7 +433,7 @@ describe("the asynchronous outline clipboard write", () => {
     });
     const built = formats(nodes, ["parent"])!;
 
-    await writeOutlineClipboard(built);
+    await writeOutlineClipboard(built, false);
 
     expect(writeText).toHaveBeenCalledWith(built.plain);
   });

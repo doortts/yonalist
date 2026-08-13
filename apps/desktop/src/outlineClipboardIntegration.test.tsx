@@ -323,6 +323,15 @@ describe("outline clipboard integration", () => {
     // The next page never lands, so the window stays the partial one.
     notesApi.queryViewport = vi.fn()
       .mockReturnValue(new Promise(() => undefined));
+    // A working clipboard, so the refusal is the only thing that can stop the
+    // delete: without one the write throws and nothing is deleted regardless.
+    vi.stubGlobal("ClipboardItem", class {
+      constructor(readonly data: Record<string, Promise<Blob>>) {}
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      value: { write: vi.fn().mockResolvedValue(undefined) },
+      configurable: true
+    });
     render(<App api={notesApi} />);
     // One unrelated row selected, and its own forest comes back whole -- the
     // signal that used to let this Cut through.

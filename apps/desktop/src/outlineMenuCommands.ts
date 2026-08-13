@@ -301,7 +301,9 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
     execute: (context) => {
       if (context.mode === "selection") return context.selection.copy();
       const formats = rowSubtreeFormats(context);
-      if (formats) void writeOutlineClipboard(formats).catch(() => undefined);
+      if (formats) {
+        void writeOutlineClipboard(formats, false).catch(() => undefined);
+      }
     }
   },
   {

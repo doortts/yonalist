@@ -430,7 +430,9 @@ export function writeOutlineClipboardEvent(
  */
 export async function writeOutlineClipboard(
   formats: OutlineClipboardFormats,
-  payloadRequired = false
+  // No default: a cut that forgets this would delete against a clipboard the
+  // degrade path had emptied, and the compiler is a cheaper guard than a test.
+  payloadRequired: boolean
 ): Promise<void> {
   const clipboard = navigator.clipboard;
   if (!clipboard) throw new Error("Clipboard access is unavailable.");
