@@ -61,6 +61,7 @@ function context(overrides: {
   readonly allCompleted?: boolean;
   readonly cutRefusal?: string | null;
   readonly forestComplete?: boolean;
+  readonly outlineComplete?: boolean;
   readonly openMoveTo?: () => void;
   readonly openTags?: () => void;
 } = {}): OutlineMenuContext {
@@ -75,6 +76,9 @@ function context(overrides: {
     allCompleted: overrides.allCompleted ?? false,
     cutRefusal: overrides.cutRefusal ?? null,
     forestComplete: overrides.forestComplete ?? true,
+    // With nothing selected the pane reads the same value into both, which is
+    // what makes the default follow the forest.
+    outlineComplete: overrides.outlineComplete ?? overrides.forestComplete ?? true,
     targetCount: overrides.mode === "row" ? 1 : rootIds.length,
     openMoveTo: overrides.openMoveTo ?? vi.fn(),
     openTags: overrides.openTags ?? vi.fn(),
@@ -629,5 +633,18 @@ describe("single-row Copy and Cut", () => {
     );
     expect(unavailable("cut", rowContext(vi.fn(), DEEP, false).ctx))
       .toBe("The complete selection is not available yet.");
+  });
+
+  // The window above is the only gate here. A right-clicked row was never part
+  // of a selection, so a band still waiting on its own forest says nothing
+  // about whether this row can be carried.
+  it("cuts a row while an unrelated selection waits on its forest", () => {
+    const { ctx } = rowContext(vi.fn());
+
+    expect(command("cut").eligibility({
+      ...ctx,
+      forestComplete: false,
+      cutRefusal: "The complete selection is not available yet."
+    }).available).toBe(true);
   });
 });

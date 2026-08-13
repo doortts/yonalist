@@ -60,6 +60,8 @@ export interface OutlineRowRuntimeState {
   readonly selectionCutRefusal: string | null;
   /** Whether the whole forest has loaded; Move To waits on it. */
   readonly forestComplete: boolean;
+  /** Whether the loaded window runs to both ends; a row Cut waits on it. */
+  readonly outlineComplete: boolean;
   readonly onZoom: (nodeId: string, split: boolean) => void;
   readonly onZoomOut: () => void;
   readonly onExtendSelection: (originId: string, headId: string) => void;

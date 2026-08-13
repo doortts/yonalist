@@ -48,6 +48,13 @@ export interface OutlineMenuContext {
    * already wait on rather than opening on a subset of the tree.
    */
   readonly forestComplete: boolean;
+  /**
+   * Whether the loaded window runs to both ends of the outline. A row command
+   * serializes from that window and deletes what the server holds, so past the
+   * window the two disagree -- and the forest above says nothing about it,
+   * because a right-clicked row was never part of a selection.
+   */
+  readonly outlineComplete: boolean;
   /** Rows the command acts on: the selected roots, or 1 in row mode. */
   readonly targetCount: number;
   readonly plans: SelectionMovePlans;
@@ -124,7 +131,7 @@ function rowSubtreeFormats(
  */
 function rowCutRefusal(context: OutlineMenuContext): string | null {
   if (context.mode === "selection") return context.cutRefusal;
-  if (!context.forestComplete) return SELECTION_INCOMPLETE;
+  if (!context.outlineComplete) return SELECTION_INCOMPLETE;
   // The payload alone, not the formats: this asks whether the subtree fits, and
   // the base64 the full write pays for is no part of that answer.
   return buildOutlineClipboardPayload(

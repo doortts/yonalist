@@ -417,10 +417,12 @@ export function NotesOutline({
     selectionPlans: movePlans,
     allSelectedCompleted,
     selectionCutRefusal: selection.cutRefusal,
-    // A row command reads the loaded window and deletes what the server holds,
-    // so it needs the window whole -- not just the forest behind whatever is
-    // selected, which says nothing about the row that was right-clicked.
     forestComplete: structuralContextComplete && selection.forestComplete,
+    // A row command reads the loaded window and deletes what the server holds,
+    // so it needs the window whole -- not the forest behind whatever is
+    // selected, which says nothing about the row that was right-clicked. The
+    // same gate the image row's own Cut reads.
+    outlineComplete: structuralContextComplete,
     onZoom: (nodeId, split) => {
       if (split && onOpenSplit) onOpenSplit(nodeId);
       else onZoomRootChange(nodeId);

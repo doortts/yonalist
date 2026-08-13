@@ -25,6 +25,7 @@ interface OutlineMenuRuntime {
     readonly allSelectedCompleted: boolean;
     readonly selectionCutRefusal: string | null;
     readonly forestComplete: boolean;
+    readonly outlineComplete: boolean;
     readonly selectionActions: SelectionKeyboardActions;
   };
 }
@@ -76,6 +77,7 @@ export function OutlineRowMenu({
     // Cut reads the clicked row's subtree itself, off the store below.
     cutRefusal: mode === "selection" ? state.selectionCutRefusal : null,
     forestComplete: state.forestComplete,
+    outlineComplete: state.outlineComplete,
     targetCount: mode === "selection" ? state.selectionRootIds.length : 1,
     plans: mode === "selection"
       ? state.selectionPlans
