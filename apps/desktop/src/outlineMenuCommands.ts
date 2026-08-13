@@ -110,13 +110,9 @@ function runMove(context: OutlineMenuContext, plan: SelectionMovePlan): void {
 function rowSubtreeFormats(
   context: OutlineMenuContext
 ): OutlineClipboardFormats | null {
-  const { nodes, drafts, noteDrafts, sessionId } = context.store.getSnapshot();
   return buildOutlineClipboardFormats(
-    nodes,
-    drafts,
-    noteDrafts,
-    [context.node.id],
-    sessionId ?? ""
+    context.store.getSnapshot(),
+    [context.node.id]
   );
 }
 
@@ -129,11 +125,10 @@ function rowSubtreeFormats(
 function rowCutRefusal(context: OutlineMenuContext): string | null {
   if (context.mode === "selection") return context.cutRefusal;
   if (!context.forestComplete) return SELECTION_INCOMPLETE;
-  const { nodes, drafts, noteDrafts } = context.store.getSnapshot();
   // The payload alone, not the formats: this asks whether the subtree fits, and
   // the base64 the full write pays for is no part of that answer.
   return buildOutlineClipboardPayload(
-    nodes, drafts, noteDrafts, [context.node.id], ""
+    context.store.getSnapshot(), [context.node.id]
   ) === null
     ? CUT_OVER_CLIPBOARD_BOUNDS
     : null;

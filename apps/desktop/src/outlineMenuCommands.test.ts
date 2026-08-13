@@ -547,7 +547,10 @@ describe("single-row Copy and Cut", () => {
     expect(writeText).toHaveBeenCalledWith("- a\n  - x\n    - deep");
     // The one-row menu path and a one-row selection must agree byte for byte.
     expect(writeText).toHaveBeenCalledWith(
-      buildOutlineClipboardFormats(DEEP, {}, {}, ["a"], "session-1")!.plain
+      buildOutlineClipboardFormats(
+        { nodes: DEEP, drafts: {}, noteDrafts: {} },
+        ["a"]
+      )!.plain
     );
   });
 
@@ -563,7 +566,10 @@ describe("single-row Copy and Cut", () => {
     await vi.waitFor(() => expect(write).toHaveBeenCalledOnce());
     const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
     expect(await item.data["text/html"]!.text()).toBe(
-      buildOutlineClipboardFormats(DEEP, {}, {}, ["a"], "session-1")!.html
+      buildOutlineClipboardFormats(
+        { nodes: DEEP, drafts: {}, noteDrafts: {} },
+        ["a"]
+      )!.html
     );
   });
 

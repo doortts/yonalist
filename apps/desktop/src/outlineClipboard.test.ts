@@ -56,11 +56,8 @@ function formats(
   noteDrafts: Readonly<Record<string, string>> = {}
 ) {
   return buildOutlineClipboardFormats(
-    source,
-    drafts,
-    noteDrafts,
-    selectedIds,
-    "session-1"
+    { nodes: source, drafts, noteDrafts },
+    selectedIds
   );
 }
 
@@ -251,7 +248,6 @@ describe("the rich outline clipboard payload", () => {
     expect(built.payload).toEqual({
       kind: "yonalist-outline-clipboard",
       version: 1,
-      sessionId: "session-1",
       nodes: [payloadNode("Ship it", {
         note: "with a caveat",
         marker: "todo",

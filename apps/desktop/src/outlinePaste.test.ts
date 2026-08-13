@@ -178,7 +178,10 @@ const FIXTURE = [
 ];
 
 describe("the copy a paste reads back", () => {
-  const built = buildOutlineClipboardFormats(FIXTURE, {}, {}, ["task"], "s")!;
+  const built = buildOutlineClipboardFormats(
+    { nodes: FIXTURE, drafts: {}, noteDrafts: {} },
+    ["task"]
+  )!;
 
   it("recovers the payload from the HTML byte for byte", () => {
     expect(extractOutlinePayload(built.html)).toEqual(built.payload);
@@ -254,7 +257,6 @@ function carrier(payload: unknown): string {
 const PAYLOAD = {
   kind: "yonalist-outline-clipboard",
   version: 1,
-  sessionId: "session-1",
   nodes: [{
     text: "Row",
     note: "",

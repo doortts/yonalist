@@ -100,7 +100,10 @@ function copiedFormat(type: string): string {
       image: COPIED_IMAGE
     }
   ];
-  const written = buildOutlineClipboardFormats(rows, {}, {}, ["copied"], "s")!;
+  const written = buildOutlineClipboardFormats(
+    { nodes: rows, drafts: {}, noteDrafts: {} },
+    ["copied"]
+  )!;
   return type === "text/html" ? written.html : written.plain;
 }
 
@@ -559,7 +562,6 @@ describe("outline clipboard integration", () => {
     expect(payload).toEqual({
       kind: "yonalist-outline-clipboard",
       version: 1,
-      sessionId: "session-clipboard",
       nodes: [
         expect.objectContaining({
           text: "Buy milk",

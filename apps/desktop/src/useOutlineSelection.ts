@@ -159,7 +159,7 @@ export function useOutlineSelection(
   const selectedNodes = selectedContentNodes.filter(
     (node) => selectedIds.includes(node.id)
   );
-  const { drafts, noteDrafts, sessionId } = store.getSnapshot();
+  const { drafts, noteDrafts } = store.getSnapshot();
   const rootKey = selectedRootIds.join("\u0000");
   const materializeForest = useCallback((
     rootIds: readonly string[],
@@ -184,11 +184,8 @@ export function useOutlineSelection(
   // drafts would pay it again on every keystroke a band is live for.
   const buildFormats = () => selectionComplete
     ? buildOutlineClipboardFormats(
-      selectedContentNodes,
-      drafts,
-      noteDrafts,
-      selectedIds,
-      sessionId ?? ""
+      { nodes: selectedContentNodes, drafts, noteDrafts },
+      selectedIds
     )
     : null;
   // Nothing else is left to refuse over: the payload carries the note, the

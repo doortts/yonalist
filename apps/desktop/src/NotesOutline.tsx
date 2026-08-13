@@ -278,16 +278,8 @@ export function NotesOutline({
   // and drafts of its own, and a payload built from `[node]` would paste the
   // picture back with its subtree missing. Undefined when the subtree runs past
   // what the clipboard format holds.
-  const nodeClipboardHtml = (node: NoteView) => {
-    const { nodes, drafts, noteDrafts, sessionId } = store.getSnapshot();
-    return buildOutlineClipboardFormats(
-      nodes,
-      drafts,
-      noteDrafts,
-      [node.id],
-      sessionId ?? ""
-    )?.html;
-  };
+  const nodeClipboardHtml = (node: NoteView) =>
+    buildOutlineClipboardFormats(store.getSnapshot(), [node.id])?.html;
   // The read promise goes straight into the write: WebKit refuses a clipboard
   // write that starts after the gesture that asked for it, so nothing may be
   // awaited between the key and `writeImageClipboard`.

@@ -48,9 +48,19 @@ export interface OutlineClipboardNode {
 export interface OutlineClipboardPayload {
   readonly kind: typeof PAYLOAD_KIND;
   readonly version: typeof PAYLOAD_VERSION;
-  /** Which session wrote it, so a paste can weigh how stale it is. */
-  readonly sessionId: string;
   readonly nodes: readonly OutlineClipboardNode[];
+}
+
+/**
+ * What a copy reads a row from. Structural on purpose: the store's snapshot
+ * satisfies it, and the serializer stays free of the store. The two draft
+ * overlays are named rather than positional because they are the same type --
+ * swapping them compiles and pastes the note as the title.
+ */
+export interface OutlineClipboardSource {
+  readonly nodes: readonly NoteView[];
+  readonly drafts: Readonly<Record<string, string>>;
+  readonly noteDrafts: Readonly<Record<string, string>>;
 }
 
 /**
@@ -86,12 +96,10 @@ function childrenBySortKey(
  * the text and the payload can never disagree about the shape.
  */
 export function buildOutlineClipboardPayload(
-  nodes: readonly NoteView[],
-  drafts: Readonly<Record<string, string>>,
-  noteDrafts: Readonly<Record<string, string>>,
-  selectedIds: readonly string[],
-  sessionId: string
+  source: OutlineClipboardSource,
+  selectedIds: readonly string[]
 ): OutlineClipboardPayload | null {
+  const { nodes, drafts, noteDrafts } = source;
   const roots = normalizeSelectedRoots(nodes, selectedIds);
   if (roots.length === 0 || roots.length > MAX_CLIPBOARD_NODES) return null;
 
@@ -145,7 +153,6 @@ export function buildOutlineClipboardPayload(
   return {
     kind: PAYLOAD_KIND,
     version: PAYLOAD_VERSION,
-    sessionId,
     nodes: built
   };
 }
@@ -319,7 +326,6 @@ export function extractOutlinePayload(
       !isRecord(parsed) ||
       parsed.kind !== PAYLOAD_KIND ||
       parsed.version !== PAYLOAD_VERSION ||
-      typeof parsed.sessionId !== "string" ||
       !Array.isArray(parsed.nodes) ||
       // A copy never writes an empty one. Reading it as a payload would take
       // the paste over and then import nothing, where `null` hands the gesture
@@ -338,7 +344,6 @@ export function extractOutlinePayload(
     return {
       kind: PAYLOAD_KIND,
       version: PAYLOAD_VERSION,
-      sessionId: parsed.sessionId,
       nodes
     };
   } catch {
@@ -353,19 +358,10 @@ function serializeOutlinePayload(payload: OutlineClipboardPayload): string {
 }
 
 export function buildOutlineClipboardFormats(
-  nodes: readonly NoteView[],
-  drafts: Readonly<Record<string, string>>,
-  noteDrafts: Readonly<Record<string, string>>,
-  selectedIds: readonly string[],
-  sessionId: string
+  source: OutlineClipboardSource,
+  selectedIds: readonly string[]
 ): OutlineClipboardFormats | null {
-  const payload = buildOutlineClipboardPayload(
-    nodes,
-    drafts,
-    noteDrafts,
-    selectedIds,
-    sessionId
-  );
+  const payload = buildOutlineClipboardPayload(source, selectedIds);
   if (!payload) return null;
   return {
     plain: serializeOutlinePayload(payload),
