@@ -52,6 +52,8 @@ export interface OutlineRowRuntimeState {
   readonly visibleIndex: OutlineIndex;
   readonly pageId: string;
   readonly selectionHeadId: string | null;
+  /** The end of the band that stays put while an arrow moves the other one. */
+  readonly selectionAnchorId: string | null;
   readonly hasSelection: boolean;
   /** Roots the selection commands act on; more than one opens selection mode. */
   readonly selectionRootIds: readonly string[];
@@ -335,6 +337,7 @@ export const OutlineRow = memo(function OutlineRow({
                     () => current.onZoom(node.id, false),
                     current.onZoomOut,
                     current.selectionHeadId,
+                    current.selectionAnchorId,
                     current.hasSelection,
                     current.onExtendSelection,
                     current.onClearSelection,
@@ -422,6 +425,7 @@ export const OutlineRow = memo(function OutlineRow({
                 () => current.onZoom(node.id, false),
                 current.onZoomOut,
                 current.selectionHeadId,
+                current.selectionAnchorId,
                 current.hasSelection,
                 current.onExtendSelection,
                 current.onClearSelection,

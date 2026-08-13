@@ -226,6 +226,10 @@ export function NotesOutline({
    * `collapse` is how an arrow key clears the band: the caret lands on the edge
    * the key pointed at, so the row it lands in has to be read off the selection
    * before it goes.
+   *
+   * The ends are the band's visible first and last row, not its anchor and head:
+   * a band built upward has them the other way round, and reading the pair would
+   * send the caret to the opposite end of the same band.
    */
   const clearSelection = (collapse?: "start" | "end") => {
     const selected = new Set(selection.selectedIds);
@@ -419,6 +423,7 @@ export function NotesOutline({
     visibleIndex,
     pageId: zoomRoot?.id ?? page.id,
     selectionHeadId: selection.headId,
+    selectionAnchorId: selection.anchorId,
     hasSelection: selection.selectedIds.length > 0,
     selectionRootIds: selection.selectedRootIds,
     selectionPlans: movePlans,

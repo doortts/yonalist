@@ -1,4 +1,5 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
+import { OutlineIndex } from "./outlineIndex";
 import {
   handleImageNodeKeyDown,
   resolveSupportingNoteKey,
@@ -72,6 +73,28 @@ function input(overrides: Partial<OutlineKeyInput> = {}): OutlineKeyInput {
     platform: "other",
     ...overrides
   };
+}
+
+/** A parent with three children and a following sibling, band already live. */
+const bandNodes = [
+  node("parent", "page", "Parent", 1_024),
+  node("kid-one", "parent", "kid one", 1_024),
+  node("kid-two", "parent", "kid two", 2_048),
+  node("kid-three", "parent", "kid three", 3_072),
+  node("after", "page", "After", 2_048)
+] as const;
+
+function bandInput(overrides: Partial<OutlineKeyInput> = {}): OutlineKeyInput {
+  return input({
+    key: "ArrowDown",
+    shiftKey: true,
+    nodeId: "parent",
+    value: "Parent",
+    hasSelection: true,
+    visibleNodes: bandNodes,
+    visibleIndex: new OutlineIndex(bandNodes),
+    ...overrides
+  });
 }
 
 describe("v2 outline keyboard intent resolver", () => {
@@ -418,6 +441,67 @@ describe("v2 outline keyboard intent resolver", () => {
       key: "Escape",
       hasSelection: false
     }))).toBeNull();
+  });
+
+  // Taking a parent takes its subtree, so a head walking one visible row at a
+  // time spends a press per child without changing what is selected.
+  it("steps the growing head past the rows the head's subtree already holds", () => {
+    expect(resolveOutlineKey(bandInput({
+      selectionHeadId: "parent",
+      selectionAnchorId: "parent"
+    }))).toEqual({ kind: "extendSelection", headId: "after" });
+    // A grandchild is inside the subtree too, wherever it sits in the order.
+    const deep = [
+      node("parent", "page", "Parent", 1_024),
+      node("kid-one", "parent", "kid one", 1_024),
+      node("grandkid", "kid-one", "grandkid", 1_024),
+      node("after", "page", "After", 2_048)
+    ];
+    expect(resolveOutlineKey(bandInput({
+      visibleNodes: deep,
+      visibleIndex: new OutlineIndex(deep),
+      selectionHeadId: "parent",
+      selectionAnchorId: "parent"
+    }))).toEqual({ kind: "extendSelection", headId: "after" });
+    // A collapsed parent shows no children, so there is nothing to step past.
+    const collapsed = [
+      { ...node("parent", "page", "Parent", 1_024), collapsed: true },
+      node("after", "page", "After", 2_048)
+    ];
+    expect(resolveOutlineKey(bandInput({
+      visibleNodes: collapsed,
+      visibleIndex: new OutlineIndex(collapsed),
+      selectionHeadId: "parent",
+      selectionAnchorId: "parent"
+    }))).toEqual({ kind: "extendSelection", headId: "after" });
+    // Nothing below the subtree: the band is already everything there is.
+    expect(resolveOutlineKey(bandInput({
+      selectionHeadId: "after",
+      selectionAnchorId: "parent"
+    }))).toEqual({ kind: "consume" });
+  });
+
+  it("shrinks a band one row at a time and steps one row with no anchor", () => {
+    // The anchor below the head means Down is giving rows back, and every one of
+    // those single rows changes what is selected.
+    expect(resolveOutlineKey(bandInput({
+      selectionHeadId: "parent",
+      selectionAnchorId: "after"
+    }))).toEqual({ kind: "extendSelection", headId: "kid-one" });
+    expect(resolveOutlineKey(bandInput({
+      selectionHeadId: "parent"
+    }))).toEqual({ kind: "extendSelection", headId: "kid-one" });
+    expect(resolveOutlineKey(bandInput({
+      selectionHeadId: "parent",
+      selectionAnchorId: "gone"
+    }))).toEqual({ kind: "extendSelection", headId: "kid-one" });
+    // Upward is untouched: descendants follow their parent, so a head going up
+    // never lands on one.
+    expect(resolveOutlineKey(bandInput({
+      key: "ArrowUp",
+      selectionHeadId: "after",
+      selectionAnchorId: "after"
+    }))).toEqual({ kind: "extendSelection", headId: "kid-three" });
   });
 
   // Text first, then the row, then its neighbours: each stage starts where the

@@ -233,6 +233,90 @@ describe("Shift and an arrow inside a bullet", () => {
   });
 });
 
+describe("Shift and Down across a parent that carries children", () => {
+  const family = [
+    bullet("parent", "page-1", SORT_KEY_STEP, "PARENT"),
+    bullet("kid-one", "parent", SORT_KEY_STEP, "kid one"),
+    bullet("kid-two", "parent", SORT_KEY_STEP * 2, "kid two"),
+    bullet("kid-three", "parent", SORT_KEY_STEP * 3, "kid three"),
+    bullet("after", "page-1", SORT_KEY_STEP * 2, "After")
+  ] as const;
+  const subtree = ["parent", "kid-one", "kid-two", "kid-three"];
+
+  async function bandOverSubtree(container: HTMLElement) {
+    const editor = await placeCaret(container, "parent", 0);
+    // Sweep the title, then take the row -- which takes the three children with
+    // it, since a band holding a parent holds its subtree.
+    await press(editor, "ArrowDown", { shiftKey: true });
+    expect(bandIds(container)).toEqual([]);
+    await press(editor, "ArrowDown", { shiftKey: true });
+    expect(bandIds(container)).toEqual(subtree);
+    return editor;
+  }
+
+  it("reaches the next sibling on the press after the subtree", async () => {
+    const { view } = await outline(family);
+    const editor = await bandOverSubtree(view.container);
+
+    await press(editor, "ArrowDown", { shiftKey: true });
+
+    expect(bandIds(view.container)).toEqual([...subtree, "after"]);
+  });
+
+  it("lands the caret at the visual end of the band a bare Down drops", async () => {
+    const { view } = await outline(family);
+    const editor = await bandOverSubtree(view.container);
+
+    await press(editor, "ArrowDown");
+
+    expect(bandIds(view.container)).toEqual([]);
+    expect(caretOf(view.container)).toEqual({
+      nodeId: "kid-three", start: 9, end: 9, direction: expect.anything()
+    });
+  });
+
+  it("lands the caret at the band's first row for a bare Up", async () => {
+    const { view } = await outline(family);
+    const editor = await bandOverSubtree(view.container);
+
+    await press(editor, "ArrowUp");
+
+    expect(bandIds(view.container)).toEqual([]);
+    expect(caretOf(view.container)).toEqual({
+      nodeId: "parent", start: 0, end: 0, direction: expect.anything()
+    });
+  });
+
+  it("leaves the caret in the row the band started from on Escape", async () => {
+    const { view } = await outline(family);
+    const editor = await bandOverSubtree(view.container);
+    const before = caretOf(view.container);
+
+    await press(editor, "Escape");
+
+    expect(bandIds(view.container)).toEqual([]);
+    expect(before?.nodeId).toBe("parent");
+    expect(caretOf(view.container)).toEqual(before);
+  });
+
+  // The band collapses to its visible ends, not to the anchor and head, so a
+  // band built upward hands the caret to the same rows a downward one does.
+  it("collapses an upward band to the same rows", async () => {
+    const { view } = await outline(family);
+    const editor = await placeCaret(view.container, "after", 0);
+    for (let press_ = 0; press_ < 5; press_ += 1) {
+      await press(editor, "ArrowUp", { shiftKey: true });
+    }
+    expect(bandIds(view.container)).toEqual([...subtree, "after"]);
+
+    await press(editor, "ArrowDown");
+
+    expect(caretOf(view.container)).toEqual({
+      nodeId: "after", start: 5, end: 5, direction: expect.anything()
+    });
+  });
+});
+
 describe("A bare arrow against a live row band", () => {
   async function bandAcross(container: HTMLElement) {
     const editor = await placeCaret(container, "two", 0);

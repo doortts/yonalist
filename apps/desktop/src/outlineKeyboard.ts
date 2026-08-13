@@ -29,6 +29,11 @@ export interface OutlineKeyInput {
   readonly visibleIndex?: OutlineIndex;
   readonly structureIndex?: OutlineIndex;
   readonly selectionHeadId?: string | null;
+  /**
+   * The end of the band that stays put. Which side of it the head sits on is
+   * what tells a growing band from a shrinking one.
+   */
+  readonly selectionAnchorId?: string | null;
   readonly hasSelection?: boolean;
   /** Which side of an image the caret stands on, when it stands on one. */
   readonly imageEdge?: "before" | "after";
@@ -173,6 +178,19 @@ function caretRowNear(
   return null;
 }
 
+/**
+ * Whether a Down press is growing the band rather than giving rows back: the
+ * head is below the anchor, or standing on it. An anchor the visible list has no
+ * row for answers no, which leaves the head stepping one row as it always has.
+ */
+function growingDown(input: OutlineKeyInput, headAt: number): boolean {
+  const anchorId = input.selectionAnchorId;
+  if (!anchorId) return false;
+  const anchorAt = input.visibleIndex?.positionOf(anchorId) ??
+    input.visibleNodes.findIndex((candidate) => candidate.id === anchorId);
+  return anchorAt >= 0 && headAt >= anchorAt;
+}
+
 function validSelection(input: OutlineKeyInput): boolean {
   const { selectionStart, selectionEnd } = input;
   return selectionStart !== null &&
@@ -281,7 +299,21 @@ export function resolveOutlineKey(
           input.visibleNodes.findIndex(
             (candidate) => candidate.id === currentId
           );
-        const target = input.visibleNodes[index + (up ? -1 : 1)];
+        let at = index + (up ? -1 : 1);
+        // A band holding a parent holds its whole subtree, and the subtree
+        // follows the parent in visible order -- so a growing head stepping onto
+        // one of those rows spends a press and selects nothing new. Only the
+        // growing side skips: with the anchor below, every single row the head
+        // gives back changes the band.
+        if (!up && growingDown(input, index)) {
+          while (
+            at < input.visibleNodes.length &&
+            input.visibleIndex?.isDescendant(input.visibleNodes[at]!.id, currentId)
+          ) {
+            at += 1;
+          }
+        }
+        const target = input.visibleNodes[at];
         return index >= 0 && target
           ? { kind: "extendSelection", headId: target.id }
           : { kind: "consume" };

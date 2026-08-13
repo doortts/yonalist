@@ -231,6 +231,9 @@ export function useOutlineSelection(
     selectedRootIds,
     rootKey,
     headId,
+    // Read at render, which every write to the ref is paired with: a keyboard
+    // extension needs the side the band grows from, not just its far end.
+    anchorId: anchor.current,
     canCut,
     cutRefusal,
     forestComplete: selectionComplete,

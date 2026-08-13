@@ -51,6 +51,7 @@ export function handleOutlineKeyDown(
   onZoomIn: () => void,
   onZoomOut: () => void,
   selectionHeadId: string | null,
+  selectionAnchorId: string | null,
   hasSelection: boolean,
   onExtendSelection: (originId: string, headId: string) => void,
   onClearSelection: (collapse?: "start" | "end") => void,
@@ -85,6 +86,7 @@ export function handleOutlineKeyDown(
     visibleIndex,
     structureIndex,
     selectionHeadId,
+    selectionAnchorId,
     hasSelection,
     target: "row",
     platform: outlinePlatform()
@@ -150,6 +152,7 @@ export function handleImagePrimaryKeyDown(
   onZoomIn: () => void,
   onZoomOut: () => void,
   selectionHeadId: string | null,
+  selectionAnchorId: string | null,
   hasSelection: boolean,
   onExtendSelection: (originId: string, headId: string) => void,
   onClearSelection: (collapse?: "start" | "end") => void,
@@ -179,6 +182,7 @@ export function handleImagePrimaryKeyDown(
     visibleIndex,
     structureIndex,
     selectionHeadId,
+    selectionAnchorId,
     hasSelection,
     // The station the key came from is the caret's side of the image; a key on
     // the frame itself belongs to no side.
