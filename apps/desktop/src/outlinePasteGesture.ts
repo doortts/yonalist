@@ -10,8 +10,10 @@ import { freshId, messageFrom } from "./storeSupport";
 import { bySiblingOrder } from "./outlineSortKeys";
 
 // The one import failure worth naming: both backends answer with this phrase
-// when the hash on the clipboard outlived the bytes it points at.
-const STALE_IMAGE = /image store/iu;
+// when the hash on the clipboard outlived the bytes it points at. The whole
+// phrase, so an image store that is merely unavailable is not reported as a
+// stale hash.
+const STALE_IMAGE = /no longer in the image store/u;
 const PASTE_REFUSED_IMAGE =
   "Could not paste: that image is no longer available.";
 const PASTE_REFUSED = "Could not paste the copied outline.";
@@ -47,7 +49,7 @@ export function isEmptyBullet(store: NotesStore, node: NoteView): boolean {
       candidate.parentId === node.id && !candidate.deleted);
 }
 
-export function handleMultilinePaste(
+export function handleOutlinePaste(
   event: ClipboardEvent<HTMLElement>,
   store: NotesStore,
   node: NoteView,

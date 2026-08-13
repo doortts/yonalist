@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::DomainError;
 
+// Mirrored in apps/desktop/src/previewValidation.ts, which the browser preview
+// validates by: these two change here first.
 pub const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 pub const MAX_IMAGE_PIXELS: u64 = 40_000_000;
 pub const MIN_IMAGE_DISPLAY_WIDTH: u32 = 120;

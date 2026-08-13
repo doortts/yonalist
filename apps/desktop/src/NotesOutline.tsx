@@ -22,7 +22,8 @@ import type { PaneFocusSnapshot } from "./appNavigation";
 import { useImageIngest } from "./useImageIngest";
 import { writeImageClipboard } from "./imageClipboard";
 import {
-  buildOutlineClipboardFormats, CUT_OVER_CLIPBOARD_BOUNDS, SELECTION_INCOMPLETE
+  buildOutlineClipboardFormats, CUT_OVER_CLIPBOARD_BOUNDS,
+  OUTLINE_WINDOW_INCOMPLETE
 } from "./outlineClipboard";
 import {
   focusAfterCommit, focusOutlineEditor, focusOutlineSnapshot
@@ -213,7 +214,7 @@ export function NotesOutline({
   ) => {
     if (selectionOperation.current) return;
     if (!selection.forestComplete) {
-      setSelectionFeedback(SELECTION_INCOMPLETE);
+      setSelectionFeedback(OUTLINE_WINDOW_INCOMPLETE);
       return;
     }
     runExclusive(action);
@@ -376,7 +377,7 @@ export function NotesOutline({
     // this waits on the window being whole. The selection's own forest says
     // nothing here -- this row was never part of a selection.
     if (!structuralContextComplete) {
-      setSelectionFeedback(SELECTION_INCOMPLETE);
+      setSelectionFeedback(OUTLINE_WINDOW_INCOMPLETE);
       return;
     }
     const html = nodeClipboardHtml(node);

@@ -105,6 +105,7 @@ impl<S: StoragePort> NotesService<S> {
         }
     }
 
+    /// No asset store: production goes through `execute_with_assets`.
     pub fn execute(&self, envelope: CommandEnvelope) -> Result<MutationReceipt, NotesError> {
         self.execute_envelope(envelope, |command| {
             // With no asset store there is nothing to weigh a referenced image

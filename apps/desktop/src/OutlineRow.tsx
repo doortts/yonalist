@@ -11,7 +11,7 @@ import {
   endOutlineEnterGesture, handleImagePrimaryKeyDown, handleOutlineKeyDown,
   type SelectionKeyboardActions
 } from "./outlineSupport";
-import { handleMultilinePaste } from "./outlinePasteGesture";
+import { handleOutlinePaste } from "./outlinePasteGesture";
 import { supportingNoteFocusTarget } from "./outlineKeyboard";
 import {
   TodoCheckbox, TodoProgressIndicator, type TodoProgress
@@ -318,7 +318,7 @@ export const OutlineRow = memo(function OutlineRow({
               <ImageNodeContent
                 node={node}
                 store={store}
-                onPaste={(event) => handleMultilinePaste(
+                onPaste={(event) => handleOutlinePaste(
                   event, store, node, runtime.state.onPasteRefused
                 )}
                 onKeyDown={(event) => {
@@ -435,7 +435,7 @@ export const OutlineRow = memo(function OutlineRow({
               if (event.key === "Backspace") store.endBackspaceGesture();
               if (event.key === "Enter") endOutlineEnterGesture(event.currentTarget);
             }}
-            onPaste={(event) => handleMultilinePaste(
+            onPaste={(event) => handleOutlinePaste(
               event, store, node, runtime.state.onPasteRefused
             )}
             onBlur={() => void store.flushDraft(node.id)}

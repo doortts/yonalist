@@ -7,7 +7,7 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
 import {
   buildOutlineClipboardFormats, buildOutlineClipboardPayload,
-  CUT_OVER_CLIPBOARD_BOUNDS, SELECTION_INCOMPLETE, writeOutlineClipboard,
+  CUT_OVER_CLIPBOARD_BOUNDS, OUTLINE_WINDOW_INCOMPLETE, writeOutlineClipboard,
   type OutlineClipboardFormats
 } from "./outlineClipboard";
 import { OUTLINE_TAG_MAX_ROWS } from "./outlineTagEdits";
@@ -131,7 +131,7 @@ function rowSubtreeFormats(
  */
 function rowCutRefusal(context: OutlineMenuContext): string | null {
   if (context.mode === "selection") return context.cutRefusal;
-  if (!context.outlineComplete) return SELECTION_INCOMPLETE;
+  if (!context.outlineComplete) return OUTLINE_WINDOW_INCOMPLETE;
   // The payload alone, not the formats: this asks whether the subtree fits, and
   // the base64 the full write pays for is no part of that answer.
   return buildOutlineClipboardPayload(

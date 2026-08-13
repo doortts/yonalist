@@ -252,7 +252,10 @@ export function buildOutlineClipboardFormats(
  */
 export const CUT_OVER_CLIPBOARD_BOUNDS =
   "Cut is unavailable because these rows are too large for the clipboard.";
-export const SELECTION_INCOMPLETE =
+// Named for the window, not the selection: two of the three surfaces that show
+// it are answering for a right-clicked row and for the loaded window itself.
+// The wording stays as the users read it.
+export const OUTLINE_WINDOW_INCOMPLETE =
   "The complete selection is not available yet.";
 
 export function writeOutlineClipboardEvent(
