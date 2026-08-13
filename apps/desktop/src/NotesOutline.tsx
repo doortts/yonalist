@@ -297,20 +297,26 @@ export function NotesOutline({
   // A copy may fall back to the picture alone -- nothing is lost either way.
   // A cut may not: the payload is the only thing that can bring the rows under
   // the image back, so without one there is nothing to delete against.
-  const writeSelectionToClipboard = (payloadRequired: boolean) => {
+  const writeSelectionToClipboard = async (
+    payloadRequired: boolean
+  ): Promise<string | null> => {
     if (!selectedImage) return selection.copyToSystem(payloadRequired);
     const html = nodeClipboardHtml(selectedImage);
-    if (!html && payloadRequired) {
-      return Promise.reject(new Error(CUT_OVER_CLIPBOARD_BOUNDS));
-    }
-    return writeNodeImage(selectedImage, html);
+    if (!html && payloadRequired) return CUT_OVER_CLIPBOARD_BOUNDS;
+    await writeNodeImage(selectedImage, html);
+    return null;
   };
   const reportWriteFailure = () => setSelectionFeedback(selectedImage
     ? "Could not write the image to the clipboard."
     : "Could not write the selected outline to the clipboard.");
   const copySelection = async () => {
     try {
-      await writeSelectionToClipboard(false);
+      // A copy deletes nothing, so a refusal and a failed write come to the
+      // same thing here: the words that name the size belong to the Cut.
+      if (await writeSelectionToClipboard(false)) {
+        reportWriteFailure();
+        return;
+      }
       setSelectionFeedback(selectedImage
         ? "Copied image."
         : "Copied selected outline.");
@@ -320,15 +326,15 @@ export function NotesOutline({
   };
   const cutSelection = async () => {
     if (!selection.canCut) return;
+    let refusal: string | null;
     try {
-      await writeSelectionToClipboard(true);
-    } catch (error) {
-      if (error instanceof Error &&
-        error.message === CUT_OVER_CLIPBOARD_BOUNDS) {
-        setSelectionFeedback(CUT_OVER_CLIPBOARD_BOUNDS);
-      } else {
-        reportWriteFailure();
-      }
+      refusal = await writeSelectionToClipboard(true);
+    } catch {
+      reportWriteFailure();
+      return;
+    }
+    if (refusal) {
+      setSelectionFeedback(refusal);
       return;
     }
     try {

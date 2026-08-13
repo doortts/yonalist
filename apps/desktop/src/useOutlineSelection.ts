@@ -210,16 +210,19 @@ export function useOutlineSelection(
   const copy = (event: ClipboardEvent<HTMLElement>) => {
     writeToEvent(event);
   };
-  // No default, matching `writeOutlineClipboard`: a cut that forgot this would
-  // delete against a clipboard the degrade path had emptied.
-  const copyToSystem = async (payloadRequired: boolean) => {
+  /**
+   * The same two channels as `writeToEvent`: a refusal comes back as its own
+   * words, and a write that failed throws. `payloadRequired` has no default,
+   * matching `writeOutlineClipboard`: a cut that forgot it would delete against
+   * a clipboard the degrade path had emptied.
+   */
+  const copyToSystem = async (
+    payloadRequired: boolean
+  ): Promise<string | null> => {
     const formats = buildFormats();
-    if (!formats) {
-      throw new Error(payloadRequired
-        ? CUT_OVER_CLIPBOARD_BOUNDS
-        : "The selected outline cannot be copied.");
-    }
+    if (!formats) return CUT_OVER_CLIPBOARD_BOUNDS;
     await writeOutlineClipboard(formats, payloadRequired);
+    return null;
   };
 
   return {
