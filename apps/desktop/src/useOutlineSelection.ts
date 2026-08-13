@@ -210,7 +210,9 @@ export function useOutlineSelection(
   const copy = (event: ClipboardEvent<HTMLElement>) => {
     writeToEvent(event);
   };
-  const copyToSystem = async (payloadRequired = false) => {
+  // No default, matching `writeOutlineClipboard`: a cut that forgot this would
+  // delete against a clipboard the degrade path had emptied.
+  const copyToSystem = async (payloadRequired: boolean) => {
     const formats = buildFormats();
     if (!formats) {
       throw new Error(payloadRequired

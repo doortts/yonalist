@@ -348,7 +348,7 @@ export function NotesOutline({
   ) => {
     const node = index.node(nodeId);
     if (!node) return;
-    const written = writeNodeImage(node, html ?? nodeClipboardHtml(node))
+    const written = writeNodeImage(node, html)
       .then(() => true, () => false);
     runExclusive(async () => {
       if (!await written) {
