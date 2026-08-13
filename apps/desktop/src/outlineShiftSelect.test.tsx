@@ -222,6 +222,34 @@ describe("Shift and an arrow inside a bullet", () => {
     expect(bandIds(view.container)).toEqual(["three"]);
   });
 
+  // Two lit ranges at once read as two selections. Once the band holds the row,
+  // the sweep it grew out of goes, and the caret stays at the end it moved to.
+  it("drops the text swept upward when the band takes the row", async () => {
+    const { view } = await outline(rows);
+    const editor = await placeCaret(view.container, "two", 4);
+
+    await press(editor, "ArrowUp", { shiftKey: true });
+    await press(editor, "ArrowUp", { shiftKey: true });
+
+    expect(bandIds(view.container)).toEqual(["two"]);
+    expect(caretOf(view.container)).toEqual({
+      nodeId: "two", start: 0, end: 0, direction: "none"
+    });
+  });
+
+  it("drops the text swept downward when the band takes the row", async () => {
+    const { view } = await outline(rows);
+    const editor = await placeCaret(view.container, "two", 0);
+
+    await press(editor, "ArrowDown", { shiftKey: true });
+    await press(editor, "ArrowDown", { shiftKey: true });
+
+    expect(bandIds(view.container)).toEqual(["two"]);
+    expect(caretOf(view.container)).toEqual({
+      nodeId: "two", start: 7, end: 7, direction: "none"
+    });
+  });
+
   it("sweeps to the row's end from mid-row", async () => {
     const { view } = await outline(rows);
     const editor = await placeCaret(view.container, "two", 4);

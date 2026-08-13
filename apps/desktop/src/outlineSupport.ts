@@ -112,6 +112,16 @@ export function handleOutlineKeyDown(
     );
     return;
   }
+  // The band takes the whole row, so the sweep it grew out of has nothing left
+  // to say: two lit ranges at once read as two selections. The caret keeps the
+  // end it moved to, which is the end a bare arrow carries on from.
+  if (intent.kind === "extendSelection") {
+    const field = event.currentTarget;
+    const caret = field.selectionDirection === "backward"
+      ? field.selectionStart
+      : field.selectionEnd;
+    field.setSelectionRange(caret, caret);
+  }
   const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
   if (!scope) return;
   if (band.hasSelection) {
