@@ -7,9 +7,11 @@ export interface OutlinePane {
   /** Brings a row into the rendered window. False when the pane does not hold
    * that node at all. */
   readonly reveal: (nodeId: string) => boolean;
+  /** The whole band, mounted rows and windowed-out rows alike. */
+  readonly selectedIds: () => readonly string[];
   /**
    * Puts a band back, an empty list clearing it. The ids are the band's whole
-   * forest, as `capturePane` reads it off the rows.
+   * forest, as `selectedIds` reports it.
    */
   readonly replaceSelection: (ids: readonly string[]) => void;
 }

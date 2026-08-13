@@ -1,4 +1,5 @@
 import { capturePane } from "./appNavigation";
+import { registerOutlinePane } from "./outlinePaneRegistry";
 
 function paneFixture(): string {
   return `
@@ -34,5 +35,26 @@ describe("app navigation", () => {
         selectionEnd: 4
       }
     });
+  });
+
+  // The pane renders only the rows near the viewport, so the mounted rows are a
+  // window onto the band and never the band itself.
+  it("takes the band from the pane rather than from the mounted rows", () => {
+    document.body.innerHTML = paneFixture();
+    const scope = document.querySelector<HTMLElement>(
+      "[data-outline-pane-id='primary']"
+    )!;
+    registerOutlinePane(scope, {
+      visibleNodes: [],
+      reveal: () => false,
+      selectedIds: () => ["above-window", "primary-selected", "below-window"],
+      replaceSelection: () => undefined
+    });
+
+    expect(capturePane("primary").selectedIds).toEqual([
+      "above-window",
+      "primary-selected",
+      "below-window"
+    ]);
   });
 });

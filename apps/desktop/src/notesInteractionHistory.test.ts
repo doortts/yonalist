@@ -4,6 +4,7 @@ import {
   NotesInteractionHistory,
   type InteractionHistoryStore
 } from "./notesInteractionHistory";
+import { registerOutlinePane } from "./outlinePaneRegistry";
 
 interface Location {
   readonly pageId: string;
@@ -85,12 +86,18 @@ function bullet(row: Row, index: number): NoteView {
 }
 
 /** The pane the caret plumbing reads and writes, as the outline renders it. */
-function renderPane(rows: readonly Row[]): void {
+function renderPane(
+  rows: readonly Row[],
+  selectedIds: readonly string[] = []
+): void {
   document.body.innerHTML = "";
   const section = document.createElement("section");
   section.className = "notes-outline";
   section.dataset.outlinePaneId = "primary";
   for (const row of rows) {
+    const item = document.createElement("div");
+    item.dataset.outlineId = row.id;
+    if (selectedIds.includes(row.id)) item.dataset.selected = "true";
     for (const [field, value] of [
       ["title", row.text],
       ...(row.note === undefined ? [] : [["note", row.note] as const])
@@ -99,8 +106,9 @@ function renderPane(rows: readonly Row[]): void {
       editor.dataset.nodeId = row.id;
       editor.dataset.outlineField = field;
       editor.value = value;
-      section.append(editor);
+      item.append(editor);
     }
+    section.append(item);
   }
   document.body.append(section);
 }
@@ -120,17 +128,18 @@ function putCaret(nodeId: string, offset: number, field = "title"): void {
 }
 
 function caretHistory(
-  rows: readonly Row[]
+  rows: readonly Row[],
+  selectedIds: readonly string[] = []
 ): ReturnType<typeof store> & {
   readonly history: NotesInteractionHistory<Location>;
-  readonly settle: (next: readonly Row[]) => void;
+  readonly settle: (next: readonly Row[], selected?: readonly string[]) => void;
 } {
   const notesStore = store();
-  const settle = (next: readonly Row[]) => {
+  const settle = (next: readonly Row[], selected: readonly string[] = []) => {
     notesStore.nodes = next.map(bullet);
-    renderPane(next);
+    renderPane(next, selected);
   };
-  settle(rows);
+  settle(rows, selectedIds);
   const history = connected(
     notesStore,
     vi.fn().mockResolvedValue(undefined)
@@ -368,5 +377,86 @@ describe("history caret", () => {
     await notesStore.history.undo();
 
     expect(editor("bullet-1").selectionStart).toBe(2);
+  });
+
+  it("repairs the live caret when the entry recorded a band alone", async () => {
+    const notesStore = caretHistory([
+      { id: "bullet-1", text: "First" },
+      { id: "bullet-2", text: "Second" }
+    ], ["bullet-1", "bullet-2"]);
+    // A toolbar Duplicate: the button holds focus, so the entry records the
+    // band and no caret at all.
+    notesStore.emitMutation();
+    notesStore.settle([
+      { id: "bullet-1", text: "First" },
+      { id: "bullet-2", text: "Second" },
+      { id: "bullet-3", text: "Second" }
+    ]);
+    // The typist then clicks into one of the duplicates the undo will remove.
+    putCaret("bullet-3", 0);
+    notesStore.undo = vi.fn(async () => notesStore.settle([
+      { id: "bullet-1", text: "First" },
+      { id: "bullet-2", text: "Second" }
+    ]));
+
+    await notesStore.history.undo();
+
+    expect(editor("bullet-2")).toHaveFocus();
+    expect(editor("bullet-2").selectionStart).toBe("Second".length);
+  });
+});
+
+describe("history pane choice", () => {
+  /**
+   * A split with a band in each pane and a caret in neither, focus sitting on
+   * the secondary pane's own action bar.
+   */
+  function splitPanes(): Record<"primary" | "secondary", string[][]> {
+    document.body.innerHTML = `
+      <section class="notes-outline" data-outline-pane-id="primary">
+        <div data-outline-id="bullet-1" data-selected="true"></div>
+      </section>
+      <section class="notes-outline" data-outline-pane-id="secondary">
+        <button type="button">Cut</button>
+        <div data-outline-id="bullet-2" data-selected="true"></div>
+      </section>
+    `;
+    const restored: Record<"primary" | "secondary", string[][]> = {
+      primary: [],
+      secondary: []
+    };
+    const band = { primary: ["bullet-1"], secondary: ["bullet-2"] };
+    for (const paneId of ["primary", "secondary"] as const) {
+      const scope = document.querySelector<HTMLElement>(
+        `[data-outline-pane-id="${paneId}"]`
+      )!;
+      registerOutlinePane(scope, {
+        visibleNodes: [],
+        reveal: () => false,
+        selectedIds: () => band[paneId],
+        replaceSelection: (ids) => restored[paneId].push([...ids])
+      });
+    }
+    document.querySelector("button")!.focus();
+    return restored;
+  }
+
+  it("puts the band back in the pane whose action bar ran the command", async () => {
+    const notesStore = store();
+    notesStore.nodes = [
+      { id: "bullet-1", text: "First" },
+      { id: "bullet-2", text: "Second" }
+    ].map(bullet);
+    const restored = splitPanes();
+    const history = connected(
+      notesStore,
+      vi.fn().mockResolvedValue(undefined)
+    );
+    notesStore.emitMutation();
+
+    await history.undo();
+
+    expect(restored.secondary).toEqual([["bullet-2"]]);
+    expect(restored.primary).toEqual([]);
   });
 });

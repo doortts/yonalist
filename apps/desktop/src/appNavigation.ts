@@ -1,3 +1,5 @@
+import { outlinePane } from "./outlinePaneRegistry";
+
 export type PaneId = "primary" | "secondary";
 
 export interface PaneFocusSnapshot {
@@ -35,14 +37,19 @@ export function paneScope(paneId: PaneId): HTMLElement | null {
   );
 }
 
+function mountedSelectedIds(scope: HTMLElement): readonly string[] {
+  return [...scope.querySelectorAll<HTMLElement>(
+    "[data-outline-id][data-selected='true']"
+  )].flatMap((node) => node.dataset.outlineId ? [node.dataset.outlineId] : []);
+}
+
 export function capturePane(paneId: PaneId): PaneSnapshot {
   const scope = paneScope(paneId);
+  // The pane keeps the band, and only the pane: the rows are windowed, so
+  // reading the band off the DOM would truncate it to whatever is on screen.
+  // The rows answer for a pane that has not registered itself yet.
   const selectedIds = scope
-    ? [...scope.querySelectorAll<HTMLElement>(
-        "[data-outline-id][data-selected='true']"
-      )].flatMap((node) => node.dataset.outlineId
-        ? [node.dataset.outlineId]
-        : [])
+    ? outlinePane(scope)?.selectedIds() ?? mountedSelectedIds(scope)
     : [];
   const active = document.activeElement;
   if (

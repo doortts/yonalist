@@ -80,6 +80,7 @@ describe("pane-scoped outline focus", () => {
     let revealed: HTMLTextAreaElement | null = null;
     registerOutlinePane(scope, {
       visibleNodes: [],
+      selectedIds: () => [],
       replaceSelection: () => undefined,
       reveal: (nodeId) => {
         if (nodeId !== "offscreen") return false;
@@ -113,6 +114,7 @@ describe("pane-scoped outline focus", () => {
     let older: HTMLTextAreaElement | null = null;
     registerOutlinePane(scope, {
       visibleNodes: [],
+      selectedIds: () => [],
       replaceSelection: () => undefined,
       reveal: (nodeId) => {
         if (nodeId !== "older") return false;
@@ -139,7 +141,10 @@ describe("pane-scoped outline focus", () => {
     const scope = document.createElement("section");
     document.body.append(scope);
     registerOutlinePane(scope, {
-      visibleNodes: [], reveal: () => false, replaceSelection: () => undefined
+      visibleNodes: [],
+      reveal: () => false,
+      selectedIds: () => [],
+      replaceSelection: () => undefined
     });
 
     expect(focusOutlineEditor(scope, "missing", "start")).toBe(false);

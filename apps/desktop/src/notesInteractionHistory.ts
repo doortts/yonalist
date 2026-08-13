@@ -49,12 +49,23 @@ const PANE_IDS = ["primary", "secondary"] as const;
  * caret wins, because a split can have the band in one pane and the typist in
  * the other, and the caret is the half every command has.
  *
+ * Between two banded panes the button that was pressed decides, since the
+ * action bar renders inside its own pane's section: a leftover band in the other
+ * pane would otherwise win by pane order alone, and the split's live band would
+ * never come back. Only a split with a band in both panes and focus outside
+ * both is left to pane order.
+ *
  * Null only when the outline holds neither, which is history's signal to leave
  * both alone rather than restore an empty pane over a live one.
  */
 function activePane(): PaneSnapshot | null {
   const panes = PANE_IDS.map((paneId) => capturePane(paneId));
+  const active = document.activeElement;
+  const pressed = active && PANE_IDS.find(
+    (paneId) => paneScope(paneId)?.contains(active));
   return panes.find((pane) => pane.focus) ??
+    panes.find((pane) =>
+      pane.paneId === pressed && pane.selectedIds.length > 0) ??
     panes.find((pane) => pane.selectedIds.length > 0) ??
     null;
 }
@@ -186,23 +197,28 @@ export class NotesInteractionHistory<Location> {
     const live = activePane();
     const before = this.store.getSnapshot().nodes;
     await step();
-    const target = recorded ?? live;
-    if (!target) return;
     const after = this.store.getSnapshot().nodes;
-    const scope = paneScope(target.paneId);
-    if (!scope) return;
     // Only the recorded band goes back, and it goes back first: `live` is the
     // band already up, which re-applying would only fight, and the caret placed
-    // below has to be the last word over the render this schedules.
-    if (recorded) {
-      outlinePane(scope)?.replaceSelection(
+    // below has to be the last word over the render this schedules. An entry
+    // that recorded nothing at all leaves a band raised since then standing --
+    // it has no empty band of its own to clear one with.
+    const bandScope = recorded && paneScope(recorded.paneId);
+    if (recorded && bandScope) {
+      outlinePane(bandScope)?.replaceSelection(
         liveHistorySelection(recorded.selectedIds, after));
     }
-    const next = resolveHistoryFocus(target.focus, before, after);
+    // The two halves are taken apart, not chosen between: a toolbar command
+    // records a band and no caret, because the button owns focus, and the live
+    // caret is then the only one there is to repair.
+    const caretFrom = recorded?.focus ? recorded : live ?? recorded;
+    if (!caretFrom) return;
+    const next = resolveHistoryFocus(caretFrom.focus, before, after);
     if (!next) return;
-    // Nothing recorded and the row survived: the DOM still holds that caret,
-    // and refocusing would drag it back out from under the typist.
-    if (!recorded && next === target.focus) return;
-    focusOutlineSnapshot(scope, next);
+    // The caret was borrowed and its row survived: the DOM still holds it, and
+    // refocusing would drag it back out from under the typist.
+    if (caretFrom !== recorded && next === caretFrom.focus) return;
+    const caretScope = paneScope(caretFrom.paneId);
+    if (caretScope) focusOutlineSnapshot(caretScope, next);
   }
 }
