@@ -9,7 +9,7 @@ import {
 import { extractOutlinePayload } from "./outlineClipboard";
 import { parsePastedOutline, pastedOutlineFromPayload } from "./outlinePaste";
 import { clipboardImageCandidates } from "./imageClipboard";
-import { messageFrom } from "./storeSupport";
+import { freshId, messageFrom } from "./storeSupport";
 import {
   handleImageNodeKeyDown,
   resolveOutlineKey,
@@ -97,6 +97,38 @@ const PASTE_REFUSED_IMAGE =
   "Could not paste: that image is no longer available.";
 const PASTE_REFUSED = "Could not paste the copied outline.";
 
+/**
+ * The row a paste on this one has to land before: its own next sibling, or
+ * `null` at the end of the run. Both paste branches anchor off this, so the
+ * bytes and the outline land in the same place.
+ */
+function nextSiblingId(store: NotesStore, node: NoteView): string | null {
+  const siblings = store.getSnapshot().nodes
+    .filter((candidate) =>
+      candidate.parentId === node.parentId && !candidate.deleted)
+    .sort((left, right) =>
+      left.sortKey - right.sortKey || left.id.localeCompare(right.id));
+  const position = siblings.findIndex((candidate) => candidate.id === node.id);
+  return position >= 0 ? siblings[position + 1]?.id ?? null : null;
+}
+
+/**
+ * A bullet with nothing in it -- the row Enter just made, which is where a
+ * paste is nearly always aimed. That row is replaced rather than pasted beside,
+ * so the outline does not keep the blank line the paste was typed into. A note,
+ * a box, a picture or a child all mean the row is carrying something, and a row
+ * carrying something stays.
+ */
+function isEmptyBullet(store: NotesStore, node: NoteView): boolean {
+  const state = store.getSnapshot();
+  return node.kind === "bullet" &&
+    node.marker === "bullet" &&
+    (state.drafts[node.id] ?? node.text).trim().length === 0 &&
+    (state.noteDrafts[node.id] ?? node.note).length === 0 &&
+    !state.nodes.some((candidate) =>
+      candidate.parentId === node.id && !candidate.deleted);
+}
+
 export function handleMultilinePaste(
   event: ClipboardEvent<HTMLElement>,
   store: NotesStore,
@@ -116,18 +148,12 @@ export function handleMultilinePaste(
     : clipboardImageCandidates(event.clipboardData);
   if (images.length > 0 && node.parentId) {
     event.preventDefault();
-    const state = store.getSnapshot();
-    const siblings = state.nodes
-      .filter((candidate) =>
-        candidate.parentId === node.parentId && !candidate.deleted)
-      .sort((left, right) =>
-        left.sortKey - right.sortKey || left.id.localeCompare(right.id));
-    const position = siblings.findIndex((candidate) => candidate.id === node.id);
-    const beforeId = position >= 0 ? siblings[position + 1]?.id ?? null : null;
     const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
-    void store.images.importAfter(node.parentId, beforeId, images).then((id) => {
-      if (scope) focusAfterCommit(scope, id, "start");
-    });
+    void store.images
+      .importAfter(node.parentId, nextSiblingId(store, node), images)
+      .then((id) => {
+        if (scope) focusAfterCommit(scope, id, "start");
+      });
     return;
   }
   // The payload in the HTML carries the marker, the tick, the note and the
@@ -141,8 +167,31 @@ export function handleMultilinePaste(
   // Before the import leaves: WebKit disowns a gesture that waits on anything.
   event.preventDefault();
   const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
-  void store.importOutline(node.id, null, roots).then(
+  // Beside the caret row, not beneath it -- Workflowy's placement, and the hand
+  // the users arrive with. A row with no parent of its own is a page, and a
+  // page has no siblings, so a paste on one stays a child of it.
+  const landing = node.parentId
+    ? { parentId: node.parentId, beforeId: nextSiblingId(store, node) }
+    : { parentId: node.id, beforeId: null };
+  const replaced = node.parentId && isEmptyBullet(store, node) ? node.id : null;
+  // One gesture, one undo step: the removal carries the import's own history
+  // group, which is what folds the two commands into a single entry. A paste
+  // past the coalescer's own 256-mutation bound is the one that still takes
+  // two, and two steps there beat one entry too large to hold.
+  const historyGroup = replaced ? `paste:${freshId()}` : null;
+  void store.importOutline(
+    landing.parentId,
+    landing.beforeId,
+    roots,
+    historyGroup
+  ).then(
     (id) => {
+      // After the import, never before it: a refused paste leaves the row the
+      // caret is standing in exactly where it was.
+      if (replaced) {
+        void store.beginRemoveEmptyNode(replaced, historyGroup)
+          .committed.catch(() => undefined);
+      }
       if (scope) focusAfterCommit(scope, id, "start");
     },
     // A refused import lands nothing at all, and a half paste behind a quiet

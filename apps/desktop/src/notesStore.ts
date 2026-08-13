@@ -246,10 +246,16 @@ export class NotesStore {
     return this.outlineMutations.beginCreateNode(parentId, text, beforeId);
   }
 
+  /**
+   * `historyGroup` is for a paste that replaces the row it landed on: the
+   * removal that follows carries the same one, and the coalescer folds the two
+   * commands into one undo step.
+   */
   async importOutline(
     parentId: string,
     beforeId: string | null,
-    roots: readonly PastedOutlineNode[]
+    roots: readonly PastedOutlineNode[],
+    historyGroup: string | null = null
   ): Promise<string> {
     if (roots.length === 0) throw new Error("The imported outline is empty.");
     const { nodes, rootIds } = flattenPastedOutline(roots, parentId, freshId);
@@ -258,7 +264,7 @@ export class NotesStore {
       parent_id: parentId,
       before_id: beforeId,
       nodes: [...nodes]
-    });
+    }, historyGroup);
     return rootIds[0];
   }
 

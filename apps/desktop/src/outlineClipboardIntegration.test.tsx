@@ -452,7 +452,7 @@ describe("outline clipboard integration", () => {
     });
   });
 
-  it("imports an indented outline as one child-subtree command", async () => {
+  it("imports an indented outline beside the caret row, not beneath it", async () => {
     const notesApi = api();
     render(<App api={notesApi} />);
     const editor = await screen.findByDisplayValue("First thought");
@@ -465,12 +465,32 @@ describe("outline clipboard integration", () => {
       expect.objectContaining({
         command: expect.objectContaining({
           kind: "importNodes",
-          parent_id: "bullet-1",
-          before_id: null,
+          parent_id: "page",
+          before_id: "bullet-2",
           nodes: [
-            { id: expect.any(String), parentId: "bullet-1", text: "Alpha" },
+            { id: expect.any(String), parentId: "page", text: "Alpha" },
             { id: expect.any(String), parentId: expect.any(String), text: "Beta" }
           ]
+        })
+      })
+    ));
+  });
+
+  it("lands a paste on the last row at the end of the run", async () => {
+    const notesApi = api();
+    render(<App api={notesApi} />);
+    const editor = await screen.findByDisplayValue("Third thought");
+
+    fireEvent.paste(editor, {
+      clipboardData: { getData: () => "- Alpha\n- Beta" }
+    });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: expect.objectContaining({
+          kind: "importNodes",
+          parent_id: "page",
+          before_id: null
         })
       })
     ));
@@ -487,11 +507,11 @@ describe("outline clipboard integration", () => {
       expect.objectContaining({
         command: expect.objectContaining({
           kind: "importNodes",
-          parent_id: "bullet-1",
-          before_id: null,
+          parent_id: "page",
+          before_id: "bullet-2",
           nodes: [
             expect.objectContaining({
-              parentId: "bullet-1",
+              parentId: "page",
               text: "Buy milk",
               note: "Two litres",
               marker: "todo",
@@ -585,6 +605,116 @@ describe("outline clipboard integration", () => {
       "Could not paste: that image is no longer available."
     )).toBeVisible();
     expect(notesApi.execute).toHaveBeenCalledOnce();
+  });
+
+  /**
+   * The same three rows with the middle one blank, which is the row Enter
+   * leaves behind and the one a paste is nearly always aimed at.
+   */
+  function withBlankSecondRow(
+    extra: Partial<NonNullable<BootSnapshot["viewport"]>["nodes"][number]> = {}
+  ): NotesApi {
+    const notesApi = api();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: {
+        ...snapshot.viewport!,
+        nodes: snapshot.viewport!.nodes.map((node) =>
+          node.id === "bullet-2" ? { ...node, text: "", ...extra } : node)
+      }
+    });
+    return notesApi;
+  }
+
+  function envelopesOf(notesApi: NotesApi) {
+    return vi.mocked(notesApi.execute).mock.calls.map(([envelope]) => envelope);
+  }
+
+  it("replaces an empty bullet with what was pasted into it", async () => {
+    const notesApi = withBlankSecondRow();
+    render(<App api={notesApi} />);
+    const editor = await screen.findByDisplayValue("First thought");
+    const blank = editor.closest("ol")!
+      .querySelector<HTMLTextAreaElement>("[data-outline-id='bullet-2'] textarea")!;
+
+    fireEvent.paste(blank, {
+      clipboardData: { getData: () => "- Alpha\n- Beta" }
+    });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledTimes(2));
+    const [imported, removed] = envelopesOf(notesApi);
+    // The pasted rows take the blank row's own place, and the blank row goes.
+    expect(imported!.command).toEqual(expect.objectContaining({
+      kind: "importNodes",
+      parent_id: "page",
+      before_id: "bullet-3"
+    }));
+    expect(removed!.command).toEqual({
+      kind: "removeEmptyNode",
+      id: "bullet-2"
+    });
+    // One history group across both commands is what folds them into a single
+    // undo step: the coalescer keeps merging while the group holds.
+    expect(imported!.historyGroup).toEqual(expect.any(String));
+    expect(removed!.historyGroup).toBe(imported!.historyGroup);
+  });
+
+  it("keeps a caret row that carries anything at all", async () => {
+    for (const extra of [
+      { marker: "todo" as const },
+      { note: "Keep this context" },
+      { text: "Second thought" }
+    ]) {
+      const notesApi = withBlankSecondRow(extra);
+      const view = render(<App api={notesApi} />);
+      await screen.findByDisplayValue("First thought");
+      const row = document.querySelector<HTMLTextAreaElement>(
+        "[data-outline-id='bullet-2'] textarea"
+      )!;
+
+      fireEvent.paste(row, {
+        clipboardData: { getData: () => "- Alpha\n- Beta" }
+      });
+
+      await waitFor(() => expect(notesApi.execute).toHaveBeenCalled());
+      expect(envelopesOf(notesApi).map((envelope) => envelope.command.kind))
+        .toEqual(["importNodes"]);
+      expect(envelopesOf(notesApi)[0]!.historyGroup).toBeNull();
+      view.unmount();
+    }
+  });
+
+  it("keeps an empty bullet that is somebody's parent", async () => {
+    const notesApi = withBlankSecondRow();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: {
+        ...snapshot.viewport!,
+        nodes: [
+          ...snapshot.viewport!.nodes.map((node) =>
+            node.id === "bullet-2" ? { ...node, text: "" } : node),
+          {
+            ...snapshot.viewport!.nodes[0],
+            id: "under",
+            parentId: "bullet-2",
+            text: "Held"
+          }
+        ]
+      }
+    });
+    render(<App api={notesApi} />);
+    await screen.findByDisplayValue("Held");
+    const blank = document.querySelector<HTMLTextAreaElement>(
+      "[data-outline-id='bullet-2'] textarea"
+    )!;
+
+    fireEvent.paste(blank, {
+      clipboardData: { getData: () => "- Alpha\n- Beta" }
+    });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalled());
+    expect(envelopesOf(notesApi).map((envelope) => envelope.command.kind))
+      .toEqual(["importNodes"]);
   });
 
   it("leaves a single-line paste to the field itself", async () => {
