@@ -183,6 +183,105 @@ describe("image node structural parity", () => {
     expect(notesApi.execute).not.toHaveBeenCalled();
   });
 
+  // A lone selected image writes its bytes with the row's own payload riding
+  // along, and that payload is the only thing that brings the row back. Past
+  // the format's bound there is none, so there is nothing to delete against --
+  // the bytes alone would paste as a fresh picture stripped of the row.
+  it("refuses to cut a selected image the format cannot carry", async () => {
+    const boot = imageBoot();
+    const oversized = {
+      ...boot,
+      viewport: {
+        ...boot.viewport!,
+        nodes: boot.viewport!.nodes.map((node) => node.id === "image"
+          ? { ...node, note: "x".repeat(100_001) }
+          : node)
+      }
+    };
+    const notesApi = selectableImageApi();
+    notesApi.bootstrap = vi.fn().mockResolvedValue(oversized);
+    notesApi.queryForest = vi.fn().mockImplementation(async (request) => ({
+      revision: 7,
+      nodes: oversized.viewport!.nodes.filter((node) =>
+        request.rootIds.includes(node.id)),
+      complete: true
+    }));
+    const write = stubClipboard();
+    const view = render(<App api={notesApi} />);
+    await screen.findByRole("group", { name: "Image: cat.png" });
+    const station = view.container.querySelector<HTMLElement>(
+      ".notes-image-caret-stop"
+    )!;
+    station.focus();
+    fireEvent.keyDown(station, { key: "ArrowRight", shiftKey: true });
+    await waitFor(() => expect(notesApi.queryForest).toHaveBeenCalled());
+
+    fireEvent.cut(screen.getByRole("region", { name: "Notes outline" }), {
+      clipboardData: { setData: vi.fn() }
+    });
+
+    await screen.findByText(
+      "Cut is unavailable because these rows are too large for the clipboard."
+    );
+    expect(write).not.toHaveBeenCalled();
+    expect(notesApi.execute).not.toHaveBeenCalled();
+  });
+
+  // Bytes are for one picture on its own. A band of two rides as the payload
+  // and the filenames, and the delete still runs behind that write.
+  it("cuts two selected images as one payload, bytes left behind", async () => {
+    const boot = imageBoot();
+    const second = {
+      ...imageNode,
+      id: "image-2",
+      sortKey: 4_096,
+      image: {
+        ...imageNode.image,
+        contentHash: "b".repeat(64),
+        originalName: "dog.png"
+      },
+      text: "dog.png"
+    };
+    const rows = [...boot.viewport!.nodes, second];
+    const notesApi = selectableImageApi();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...boot,
+      viewport: { ...boot.viewport!, nodes: rows }
+    });
+    notesApi.queryForest = vi.fn().mockImplementation(async (request) => ({
+      revision: 7,
+      nodes: rows.filter((node) => request.rootIds.includes(node.id)),
+      complete: true
+    }));
+    const write = stubClipboard();
+    render(<App api={notesApi} />);
+    const first = await screen.findByRole("group", { name: "Image: cat.png" });
+    fireEvent.pointerDown(first, { button: 0, pointerId: 41, ctrlKey: true });
+    fireEvent.pointerDown(
+      screen.getByRole("group", { name: "Image: dog.png" }),
+      { button: 0, pointerId: 42, ctrlKey: true }
+    );
+    await screen.findByRole("toolbar", {
+      name: "Actions for 2 selected notes"
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Cut" }));
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: { kind: "deleteSubtrees", ids: ["image", "image-2"] }
+      })
+    ));
+    const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
+    expect(Object.keys(item.data))
+      .toEqual(["text/plain", "text/markdown", "text/html"]);
+    expect(await (await item.data["text/plain"]!).text())
+      .toBe("- cat.png\n- dog.png");
+    expect(await (await item.data["text/html"]!).text())
+      .toContain("<!--yonalist-outline-clipboard:");
+  });
+
   it("multi-selects an image with a bullet and indents one ordered batch", async () => {
     const notesApi = appApi();
     notesApi.bootstrap = vi.fn().mockResolvedValue(imageBoot());

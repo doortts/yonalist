@@ -113,6 +113,15 @@ function bandDownFrom(field: HTMLElement): void {
   }
 }
 
+/**
+ * A cut that got through schedules its delete a microtask out, so "nothing was
+ * deleted" is only worth asserting from the far side of a macrotask -- read one
+ * tick early it holds whether the guard fired or not.
+ */
+function settled(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 describe("outline clipboard integration", () => {
   it("materializes a selected parent into its complete authoritative subtree", async () => {
     const notesApi = api();
@@ -264,6 +273,7 @@ describe("outline clipboard integration", () => {
       clipboardData: { setData }
     });
 
+    await settled();
     expect(setData).not.toHaveBeenCalled();
     expect(notesApi.execute).not.toHaveBeenCalled();
   });
@@ -311,6 +321,7 @@ describe("outline clipboard integration", () => {
     // The size is the reason, so the size is what the pane says -- the write
     // never ran, and blaming it would send the reader after the wrong thing.
     await screen.findByText(CUT_OVER_BOUNDS);
+    await settled();
     expect(setData).not.toHaveBeenCalled();
     expect(notesApi.execute).not.toHaveBeenCalled();
   });
@@ -325,6 +336,7 @@ describe("outline clipboard integration", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Cut" }));
 
     await screen.findByText(CUT_OVER_BOUNDS);
+    await settled();
     expect(notesApi.execute).not.toHaveBeenCalled();
   });
 
@@ -649,7 +661,10 @@ describe("outline clipboard integration", () => {
   });
 
   // Half a paste would be worse than none, so a refused import says so and
-  // stops rather than quietly retrying the title-only text behind it.
+  // stops rather than quietly retrying the title-only text behind it. The
+  // bytes on the clipboard beside the payload are no fallback either: importing
+  // them would answer a stale hash with a lone picture, the note, the marker
+  // and the children of the row all gone.
   it("says so when the copied image outlived the bytes it points at", async () => {
     const notesApi = api();
     notesApi.execute = vi.fn().mockRejectedValue({
@@ -658,13 +673,22 @@ describe("outline clipboard integration", () => {
     });
     render(<App api={notesApi} />);
     const editor = await screen.findByDisplayValue("First thought");
+    const png = new File([Uint8Array.from([1])], "sample.png", {
+      type: "image/png"
+    });
 
-    fireEvent.paste(editor, { clipboardData: { getData: copiedFormat } });
+    fireEvent.paste(editor, {
+      clipboardData: {
+        items: [{ kind: "file", type: "image/png", getAsFile: () => png }],
+        getData: copiedFormat
+      }
+    });
 
     expect(await screen.findByText(
       "Could not paste: that image is no longer available."
     )).toBeVisible();
     expect(notesApi.execute).toHaveBeenCalledOnce();
+    expect(notesApi.importImageBytes).not.toHaveBeenCalled();
   });
 
   /**
@@ -1330,12 +1354,33 @@ describe("outline clipboard integration", () => {
         request.rootIds.includes(row.parentId ?? "")),
       complete: true
     }));
-    notesApi.undo = vi.fn().mockResolvedValue({
-      revision: 9,
+    // The delete reports what it took, so the cut is readable on the outline
+    // rather than only in the command it sent.
+    notesApi.execute = vi.fn().mockImplementation(async (envelope) => ({
+      revision: 8,
       changedNodes: [],
+      deletedIds: envelope.command.kind === "deleteSubtrees"
+        ? ["todo", "photo", "plain"]
+        : [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    }));
+    // Two entries to walk back: the paste, then the cut. Only the second one
+    // hands rows back, which is what makes "the cut is one step" an assertion
+    // about the outline rather than about a call count.
+    let undone = 0;
+    notesApi.undo = vi.fn().mockImplementation(async () => ({
+      revision: 9 + (undone += 1),
+      changedNodes: undone === 2
+        ? rows.filter((row) => row.id !== "spare")
+        : [],
       deletedIds: [],
-      history: { canUndo: true, canRedo: true, undoDepth: 1, redoDepth: 1 }
-    });
+      history: {
+        canUndo: true,
+        canRedo: true,
+        undoDepth: 2 - undone,
+        redoDepth: undone
+      }
+    }));
     render(<App api={notesApi} />);
     fireEvent.pointerDown(await screen.findByDisplayValue("Buy milk"));
     fireEvent.pointerDown(screen.getByDisplayValue("Plain thought"), {
@@ -1407,8 +1452,13 @@ describe("outline clipboard integration", () => {
 
     fireEvent.keyDown(window, { key: "z", ctrlKey: true });
     await waitFor(() => expect(notesApi.undo).toHaveBeenCalledOnce());
+    // The paste came back out and the cut rows are still gone: one step each.
+    expect(screen.queryByDisplayValue("Buy milk")).toBeNull();
+
     fireEvent.keyDown(window, { key: "z", ctrlKey: true });
-    await waitFor(() => expect(notesApi.undo).toHaveBeenCalledTimes(2));
+
+    expect(await screen.findByDisplayValue("Buy milk")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Plain thought")).toBeInTheDocument();
   });
 
   it("keeps 200 immediate draft overlays below the input latency budget", async () => {
