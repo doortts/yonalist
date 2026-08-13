@@ -3,6 +3,7 @@ import type { BootSnapshot } from "../../../packages/contracts/generated/BootSna
 import type { NotesApi } from "./api";
 import { App } from "./App";
 import type { ImageImportRequest } from "./imageApi";
+import { buildOutlineClipboardFormats } from "./outlineClipboard";
 const snapshot: BootSnapshot = {
   sessionId: "session-clipboard",
   revision: 7,
@@ -61,6 +62,44 @@ function api(): NotesApi {
     unusedAssets: vi.fn(),
     deleteAllData: vi.fn()
   };
+}
+
+const COPIED_IMAGE = {
+  contentHash: "d".repeat(64),
+  originalName: "sample.png",
+  mimeType: "image/png",
+  byteLength: 1,
+  pixelWidth: 1,
+  pixelHeight: 1,
+  displayWidth: 320
+};
+
+/**
+ * What a copy of a to-do row carrying a note and an image actually puts on the
+ * clipboard, so the paste under test reads our own writer rather than a fixture
+ * that could drift away from it.
+ */
+function copiedFormat(type: string): string {
+  const rows = [
+    {
+      ...snapshot.viewport!.nodes[0],
+      id: "copied",
+      text: "Buy milk",
+      marker: "todo" as const,
+      completed: true,
+      note: "Two litres"
+    },
+    {
+      ...snapshot.viewport!.nodes[1],
+      id: "copied-image",
+      parentId: "copied",
+      kind: "image" as const,
+      text: "sample.png",
+      image: COPIED_IMAGE
+    }
+  ];
+  const written = buildOutlineClipboardFormats(rows, {}, {}, ["copied"], "s")!;
+  return type === "text/html" ? written.html : written.plain;
 }
 
 /**
@@ -435,6 +474,99 @@ describe("outline clipboard integration", () => {
         })
       })
     ));
+  });
+
+  it("pastes our own copy back with every field it carried", async () => {
+    const notesApi = api();
+    render(<App api={notesApi} />);
+    const editor = await screen.findByDisplayValue("First thought");
+
+    fireEvent.paste(editor, { clipboardData: { getData: copiedFormat } });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: expect.objectContaining({
+          kind: "importNodes",
+          parent_id: "bullet-1",
+          before_id: null,
+          nodes: [
+            expect.objectContaining({
+              parentId: "bullet-1",
+              text: "Buy milk",
+              note: "Two litres",
+              marker: "todo",
+              completed: true
+            }),
+            expect.objectContaining({
+              text: "sample.png",
+              marker: "bullet",
+              image: COPIED_IMAGE
+            })
+          ]
+        })
+      })
+    ));
+    expect(notesApi.execute).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to the plain text when the payload cannot be read", async () => {
+    const notesApi = api();
+    render(<App api={notesApi} />);
+    const editor = await screen.findByDisplayValue("First thought");
+
+    fireEvent.paste(editor, {
+      clipboardData: {
+        getData: (type: string) => type === "text/html"
+          ? "<!--yonalist-outline-clipboard:!!!--><ul><li>Alpha</li></ul>"
+          : "- Alpha\n  - Beta"
+      }
+    });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: expect.objectContaining({
+          kind: "importNodes",
+          nodes: [
+            expect.objectContaining({ text: "Alpha" }),
+            expect.objectContaining({ text: "Beta" })
+          ]
+        })
+      })
+    ));
+  });
+
+  // Half a paste would be worse than none, so a refused import says so and
+  // stops rather than quietly retrying the title-only text behind it.
+  it("says so when the copied image outlived the bytes it points at", async () => {
+    const notesApi = api();
+    notesApi.execute = vi.fn().mockRejectedValue({
+      code: "invalid_command",
+      message: "A pasted image is no longer in the image store."
+    });
+    render(<App api={notesApi} />);
+    const editor = await screen.findByDisplayValue("First thought");
+
+    fireEvent.paste(editor, { clipboardData: { getData: copiedFormat } });
+
+    expect(await screen.findByText(
+      "Could not paste: that image is no longer available."
+    )).toBeVisible();
+    expect(notesApi.execute).toHaveBeenCalledOnce();
+  });
+
+  it("leaves a single-line paste to the field itself", async () => {
+    const notesApi = api();
+    render(<App api={notesApi} />);
+    const editor = await screen.findByDisplayValue("First thought");
+
+    // `fireEvent` answers false once something calls `preventDefault`, which is
+    // the line between an import and the field's own insertion.
+    const native = fireEvent.paste(editor, {
+      clipboardData: { getData: () => "one line" }
+    });
+
+    expect(native).toBe(true);
+    expect(notesApi.execute).not.toHaveBeenCalled();
   });
 
   it("removes an empty bullet atomically with Backspace", async () => {

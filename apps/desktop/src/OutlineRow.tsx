@@ -70,6 +70,8 @@ export interface OutlineRowRuntimeState {
   /** Clipboard for an image row with nothing selected around it. */
   readonly onCopyImage: (nodeId: string) => void;
   readonly onCutImage: (nodeId: string) => void;
+  /** Why a paste landed nothing, for the pane's own status line. */
+  readonly onPasteRefused: (message: string) => void;
   readonly selectionActions: SelectionKeyboardActions;
   readonly onDragHandlePointerDown: (
     nodeId: string,
@@ -313,7 +315,9 @@ export const OutlineRow = memo(function OutlineRow({
               <ImageNodeContent
                 node={node}
                 store={store}
-                onPaste={(event) => handleMultilinePaste(event, store, node)}
+                onPaste={(event) => handleMultilinePaste(
+                  event, store, node, runtime.state.onPasteRefused
+                )}
                 onKeyDown={(event) => {
                   const current = runtime.state;
                   handleImagePrimaryKeyDown(
@@ -428,7 +432,9 @@ export const OutlineRow = memo(function OutlineRow({
               if (event.key === "Backspace") store.endBackspaceGesture();
               if (event.key === "Enter") endOutlineEnterGesture(event.currentTarget);
             }}
-            onPaste={(event) => handleMultilinePaste(event, store, node)}
+            onPaste={(event) => handleMultilinePaste(
+              event, store, node, runtime.state.onPasteRefused
+            )}
             onBlur={() => void store.flushDraft(node.id)}
           />}
         </div>

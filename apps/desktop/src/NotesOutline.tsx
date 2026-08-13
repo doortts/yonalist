@@ -408,6 +408,7 @@ export function NotesOutline({
       () => setSelectionFeedback("Copied image.")
     ),
     onCutImage: cutImageNode,
+    onPasteRefused: setSelectionFeedback,
     selectionActions: {
       indent: () => executeMovePlan(movePlans.indent),
       outdent: () => executeMovePlan(movePlans.outdent),

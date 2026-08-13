@@ -213,6 +213,120 @@ function payloadComment(payload: OutlineClipboardPayload): string {
   return `<!--${PAYLOAD_KIND}:${btoa(binary)}-->`;
 }
 
+const PAYLOAD_COMMENT = new RegExp(
+  `<!--${PAYLOAD_KIND}:([A-Za-z0-9+/=]*)-->`,
+  "u"
+);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** `undefined` for a malformed reference; `null` is a row with no image. */
+function readClipboardImage(source: unknown): ImageView | null | undefined {
+  if (source === null) return null;
+  if (!isRecord(source)) return undefined;
+  const {
+    contentHash, originalName, mimeType, byteLength,
+    pixelWidth, pixelHeight, displayWidth
+  } = source;
+  if (
+    typeof contentHash !== "string" ||
+    typeof originalName !== "string" ||
+    typeof mimeType !== "string" ||
+    typeof byteLength !== "number" ||
+    typeof pixelWidth !== "number" ||
+    typeof pixelHeight !== "number" ||
+    typeof displayWidth !== "number"
+  ) {
+    return undefined;
+  }
+  return {
+    contentHash, originalName, mimeType, byteLength,
+    pixelWidth, pixelHeight, displayWidth
+  };
+}
+
+function readClipboardNode(
+  source: unknown,
+  depth: number,
+  budget: { left: number }
+): OutlineClipboardNode | null {
+  budget.left -= 1;
+  if (!isRecord(source) || depth >= MAX_CLIPBOARD_DEPTH || budget.left < 0) {
+    return null;
+  }
+  const { text, note, marker, completed, collapsed, starred, children } = source;
+  const encoder = new TextEncoder();
+  if (
+    typeof text !== "string" ||
+    typeof note !== "string" ||
+    (marker !== "bullet" && marker !== "todo") ||
+    typeof completed !== "boolean" ||
+    typeof collapsed !== "boolean" ||
+    typeof starred !== "boolean" ||
+    !Array.isArray(children) ||
+    encoder.encode(text).byteLength > MAX_TEXT_UTF8_BYTES ||
+    encoder.encode(note).byteLength > MAX_TEXT_UTF8_BYTES
+  ) {
+    return null;
+  }
+  const image = readClipboardImage(source.image);
+  if (image === undefined) return null;
+  const built: OutlineClipboardNode[] = [];
+  for (const child of children) {
+    const subtree = readClipboardNode(child, depth + 1, budget);
+    if (!subtree) return null;
+    built.push(subtree);
+  }
+  return {
+    text, note, marker, completed, collapsed, starred, image, children: built
+  };
+}
+
+/**
+ * The payload back out of a copy's HTML, or `null` when the markup carries none
+ * this build can read -- a caller falls through to the plain text then. What
+ * comes off the clipboard is someone else's JSON, so every field is read by
+ * name into a fresh object rather than trusted as the shape it claims to be,
+ * and nothing here throws.
+ */
+export function extractOutlinePayload(
+  html: string
+): OutlineClipboardPayload | null {
+  const encoded = PAYLOAD_COMMENT.exec(html)?.[1];
+  if (encoded === undefined) return null;
+  try {
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(
+      Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0))
+    ));
+    if (
+      !isRecord(parsed) ||
+      parsed.kind !== PAYLOAD_KIND ||
+      parsed.version !== PAYLOAD_VERSION ||
+      typeof parsed.sessionId !== "string" ||
+      !Array.isArray(parsed.nodes)
+    ) {
+      return null;
+    }
+    const budget = { left: MAX_CLIPBOARD_NODES };
+    const nodes: OutlineClipboardNode[] = [];
+    for (const source of parsed.nodes) {
+      const node = readClipboardNode(source, 0, budget);
+      if (!node) return null;
+      nodes.push(node);
+    }
+    return {
+      kind: PAYLOAD_KIND,
+      version: PAYLOAD_VERSION,
+      sessionId: parsed.sessionId,
+      nodes
+    };
+  } catch {
+    return null;
+  }
+}
+
 function serializeOutlinePayload(payload: OutlineClipboardPayload): string {
   const lines: string[] = [];
   plainLines(payload.nodes, 0, lines);

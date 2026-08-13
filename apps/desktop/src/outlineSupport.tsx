@@ -6,8 +6,10 @@ import {
   focusAfterCommit,
   focusOutlineEditor
 } from "./outlineFocus";
-import { parsePastedOutline } from "./outlinePaste";
+import { extractOutlinePayload } from "./outlineClipboard";
+import { parsePastedOutline, pastedOutlineFromPayload } from "./outlinePaste";
 import { clipboardImageCandidates } from "./imageClipboard";
+import { messageFrom } from "./storeSupport";
 import {
   handleImageNodeKeyDown,
   resolveOutlineKey,
@@ -88,10 +90,18 @@ export function RowMenuItem({
   );
 }
 
+// The one import failure worth naming: both backends answer with this phrase
+// when the hash on the clipboard outlived the bytes it points at.
+const STALE_IMAGE = /image store/iu;
+const PASTE_REFUSED_IMAGE =
+  "Could not paste: that image is no longer available.";
+const PASTE_REFUSED = "Could not paste the copied outline.";
+
 export function handleMultilinePaste(
   event: ClipboardEvent<HTMLElement>,
   store: NotesStore,
-  node: NoteView
+  node: NoteView,
+  onRefused?: (message: string) => void
 ) {
   const images = clipboardImageCandidates(event.clipboardData);
   if (images.length > 0 && node.parentId) {
@@ -110,13 +120,30 @@ export function handleMultilinePaste(
     });
     return;
   }
-  const roots = parsePastedOutline(event.clipboardData.getData("text/plain"));
+  // Our own copy first: the payload in the HTML carries the marker, the tick,
+  // the note and the image that the plain text has to leave behind. Anything
+  // else -- another app's markup, a payload this build cannot read -- falls
+  // through to the text, which is where an outside outline comes in.
+  const payload = extractOutlinePayload(
+    event.clipboardData.getData("text/html")
+  );
+  const roots = payload
+    ? pastedOutlineFromPayload(payload)
+    : parsePastedOutline(event.clipboardData.getData("text/plain"));
   if (!roots) return;
+  // Before the import leaves: WebKit disowns a gesture that waits on anything.
   event.preventDefault();
   const scope = event.currentTarget.closest<HTMLElement>(".notes-outline");
-  void store.importOutline(node.id, null, roots).then((id) => {
-    if (scope) focusAfterCommit(scope, id, "start");
-  });
+  void store.importOutline(node.id, null, roots).then(
+    (id) => {
+      if (scope) focusAfterCommit(scope, id, "start");
+    },
+    // A refused import lands nothing at all, and a half paste behind a quiet
+    // fallback would be worse than saying so.
+    (cause: unknown) => onRefused?.(
+      STALE_IMAGE.test(messageFrom(cause)) ? PASTE_REFUSED_IMAGE : PASTE_REFUSED
+    )
+  );
 }
 
 export function handleOutlineKeyDown(

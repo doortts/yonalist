@@ -383,6 +383,60 @@ describe("NotesStore viewport recovery", () => {
     expect(notesApi.execute).toHaveBeenCalledOnce();
   });
 
+  it("imports a rich outline with its marker, note, tick and image", async () => {
+    const notesApi = api(vi.fn());
+    notesApi.execute = vi.fn().mockResolvedValue({
+      revision: 2,
+      changedNodes: [],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    });
+    const image = {
+      contentHash: "a".repeat(64),
+      originalName: "photo.png",
+      mimeType: "image/png",
+      byteLength: 3,
+      pixelWidth: 1,
+      pixelHeight: 1,
+      displayWidth: 320
+    };
+    const store = new NotesStore(notesApi);
+    await store.bootstrap();
+
+    const rootId = await store.importOutline("one", "two", [{
+      title: "Buy milk",
+      note: "Two litres",
+      marker: "todo",
+      completed: true,
+      children: [{ title: "photo.png", image, children: [] }]
+    }]);
+
+    const imported = vi.mocked(notesApi.execute).mock.calls[0][0].command;
+    if (imported.kind !== "importNodes") throw new Error("expected importNodes");
+    expect(imported.before_id).toBe("two");
+    expect(imported.nodes).toEqual([
+      {
+        id: rootId,
+        parentId: "one",
+        text: "Buy milk",
+        note: "Two litres",
+        marker: "todo",
+        completed: true,
+        image: undefined
+      },
+      {
+        id: expect.any(String),
+        parentId: rootId,
+        text: "photo.png",
+        note: undefined,
+        marker: undefined,
+        completed: undefined,
+        image
+      }
+    ]);
+    expect(notesApi.execute).toHaveBeenCalledOnce();
+  });
+
   it("moves a selected block with one semantic command", async () => {
     const notesApi = api(vi.fn());
     notesApi.execute = vi.fn().mockResolvedValue({
