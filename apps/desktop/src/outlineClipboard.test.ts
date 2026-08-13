@@ -3,7 +3,6 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import {
   buildOutlineClipboardFormats,
   normalizeSelectedRoots,
-  outlineCutRefusal,
   writeOutlineClipboard,
   writeOutlineClipboardEvent,
   type OutlineClipboardNode
@@ -102,7 +101,6 @@ describe("outline clipboard", () => {
 
     expect(normalizeSelectedRoots(unreadableNodes, [])).toEqual([]);
     expect(formats(unreadableNodes, [])).toBeNull();
-    expect(outlineCutRefusal(unreadableNodes, [])).toBeTruthy();
   });
 
   it("normalizes selected rows to forest roots in outline order", () => {
@@ -133,29 +131,6 @@ describe("outline clipboard", () => {
 
   it("represents an empty title as one Markdown list marker", () => {
     expect(plain([node("empty", "page", "", 1_024)], ["empty"])).toBe("-");
-  });
-
-  // Every refusal but one is gone: the payload carries the note, the marker,
-  // the tick and the image hash, so cutting them loses nothing to refuse over.
-  it("refuses an empty selection and nothing else", () => {
-    const withDeepImage = nodes.map((candidate) => candidate.id === "grandchild"
-      ? { ...candidate, kind: "image" as const, text: "photo.png" }
-      : candidate);
-    const noted = withDeepImage.map((candidate) => candidate.id === "child"
-      ? { ...candidate, note: "Keep this context", marker: "todo" as const }
-      : candidate);
-
-    expect(outlineCutRefusal(nodes, [])).toBe("Select at least one row to cut.");
-    expect(outlineCutRefusal(nodes, ["missing"]))
-      .toBe("Select at least one row to cut.");
-    // A note, a to-do, an image, an image with a child under it, a mixed band.
-    expect(outlineCutRefusal(noted, ["parent"])).toBeNull();
-    expect(outlineCutRefusal(noted, ["grandchild"])).toBeNull();
-    expect(outlineCutRefusal(noted, ["grandchild", "sibling"])).toBeNull();
-    expect(outlineCutRefusal(
-      [...withDeepImage, node("caption", "grandchild", "Caption", 1_024)],
-      ["grandchild"]
-    )).toBeNull();
   });
 
   it("writes plain text, Markdown and the rich HTML from one copy", () => {

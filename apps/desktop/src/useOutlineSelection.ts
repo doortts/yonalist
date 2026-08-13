@@ -8,7 +8,6 @@ import {
   buildOutlineClipboardFormats,
   CUT_OVER_CLIPBOARD_BOUNDS,
   normalizeSelectedRoots,
-  outlineCutRefusal,
   SELECTION_INCOMPLETE,
   writeOutlineClipboard,
   writeOutlineClipboardEvent
@@ -192,12 +191,10 @@ export function useOutlineSelection(
       sessionId ?? ""
     )
     : null;
-  const cutRefusal = useMemo(
-    () => selectionComplete
-      ? outlineCutRefusal(selectedContentNodes, selectedIds)
-      : SELECTION_INCOMPLETE,
-    [selectedContentNodes, selectedIds, selectionComplete]
-  );
+  // Nothing else is left to refuse over: the payload carries the note, the
+  // marker, the tick and the image hash, so the losses a Cut used to be turned
+  // down for are no longer losses. The size bound answers on the gesture.
+  const cutRefusal = selectionComplete ? null : SELECTION_INCOMPLETE;
   const canCut = cutRefusal === null;
   /**
    * `null` once every format is on the event, or why none of them could go --

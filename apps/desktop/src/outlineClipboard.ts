@@ -374,37 +374,18 @@ export function buildOutlineClipboardFormats(
   };
 }
 
-const CUT_REFUSED_EMPTY = "Select at least one row to cut.";
-
 /**
- * The other two reasons a Cut is turned down. They live beside the refusal
- * above because the surfaces that cut have to answer with the same words. The
- * row menu shows them on the item it disables rather than in the pane's status
- * line: a bullet menu has no feedback channel of its own, so a write the
- * clipboard refuses after the menu has closed passes there in silence. It
- * leaves the row where it is, which is the part that matters.
+ * The two reasons a Cut is turned down. They live together because the surfaces
+ * that cut have to answer with the same words. The row menu shows them on the
+ * item it disables rather than in the pane's status line: a bullet menu has no
+ * feedback channel of its own, so a write the clipboard refuses after the menu
+ * has closed passes there in silence. It leaves the row where it is, which is
+ * the part that matters.
  */
 export const CUT_OVER_CLIPBOARD_BOUNDS =
   "Cut is unavailable because these rows are too large for the clipboard.";
 export const SELECTION_INCOMPLETE =
   "The complete selection is not available yet.";
-
-/**
- * Why the selected subtrees cannot be cut, or `null` when the copy-then-delete
- * round trip is lossless. The payload carries the note, the marker, the tick
- * and the image hash now, so the losses this used to refuse over are no longer
- * losses -- an empty selection is all there is left to turn down. The pane's
- * own gate on an incomplete forest is a separate one and lives with the
- * selection.
- */
-export function outlineCutRefusal(
-  nodes: readonly NoteView[],
-  selectedIds: readonly string[]
-): string | null {
-  return normalizeSelectedRoots(nodes, selectedIds).length === 0
-    ? CUT_REFUSED_EMPTY
-    : null;
-}
 
 export function writeOutlineClipboardEvent(
   clipboardData: Pick<DataTransfer, "setData">,
