@@ -375,8 +375,9 @@ export function NotesOutline({
     if (!node) return;
     // The payload is built from the loaded window, and the delete takes the
     // whole subtree the server holds: past the window those two disagree, so
-    // this waits on the very gate the selection commands wait on.
-    if (!selection.forestComplete) {
+    // this waits on the window being whole. The selection's own forest says
+    // nothing here -- this row was never part of a selection.
+    if (!structuralContextComplete) {
       setSelectionFeedback(SELECTION_INCOMPLETE);
       return;
     }
@@ -424,7 +425,10 @@ export function NotesOutline({
     selectionPlans: movePlans,
     allSelectedCompleted,
     selectionCutRefusal: selection.cutRefusal,
-    forestComplete: selection.forestComplete,
+    // A row command reads the loaded window and deletes what the server holds,
+    // so it needs the window whole -- not just the forest behind whatever is
+    // selected, which says nothing about the row that was right-clicked.
+    forestComplete: structuralContextComplete && selection.forestComplete,
     onZoom: (nodeId, split) => {
       if (split && onOpenSplit) onOpenSplit(nodeId);
       else onZoomRootChange(nodeId);

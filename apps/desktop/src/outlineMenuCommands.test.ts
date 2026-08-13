@@ -574,9 +574,11 @@ describe("single-row Copy and Cut", () => {
 
     command("cut").execute(ctx);
 
+    // Read before the await: WebKit drops a clipboard write that leaves after
+    // the gesture that asked for it, so the write has to be out already.
+    const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
     expect(deleteSubtree).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(deleteSubtree).toHaveBeenCalledWith("a"));
-    const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
     expect(await item.data["text/plain"]!.text())
       .toBe("- a\n  - x\n    - deep");
   });

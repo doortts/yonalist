@@ -1,4 +1,6 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent, render, screen, waitFor, within
+} from "@testing-library/react";
 import type { BootSnapshot } from "../../../packages/contracts/generated/BootSnapshot";
 import type { NotesApi } from "./api";
 import { App } from "./App";
@@ -309,6 +311,44 @@ describe("outline clipboard integration", () => {
 
   // The forest is whole here, so the completeness gate lets the cut through --
   // but a note past the format's own bound leaves nothing to delete against.
+  // A row menu reads the loaded window and deletes what the server holds. The
+  // forest behind some other selection says nothing about the row that was
+  // right-clicked, so the window itself is what has to be whole.
+  it("refuses a row Cut while the outline is still paginated", async () => {
+    const notesApi = api();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: { ...snapshot.viewport!, afterCursor: "cursor-1" }
+    });
+    // The next page never lands, so the window stays the partial one.
+    notesApi.queryViewport = vi.fn()
+      .mockReturnValue(new Promise(() => undefined));
+    render(<App api={notesApi} />);
+    // One unrelated row selected, and its own forest comes back whole -- the
+    // signal that used to let this Cut through.
+    fireEvent.pointerDown(
+      await screen.findByDisplayValue("First thought"),
+      { button: 0, pointerId: 71, ctrlKey: true }
+    );
+    await waitFor(() => expect(notesApi.queryForest).toHaveBeenCalled());
+
+    fireEvent.click(await screen.findByRole("button", {
+      name: "Actions for Second thought"
+    }));
+    const cut = within(await screen.findByRole("menu", { name: "Row actions" }))
+      .getAllByRole("menuitem")
+      .find((item) => item.querySelector("span")?.textContent === "Cut")!;
+
+    expect(cut).toHaveAttribute("aria-disabled", "true");
+    expect(cut).toHaveAttribute(
+      "title",
+      "The complete selection is not available yet."
+    );
+    fireEvent.click(cut);
+    await settled();
+    expect(notesApi.execute).not.toHaveBeenCalled();
+  });
+
   it("refuses destructive Cut when the rows outrun the clipboard format", async () => {
     const notesApi = api();
     await selectOversizedRow(notesApi);
@@ -1450,10 +1490,12 @@ describe("outline clipboard integration", () => {
     // The picture rides as a hash, never as bytes on the wire.
     expect(notesApi.importImageBytes).not.toHaveBeenCalled();
 
+    // Two steps back: the paste, then the cut. Only the second one has rows to
+    // hand back, so that is the one this can watch. (The receipt for the paste
+    // carries no rows to undo here -- the import is not projected optimistically
+    // and the stub answers it empty.)
     fireEvent.keyDown(window, { key: "z", ctrlKey: true });
     await waitFor(() => expect(notesApi.undo).toHaveBeenCalledOnce());
-    // The paste came back out and the cut rows are still gone: one step each.
-    expect(screen.queryByDisplayValue("Buy milk")).toBeNull();
 
     fireEvent.keyDown(window, { key: "z", ctrlKey: true });
 

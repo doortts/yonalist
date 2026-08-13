@@ -378,8 +378,11 @@ const CUT_REFUSED_EMPTY = "Select at least one row to cut.";
 
 /**
  * The other two reasons a Cut is turned down. They live beside the refusal
- * above because every surface that cuts -- the pane, the selection hook, the
- * row menu -- has to answer with the same words.
+ * above because the surfaces that cut have to answer with the same words. The
+ * row menu shows them on the item it disables rather than in the pane's status
+ * line: a bullet menu has no feedback channel of its own, so a write the
+ * clipboard refuses after the menu has closed passes there in silence. It
+ * leaves the row where it is, which is the part that matters.
  */
 export const CUT_OVER_CLIPBOARD_BOUNDS =
   "Cut is unavailable because these rows are too large for the clipboard.";
