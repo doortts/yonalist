@@ -8,10 +8,10 @@ import {
   MAX_TEXT_UTF8_BYTES,
   PAYLOAD_KIND,
   PAYLOAD_VERSION,
+  readTodoBox,
   type OutlineClipboardNode,
   type OutlineClipboardPayload
 } from "./outlineClipboard";
-import { readTodoBox } from "./outlineSlash";
 
 /**
  * One pasted row. Everything past the title is optional: plain outside text

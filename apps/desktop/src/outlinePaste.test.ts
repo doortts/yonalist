@@ -77,6 +77,15 @@ describe("the Markdown task list a paste reads back", () => {
       { title: "[ ]extra", children: [] }
     ]);
   });
+
+  // The bare pair is a typing shortcut, not Markdown: GFM wants a character
+  // between the brackets, so a paste keeps the characters it was given.
+  it("leaves a bare bracket pair in the title it was pasted in", () => {
+    expect(parsePastedOutline("- [] means empty\n- next")).toEqual([
+      { title: "[] means empty", children: [] },
+      { title: "next", children: [] }
+    ]);
+  });
 });
 
 describe("the note lines a paste reads back", () => {

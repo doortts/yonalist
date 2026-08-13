@@ -161,6 +161,33 @@ export function buildOutlineClipboardPayload(
 }
 
 /**
+ * The Markdown task box as GFM writes it, which is what a paste reads back and
+ * what a hand used to Markdown types at a title's start. The character between
+ * the brackets is required here; the bare pair `[]` a hand types instead is the
+ * typed path's own shorthand and never reaches a paste.
+ */
+const TODO_BOX = /^\[([ xX])\](?: (.*))?$/u;
+
+export interface TodoBox {
+  readonly completed: boolean;
+  /** What follows the box and the one space after it. */
+  readonly rest: string;
+  /** Whether that space was there at all; a bare box ends the line. */
+  readonly spaced: boolean;
+}
+
+/** One recogniser for both halves of the round trip: reading and writing. */
+export function readTodoBox(content: string): TodoBox | null {
+  const box = TODO_BOX.exec(content);
+  if (!box) return null;
+  return {
+    completed: box[1]!.toLowerCase() === "x",
+    rest: box[2] ?? "",
+    spaced: box[2] !== undefined
+  };
+}
+
+/**
  * The Markdown task box a row carries out of the app, `""` for a plain bullet
  * still open. The tick has nowhere else to go in text, so a completed row takes
  * a box whatever its marker: reading that back through the plain path makes a

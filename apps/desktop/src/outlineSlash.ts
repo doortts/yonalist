@@ -1,3 +1,5 @@
+import { readTodoBox, type TodoBox } from "./outlineClipboard";
+
 export type SlashCommandId = "today" | "todo";
 
 export interface SlashCommandDefinition {
@@ -24,29 +26,15 @@ export const slashCommands = [
 ] as const satisfies readonly SlashCommandDefinition[];
 
 /**
- * The Markdown task box, which is both what a copy writes for a to-do row and
- * what a hand used to Markdown types at a title's start. An empty pair counts:
- * `[]` is what a hand types when it does not stop to put the space in.
+ * The box a title's start reads as, the bare pair `[]` included: that is what a
+ * hand types when it does not stop to put the space in. Only the typed path
+ * takes it -- GFM writes a character between the brackets, so a paste that read
+ * the pair as a box would eat characters nobody meant as one.
  */
-const TODO_BOX = /^\[([ xX]?)\](?: (.*))?$/u;
-
-export interface TodoBox {
-  readonly completed: boolean;
-  /** What follows the box and the one space after it. */
-  readonly rest: string;
-  /** Whether that space was there at all; a bare box ends the line. */
-  readonly spaced: boolean;
-}
-
-/** One recogniser for both halves of the round trip: typing and pasting. */
-export function readTodoBox(content: string): TodoBox | null {
-  const box = TODO_BOX.exec(content);
-  if (!box) return null;
-  return {
-    completed: box[1]!.toLowerCase() === "x",
-    rest: box[2] ?? "",
-    spaced: box[2] !== undefined
-  };
+function readTypedBox(content: string): TodoBox | null {
+  return readTodoBox(
+    content.startsWith("[]") ? `[ ]${content.slice(2)}` : content
+  );
 }
 
 export interface TodoBoxEdit {
@@ -71,8 +59,9 @@ export function resolveTodoBoxInput(
   previous: string
 ): TodoBoxEdit | null {
   if (selectionStart === null || selectionStart !== selectionEnd) return null;
-  if (readTodoBox(previous)?.spaced) return null;
-  const box = readTodoBox(value);
+  if (readTypedBox(previous)?.spaced) return null;
+  const box = readTypedBox(value);
+  // The offsets are the row's own: `rest` is a suffix of it either way.
   if (!box?.spaced || selectionStart !== value.length - box.rest.length) {
     return null;
   }
