@@ -245,7 +245,14 @@ function htmlList(nodes: readonly OutlineClipboardNode[]): string {
       ? `<blockquote>${escapeHtml(node.note).replace(/\n/gu, "<br>")}</blockquote>`
       : "";
     const children = node.children.length > 0 ? htmlList(node.children) : "";
-    return `<li>${box ? `${box} ` : ""}${struck}${note}${children}</li>`;
+    // Workflowy reads this attribute off the `<li>` it walks into and keeps the
+    // row a bullet. Without it, one `[ ]` box anywhere in the paste marks the
+    // whole sibling group as Markdown, and every row that carries no marker of
+    // its own is forced to their paragraph layout, which draws no bullet at all.
+    // A box still wins over the attribute on their side, so a todo row stays a
+    // todo row, and every other target ignores an attribute it does not know.
+    return `<li data-wf-layout="bullet">`
+      + `${box ? `${box} ` : ""}${struck}${note}${children}</li>`;
   });
   return `<ul>${items.join("")}</ul>`;
 }

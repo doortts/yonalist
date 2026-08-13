@@ -319,6 +319,8 @@ describe("the rich outline clipboard payload", () => {
 
 describe("the outline clipboard HTML carrier", () => {
   const MARKER = "<!--yonalist-outline-clipboard:";
+  /** Every row carries the bullet layout Workflowy reads off the `<li>`. */
+  const LI = '<li data-wf-layout="bullet">';
 
   it("leads with the payload comment and round-trips it byte for byte", () => {
     const built = formats(nodes, ["parent", "sibling"])!;
@@ -340,7 +342,7 @@ describe("the outline clipboard HTML carrier", () => {
     const built = formats(rows, ["markup"])!;
 
     expect(built.html.slice(built.html.indexOf("-->") + 3)).toBe(
-      "<ul><li>[ ] &lt;b&gt;&amp;&lt;/b&gt; 표<ul><li>Child</li></ul></li></ul>"
+      `<ul>${LI}[ ] &lt;b&gt;&amp;&lt;/b&gt; 표<ul>${LI}Child</li></ul></li></ul>`
     );
     // The comment carries the title unescaped, so a paste reads it back exact.
     expect(built.payload.nodes[0].text).toBe("<b>&</b> 표");
@@ -354,11 +356,11 @@ describe("the outline clipboard HTML carrier", () => {
 
     expect(built.html.slice(built.html.indexOf("-->") + 3)).toBe(
       "<ul>" +
-      "<li>Bullet</li>" +
-      "<li>[x] <s>Bullet done</s></li>" +
-      "<li>[ ] Open</li>" +
-      "<li>[x] <s>Done</s></li>" +
-      "<li>[ ] </li>" +
+      `${LI}Bullet</li>` +
+      `${LI}[x] <s>Bullet done</s></li>` +
+      `${LI}[ ] Open</li>` +
+      `${LI}[x] <s>Done</s></li>` +
+      `${LI}[ ] </li>` +
       "</ul>"
     );
     expect(built.html).not.toContain("<input");
@@ -379,9 +381,9 @@ describe("the outline clipboard HTML carrier", () => {
     const built = formats(rows, ["task"])!;
 
     expect(built.html.slice(built.html.indexOf("-->") + 3)).toBe(
-      "<ul><li>[ ] Ship it<ul>" +
-      "<li>[x] <s>Draft</s><blockquote>shipped late</blockquote></li>" +
-      "<li>[x] <s>Plain done</s><ul><li>Leaf</li></ul></li>" +
+      `<ul>${LI}[ ] Ship it<ul>` +
+      `${LI}[x] <s>Draft</s><blockquote>shipped late</blockquote></li>` +
+      `${LI}[x] <s>Plain done</s><ul>${LI}Leaf</li></ul></li>` +
       "</ul></li></ul>"
     );
     expect(built.plain).toBe([
@@ -404,9 +406,31 @@ describe("the outline clipboard HTML carrier", () => {
     const built = formats(rows, ["parent"])!;
 
     expect(built.html.slice(built.html.indexOf("-->") + 3)).toBe(
-      "<ul><li>Parent<blockquote>first &lt;b&gt;<br>second</blockquote>" +
-      "<ul><li>Child</li></ul></li></ul>"
+      `<ul>${LI}Parent<blockquote>first &lt;b&gt;<br>second</blockquote>` +
+      `<ul>${LI}Child</li></ul></li></ul>`
     );
+  });
+
+  // Workflowy's paste treats a sibling group holding any Markdown marker as
+  // Markdown, and forces every unmarked row in it to their paragraph layout,
+  // which draws no bullet. The attribute is the one thing their parser reads off
+  // the `<li>` to keep the row a bullet, so a mixed selection needs it on rows
+  // that carry no box of their own -- the exact case that lost its bullet.
+  it("marks every row a bullet, at depth and beside a box", () => {
+    const rows = [
+      node("boxed", "page", "Boxed", 1_024, { marker: "todo" }),
+      node("bare", "page", "Bare", 2_048),
+      node("kid", "bare", "Kid", 1_024)
+    ];
+
+    const built = formats(rows, ["boxed", "bare"])!;
+    const markup = built.html.slice(built.html.indexOf("-->") + 3);
+
+    expect(markup).toBe(
+      `<ul>${LI}[ ] Boxed</li>${LI}Bare<ul>${LI}Kid</li></ul></li></ul>`
+    );
+    expect(markup.split("<li").length - 1).toBe(3);
+    expect(markup.split(LI).length - 1).toBe(3);
   });
 });
 
