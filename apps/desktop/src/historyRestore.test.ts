@@ -1,6 +1,6 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { PaneFocusSnapshot } from "./appNavigation";
-import { liveHistorySelection, resolveHistoryFocus } from "./historyFocus";
+import { liveHistorySelection, resolveHistoryFocus } from "./historyRestore";
 
 function bullet(
   id: string,

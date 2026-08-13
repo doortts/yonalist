@@ -11,15 +11,25 @@ function liveNode(
 }
 
 /**
- * The recorded band, minus the rows the history step did not hand back. A band
- * holding a row the store no longer has would leave the selection describing an
- * outline that is not there, and every count and command read off it would be
- * about that phantom row.
+ * The recorded band, minus the rows the history step did not hand back. What
+ * this protects is the band's two ends: `replace` takes its anchor and head
+ * straight off the list it is handed, and a Shift+Arrow can only step from an
+ * end the visible rows have an index for -- one dead end and the chord does
+ * nothing at all. The band's own contents need no protecting, since
+ * `normalizeSelectedRoots` already drops what the outline does not have.
+ *
+ * The rows are the ones the store holds, which is not quite the rows the pane
+ * shows: a live row that is hidden -- a completed row restored with "hide
+ * completed" on -- still lands as an end the visible list has no index for.
+ * Filtering against the visible rows instead is not open to a caller, whose
+ * render is one commit behind the step that just ran; healing the ends where
+ * they are read would be, and would want its own change.
  */
 export function liveHistorySelection(
   selectedIds: readonly string[],
   after: readonly NoteView[]
 ): readonly string[] {
+  if (selectedIds.length === 0) return selectedIds;
   const live = new Set(after
     .filter((node) => !node.deleted)
     .map((node) => node.id));

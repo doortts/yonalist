@@ -4,7 +4,7 @@ import {
   paneScope,
   type PaneSnapshot
 } from "./appNavigation";
-import { liveHistorySelection, resolveHistoryFocus } from "./historyFocus";
+import { liveHistorySelection, resolveHistoryFocus } from "./historyRestore";
 import { focusOutlineSnapshot } from "./outlineFocus";
 import { outlinePane } from "./outlinePaneRegistry";
 import type { NotesMutationHistoryEvent } from "./storeHistory";
@@ -28,7 +28,12 @@ type InteractionEntry<Location> =
       readonly kind: "mutation";
       /** The band and caret the command started from; undo puts them back. */
       readonly before: PaneSnapshot | null;
-      /** What the pane held when this step was undone; redo puts it back. */
+      /**
+       * What the pane held when this step was undone; redo puts it back. Read
+       * at undo time and not at the command, so a run of undos hands each entry
+       * the band the undo before it restored -- redoing back up the run puts
+       * those bands back a step early. Redo of a band is not what this fixed.
+       */
       after: PaneSnapshot | null;
     }
   | {

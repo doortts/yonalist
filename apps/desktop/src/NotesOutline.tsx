@@ -31,6 +31,7 @@ import {
 import { subtreeIds } from "./storeState";
 import { NotesExportBoundary } from "./NotesExportBoundary";
 import { useOutlineWindow } from "./useOutlineWindow";
+import { liveHistorySelection } from "./historyRestore";
 import { registerOutlinePane } from "./outlinePaneRegistry";
 import { ROOT_ID } from "./storeSupport";
 
@@ -145,14 +146,18 @@ export function NotesOutline({
   } = selection;
   useEffect(() => {
     if (!restoreRequest) return;
-    restoreSelectionRef.current(restoreRequest.selectedIds);
+    // Through the same filter an undo's band goes through: a recorded row the
+    // outline no longer has would land as the band's end, and Shift with an
+    // arrow has nowhere to step from there.
+    restoreSelectionRef.current(liveHistorySelection(
+      restoreRequest.selectedIds, store.getSnapshot().nodes));
     if (!restoreRequest.focus || !scopeRef.current) return;
     reveal(restoreRequest.focus.nodeId);
     // The revealed row mounts a tick or two from here, which is what
     // focusOutlineSnapshot waits out -- and it waits on timers, so the caret
     // still arrives in a window the browser is painting no frames for.
     focusOutlineSnapshot(scopeRef.current, restoreRequest.focus);
-  }, [restoreRequest, reveal]);
+  }, [restoreRequest, reveal, store]);
   useEffect(() => {
     if (!rootKey) return;
     let active = true;
