@@ -222,6 +222,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * A measurement the other side reads as a `u32`/`u64`: whole, in range, and
+ * neither a fraction nor a NaN. Plain `typeof` lets all three through, and the
+ * bounds further in only refuse what is too large -- so a `-5` or a `1.5` would
+ * reach the browser preview and be refused only by Rust's own serde.
+ */
+function isCount(value: unknown, least: number): value is number {
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= least;
+}
+
 /** `undefined` for a malformed reference; `null` is a row with no image. */
 function readClipboardImage(source: unknown): ImageView | null | undefined {
   if (source === null) return null;
@@ -234,10 +246,13 @@ function readClipboardImage(source: unknown): ImageView | null | undefined {
     typeof contentHash !== "string" ||
     typeof originalName !== "string" ||
     typeof mimeType !== "string" ||
-    typeof byteLength !== "number" ||
-    typeof pixelWidth !== "number" ||
-    typeof pixelHeight !== "number" ||
-    typeof displayWidth !== "number"
+    // The floors notes-core writes an image by: one byte, one pixel each way.
+    // The display width's own floor of 120 stays with the validation that
+    // refuses the whole import, so a narrow one is refused by its message.
+    !isCount(byteLength, 1) ||
+    !isCount(pixelWidth, 1) ||
+    !isCount(pixelHeight, 1) ||
+    !isCount(displayWidth, 0)
   ) {
     return undefined;
   }
@@ -305,7 +320,11 @@ export function extractOutlinePayload(
       parsed.kind !== PAYLOAD_KIND ||
       parsed.version !== PAYLOAD_VERSION ||
       typeof parsed.sessionId !== "string" ||
-      !Array.isArray(parsed.nodes)
+      !Array.isArray(parsed.nodes) ||
+      // A copy never writes an empty one. Reading it as a payload would take
+      // the paste over and then import nothing, where `null` hands the gesture
+      // to the plain text behind it.
+      parsed.nodes.length === 0
     ) {
       return null;
     }

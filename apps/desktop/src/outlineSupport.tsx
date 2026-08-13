@@ -103,7 +103,17 @@ export function handleMultilinePaste(
   node: NoteView,
   onRefused?: (message: string) => void
 ) {
-  const images = clipboardImageCandidates(event.clipboardData);
+  // Our own copy outranks everything, the image files included: a copied
+  // picture rides the clipboard twice -- as its bytes and inside the payload --
+  // and importing the bytes would land a fresh lone row with the children, the
+  // note and the marker left behind. A screenshot carries no payload of ours,
+  // so it still takes the branch below.
+  const payload = extractOutlinePayload(
+    event.clipboardData.getData("text/html")
+  );
+  const images = payload
+    ? []
+    : clipboardImageCandidates(event.clipboardData);
   if (images.length > 0 && node.parentId) {
     event.preventDefault();
     const state = store.getSnapshot();
@@ -120,13 +130,10 @@ export function handleMultilinePaste(
     });
     return;
   }
-  // Our own copy first: the payload in the HTML carries the marker, the tick,
-  // the note and the image that the plain text has to leave behind. Anything
-  // else -- another app's markup, a payload this build cannot read -- falls
-  // through to the text, which is where an outside outline comes in.
-  const payload = extractOutlinePayload(
-    event.clipboardData.getData("text/html")
-  );
+  // The payload in the HTML carries the marker, the tick, the note and the
+  // image that the plain text has to leave behind. Anything else -- another
+  // app's markup, a payload this build cannot read -- falls through to the
+  // text, which is where an outside outline comes in.
   const roots = payload
     ? pastedOutlineFromPayload(payload)
     : parsePastedOutline(event.clipboardData.getData("text/plain"));
@@ -139,7 +146,9 @@ export function handleMultilinePaste(
       if (scope) focusAfterCommit(scope, id, "start");
     },
     // A refused import lands nothing at all, and a half paste behind a quiet
-    // fallback would be worse than saying so.
+    // fallback would be worse than saying so -- including when the bytes are
+    // right there on the clipboard: importing them would answer a stale hash
+    // with a lone picture stripped of everything the row carried.
     (cause: unknown) => onRefused?.(
       STALE_IMAGE.test(messageFrom(cause)) ? PASTE_REFUSED_IMAGE : PASTE_REFUSED
     )

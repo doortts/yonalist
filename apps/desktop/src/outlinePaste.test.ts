@@ -294,6 +294,40 @@ describe("extractOutlinePayload", () => {
     }
   });
 
+  // The other side reads these as u32/u64, so a number that is not a whole
+  // count is refused here rather than by serde after the row has already been
+  // through the preview's own bounds.
+  it("refuses an image measurement that is not a whole count", () => {
+    const [row] = PAYLOAD.nodes;
+    for (const image of [
+      { ...IMAGE, byteLength: -5 },
+      { ...IMAGE, byteLength: 0 },
+      { ...IMAGE, byteLength: 1.5 },
+      { ...IMAGE, pixelWidth: -5 },
+      { ...IMAGE, pixelWidth: 0 },
+      { ...IMAGE, pixelHeight: 1.5 },
+      { ...IMAGE, pixelHeight: Number.NaN },
+      { ...IMAGE, displayWidth: -1 },
+      { ...IMAGE, displayWidth: Number.NaN },
+      { ...IMAGE, displayWidth: 320.5 }
+    ]) {
+      expect(extractOutlinePayload(carrier({
+        ...PAYLOAD,
+        nodes: [{ ...row, image }]
+      }))).toBeNull();
+    }
+    expect(extractOutlinePayload(carrier({
+      ...PAYLOAD,
+      nodes: [{ ...row, image: IMAGE }]
+    }))).not.toBeNull();
+  });
+
+  // A copy can never write one, and accepting it would preventDefault a paste
+  // that then imports nothing instead of falling through to the text.
+  it("refuses a payload carrying no rows at all", () => {
+    expect(extractOutlinePayload(carrier({ ...PAYLOAD, nodes: [] }))).toBeNull();
+  });
+
   it("refuses a payload past the bounds an import accepts", () => {
     const [row] = PAYLOAD.nodes;
     const nest = (depth: number): unknown => depth === 0

@@ -509,6 +509,39 @@ describe("outline clipboard integration", () => {
     expect(notesApi.execute).toHaveBeenCalledOnce();
   });
 
+  // A copied image row rides the clipboard twice over: the bytes as a file item
+  // and the whole row in the payload. Importing the bytes would land a fresh
+  // lone picture and drop the children, the note and the marker with it.
+  it("takes the payload over the picture it rides with", async () => {
+    const notesApi = api();
+    render(<App api={notesApi} />);
+    const editor = await screen.findByDisplayValue("First thought");
+    const png = new File([Uint8Array.from([1])], "sample.png", {
+      type: "image/png"
+    });
+
+    fireEvent.paste(editor, {
+      clipboardData: {
+        items: [{ kind: "file", type: "image/png", getAsFile: () => png }],
+        getData: copiedFormat
+      }
+    });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: expect.objectContaining({
+          kind: "importNodes",
+          nodes: [
+            expect.objectContaining({ text: "Buy milk", marker: "todo" }),
+            expect.objectContaining({ text: "sample.png", image: COPIED_IMAGE })
+          ]
+        })
+      })
+    ));
+    expect(notesApi.execute).toHaveBeenCalledOnce();
+    expect(notesApi.importImageBytes).not.toHaveBeenCalled();
+  });
+
   it("falls back to the plain text when the payload cannot be read", async () => {
     const notesApi = api();
     render(<App api={notesApi} />);
