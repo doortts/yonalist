@@ -733,6 +733,50 @@ describe("browser-only preview adapter", () => {
     })).toEqual(Uint8Array.from([1, 2, 3]));
   });
 
+  it("undoes a replacement whose file keeps the original name", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const imported = await previewNotesApi.importImageBytes({
+      sessionId: boot.sessionId,
+      requestId: "preview-same-name-import",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      parentId: boot.activePageId!,
+      beforeId: null,
+      images: [{
+        nodeId: "preview-same-name-image",
+        originalName: "cat.png",
+        declaredMimeType: "image/png",
+        blob: new Blob([Uint8Array.from([1, 2, 3])], { type: "image/png" })
+      }]
+    });
+    const originalHash = imported.changedNodes[0].image!.contentHash;
+
+    const replaced = await previewNotesApi.replaceImageBytes({
+      sessionId: boot.sessionId,
+      requestId: "preview-same-name-replace",
+      baseRevision: imported.revision,
+      historyGroup: "images:replace",
+      targetId: "preview-same-name-image",
+      image: {
+        nodeId: "preview-same-name-image",
+        originalName: "cat.png",
+        declaredMimeType: "image/png",
+        blob: new Blob([Uint8Array.from([4, 5, 6])], { type: "image/png" })
+      }
+    });
+    expect(replaced.changedNodes[0].image!.contentHash).not.toBe(originalHash);
+
+    const undone = await previewNotesApi.undo({
+      sessionId: boot.sessionId,
+      baseRevision: replaced.revision
+    });
+    expect(undone.changedNodes[0]?.image?.contentHash).toBe(originalHash);
+    expect(await previewNotesApi.readImage({
+      sessionId: boot.sessionId,
+      nodeId: "preview-same-name-image"
+    })).toEqual(Uint8Array.from([1, 2, 3]));
+  });
+
   it("pastes marker, note, tick and an image reference, and refuses a stale hash", async () => {
     const boot = await previewNotesApi.bootstrap();
     const pageId = boot.activePageId!;

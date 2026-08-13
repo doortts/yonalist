@@ -1,3 +1,4 @@
+import type { ImageView } from "../../../packages/contracts/generated/ImageView";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 
 export interface PreviewNodeDelta {
@@ -11,6 +12,18 @@ export interface PreviewHistoryEntry {
   readonly inverse: PreviewNodeDelta;
 }
 
+function sameImage(left: ImageView | null, right: ImageView | null): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return left.contentHash === right.contentHash &&
+    left.originalName === right.originalName &&
+    left.mimeType === right.mimeType &&
+    left.byteLength === right.byteLength &&
+    left.pixelWidth === right.pixelWidth &&
+    left.pixelHeight === right.pixelHeight &&
+    left.displayWidth === right.displayWidth;
+}
+
 function sameNode(left: NoteView, right: NoteView): boolean {
   return left.id === right.id &&
     left.parentId === right.parentId &&
@@ -22,7 +35,8 @@ function sameNode(left: NoteView, right: NoteView): boolean {
     left.collapsed === right.collapsed &&
     left.completed === right.completed &&
     left.starred === right.starred &&
-    left.deleted === right.deleted;
+    left.deleted === right.deleted &&
+    sameImage(left.image, right.image);
 }
 
 function deltaBetween(
