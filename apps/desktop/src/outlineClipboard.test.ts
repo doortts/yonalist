@@ -7,6 +7,7 @@ import {
   writeOutlineClipboardEvent,
   type OutlineClipboardNode
 } from "./outlineClipboard";
+import { parsePastedOutline } from "./outlinePaste";
 
 function node(
   id: string,
@@ -149,26 +150,43 @@ describe("outline clipboard", () => {
   });
 });
 
-describe("outline clipboard plain text", () => {
-  // Only a to-do row gets a box, the rule the PDF export prints by: a completed
-  // plain bullet is still a bullet.
-  it("boxes to-do rows by their tick and leaves plain bullets alone", () => {
-    const rows = [
-      node("open", "page", "Open", 1_024, { marker: "todo" }),
-      node("done", "page", "Done", 2_048, {
-        marker: "todo",
-        completed: true
-      }),
-      node("bullet", "page", "Bullet", 3_072, { completed: true }),
-      node("blank", "page", "", 4_096, { marker: "todo" })
-    ];
+/** The four marker-and-tick combinations, plus an empty to-do. */
+const combinations = [
+  node("bullet", "page", "Bullet", 1_024),
+  node("bullet-done", "page", "Bullet done", 2_048, { completed: true }),
+  node("open", "page", "Open", 3_072, { marker: "todo" }),
+  node("done", "page", "Done", 4_096, { marker: "todo", completed: true }),
+  node("blank", "page", "", 5_120, { marker: "todo" })
+];
 
-    expect(plain(rows, rows.map((row) => row.id))).toBe([
+describe("outline clipboard plain text", () => {
+  // A tick has only the box to ride out on, so a completed row takes one
+  // whatever its marker -- the payload keeps the true marker for a paste that
+  // comes back here.
+  it("boxes every completed row and leaves an open plain bullet alone", () => {
+    expect(plain(combinations, combinations.map((row) => row.id))).toBe([
+      "- Bullet",
+      "- [x] Bullet done",
       "- [ ] Open",
       "- [x] Done",
-      "- Bullet",
       "- [ ]"
     ].join("\n"));
+  });
+
+  it("restores the marker and the tick from its own plain output", () => {
+    const written = plain(combinations, combinations.map((row) => row.id))!;
+
+    expect(parsePastedOutline(written)?.map((row) => ({
+      title: row.title,
+      marker: row.marker,
+      completed: row.completed
+    }))).toEqual([
+      { title: "Bullet", marker: undefined, completed: undefined },
+      { title: "Bullet done", marker: "todo", completed: true },
+      { title: "Open", marker: "todo", completed: false },
+      { title: "Done", marker: "todo", completed: true },
+      { title: "", marker: "todo", completed: false }
+    ]);
   });
 
   it("writes a note one level in, before the row's children", () => {
@@ -326,6 +344,53 @@ describe("the outline clipboard HTML carrier", () => {
     );
     // The comment carries the title unescaped, so a paste reads it back exact.
     expect(built.payload.nodes[0].text).toBe("<b>&</b> 표");
+  });
+
+  // The screen's own two marks: the box and the strike-through. Both stay
+  // characters and tags a rich editor keeps -- an `<input>` would be stripped on
+  // paste and take the tick with it.
+  it("carries the box and the strike-through of every completed row", () => {
+    const built = formats(combinations, combinations.map((row) => row.id))!;
+
+    expect(built.html.slice(built.html.indexOf("-->") + 3)).toBe(
+      "<ul>" +
+      "<li>Bullet</li>" +
+      "<li>[x] <s>Bullet done</s></li>" +
+      "<li>[ ] Open</li>" +
+      "<li>[x] <s>Done</s></li>" +
+      "<li>[ ] </li>" +
+      "</ul>"
+    );
+    expect(built.html).not.toContain("<input");
+  });
+
+  it("renders a mixed tree at depth with notes beside the marks", () => {
+    const rows = [
+      node("task", "page", "Ship it", 1_024, { marker: "todo" }),
+      node("draft", "task", "Draft", 1_024, {
+        marker: "todo",
+        completed: true,
+        note: "shipped late"
+      }),
+      node("plain", "task", "Plain done", 2_048, { completed: true }),
+      node("leaf", "plain", "Leaf", 1_024)
+    ];
+
+    const built = formats(rows, ["task"])!;
+
+    expect(built.html.slice(built.html.indexOf("-->") + 3)).toBe(
+      "<ul><li>[ ] Ship it<ul>" +
+      "<li>[x] <s>Draft</s><blockquote>shipped late</blockquote></li>" +
+      "<li>[x] <s>Plain done</s><ul><li>Leaf</li></ul></li>" +
+      "</ul></li></ul>"
+    );
+    expect(built.plain).toBe([
+      "- [ ] Ship it",
+      "  - [x] Draft",
+      "    > shipped late",
+      "  - [x] Plain done",
+      "    - Leaf"
+    ].join("\n"));
   });
 
   // A rich-text target reads the markup and nothing else, so a note missing

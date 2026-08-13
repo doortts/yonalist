@@ -160,6 +160,18 @@ export function buildOutlineClipboardPayload(
   };
 }
 
+/**
+ * The Markdown task box a row carries out of the app, `""` for a plain bullet
+ * still open. The tick has nowhere else to go in text, so a completed row takes
+ * a box whatever its marker: reading that back through the plain path makes a
+ * completed bullet a to-do, which is the price of not losing the tick. An
+ * in-app paste reads the payload, which keeps the true marker.
+ */
+function textBox(node: OutlineClipboardNode): string {
+  if (node.completed) return " [x]";
+  return node.marker === "todo" ? " [ ]" : "";
+}
+
 function plainLines(
   nodes: readonly OutlineClipboardNode[],
   depth: number,
@@ -167,12 +179,7 @@ function plainLines(
 ): void {
   for (const node of nodes) {
     const indent = "  ".repeat(depth);
-    // Only a to-do row gets a box: a completed plain bullet stays a bullet, the
-    // rule the PDF export already prints by.
-    const box = node.marker === "todo"
-      ? node.completed ? " [x]" : " [ ]"
-      : "";
-    const marker = `${indent}-${box}`;
+    const marker = `${indent}-${textBox(node)}`;
     lines.push(node.text ? `${marker} ${node.text}` : marker);
     // A note sits one level in from its own row, as the Markdown export writes
     // it, and before the children so the reading order matches the screen.
@@ -192,16 +199,20 @@ function escapeHtml(value: string): string {
 
 function htmlList(nodes: readonly OutlineClipboardNode[]): string {
   const items = nodes.map((node) => {
-    const box = node.marker === "todo"
-      ? node.completed ? "[x] " : "[ ] "
-      : "";
+    // The box stays characters rather than an `<input>`: a rich editor strips
+    // form controls on paste, and the tick survives today precisely because it
+    // is text. `<s>` carries the screen's strike-through the same way, over the
+    // title alone as the stylesheet draws it.
+    const box = textBox(node).trimStart();
+    const title = escapeHtml(node.text);
+    const struck = node.completed && title.length > 0 ? `<s>${title}</s>` : title;
     // A rich-text app prefers text/html and never reads the payload comment, so
     // a note left out here is a note that app never sees.
     const note = node.note.length > 0
       ? `<blockquote>${escapeHtml(node.note).replace(/\n/gu, "<br>")}</blockquote>`
       : "";
     const children = node.children.length > 0 ? htmlList(node.children) : "";
-    return `<li>${box}${escapeHtml(node.text)}${note}${children}</li>`;
+    return `<li>${box ? `${box} ` : ""}${struck}${note}${children}</li>`;
   });
   return `<ul>${items.join("")}</ul>`;
 }
