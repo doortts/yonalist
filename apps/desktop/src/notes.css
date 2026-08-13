@@ -706,40 +706,6 @@
   min-width: 0;
 }
 
-.notes-node-content-line {
-  display: contents;
-}
-
-.notes-node-content-line[data-readonly="true"] {
-  display: flex;
-  grid-column: 4;
-  grid-row: 1;
-  align-items: flex-start;
-  width: fit-content;
-  max-width: 100%;
-  min-width: 0;
-}
-
-.notes-node-content-line[data-readonly="true"] .notes-node-title-field {
-  flex: 0 1 auto;
-  grid-column: auto;
-  width: auto;
-  overflow: hidden;
-}
-
-.notes-node-content-line[data-readonly="true"]
-  .notes-node-title-field
-  > .notes-token-text {
-  position: static !important;
-}
-
-.notes-node-content-line[data-readonly="true"]
-  .notes-node-title-field
-  > textarea {
-  position: absolute;
-  inset: 0;
-}
-
 .notes-external-title-field {
   flex: 0 1 auto;
   width: auto;
@@ -760,22 +726,6 @@
   max-width: 100%;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.notes-node-inline-actions {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 0;
-}
-
-.notes-node-lock {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 28px;
-  color: var(--text-3);
 }
 
 .notes-external-details {
@@ -824,26 +774,6 @@
 .notes-external-completion-error button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .notes-node[data-readonly="true"] .notes-node-readonly-actions {
-    opacity: 0;
-  }
-
-  .notes-external-row .notes-node-inline-actions {
-    opacity: 0;
-  }
-
-  .notes-node[data-readonly="true"]:hover .notes-node-readonly-actions,
-  .notes-node[data-readonly="true"]:focus-within .notes-node-readonly-actions {
-    opacity: 1;
-  }
-
-  .notes-external-row:hover .notes-node-inline-actions,
-  .notes-external-row:focus-within .notes-node-inline-actions {
-    opacity: 1;
-  }
 }
 
 .notes-selection-action-bar {
@@ -1610,14 +1540,6 @@ button.notes-date-token:hover {
   min-width: 0;
 }
 
-/* A moved row lifts above the flow while it animates so it reads as the
-   subject of the change rather than sliding beneath its neighbours. The class
-   is added/removed imperatively by the FLIP motion hook. */
-/* Moved rows keep only a stacking lift while animating — no card shadow. */
-.notes-outline-item--motion-lift {
-  z-index: 3;
-}
-
 .notes-outline-drop-preview-tail {
   position: relative;
   height: 0;
@@ -1697,29 +1619,6 @@ button.notes-date-token:hover {
 
 .notes-write-error-retry:hover {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
-}
-
-.notes-node-command-notice {
-  margin: 4px 0 0;
-  padding: 6px 9px;
-  border: 1px solid var(--danger);
-  border-radius: var(--radius-sm);
-  background: var(--danger-soft);
-  color: var(--danger);
-  font-size: 12px;
-}
-
-.notes-inline-warning {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 12px 0 0;
-  padding: 8px 10px;
-  border: 1px solid var(--warning-border);
-  border-radius: var(--radius-sm);
-  background: var(--warning-soft);
-  color: var(--warning);
-  font-size: 12.5px;
 }
 
 .notes-node {
@@ -1889,31 +1788,6 @@ button.notes-date-token:hover {
 .notes-node[data-marker-kind="todo"] .notes-node-main {
   grid-template-columns:
     var(--notes-menu-width) 20px 18px 22px minmax(0, 1fr);
-}
-
-.notes-node-main-readonly {
-  grid-template-columns: var(--notes-menu-width) minmax(0, 1fr);
-  min-height: 34px;
-  padding-left: 8px;
-}
-
-.notes-node-readonly-title {
-  grid-column: 2;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-2);
-  font-size: 14px;
-  line-height: 34px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.notes-node-readonly-note {
-  margin: 0 0 8px calc(var(--notes-indent) + var(--notes-content-offset));
-  color: var(--text-3);
-  font-size: 14px;
-  line-height: 20px;
-  white-space: pre-wrap;
 }
 
 .notes-node-arrow-slot {
@@ -2149,7 +2023,6 @@ body.is-outline-dragging * {
 }
 
 .notes-node[data-marker-kind="todo"] .notes-node-note-field,
-.notes-node[data-marker-kind="todo"] .notes-node-attachments,
 .notes-node[data-marker-kind="todo"] .notes-node-todo-progress {
   width: calc(
     100% - var(--notes-indent) - var(--notes-content-offset) - 26px
@@ -2226,11 +2099,6 @@ body.is-outline-dragging * {
 .notes-node-main:has(> .notes-node-arrow-slot:empty)
   > .notes-node-menu-slot {
   grid-column: 2;
-}
-
-.notes-node-main-readonly .notes-node-menu-slot {
-  width: 24px;
-  min-width: 24px;
 }
 
 .notes-child-composer {
@@ -2557,13 +2425,6 @@ body.is-outline-dragging * {
   line-height: 20px;
 }
 
-.notes-node-attachments {
-  display: grid;
-  width: calc(100% - var(--notes-indent) - var(--notes-content-offset));
-  gap: 8px;
-  margin: 4px 0 10px calc(var(--notes-indent) + var(--notes-content-offset));
-}
-
 .notes-page-attachments {
   display: grid;
   width: calc(100% - var(--notes-content-offset));
@@ -2742,10 +2603,6 @@ body.is-outline-dragging * {
   border-radius: 6px;
   background: var(--bg-hover);
   color: var(--text-3);
-}
-
-.notes-node-attachments-readonly {
-  margin-top: 2px;
 }
 
 .notes-attachment-error {
