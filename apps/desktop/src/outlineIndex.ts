@@ -1,4 +1,5 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
+import { bySiblingOrder } from "./outlineSortKeys";
 
 export class OutlineIndex {
   private readonly byId = new Map<string, NoteView>();
@@ -18,9 +19,7 @@ export class OutlineIndex {
       this.children.set(node.parentId, siblings);
     });
     for (const siblings of this.children.values()) {
-      siblings.sort((left, right) =>
-        left.sortKey - right.sortKey || left.id.localeCompare(right.id)
-      );
+      siblings.sort(bySiblingOrder);
       siblings.forEach((node, position) => {
         this.siblingPositions.set(node.id, position);
       });

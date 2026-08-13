@@ -1,5 +1,6 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { SelectionNodeMove } from "./selectionMoves";
+import { bySiblingOrder } from "./outlineSortKeys";
 
 export interface OutlineMoveTarget {
   /** `null` is the synthetic top-level entry: the outline's own root. */
@@ -34,8 +35,7 @@ export function outlineMoveTargets(
     else children.set(node.parentId, [node]);
   }
   for (const bucket of children.values()) {
-    bucket.sort((left, right) =>
-      left.sortKey - right.sortKey || left.id.localeCompare(right.id));
+    bucket.sort(bySiblingOrder);
   }
   const targets: OutlineMoveTarget[] = [
     { id: null, label: OUTLINE_MOVE_TOP_LEVEL, depth: 0 }

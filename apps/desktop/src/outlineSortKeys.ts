@@ -2,6 +2,15 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 
 export const SORT_KEY_STEP = 4_294_967_296;
 
+/**
+ * Sibling order, which every surface that walks a parent's children sorts by.
+ * The id breaks a tie: two rows can share a sortKey until the next rebalance,
+ * and a comparator that stopped at the key would order them by however the
+ * rows arrived.
+ */
+export const bySiblingOrder = (left: NoteView, right: NoteView): number =>
+  left.sortKey - right.sortKey || left.id.localeCompare(right.id);
+
 export interface SortKeyAllocation {
   readonly sortKey: number;
   readonly rebalancedSortKeys: ReadonlyMap<string, number>;
@@ -38,9 +47,7 @@ export function allocateSiblingSortKey(
       node.id !== excludeId &&
       !node.deleted
     )
-    .sort((left, right) =>
-      left.sortKey - right.sortKey || left.id.localeCompare(right.id)
-    );
+    .sort(bySiblingOrder);
   const requestedIndex = beforeId
     ? siblings.findIndex((node) => node.id === beforeId)
     : siblings.length;

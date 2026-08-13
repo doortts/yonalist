@@ -1,4 +1,5 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
+import { bySiblingOrder } from "./outlineSortKeys";
 
 export function previewDescendants(
   nodes: readonly NoteView[],
@@ -44,7 +45,5 @@ export function previewSiblings(
       node.id !== excludeId &&
       !node.deleted
     )
-    .sort((left, right) =>
-      left.sortKey - right.sortKey || left.id.localeCompare(right.id)
-    );
+    .sort(bySiblingOrder);
 }

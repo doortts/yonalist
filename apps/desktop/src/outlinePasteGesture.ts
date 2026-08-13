@@ -7,6 +7,7 @@ import {
 } from "./outlinePaste";
 import { clipboardImageCandidates } from "./imageClipboard";
 import { freshId, messageFrom } from "./storeSupport";
+import { bySiblingOrder } from "./outlineSortKeys";
 
 // The one import failure worth naming: both backends answer with this phrase
 // when the hash on the clipboard outlived the bytes it points at.
@@ -24,8 +25,7 @@ export function nextSiblingId(store: NotesStore, node: NoteView): string | null 
   const siblings = store.getSnapshot().nodes
     .filter((candidate) =>
       candidate.parentId === node.parentId && !candidate.deleted)
-    .sort((left, right) =>
-      left.sortKey - right.sortKey || left.id.localeCompare(right.id));
+    .sort(bySiblingOrder);
   const position = siblings.findIndex((candidate) => candidate.id === node.id);
   return position >= 0 ? siblings[position + 1]?.id ?? null : null;
 }

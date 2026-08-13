@@ -1,5 +1,5 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
-import { SORT_KEY_STEP } from "./outlineSortKeys";
+import { bySiblingOrder, SORT_KEY_STEP } from "./outlineSortKeys";
 import { ROOT_ID } from "./storeSupport";
 
 export function createInitialPreviewNodes(): NoteView[] {
@@ -106,9 +106,7 @@ export function previewPageNodes(
     children.set(node.parentId ?? "", siblings);
   }
   for (const siblings of children.values()) {
-    siblings.sort((left, right) =>
-      left.sortKey - right.sortKey || left.id.localeCompare(right.id)
-    );
+    siblings.sort(bySiblingOrder);
   }
   const ordered: NoteView[] = [];
   const visit = (node: NoteView): void => {

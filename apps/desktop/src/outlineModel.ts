@@ -1,4 +1,5 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
+import { bySiblingOrder } from "./outlineSortKeys";
 
 export function mergeViewport(
   current: readonly NoteView[],
@@ -32,9 +33,7 @@ export function orderOutline(
     }
   }
   for (const siblings of children.values()) {
-    siblings.sort((left, right) =>
-      left.sortKey - right.sortKey || left.id.localeCompare(right.id)
-    );
+    siblings.sort(bySiblingOrder);
   }
   const ordered: NoteView[] = [];
   const visited = new Set<string>();

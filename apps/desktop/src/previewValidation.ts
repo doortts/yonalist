@@ -1,6 +1,7 @@
 import type { IpcImportNode } from "../../../packages/contracts/generated/IpcImportNode";
 import type { IpcNotesCommand } from "../../../packages/contracts/generated/IpcNotesCommand";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
+import { bySiblingOrder } from "./outlineSortKeys";
 
 const IMAGE_CONTENT_HASH = /^[0-9a-f]{64}$/u;
 // notes-core derives an asset's extension from these four and rejects the rest.
@@ -136,9 +137,7 @@ export function validatePreviewBatch(
           node.parentId === current.parentId &&
           !node.deleted
         )
-        .sort((left, right) =>
-          left.sortKey - right.sortKey || left.id.localeCompare(right.id)
-        );
+        .sort(bySiblingOrder);
       const currentIndex = siblings.findIndex((node) => node.id === current.id);
       const eligible = current.parentId !== null &&
         previous.parentId === current.parentId &&

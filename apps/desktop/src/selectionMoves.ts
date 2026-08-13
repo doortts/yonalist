@@ -1,4 +1,5 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
+import { bySiblingOrder } from "./outlineSortKeys";
 
 export interface SelectionNodeMove {
   readonly id: string;
@@ -30,8 +31,7 @@ export function selectedCompletion(
 function siblingsOf(nodes: readonly NoteView[], parentId: string | null) {
   return nodes
     .filter((node) => node.parentId === parentId && !node.deleted)
-    .sort((left, right) =>
-      left.sortKey - right.sortKey || left.id.localeCompare(right.id));
+    .sort(bySiblingOrder);
 }
 
 export function planSelectionIndent(

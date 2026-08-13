@@ -1,6 +1,7 @@
 import type { ImageView } from "../../../packages/contracts/generated/ImageView";
 import type { IpcMarkerKind } from "../../../packages/contracts/generated/IpcMarkerKind";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
+import { bySiblingOrder } from "./outlineSortKeys";
 
 // One set for both halves of the round trip: the read side in `outlinePaste`
 // bounds what it accepts by the very numbers a copy is written under. They live
@@ -87,8 +88,7 @@ function childrenBySortKey(
     children.set(node.parentId, siblings);
   }
   for (const siblings of children.values()) {
-    siblings.sort((left, right) =>
-      left.sortKey - right.sortKey || left.id.localeCompare(right.id));
+    siblings.sort(bySiblingOrder);
   }
   return children;
 }

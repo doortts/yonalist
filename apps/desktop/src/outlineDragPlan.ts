@@ -1,5 +1,6 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { SelectionNodeMove } from "./selectionMoves";
+import { bySiblingOrder } from "./outlineSortKeys";
 
 export const OUTLINE_DRAG_INDENT_PX = 36;
 
@@ -126,8 +127,7 @@ function orderedSiblings(
 ): readonly string[] {
   return nodes
     .filter((node) => node.parentId === parentId && !node.deleted)
-    .sort((left, right) =>
-      left.sortKey - right.sortKey || left.id.localeCompare(right.id))
+    .sort(bySiblingOrder)
     .map((node) => node.id);
 }
 

@@ -4,6 +4,7 @@ import { orderOutline } from "./outlineModel";
 import {
   allocateSiblingSortKey,
   applyRebalancedSortKeys,
+  bySiblingOrder,
   SORT_KEY_STEP
 } from "./outlineSortKeys";
 import { omitKeys } from "./storeState";
@@ -135,15 +136,11 @@ export function projectRemoveEmptyNode(
   }
   const siblings = state.nodes
     .filter((node) => node.parentId === source.parentId && node.id !== id)
-    .sort((left, right) =>
-      left.sortKey - right.sortKey || left.id.localeCompare(right.id)
-    );
+    .sort(bySiblingOrder);
   const next = siblings.find((node) => node.sortKey > source.sortKey);
   const children = state.nodes
     .filter((node) => node.parentId === id)
-    .sort((left, right) =>
-      left.sortKey - right.sortKey || left.id.localeCompare(right.id)
-    );
+    .sort(bySiblingOrder);
   const nodes = state.nodes
     .filter((node) => node.id !== id)
     .map((node) => {

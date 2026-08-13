@@ -1,6 +1,7 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { PaneFocusSnapshot } from "./appNavigation";
 import { holdsCaret } from "./outlineModel";
+import { bySiblingOrder } from "./outlineSortKeys";
 
 function liveNode(
   nodes: readonly NoteView[],
@@ -19,8 +20,7 @@ function previousSiblingId(
       holdsCaret(liveNode(after, node.id)) &&
       (node.sortKey - removed.sortKey ||
         node.id.localeCompare(removed.id)) < 0)
-    .sort((left, right) =>
-      left.sortKey - right.sortKey || left.id.localeCompare(right.id))
+    .sort(bySiblingOrder)
     .at(-1)?.id ?? null;
 }
 
