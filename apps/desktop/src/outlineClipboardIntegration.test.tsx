@@ -268,10 +268,8 @@ describe("outline clipboard integration", () => {
     expect(notesApi.execute).not.toHaveBeenCalled();
   });
 
-  // The forest is whole here, so the completeness gate lets the cut through --
-  // but a note past the format's own bound leaves nothing to delete against.
-  it("refuses destructive Cut when the rows outrun the clipboard format", async () => {
-    const notesApi = api();
+  /** A row whose note runs past what the clipboard format can carry. */
+  async function selectOversizedRow(notesApi: NotesApi): Promise<void> {
     const oversized = {
       ...snapshot.viewport!.nodes[0],
       note: "x".repeat(100_001)
@@ -294,13 +292,39 @@ describe("outline clipboard integration", () => {
       { button: 0, pointerId: 61, ctrlKey: true }
     );
     await waitFor(() => expect(notesApi.queryForest).toHaveBeenCalled());
+  }
+
+  const CUT_OVER_BOUNDS =
+    "Cut is unavailable because these rows are too large for the clipboard.";
+
+  // The forest is whole here, so the completeness gate lets the cut through --
+  // but a note past the format's own bound leaves nothing to delete against.
+  it("refuses destructive Cut when the rows outrun the clipboard format", async () => {
+    const notesApi = api();
+    await selectOversizedRow(notesApi);
     const setData = vi.fn();
 
     fireEvent.cut(screen.getByRole("region", { name: "Notes outline" }), {
       clipboardData: { setData }
     });
 
+    // The size is the reason, so the size is what the pane says -- the write
+    // never ran, and blaming it would send the reader after the wrong thing.
+    await screen.findByText(CUT_OVER_BOUNDS);
     expect(setData).not.toHaveBeenCalled();
+    expect(notesApi.execute).not.toHaveBeenCalled();
+  });
+
+  // The action bar takes the asynchronous path instead of the cut event, and
+  // the same refusal has to reach the same words there.
+  it("names the size when the action bar cuts rows past the bound", async () => {
+    const notesApi = api();
+    await selectOversizedRow(notesApi);
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Cut" }));
+
+    await screen.findByText(CUT_OVER_BOUNDS);
     expect(notesApi.execute).not.toHaveBeenCalled();
   });
 

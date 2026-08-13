@@ -72,8 +72,8 @@ export function OutlineRowMenu({
     allCompleted: mode === "selection"
       ? state.allSelectedCompleted
       : node.completed,
-    // One clicked row is always a row Cut can carry whole, so the only refusal
-    // left is the selection's own -- an empty band, or a forest still loading.
+    // The band's own refusal, which only selection mode answers from: a row
+    // Cut reads the clicked row's subtree itself, off the store below.
     cutRefusal: mode === "selection" ? state.selectionCutRefusal : null,
     forestComplete: state.forestComplete,
     targetCount: mode === "selection" ? state.selectionRootIds.length : 1,

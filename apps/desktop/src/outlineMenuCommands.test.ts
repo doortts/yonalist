@@ -497,13 +497,42 @@ const DEEP: readonly NoteView[] = [
   bullet("deep", "x", 1024)
 ];
 
+/** jsdom has no ClipboardItem, so the item write is read off this one. */
+class FakeClipboardItem {
+  constructor(readonly data: Record<string, Blob>) {}
+}
+
+/** The only write a Cut accepts: one item carrying every format. */
+function stubItemClipboard(write: unknown, writeText: unknown = vi.fn()) {
+  vi.stubGlobal("ClipboardItem", FakeClipboardItem);
+  Object.defineProperty(navigator, "clipboard", {
+    value: { write, writeText },
+    configurable: true
+  });
+}
+
 describe("single-row Copy and Cut", () => {
-  function rowContext(writeText: unknown) {
-    const { store, deleteSubtree } = clipboardStore(DEEP, writeText);
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+
+  function rowContext(
+    writeText: unknown,
+    nodes: readonly NoteView[] = DEEP,
+    forestComplete = true
+  ) {
+    const { store, deleteSubtree } = clipboardStore(nodes, writeText);
     return {
       deleteSubtree,
       ctx: {
-        ...context({ mode: "row", nodes: DEEP, node: DEEP[0], rootIds: ["a"] }),
+        ...context({
+          mode: "row",
+          nodes,
+          node: nodes[0],
+          rootIds: ["a"],
+          forestComplete
+        }),
         store
       } as OutlineMenuContext
     };
@@ -525,16 +554,9 @@ describe("single-row Copy and Cut", () => {
   // jsdom has no ClipboardItem, so the row path degrades to writeText above.
   // With one present the same copy has to carry the rich payload too.
   it("carries the rich payload when the clipboard takes an item", async () => {
-    class FakeClipboardItem {
-      constructor(readonly data: Record<string, Blob>) {}
-    }
     const { ctx } = rowContext(vi.fn());
     const write = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal("ClipboardItem", FakeClipboardItem);
-    Object.defineProperty(navigator, "clipboard", {
-      value: { write },
-      configurable: true
-    });
+    stubItemClipboard(write);
 
     command("copy").execute(ctx);
 
@@ -543,27 +565,61 @@ describe("single-row Copy and Cut", () => {
     expect(await item.data["text/html"]!.text()).toBe(
       buildOutlineClipboardFormats(DEEP, {}, {}, ["a"], "session-1")!.html
     );
-    vi.unstubAllGlobals();
   });
 
   it("cuts a row by writing the subtree first and deleting only after", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const { ctx, deleteSubtree } = rowContext(vi.fn());
+    stubItemClipboard(write);
+
+    command("cut").execute(ctx);
+
+    expect(deleteSubtree).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(deleteSubtree).toHaveBeenCalledWith("a"));
+    const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
+    expect(await item.data["text/plain"]!.text())
+      .toBe("- a\n  - x\n    - deep");
+  });
+
+  it("keeps the row when the item write is refused", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const { ctx, deleteSubtree } = rowContext(vi.fn());
+    const write = vi.fn().mockRejectedValue(new Error("denied"));
+    stubItemClipboard(write, writeText);
+
+    command("cut").execute(ctx);
+    await vi.waitFor(() => expect(write).toHaveBeenCalled());
+
+    expect(deleteSubtree).not.toHaveBeenCalled();
+  });
+
+  // Plain text carries no payload, so a row deleted against it could not come
+  // back. A copy may degrade to it; a cut may not.
+  it("keeps the row when the clipboard takes plain text only", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     const { ctx, deleteSubtree } = rowContext(writeText);
 
     command("cut").execute(ctx);
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(writeText).toHaveBeenCalledWith("- a\n  - x\n    - deep");
+    expect(writeText).not.toHaveBeenCalled();
     expect(deleteSubtree).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(deleteSubtree).toHaveBeenCalledWith("a"));
   });
 
-  it("keeps the row when the clipboard write fails", async () => {
-    const writeText = vi.fn().mockRejectedValue(new Error("denied"));
-    const { ctx, deleteSubtree } = rowContext(writeText);
+  // One clicked row is not always a row Cut can carry: its subtree can outrun
+  // the clipboard format, and the snapshot it serializes from is only the
+  // window that has loaded.
+  it("refuses a row Cut the clipboard or the loaded window cannot carry", () => {
+    const oversized = DEEP.map((node) => node.id === "deep"
+      ? { ...node, note: "x".repeat(100_001) }
+      : node);
 
-    command("cut").execute(ctx);
-    await vi.waitFor(() => expect(writeText).toHaveBeenCalled());
-
-    expect(deleteSubtree).not.toHaveBeenCalled();
+    expect(command("cut").eligibility(rowContext(vi.fn()).ctx).available)
+      .toBe(true);
+    expect(unavailable("cut", rowContext(vi.fn(), oversized).ctx)).toBe(
+      "Cut is unavailable because these rows are too large for the clipboard."
+    );
+    expect(unavailable("cut", rowContext(vi.fn(), DEEP, false).ctx))
+      .toBe("The complete selection is not available yet.");
   });
 });

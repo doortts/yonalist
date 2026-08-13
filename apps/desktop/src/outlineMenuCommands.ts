@@ -6,7 +6,8 @@ import {
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
 import {
-  buildOutlineClipboardFormats, writeOutlineClipboard,
+  buildOutlineClipboardFormats, buildOutlineClipboardPayload,
+  CUT_OVER_CLIPBOARD_BOUNDS, SELECTION_INCOMPLETE, writeOutlineClipboard,
   type OutlineClipboardFormats
 } from "./outlineClipboard";
 import { OUTLINE_TAG_MAX_ROWS } from "./outlineTagEdits";
@@ -36,9 +37,9 @@ export interface OutlineMenuContext {
   /** Selection mode: every selected node is complete. Row mode: this node is. */
   readonly allCompleted: boolean;
   /**
-   * `outlineCutRefusal` over whatever Cut would delete, or `null` when the
-   * round trip is lossless. Precomputed by the caller the way `plans` is, so
-   * both modes answer from the one guard.
+   * Selection mode only: the pane's own Cut refusal over the whole band, or
+   * `null` when that round trip is lossless. Row mode answers from
+   * `rowCutRefusal` below instead, which reads the clicked row's own subtree.
    */
   readonly cutRefusal: string | null;
   /**
@@ -117,6 +118,25 @@ function rowSubtreeFormats(
     [context.node.id],
     sessionId ?? ""
   );
+}
+
+/**
+ * Why Cut is unavailable, or `null` when it can run. One clicked row is not
+ * always a row Cut can carry whole: its subtree can outrun the clipboard
+ * format, and the snapshot it serializes from is only the window that has
+ * loaded, while the delete takes the subtree the server holds.
+ */
+function rowCutRefusal(context: OutlineMenuContext): string | null {
+  if (context.mode === "selection") return context.cutRefusal;
+  if (!context.forestComplete) return SELECTION_INCOMPLETE;
+  const { nodes, drafts, noteDrafts } = context.store.getSnapshot();
+  // The payload alone, not the formats: this asks whether the subtree fits, and
+  // the base64 the full write pays for is no part of that answer.
+  return buildOutlineClipboardPayload(
+    nodes, drafts, noteDrafts, [context.node.id], ""
+  ) === null
+    ? CUT_OVER_CLIPBOARD_BOUNDS
+    : null;
 }
 
 /**
@@ -289,16 +309,20 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
     icon: () => Scissors,
     label: () => "Cut",
     binding: binding("⌘X", "Ctrl+X", "Meta+X", "Control+X"),
-    eligibility: (context) => context.cutRefusal === null
-      ? { available: true }
-      : { available: false, reason: context.cutRefusal },
+    eligibility: (context) => {
+      const refusal = rowCutRefusal(context);
+      return refusal === null
+        ? { available: true }
+        : { available: false, reason: refusal };
+    },
     execute: (context) => {
       if (context.mode === "selection") return context.selection.cut();
       const formats = rowSubtreeFormats(context);
       if (!formats) return;
       // Delete only once the clipboard actually holds the subtree; a rejected
-      // write must leave the row where it is rather than lose it.
-      void writeOutlineClipboard(formats)
+      // write, and a write that could only take the payload-less plain text,
+      // must both leave the row where it is rather than lose it.
+      void writeOutlineClipboard(formats, true)
         .then(() => context.store.deleteSubtree(context.node.id))
         .catch(() => undefined);
     }

@@ -21,7 +21,9 @@ import { OutlineIndex } from "./outlineIndex";
 import type { PaneFocusSnapshot } from "./appNavigation";
 import { useImageIngest } from "./useImageIngest";
 import { writeImageClipboard } from "./imageClipboard";
-import { buildOutlineClipboardFormats } from "./outlineClipboard";
+import {
+  buildOutlineClipboardFormats, CUT_OVER_CLIPBOARD_BOUNDS, SELECTION_INCOMPLETE
+} from "./outlineClipboard";
 import {
   focusAfterCommit, focusOutlineEditor, focusOutlineSnapshot
 } from "./outlineFocus";
@@ -41,13 +43,6 @@ const OutlineDragVisuals = lazy(() =>
   })));
 
 type SelectionPlanner = typeof import("./selectionMoves");
-
-// Cut deletes, so it may only run once the clipboard holds what it is about to
-// remove. The rich payload carries everything the old refusals used to stand in
-// for -- except a subtree past the format's own bounds, which it cannot carry
-// at all.
-const CUT_OVER_CLIPBOARD_BOUNDS =
-  "Cut is unavailable because these rows are too large for the clipboard.";
 
 export interface PaneRestoreRequest {
   readonly epoch: number;
@@ -218,7 +213,7 @@ export function NotesOutline({
   ) => {
     if (selectionOperation.current) return;
     if (!selection.forestComplete) {
-      setSelectionFeedback("The complete selection is not available yet.");
+      setSelectionFeedback(SELECTION_INCOMPLETE);
       return;
     }
     runExclusive(action);
@@ -311,7 +306,7 @@ export function NotesOutline({
   // A cut may not: the payload is the only thing that can bring the rows under
   // the image back, so without one there is nothing to delete against.
   const writeSelectionToClipboard = (payloadRequired: boolean) => {
-    if (!selectedImage) return selection.copyToSystem();
+    if (!selectedImage) return selection.copyToSystem(payloadRequired);
     const html = nodeClipboardHtml(selectedImage);
     if (!html && payloadRequired) {
       return Promise.reject(new Error(CUT_OVER_CLIPBOARD_BOUNDS));
@@ -378,6 +373,13 @@ export function NotesOutline({
   const cutImageNode = (nodeId: string) => {
     const node = index.node(nodeId);
     if (!node) return;
+    // The payload is built from the loaded window, and the delete takes the
+    // whole subtree the server holds: past the window those two disagree, so
+    // this waits on the very gate the selection commands wait on.
+    if (!selection.forestComplete) {
+      setSelectionFeedback(SELECTION_INCOMPLETE);
+      return;
+    }
     const html = nodeClipboardHtml(node);
     if (!html) {
       setSelectionFeedback(CUT_OVER_CLIPBOARD_BOUNDS);
@@ -497,8 +499,9 @@ export function NotesOutline({
           runSelectionAction(cutSelection);
           return;
         }
-        if (!selection.writeToEvent(event)) {
-          setSelectionFeedback("Could not write the selected outline to the clipboard.");
+        const refusal = selection.writeToEvent(event);
+        if (refusal) {
+          setSelectionFeedback(refusal);
           return;
         }
         runSelectionAction(() => deleteSelection().catch(() => {

@@ -377,6 +377,16 @@ export function buildOutlineClipboardFormats(
 const CUT_REFUSED_EMPTY = "Select at least one row to cut.";
 
 /**
+ * The other two reasons a Cut is turned down. They live beside the refusal
+ * above because every surface that cuts -- the pane, the selection hook, the
+ * row menu -- has to answer with the same words.
+ */
+export const CUT_OVER_CLIPBOARD_BOUNDS =
+  "Cut is unavailable because these rows are too large for the clipboard.";
+export const SELECTION_INCOMPLETE =
+  "The complete selection is not available yet.";
+
+/**
  * Why the selected subtrees cannot be cut, or `null` when the copy-then-delete
  * round trip is lossless. The payload carries the note, the marker, the tick
  * and the image hash now, so the losses this used to refuse over are no longer
@@ -409,8 +419,15 @@ export function writeOutlineClipboardEvent(
   }
 }
 
+/**
+ * `payloadRequired` is what a Cut passes. The plain text below carries no
+ * payload, so a caller that deletes against this write would delete rows
+ * nothing left on the clipboard could bring back; a copy loses nothing by
+ * degrading and keeps the fallback.
+ */
 export async function writeOutlineClipboard(
-  formats: OutlineClipboardFormats
+  formats: OutlineClipboardFormats,
+  payloadRequired = false
 ): Promise<void> {
   const clipboard = navigator.clipboard;
   if (!clipboard) throw new Error("Clipboard access is unavailable.");
@@ -425,6 +442,9 @@ export async function writeOutlineClipboard(
     } catch {
       // Some WebViews expose ClipboardItem but reject custom MIME writes.
     }
+  }
+  if (payloadRequired) {
+    throw new Error("The clipboard could not take the whole selection.");
   }
   if (typeof clipboard.writeText === "function") {
     await clipboard.writeText(formats.plain);

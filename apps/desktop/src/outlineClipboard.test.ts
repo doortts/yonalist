@@ -402,6 +402,25 @@ describe("the asynchronous outline clipboard write", () => {
     expect(await item.data["text/html"]!.text()).toBe(built.html);
   });
 
+  // The fallback carries no payload, so a caller that deletes against this
+  // write has to hear about it rather than get the plain text quietly.
+  it("refuses the fallback for a write something is deleted against", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("ClipboardItem", FakeClipboardItem);
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        write: vi.fn().mockRejectedValue(new Error("denied")),
+        writeText
+      },
+      configurable: true
+    });
+    const built = formats(nodes, ["parent"])!;
+
+    await expect(writeOutlineClipboard(built, true)).rejects.toThrow();
+
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
   it("falls back to plain text when the item write is refused", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("ClipboardItem", FakeClipboardItem);

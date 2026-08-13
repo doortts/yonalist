@@ -147,6 +147,42 @@ describe("image node structural parity", () => {
     expect(write).toHaveBeenCalledOnce();
   });
 
+  // The plain text behind a refused item write carries no payload at all: the
+  // image hash, the collapsed flag and the starred flag are gone from it, so a
+  // Cut that degraded to it would delete rows nothing could bring back.
+  it("keeps the rows when the clipboard degrades to plain text", async () => {
+    const notesApi = selectableImageApi();
+    vi.stubGlobal("ClipboardItem", FakeClipboardItem);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        write: vi.fn().mockRejectedValue(new Error("denied")),
+        writeText
+      },
+      configurable: true
+    });
+    render(<App api={notesApi} />);
+    const image = await screen.findByRole("group", { name: "Image: cat.png" });
+    fireEvent.pointerDown(image, { button: 0, pointerId: 31, ctrlKey: true });
+    fireEvent.pointerDown(screen.getByDisplayValue("Second thought"), {
+      button: 0,
+      pointerId: 32,
+      ctrlKey: true
+    });
+    await screen.findByRole("toolbar", {
+      name: "Actions for 2 selected notes"
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Cut" }));
+
+    await screen.findByText(
+      "Could not write the selected outline to the clipboard."
+    );
+    expect(writeText).not.toHaveBeenCalled();
+    expect(notesApi.execute).not.toHaveBeenCalled();
+  });
+
   it("multi-selects an image with a bullet and indents one ordered batch", async () => {
     const notesApi = appApi();
     notesApi.bootstrap = vi.fn().mockResolvedValue(imageBoot());
@@ -359,6 +395,33 @@ describe("image clipboard chords at the caret station", () => {
     await screen.findByText(
       "Cut is unavailable because these rows are too large for the clipboard."
     );
+    expect(notesApi.execute).not.toHaveBeenCalled();
+  });
+
+  // The payload is built from the loaded window alone, and a cursor is exactly
+  // the rows that window is missing: cutting here would carry half a subtree
+  // while the delete took all of it.
+  it("refuses to cut while the outline is still paginated", async () => {
+    const notesApi = selectableImageApi();
+    const boot = childBoot();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...boot,
+      viewport: { ...boot.viewport!, afterCursor: "cursor-1" }
+    });
+    // The next page never arrives, so the window stays the partial one.
+    notesApi.queryViewport = vi.fn().mockReturnValue(new Promise(() => undefined));
+    const write = stubClipboard();
+    const view = render(<App api={notesApi} />);
+    await screen.findByRole("group", { name: "Image: cat.png" });
+    const station = view.container.querySelector<HTMLElement>(
+      ".notes-image-caret-stop"
+    )!;
+    station.focus();
+
+    fireEvent.keyDown(station, { key: "x", metaKey: true });
+
+    await screen.findByText("The complete selection is not available yet.");
+    expect(write).not.toHaveBeenCalled();
     expect(notesApi.execute).not.toHaveBeenCalled();
   });
 

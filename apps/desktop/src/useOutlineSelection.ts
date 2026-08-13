@@ -6,11 +6,15 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
 import {
   buildOutlineClipboardFormats,
+  CUT_OVER_CLIPBOARD_BOUNDS,
   normalizeSelectedRoots,
   outlineCutRefusal,
+  SELECTION_INCOMPLETE,
   writeOutlineClipboard,
   writeOutlineClipboardEvent
 } from "./outlineClipboard";
+
+const WRITE_FAILED = "Could not write the selected outline to the clipboard.";
 
 export function useOutlineSelection(
   nodes: readonly NoteView[],
@@ -191,26 +195,35 @@ export function useOutlineSelection(
   const cutRefusal = useMemo(
     () => selectionComplete
       ? outlineCutRefusal(selectedContentNodes, selectedIds)
-      : "The complete selection is not available yet.",
+      : SELECTION_INCOMPLETE,
     [selectedContentNodes, selectedIds, selectionComplete]
   );
   const canCut = cutRefusal === null;
-  const writeToEvent = (event: ClipboardEvent<HTMLElement>) => {
-    if (selectedIds.length === 0) return false;
+  /**
+   * `null` once every format is on the event, or why none of them could go --
+   * the size and a refused write are different failures, and a cut has to say
+   * which one turned it down.
+   */
+  const writeToEvent = (event: ClipboardEvent<HTMLElement>): string | null => {
+    if (selectedIds.length === 0) return WRITE_FAILED;
     const formats = buildFormats();
-    if (!formats) return false;
+    if (!formats) return CUT_OVER_CLIPBOARD_BOUNDS;
     event.preventDefault();
-    return writeOutlineClipboardEvent(event.clipboardData, formats);
+    return writeOutlineClipboardEvent(event.clipboardData, formats)
+      ? null
+      : WRITE_FAILED;
   };
   const copy = (event: ClipboardEvent<HTMLElement>) => {
     writeToEvent(event);
   };
-  const copyToSystem = async () => {
+  const copyToSystem = async (payloadRequired = false) => {
     const formats = buildFormats();
     if (!formats) {
-      throw new Error("The selected outline cannot be copied.");
+      throw new Error(payloadRequired
+        ? CUT_OVER_CLIPBOARD_BOUNDS
+        : "The selected outline cannot be copied.");
     }
-    await writeOutlineClipboard(formats);
+    await writeOutlineClipboard(formats, payloadRequired);
   };
 
   return {
