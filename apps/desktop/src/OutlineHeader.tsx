@@ -6,8 +6,9 @@ import {
 import { flushSync } from "react-dom";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import {
-  handleImagePageKeyDown, handlePageKeyDown, RowMenuItem
+  handleImagePageKeyDown, handlePageKeyDown
 } from "./outlineSupport";
+import { RowMenuItem } from "./RowMenuItem";
 import { useMenuDismiss } from "./useMenuDismiss";
 import type { NotesStore } from "./notesStore";
 import type { OutlineIndex } from "./outlineIndex";

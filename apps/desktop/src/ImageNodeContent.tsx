@@ -23,7 +23,7 @@ import {
   clampImageWidth,
   imageKeyboardResizeWidth
 } from "./imageResize";
-import { RowMenuItem } from "./outlineSupport";
+import { RowMenuItem } from "./RowMenuItem";
 import { freshId } from "./storeSupport";
 import { useMenuDismiss } from "./useMenuDismiss";
 import { ImageLightbox } from "./ImageLightbox";

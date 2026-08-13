@@ -8,9 +8,10 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import { NotesStore } from "./notesStore";
 import type { OutlineIndex } from "./outlineIndex";
 import {
-  endOutlineEnterGesture, handleImagePrimaryKeyDown, handleMultilinePaste,
-  handleOutlineKeyDown, type SelectionKeyboardActions
+  endOutlineEnterGesture, handleImagePrimaryKeyDown, handleOutlineKeyDown,
+  type SelectionKeyboardActions
 } from "./outlineSupport";
+import { handleMultilinePaste } from "./outlinePasteGesture";
 import { supportingNoteFocusTarget } from "./outlineKeyboard";
 import {
   TodoCheckbox, TodoProgressIndicator, type TodoProgress

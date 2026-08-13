@@ -5,8 +5,9 @@ import {
   outlineMenuCommands, type OutlineMenuContext, type OutlineMenuMode
 } from "./outlineMenuCommands";
 import {
-  outlinePlatform, RowMenuItem, type SelectionKeyboardActions
+  outlinePlatform, type SelectionKeyboardActions
 } from "./outlineSupport";
+import { RowMenuItem } from "./RowMenuItem";
 import {
   buildSelectionMovePlans, type SelectionMovePlans
 } from "./selectionMoves";
