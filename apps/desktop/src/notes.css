@@ -1727,6 +1727,12 @@ button.notes-date-token:hover {
   --notes-indent: calc(var(--notes-depth) * var(--notes-outline-indent));
   position: relative;
   min-width: 0;
+  /* The guide below is this box's own background, so it reaches exactly as far
+     as this box does. A trailing margin on the last child -- the note field's
+     8px -- would collapse out through here and the list item alike and land
+     between the rows, where nothing paints, breaking the guide by that much.
+     flow-root keeps it in. */
+  display: flow-root;
   /* One guide per level the row sits under, each at that ancestor's bullet
      centre: the stripes start at the first bullet centre and repeat by the
      indent, and the painted width stops at the row's own depth. A row draws no
