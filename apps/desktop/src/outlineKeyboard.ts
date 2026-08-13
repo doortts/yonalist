@@ -178,17 +178,46 @@ function caretRowNear(
   return null;
 }
 
+function visiblePositionOf(
+  input: OutlineKeyInput,
+  id: string | null | undefined
+): number {
+  if (!id) return -1;
+  return input.visibleIndex?.positionOf(id) ??
+    input.visibleNodes.findIndex((candidate) => candidate.id === id);
+}
+
 /**
- * Whether a Down press is growing the band rather than giving rows back: the
- * head is below the anchor, or standing on it. An anchor the visible list has no
- * row for answers no, which leaves the head stepping one row as it always has.
+ * Where one press puts the band's far end: past every row the band holds either
+ * way. A band holding a parent holds its whole subtree, so a row whose parent the
+ * band also holds is selected wherever the head stands -- taking one in, or
+ * handing one back, spends a press and changes nothing. The head stops at the
+ * anchor, since a step past it would turn the band around, and an anchor the
+ * visible list has no row for leaves the head stepping one row as it always has.
  */
-function growingDown(input: OutlineKeyInput, headAt: number): boolean {
-  const anchorId = input.selectionAnchorId;
-  if (!anchorId) return false;
-  const anchorAt = input.visibleIndex?.positionOf(anchorId) ??
-    input.visibleNodes.findIndex((candidate) => candidate.id === anchorId);
-  return anchorAt >= 0 && headAt >= anchorAt;
+function bandHeadStep(
+  input: OutlineKeyInput,
+  headAt: number,
+  step: -1 | 1
+): number {
+  const anchorAt = visiblePositionOf(input, input.selectionAnchorId);
+  let at = headAt + step;
+  if (anchorAt < 0) return at;
+  // Growing takes the row ahead of the head in; giving rows back drops the one
+  // the head leaves behind, which sits one step outside the band it lands in.
+  const growing = (headAt - anchorAt) * step >= 0;
+  while (at !== anchorAt && at >= 0 && at < input.visibleNodes.length) {
+    const changed = input.visibleNodes[growing ? at : at - step];
+    const parentAt = visiblePositionOf(input, changed?.parentId);
+    if (
+      parentAt < Math.min(anchorAt, at) ||
+      parentAt > Math.max(anchorAt, at)
+    ) {
+      break;
+    }
+    at += step;
+  }
+  return at;
 }
 
 function validSelection(input: OutlineKeyInput): boolean {
@@ -299,22 +328,10 @@ export function resolveOutlineKey(
           input.visibleNodes.findIndex(
             (candidate) => candidate.id === currentId
           );
-        let at = index + (up ? -1 : 1);
-        // A band holding a parent holds its whole subtree, and the subtree
-        // follows the parent in visible order -- so a growing head stepping onto
-        // one of those rows spends a press and selects nothing new. Only the
-        // growing side skips: with the anchor below, every single row the head
-        // gives back changes the band.
-        if (!up && growingDown(input, index)) {
-          while (
-            at < input.visibleNodes.length &&
-            input.visibleIndex?.isDescendant(input.visibleNodes[at]!.id, currentId)
-          ) {
-            at += 1;
-          }
-        }
-        const target = input.visibleNodes[at];
-        return index >= 0 && target
+        const target = index >= 0
+          ? input.visibleNodes[bandHeadStep(input, index, up ? -1 : 1)]
+          : undefined;
+        return target
           ? { kind: "extendSelection", headId: target.id }
           : { kind: "consume" };
       }

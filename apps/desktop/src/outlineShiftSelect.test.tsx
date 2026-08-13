@@ -263,6 +263,42 @@ describe("Shift and Down across a parent that carries children", () => {
     expect(bandIds(view.container)).toEqual([...subtree, "after"]);
   });
 
+  async function bandOverSubtreeAndSibling(container: HTMLElement) {
+    const editor = await bandOverSubtree(container);
+    await press(editor, "ArrowDown", { shiftKey: true });
+    expect(bandIds(container)).toEqual([...subtree, "after"]);
+    return editor;
+  }
+
+  // The band can never fall below the anchor's own subtree, so the sizes stop at
+  // four; what the fix buys is that the presses which cannot change them are
+  // refused instead of walking the head down the subtree one child at a time.
+  it("gives the sibling back on the first press and then holds", async () => {
+    const { view } = await outline(family);
+    const editor = await bandOverSubtreeAndSibling(view.container);
+
+    const sizes = [bandIds(view.container).length];
+    for (let count = 0; count < 6; count += 1) {
+      await press(editor, "ArrowUp", { shiftKey: true });
+      sizes.push(bandIds(view.container).length);
+    }
+
+    expect(sizes).toEqual([5, 4, 4, 4, 4, 4, 4]);
+  });
+
+  // Two presses put the head back on the anchor, so the third has the whole
+  // subtree to step over and reaches the sibling again.
+  it("reaches the sibling again on the first press back down", async () => {
+    const { view } = await outline(family);
+    const editor = await bandOverSubtreeAndSibling(view.container);
+
+    await press(editor, "ArrowUp", { shiftKey: true });
+    await press(editor, "ArrowUp", { shiftKey: true });
+    await press(editor, "ArrowDown", { shiftKey: true });
+
+    expect(bandIds(view.container)).toEqual([...subtree, "after"]);
+  });
+
   it("lands the caret at the visual end of the band a bare Down drops", async () => {
     const { view } = await outline(family);
     const editor = await bandOverSubtree(view.container);

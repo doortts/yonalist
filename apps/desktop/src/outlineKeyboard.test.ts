@@ -445,7 +445,7 @@ describe("v2 outline keyboard intent resolver", () => {
 
   // Taking a parent takes its subtree, so a head walking one visible row at a
   // time spends a press per child without changing what is selected.
-  it("steps the growing head past the rows the head's subtree already holds", () => {
+  it("steps the growing head past the rows the band already holds", () => {
     expect(resolveOutlineKey(bandInput({
       selectionHeadId: "parent",
       selectionAnchorId: "parent"
@@ -481,13 +481,40 @@ describe("v2 outline keyboard intent resolver", () => {
     }))).toEqual({ kind: "consume" });
   });
 
-  it("shrinks a band one row at a time and steps one row with no anchor", () => {
-    // The anchor below the head means Down is giving rows back, and every one of
-    // those single rows changes what is selected.
+  it("gives back only the rows a shrinking band really holds", () => {
+    // The anchor below the head means Down is giving rows back. `parent` leaves
+    // the band with it, so that press changes what is selected.
     expect(resolveOutlineKey(bandInput({
       selectionHeadId: "parent",
       selectionAnchorId: "after"
     }))).toEqual({ kind: "extendSelection", headId: "kid-one" });
+    // Anchored on the parent with the head below its subtree: the sibling comes
+    // out of the band on the first press. Every row between it and the anchor is
+    // inside the anchor's subtree, so the next press has nowhere to put the head
+    // but the anchor itself, and a further one has nothing left to give.
+    expect(resolveOutlineKey(bandInput({
+      key: "ArrowUp",
+      selectionHeadId: "after",
+      selectionAnchorId: "parent"
+    }))).toEqual({ kind: "extendSelection", headId: "kid-three" });
+    expect(resolveOutlineKey(bandInput({
+      key: "ArrowUp",
+      selectionHeadId: "kid-three",
+      selectionAnchorId: "parent"
+    }))).toEqual({ kind: "extendSelection", headId: "parent" });
+    expect(resolveOutlineKey(bandInput({
+      key: "ArrowUp",
+      selectionHeadId: "parent",
+      selectionAnchorId: "parent"
+    }))).toEqual({ kind: "consume" });
+    // Growing again from a head left inside the subtree wastes no press either.
+    expect(resolveOutlineKey(bandInput({
+      selectionHeadId: "kid-two",
+      selectionAnchorId: "parent"
+    }))).toEqual({ kind: "extendSelection", headId: "after" });
+  });
+
+  it("steps one row when the band has no anchor to measure against", () => {
     expect(resolveOutlineKey(bandInput({
       selectionHeadId: "parent"
     }))).toEqual({ kind: "extendSelection", headId: "kid-one" });
@@ -495,8 +522,8 @@ describe("v2 outline keyboard intent resolver", () => {
       selectionHeadId: "parent",
       selectionAnchorId: "gone"
     }))).toEqual({ kind: "extendSelection", headId: "kid-one" });
-    // Upward is untouched: descendants follow their parent, so a head going up
-    // never lands on one.
+    // A head at the anchor going the other way starts a band upward, and the
+    // row above is outside the subtree it is about to take.
     expect(resolveOutlineKey(bandInput({
       key: "ArrowUp",
       selectionHeadId: "after",
