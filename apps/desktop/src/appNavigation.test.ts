@@ -25,6 +25,7 @@ describe("app navigation", () => {
     editor.setSelectionRange(2, 4);
 
     expect(capturePane("secondary")).toEqual({
+      paneId: "secondary",
       selectedIds: ["secondary-selected"],
       focus: {
         nodeId: "secondary-focused",

@@ -80,6 +80,7 @@ describe("pane-scoped outline focus", () => {
     let revealed: HTMLTextAreaElement | null = null;
     registerOutlinePane(scope, {
       visibleNodes: [],
+      replaceSelection: () => undefined,
       reveal: (nodeId) => {
         if (nodeId !== "offscreen") return false;
         revealed = editor(scope, nodeId, "windowed");
@@ -112,6 +113,7 @@ describe("pane-scoped outline focus", () => {
     let older: HTMLTextAreaElement | null = null;
     registerOutlinePane(scope, {
       visibleNodes: [],
+      replaceSelection: () => undefined,
       reveal: (nodeId) => {
         if (nodeId !== "older") return false;
         // The row mounts right away but the caret only lands a tick later,
@@ -136,7 +138,9 @@ describe("pane-scoped outline focus", () => {
   it("refuses to reveal a node the pane does not hold", () => {
     const scope = document.createElement("section");
     document.body.append(scope);
-    registerOutlinePane(scope, { visibleNodes: [], reveal: () => false });
+    registerOutlinePane(scope, {
+      visibleNodes: [], reveal: () => false, replaceSelection: () => undefined
+    });
 
     expect(focusOutlineEditor(scope, "missing", "start")).toBe(false);
   });

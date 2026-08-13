@@ -4,7 +4,7 @@ import type { ExportFormat } from "../../../packages/contracts/generated/ExportF
 import type { NotesExportResult } from "../../../packages/contracts/generated/NotesExportResult";
 import type { SearchPage } from "../../../packages/contracts/generated/SearchPage";
 import type { ForestSnapshot } from "../../../packages/contracts/generated/ForestSnapshot";
-import type { PaneCaret } from "./appNavigation";
+import type { PaneSnapshot } from "./appNavigation";
 import type { NotesApi } from "./api";
 import { initialNotesState, type NotesState } from "./notesState";
 import { freshId, messageFrom, ROOT_ID } from "./storeSupport";
@@ -30,7 +30,7 @@ import {
 
 export class NotesStore {
   private state: NotesState = initialNotesState;
-  private captureCaret: () => PaneCaret | null = () => null;
+  private capturePaneSnapshot: () => PaneSnapshot | null = () => null;
   private readonly listeners = new Set<() => void>();
   private readonly subscriptions: StoreSubscriptions;
   private readonly commands: StoreCommands;
@@ -45,7 +45,7 @@ export class NotesStore {
       write: (patch, invalidation) => this.update(patch, invalidation),
       applyReceipt: (receipt) => this.applyReceipt(receipt),
       flushDrafts: () => this.drafts.flushPending(),
-      captureCaret: () => this.captureCaret()
+      capturePaneSnapshot: () => this.capturePaneSnapshot()
     });
     this.images = new LazyStoreImages(api, this.commands, this.getSnapshot);
     this.drafts = new StoreDrafts({
@@ -102,11 +102,11 @@ export class NotesStore {
   }
 
   /**
-   * The app layer owns the DOM, so it hands the store a way to read the caret
-   * and the store only ever asks for it at the command seam.
+   * The app layer owns the DOM, so it hands the store a way to read what the
+   * pane holds, and the store only ever asks for it at the command seam.
    */
-  setCaretCapture(capture: () => PaneCaret | null): void {
-    this.captureCaret = capture;
+  setPaneCapture(capture: () => PaneSnapshot | null): void {
+    this.capturePaneSnapshot = capture;
   }
 
   beginBackspaceGesture(repeat: boolean): string {

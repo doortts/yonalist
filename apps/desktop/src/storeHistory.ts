@@ -1,16 +1,17 @@
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
-import type { PaneCaret } from "./appNavigation";
+import type { PaneSnapshot } from "./appNavigation";
 
 export interface NotesMutationHistoryEvent {
   readonly kind: "recordMutation";
   readonly undoDepth: number;
   readonly redoDepth: number;
   /**
-   * Where the caret sat before the first command of this entry ran, so undo
-   * can put it back instead of guessing. Null when nothing in the outline held
-   * it -- a menu click, a flush after blur.
+   * What the pane held before the first command of this entry ran -- the band
+   * and the caret -- so undo can put both back instead of guessing. Null when
+   * the outline held neither: a menu click over an empty band, a flush after
+   * blur.
    */
-  readonly caret: PaneCaret | null;
+  readonly pane: PaneSnapshot | null;
 }
 
 export class StoreHistoryEvents {
@@ -40,7 +41,7 @@ export class StoreHistoryEvents {
     group: string | null,
     previousUndoDepth: number,
     receipt: MutationReceipt,
-    caret: PaneCaret | null
+    pane: PaneSnapshot | null
   ): void {
     const coalesced = group !== null &&
       group === this.lastCommittedGroup &&
@@ -52,7 +53,7 @@ export class StoreHistoryEvents {
         kind: "recordMutation",
         undoDepth: receipt.history.undoDepth,
         redoDepth: receipt.history.redoDepth,
-        caret
+        pane
       }));
     }
     this.lastCommittedGroup = group;

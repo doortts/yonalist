@@ -7,10 +7,15 @@ export interface PaneFocusSnapshot {
   readonly selectionEnd: number;
 }
 
-/** A caret, with the pane to put it back into. */
-export interface PaneCaret {
+/**
+ * What one pane had selected and where its caret sat. Either half can stand
+ * alone: a band lives on without a caret once a toolbar button takes focus,
+ * and an ordinary edit has a caret with no band behind it.
+ */
+export interface PaneSnapshot {
   readonly paneId: PaneId;
-  readonly focus: PaneFocusSnapshot;
+  readonly selectedIds: readonly string[];
+  readonly focus: PaneFocusSnapshot | null;
 }
 
 export interface AppNavigationLocation {
@@ -30,10 +35,7 @@ export function paneScope(paneId: PaneId): HTMLElement | null {
   );
 }
 
-export function capturePane(paneId: PaneId): {
-  readonly selectedIds: readonly string[];
-  readonly focus: PaneFocusSnapshot | null;
-} {
+export function capturePane(paneId: PaneId): PaneSnapshot {
   const scope = paneScope(paneId);
   const selectedIds = scope
     ? [...scope.querySelectorAll<HTMLElement>(
@@ -48,7 +50,7 @@ export function capturePane(paneId: PaneId): {
     !(active instanceof HTMLTextAreaElement) ||
     !scope.contains(active)
   ) {
-    return { selectedIds, focus: null };
+    return { paneId, selectedIds, focus: null };
   }
   const nodeId = active.dataset.nodeId;
   const field = active.dataset.outlineField;
@@ -60,7 +62,7 @@ export function capturePane(paneId: PaneId): {
         selectionEnd: active.selectionEnd
       } satisfies PaneFocusSnapshot
     : null;
-  return { selectedIds, focus };
+  return { paneId, selectedIds, focus };
 }
 
 export function emptyPaneLocation(

@@ -75,6 +75,11 @@ export function NotesOutline({
     store.getOutlineSnapshot
   );
   const scopeRef = useRef<HTMLElement>(null);
+  // Declared ahead of the registration below, which hands history a way to put
+  // a band back; the selection hook it points at is built further down.
+  const restoreSelectionRef = useRef<(ids: readonly string[]) => void>(
+    () => undefined
+  );
   const [rowRuntime] = useState(() => new OutlineRowRuntime());
   const [showCompleted, setShowCompleted] = useState(true);
   const [selectionFeedback, setSelectionFeedback] = useState("");
@@ -114,7 +119,11 @@ export function NotesOutline({
   const reveal = outlineWindow.reveal;
   useEffect(() => {
     if (scopeRef.current) {
-      registerOutlinePane(scopeRef.current, { visibleNodes: bodyNodes, reveal });
+      registerOutlinePane(scopeRef.current, {
+        visibleNodes: bodyNodes,
+        reveal,
+        replaceSelection: (ids) => restoreSelectionRef.current(ids)
+      });
     }
   }, [bodyNodes, reveal]);
   const structuralContextComplete =
@@ -124,7 +133,6 @@ export function NotesOutline({
     `${page?.id ?? ""}:${zoomRootId ?? ""}`,
     structuralContextComplete,
     state.revision);
-  const restoreSelectionRef = useRef(selection.replace);
   restoreSelectionRef.current = selection.replace;
   const {
     materializeForest,

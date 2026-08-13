@@ -1,12 +1,13 @@
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
-import type { PaneCaret } from "./appNavigation";
+import type { PaneSnapshot } from "./appNavigation";
 import type { NotesApi } from "./api";
 import { initialNotesState, type NotesState } from "./notesState";
 import { StoreCommands } from "./storeCommands";
 
-function caret(offset: number): PaneCaret {
+function caret(offset: number): PaneSnapshot {
   return {
     paneId: "primary",
+    selectedIds: [],
     focus: {
       nodeId: "bullet-1",
       field: "title",
@@ -77,7 +78,7 @@ describe("StoreCommands", () => {
         state = { ...state, revision: next.revision };
       },
       flushDrafts: () => Promise.resolve(),
-      captureCaret: () => null
+      capturePaneSnapshot: () => null
     });
 
     const first = commands.execute({ kind: "createNode", id: "a", parent_id: "root", before_id: null, text: "A" });
@@ -115,7 +116,7 @@ describe("StoreCommands", () => {
         };
       },
       flushDrafts: () => Promise.resolve(),
-      captureCaret: () => null
+      capturePaneSnapshot: () => null
     });
     const history = vi.fn();
     commands.subscribeHistory(history);
@@ -148,14 +149,14 @@ describe("StoreCommands", () => {
         live = caret(9);
         return Promise.resolve();
       },
-      captureCaret: () => live
+      capturePaneSnapshot: () => live
     });
     const history = vi.fn();
     commands.subscribeHistory(history);
 
     await commands.execute({ kind: "setStarred", id: "bullet-1", starred: true });
 
-    expect(history.mock.calls[0][0].caret).toEqual(caret(2));
+    expect(history.mock.calls[0][0].pane).toEqual(caret(2));
   });
 
   it("gives a coalesced group the caret of its first command", async () => {
@@ -182,7 +183,7 @@ describe("StoreCommands", () => {
         };
       },
       flushDrafts: () => Promise.resolve(),
-      captureCaret: () => live
+      capturePaneSnapshot: () => live
     });
     const history = vi.fn();
     commands.subscribeHistory(history);
@@ -194,6 +195,6 @@ describe("StoreCommands", () => {
       { kind: "updateText", id: "bullet-1", text: "ab" }, "typing");
 
     expect(history).toHaveBeenCalledOnce();
-    expect(history.mock.calls[0][0].caret).toEqual(caret(1));
+    expect(history.mock.calls[0][0].pane).toEqual(caret(1));
   });
 });

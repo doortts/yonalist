@@ -3,7 +3,7 @@ import type { CommandEnvelope } from "../../../packages/contracts/generated/Comm
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { IpcNotesCommand } from "../../../packages/contracts/generated/IpcNotesCommand";
-import type { PaneCaret } from "./appNavigation";
+import type { PaneSnapshot } from "./appNavigation";
 import type { NotesApi } from "./api";
 import { initialNotesState } from "./notesState";
 import { NotesStore } from "./notesStore";
@@ -236,8 +236,9 @@ describe("how much typing one undo step covers", () => {
 
   it("gives each typing run the caret that run started from", async () => {
     const { store } = await harness();
-    const caretAt = (offset: number): PaneCaret => ({
+    const caretAt = (offset: number): PaneSnapshot => ({
       paneId: "primary",
+      selectedIds: [],
       focus: {
         nodeId: "one",
         field: "title",
@@ -246,10 +247,10 @@ describe("how much typing one undo step covers", () => {
       }
     });
     let caret = caretAt(5);
-    store.setCaretCapture(() => caret);
+    store.setPaneCapture(() => caret);
     const recorded: (number | undefined)[] = [];
     store.subscribeHistory(
-      (event) => recorded.push(event.caret?.focus.selectionStart));
+      (event) => recorded.push(event.pane?.focus?.selectionStart));
 
     store.setDraft("one", "one a");
     await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);

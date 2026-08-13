@@ -1,5 +1,5 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
-import type { PaneCaret } from "./appNavigation";
+import type { PaneSnapshot } from "./appNavigation";
 import {
   NotesInteractionHistory,
   type InteractionHistoryStore
@@ -20,7 +20,7 @@ function store() {
   const listeners = new Set<
     Parameters<InteractionHistoryStore["subscribeHistory"]>[0]
   >();
-  let capture: () => PaneCaret | null = () => null;
+  let capture: () => PaneSnapshot | null = () => null;
   const value: InteractionHistoryStore & {
     nodes: readonly NoteView[];
     readonly emitMutation: () => void;
@@ -30,7 +30,7 @@ function store() {
     undo: vi.fn().mockResolvedValue(undefined),
     redo: vi.fn().mockResolvedValue(undefined),
     breakHistoryGroup: vi.fn(),
-    setCaretCapture: (next) => {
+    setPaneCapture: (next) => {
       capture = next;
     },
     subscribeHistory(listener) {
@@ -42,15 +42,15 @@ function store() {
       canRedo: true,
       nodes: value.nodes
     }),
-    // Mirrors the command seam: the caret is read the moment the mutation
-    // starts, and the entry the store emits carries it.
+    // Mirrors the command seam: the band and the caret are read the moment the
+    // mutation starts, and the entry the store emits carries them.
     emitMutation: () => {
-      const caret = capture();
+      const pane = capture();
       listeners.forEach((listener) => listener({
         kind: "recordMutation",
         undoDepth: 1,
         redoDepth: 0,
-        caret
+        pane
       }));
     }
   };

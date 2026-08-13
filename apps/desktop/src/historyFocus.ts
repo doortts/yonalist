@@ -10,6 +10,22 @@ function liveNode(
   return nodes.find((node) => node.id === id && !node.deleted);
 }
 
+/**
+ * The recorded band, minus the rows the history step did not hand back. A band
+ * holding a row the store no longer has would leave the selection describing an
+ * outline that is not there, and every count and command read off it would be
+ * about that phantom row.
+ */
+export function liveHistorySelection(
+  selectedIds: readonly string[],
+  after: readonly NoteView[]
+): readonly string[] {
+  const live = new Set(after
+    .filter((node) => !node.deleted)
+    .map((node) => node.id));
+  return selectedIds.filter((id) => live.has(id));
+}
+
 function previousSiblingId(
   before: readonly NoteView[],
   after: readonly NoteView[],

@@ -7,6 +7,11 @@ export interface OutlinePane {
   /** Brings a row into the rendered window. False when the pane does not hold
    * that node at all. */
   readonly reveal: (nodeId: string) => boolean;
+  /**
+   * Puts a band back, an empty list clearing it. The ids are the band's whole
+   * forest, as `capturePane` reads it off the rows.
+   */
+  readonly replaceSelection: (ids: readonly string[]) => void;
 }
 
 const panes = new WeakMap<HTMLElement, OutlinePane>();

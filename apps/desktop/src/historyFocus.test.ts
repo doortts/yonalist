@@ -1,6 +1,6 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { PaneFocusSnapshot } from "./appNavigation";
-import { resolveHistoryFocus } from "./historyFocus";
+import { liveHistorySelection, resolveHistoryFocus } from "./historyFocus";
 
 function bullet(
   id: string,
@@ -139,5 +139,33 @@ describe("resolveHistoryFocus", () => {
   it("gives up when the row was never in the outline", () => {
     expect(resolveHistoryFocus(caretOn("stranger", 0), [first], [first]))
       .toBeNull();
+  });
+});
+
+describe("liveHistorySelection", () => {
+  const second = bullet("bullet-2", 2_048, "Second thought");
+
+  it("keeps a band whose rows all came back, in the order it recorded", () => {
+    expect(liveHistorySelection(
+      ["bullet-1", "bullet-2"], [second, first]
+    )).toEqual(["bullet-1", "bullet-2"]);
+  });
+
+  // A step can hand back part of what it took, and a band holding the rest
+  // would have the selection counting a row the store does not have.
+  it("drops the rows the step did not hand back", () => {
+    expect(liveHistorySelection(
+      ["bullet-1", "bullet-2"], [first]
+    )).toEqual(["bullet-1"]);
+  });
+
+  it("treats a tombstoned row as one that did not come back", () => {
+    expect(liveHistorySelection(
+      ["bullet-1", "bullet-2"], [first, { ...second, deleted: true }]
+    )).toEqual(["bullet-1"]);
+  });
+
+  it("empties a band none of whose rows came back", () => {
+    expect(liveHistorySelection(["bullet-1"], [])).toEqual([]);
   });
 });
