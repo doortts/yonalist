@@ -1727,6 +1727,20 @@ button.notes-date-token:hover {
   --notes-indent: calc(var(--notes-depth) * var(--notes-outline-indent));
   position: relative;
   min-width: 0;
+  /* One guide per level the row sits under, each at that ancestor's bullet
+     centre: the stripes start at the first bullet centre and repeat by the
+     indent, and the painted width stops at the row's own depth. A row draws no
+     stripe for itself, so a parent's guide begins at its first child and ends
+     where the rows step back out -- no element and no measuring to keep it in
+     step with the bullets. */
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--border) 0 1px,
+    transparent 1px var(--notes-outline-indent)
+  );
+  background-repeat: no-repeat;
+  background-position: var(--notes-bullet-center-offset) 0;
+  background-size: var(--notes-indent) 100%;
 }
 
 .notes-node[data-dragging="true"] {
@@ -1853,25 +1867,6 @@ button.notes-date-token:hover {
 .notes-node[data-range-selected="true"] > .notes-node-main {
   background: var(--accent-soft);
   border-radius: 4px;
-}
-
-.notes-node-guides {
-  position: absolute;
-  z-index: 0;
-  display: grid;
-  inset: 0;
-  grid-template-columns: repeat(
-    var(--notes-guide-count),
-    var(--notes-outline-indent)
-  );
-  pointer-events: none;
-}
-
-.notes-node-guide {
-  width: 1px;
-  height: 100%;
-  margin-inline-start: var(--notes-bullet-center-offset);
-  background: var(--border);
 }
 
 .notes-node-main {
