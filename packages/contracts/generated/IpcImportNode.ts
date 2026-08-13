@@ -6,4 +6,4 @@ import type { IpcMarkerKind } from "./IpcMarkerKind";
  * The fields past `text` all default, so a plain text paste keeps sending three
  * of them and a rich paste fills the rest in the same command.
  */
-export type IpcImportNode = { id: string, parentId: string, text: string, note?: string, marker?: IpcMarkerKind, completed?: boolean, image?: IpcImportImage, };
+export type IpcImportNode = { id: string, parentId: string, text: string, note?: string, marker?: IpcMarkerKind, completed?: boolean, collapsed?: boolean, starred?: boolean, image?: IpcImportImage, };

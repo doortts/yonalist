@@ -162,9 +162,9 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
           text: image ? image.originalName : imported.text,
           note: imported.note ?? "",
           marker: imported.marker ?? "bullet",
-          collapsed: false,
+          collapsed: imported.collapsed ?? false,
           completed: imported.completed ?? false,
-          starred: false,
+          starred: imported.starred ?? false,
           deleted: false
         };
         nodes.push(node);

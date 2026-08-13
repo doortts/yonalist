@@ -244,6 +244,8 @@ impl NotesTree {
         created.set_note(node.note);
         created.set_marker(node.marker);
         created.set_completed(node.completed);
+        created.set_collapsed(node.collapsed);
+        created.set_starred(node.starred);
         self.nodes.insert(id.clone(), created);
         self.place_child(&id, &parent_id, position)
     }

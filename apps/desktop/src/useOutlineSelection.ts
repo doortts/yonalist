@@ -190,20 +190,9 @@ export function useOutlineSelection(
     : null;
   const cutRefusal = useMemo(
     () => selectionComplete
-      ? outlineCutRefusal(
-        selectedContentNodes,
-        drafts,
-        noteDrafts,
-        selectedIds
-      )
+      ? outlineCutRefusal(selectedContentNodes, selectedIds)
       : "The complete selection is not available yet.",
-    [
-      selectedContentNodes,
-      drafts,
-      noteDrafts,
-      selectedIds,
-      selectionComplete
-    ]
+    [selectedContentNodes, selectedIds, selectionComplete]
   );
   const canCut = cutRefusal === null;
   const writeToEvent = (event: ClipboardEvent<HTMLElement>) => {

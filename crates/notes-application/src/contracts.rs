@@ -169,6 +169,12 @@ pub struct IpcImportNode {
     pub completed: Option<bool>,
     #[serde(default)]
     #[ts(optional)]
+    pub collapsed: Option<bool>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub starred: Option<bool>,
+    #[serde(default)]
+    #[ts(optional)]
     pub image: Option<IpcImportImage>,
 }
 

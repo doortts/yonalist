@@ -1227,6 +1227,130 @@ describe("outline clipboard integration", () => {
     expect(notesApi.execute).not.toHaveBeenCalled();
   });
 
+  /**
+   * The whole round trip in one gesture pair: a mixed band across two depths is
+   * cut, and what the paste imports is compared field for field against the
+   * rows that were cut. The restore itself is the backend's own test -- here
+   * the two undo steps are the cut's and the paste's, one command each.
+   */
+  it("carries a mixed multi-depth band through cut and back on paste", async () => {
+    const notesApi = api();
+    const rows = [
+      {
+        ...snapshot.viewport!.nodes[0],
+        id: "todo",
+        text: "Buy milk",
+        marker: "todo" as const,
+        completed: true,
+        note: "Two litres",
+        collapsed: true,
+        starred: true
+      },
+      {
+        ...snapshot.viewport!.nodes[1],
+        id: "photo",
+        parentId: "todo",
+        kind: "image" as const,
+        text: "sample.png",
+        image: COPIED_IMAGE
+      },
+      { ...snapshot.viewport!.nodes[1], id: "plain", text: "Plain thought" },
+      { ...snapshot.viewport!.nodes[2], id: "spare", text: "Spare thought" }
+    ];
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: { ...snapshot.viewport!, nodes: rows }
+    });
+    // The authoritative forest is the roots and everything under them, which is
+    // what makes the collapsed image row part of the cut.
+    notesApi.queryForest = vi.fn().mockImplementation(async (request) => ({
+      revision: snapshot.revision,
+      nodes: rows.filter((row) =>
+        request.rootIds.includes(row.id) ||
+        request.rootIds.includes(row.parentId ?? "")),
+      complete: true
+    }));
+    notesApi.undo = vi.fn().mockResolvedValue({
+      revision: 9,
+      changedNodes: [],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: true, undoDepth: 1, redoDepth: 1 }
+    });
+    render(<App api={notesApi} />);
+    fireEvent.pointerDown(await screen.findByDisplayValue("Buy milk"));
+    fireEvent.pointerDown(screen.getByDisplayValue("Plain thought"), {
+      shiftKey: true
+    });
+    await screen.findByRole("toolbar", { name: "Actions for 3 selected notes" });
+    const setData = vi.fn();
+
+    fireEvent.cut(screen.getByRole("region", { name: "Notes outline" }), {
+      clipboardData: { setData }
+    });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: { kind: "deleteSubtrees", ids: ["todo", "plain"] }
+      })
+    ));
+    const written = new Map<string, string>(setData.mock.calls as [
+      string,
+      string
+    ][]);
+
+    fireEvent.paste(screen.getByDisplayValue("Spare thought"), {
+      clipboardData: { getData: (type: string) => written.get(type) ?? "" }
+    });
+
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledTimes(2));
+    const pasted = vi.mocked(notesApi.execute).mock.calls[1]![0].command;
+    if (pasted.kind !== "importNodes") throw new Error("expected importNodes");
+    expect(pasted.nodes.map((imported) => ({
+      text: imported.text,
+      note: imported.note ?? "",
+      marker: imported.marker ?? "bullet",
+      completed: imported.completed ?? false,
+      collapsed: imported.collapsed ?? false,
+      starred: imported.starred ?? false,
+      image: imported.image ?? null
+    }))).toEqual([
+      {
+        text: "Buy milk",
+        note: "Two litres",
+        marker: "todo",
+        completed: true,
+        collapsed: true,
+        starred: true,
+        image: null
+      },
+      {
+        text: "sample.png",
+        note: "",
+        marker: "bullet",
+        completed: false,
+        collapsed: false,
+        starred: false,
+        image: COPIED_IMAGE
+      },
+      {
+        text: "Plain thought",
+        note: "",
+        marker: "bullet",
+        completed: false,
+        collapsed: false,
+        starred: false,
+        image: null
+      }
+    ]);
+    // The picture rides as a hash, never as bytes on the wire.
+    expect(notesApi.importImageBytes).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    await waitFor(() => expect(notesApi.undo).toHaveBeenCalledOnce());
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    await waitFor(() => expect(notesApi.undo).toHaveBeenCalledTimes(2));
+  });
+
   it("keeps 200 immediate draft overlays below the input latency budget", async () => {
     render(<App api={api()} />);
     const editor = await screen.findByDisplayValue("First thought");

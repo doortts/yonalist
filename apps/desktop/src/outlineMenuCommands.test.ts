@@ -377,20 +377,21 @@ describe("outline menu eligibility", () => {
     })).toBe(`Tag up to ${OUTLINE_TAG_MAX_ROWS} rows at a time.`);
   });
 
-  it("hands Cut's refusal straight through from the clipboard guard", () => {
+  // The one refusal left over from the selection: a forest still loading.
+  it("hands Cut's refusal straight through from the selection guard", () => {
     expect(command("cut").eligibility(context({ cutRefusal: null })).available)
       .toBe(true);
     expect(unavailable("cut", context({
-      cutRefusal: "Cut is unavailable because the moon is full."
-    }))).toBe("Cut is unavailable because the moon is full.");
+      cutRefusal: "The complete selection is not available yet."
+    }))).toBe("The complete selection is not available yet.");
   });
 
-  // Copy never deletes, so a title-only serialization loses nothing that was
-  // not already on screen; it stays reachable when every mutation is refused.
+  // Copy never deletes, so it loses nothing that was not already on screen; it
+  // stays reachable when every mutation is refused.
   it("keeps Copy available even where Cut and every move are refused", () => {
     const ctx = context({
       rootIds: ["a", "x"],
-      cutRefusal: "Cut is unavailable because the selection holds an image."
+      cutRefusal: "The complete selection is not available yet."
     });
 
     expect(command("copy").eligibility(ctx).available).toBe(true);

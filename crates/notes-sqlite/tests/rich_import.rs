@@ -80,6 +80,8 @@ fn paste(image: Option<IpcImportImage>) -> IpcNotesCommand {
                 note: Some("Two litres".into()),
                 marker: Some(IpcMarkerKind::Todo),
                 completed: Some(true),
+                collapsed: Some(true),
+                starred: Some(true),
                 image: None,
             },
             IpcImportNode {
@@ -116,6 +118,9 @@ fn a_rich_paste_commits_marker_note_tick_and_an_image_row_in_one_undoable_revisi
     assert_eq!(text.note(), "Two litres");
     assert_eq!(text.marker(), NoteMarkerKind::Todo);
     assert!(text.is_completed());
+    // Cut a collapsed, starred subtree and it comes back the same way round.
+    assert!(text.is_collapsed());
+    assert!(text.is_starred());
     let pasted_image = storage
         .node("pasted-image")
         .expect("query")

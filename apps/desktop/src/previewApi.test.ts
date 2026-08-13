@@ -388,7 +388,13 @@ describe("browser-only preview adapter", () => {
         parent_id: pageId,
         before_id: null,
         nodes: [
-          { id: "preview-import-root", parentId: pageId, text: "Root" },
+          {
+            id: "preview-import-root",
+            parentId: pageId,
+            text: "Root",
+            collapsed: true,
+            starred: true
+          },
           {
             id: "preview-import-child",
             parentId: "preview-import-root",
@@ -402,12 +408,18 @@ describe("browser-only preview adapter", () => {
       expect.objectContaining({
         id: "preview-import-root",
         parentId: pageId,
-        text: "Root"
+        text: "Root",
+        // The two the payload carries and the desktop lands: a subtree cut
+        // while collapsed pastes back collapsed here too.
+        collapsed: true,
+        starred: true
       }),
       expect.objectContaining({
         id: "preview-import-child",
         parentId: "preview-import-root",
-        text: "Child"
+        text: "Child",
+        collapsed: false,
+        starred: false
       })
     ]));
   });

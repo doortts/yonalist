@@ -112,6 +112,8 @@ impl TryFrom<IpcNotesCommand> for NotesCommand {
                         note,
                         marker: node.marker.unwrap_or(IpcMarkerKind::Bullet).into(),
                         completed: node.completed.unwrap_or_default(),
+                        collapsed: node.collapsed.unwrap_or_default(),
+                        starred: node.starred.unwrap_or_default(),
                         image,
                     });
                 }

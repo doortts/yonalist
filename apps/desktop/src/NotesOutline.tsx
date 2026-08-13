@@ -5,7 +5,6 @@ import {
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import { NotesStore } from "./notesStore";
 import type { NotesShellSnapshot } from "./storeSubscriptions";
-import { outlineCutRefusal } from "./outlineClipboard";
 import {
   hideCollapsedSubtrees, hideCompletedSubtrees
 } from "./outlineVisibility";
@@ -345,15 +344,10 @@ export function NotesOutline({
       await done();
     });
   };
+  // No guard left to run: the payload `writeNodeImage` puts beside the bytes
+  // carries the row's whole subtree, so a picture with a caption under it cuts
+  // and pastes back with the caption.
   const cutImageNode = (nodeId: string) => {
-    const { drafts, noteDrafts } = store.getSnapshot();
-    const refusal = outlineCutRefusal(
-      state.nodes, drafts, noteDrafts, [nodeId]
-    );
-    if (refusal) {
-      setSelectionFeedback(refusal);
-      return;
-    }
     const takeCaret = handOffCaret([nodeId]);
     putImageOnClipboard(nodeId, async () => {
       await store.deleteSubtrees([nodeId]);

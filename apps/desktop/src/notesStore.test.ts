@@ -408,6 +408,8 @@ describe("NotesStore viewport recovery", () => {
       note: "Two litres",
       marker: "todo",
       completed: true,
+      collapsed: true,
+      starred: true,
       children: [{ title: "photo.png", image, children: [] }]
     }]);
 
@@ -422,6 +424,8 @@ describe("NotesStore viewport recovery", () => {
         note: "Two litres",
         marker: "todo",
         completed: true,
+        collapsed: true,
+        starred: true,
         image: undefined
       },
       {
@@ -431,6 +435,8 @@ describe("NotesStore viewport recovery", () => {
         note: undefined,
         marker: undefined,
         completed: undefined,
+        collapsed: undefined,
+        starred: undefined,
         image
       }
     ]);

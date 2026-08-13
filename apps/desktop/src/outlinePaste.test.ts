@@ -168,7 +168,9 @@ const IMAGE = {
 const FIXTURE = [
   node("task", "page", "Ship it", 1_024, {
     marker: "todo",
-    note: "first line\n\nthird line"
+    note: "first line\n\nthird line",
+    collapsed: true,
+    starred: true
   }),
   node("done", "task", "Draft", 1_024, { marker: "todo", completed: true }),
   node("photo", "task", "photo.png", 2_048, { kind: "image", image: IMAGE }),
@@ -216,9 +218,18 @@ describe("the copy a paste reads back", () => {
         note: "first line\n\nthird line",
         marker: "todo",
         completed: false,
+        // A subtree cut while collapsed comes back collapsed, not thrown open.
+        collapsed: true,
+        starred: true,
         image: undefined
       },
-      expect.objectContaining({ id: "new-2", parentId: "new-1", text: "Draft" }),
+      expect.objectContaining({
+        id: "new-2",
+        parentId: "new-1",
+        text: "Draft",
+        collapsed: false,
+        starred: false
+      }),
       expect.objectContaining({
         id: "new-3",
         parentId: "new-1",

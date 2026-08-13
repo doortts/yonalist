@@ -102,7 +102,7 @@ describe("outline clipboard", () => {
 
     expect(normalizeSelectedRoots(unreadableNodes, [])).toEqual([]);
     expect(formats(unreadableNodes, [])).toBeNull();
-    expect(outlineCutRefusal(unreadableNodes, {}, {}, [])).toBeTruthy();
+    expect(outlineCutRefusal(unreadableNodes, [])).toBeTruthy();
   });
 
   it("normalizes selected rows to forest roots in outline order", () => {
@@ -135,96 +135,27 @@ describe("outline clipboard", () => {
     expect(plain([node("empty", "page", "", 1_024)], ["empty"])).toBe("-");
   });
 
-  it("blocks lossy Cut when a selected subtree has a note or embedded title newline", () => {
-    expect(outlineCutRefusal(
-      nodes.map((candidate) => candidate.id === "grandchild"
-        ? { ...candidate, note: "Keep this context" }
-        : candidate),
-      {},
-      {},
-      ["parent"]
-    )).toContain("supporting notes");
-    expect(outlineCutRefusal(
-      nodes,
-      { child: "line one\nline two" },
-      {},
-      ["parent"]
-    )).toContain("supporting notes");
-    expect(outlineCutRefusal(
-      nodes.map((candidate) => candidate.id === "child"
-        ? { ...candidate, note: "   " }
-        : candidate),
-      {},
-      {},
-      ["parent"]
-    )).toContain("supporting notes");
-    expect(outlineCutRefusal(nodes, {}, {}, ["parent"])).toBeNull();
-  });
-
-  // An image node's title is its filename and its bytes live outside the text,
-  // so serializing one yields `- photo.png` and the cut's delete would discard
-  // the image with nothing on the clipboard to paste it back from.
-  it("blocks Cut when an image node sits anywhere in a selected subtree", () => {
+  // Every refusal but one is gone: the payload carries the note, the marker,
+  // the tick and the image hash, so cutting them loses nothing to refuse over.
+  it("refuses an empty selection and nothing else", () => {
     const withDeepImage = nodes.map((candidate) => candidate.id === "grandchild"
       ? { ...candidate, kind: "image" as const, text: "photo.png" }
       : candidate);
-
-    expect(outlineCutRefusal(withDeepImage, {}, {}, ["parent"]))
-      .toContain("an image");
-    expect(outlineCutRefusal(withDeepImage, {}, {}, ["child"]))
-      .toContain("an image");
-    // A sibling subtree that holds no image is still cuttable.
-    expect(outlineCutRefusal(withDeepImage, {}, {}, ["sibling"])).toBeNull();
-  });
-
-  // The one image the clipboard can carry whole: its bytes go on the clipboard
-  // instead of its filename, so the cut's delete loses nothing.
-  it("allows Cut for a lone childless image", () => {
-    const withDeepImage = nodes.map((candidate) => candidate.id === "grandchild"
-      ? { ...candidate, kind: "image" as const, text: "photo.png" }
+    const noted = withDeepImage.map((candidate) => candidate.id === "child"
+      ? { ...candidate, note: "Keep this context", marker: "todo" as const }
       : candidate);
 
-    expect(outlineCutRefusal(withDeepImage, {}, {}, ["grandchild"])).toBeNull();
-    // A note on it is still lost, and so is anything under or beside it.
-    expect(outlineCutRefusal(
-      withDeepImage.map((candidate) => candidate.id === "grandchild"
-        ? { ...candidate, note: "Keep this context" }
-        : candidate),
-      {},
-      {},
-      ["grandchild"]
-    )).toContain("supporting notes");
+    expect(outlineCutRefusal(nodes, [])).toBe("Select at least one row to cut.");
+    expect(outlineCutRefusal(nodes, ["missing"]))
+      .toBe("Select at least one row to cut.");
+    // A note, a to-do, an image, an image with a child under it, a mixed band.
+    expect(outlineCutRefusal(noted, ["parent"])).toBeNull();
+    expect(outlineCutRefusal(noted, ["grandchild"])).toBeNull();
+    expect(outlineCutRefusal(noted, ["grandchild", "sibling"])).toBeNull();
     expect(outlineCutRefusal(
       [...withDeepImage, node("caption", "grandchild", "Caption", 1_024)],
-      {},
-      {},
       ["grandchild"]
-    )).toContain("an image");
-    expect(outlineCutRefusal(withDeepImage, {}, {}, ["grandchild", "sibling"]))
-      .toContain("an image");
-  });
-
-  it("names Move To as the lossless alternative in every Cut refusal", () => {
-    const refusals = [
-      outlineCutRefusal(
-        nodes.map((candidate) => candidate.id === "grandchild"
-          ? { ...candidate, kind: "image" as const }
-          : candidate),
-        {},
-        {},
-        ["parent"]
-      ),
-      outlineCutRefusal(
-        nodes.map((candidate) => candidate.id === "grandchild"
-          ? { ...candidate, note: "Keep this context" }
-          : candidate),
-        {},
-        {},
-        ["parent"]
-      )
-    ];
-
-    for (const refusal of refusals) expect(refusal).toContain("Move To");
+    )).toBeNull();
   });
 
   it("writes plain text, Markdown and the rich HTML from one copy", () => {

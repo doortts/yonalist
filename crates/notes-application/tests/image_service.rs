@@ -422,6 +422,7 @@ fn pasted_outline(hash_digit: char) -> IpcNotesCommand {
                 marker: Some(IpcMarkerKind::Todo),
                 completed: Some(true),
                 image: None,
+                ..IpcImportNode::default()
             },
             IpcImportNode {
                 id: "pasted-image".into(),

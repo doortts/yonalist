@@ -38,6 +38,8 @@ fn imported(node_id: &str, parent_id: &str, text: &str) -> ImportNode {
         note: String::new(),
         marker: NoteMarkerKind::Bullet,
         completed: false,
+        collapsed: false,
+        starred: false,
         image: None,
     }
 }
@@ -515,6 +517,8 @@ fn importing_carries_marker_note_tick_and_an_image_reference_in_one_patch() {
                     note: "Two litres".into(),
                     marker: NoteMarkerKind::Todo,
                     completed: true,
+                    collapsed: true,
+                    starred: true,
                     ..imported("todo", "page", "Buy milk")
                 },
                 ImportNode {
@@ -530,6 +534,9 @@ fn importing_carries_marker_note_tick_and_an_image_reference_in_one_patch() {
     assert_eq!(todo.note(), "Two litres");
     assert_eq!(todo.marker(), NoteMarkerKind::Todo);
     assert!(todo.is_completed());
+    // A collapsed subtree pastes back collapsed, and a starred row starred.
+    assert!(todo.is_collapsed());
+    assert!(todo.is_starred());
     let picture = tree.node(&id("picture")).unwrap();
     assert_eq!(picture.kind(), NoteNodeKind::Image);
     assert_eq!(picture.text(), "sample.png");

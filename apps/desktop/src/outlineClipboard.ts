@@ -375,62 +375,22 @@ export function buildOutlineClipboardFormats(
 }
 
 const CUT_REFUSED_EMPTY = "Select at least one row to cut.";
-const CUT_REFUSED_RICH_TEXT =
-  "Cut is unavailable because the selected subtrees contain supporting " +
-  "notes or multiline titles. Use Move To to preserve rich content.";
-// The clipboard carries titles only, and an image node's title is just its
-// filename — the bytes live outside the text. Serializing one writes
-// `- photo.png`, so cutting it would delete the image with nothing on the
-// clipboard able to paste it back. The one exception is a lone childless
-// image: `writeImageClipboard` puts its bytes on the clipboard instead of its
-// filename, which is the only shape that round trip covers.
-const CUT_REFUSED_IMAGE =
-  "Cut is unavailable because the selected subtrees contain an image. " +
-  "Use Move To to preserve the image.";
 
 /**
  * Why the selected subtrees cannot be cut, or `null` when the copy-then-delete
- * round trip is lossless. Cut is the only clipboard command that deletes, so
- * every case the title-only format cannot carry has to refuse here rather than
- * silently discard the part it could not serialize.
+ * round trip is lossless. The payload carries the note, the marker, the tick
+ * and the image hash now, so the losses this used to refuse over are no longer
+ * losses -- an empty selection is all there is left to turn down. The pane's
+ * own gate on an incomplete forest is a separate one and lives with the
+ * selection.
  */
 export function outlineCutRefusal(
   nodes: readonly NoteView[],
-  drafts: Readonly<Record<string, string>>,
-  noteDrafts: Readonly<Record<string, string>>,
   selectedIds: readonly string[]
 ): string | null {
-  const roots = new Set(normalizeSelectedRoots(nodes, selectedIds));
-  if (roots.size === 0) return CUT_REFUSED_EMPTY;
-  const byId = new Map(nodes.map((node) => [node.id, node]));
-  const [onlyRoot] = roots;
-  const carriedImageId = roots.size === 1 &&
-    byId.get(onlyRoot!)?.kind === "image" &&
-    !nodes.some((node) => node.parentId === onlyRoot && !node.deleted)
-    ? onlyRoot
+  return normalizeSelectedRoots(nodes, selectedIds).length === 0
+    ? CUT_REFUSED_EMPTY
     : null;
-  let refusal: string | null = null;
-  for (const node of nodes) {
-    let current: NoteView | undefined = node;
-    const visited = new Set<string>();
-    let selectedSubtree = false;
-    while (current && visited.add(current.id)) {
-      if (roots.has(current.id)) {
-        selectedSubtree = true;
-        break;
-      }
-      current = current.parentId ? byId.get(current.parentId) : undefined;
-    }
-    if (!selectedSubtree) continue;
-    // An image outranks a note: it is the loss the user cannot see coming.
-    if (node.kind === "image" && node.id !== carriedImageId) {
-      return CUT_REFUSED_IMAGE;
-    }
-    const title = drafts[node.id] ?? node.text;
-    const note = noteDrafts[node.id] ?? node.note;
-    if (/[\r\n]/u.test(title) || note.length > 0) refusal = CUT_REFUSED_RICH_TEXT;
-  }
-  return refusal;
 }
 
 export function writeOutlineClipboardEvent(

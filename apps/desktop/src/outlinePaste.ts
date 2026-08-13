@@ -15,6 +15,8 @@ export interface PastedOutlineNode {
   readonly note?: string;
   readonly marker?: IpcMarkerKind;
   readonly completed?: boolean;
+  readonly collapsed?: boolean;
+  readonly starred?: boolean;
   /** The bytes stay in the asset store; the import references them by hash. */
   readonly image?: IpcImportImage;
   readonly children: PastedOutlineNode[];
@@ -29,6 +31,9 @@ export function pastedOutlineFromPayload(
     note: node.note,
     marker: node.marker,
     completed: node.completed,
+    // A collapsed subtree pastes back collapsed rather than thrown open.
+    collapsed: node.collapsed,
+    starred: node.starred,
     // Field for field rather than a spread: what crosses to the command is the
     // wire shape, not whatever the view type happens to carry.
     image: node.image
@@ -65,6 +70,8 @@ export function flattenPastedOutline(
       note: source.note,
       marker: source.marker,
       completed: source.completed,
+      collapsed: source.collapsed,
+      starred: source.starred,
       image: source.image
     });
     source.children.forEach((child) => append(child, id));

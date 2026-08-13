@@ -314,14 +314,30 @@ describe("image clipboard chords at the caret station", () => {
     ).toHaveFocus());
   });
 
-  it("refuses to cut an image that carries a child", async () => {
+  // What the refusal used to stand in for: the caption goes with the picture,
+  // and both come back off the payload the write carried.
+  it("cuts an image that carries a child, subtree and all", async () => {
     const { notesApi, write, station } = await stationOf(childBoot());
 
     fireEvent.keyDown(station, { key: "x", metaKey: true });
 
-    await screen.findByText(/Cut is unavailable/u);
-    expect(write).not.toHaveBeenCalled();
-    expect(notesApi.execute).not.toHaveBeenCalled();
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: { kind: "deleteSubtrees", ids: ["image"] }
+      })
+    ));
+    expect(write).toHaveBeenCalledOnce();
+    const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
+    const html = await (await item.data["text/html"]!).text();
+    const marker = "<!--yonalist-outline-clipboard:";
+    const payload = JSON.parse(new TextDecoder().decode(Uint8Array.from(
+      atob(html.slice(marker.length, html.indexOf("-->"))),
+      (character: string) => character.charCodeAt(0)
+    )));
+    expect(payload.nodes).toEqual([expect.objectContaining({
+      text: "cat.png",
+      children: [expect.objectContaining({ text: "Caption thought" })]
+    })]);
   });
 
   it("hands a selected image to the selection path, writing once", async () => {

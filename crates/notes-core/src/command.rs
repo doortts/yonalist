@@ -10,6 +10,8 @@ pub struct ImportNode {
     pub note: String,
     pub marker: NoteMarkerKind,
     pub completed: bool,
+    pub collapsed: bool,
+    pub starred: bool,
     /// An imported node may reference an image asset that already exists; the
     /// bytes are never carried through the command.
     pub image: Option<NoteImage>,
