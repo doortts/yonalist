@@ -127,7 +127,27 @@ function cutBand(): void {
   });
 }
 
+/**
+ * jsdom ships neither half of the asynchronous clipboard, so the toolbar Cut
+ * below defines both -- and a definition left standing outlives the test that
+ * wanted it, handing every test after it a clipboard the app can write to.
+ */
+const CLIPBOARD_GLOBALS = [
+  [navigator, "clipboard"],
+  [globalThis, "ClipboardItem"]
+] as const;
+const nativeClipboard = CLIPBOARD_GLOBALS.map(([host, key]) =>
+  Object.getOwnPropertyDescriptor(host, key));
+
 describe("history band", () => {
+  afterEach(() => {
+    CLIPBOARD_GLOBALS.forEach(([host, key], at) => {
+      const native = nativeClipboard[at];
+      if (native) Object.defineProperty(host, key, native);
+      else Reflect.deleteProperty(host, key);
+    });
+  });
+
   it("puts the cut band back on undo and takes it away on redo", async () => {
     const notesApi = api();
     render(<App api={notesApi} />);
@@ -158,13 +178,23 @@ describe("history band", () => {
       .toBeInTheDocument();
 
     // And a redo lands on the far side of the cut again: the rows go, and the
-    // band restored a moment ago goes with them.
+    // empty band the cut left behind is what redo owes back. Read off the cut
+    // rows that would prove nothing -- the selection drops them as they are
+    // deleted, cleared or not -- so the band under test is one raised in the
+    // meantime, on rows the redo keeps.
+    fireEvent.pointerDown(screen.getByDisplayValue("CUT ME THREE"));
+    fireEvent.pointerDown(screen.getByDisplayValue("KEEP ME"), {
+      shiftKey: true
+    });
+    await screen.findByRole("toolbar", { name: "Actions for 2 selected notes" });
+
     await press("z", true);
 
     await waitFor(() => expect(notesApi.redo).toHaveBeenCalledOnce());
     await waitFor(() => expect(screen.queryByDisplayValue("CUT ME")).toBeNull());
-    expect(screen.queryByRole("toolbar", { name: /selected notes/ }))
-      .toBeNull();
+    await waitFor(() => expect(
+      screen.queryByRole("toolbar", { name: /selected notes/ })
+    ).toBeNull());
   });
 
   // The band's far end is the last row it recorded, and the chord that grows a
@@ -243,6 +273,9 @@ describe("history band", () => {
     });
   });
 
+  // A guard over what the band work had to leave standing, not a test of it:
+  // this passes on the commit before as well, and is here so the caret-only
+  // entry keeps working now that the band shares its snapshot.
   it("restores the caret alone when the command had no band", async () => {
     const notesApi = api();
     render(<App api={notesApi} />);
