@@ -1,4 +1,6 @@
-use notes_application::{CommandEnvelope, HistoryRequest, IpcNotesCommand, NotesService};
+use notes_application::{
+    CommandEnvelope, HistoryRequest, IpcImportNode, IpcNotesCommand, NotesService,
+};
 use notes_core::NodeId;
 use notes_sqlite::SqliteStorage;
 
@@ -142,6 +144,63 @@ fn undoing_a_coalesced_parent_merge_restores_the_row_it_re_inserts() {
 
     service.undo(history(storage.revision().unwrap())).unwrap();
     assert_restored(&storage);
+}
+
+// A paste aimed at an empty bullet is two commands — the import, then the blank
+// row's removal — sent under one history group. Coalescing keys on the group
+// alone, so the gesture stays one undo: the entry that takes the pasted rows
+// back is the same one that puts the blank row back.
+#[test]
+fn undoing_a_paste_over_a_blank_row_restores_both_in_one_step() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let service = NotesService::new(&storage, "session", 0);
+    seed(&storage, &service, &[("blank", "page", "")]);
+
+    let imported = service
+        .execute(command(
+            "import",
+            storage.revision().unwrap(),
+            Some("paste:1"),
+            IpcNotesCommand::ImportNodes {
+                parent_id: "page".into(),
+                before_id: None,
+                nodes: vec![
+                    IpcImportNode {
+                        id: "pasted".into(),
+                        parent_id: "page".into(),
+                        text: "붙인 줄".into(),
+                        ..IpcImportNode::default()
+                    },
+                    IpcImportNode {
+                        id: "pasted-child".into(),
+                        parent_id: "pasted".into(),
+                        text: "그 아래".into(),
+                        ..IpcImportNode::default()
+                    },
+                ],
+            },
+        ))
+        .unwrap();
+    let removed = service
+        .execute(command(
+            "remove",
+            storage.revision().unwrap(),
+            Some("paste:1"),
+            IpcNotesCommand::RemoveEmptyNode {
+                id: "blank".into(),
+            },
+        ))
+        .unwrap();
+
+    // The removal joined the import's entry rather than pushing one of its own.
+    assert_eq!(removed.history.undo_depth, imported.history.undo_depth);
+    assert!(storage.node("blank").unwrap().is_none());
+
+    service.undo(history(storage.revision().unwrap())).unwrap();
+
+    assert_eq!(storage.node("blank").unwrap().unwrap().text(), "");
+    assert!(storage.node("pasted").unwrap().is_none());
+    assert!(storage.node("pasted-child").unwrap().is_none());
 }
 
 // The plain empty-row backspace coalesces the same way: the blanking edit and

@@ -177,7 +177,9 @@ export function handleMultilinePaste(
   // One gesture, one undo step: the removal carries the import's own history
   // group, which is what folds the two commands into a single entry. A paste
   // past the coalescer's own 256-mutation bound is the one that still takes
-  // two, and two steps there beat one entry too large to hold.
+  // two, and two steps there beat one entry too large to hold. The browser
+  // preview backend coalesces nothing -- every command is its own entry there,
+  // so the same gesture takes two undos in `npm run dev`.
   const historyGroup = replaced ? `paste:${freshId()}` : null;
   void store.importOutline(
     landing.parentId,
