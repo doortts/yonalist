@@ -1954,17 +1954,12 @@ body.is-outline-dragging * {
   background: currentColor;
 }
 
-.notes-node[data-empty-bullet="true"] .notes-node-bullet-dot,
-.notes-node[data-marker-kind="todo"] .notes-node-bullet-dot {
+.notes-node[data-empty-bullet="true"] .notes-node-bullet-dot {
   opacity: 0;
 }
 
 .notes-node[data-empty-bullet="true"]
   .notes-node-main:has(.notes-node-title-field:focus-within)
-  .notes-node-bullet-dot,
-.notes-node[data-marker-kind="todo"] .notes-node-main:hover
-  .notes-node-bullet-dot,
-.notes-node[data-marker-kind="todo"] .notes-node-main:focus-within
   .notes-node-bullet-dot {
   opacity: 1;
 }
