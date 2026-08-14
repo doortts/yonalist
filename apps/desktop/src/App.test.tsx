@@ -52,6 +52,70 @@ describe("Yonalist v2 desktop shell", () => {
     expect(notesApi.queryViewport).not.toHaveBeenCalled();
   });
 
+  it("lists Pages above Library and keeps search behind the header icon", async () => {
+    render(<App api={api()} />);
+    await screen.findByRole("heading", { name: "Yonalist" });
+
+    const headings = screen.getAllByRole("heading", { level: 2 })
+      .map((heading) => heading.textContent);
+    expect(headings.indexOf("Pages")).toBeLessThan(headings.indexOf("Library"));
+    expect(screen.queryByRole("searchbox", { name: "Search Yonalist" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    const search = screen.getByRole("searchbox", { name: "Search Yonalist" });
+    expect(document.querySelector(".yonalist-navigation-header"))
+      .toHaveAttribute("data-search-open", "true");
+
+    // A field with a query survives losing focus: its results are below it, and
+    // clicking one means clicking away from the field.
+    fireEvent.change(search, { target: { value: "thought" } });
+    fireEvent.blur(search);
+    expect(screen.getByRole("searchbox", { name: "Search Yonalist" })).toBeVisible();
+
+    fireEvent.keyDown(search, { key: "Escape" });
+    expect(screen.queryByRole("searchbox", { name: "Search Yonalist" })).toBeNull();
+    expect(document.querySelector(".notes-search-results")).toBeNull();
+  });
+
+  it("closes an empty search field as soon as it loses focus", async () => {
+    render(<App api={api()} />);
+    await screen.findByRole("heading", { name: "Yonalist" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    fireEvent.blur(screen.getByRole("searchbox", { name: "Search Yonalist" }));
+
+    expect(screen.queryByRole("searchbox", { name: "Search Yonalist" })).toBeNull();
+  });
+
+  it("opens the library search from the platform find shortcut", async () => {
+    render(<App api={api()} />);
+    const row = await screen.findByDisplayValue<HTMLTextAreaElement>(
+      "First thought"
+    );
+
+    // From inside a row textarea: the window has no menu bar, so Cmd+F has to
+    // reach the search from wherever the caret happens to be.
+    fireEvent.keyDown(row, { key: "f", metaKey: true, ctrlKey: true });
+
+    expect(screen.getByRole("searchbox", { name: "Search Yonalist" }))
+      .toHaveFocus();
+  });
+
+  it("shows a control's shortcut under it only while the modifier is held", async () => {
+    render(<App api={api()} />);
+    await screen.findByRole("heading", { name: "Yonalist" });
+    const hint = document.querySelector(".shortcut-hint");
+    expect(hint?.textContent).toMatch(/F$/u);
+
+    fireEvent.keyDown(window, { key: "Meta" });
+    fireEvent.keyDown(window, { key: "Control" });
+    expect(document.documentElement).toHaveAttribute("data-modifier-held");
+
+    // Cmd+Tab leaves with the key still down, so no keyup ever arrives.
+    fireEvent.blur(window);
+    expect(document.documentElement).not.toHaveAttribute("data-modifier-held");
+  });
+
   it("creates the first bullet from the current Add child composer", async () => {
     const notesApi = api();
     notesApi.bootstrap = vi.fn().mockResolvedValue({
@@ -1295,12 +1359,16 @@ describe("Yonalist v2 desktop shell", () => {
     expect(house).toBeDisabled();
     expect(house).toHaveAttribute("aria-current", "page");
     expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
-      "aria-pressed",
-      "true"
+      "aria-current",
+      "page"
     );
-    expect(document.querySelectorAll(
+    // Home is a row of the Pages list too -- its first one -- so on home that
+    // row is the active one and no real page row is.
+    const activeRows = document.querySelectorAll(
       ".notes-library-page-row[data-active='true']"
-    )).toHaveLength(0);
+    );
+    expect(activeRows).toHaveLength(1);
+    expect(activeRows[0]).toHaveTextContent("All");
     expect(screen.queryByDisplayValue("First thought")).toBeNull();
     // Adding a page is adding a child of the root, so home keeps the composer.
     expect(screen.getByRole("button", { name: "Add child" })).toBeVisible();
@@ -1362,14 +1430,25 @@ describe("Yonalist v2 desktop shell", () => {
 
     await waitFor(() => expect(screen.getByDisplayValue("Backlog"))
       .toHaveAttribute("aria-label", "Page title"));
-    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
-      "aria-pressed",
-      "false"
-    );
+    expect(screen.getByRole("button", { name: "All" }))
+      .not.toHaveAttribute("aria-current");
     expect(within(sidebar).getByRole("button", {
       name: "Backlog",
       current: "page"
     })).toBeVisible();
+  });
+
+  it("keeps the All row reachable while a filtered view is on", async () => {
+    render(<App api={homeApi()} />);
+    await screen.findByDisplayValue("First thought");
+
+    fireEvent.click(screen.getByRole("button", { name: "Trash" }));
+    // The page rows go away with the filter, but the way back must not.
+    expect(screen.queryByRole("button", { name: "Backlog" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+
+    await homeRow("Today");
+    expect(screen.getByRole("button", { name: "Backlog" })).toBeVisible();
   });
 
   it("zooms a home row and comes back through the breadcrumb house", async () => {

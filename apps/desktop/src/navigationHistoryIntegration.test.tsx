@@ -217,6 +217,7 @@ describe("who owns the Undo shortcut", () => {
     const notesApi = api();
     await withSomethingToUndo(notesApi);
 
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
     const search = screen.getByRole("searchbox", { name: "Search Yonalist" });
     const delivered = fireEvent.keyDown(search, { key: "z", ctrlKey: true });
 

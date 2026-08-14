@@ -692,6 +692,7 @@ body.is-resizing-pane {
 }
 
 .yonalist-navigation-header {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -714,6 +715,29 @@ body.is-resizing-pane {
   flex-shrink: 0;
   align-items: center;
   gap: 4px;
+}
+
+/* App-wide: a control's own shortcut sits under it while the modifier is held.
+   The host control carries `position: relative`; the hint paints nothing until
+   `useShortcutHints` marks the document. */
+.shortcut-hint {
+  position: absolute;
+  top: calc(100% + 1px);
+  left: 50%;
+  display: none;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--bg-active);
+  color: var(--text-3);
+  font-size: 10px;
+  line-height: 15px;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+[data-modifier-held] .shortcut-hint {
+  display: block;
 }
 
 .yonalist-navigation-scroll {

@@ -1,4 +1,4 @@
-import { Plus, Search, Settings } from "lucide-react";
+import { House, Plus, Search, Settings } from "lucide-react";
 import {
   lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState,
   useSyncExternalStore, type CSSProperties
@@ -14,7 +14,9 @@ import { LibraryViewButtons, type LibraryView } from "./LibraryViewButtons";
 import { LibraryPageRow } from "./LibraryPageRow";
 import type { PaneRestoreRequest } from "./NotesOutline";
 import { NotesInteractionHistory } from "./notesInteractionHistory";
-import { isDevtoolsShortcut, toggleDevtools } from "./devtools";
+import {
+  isDevtoolsShortcut, isDragDebugShortcut, toggleDevtools
+} from "./devtools";
 import {
   capturePane,
   emptyPaneLocation,
@@ -23,6 +25,7 @@ import {
 import { NotesDetailPanes } from "./NotesDetailPanes";
 import { ROOT_ID } from "./storeSupport";
 import type { OutlineTagToken } from "./OutlineTextField";
+import { ShortcutHint, useShortcutHints } from "./shortcutHints";
 const SearchPanel = lazy(() => import("./SearchPanel").then((module) =>
   ({ default: module.SearchPanel })));
 // Settings pulls in @base-ui/react, which costs ~12KB gzip of first paint the
@@ -32,6 +35,7 @@ const SettingsView = lazy(() => import("./SettingsView").then((module) =>
 
 export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   const theme = useTheme();
+  useShortcutHints();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const store = useMemo(() => new NotesStore(api), [api]);
   const state = useSyncExternalStore(
@@ -40,6 +44,12 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     store.getShellSnapshot
   );
   const [query, setQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInput = useRef<HTMLInputElement | null>(null);
+  const closeSearch = useCallback(() => {
+    setQuery("");
+    setSearchOpen(false);
+  }, []);
   const [libraryView, setLibraryView] = useState<LibraryView>("all");
   const [sidebarWidth, setSidebarWidth] = useState(336);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -99,7 +109,24 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
         void toggleDevtools();
         return;
       }
+      // Purely a paint on the document element, so it needs no React state and
+      // cannot re-render (or re-mount a textarea) out from under a drag test.
+      if (isDragDebugShortcut(event)) {
+        event.preventDefault();
+        document.documentElement.toggleAttribute("data-drag-debug");
+        return;
+      }
       const modifier = navigator.platform.includes("Mac") ? event.metaKey : event.ctrlKey;
+      // The library search is the window's only find, so Cmd+F reaches it from
+      // anywhere, including from inside a row textarea.
+      if (modifier && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setSearchOpen(true);
+        // Already open: the field is mounted, so nothing re-runs its autoFocus
+        // and the caret has to be sent back by hand.
+        searchInput.current?.focus();
+        return;
+      }
       if (!modifier || event.key.toLowerCase() !== "z") return;
       // Every other text field on screen -- the library search, the Move To
       // and Tags filters -- keeps its own native undo. The outline's row and
@@ -348,9 +375,55 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       />
       <nav className="yonalist-navigation-pane" aria-label="Navigation" data-active-feature="notes">
         <div className="pane-titlebar-spacer" />
-        <header className="yonalist-navigation-header">
+        <header
+          className="yonalist-navigation-header"
+          data-tauri-drag-region="deep"
+          data-search-open={searchOpen ? "true" : undefined}
+        >
           <h1>Yonalist</h1>
-          <div className="yonalist-navigation-header-actions" />
+          {/* The field grows out of the icon's own place and over the title, so
+              the icon has to stop being a button once it is the field's leading
+              glyph: a click on it inside an open field would otherwise blur the
+              input and take the toggle with it. Escape and blur close it. */}
+          <div className="notes-search-field">
+            {searchOpen ? (
+              <>
+                <Search size={15} aria-hidden="true" />
+                <input
+                  ref={searchInput}
+                  type="search"
+                  aria-label="Search Yonalist"
+                  placeholder="Search Yonalist"
+                  autoFocus
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Escape") return;
+                    event.stopPropagation();
+                    closeSearch();
+                  }}
+                  // An empty field has nothing to lose, so it goes as soon as
+                  // it loses focus. A field with a query stays: its results are
+                  // below it, and reaching one means clicking away from it.
+                  onBlur={() => {
+                    if (query.trim().length === 0) setSearchOpen(false);
+                  }}
+                />
+              </>
+            ) : (
+              <button
+                className="notes-library-icon-button"
+                type="button"
+                aria-label="Search"
+                aria-expanded={false}
+                aria-keyshortcuts="Meta+F Control+F"
+                onClick={() => setSearchOpen(true)}
+              >
+                <Search size={16} aria-hidden="true" />
+                <ShortcutHint mac="⌘F" other="Ctrl+F" />
+              </button>
+            )}
+          </div>
         </header>
         <div className="yonalist-navigation-scroll">
           <section
@@ -359,6 +432,20 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             aria-busy={state.status === "loading"}
           >
             <div className="notes-library-discovery">
+              {/* Results lead the pane so they sit right under the field they
+                  came from, instead of below the New page button. */}
+              {libraryQuery && (
+                <Suspense fallback={<p className="notes-pane-state">Searching...</p>}>
+                  <SearchPanel
+                    query={libraryQuery}
+                    store={store}
+                    onOpen={(pageId) => {
+                      closeSearch();
+                      void openPage(pageId);
+                    }}
+                  />
+                </Suspense>
+              )}
               <button
                 className="primary-button notes-new-page"
                 type="button"
@@ -368,59 +455,65 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                 <Plus size={16} aria-hidden="true" />
                 <span>New page</span>
               </button>
-              <label className="notes-search-field">
-                <Search size={15} aria-hidden="true" />
-                <input
-                  type="search"
-                  aria-label="Search Yonalist"
-                  placeholder="Search Yonalist"
-                  value={query}
-                  onChange={(event) => setQuery(event.target.value)}
-                />
-              </label>
-              {libraryQuery && (
-                <Suspense fallback={<p className="notes-pane-state">Searching...</p>}>
-                  <SearchPanel
-                    query={libraryQuery}
-                    store={store}
-                    onOpen={(pageId) => {
-                      setQuery("");
-                      void openPage(pageId);
-                    }}
-                  />
-                </Suspense>
-              )}
-              <section className="notes-navigation-section" aria-labelledby="library-title">
-                <h2 id="library-title" className="eyebrow">Library</h2>
-                <div className="notes-library-views" role="group" aria-label="Yonalist library views">
-                  <LibraryViewButtons
-                    active={atHome ? libraryView : null}
-                    onSelect={(view) => {
-                      setLibraryView(view);
-                      setQuery("");
-                      openHome();
-                    }}
-                  />
-                </div>
-              </section>
             </div>
             <section
               className="notes-navigation-section notes-navigation-pages"
               aria-labelledby="pages-title"
-              hidden={libraryView !== "all" || query.trim().length > 0}
             >
               <h2 id="pages-title" className="eyebrow">Pages</h2>
               <div className="notes-library-list">
-                {state.pages.map((page) => (
-                  <LibraryPageRow
-                    key={page.id}
-                    page={page}
-                    active={page.id === state.activePageId}
-                    store={store}
-                    onOpen={() => void openPage(page.id)}
-                    onDelete={() => deletePage(page.id)}
-                  />
-                ))}
+                {/* Home is the root page and no page's row, so the list leads
+                    with its own entry instead of one from state.pages. It also
+                    stays put while a filtered view or a search is on, since it
+                    is the way back out of both. */}
+                <div
+                  className="notes-library-page-row"
+                  data-active={atHome && libraryView === "all" ? "true" : undefined}
+                >
+                  <button
+                    className="notes-library-page"
+                    type="button"
+                    aria-current={
+                      atHome && libraryView === "all" ? "page" : undefined
+                    }
+                    onClick={() => {
+                      setLibraryView("all");
+                      setQuery("");
+                      openHome();
+                    }}
+                  >
+                    <House size={16} aria-hidden="true" />
+                    <span>All</span>
+                  </button>
+                </div>
+                {libraryView === "all" &&
+                  query.trim().length === 0 &&
+                  state.pages.map((page) => (
+                    <LibraryPageRow
+                      key={page.id}
+                      page={page}
+                      active={page.id === state.activePageId}
+                      store={store}
+                      onOpen={() => void openPage(page.id)}
+                      onDelete={() => deletePage(page.id)}
+                    />
+                  ))}
+              </div>
+            </section>
+            <section
+              className="notes-navigation-section notes-navigation-library"
+              aria-labelledby="library-title"
+            >
+              <h2 id="library-title" className="eyebrow">Library</h2>
+              <div className="notes-library-views" role="group" aria-label="Yonalist library views">
+                <LibraryViewButtons
+                  active={atHome ? libraryView : null}
+                  onSelect={(view) => {
+                    setLibraryView(view);
+                    setQuery("");
+                    openHome();
+                  }}
+                />
               </div>
             </section>
           </section>
