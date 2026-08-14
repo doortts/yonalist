@@ -1,6 +1,7 @@
 import type { ImageView } from "../../../../packages/contracts/generated/ImageView";
 import type { IpcMarkerKind } from "../../../../packages/contracts/generated/IpcMarkerKind";
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
+import { orderedStart } from "./outlineOrdered";
 import { bySiblingOrder } from "./outlineSortKeys";
 
 // One set for both halves of the round trip: the read side in `outlinePaste`
@@ -204,15 +205,36 @@ function taskBox(node: OutlineClipboardNode): string {
   return node.marker === "todo" ? "[ ]" : "";
 }
 
+/**
+ * Each sibling paired with the number a numbered row draws, counting from the
+ * one its run's first row carries. The same rule the outline and both exports
+ * number by, over the one sibling list a copied subtree hands out at a time.
+ */
+function numberedSiblings(
+  nodes: readonly OutlineClipboardNode[]
+): ReadonlyArray<readonly [OutlineClipboardNode, number | null]> {
+  let running: number | null = null;
+  return nodes.map((node) => {
+    const start = orderedStart(node.marker);
+    if (start === null) {
+      running = null;
+      return [node, null] as const;
+    }
+    running = running === null ? start : running + 1;
+    return [node, running] as const;
+  });
+}
+
 function plainLines(
   nodes: readonly OutlineClipboardNode[],
   depth: number,
   lines: string[]
 ): void {
-  for (const node of nodes) {
+  for (const [node, number] of numberedSiblings(nodes)) {
     const indent = "  ".repeat(depth);
     const box = taskBox(node);
-    const marker = `${indent}-${box ? ` ${box}` : ""}`;
+    const bullet = number === null ? "-" : `${number}.`;
+    const marker = `${indent}${bullet}${box ? ` ${box}` : ""}`;
     lines.push(node.text ? `${marker} ${node.text}` : marker);
     // A note sits one level in from its own row, as the Markdown export writes
     // it, and before the children so the reading order matches the screen.
@@ -230,7 +252,27 @@ function escapeHtml(value: string): string {
     character === "&" ? "&amp;" : character === "<" ? "&lt;" : "&gt;");
 }
 
+/**
+ * One list element per run: numbered siblings go into an `<ol>` that starts
+ * where the run does, and everything else stays a `<ul>`. A paste target that
+ * reads the markup then sees the same numbers the screen showed.
+ */
 function htmlList(nodes: readonly OutlineClipboardNode[]): string {
+  const runs: Array<{ start: number | null; nodes: OutlineClipboardNode[] }> = [];
+  for (const [node, number] of numberedSiblings(nodes)) {
+    const open = runs.at(-1);
+    if (open && (open.start === null) === (number === null)) {
+      open.nodes.push(node);
+      continue;
+    }
+    runs.push({ start: number, nodes: [node] });
+  }
+  return runs.map((run) => run.start === null
+    ? `<ul>${listItems(run.nodes)}</ul>`
+    : `<ol start="${run.start}">${listItems(run.nodes)}</ol>`).join("");
+}
+
+function listItems(nodes: readonly OutlineClipboardNode[]): string {
   const items = nodes.map((node) => {
     // The box stays characters rather than an `<input>`: a rich editor strips
     // form controls on paste, and the tick survives today precisely because it
@@ -254,7 +296,7 @@ function htmlList(nodes: readonly OutlineClipboardNode[]): string {
     return `<li data-wf-layout="bullet">`
       + `${box ? `${box} ` : ""}${struck}${note}${children}</li>`;
   });
-  return `<ul>${items.join("")}</ul>`;
+  return items.join("");
 }
 
 /**

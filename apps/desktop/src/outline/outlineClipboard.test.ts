@@ -432,6 +432,33 @@ describe("the outline clipboard HTML carrier", () => {
     expect(markup.split("<li").length - 1).toBe(3);
     expect(markup.split(LI).length - 1).toBe(3);
   });
+
+  // A copy carries the numbers the outline drew, counting from the one the run
+  // started at. A row that is not numbered ends the run and takes the dash.
+  it("writes a numbered run as its own numbers in both formats", () => {
+    const ordered = (start: number) => ({ marker: { ordered: { start } } });
+    const rows = [
+      node("milk", "page", "Milk", 1_024, ordered(3)),
+      node("onion", "page", "Onion", 2_048, ordered(9)),
+      node("break", "page", "Break", 3_072),
+      node("tofu", "page", "Tofu", 4_096, ordered(1))
+    ];
+
+    const built = formats(rows, ["milk", "onion", "break", "tofu"])!;
+
+    expect(built.plain).toBe([
+      "3. Milk",
+      "4. Onion",
+      "- Break",
+      "1. Tofu"
+    ].join("\n"));
+    const markup = built.html.slice(built.html.indexOf("-->") + 3);
+    expect(markup).toBe(
+      `<ol start="3">${LI}Milk</li>${LI}Onion</li></ol>`
+      + `<ul>${LI}Break</li></ul>`
+      + `<ol start="1">${LI}Tofu</li></ol>`
+    );
+  });
 });
 
 /** jsdom has no ClipboardItem, so the async write contract is read off this one. */

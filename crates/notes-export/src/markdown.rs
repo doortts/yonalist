@@ -4,7 +4,7 @@ use std::path::{Component, Path};
 use std::sync::Arc;
 
 use notes_application::{ExportAsset, ExportError, ExportNode, ExportSnapshot, RenderedExport};
-use notes_core::NoteNodeKind;
+use notes_core::{NoteMarkerKind, NoteNodeKind};
 
 pub(crate) fn render(
     snapshot: &ExportSnapshot,
@@ -30,6 +30,7 @@ pub(crate) fn render(
         asset_directory_name,
         &mut asset_links,
         &mut assets,
+        None,
     )?;
     Ok(RenderedExport::Markdown {
         document: markdown.into_bytes(),
@@ -112,14 +113,22 @@ fn render_node(
     asset_directory_name: &str,
     asset_links: &mut HashMap<String, String>,
     assets: &mut Vec<ExportAsset>,
+    number: Option<i64>,
 ) -> Result<(), ExportError> {
     let indentation = "  ".repeat(depth);
     let completion = if node.completed { 'x' } else { ' ' };
+    // A numbered row leads with the number its run reached rather than the
+    // bullet's dash; the task box stays either way, so the tick a row carries
+    // survives the export whatever its marker.
+    let bullet = match node.marker {
+        NoteMarkerKind::Ordered { start } => format!("{}.", number.unwrap_or(start)),
+        _ => "-".to_owned(),
+    };
     match node.kind {
         NoteNodeKind::Page | NoteNodeKind::Bullet => {
             writeln!(
                 markdown,
-                "{indentation}- [{completion}] {} <!-- yonalist-node-id: {} -->",
+                "{indentation}{bullet} [{completion}] {} <!-- yonalist-node-id: {} -->",
                 escape_inline(&node.text),
                 node.id
             )
@@ -132,7 +141,7 @@ fn render_node(
             let link = image_link(image, asset_directory_name, asset_links, assets)?;
             writeln!(
                 markdown,
-                "{indentation}- [{completion}] ![Image]({link}) <!-- yonalist-attachment-original-name: {} --> <!-- yonalist-node-id: {} -->",
+                "{indentation}{bullet} [{completion}] ![Image]({link}) <!-- yonalist-attachment-original-name: {} --> <!-- yonalist-node-id: {} -->",
                 percent_encode_comment_metadata(image.metadata.original_name()),
                 node.id
             )
@@ -151,7 +160,21 @@ fn render_node(
             }
         }
     }
+    // One run of numbered siblings counts from the number its first row was
+    // given, the same rule the outline and the PDF export draw it by.
+    let mut counted: Option<i64> = None;
     for child in &node.children {
+        let child_number = match child.marker {
+            NoteMarkerKind::Ordered { start } => {
+                let next = counted.map_or(start, |previous| previous + 1);
+                counted = Some(next);
+                Some(next)
+            }
+            _ => {
+                counted = None;
+                None
+            }
+        };
         render_node(
             markdown,
             child,
@@ -159,6 +182,7 @@ fn render_node(
             asset_directory_name,
             asset_links,
             assets,
+            child_number,
         )?;
     }
     Ok(())

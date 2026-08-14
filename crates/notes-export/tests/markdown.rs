@@ -168,3 +168,85 @@ fn markdown_is_repeatable_and_rejects_unhydrated_images() {
             .is_err()
     );
 }
+
+/// A run of numbered rows leads with the numbers the outline draws, counting
+/// from the one its first row carries. Anything that is not a numbered sibling
+/// ends the run, and the row after it starts its own.
+#[test]
+fn markdown_numbers_a_run_of_ordered_rows() {
+    let renderer = NativeExportRenderer::new(PathBuf::from("unused-font.ttf"));
+    let snapshot = ExportSnapshot {
+        revision: 1,
+        root_node_id: id("page"),
+        title: "Shopping".into(),
+        exported_at: "2026-08-15T00:00:00.000Z".into(),
+        root: ExportNode {
+            id: id("page"),
+            kind: NoteNodeKind::Page,
+            marker: NoteMarkerKind::Bullet,
+            text: "Shopping".into(),
+            note: String::new(),
+            completed: false,
+            image: None,
+            children: vec![
+                text_node(
+                    "milk",
+                    "Milk",
+                    "",
+                    NoteMarkerKind::Ordered { start: 3 },
+                    false,
+                    Vec::new(),
+                ),
+                text_node(
+                    "onion",
+                    "Onion",
+                    "",
+                    NoteMarkerKind::Ordered { start: 9 },
+                    true,
+                    Vec::new(),
+                ),
+                text_node(
+                    "break",
+                    "Break",
+                    "",
+                    NoteMarkerKind::Bullet,
+                    false,
+                    Vec::new(),
+                ),
+                text_node(
+                    "tofu",
+                    "Tofu",
+                    "",
+                    NoteMarkerKind::Ordered { start: 1 },
+                    false,
+                    Vec::new(),
+                ),
+            ],
+        },
+    };
+
+    let RenderedExport::Markdown { document, .. } = renderer
+        .render(&snapshot, ExportFormat::Markdown, Some("assets"))
+        .expect("render Markdown")
+    else {
+        panic!("expected Markdown");
+    };
+    let body = String::from_utf8(document).expect("UTF-8 Markdown");
+
+    assert!(
+        body.contains("  3. [ ] Milk <!-- yonalist-node-id: milk -->\n"),
+        "{body}"
+    );
+    assert!(
+        body.contains("  4. [x] Onion <!-- yonalist-node-id: onion -->\n"),
+        "{body}"
+    );
+    assert!(
+        body.contains("  - [ ] Break <!-- yonalist-node-id: break -->\n"),
+        "{body}"
+    );
+    assert!(
+        body.contains("  1. [ ] Tofu <!-- yonalist-node-id: tofu -->\n"),
+        "{body}"
+    );
+}
