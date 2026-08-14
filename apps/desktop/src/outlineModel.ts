@@ -50,6 +50,24 @@ export function orderOutline(
 }
 
 /**
+ * The live Todo rows under each parent id. A chain of Todos is exactly what
+ * walking this index covers: an ordinary bullet holds no entry, so a descent
+ * stops there and whatever hangs below it starts a chain of its own.
+ */
+export function todoChildrenByParent(
+  nodes: readonly NoteView[]
+): ReadonlyMap<string, readonly NoteView[]> {
+  const children = new Map<string, NoteView[]>();
+  for (const node of nodes) {
+    if (node.marker !== "todo" || !node.parentId || node.deleted) continue;
+    const siblings = children.get(node.parentId);
+    if (siblings) siblings.push(node);
+    else children.set(node.parentId, [node]);
+  }
+  return children;
+}
+
+/**
  * Whether a row is somewhere a caret can actually sit. A picture row is
  * focusable -- arrow keys land on it deliberately -- but it renders a `div`,
  * not a textarea, so focus put there leaves the typist with a highlighted row

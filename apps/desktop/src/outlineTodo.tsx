@@ -1,22 +1,52 @@
 import { Check } from "lucide-react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
+import { todoChildrenByParent } from "./outlineModel";
 
 export interface TodoProgress {
   readonly completed: number;
   readonly total: number;
 }
 
+/**
+ * A row counts every Todo hanging under it, not just its direct children, so
+ * the bar answers "how much of this branch is left" rather than "how much of
+ * this one level". Counting stops at the first non-Todo row: an ordinary
+ * bullet ends the chain, and whatever it carries belongs to its own tally.
+ *
+ * A Todo nested under another Todo draws no bar of its own -- the topmost
+ * Todo of a chain already reports the whole chain, and repeating it on every
+ * level below just stacks the same number down the page.
+ */
 export function buildTodoProgressMap(
   nodes: readonly NoteView[]
 ): ReadonlyMap<string, TodoProgress> {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const todoChildren = todoChildrenByParent(nodes);
+  const branch = new Map<string, TodoProgress>();
+  const measure = (id: string): TodoProgress => {
+    const known = branch.get(id);
+    if (known) return known;
+    // Seeded before the walk so a parent cycle terminates instead of
+    // recurring forever.
+    branch.set(id, { completed: 0, total: 0 });
+    let completed = 0;
+    let total = 0;
+    for (const child of todoChildren.get(id) ?? []) {
+      const below = measure(child.id);
+      completed += (child.completed ? 1 : 0) + below.completed;
+      total += 1 + below.total;
+    }
+    const value = { completed, total };
+    branch.set(id, value);
+    return value;
+  };
   const progress = new Map<string, TodoProgress>();
   for (const node of nodes) {
-    if (node.marker !== "todo" || !node.parentId || node.deleted) continue;
-    const current = progress.get(node.parentId) ?? { completed: 0, total: 0 };
-    progress.set(node.parentId, {
-      completed: current.completed + (node.completed ? 1 : 0),
-      total: current.total + 1
-    });
+    if (node.deleted) continue;
+    const parent = node.parentId ? byId.get(node.parentId) : undefined;
+    if (node.marker === "todo" && parent?.marker === "todo") continue;
+    const value = measure(node.id);
+    if (value.total > 0) progress.set(node.id, value);
   }
   return progress;
 }
@@ -67,7 +97,7 @@ export function TodoProgressIndicator({
         />
       </span>
       <span className="notes-todo-progress-count">
-        ({value.completed}/{value.total})
+        {complete ? value.total : `${value.completed}/${value.total}`}
       </span>
     </div>
   );
