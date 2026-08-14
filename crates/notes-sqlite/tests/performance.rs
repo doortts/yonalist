@@ -165,3 +165,48 @@ fn fifty_thousand_sibling_append_returns_a_compact_patch() {
     assert_eq!(receipt.changed_nodes.len(), 1);
     assert!(elapsed < Duration::from_millis(200));
 }
+
+#[test]
+fn moving_a_five_thousand_node_subtree_stays_bounded() {
+    let storage = SqliteStorage::open_in_memory().expect("open fixture database");
+    storage
+        .load_performance_fixture(5_000)
+        .expect("load fixture");
+    let service = NotesService::new(&storage, "performance-session", 1);
+    service
+        .execute(CommandEnvelope {
+            session_id: "performance-session".into(),
+            request_id: "destination".into(),
+            base_revision: 1,
+            history_group: None,
+            command: IpcNotesCommand::CreateNode {
+                id: "destination".into(),
+                parent_id: "root".into(),
+                before_id: None,
+                text: "Destination".into(),
+            },
+        })
+        .expect("create the destination");
+    let started = Instant::now();
+    let receipt = service
+        .execute(CommandEnvelope {
+            session_id: "performance-session".into(),
+            request_id: "move".into(),
+            base_revision: 2,
+            history_group: None,
+            command: IpcNotesCommand::MoveNode {
+                id: "fixture-page".into(),
+                parent_id: "destination".into(),
+                before_id: None,
+            },
+        })
+        .expect("move the whole page");
+    let elapsed = started.elapsed();
+
+    eprintln!("5,000-descendant subtree move: {elapsed:?}");
+    // One row moved, 5,000 paths rewritten below it. The bound is loose because
+    // the fixtures in this file run alongside each other; it is here to catch an
+    // order-of-magnitude regression in the rewrite, not to pin the number.
+    assert_eq!(receipt.changed_nodes.len(), 1);
+    assert!(elapsed < Duration::from_secs(1));
+}

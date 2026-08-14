@@ -6,6 +6,7 @@ mod fixtures;
 mod forest_queries;
 mod image_assets;
 mod mutations;
+mod node_paths;
 mod queries;
 mod repository;
 mod row_mapping;

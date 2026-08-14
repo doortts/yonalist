@@ -56,6 +56,7 @@ pub(crate) fn load_performance_fixture(
             )
             .map_err(internal)?;
     }
+    crate::node_paths::rebuild_all(&transaction)?;
     transaction
         .execute("UPDATE notes_meta SET revision = 1 WHERE singleton = 1", [])
         .map_err(internal)?;

@@ -60,6 +60,9 @@ pub(crate) fn commit(
             }
         }
     }
+    // After the whole patch: a row's path reads its ancestors, which an earlier
+    // mutation in this same loop may not have written yet.
+    crate::node_paths::refresh(&transaction, patch)?;
     let next_revision = actual_revision
         .checked_add(1)
         .ok_or_else(|| StorageError::Internal("revision overflowed".into()))?;

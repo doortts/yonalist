@@ -1,14 +1,26 @@
 use notes_application::StorageError;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 
-pub(crate) const SCHEMA_VERSION: i64 = 1;
+pub(crate) const SCHEMA_VERSION: i64 = 2;
 pub(crate) const ROOT_ID: &str = "root";
 
 /// `MIGRATIONS[i]` carries a database from version `i + 1` to `i + 2`, so the
 /// list length pins `SCHEMA_VERSION` and adding a step means bumping it.
 type Migration = fn(&Transaction<'_>) -> Result<(), StorageError>;
-const MIGRATIONS: &[Migration] = &[];
+const MIGRATIONS: &[Migration] = &[add_node_paths];
 const _: () = assert!(MIGRATIONS.len() as i64 + 1 == SCHEMA_VERSION);
+
+/// The DDL here and the mirror inside `create_schema` have to stay one shape:
+/// a migrated database and a fresh one order the same outline off this column.
+fn add_node_paths(transaction: &Transaction<'_>) -> Result<(), StorageError> {
+    transaction
+        .execute_batch(
+            "ALTER TABLE notes_nodes ADD COLUMN path TEXT;
+             CREATE INDEX notes_nodes_path ON notes_nodes(path);",
+        )
+        .map_err(internal)?;
+    crate::node_paths::rebuild_all(transaction)
+}
 
 /// Guarantees the single root row every outline hangs from and adopts legacy
 /// top-level pages as its children, so a "page" is only ever a root child.
@@ -26,6 +38,7 @@ pub(crate) fn ensure_root(connection: &mut Connection) -> Result<(), StorageErro
         )
         .optional()
         .map_err(internal)?;
+    let mut rewritten = false;
     match kind.as_deref() {
         Some("page") => {}
         Some(other) => {
@@ -44,11 +57,12 @@ pub(crate) fn ensure_root(connection: &mut Connection) -> Result<(), StorageErro
                     [ROOT_ID],
                 )
                 .map_err(internal)?;
+            rewritten = true;
         }
     }
     // Legacy pages become collapsed root children; the deferred self-FK lets
     // this follow the insert above inside one transaction.
-    transaction
+    let adopted = transaction
         .execute(
             "UPDATE notes_nodes
              SET parent_id = ?1, kind = 'bullet', collapsed = 1
@@ -56,6 +70,12 @@ pub(crate) fn ensure_root(connection: &mut Connection) -> Result<(), StorageErro
             [ROOT_ID],
         )
         .map_err(internal)?;
+    // An adopted page hangs one level deeper than it did, so its whole branch
+    // gets a new path. Nothing moved means nothing to rewrite, which is what
+    // keeps a normal open from touching every row.
+    if rewritten || adopted > 0 {
+        crate::node_paths::rebuild_all(&transaction)?;
+    }
     transaction.commit().map_err(internal)
 }
 
@@ -140,6 +160,7 @@ fn create_schema(connection: &Connection) -> Result<(), StorageError> {
                 completed INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1)),
                 starred INTEGER NOT NULL DEFAULT 0 CHECK (starred IN (0, 1)),
                 deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
+                path TEXT,
                 FOREIGN KEY(parent_id) REFERENCES notes_nodes(id)
                     DEFERRABLE INITIALLY DEFERRED,
                 CHECK (
@@ -149,6 +170,7 @@ fn create_schema(connection: &Connection) -> Result<(), StorageError> {
             ) STRICT;
             CREATE INDEX notes_nodes_parent_order
                 ON notes_nodes(parent_id, deleted, sort_key, id);
+            CREATE INDEX notes_nodes_path ON notes_nodes(path);
 
             CREATE TABLE notes_images (
                 node_id TEXT PRIMARY KEY NOT NULL,
@@ -239,7 +261,7 @@ fn create_schema(connection: &Connection) -> Result<(), StorageError> {
                 value TEXT NOT NULL
             ) STRICT;
 
-            PRAGMA user_version = 1;
+            PRAGMA user_version = 2;
             COMMIT;
             ",
         )
@@ -413,7 +435,8 @@ mod tests {
 
         let message = error.to_string();
         assert!(
-            message.contains("unsupported Notes schema version 2") && message.contains("expected 1"),
+            message.contains("unsupported Notes schema version 3")
+                && message.contains("expected 2"),
             "unexpected error: {message}"
         );
     }
@@ -427,7 +450,7 @@ mod tests {
         let message = error.to_string();
         assert!(
             message.contains("unsupported Notes schema version -1")
-                && message.contains("expected 1"),
+                && message.contains("expected 2"),
             "unexpected error: {message}"
         );
     }
