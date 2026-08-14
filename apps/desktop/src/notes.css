@@ -1954,6 +1954,51 @@ body.is-outline-dragging * {
   background: currentColor;
 }
 
+/* Each depth takes its marker from the variables the settings publish: a box
+   this stylesheet sizes, or -- when the shape is a glyph -- a transparent box
+   carrying the character. A row deeper than the configured levels repeats the
+   last one, which the row decides when it stamps `data-marker-level`. */
+.notes-node[data-marker-level="0"] .notes-node-bullet-dot {
+  width: var(--notes-marker-0-w, 7px);
+  height: var(--notes-marker-0-h, 7px);
+  border-radius: var(--notes-marker-0-r, 50%);
+  background: var(--notes-marker-0-bg, currentColor);
+  color: var(--notes-marker-0-color, inherit);
+}
+
+.notes-node[data-marker-level="0"] .notes-node-bullet-dot::after {
+  content: var(--notes-marker-0-char, "");
+}
+
+.notes-node[data-marker-level="1"] .notes-node-bullet-dot {
+  width: var(--notes-marker-1-w, 7px);
+  height: var(--notes-marker-1-h, 7px);
+  border-radius: var(--notes-marker-1-r, 50%);
+  background: var(--notes-marker-1-bg, currentColor);
+  color: var(--notes-marker-1-color, inherit);
+}
+
+.notes-node[data-marker-level="1"] .notes-node-bullet-dot::after {
+  content: var(--notes-marker-1-char, "");
+}
+
+.notes-node[data-marker-level="2"] .notes-node-bullet-dot {
+  width: var(--notes-marker-2-w, 7px);
+  height: var(--notes-marker-2-h, 7px);
+  border-radius: var(--notes-marker-2-r, 50%);
+  background: var(--notes-marker-2-bg, currentColor);
+  color: var(--notes-marker-2-color, inherit);
+}
+
+.notes-node[data-marker-level="2"] .notes-node-bullet-dot::after {
+  content: var(--notes-marker-2-char, "");
+}
+
+.notes-node-bullet-dot::after {
+  font-size: 13px;
+  line-height: 1;
+}
+
 .notes-node[data-empty-bullet="true"] .notes-node-bullet-dot {
   opacity: 0;
 }

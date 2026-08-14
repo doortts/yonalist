@@ -6,6 +6,7 @@ import {
 import { flushSync } from "react-dom";
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
 import { NotesStore } from "../notesStore";
+import { markerLevelOfDepth } from "../outlineMarkers";
 import type { OutlineIndex } from "./outlineIndex";
 import {
   endOutlineEnterGesture, handleImagePrimaryKeyDown, handleOutlineKeyDown,
@@ -196,6 +197,7 @@ export const OutlineRow = memo(function OutlineRow({
           node.kind === "image" &&
           runtime.state.selectionRootIds.length === 1 ? "true" : undefined}
         data-marker-kind={node.marker}
+        data-marker-level={markerLevelOfDepth(depth)}
         data-empty-bullet={(draft ?? node.text).length === 0 ? "true" : undefined}
         style={{ "--notes-depth": depth } as CSSProperties}
       >
