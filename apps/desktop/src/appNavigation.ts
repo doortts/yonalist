@@ -1,4 +1,4 @@
-import { outlinePane } from "./outlinePaneRegistry";
+import { outlinePane } from "./outline/outlinePaneRegistry";
 
 export type PaneId = "primary" | "secondary";
 

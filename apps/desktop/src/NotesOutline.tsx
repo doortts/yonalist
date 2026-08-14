@@ -3,38 +3,38 @@ import {
   useSyncExternalStore
 } from "react";
 import { NotesStore } from "./notesStore";
-import type { NotesShellSnapshot } from "./storeSubscriptions";
+import type { NotesShellSnapshot } from "./store/storeSubscriptions";
 import {
   hideCollapsedSubtrees, hideCompletedSubtrees
-} from "./outlineVisibility";
-import { useOutlineSelection } from "./useOutlineSelection";
-import { useOutlinePointerSelection } from "./useOutlinePointerSelection";
-import { useOutlineDrag } from "./useOutlineDrag";
-import { OutlineHeader, OutlinePageHeading } from "./OutlineHeader";
-import { OutlineRow, OutlineRowRuntime } from "./OutlineRow";
+} from "./outline/outlineVisibility";
+import { useOutlineSelection } from "./outline/useOutlineSelection";
+import { useOutlinePointerSelection } from "./outline/useOutlinePointerSelection";
+import { useOutlineDrag } from "./outline/useOutlineDrag";
+import { OutlineHeader, OutlinePageHeading } from "./outline/OutlineHeader";
+import { OutlineRow, OutlineRowRuntime } from "./outline/OutlineRow";
 import { NotesChildComposer } from "./NotesChildComposer";
-import { buildTodoProgressMap } from "./outlineTodo";
-import type { OutlineTagToken } from "./OutlineTextField";
+import { buildTodoProgressMap } from "./outline/outlineTodo";
+import type { OutlineTagToken } from "./outline/OutlineTextField";
 import type { SelectionMovePlan } from "./selectionMoves";
-import { OutlineIndex } from "./outlineIndex";
+import { OutlineIndex } from "./outline/outlineIndex";
 import type { PaneFocusSnapshot } from "./appNavigation";
-import { useImageIngest } from "./useImageIngest";
-import { OUTLINE_WINDOW_INCOMPLETE } from "./outlineClipboard";
-import { outlineClipboardActions } from "./outlineClipboardActions";
-import { focusOutlineEditor, focusOutlineSnapshot } from "./outlineFocus";
-import { caretHandoff } from "./outlineCaretHandoff";
+import { useImageIngest } from "./image/useImageIngest";
+import { OUTLINE_WINDOW_INCOMPLETE } from "./outline/outlineClipboard";
+import { outlineClipboardActions } from "./outline/outlineClipboardActions";
+import { focusOutlineEditor, focusOutlineSnapshot } from "./outline/outlineFocus";
+import { caretHandoff } from "./outline/outlineCaretHandoff";
 import { NotesExportBoundary } from "./NotesExportBoundary";
-import { useOutlineWindow } from "./useOutlineWindow";
+import { useOutlineWindow } from "./outline/useOutlineWindow";
 import { liveHistorySelection } from "./historyRestore";
-import { registerOutlinePane } from "./outlinePaneRegistry";
-import { ROOT_ID } from "./storeSupport";
+import { registerOutlinePane } from "./outline/outlinePaneRegistry";
+import { ROOT_ID } from "./store/storeSupport";
 
 const OutlineSelectionActionBar = lazy(() =>
-  import("./OutlineSelectionActionBar").then((module) => ({
+  import("./outline/OutlineSelectionActionBar").then((module) => ({
     default: module.OutlineSelectionActionBar
   })));
 const OutlineDragVisuals = lazy(() =>
-  import("./OutlineDragVisuals").then((module) => ({
+  import("./outline/OutlineDragVisuals").then((module) => ({
     default: module.OutlineDragVisuals
   })));
 

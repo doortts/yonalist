@@ -5,7 +5,7 @@ import {
 import { createPortal } from "react-dom";
 import type {
   SlashCommandDefinition, SlashCommandId
-} from "./outlineSlash";
+} from "./outline/outlineSlash";
 
 export function SlashCommandMenu({
   anchor, commands, activeIndex, onSelect

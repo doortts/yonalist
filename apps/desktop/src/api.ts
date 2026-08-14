@@ -20,7 +20,7 @@ import type {
   ImageImportRequest,
   ImagePathImportRequest,
   ImageReplaceRequest
-} from "./imageApi";
+} from "./image/imageApi";
 
 export interface NotesApi {
   bootstrap(): Promise<BootSnapshot>;
@@ -49,7 +49,7 @@ export const tauriNotesApi: NotesApi = {
   queryForest: (request) => invoke("notes_query_forest", { request }),
   execute: (envelope) => invoke("notes_execute", { envelope }),
   importImageBytes: async (request) => {
-    const { encodeImageEnvelope } = await import("./imageApi");
+    const { encodeImageEnvelope } = await import("./image/imageApi");
     return invoke(
       "notes_import_image_bytes",
       await encodeImageEnvelope(request)
@@ -58,7 +58,7 @@ export const tauriNotesApi: NotesApi = {
   importImagePaths: (request) =>
     invoke("notes_import_image_paths", { request }),
   replaceImageBytes: async (request) => {
-    const { encodeImageReplaceEnvelope } = await import("./imageApi");
+    const { encodeImageReplaceEnvelope } = await import("./image/imageApi");
     return invoke(
       "notes_replace_image_bytes",
       await encodeImageReplaceEnvelope(request)
@@ -68,7 +68,7 @@ export const tauriNotesApi: NotesApi = {
     invoke("notes_replace_image_path", { request }),
   readImage: async (request) => {
     const [{ normalizeImageBytes }, response] = await Promise.all([
-      import("./imageApi"),
+      import("./image/imageApi"),
       invoke<unknown>("notes_read_image", { request })
     ]);
     return normalizeImageBytes(response);

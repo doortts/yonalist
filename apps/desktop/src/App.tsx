@@ -23,8 +23,8 @@ import {
   type AppNavigationLocation
 } from "./appNavigation";
 import { NotesDetailPanes } from "./NotesDetailPanes";
-import { ROOT_ID } from "./storeSupport";
-import type { OutlineTagToken } from "./OutlineTextField";
+import { ROOT_ID } from "./store/storeSupport";
+import type { OutlineTagToken } from "./outline/OutlineTextField";
 import { ShortcutHint, useShortcutHints } from "./shortcutHints";
 const SearchPanel = lazy(() => import("./SearchPanel").then((module) =>
   ({ default: module.SearchPanel })));

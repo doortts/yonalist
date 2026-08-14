@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { outlinePlatform } from "./outlineSupport";
+import { outlinePlatform } from "./outline/outlineSupport";
 
 // The platform standard: Cmd+Alt+I on macOS, Ctrl+Shift+I everywhere else.
 // Keyed off `event.code` rather than `event.key` because Option+I on macOS is a

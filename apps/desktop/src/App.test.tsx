@@ -4,7 +4,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { App } from "./App";
 import type { NotesApi } from "./api";
-import { ROOT_ID } from "./storeSupport";
+import { ROOT_ID } from "./store/storeSupport";
 import {
   appApi as api,
   receipt,

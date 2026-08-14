@@ -4,8 +4,8 @@ import {
   NotesOutline,
   type PaneRestoreRequest
 } from "./NotesOutline";
-import type { OutlineTagToken } from "./OutlineTextField";
-import type { NotesShellSnapshot } from "./storeSubscriptions";
+import type { OutlineTagToken } from "./outline/OutlineTextField";
+import type { NotesShellSnapshot } from "./store/storeSubscriptions";
 import { useSplitResize } from "./useSplitResize";
 
 export interface NotesDetailPanesProps {

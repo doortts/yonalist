@@ -6,7 +6,7 @@ import { tauriNotesApi, type NotesApi } from "./api";
 async function start() {
   let api: NotesApi = tauriNotesApi;
   if (import.meta.env.DEV && !("__TAURI_INTERNALS__" in window)) {
-    api = (await import("./previewApi")).previewNotesApi;
+    api = (await import("./preview/previewApi")).previewNotesApi;
   }
   createRoot(document.getElementById("root")!).render(
     <StrictMode>

@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { outlinePlatform } from "./outlineSupport";
+import { outlinePlatform } from "./outline/outlineSupport";
 
 /**
  * App-wide rule: holding the shortcut modifier -- Cmd on macOS, Ctrl
