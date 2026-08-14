@@ -1999,6 +1999,18 @@ body.is-outline-dragging * {
   line-height: 1;
 }
 
+/* A numbered row draws its number where the bullet sits, so the text starts on
+   the same line as every other row's. The number is the marker, so the depth
+   shapes above never apply to it. */
+.notes-node-bullet-number {
+  position: relative;
+  z-index: 1;
+  color: var(--text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
 .notes-node[data-empty-bullet="true"] .notes-node-bullet-dot {
   opacity: 0;
 }

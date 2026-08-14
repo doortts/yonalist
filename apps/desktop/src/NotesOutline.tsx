@@ -13,6 +13,7 @@ import { useOutlineDrag } from "./outline/useOutlineDrag";
 import { OutlineHeader, OutlinePageHeading } from "./outline/OutlineHeader";
 import { OutlineRow, OutlineRowRuntime } from "./outline/OutlineRow";
 import { NotesChildComposer } from "./NotesChildComposer";
+import { orderedNumbers } from "./outline/outlineOrdered";
 import { buildTodoProgressMap } from "./outline/outlineTodo";
 import type { OutlineTagToken } from "./outline/OutlineTextField";
 import type { SelectionMovePlan } from "./selectionMoves";
@@ -283,6 +284,10 @@ export function NotesOutline({
     () => buildTodoProgressMap(state.nodes),
     [state.nodes]
   );
+  const rowNumbers = useMemo(
+    () => orderedNumbers(state.nodes),
+    [state.nodes]
+  );
   const selectedIds = useMemo(
     () => new Set(selection.selectedIds),
     [selection.selectedIds]
@@ -506,6 +511,7 @@ export function NotesOutline({
                 depth={index.depthOf(node.id, zoomRoot?.id ?? page.id)}
                 hasChildren={index.hasChildren(node.id)}
                 todoProgress={todoProgress.get(node.id) ?? null}
+                orderedNumber={rowNumbers.get(node.id) ?? null}
                 imageDropTarget={imageIngest.dropTargetId === node.id}
                 dragSource={outlineDrag.rowProps(node.id).dragSource}
                 runtime={rowRuntime}

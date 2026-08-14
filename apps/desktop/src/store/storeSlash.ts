@@ -1,3 +1,4 @@
+import type { IpcMarkerKind } from "../../../../packages/contracts/generated/IpcMarkerKind";
 import type { IpcNotesCommand } from "../../../../packages/contracts/generated/IpcNotesCommand";
 import type { NotesState } from "../notesState";
 import { confirmedText, freshId } from "./storeSupport";
@@ -14,11 +15,21 @@ interface SlashEditPort {
   ) => Promise<void>;
 }
 
+function sameMarker(
+  marker: IpcMarkerKind,
+  other: IpcMarkerKind | undefined
+): boolean {
+  if (typeof marker === "string" || typeof other !== "object") {
+    return marker === other;
+  }
+  return marker.ordered.start === other.ordered.start;
+}
+
 export async function runSlashEdit(
   port: SlashEditPort,
   id: string,
   text: string,
-  marker: "todo" | null,
+  marker: IpcMarkerKind | null,
   // What `[x] ` asks for beyond the box itself. It rides the same group, so the
   // tick and the box the same keystroke put on come off in one undo.
   completed?: boolean
@@ -33,7 +44,9 @@ export async function runSlashEdit(
     await port.execute({ kind: "updateText", id, text }, historyGroup);
   }
   const confirmed = port.getState().nodes.find((node) => node.id === id);
-  if (marker && marker !== confirmed?.marker) {
+  // A numbered marker carries its start, so the comparison is on the value, not
+  // on the reference two snapshots of the same marker never share.
+  if (marker && !sameMarker(marker, confirmed?.marker)) {
     await port.execute({ kind: "setMarker", id, marker }, historyGroup);
   }
   if (completed !== undefined && completed !== confirmed?.completed) {

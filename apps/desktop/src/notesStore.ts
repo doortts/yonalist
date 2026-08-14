@@ -1,3 +1,4 @@
+import type { IpcMarkerKind } from "../../../packages/contracts/generated/IpcMarkerKind";
 import type { IpcNotesCommand } from "../../../packages/contracts/generated/IpcNotesCommand";
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { ExportFormat } from "../../../packages/contracts/generated/ExportFormat";
@@ -436,12 +437,12 @@ export class NotesStore {
     await this.executeCommand({ kind: "setStarred", id, starred }); }
   async setCollapsed(id: string, collapsed: boolean): Promise<void> {
     await this.executeCommand({ kind: "setCollapsed", id, collapsed }); }
-  async setMarker(id: string, marker: "bullet" | "todo"): Promise<void> {
+  async setMarker(id: string, marker: IpcMarkerKind): Promise<void> {
     await this.executeCommand({ kind: "setMarker", id, marker }); }
   async applySlashEdit(
     id: string,
     text: string,
-    marker: "todo" | null,
+    marker: IpcMarkerKind | null,
     completed?: boolean
   ): Promise<void> {
     await runSlashEdit({

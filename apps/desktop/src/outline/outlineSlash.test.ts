@@ -1,6 +1,7 @@
 import {
   applySlashCommand,
   filterSlashCommands,
+  resolveOrderedInput,
   resolveSlashCommandQuery,
   resolveTitleInput,
   resolveTodoBoxInput
@@ -111,7 +112,48 @@ describe("a task box typed at a title's start", () => {
   });
 });
 
+describe("the numbered prefix a keystroke finishes", () => {
+  it("takes the number the reader typed and keeps the rest of the row", () => {
+    expect(resolveOrderedInput("3. buy milk", 3, 3, "3.buy milk")).toEqual({
+      value: "buy milk",
+      caret: 0,
+      start: 3
+    });
+    expect(resolveOrderedInput("12. ", 4, 4, "12.")).toEqual({
+      value: "",
+      caret: 0,
+      start: 12
+    });
+  });
+
+  it("only fires on the keystroke that finished the prefix", () => {
+    // The caret elsewhere in the row: an edit further along, not a marker.
+    expect(resolveOrderedInput("1. milk", 7, 7, "1. mil")).toBeNull();
+    // A row that already carried the prefix is being typed into.
+    expect(resolveOrderedInput("1. milk", 3, 3, "1. ilk")).toBeNull();
+    // A selection is a replacement, not a finished prefix.
+    expect(resolveOrderedInput("1. milk", 3, 5, "1.milk")).toBeNull();
+  });
+
+  it("ignores a prefix the syntax does not allow", () => {
+    expect(resolveOrderedInput("1 milk", 2, 2, "1milk")).toBeNull();
+    expect(resolveOrderedInput(".milk ", 6, 6, ".milk")).toBeNull();
+    expect(resolveOrderedInput("a1. milk", 4, 4, "a1.milk")).toBeNull();
+  });
+});
+
 describe("the one question a title's own field asks of a change", () => {
+  it("answers with a numbered marker before it looks for a command", () => {
+    expect(resolveTitleInput("3.", {
+      value: "3. ",
+      selectionStart: 3,
+      selectionEnd: 3
+    })).toEqual({
+      kind: "ordered",
+      edit: { value: "", caret: 0, start: 3 }
+    });
+  });
+
   it("answers with a box, a query, or nothing at all", () => {
     expect(resolveTitleInput("[ ]buy milk", {
       value: "[ ] buy milk",

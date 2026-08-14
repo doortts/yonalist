@@ -1,6 +1,7 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import { initialNotesState, type NotesState } from "./notesState";
 import { projectSplitNode } from "./optimisticOutline";
+import { orderedNumbers } from "./outline/outlineOrdered";
 
 function bullet(id: string, sortKey: number): NoteView {
   return {
@@ -75,5 +76,31 @@ describe("optimistic outline ordering", () => {
     const created = projected.nodes.find((node) => node.id === "new");
     expect(created?.marker).toBe("todo");
     expect(created?.completed).toBe(false);
+  });
+
+  // Enter on a numbered row continues the run, so the half it makes carries the
+  // marker over and the outline counts it as the next number.
+  it("carries a numbered marker onto the half Enter makes", () => {
+    const state: NotesState = {
+      ...initialNotesState,
+      status: "ready",
+      activePageId: "page",
+      nodes: [{ ...bullet("source", 1_024), marker: { ordered: { start: 3 } } }]
+    };
+
+    const projected = projectSplitNode(state, {
+      id: "source",
+      newId: "new",
+      parentId: "page",
+      beforeId: null,
+      prefix: "Milk",
+      suffix: ""
+    });
+
+    expect(projected.nodes.find((node) => node.id === "new")?.marker)
+      .toEqual({ ordered: { start: 3 } });
+    expect([...orderedNumbers(projected.nodes)]).toEqual([
+      ["source", 3], ["new", 4]
+    ]);
   });
 });

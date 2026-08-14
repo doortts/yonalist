@@ -5,6 +5,7 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
+import type { IpcMarkerKind } from "../../../../packages/contracts/generated/IpcMarkerKind";
 import { NotesStore } from "../notesStore";
 import { markerLevelOfDepth } from "../outlineMarkers";
 import type { OutlineIndex } from "./outlineIndex";
@@ -103,6 +104,8 @@ interface OutlineRowProps {
   readonly depth: number;
   readonly hasChildren: boolean;
   readonly todoProgress: TodoProgress | null;
+  /** The number a numbered row draws, or `null` for every other marker. */
+  readonly orderedNumber: number | null;
   readonly imageDropTarget: boolean;
   readonly dragSource: boolean;
   readonly runtime: OutlineRowRuntime;
@@ -110,7 +113,7 @@ interface OutlineRowProps {
 
 export const OutlineRow = memo(function OutlineRow({
   node: outlineNode, store, selected, depth, hasChildren, todoProgress,
-  imageDropTarget, dragSource, runtime
+  orderedNumber, imageDropTarget, dragSource, runtime
 }: OutlineRowProps) {
   const {
     node: confirmedNode,
@@ -145,7 +148,7 @@ export const OutlineRow = memo(function OutlineRow({
   };
   const commitRowEdit = (
     edit: { readonly value: string; readonly caret: number },
-    marker: "todo" | null,
+    marker: IpcMarkerKind | null,
     completed?: boolean
   ) => {
     void store.applySlashEdit(node.id, edit.value, marker, completed).then(() => {
@@ -305,7 +308,9 @@ export const OutlineRow = memo(function OutlineRow({
               runtime.state.onZoom(node.id, event.shiftKey);
             }}
           >
-            <span className="notes-node-bullet-dot" />
+            {orderedNumber === null
+              ? <span className="notes-node-bullet-dot" />
+              : <span className="notes-node-bullet-number">{orderedNumber}.</span>}
           </button>
           {node.marker === "todo" && (
             <TodoCheckbox
@@ -377,6 +382,13 @@ export const OutlineRow = memo(function OutlineRow({
                 // The box goes on before the draft does: the prefix never becomes
                 // text the row has to be edited back out of.
                 commitRowEdit(input.edit, "todo", input.edit.completed);
+                return;
+              }
+              if (input?.kind === "ordered") {
+                setSlashMenu(null);
+                commitRowEdit(
+                  input.edit, { ordered: { start: input.edit.start } }
+                );
                 return;
               }
               store.setDraft(node.id, event.currentTarget.value);
