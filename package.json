@@ -17,7 +17,7 @@
     "test:v2:architecture": "node scripts/checkV2Architecture.mjs",
     "test:v2:contracts": "node scripts/checkV2Contracts.mjs",
     "test:v2:bundle": "npm run v2:build && node scripts/checkV2BundleBudget.mjs",
-    "test:v2:performance": "cargo test -p notes-sqlite --features bench-fixtures --test performance -- --nocapture",
+    "test:v2:performance": "cargo test -p notes-sqlite --release --features bench-fixtures --test performance -- --nocapture",
     "test:v2:frontend": "npm run test --prefix apps/desktop",
     "lint:v2": "eslint apps/desktop/src",
     "test:v2": "cargo test --workspace && npm run test:v2:frontend && npm run lint:v2 && npm run test:v2:architecture && npm run test:v2:contracts",
