@@ -352,12 +352,19 @@ impl NotesTree {
                 current = self.nodes.get(parent_id).and_then(NoteNode::parent_id);
             }
         }
-        for parent_id in self.nodes.keys() {
-            let children = self.ordered_children(parent_id, true);
+        // Every remaining parent id exists as a node: the loop above rejects any
+        // node whose parent is absent, so grouping by `parent_id` reaches the
+        // same parents as scanning the node ids, deleted children included.
+        let mut siblings: BTreeMap<&NodeId, Vec<&NoteNode>> = BTreeMap::new();
+        for node in self.nodes.values() {
+            if let Some(parent_id) = node.parent_id() {
+                siblings.entry(parent_id).or_default().push(node);
+            }
+        }
+        for (parent_id, mut children) in siblings {
+            children.sort_by_key(|node| (node.sort_key(), node.id()));
             for pair in children.windows(2) {
-                let left = self.nodes.get(&pair[0]).expect("known child");
-                let right = self.nodes.get(&pair[1]).expect("known child");
-                if left.sort_key() >= right.sort_key() {
+                if pair[0].sort_key() >= pair[1].sort_key() {
                     return Err(DomainError::Invariant(format!(
                         "siblings below {parent_id} are not strictly ordered"
                     )));
