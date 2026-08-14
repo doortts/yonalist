@@ -146,7 +146,7 @@ export function useImageIngest({
   }, [boundary, importPaths, scopeRef]);
 
   const onDragOver = useCallback<DragEventHandler<HTMLElement>>((event) => {
-    if (!hasSupportedImage([...event.dataTransfer.files])) return;
+    if (!carriesDraggedImage(event.dataTransfer)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
     setDropTargetId(targetFromElement(
@@ -249,7 +249,27 @@ const defaultImageIngestBoundary: ImageIngestBoundary = {
   }
 };
 
+function isSupportedImageType(type: string): boolean {
+  return /^image\/(?:png|jpeg|gif|webp)$/u.test(type);
+}
+
 function hasSupportedImage(files: readonly File[]): boolean {
-  return files.some((file) =>
-    /^image\/(?:png|jpeg|gif|webp)$/u.test(file.type));
+  return files.some((file) => isSupportedImageType(file.type));
+}
+
+/**
+ * Whether a drag still in flight is carrying a file. A browser holds the files
+ * back until the drop -- `dataTransfer.files` is empty for every `dragover` --
+ * so reading it there refuses the drag the drop was meant for, and the drop
+ * never arrives. The item list is what a drag in flight does expose: a kind for
+ * every item, and, where the browser allows it, a type to match against.
+ */
+function carriesDraggedImage(transfer: DataTransfer): boolean {
+  const files = [...transfer.items ?? []].filter((item) => item.kind === "file");
+  if (files.length === 0) {
+    return [...transfer.types ?? []].includes("Files");
+  }
+  // Safari hides the type until the drop, so an item that will not say what it
+  // is has to be let through and turned away by the drop instead.
+  return files.some((item) => item.type === "" || isSupportedImageType(item.type));
 }

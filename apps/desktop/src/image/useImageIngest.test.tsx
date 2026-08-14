@@ -138,4 +138,64 @@ describe("image ingest", () => {
       .toBeDefined();
     Reflect.deleteProperty(document, "elementFromPoint");
   });
+
+  // A browser keeps the files back until the drop, so every `dragover` reports
+  // an empty file list. Reading it there refuses the drag, the section never
+  // accepts the drop, and nothing at all arrives.
+  it("accepts a drag whose files the browser has not handed over yet", () => {
+    const { scope, ref } = scopeFixture();
+    const { result } = renderHook(() => useImageIngest({
+      store: store(),
+      outlineRootId: "page",
+      index: index(),
+      scopeRef: ref,
+      boundary: { ...boundary().value, native: false }
+    }));
+    const preventDefault = vi.fn();
+    const dataTransfer = {
+      files: [] as unknown as FileList,
+      items: [{ kind: "file", type: "image/png" }],
+      types: ["Files"]
+    };
+
+    act(() => result.current.sectionProps.onDragOver({
+      preventDefault,
+      dataTransfer,
+      target: scope.querySelector("[data-outline-id]"),
+      currentTarget: scope
+    } as unknown as Parameters<
+      typeof result.current.sectionProps.onDragOver
+    >[0]));
+
+    expect(preventDefault).toHaveBeenCalled();
+    expect(result.current.dropTargetId).toBe("first");
+  });
+
+  it("leaves a drag carrying no file to whatever else wants it", () => {
+    const { scope, ref } = scopeFixture();
+    const { result } = renderHook(() => useImageIngest({
+      store: store(),
+      outlineRootId: "page",
+      index: index(),
+      scopeRef: ref,
+      boundary: { ...boundary().value, native: false }
+    }));
+    const preventDefault = vi.fn();
+
+    act(() => result.current.sectionProps.onDragOver({
+      preventDefault,
+      dataTransfer: {
+        files: [] as unknown as FileList,
+        items: [{ kind: "string", type: "text/plain" }],
+        types: ["text/plain"]
+      },
+      target: scope,
+      currentTarget: scope
+    } as unknown as Parameters<
+      typeof result.current.sectionProps.onDragOver
+    >[0]));
+
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(result.current.dropTargetId).toBeNull();
+  });
 });
