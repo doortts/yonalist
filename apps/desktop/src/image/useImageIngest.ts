@@ -222,6 +222,25 @@ function targetFromElement(
     outlineRootId;
 }
 
+/**
+ * What a reported drop position has to be divided by to reach CSS pixels.
+ *
+ * On macOS wry reads the point off the webview's own frame, which is in points
+ * -- CSS pixels already -- and Tauri passes it on as a physical position all
+ * the same. Dividing it again by a Retina scale factor puts every drop at half
+ * its distance from the window's top-left corner: a drop over the first rows
+ * still lands somewhere in the outline, and one anywhere else lands in the
+ * sidebar or above the list, where the outline owns nothing and the drop is
+ * dropped. Every other platform does report device pixels and keeps the
+ * window's own scale factor.
+ */
+export function dropPositionScale(
+  scaleFactor: number,
+  userAgent: string = navigator.userAgent
+): number {
+  return userAgent.includes("Macintosh") ? 1 : scaleFactor;
+}
+
 function messageFrom(cause: unknown): string {
   return cause instanceof Error ? cause.message : "The image could not be imported.";
 }
@@ -238,7 +257,9 @@ const defaultImageIngestBoundary: ImageIngestBoundary = {
       import("@tauri-apps/api/webview"),
       import("@tauri-apps/api/window")
     ]);
-    const scaleFactor = await getCurrentWindow().scaleFactor();
+    const scaleFactor = dropPositionScale(
+      await getCurrentWindow().scaleFactor()
+    );
     return getCurrentWebview().onDragDropEvent(({ payload }) => {
       if (payload.type === "leave") {
         listener({ type: "leave" });

@@ -3,10 +3,16 @@ import type { RefObject } from "react";
 import type { NotesStore } from "../notesStore";
 import { OutlineIndex } from "../outline/outlineIndex";
 import {
+  dropPositionScale,
   useImageIngest,
   type ImageIngestBoundary,
   type NativeImageDropEvent
 } from "./useImageIngest";
+
+const MAC_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15";
+const WINDOWS_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
 
 function scopeFixture() {
   const scope = document.createElement("section");
@@ -137,6 +143,15 @@ describe("image ingest", () => {
     expect(vi.mocked(native.value.listenNativeDrops).mock.results[0])
       .toBeDefined();
     Reflect.deleteProperty(document, "elementFromPoint");
+  });
+
+  // macOS reports the drop point in CSS pixels already. Scaling it again by a
+  // Retina factor halves the distance from the window's corner, which drops
+  // every drop but the ones over the first rows.
+  it("scales a drop position only where the platform reports device pixels", () => {
+    expect(dropPositionScale(2, MAC_AGENT)).toBe(1);
+    expect(dropPositionScale(1, MAC_AGENT)).toBe(1);
+    expect(dropPositionScale(2, WINDOWS_AGENT)).toBe(2);
   });
 
   // The window's own drag strips sit above the outline's first rows, so the
