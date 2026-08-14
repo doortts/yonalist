@@ -330,7 +330,7 @@ describe("NotesStore viewport recovery", () => {
     expect(store.getSnapshot().nodes).toHaveLength(0);
   });
 
-  it("holds the completion cascade back on a half-loaded window", async () => {
+  it("sends one row and leaves the Todo chain to the server", async () => {
     const parent = { ...bullet("one", 1024), marker: "todo" as const };
     const child = {
       ...bullet("child", 2048), parentId: "one", marker: "todo" as const
@@ -342,7 +342,7 @@ describe("NotesStore viewport recovery", () => {
     });
     notesApi.execute = vi.fn().mockResolvedValue({
       revision: 2,
-      changedNodes: [{ ...parent, completed: true }],
+      changedNodes: [{ ...parent, completed: true }, { ...child, completed: true }],
       deletedIds: [],
       history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
     });
@@ -351,11 +351,14 @@ describe("NotesStore viewport recovery", () => {
     await store.bootstrap();
     await store.setCompleted("one", true);
 
-    // `boot` still carries an afterCursor, so the loaded rows are not the
-    // whole branch and a cascade off them would write ids nobody fetched.
+    // The loaded rows are only a window of the page, so the client never
+    // decides which rows the tick reaches.
+    expect(notesApi.execute).toHaveBeenCalledTimes(1);
     expect(notesApi.execute).toHaveBeenCalledWith(expect.objectContaining({
       command: { kind: "setCompleted", id: "one", completed: true }
     }));
+    expect(store.getSnapshot().nodes.map((node) => node.completed))
+      .toEqual([true, true]);
   });
 
   it("imports a parsed outline hierarchy with one semantic command", async () => {

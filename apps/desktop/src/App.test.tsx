@@ -1049,7 +1049,9 @@ describe("Yonalist v2 desktop shell", () => {
     expect(within(bar).queryByText("1/1")).toBeNull();
   });
 
-  it("settles the Todos under the box that was ticked", async () => {
+  // The chain the tick settles reaches past the loaded window, so the row that
+  // was clicked is all the client sends and notes-core settles the rest.
+  it("sends the ticked box alone and leaves the chain to the server", async () => {
     const parent = { ...snapshot.viewport!.nodes[0], marker: "todo" as const };
     const child = {
       ...snapshot.viewport!.nodes[1],
@@ -1069,13 +1071,8 @@ describe("Yonalist v2 desktop shell", () => {
     }));
 
     await waitFor(() => {
-      const command = vi.mocked(notesApi.execute).mock.calls.at(-1)?.[0].command;
-      expect(command).toMatchObject({
-        kind: "setCompletedMany",
-        completed: true
-      });
-      expect(new Set(command?.kind === "setCompletedMany" ? command.ids : []))
-        .toEqual(new Set([parent.id, "child"]));
+      expect(vi.mocked(notesApi.execute).mock.calls.at(-1)?.[0].command)
+        .toEqual({ kind: "setCompleted", id: parent.id, completed: true });
     });
   });
 
