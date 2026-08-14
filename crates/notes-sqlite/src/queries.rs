@@ -36,14 +36,7 @@ pub(crate) fn bootstrap(
         .map_err(internal)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(internal)?;
-    let preferred_page = connection
-        .query_row(
-            "SELECT value FROM notes_ui_state WHERE key = 'active_page_id'",
-            [],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(internal)?;
+    let preferred_page = active_page(connection)?;
     // Home is a page like any other, so it is both the fallback and a legal
     // stored value; anything else has to still name a live page.
     let active_page_id = preferred_page
@@ -158,14 +151,19 @@ pub(crate) fn viewport(
         .map(NoteView::from)
         .collect::<Vec<_>>();
     let consumed = offset + nodes.len();
-    connection
-        .execute(
-            "INSERT INTO notes_ui_state(key, value)
-             VALUES ('active_page_id', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [&request.page_id],
-        )
-        .map_err(internal)?;
+    // Scrolling is a stream of viewport calls on one page, and every write
+    // queues a transaction behind the single database worker; the read keeps
+    // the restart-restore guarantee without paying for it per scroll step.
+    if active_page(connection)?.as_deref() != Some(request.page_id.as_str()) {
+        connection
+            .execute(
+                "INSERT INTO notes_ui_state(key, value)
+                 VALUES ('active_page_id', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [&request.page_id],
+            )
+            .map_err(internal)?;
+    }
     let page_node = repository::node(connection, &request.page_id)?
         .map(NoteView::from)
         .filter(|node| !node.deleted);
@@ -405,6 +403,17 @@ fn anchor_offset(
         .map_err(|_| StorageError::Internal("viewport anchor offset was invalid".into()))
 }
 
+fn active_page(connection: &Connection) -> Result<Option<String>, StorageError> {
+    connection
+        .query_row(
+            "SELECT value FROM notes_ui_state WHERE key = 'active_page_id'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(internal)
+}
+
 fn cursor(revision: u64, offset: usize) -> String {
     format!("r:{revision}:o:{offset}")
 }
@@ -441,4 +450,134 @@ fn parse_cursor(value: &str, actual_revision: u64) -> Result<usize, StorageError
 
 fn internal(error: rusqlite::Error) -> StorageError {
     StorageError::Internal(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema;
+
+    fn open() -> Connection {
+        let mut connection = Connection::open_in_memory().expect("in-memory db");
+        schema::initialize(&connection).expect("schema");
+        schema::ensure_root(&mut connection).expect("root");
+        connection
+    }
+
+    fn insert_child(connection: &Connection, id: &str, parent_id: &str, sort_key: i64) {
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text)
+                 VALUES (?1, ?2, ?3, 'bullet', ?1)",
+                params![id, parent_id, sort_key],
+            )
+            .expect("node");
+    }
+
+    fn open_page(id: &str) -> ViewportRequest {
+        ViewportRequest {
+            page_id: id.into(),
+            anchor_id: None,
+            before_cursor: None,
+            after_cursor: None,
+            limit: 10,
+        }
+    }
+
+    #[test]
+    fn scrolling_one_page_never_touches_a_row() {
+        let connection = open();
+        insert_child(&connection, "page", ROOT_ID, 1024);
+        for index in 0..40 {
+            insert_child(
+                &connection,
+                &format!("node-{index}"),
+                "page",
+                1024 * (index + 1),
+            );
+        }
+        let opened = viewport(&connection, open_page("page")).expect("open the page");
+
+        let before = connection.total_changes();
+        let down = viewport(
+            &connection,
+            ViewportRequest {
+                after_cursor: opened.after_cursor,
+                ..open_page("page")
+            },
+        )
+        .expect("scroll down");
+        viewport(
+            &connection,
+            ViewportRequest {
+                before_cursor: down.before_cursor,
+                ..open_page("page")
+            },
+        )
+        .expect("scroll up");
+        viewport(
+            &connection,
+            ViewportRequest {
+                anchor_id: Some("node-30".into()),
+                ..open_page("page")
+            },
+        )
+        .expect("jump to an anchor");
+        viewport(&connection, open_page("page")).expect("reopen the same page");
+
+        assert_eq!(connection.total_changes(), before, "a read path wrote rows");
+    }
+
+    #[test]
+    fn switching_pages_writes_once_and_then_settles() {
+        let connection = open();
+        insert_child(&connection, "page-a", ROOT_ID, 1024);
+        insert_child(&connection, "page-b", ROOT_ID, 2048);
+        viewport(&connection, open_page("page-a")).expect("open a");
+
+        let before = connection.total_changes();
+        viewport(&connection, open_page("page-b")).expect("switch to b");
+        let switched = connection.total_changes();
+        viewport(&connection, open_page("page-b")).expect("stay on b");
+
+        assert_eq!(switched - before, 1);
+        assert_eq!(connection.total_changes(), switched);
+        assert_eq!(
+            active_page(&connection).expect("ui state").as_deref(),
+            Some("page-b")
+        );
+    }
+
+    #[test]
+    fn a_boot_after_opening_a_page_lands_back_on_it() {
+        let connection = open();
+        insert_child(&connection, "first-page", ROOT_ID, 1024);
+        insert_child(&connection, "second-page", ROOT_ID, 2048);
+
+        let first = bootstrap(&connection, "session-a".into(), 20).expect("first boot");
+        assert_eq!(first.active_page_id.as_deref(), Some(ROOT_ID));
+        viewport(&connection, open_page("second-page")).expect("open the second page");
+
+        let second = bootstrap(&connection, "session-b".into(), 20).expect("second boot");
+        assert_eq!(second.active_page_id.as_deref(), Some("second-page"));
+    }
+
+    #[test]
+    fn booting_past_a_dead_stored_page_repairs_the_stored_row() {
+        let connection = open();
+        connection
+            .execute(
+                "INSERT INTO notes_ui_state(key, value) VALUES ('active_page_id', 'ghost-page')",
+                [],
+            )
+            .expect("stale row");
+
+        let boot = bootstrap(&connection, "session-a".into(), 20).expect("boot");
+
+        assert_eq!(boot.active_page_id.as_deref(), Some(ROOT_ID));
+        assert_eq!(
+            active_page(&connection).expect("ui state").as_deref(),
+            Some(ROOT_ID)
+        );
+    }
 }
