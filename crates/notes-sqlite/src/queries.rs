@@ -11,6 +11,42 @@ use crate::schema::ROOT_ID;
 const MAX_VIEWPORT_LIMIT: u32 = 200;
 const MAX_SEARCH_LIMIT: u32 = 100;
 
+/// The rows under page `?1` are the ones whose stored path extends the page's
+/// own path by a separator, and '0' is the byte after '/', so the pair is a
+/// half-open range the path index seeks straight to. The page's own row sorts
+/// below it, and a trashed branch carries a NULL path no comparison can be true
+/// for, which is what leaves the window with no `deleted` predicate to run.
+///
+/// `viewport` and `anchor_offset` are the same ordering read two ways; they
+/// share this text so a window and a jump into it cannot bound differently.
+const PAGE_RANGE: &str = "body.path >= (SELECT path FROM notes_nodes WHERE id = ?1) || '/'
+     AND body.path < (SELECT path FROM notes_nodes WHERE id = ?1) || '0'";
+
+/// `?1` page, `?2` row count, `?3` offset.
+fn window_sql() -> String {
+    format!(
+        "SELECT node.*
+         FROM notes_nodes body
+         JOIN notes_node_records node ON node.id = body.id
+         WHERE {PAGE_RANGE}
+         ORDER BY body.path
+         LIMIT ?2 OFFSET ?3"
+    )
+}
+
+/// `?1` page, `?2` anchor. The range leaves the page's own row out, so the
+/// first row it carries is offset zero.
+fn anchor_sql() -> String {
+    format!(
+        "WITH ordered AS (
+            SELECT body.id, row_number() OVER (ORDER BY body.path) - 1 AS offset
+            FROM notes_nodes body
+            WHERE {PAGE_RANGE}
+         )
+         SELECT offset FROM ordered WHERE id = ?2"
+    )
+}
+
 pub(crate) fn bootstrap(
     connection: &Connection,
     session_id: String,
@@ -93,43 +129,7 @@ pub(crate) fn viewport(
     } else {
         0
     };
-    let mut statement = connection
-        .prepare(
-            "WITH RECURSIVE outline(id, path) AS (
-                SELECT id,
-                       CASE WHEN sort_key < 0
-                           THEN printf(
-                               '0%019lld:%s',
-                               9223372036854775807 + sort_key + 1,
-                               id
-                           )
-                           ELSE printf('1%019lld:%s', sort_key, id)
-                       END
-                FROM notes_nodes
-                WHERE id = ?1 AND deleted = 0
-                UNION ALL
-                SELECT child.id,
-                       outline.path || '/' ||
-                           CASE WHEN child.sort_key < 0
-                               THEN printf(
-                                   '0%019lld:%s',
-                                   9223372036854775807 + child.sort_key + 1,
-                                   child.id
-                               )
-                               ELSE printf('1%019lld:%s', child.sort_key, child.id)
-                           END
-                FROM notes_nodes child
-                JOIN outline ON child.parent_id = outline.id
-                WHERE child.deleted = 0
-             )
-             SELECT node.*
-             FROM outline
-             JOIN notes_node_records node ON node.id = outline.id
-             WHERE node.id <> ?1
-             ORDER BY outline.path
-             LIMIT ?2 OFFSET ?3",
-        )
-        .map_err(internal)?;
+    let mut statement = connection.prepare(&window_sql()).map_err(internal)?;
     let rows = statement
         .query_map(
             params![
@@ -360,42 +360,9 @@ fn anchor_offset(
     anchor_id: &str,
 ) -> Result<usize, StorageError> {
     let offset = connection
-        .query_row(
-            "WITH RECURSIVE outline(id, path) AS (
-                SELECT id,
-                       CASE WHEN sort_key < 0
-                           THEN printf(
-                               '0%019lld:%s',
-                               9223372036854775807 + sort_key + 1,
-                               id
-                           )
-                           ELSE printf('1%019lld:%s', sort_key, id)
-                       END
-                FROM notes_nodes
-                WHERE id = ?1 AND deleted = 0
-                UNION ALL
-                SELECT child.id,
-                       outline.path || '/' ||
-                           CASE WHEN child.sort_key < 0
-                               THEN printf(
-                                   '0%019lld:%s',
-                                   9223372036854775807 + child.sort_key + 1,
-                                   child.id
-                               )
-                               ELSE printf('1%019lld:%s', child.sort_key, child.id)
-                           END
-                FROM notes_nodes child
-                JOIN outline ON child.parent_id = outline.id
-                WHERE child.deleted = 0
-             ),
-             ordered AS (
-                SELECT id, row_number() OVER (ORDER BY path) - 2 AS offset
-                FROM outline
-             )
-             SELECT MAX(offset, 0) FROM ordered WHERE id = ?2",
-            params![page_id, anchor_id],
-            |row| row.get::<_, i64>(0),
-        )
+        .query_row(&anchor_sql(), params![page_id, anchor_id], |row| {
+            row.get::<_, i64>(0)
+        })
         .optional()
         .map_err(internal)?
         .ok_or_else(|| StorageError::Internal("viewport anchor was not found".into()))?;
@@ -464,14 +431,19 @@ mod tests {
         connection
     }
 
-    fn insert_child(connection: &Connection, id: &str, parent_id: &str, sort_key: i64) {
-        connection
+    /// Through the same path maintenance a commit runs, since the window reads
+    /// the stored column now.
+    fn insert_child(connection: &mut Connection, id: &str, parent_id: &str, sort_key: i64) {
+        let transaction = connection.transaction().expect("transaction");
+        transaction
             .execute(
                 "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text)
                  VALUES (?1, ?2, ?3, 'bullet', ?1)",
                 params![id, parent_id, sort_key],
             )
             .expect("node");
+        crate::node_paths::rebuild_all(&transaction).expect("paths");
+        transaction.commit().expect("commit");
     }
 
     fn open_page(id: &str) -> ViewportRequest {
@@ -484,13 +456,47 @@ mod tests {
         }
     }
 
+    fn plan(connection: &Connection, sql: &str) -> String {
+        let mut statement = connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .expect("plan");
+        let bindings = statement.parameter_count();
+        statement
+            .query_map(&params!["page", 10, 0][..bindings], |row| {
+                row.get::<_, String>(3)
+            })
+            .expect("plan rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("plan rows")
+            .join(" | ")
+    }
+
+    /// The point of the stored path: both readers seek into the index rather
+    /// than sorting the page. A predicate that stops being sargable turns these
+    /// into SCAN and takes the deep-scroll bound with it.
+    #[test]
+    fn both_readers_seek_the_path_index() {
+        let mut connection = open();
+        insert_child(&mut connection, "page", ROOT_ID, 1024);
+        insert_child(&mut connection, "node", "page", 1024);
+
+        for sql in [window_sql(), anchor_sql()] {
+            let plan = plan(&connection, &sql);
+            assert!(
+                plan.contains("SEARCH body USING INDEX notes_nodes_path (path>? AND path<?)"),
+                "{plan}"
+            );
+            assert!(!plan.contains("TEMP B-TREE"), "{plan}");
+        }
+    }
+
     #[test]
     fn scrolling_one_page_never_touches_a_row() {
-        let connection = open();
-        insert_child(&connection, "page", ROOT_ID, 1024);
+        let mut connection = open();
+        insert_child(&mut connection, "page", ROOT_ID, 1024);
         for index in 0..40 {
             insert_child(
-                &connection,
+                &mut connection,
                 &format!("node-{index}"),
                 "page",
                 1024 * (index + 1),
@@ -530,9 +536,9 @@ mod tests {
 
     #[test]
     fn switching_pages_writes_once_and_then_settles() {
-        let connection = open();
-        insert_child(&connection, "page-a", ROOT_ID, 1024);
-        insert_child(&connection, "page-b", ROOT_ID, 2048);
+        let mut connection = open();
+        insert_child(&mut connection, "page-a", ROOT_ID, 1024);
+        insert_child(&mut connection, "page-b", ROOT_ID, 2048);
         viewport(&connection, open_page("page-a")).expect("open a");
 
         let before = connection.total_changes();
@@ -550,9 +556,9 @@ mod tests {
 
     #[test]
     fn a_boot_after_opening_a_page_lands_back_on_it() {
-        let connection = open();
-        insert_child(&connection, "first-page", ROOT_ID, 1024);
-        insert_child(&connection, "second-page", ROOT_ID, 2048);
+        let mut connection = open();
+        insert_child(&mut connection, "first-page", ROOT_ID, 1024);
+        insert_child(&mut connection, "second-page", ROOT_ID, 2048);
 
         let first = bootstrap(&connection, "session-a".into(), 20).expect("first boot");
         assert_eq!(first.active_page_id.as_deref(), Some(ROOT_ID));
