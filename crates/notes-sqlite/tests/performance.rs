@@ -128,12 +128,13 @@ fn the_deepest_fifty_thousand_node_window_is_bounded() {
     eprintln!("50,000-node deepest window: {elapsed:?}");
     assert_eq!(page.nodes.len(), 80);
     assert!(page.after_cursor.is_none());
-    // ponytail: every window re-walks the whole subtree, so a window's cost is
-    // the page's size rather than the scroll depth -- ~25ms at 5,000 nodes but
-    // ~270ms here, already past the 100ms scroll budget. This bound only holds
-    // the measured cliff in place; materializing the sort-key path makes a
-    // window a range scan and ends the re-walk.
-    assert!(elapsed < Duration::from_secs(1));
+    // ponytail: every window re-walks the whole subtree, so a window costs what
+    // the page holds rather than how deep the scroll went -- ~45ms at 5,000
+    // nodes and ~94ms here, which leaves a 50,000-node page about 5% under the
+    // 100ms a scroll step gets. The next size up spends it. This bound holds the
+    // cliff where it is; materializing the sort-key path makes a window a range
+    // scan and ends the re-walk.
+    assert!(elapsed < Duration::from_millis(300));
 }
 
 #[test]
