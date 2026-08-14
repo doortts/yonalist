@@ -143,7 +143,7 @@ P1-9 시점 재검토: 1차 문서는 "태그 작업 진행 중"을 근거로 �
 | 12 | preview 백엔드 유지 정책 결정. 브라우저 개발용으로 Rust 백엔드를 TS로 1,292줄 재구현(+테스트 1,074줄)했고 Rust 명령이 바뀔 때마다 두 벌을 수정한다. 유지한다면 두 구현의 드리프트를 잡는 계약 테스트가 필요하다. | `previewApi.ts` + `preview*` 8모듈 |
 | 13 | 렌더 중 변이 3곳 정리. 앞의 둘은 지금도 제거 가능하고 `rowRuntime`은 성능 부하를 지는 축이라 문서화 후 유지한다. | `App.tsx:216`, `NotesOutline.tsx:140`, `:437` |
 | 14 | 문서 드리프트 정리. parity matrix가 Export(`:51`)·Appearance(`:19`)를 "missing"이라 하지만 둘 다 출하됐다. README는 v1을 제품이라 설명하고 존재하지 않는 Monaco 표면을 언급한다. 계약 파일 수(32→37)와 번들 예산(300→312KB)도 낡았다. `architecture.md`에는 `crates/notes-export`가 빠져 있다. | 문서 9곳 대조 |
-| 17 | `tree.rs`의 부모 그룹핑 두 벌을 한 벌로. P1-8이 `validate()` 안에 인라인 그룹핑을 넣고 P1-8b가 `children_index`를 넣어, 같은 파일에 같은 그룹핑이 두 번 있다. `children_index`가 `Vec<&NoteNode>`를 돌려주면 `validate()`가 그대로 쓰고 walker만 id로 매핑하면 된다 — 인라인 쪽 8줄이 사라진다. 리뷰를 통과한 두 커밋을 마지막에 손대지 않으려고 미룬 것이지 난도 때문이 아니다. | `crates/notes-core/src/tree.rs:355`(인라인), `:248`(`children_index`) |
+| 17 | ~~`tree.rs`의 부모 그룹핑 두 벌을 한 벌로~~ **완료**. P1-8이 `validate()` 안에 인라인 그룹핑을 넣고 P1-8b가 `children_index`를 넣어, 같은 파일에 같은 그룹핑이 두 번 있다. `children_index`가 `Vec<&NoteNode>`를 돌려주면 `validate()`가 그대로 쓰고 walker만 id로 매핑하면 된다 — 인라인 쪽 8줄이 사라진다. 리뷰를 통과한 두 커밋을 마지막에 손대지 않으려고 미룬 것이지 난도 때문이 아니다. | `crates/notes-core/src/tree.rs:355`(인라인), `:248`(`children_index`) |
 | 18 | v2 엔트리 청크 목표치를 정하고 쪼갠다. 지금 엔트리가 324KB raw / 98KB gzip 한 덩어리고, P0-2가 그 크기를 예산으로 공식화했다. 지연 청크 24개 중 7개만 예산을 건드릴 만큼 크고 나머지 17개는 각 3.3KB 미만이라 잘못 eager import해도 안 걸린다. 크기 자체가 맞는지는 제품 판단이라 P0-2 범위 밖으로 뒀다. | `scripts/checkV2BundleBudget.mjs` |
 | 15 | 저장소 위생. `.superpowers/sdd/` 추적 파일 24개를 `git rm --cached`(ignore가 소급 적용되지 않은 상태), `.claude/launch.json`의 죽은 절대 경로 제거, `packages/contracts`를 상대 경로 대신 패키지 이름으로 import. | 워크스페이스 별칭이 장식으로만 존재 |
 

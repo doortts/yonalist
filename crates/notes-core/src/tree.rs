@@ -14,12 +14,12 @@ pub struct NotesTree {
 
 /// Children go onto the stack reversed so popping hands them back in document
 /// order: `duplicate_node` numbers the copies in the order they arrive here.
-fn walk_subtree(index: &BTreeMap<&NodeId, Vec<NodeId>>, root_id: &NodeId) -> Vec<NodeId> {
+fn walk_subtree(index: &BTreeMap<&NodeId, Vec<&NoteNode>>, root_id: &NodeId) -> Vec<NodeId> {
     let mut result = Vec::new();
     let mut pending = vec![root_id.clone()];
     while let Some(id) = pending.pop() {
         if let Some(children) = index.get(&id) {
-            pending.extend(children.iter().rev().cloned());
+            pending.extend(children.iter().rev().map(|node| node.id().clone()));
         }
         result.push(id);
     }
@@ -245,7 +245,10 @@ impl NotesTree {
         Ok(())
     }
 
-    fn children_index(&self, include_deleted: bool) -> BTreeMap<&NodeId, Vec<NodeId>> {
+    /// Siblings under each parent, in the order `ordered_children` would return
+    /// them. Both the subtree walks and `validate`'s ordering check read this,
+    /// so the two cannot drift apart on what counts as a child.
+    fn children_index(&self, include_deleted: bool) -> BTreeMap<&NodeId, Vec<&NoteNode>> {
         let mut index: BTreeMap<&NodeId, Vec<&NoteNode>> = BTreeMap::new();
         for node in self
             .nodes
@@ -256,14 +259,10 @@ impl NotesTree {
                 index.entry(parent_id).or_default().push(node);
             }
         }
+        for children in index.values_mut() {
+            children.sort_by_key(|node| (node.sort_key(), node.id()));
+        }
         index
-            .into_iter()
-            .map(|(parent_id, mut children)| {
-                children.sort_by_key(|node| (node.sort_key(), node.id()));
-                let ids = children.into_iter().map(|node| node.id().clone()).collect();
-                (parent_id, ids)
-            })
-            .collect()
     }
 
     /// Deleted rows stay in the walk: delete and restore both have to reach the
@@ -372,15 +371,10 @@ impl NotesTree {
         }
         // Every remaining parent id exists as a node: the loop above rejects any
         // node whose parent is absent, so grouping by `parent_id` reaches the
-        // same parents as scanning the node ids, deleted children included.
-        let mut siblings: BTreeMap<&NodeId, Vec<&NoteNode>> = BTreeMap::new();
-        for node in self.nodes.values() {
-            if let Some(parent_id) = node.parent_id() {
-                siblings.entry(parent_id).or_default().push(node);
-            }
-        }
-        for (parent_id, mut children) in siblings {
-            children.sort_by_key(|node| (node.sort_key(), node.id()));
+        // same parents as scanning the node ids. Deleted children are included
+        // because a deleted row still holds its ordering slot until it is
+        // purged, and two rows may not share one.
+        for (parent_id, children) in self.children_index(true) {
             for pair in children.windows(2) {
                 if pair[0].sort_key() >= pair[1].sort_key() {
                     return Err(DomainError::Invariant(format!(
