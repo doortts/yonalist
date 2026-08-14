@@ -1535,7 +1535,6 @@ button.notes-date-token:hover {
 
 .notes-page-header[data-completed="true"] .notes-page-title {
   color: var(--text-3);
-  text-decoration: line-through;
 }
 
 .notes-page-note {
@@ -2021,12 +2020,12 @@ body.is-outline-dragging * {
 
 .notes-todo-progress-track {
   display: block;
-  flex: 1 1 auto;
-  max-width: 150px;
+  flex: 0 0 auto;
+  width: 56px;
   height: 4px;
   overflow: hidden;
-  border-radius: 999px;
-  background: var(--border);
+  border-radius: 1px;
+  background: var(--danger-soft);
 }
 
 .notes-todo-progress-fill {
@@ -2116,7 +2115,6 @@ body.is-outline-dragging * {
 
 .notes-node[data-completed="true"] .notes-node-title {
   color: var(--text-3);
-  text-decoration: line-through;
 }
 
 .notes-node-menu-slot {
@@ -2623,7 +2621,6 @@ body.is-outline-dragging * {
   .notes-image-atom-editor.notes-node-primary-image
   [data-image-atom-region="after"] {
   color: var(--text-3);
-  text-decoration: line-through;
 }
 
 .notes-image-attachment-slot:focus-visible {

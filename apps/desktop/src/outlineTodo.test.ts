@@ -22,17 +22,50 @@ function node(
   };
 }
 
-describe("v2 direct-child Todo progress", () => {
-  it("counts only direct Todo children in one query-model pass", () => {
+describe("v2 Todo branch progress", () => {
+  it("counts the whole Todo chain under a bullet", () => {
     const progress = buildTodoProgressMap([
+      node("parent", "page", "bullet"),
       node("done", "parent", "todo", true),
       node("open", "parent", "todo"),
       node("ordinary", "parent", "bullet", true),
       node("grandchild", "open", "todo", true)
     ]);
 
-    expect(progress.get("parent")).toEqual({ completed: 1, total: 2 });
-    expect(progress.get("open")).toEqual({ completed: 1, total: 1 });
+    expect(progress.get("parent")).toEqual({ completed: 2, total: 3 });
     expect(progress.has("ordinary")).toBe(false);
+  });
+
+  it("draws no bar on a Todo nested under another Todo", () => {
+    const progress = buildTodoProgressMap([
+      node("top", "page", "todo"),
+      node("middle", "top", "todo"),
+      node("leaf", "middle", "todo", true)
+    ]);
+
+    expect(progress.get("top")).toEqual({ completed: 1, total: 2 });
+    expect(progress.has("middle")).toBe(false);
+  });
+
+  it("stops counting at an ordinary bullet in the chain", () => {
+    const progress = buildTodoProgressMap([
+      node("parent", "page", "bullet"),
+      node("open", "parent", "todo"),
+      node("divider", "open", "bullet"),
+      node("beyond", "divider", "todo", true)
+    ]);
+
+    expect(progress.get("parent")).toEqual({ completed: 0, total: 1 });
+    expect(progress.get("divider")).toEqual({ completed: 1, total: 1 });
+  });
+
+  it("skips deleted Todos", () => {
+    const progress = buildTodoProgressMap([
+      node("parent", "page", "bullet"),
+      { ...node("gone", "parent", "todo"), deleted: true },
+      node("open", "parent", "todo")
+    ]);
+
+    expect(progress.get("parent")).toEqual({ completed: 0, total: 1 });
   });
 });

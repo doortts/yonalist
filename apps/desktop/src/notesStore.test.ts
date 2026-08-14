@@ -330,6 +330,34 @@ describe("NotesStore viewport recovery", () => {
     expect(store.getSnapshot().nodes).toHaveLength(0);
   });
 
+  it("holds the completion cascade back on a half-loaded window", async () => {
+    const parent = { ...bullet("one", 1024), marker: "todo" as const };
+    const child = {
+      ...bullet("child", 2048), parentId: "one", marker: "todo" as const
+    };
+    const notesApi = api(vi.fn());
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...boot,
+      viewport: { ...boot.viewport!, nodes: [parent, child] }
+    });
+    notesApi.execute = vi.fn().mockResolvedValue({
+      revision: 2,
+      changedNodes: [{ ...parent, completed: true }],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    });
+    const store = new NotesStore(notesApi);
+
+    await store.bootstrap();
+    await store.setCompleted("one", true);
+
+    // `boot` still carries an afterCursor, so the loaded rows are not the
+    // whole branch and a cascade off them would write ids nobody fetched.
+    expect(notesApi.execute).toHaveBeenCalledWith(expect.objectContaining({
+      command: { kind: "setCompleted", id: "one", completed: true }
+    }));
+  });
+
   it("imports a parsed outline hierarchy with one semantic command", async () => {
     const notesApi = api(vi.fn());
     notesApi.execute = vi.fn().mockImplementation(async (envelope) => {

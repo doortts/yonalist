@@ -984,7 +984,7 @@ describe("Yonalist v2 desktop shell", () => {
     }));
   });
 
-  it("shows progress from direct Todo children only", async () => {
+  it("shows one bar per Todo chain, counting the whole branch", async () => {
     const parent = { ...snapshot.viewport!.nodes[0], marker: "todo" as const };
     const directDone = {
       ...snapshot.viewport!.nodes[1],
@@ -999,7 +999,7 @@ describe("Yonalist v2 desktop shell", () => {
       parentId: parent.id,
       marker: "todo" as const
     };
-    const ignoredGrandchild = {
+    const grandchild = {
       ...snapshot.viewport!.nodes[1],
       id: "grandchild",
       parentId: directOpen.id,
@@ -1011,14 +1011,72 @@ describe("Yonalist v2 desktop shell", () => {
       ...snapshot,
       viewport: {
         ...snapshot.viewport!,
-        nodes: [parent, directDone, directOpen, ignoredGrandchild]
+        nodes: [parent, directDone, directOpen, grandchild]
       }
     });
     render(<App api={notesApi} />);
 
-    expect(await screen.findByRole("progressbar", {
-      name: "1 of 2 To-dos complete"
-    })).toBeVisible();
+    const bar = await screen.findByRole("progressbar", {
+      name: "2 of 3 To-dos complete"
+    });
+    expect(bar).toBeVisible();
+    expect(within(bar).getByText("2/3")).toBeVisible();
+    // direct-open carries a Todo of its own, but the chain it belongs to is
+    // already reported one row up.
+    expect(screen.getAllByRole("progressbar")).toHaveLength(1);
+  });
+
+  it("counts down to the total alone once the chain is finished", async () => {
+    const parent = { ...snapshot.viewport!.nodes[0], marker: "todo" as const };
+    const child = {
+      ...snapshot.viewport!.nodes[1],
+      id: "child",
+      parentId: parent.id,
+      marker: "todo" as const,
+      completed: true
+    };
+    const notesApi = api();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: { ...snapshot.viewport!, nodes: [parent, child] }
+    });
+    render(<App api={notesApi} />);
+
+    const bar = await screen.findByRole("progressbar", {
+      name: "1 of 1 To-dos complete"
+    });
+    expect(within(bar).getByText("1")).toBeVisible();
+    expect(within(bar).queryByText("1/1")).toBeNull();
+  });
+
+  it("settles the Todos under the box that was ticked", async () => {
+    const parent = { ...snapshot.viewport!.nodes[0], marker: "todo" as const };
+    const child = {
+      ...snapshot.viewport!.nodes[1],
+      id: "child",
+      parentId: parent.id,
+      marker: "todo" as const
+    };
+    const notesApi = api();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: { ...snapshot.viewport!, nodes: [parent, child] }
+    });
+    render(<App api={notesApi} />);
+
+    fireEvent.click(await screen.findByRole("checkbox", {
+      name: `Mark complete: ${parent.text}`
+    }));
+
+    await waitFor(() => {
+      const command = vi.mocked(notesApi.execute).mock.calls.at(-1)?.[0].command;
+      expect(command).toMatchObject({
+        kind: "setCompletedMany",
+        completed: true
+      });
+      expect(new Set(command?.kind === "setCompletedMany" ? command.ids : []))
+        .toEqual(new Set([parent.id, "child"]));
+    });
   });
 
   it("applies /todo as one coalesced text-and-marker gesture", async () => {
