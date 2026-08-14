@@ -17,6 +17,12 @@ pub enum NoteNodeKind {
 pub enum NoteMarkerKind {
     Bullet,
     Todo,
+    /// A numbered row. `start` is the number the reader typed, which only the
+    /// first row of a run of siblings uses: the rows under it count up from
+    /// there, so the numbers stay right when one is added or taken away.
+    Ordered {
+        start: i64,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

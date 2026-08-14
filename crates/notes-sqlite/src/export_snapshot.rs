@@ -68,8 +68,8 @@ pub(crate) fn load(
             |row| {
                 Ok((
                     parse_node(row)?,
-                    row.get::<_, i64>(19)?,
-                    row.get::<_, i64>(20)? != 0,
+                    row.get::<_, i64>(20)?,
+                    row.get::<_, i64>(21)? != 0,
                 ))
             },
         )

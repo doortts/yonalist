@@ -159,7 +159,12 @@ fn wrap(
     Ok(lines)
 }
 
-fn row(font: &ParsedFont, node: &ExportNode, depth: usize) -> Result<PdfPreparedRow, ExportError> {
+fn row(
+    font: &ParsedFont,
+    node: &ExportNode,
+    depth: usize,
+    number: Option<i64>,
+) -> Result<PdfPreparedRow, ExportError> {
     let body_width = points(PDF_PAGE_WIDTH_MM - MARGIN_X_MM * 2.0);
     let max_indent = body_width - MIN_TEXT_WIDTH - NOTE_INDENT;
     let indentation = (depth as f32 * DEPTH_INDENT).min(max_indent);
@@ -169,7 +174,7 @@ fn row(font: &ParsedFont, node: &ExportNode, depth: usize) -> Result<PdfPrepared
         font,
         &format!(
             "{} {}",
-            marker_prefix(node.marker, node.completed),
+            marker_prefix(node.marker, node.completed, number),
             node.text
         ),
         ROW_SIZE,
@@ -218,6 +223,7 @@ fn image(
     node: &ExportNode,
     depth: usize,
     full_page_height: f32,
+    number: Option<i64>,
 ) -> Result<PdfPreparedImage, ExportError> {
     let image = node
         .image
@@ -280,7 +286,7 @@ fn image(
     width *= scale;
     height *= scale;
     let marker_line = PdfPreparedLine {
-        text: marker_prefix(node.marker, node.completed).into(),
+        text: marker_prefix(node.marker, node.completed, number),
         x: marker_x,
         size: ROW_SIZE,
         line_height: ROW_LINE_HEIGHT,
@@ -305,11 +311,14 @@ fn image(
     })
 }
 
-fn marker_prefix(marker: NoteMarkerKind, completed: bool) -> &'static str {
+fn marker_prefix(marker: NoteMarkerKind, completed: bool, number: Option<i64>) -> String {
     match marker {
-        NoteMarkerKind::Bullet => "•",
-        NoteMarkerKind::Todo if completed => "[x]",
-        NoteMarkerKind::Todo => "[ ]",
+        NoteMarkerKind::Bullet => "\u{2022}".into(),
+        NoteMarkerKind::Todo if completed => "[x]".into(),
+        NoteMarkerKind::Todo => "[ ]".into(),
+        // A run counted from its own first row, so an export prints the numbers
+        // the outline shows. A row torn out of its run falls back to its own.
+        NoteMarkerKind::Ordered { start } => format!("{}.", number.unwrap_or(start)),
     }
 }
 
@@ -319,6 +328,7 @@ fn blocks(
     depth: usize,
     full_page_height: f32,
     output: &mut Vec<PdfPreparedBlock>,
+    number: Option<i64>,
 ) -> Result<(), ExportError> {
     match node.kind {
         NoteNodeKind::Image => {
@@ -327,14 +337,37 @@ fn blocks(
                 node,
                 depth,
                 full_page_height,
+                number,
             )?));
         }
         NoteNodeKind::Page | NoteNodeKind::Bullet => {
-            output.push(PdfPreparedBlock::Row(row(font, node, depth)?));
+            output.push(PdfPreparedBlock::Row(row(font, node, depth, number)?));
         }
     }
+    // One run of numbered siblings counts from the number its first row was
+    // given; anything else between them ends the run, exactly as the outline
+    // draws it.
+    let mut counted: Option<i64> = None;
     for child in &node.children {
-        blocks(font, child, depth + 1, full_page_height, output)?;
+        let child_number = match child.marker {
+            NoteMarkerKind::Ordered { start } => {
+                let next = counted.map_or(start, |previous| previous + 1);
+                counted = Some(next);
+                Some(next)
+            }
+            _ => {
+                counted = None;
+                None
+            }
+        };
+        blocks(
+            font,
+            child,
+            depth + 1,
+            full_page_height,
+            output,
+            child_number,
+        )?;
     }
     Ok(())
 }
@@ -389,7 +422,14 @@ pub(super) fn build_pages(
         ));
     }
     let mut prepared = Vec::new();
-    blocks(font, &snapshot.root, 0, full_page_height, &mut prepared)?;
+    blocks(
+        font,
+        &snapshot.root,
+        0,
+        full_page_height,
+        &mut prepared,
+        None,
+    )?;
     let mut pages = vec![PdfPageDraft::default()];
     place_lines(&mut pages[0], title_lines, content_top);
     let mut cursor_top = content_top - title_height;
@@ -484,9 +524,22 @@ mod tests {
 
     #[test]
     fn markers_preserve_bullet_and_todo_semantics() {
-        assert_eq!(marker_prefix(NoteMarkerKind::Bullet, false), "•");
-        assert_eq!(marker_prefix(NoteMarkerKind::Bullet, true), "•");
-        assert_eq!(marker_prefix(NoteMarkerKind::Todo, false), "[ ]");
-        assert_eq!(marker_prefix(NoteMarkerKind::Todo, true), "[x]");
+        assert_eq!(
+            marker_prefix(NoteMarkerKind::Bullet, false, None),
+            "\u{2022}"
+        );
+        assert_eq!(
+            marker_prefix(NoteMarkerKind::Bullet, true, None),
+            "\u{2022}"
+        );
+        assert_eq!(marker_prefix(NoteMarkerKind::Todo, false, None), "[ ]");
+        assert_eq!(marker_prefix(NoteMarkerKind::Todo, true, None), "[x]");
+    }
+
+    #[test]
+    fn a_numbered_row_prints_the_number_its_run_reached() {
+        let marker = NoteMarkerKind::Ordered { start: 3 };
+        assert_eq!(marker_prefix(marker, false, Some(4)), "4.");
+        assert_eq!(marker_prefix(marker, false, None), "3.");
     }
 }

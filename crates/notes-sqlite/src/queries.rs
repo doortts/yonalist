@@ -275,8 +275,8 @@ pub(crate) fn search(
             |row| {
                 Ok(SearchHit {
                     node: repository::parse_node(row)?.into(),
-                    page_id: row.get(19)?,
-                    snippet: row.get(20)?,
+                    page_id: row.get(20)?,
+                    snippet: row.get(21)?,
                 })
             },
         )
@@ -337,8 +337,8 @@ fn filtered_search(
             |row| {
                 Ok(SearchHit {
                     node: repository::parse_node(row)?.into(),
-                    page_id: row.get(19)?,
-                    snippet: row.get(20)?,
+                    page_id: row.get(20)?,
+                    snippet: row.get(21)?,
                 })
             },
         )

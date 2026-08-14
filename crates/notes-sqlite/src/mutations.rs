@@ -171,8 +171,8 @@ fn insert_node(
         .execute(
             "INSERT INTO notes_nodes(
                 id, parent_id, sort_key, kind, text, note, marker, collapsed,
-                completed, starred, deleted
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                completed, starred, deleted, ordered_start
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 node.id().as_str(),
                 node.parent_id().map(NodeId::as_str),
@@ -185,6 +185,7 @@ fn insert_node(
                 node.is_completed(),
                 node.is_starred(),
                 node.is_deleted(),
+                marker_start(node.marker()),
             ],
         )
         .map_err(internal)?;
@@ -207,7 +208,8 @@ fn update_node(
                 collapsed = ?8,
                 completed = ?9,
                 starred = ?10,
-                deleted = ?11
+                deleted = ?11,
+                ordered_start = ?12
              WHERE id = ?1",
             params![
                 node.id().as_str(),
@@ -221,6 +223,7 @@ fn update_node(
                 node.is_completed(),
                 node.is_starred(),
                 node.is_deleted(),
+                marker_start(node.marker()),
             ],
         )
         .map_err(internal)?;
@@ -279,6 +282,16 @@ fn marker_name(marker: notes_core::NoteMarkerKind) -> &'static str {
     match marker {
         notes_core::NoteMarkerKind::Bullet => "bullet",
         notes_core::NoteMarkerKind::Todo => "todo",
+        notes_core::NoteMarkerKind::Ordered { .. } => "ordered",
+    }
+}
+
+/// The number an `ordered` row starts its run at. Every other marker stores the
+/// column's default, which no reader of that row ever looks at.
+fn marker_start(marker: notes_core::NoteMarkerKind) -> i64 {
+    match marker {
+        notes_core::NoteMarkerKind::Ordered { start } => start,
+        _ => 1,
     }
 }
 

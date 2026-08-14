@@ -94,6 +94,7 @@ impl From<&NoteImage> for ImageView {
 pub enum IpcMarkerKind {
     Bullet,
     Todo,
+    Ordered { start: i64 },
 }
 
 impl From<NoteMarkerKind> for IpcMarkerKind {
@@ -101,6 +102,7 @@ impl From<NoteMarkerKind> for IpcMarkerKind {
         match marker {
             NoteMarkerKind::Bullet => Self::Bullet,
             NoteMarkerKind::Todo => Self::Todo,
+            NoteMarkerKind::Ordered { start } => Self::Ordered { start },
         }
     }
 }
@@ -110,6 +112,7 @@ impl From<IpcMarkerKind> for NoteMarkerKind {
         match marker {
             IpcMarkerKind::Bullet => Self::Bullet,
             IpcMarkerKind::Todo => Self::Todo,
+            IpcMarkerKind::Ordered { start } => Self::Ordered { start },
         }
     }
 }

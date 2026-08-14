@@ -20,6 +20,9 @@ pub(crate) fn parse_node(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
     let marker = match row.get::<_, String>(6)?.as_str() {
         "bullet" => NoteMarkerKind::Bullet,
         "todo" => NoteMarkerKind::Todo,
+        "ordered" => NoteMarkerKind::Ordered {
+            start: row.get(19)?,
+        },
         value => {
             return Err(rusqlite::Error::FromSqlConversionFailure(
                 6,

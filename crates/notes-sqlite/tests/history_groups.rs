@@ -186,9 +186,7 @@ fn undoing_a_paste_over_a_blank_row_restores_both_in_one_step() {
             "remove",
             storage.revision().unwrap(),
             Some("paste:1"),
-            IpcNotesCommand::RemoveEmptyNode {
-                id: "blank".into(),
-            },
+            IpcNotesCommand::RemoveEmptyNode { id: "blank".into() },
         ))
         .unwrap();
 

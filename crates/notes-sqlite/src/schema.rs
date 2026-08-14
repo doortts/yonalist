@@ -102,7 +102,10 @@ fn create_schema(connection: &Connection) -> Result<(), StorageError> {
                 text TEXT NOT NULL,
                 note TEXT NOT NULL DEFAULT '',
                 marker TEXT NOT NULL DEFAULT 'bullet'
-                    CHECK (marker IN ('bullet', 'todo')),
+                    CHECK (marker IN ('bullet', 'todo', 'ordered')),
+                -- Only an `ordered` row reads this; every other marker leaves
+                -- it at the default rather than carrying a number nobody draws.
+                ordered_start INTEGER NOT NULL DEFAULT 1,
                 collapsed INTEGER NOT NULL DEFAULT 0
                     CHECK (collapsed IN (0, 1)),
                 completed INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1)),
@@ -159,7 +162,10 @@ fn create_schema(connection: &Connection) -> Result<(), StorageError> {
                 image.byte_length,
                 image.pixel_width,
                 image.pixel_height,
-                image.display_width
+                image.display_width,
+                -- Last, so the image columns above keep the positions the row
+                -- mapping reads them at.
+                node.ordered_start
             FROM notes_nodes node
             LEFT JOIN notes_images image ON image.node_id = node.id;
 
