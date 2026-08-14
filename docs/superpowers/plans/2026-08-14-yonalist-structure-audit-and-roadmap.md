@@ -85,7 +85,7 @@
 | # | 항목 | 근거 | 크기 |
 |---|---|---|---|
 | 4 | **`NotesOutline.tsx` 갓 컴포넌트 분해.** 626줄 함수 하나에 훅 37개 호출. 1차로 클립보드 정책(`:293-416`, ~125줄)을 `useOutlineClipboard(...)`로, 커서 인계(`:263-292`)를 `useOutlineCaretHandoff()`로 추출한다. 둘 다 클로저 의존이 얕아 그대로 떼어진다. | `NotesOutline.tsx:55-680` — 단독 테스트 불가, 모든 아웃라인 기능이 이 파일에 착지 | M |
-| 5 | **위치 인자 18~19개를 옵션 객체로.** `handleOutlineKeyDown`(18개)과 `handleImagePrimaryKeyDown`(19개)은 같은 타입 콜백이 6개라 둘이 뒤바뀌어도 컴파일이 통과한다. 코드베이스가 2개 인자 사례에는 경고 주석을 달아 놓고 19개를 커밋한 상태다. | `outlineSupport.ts:55-72`, `:163-181`; 호출부 `OutlineRow.tsx:420`, `:331` | S |
+| 5 | **위치 인자 17~18개를 옵션 객체로.** `handleOutlineKeyDown`(17개)과 `handleImagePrimaryKeyDown`(18개)에는 맨몸 `() => void` 콜백이 4개, `NoteView[]`가 2개, `OutlineIndex`가 2개 있어 짝끼리 뒤바뀌어도 컴파일이 통과한다. 옵션 객체 선례는 같은 자리에 이미 있다 — `handleImageNodeKeyDown`이 객체 리터럴로 불린다. (1차 문서의 "18~19개"는 하나씩 과다 계수였다.) | `outlineSupport.ts:55-72`, `:163-181`; 호출부 `OutlineRow.tsx:420`, `:331` | S |
 | 6 | **뷰포트 CTE 개선.** 80행 창 하나를 계산할 때마다 페이지 전체 서브트리를 재귀 CTE로 걷는다(문서 끝까지 스크롤하면 O(N²/80)). 재귀 조건이 `deleted = 0`뿐이라 `collapsed` 가지도 전부 내려간다. 접힌 가지 가지치기가 1순위. **정렬 키 물질화는 스키마 변경이라 §8 스키마 창으로 넘긴다.** 아래 제약 참조. | `crates/notes-sqlite/src/queries.rs:103-137`, `:359` — 출하 앱의 핵심 읽기 경로 | M |
 | 7 | **읽기 경로의 쓰기 제거.** 뷰포트 조회마다 `notes_ui_state` upsert가 실행돼 스크롤이 단일 워커의 쓰기 트랜잭션 뒤에 줄을 선다. 아래 제약 참조 — 이 쓰기는 지울 수 없다. | `queries.rs:161-168` | S |
 | 8 | **`validate()`에 자식 인덱스 도입.** `validate()`가 노드를 전부 부모 후보로 돌면서 `ordered_children`을 부르고, 그 안에서 매번 전체 값 스캔 + 정렬을 한다(O(n² log n)). 5k 노드면 약 2,500만 비교. `parent_id`로 한 번 그룹핑하면 끝난다. **`plan()`/`apply()`의 `self.clone()`은 건드리지 않는다** — 1차 문서는 이걸 낭비로 봤지만 `plan()`은 diff 상대가 필요하고 `apply()`는 검증 실패 시 롤백이 필요해서, 복사가 곧 그 의미다. | `crates/notes-core/src/tree.rs:28`, `:326`, `:355-366` | S |
@@ -220,11 +220,13 @@ v1 파이프라인은 스텁이 아니라 완성돼 있고 이례적으로 엄�
 
 항목마다: Opus xHigh가 TDD로 구현 → Fable xHigh 적대적 리뷰 → 필요하면 재작업 → 커밋 1개.
 
+작업 브랜치: `refactor/p1-structure-surgery` (main에서 분기).
+
 | # | 항목 | 상태 | 커밋 | 비고 |
 |---|---|---|---|---|
-| 4 | NotesOutline 분해 | 대기 | | |
-| 5 | 옵션 객체 전환 | 대기 | | |
-| 6 | 뷰포트 CTE (접힌 가지 가지치기) | 대기 | | 물질화는 §8로 분리 |
+| 4 | NotesOutline 분해 | **완료** | `b9a4c3f4` | 726→585줄. `outlineCaretHandoff.ts`(37줄) + `outlineClipboardActions.ts`(172줄)로 분리, 단위 테스트 22개 추가. 리뷰 1라운드 pass + minor 1건(대역 복사 거부 경로 미검증) 즉시 보강 |
+| 5 | 옵션 객체 전환 | **완료** | | `outlineSupport.ts` 579→544줄. 공유 `OutlineRowKeyContext` 15필드 + 각자 확장 2개. `executeRowIntent`(같은 위험을 지닌 10인자)도 함께 전환 — 범위 확장이지만 호출부가 전환 대상 둘뿐이라 diff가 오히려 줄었다. 직접 테스트 18개 신규, 뒤바뀜 7종을 전환 전후 두 번 측정해 잡히는 것과 못 잡는 것을 기록. 리뷰 findings 0건 |
+| 6 | 뷰포트 CTE (접힌 가지 가지치기) | 진행 중 | | 물질화는 §8로 분리 |
 | 7 | 읽기 경로 쓰기 제거 | 대기 | | |
 | 8 | validate 자식 인덱스 | 대기 | | |
 | 9 | 폴더 구조 | 대기 | | 맨 마지막 |

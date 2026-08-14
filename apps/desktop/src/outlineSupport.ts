@@ -36,6 +36,39 @@ export interface SelectionKeyboardActions {
   readonly cut: () => void;
 }
 
+/**
+ * Everything the two row keyboard entry points share. The event stays out of
+ * it: the surfaces they read the caret off differ, so each names its own.
+ */
+interface OutlineRowKeyContext {
+  readonly store: NotesStore;
+  readonly node: NoteView;
+  readonly nodes: readonly NoteView[];
+  readonly visibleNodes: readonly NoteView[];
+  readonly structureIndex: OutlineIndex;
+  readonly visibleIndex: OutlineIndex;
+  readonly pageId: string;
+  readonly onZoomIn: () => void;
+  readonly onZoomOut: () => void;
+  readonly band: OutlineBandState;
+  readonly onExtendSelection: (originId: string, headId: string) => void;
+  readonly onClearSelection: (collapse?: "start" | "end") => void;
+  readonly onFocusNote: () => void;
+  readonly onMoveTo: () => void;
+  readonly selectionActions: SelectionKeyboardActions;
+}
+
+export interface OutlineRowKeyOptions extends OutlineRowKeyContext {
+  readonly event: KeyboardEvent<HTMLTextAreaElement>;
+  readonly supportingNote: string;
+}
+
+export interface ImageRowKeyOptions extends OutlineRowKeyContext {
+  readonly event: KeyboardEvent<HTMLDivElement>;
+  readonly onCopyImage: (nodeId: string) => void;
+  readonly onCutImage: (nodeId: string) => void;
+}
+
 interface EnterSplitGesture {
   // The row holding the caret and the half after it, which is what the next
   // repeat splits again. Always the row the split just created.
@@ -51,25 +84,11 @@ export function endOutlineEnterGesture(target: HTMLElement): void {
   if (scope) enterSplitGestures.delete(scope);
 }
 
-export function handleOutlineKeyDown(
-  event: KeyboardEvent<HTMLTextAreaElement>,
-  store: NotesStore,
-  node: NoteView,
-  nodes: readonly NoteView[],
-  visibleNodes: readonly NoteView[],
-  structureIndex: OutlineIndex,
-  visibleIndex: OutlineIndex,
-  pageId: string,
-  onZoomIn: () => void,
-  onZoomOut: () => void,
-  band: OutlineBandState,
-  onExtendSelection: (originId: string, headId: string) => void,
-  onClearSelection: (collapse?: "start" | "end") => void,
-  onFocusNote: () => void,
-  onMoveTo: () => void,
-  supportingNote: string,
-  selectionActions: SelectionKeyboardActions
-) {
+export function handleOutlineKeyDown(options: OutlineRowKeyOptions) {
+  const {
+    event, store, node, nodes, visibleNodes, structureIndex, visibleIndex,
+    pageId, band, onClearSelection, supportingNote, selectionActions
+  } = options;
   const backspaceGroup = updateBackspaceGesture(event, store);
   const caretLines = event.key === "ArrowUp" || event.key === "ArrowDown"
     ? measureTextareaCaretLines(event.currentTarget)
@@ -135,22 +154,7 @@ export function handleOutlineKeyDown(
     // before the caret leaves the row for it.
     if (intent.kind === "focusNote") onClearSelection();
   }
-  executeRowIntent(
-    intent,
-    scope,
-    store,
-    node,
-    nodes,
-    structureIndex,
-    onZoomIn,
-    onZoomOut,
-    onExtendSelection,
-    onClearSelection,
-    onFocusNote,
-    onMoveTo,
-    backspaceGroup,
-    event.repeat
-  );
+  executeRowIntent(intent, scope, options, backspaceGroup, event.repeat);
 }
 
 function imageEdgeOf(target: EventTarget): "before" | "after" | undefined {
@@ -160,26 +164,11 @@ function imageEdgeOf(target: EventTarget): "before" | "after" | undefined {
   return edge === "before" || edge === "after" ? edge : undefined;
 }
 
-export function handleImagePrimaryKeyDown(
-  event: KeyboardEvent<HTMLDivElement>,
-  store: NotesStore,
-  node: NoteView,
-  nodes: readonly NoteView[],
-  visibleNodes: readonly NoteView[],
-  structureIndex: OutlineIndex,
-  visibleIndex: OutlineIndex,
-  pageId: string,
-  onZoomIn: () => void,
-  onZoomOut: () => void,
-  band: OutlineBandState,
-  onExtendSelection: (originId: string, headId: string) => void,
-  onClearSelection: (collapse?: "start" | "end") => void,
-  onFocusNote: () => void,
-  onMoveTo: () => void,
-  selectionActions: SelectionKeyboardActions,
-  onCopyImage: (nodeId: string) => void,
-  onCutImage: (nodeId: string) => void
-) {
+export function handleImagePrimaryKeyDown(options: ImageRowKeyOptions) {
+  const {
+    event, node, nodes, visibleNodes, structureIndex, visibleIndex, pageId,
+    band, onClearSelection, selectionActions, onCopyImage, onCutImage
+  } = options;
   const intent = handleImageNodeKeyDown({
     key: event.key,
     altKey: event.altKey,
@@ -237,22 +226,7 @@ export function handleImagePrimaryKeyDown(
     event.currentTarget.focus();
     return;
   }
-  executeRowIntent(
-    intent,
-    scope,
-    store,
-    node,
-    nodes,
-    structureIndex,
-    onZoomIn,
-    onZoomOut,
-    onExtendSelection,
-    onClearSelection,
-    onFocusNote,
-    onMoveTo,
-    null,
-    event.repeat
-  );
+  executeRowIntent(intent, scope, options, null, event.repeat);
 }
 
 export function handlePageKeyDown(
@@ -390,19 +364,11 @@ function createFirstChild(
 function executeRowIntent(
   intent: OutlineKeyIntent,
   scope: HTMLElement,
-  store: NotesStore,
-  node: NoteView,
-  nodes: readonly NoteView[],
-  structureIndex: OutlineIndex,
-  onZoomIn: () => void,
-  onZoomOut: () => void,
-  onExtendSelection: (originId: string, headId: string) => void,
-  onClearSelection: (collapse?: "start" | "end") => void,
-  onFocusNote: () => void,
-  onMoveTo: () => void,
+  context: OutlineRowKeyContext,
   backspaceGroup: string | null,
   repeated: boolean
 ): void {
+  const { store, node, nodes, structureIndex } = context;
   switch (intent.kind) {
     case "consume":
     // Only the image surface resolves these, and it routes them itself.
@@ -532,7 +498,7 @@ function executeRowIntent(
     // selection, so the key needs no diversion of its own: it flips the same
     // state the menu item flips.
     case "moveTo":
-      onMoveTo();
+      context.onMoveTo();
       return;
     case "duplicate": {
       const siblings = node.parentId
@@ -563,16 +529,16 @@ function executeRowIntent(
     }
     case "zoom":
       void store.flushDraft(node.id).then(
-        intent.direction === "in" ? onZoomIn : onZoomOut
+        intent.direction === "in" ? context.onZoomIn : context.onZoomOut
       );
       return;
     case "focusNote":
-      onFocusNote();
+      context.onFocusNote();
       return;
     case "extendSelection":
-      onExtendSelection(node.id, intent.headId);
+      context.onExtendSelection(node.id, intent.headId);
       return;
     case "clearSelection":
-      onClearSelection(intent.collapse);
+      context.onClearSelection(intent.collapse);
   }
 }

@@ -328,26 +328,26 @@ export const OutlineRow = memo(function OutlineRow({
                 )}
                 onKeyDown={(event) => {
                   const current = runtime.state;
-                  handleImagePrimaryKeyDown(
+                  handleImagePrimaryKeyDown({
                     event,
                     store,
                     node,
-                    store.getSnapshot().nodes,
-                    current.visibleNodes,
-                    current.index,
-                    current.visibleIndex,
-                    current.pageId,
-                    () => current.onZoom(node.id, false),
-                    current.onZoomOut,
-                    current.band,
-                    current.onExtendSelection,
-                    current.onClearSelection,
-                    openNoteAndFocus,
-                    openMoveChooser,
-                    current.selectionActions,
-                    current.onCopyImage,
-                    current.onCutImage
-                  );
+                    nodes: store.getSnapshot().nodes,
+                    visibleNodes: current.visibleNodes,
+                    structureIndex: current.index,
+                    visibleIndex: current.visibleIndex,
+                    pageId: current.pageId,
+                    onZoomIn: () => current.onZoom(node.id, false),
+                    onZoomOut: current.onZoomOut,
+                    band: current.band,
+                    onExtendSelection: current.onExtendSelection,
+                    onClearSelection: current.onClearSelection,
+                    onFocusNote: openNoteAndFocus,
+                    onMoveTo: openMoveChooser,
+                    selectionActions: current.selectionActions,
+                    onCopyImage: current.onCopyImage,
+                    onCutImage: current.onCutImage
+                  });
                 }}
               />
             </Suspense>
@@ -417,25 +417,25 @@ export const OutlineRow = memo(function OutlineRow({
               const latestVisibleNodes = current.visibleNodes.map(
                 (candidate) => latestById.get(candidate.id) ?? candidate
               );
-              handleOutlineKeyDown(
+              handleOutlineKeyDown({
                 event,
                 store,
-                latestById.get(node.id) ?? node,
-                latestNodes,
-                latestVisibleNodes,
-                current.index,
-                current.visibleIndex,
-                current.pageId,
-                () => current.onZoom(node.id, false),
-                current.onZoomOut,
-                current.band,
-                current.onExtendSelection,
-                current.onClearSelection,
-                openNoteAndFocus,
-                openMoveChooser,
-                visibleNote,
-                current.selectionActions
-              );
+                node: latestById.get(node.id) ?? node,
+                nodes: latestNodes,
+                visibleNodes: latestVisibleNodes,
+                structureIndex: current.index,
+                visibleIndex: current.visibleIndex,
+                pageId: current.pageId,
+                onZoomIn: () => current.onZoom(node.id, false),
+                onZoomOut: current.onZoomOut,
+                band: current.band,
+                onExtendSelection: current.onExtendSelection,
+                onClearSelection: current.onClearSelection,
+                onFocusNote: openNoteAndFocus,
+                onMoveTo: openMoveChooser,
+                supportingNote: visibleNote,
+                selectionActions: current.selectionActions
+              });
             }}
             onKeyUp={(event) => {
               if (event.key === "Backspace") store.endBackspaceGesture();
