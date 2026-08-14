@@ -3,6 +3,11 @@ import { Database, Trash2, X } from "lucide-react";
 import { useState } from "react";
 
 import type { UnusedAssetsReport } from "../../../packages/contracts/generated/UnusedAssetsReport";
+import {
+  normalizeMarkerChar,
+  type OutlineMarkerShape,
+  type OutlineMarkerStyle
+} from "./outlineMarkers";
 import type {
   CaretColor,
   DarkTheme,
@@ -30,6 +35,19 @@ const darkThemeOptions: Array<{ value: DarkTheme; label: string }> = [
   { value: "base-dark", label: "Base Dark" }
 ];
 
+const markerShapeOptions: Array<{ value: OutlineMarkerShape; label: string }> = [
+  { value: "dot", label: "Dot" },
+  { value: "square", label: "Square" },
+  { value: "hyphen", label: "Hyphen" },
+  { value: "dash", label: "Dash" },
+  { value: "custom", label: "Custom" }
+];
+
+/** What the picker offers first once a level turns custom. */
+const defaultCustomMarker = "▸";
+/** What the colour input opens on while a level is still on the theme colour. */
+const defaultMarkerColor = "#a8afb8";
+
 const caretColorOptions: Array<{ value: string; label: string }> = [
   { value: "#0a84ff", label: "System Blue" },
   { value: "#bf5af2", label: "Purple" },
@@ -44,10 +62,12 @@ export function SettingsView({
   lightTheme,
   darkTheme,
   caretColor,
+  markerStyles,
   onThemeModeChange,
   onLightThemeChange,
   onDarkThemeChange,
   onCaretColorChange,
+  onMarkerStyleChange,
   onClose,
   unusedAssets,
   deleteAllData
@@ -56,10 +76,12 @@ export function SettingsView({
   readonly lightTheme: LightTheme;
   readonly darkTheme: DarkTheme;
   readonly caretColor: CaretColor;
+  readonly markerStyles: readonly OutlineMarkerStyle[];
   readonly onThemeModeChange: (mode: ThemeMode) => void;
   readonly onLightThemeChange: (theme: LightTheme) => void;
   readonly onDarkThemeChange: (theme: DarkTheme) => void;
   readonly onCaretColorChange: (color: CaretColor) => void;
+  readonly onMarkerStyleChange: (level: number, style: OutlineMarkerStyle) => void;
   readonly onClose: () => void;
   readonly unusedAssets: (purge: boolean) => Promise<UnusedAssetsReport>;
   readonly deleteAllData: () => Promise<void>;
@@ -105,6 +127,10 @@ export function SettingsView({
             onChange={onDarkThemeChange}
           />
           <CaretColorGroup value={caretColor} onChange={onCaretColorChange} />
+          <OutlineMarkerGroup
+            styles={markerStyles}
+            onChange={onMarkerStyleChange}
+          />
         </section>
 
         <NotesDataSection
@@ -261,6 +287,113 @@ function NotesDataSection({
         </div>
       </div>
     </section>
+  );
+}
+
+/**
+ * One row per outline level. The deepest level configured here is also what
+ * every level below it draws, which the heading says rather than repeating the
+ * rule beside each row.
+ */
+function OutlineMarkerGroup({
+  styles,
+  onChange
+}: {
+  readonly styles: readonly OutlineMarkerStyle[];
+  readonly onChange: (level: number, style: OutlineMarkerStyle) => void;
+}) {
+  return (
+    <div className="theme-settings-group">
+      <h3>Outline markers</h3>
+      <p className="marker-level-hint">
+        Rows deeper than level {styles.length} keep level {styles.length}&apos;s marker.
+      </p>
+      {styles.map((style, level) => (
+        <div className="marker-level-row" key={level}>
+          <span className="marker-level-label">Level {level + 1}</span>
+          <div
+            className="marker-shape-row"
+            role="group"
+            aria-label={`Level ${level + 1} marker`}
+          >
+            {markerShapeOptions.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                className="marker-shape-button"
+                aria-label={`${option.label} marker for level ${level + 1}`}
+                aria-pressed={style.shape === option.value}
+                onClick={() => onChange(level, {
+                  ...style,
+                  shape: option.value,
+                  char: option.value === "custom"
+                    ? style.char || defaultCustomMarker
+                    : ""
+                })}
+              >
+                <MarkerPreview shape={option.value} char={style.char} />
+                <span>{option.label}</span>
+              </button>
+            ))}
+          </div>
+          {style.shape === "custom" ? (
+            <input
+              className="marker-custom-char"
+              aria-label={`Level ${level + 1} marker character`}
+              value={style.char}
+              onChange={(event) => onChange(level, {
+                ...style,
+                char: normalizeMarkerChar(event.target.value)
+              })}
+            />
+          ) : null}
+          <div
+            className="marker-color-row"
+            role="group"
+            aria-label={`Level ${level + 1} marker colour`}
+          >
+            <button
+              type="button"
+              className="marker-color-default"
+              aria-label={`Theme colour for level ${level + 1}`}
+              aria-pressed={style.color === null}
+              onClick={() => onChange(level, { ...style, color: null })}
+            >
+              Theme
+            </button>
+            <label className="marker-color-custom">
+              <span>Pick</span>
+              <input
+                type="color"
+                aria-label={`Custom colour for level ${level + 1}`}
+                value={style.color ?? defaultMarkerColor}
+                onChange={(event) =>
+                  onChange(level, { ...style, color: event.target.value })}
+              />
+            </label>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MarkerPreview({
+  shape,
+  char
+}: {
+  readonly shape: OutlineMarkerShape;
+  readonly char: string;
+}) {
+  if (shape === "hyphen" || shape === "custom") {
+    return (
+      <span className="marker-preview marker-preview-glyph" aria-hidden="true">
+        {shape === "hyphen" ? "-" : char || defaultCustomMarker}
+      </span>
+    );
+  }
+  return (
+    <span className={`marker-preview marker-preview-${shape}`} aria-hidden="true" />
   );
 }
 

@@ -8,6 +8,7 @@ import "./notes.css";
 import "./formControls.css";
 import { tauriNotesApi, type NotesApi } from "./api";
 import { useTheme } from "./useTheme";
+import { useOutlineMarkerStyles } from "./outlineMarkers";
 import { NotesStore } from "./notesStore";
 import { WindowChrome } from "./WindowChrome";
 import { LibraryViewButtons, type LibraryView } from "./LibraryViewButtons";
@@ -35,6 +36,7 @@ const SettingsView = lazy(() => import("./SettingsView").then((module) =>
 
 export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   const theme = useTheme();
+  const markers = useOutlineMarkerStyles();
   useShortcutHints();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const store = useMemo(() => new NotesStore(api), [api]);
@@ -551,10 +553,12 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             lightTheme={theme.lightTheme}
             darkTheme={theme.darkTheme}
             caretColor={theme.caretColor}
+            markerStyles={markers.markerStyles}
             onThemeModeChange={theme.setMode}
             onLightThemeChange={theme.setLightTheme}
             onDarkThemeChange={theme.setDarkTheme}
             onCaretColorChange={theme.setCaretColor}
+            onMarkerStyleChange={markers.setMarkerStyle}
             onClose={() => setSettingsOpen(false)}
             unusedAssets={(purge) => api.unusedAssets(purge)}
             deleteAllData={() => api.deleteAllData()}

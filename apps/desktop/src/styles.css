@@ -2319,6 +2319,117 @@ body.is-resizing-pane {
   line-height: 1.35;
 }
 
+.marker-level-hint {
+  margin: -4px 0 0;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.marker-level-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.marker-level-label {
+  min-width: 52px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.marker-shape-row,
+.marker-color-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.marker-shape-button,
+.marker-color-default {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.marker-shape-button:hover,
+.marker-color-default:hover {
+  background: var(--bg-hover);
+}
+
+.marker-shape-button[aria-pressed="true"],
+.marker-color-default[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text-1);
+}
+
+/* The same shapes the rows draw, at the same sizes: what the button shows is
+   what the outline gets. */
+.marker-preview {
+  display: inline-block;
+  background: currentColor;
+}
+
+.marker-preview-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.marker-preview-square {
+  width: 6px;
+  height: 6px;
+  border-radius: 1.5px;
+}
+
+.marker-preview-dash {
+  width: 11px;
+  height: 2.5px;
+  border-radius: 1.5px;
+}
+
+.marker-preview-glyph {
+  min-width: 7px;
+  background: transparent;
+  font-size: 13px;
+  line-height: 1;
+  text-align: center;
+}
+
+.marker-custom-char {
+  width: 44px;
+  padding: 4px 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-1);
+  font-size: 13px;
+  text-align: center;
+}
+
+.settings-section label.marker-color-custom {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.marker-color-custom input[type="color"] {
+  width: 30px;
+  height: 26px;
+  padding: 2px;
+}
+
 .caret-swatch-row {
   display: flex;
   align-items: center;
