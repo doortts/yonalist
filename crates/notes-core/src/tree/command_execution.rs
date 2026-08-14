@@ -128,11 +128,13 @@ impl NotesTree {
                 Ok(())
             }
             NotesCommand::SetCompleted { id, completed } => self.cascade_completed(&id, completed),
-            // Deliberately literal: the selection bulk-complete hands over the
-            // exact rows it means, so nothing else may ride along.
+            // The selection bulk-complete settles each listed row exactly as
+            // ticking its own box would. In order, and against the tree the
+            // earlier ids already left: a later id's ancestor check has to see
+            // the sibling branch an earlier id just closed.
             NotesCommand::SetCompletedMany { ids, completed } => {
                 for id in ids {
-                    self.node_mut(&id)?.set_completed(completed);
+                    self.cascade_completed(&id, completed)?;
                 }
                 Ok(())
             }

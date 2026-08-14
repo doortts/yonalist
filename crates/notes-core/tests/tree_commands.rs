@@ -1316,6 +1316,52 @@ fn completing_one_row_stays_one_reversible_patch() {
     assert_eq!(tree, original);
 }
 
+fn set_completed_many(tree: &mut NotesTree, node_ids: &[&str], completed: bool) {
+    plan_and_apply(
+        tree,
+        NotesCommand::SetCompletedMany {
+            ids: node_ids.iter().map(|value| id(value)).collect(),
+            completed,
+        },
+    );
+}
+
+#[test]
+fn completing_a_selection_settles_each_listed_row_s_own_chain() {
+    let mut tree = todo_branch();
+
+    // `first` already sits under `top`, so the two chains overlap.
+    set_completed_many(&mut tree, &["top", "first"], true);
+
+    for row in ["top", "first", "second"] {
+        assert!(is_completed(&tree, row), "{row} was left open");
+    }
+    // The bullet ends that branch here exactly as it does for a single tick.
+    assert!(!is_completed(&tree, "beyond"));
+}
+
+#[test]
+fn an_overlapping_selection_lands_the_same_way_in_either_order() {
+    let mut ancestor_first = todo_branch();
+    let mut descendant_first = todo_branch();
+
+    set_completed_many(&mut ancestor_first, &["top", "first"], true);
+    set_completed_many(&mut descendant_first, &["first", "top"], true);
+
+    assert_eq!(ancestor_first, descendant_first);
+}
+
+#[test]
+fn a_selection_settles_an_ancestor_no_single_row_in_it_could_close() {
+    let mut tree = todo_branch();
+
+    // Neither row closes `top` on its own -- `first` leaves `second` open and
+    // the other way round. Applying them in order is what settles it.
+    set_completed_many(&mut tree, &["first", "second"], true);
+
+    assert!(is_completed(&tree, "top"));
+}
+
 proptest! {
     #[test]
     fn every_planned_move_round_trips_through_its_inverse(

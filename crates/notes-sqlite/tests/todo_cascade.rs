@@ -1,4 +1,6 @@
-use notes_application::{CommandEnvelope, IpcNotesCommand, NotesService, StoragePort};
+use notes_application::{
+    CommandEnvelope, IpcNotesCommand, MutationReceipt, NotesService, StoragePort,
+};
 use notes_core::{DomainPatch, NodeId, NoteMarkerKind, NoteNode, NoteNodeKind, TreeMutation};
 use notes_sqlite::SqliteStorage;
 
@@ -96,6 +98,26 @@ fn set_completed(storage: &SqliteStorage, node_id: &NodeId, completed: bool) {
         .unwrap();
 }
 
+fn set_completed_many(
+    storage: &SqliteStorage,
+    node_ids: &[NodeId],
+    completed: bool,
+) -> MutationReceipt {
+    let revision = storage.revision().unwrap();
+    NotesService::new(storage, "session", revision)
+        .execute(CommandEnvelope {
+            session_id: "session".into(),
+            request_id: format!("many-{completed}"),
+            base_revision: revision,
+            history_group: None,
+            command: IpcNotesCommand::SetCompletedMany {
+                ids: node_ids.iter().map(NodeId::to_string).collect(),
+                completed,
+            },
+        })
+        .unwrap()
+}
+
 fn is_completed(storage: &SqliteStorage, node_id: &NodeId) -> bool {
     storage
         .node(node_id.as_str())
@@ -118,6 +140,42 @@ fn ticking_the_top_settles_a_chain_far_past_any_client_window() {
     }
     // The bullet ends the chain, so the Todo under it keeps its own state.
     assert!(!is_completed(&storage, &id("beyond")));
+}
+
+/// The selection bulk-complete reaches just as far as a single tick: the
+/// working set has to load the chain under each listed row, not the row alone.
+#[test]
+fn a_bulk_selection_settles_chains_far_past_any_client_window() {
+    let storage = stored_chain();
+
+    // Two overlapping rows near the top. Nothing below them is an ancestor of
+    // anything listed, so the rows the cascade reaches can only come from the
+    // working set widening to each listed row's own chain.
+    let receipt = set_completed_many(&storage, &[chain_id(1), chain_id(0)], true);
+
+    for depth in 0..CHAIN_DEPTH {
+        assert!(
+            is_completed(&storage, &chain_id(depth)),
+            "chain row {depth} was left open"
+        );
+    }
+    // The bullet ends that branch in a batch too.
+    assert!(!is_completed(&storage, &id("beyond")));
+
+    // The client redraws from the receipt, so every row the cascade flipped has
+    // to ride back in it -- including the ones no client ever sent.
+    let changed = receipt
+        .changed_nodes
+        .iter()
+        .map(|node| node.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for depth in 0..CHAIN_DEPTH {
+        let row = chain_id(depth);
+        assert!(
+            changed.contains(row.as_str()),
+            "chain row {depth} never reached the receipt"
+        );
+    }
 }
 
 #[test]

@@ -350,10 +350,18 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
       break;
     }
     case "setCompletedMany": {
-      changed = nodes.filter((node) => command.ids.includes(node.id));
-      changed.forEach((node) => {
-        node.completed = command.completed;
-      });
+      // Each listed row settles its own chain, in order and against the rows
+      // the earlier ids already flipped, the way the server's bulk cascade
+      // does.
+      const cascade = new Set<string>();
+      for (const id of command.ids) {
+        for (const cascadedId of completionCascade(nodes, id, command.completed)) {
+          cascade.add(cascadedId);
+          const node = nodes.find((candidate) => candidate.id === cascadedId);
+          if (node) node.completed = command.completed;
+        }
+      }
+      changed = nodes.filter((node) => cascade.has(node.id));
       break;
     }
     case "setCollapsed":

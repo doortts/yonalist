@@ -1,4 +1,5 @@
 import type { IpcImportNode } from "../../../../packages/contracts/generated/IpcImportNode";
+import type { IpcNotesCommand } from "../../../../packages/contracts/generated/IpcNotesCommand";
 import { previewNotesApi } from "./previewApi";
 import { SORT_KEY_STEP } from "../outline/outlineSortKeys";
 
@@ -467,19 +468,142 @@ describe("browser-only preview adapter", () => {
 
   it("completes multiple preview rows with one batch command", async () => {
     const boot = await previewNotesApi.bootstrap();
-    const ids = boot.viewport!.nodes.slice(0, 2).map((node) => node.id);
+    const pageId = boot.activePageId!;
+    let revision = boot.revision;
+    // Two open bullets of its own: the seeded rows an earlier test already
+    // ticked would be dropped as no-ops, hiding whether the batch wrote at all.
+    const ids = ["batch-plain-one", "batch-plain-two"];
+    for (const id of ids) {
+      const created = await previewNotesApi.execute({
+        sessionId: boot.sessionId,
+        requestId: `preview-complete-many-create-${id}`,
+        baseRevision: revision,
+        historyGroup: null,
+        command: {
+          kind: "createNode",
+          id,
+          parent_id: pageId,
+          before_id: null,
+          text: id
+        }
+      });
+      revision = created.revision;
+    }
     const completed = await previewNotesApi.execute({
       sessionId: boot.sessionId,
       requestId: "preview-complete-many-request",
-      baseRevision: boot.revision,
+      baseRevision: revision,
       historyGroup: null,
       command: { kind: "setCompletedMany", ids, completed: true }
     });
 
+    // Plain bullets, so the batch is still exactly the rows it names.
     expect(completed.changedNodes).toHaveLength(2);
     expect(completed.changedNodes).toEqual(expect.arrayContaining(
       ids.map((id) => expect.objectContaining({ id, completed: true }))
     ));
+  });
+
+  it("settles every listed row's Todo chain in one batch", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    let revision = boot.revision;
+    const run = async (requestId: string, command: IpcNotesCommand) => {
+      const result = await previewNotesApi.execute({
+        sessionId: boot.sessionId,
+        requestId,
+        baseRevision: revision,
+        historyGroup: null,
+        command
+      });
+      revision = result.revision;
+      return result;
+    };
+    const rows = ["batch-top", "batch-under", "batch-loose"];
+    for (const id of rows) {
+      await run(`preview-batch-create-${id}`, {
+        kind: "createNode",
+        id,
+        parent_id: pageId,
+        before_id: null,
+        text: id
+      });
+      await run(`preview-batch-marker-${id}`, {
+        kind: "setMarker",
+        id,
+        marker: "todo"
+      });
+    }
+    await run("preview-batch-nest", {
+      kind: "moveNode",
+      id: "batch-under",
+      parent_id: "batch-top",
+      before_id: null
+    });
+
+    // Only the two chain heads are listed, so `batch-under` can flip only by
+    // riding the cascade under `batch-top` -- the way the server expands it.
+    const completed = await run("preview-batch-complete", {
+      kind: "setCompletedMany",
+      ids: ["batch-top", "batch-loose"],
+      completed: true
+    });
+
+    expect(completed.changedNodes).toEqual(expect.arrayContaining(
+      rows.map((id) => expect.objectContaining({ id, completed: true }))
+    ));
+  });
+
+  it("closes a parent no single row in the batch could close", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    let revision = boot.revision;
+    const run = async (requestId: string, command: IpcNotesCommand) => {
+      const result = await previewNotesApi.execute({
+        sessionId: boot.sessionId,
+        requestId,
+        baseRevision: revision,
+        historyGroup: null,
+        command
+      });
+      revision = result.revision;
+      return result;
+    };
+    for (const id of ["joint-parent", "joint-first", "joint-second"]) {
+      await run(`preview-joint-create-${id}`, {
+        kind: "createNode",
+        id,
+        parent_id: pageId,
+        before_id: null,
+        text: id
+      });
+      await run(`preview-joint-marker-${id}`, {
+        kind: "setMarker",
+        id,
+        marker: "todo"
+      });
+    }
+    for (const id of ["joint-first", "joint-second"]) {
+      await run(`preview-joint-nest-${id}`, {
+        kind: "moveNode",
+        id,
+        parent_id: "joint-parent",
+        before_id: null
+      });
+    }
+
+    const completed = await run("preview-joint-complete", {
+      kind: "setCompletedMany",
+      ids: ["joint-first", "joint-second"],
+      completed: true
+    });
+
+    // Neither sibling settles the parent on its own -- the second one only
+    // closes it because the first already landed. Reading the batch against
+    // the state it started from would leave the parent open here.
+    expect(completed.changedNodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "joint-parent", completed: true })
+    ]));
   });
 
   it("deletes multiple preview subtrees with one batch command", async () => {

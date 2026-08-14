@@ -111,16 +111,22 @@ fn collect_command_context(
             collect_ancestors(connection, id, nodes)?;
         }
         NotesCommand::SetCompleted { id, .. } => {
-            // A tick settles the whole Todo chain the row sits in, so the
-            // working set is that chain and not the row alone. Ancestors load
-            // first: the climb to the chain's top reads their markers.
-            collect_ancestors(connection, id, nodes)?;
-            let chain_root = todo_chain_root(nodes, id);
-            collect_descendants(connection, &chain_root, nodes)?;
+            collect_todo_chain(connection, id, nodes)?;
         }
         NotesCommand::SetCompletedMany { ids, .. } => {
+            // Every listed row cascades the way a single tick does, so each one
+            // brings its own chain along. A selection usually sits inside one
+            // chain, so the roots are collected first and each subtree is read
+            // once instead of once per selected row.
             for id in ids {
                 collect_ancestors(connection, id, nodes)?;
+            }
+            let roots = ids
+                .iter()
+                .map(|id| todo_chain_root(nodes, id))
+                .collect::<BTreeSet<_>>();
+            for root in &roots {
+                collect_descendants(connection, root, nodes)?;
             }
         }
         NotesCommand::SplitNode {
@@ -218,6 +224,19 @@ fn collect_command_context(
         }
     }
     Ok(())
+}
+
+/// A tick settles the whole Todo chain the row sits in, so the working set is
+/// that chain and not the row alone. Ancestors load first: the climb to the
+/// chain's top reads their markers.
+fn collect_todo_chain(
+    connection: &Connection,
+    id: &NodeId,
+    nodes: &mut BTreeMap<NodeId, NoteNode>,
+) -> Result<(), StorageError> {
+    collect_ancestors(connection, id, nodes)?;
+    let chain_root = todo_chain_root(nodes, id);
+    collect_descendants(connection, &chain_root, nodes)
 }
 
 /// The highest Todo an unbroken chain of Todo parents reaches from `id` -- the
