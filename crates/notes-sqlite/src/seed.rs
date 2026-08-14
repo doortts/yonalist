@@ -80,8 +80,8 @@ mod tests {
     use crate::schema;
 
     fn open() -> Connection {
-        let connection = Connection::open_in_memory().expect("in-memory db");
-        schema::initialize(&connection).expect("schema");
+        let mut connection = Connection::open_in_memory().expect("in-memory db");
+        schema::initialize(&mut connection).expect("schema");
         connection
     }
 

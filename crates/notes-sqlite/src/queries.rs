@@ -459,7 +459,7 @@ mod tests {
 
     fn open() -> Connection {
         let mut connection = Connection::open_in_memory().expect("in-memory db");
-        schema::initialize(&connection).expect("schema");
+        schema::initialize(&mut connection).expect("schema");
         schema::ensure_root(&mut connection).expect("root");
         connection
     }

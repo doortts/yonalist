@@ -1,8 +1,14 @@
 use notes_application::StorageError;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 pub(crate) const SCHEMA_VERSION: i64 = 1;
 pub(crate) const ROOT_ID: &str = "root";
+
+/// `MIGRATIONS[i]` carries a database from version `i + 1` to `i + 2`, so the
+/// list length pins `SCHEMA_VERSION` and adding a step means bumping it.
+type Migration = fn(&Transaction<'_>) -> Result<(), StorageError>;
+const MIGRATIONS: &[Migration] = &[];
+const _: () = assert!(MIGRATIONS.len() as i64 + 1 == SCHEMA_VERSION);
 
 /// Guarantees the single root row every outline hangs from and adopts legacy
 /// top-level pages as its children, so a "page" is only ever a root child.
@@ -53,7 +59,7 @@ pub(crate) fn ensure_root(connection: &mut Connection) -> Result<(), StorageErro
     transaction.commit().map_err(internal)
 }
 
-pub(crate) fn initialize(connection: &Connection) -> Result<(), StorageError> {
+pub(crate) fn initialize(connection: &mut Connection) -> Result<(), StorageError> {
     connection
         .pragma_update(None, "foreign_keys", "ON")
         .map_err(internal)?;
@@ -74,11 +80,34 @@ pub(crate) fn initialize(connection: &Connection) -> Result<(), StorageError> {
         .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
         .map_err(internal)?;
     if version == 0 {
-        create_schema(connection)?;
-    } else if version != SCHEMA_VERSION {
+        return create_schema(connection);
+    }
+    // Stays as wide as `!=` was: a negative user_version, which SQLite accepts,
+    // would otherwise wrap the ladder's start index and open unmigrated.
+    if version < 1 || version > SCHEMA_VERSION {
         return Err(StorageError::Internal(format!(
             "unsupported Notes schema version {version}; expected {SCHEMA_VERSION}"
         )));
+    }
+    migrate(connection, version, MIGRATIONS)
+}
+
+fn migrate(
+    connection: &mut Connection,
+    version: i64,
+    steps: &[Migration],
+) -> Result<(), StorageError> {
+    for (index, step) in steps.iter().enumerate().skip(version as usize - 1) {
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(internal)?;
+        step(&transaction)?;
+        // Inside the step's own transaction: a version that outlives a rolled
+        // back step would skip that step forever.
+        transaction
+            .pragma_update(None, "user_version", index as i64 + 2)
+            .map_err(internal)?;
+        transaction.commit().map_err(internal)?;
     }
     Ok(())
 }
@@ -237,8 +266,8 @@ mod tests {
     }
 
     fn open() -> Connection {
-        let connection = Connection::open_in_memory().expect("in-memory db");
-        initialize(&connection).expect("schema");
+        let mut connection = Connection::open_in_memory().expect("in-memory db");
+        initialize(&mut connection).expect("schema");
         connection
     }
 
@@ -250,6 +279,75 @@ mod tests {
                 params![id, sort_key, deleted],
             )
             .expect("page");
+    }
+
+    fn data_version(connection: &Connection) -> i64 {
+        connection
+            .pragma_query_value(None, "data_version", |row| row.get(0))
+            .expect("data_version")
+    }
+
+    fn user_version(connection: &Connection) -> i64 {
+        connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user_version")
+    }
+
+    fn opened_at(version: i64) -> Connection {
+        let connection = Connection::open_in_memory().expect("in-memory db");
+        connection
+            .pragma_update(None, "user_version", version)
+            .expect("version");
+        connection
+    }
+
+    fn ladder(version: i64) -> Connection {
+        let connection = opened_at(version);
+        connection
+            .execute_batch("CREATE TABLE marks(step TEXT NOT NULL)")
+            .expect("marks");
+        connection
+    }
+
+    fn marks(connection: &Connection) -> Vec<String> {
+        let mut statement = connection
+            .prepare("SELECT step FROM marks ORDER BY rowid")
+            .expect("prepare");
+        let marks = statement
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .collect::<Result<Vec<String>, _>>()
+            .expect("marks");
+        marks
+    }
+
+    fn mark(transaction: &Transaction<'_>, step: &str) -> Result<(), StorageError> {
+        transaction
+            .execute("INSERT INTO marks(step) VALUES (?1)", [step])
+            .map_err(internal)?;
+        Ok(())
+    }
+
+    fn first(transaction: &Transaction<'_>) -> Result<(), StorageError> {
+        mark(transaction, "first")
+    }
+
+    fn second(transaction: &Transaction<'_>) -> Result<(), StorageError> {
+        mark(transaction, "second")
+    }
+
+    fn marks_then_fails(transaction: &Transaction<'_>) -> Result<(), StorageError> {
+        mark(transaction, "half applied")?;
+        Err(StorageError::Internal("step gave up".into()))
+    }
+
+    fn marks_then_blocks_the_bump(transaction: &Transaction<'_>) -> Result<(), StorageError> {
+        mark(transaction, "half applied")?;
+        // query_only fails the version bump while still letting COMMIT through,
+        // which is the only window a bump outside the transaction would leak.
+        transaction
+            .pragma_update(None, "query_only", true)
+            .map_err(internal)
     }
 
     fn rows(connection: &Connection) -> Vec<Row> {
@@ -275,6 +373,112 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("rows");
         rows
+    }
+
+    #[test]
+    fn an_empty_database_gets_the_schema_and_the_current_version() {
+        let connection = open();
+
+        assert_eq!(user_version(&connection), SCHEMA_VERSION);
+        let revision: i64 = connection
+            .query_row("SELECT revision FROM notes_meta", [], |row| row.get(0))
+            .expect("meta row");
+        assert_eq!(revision, 0);
+    }
+
+    #[test]
+    fn opening_a_current_database_writes_nothing() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("notes.db");
+        let mut connection = Connection::open(&path).expect("database");
+        initialize(&mut connection).expect("schema");
+        // data_version moves for a header-only write, which total_changes cannot see.
+        let observer = Connection::open(&path).expect("observer");
+        let before = (connection.total_changes(), data_version(&observer));
+
+        initialize(&mut connection).expect("reopen");
+
+        assert_eq!(
+            (connection.total_changes(), data_version(&observer)),
+            before
+        );
+        assert_eq!(user_version(&connection), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn refuses_a_database_from_a_newer_build() {
+        let mut connection = opened_at(SCHEMA_VERSION + 1);
+
+        let error = initialize(&mut connection).expect_err("unsupported");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("unsupported Notes schema version 2") && message.contains("expected 1"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn refuses_a_negative_user_version() {
+        let mut connection = opened_at(-1);
+
+        let error = initialize(&mut connection).expect_err("unsupported");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("unsupported Notes schema version -1")
+                && message.contains("expected 1"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn runs_every_step_the_database_is_behind_on() {
+        let mut connection = ladder(1);
+
+        migrate(&mut connection, 1, &[first, second]).expect("migrate");
+
+        assert_eq!(marks(&connection), ["first", "second"]);
+        assert_eq!(user_version(&connection), 3);
+    }
+
+    #[test]
+    fn skips_the_steps_already_applied() {
+        let mut connection = ladder(2);
+
+        migrate(&mut connection, 2, &[first, second]).expect("migrate");
+
+        assert_eq!(marks(&connection), ["second"]);
+        assert_eq!(user_version(&connection), 3);
+    }
+
+    #[test]
+    fn a_failing_step_leaves_the_database_untouched() {
+        let mut connection = ladder(1);
+
+        let error = migrate(&mut connection, 1, &[marks_then_fails, second]).expect_err("step");
+
+        assert!(error.to_string().contains("step gave up"), "{error}");
+        assert!(
+            marks(&connection).is_empty(),
+            "rolled back step left {:?}",
+            marks(&connection)
+        );
+        assert_eq!(user_version(&connection), 1);
+    }
+
+    #[test]
+    fn a_step_whose_version_bump_fails_leaves_the_database_untouched() {
+        let mut connection = ladder(1);
+
+        migrate(&mut connection, 1, &[marks_then_blocks_the_bump]).expect_err("bump");
+
+        assert!(
+            marks(&connection).is_empty(),
+            "step committed outside its version bump, leaving {:?}",
+            marks(&connection)
+        );
+        assert_eq!(user_version(&connection), 1);
     }
 
     #[test]

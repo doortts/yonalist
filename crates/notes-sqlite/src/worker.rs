@@ -164,7 +164,7 @@ impl SqliteStorage {
                 }
                 .map_err(|error| StorageError::Unavailable(error.to_string()))
                 .and_then(|mut connection| {
-                    schema::initialize(&connection)?;
+                    schema::initialize(&mut connection)?;
                     if seed_onboarding {
                         crate::seed::seed_onboarding(&mut connection)?;
                     }
