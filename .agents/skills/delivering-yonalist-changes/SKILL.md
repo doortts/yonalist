@@ -57,10 +57,8 @@ that moves wrapped lines; leave a focused regression test for that contract.
 ## 4. Expand one acceptance row at a time
 
 During the edit loop, run only the focused or owning-module tests. Keep worker
-tasks and file ownership disjoint. GPT-5.6 Sol owns design, adversarial review,
-rework decisions, final desktop proof, and the complete gate; use GPT-5.6
-Terra for bounded implementation or targeted tests only when delegation is
-authorized.
+tasks and file ownership disjoint. Model roles, review, and the rework loop are
+owned by `fable-opus-loop`.
 
 ## 5. Verify proportionately
 
