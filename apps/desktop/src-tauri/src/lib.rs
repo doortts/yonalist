@@ -300,10 +300,67 @@ fn open_external_url(url: String) -> Result<(), String> {
     open::that(parsed.as_str()).map_err(|error| error.to_string())
 }
 
-/// The main window draws its own chrome (`"decorations": false`), so there is no
-/// native menu bar and macOS gives a WKWebView no built-in inspector shortcut.
-/// The keyboard shortcut in the frontend is the only way in; this is what it
-/// calls. Answers the state the webview ended up in.
+/// Logical inset `(x, y)` for the macOS window controls ("traffic lights"),
+/// chosen from the detected macOS major version.
+///
+/// macOS Tahoe (major 26) reworked window chrome: the top-left corner uses a
+/// much larger radius drawn concentric with the red close button, and the
+/// controls sit slightly higher in the bar, so the older `(20, 15)` inset
+/// leaves them crammed into the corner there. Both values put the controls on
+/// the 42px titlebar's center line, which is what `.pane-toggle` glyphs line
+/// up against. Kept free of `cfg(target_os)` so it stays unit-testable on every
+/// platform (only the caller is macOS-gated).
+fn traffic_light_inset(macos_major: Option<u32>) -> (f64, f64) {
+    match macos_major {
+        Some(major) if major >= 26 => (22.0, 20.0),
+        _ => (20.0, 15.0),
+    }
+}
+
+/// Detected macOS major version via `NSProcessInfo`, e.g. `26` on Tahoe, `15`
+/// on Sequoia. `None` if the value does not fit a `u32` (never expected).
+#[cfg(target_os = "macos")]
+fn macos_major_version() -> Option<u32> {
+    use objc2_foundation::NSProcessInfo;
+    let version = NSProcessInfo::processInfo().operatingSystemVersion();
+    u32::try_from(version.majorVersion).ok()
+}
+
+/// Creates the main window in Rust rather than `tauri.conf.json` so the macOS
+/// traffic-light inset can be picked at launch from the OS version: the
+/// builder's `traffic_light_position` is the only supported hook (there is no
+/// runtime setter on `WebviewWindow`), and wry re-applies it across resize and
+/// fullscreen. The window keeps its decorations so macOS still draws the
+/// rounded corners, the shadow and the controls themselves; `Overlay` is what
+/// lets the webview paint under the titlebar the way an undecorated window did.
+fn build_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+    #[allow(unused_mut)]
+    let mut builder =
+        tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+            .title("Yonalist")
+            .inner_size(1200.0, 760.0)
+            .min_inner_size(840.0, 560.0)
+            .decorations(true);
+
+    // Overlay title bar, hidden title and traffic-light placement are macOS-only
+    // concepts, so they stay off every other platform.
+    #[cfg(target_os = "macos")]
+    {
+        let (x, y) = traffic_light_inset(macos_major_version());
+        builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .traffic_light_position(tauri::LogicalPosition::new(x, y));
+    }
+
+    builder.build()?;
+    Ok(())
+}
+
+/// The main window hides its title bar behind the app's own chrome, so there is
+/// no native menu bar and macOS gives a WKWebView no built-in inspector
+/// shortcut. The keyboard shortcut in the frontend is the only way in; this is
+/// what it calls. Answers the state the webview ended up in.
 #[tauri::command]
 async fn notes_toggle_devtools(webview: tauri::WebviewWindow) -> bool {
     #[cfg(any(debug_assertions, feature = "devtools"))]
@@ -444,6 +501,7 @@ pub fn run() {
                     }
                 },
             ))?;
+            build_main_window(app.handle())?;
             let data_directory = select_data_directory(
                 app.path().app_data_dir()?,
                 std::env::var_os("YONALIST_V2_DATA_DIR"),
@@ -497,7 +555,10 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;
 
-    use super::{internal_error, parse_http_url, run_close_attempt, select_data_directory};
+    use super::{
+        internal_error, parse_http_url, run_close_attempt, select_data_directory,
+        traffic_light_inset,
+    };
     use notes_application::{CommandEnvelope, IpcImportNode, IpcMarkerKind, IpcNotesCommand};
 
     #[test]
@@ -640,5 +701,15 @@ mod tests {
         let after_close =
             tauri::async_runtime::block_on(run_close_attempt(&closed, async { Ok(()) })).unwrap();
         assert_eq!(after_close, notes_application::CloseOutcome::AlreadyClosed);
+    }
+
+    #[test]
+    fn traffic_light_inset_follows_the_macos_version() {
+        // Tahoe and anything after it take the roomier inset; every earlier
+        // release -- and an undetectable version -- keeps the original.
+        assert_eq!(traffic_light_inset(Some(26)), (22.0, 20.0));
+        assert_eq!(traffic_light_inset(Some(27)), (22.0, 20.0));
+        assert_eq!(traffic_light_inset(Some(15)), (20.0, 15.0));
+        assert_eq!(traffic_light_inset(None), (20.0, 15.0));
     }
 }

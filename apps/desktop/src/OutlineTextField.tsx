@@ -33,20 +33,6 @@ export interface OutlineTextFieldProps
   readonly onOpenExternal?: (url: string) => void;
 }
 
-const urlStyle: CSSProperties = {
-  appearance: "none",
-  margin: 0,
-  padding: 0,
-  border: 0,
-  background: "none",
-  color: "inherit",
-  cursor: "pointer",
-  font: "inherit",
-  letterSpacing: "inherit",
-  textDecoration: "underline",
-  whiteSpace: "inherit"
-};
-
 interface CaretDocument {
   caretPositionFromPoint?: (
     x: number,
@@ -117,18 +103,26 @@ function renderToken(
         </span>
       );
     case "link":
+      // a button lays its label out in one inline-block box, so a long URL
+      // takes the whole row and centers its wrapped lines; an inline span
+      // wraps through the same line boxes the textarea underneath uses
       return (
-        <button
+        <span
           className="notes-url-token"
-          type="button"
+          role="button"
+          tabIndex={0}
           aria-label={`Open link ${token.display}`}
           key={token.start}
-          style={urlStyle}
           onPointerDown={(event) => event.stopPropagation()}
           onClick={() => onOpenExternal(token.href)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" && event.key !== " ") return;
+            event.preventDefault();
+            onOpenExternal(token.href);
+          }}
         >
           {token.display}
-        </button>
+        </span>
       );
     case "tag":
       return (

@@ -882,6 +882,22 @@ body.is-resizing-pane {
   }
 }
 
+/* Drag-region debug paint, toggled by Cmd+Alt+D (Ctrl+Shift+D off macOS). The
+   fixed strips are transparent and the two headers look like ordinary chrome,
+   so there is otherwise no way to see where the window can be grabbed. Buttons
+   and other clickable children block dragging even inside a "deep" region, so
+   they are struck through in red to show the holes. */
+[data-drag-debug] [data-tauri-drag-region] {
+  outline: 2px dashed #ff00c8;
+  outline-offset: -2px;
+  background-color: rgb(255 0 200 / 12%);
+}
+
+[data-drag-debug] [data-tauri-drag-region] :is(a, button, input, select, textarea, label, summary) {
+  outline: 1px solid #ff2d2d;
+  background-color: rgb(255 45 45 / 18%);
+}
+
 .pane-titlebar-spacer {
   flex: 0 0 var(--titlebar-height);
 }

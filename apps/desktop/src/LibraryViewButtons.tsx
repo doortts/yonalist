@@ -1,9 +1,10 @@
-import { Archive, Clock3, ListTree, Star, Tags, Trash2 } from "lucide-react";
+import { Archive, Clock3, Star, Tags, Trash2 } from "lucide-react";
 
+// "all" has no button of its own: the Pages list leads with an All row, which
+// is the same destination and doubles as the way back out of a filtered view.
 export type LibraryView = "all" | "starred" | "tags" | "trash";
 
 const views = [
-  { id: "all", label: "All", icon: ListTree, available: true },
   { id: "starred", label: "Starred", icon: Star, available: true },
   { id: "recent", label: "Recent", icon: Clock3, available: false },
   { id: "tags", label: "Tags", icon: Tags, available: true },

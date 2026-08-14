@@ -189,6 +189,7 @@ const mainWindowCapability = JSON.parse(readFileSync(
 const requiredPermissions = [
   "core:default",
   "core:window:allow-destroy",
+  "core:window:allow-start-dragging",
   "dialog:allow-open",
   "dialog:allow-save",
   "main-window-notes-commands"

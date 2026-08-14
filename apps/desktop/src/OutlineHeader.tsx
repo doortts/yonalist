@@ -114,7 +114,10 @@ export function OutlineHeader({
   const atRoot = pageId === ROOT_ID;
   return (
     <>
-      {selectionToolbar ?? <div className="notes-outline-toolbar">
+      {selectionToolbar ?? <div
+        className="notes-outline-toolbar"
+        data-tauri-drag-region="deep"
+      >
         <nav className="notes-breadcrumb" aria-label="Breadcrumb">
           <span className="notes-breadcrumb-segment">
             <button

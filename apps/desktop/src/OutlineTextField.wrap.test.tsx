@@ -45,6 +45,38 @@ describe("v2 outline text wrapping", () => {
     expect(presentation.textContent).toBe("abc");
   });
 
+  it("wraps a long link inside the row line boxes instead of its own centered box", () => {
+    render(
+      <OutlineTextField
+        value="https://example.com/j/95078260144?pwd=NOaaLNOb54IHaoW3ot4rT7bb0bi2jq.1"
+        aria-label="Note text"
+        onChange={vi.fn()}
+        onOpenExternal={vi.fn()}
+      />
+    );
+    const link = screen.getByRole("button", { name: /^Open link/ });
+    const linkStyle = getComputedStyle(link);
+
+    expect(linkStyle.display).toBe("inline");
+    expect(linkStyle.textAlign).not.toBe("center");
+  });
+
+  it("keeps the link keyboard-openable without a button element", () => {
+    const onOpenExternal = vi.fn();
+    render(
+      <OutlineTextField
+        value="https://example.com/docs"
+        aria-label="Note text"
+        onChange={vi.fn()}
+        onOpenExternal={onOpenExternal}
+      />
+    );
+    const link = screen.getByRole("button", { name: /^Open link/ });
+
+    fireEvent.keyDown(link, { key: "Enter" });
+    expect(onOpenExternal).toHaveBeenCalledWith("https://example.com/docs");
+  });
+
   it("gives both layers the same metrics class", () => {
     const { presentation, textarea } = renderField("abc");
 
