@@ -199,7 +199,9 @@ export const OutlineRow = memo(function OutlineRow({
         data-solo-image-selection={selected &&
           node.kind === "image" &&
           runtime.state.selectionRootIds.length === 1 ? "true" : undefined}
-        data-marker-kind={node.marker}
+        data-marker-kind={typeof node.marker === "string"
+          ? node.marker
+          : "ordered"}
         data-marker-level={markerLevelOfDepth(depth)}
         data-empty-bullet={(draft ?? node.text).length === 0 ? "true" : undefined}
         style={{ "--notes-depth": depth } as CSSProperties}

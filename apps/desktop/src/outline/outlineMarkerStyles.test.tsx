@@ -32,7 +32,9 @@ const nodes = [
   bullet("one", "page-1", 1_024),
   bullet("two", "one", 1_024),
   bullet("three", "two", 1_024),
-  bullet("four", "three", 1_024)
+  bullet("four", "three", 1_024),
+  { ...bullet("five", "page-1", 2_048), marker: { ordered: { start: 5 } } },
+  { ...bullet("six", "page-1", 3_072), marker: { ordered: { start: 5 } } }
 ] as const;
 
 function bootSnapshot(): BootSnapshot {
@@ -108,6 +110,22 @@ describe("outline marker styles", () => {
     expect(levelOf(container, "two")).toBe("1");
     expect(levelOf(container, "three")).toBe("2");
     expect(levelOf(container, "four")).toBe("2");
+  });
+
+  // The number is the marker, so it stands where the shaped bullet would and
+  // the row reports the kind by name rather than as the marker's own value.
+  it("draws a numbered row's number in place of its bullet", async () => {
+    const { container } = await outline();
+    const row = (id: string) =>
+      container.querySelector(`[data-outline-id='${id}']`);
+
+    expect(row("five")?.getAttribute("data-marker-kind")).toBe("ordered");
+    expect(row("five")?.querySelector(".notes-node-bullet-number")?.textContent)
+      .toBe("5.");
+    expect(row("six")?.querySelector(".notes-node-bullet-number")?.textContent)
+      .toBe("6.");
+    expect(row("one")?.querySelector(".notes-node-bullet-number")).toBeNull();
+    expect(row("one")?.querySelector(".notes-node-bullet-dot")).not.toBeNull();
   });
 
   // The variables carry the whole shape, so a level that nobody configured

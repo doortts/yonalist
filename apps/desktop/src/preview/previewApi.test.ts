@@ -104,6 +104,58 @@ describe("browser-only preview adapter", () => {
     })).rejects.toThrow(/is neither a child of/u);
   });
 
+  // notes-core carries the source's marker onto the new half, so a run of
+  // numbered rows keeps counting under Enter. A preview that answers with a
+  // plain bullet shows the feature broken on the browser surface alone.
+  it("carries the source's marker onto the half a split makes", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    const created = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-split-marker-source",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: {
+        kind: "createNode",
+        id: "preview-split-marker",
+        parent_id: pageId,
+        before_id: null,
+        text: "Milk"
+      }
+    });
+    const marked = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-split-marker-set",
+      baseRevision: created.revision,
+      historyGroup: null,
+      command: {
+        kind: "setMarker",
+        id: "preview-split-marker",
+        marker: { ordered: { start: 3 } }
+      }
+    });
+
+    const split = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-split-marker-split",
+      baseRevision: marked.revision,
+      historyGroup: null,
+      command: {
+        kind: "splitNode",
+        id: "preview-split-marker",
+        new_id: "preview-split-marker-half",
+        parent_id: pageId,
+        before_id: null,
+        prefix: "Milk",
+        suffix: ""
+      }
+    });
+
+    expect(split.changedNodes.find((node) =>
+      node.id === "preview-split-marker-half")?.marker
+    ).toEqual({ ordered: { start: 3 } });
+  });
+
   it("nests a split under the source and opens it, as notes-core does", async () => {
     const boot = await previewNotesApi.bootstrap();
     const pageId = boot.activePageId!;

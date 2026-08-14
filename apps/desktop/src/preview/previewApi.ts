@@ -212,7 +212,9 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
           kind: "bullet", image: null,
           text: command.suffix,
           note: "",
-          marker: "bullet",
+          // notes-core carries the source's marker onto the new half, never its
+          // tick, so a run of To-dos or numbers keeps going under Enter.
+          marker: source.marker,
           collapsed: false,
           completed: false,
           starred: false,
