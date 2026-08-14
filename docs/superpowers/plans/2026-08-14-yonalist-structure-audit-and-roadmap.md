@@ -111,6 +111,7 @@ P1-9 시점 재검토: 1차 문서는 "태그 작업 진행 중"을 근거로 �
 | 12 | preview 백엔드 유지 정책 결정. 브라우저 개발용으로 Rust 백엔드를 TS로 1,292줄 재구현(+테스트 1,074줄)했고 Rust 명령이 바뀔 때마다 두 벌을 수정한다. 유지한다면 두 구현의 드리프트를 잡는 계약 테스트가 필요하다. | `previewApi.ts` + `preview*` 8모듈 |
 | 13 | 렌더 중 변이 3곳 정리. 앞의 둘은 지금도 제거 가능하고 `rowRuntime`은 성능 부하를 지는 축이라 문서화 후 유지한다. | `App.tsx:216`, `NotesOutline.tsx:140`, `:437` |
 | 14 | 문서 드리프트 정리. parity matrix가 Export(`:51`)·Appearance(`:19`)를 "missing"이라 하지만 둘 다 출하됐다. README는 v1을 제품이라 설명하고 존재하지 않는 Monaco 표면을 언급한다. 계약 파일 수(32→37)와 번들 예산(300→312KB)도 낡았다. `architecture.md`에는 `crates/notes-export`가 빠져 있다. | 문서 9곳 대조 |
+| 17 | `tree.rs`의 부모 그룹핑 두 벌을 한 벌로. P1-8이 `validate()` 안에 인라인 그룹핑을 넣고 P1-8b가 `children_index`를 넣어, 같은 파일에 같은 그룹핑이 두 번 있다. `children_index`가 `Vec<&NoteNode>`를 돌려주면 `validate()`가 그대로 쓰고 walker만 id로 매핑하면 된다 — 인라인 쪽 8줄이 사라진다. 리뷰를 통과한 두 커밋을 마지막에 손대지 않으려고 미룬 것이지 난도 때문이 아니다. | `crates/notes-core/src/tree.rs:355`(인라인), `:248`(`children_index`) |
 | 15 | 저장소 위생. `.superpowers/sdd/` 추적 파일 24개를 `git rm --cached`(ignore가 소급 적용되지 않은 상태), `.claude/launch.json`의 죽은 절대 경로 제거, `packages/contracts`를 상대 경로 대신 패키지 이름으로 import. | 워크스페이스 별칭이 장식으로만 존재 |
 
 ### 결함이 아닌 것 (기록용)
@@ -237,7 +238,7 @@ v1 파이프라인은 스텁이 아니라 완성돼 있고 이례적으로 엄�
 | 8 | validate 자식 인덱스 | **완료** | | 부모별 그룹핑 한 번으로 교체(+12/−5줄). 5k 노드 `plan()` 3.30s → 0.04s. 통합 테스트 5개 신규, 그중 스케일 테스트는 되돌리면 실제로 실패함을 확인. 삭제된 형제를 포함하는 순서 검사를 그대로 보존(살아 있는 노드만 인덱싱하면 통과해 버리는 구멍을 테스트가 막는다). 리뷰 findings 0건 |
 | 7 | 읽기 경로 쓰기 제거 | **완료** | | 저장값이 바뀔 때만 쓰도록 가드. 같은 페이지 스크롤 20회 기준 쓰기 20→0. 결정적 근거는 `BEGIN IMMEDIATE`로 쓰기 잠금을 잡고 측정한 것 — 가드 전 5.175s(busy_timeout 만료), 후 480µs. 무경합 구간의 벽시계는 구분되지 않는다는 점도 함께 기록. `queries.rs`가 584줄이 되어 advisory 경고가 하나 늘었다(테스트 모듈 때문. 파일 분리는 이 저장소에 없는 패턴이라 받아들임). 리뷰 findings 0건 |
 | 6 | 뷰포트 CTE | **완료 — 가지치기는 §8로 연기** | | 위험 3건 전부 성립. 특히 위험 B는 내가 짚은 것보다 넓었다 — 스냅샷에서 페이로드를 만들고 서버 서브트리를 지우는 경로가 `outlineClipboardActions.ts:148`, `outlineMenuCommands.ts:134`·`:330`, `useOutlineSelection.ts:125` 넷이고, `outlineClipboard.ts:133`의 클립보드 walk는 한계를 넘으면 조용히 자른다. `anchor_offset`의 CTE는 `viewport()`와 byte-identical. 따라서 SQL 층 안에서 닫히지 않는다. 대신 심부 스크롤 성능 계약을 신설(§6 표). 리뷰 2라운드 — 1라운드는 50k 절벽을 주석에만 적고 단언하지 않아 반려됐다 |
-| 8b | subtree_ids 재스캔 제거 | 대기 | | P1-8에서 파생. 8과 같은 모양의 수정 |
-| 9 | 폴더 구조 | 대기 | | 맨 마지막 |
+| 8b | subtree_ids 재스캔 제거 | **완료** | | 부모 인덱스를 한 번 만들어 걷도록 교체(+39/−21줄). 5k 서브트리 삭제 1.61s → 0.03s, 5k 서브트리 복제 1.71s → 0.07s. 둘 다 P1-8이 끝난 코드에서 잰 값이라 이 항목이 걷어낸 시간만 남는다. 통합 테스트 4개 신규 — 순서와 도달 범위를 고정한 2개는 수정 전 코드에서 먼저 초록임을 확인했고 스케일 2개는 수정 전 코드에서 실제로 실패한다. `subtree_ids`는 삭제된 행까지 걷고 `visible_subtree_ids`는 걷지 않는 차이를 그대로 뒀다. 달라진 지점은 `subtree_ids`의 방문 순서 하나다(id 순 → 문서 순). 호출부가 id마다 플래그만 세우는 `set_subtree_deleted` 하나라 순서를 보는 곳이 없다. 기존 커맨드 테스트 33개는 복제가 삭제 행을 건너뛰는지 검증하지 않아 인덱스에 삭제 행을 넣어도 전부 통과한다 |
+| 9 | 폴더 구조 | **보류 — 착수 조건 미충족** | | 이 항목이 예측한 충돌 조건이 실제로 발생했다. 2026-08-14 저녁 현재 `feat/todo-progress-bar-redesign`에서 다른 세션이 `apps/desktop/src` 파일 8개(`outlineTodo.tsx`, `storeState.ts`, `notesStore.ts`, `outlineModel.ts`, `notes.css` 및 테스트 3개)를 편집 중이다. 178파일 rename은 그 작업과 전면 충돌한다. **착수 조건: `apps/desktop/src`를 건드리는 미머지 브랜치가 없을 때.** 그날이 오면 그때가 가장 넓은 창이라는 위 판단은 그대로 유효하다 |
 
 착수 전 게이트 기준선: `npm run test:v2` 전 단계 초록 (cargo workspace / vitest / lint / 아키텍처 / 계약).

@@ -12,6 +12,20 @@ pub struct NotesTree {
     nodes: BTreeMap<NodeId, NoteNode>,
 }
 
+/// Children go onto the stack reversed so popping hands them back in document
+/// order: `duplicate_node` numbers the copies in the order they arrive here.
+fn walk_subtree(index: &BTreeMap<&NodeId, Vec<NodeId>>, root_id: &NodeId) -> Vec<NodeId> {
+    let mut result = Vec::new();
+    let mut pending = vec![root_id.clone()];
+    while let Some(id) = pending.pop() {
+        if let Some(children) = index.get(&id) {
+            pending.extend(children.iter().rev().cloned());
+        }
+        result.push(id);
+    }
+    result
+}
+
 impl NotesTree {
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
@@ -231,31 +245,35 @@ impl NotesTree {
         Ok(())
     }
 
-    fn subtree_ids(&self, root_id: &NodeId) -> Vec<NodeId> {
-        let mut result = Vec::new();
-        let mut pending = vec![root_id.clone()];
-        while let Some(id) = pending.pop() {
-            pending.extend(
-                self.nodes
-                    .values()
-                    .filter(|node| node.parent_id() == Some(&id))
-                    .map(|node| node.id().clone()),
-            );
-            result.push(id);
+    fn children_index(&self, include_deleted: bool) -> BTreeMap<&NodeId, Vec<NodeId>> {
+        let mut index: BTreeMap<&NodeId, Vec<&NoteNode>> = BTreeMap::new();
+        for node in self
+            .nodes
+            .values()
+            .filter(|node| include_deleted || !node.is_deleted())
+        {
+            if let Some(parent_id) = node.parent_id() {
+                index.entry(parent_id).or_default().push(node);
+            }
         }
-        result
+        index
+            .into_iter()
+            .map(|(parent_id, mut children)| {
+                children.sort_by_key(|node| (node.sort_key(), node.id()));
+                let ids = children.into_iter().map(|node| node.id().clone()).collect();
+                (parent_id, ids)
+            })
+            .collect()
+    }
+
+    /// Deleted rows stay in the walk: delete and restore both have to reach the
+    /// rows already flagged, and a branch under a flagged parent hangs off them.
+    fn subtree_ids(&self, root_id: &NodeId) -> Vec<NodeId> {
+        walk_subtree(&self.children_index(true), root_id)
     }
 
     fn visible_subtree_ids(&self, root_id: &NodeId) -> Vec<NodeId> {
-        let mut result = Vec::new();
-        let mut pending = vec![root_id.clone()];
-        while let Some(id) = pending.pop() {
-            let mut children = self.ordered_children(&id, false);
-            children.reverse();
-            pending.extend(children);
-            result.push(id);
-        }
-        result
+        walk_subtree(&self.children_index(false), root_id)
     }
 
     fn is_descendant_of(&self, candidate: &NodeId, ancestor: &NodeId) -> bool {
