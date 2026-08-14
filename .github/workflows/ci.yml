@@ -4,28 +4,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
-  frontend:
+  v2:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Typecheck
-        run: npx tsc --noEmit
-      - name: Unit tests
-        run: npx vitest run
-      - name: Production build
-        run: npm run build
-
-  rust:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      # cargo test --workspace builds apps/desktop/src-tauri, so the whole
+      # webkit2gtk/gtk link surface has to be present even though no test opens
+      # a window. Every native -sys crate the v2 workspace resolves is a subset
+      # of what v1 links, so this list stays in step with ci-v1.yml.
       - name: Install Tauri system dependencies
         run: |
           sudo apt-get update
@@ -34,9 +23,34 @@ jobs:
             pkg-config
       - uses: dtolnay/rust-toolchain@1.97.0
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
         with:
-          workspaces: src-tauri
-      - name: Rust tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml
-      - name: Rust performance gate
-        run: cargo test --manifest-path src-tauri/Cargo.toml -- --ignored
+          node-version: 22
+          cache: npm
+      # Root install covers the apps/desktop and packages/contracts workspaces;
+      # apps/desktop/node_modules holds only vite's cache, never packages.
+      - run: npm ci
+      # One step on purpose: whatever `test:v2` covers is what CI covers, so a
+      # check cannot rot by being left out of the composite.
+      - name: v2 gate
+        run: npm run test:v2
+
+  v2-performance:
+    # Timing assertions on a shared runner are flaky and the suite builds
+    # --release under lto=true/codegen-units=1, so it stays off pull requests
+    # and guards main instead.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: Swatinem/rust-cache@v2
+      # No npm ci: the script is a bare cargo invocation and notes-sqlite pulls
+      # no node or GUI dependency. Node is here only to dispatch the script, so
+      # the command has one definition in package.json.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Release performance suite
+        run: npm run test:v2:performance

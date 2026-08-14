@@ -43,6 +43,14 @@ export default defineConfig({
     // Keep vitest's default excludes (node_modules, dist, .git, …) and also
     // skip any nested repo copies under `.claude/` or `.worktrees/` so
     // worktree checkouts don't get their test suites scanned and run twice.
-    exclude: [...configDefaults.exclude, "**/.claude/**", "**/.worktrees/**"]
+    // `apps/**` is excluded because these setupFiles are v1's: apps/desktop
+    // ships its own vitest config and setup, and running its suites under this
+    // one fails on the polyfills they never asked for.
+    exclude: [
+      ...configDefaults.exclude,
+      "**/.claude/**",
+      "**/.worktrees/**",
+      "apps/**"
+    ]
   }
 });

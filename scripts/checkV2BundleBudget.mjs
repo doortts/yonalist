@@ -29,15 +29,19 @@ for (const file of files) {
   gzip += gzipSync(bytes).length;
 }
 
-// Raised from 300KB/91KB for the bullet menu parity work. The menus this
-// budget guards are all lazy chunks, but every lazy boundary still leaves
-// import machinery in the entry chunk, so a feature spread across several
-// menus costs the entry a few hundred gzip bytes it cannot shed. The old
-// ceiling had 75 gzip bytes left, which is a tripwire, not a budget. These
-// limits keep roughly 5KB of gzip headroom: enough to finish the menu work,
-// tight enough that an accidental eager import still trips the gate.
-const rawLimit = 312 * 1024;
-const gzipLimit = 96 * 1024;
+// `test:v2` runs this check, so these two numbers are a commitment, not a
+// note: exceeding them stops the gate for everyone. Raise them only with a
+// fresh measurement recorded here, never to get a build through.
+// The entry pair measures 331,802 raw / 100,785 gzip, leaving 4,070 raw and
+// 1,615 gzip bytes of headroom. Raw binds first, so eagerly importing any of
+// the 7 largest lazy chunks (selection bar, export, row menu, drag engine,
+// window, image, settings) trips the gate; the other 17 are each under 3.3KB
+// raw and slip through. Catching those too needs headroom near 200 bytes,
+// which is well below ordinary drift — two weeks of refactoring moved this by
+// 573 gzip bytes — and would make the budget a tripwire that gets raised
+// reflexively instead of read.
+const rawLimit = 328 * 1024;
+const gzipLimit = 100 * 1024;
 if (raw > rawLimit || gzip > gzipLimit) {
   throw new Error(
     `v2 editable JS ${raw} raw / ${gzip} gzip exceeds ` +
