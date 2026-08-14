@@ -1,13 +1,13 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesState } from "./notesState";
-import { orderOutline } from "./outlineModel";
+import { orderOutline } from "./outline/outlineModel";
 import {
   allocateSiblingSortKey,
   applyRebalancedSortKeys,
   bySiblingOrder,
   SORT_KEY_STEP
-} from "./outlineSortKeys";
-import { omitKeys } from "./storeState";
+} from "./outline/outlineSortKeys";
+import { omitKeys } from "./store/storeState";
 
 export interface OptimisticOutlineState {
   readonly nodes: readonly NoteView[];

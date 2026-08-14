@@ -1,8 +1,8 @@
 import type { NotesApi } from "./api";
-import type { ImageCandidate } from "./imageApi";
+import type { ImageCandidate } from "./image/imageApi";
 import type { NotesState } from "./notesState";
-import type { StoreCommands } from "./storeCommands";
-import type { StoreImages } from "./storeImages";
+import type { StoreCommands } from "./store/storeCommands";
+import type { StoreImages } from "./store/storeImages";
 
 export class LazyStoreImages {
   private loaded: Promise<StoreImages> | null = null;
@@ -62,7 +62,7 @@ export class LazyStoreImages {
   }
 
   private load(): Promise<StoreImages> {
-    this.loaded ??= import("./storeImages").then(({ StoreImages }) =>
+    this.loaded ??= import("./store/storeImages").then(({ StoreImages }) =>
       new StoreImages(this.api, this.commands, this.readState));
     return this.loaded;
   }

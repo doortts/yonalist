@@ -1,7 +1,7 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { PaneFocusSnapshot } from "./appNavigation";
-import { holdsCaret } from "./outlineModel";
-import { bySiblingOrder } from "./outlineSortKeys";
+import { holdsCaret } from "./outline/outlineModel";
+import { bySiblingOrder } from "./outline/outlineSortKeys";
 
 function liveNode(
   nodes: readonly NoteView[],

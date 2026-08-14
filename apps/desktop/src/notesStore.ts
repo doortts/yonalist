@@ -7,28 +7,28 @@ import type { ForestSnapshot } from "../../../packages/contracts/generated/Fores
 import type { PaneSnapshot } from "./appNavigation";
 import type { NotesApi } from "./api";
 import { initialNotesState, type NotesState } from "./notesState";
-import { freshId, messageFrom, ROOT_ID } from "./storeSupport";
-import { flattenPastedOutline, type PastedOutlineNode } from "./outlinePaste";
+import { freshId, messageFrom, ROOT_ID } from "./store/storeSupport";
+import { flattenPastedOutline, type PastedOutlineNode } from "./outline/outlinePaste";
 import {
   completionCascade, receiptState, subtreeIds, viewportState
-} from "./storeState";
-import { runSlashEdit } from "./storeSlash";
-import type { NotesMutationHistoryEvent } from "./storeHistory";
-import { StoreViewport } from "./storeViewport";
-import { StoreCommands } from "./storeCommands";
-import { StoreDrafts } from "./storeDrafts";
+} from "./store/storeState";
+import { runSlashEdit } from "./store/storeSlash";
+import type { NotesMutationHistoryEvent } from "./store/storeHistory";
+import { StoreViewport } from "./store/storeViewport";
+import { StoreCommands } from "./store/storeCommands";
+import { StoreDrafts } from "./store/storeDrafts";
 import { LazyStoreImages } from "./lazyStoreImages";
 import {
   StoreOutlineMutations,
   type MergeIntoParentInput,
   type PendingCreatedNode,
   type PendingOutlineMutation
-} from "./storeOutlineMutations";
+} from "./store/storeOutlineMutations";
 import {
   StoreSubscriptions,
   invalidationForPatch,
   type StoreInvalidation
-} from "./storeSubscriptions";
+} from "./store/storeSubscriptions";
 
 export class NotesStore {
   private state: NotesState = initialNotesState;

@@ -8,7 +8,7 @@ import {
   isRetryableExportError
 } from "./exportApi";
 import { pickExportPath } from "./exportPicker";
-import { messageFrom } from "./storeSupport";
+import { messageFrom } from "./store/storeSupport";
 import "./notesExport.css";
 
 interface ExportTarget {

@@ -1,7 +1,7 @@
 import { Plus } from "lucide-react";
 import { useRef, useState } from "react";
 import { NotesStore } from "./notesStore";
-import { focusAfterCommit } from "./outlineFocus";
+import { focusAfterCommit } from "./outline/outlineFocus";
 
 export function NotesChildComposer({
   store, parentId, hasChildren

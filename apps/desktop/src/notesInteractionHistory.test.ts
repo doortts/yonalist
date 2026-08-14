@@ -4,7 +4,7 @@ import {
   NotesInteractionHistory,
   type InteractionHistoryStore
 } from "./notesInteractionHistory";
-import { registerOutlinePane } from "./outlinePaneRegistry";
+import { registerOutlinePane } from "./outline/outlinePaneRegistry";
 
 interface Location {
   readonly pageId: string;

@@ -1,5 +1,5 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
-import { bySiblingOrder } from "./outlineSortKeys";
+import { bySiblingOrder } from "./outline/outlineSortKeys";
 
 export interface SelectionNodeMove {
   readonly id: string;

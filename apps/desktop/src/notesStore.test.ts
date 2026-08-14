@@ -4,8 +4,8 @@ import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "./api";
 import type { ViewportPage } from "../../../packages/contracts/generated/ViewportPage";
 import { NotesStore } from "./notesStore";
-import { parseSingleTag, planTagEdits } from "./outlineTagEdits";
-import { DRAFT_DEBOUNCE_MS } from "./storeSupport";
+import { parseSingleTag, planTagEdits } from "./outline/outlineTagEdits";
+import { DRAFT_DEBOUNCE_MS } from "./store/storeSupport";
 
 function bullet(id: string, sortKey: number): NoteView {
   return {

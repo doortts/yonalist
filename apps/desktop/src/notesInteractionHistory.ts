@@ -5,9 +5,9 @@ import {
   type PaneSnapshot
 } from "./appNavigation";
 import { liveHistorySelection, resolveHistoryFocus } from "./historyRestore";
-import { focusOutlineSnapshot } from "./outlineFocus";
-import { outlinePane } from "./outlinePaneRegistry";
-import type { NotesMutationHistoryEvent } from "./storeHistory";
+import { focusOutlineSnapshot } from "./outline/outlineFocus";
+import { outlinePane } from "./outline/outlinePaneRegistry";
+import type { NotesMutationHistoryEvent } from "./store/storeHistory";
 
 export interface InteractionHistoryStore {
   readonly getSnapshot: () => {

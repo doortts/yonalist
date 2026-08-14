@@ -1,10 +1,10 @@
 import type { Ref } from "react";
-import { focusAfterCommit, type OutlineFocusEdge } from "./outlineFocus";
+import { focusAfterCommit, type OutlineFocusEdge } from "./outline/outlineFocus";
 import type { NotesStore } from "./notesStore";
-import { resolveSupportingNoteKey } from "./outlineKeyboard";
+import { resolveSupportingNoteKey } from "./outline/outlineKeyboard";
 import {
   OutlineTextField, type OutlineTagToken
-} from "./OutlineTextField";
+} from "./outline/OutlineTextField";
 
 export interface SupportingNoteTargets {
   /** The row Down out of the note lands on, or null when there is none. */

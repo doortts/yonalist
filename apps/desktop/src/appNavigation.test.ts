@@ -1,5 +1,5 @@
 import { capturePane } from "./appNavigation";
-import { registerOutlinePane } from "./outlinePaneRegistry";
+import { registerOutlinePane } from "./outline/outlinePaneRegistry";
 
 function paneFixture(): string {
   return `

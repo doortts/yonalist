@@ -5,7 +5,7 @@ import type { BootSnapshot } from "../../../packages/contracts/generated/BootSna
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { NotesApi } from "./api";
 import { App } from "./App";
-import { ROOT_ID } from "./storeSupport";
+import { ROOT_ID } from "./store/storeSupport";
 
 const snapshot: BootSnapshot = {
   sessionId: "navigation-session",
