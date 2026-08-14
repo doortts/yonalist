@@ -194,10 +194,17 @@ function targetAtPosition(
   outlineRootId: string
 ): string | null {
   if (!scope) return null;
-  const pointed = typeof document.elementFromPoint === "function"
-    ? document.elementFromPoint(position.x, position.y)
-    : null;
-  if (!pointed || !scope.contains(pointed)) return null;
+  // Every element under the pointer, not just the topmost: the window's drag
+  // strips sit above the outline's first rows, and a hit test that stopped at
+  // the top one would call a drop there a drop on nothing.
+  const stack = typeof document.elementsFromPoint === "function"
+    ? document.elementsFromPoint(position.x, position.y)
+    : typeof document.elementFromPoint === "function"
+      ? [document.elementFromPoint(position.x, position.y)]
+      : [];
+  const pointed = stack.find((element) =>
+    element instanceof Element && scope.contains(element));
+  if (!pointed) return null;
   return targetFromElement(pointed, scope, outlineRootId);
 }
 

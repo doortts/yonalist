@@ -139,6 +139,48 @@ describe("image ingest", () => {
     Reflect.deleteProperty(document, "elementFromPoint");
   });
 
+  // The window's own drag strips sit above the outline's first rows, so the
+  // topmost element under a native drop is not always a row. Reading only that
+  // one calls the drop a drop on nothing and imports nothing.
+  it("reads past an overlay the native drop lands on", async () => {
+    const { scope, ref } = scopeFixture();
+    const native = boundary();
+    const notesStore = store();
+    vi.mocked(notesStore.images.importPathsAfter).mockResolvedValue("cat");
+    const strip = document.createElement("div");
+    strip.className = "app-content-drag-strip";
+    document.body.append(strip);
+    const { result } = renderHook(() => useImageIngest({
+      store: notesStore,
+      outlineRootId: "page",
+      index: index(),
+      scopeRef: ref,
+      boundary: native.value
+    }));
+    await waitFor(() => expect(
+      native.value.listenNativeDrops
+    ).toHaveBeenCalledOnce());
+    Object.defineProperty(document, "elementsFromPoint", {
+      configurable: true,
+      value: vi.fn(() => [strip, scope.querySelector("[data-outline-id]")!])
+    });
+
+    await act(async () => {
+      native.emit({
+        type: "drop",
+        paths: ["C:\\cat.png"],
+        position: { x: 10, y: 10 }
+      });
+    });
+
+    expect(notesStore.images.importPathsAfter).toHaveBeenCalledWith(
+      "page", null, ["C:\\cat.png"]
+    );
+    void result;
+    Reflect.deleteProperty(document, "elementsFromPoint");
+    strip.remove();
+  });
+
   // A browser keeps the files back until the drop, so every `dragover` reports
   // an empty file list. Reading it there refuses the drag, the section never
   // accepts the drop, and nothing at all arrives.
