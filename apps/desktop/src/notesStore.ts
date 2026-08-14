@@ -9,9 +9,7 @@ import type { NotesApi } from "./api";
 import { initialNotesState, type NotesState } from "./notesState";
 import { freshId, messageFrom, ROOT_ID } from "./storeSupport";
 import { flattenPastedOutline, type PastedOutlineNode } from "./outlinePaste";
-import {
-  completionCascade, receiptState, subtreeIds, viewportState
-} from "./storeState";
+import { receiptState, subtreeIds, viewportState } from "./storeState";
 import { runSlashEdit } from "./storeSlash";
 import type { NotesMutationHistoryEvent } from "./storeHistory";
 import { StoreViewport } from "./storeViewport";
@@ -419,23 +417,11 @@ export class NotesStore {
     });
     return subtreeIds(this.state.nodes, newIds);
   }
+  /**
+   * One row travels; the server settles the Todo chain around it, which is the
+   * only place the whole chain is known -- the client holds a window of it.
+   */
   async setCompleted(id: string, completed: boolean): Promise<void> {
-    // The cascade reads the loaded window and the server writes exactly the
-    // ids it is handed, so a window cut short by paging would both miss the
-    // Todos it never loaded and settle an ancestor whose unloaded children
-    // are still open. The same gate every structural row command reads.
-    const windowComplete =
-      this.state.beforeCursor === null && this.state.afterCursor === null;
-    const cascade = windowComplete
-      ? completionCascade(this.state.nodes, id, completed)
-      : [id];
-    // The cascade drops rows already holding the target state, so the clicked
-    // row is not guaranteed to be in it -- and a lone child still needs the
-    // many-write to reach it.
-    if (cascade.length === 0) return;
-    if (cascade.length > 1 || cascade[0] !== id) {
-      return this.setCompletedMany(cascade, completed);
-    }
     await this.executeCommand({ kind: "setCompleted", id, completed });
   }
   async setCompletedMany(ids: readonly string[], completed: boolean): Promise<void> {

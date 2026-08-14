@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use crate::node::SORT_KEY_STEP;
 use crate::{
-    DomainError, ImportImageNode, ImportNode, NodeId, NoteNode, NoteNodeKind, NotesCommand,
-    Position,
+    DomainError, ImportImageNode, ImportNode, NodeId, NoteMarkerKind, NoteNode, NoteNodeKind,
+    NotesCommand, Position,
 };
 
 use super::NotesTree;
@@ -127,10 +127,9 @@ impl NotesTree {
                 }
                 Ok(())
             }
-            NotesCommand::SetCompleted { id, completed } => {
-                self.node_mut(&id)?.set_completed(completed);
-                Ok(())
-            }
+            NotesCommand::SetCompleted { id, completed } => self.cascade_completed(&id, completed),
+            // Deliberately literal: the selection bulk-complete hands over the
+            // exact rows it means, so nothing else may ride along.
             NotesCommand::SetCompletedMany { ids, completed } => {
                 for id in ids {
                     self.node_mut(&id)?.set_completed(completed);
@@ -454,5 +453,116 @@ impl NotesTree {
             self.node_mut(&child_id)?.set_sort_key(sort_key);
         }
         Ok(())
+    }
+
+    /// Ticking a Todo settles the whole chain it heads: every Todo under it
+    /// takes the same state, and an ancestor Todo follows once nothing below it
+    /// is left open. Clearing one runs the other way -- an ancestor cannot stay
+    /// ticked while a row under it is open again. It lives here rather than in
+    /// the client because a client only ever holds a window of the page, and
+    /// the chain reaches past it.
+    fn cascade_completed(&mut self, id: &NodeId, completed: bool) -> Result<(), DomainError> {
+        self.node_mut(id)?.set_completed(completed);
+        for below_id in self.todo_subtree_ids(id) {
+            self.node_mut(&below_id)?.set_completed(completed);
+        }
+        let mut current = id.clone();
+        // Seeded with the clicked row so a parent cycle ends the walk instead
+        // of climbing forever.
+        let mut visited = BTreeSet::from([id.clone()]);
+        while let Some(parent_id) = self.live_todo_parent(&current) {
+            if !visited.insert(parent_id.clone()) {
+                break;
+            }
+            // The whole branch, not the row below: an ancestor with a done
+            // child that still carries an open grandchild is not settled. The
+            // rows this cascade just set are already ticked in the tree, so
+            // reading them back is reading the cascade's own result.
+            let settled = self
+                .todo_subtree_ids(&parent_id)
+                .iter()
+                .all(|below_id| self.node(below_id).is_some_and(NoteNode::is_completed));
+            if completed && !settled {
+                break;
+            }
+            self.node_mut(&parent_id)?.set_completed(completed);
+            current = parent_id;
+        }
+        Ok(())
+    }
+
+    /// Every live Todo below `root_id`. A child that is not a Todo ends that
+    /// branch: whatever hangs under it starts a chain of its own.
+    fn todo_subtree_ids(&self, root_id: &NodeId) -> Vec<NodeId> {
+        let mut found = Vec::new();
+        let mut seen = BTreeSet::from([root_id.clone()]);
+        let mut pending = vec![root_id.clone()];
+        while let Some(current) = pending.pop() {
+            for child_id in self.children_of(&current) {
+                if self.node(&child_id).map(NoteNode::marker) != Some(NoteMarkerKind::Todo)
+                    || !seen.insert(child_id.clone())
+                {
+                    continue;
+                }
+                found.push(child_id.clone());
+                pending.push(child_id);
+            }
+        }
+        found
+    }
+
+    fn live_todo_parent(&self, id: &NodeId) -> Option<NodeId> {
+        let parent_id = self.node(id)?.parent_id()?;
+        let parent = self.node(parent_id)?;
+        (!parent.is_deleted() && parent.marker() == NoteMarkerKind::Todo).then(|| parent_id.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    use super::NotesTree;
+    use crate::{NodeId, NoteMarkerKind, NoteNode, NoteNodeKind};
+
+    /// `validate` refuses a parent cycle, so one can only be planted by
+    /// reaching past the public API — which is the only way to prove the walk
+    /// ends rather than climbing forever. The walk runs on a thread of its own
+    /// so a lost guard fails here by name instead of stalling the whole suite
+    /// until the job's own timeout ends it.
+    #[test]
+    fn a_parent_cycle_ends_the_cascade_instead_of_looping() {
+        let mut tree = NotesTree::default();
+        for (id, parent_id) in [("left", "right"), ("right", "left")] {
+            let node = NoteNode::from_persisted(
+                NodeId::try_from(id).unwrap(),
+                Some(NodeId::try_from(parent_id).unwrap()),
+                1_024,
+                NoteNodeKind::Bullet,
+                id.into(),
+                String::new(),
+                NoteMarkerKind::Todo,
+                false,
+                false,
+                false,
+                false,
+            );
+            tree.nodes.insert(node.id().clone(), node);
+        }
+
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let id = NodeId::try_from("left").unwrap();
+            tree.cascade_completed(&id, true).unwrap();
+            sender.send(tree.node(&id).unwrap().is_completed()).ok();
+        });
+
+        assert!(
+            receiver
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the cascade never came back off the cycle")
+        );
     }
 }

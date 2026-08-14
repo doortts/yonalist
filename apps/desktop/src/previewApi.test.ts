@@ -424,6 +424,47 @@ describe("browser-only preview adapter", () => {
     ]));
   });
 
+  it("settles the whole Todo chain from one ticked row", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const [parent, child] = boot.viewport!.nodes;
+    let revision = boot.revision;
+    for (const [index, id] of [parent.id, child.id].entries()) {
+      const marked = await previewNotesApi.execute({
+        sessionId: boot.sessionId,
+        requestId: `preview-chain-marker-${index}`,
+        baseRevision: revision,
+        historyGroup: null,
+        command: { kind: "setMarker", id, marker: "todo" }
+      });
+      revision = marked.revision;
+    }
+    const nested = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-chain-indent",
+      baseRevision: revision,
+      historyGroup: null,
+      command: {
+        kind: "moveNode",
+        id: child.id,
+        parent_id: parent.id,
+        before_id: null
+      }
+    });
+
+    const completed = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-chain-complete",
+      baseRevision: nested.revision,
+      historyGroup: null,
+      command: { kind: "setCompleted", id: parent.id, completed: true }
+    });
+
+    expect(completed.changedNodes).toEqual(expect.arrayContaining(
+      [parent.id, child.id].map((id) =>
+        expect.objectContaining({ id, completed: true }))
+    ));
+  });
+
   it("completes multiple preview rows with one batch command", async () => {
     const boot = await previewNotesApi.bootstrap();
     const ids = boot.viewport!.nodes.slice(0, 2).map((node) => node.id);

@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use notes_application::StorageError;
 use notes_core::{
-    NodeId, NoteNode, NotesCommand, NotesTree, Position, SORT_KEY_STEP, TreeMutation,
+    NodeId, NoteMarkerKind, NoteNode, NotesCommand, NotesTree, Position, SORT_KEY_STEP,
+    TreeMutation,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -104,11 +105,18 @@ fn collect_command_context(
         | NotesCommand::UpdateNote { id, .. }
         | NotesCommand::ResizeImage { id, .. }
         | NotesCommand::ReplaceImage { id, .. }
-        | NotesCommand::SetCompleted { id, .. }
         | NotesCommand::SetStarred { id, .. }
         | NotesCommand::SetCollapsed { id, .. }
         | NotesCommand::SetMarker { id, .. } => {
             collect_ancestors(connection, id, nodes)?;
+        }
+        NotesCommand::SetCompleted { id, .. } => {
+            // A tick settles the whole Todo chain the row sits in, so the
+            // working set is that chain and not the row alone. Ancestors load
+            // first: the climb to the chain's top reads their markers.
+            collect_ancestors(connection, id, nodes)?;
+            let chain_root = todo_chain_root(nodes, id);
+            collect_descendants(connection, &chain_root, nodes)?;
         }
         NotesCommand::SetCompletedMany { ids, .. } => {
             for id in ids {
@@ -210,6 +218,28 @@ fn collect_command_context(
         }
     }
     Ok(())
+}
+
+/// The highest Todo an unbroken chain of Todo parents reaches from `id` -- the
+/// row whose descendants a completion cascade may touch. `id` itself when its
+/// parent is not a live Todo. Reads the already-loaded ancestors.
+fn todo_chain_root(nodes: &BTreeMap<NodeId, NoteNode>, id: &NodeId) -> NodeId {
+    let mut root = id.clone();
+    let mut visited = BTreeSet::new();
+    while visited.insert(root.clone()) {
+        let Some(parent) = nodes
+            .get(&root)
+            .and_then(NoteNode::parent_id)
+            .and_then(|parent_id| nodes.get(parent_id))
+        else {
+            break;
+        };
+        if parent.is_deleted() || parent.marker() != NoteMarkerKind::Todo {
+            break;
+        }
+        root = parent.id().clone();
+    }
+    root
 }
 
 fn collect_move_context(

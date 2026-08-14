@@ -6,6 +6,7 @@ import { previewForest } from "./previewForest";
 import { previewHistory } from "./previewHistory";
 import { PreviewImages } from "./previewImages";
 import {
+  completionCascade,
   previewDescendants,
   previewSiblings,
   previewVisibleSubtree
@@ -328,12 +329,22 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
       }
       break;
     }
-    case "setCompleted":
+    case "setCompleted": {
+      // The desktop's server settles the whole Todo chain from one tick, so
+      // the preview does too.
+      const cascade = new Set(
+        completionCascade(nodes, command.id, command.completed)
+      );
+      changed = nodes.filter((node) => cascade.has(node.id));
+      changed.forEach((node) => {
+        node.completed = command.completed;
+      });
+      break;
+    }
     case "setStarred": {
       const node = nodes.find((candidate) => candidate.id === command.id);
       if (node) {
-        if (command.kind === "setCompleted") node.completed = command.completed;
-        else node.starred = command.starred;
+        node.starred = command.starred;
         changed = [node];
       }
       break;

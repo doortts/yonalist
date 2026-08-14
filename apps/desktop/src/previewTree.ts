@@ -1,5 +1,61 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
+import { todoChildrenByParent } from "./outlineModel";
 import { bySiblingOrder } from "./outlineSortKeys";
+
+/**
+ * notes-core's own completion cascade, mirrored so the browser preview settles
+ * a Todo chain the way the desktop's server does: every Todo under the clicked
+ * row takes the same state, and an ancestor Todo follows once nothing below it
+ * is left open. Clearing one runs the other way -- an ancestor cannot stay
+ * ticked while a row under it is open again.
+ *
+ * Rows already holding the target state are dropped, so a plain single-row
+ * toggle still writes a single row.
+ */
+export function completionCascade(
+  nodes: readonly NoteView[],
+  id: string,
+  completed: boolean
+): readonly string[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const todoChildren = todoChildrenByParent(nodes);
+  const todoSubtree = (rootId: string): readonly NoteView[] => {
+    const found: NoteView[] = [];
+    // Seeded with the root so a parent cycle ends the walk instead of
+    // recurring forever.
+    const seen = new Set<string>([rootId]);
+    const descend = (parentId: string) => {
+      for (const child of todoChildren.get(parentId) ?? []) {
+        if (seen.has(child.id)) continue;
+        seen.add(child.id);
+        found.push(child);
+        descend(child.id);
+      }
+    };
+    descend(rootId);
+    return found;
+  };
+  const cascaded = new Set<string>([
+    id, ...todoSubtree(id).map((below) => below.id)
+  ]);
+  let node = byId.get(id);
+  while (node?.parentId) {
+    const parent = byId.get(node.parentId);
+    if (!parent || parent.deleted || parent.marker !== "todo") break;
+    if (cascaded.has(parent.id)) break;
+    // The whole branch, not the row below: an ancestor with a done child that
+    // still carries an open grandchild is not settled.
+    const settled = todoSubtree(parent.id).every(
+      (below) => cascaded.has(below.id) || below.completed
+    );
+    if (completed && !settled) break;
+    cascaded.add(parent.id);
+    node = parent;
+  }
+  return [...cascaded].filter(
+    (cascadedId) => byId.get(cascadedId)?.completed !== completed
+  );
+}
 
 export function previewDescendants(
   nodes: readonly NoteView[],

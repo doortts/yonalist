@@ -1194,6 +1194,128 @@ fn indenting_under_a_collapsed_sibling_expands_it_atomically() {
     assert_eq!(tree, original);
 }
 
+/// page
+/// └ top (Todo)
+///   ├ first (Todo)
+///   ├ second (Todo)
+///   └ divider (bullet)
+///     └ beyond (Todo)
+fn todo_branch() -> NotesTree {
+    let mut tree = NotesTree::default();
+    tree.apply(&[
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(todo("top", "page", 1_024, false)),
+        TreeMutation::upsert(todo("first", "top", 1_024, false)),
+        TreeMutation::upsert(todo("second", "top", 2_048, false)),
+        TreeMutation::upsert(NoteNode::child(id("divider"), id("top"), 3_072, "Divider")),
+        TreeMutation::upsert(todo("beyond", "divider", 1_024, false)),
+    ])
+    .unwrap();
+    tree
+}
+
+fn todo(node_id: &str, parent_id: &str, sort_key: i64, completed: bool) -> NoteNode {
+    NoteNode::from_persisted(
+        id(node_id),
+        Some(id(parent_id)),
+        sort_key,
+        NoteNodeKind::Bullet,
+        node_id.into(),
+        String::new(),
+        NoteMarkerKind::Todo,
+        false,
+        completed,
+        false,
+        false,
+    )
+}
+
+fn set_completed(tree: &mut NotesTree, node_id: &str, completed: bool) {
+    plan_and_apply(
+        tree,
+        NotesCommand::SetCompleted {
+            id: id(node_id),
+            completed,
+        },
+    );
+}
+
+fn is_completed(tree: &NotesTree, node_id: &str) -> bool {
+    tree.node(&id(node_id)).unwrap().is_completed()
+}
+
+#[test]
+fn ticking_a_todo_settles_the_chain_below_it_and_stops_at_a_bullet() {
+    let mut tree = todo_branch();
+
+    set_completed(&mut tree, "top", true);
+
+    assert!(is_completed(&tree, "top"));
+    assert!(is_completed(&tree, "first"));
+    assert!(is_completed(&tree, "second"));
+    // The bullet ends that branch, so nothing under it is touched.
+    assert!(!is_completed(&tree, "beyond"));
+}
+
+#[test]
+fn an_ancestor_todo_waits_for_the_whole_branch_below_it() {
+    let mut tree = todo_branch();
+
+    set_completed(&mut tree, "first", true);
+    assert!(!is_completed(&tree, "top"));
+
+    set_completed(&mut tree, "second", true);
+    assert!(is_completed(&tree, "top"));
+}
+
+#[test]
+fn an_ancestor_todo_stays_open_while_a_todo_further_down_is_open() {
+    let mut tree = NotesTree::default();
+    tree.apply(&[
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(todo("top", "page", 1_024, false)),
+        TreeMutation::upsert(todo("done", "top", 1_024, true)),
+        // The ticked sibling's own box is done, so a direct-children-only test
+        // reads the branch as settled while this row is still open.
+        TreeMutation::upsert(todo("nested", "done", 1_024, false)),
+        TreeMutation::upsert(todo("last", "top", 2_048, false)),
+    ])
+    .unwrap();
+
+    set_completed(&mut tree, "last", true);
+
+    assert!(!is_completed(&tree, "top"));
+}
+
+#[test]
+fn reopening_a_nested_todo_clears_every_ancestor_todo() {
+    let mut tree = todo_branch();
+    set_completed(&mut tree, "top", true);
+
+    set_completed(&mut tree, "first", false);
+
+    assert!(!is_completed(&tree, "first"));
+    assert!(!is_completed(&tree, "top"));
+    assert!(is_completed(&tree, "second"));
+}
+
+#[test]
+fn completing_one_row_stays_one_reversible_patch() {
+    let mut tree = todo_branch();
+    let original = tree.clone();
+
+    let patch = tree
+        .plan(NotesCommand::SetCompleted {
+            id: id("top"),
+            completed: true,
+        })
+        .unwrap();
+    tree.apply(&patch.forward).unwrap();
+    tree.apply(&patch.inverse).unwrap();
+
+    assert_eq!(tree, original);
+}
+
 proptest! {
     #[test]
     fn every_planned_move_round_trips_through_its_inverse(
