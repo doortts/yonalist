@@ -3,6 +3,7 @@ import {
   defaultOutlineMarkerStyles,
   loadOutlineMarkerStyles,
   markerLevelOfDepth,
+  MAX_OUTLINE_MARKER_LEVELS,
   normalizeMarkerChar,
   outlineMarkerVariables,
   saveOutlineMarkerStyles,
@@ -31,10 +32,13 @@ describe("outline marker styles", () => {
     delete (window as { localStorage?: unknown }).localStorage;
   });
 
-  it("starts every level on the dot the rows already draw", () => {
+  // One level to begin with: the reader adds a second only once they want the
+  // depth below to look different, and everything deeper follows the last one.
+  it("starts on a single dot level", () => {
     expect(loadOutlineMarkerStyles()).toEqual(defaultOutlineMarkerStyles());
-    expect(defaultOutlineMarkerStyles().map((level) => level.shape))
-      .toEqual(["dot", "dot", "dot"]);
+    expect(defaultOutlineMarkerStyles()).toEqual([
+      { shape: "dot", char: "", color: null }
+    ]);
   });
 
   it("reads back what it stored", () => {
@@ -57,16 +61,49 @@ describe("outline marker styles", () => {
     expect(loadOutlineMarkerStyles()).toEqual(defaultOutlineMarkerStyles());
   });
 
+  // The stored count is what the reader built, so it has to come back at any
+  // length the settings could have produced -- and at no other.
+  it("reads back any level count the settings can build, and no other", () => {
+    for (const count of [1, 2, MAX_OUTLINE_MARKER_LEVELS]) {
+      const stored = Array.from({ length: count }, () => style({}));
+      saveOutlineMarkerStyles(stored);
+      expect(loadOutlineMarkerStyles()).toHaveLength(count);
+    }
+    for (const count of [0, MAX_OUTLINE_MARKER_LEVELS + 1]) {
+      window.localStorage.setItem(
+        "yonalist.outlineMarkers.v1",
+        JSON.stringify(Array.from({ length: count }, () => style({})))
+      );
+      expect(loadOutlineMarkerStyles()).toEqual(defaultOutlineMarkerStyles());
+    }
+  });
+
   it("keeps one code point of a custom marker, emoji included", () => {
     expect(normalizeMarkerChar("▸▸")).toBe("▸");
     expect(normalizeMarkerChar("🍎")).toBe("🍎");
     expect(normalizeMarkerChar("")).toBe("");
   });
 
-  // The row repeats its last configured level rather than running out of
-  // markers, so a deep branch keeps drawing the marker its parent drew.
-  it("repeats the last level below the configured depth", () => {
-    expect([0, 1, 2, 3, 9].map(markerLevelOfDepth)).toEqual([0, 1, 2, 2, 2]);
+  // The row stamps its level without knowing how many the settings hold: it
+  // clamps to the highest level there could be, and the variables for the
+  // levels nobody configured repeat the last one that is.
+  it("clamps a row's level to the highest the settings could hold", () => {
+    expect([0, 1, 5, 6, 40].map(markerLevelOfDepth)).toEqual([0, 1, 5, 5, 5]);
+  });
+
+  it("repeats the last configured level over every slot above it", () => {
+    const variables = outlineMarkerVariables([
+      style({ shape: "dot" }),
+      style({ shape: "dash", color: "#e8734a" })
+    ]);
+
+    for (let slot = 1; slot < MAX_OUTLINE_MARKER_LEVELS; slot += 1) {
+      expect(variables[`--notes-marker-${slot}-w`]).toBe("11px");
+      expect(variables[`--notes-marker-${slot}-color`]).toBe("#e8734a");
+    }
+    expect(variables["--notes-marker-0-w"]).toBe("7px");
+    expect(variables[`--notes-marker-${MAX_OUTLINE_MARKER_LEVELS}-w`])
+      .toBeUndefined();
   });
 
   it("writes box shapes as a size and glyph shapes as content", () => {

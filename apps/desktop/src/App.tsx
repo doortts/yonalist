@@ -560,7 +560,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             onDarkThemeChange={theme.setDarkTheme}
             onCaretColorChange={theme.setCaretColor}
             onTextFontChange={theme.setTextFont}
-            onMarkerStyleChange={markers.setMarkerStyle}
+            onMarkerStylesChange={markers.setMarkerStyles}
             onClose={() => setSettingsOpen(false)}
             unusedAssets={(purge) => api.unusedAssets(purge)}
             deleteAllData={() => api.deleteAllData()}

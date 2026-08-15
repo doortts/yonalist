@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import type { UnusedAssetsReport } from "../../../packages/contracts/generated/UnusedAssetsReport";
 import {
+  MAX_OUTLINE_MARKER_LEVELS,
   normalizeMarkerChar,
   type OutlineMarkerShape,
   type OutlineMarkerStyle
@@ -75,7 +76,7 @@ export function SettingsView({
   onDarkThemeChange,
   onCaretColorChange,
   onTextFontChange,
-  onMarkerStyleChange,
+  onMarkerStylesChange,
   onClose,
   unusedAssets,
   deleteAllData
@@ -91,7 +92,7 @@ export function SettingsView({
   readonly onDarkThemeChange: (theme: DarkTheme) => void;
   readonly onCaretColorChange: (color: CaretColor) => void;
   readonly onTextFontChange: (font: TextFont) => void;
-  readonly onMarkerStyleChange: (level: number, style: OutlineMarkerStyle) => void;
+  readonly onMarkerStylesChange: (styles: OutlineMarkerStyle[]) => void;
   readonly onClose: () => void;
   readonly unusedAssets: (purge: boolean) => Promise<UnusedAssetsReport>;
   readonly deleteAllData: () => Promise<void>;
@@ -146,7 +147,7 @@ export function SettingsView({
           <CaretColorGroup value={caretColor} onChange={onCaretColorChange} />
           <OutlineMarkerGroup
             styles={markerStyles}
-            onChange={onMarkerStyleChange}
+            onChange={onMarkerStylesChange}
           />
         </section>
 
@@ -312,13 +313,21 @@ function NotesDataSection({
  * every level below it draws, which the heading says rather than repeating the
  * rule beside each row.
  */
+/**
+ * One row per level, starting at a single one. A level is added on the end and
+ * removed from the end alone: taking one out of the middle would pull every
+ * level below it up a place, changing markers nobody asked to change.
+ */
 function OutlineMarkerGroup({
   styles,
   onChange
 }: {
   readonly styles: readonly OutlineMarkerStyle[];
-  readonly onChange: (level: number, style: OutlineMarkerStyle) => void;
+  readonly onChange: (styles: OutlineMarkerStyle[]) => void;
 }) {
+  const replace = (level: number, style: OutlineMarkerStyle) =>
+    onChange(styles.map((current, index) =>
+      index === level ? style : current));
   return (
     <div className="theme-settings-group">
       <h3>Outline markers</h3>
@@ -327,7 +336,23 @@ function OutlineMarkerGroup({
       </p>
       {styles.map((style, level) => (
         <div className="marker-level-row" key={level}>
-          <span className="marker-level-label">Level {level + 1}</span>
+          <span className="marker-level-name">
+            <span className="marker-level-label">Level {level + 1}</span>
+            {/* The slot stands whether or not the icon does, so a level being
+                added or removed never shifts the row's other controls. */}
+            <span className="marker-level-remove-slot">
+              {level === styles.length - 1 && styles.length > 1 ? (
+                <button
+                  type="button"
+                  className="marker-level-remove"
+                  aria-label={`Remove level ${level + 1}`}
+                  onClick={() => onChange(styles.slice(0, -1))}
+                >
+                  <Trash2 size={13} aria-hidden="true" />
+                </button>
+              ) : null}
+            </span>
+          </span>
           <div
             className="marker-shape-row"
             role="group"
@@ -340,7 +365,7 @@ function OutlineMarkerGroup({
                 className="marker-shape-button"
                 aria-label={`${option.label} marker for level ${level + 1}`}
                 aria-pressed={style.shape === option.value}
-                onClick={() => onChange(level, {
+                onClick={() => replace(level, {
                   ...style,
                   shape: option.value,
                   char: option.value === "custom"
@@ -358,39 +383,56 @@ function OutlineMarkerGroup({
               className="marker-custom-char"
               aria-label={`Level ${level + 1} marker character`}
               value={style.char}
-              onChange={(event) => onChange(level, {
+              onChange={(event) => replace(level, {
                 ...style,
                 char: normalizeMarkerChar(event.target.value)
               })}
             />
           ) : null}
-          <div
-            className="marker-color-row"
-            role="group"
-            aria-label={`Level ${level + 1} marker colour`}
-          >
-            <button
-              type="button"
-              className="marker-color-default"
-              aria-label={`Theme colour for level ${level + 1}`}
-              aria-pressed={style.color === null}
-              onClick={() => onChange(level, { ...style, color: null })}
-            >
-              Theme
-            </button>
-            <label className="marker-color-custom">
-              <span>Pick</span>
+          <span className="marker-color-field">
+            <span className="marker-color-label">Color</span>
+            {/* The picker always answers with a colour -- it has no "none" --
+                so the way back to the theme's own colour is this badge, and it
+                shows only where there is a colour to clear. */}
+            <span className="marker-color-slot">
               <input
                 type="color"
-                aria-label={`Custom colour for level ${level + 1}`}
+                className={style.color === null
+                  ? "marker-color-swatch marker-color-swatch-auto"
+                  : "marker-color-swatch"}
+                aria-label={`Level ${level + 1} marker color`}
                 value={style.color ?? defaultMarkerColor}
                 onChange={(event) =>
-                  onChange(level, { ...style, color: event.target.value })}
+                  replace(level, { ...style, color: event.target.value })}
               />
-            </label>
-          </div>
+              {style.color === null ? null : (
+                <button
+                  type="button"
+                  className="marker-color-clear"
+                  aria-label={`Clear level ${level + 1} color`}
+                  onClick={() => replace(level, { ...style, color: null })}
+                >
+                  <X size={9} aria-hidden="true" />
+                </button>
+              )}
+            </span>
+          </span>
         </div>
       ))}
+      {styles.length < MAX_OUTLINE_MARKER_LEVELS ? (
+        <div className="marker-level-row">
+          <button
+            type="button"
+            className="marker-level-add"
+            aria-label={`Add level ${styles.length + 1}`}
+            onClick={() => onChange([
+              ...styles, { shape: "dot", char: "", color: null }
+            ])}
+          >
+            + Add level {styles.length + 1}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
