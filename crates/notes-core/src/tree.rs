@@ -12,6 +12,22 @@ pub struct NotesTree {
     nodes: BTreeMap<NodeId, NoteNode>,
 }
 
+/// Namespace for ids the domain derives rather than receives. Fixed forever:
+/// changing it would give the same duplication a different id on a later
+/// release, and two devices on different releases would then disagree.
+const DERIVED_ID_NAMESPACE: uuid::Uuid =
+    uuid::Uuid::from_u128(0x7f9c_2b14_5d63_4a08_9e21_3c6f_0d8b_4a52);
+
+/// The copy of a subtree needs an id per node, and only the top one arrives
+/// with the command. The rest are derived from it so every device that
+/// duplicates the same subtree lands on the same ids, and they are uuids
+/// because that is the only shape the file format carries.
+fn derived_child_id(new_id: &NodeId, ordinal: usize) -> Result<NodeId, DomainError> {
+    let name = format!("{new_id}/{ordinal}");
+    let derived = uuid::Uuid::new_v5(&DERIVED_ID_NAMESPACE, name.as_bytes());
+    NodeId::try_from(derived.to_string())
+}
+
 /// Children go onto the stack reversed so popping hands them back in document
 /// order: `duplicate_node` numbers the copies in the order they arrive here.
 fn walk_subtree(index: &BTreeMap<&NodeId, Vec<&NoteNode>>, root_id: &NodeId) -> Vec<NodeId> {
@@ -136,7 +152,7 @@ impl NotesTree {
         self.nodes.insert(new_id.clone(), copy);
         let mut copied_ids = BTreeMap::from([(source_id, new_id.clone())]);
         for (index, source_child_id) in source_ids.into_iter().skip(1).enumerate() {
-            let copied_id = NodeId::try_from(format!("{new_id}/{}", index + 1))?;
+            let copied_id = derived_child_id(&new_id, index + 1)?;
             self.ensure_new_id(&copied_id)?;
             let source_child = self
                 .nodes

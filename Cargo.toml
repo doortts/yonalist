@@ -23,7 +23,7 @@ rusqlite = { version = "0.40.1", features = ["bundled", "functions"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 ts-rs = "12.0.1"
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v5"] }
 
 [profile.release]
 opt-level = 3

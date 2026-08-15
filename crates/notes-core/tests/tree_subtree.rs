@@ -66,23 +66,27 @@ fn duplicating_a_deep_subtree_copies_it_in_document_order_without_deleted_rows()
         },
     );
 
-    // Copied ids are handed out in the order the walk reaches the source rows,
-    // so the numbering pins the traversal order and not just the shape.
+    // Copied ids are derived from the order the walk reaches the source rows,
+    // so reading the copy back in document order pins the traversal and not
+    // just the shape. The deleted rows stay behind.
+    let texts = |parent: &NodeId| {
+        tree.children_of(parent)
+            .into_iter()
+            .map(|child| tree.node(&child).unwrap().text().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let copied = tree.children_of(&id("copy"));
+    assert_eq!(texts(&id("copy")), vec!["zeta", "alpha"]);
+    assert_eq!(texts(&copied[0]), vec!["yak", "beta"]);
+    assert_eq!(texts(&copied[1]), vec!["omega"]);
     assert_eq!(
-        tree.children_of(&id("copy")),
-        vec![id("copy/1"), id("copy/4")]
+        tree.children_of(&copied[0])
+            .iter()
+            .map(|child| tree.children_of(child).len())
+            .sum::<usize>(),
+        0,
+        "the copy is five rows deep and no deeper"
     );
-    assert_eq!(
-        tree.children_of(&id("copy/1")),
-        vec![id("copy/2"), id("copy/3")]
-    );
-    assert_eq!(tree.children_of(&id("copy/4")), vec![id("copy/5")]);
-    assert_eq!(tree.node(&id("copy/1")).unwrap().text(), "zeta");
-    assert_eq!(tree.node(&id("copy/2")).unwrap().text(), "yak");
-    assert_eq!(tree.node(&id("copy/3")).unwrap().text(), "beta");
-    assert_eq!(tree.node(&id("copy/4")).unwrap().text(), "alpha");
-    assert_eq!(tree.node(&id("copy/5")).unwrap().text(), "omega");
-    assert!(tree.node(&id("copy/6")).is_none());
 }
 
 #[test]

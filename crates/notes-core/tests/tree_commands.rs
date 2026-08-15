@@ -385,10 +385,12 @@ fn duplicating_a_bullet_copies_its_descendants_with_fresh_ids() {
         },
     );
 
-    let child_copy = tree.node(&id("copy/1")).expect("copied child");
-    let grandchild_copy = tree.node(&id("copy/2")).expect("copied grandchild");
+    let child_copy_id = tree.children_of(&id("copy"))[0].clone();
+    let grandchild_copy_id = tree.children_of(&child_copy_id)[0].clone();
+    let child_copy = tree.node(&child_copy_id).expect("copied child");
+    let grandchild_copy = tree.node(&grandchild_copy_id).expect("copied grandchild");
     assert_eq!(child_copy.parent_id(), Some(&id("copy")));
-    assert_eq!(grandchild_copy.parent_id(), Some(&id("copy/1")));
+    assert_eq!(grandchild_copy.parent_id(), Some(&child_copy_id));
     assert_eq!(child_copy.text(), "Child");
     assert_eq!(grandchild_copy.text(), "Grandchild");
 }
@@ -688,7 +690,8 @@ fn duplicating_many_subtrees_is_one_atomic_reversible_patch() {
             id("after")
         ]
     );
-    assert_eq!(tree.node(&id("b-copy/1")).unwrap().text(), "Child");
+    let copied_child_id = tree.children_of(&id("b-copy"))[0].clone();
+    assert_eq!(tree.node(&copied_child_id).unwrap().text(), "Child");
     tree.apply(&patch.inverse).unwrap();
     assert_eq!(tree, original);
 }
@@ -1405,4 +1408,43 @@ proptest! {
 
         prop_assert_eq!(tree, original);
     }
+}
+
+#[test]
+fn duplicated_children_get_uuid_ids() {
+    let mut tree = NotesTree::default();
+    tree.apply(&[
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("b"), id("page"), 1_024, "B")),
+        TreeMutation::upsert(NoteNode::child(id("child"), id("b"), 1_024, "Child")),
+    ])
+    .unwrap();
+    let copy_id = id("6f1d90a4-1c77-4f0e-9b3a-7d2e5c48a910");
+
+    let duplicate = |tree: &mut NotesTree| {
+        let patch = tree
+            .plan(NotesCommand::DuplicateNode {
+                source_id: id("b"),
+                new_id: copy_id.clone(),
+                parent_id: id("page"),
+                position: Position::at_end(),
+            })
+            .unwrap();
+        tree.apply(&patch.forward).unwrap();
+        tree.children_of(&copy_id)
+    };
+
+    let copied = duplicate(&mut tree.clone());
+
+    assert_eq!(copied.len(), 1, "the copy keeps its one child");
+    let child_id = copied[0].as_str();
+    assert!(
+        uuid::Uuid::try_parse(child_id).is_ok(),
+        "a derived child id has to be a uuid the file format can carry, got {child_id}"
+    );
+    assert_eq!(
+        duplicate(&mut tree.clone()),
+        copied,
+        "the same duplication has to derive the same ids on every device"
+    );
 }
