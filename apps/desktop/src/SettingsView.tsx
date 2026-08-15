@@ -12,6 +12,7 @@ import type {
   CaretColor,
   DarkTheme,
   LightTheme,
+  TextFont,
   ThemeMode
 } from "./useTheme";
 
@@ -33,6 +34,11 @@ const darkThemeOptions: Array<{ value: DarkTheme; label: string }> = [
   { value: "dark", label: "Default" },
   { value: "yona-dark", label: "Yonal Dark" },
   { value: "base-dark", label: "Base Dark" }
+];
+
+const textFontOptions: Array<{ value: TextFont; label: string }> = [
+  { value: "sans", label: "Sans" },
+  { value: "mono", label: "Monospace" }
 ];
 
 const markerShapeOptions: Array<{ value: OutlineMarkerShape; label: string }> = [
@@ -62,11 +68,13 @@ export function SettingsView({
   lightTheme,
   darkTheme,
   caretColor,
+  textFont,
   markerStyles,
   onThemeModeChange,
   onLightThemeChange,
   onDarkThemeChange,
   onCaretColorChange,
+  onTextFontChange,
   onMarkerStyleChange,
   onClose,
   unusedAssets,
@@ -76,11 +84,13 @@ export function SettingsView({
   readonly lightTheme: LightTheme;
   readonly darkTheme: DarkTheme;
   readonly caretColor: CaretColor;
+  readonly textFont: TextFont;
   readonly markerStyles: readonly OutlineMarkerStyle[];
   readonly onThemeModeChange: (mode: ThemeMode) => void;
   readonly onLightThemeChange: (theme: LightTheme) => void;
   readonly onDarkThemeChange: (theme: DarkTheme) => void;
   readonly onCaretColorChange: (color: CaretColor) => void;
+  readonly onTextFontChange: (font: TextFont) => void;
   readonly onMarkerStyleChange: (level: number, style: OutlineMarkerStyle) => void;
   readonly onClose: () => void;
   readonly unusedAssets: (purge: boolean) => Promise<UnusedAssetsReport>;
@@ -125,6 +135,13 @@ export function SettingsView({
             value={darkTheme}
             optionSuffix="dark theme"
             onChange={onDarkThemeChange}
+          />
+          <ThemeRadioGroup
+            title="Outline text"
+            options={textFontOptions}
+            value={textFont}
+            optionSuffix="outline text"
+            onChange={onTextFontChange}
           />
           <CaretColorGroup value={caretColor} onChange={onCaretColorChange} />
           <OutlineMarkerGroup
@@ -386,8 +403,15 @@ function MarkerPreview({
   readonly char: string;
 }) {
   if (shape === "hyphen" || shape === "custom") {
+    // The hyphen preview takes the same monospace font the row draws it in, so
+    // the button shows the long even dash rather than the interface font's tick.
     return (
-      <span className="marker-preview marker-preview-glyph" aria-hidden="true">
+      <span
+        className={shape === "hyphen"
+          ? "marker-preview marker-preview-glyph marker-preview-hyphen"
+          : "marker-preview marker-preview-glyph"}
+        aria-hidden="true"
+      >
         {shape === "hyphen" ? "-" : char || defaultCustomMarker}
       </span>
     );

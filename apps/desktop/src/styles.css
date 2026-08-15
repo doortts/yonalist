@@ -2404,6 +2404,11 @@ body.is-resizing-pane {
   text-align: center;
 }
 
+.marker-preview-hyphen {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
 .marker-custom-char {
   width: 44px;
   padding: 4px 0;
