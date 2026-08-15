@@ -24,7 +24,6 @@ import {
   type AppNavigationLocation
 } from "./appNavigation";
 import { NotesDetailPanes } from "./NotesDetailPanes";
-import { VaultSetupCard } from "./VaultSetupCard";
 import { ROOT_ID } from "./store/storeSupport";
 import type { OutlineTagToken } from "./outline/OutlineTextField";
 import { ShortcutHint, useShortcutHints } from "./shortcutHints";
@@ -34,6 +33,9 @@ const SearchPanel = lazy(() => import("./SearchPanel").then((module) =>
 // outline never needs. It stays out of the entry chunk like the row menus do.
 const SettingsView = lazy(() => import("./SettingsView").then((module) =>
   ({ default: module.SettingsView })));
+// Shown at most once per install, so it stays out of the startup bundle.
+const VaultSetupCard = lazy(() => import("./VaultSetupCard").then((module) =>
+  ({ default: module.VaultSetupCard })));
 
 export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   const theme = useTheme();
@@ -560,10 +562,12 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
         }}
       />
       {!settingsOpen && (
-        <VaultSetupCard
-          readVaultPath={readVaultPath}
-          setVaultPath={chooseVaultPath}
-        />
+        <Suspense fallback={null}>
+          <VaultSetupCard
+            readVaultPath={readVaultPath}
+            setVaultPath={chooseVaultPath}
+          />
+        </Suspense>
       )}
       {settingsOpen ? (
         <Suspense fallback={<p className="notes-pane-state">Loading settings...</p>}>
