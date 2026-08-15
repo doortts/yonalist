@@ -2,7 +2,7 @@
 //! owns rather than the database: it has to be readable before the worker is up,
 //! and a data reset clears it without touching the folder it names.
 
-use notes_application::SyncVaultFolderState;
+use notes_application::{NotesError, NotesErrorCode, SyncVaultFolderState};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -15,12 +15,40 @@ const VAULT_MARKER_DIRECTORY: &str = ".yonalist";
 /// an arbitrarily large document in memory to answer a yes-or-no question.
 const README_PROBE_BYTES: u64 = 4096;
 
+/// Two different problems with two different answers: the user can pick another
+/// folder, but nothing they do fixes this app's own storage being unreachable,
+/// and that one is worth retrying.
+#[derive(Debug)]
+pub(crate) enum VaultError {
+    Rejected(String),
+    Storage(String),
+}
+
+impl From<VaultError> for NotesError {
+    fn from(error: VaultError) -> Self {
+        match error {
+            VaultError::Rejected(message) => NotesError {
+                code: NotesErrorCode::InvalidDestination,
+                message,
+                retryable: false,
+            },
+            VaultError::Storage(message) => NotesError {
+                code: NotesErrorCode::StorageUnavailable,
+                message,
+                retryable: true,
+            },
+        }
+    }
+}
+
 /// Absent until the user picks one. That absence is what "first run" means, so
 /// a data reset clearing this file puts the app back at first run without
 /// touching the documents the folder holds.
 pub(crate) fn read_vault_path(data_directory: &Path) -> Option<PathBuf> {
     let raw = fs::read_to_string(data_directory.join(VAULT_PATH_FILE)).ok()?;
-    let trimmed = raw.trim();
+    // Only the line endings a hand edit might add: a folder name is allowed to
+    // end in a space, and set writes the path with nothing appended.
+    let trimmed = raw.trim_end_matches(['\n', '\r']);
     if trimmed.is_empty() {
         return None;
     }
@@ -30,10 +58,11 @@ pub(crate) fn read_vault_path(data_directory: &Path) -> Option<PathBuf> {
 pub(crate) fn set_vault_path(
     data_directory: &Path,
     vault: &Path,
-) -> Result<SyncVaultFolderState, String> {
+) -> Result<SyncVaultFolderState, VaultError> {
     validate(data_directory, vault)?;
-    fs::write(data_directory.join(VAULT_PATH_FILE), path_bytes(vault)?)
-        .map_err(|error| format!("Could not remember the vault location: {error}"))?;
+    fs::write(data_directory.join(VAULT_PATH_FILE), path_bytes(vault)?).map_err(|error| {
+        VaultError::Storage(format!("Could not remember the vault location: {error}"))
+    })?;
     Ok(classify(vault))
 }
 
@@ -89,29 +118,70 @@ pub(crate) fn clear_vault_path(data_directory: &Path) -> Result<(), String> {
     }
 }
 
-fn path_bytes(vault: &Path) -> Result<String, String> {
+fn path_bytes(vault: &Path) -> Result<String, VaultError> {
     vault
         .to_str()
         .map(str::to_owned)
-        .ok_or_else(|| "A vault path has to be valid UTF-8.".to_owned())
+        .ok_or_else(|| VaultError::Rejected("A vault path has to be valid UTF-8.".to_owned()))
 }
 
-/// The folder has to be one the app can keep writing to, and it must not be the
-/// app's own storage: a vault inside `app_data_dir` would be deleted by the very
-/// reset that is supposed to leave the documents alone.
-fn validate(data_directory: &Path, vault: &Path) -> Result<(), String> {
+/// The folder has to be one the app can keep writing to, and it must not overlap
+/// the app's own storage in either direction: a vault inside `app_data_dir`
+/// would be deleted by the reset that is supposed to leave the documents alone,
+/// and one holding `app_data_dir` would later have the live database exported
+/// into it as if it were a note.
+fn validate(data_directory: &Path, vault: &Path) -> Result<(), VaultError> {
     if !vault.is_absolute() {
-        return Err("A vault path has to be absolute.".to_owned());
+        return Err(VaultError::Rejected(
+            "A vault path has to be absolute.".to_owned(),
+        ));
     }
-    let resolved =
-        fs::canonicalize(vault).map_err(|error| format!("Could not open that folder: {error}"))?;
+    let data_directory = fs::canonicalize(data_directory).map_err(|error| {
+        VaultError::Storage(format!("Could not resolve the app's storage: {error}"))
+    })?;
+    let resolved = resolve_or_create(vault, &data_directory)?;
     if !resolved.is_dir() {
-        return Err("A vault has to be a folder.".to_owned());
+        return Err(VaultError::Rejected(
+            "A vault has to be a folder.".to_owned(),
+        ));
     }
-    let data_directory = fs::canonicalize(data_directory)
-        .map_err(|error| format!("Could not resolve the app's storage: {error}"))?;
-    if resolved.starts_with(&data_directory) {
-        return Err("A vault cannot live inside the app's own storage.".to_owned());
+    separate_from_storage(&resolved, &data_directory)
+}
+
+/// A folder the user names but has not made yet is theirs to have — the choice
+/// is only recorded once it exists. Where it would go is checked before it is
+/// made, so a rejected choice never leaves a folder behind.
+fn resolve_or_create(vault: &Path, data_directory: &Path) -> Result<PathBuf, VaultError> {
+    match fs::canonicalize(vault) {
+        Ok(resolved) => Ok(resolved),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let (parent, name) = vault
+                .parent()
+                .zip(vault.file_name())
+                .ok_or_else(|| VaultError::Rejected("Could not open that folder.".to_owned()))?;
+            let parent = fs::canonicalize(parent).map_err(|error| {
+                VaultError::Rejected(format!("Could not open that folder: {error}"))
+            })?;
+            let candidate = parent.join(name);
+            separate_from_storage(&candidate, data_directory)?;
+            fs::create_dir(&candidate).map_err(|error| {
+                VaultError::Rejected(format!("Could not make that folder: {error}"))
+            })?;
+            fs::canonicalize(&candidate).map_err(|error| {
+                VaultError::Rejected(format!("Could not open that folder: {error}"))
+            })
+        }
+        Err(error) => Err(VaultError::Rejected(format!(
+            "Could not open that folder: {error}"
+        ))),
+    }
+}
+
+fn separate_from_storage(vault: &Path, data_directory: &Path) -> Result<(), VaultError> {
+    if vault.starts_with(data_directory) || data_directory.starts_with(vault) {
+        return Err(VaultError::Rejected(
+            "A vault cannot live inside the app's own storage, or hold it.".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -225,6 +295,59 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_that_does_not_exist_yet_is_created_and_empty() {
+        let (_directory, data, vault) = workspace();
+        let fresh = vault.join("Yonalist Vault");
+
+        assert_eq!(
+            set_vault_path(&data, &fresh).expect("set"),
+            SyncVaultFolderState::Empty
+        );
+        assert!(
+            fresh.is_dir(),
+            "the folder the user named has to exist after"
+        );
+        assert_eq!(read_vault_path(&data).as_deref(), Some(fresh.as_path()));
+    }
+
+    #[test]
+    fn a_vault_that_would_swallow_the_app_storage_is_rejected() {
+        let (directory, data, _vault) = workspace();
+
+        assert!(
+            set_vault_path(&data, directory.path()).is_err(),
+            "a vault holding the app's own storage would export the live database"
+        );
+    }
+
+    #[test]
+    fn a_bad_folder_and_broken_storage_read_differently() {
+        let (_directory, data, vault) = workspace();
+
+        assert!(matches!(
+            set_vault_path(&data, std::path::Path::new("Notes")),
+            Err(VaultError::Rejected(_))
+        ));
+
+        std::fs::remove_dir_all(&data).expect("remove");
+        assert!(
+            matches!(set_vault_path(&data, &vault), Err(VaultError::Storage(_))),
+            "the folder was fine; it was this app's storage that was not"
+        );
+    }
+
+    #[test]
+    fn a_folder_name_keeps_its_trailing_space() {
+        let (_directory, data, vault) = workspace();
+        let spaced = vault.join("Notes ");
+        std::fs::create_dir(&spaced).expect("spaced");
+
+        set_vault_path(&data, &spaced).expect("set");
+
+        assert_eq!(read_vault_path(&data).as_deref(), Some(spaced.as_path()));
+    }
+
+    #[test]
     fn a_relative_or_data_dir_path_is_rejected() {
         let (_directory, data, _vault) = workspace();
         let inside = data.join("vault");
@@ -235,6 +358,11 @@ mod tests {
             set_vault_path(&data, &inside).is_err(),
             "the reset that clears the database would take the documents with it"
         );
-        assert!(set_vault_path(&data, &data.join("missing")).is_err());
+        let inside_missing = data.join("missing");
+        assert!(set_vault_path(&data, &inside_missing).is_err());
+        assert!(
+            !inside_missing.exists(),
+            "a folder that gets rejected must not be left behind"
+        );
     }
 }

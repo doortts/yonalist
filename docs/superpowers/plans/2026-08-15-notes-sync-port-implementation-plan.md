@@ -260,7 +260,7 @@ red 테스트 없음 — 문서 항목의 게이트는 적대적 리뷰다. 스�
 - 테스트: `cargo test -p notes-sqlite --test sync_stamping` (테스트 설계 §3). 기존 notes-sqlite 테스트 전체 green 유지 확인. 의존: M1.2.
 
 **M1.5 — vault 위치 IPC와 영속.**
-- 바뀌는 것: `apps/desktop/src-tauri/src/sync_settings.rs` 신규 — `notes_sync_vault_get` / `notes_sync_vault_set(path)` 명령, 검증(절대 경로·생성 가능 디렉터리·`app_data_dir` 내부 금지), `app_data_dir/vault-path` 한 줄 텍스트 파일에 영속. `lib.rs` generate_handler 등록. 명령 추가 리플: `scripts/checkV2Architecture.mjs:137-149` expectedCommands, `apps/desktop/src-tauri/permissions/main-window.toml`, `apps/desktop/src-tauri/build.rs`. 계약: notes-application `contracts.rs`에 `SyncVaultStatus` ts-rs 타입 + `packages/contracts/generated` 재생성 커밋.
+- 바뀌는 것: `apps/desktop/src-tauri/src/sync_settings.rs` 신규 — `notes_sync_vault_get` / `notes_sync_vault_set(path)` 명령, 검증(절대 경로·생성 가능 디렉터리·`app_data_dir` 내부 금지), `app_data_dir/vault-path` 한 줄 텍스트 파일에 영속. `lib.rs` generate_handler 등록. 명령 추가 리플: `scripts/checkV2Architecture.mjs:137-149` expectedCommands, `apps/desktop/src-tauri/permissions/main-window.toml`, `apps/desktop/src-tauri/build.rs`. 계약: **`SyncVaultStatus` 타입은 만들지 않는다**(M1.5 구현 중 확정). get이 돌려줄 것이 경로 하나뿐이라 한 필드짜리 struct는 이름만 늘리고, 실제로 계약 타입이 필요해진 자리는 set의 반환값이어서 M1.7이 `SyncVaultFolderState`로 만들었다. get은 `Option<String>`으로 남는다.
 - 무수정: 워커·notes_ui_state(vault 경로는 어댑터 소유다. DB보다 먼저 필요하고 워커 표면을 늘리지 않는다).
 - 커밋: `feat(sync): persist the vault location behind new IPC commands`
 - 테스트: `cargo test -p yonalist-v2-desktop sync_settings` + `npm run test:v2:architecture` + `npm run test:v2:contracts` (테스트 설계 §2.4). 의존: M1.1.

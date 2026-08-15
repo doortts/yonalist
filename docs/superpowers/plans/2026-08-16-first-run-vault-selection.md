@@ -86,7 +86,7 @@ FV-1·FV-2·FV-4가 한 항목(M1.9)에 몰리는 것은 loop 규칙과 어긋�
 - 바뀌는 것:
   - `apps/desktop/src-tauri/src/sync_settings.rs` (M1.5의 신규 파일을 확장) — set 성공 시 D5 표의 판별을 실행해 결과를 돌려준다. `README.md`는 첫 4KiB만 읽고, 판별 중 어떤 파일도 만들지 않는다.
   - `crates/notes-application/src/contracts.rs` — `SyncVaultFolderState` ts-rs enum(`empty`/`existingVault`/`nonEmpty`) 추가. `notes_sync_vault_set`의 반환 타입이 된다. `packages/contracts/generated/` 재생성 커밋.
-- 무수정: `notes_sync_vault_get`의 모양(M1.5의 `SyncVaultStatus` 그대로 — 판별은 set 시점 1회다), 명령 수(2개 그대로 — `scripts/checkV2Architecture.mjs`·`permissions/main-window.toml`·`build.rs`는 M1.5가 갱신한 그대로), 워커와 DB(`sync_settings.rs`는 storage 의존이 없어 DB 무접촉이 구조로 보장된다).
+- 무수정: `notes_sync_vault_get`의 모양(M1.5가 정한 `Option<String>` 그대로 — 판별은 set 시점 1회다), 명령 수(2개 그대로 — `scripts/checkV2Architecture.mjs`·`permissions/main-window.toml`·`build.rs`는 M1.5가 갱신한 그대로), 워커와 DB(`sync_settings.rs`는 storage 의존이 없어 DB 무접촉이 구조로 보장된다).
 - 커밋: `feat(sync): report the chosen vault folder's state without touching it`
 - 소유 테스트 명령: `cargo test -p yonalist-v2-desktop sync_settings` + `npm run test:v2:contracts`
 - **첫 red**: `choosing_a_folder_with_an_existing_vault_reports_it` — `apps/desktop/src-tauri/src/sync_settings.rs` `#[cfg(test)]`. tempdir에 `kind: yonalist-notes` frontmatter를 가진 `README.md`를 심고 set → `existingVault`. 반환 타입이 아직 없어 컴파일 red.

@@ -259,13 +259,7 @@ async fn notes_sync_vault_set(
     state: State<'_, DesktopState>,
     path: String,
 ) -> Result<SyncVaultFolderState, NotesError> {
-    sync_settings::set_vault_path(&state.data_directory, Path::new(&path)).map_err(|message| {
-        NotesError {
-            code: NotesErrorCode::InvalidCommand,
-            message,
-            retryable: false,
-        }
-    })
+    sync_settings::set_vault_path(&state.data_directory, Path::new(&path)).map_err(NotesError::from)
 }
 
 #[tauri::command]
