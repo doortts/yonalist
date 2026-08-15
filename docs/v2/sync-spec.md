@@ -392,15 +392,17 @@ root_hlc: 0swkd7qz5-00-a3f2
 root_starred: true
 ---
 # Projects
-> 이번 분기에 손대는 것만.
+> 이번 분기에 손대는 것만\.
 
 - 아키텍처 다시 그리기 <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 -->
   - [ ] 크레이트 경계 정리 <!-- yid: 8a201f33-0000-4c91-8d02-000000000002 t: 0swkd7qz7-00-a3f2 todo -->
-  - ![아키텍처.png](assets/아키텍처-9f3a1c8e2044.png) <!-- ya: w: 320 px: 1280x720 bytes: 421904 --> <!-- yid: 8a201f33-0000-4c91-8d02-000000000003 t: 0swkd7qz8-00-a3f2 -->
+  - ![아키텍처\.png](assets/아키텍처-9f3a1c8e2044.png) <!-- ya: w: 320 px: 1280x720 bytes: 421904 --> <!-- yid: 8a201f33-0000-4c91-8d02-000000000003 t: 0swkd7qz8-00-a3f2 -->
 - 정리한 것 <!-- yid: 8a201f33-0000-4c91-8d02-000000000004 t: 0swkd7qz9-00-a3f2 done collapsed -->
 ```
 
 덮는 계약: 기본값 키 생략(`sort_key`·`root_marker_kind` 등이 없다), 루트 note 블록, `root_starred`, 미완료 todo, 완료된 일반 블릿(`done`), collapsed, 자식 들여쓰기, 상대 경로 이미지 링크, 링크 텍스트가 진 원본 파일명, `max_hlc`가 문서 최댓값.
+
+note 줄의 `\.`과 링크 텍스트의 `아키텍처\.png`는 §4.1 이스케이프가 ASCII 문장부호 전부에 `\`를 붙이기 때문이다 — 마침표도 예외가 아니다. 링크 **경로**는 이스케이프하지 않는다.
 
 ### B. `.yonalist/trash.md`
 
