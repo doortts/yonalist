@@ -9,4 +9,5 @@
 pub mod document;
 pub mod file_io;
 pub mod hlc;
+pub mod parse;
 pub mod render;
