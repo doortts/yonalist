@@ -19,8 +19,11 @@ pub const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 /// place, then flushes the directory itself. A reader — including the cloud
 /// client watching the folder — sees the old bytes or the new ones, never a
 /// prefix of the new ones.
-pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path.parent().ok_or("A vault path must name a directory.")?;
+pub fn write_atomic(vault_root: &Path, path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let resolved = resolve_inside(vault_root, path)?;
+    let parent = resolved
+        .parent()
+        .ok_or("A vault path must name a directory.")?;
     let mut temporary = tempfile::Builder::new()
         .prefix(".yonalist-")
         .tempfile_in(parent)
@@ -30,7 +33,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .and_then(|()| temporary.as_file().sync_all())
         .map_err(|error| format!("Could not write the temporary file: {error}"))?;
     temporary
-        .persist(path)
+        .persist(&resolved)
         .map_err(|error| format!("Could not put the file in place: {error}"))?;
     sync_directory(parent)
 }
@@ -44,6 +47,8 @@ fn sync_directory(path: &Path) -> Result<(), String> {
 }
 
 /// Resolves everything above the file and refuses a result that left the vault.
+/// All three operations run through it, so a link planted in the folder cannot
+/// redirect a read, a write, or a move past the root.
 fn resolve_inside(vault_root: &Path, path: &Path) -> Result<PathBuf, String> {
     let name = path
         .file_name()
@@ -69,10 +74,13 @@ fn resolve_inside(vault_root: &Path, path: &Path) -> Result<PathBuf, String> {
 /// along the way resolves out, and the check catches it. Refusing every link on
 /// the path instead would be wrong — the vault itself commonly sits behind one
 /// (`/var` is a link on macOS). The leaf is then guarded by the open flag
-/// rather than a prior `stat`, since checking and then opening leaves a window,
-/// and the path opened is the resolved one, so nothing between the root and the
-/// file can be swapped for a link in between. `O_NONBLOCK` is there so a fifo
-/// planted at a vault path fails instead of parking the worker on the open.
+/// rather than a prior `stat`, since checking and then opening leaves a window.
+/// What remains is narrow: `open` re-walks the resolved path, so a directory
+/// swapped for a link between the two calls is still followed. That needs local
+/// code running as this user, which could read the file directly anyway; the
+/// escape this closes is the one someone leaves lying in the folder.
+/// `O_NONBLOCK` is there so a fifo planted at a vault path fails instead of
+/// parking the worker on the open.
 pub fn read_regular_bounded(
     vault_root: &Path,
     path: &Path,
@@ -113,14 +121,16 @@ pub fn read_regular_bounded(
 ///
 /// The source has to be a regular file: `rename` moves a symbolic link as
 /// itself, which would plant one under a vault name by the app's own hand.
-pub fn move_no_replace(from: &Path, to: &Path) -> Result<(), String> {
-    if !fs::symlink_metadata(from)
+pub fn move_no_replace(vault_root: &Path, from: &Path, to: &Path) -> Result<(), String> {
+    let from = resolve_inside(vault_root, from)?;
+    let to = resolve_inside(vault_root, to)?;
+    if !fs::symlink_metadata(&from)
         .map_err(|error| format!("Could not inspect {}: {error}", from.display()))?
         .is_file()
     {
         return Err(format!("{} is not a regular file.", from.display()));
     }
-    rename_no_replace(from, to)?;
+    rename_no_replace(&from, &to)?;
     // Both ends, because this is the one operation whose two names live in
     // different directories: a flush of only the destination can let a power
     // cut resurrect the source and leave the file under both names.
@@ -150,11 +160,13 @@ fn rename_no_replace(from: &Path, to: &Path) -> Result<(), String> {
     if outcome == 0 {
         return Ok(());
     }
+    // Read before the formatting below allocates, which is not guaranteed to
+    // leave errno alone.
+    let error = std::io::Error::last_os_error();
     Err(format!(
-        "Could not move {} to {}: {}",
+        "Could not move {} to {}: {error}",
         from.display(),
-        to.display(),
-        std::io::Error::last_os_error()
+        to.display()
     ))
 }
 
@@ -186,6 +198,37 @@ mod tests {
     }
 
     #[test]
+    fn a_write_refuses_a_symlinked_directory_on_the_way() {
+        let directory = dir();
+        let vault = directory.path().join("vault");
+        let outside = directory.path().join("outside");
+        std::fs::create_dir_all(&vault).expect("vault");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::os::unix::fs::symlink(&outside, vault.join("page")).expect("symlink");
+
+        assert!(
+            write_atomic(&vault, &vault.join("page/README.md"), b"# Mine\n").is_err(),
+            "the write side of the same escape plants a document outside the vault"
+        );
+        assert!(!outside.join("README.md").exists());
+    }
+
+    #[test]
+    fn a_move_refuses_a_destination_outside_the_vault() {
+        let directory = dir();
+        let vault = directory.path().join("vault");
+        let outside = directory.path().join("outside");
+        std::fs::create_dir_all(&vault).expect("vault");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::os::unix::fs::symlink(&outside, vault.join("page")).expect("symlink");
+        let from = vault.join("source.md");
+        std::fs::write(&from, b"mine").expect("write");
+
+        assert!(move_no_replace(&vault, &from, &vault.join("page/moved.md")).is_err());
+        assert!(!outside.join("moved.md").exists());
+    }
+
+    #[test]
     fn a_read_refuses_a_symlinked_directory_on_the_way() {
         let directory = dir();
         let vault = directory.path().join("vault");
@@ -210,7 +253,7 @@ mod tests {
         std::os::unix::fs::symlink(&outside, &link).expect("symlink");
 
         assert!(
-            move_no_replace(&link, &directory.path().join("moved.md")).is_err(),
+            move_no_replace(directory.path(), &link, &directory.path().join("moved.md")).is_err(),
             "moving a link would transplant it under a vault name"
         );
     }
@@ -245,12 +288,12 @@ mod tests {
         std::fs::write(&from, b"mine").expect("write");
         std::fs::write(&onto, b"theirs").expect("write");
 
-        assert!(move_no_replace(&from, &onto).is_err());
+        assert!(move_no_replace(directory.path(), &from, &onto).is_err());
         assert_eq!(std::fs::read(&onto).expect("read"), b"theirs");
         assert!(from.exists(), "a refused move leaves the source alone");
 
         let free = directory.path().join("free.md");
-        move_no_replace(&from, &free).expect("move");
+        move_no_replace(directory.path(), &from, &free).expect("move");
         assert_eq!(std::fs::read(&free).expect("read"), b"mine");
         assert!(!from.exists());
     }
@@ -260,8 +303,8 @@ mod tests {
         let directory = dir();
         let path = directory.path().join("README.md");
 
-        write_atomic(&path, b"# Projects\n").expect("write");
-        write_atomic(&path, b"# Renamed\n").expect("overwrite");
+        write_atomic(directory.path(), &path, b"# Projects\n").expect("write");
+        write_atomic(directory.path(), &path, b"# Renamed\n").expect("overwrite");
 
         assert_eq!(std::fs::read(&path).expect("read"), b"# Renamed\n");
         let leftovers = std::fs::read_dir(directory.path())
