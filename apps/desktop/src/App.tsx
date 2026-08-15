@@ -55,10 +55,11 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   // The settings section re-reads the folder whenever this identity changes, so
   // both stay pinned to the api rather than to a render.
   const readVaultPath = useCallback(() => api.syncVaultGet(), [api]);
-  const setVaultPath = useCallback(
-    (path: string) => api.syncVaultSet(path),
-    [api]
-  );
+  // The settings screen only needs the choice recorded; what the folder held
+  // is the first-run card's business.
+  const setVaultPath = useCallback(async (path: string) => {
+    await api.syncVaultSet(path);
+  }, [api]);
   const [libraryView, setLibraryView] = useState<LibraryView>("all");
   const [sidebarWidth, setSidebarWidth] = useState(336);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);

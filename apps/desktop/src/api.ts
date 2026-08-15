@@ -12,6 +12,7 @@ import type { MutationReceipt } from "../../../packages/contracts/generated/Muta
 import type { NotesExportRequest } from "../../../packages/contracts/generated/NotesExportRequest";
 import type { NotesExportResult } from "../../../packages/contracts/generated/NotesExportResult";
 import type { SearchPage } from "../../../packages/contracts/generated/SearchPage";
+import type { SyncVaultFolderState } from "../../../packages/contracts/generated/SyncVaultFolderState";
 import type { UnusedAssetsReport } from "../../../packages/contracts/generated/UnusedAssetsReport";
 import type { SearchQuery } from "../../../packages/contracts/generated/SearchQuery";
 import type { ViewportPage } from "../../../packages/contracts/generated/ViewportPage";
@@ -42,7 +43,7 @@ export interface NotesApi {
   unusedAssets(purge: boolean): Promise<UnusedAssetsReport>;
   deleteAllData(): Promise<void>;
   syncVaultGet(): Promise<string | null>;
-  syncVaultSet(path: string): Promise<void>;
+  syncVaultSet(path: string): Promise<SyncVaultFolderState>;
 }
 
 export const tauriNotesApi: NotesApi = {

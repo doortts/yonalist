@@ -2,10 +2,18 @@
 //! owns rather than the database: it has to be readable before the worker is up,
 //! and a data reset clears it without touching the folder it names.
 
+use notes_application::SyncVaultFolderState;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const VAULT_PATH_FILE: &str = "vault-path";
+/// What a vault keeps its own bookkeeping in, and so what identifies one even
+/// after every page has been deleted.
+const VAULT_MARKER_DIRECTORY: &str = ".yonalist";
+/// Frontmatter sits at the top of the file; reading past it would mean holding
+/// an arbitrarily large document in memory to answer a yes-or-no question.
+const README_PROBE_BYTES: u64 = 4096;
 
 /// Absent until the user picks one. That absence is what "first run" means, so
 /// a data reset clearing this file puts the app back at first run without
@@ -19,10 +27,55 @@ pub(crate) fn read_vault_path(data_directory: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(trimmed))
 }
 
-pub(crate) fn set_vault_path(data_directory: &Path, vault: &Path) -> Result<(), String> {
+pub(crate) fn set_vault_path(
+    data_directory: &Path,
+    vault: &Path,
+) -> Result<SyncVaultFolderState, String> {
     validate(data_directory, vault)?;
     fs::write(data_directory.join(VAULT_PATH_FILE), path_bytes(vault)?)
-        .map_err(|error| format!("Could not remember the vault location: {error}"))
+        .map_err(|error| format!("Could not remember the vault location: {error}"))?;
+    Ok(classify(vault))
+}
+
+/// Reads the folder to describe it, never to change it. Hidden entries are what
+/// Finder and the sync clients leave behind, so a folder holding only those is
+/// still an empty one to the user.
+fn classify(vault: &Path) -> SyncVaultFolderState {
+    if vault.join(VAULT_MARKER_DIRECTORY).is_dir() {
+        return SyncVaultFolderState::ExistingVault;
+    }
+    if readme_is_a_vault(&vault.join("README.md")) {
+        return SyncVaultFolderState::ExistingVault;
+    }
+    let Ok(entries) = fs::read_dir(vault) else {
+        return SyncVaultFolderState::Empty;
+    };
+    let visible = entries
+        .flatten()
+        .any(|entry| !entry.file_name().to_string_lossy().starts_with('.'));
+    if visible {
+        SyncVaultFolderState::NonEmpty
+    } else {
+        SyncVaultFolderState::Empty
+    }
+}
+
+/// A README written by anything else is not a vault: without the frontmatter a
+/// checkout of someone's project would read as one and invite a merge.
+fn readme_is_a_vault(readme: &Path) -> bool {
+    let Ok(file) = fs::File::open(readme) else {
+        return false;
+    };
+    let mut head = Vec::new();
+    if file
+        .take(README_PROBE_BYTES)
+        .read_to_end(&mut head)
+        .is_err()
+    {
+        return false;
+    }
+    let head = String::from_utf8_lossy(&head);
+    head.starts_with("---") && head.contains("kind: yonalist-")
 }
 
 /// Forgets where the vault is without going near it. The documents belong to
@@ -86,6 +139,89 @@ mod tests {
         set_vault_path(&data, &vault).expect("set");
 
         assert_eq!(read_vault_path(&data).as_deref(), Some(vault.as_path()));
+    }
+
+    #[test]
+    fn choosing_a_folder_with_an_existing_vault_reports_it() {
+        let (_directory, data, vault) = workspace();
+        std::fs::write(
+            vault.join("README.md"),
+            b"---\nkind: yonalist-notes\nformat_version: 1\n---\n\n# Home\n",
+        )
+        .expect("document");
+
+        assert_eq!(
+            set_vault_path(&data, &vault).expect("set"),
+            SyncVaultFolderState::ExistingVault
+        );
+    }
+
+    #[test]
+    fn a_marker_folder_alone_reports_an_existing_vault() {
+        let (_directory, data, vault) = workspace();
+        std::fs::create_dir(vault.join(".yonalist")).expect("marker");
+
+        assert_eq!(
+            set_vault_path(&data, &vault).expect("set"),
+            SyncVaultFolderState::ExistingVault,
+            "a vault whose pages were all deleted still belongs to Yonalist"
+        );
+    }
+
+    #[test]
+    fn an_unrelated_readme_is_not_a_vault() {
+        let (_directory, data, vault) = workspace();
+        std::fs::write(vault.join("README.md"), b"# Some project\n").expect("document");
+
+        assert_eq!(
+            set_vault_path(&data, &vault).expect("set"),
+            SyncVaultFolderState::NonEmpty,
+            "a git checkout is not a vault to merge with"
+        );
+    }
+
+    #[test]
+    fn hidden_entries_leave_a_folder_empty() {
+        let (_directory, data, vault) = workspace();
+        std::fs::write(vault.join(".DS_Store"), b"\x00").expect("finder");
+        std::fs::create_dir(vault.join(".stfolder")).expect("syncthing");
+
+        assert_eq!(
+            set_vault_path(&data, &vault).expect("set"),
+            SyncVaultFolderState::Empty,
+            "what a sync client left behind is not the user's content"
+        );
+    }
+
+    #[test]
+    fn vault_set_writes_nothing_inside_the_chosen_folder() {
+        let (_directory, data, vault) = workspace();
+        std::fs::write(vault.join("README.md"), b"---\nkind: yonalist-notes\n---\n")
+            .expect("document");
+        let before = listing(&vault);
+
+        set_vault_path(&data, &vault).expect("set");
+
+        assert_eq!(
+            before,
+            listing(&vault),
+            "reporting a folder is not entering it"
+        );
+    }
+
+    fn listing(folder: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(folder)
+            .expect("read")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        names
     }
 
     #[test]
