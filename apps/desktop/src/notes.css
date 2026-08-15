@@ -1305,6 +1305,26 @@
     sans-serif;
 }
 
+/*
+ * The monospace setting covers the text the reader writes -- row titles, their
+ * supporting notes and the page's own title -- and nothing else: the sidebar,
+ * the menus and the toolbars stay in the interface font, which is what a code
+ * editor does too. The strut still leads the row stack, so the caret and the
+ * line box keep the geometry they had.
+ */
+:root[data-text-font="mono"] .notes-node-title-field {
+  font-family: "Yonalist Caret Strut", ui-monospace, SFMono-Regular, "SF Mono",
+    Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+:root[data-text-font="mono"] .notes-node-title-field[data-markdown-level],
+:root[data-text-font="mono"] .notes-node-note-field,
+:root[data-text-font="mono"] .notes-page-title-field,
+:root[data-text-font="mono"] .notes-page-note-field {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
 .notes-node-title-field[data-markdown-level="1"] {
   --notes-title-font-size: 24px;
   --notes-title-font-weight: 700;
@@ -1968,6 +1988,7 @@ body.is-outline-dragging * {
 
 .notes-node[data-marker-level="0"] .notes-node-bullet-dot::after {
   content: var(--notes-marker-0-char, "");
+  font-family: var(--notes-marker-0-font, inherit);
 }
 
 .notes-node[data-marker-level="1"] .notes-node-bullet-dot {
@@ -1980,6 +2001,7 @@ body.is-outline-dragging * {
 
 .notes-node[data-marker-level="1"] .notes-node-bullet-dot::after {
   content: var(--notes-marker-1-char, "");
+  font-family: var(--notes-marker-1-font, inherit);
 }
 
 .notes-node[data-marker-level="2"] .notes-node-bullet-dot {
@@ -1992,6 +2014,7 @@ body.is-outline-dragging * {
 
 .notes-node[data-marker-level="2"] .notes-node-bullet-dot::after {
   content: var(--notes-marker-2-char, "");
+  font-family: var(--notes-marker-2-font, inherit);
 }
 
 .notes-node-bullet-dot::after {

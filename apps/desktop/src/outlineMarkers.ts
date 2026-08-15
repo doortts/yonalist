@@ -113,6 +113,17 @@ interface ShapeBox {
   readonly r: string;
 }
 
+/**
+ * A hyphen drawn in the interface font is short and thin, because a
+ * proportional font gives it only the width the character needs. A monospace
+ * font draws it to fill a fixed advance, which is the long, even dash a
+ * Markdown list is read with -- so the hyphen marker takes that font and every
+ * other glyph keeps the row's own.
+ */
+export const monospaceStack =
+  'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, ' +
+  '"Liberation Mono", monospace';
+
 const boxes: Record<OutlineMarkerShape, ShapeBox> = {
   dot: { w: "7px", h: "7px", r: "50%" },
   square: { w: "6px", h: "6px", r: "1.5px" },
@@ -139,6 +150,9 @@ export function outlineMarkerVariables(
       : "currentColor";
     variables[`--notes-marker-${index}-char`] = cssString(glyph);
     variables[`--notes-marker-${index}-color`] = level.color ?? "inherit";
+    variables[`--notes-marker-${index}-font`] = level.shape === "hyphen"
+      ? monospaceStack
+      : "inherit";
   });
   return variables;
 }

@@ -553,11 +553,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             lightTheme={theme.lightTheme}
             darkTheme={theme.darkTheme}
             caretColor={theme.caretColor}
+            textFont={theme.textFont}
             markerStyles={markers.markerStyles}
             onThemeModeChange={theme.setMode}
             onLightThemeChange={theme.setLightTheme}
             onDarkThemeChange={theme.setDarkTheme}
             onCaretColorChange={theme.setCaretColor}
+            onTextFontChange={theme.setTextFont}
             onMarkerStyleChange={markers.setMarkerStyle}
             onClose={() => setSettingsOpen(false)}
             unusedAssets={(purge) => api.unusedAssets(purge)}

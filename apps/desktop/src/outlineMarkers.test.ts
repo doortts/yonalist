@@ -86,6 +86,20 @@ describe("outline marker styles", () => {
     expect(variables["--notes-marker-0-color"]).toBe("inherit");
   });
 
+  // A proportional font draws the hyphen only as wide as the character needs,
+  // which reads as a speck beside a Markdown list's even dash.
+  it("gives the hyphen a monospace font and leaves every other shape alone", () => {
+    const variables = outlineMarkerVariables([
+      style({ shape: "hyphen" }),
+      style({ shape: "custom", char: "▸" }),
+      style({ shape: "dot" })
+    ]);
+
+    expect(variables["--notes-marker-0-font"]).toContain("ui-monospace");
+    expect(variables["--notes-marker-1-font"]).toBe("inherit");
+    expect(variables["--notes-marker-2-font"]).toBe("inherit");
+  });
+
   it("escapes a custom marker that would break out of the CSS string", () => {
     const variables = outlineMarkerVariables([
       style({ shape: "custom", char: '"' }),
