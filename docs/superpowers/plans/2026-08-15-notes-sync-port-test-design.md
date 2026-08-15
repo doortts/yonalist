@@ -96,7 +96,7 @@ M2.1의 첫 red: `golden_topic_renders_byte_identical`(fixture는 있는데 렌�
 
 ### 5.1 수용 (행마다 1테스트)
 
-`a_bullet_without_yid_is_accepted_for_id_issue`(발급은 병합 몫 — 파서는 None id로 통과), `an_unparsable_hlc_becomes_empty_and_loses_lww`(v1의 `t: too-new` 케이스 계승, `topic_parser.rs:1724`), `odd_indent_and_tabs_normalize_to_two_spaces`, `a_bare_dash_line_is_an_unchecked_item`, `missing_frontmatter_keys_take_defaults`, `crlf_normalizes_to_lf`, `a_v4_golden_parses_with_v5_semantics`(v1/v4 vault 수용 — 결정 6).
+`a_bullet_without_yid_is_accepted_for_id_issue`(발급은 병합 몫 — 파서는 None id로 통과), `an_unparsable_hlc_becomes_empty_and_loses_lww`(v1의 `t: too-new` 케이스 계승, `topic_parser.rs:1724`), `odd_indent_and_tabs_normalize_to_two_spaces`, `a_bare_dash_line_is_a_plain_bullet`(**체크박스가 없으면 할 일이 아니다** — marker=bullet, completed=false), `a_checkbox_line_is_always_a_todo`(`- [ ]`·`- [x]` 둘 다 marker=todo), `a_completed_plain_bullet_round_trips_through_the_done_token`(프리픽스가 아니라 주석이 싣는다), `a_v4_completed_bullet_becomes_done_on_write_back`(v4의 `- [x]` + todo 토큰 없음 → `- ` + `done`, `needs_write_back`), `missing_frontmatter_keys_take_defaults`, `crlf_normalizes_to_lf`, `a_v4_golden_parses_with_v5_semantics`(v1/v4 vault 수용 — 결정 6).
 
 ### 5.2 격리 (부분 적용 금지)
 
