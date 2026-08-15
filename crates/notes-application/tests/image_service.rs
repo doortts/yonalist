@@ -42,8 +42,13 @@ struct StorageState {
 impl FakeStorage {
     fn new(fail_commit: bool) -> Self {
         let mut tree = NotesTree::default();
-        tree.apply(&[TreeMutation::upsert(NoteNode::page(id("page"), "Page"))])
-            .expect("seed page");
+        // Images hang below a page, and the page below the root: an image
+        // directly below the root would be a document headed by an image.
+        tree.apply(&[
+            TreeMutation::upsert(NoteNode::page(id("root"), "Home")),
+            TreeMutation::upsert(NoteNode::child(id("page"), id("root"), 1_024, "Page")),
+        ])
+        .expect("seed page");
         Self {
             state: Mutex::new(StorageState {
                 revision: 1,

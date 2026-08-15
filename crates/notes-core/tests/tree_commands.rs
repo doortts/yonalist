@@ -1,6 +1,6 @@
 use notes_core::{
-    DomainError, ImportNode, NodeDuplicate, NodeId, NodeMove, NoteImage, NoteMarkerKind, NoteNode,
-    NoteNodeKind, NotesCommand, NotesTree, Position, TreeMutation,
+    DomainError, ImportImageNode, ImportNode, NodeDuplicate, NodeId, NodeMove, NoteImage,
+    NoteMarkerKind, NoteNode, NoteNodeKind, NotesCommand, NotesTree, Position, TreeMutation,
 };
 use proptest::prelude::*;
 
@@ -513,9 +513,10 @@ fn importing_an_outline_forest_is_one_atomic_reversible_patch() {
 
 #[test]
 fn importing_carries_marker_note_tick_and_an_image_reference_in_one_patch() {
-    let mut tree = NotesTree::default();
-    tree.apply(&[TreeMutation::upsert(NoteNode::page(id("page"), "Page"))])
-        .unwrap();
+    // A page hangs below the root here because one of the imported rows is an
+    // image, and an image directly below the root has no heading to live on.
+    let mut tree = root_tree();
+    create_page(&mut tree, &id("page"));
     let original = tree.clone();
 
     let patch = tree
@@ -1458,5 +1459,65 @@ fn duplicated_children_get_uuid_ids() {
         duplicate(&mut tree.clone()),
         copied,
         "the same duplication has to derive the same ids on every device"
+    );
+}
+
+#[test]
+fn a_field_over_the_cap_is_rejected_before_commit() {
+    let mut tree = root_tree();
+    create_page(&mut tree, &id("page"));
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::CreateNode {
+            id: id("row"),
+            parent_id: id("page"),
+            position: Position::at_end(),
+            text: "Row".into(),
+        },
+    );
+    let oversized = "a".repeat(notes_core::MAX_FIELD_BYTES + 1);
+
+    for command in [
+        NotesCommand::UpdateText {
+            id: id("row"),
+            text: oversized.clone(),
+        },
+        NotesCommand::UpdateNote {
+            id: id("row"),
+            note: oversized.clone(),
+        },
+    ] {
+        let label = format!("{command:?}");
+        assert!(
+            tree.plan(command).is_err(),
+            "a field the vault would quarantine has to be refused here: {label}"
+        );
+    }
+}
+
+#[test]
+fn an_image_cannot_become_a_root_child() {
+    let mut tree = root_tree();
+    create_page(&mut tree, &id("page"));
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::ImportImages {
+            parent_id: id("page"),
+            position: Position::at_end(),
+            nodes: vec![ImportImageNode {
+                id: id("picture"),
+                image: pasted_image(),
+            }],
+        },
+    );
+
+    assert!(
+        tree.plan(NotesCommand::MoveNode {
+            id: id("picture"),
+            parent_id: id("root"),
+            position: Position::at_end(),
+        })
+        .is_err(),
+        "an image directly under root has no heading to live on, so the vault cannot carry it"
     );
 }

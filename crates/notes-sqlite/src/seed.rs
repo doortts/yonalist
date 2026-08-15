@@ -7,7 +7,10 @@ use crate::repository::internal;
 const ONBOARDING_MARKER_KEY: &str = "onboarding_seeded";
 /// Fixed uuids rather than readable strings: every id the vault carries is a
 /// uuid, and the seed writes rows like any other producer. They are constants
-/// so a reseeded database lands on the same ids it had before.
+/// so a reseeded database lands on the same ids it had before. Their values are
+/// uuid v5 over the sync namespace `7f9c2b14-5d63-4a08-9e21-3c6f0d8b4a52` with
+/// the names `onboarding/page` and `onboarding/guide/N`, so the family extends
+/// without guessing at collisions.
 const ONBOARDING_PAGE_ID: &str = "f4556d3d-868c-5fab-914a-614c84331c53";
 const ONBOARDING_TITLE: &str = "Yonalist 시작하기";
 const ONBOARDING_NOTE: &str = "이 노트는 자유롭게 수정하거나 삭제할 수 있어요.";
@@ -101,6 +104,16 @@ mod tests {
         connection
     }
 
+    fn seeded_ids(connection: &Connection) -> Vec<String> {
+        connection
+            .prepare("SELECT id FROM notes_nodes WHERE id <> 'root' ORDER BY id")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows")
+    }
+
     fn node_count(connection: &Connection) -> i64 {
         connection
             .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get(0))
@@ -108,17 +121,34 @@ mod tests {
     }
 
     #[test]
+    fn the_onboarding_seed_ids_are_fixed_and_canonical() {
+        let ids = |connection: &mut Connection| {
+            seed_onboarding(connection).expect("seed");
+            seeded_ids(connection)
+        };
+
+        let first = ids(&mut open());
+        assert_eq!(
+            first,
+            ids(&mut open()),
+            "a reseeded database has to land on the ids it had before"
+        );
+        for id in &first {
+            let parsed = uuid::Uuid::try_parse(id).expect("uuid");
+            assert_eq!(
+                parsed.hyphenated().to_string(),
+                *id,
+                "the renderer only writes lowercase hyphenated uuids"
+            );
+        }
+    }
+
+    #[test]
     fn the_onboarding_seed_uses_uuids() {
         let mut connection = open();
         seed_onboarding(&mut connection).expect("seed");
 
-        let ids: Vec<String> = connection
-            .prepare("SELECT id FROM notes_nodes WHERE id <> 'root' ORDER BY id")
-            .expect("prepare")
-            .query_map([], |row| row.get(0))
-            .expect("query")
-            .collect::<Result<_, _>>()
-            .expect("rows");
+        let ids = seeded_ids(&connection);
         assert_eq!(ids.len(), 7);
         for id in &ids {
             assert!(

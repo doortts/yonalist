@@ -360,11 +360,44 @@ impl NotesTree {
     }
 
     fn validate(&self) -> Result<(), DomainError> {
+        // The vault quarantines a whole document rather than half-applying it,
+        // so a shape the file could not carry is refused here. Otherwise the
+        // edit commits, the export rejects it, and that page silently stops
+        // syncing.
+        if self.nodes.len() > crate::MAX_TREE_NODES {
+            return Err(DomainError::Invariant(format!(
+                "an outline holds at most {} nodes",
+                crate::MAX_TREE_NODES
+            )));
+        }
         for node in self.nodes.values() {
+            for (field, value) in [("text", node.text()), ("note", node.note())] {
+                if value.len() > crate::MAX_FIELD_BYTES {
+                    return Err(DomainError::Invariant(format!(
+                        "node {} has a {field} past {} bytes",
+                        node.id(),
+                        crate::MAX_FIELD_BYTES
+                    )));
+                }
+            }
             match (node.kind(), node.parent_id()) {
                 (NoteNodeKind::Page, None) if node.image().is_none() => {}
                 (NoteNodeKind::Bullet, Some(parent_id))
                     if self.nodes.contains_key(parent_id) && node.image().is_none() => {}
+                // An image directly below the root has no heading line to live
+                // on: the root's own document writes its title as the heading,
+                // and an image cannot be a heading.
+                (NoteNodeKind::Image, Some(parent_id))
+                    if self
+                        .nodes
+                        .get(parent_id)
+                        .is_some_and(|parent| parent.kind() == NoteNodeKind::Page) =>
+                {
+                    return Err(DomainError::Invariant(format!(
+                        "image {} cannot hang directly below the root",
+                        node.id()
+                    )));
+                }
                 (NoteNodeKind::Image, Some(parent_id)) if self.nodes.contains_key(parent_id) => {}
                 (NoteNodeKind::Bullet | NoteNodeKind::Image, Some(parent_id)) => {
                     return Err(DomainError::ParentNotFound(parent_id.clone()));
@@ -386,6 +419,13 @@ impl NotesTree {
                     });
                 }
                 current = self.nodes.get(parent_id).and_then(NoteNode::parent_id);
+            }
+            if visited.len() > crate::MAX_TREE_DEPTH {
+                return Err(DomainError::Invariant(format!(
+                    "node {} hangs deeper than {}",
+                    node.id(),
+                    crate::MAX_TREE_DEPTH
+                )));
             }
         }
         // Every remaining parent id exists as a node: the loop above rejects any

@@ -22,10 +22,16 @@ fn image(seed: char, original_name: &str, display_width: u32) -> NoteImage {
     .expect("valid image metadata")
 }
 
+/// The shape the app actually holds: one root page, and the row images hang
+/// below is a child of it. An image directly under the root would be a document
+/// whose heading is an image, which the vault has no line for.
 fn page_tree() -> NotesTree {
     let mut tree = NotesTree::default();
-    tree.apply(&[TreeMutation::upsert(NoteNode::page(id("page"), "Page"))])
-        .expect("page apply");
+    tree.apply(&[
+        TreeMutation::upsert(NoteNode::page(id("root"), "Home")),
+        TreeMutation::upsert(NoteNode::child(id("page"), id("root"), 1_024, "Page")),
+    ])
+    .expect("page apply");
     tree
 }
 

@@ -4,6 +4,15 @@ use crate::{NodeId, NoteImage};
 
 pub const SORT_KEY_STEP: i64 = 4_294_967_296;
 
+/// The vault quarantines a document whose field runs past this, so a value the
+/// file could not carry is refused here rather than committed and then stranded
+/// out of sync.
+pub const MAX_FIELD_BYTES: usize = 100_000;
+
+/// Same reason as `MAX_FIELD_BYTES`, for the shape of the outline itself.
+pub const MAX_TREE_DEPTH: usize = 128;
+pub const MAX_TREE_NODES: usize = 20_000;
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NoteNodeKind {
