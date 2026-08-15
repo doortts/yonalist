@@ -18,7 +18,7 @@
 | 9 | 성능 계약 | `crates/notes-sync/tests/` + 기존 `notes-sqlite/tests/performance.rs` | `cargo test -p notes-sync --test perf_contracts` · `npm run test:v2:performance` |
 | 10 | 멀티 디바이스 통합 (M6) | `crates/notes-sync/tests/multi_device.rs` | `cargo test -p notes-sync --test multi_device` |
 
-설계 테스트 수: §2 19 · §3 7 · §4 7 · §5 14 · §6 21(property 4 포함) · §7 5 · §8 34 · §9 5(+기존 7 무회귀) · §10 17 = **신규 129개** (v1에서 계약 단위로 추가 이식되는 단위 테스트는 별도).
+설계 테스트 수: §2 19 · §3 7 · §4 7 · §5 14 · §6 21(property 4 포함) · §7 5 · §8 34 · §9 6(+기존 7 무회귀) · §10 17 = **신규 130개** (v1에서 계약 단위로 추가 이식되는 단위 테스트는 별도).
 
 ## 1. M0 — red 테스트 없음 (명시)
 
@@ -211,7 +211,7 @@ M2.1의 첫 red: `golden_topic_renders_byte_identical`(fixture는 있는데 렌�
 
 ### 8.5 watcher (M5.1)
 
-notify를 우회해 콜백을 직접 호출한다: `an_echo_of_our_own_write_is_skipped`(해시 == `exported_hash`), `an_unchanged_mtime_and_size_never_opens_the_file`, `a_changed_hash_parses_even_with_a_stale_max_hlc`(**P0 재발 방지** — 손편집은 max_hlc를 안 바꾼다. 파일 생략 근거는 해시뿐), `a_conflicted_copy_merges_and_retires`, `a_placeholder_file_is_retried_not_treated_as_truncation`, `events_coalesce_within_the_window`, `a_startup_scan_and_the_safety_net_enter_the_same_gates`.
+notify를 우회해 콜백을 직접 호출한다: `an_echo_of_our_own_write_is_skipped`(해시 == `exported_hash`), `a_watch_event_hashes_even_when_stat_is_unchanged`(**이벤트 경로에 stat 단축 없음** — mtime 보존 transport 대비, 스펙 §6), `a_changed_hash_parses_even_with_a_stale_max_hlc`(**P0 재발 방지** — 손편집은 max_hlc를 안 바꾼다. 파일 생략 근거는 해시뿐), `a_conflicted_copy_merges_and_retires`, `a_placeholder_file_is_retried_not_treated_as_truncation`, `events_coalesce_within_the_window`, `a_startup_scan_and_the_safety_net_enter_the_same_gates`.
 
 배압: `a_user_command_waits_behind_at_most_one_merge` — watcher가 문서 100개 변경을 들고 있어도 요청은 한 번에 하나만 큐에 있다. 명령 하나를 사이에 넣어 대기가 병합 1건임을 단언한다.
 
@@ -237,7 +237,9 @@ notify를 우회해 콜백을 직접 호출한다: `an_echo_of_our_own_write_is_
 
 **파일**: `crates/notes-sync/tests/perf_contracts.rs`. `reconcile` 보고서 `{ parsed_files, skipped_files }`가 관찰면이다.
 - `bootstrap_reparses_only_changed_files`: 파일 10개 조정 → 전부 skip. 1개의 mtime을 바꾸면 parsed_files == 1.
-- `reindex_is_refused_while_edits_are_unexported`: dirty가 남은 채 재색인을 부르면 거절된다 (스펙 §9).\n- `the_gate_is_mtime_and_size_not_content`: mtime·size를 보존한 채 내용만 바꾼 파일은 skip된다 — 게이트가 정말 mtime+size임을 증거로 잠근다(내용 훼손은 다음 mtime 변경 때 해시 확인이 잡는다는 한계도 이 테스트가 문서화한다).
+- `reindex_is_refused_while_edits_are_unexported`: dirty가 남은 채 재색인을 부르면 거절된다 (스펙 §9).
+- `the_scan_gate_is_mtime_and_size_not_content`: **전체 스캔에서만** — mtime·size를 보존한 채 내용만 바꾼 파일은 시작 스캔이 skip한다. 그 한계가 좁은 이유(이벤트 경로는 stat을 안 본다)까지 이 테스트가 문서화한다.
+- `a_manual_reindex_verifies_every_file_by_hash`: "vault에서 다시 읽기"는 stat을 무시한다 — 스캔 게이트가 놓친 잔여를 닫는 마지막 그물.
 
 ### 9.2 exporter 질의 수 상한 (M6.3, M4.1이 예비 실행)
 

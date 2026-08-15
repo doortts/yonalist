@@ -274,7 +274,7 @@ red 테스트 없음 — 문서 항목의 게이트는 적대적 리뷰다. 스�
 | 필드 | 내용 |
 |---|---|
 | Goal | 렌더러·파서가 결정성·왕복·관대함 계약을 만족한다 |
-| Acceptance | M2-1 같은 상태 = 같은 바이트 + golden 일치 / M2-2 관대함 표 전 행 + v4/v1 수용 + 격리 판정 / M2-3 미지 필드가 파일 왕복에서 보존 |
+| Acceptance | M2-1 같은 상태 = 같은 바이트 + golden 일치 / M2-2 관대함 표 전 행 + 격리 판정 / M2-3 미지 필드가 파일 왕복에서 보존 |
 | Non-goals | DB 접촉 없음(순수 문서 구조 대상). 병합·export 없음 |
 | Boundaries | Rust(notes-sync만) |
 | Manual proof | N/A |
@@ -283,7 +283,7 @@ red 테스트 없음 — 문서 항목의 게이트는 적대적 리뷰다. 스�
 |---|---|---|---|
 | M2.1 | `topic_file.rs` 렌더러 이식·개정(910줄 원본). BTreeMap/명시 정렬만, hand-rolled frontmatter | 결정성 + M0 golden 3종 바이트 일치 (테스트 설계 §4.1) | M0, M1.2 |
 | M2.2 | `topic_parser.rs` 파서 이식·개정(2,785줄 원본). `format_version`은 `1`만 수용, 격리 판정, CRLF·들여쓰기 정규화 | 관대함 표 전 행 + `render(parse(render(s))) == render(s)` fixpoint (테스트 설계 §4.2·§5) | M2.1 |
-| M2.3 | 미지 필드 파일층 보존 — 파서가 미지 키·토큰을 구조체에 실어 렌더러가 결정적 위치에 재방출 | v4 golden(plugin/readonly 포함) parse→render에서 미지 필드 무손실 (테스트 설계 §5.3) | M2.2 |
+| M2.3 | 미지 필드 파일층 보존 — 파서가 미지 키·토큰을 구조체에 실어 렌더러가 결정적 위치에 재방출 | 미지 키·토큰을 심은 합성 입력의 parse→render 무손실 (테스트 설계 §5.3) | M2.2 |
 
 ### M3 — 병합 (5항목)
 
@@ -325,14 +325,14 @@ red 테스트 없음 — 문서 항목의 게이트는 적대적 리뷰다. 스�
 | 필드 | 내용 |
 |---|---|
 | Goal | 외부 파일 변경이 UI까지 흐르고 재시작은 변경분만 만진다 |
-| Acceptance | M5-1 파일 변경→coalesce→병합, 에코 skip, conflicted copy 승격, placeholder 재시도 / M5-2 vault 자산 도착이 로컬 캐시를 채운다 / M5-3 시작 조정 4분기 + mtime+size 게이트 증분 재색인 + StartupGate 편승 / M5-4 sync-changed 이벤트가 프런트를 갱신한다 |
+| Acceptance | M5-1 파일 변경→coalesce→해시→병합(이벤트에 stat 단축 없음), 에코 skip, conflicted copy 승격, placeholder 재시도 / M5-2 vault 자산 도착이 로컬 캐시를 채운다 / M5-3 시작 조정 4분기 + mtime+size 게이트 증분 재색인 + StartupGate 편승 / M5-4 sync-changed 이벤트가 프런트를 갱신한다 |
 | Non-goals | 성능 계약 게이트화(M6) |
 | Boundaries | Rust(notes-sync watcher·bootstrap 코어, adapter), 신규 의존 notify(v1과 같은 8 계열), IPC(최초 이벤트 2종), React(listener) |
 | Manual proof | 격리 실행 → vault의 md를 외부 편집기로 수정 → 앱 반영 확인. 재시작 → 즉시 부팅(전체 재파싱 없음) 확인 |
 
 | 항목 | 내용 | 완료 조건 | 의존 |
 |---|---|---|---|
-| M5.1 | watcher 이식(2,591줄 원본): notify(FSEvents) 감시 + 500ms coalesce + mtime·크기 게이트 + `exported_hash` 에코 skip + `max_hlc` 조기 탈출 + guarded read + conflicted copy 병합 승격 + 자리표시 파일 재시도 + 60s 안전망 스캔. **병합은 문서당 요청 1개, watcher는 응답을 받고 다음을 보낸다**(배압) — 큐는 FIFO 그대로이고 사용자 명령의 대기는 병합 최대 1건이다 | watcher 콜백 직접 호출 + 배압 테스트 (테스트 설계 §8.5) | M3.3, M4 |
+| M5.1 | watcher 이식(2,591줄 원본): notify(FSEvents) 감시 + 500ms coalesce + **이벤트는 무조건 해시**(stat 게이트는 전체 스캔 전용 — 스펙 §6) + `exported_hash` 에코 skip + guarded read + conflicted copy 병합 승격 + 자리표시 파일 재시도 + 60s 안전망 스캔. **병합은 문서당 요청 1개, watcher는 응답을 받고 다음을 보낸다**(배압) — 큐는 FIFO 그대로이고 사용자 명령의 대기는 병합 최대 1건이다 | watcher 콜백 직접 호출 + 배압 테스트 (테스트 설계 §8.5) | M3.3, M4 |
 | M5.2 | 첨부 인입: vault의 첨부 도착 감지 → 로컬 `images/` 캐시 채우기 → 미해소 이미지 행 해소 알림 | 첨부 인입 테스트 (테스트 설계 §8.6) | M5.1 |
 | M5.3 | bootstrap 이식(3,089줄 원본): 시작 조정 4분기(v1 §9.4), `file_mtime_ms`+`file_size` 게이트 통과분만 해시 확인, StartupGate 뒤에 비차단 편승, **미방출 편집이 있으면 재색인 거부**(스펙 §9) | 증분 재색인 + 재색인 거부 테스트 (테스트 설계 §9.1) | M5.1 |
 | M5.4 | `notes://sync-changed`·`notes://sync-status` emit(어댑터) + 프런트 listener(신규 파일, 500ms coalesce, StrictMode 멱등 등록/해제) + `applyReceipt` 모양 반영, 페이로드가 크면 뷰포트 재조회 | 이벤트 페이로드·listener 테스트 (테스트 설계 §8.7) | M3.3, M5.1 |
@@ -385,6 +385,14 @@ Clippy는 접촉 경계와 직접 관련될 때만 기준선 대비로 본다(�
 - **깊이 분할, P2P 전송, 다중 사용자 공동 편집** — v1 스펙 비목표 계승.
 - **v1 트리 수정** — v1은 동결 oracle. 이식은 복사다.
 - 기존 수동 `notes_export`(markdown/PDF, `crates/notes-export`)는 topic 포맷과 별개 기능으로 무수정.
+
+### 출시 게이트 (이식 범위 밖 — 기록만)
+
+이식이 끝나도 아래를 지나기 전에는 릴리스하지 않는다. 외부 리뷰 권고 중 시점만 뒤로 미룬 것들이다.
+
+- **v1→v2 일회성 변환기.** 두 런타임 영구 지원이 아니라 변환 전 백업 + 미리보기 + 변환 후 항목 수·해시 검증이면 된다. 마이그레이션 재개 신호가 오면 첫 항목.
+- **공식 transport는 iCloud 하나로 시작.** Dropbox·Syncthing·OneDrive는 실험 표시, git은 미보증(결정 1의 릴리스 시점 좁히기).
+- **실기기 2대 수 주 내구 검증.** 오프라인 동시 편집, 프로세스 강제 종료, 네트워크 단절, conflicted copy, 자리표시 파일, 시계 점프, DB 삭제 후 vault 복원. M6의 1회 확인은 이식의 완료 조건이지 출시 근거가 아니다.
 
 ## 9. 미해결 질문
 
