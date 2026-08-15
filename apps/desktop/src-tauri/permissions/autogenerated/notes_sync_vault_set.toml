@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-sync-vault-set"
+description = "Enables the notes_sync_vault_set command without any pre-configured scope."
+commands.allow = ["notes_sync_vault_set"]
+
+[[permission]]
+identifier = "deny-notes-sync-vault-set"
+description = "Denies the notes_sync_vault_set command without any pre-configured scope."
+commands.deny = ["notes_sync_vault_set"]

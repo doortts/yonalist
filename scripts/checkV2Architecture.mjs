@@ -143,6 +143,8 @@ const expectedCommands = [
   "notes_undo",
   "notes_redo",
   "notes_search",
+  "notes_sync_vault_get",
+  "notes_sync_vault_set",
   "notes_close_session",
   "notes_unused_assets",
   "notes_delete_all_data",

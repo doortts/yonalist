@@ -267,6 +267,18 @@
           "markdownDescription": "Enables the notes_search command without any pre-configured scope."
         },
         {
+          "description": "Enables the notes_sync_vault_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-sync-vault-get",
+          "markdownDescription": "Enables the notes_sync_vault_get command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_sync_vault_set command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-sync-vault-set",
+          "markdownDescription": "Enables the notes_sync_vault_set command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notes_toggle_devtools command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notes-toggle-devtools",
@@ -385,6 +397,18 @@
           "type": "string",
           "const": "deny-notes-search",
           "markdownDescription": "Denies the notes_search command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_sync_vault_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-sync-vault-get",
+          "markdownDescription": "Denies the notes_sync_vault_get command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_sync_vault_set command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-sync-vault-set",
+          "markdownDescription": "Denies the notes_sync_vault_set command without any pre-configured scope."
         },
         {
           "description": "Denies the notes_toggle_devtools command without any pre-configured scope.",

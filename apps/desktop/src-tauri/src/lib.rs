@@ -3,6 +3,7 @@ mod image_file_actions;
 mod image_ipc;
 mod image_replace_ipc;
 mod startup;
+mod sync_settings;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -35,6 +36,10 @@ struct DesktopRuntime {
 
 struct DesktopState {
     runtime: Arc<StartupGate<DesktopRuntime, NotesError>>,
+    /// Held here rather than inside the runtime because the vault commands
+    /// answer before the worker is up: the first-run screen asks where the
+    /// vault is while the database is still opening.
+    data_directory: PathBuf,
     closed: AtomicBool,
 }
 
@@ -239,6 +244,28 @@ async fn notes_unused_assets(
         })
     })
     .await
+}
+
+#[tauri::command]
+async fn notes_sync_vault_get(
+    state: State<'_, DesktopState>,
+) -> Result<Option<String>, NotesError> {
+    Ok(sync_settings::read_vault_path(&state.data_directory)
+        .map(|path| path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+async fn notes_sync_vault_set(
+    state: State<'_, DesktopState>,
+    path: String,
+) -> Result<(), NotesError> {
+    sync_settings::set_vault_path(&state.data_directory, Path::new(&path)).map_err(|message| {
+        NotesError {
+            code: NotesErrorCode::InvalidCommand,
+            message,
+            retryable: false,
+        }
+    })
 }
 
 #[tauri::command]
@@ -514,6 +541,7 @@ pub fn run() {
             let runtime = Arc::new(StartupGate::pending());
             app.manage(DesktopState {
                 runtime: Arc::clone(&runtime),
+                data_directory: data_directory.clone(),
                 closed: AtomicBool::new(false),
             });
             std::thread::Builder::new()
@@ -534,6 +562,8 @@ pub fn run() {
             notes_close_session,
             notes_unused_assets,
             notes_delete_all_data,
+            notes_sync_vault_get,
+            notes_sync_vault_set,
             export_ipc::notes_export,
             image_ipc::notes_import_image_bytes,
             image_ipc::notes_import_image_paths,
