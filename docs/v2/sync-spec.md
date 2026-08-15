@@ -1,88 +1,146 @@
 # Notes 파일 SSOT 동기화 스펙 — 포맷 v1
 
-2026-08-15 · 기준 코드 `main@4b84719b` · [구현 계획](../superpowers/plans/2026-08-15-notes-sync-port-implementation-plan.md) M0.1의 산출물
+2026-08-16 · 기준 코드 `main@69d0b996` · [구현 계획](../superpowers/plans/2026-08-15-notes-sync-port-implementation-plan.md) M0.1의 산출물
 
-## 1. 지위
+## 1. 지위와 목표
 
-- 이 문서가 M1–M6 구현의 진실 소스다. 마일스톤·항목·게이트는 [구현 계획 §6](../superpowers/plans/2026-08-15-notes-sync-port-implementation-plan.md)이, 테스트 이름·경로는 [테스트 설계](../superpowers/plans/2026-08-15-notes-sync-port-test-design.md)가 소유한다. 여기서는 그 둘이 잠그는 **계약**만 적는다.
-- [v1 스펙(2026-07-21)](../superpowers/plans/2026-07-21-notes-file-ssot-sync-implementation.md)과 v1 코드(`src-tauri/src/notes/`)는 동결 oracle이다. v1 스펙과 v1 코드가 어긋나는 곳은 코드가 이기고 §10에 기록했다.
-- 문법(§3)은 이 절만 읽고 렌더러·파서를 바이트 단위로 재작성할 수 있게 쓴다.
+- 이 문서가 M1–M6 구현의 진실 소스다. 마일스톤·항목·게이트는 구현 계획이, 테스트 이름·경로는 [테스트 설계](../superpowers/plans/2026-08-15-notes-sync-port-test-design.md)가 소유한다. 여기서는 그 둘이 잠그는 **계약**만 적는다.
+- 문법(§4~§5)은 이 절만 읽고 렌더러와 파서를 바이트 단위로 재작성할 수 있게 쓴다.
+- v1 코드(`src-tauri/src/notes/`)는 동결 oracle이다. 이식할 함수와 상수를 가리킬 때 인용하되, **v1 파일을 읽는 호환은 목표가 아니다**(결정 6 취소).
 
-## 2. 용어와 v2 대응
+**목표 한 줄.** vault 폴더를 markdown 서버에 얹으면 사람이 문서를 찾아 열고 이미지까지 볼 수 있다. 앱의 기능이 거기서 동작할 필요는 없다.
 
-| 용어 | v1 | v2 |
+**저장의 경계.** vault는 읽을거리를 진다 — 본문·노트·계층·순서·체크·별표·접힘·첨부 바이트·삭제된 노드, 그리고 정체성인 `yid`와 `t`. DB는 살림살이를 진다 — 충돌 로그, 방출 추적, HLC 클록, 검색 색인, 첨부 위치와 미참조 시각, UI 상태. DB를 잃어도 문서 내용은 vault에서 그대로 돌아온다.
+
+## 2. 용어
+
+| 용어 | 뜻 |
+|---|---|
+| 루트 행 `root` | 고정 id를 가진 유일한 `parent_id IS NULL` 행 ([schema.rs:5](../../crates/notes-sqlite/src/schema.rs#L5)). Home이다 |
+| 페이지 | `root`의 직계 자식 ([queries.rs:29](../../crates/notes-sqlite/src/queries.rs#L29)의 pages 질의와 같은 집합). 폴더 하나에 대응한다 |
+| 문서 | `README.md` 파일 하나. home 문서, 페이지 문서, 분할 문서 셋이 같은 문법을 쓴다 |
+| 문서 루트 | 그 문서가 담는 서브트리의 최상위 노드. home 문서는 `root`, 페이지 문서는 그 페이지, 분할 문서는 승격된 노드 |
+| 삭제 | `deleted` boolean. 삭제 행도 parent_id·sort_key를 유지한다 ([tree.rs:226-246](../../crates/notes-core/src/tree.rs#L226)) — `from:`은 이 행 값에서 파생한다 |
+| marker | bullet·todo·ordered{start} ([node.rs:17-26](../../crates/notes-core/src/node.rs#L17)) |
+| 이미지 | 독립 노드 `kind=image`, text = 원본 파일명, `notes_images` 행 1개 |
+
+**purge는 이 포맷에 없다**(결정 7). 삭제 증거는 `trash.md` 하나뿐이다.
+
+## 3. vault 배치
+
+```
+vault/
+├── README.md                          home 문서 — root 자신
+├── Projects-4f1c8e20a3b7/
+│   ├── README.md                      페이지 문서
+│   ├── assets/                        이 페이지만 쓰는 첨부
+│   │   └── 아키텍처-9f3a1c8e2044.png
+│   └── 2024-아카이브-9d3f21b8c440/     분할 문서
+│       └── README.md
+├── 회의록-11c8da70b5e1/
+│   └── README.md
+├── 회의록-a3f204ee81cc/               제목이 같아도 폴더는 겹치지 않는다
+│   └── README.md
+├── assets/                            두 곳 이상이 쓰는 첨부
+│   └── 로고-2e77a05fb163.png
+└── .yonalist/
+    └── trash.md                       삭제된 노드 — 전파용, 읽을거리 아님
+```
+
+### 3.1 폴더 이름
+
+페이지 노드 하나가 폴더 하나다. 이름은 `<정제한 제목>-<id 앞 12자>`이고 **접미사는 조건 없이 언제나 붙는다**. 겹칠 때만 붙이면 "누가 먼저였나"를 따지는 비교가 필요하고, 그 비교는 두 기기가 서로를 모르는 동안 다른 답을 낸다.
+
+정제는 순서대로:
+
+1. NFC 정규화, 제어문자와 줄바꿈 제거.
+2. `/ \ : * ? " < > |`, `# % { } ^ ~ [ ]`, 연속 공백을 `-`로.
+3. 연속 `-`를 하나로, 앞뒤 `-`와 `.` 제거. 선두 `.`은 폴더를 숨기므로 반드시 제거한다.
+4. 40자 **동시에** UTF-8 120바이트로 절단. 자소 경계에서 자르고 이모지를 쪼개지 않는다.
+5. `CON` `PRN` `AUX` `NUL` `COM1`–`COM9` `LPT1`–`LPT9`(대소문자 무관)이면 앞에 `_`.
+6. 남은 것이 없으면 `untitled`.
+7. `-<id 앞 12자>`를 붙인다. 절단은 이 단계 **전** 값에 적용한다.
+
+전체 길이는 최대 53자·133바이트다. 제목이 바뀌어도 폴더 이름은 따라가지 않는다 — 자동 rename은 동기화가 가장 못 다루는 연산이다. 사용자가 실행하는 "vault 이름 정리"가 폴더를 제목에 맞춘다.
+
+### 3.2 문서 파일
+
+폴더의 문서는 언제나 `README.md`다. home 문서는 vault 루트의 `README.md`이고 폴더 접미사가 없다.
+
+### 3.3 첨부 배치
+
+| 참조 수 | 바이트가 있는 곳 | 문서에서 가리키는 법 |
 |---|---|---|
-| topic | `parent_id IS NULL`인 노드 | **고정 루트 행 `root`의 직계 자식** ([schema.rs:5](../../crates/notes-sqlite/src/schema.rs#L5), [queries.rs:29](../../crates/notes-sqlite/src/queries.rs#L29)의 pages 질의와 같은 집합) |
-| topic 파일 | topic 하나당 vault 루트의 `*.md` 1개 | 동일. 파일 내용 = topic 노드(= 문서 루트) + 그 아래 서브트리 |
-| 루트 행 `root` (Home) | 없음 | 파일로 나가지 않는다. 각 기기가 [ensure_root](../../crates/notes-sqlite/src/schema.rs#L11)로 따로 만들고 text·note·collapsed는 기기 로컬로 남는다 (§9-1) |
-| 삭제 | `deleted_at` timestamp | `deleted` boolean. 삭제 행도 parent_id·sort_key를 유지한다 ([tree.rs:226-246](../../crates/notes-core/src/tree.rs#L226)) — trash의 `from:`은 이 행 값에서 파생 (§3.4) |
-| purge | 휴지통 비우기 hard delete | `TreeMutation::Delete` 적용 ([command.rs:169](../../crates/notes-core/src/command.rs#L169), 실행 [mutations.rs:56-58](../../crates/notes-sqlite/src/mutations.rs#L56)). 결정 7 — §8 |
-| 완료 | `completed_at` timestamp | `completed` boolean |
-| marker | bullet·todo | bullet·todo·**ordered{start}** ([node.rs:17-26](../../crates/notes-core/src/node.rs#L17), `ordered_start` 컬럼 [schema.rs:108](../../crates/notes-sqlite/src/schema.rs#L108)) |
-| 이미지 | 텍스트 노드의 before/attachment/after 분할 | 독립 노드 `kind=image`, text = 원본 파일명, `notes_images` 행 1개 ([node.rs:79-94](../../crates/notes-core/src/node.rs#L79), [image.rs:12-21](../../crates/notes-core/src/image.rs#L12)) |
-| 자산 | vault `.yonalist/notes-assets/<sha256>.<ext>` | vault 쪽 동일(불변 규칙 7). 앱 로컬 캐시는 `app_data_dir/images/` 그대로 |
-| archive / readonly / plugin | 있음 | 없음. 이 포맷에 자리가 없다 |
+| 1 | 그 페이지 폴더의 `assets/` | `assets/<이름>` |
+| 2 이상 | vault 루트의 `assets/` | 깊이만큼 `../` |
+| 0 | 있던 자리에 그대로 — 최대 2주 | 가리키는 문서가 없다 |
 
-`sync_topics.topic_id` = topic 노드 id. trash.md는 루트 노드 없는 가상 topic이다. 복구 topic(사이클·고아 수용처)은 v1 스펙 §4.2 규칙 그대로 — `uuid v5(namespace=vault_uuid, name="yonalist-recovery-topic")`인 topic을 lazy 생성하고 제목은 "복구됨"이다.
+파일 이름은 두 자리에서 같다: `<원래이름>-<내용 해시 앞 12자>.<확장자>`. 원래 이름은 §3.1의 1–4단계 정제를 거친다. 이동은 폴더만 달라지는 일이 된다.
 
-## 3. 포맷 v1 문법
+- 붙일 때 바이트를 해시해 같은 해시가 이미 있으면 파일을 쓰지 않고 그것을 가리킨다. 사용자가 다른 이름으로 올렸어도 디스크 이름은 먼저 들어온 것을 유지하고, **블릿이 쓴 이름은 DB가 노드마다 따로 기억한다**.
+- 참조가 1→2가 되면 루트로 올리고, 2→1이 되면 남은 페이지 폴더로 내린다. 순서는 언제나 **쓰고 나서 지운다** — 전파가 끊겨도 두 곳에 있는 상태로 끝나지 사라지지 않는다. 내용이 같으므로 잠시 둘인 것은 무해하다.
+- 참조는 **살아 있는 노드와 휴지통의 노드**를 함께 센다. 참조 0이면 그 자리에 두고 시각만 기록한다. 삭제는 사용자가 첨부 목록에서 누른다.
 
-### 3.1 공통 규칙
+### 3.4 링크 규칙
 
-- 인코딩 UTF-8, 개행 LF. 파서는 CRLF·CR을 LF로 정규화한다 ([topic_parser.rs:54](../../src-tauri/src/notes/sync/topic_parser.rs#L54) 계승).
-- **HLC**: 17자 고정폭 `mmmmmmmmm-cc-dddd` — millis base36 소문자 9자 zero-pad, counter base36 2자, device 소문자 hex 4자. decode는 재인코딩 일치까지 요구한다(비정규형 거부, [hlc.rs:43-65](../../src-tauri/src/notes/hlc.rs#L43)). 빈 문자열은 "없음"이며 사전순 비교에서 항상 진다.
-- **UUID**: 파서는 대소문자 무관 수용, 파일 내 유일성 검사도 대소문자 무관 ([topic_parser.rs:455-460](../../src-tauri/src/notes/sync/topic_parser.rs#L455)). 렌더러는 소문자 hyphenated 정규형만 쓴다 ([topic_file.rs:515-519](../../src-tauri/src/notes/sync/topic_file.rs#L515)).
-- **이스케이프** (v1 함수 그대로 이식):
-  - `escape_markdown` ([export.rs:257-272](../../src-tauri/src/notes/export.rs#L257)): `&`→`&amp;`, `<`→`&lt;`, `>`→`&gt;`, 그 밖의 ASCII 문장부호는 `\` 접두. 노트의 줄 단위 규칙.
-  - `escape_inline` ([export.rs:274-280](../../src-tauri/src/notes/export.rs#L274)): 개행 정규화 후 줄마다 `escape_markdown`, 줄들을 리터럴 `\n`으로 join. 제목 규칙.
-  - 복원은 [topic_parser.rs:1204-1244](../../src-tauri/src/notes/sync/topic_parser.rs#L1204): 엔티티 3종 복원, `\`+문장부호 복원, inline에서만 `\n`→개행, 고아 `\`는 그대로.
-- **percent 인코딩**(이미지 원본명): raw 허용 바이트는 영숫자와 `. _ ~`, 그 밖은 `%XX` 대문자 hex. 재인코딩 일치 검사로 정규형만 수용 ([markdown_import.rs:886-923](../../src-tauri/src/notes/markdown_import.rs#L886)). 디코드 결과는 1..=1024바이트, 공백뿐이면 거부 ([markdown_import.rs:875-884](../../src-tauri/src/notes/markdown_import.rs#L875)).
-- **캡** (불변 규칙 8): 파일 16MiB ([markdown_import.rs:15](../../src-tauri/src/notes/markdown_import.rs#L15)), depth 128·노드 20,000 ([repository.rs:74-76](../../src-tauri/src/notes/repository.rs#L74)), 필드 100,000바이트 ([types.rs:41](../../src-tauri/src/notes/types.rs#L41)).
-- **결정성**: 같은 DB 상태는 같은 바이트다. BTreeMap 또는 명시 정렬만, HashMap 순회 금지 (불변 규칙 3).
-- `sort_key`는 topic frontmatter 한 곳 외에는 파일에 쓰지 않는다. 형제 순서 = 파일 줄 순서. 파서는 형제 순번으로 sort_key를 `ordinal * SORT_KEY_STEP`(v2 값 4,294,967,296, [node.rs:5](../../crates/notes-core/src/node.rs#L5))으로 재구성하고 병합이 실제 키를 정한다.
+첨부 링크는 **그 문서가 있는 폴더 기준 상대 경로**다. 절대 경로도, vault 루트 기준 경로도 쓰지 않는다. `../`는 루트 `assets/`에 닿을 때만 허용하고, 그 밖을 가리키면 격리한다.
 
-### 3.2 topic 파일
+## 4. 문서 문법
 
-전체 형태 (부록 A가 규범 바이트):
+### 4.1 공통 규칙
+
+- 인코딩 UTF-8, 개행 LF. 파서는 CRLF·CR을 LF로 정규화한다.
+- **HLC**: 17자 고정폭 `mmmmmmmmm-cc-dddd` — millis base36 소문자 9자 zero-pad, counter base36 2자, device 소문자 hex 4자. decode는 재인코딩 일치까지 요구한다(비정규형 거부, [hlc.rs:43-65](../../src-tauri/src/notes/hlc.rs#L43)). 빈 문자열은 "없음"이고 사전순 비교에서 언제나 진다.
+- **UUID**: 파서는 대소문자 무관 수용, 파일 내 유일성 검사도 대소문자 무관. 렌더러는 소문자 hyphenated 정규형만 쓴다.
+- **이스케이프** (v1 함수 그대로 이식): `escape_markdown`은 `&`→`&amp;`, `<`→`&lt;`, `>`→`&gt;`, 그 밖의 ASCII 문장부호에 `\` 접두 ([export.rs:257-272](../../src-tauri/src/notes/export.rs#L257)). `escape_inline`은 개행 정규화 후 줄마다 `escape_markdown`하고 리터럴 `\n`으로 join ([export.rs:274-280](../../src-tauri/src/notes/export.rs#L274)). `<`가 엔티티가 되므로 **사용자가 친 `<!--`는 절대 주석이 되지 않는다**.
+- **캡** (불변 규칙 8): 파일 16MiB, depth 128, 노드 20,000, 필드 100,000바이트. **도메인도 같은 상한을 건다** — DB에는 들어가는데 파일로는 못 나가는 값이 있으면 그 문서가 조용히 동기화에서 빠진다.
+- **결정성**: 같은 DB 상태는 같은 바이트다. BTreeMap 또는 명시 정렬만, HashMap 순회 금지.
+- `sort_key`는 frontmatter 외에는 파일에 쓰지 않는다. 형제 순서 = 줄 순서. 파서는 형제 순번으로 `ordinal * SORT_KEY_STEP`(4,294,967,296, [node.rs:5](../../crates/notes-core/src/node.rs#L5))을 재구성하고 병합이 실제 키를 정한다.
+
+### 4.2 문서 전체 형태
 
 ```
 ---
-<frontmatter — 아래 표 순서 그대로>
+<frontmatter>
 ---
-# <escape_inline(topic.text)>
+# <escape_inline(문서 루트의 text)>
 <루트 note — depth-0 blockquote, 비면 블록 생략>
 <빈 줄 1개 — 항상>
 <노드 라인들>
 ```
 
-**frontmatter** — 키는 아래 순서로 전부, 무조건 렌더한다. `키: 값` 한 줄씩, 콜론 뒤 공백 1개.
+**frontmatter** — 아래 순서대로, **기본값인 선택 키는 생략한다**. `키: 값` 한 줄씩, 콜론 뒤 공백 1개.
 
-| # | 키 | 값 | 파스 기본값 | v2 근원 |
+| # | 키 | 값 | 필수 | 기본값 |
 |---|---|---|---|---|
-| 1 | `kind` | `yonalist-notes` | topic | — |
-| 2 | `format_version` | `1` | 없거나 다르면 격리 | — |
-| 3 | `id` | topic 노드 UUID | 없으면 격리 | `notes_nodes.id` |
-| 4 | `sort_key` | i64 10진 | `0` | topic 노드의 sort_key (페이지 순서) |
-| 5 | `max_hlc` | HLC 또는 빈 값 | `''` | 문서에 실린 모든 HLC의 최댓값 |
-| 6 | `root_hlc` | HLC 또는 빈 값 | `''` | topic 노드의 hlc |
-| 7 | `root_marker_kind` | `bullet`\|`todo`\|`ordered` | `bullet` | `marker` |
-| 8 | `root_ordered_start` | i64 10진 | `1` | `ordered_start` |
-| 9 | `root_collapsed` | `true`\|`false` | `false` | `collapsed` |
-| 10 | `root_completed` | `true`\|`false` | `false` | `completed` |
-| 11 | `root_starred` | `true`\|`false` | `false` | `starred` |
-| — | (미지 키 보존분) | 원문 라인 | — | §4.2 — `root_starred` 뒤, 닫는 `---` 앞 |
+| 1 | `kind` | `yonalist-notes` 또는 `yonalist-trash` | 필수 | — |
+| 2 | `format_version` | `1` | 필수 | 없거나 다르면 격리 |
+| 3 | `id` | 문서 루트의 UUID | 필수 | 없으면 격리 |
+| 4 | `title` | 문서 루트의 원래 제목. 큰따옴표로 감싸고 `\`와 `"`를 이스케이프 | 필수 | — |
+| 5 | `parent` | 부모 노드 UUID | 분할 문서만 | 없으면 페이지 문서 |
+| 6 | `sort_key` | i64 10진 | 선택 | `0`. 부모 문서의 줄 순서가 이긴다 |
+| 7 | `max_hlc` | HLC | 필수 | 문서에 실린 모든 HLC의 최댓값 |
+| 8 | `root_hlc` | HLC | 필수 | 문서 루트의 hlc |
+| 9 | `root_marker_kind` | `bullet`\|`todo`\|`ordered` | 선택 | `bullet` |
+| 10 | `root_ordered_start` | i64 10진 | 선택 | `1` |
+| 11 | `root_collapsed` | `true`\|`false` | 선택 | `false` |
+| 12 | `root_completed` | `true`\|`false` | 선택 | `false` |
+| 13 | `root_starred` | `true`\|`false` | 선택 | `false` |
+| — | (미지 키 보존분) | 원문 라인 | — | 인정 키 전부 뒤, 닫는 `---` 앞 |
 
-boolean은 `true`/`false` 소문자만. 인정 스칼라 키의 중복은 격리다 ([topic_parser.rs:252](../../src-tauri/src/notes/sync/topic_parser.rs#L252) 계승). 빈 HLC는 `max_hlc: ` 처럼 빈 값으로 렌더하고 파스에서 `''`가 된다.
+boolean은 소문자 `true`/`false`만. 인정 스칼라 키의 중복은 격리다. **HLC가 비어 있으면 그 키를 쓰지 않는다** — `max_hlc: ` 처럼 후행 공백으로 끝나는 줄은 손편집기의 trim에 사라지고 `git diff --check`에도 걸린다.
 
-**루트 note**: 헤딩 직후 depth-0 blockquote. 줄마다 `> {escape_markdown(줄)}`, 빈 줄은 `>` 단독. note가 비면 블록을 생략한다. 블록(또는 헤딩) 뒤에 빈 줄 1개를 항상 렌더하고 파서는 빈 줄 없이 바로 bullet이 와도 수용한다 ([topic_parser.rs:2505](../../src-tauri/src/notes/sync/topic_parser.rs#L2505) 테스트 계승).
+**루트 note**: 헤딩 직후 depth-0 blockquote. 줄마다 `> {escape_markdown(줄)}`, 빈 줄은 `>` 단독. note가 비면 블록을 생략한다. 블록(또는 헤딩) 뒤에 빈 줄 1개를 항상 렌더하고, 파서는 빈 줄 없이 바로 bullet이 와도 수용한다.
 
-**노드 라인**: depth d의 들여쓰기는 공백 `2*d`개.
+### 4.3 노드 라인
+
+depth d의 들여쓰기는 공백 `2*d`개.
 
 ```
 {들여쓰기}{프리픽스}{본문} {노드 주석}
 ```
 
-프리픽스 (렌더 규칙 — 파스는 더 관대, §5):
+**프리픽스**:
 
 | marker | completed | 프리픽스 |
 |---|---|---|
@@ -90,282 +148,266 @@ boolean은 `true`/`false` 소문자만. 인정 스칼라 키의 중복은 격리
 | todo | true | `- [x] ` |
 | bullet·ordered | 무엇이든 | `- ` |
 
-**체크박스는 todo marker의 표기다.** 사용자가 체크박스로 만들지 않은 블릿은 완료 상태와 무관하게 그냥 블릿 텍스트로 나간다. 파일을 읽는 사람이 `- [x]`를 봤다면 그것은 언제나 체크한 할 일이지, 어쩌다 완료 플래그가 선 일반 블릿이 아니다.
+체크박스는 todo marker의 표기다. 체크박스로 만들지 않은 블릿은 완료 상태와 무관하게 그냥 블릿 텍스트로 나간다. 읽는 사람이 `- [x]`를 봤다면 그것은 언제나 체크한 할 일이다. `completed`는 marker와 독립이라([command_execution.rs:467](../../crates/notes-core/src/tree/command_execution.rs#L467)이 marker를 보지 않는다) todo가 아닌 노드도 완료일 수 있고, 그 상태는 `done` 토큰이 싣는다.
 
-`completed`는 marker와 독립된 값이라(`SetCompleted`에 marker 가드가 없고 [command_execution.rs:467](../../crates/notes-core/src/tree/command_execution.rs#L467)이 클릭된 노드에 무조건 세운다) todo가 아닌 노드도 완료일 수 있다. 그 상태는 프리픽스 대신 §3.2 주석의 `done` 토큰이 싣는다.
+**본문과 주석의 경계**: 줄의 **마지막** ` <!--`에서 자르고 구분 공백 1개만 소비한다 ([topic_parser.rs:568-588](../../src-tauri/src/notes/sync/topic_parser.rs#L568) 계승). 본문이 비면 프리픽스 뒤 공백 1개 다음 바로 주석이 온다. 헤딩의 본문이 비면 `#` 뒤에 아무것도 쓰지 않고 후행 공백도 남기지 않는다.
 
-본문: 텍스트 노드는 `escape_inline(text)`. 이미지 노드는 §3.3의 이미지 atom.
+**노드 주석** — 토큰들을 공백 1개로 구분한다. 순서 고정, 각 토큰은 조건이 맞을 때만 나온다.
 
-**노드 주석** — 본문 뒤 공백 1개, `<!--`와 `-->` 사이 토큰들을 공백 1개로 구분. 토큰 순서는 아래 고정이고 각 토큰은 조건이 맞을 때만 나온다.
+| 순서 | 토큰 | 조건 |
+|---|---|---|
+| 1 | `yid: <uuid>` | 항상 |
+| 2 | `t: <hlc>` | 항상. 렌더에서 비어 있으면 오류 — 스탬프 전 노드는 나가지 않는다 |
+| 3 | `star` | starred |
+| 4 | `todo` 또는 `ordered: <i64>` | marker |
+| 5 | `done` | completed이고 marker가 todo가 아닐 때 |
+| 6 | `split` | 이 줄이 분할 문서로 나간 자식을 가리킬 때 (§4.5) |
+| 7 | `from: <parent>@<i64>` | `trash.md` 전용 (§4.6) |
+| 8 | `collapsed` | collapsed |
+| 9 | (미지 토큰 보존분) | §5.3 |
 
-| 순서 | 토큰 | 조건 | 값 |
-|---|---|---|---|
-| 1 | `yid: <uuid>` | 항상 | 노드 id 소문자 정규형 |
-| 2 | `t: <hlc>` | 항상 | 노드 hlc. 렌더에는 비어 있으면 오류(스탬프 전 노드는 나가지 않는다) |
-| 3 | `star` | starred | — |
-| 4 | `todo` 또는 `ordered: <i64>` | marker가 todo / ordered | ordered 값 = ordered_start |
-| 4.5 | `done` | completed이면서 marker가 todo가 아닐 때 | — (todo의 완료는 `- [x]` 프리픽스가 싣는다) |
-| 5 | `from: <parent>@<i64>` | trash.md 전용 렌더 (§3.4) | parent = UUID 또는 리터럴 `root`, 값 = sort_key |
-| 6 | `collapsed` | collapsed | — |
-| 7 | (미지 토큰 보존분) | §4.2 | 원문 그대로 |
-
-같은 인정 토큰의 중복은 격리 ([topic_parser.rs:612-763](../../src-tauri/src/notes/sync/topic_parser.rs#L612)의 seen 검사 계승). 파서는 `collapsed: true|false` 변형도 수용하되 렌더는 bare `collapsed`만 쓴다.
+**토큰 분해 규칙**: 토큰은 공백으로 나눈 단어 단위로 인식한다. `:`로 끝나는 토큰은 **인정·미지를 가리지 않고 다음 단어 하나를 값으로 소비**하며, 그 값 자리는 인정 토큰으로 보지 않는다. 이 규칙이 없으면 `foo: collapsed` 같은 미지 토큰의 값이 상태로 오인된다. 같은 인정 토큰의 중복은 격리다.
 
 **노드 note**: bullet 라인 다음 줄부터 `{공백 2*(d+1)}> …` blockquote, 루트 note와 같은 줄 규칙.
 
-### 3.3 이미지 라인
+### 4.4 이미지 라인
 
-이미지 노드는 자기 bullet 한 줄이 전부다. v1의 before/after 분할은 이 포맷에 없다.
+이미지 노드는 자기 bullet 한 줄이 전부다.
 
 ```
-{들여쓰기}{프리픽스}![Image](.yonalist/notes-assets/<hash>.<ext>) <!-- ya: name: <pct> w: <u32> px: <u32>x<u32> bytes: <u64> --> <!-- yid: … t: … -->
+{들여쓰기}{프리픽스}![{escape_inline(원본명)}]({상대 경로}) <!-- ya: w: <u32> px: <u32>x<u32> bytes: <u64> --> <!-- yid: … t: … -->
 ```
 
-- 링크 정규형: `.yonalist/notes-assets/` 접두 + 소문자 hex 64자 hash + `.` + 확장자 `png|jpg|webp|gif`. 경로에 `/ \ ? #` 추가 금지, 대문자 hash·`jpeg` 거부 ([topic_parser.rs:1165-1183](../../src-tauri/src/notes/sync/topic_parser.rs#L1165), [topic_file.rs:583-596](../../src-tauri/src/notes/sync/topic_file.rs#L583)). 확장자는 mime과 1:1이다 ([image.rs:157-165](../../crates/notes-core/src/image.rs#L157)).
-- `ya:` 주석 토큰 — 순서 고정 `name`, `w`, `px`, `bytes`:
+- **상대 경로**는 §3.4를 따른다. 경로 탈출과 비정규 형태는 격리한다.
+- `w:`는 표시 폭, 정수 필수, 하한 120([image.rs:9](../../crates/notes-core/src/image.rs#L9)). `px:`는 원본 픽셀 크기, `bytes:`는 바이트 수다.
+- **원본 파일명은 링크 텍스트가 진다.** v1이 percent 인코딩해 주석에 싣던 값을 사람이 읽는 자리로 옮겼다 — markdown 서버에서 alt 텍스트로 그대로 보인다.
+- 자산 바이트가 아직 도착하지 않아도 **메타가 완전하면 노드를 적용한다**([image.rs:90-114](../../crates/notes-core/src/image.rs#L90)의 `try_referenced`). placeholder는 메타가 불완전할 때만이고, 그 줄은 다음 방출에서 원문 그대로 재방출한다. 해소 시 표시 폭이 없으면 `DEFAULT_DISPLAY_WIDTH`(320, [image_assets.rs:16](../../crates/notes-sqlite/src/image_assets.rs#L16))를 쓴다.
+- **문서 루트가 이미지 노드인 경우는 문법 밖이다.** 헤딩에 이미지를 실을 자리가 없다. 그런 상태는 방출에서 격리하고 상태로 통지한다.
 
-| 토큰 | 값 | v2 근원 |
-|---|---|---|
-| `name:` | percent 정규형 원본명 (§3.1) | `original_name` |
-| `w:` | display_width, 정수 ≥ 120 ([image.rs:9](../../crates/notes-core/src/image.rs#L9)) | `display_width` |
-| `px:` | `<pixel_width>x<pixel_height>`, 각각 > 0, 곱 ≤ 40,000,000 | `pixel_width`·`pixel_height` |
-| `bytes:` | byte_length, 1..=20,971,520 | `byte_length` |
+### 4.5 분할
 
-- `px:`·`bytes:`는 이 포맷의 신설 토큰이다. 자산 바이트가 아직 도착하지 않은 상태에서도 `NoteImage::try_referenced` ([image.rs:90-114](../../crates/notes-core/src/image.rs#L90))로 행을 만들 수 있게 한다. 정식 렌더는 네 토큰을 전부 쓴다.
-- ya 주석 뒤 공백 1개, 그다음 노드 주석. ya 주석은 노드 주석으로 오인하지 않는다(`ya:` 접두 판별, [topic_parser.rs:585-587](../../src-tauri/src/notes/sync/topic_parser.rs#L585) 계승).
-- **미해소 이미지 노드**: `w: -`(v4 파일)이거나 `px:`·`bytes:`가 없거나 자산이 아직 없으면 노드는 placeholder로 적용하고 다음 export는 파스한 이미지 라인을 **원문 그대로** 재방출한다. 자산이 도착하면 정식 `notes_images` 행으로 해소하고 그때부터 정규형으로 렌더한다. 해소 시 display_width가 없으면 `clamp(pixel_width, 120, 640)`으로 정한다 — v2 코드에 기존 기본값이 없어 이 스펙이 정한 값이다 (§9-5).
-- 이미지 노드도 note와 자식을 가질 수 있다. 그 밖의 자리(`- ` 본문이 아닌 곳)의 `![`는 격리다.
+문서가 §7의 임계를 넘으면 직계 자식 하나가 자기 폴더의 문서로 나간다. 부모 문서에는 평범한 markdown 링크 한 줄이 남는다.
 
-### 3.4 trash.md와 purge tombstone
+```
+{들여쓰기}- [{escape_inline(자식 제목)}]({폴더}/README.md) <!-- yid: … t: … split -->
+```
+
+자식 문서의 frontmatter는 `parent`와 `sort_key`로 자기 자리를 기록한다. `split` 토큰이 있는데 링크가 가리키는 문서가 없으면 격리하지 않고 **아직 못 받음**으로 두고 재시도한다 — 전파 순서 때문에 흔히 생기는 상태다.
+
+### 4.6 `trash.md`
 
 ```
 ---
 kind: yonalist-trash
 format_version: 1
 max_hlc: <hlc>
-purged: <uuid> <hlc>        ← 0개 이상. (id, hlc) 튜플 정규화 후 오름차순 정렬
 ---
 - Deleted <!-- yid: … t: … from: <parent>@<sort_key> -->
   - Child <!-- yid: … t: … done -->
 ```
 
-- **trash 루트** = `deleted = 1`이고 부모가 살아 있거나 없는 노드. v2는 삭제 행이 parent_id·sort_key를 유지하므로 ([tree.rs:226-233](../../crates/notes-core/src/tree.rs#L226)) `from:`은 행 자체에서 파생한다 — v1이 exporter에서 하던 그대로다 ([exporter.rs:2018-2020](../../src-tauri/src/notes/sync/exporter.rs#L2018)). `from:`의 parent는 UUID이거나, 삭제된 노드가 topic이었으면 리터럴 `root`다.
-- trash 루트 아래 자식들은 `from:` 없이 서브트리 그대로 나온다. 루트 정렬은 `(sort_key, id)` 오름차순, 자식은 형제 정렬 그대로.
-- **purge tombstone**: `purged: <uuid> <hlc>` frontmatter 라인. 렌더는 정규화(uuid 소문자, hlc 정규형) 후 정렬한다 ([topic_file.rs:245-259](../../src-tauri/src/notes/sync/topic_file.rs#L245)). hlc 없는 tombstone은 렌더 오류다.
-- **tombstone의 유일한 발생지 (결정 7)**: 워커가 명령 패치의 `TreeMutation::Delete`를 적용할 때다 — 오늘의 생산자는 `RemoveEmptyNode`의 forward와 노드 생성 명령들의 undo 역패치다 ([tree.rs:328-331](../../crates/notes-core/src/tree.rs#L328)). 적용 시 fresh HLC로 `sync_purged_tombstones`에 upsert하고 다음 trash.md export가 `purged:` 라인으로 내보낸다. **병합이 원격 tombstone을 적용할 때는 원격 hlc 그대로 기록하고 새 tombstone을 만들지 않는다.** 그 밖의 어떤 경로도 tombstone을 만들지 않는다.
-- 병합 의미: tombstone hlc보다 오래된 노드만 지운다. 그보다 새 노드는 산다(부활 경로, 불변 규칙 1). undo-of-create가 남긴 tombstone도 같은 규칙 덕에 redo를 죽이지 못한다 — redo의 재삽입은 fresh HLC를 받는다.
-- topic 자체가 삭제되면 trash.md가 먼저 그 서브트리를 실은 뒤에야 topic 파일을 지운다 (v1 순서 계승, [exporter.rs:3884](../../src-tauri/src/notes/sync/exporter.rs#L3884) 테스트).
-- tombstone은 90일 뒤 GC한다 ([mod.rs:62](../../src-tauri/src/notes/sync/mod.rs#L62)). 창을 넘긴 스냅샷 정책은 §7-1.
+- **trash 루트** = `deleted = 1`이고 부모가 살아 있거나 없는 노드. `from:`의 parent는 UUID이거나, 삭제된 노드가 페이지였으면 리터럴 `root`다. 값은 sort_key다.
+- trash 루트의 정렬은 `(sort_key, id)` 오름차순. 자식은 `from:`을 쓰지 않는다 — 부모가 같이 왔으므로 자리를 안다.
+- `trash.md`는 `id`와 `title`을 갖지 않는다. 격리 상태는 리터럴 키 `yonalist-trash`로 기록한다.
+- frontmatter 미지 키는 실을 노드 행이 없어 보존하지 않는다. 손으로 넣은 키는 다음 렌더에서 사라진다.
 
-### 3.5 파일명
+## 5. 파서
 
-`{slug}.{topic_id 앞 8 hex}.md`. slug 규칙과 40자 절단은 v1 [derive_topic_filename](../../src-tauri/src/notes/sync/topic_file.rs#L302) 그대로. 파일명은 코스메틱이고 identity는 frontmatter `id`다. 생성 후 rename하지 않는다 (v1 스펙 §4.2).
-
-## 4. 미지 필드 보존 — 결정적 위치·순서
-
-파서는 자기가 의미를 갖지 않는 조각을 원문 그대로 실어 나른다. 앞으로 포맷이 늘어날 때 먼저 만들어진 파일이 값을 잃지 않게 하는 장치다. 저장처는 `notes_nodes.sync_extras`(topic frontmatter 몫은 topic 노드 행)이고 정확한 컬럼 인코딩은 M2 구현 소유다. 파일 쪽 계약만 고정한다:
-
-| 조각 | 보존 단위 | 재방출 위치 | 순서 |
-|---|---|---|---|
-| frontmatter 미지 키 | `키: 값` 라인 전체 | 마지막 인정 키(`root_starred`) 뒤, 닫는 `---` 앞 | 만난 순서 |
-| 노드 주석 미지 토큰 | 인정 토큰이 아닌 연속 토큰 run 통째 (예: `plugin: github-notification notification_key: …` 전체) | 인정 토큰 전부 뒤, ` -->` 앞 | 만난 순서 |
-| ya 주석 미지 토큰 | 동일 | 인정 토큰(`bytes:`) 뒤, ` -->` 앞 | 만난 순서 |
-
-- 같은 상태를 두 번 렌더하면 보존분 포함 바이트가 같다. 보존은 바이트가 아니라 정보를 지키는 것이라, 재방출은 언제나 정규형이다 (테스트 설계 §5.3).
-- trash.md frontmatter의 미지 키는 실을 노드 행이 없어 보존하지 않는다. 손으로 넣은 키는 다음 렌더에서 사라진다.
-
-## 5. 관대함과 격리
-
-v1 §7.3 계승 + 개정. **격리는 문서 전체 거부다. 절반만 적용된 결과가 존재하면 그 자체가 결함이다** (테스트 설계 §5.2).
-
-**수용** (행마다 테스트 1개, 테스트 설계 §5.1):
+### 5.1 수용
 
 | 입력 | 처리 |
 |---|---|
-| yid 없는 bullet | 수용. id/hlc 없음으로 통과 — 발급은 병합 몫, write-back으로 역기록 (불변 규칙 2 단서) |
-| `t:` 없음 또는 hlc 파싱 불가 | `''` → LWW에서 항상 패배 ([topic_parser.rs:1722-1728](../../src-tauri/src/notes/sync/topic_parser.rs#L1722) 계승) |
+| yid 없는 bullet | 수용. id 없음으로 통과 — 발급은 병합 몫이고 write-back으로 역기록한다 |
+| `t:` 없음 또는 HLC 파싱 불가 | `''` → LWW에서 언제나 패배 |
 | 홀수 칸·탭 들여쓰기 | 2칸 내림 정규화, 탭 = 2칸. 예상보다 깊은 bullet은 가장 가까운 depth로 clamp |
-| checkbox 없는 `- text` | marker = bullet, completed = false. **체크박스가 없으면 할 일이 아니라 그냥 블릿이다** (§3.2) |
-| `- [ ] text` · `- [x] text` | marker = todo, completed는 표시대로 |
-| frontmatter 선택 키 누락 | §3.2 기본값. 격리는 `id`·`format_version`뿐 — v1 코드의 root_collapsed·root_readonly 필수화([topic_parser.rs:163-168](../../src-tauri/src/notes/sync/topic_parser.rs#L163))는 계승하지 않는다 (§10-3) |
-| 미지 frontmatter 키·주석 토큰 | **보존** (§4.2 — v4의 "무시"에서 변경) |
+| checkbox 없는 `- text` | marker = bullet, completed = false |
+| `- [ ]` · `- [x]` | marker = todo, completed는 표시대로 |
+| 선택 frontmatter 키 누락 | §4.2 기본값 |
+| 미지 frontmatter 키·주석 토큰 | **보존** (§5.3) |
 | CRLF | LF 정규화 |
 | 공백뿐인 본문 줄 | 빈 줄 취급 |
+| `split` 링크가 가리키는 문서 부재 | 아직 못 받음 — 재시도 |
 
-**격리** (통지는 `notes://sync-status`, `sync_topics.quarantined = 1`, 병합 skip):
+### 5.2 격리
 
-| 입력 | 비고 |
-|---|---|
-| `format_version`이 `1`이 아니거나 없다 | 아는 포맷은 하나뿐이다. 미래 버전 보호를 겸한다 |
-| topic의 `id` 누락·비 UUID | |
-| UTF-8 아님 / 16MiB 초과 | |
-| depth > 128 / 노드 > 20,000 / 필드 100,000바이트 초과 | |
-| `<<<<<<<` 또는 `>>>>>>>`로 시작하는 라인 | git 충돌 마커 — 결정 1의 "git 미보증"이 안전한 이유 (테스트 설계 §5.2) |
-| 인정 스칼라 키 중복, 인정 토큰 중복, 파일 내 yid 중복(대소문자 무관), topic id와 노드 id 충돌 | |
-| 비정규 자산 링크 (경로 탈출·대문자 hash·`jpeg`·ya `name`/`w` 자체 누락) | 불변 규칙 7 |
-| kind 비호환 키 (topic에 `purged:`, trash에 `id:` 등) | |
-| 소화되지 않는 본문 줄 (bullet도 note도 연속행도 아님) | |
-| `purged:` 구조 파손 (uuid 아님, 필드 수 불일치) | hlc만 malformed면 `''`로 수용 ([topic_parser.rs:2059-2075](../../src-tauri/src/notes/sync/topic_parser.rs#L2059) 계승) |
+**격리는 문서 전체 거부다. 절반만 적용된 결과가 존재하면 그 자체가 결함이다.** 통지는 `notes://sync-status`, 병합은 skip한다.
 
-## 6. 불변 규칙
+| 입력 |
+|---|
+| `format_version`이 `1`이 아니거나 없다 |
+| `id`·`title` 누락, `id`가 UUID가 아니다 |
+| UTF-8이 아니거나 16MiB 초과 |
+| depth > 128 / 노드 > 20,000 / 필드 100,000바이트 초과 |
+| `<<<<<<<` 또는 `>>>>>>>`로 시작하는 라인 (git 충돌 마커) |
+| 인정 스칼라 키 중복, 인정 토큰 중복, 파일 내 yid 중복(대소문자 무관), 문서 id와 노드 id 충돌 |
+| 비정규 자산 링크 — 경로 탈출, `../`가 루트 `assets/` 밖을 가리킴, 대문자 해시 |
+| kind 비호환 키 — topic 문서에 `from:`, trash에 `id:` |
+| 소화되지 않는 본문 줄 — bullet도 note도 아니다 |
+| 문서 루트가 이미지 노드다 |
 
-v1 스펙 §1의 10건을 그대로 계승한다. v2 좌표로 다시 적으면:
+**그 밖의 구조 위반도 전부 격리한다.** 위 표는 자주 만나는 것을 적은 것이지 전수가 아니다. 파서가 문법으로 설명할 수 없는 줄을 만나면 문서를 거부한다.
 
-1. **부재 ≠ 삭제.** 파일에 없는 노드는 지우지 않는다. 삭제 증거는 (a) trash.md 이동(LWW), (b) purge tombstone 둘뿐이다.
-2. **병합은 멱등·교환적.** canonical(yid/HLC 기록) 문서 기준. yid 없는 입력은 전달마다 신규 발급이고 write-back 후부터 멱등이 적용된다. LWW 비교는 HLC 문자열 사전순.
-3. **직렬화는 결정적.** 같은 상태 → 같은 바이트. 보존분(§4.2)도 포함해서다.
-4. **export 자가 검증.** 쓴 바이트를 재파싱해 상태와 다르면 파일을 덮지 않고 dirty 유지.
-5. **원자적 쓰기만.** 모든 vault 쓰기는 notes-sync `file_io::write_atomic_file` 경유.
-6. **병합이 적용하는 원격 hlc는 원격 값 그대로.** 스탬핑 트리거의 WHEN 가드가 보장한다 ([구현 계획 §5.1](../superpowers/plans/2026-08-15-notes-sync-port-implementation-plan.md)). 유일한 예외가 §7-2의 드리프트 재스탬프다.
-7. **asset 링크는 정규형만.** 경로 탈출 즉시 거부.
-8. **기존 캡 유지.** §3.1의 값들.
-9. **budget·테스트 규칙 준수.** 저장소 관례(`toHaveBeenNthCalledWith` 금지 등) 그대로.
-10. **undo 오염 금지.** 병합·부트스트랩은 history 없이 실행 — 원격 변경은 undo 스택에 들어가지 않는다.
+### 5.3 미지 조각 보존
 
-시작 조정 4분기(v1 §9.4)와 §12 매트릭스도 그대로 계승한다 — 재색인은 `file_mtime_ms + file_size` 게이트 통과분만 해시 확인한다 ([구현 계획 §6 M5.3](../superpowers/plans/2026-08-15-notes-sync-port-implementation-plan.md), 테스트 설계 §9.1).
+파서는 자기가 의미를 갖지 않는 조각을 원문 그대로 실어 나른다. 앞으로 포맷이 늘어날 때 먼저 만들어진 파일이 값을 잃지 않게 하는 장치다. 저장처는 `notes_nodes.sync_extras`이고 컬럼 인코딩은 구현 소유다. 파일 쪽 계약만 고정한다:
 
-**v2 개정 3건**:
-
-- **A. 병합은 워커 큐를 지난다.** `Request::MergeTopic` 하나가 IMMEDIATE 트랜잭션으로 병합 전체를 실행하고 **적용된 변경이 있을 때만** `notes_meta.revision`을 정확히 1 올린다. no-op 병합은 revision을 올리지 않는다(멱등의 관찰면). 같은 DB 파일에 딴 Connection을 여는 우회는 금지 — 낡은 revision의 commit이 성공해 버리는 것으로 탐지한다 ([구현 계획 §4.2](../superpowers/plans/2026-08-15-notes-sync-port-implementation-plan.md), 테스트 설계 §6.2).
-- **B. undo 배리어.** 병합은 `NotesService::absorb_external`을 지나 서비스 revision 사본을 갱신한다. 병합이 바꾼 노드 집합과 교차하는 undo 항목 위로 `undo_floor`를 올린다 — 교차 지점 아래로 undo가 내려가지 못하고, 교차하지 않는 위쪽 항목은 전부 되돌아간다. redo 스택은 교차 발생 시 전체 비운다 ([구현 계획 §4.3](../superpowers/plans/2026-08-15-notes-sync-port-implementation-plan.md), 테스트 설계 §7).
-- **C. 이벤트 계약.** 이 앱 최초의 Tauri 이벤트 2종, 페이로드는 camelCase wire다: `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }` — 병합이 상태를 바꿨을 때. `notes://sync-status` — 격리·오류·상태 전이. 프런트 반영 방식은 [구현 계획 §4.5](../superpowers/plans/2026-08-15-notes-sync-port-implementation-plan.md)가 소유한다 (테스트 설계 §8.6).
-
-## 7. 리스크 정책 4건
-
-| # | 정책 | 계약 |
-|---|---|---|
-| 1 | **90일 창 초과 스냅샷 격리.** 기기별 마지막 병합 HLC를 `sync_meta`에 기록한다. 들어온 문서의 증거가 그보다 90일([mod.rs:62](../../src-tauri/src/notes/sync/mod.rs#L62)) 넘게 오래됐으면 자동 병합하지 않고 격리 후 `notes://sync-status`로 사용자 확인을 받는다. tombstone GC가 이미 지운 증거를 스냅샷이 되살리는 사고(결정 4)를 막는다 | 테스트 설계 §10.2 |
-| 2 | **미래 HLC 재스탬프.** 로컬 시계보다 24시간 넘게 미래인 원격 HLC는 fresh HLC로 재스탬프해 적용하고 로그를 남긴다. 시계가 튄 기기의 편집이 이후 모든 정상 편집을 영구히 이기는 경로를 닫는다. 불변 규칙 6의 명시적 예외다 | 테스트 설계 §6.1·§10.2 |
-| 3 | **transport 겹침 미지원.** 같은 vault를 두 동기화 클라이언트가 만지는 구성은 지원하지 않는다고 문서화하고(§8 결정 1의 사용자 문구와 같은 자리) 감지 가능할 때 — 예: 한 파일에 `.sync-conflict-*`와 `(conflicted copy)`가 함께 보일 때 — `notes://sync-status`로 경고한다 | — |
-| 4 | **conflicted copy는 입력이다.** `* (conflicted copy)*.md`·`* 2.md`·`.sync-conflict-*` 사본이 우리 포맷으로 파싱되면 병합하고 canonical 파일을 다시 쓴 뒤 사본을 held-identity no-replace 이동으로 `.yonalist/sync-cleanup/consumed/`에 은퇴시킨다. v1의 격리 보존([watcher.rs:891](../../src-tauri/src/notes/sync/watcher.rs#L891)의 retire 메커니즘)을 병합 승격으로 올린 것이다 | 테스트 설계 §8.4·§10.2 |
-
-## 8. 결정 기록 (1–9)
-
-[구현 계획 §0](../superpowers/plans/2026-08-15-notes-sync-port-implementation-plan.md)에서 사용자가 확정했다. 재론 금지.
-
-| # | 결정 | 이 스펙에서의 자리 |
-|---|---|---|
-| 1 | 클라우드 폴더 동기화 공식 지원, git은 "동작하지만 미보증" | 사용자 문구는 **설정 화면 vault 절(M1.6)의 보조 텍스트**에 넣는다. 고정 문안: "vault 폴더는 iCloud Drive, Dropbox, Syncthing, OneDrive 같은 폴더 동기화 서비스에 두는 것을 지원합니다. git 저장소에 둬도 동작하지만 보증하지 않으며 충돌 마커가 든 파일은 안전하게 격리됩니다." 격리 근거는 §5의 충돌 마커 행 |
-| 2 | 같은 노드 동시 편집 = LWW + conflict log | §6 규칙 2, 복구는 결정 5 |
-| 3 | collapsed는 파일에 기록, 기기 간 공유 | §3.2 `root_collapsed`·`collapsed` 토큰 |
-| 4 | tombstone 90일 + 초과 스냅샷 격리 | §3.4, §7-1 |
-| 5 | 충돌 노출 = 설정 화면 목록 + 복구 버튼, 인라인 배지 없음 | 복구 = 패자를 새 편집으로 재적용(LWW 전파). 보존 상한은 결정 8 |
-| 6 | ~~v1/v4 vault 관대 수용~~ — 취소(결정 15). 포맷은 `1`에서 시작하고 아는 버전은 그것뿐이다. 미지 필드 보존은 앞으로를 위해 유지 | §3, §4, §5 |
-| 7 | purge = v2의 hard delete 경로가 tombstone을 남기는 유일한 곳 | §3.4. 계획의 표기 `NotesCommand::Delete`는 코드에 없다 — 실체는 `TreeMutation::Delete` ([command.rs:169](../../crates/notes-core/src/command.rs#L169))이고 이 스펙은 그 이름으로 못 박는다. 휴지통 비우기 UI는 범위 밖 |
-| 8 | conflict log 보존 상한 1,000건 또는 180일 중 먼저 | 테스트 설계 §6.3 |
-| 9 | M6 수동 증거에 실 transport 1회 포함 | 구현 계획 §6 M6 |
-
-## 9. 이 스펙이 새로 정한 것 — 사용자 확인 대상
-
-계획이 정하지 않아 여기서 확정한 문법·의미 결정. M0 적대적 리뷰의 검토 목록이다.
-
-1. **topic = `root`의 직계 자식** (§2). 루트 행(Home)의 text·note·collapsed는 동기화되지 않는다 — Home의 note를 쓰는 사용자는 기기 간 불일치를 본다. 필요해지면 예약 파일(home.md)로 후속.
-3. **ya 메타 확장** `px:`·`bytes:` 신설, `w:`는 정수 필수(렌더) (§3.3).
-5. **미해소 이미지 라인의 원문 재방출과 해소 기본값** (§3.3) — placeholder 상태에서도 결정성과 무손실을 지키고 display_width가 없는 이미지는 자산 도착 시 `clamp(pixel_width, 120, 640)`으로 정한다. 하한 120은 [image.rs:9](../../crates/notes-core/src/image.rs#L9), 상한 640은 지어낸 값이다.
-6. **trash `from:`의 리터럴 `root` 허용** (§3.4) — v2에서 topic의 부모가 NULL이 아니라 `root`라서 생긴 자리.
-8. **보존분 재방출 위치** — frontmatter는 인정 키 뒤·`---` 앞, 주석은 인정 토큰 뒤·` -->` 앞, 만난 순서 (§4.2). trash frontmatter 미지 키는 보존하지 않는다.
-9. **이미지 topic 루트는 문법 밖** — `root` 직계의 `kind=image` 행은 topic 파일로 낼 수 없다. exporter는 그 topic을 export 격리하고 `notes://sync-status`로 알린다. 오늘 UI가 만들 수 없는 상태라 문법을 넓히지 않았다.
-10. **trash 루트 정렬 (sort_key, id) 오름차순** (§3.4).
-11. **프리픽스 규칙** — 체크박스는 todo marker 전용이다. todo가 아닌 노드는 완료여도 `- `로 나가고 완료 상태는 `done` 토큰이 싣는다 (§3.2). 번호 렌더는 UI 몫이라 ordered도 파일에서는 `- `다. 
-12. **id는 UUID만** — [freshId()](../../apps/desktop/src/store/storeSupport.ts#L19)의 비 UUID 폴백(`note-<ts>-<rand>`)이 실제로 발급되면 그 노드는 export 불가다. 폴백 수리는 이 이식 밖의 결함으로 별도 처리한다.
-13. **tombstone 생산자에 undo 역패치 포함** (§3.4) — `TreeMutation::Delete`는 전부 purge다. 생성 명령의 undo가 남긴 tombstone은 "새 노드가 이긴다" 규칙 덕에 무해하다.
-
-**기재만 하는 요구사항 (이 이식이 구현하지 않음, [구현 계획 §8](../superpowers/plans/2026-08-15-notes-sync-port-implementation-plan.md))**: yid 재대응 — 주석을 잃은 손편집 bullet을 텍스트·위치 근접으로 기존 id에 다시 잇는 것. 지금은 신규 발급 + 원본 잔존(중복 발생)이 명세된 동작이다.
-
-## 10. 문서 ↔ 코드 불일치 기록 (코드 우선)
-
-| # | v1 스펙 | v1 코드 | 이 포맷의 처분 |
+| 조각 | 보존 단위 | 재방출 위치 | 순서 |
 |---|---|---|---|
-| 1 | §7.1 `format_version: 2` 키 셋 | `TOPIC_FORMAT_VERSION = 4` + root_marker_kind·root_collapsed·root_readonly·root_markdown_image_width·plugin 일가 ([topic_file.rs:11](../../src-tauri/src/notes/sync/topic_file.rs#L11), [:140-197](../../src-tauri/src/notes/sync/topic_file.rs#L140)) | v1 실물 문법을 참고했을 뿐, 호환은 목표가 아니다 |
-| 2 | §7.3 "`format_version > 2` 격리" | 수용창 3..=4, 2와 누락도 격리 ([topic_parser.rs:98-103](../../src-tauri/src/notes/sync/topic_parser.rs#L98)) | 계승하지 않는다 — 아는 버전은 `1` 하나다 |
-| 3 | §7.3 "키 누락 → 기본값, id만 격리" | 일반 topic에서 root_collapsed·root_readonly 누락을 격리 ([topic_parser.rs:163-168](../../src-tauri/src/notes/sync/topic_parser.rs#L163)) | 스펙 방향(기본값)으로 되돌린다 — 두 키가 사라지거나 선택이 됐다 |
-| 4 | §7.1 "collapsed는 파일에 쓰지 않는다" | v3부터 collapsed 렌더 ([topic_file.rs:431-433](../../src-tauri/src/notes/sync/topic_file.rs#L431)) | 결정 3이 코드 손을 들었다 — 이 포맷도 기록한다 |
-| 5 | 계획 §0 결정 7 "`NotesCommand::Delete`" | `NotesCommand`에 Delete 없음. hard delete는 `TreeMutation::Delete` ([command.rs:169](../../crates/notes-core/src/command.rs#L169), [mutations.rs:56-58](../../crates/notes-sqlite/src/mutations.rs#L56)) | §8 결정 7에 실명으로 고정 |
+| frontmatter 미지 키 | `키: 값` 라인 전체 | 인정 키 전부 뒤, 닫는 `---` 앞 | 만난 순서 |
+| 노드 주석 미지 토큰 | §4.3의 분해 규칙으로 잘라 낸 토큰(값 포함) | 인정 토큰 전부 뒤, ` -->` 앞 | 만난 순서 |
+| ya 주석 미지 토큰 | 동일 | 인정 토큰 뒤, ` -->` 앞 | 만난 순서 |
 
-## 부록 — golden 초안
+같은 상태를 두 번 렌더하면 보존분 포함 바이트가 같다. 보존은 바이트가 아니라 정보를 지키는 것이라 재방출은 언제나 정규형이다.
 
-아래 세 블록이 M2가 `crates/notes-sync/fixtures/`로 커밋할 fixture의 규범 바이트다 (테스트 설계 §4). 코드 펜스 안 내용이 전부이고 각 파일은 마지막 줄 뒤 개행 1개로 끝난다. 값은 전부 지어냈으되 고정이다:
+## 6. 손편집
 
-| 용도 | 값 |
+사용자가 다른 에디터로 vault 파일을 여는 것은 **정상 사용**이다. 무엇을 고쳤느냐에 따라 결과가 갈린다.
+
+| 사용자가 한 일 | 결과 |
 |---|---|
-| device (기기 1 / 기기 2) | `a3f2` / `b7c1` |
-| HLC millis 접두 | `0swkd7qz2` … `0swkd7qzb` (base36 9자, 끝자리만 증가) |
-| topic id (A / B) | `11111111-1111-4111-8111-111111111111` / `aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa` |
-| 노드 id | 부록 본문의 yid 그대로 |
-| 자산 hash | `a` 64개 (png) / `b` 64개 (webp) |
-| sort_key | `4294967296`(STEP), `8589934592`(2×STEP) |
+| **본문만 고치고 주석은 그대로 둠** | 정체성이 남아 있으니 같은 노드다. HLC는 같은데 내용이 다르므로 **파일이 이기고 fresh HLC를 새로 찍어 채택**한다 (v1 A4, [merger.rs:2023-2041](../../src-tauri/src/notes/sync/merger.rs#L2023)). 그 문서는 `needs_write_back`이 되어 다음 방출에서 정규형으로 다시 쓰인다 |
+| 줄을 옮기거나 들여쓰기를 바꿈 | 구조도 같은 규칙을 탄다. 부모와 순서를 줄 위치에서 재구성하고 달라졌으면 fresh HLC로 채택한다 |
+| 새 bullet을 손으로 추가 | yid 없는 줄로 수용되고, 병합이 UUID와 HLC를 발급한 뒤 write-back한다 |
+| **주석을 지움** | 정체성을 잃어 신규 노드로 발급된다. 원본은 DB에 남아 있어 **중복이 생긴다.** 재결합은 이번 범위 밖이다 |
+| 파일 이름·폴더 이름을 바꿈 | 이름은 꾸밈이다. 안의 `id`로 같은 문서임을 알아보고 경로만 갱신한다 |
+| 문법을 깨뜨림 | 문서 전체 격리. **그 파일을 덮어쓰지 않고** 사람이 볼 때까지 그대로 둔다 |
+| 파일을 지움 | 부재는 삭제가 아니다. 다음 방출이 다시 쓴다 |
 
-### A. `topic_golden.md`
+**방출이 손편집을 덮지 않게 하는 규칙.** 파일을 쓰기 직전에 현재 파일의 해시를 `exported_hash`와 대조한다. 다르면 그 사이에 누군가 고친 것이므로 **쓰지 않고 먼저 병합**한다. 이 검사가 없으면 사용자가 에디터에서 고친 내용을 우리 디바운스 방출이 덮는다.
+
+## 7. 분할과 크기
+
+- 임계는 **256KB 또는 노드 2,000개**. 되돌려 합치는 것은 96KB·800개 밑으로 내려왔을 때다.
+- 내보내는 대상은 가장 큰 자식이 아니라 **가장 오래 손대지 않은 직계 자식** — 그 서브트리의 `max_hlc`가 가장 작은 것. 자주 고치는 부분이 작은 파일에 남아야 편집 한 번의 비용이 준다. 문서의 15% 미만인 자식은 후보가 아니다.
+- 되돌려 합칠 때는 반대로 가장 최근에 손댄 자식부터.
+- 한 번에 한 단계만 자른다.
+- **이번 이식에서는 포맷만 만든다.** 자동 승격은 켜지 않고 사용자가 실행하는 "문서로 분리" 명령만 둔다.
+
+## 8. 불변 규칙
+
+v1의 10건을 계승한다.
+
+1. **부재 ≠ 삭제.** 파일에 없는 노드는 지우지 않는다. 삭제는 `trash.md` 이동이라는 증거로만 전파된다.
+2. **병합은 멱등·교환적.** 같은 문서를 두 번 병합하면 no-op이고 순서가 결과를 바꾸지 않는다. 멱등 계약은 발급값이 write-back된 문서부터 적용된다.
+3. **직렬화는 결정적.** 같은 상태 → 같은 바이트.
+4. **방출은 자가 검증한다.** 쓴 바이트를 재파싱해 상태와 다르면 파일을 덮지 않고 dirty를 유지한다.
+5. **원자적 쓰기만.** 임시 파일에 쓰고 이름을 바꾼다.
+6. **명시 HLC는 재스탬프되지 않는다.** 트리거의 WHEN 가드가 보장한다.
+7. **자산 경로는 정규형만.** 경로 탈출은 격리한다.
+8. **캡을 지킨다.** 파일·depth·노드 수·필드 크기. 도메인과 파일이 같은 값을 쓴다.
+9. **격리는 문서 전체.** 부분 적용 금지.
+10. **병합과 부트스트랩은 history 없이 실행된다.** 원격 변경은 undo 스택에 들어가지 않는다.
+
+v2 개정 3건:
+
+- **A. 병합은 워커 큐를 지난다.** 별도 연결로 쓰면 프런트가 든 revision이 조용히 낡는다. 병합 트랜잭션은 **적용된 변경이 있을 때만** revision을 올린다.
+- **B. undo 배리어.** 병합은 `NotesService::absorb_external`을 지나 서비스의 revision 사본을 갱신하고, 병합이 바꾼 노드와 교차하는 undo 항목 위로 `undo_floor`를 올린다. 교차하지 않는 위쪽 항목은 전부 되돌아간다. redo는 교차 시 전체 비운다.
+- **C. 이벤트 계약.** `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }`와 `notes://sync-status`. 이 앱 최초의 Tauri 이벤트다.
+
+## 9. 정책
+
+- **HLC는 내용이 바뀔 때만 전진한다.** 방출 시 노드의 내용 해시를 직전 방출본과 비교해 같으면 그때의 HLC를 그대로 쓴다. 상태를 바꿨다 되돌린 편집이 파일을 건드리지 않게 하는 규칙이다.
+- **미래로 튄 시계.** 로컬 시계보다 24시간 넘게 앞선 HLC는 fresh HLC로 재스탬프하고 기록한다. **그 값을 observe하지 않는다** — 흡수하면 이후 모든 로컬 편집이 미래 스탬프를 받아 정책이 무력해진다.
+- **transport 겹침.** 같은 vault를 두 동기화 클라이언트가 만지는 구성은 문서로 금지하고, 감지되면 경고한다.
+- **conflicted copy는 입력이다.** 우리 포맷이면 병합하고 정본 하나로 다시 쓴 뒤 사본을 `sync-cleanup`으로 치운다. 열어 봤을 때 `id`가 다르면 같은 문서의 두 판이 아니라 서로 다른 문서다 — 폴더 이름 규칙(§3.1)이 애초에 이 상황을 거의 없앤다.
+- **자리표시 파일.** 내용이 아직 없는 파일은 삭제나 절단으로 읽지 않는다. 판별되면 병합하지 않고 재시도한다.
+- **재색인 전에 방출한다.** 재색인은 파일을 진실로 채택하므로 미방출 편집이 남아 있으면 거부한다.
+
+## 10. 확정 결정
+
+| # | 결정 | 이 문서의 어디 |
+|---|---|---|
+| 1 | 클라우드 폴더 동기화 공식 지원, git 미보증 | §5.2의 충돌 마커 격리가 git을 안전하게 만든다 |
+| 2 | 같은 노드 동시 편집은 LWW + 충돌 로그. 문자 병합 안 씀 | §8-1 |
+| 3 | collapsed는 파일에 기록 | §4.3 |
+| 5 | 충돌은 설정 화면 목록 + 복구 버튼 | 로그는 DB |
+| 6 | ~~v1/v4 vault 읽기~~ 취소 | §1 |
+| 7 | purge tombstone 없음 | §2, §8-1 |
+| 8 | 충돌 로그 상한 1,000건 또는 180일 | DB |
+| 10 | Home은 id가 `root`인 평범한 문서 | §3.2 |
+| 11 | 페이지마다 폴더, 이름에 언제나 id 접미사 | §3.1 |
+| 12 | 첨부는 페이지 곁에, 공유되면 루트로 | §3.3 |
+| 13 | 첨부 목록·참조는 DB, 참조 0은 2주 보존 | §3.3 |
+| 14 | 분할 임계 256KB·2,000노드, 오래된 것부터 | §7 |
+| 15 | 개발 중 마이그레이션 없음 | §4.2의 `format_version: 1` |
+| 16 | `title` 신설, 기본값 키 생략, 체크박스는 todo 전용 | §4.2, §4.3 |
+
+git 미보증 문구는 설정 화면의 vault 절에 둔다: "git으로도 동기화할 수 있지만 보증하지 않습니다. 충돌 마커가 들어간 파일은 앱이 건드리지 않고 남겨 둡니다."
+
+**이번 범위 밖으로 남기는 요구사항**: 주석을 잃은 손편집의 재결합(§6), 자동 문서 승격(§7), 휴지통 비우기와 그때 필요해지는 tombstone(§2), `note` 필드의 문자 병합(결정 2).
+
+## 11. golden 초안
+
+M2가 커밋할 fixture의 원본이다. 지어낸 값은 아래로 고정한다 — 재현 가능해야 한다.
+
+| 자리 | 값 |
+|---|---|
+| 페이지 id | `4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1` |
+| 분할 문서 id | `9d3f21b8-c440-4c91-8d02-2e77a05fb163` |
+| 노드 id | `8a201f33-0000-4c91-8d02-0000000000NN` |
+| device | `a3f2` |
+| HLC | `0swkd7qz5-00-a3f2`부터 counter 증가 |
+
+### A. `Projects-4f1c8e20a3b7/README.md`
 
 ```
 ---
 kind: yonalist-notes
 format_version: 1
-id: 11111111-1111-4111-8111-111111111111
-sort_key: 4294967296
-max_hlc: 0swkd7qz7-00-a3f2
-root_hlc: 0swkd7qz2-00-a3f2
-root_marker_kind: bullet
-root_ordered_start: 1
-root_collapsed: false
-root_completed: true
+id: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1
+title: "Projects"
+max_hlc: 0swkd7qz9-00-a3f2
+root_hlc: 0swkd7qz5-00-a3f2
 root_starred: true
 ---
-# Groceries &amp; Supplies
-> Weekly staples
->
-> and &amp; treats
+# Projects
+> 이번 분기에 손대는 것만.
 
-- Milk &amp; bread <!-- yid: 22222222-2222-4222-8222-222222222222 t: 0swkd7qz4-00-a3f2 star -->
-  > first note
-  >
-  > second &gt; line
-- [ ] Call Anna <!-- yid: 33333333-3333-4333-8333-333333333333 t: 0swkd7qz5-00-a3f2 todo -->
-  - Child <!-- yid: 44444444-4444-4444-8444-444444444444 t: 0swkd7qz6-00-a3f2 done collapsed -->
-- Steps <!-- yid: 55555555-5555-4555-8555-555555555555 t: 0swkd7qz7-00-a3f2 ordered: 3 -->
+- 아키텍처 다시 그리기 <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 -->
+  - [ ] 크레이트 경계 정리 <!-- yid: 8a201f33-0000-4c91-8d02-000000000002 t: 0swkd7qz7-00-a3f2 todo -->
+  - ![아키텍처.png](assets/아키텍처-9f3a1c8e2044.png) <!-- ya: w: 320 px: 1280x720 bytes: 421904 --> <!-- yid: 8a201f33-0000-4c91-8d02-000000000003 t: 0swkd7qz8-00-a3f2 -->
+- 정리한 것 <!-- yid: 8a201f33-0000-4c91-8d02-000000000004 t: 0swkd7qz9-00-a3f2 done collapsed -->
 ```
 
-덮는 계약: 전 frontmatter 키, 루트 note 블록, star, 미완료 todo(`- [ ]` + `todo`), 완료된 일반 블릿(`- ` + `done`), collapsed, ordered, 자식 들여쓰기, 노트 이스케이프.
+덮는 계약: 기본값 키 생략(`sort_key`·`root_marker_kind` 등이 없다), 루트 note 블록, `root_starred`, 미완료 todo, 완료된 일반 블릿(`done`), collapsed, 자식 들여쓰기, 상대 경로 이미지 링크, 링크 텍스트가 진 원본 파일명, `max_hlc`가 문서 최댓값.
 
-### B. `topic_images_golden.md`
-
-```
----
-kind: yonalist-notes
-format_version: 1
-id: aaaaaaaa-1111-4aaa-8aaa-aaaaaaaaaaaa
-sort_key: 8589934592
-max_hlc: 0swkd7qz5-00-b7c1
-root_hlc: 0swkd7qz2-00-b7c1
-root_marker_kind: bullet
-root_ordered_start: 1
-root_collapsed: false
-root_completed: false
-root_starred: false
----
-# Trip Photos
-
-- Day one <!-- yid: bbbbbbbb-2222-4bbb-8bbb-bbbbbbbbbbbb t: 0swkd7qz3-00-b7c1 -->
-  - ![Image](.yonalist/notes-assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png) <!-- ya: name: photo%20one.png w: 320 px: 1280x960 bytes: 48213 --> <!-- yid: cccccccc-3333-4ccc-8ccc-cccccccccccc t: 0swkd7qz4-00-b7c1 -->
-    > taken at the harbor
-- ![Image](.yonalist/notes-assets/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.webp) <!-- ya: name: diagram.webp w: 480 px: 800x600 bytes: 10240 --> <!-- yid: dddddddd-4444-4ddd-8ddd-dddddddddddd t: 0swkd7qz5-00-b7c1 -->
-```
-
-덮는 계약: 빈 루트 note(헤딩 뒤 빈 줄 1개), 자식 이미지 노드, 이미지 노드의 note, 최상위 이미지 노드, ya 4토큰 순서, percent 인코딩, png·webp 확장자.
-
-### C. `trash_golden.md`
+### B. `.yonalist/trash.md`
 
 ```
 ---
 kind: yonalist-trash
 format_version: 1
-max_hlc: 0swkd7qzb-00-a3f2
-purged: 66666666-6666-4666-8666-666666666666 0swkd7qz7-00-a3f2
-purged: 77777777-7777-4777-8777-777777777777 0swkd7qz8-00-a3f2
+max_hlc: 0swkd7qzc-00-a3f2
 ---
-- Old page <!-- yid: eeeeeeee-5555-4eee-8eee-eeeeeeeeeeee t: 0swkd7qz9-00-a3f2 from: root@4294967296 -->
-- Deleted <!-- yid: 88888888-8888-4888-8888-888888888888 t: 0swkd7qza-00-a3f2 from: 99999999-9999-4999-8999-999999999999@8589934592 -->
-  - Child <!-- yid: aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa t: 0swkd7qzb-00-a3f2 done -->
+- Old page <!-- yid: 8a201f33-0000-4c91-8d02-000000000005 t: 0swkd7qza-00-a3f2 from: root@4294967296 -->
+- Deleted <!-- yid: 8a201f33-0000-4c91-8d02-000000000006 t: 0swkd7qzb-00-a3f2 from: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1@8589934592 -->
+  - Child <!-- yid: 8a201f33-0000-4c91-8d02-000000000007 t: 0swkd7qzc-00-a3f2 done -->
 ```
 
-덮는 계약: purged 정렬, 삭제된 topic의 `from: root@…`, 일반 trash 루트의 `from: <uuid>@<sort_key>`, from 없는 자식, trash 루트 (sort_key, id) 정렬(4294967296 < 8589934592).
+덮는 계약: 삭제된 페이지의 `from: root@…`, 일반 trash 루트의 `from: <uuid>@<sort_key>`, `from` 없는 자식, trash 루트 `(sort_key, id)` 정렬, `id`·`title` 키 없음.
+
+### C. `Projects-4f1c8e20a3b7/2024-아카이브-9d3f21b8c440/README.md`
+
+```
+---
+kind: yonalist-notes
+format_version: 1
+id: 9d3f21b8-c440-4c91-8d02-2e77a05fb163
+title: "2024 아카이브"
+parent: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1
+sort_key: 4294967296
+max_hlc: 0swkd7qze-00-a3f2
+root_hlc: 0swkd7qzd-00-a3f2
+---
+# 2024 아카이브
+
+- 3월 회고 <!-- yid: 8a201f33-0000-4c91-8d02-000000000008 t: 0swkd7qze-00-a3f2 -->
+```
+
+부모 문서에 남는 줄:
+
+```
+- [2024 아카이브](2024-아카이브-9d3f21b8c440/README.md) <!-- yid: 9d3f21b8-c440-4c91-8d02-2e77a05fb163 t: 0swkd7qzd-00-a3f2 split -->
+```
+
+덮는 계약: `parent`·`sort_key` 존재, `split` 토큰, 링크 대상 경로, **자식 문서의 `id`가 부모 줄의 `yid`와 같다는 것**.
