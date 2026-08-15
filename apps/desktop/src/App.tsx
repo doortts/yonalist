@@ -24,6 +24,7 @@ import {
   type AppNavigationLocation
 } from "./appNavigation";
 import { NotesDetailPanes } from "./NotesDetailPanes";
+import { VaultSetupCard } from "./VaultSetupCard";
 import { ROOT_ID } from "./store/storeSupport";
 import type { OutlineTagToken } from "./outline/OutlineTextField";
 import { ShortcutHint, useShortcutHints } from "./shortcutHints";
@@ -57,9 +58,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   const readVaultPath = useCallback(() => api.syncVaultGet(), [api]);
   // The settings screen only needs the choice recorded; what the folder held
   // is the first-run card's business.
+  const chooseVaultPath = useCallback(
+    (path: string) => api.syncVaultSet(path),
+    [api]
+  );
   const setVaultPath = useCallback(async (path: string) => {
-    await api.syncVaultSet(path);
-  }, [api]);
+    await chooseVaultPath(path);
+  }, [chooseVaultPath]);
   const [libraryView, setLibraryView] = useState<LibraryView>("all");
   const [sidebarWidth, setSidebarWidth] = useState(336);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -554,6 +559,12 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           document.body.classList.add("is-resizing-pane");
         }}
       />
+      {!settingsOpen && (
+        <VaultSetupCard
+          readVaultPath={readVaultPath}
+          setVaultPath={chooseVaultPath}
+        />
+      )}
       {settingsOpen ? (
         <Suspense fallback={<p className="notes-pane-state">Loading settings...</p>}>
           <SettingsView

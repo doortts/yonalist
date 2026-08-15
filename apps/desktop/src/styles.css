@@ -1913,6 +1913,26 @@ body.is-resizing-pane {
   line-height: 1.55;
 }
 
+.vault-setup-card {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  z-index: 5;
+  display: grid;
+  gap: 10px;
+  max-width: 380px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
+}
+
+.vault-setup-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .settings-path {
   max-width: 680px;
   margin: 0;
