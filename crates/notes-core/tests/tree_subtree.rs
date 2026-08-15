@@ -37,8 +37,9 @@ fn plan_and_apply(tree: &mut NotesTree, command: NotesCommand) {
 }
 
 /// The uuid the duplication is keyed on. Fixed so the derived ids below stay
-/// reproducible.
-const COPY_ID: &str = "0f3c5a71-2b64-4d18-8e05-9a6c3d21b7f4";
+/// reproducible, and spelled in upper case so the derivation's lowercasing is
+/// load-bearing: drop it and every golden below moves.
+const COPY_ID: &str = "0F3C5A71-2B64-4D18-8E05-9A6C3D21B7F4";
 
 #[test]
 fn duplicating_a_deep_subtree_copies_it_in_document_order_without_deleted_rows() {
@@ -71,8 +72,8 @@ fn duplicating_a_deep_subtree_copies_it_in_document_order_without_deleted_rows()
     );
 
     // Copied ids are a uuid v5 derivation over the ordinal the walk hands out,
-    // so these golden values pin the namespace, the name format and the walk
-    // order together. Change any one of the three and these strings move.
+    // so these golden values pin the namespace, the name format, the key's
+    // lowercasing and the walk order together. Change any one and they move.
     let zeta = id("35a2fca0-9399-5157-8bdf-2442731c491a");
     let yak = id("74884284-e696-5c05-9c70-04d14a156fcc");
     let beta = id("5603c89b-011e-54d5-9e4d-6c95054f50a7");

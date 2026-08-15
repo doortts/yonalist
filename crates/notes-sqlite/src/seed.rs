@@ -76,12 +76,7 @@ pub(crate) fn seed_onboarding(connection: &mut Connection) -> Result<(), Storage
                 .execute(
                     "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text)
                      VALUES (?1, ?2, ?3, 'bullet', ?4)",
-                    params![
-                        child_id,
-                        ONBOARDING_PAGE_ID,
-                        ordinal * SORT_KEY_STEP,
-                        title
-                    ],
+                    params![child_id, ONBOARDING_PAGE_ID, ordinal * SORT_KEY_STEP, title],
                 )
                 .map_err(internal)?;
         }
