@@ -5,16 +5,37 @@ use rusqlite::{Connection, TransactionBehavior, params};
 use crate::repository::internal;
 
 const ONBOARDING_MARKER_KEY: &str = "onboarding_seeded";
-const ONBOARDING_PAGE_ID: &str = "onboarding-page";
+/// Fixed uuids rather than readable strings: every id the vault carries is a
+/// uuid, and the seed writes rows like any other producer. They are constants
+/// so a reseeded database lands on the same ids it had before.
+const ONBOARDING_PAGE_ID: &str = "f4556d3d-868c-5fab-914a-614c84331c53";
 const ONBOARDING_TITLE: &str = "Yonalist 시작하기";
 const ONBOARDING_NOTE: &str = "이 노트는 자유롭게 수정하거나 삭제할 수 있어요.";
-const ONBOARDING_CHILDREN: [&str; 6] = [
-    "Enter — 새 항목 만들기",
-    "Tab / Shift+Tab — 들여쓰기 / 내어쓰기",
-    "Shift+Enter — 설명 입력하기",
-    "⌘/Ctrl+Enter — 완료 표시",
-    "↑/↓ — 항목 사이 이동",
-    "불릿을 드래그해 순서와 계층 바꾸기",
+const ONBOARDING_CHILDREN: [(&str, &str); 6] = [
+    (
+        "5c64635d-db37-5efc-b331-fd3687acbd5d",
+        "Enter — 새 항목 만들기",
+    ),
+    (
+        "a18820a4-633c-5bd2-abcf-91a98b9f775c",
+        "Tab / Shift+Tab — 들여쓰기 / 내어쓰기",
+    ),
+    (
+        "89c02706-d65d-5691-a17c-397339acdeff",
+        "Shift+Enter — 설명 입력하기",
+    ),
+    (
+        "5915228f-fbc6-5d8d-8206-e0eab04009f1",
+        "⌘/Ctrl+Enter — 완료 표시",
+    ),
+    (
+        "36c840c3-4964-5ea8-8a1e-2e94880821eb",
+        "↑/↓ — 항목 사이 이동",
+    ),
+    (
+        "8b425319-cfc2-5dac-b7a1-553473556311",
+        "불릿을 드래그해 순서와 계층 바꾸기",
+    ),
 ];
 
 /// Seeds the first-run onboarding page exactly once per database. Existing
@@ -48,7 +69,7 @@ pub(crate) fn seed_onboarding(connection: &mut Connection) -> Result<(), Storage
                 ],
             )
             .map_err(internal)?;
-        for (index, title) in ONBOARDING_CHILDREN.iter().enumerate() {
+        for (index, (child_id, title)) in ONBOARDING_CHILDREN.iter().enumerate() {
             let ordinal = i64::try_from(index + 1)
                 .map_err(|_| StorageError::Internal("onboarding ordinal overflowed".into()))?;
             transaction
@@ -56,7 +77,7 @@ pub(crate) fn seed_onboarding(connection: &mut Connection) -> Result<(), Storage
                     "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text)
                      VALUES (?1, ?2, ?3, 'bullet', ?4)",
                     params![
-                        format!("onboarding-guide-{ordinal}"),
+                        child_id,
                         ONBOARDING_PAGE_ID,
                         ordinal * SORT_KEY_STEP,
                         title
@@ -89,6 +110,27 @@ mod tests {
         connection
             .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get(0))
             .expect("count")
+    }
+
+    #[test]
+    fn the_onboarding_seed_uses_uuids() {
+        let mut connection = open();
+        seed_onboarding(&mut connection).expect("seed");
+
+        let ids: Vec<String> = connection
+            .prepare("SELECT id FROM notes_nodes WHERE id <> 'root' ORDER BY id")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .collect::<Result<_, _>>()
+            .expect("rows");
+        assert_eq!(ids.len(), 7);
+        for id in &ids {
+            assert!(
+                uuid::Uuid::try_parse(id).is_ok(),
+                "the vault can only carry uuid ids, got {id}"
+            );
+        }
     }
 
     #[test]

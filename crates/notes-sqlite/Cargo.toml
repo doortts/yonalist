@@ -16,6 +16,7 @@ rusqlite.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
 unicode-normalization = "0.1.25"
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile = "3.27.0"

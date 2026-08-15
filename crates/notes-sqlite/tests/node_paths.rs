@@ -88,6 +88,19 @@ fn sort_key(database: &Path, id: &str) -> i64 {
         .expect("sort key")
 }
 
+/// The onboarding row the seed writes before any command runs, and so the only
+/// root child present at this point.
+fn seeded_page(database: &Path) -> String {
+    rusqlite::Connection::open(database)
+        .expect("inspect database")
+        .query_row(
+            "SELECT id FROM notes_nodes WHERE parent_id = 'root'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("seeded onboarding page")
+}
+
 /// A workspace with a nested branch, a negative sort key and a trashed subtree,
 /// which is every shape the path construction branches on.
 fn build_workspace(database: &Path) {
@@ -191,6 +204,10 @@ fn every_command_leaves_the_stored_path_equal_to_the_cte() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database = directory.path().join("notes-v2.sqlite");
     let storage = SqliteStorage::open(&database).expect("open storage");
+    // The seeded onboarding page is the one row that arrived without a command,
+    // so it is read back rather than named: its id belongs to the seed, not to
+    // this test.
+    let seeded_page_id = seeded_page(&database);
     let service = NotesService::new(&storage, "session", 0);
     let mut outline = Outline {
         database: database.clone(),
@@ -388,10 +405,10 @@ fn every_command_leaves_the_stored_path_equal_to_the_cte() {
         },
         IpcNotesCommand::RestoreSubtree { id: "beta".into() },
         IpcNotesCommand::DeleteSubtree {
-            id: "onboarding-page".into(),
+            id: seeded_page_id.clone(),
         },
         IpcNotesCommand::RestoreSubtree {
-            id: "onboarding-page".into(),
+            id: seeded_page_id.clone(),
         },
     ] {
         outline.run(&service, command);
