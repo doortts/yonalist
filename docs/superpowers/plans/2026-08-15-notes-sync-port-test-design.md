@@ -142,7 +142,7 @@ M2.1의 첫 red: `golden_topic_renders_byte_identical`(fixture는 있는데 렌�
 
 ### 6.3 충돌 IPC (M3.4)
 
-`crates/notes-sqlite/tests/sync_merge_seam.rs` 이어서: `conflicts_page_returns_recorded_losers`(읽기 + 페이로드 직렬화 — camelCase wire 모양은 adapter `lib.rs` 테스트 관례처럼 serde_json으로 고정), `restoring_a_conflict_reapplies_the_loser_as_a_new_edit`(복구 = 새 편집, LWW로 전파), `the_log_is_pruned_past_its_retention_caps`(개수·기간 상한 — 값은 미해결 2 확정 후).
+`crates/notes-sqlite/tests/sync_merge_seam.rs` 이어서: `conflicts_page_returns_recorded_losers`(읽기 + 페이로드 직렬화 — camelCase wire 모양은 adapter `lib.rs` 테스트 관례처럼 serde_json으로 고정), `restoring_a_conflict_reapplies_the_loser_as_a_new_edit`(복구 = 새 편집, LWW로 전파), `the_log_is_pruned_past_its_retention_caps`(1,000건 또는 180일 중 먼저 닿는 쪽 — 계획 결정 8. 두 상한을 각각 넘기는 케이스 2개로 나눈다).
 
 ### 6.4 충돌 UI (M3.5)
 

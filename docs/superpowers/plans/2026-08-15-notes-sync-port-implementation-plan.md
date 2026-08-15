@@ -18,6 +18,14 @@
 | 5 | 충돌 노출: 설정 화면 목록 + 복구 버튼. 노드 인라인 배지 없음 |
 | 6 | 포맷 버전: v5 재정의. 파서는 v1/v4 vault를 관대하게 읽고 미지 필드를 보존 |
 
+설계 검토에서 드러난 3건도 사용자가 확정했다(2026-08-15).
+
+| # | 결정 |
+|---|---|
+| 7 | purge의 v2 경로: 기존 `NotesCommand::Delete`를 purge로 정의해 이중 증거 tombstone을 남긴다. 휴지통 비우기 UI는 이 이식의 범위 밖 |
+| 8 | conflict log 보존 상한: 1,000건 또는 180일 중 먼저 닿는 쪽 |
+| 9 | M6 수동 증거: 파일 복사 모사에 더해 실 transport(iCloud 또는 Syncthing) 1회 확인을 포함 |
+
 범위 결정: **M0–M6 전부를 항목·의존·완료 조건 입도로 다루고, M0·M1은 추가로 실행 수준(커밋 단위 항목 + 항목별 red 테스트)까지 확정한다.** M2–M6의 실행 수준 분해는 선행 마일스톤의 코드가 생긴 뒤에 한다.
 
 ### 마이그레이션 결정 (사용자 확정)
@@ -172,7 +180,7 @@ M5에서 `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }`를 
 | Manual proof | N/A |
 
 **M0.1** — `docs/v2/sync-spec.md` 신규 작성. 내용:
-- 포맷 v5 문법 전체: frontmatter 키 셋(v2 도메인 정합: kind/text/note/marker/ordered_start/collapsed/completed/starred), 노드 주석 토큰(`yid`/`t`/star/collapsed/ordered_start), 이미지 라인(정규형 `.yonalist/notes-assets/<sha256>.<ext>` + `ya:` 메타), trash.md(v2는 `deleted` boolean이고 삭제 행이 parent_id·sort_key를 유지하므로 `from:` 메타는 행 자체에서 파생), purge 이중 증거의 v2 대응(어느 명령 경로가 purge인지: `NotesCommand::Delete`가 후보, §9 미해결 1).
+- 포맷 v5 문법 전체: frontmatter 키 셋(v2 도메인 정합: kind/text/note/marker/ordered_start/collapsed/completed/starred), 노드 주석 토큰(`yid`/`t`/star/collapsed/ordered_start), 이미지 라인(정규형 `.yonalist/notes-assets/<sha256>.<ext>` + `ya:` 메타), trash.md(v2는 `deleted` boolean이고 삭제 행이 parent_id·sort_key를 유지하므로 `from:` 메타는 행 자체에서 파생), purge 이중 증거의 v2 대응 — `NotesCommand::Delete`가 purge다(결정 7). 이 명령이 tombstone을 남기는 유일한 경로임을 스펙이 못 박는다.
 - v4 대비 삭제 필드(readonly, plugin, plugin_children, collapsed_groups, miw)와 보존 규칙: 파서는 미지 frontmatter 키·주석 토큰을 원문 그대로 `sync_extras`에 실어 왕복시킨다(결정 6). 재방출 위치·순서 규칙을 결정적으로 고정.
 - 관대함 표(v1 §7.3 계승 + `format_version <= 5` 수용), 불변 규칙 10건 계승 선언 + v2 개정 3건(병합은 워커 큐 경유·revision 규약, undo 배리어, 이벤트 계약).
 - 신규 리스크 정책 4건: 90일 창 초과 스냅샷 격리, 24h 초과 미래 HLC fresh 재스탬프 + 로그, transport 겹침 문서 경고, conflicted copy 병합 승격(병합·재작성 성공 시 `sync-cleanup` 은퇴 이동, v1 메커니즘 유지).
@@ -265,7 +273,7 @@ M5에서 `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }`를 
 | M3.1 | `merger.rs` 이식(6,766줄 원본): LWW, A4 손편집 수용, purge tombstone, 결정적 cycle 파킹, lifecycle repair(`repair.rs` 흡수), conflict log 중복 없는 기록, needs_write_back 판단, `sync_extras` upsert, 24h 초과 미래 HLC 재스탬프(신규 정책) | 병합 대수 property + 단위 테스트 (테스트 설계 §5·§6.1) | M2 |
 | M3.2 | 워커 접합: `Request::MergeTopic` + `SqliteStorage::merge_topic` + 변경 시에만 revision +1 | 워커 seam 통합 테스트 (테스트 설계 §6.2) | M3.1, M1.4 |
 | M3.3 | `NotesService::absorb_external` + `undo_floor` 배리어 + redo 교차 정리(§4.3) | 배리어 테스트 3종, Rust 단독 (테스트 설계 §7) | M3.2 |
-| M3.4 | conflict log 읽기·복구·정리: `notes_sync_conflicts` / `notes_sync_restore_conflict` 명령, 보존 상한(개수+기간, `maintenance.rs` 계승), `SyncConflict` ts-rs 계약, 명령 리플 3파일 | IPC 페이로드 왕복 + 상한 테스트 (테스트 설계 §6.3) | M3.1 |
+| M3.4 | conflict log 읽기·복구·정리: `notes_sync_conflicts` / `notes_sync_restore_conflict` 명령, 보존 상한 1,000건 또는 180일(결정 8, `maintenance.rs` 계승), `SyncConflict` ts-rs 계약, 명령 리플 3파일 | IPC 페이로드 왕복 + 상한 테스트 (테스트 설계 §6.3) | M3.1 |
 | M3.5 | `SettingsView.tsx` 충돌 목록 + 복구 버튼(결정 5 — 인라인 배지 없음) | 프런트 테스트 (테스트 설계 §6.4) | M3.4 |
 
 ### M4 — 방출 (3항목)
@@ -309,7 +317,7 @@ M5에서 `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }`를 
 | Acceptance | M6-1 v1 §12 매트릭스 10시나리오 / M6-2 신규 4시나리오 / M6-3 성능 계약(증분 부트스트랩·질의 수 상한·기존 스위트 무회귀) |
 | Non-goals | production 수정은 테스트가 드러낸 최소 결함에 한정 |
 | Boundaries | Rust 테스트 + 성능 게이트 |
-| Manual proof | 데이터 디렉터리 2개 + vault 1개로 앱 2회 기동 → 교차 편집 수렴 확인 |
+| Manual proof | 데이터 디렉터리 2개 + vault 1개로 앱 2회 기동 → 교차 편집 수렴 확인. 여기에 더해 실 transport 1회(결정 9): vault를 iCloud Drive 또는 Syncthing 폴더에 두고 기기 2대로 편집 → 수렴·격리 없음 확인. 자동 테스트의 복사 모사가 못 보는 placeholder·지연·conflicted copy 실물이 이 확인의 대상이다 |
 
 | 항목 | 내용 | 완료 조건 | 의존 |
 |---|---|---|---|
@@ -345,8 +353,6 @@ Clippy는 접촉 경계와 직접 관련될 때만 기준선 대비로 본다(�
 - **v1 트리 수정** — v1은 동결 oracle. 이식은 복사다.
 - 기존 수동 `notes_export`(markdown/PDF, `crates/notes-export`)는 topic 포맷과 별개 기능으로 무수정.
 
-## 9. 미해결 질문 (사용자 결정 필요)
+## 9. 미해결 질문
 
-1. **purge의 v2 사용자 경로.** 이중 증거 tombstone을 만드는 "휴지통 비우기"에 해당하는 v2 동작이 아직 없다(`NotesCommand::Delete`는 있으나 UI 연결 미확인). M0 스펙에서 (a) 기존 hard `Delete` 경로를 purge로 정의할지 (b) 휴지통 비우기 UI를 이 이식에 포함할지 결정이 필요하다. 전자는 코드가 작고 후자는 UX가 완결된다.
-2. **conflict log 보존 상한의 기본값.** 개수·기간 상한 신설은 확정인데 값이 없다. 제안: 1,000건 또는 180일 중 먼저 닿는 쪽. M0 스펙에 박기 전에 확인.
-3. **M6 수동 증거의 transport.** 실제 iCloud/Syncthing 폴더로 한 번 돌려볼지, 파일 복사 모사로 충분한지. 자동 테스트는 모사로 충분하지만 출하 전 실 transport 1회 확인을 M6 수동 증거에 넣을지 결정.
+없다. 설계 검토가 남긴 3건은 결정 7·8·9로 확정했다(§0). 새 질문이 생기면 여기에 쌓는다.
