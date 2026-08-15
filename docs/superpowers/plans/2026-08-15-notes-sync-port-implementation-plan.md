@@ -174,7 +174,7 @@ M5에서 `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }`를 
   - `sync_conflict_log`(seq INTEGER PK AUTOINCREMENT, node_id, loser_json, loser_hlc, winner_hlc, recorded_at)
   - `sync_assets`(content_hash PK, disk_name, location, unreferenced_at) — 첨부가 페이지 폴더에 있는지 루트에 있는지, 참조 0이 된 시각. **참조 수는 저장하지 않고 노드에서 센다**(결정 13)
 - `sync_purged_tombstones`는 만들지 않는다(결정 7).
-- 트리거 3개: v1 `src-tauri/src/notes/schema.rs:208-228`의 `notes_nodes_hlc_ai / _au / _ad`를 그대로 가져온다. INSERT는 `WHEN NEW.hlc = ''`, UPDATE는 `WHEN NEW.hlc = OLD.hlc`일 때만 `yona_hlc()`로 스탬프하고 dirty에 upsert. 병합이 hlc를 명시하면 미발화(불변 규칙 6). `PRAGMA recursive_triggers`는 기본 OFF 전제 — 어디서도 켜지 않는다. hlc UPDATE는 `text, note`를 건드리지 않아 FTS 트리거(`schema.rs:199`)와 간섭 없다.
+- 트리거 3개: v1 `src-tauri/src/notes/schema.rs:208-228`의 `notes_nodes_hlc_ai / _au / _ad`를 가져오되 **UPDATE 트리거는 컬럼을 한정한다**(적대적 리뷰 결과). v1의 `notes_nodes`에는 없던 파생 컬럼 `path`가 v2에 있고, 이동 한 번이 서브트리 전체의 `path`를 다시 쓴다. 컬럼을 안 적으면 손대지 않은 자손이 전부 재스탬프되어, 그 판독이 다른 기기의 진짜 편집을 이긴다 — 스펙 §9의 "HLC는 내용이 바뀔 때만 전진한다"가 DB 층에서 깨진다. INSERT는 `WHEN NEW.hlc = ''`, UPDATE는 `WHEN NEW.hlc = OLD.hlc`일 때만 `yona_hlc()`로 스탬프하고 dirty에 upsert. 병합이 hlc를 명시하면 미발화(불변 규칙 6). `PRAGMA recursive_triggers`는 기본 OFF 전제 — 어디서도 켜지 않는다. hlc UPDATE는 `text, note`를 건드리지 않아 FTS 트리거(`schema.rs:199`)와 간섭 없다.
 - `yona_hlc()` 등록: 워커 스레드가 Connection을 만든 직후(`worker.rs:160-175`) `notes_sync::hlc::register(&connection)` 호출. rusqlite `functions` feature는 이미 켜져 있다(루트 `Cargo.toml:22`).
 - `user_version`은 1 그대로(`SCHEMA_VERSION = 1`, `MIGRATIONS`는 빈 목록). 버전 분기 없음.
 

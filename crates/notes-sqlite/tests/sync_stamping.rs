@@ -103,6 +103,85 @@ fn a_command_commit_stamps_hlc_and_marks_dirty() {
 }
 
 #[test]
+fn moving_a_parent_leaves_its_descendants_unstamped() {
+    let (_directory, database) = workspace();
+    let storage = SqliteStorage::open(&database).expect("open");
+    let page = seeded_page(&database);
+    let mut revision: u64 = inspect(&database)
+        .query_row("SELECT revision FROM notes_meta", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("revision") as u64;
+    for (id, parent) in [
+        ("branch", page.as_str()),
+        ("leaf", "branch"),
+        ("elsewhere", "root"),
+    ] {
+        revision = run(
+            &storage,
+            IpcNotesCommand::CreateNode {
+                id: id.into(),
+                parent_id: parent.into(),
+                before_id: None,
+                text: id.into(),
+            },
+            revision,
+        );
+    }
+    let before: String = inspect(&database)
+        .query_row("SELECT hlc FROM notes_nodes WHERE id = 'leaf'", [], |row| {
+            row.get(0)
+        })
+        .expect("hlc");
+    inspect(&database)
+        .execute("DELETE FROM sync_dirty_nodes", [])
+        .expect("clear");
+
+    // The move rewrites the stored path of everything under `branch`. Those
+    // rows did not change, so nothing about them may look newer.
+    run(
+        &storage,
+        IpcNotesCommand::MoveNode {
+            id: "branch".into(),
+            parent_id: "elsewhere".into(),
+            before_id: None,
+        },
+        revision,
+    );
+
+    let connection = inspect(&database);
+    let path: String = connection
+        .query_row(
+            "SELECT path FROM notes_nodes WHERE id = 'leaf'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("path");
+    assert!(
+        path.contains("elsewhere"),
+        "the move has to have rewritten the descendant's path, or this proves nothing"
+    );
+    let after: String = connection
+        .query_row("SELECT hlc FROM notes_nodes WHERE id = 'leaf'", [], |row| {
+            row.get(0)
+        })
+        .expect("hlc");
+    assert_eq!(
+        after, before,
+        "a row whose content did not change must not get a newer reading, \
+         or a move on this device beats a real edit on another one"
+    );
+    let dirty: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = 'leaf'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("dirty");
+    assert_eq!(dirty, 0, "and it does not need re-exporting either");
+}
+
+#[test]
 fn user_version_stays_one() {
     let (_directory, database) = workspace();
     drop(SqliteStorage::open(&database).expect("open"));
@@ -195,20 +274,25 @@ fn an_hlc_stamp_does_not_touch_the_fts_index() {
     let (_directory, database) = workspace();
     drop(SqliteStorage::open(&database).expect("open"));
     let connection = writer(&database);
-    let before: i64 = connection
-        .query_row("SELECT COUNT(*) FROM notes_fts", [], |row| row.get(0))
-        .expect("count");
-
+    // A cost contract, so what it measures is work done: the search index is
+    // rebuilt by delete-then-insert, which leaves the same rows behind and can
+    // only be seen in the row count the connection reports.
     connection
-        .execute("UPDATE notes_nodes SET hlc = '' WHERE id = 'root'", [])
-        .expect("restamp");
+        .execute("UPDATE notes_nodes SET collapsed = 0 WHERE id = 'root'", [])
+        .expect("settle");
+    let before = connection.total_changes();
 
-    let after: i64 = connection
-        .query_row("SELECT COUNT(*) FROM notes_fts", [], |row| row.get(0))
-        .expect("count");
+    // A content column the search index does not follow, so the stamping
+    // trigger fires here and the FTS one must not.
+    connection
+        .execute("UPDATE notes_nodes SET collapsed = 1 WHERE id = 'root'", [])
+        .expect("collapse");
+
+    let changed = connection.total_changes() - before;
     assert_eq!(
-        before, after,
-        "the search index follows text and note, not the clock"
+        changed, 3,
+        "the row, its stamp and its dirty mark — the search index follows text \
+         and note, and a stamp on anything else must not rewrite it"
     );
 }
 
@@ -248,7 +332,9 @@ fn the_clock_reseeds_from_stored_hlcs_on_boot() {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("epoch")
             .as_millis() as u64
-            + 60_000;
+            // Well clear of anything this run issues, and well inside the 24h
+            // the drift guard allows, so a slow machine cannot false-pass it.
+            + 12 * 60 * 60 * 1_000;
         notes_sync::hlc::Hlc::new(millis, 0, "b1c2")
             .expect("hlc")
             .encode()

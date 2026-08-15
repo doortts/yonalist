@@ -79,9 +79,10 @@ pub struct SqliteStorage {
 }
 
 /// The four hexadecimal characters an HLC carries to break ties between
-/// devices. Seeded once per database and never changed: a device that renamed
-/// itself would look like a different one to every merge.
-fn device_id(connection: &Connection) -> Result<String, StorageError> {
+/// devices, provisioning the row on first open along with the vault's own id.
+/// Never changed after that: a device that renamed itself would look like a
+/// different one to every merge.
+fn ensure_device_id(connection: &Connection) -> Result<String, StorageError> {
     let existing: Option<String> = connection
         .query_row(
             "SELECT device_id FROM sync_meta WHERE singleton = 1",
@@ -95,13 +96,22 @@ fn device_id(connection: &Connection) -> Result<String, StorageError> {
     }
     let device_id = uuid::Uuid::new_v4().simple().to_string()[..4].to_owned();
     let vault_uuid = uuid::Uuid::new_v4().to_string();
+    // Two processes can both find it empty; the one that loses reads back what
+    // the other wrote rather than failing the open on the singleton key.
     connection
         .execute(
-            "INSERT INTO sync_meta(singleton, device_id, vault_uuid) VALUES (1, ?1, ?2)",
+            "INSERT INTO sync_meta(singleton, device_id, vault_uuid) VALUES (1, ?1, ?2)
+             ON CONFLICT(singleton) DO NOTHING",
             rusqlite::params![device_id, vault_uuid],
         )
         .map_err(|error| StorageError::Internal(error.to_string()))?;
-    Ok(device_id)
+    connection
+        .query_row(
+            "SELECT device_id FROM sync_meta WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| StorageError::Internal(error.to_string()))
 }
 
 impl SqliteStorage {
@@ -197,19 +207,23 @@ impl SqliteStorage {
                     // exist to read the device from, and the stamping triggers
                     // call `yona_hlc()` on every insert after this point.
                     let clock = Arc::new(
-                        Clock::new(&device_id(&connection)?).map_err(StorageError::Internal)?,
+                        Clock::new(&ensure_device_id(&connection)?)
+                            .map_err(StorageError::Internal)?,
                     );
                     hlc::register(&connection, Arc::clone(&clock))
                         .map_err(StorageError::Internal)?;
+                    // Before anything writes. The seed and the root repair both
+                    // stamp, and stamping from a clock that has not caught up to
+                    // the stored readings is the non-monotonicity the reseed
+                    // exists to prevent. It only reads, so on a first boot this
+                    // is a no-op against empty tables.
+                    hlc::reseed(&clock, &connection).map_err(StorageError::Internal)?;
                     if seed_onboarding {
                         crate::seed::seed_onboarding(&mut connection)?;
                     }
                     // After the seed so the onboarding page is adopted like any
                     // other legacy top-level page.
                     schema::ensure_root(&mut connection)?;
-                    // The clock is derived state: it catches up to whatever the
-                    // rows already carry rather than being stored and restored.
-                    hlc::reseed(&clock, &connection).map_err(StorageError::Internal)?;
                     Ok(connection)
                 });
                 let mut connection = match connection {

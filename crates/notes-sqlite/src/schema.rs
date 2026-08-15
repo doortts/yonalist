@@ -10,6 +10,9 @@ pub(crate) const ROOT_ID: &str = "root";
 /// Empty while the format is still moving: a schema change edits `create_schema`
 /// in place and development databases get regenerated. The ladder stays because
 /// the first release needs it; nothing rides it until then.
+/// A step that touches `notes_nodes` will need the HLC function registered
+/// first: the ladder runs inside `initialize`, before the worker builds the
+/// clock, so today a stamping trigger would fire with no `yona_hlc()` to call.
 type Migration = fn(&Transaction<'_>) -> Result<(), StorageError>;
 const MIGRATIONS: &[Migration] = &[];
 const _: () = assert!(MIGRATIONS.len() as i64 + 1 == SCHEMA_VERSION);
@@ -264,7 +267,14 @@ fn create_schema(connection: &Connection) -> Result<(), StorageError> {
               ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
             END;
 
-            CREATE TRIGGER notes_nodes_hlc_au AFTER UPDATE ON notes_nodes
+            -- Named columns, not the whole row: `path` is derived, and a move
+            -- rewrites it across the whole subtree. A blanket AFTER UPDATE would
+            -- restamp every untouched descendant, and that reading would then
+            -- beat a real edit made on another device.
+            CREATE TRIGGER notes_nodes_hlc_au AFTER UPDATE OF
+                parent_id, sort_key, kind, text, note, marker, ordered_start,
+                collapsed, completed, starred, deleted, sync_extras
+            ON notes_nodes
             WHEN NEW.hlc = OLD.hlc
             BEGIN
               UPDATE notes_nodes SET hlc = yona_hlc() WHERE id = NEW.id;
