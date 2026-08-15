@@ -16,9 +16,14 @@ export function hasErrorCode(cause: unknown, code: string): boolean {
   );
 }
 
+/**
+ * Every id ends up in the vault as `<!-- yid: ... -->`, the node's identity
+ * across devices, so it has to be a UUID. Both runtimes that reach this —
+ * the Tauri webview and jsdom under vitest — have `randomUUID`; a runtime
+ * that does not should stop here rather than mint an unexportable node.
+ */
 export function freshId(): string {
-  return globalThis.crypto?.randomUUID?.() ??
-    `note-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return globalThis.crypto.randomUUID();
 }
 
 export function confirmedText(
