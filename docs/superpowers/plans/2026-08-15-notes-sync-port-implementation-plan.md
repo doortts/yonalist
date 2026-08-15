@@ -116,9 +116,9 @@ golden fixture: `src-tauri/src/notes/sync/fixtures/topic_golden.md`(format_versi
 | A2 | 기존 mutation 명령이 무수정으로 HLC 스탬프·dirty 기록을 남기고 vault 위치를 설정에서 지정·유지할 수 있다 | M1 |
 | A3 | 같은 DB 상태는 바이트 동일한 파일로 렌더되고 그 파일이 손실 없이 왕복한다 | M2 |
 | A4 | 파일 병합이 워커 큐를 지나 revision을 올리고 undo가 병합된 노드를 넘어 내려가지 않으며 충돌이 설정 화면에서 복구된다 | M3 |
-| A5 | 편집 후 디바운스 안에 vault 파일과 자산이 자가 검증을 거쳐 원자적으로 방출된다 | M4 |
+| A5 | 편집 후 디바운스 안에 문서 폴더와 첨부가 자가 검증을 거쳐 원자적으로 방출되고, 내용이 그대로면 쓰지 않는다 | M4 |
 | A6 | 외부 파일 변경이 감시·병합·이벤트로 UI에 반영되고 재시작 시 변경분만 재색인된다 | M5 |
-| A7 | 두 DB 인스턴스가 한 vault로 v1 §12 매트릭스 + 신규 4시나리오를 수렴시키고 성능 계약을 지킨다 | M6 |
+| A7 | 두 DB 인스턴스가 한 vault로 v1 §12 매트릭스 + 신규 시나리오를 수렴시키고 성능 계약을 지킨다 | M6 |
 
 ## 4. 아키텍처 확정
 
@@ -165,11 +165,18 @@ M5에서 `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }`를 
 
 ### 5.1 DDL — `crates/notes-sqlite/src/schema.rs` `create_schema`에 직접 추가
 
-- `notes_nodes`에 컬럼 2개: `hlc TEXT NOT NULL DEFAULT ''`, `sync_extras TEXT NOT NULL DEFAULT ''`(미지 필드 보존용, 결정 6).
-- 신규 테이블(전부 STRICT, 기존 관례): `sync_meta`(singleton, device_id, vault_uuid, hlc_millis, hlc_counter), `sync_topics`(topic_id PK, file_name UNIQUE, applied_max_hlc, exported_hash, file_mtime_ms, file_size, quarantined), `sync_dirty_nodes`(node_id PK, marked_at), `sync_conflict_log`(seq INTEGER PK AUTOINCREMENT, node_id, loser_json, loser_hlc, winner_hlc, recorded_at), `sync_purged_tombstones`(node_id PK, purged_hlc). `file_mtime_ms`/`file_size`는 M5 증분 재색인 게이트다.
+- `notes_nodes`에 컬럼 2개: `hlc TEXT NOT NULL DEFAULT ''`, `sync_extras TEXT NOT NULL DEFAULT ''`(미지 조각 보존용, 스펙 §5.3).
+- 신규 테이블(전부 STRICT, 기존 관례):
+  - `sync_meta`(singleton, device_id, vault_uuid, hlc_millis, hlc_counter)
+  - `sync_documents`(root_id PK, folder_path UNIQUE, applied_max_hlc, exported_hash, file_mtime_ms, file_size, quarantined) — 문서 하나가 한 행이다. 페이지 문서·home 문서·분할 문서를 구분하지 않는다. `file_mtime_ms`·`file_size`가 M5 증분 재색인 게이트다
+  - `sync_dirty_nodes`(node_id PK, marked_at)
+  - `sync_node_exports`(node_id PK, content_hash, exported_hlc) — 내용이 그대로면 HLC를 전진시키지 않는 규칙(스펙 §9)의 근거
+  - `sync_conflict_log`(seq INTEGER PK AUTOINCREMENT, node_id, loser_json, loser_hlc, winner_hlc, recorded_at)
+  - `sync_assets`(content_hash PK, disk_name, location, unreferenced_at) — 첨부가 페이지 폴더에 있는지 루트에 있는지, 참조 0이 된 시각. **참조 수는 저장하지 않고 노드에서 센다**(결정 13)
+- `sync_purged_tombstones`는 만들지 않는다(결정 7).
 - 트리거 3개: v1 `src-tauri/src/notes/schema.rs:208-228`의 `notes_nodes_hlc_ai / _au / _ad`를 그대로 가져온다. INSERT는 `WHEN NEW.hlc = ''`, UPDATE는 `WHEN NEW.hlc = OLD.hlc`일 때만 `yona_hlc()`로 스탬프하고 dirty에 upsert. 병합이 hlc를 명시하면 미발화(불변 규칙 6). `PRAGMA recursive_triggers`는 기본 OFF 전제 — 어디서도 켜지 않는다. hlc UPDATE는 `text, note`를 건드리지 않아 FTS 트리거(`schema.rs:199`)와 간섭 없다.
 - `yona_hlc()` 등록: 워커 스레드가 Connection을 만든 직후(`worker.rs:160-175`) `notes_sync::hlc::register(&connection)` 호출. rusqlite `functions` feature는 이미 켜져 있다(루트 `Cargo.toml:22`).
-- `user_version`은 1 그대로. 버전 분기 없음.
+- `user_version`은 1 그대로(`SCHEMA_VERSION = 1`, `MIGRATIONS`는 빈 목록). 버전 분기 없음.
 
 ### 5.2 개발 DB 리셋 (마이그레이션 대신 — 정확한 절차)
 
@@ -187,21 +194,19 @@ M5에서 `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }`를 
 
 | 필드 | 내용 |
 |---|---|
-| Goal | 이후 모든 단계의 진실 소스가 될 v2 sync 스펙 확정 |
+| Goal | 이후 모든 단계의 진실 소스가 될 sync 스펙 확정 |
 | Acceptance | 스펙 문서가 문법 전체·확정 결정·불변 규칙·리스크 정책·golden 초안을 담고 적대적 리뷰를 통과한다 |
 | Non-goals | 코드 변경 없음 |
 | Boundaries | 문서만 |
 | Manual proof | N/A |
 
-**M0.1** — `docs/v2/sync-spec.md` 신규 작성. 내용:
-- 포맷 문법 전체: frontmatter 키 셋(v2 도메인 정합: kind/text/note/marker/ordered_start/collapsed/completed/starred), 노드 주석 토큰(`yid`/`t`/star/collapsed/ordered_start), 이미지 라인(정규형 `.yonalist/notes-assets/<sha256>.<ext>` + `ya:` 메타), trash.md(v2는 `deleted` boolean이고 삭제 행이 parent_id·sort_key를 유지하므로 `from:` 메타는 행 자체에서 파생), 삭제 증거는 trash.md 하나다(결정 7 — purge tombstone 없음).
-- v4 대비 삭제 필드(readonly, plugin, plugin_children, collapsed_groups, miw)와 보존 규칙: 파서는 미지 frontmatter 키·주석 토큰을 원문 그대로 `sync_extras`에 실어 왕복시킨다(결정 6). 재방출 위치·순서 규칙을 결정적으로 고정.
-- 관대함 표(v1 §7.3 계승, `format_version`은 `1`만 수용), 불변 규칙 10건 계승 선언 + v2 개정 3건(병합은 워커 큐 경유·revision 규약, undo 배리어, 이벤트 계약).
-- 신규 리스크 정책 4건: 90일 창 초과 스냅샷 격리, 24h 초과 미래 HLC fresh 재스탬프 + 로그, transport 겹침 문서 경고, conflicted copy 병합 승격(병합·재작성 성공 시 `sync-cleanup` 은퇴 이동, v1 메커니즘 유지).
-- golden 초안 3종(topic/이미지 포함 topic/trash)을 v1 golden(§1.1)에서 파생해 부록으로 싣는다.
-- git 미보증 문구(결정 1)의 게재 위치 지정.
+**M0.1 — 완료.** `docs/v2/sync-spec.md`가 커밋됐다(`bf981b46`). 담은 것:
 
-커밋: `docs(sync): write the v2 sync spec`. red 테스트 없음 — 문서 항목의 게이트는 적대적 리뷰다. 이 스펙의 계약들은 M1·M2에서 red 테스트로 물화된다(테스트 설계 §1).
+- vault 배치(폴더·이름 7단계·첨부 위치·링크 규칙), 문서 문법(frontmatter·노드 라인·이미지 라인·분할·trash), 파서의 수용과 격리, 미지 조각 보존, 손편집, 분할 임계, 불변 규칙 10건 + v2 개정 3건, 정책 6건, 확정 결정 대조표, golden 초안 3종.
+- 적대적 리뷰가 남긴 미정 지점을 닫았다: 주석 토큰 분해 규칙(`:`로 끝나는 토큰은 다음 단어를 값으로 먹는다), 이미지 적용 조건(메타가 완전하면 자산 없이도 적용), 표시 폭 기본값 320, 빈 HLC는 키 생략, "그 밖의 구조 위반도 전부 격리".
+- 손편집 절과 방출 전 해시 대조 규칙은 이 개정에서 새로 들어갔다.
+
+red 테스트 없음 — 문서 항목의 게이트는 적대적 리뷰다. 스펙의 계약들은 M1·M2에서 red 테스트로 물화된다(테스트 설계 §1).
 
 ### M1 — 골격 (6항목, 실행 수준)
 
@@ -277,36 +282,37 @@ M5에서 `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }`를 
 | 필드 | 내용 |
 |---|---|
 | Goal | 파일 병합이 워커·서비스·undo·충돌 노출까지 한 경로로 통한다 |
-| Acceptance | M3-1 병합 대수(멱등·교환·수렴·부재≠삭제·이중 증거) / M3-2 워커 경유 병합이 revision을 정확히 한 번 올린다 / M3-3 undo 배리어 / M3-4 충돌 읽기·복구·보존 상한 IPC / M3-5 설정 화면 충돌 목록 |
+| Acceptance | M3-1 병합 대수(멱등·교환·수렴·부재≠삭제) / M3-2 워커 경유 병합이 revision을 정확히 한 번 올린다 / M3-3 undo 배리어 / M3-4 충돌 읽기·복구·보존 상한 IPC / M3-5 설정 화면 충돌 목록 |
 | Non-goals | watcher·이벤트 없음(병합 호출자는 테스트와 M5) |
 | Boundaries | Rust(notes-sync, notes-sqlite, notes-application, adapter), IPC(명령 2개 + 계약 2타입), React(설정 화면) |
 | Manual proof | 설정 화면에서 충돌 목록·복구 버튼 확인(M3.5 이후, 테스트로 심은 충돌) |
 
 | 항목 | 내용 | 완료 조건 | 의존 |
 |---|---|---|---|
-| M3.1 | `merger.rs` 이식(6,766줄 원본): LWW, A4 손편집 수용, purge tombstone, 결정적 cycle 파킹, lifecycle repair(`repair.rs` 흡수), conflict log 중복 없는 기록, needs_write_back 판단, `sync_extras` upsert, 24h 초과 미래 HLC 재스탬프(신규 정책) | 병합 대수 property + 단위 테스트 (테스트 설계 §5·§6.1) | M2 |
+| M3.1 | `merger.rs` 이식(6,766줄 원본): 노드 LWW, **손편집 수용**(HLC 같고 내용 다르면 파일이 이기고 fresh HLC — 스펙 §6), 결정적 cycle 파킹, lifecycle repair(`repair.rs` 흡수), conflict log 중복 없는 기록, needs_write_back 판단, `sync_extras` upsert, 24h 초과 미래 HLC 재스탬프 + **observe 제외**. tombstone 없음 | 병합 대수 property + 단위 테스트 (테스트 설계 §5·§6.1) | M2 |
 | M3.2 | 워커 접합: `Request::MergeTopic` + `SqliteStorage::merge_topic` + 변경 시에만 revision +1 | 워커 seam 통합 테스트 (테스트 설계 §6.2) | M3.1, M1.4 |
 | M3.3 | `NotesService::absorb_external` + `undo_floor` 배리어 + redo 교차 정리(§4.3) | 배리어 테스트 3종, Rust 단독 (테스트 설계 §7) | M3.2 |
 | M3.4 | conflict log 읽기·복구·정리: `notes_sync_conflicts` / `notes_sync_restore_conflict` 명령, 보존 상한 1,000건 또는 180일(결정 8, `maintenance.rs` 계승), `SyncConflict` ts-rs 계약, 명령 리플 3파일 | IPC 페이로드 왕복 + 상한 테스트 (테스트 설계 §6.3) | M3.1 |
 | M3.5 | `SettingsView.tsx` 충돌 목록 + 복구 버튼(결정 5 — 인라인 배지 없음) | 프런트 테스트 (테스트 설계 §6.4) | M3.4 |
 
-### M4 — 방출 (3항목)
+### M4 — 방출 (4항목)
 
 | 필드 | 내용 |
 |---|---|
-| Goal | 편집이 디바운스 안에 자가 검증된 원자적 파일·자산 방출로 이어진다 |
-| Acceptance | M4-1 dirty→export가 상수 개 질의로 해석되고 자가 검증 실패 시 파일을 덮지 않는다 + trash.md·tombstone 방출 / M4-2 이미지 바이트가 vault 정규 경로로 복사된다 / M4-3 디바운스 3s/30s·flush·종료 flush가 폴링 없이 동작한다 |
-| Non-goals | watcher 없음. vault 쪽 asset GC 없음(§8) |
+| Goal | 편집이 디바운스 안에 자가 검증된 원자적 문서·첨부 방출로 이어지고, 내용이 그대로면 쓰지 않는다 |
+| Acceptance | M4-1 dirty→export가 상수 개 질의로 해석되고 자가 검증 실패 시 파일을 덮지 않는다 + trash.md 방출 / M4-2 폴더 배치와 이름 규칙대로 문서가 놓인다 / M4-3 첨부가 참조 수에 따라 페이지 폴더와 루트를 오간다 / M4-4 디바운스·flush·종료 flush가 폴링 없이 동작하고 내용 무변경이면 쓰기 0 |
+| Non-goals | watcher 없음. 자동 문서 승격 없음(포맷만). 첨부 자동 삭제 없음 |
 | Boundaries | Rust(notes-sync exporter 코어, notes-sqlite 워커 요청, adapter SyncRuntime 절반), IPC(flush 명령), 파일시스템 |
-| Manual proof | 격리 실행 → 편집 → 5초 내 vault에 `*.md` 생성·내용 확인 |
+| Manual proof | 격리 실행 → 편집 → 5초 내 vault에 페이지 폴더와 `README.md` 생성·내용 확인 |
 
 | 항목 | 내용 | 완료 조건 | 의존 |
 |---|---|---|---|
-| M4.1 | exporter 코어 이식(4,847줄 원본): dirty→대상 해석을 노드당 질의(§2-5) 대신 상수 개 질의로, 렌더→파스백 자가 검증→`write_atomic_file`→`exported_hash` 기록, trash.md + purge tombstone 방출, 실패 격리·재시도 | 방출 단위 테스트 + 질의 수 상한 (테스트 설계 §8.1·§9.2) | M2, M3.1 |
-| M4.2 | 자산 방출: dirty 이미지 노드의 바이트를 로컬 `images/`에서 vault `.yonalist/notes-assets/<sha256>.<ext>`로 복사(존재 시 생략). 경로 탈출 거부(불변 규칙 7) | 자산 방출 테스트 (테스트 설계 §8.2) | M4.1 |
-| M4.3 | SyncRuntime 절반(adapter): exporter 스레드 + 커밋 poke + 디바운스 만기 `recv_timeout`(§4.4) + `notes_sync_flush` 명령(명령 리플 3파일) + 종료 시 flush | 디바운스·flush 테스트 (테스트 설계 §8.3) | M4.1, M1.5 |
+| M4.1 | exporter 코어 이식(4,847줄 원본): dirty→대상 해석을 노드당 질의(§2-5) 대신 상수 개 질의로, **쓰기 전 파일 해시를 `exported_hash`와 대조**(손편집을 덮지 않는다 — 스펙 §6), 렌더→파스백 자가 검증→`write_atomic_file`→`exported_hash` 기록, trash.md 방출, 실패 격리·재시도 | 방출 단위 테스트 + 질의 수 상한 (테스트 설계 §8.1·§9.2) | M2, M3.1 |
+| M4.2 | 폴더 배치: 페이지 폴더 이름 생성(스펙 §3.1의 7단계), `README.md` 배치, 문서 수명(루트 노드가 삭제되거나 최상위가 아니면 폴더 정리), 분할 문서 경로 | 이름 규칙 표 전 행 + 폴더 수명 테스트 (테스트 설계 §8.2) | M4.1 |
+| M4.3 | 첨부 방출: 참조 수에 따른 페이지 폴더 ↔ 루트 이동(쓰고 나서 지운다), `<원래이름>-<해시12>` 이름, 상대 경로 링크, 참조 0의 시각 기록 | 첨부 배치·이동 테스트 (테스트 설계 §8.3) | M4.2 |
+| M4.4 | SyncRuntime 절반(adapter): exporter 스레드 + 커밋 poke + 디바운스 만기 `recv_timeout`(§4.4) + `notes_sync_flush` 명령(명령 리플 3파일) + 종료 시 flush + **내용 해시가 같으면 HLC 미전진·쓰기 생략**(스펙 §9) | 디바운스·flush·압축 테스트 (테스트 설계 §8.4) | M4.1, M1.5 |
 
-### M5 — 감시와 부팅 (4항목)
+### M5 — 감시와 부팅 (5항목)
 
 | 필드 | 내용 |
 |---|---|
@@ -318,10 +324,11 @@ M5에서 `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }`를 
 
 | 항목 | 내용 | 완료 조건 | 의존 |
 |---|---|---|---|
-| M5.1 | watcher 이식(2,591줄 원본): notify 감시 + 500ms coalesce + `exported_hash` 에코 skip + guarded read + conflicted copy 병합 승격(성공 시 `sync-cleanup` 은퇴) + placeholder 재시도 + 60s 안전망 스캔 | watcher 콜백 직접 호출 테스트 (테스트 설계 §8.4) | M3.3, M4 |
-| M5.2 | 자산 인입: notes-assets 도착 감지 → 로컬 `images/`로 복사 → placeholder 이미지 행 해소 알림 | 자산 인입 테스트 (테스트 설계 §8.5) | M5.1 |
-| M5.3 | bootstrap 이식(3,089줄 원본): 시작 조정 4분기(v1 §9.4), `file_mtime_ms`+`file_size` 게이트 통과분만 해시 확인, StartupGate(`apps/desktop/src-tauri/src/startup.rs`) 뒤에 비차단 편승 | 증분 재색인 테스트 (테스트 설계 §9.1) | M5.1 |
-| M5.4 | `notes://sync-changed`·`notes://sync-status` emit(어댑터) + 프런트 listener(신규 파일, 500ms coalesce, StrictMode 멱등 등록/해제) + `applyReceipt` 모양 반영 | 이벤트 페이로드·listener 테스트 (테스트 설계 §8.6) | M3.3, M5.1 |
+| M5.1 | watcher 이식(2,591줄 원본): notify(FSEvents) 감시 + 500ms coalesce + mtime·크기 게이트 + `exported_hash` 에코 skip + `max_hlc` 조기 탈출 + guarded read + conflicted copy 병합 승격 + 자리표시 파일 재시도 + 60s 안전망 스캔. **병합 요청은 낮은 우선순위 입구로** 넣어 타이핑이 뒤에 서지 않게 한다 | watcher 콜백 직접 호출 + 우선순위 테스트 (테스트 설계 §8.5) | M3.3, M4 |
+| M5.2 | 첨부 인입: vault의 첨부 도착 감지 → 로컬 `images/` 캐시 채우기 → 미해소 이미지 행 해소 알림 | 첨부 인입 테스트 (테스트 설계 §8.6) | M5.1 |
+| M5.3 | bootstrap 이식(3,089줄 원본): 시작 조정 4분기(v1 §9.4), `file_mtime_ms`+`file_size` 게이트 통과분만 해시 확인, StartupGate 뒤에 비차단 편승, **미방출 편집이 있으면 재색인 거부**(스펙 §9) | 증분 재색인 + 재색인 거부 테스트 (테스트 설계 §9.1) | M5.1 |
+| M5.4 | `notes://sync-changed`·`notes://sync-status` emit(어댑터) + 프런트 listener(신규 파일, 500ms coalesce, StrictMode 멱등 등록/해제) + `applyReceipt` 모양 반영, 페이로드가 크면 뷰포트 재조회 | 이벤트 페이로드·listener 테스트 (테스트 설계 §8.7) | M3.3, M5.1 |
+| M5.5 | 첨부 목록 페이지(설정 안 독립 페이지): 파일 이름(블릿이 쓴 이름)·크기·페이지·상위 블릿·참조 수, 크기 큰 순 기본 정렬, 참조 0의 남은 보존 기간 표시와 삭제, 줄을 누르면 그 블릿으로 이동. 조회는 `notes_nodes.path`로 조상을 한 번에 얻는다. 명령 2개 + ts-rs 계약 + 명령 리플 3파일 | 조회 질의 + 프런트 테스트 (테스트 설계 §8.8) | M4.3 |
 
 ### M6 — 멀티 디바이스 검증 (3항목)
 
@@ -336,8 +343,8 @@ M5에서 `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }`를 
 | 항목 | 내용 | 완료 조건 | 의존 |
 |---|---|---|---|
 | M6.1 | v1 §12 매트릭스 재현: vault 2개 + 파일 복사로 transport 모사, DB 2개 (테스트 설계 §10.1) | 10시나리오 전부 green | M5 |
-| M6.2 | 신규 시나리오: 90일 창 초과 스냅샷 격리, 24h 시계 드리프트 재스탬프, conflicted copy 수렴·승격, 동시 편집 conflict log (테스트 설계 §10.2) | 4시나리오 green | M6.1 |
-| M6.3 | 성능 계약 게이트화: 부트스트랩 = 변경분만(카운터 단언), exporter 질의 수 상한, `test:v2:performance` 기존 7계약 무회귀, `docs/v2/performance.md`의 50k 부트스트랩 계약 문구 재정의 | 테스트 설계 §9 전부 green | M6.1 |
+| M6.2 | 신규 시나리오: 24h 시계 드리프트 재스탬프와 observe 제외, conflicted copy 수렴, 같은 제목 페이지를 두 기기가 동시 생성, 다른 블릿을 동시 편집했을 때 덮어쓰인 파일이 병합으로 복원, 손편집 채택, 첨부 공유 승격·강등 (테스트 설계 §10.2) | 6시나리오 green | M6.1 |
+| M6.3 | 성능 계약 게이트화: 부트스트랩 = 변경분만(카운터 단언), exporter·병합 질의 수 상한, `test:v2:performance` 기존 7계약 무회귀, `docs/v2/performance.md`의 50k 부트스트랩 계약 문구 재정의 | 테스트 설계 §9 전부 green | M6.1 |
 
 ## 7. 최종 게이트 (마일스톤별, 실재하는 명령만)
 
@@ -349,8 +356,8 @@ diff 동결 후 1회. 편집 루프 중에는 소유 테스트만 돈다.
 | M1 | `npm run test:v2` · `cargo fmt --all -- --check` · `git diff --check` (M1.6 프런트 접촉 → `npm run test:v2:bundle` 추가) |
 | M2 | `cargo test --workspace` · `cargo fmt --all -- --check` · `npm run test:v2:architecture` (프런트 무접촉이라 vitest·lint·bundle은 명시 생략) |
 | M3 | `npm run test:v2` · `cargo fmt --all -- --check` · `npm run test:v2:bundle` (M3.5 프런트 접촉) |
-| M4 | `npm run test:v2` · `cargo fmt --all -- --check` + 수동 증거(§6 M4) |
-| M5 | `npm run test:v2` · `cargo fmt --all -- --check` · `npm run test:v2:bundle` + 수동 증거(§6 M5) |
+| M4 | `cargo test --workspace` · `cargo fmt --all -- --check` · `npm run test:v2:architecture` · `npm run test:v2:contracts` + 수동 증거(§6 M4). 프런트 무접촉이라 vitest·bundle은 명시 생략 |
+| M5 | `npm run test:v2` · `cargo fmt --all -- --check` · `npm run test:v2:bundle` + 수동 증거(§6 M5). M5.4·M5.5가 프런트를 만진다 |
 | M6 | `npm run test:v2` · `cargo fmt --all -- --check` · `npm run test:v2:performance` + 수동 증거(§6 M6) |
 
 Clippy는 접촉 경계와 직접 관련될 때만 기준선 대비로 본다(스킬 규정). 알려진 advisory 경고(500/800줄 초과 15건)는 실패가 아니다.
