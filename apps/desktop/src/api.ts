@@ -41,6 +41,8 @@ export interface NotesApi {
   closeSession(): Promise<CloseOutcome>;
   unusedAssets(purge: boolean): Promise<UnusedAssetsReport>;
   deleteAllData(): Promise<void>;
+  syncVaultGet(): Promise<string | null>;
+  syncVaultSet(path: string): Promise<void>;
 }
 
 export const tauriNotesApi: NotesApi = {
@@ -83,5 +85,7 @@ export const tauriNotesApi: NotesApi = {
   search: (query) => invoke("notes_search", { query }),
   closeSession: () => invoke("notes_close_session"),
   unusedAssets: (purge) => invoke("notes_unused_assets", { purge }),
-  deleteAllData: () => invoke("notes_delete_all_data")
+  deleteAllData: () => invoke("notes_delete_all_data"),
+  syncVaultGet: () => invoke("notes_sync_vault_get"),
+  syncVaultSet: (path) => invoke("notes_sync_vault_set", { path })
 };

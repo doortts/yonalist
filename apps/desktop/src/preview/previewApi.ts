@@ -544,5 +544,12 @@ export const previewNotesApi: NotesApi = {
   },
   async deleteAllData() {
     // The browser preview keeps its in-memory fixture.
+  },
+  async syncVaultGet() {
+    // No vault outside the desktop app: there is no folder to sync into.
+    return null;
+  },
+  async syncVaultSet() {
+    // Same reason — the preview has nowhere to record a choice.
   }
 };

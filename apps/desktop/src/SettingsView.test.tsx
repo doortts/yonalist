@@ -1,4 +1,6 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+import { pickVaultFolder } from "./vaultPicker";
 
 import {
   defaultOutlineMarkerStyles,
@@ -25,6 +27,8 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsView>[0]> =
       purged: false
     }),
     deleteAllData: vi.fn().mockResolvedValue(undefined),
+    readVaultPath: vi.fn().mockResolvedValue(null),
+    setVaultPath: vi.fn().mockResolvedValue(undefined),
     ...overrides
   };
   render(
@@ -38,7 +42,42 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsView>[0]> =
   return handlers;
 }
 
+vi.mock("./vaultPicker", () => ({ pickVaultFolder: vi.fn() }));
+
 describe("SettingsView", () => {
+  it("shows the vault folder that is already chosen", async () => {
+    renderSettings({
+      readVaultPath: vi.fn().mockResolvedValue("/Users/me/Yonalist")
+    });
+
+    expect(await screen.findByText("/Users/me/Yonalist")).toBeInTheDocument();
+  });
+
+  it("saves and shows a newly chosen vault folder", async () => {
+    vi.mocked(pickVaultFolder).mockResolvedValue("/Users/me/Yonalist");
+    const handlers = renderSettings();
+
+    fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
+
+    await waitFor(() => {
+      expect(handlers.setVaultPath).toHaveBeenCalledWith("/Users/me/Yonalist");
+    });
+    expect(await screen.findByText("/Users/me/Yonalist")).toBeInTheDocument();
+  });
+
+  it("leaves the folder alone when the picker is dismissed", async () => {
+    vi.mocked(pickVaultFolder).mockResolvedValue(null);
+    const handlers = renderSettings({
+      readVaultPath: vi.fn().mockResolvedValue("/Users/me/Yonalist")
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Choose folder" }));
+
+    await waitFor(() => expect(pickVaultFolder).toHaveBeenCalled());
+    expect(handlers.setVaultPath).not.toHaveBeenCalled();
+    expect(screen.getByText("/Users/me/Yonalist")).toBeInTheDocument();
+  });
+
   it("offers system, light, and dark modes and reports a change", () => {
     const handlers = renderSettings();
 

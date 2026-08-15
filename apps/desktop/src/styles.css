@@ -1913,6 +1913,17 @@ body.is-resizing-pane {
   line-height: 1.55;
 }
 
+.settings-path {
+  max-width: 680px;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-1);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
 .reset-settings-section {
   border-bottom: 0;
 }

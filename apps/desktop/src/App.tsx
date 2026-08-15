@@ -52,6 +52,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     setQuery("");
     setSearchOpen(false);
   }, []);
+  // The settings section re-reads the folder whenever this identity changes, so
+  // both stay pinned to the api rather than to a render.
+  const readVaultPath = useCallback(() => api.syncVaultGet(), [api]);
+  const setVaultPath = useCallback(
+    (path: string) => api.syncVaultSet(path),
+    [api]
+  );
   const [libraryView, setLibraryView] = useState<LibraryView>("all");
   const [sidebarWidth, setSidebarWidth] = useState(336);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -564,6 +571,8 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             onClose={() => setSettingsOpen(false)}
             unusedAssets={(purge) => api.unusedAssets(purge)}
             deleteAllData={() => api.deleteAllData()}
+            readVaultPath={readVaultPath}
+            setVaultPath={setVaultPath}
           />
         </Suspense>
       ) : (
