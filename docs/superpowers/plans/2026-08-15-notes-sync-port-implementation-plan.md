@@ -289,7 +289,7 @@ red 테스트 없음 — 문서 항목의 게이트는 적대적 리뷰다. 스�
 
 | 항목 | 내용 | 완료 조건 | 의존 |
 |---|---|---|---|
-| M3.1 | `merger.rs` 이식(6,766줄 원본): 노드 LWW, **손편집 수용**(HLC 같고 내용 다르면 파일이 이기고 fresh HLC — 스펙 §6), 결정적 cycle 파킹, lifecycle repair(`repair.rs` 흡수), conflict log 중복 없는 기록, needs_write_back 판단, `sync_extras` upsert, 24h 초과 미래 HLC 재스탬프 + **observe 제외**. tombstone 없음 | 병합 대수 property + 단위 테스트 (테스트 설계 §5·§6.1) | M2 |
+| M3.1 | `merger.rs` 이식(6,766줄 원본): 노드 LWW, **손편집 수용**(HLC 같고 내용 다르면 파일이 이기고 fresh HLC — 스펙 §6), 결정적 cycle 파킹(복구 페이지 — 스펙 §9), **split 줄 권위 규칙**(존재·위치만 — 스펙 §4.5), lifecycle repair(`repair.rs` 흡수), conflict log 중복 없는 기록, needs_write_back 판단, `sync_extras` upsert, 24h 초과 미래 HLC 재스탬프 + **observe 제외**. tombstone 없음 | 병합 대수 property + 단위 테스트 (테스트 설계 §5·§6.1) | M2 |
 | M3.2 | 워커 접합: `Request::MergeTopic` + `SqliteStorage::merge_topic` + 변경 시에만 revision +1 | 워커 seam 통합 테스트 (테스트 설계 §6.2) | M3.1, M1.4 |
 | M3.3 | `NotesService::absorb_external` + `undo_floor` 배리어 + redo 교차 정리(§4.3) | 배리어 테스트 3종, Rust 단독 (테스트 설계 §7) | M3.2 |
 | M3.4 | conflict log 읽기·복구·정리: `notes_sync_conflicts` / `notes_sync_restore_conflict` 명령, 보존 상한 1,000건 또는 180일(결정 8, `maintenance.rs` 계승), `SyncConflict` ts-rs 계약, 명령 리플 3파일 | IPC 페이로드 왕복 + 상한 테스트 (테스트 설계 §6.3) | M3.1 |
@@ -308,8 +308,8 @@ red 테스트 없음 — 문서 항목의 게이트는 적대적 리뷰다. 스�
 | 항목 | 내용 | 완료 조건 | 의존 |
 |---|---|---|---|
 | M4.1 | exporter 코어 이식(4,847줄 원본): dirty→대상 해석을 노드당 질의(§2-5) 대신 상수 개 질의로, **쓰기 전 파일 해시를 `exported_hash`와 대조**(손편집을 덮지 않는다 — 스펙 §6), 렌더→파스백 자가 검증→`write_atomic_file`→`exported_hash` 기록, trash.md 방출, 실패 격리·재시도 | 방출 단위 테스트 + 질의 수 상한 (테스트 설계 §8.1·§9.2) | M2, M3.1 |
-| M4.2 | 폴더 배치: 페이지 폴더 이름 생성(스펙 §3.1의 7단계), `README.md` 배치, 문서 수명(루트 노드가 삭제되거나 최상위가 아니면 폴더 정리), 분할 문서 경로 | 이름 규칙 표 전 행 + 폴더 수명 테스트 (테스트 설계 §8.2) | M4.1 |
-| M4.3 | 첨부 방출: 참조 수에 따른 페이지 폴더 ↔ 루트 이동(쓰고 나서 지운다), `<원래이름>-<해시12>` 이름, 상대 경로 링크, 참조 0의 시각 기록 | 첨부 배치·이동 테스트 (테스트 설계 §8.3) | M4.2 |
+| M4.2 | 폴더 배치: 페이지 폴더 이름 생성(스펙 §3.1의 7단계, 하이픈 뺀 id 12자), `README.md` 배치, home 색인 문서(split 링크 줄만), 문서 수명(스펙 §3.5 — **첨부 루트 승격 후** 폴더 정리), 분할 문서 경로 | 이름 규칙 표 전 행 + 폴더 수명 테스트 (테스트 설계 §8.2) | M4.1 |
+| M4.3 | 첨부 방출: 참조 수에 따른 페이지 폴더 ↔ 루트 이동(쓰고 나서 지운다, 이동 계획은 순수 함수로 분리), 이름 병합은 정제명 사전순 최소, 휴지통 이미지의 루트 승격, `<원래이름>-<해시12>` 이름, 상대 경로 링크, 참조 0의 시각 기록. **위치는 노드 내용이 아니다 — 이동이 HLC를 밀지 않는다** | 첨부 배치·이동 테스트 (테스트 설계 §8.3) | M4.2 |
 | M4.4 | SyncRuntime 절반(adapter): exporter 스레드 + 커밋 poke + 디바운스 만기 `recv_timeout`(§4.4) + `notes_sync_flush` 명령(명령 리플 3파일) + 종료 시 flush + **내용 해시가 같으면 HLC 미전진·쓰기 생략**(스펙 §9) | 디바운스·flush·압축 테스트 (테스트 설계 §8.4) | M4.1, M1.5 |
 
 ### M5 — 감시와 부팅 (5항목)

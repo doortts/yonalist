@@ -79,12 +79,12 @@ M0.1은 문서다. 게이트는 적대적 리뷰이고 이 스펙이 확정하�
 
 ## 4. 결정성·golden 왕복 (M2)
 
-**fixture**: `crates/notes-sync/fixtures/topic_golden.md`, `topic_images_golden.md`, `trash_golden.md` — M0 부록에서 확정한 판. 원본은 v1의 `src-tauri/src/notes/sync/fixtures/topic_golden.md`(format_version 4), `github_notifications_golden.md`, `TRASH_GOLDEN`(`topic_parser.rs:1325`)이다.
+**fixture**: `crates/notes-sync/fixtures/` 아래 4종 — 페이지·trash·분할·home(리터럴 `root` id). M0 부록에서 확정한 판. 원본은 v1의 `src-tauri/src/notes/sync/fixtures/topic_golden.md`(format_version 4), `github_notifications_golden.md`, `TRASH_GOLDEN`(`topic_parser.rs:1325`)이다.
 
 | 테스트 (`topic_file.rs`/`topic_parser.rs` 테스트 모듈) | 계약 |
 |---|---|
 | `rendering_the_same_state_twice_is_byte_identical` | 결정성 — 불변 규칙 3. 같은 문서 구조 2회 렌더 = 동일 Vec<u8> |
-| `golden_topic_renders_byte_identical` (3 fixture 각각) | 스펙의 문법이 곧 렌더러의 출력이다. include_str! 바이트 비교 |
+| `golden_topic_renders_byte_identical` (4 fixture 각각) | 스펙의 문법이 곧 렌더러의 출력이다. include_str! 바이트 비교 |
 | `render_parse_render_reaches_a_fixpoint` | `render(parse(render(s))) == render(s)` — v1 §7.4 계승 |
 | `sibling_order_is_the_file_line_order` | sort_key는 파일에 없고 줄 순서가 형제 순서 |
 | `keys_serialize_in_the_specified_order` | frontmatter 키 순서 고정(HashMap 순회 금지의 관찰 가능면) |
@@ -97,7 +97,7 @@ M2.1의 첫 red: `golden_topic_renders_byte_identical`(fixture는 있는데 렌�
 
 ### 5.1 수용 (행마다 1테스트)
 
-`a_bullet_without_yid_is_accepted_for_id_issue`(발급은 병합 몫 — 파서는 None id로 통과), `an_unparsable_hlc_becomes_empty_and_loses_lww`(v1의 `t: too-new` 케이스 계승, `topic_parser.rs:1724`), `odd_indent_and_tabs_normalize_to_two_spaces`, `a_bare_dash_line_is_a_plain_bullet`(**체크박스가 없으면 할 일이 아니다** — marker=bullet, completed=false), `a_checkbox_line_is_always_a_todo`(`- [ ]`·`- [x]` 둘 다 marker=todo), `a_completed_plain_bullet_round_trips_through_the_done_token`(프리픽스가 아니라 주석이 싣는다), `missing_frontmatter_keys_take_defaults`, `crlf_normalizes_to_lf`, `a_colon_token_swallows_the_next_word`(미지 토큰 `foo: collapsed`의 값이 상태로 오인되지 않는다 — 스펙 §4.3의 분해 규칙), `a_split_link_without_its_document_waits`(격리가 아니라 재시도).
+`a_bullet_without_yid_is_accepted_for_id_issue`(발급은 병합 몫 — 파서는 None id로 통과), `an_unparsable_hlc_becomes_empty_and_loses_lww`(v1의 `t: too-new` 케이스 계승, `topic_parser.rs:1724`), `odd_indent_and_tabs_normalize_to_two_spaces`, `a_bare_dash_line_is_a_plain_bullet`(**체크박스가 없으면 할 일이 아니다** — marker=bullet, completed=false), `a_checkbox_line_is_always_a_todo`(`- [ ]`·`- [x]` 둘 다 marker=todo), `a_completed_plain_bullet_round_trips_through_the_done_token`(프리픽스가 아니라 주석이 싣는다), `missing_frontmatter_keys_take_defaults`, `crlf_normalizes_to_lf`, `a_colon_token_swallows_the_next_word`(미지 토큰 `foo: collapsed`의 값이 상태로 오인되지 않는다 — 스펙 §4.3의 분해 규칙), `a_split_link_without_its_document_waits`(격리가 아니라 재시도), `the_home_document_accepts_the_literal_root_id`(다른 문서의 `root`는 격리), `a_missing_max_hlc_is_recomputed_from_content`(격리가 아니다), `a_split_line_carries_no_state_tokens_and_grants_no_state`(권위는 자식 문서 frontmatter — 스펙 §4.5).
 
 ### 5.2 격리 (부분 적용 금지)
 
@@ -175,11 +175,16 @@ M2.1의 첫 red: `golden_topic_renders_byte_identical`(fixture는 있는데 렌�
 - `two_pages_with_the_same_title_get_different_folders` — 비교 로직이 없다는 것의 관찰면.
 - `a_page_document_lands_at_readme_md`, `a_split_document_lands_under_its_parent_folder`.
 - `a_deleted_page_folder_is_removed_after_export`, `a_page_that_stops_being_top_level_loses_its_folder` — 문서 수명.
+- `folder_cleanup_promotes_live_attachments_first` — 휴지통이 참조하는 바이트가 폴더 정리에 죽지 않는다 (스펙 §3.5).
+- `the_home_index_lists_every_page_as_a_split_line` — home 문서의 문법.
 
 ### 8.3 첨부 배치와 이동 (M4.3)
 
 - `a_single_reference_attachment_stays_in_the_page_folder`.
 - `a_second_reference_promotes_the_file_to_the_root_store` — 두 문서의 링크가 `../assets/…`로 바뀐다.
+- `a_promotion_merges_names_deterministically` — 서로 다른 디스크 이름은 정제명 사전순 최소로 (스펙 §3.3).
+- `a_trashed_image_moves_its_bytes_to_the_root_store` — trash.md가 `../assets/…`만 가리킨다 (스펙 §3.3).
+- `a_promotion_does_not_advance_the_node_hlc` — 위치는 노드 내용이 아니다 (스펙 §9).
 - `dropping_back_to_one_reference_demotes_it` — 남은 페이지 폴더로 돌아온다.
 - `a_promotion_writes_before_it_deletes` — 새 자리에 파일이 생긴 뒤에 옛 자리를 지운다. 중간에 끊겨도 사라지지 않는다.
 - `the_same_bytes_under_a_different_name_reuse_the_file` — 디스크 이름은 먼저 들어온 것, 블릿이 쓴 이름은 노드마다 따로.
@@ -242,7 +247,7 @@ notify를 우회해 콜백을 직접 호출한다: `an_echo_of_our_own_write_is_
 
 ### 10.1 v1 §12 매트릭스 재현 (10)
 
-1. `edits_propagate_a_to_b` 2. `concurrent_edits_converge_with_a_logged_loser` 3. `disjoint_edits_merge_without_conflict` 4. `a_move_and_a_rename_of_the_same_node_converge`(X는 한 topic에 1개, 제목은 hlc 승자) 5. `trash_and_restore_round_trip_between_devices` 6. `a_purge_propagates_and_a_late_old_node_lands_in_trash`(90일 GC 후 도착 = trash 부활, 허용 동작 문서화) 7. `a_truncated_file_quarantines_without_data_loss_then_reexports` 8. `a_bounced_copy_is_digested_and_retired` 9. `a_hand_edited_bullet_gets_an_id_and_writes_back` 10. `a_concurrent_move_cycle_parks_the_same_node_on_both_devices`
+1. `edits_propagate_a_to_b` 2. `concurrent_edits_converge_with_a_logged_loser` 3. `disjoint_edits_merge_without_conflict` 4. `a_move_and_a_rename_of_the_same_node_converge`(X는 한 topic에 1개, 제목은 hlc 승자) 5. `trash_and_restore_round_trip_between_devices` 6. `a_late_old_edit_loses_to_the_trash_evidence`(휴지통 이동보다 오래된 편집이 도착해도 노드는 휴지통에 남는다) 7. `a_truncated_file_quarantines_without_data_loss_then_reexports` 8. `a_bounced_copy_is_digested_and_retired` 9. `a_hand_edited_bullet_gets_an_id_and_writes_back` 10. `a_concurrent_move_cycle_parks_the_same_node_on_both_devices`(복구 페이지 — 스펙 §9)
 
 ### 10.2 신규 시나리오
 
