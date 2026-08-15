@@ -97,7 +97,7 @@ FV-1·FV-2·FV-4가 한 항목(M1.9)에 몰리는 것은 loop 규칙과 어긋�
 
 - 바뀌는 것:
   - `apps/desktop/src-tauri/src/lib.rs` — `apply_pending_data_deletion`([:265-287](../../../apps/desktop/src-tauri/src/lib.rs#L265))의 파일 삭제 목록에 vault-path 파일 추가. 파일 이름 상수는 `sync_settings.rs`가 `pub(crate)`로 내놓아 두 곳이 한 값을 쓴다.
-  - `apps/desktop/src/SettingsView.tsx` — 삭제 안내 문구([:271-274](../../../apps/desktop/src/SettingsView.tsx#L271))에 sync 폴더와 그 안의 파일은 남는다는 한 문장.
+  - ~~`SettingsView.tsx`의 삭제 안내 문구~~ — **M1.6이 함께 넣었다.** 그 문장은 vault 절이 화면에 있어야 뜻이 통해서 같은 커밋에 묶였다.
 - 무수정: `notes_delete_all_data`의 시그니처와 마커 방식([lib.rs:244-263](../../../apps/desktop/src-tauri/src/lib.rs#L244)), vault 폴더 자체(코드가 그 경로를 읽지 않는다), `images/`·`original-views/` 목록.
 - 커밋: `feat(sync): clear the vault choice when all local data is deleted`
 - 소유 테스트 명령: `cargo test -p yonalist-v2-desktop a_data_reset`
@@ -109,9 +109,9 @@ FV-1·FV-2·FV-4가 한 항목(M1.9)에 몰리는 것은 loop 규칙과 어긋�
 
 - 바뀌는 것:
   - `apps/desktop/src/VaultSetupCard.tsx` 신규 + co-located `VaultSetupCard.test.tsx`. 카드가 스스로 `vaultGet`을 1회 읽어 노출을 정하고(D3) Choose folder…와 Later 버튼을 갖는다. set 결과가 `empty`가 아니면 D5의 안내 문구를 보인 뒤 닫힌다. dismissal은 `yonalist.vaultPromptDismissed.v1`에 기록하고 읽기·쓰기는 [useTheme.ts:23-37](../../../apps/desktop/src/useTheme.ts#L23)처럼 try/catch로 감싼다.
-  - `apps/desktop/src/vaultPicker.ts` 신규 — `pickVaultFolder(): Promise<string | null>`. [exportPicker.ts:9-19](../../../apps/desktop/src/exportPicker.ts#L9) 관례대로 `@tauri-apps/plugin-dialog`의 `open({ directory: true })`을 동적 import로 부른다.
+  - ~~`apps/desktop/src/vaultPicker.ts` 신규~~ — **M1.6이 이미 만들었다**(구현 중 확정). 테스트가 picker를 mock하려면 모듈 경계가 필요하고([NotesExportMenu.test.tsx:9](../../../apps/desktop/src/NotesExportMenu.test.tsx#L9)의 관례) M1.6의 테스트가 그 자리에서 이미 필요로 했다. 인라인으로 넣었다가 옮기는 쪽이 총 diff가 더 크다.
   - `apps/desktop/src/App.tsx` — settings가 닫혀 있을 때 노트 영역 위에 카드 렌더(레이아웃 구현은 자유, 계약은 노출 조건과 버튼 동작).
-  - `apps/desktop/src/SettingsView.tsx` — M1.6이 인라인으로 넣은 picker 호출을 `vaultPicker` 공유 helper로 교체(동작 불변).
+  - ~~`SettingsView.tsx`의 picker 호출 교체~~ — 인라인 호출이 애초에 없었으므로 할 일이 없다.
 - 무수정: Rust 전부, `notesStore.ts`(vault는 노트 상태가 아니라 store 밖에 산다), StartupGate, `api.ts`의 invoke 표면(M1.6이 이미 추가한 2개를 쓴다).
 - 커밋: `feat(sync): offer the vault folder choice on first launch`
 - 소유 테스트 명령: `npm run test:v2:frontend`

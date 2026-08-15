@@ -52,7 +52,7 @@ describe("Yonalist v2 desktop shell", () => {
     expect(notesApi.queryViewport).not.toHaveBeenCalled();
   });
 
-  it("vault가 없으면 outliner와 카드가 같이 보인다", async () => {
+  it("shows the outliner and the vault card together when no vault is set", async () => {
     const backing = new Map<string, string>();
     Object.defineProperty(window, "localStorage", {
       configurable: true,
@@ -63,13 +63,16 @@ describe("Yonalist v2 desktop shell", () => {
         clear: () => backing.clear()
       }
     });
-    render(<App api={api()} />);
+    try {
+      render(<App api={api()} />);
 
-    expect(await screen.findByRole("complementary", { name: "Choose a sync folder" }))
-      .toBeVisible();
-    expect(screen.getAllByRole("group", { name: "Note text" })[0])
-      .toHaveTextContent("First thought");
-    delete (window as { localStorage?: unknown }).localStorage;
+      expect(await screen.findByRole("complementary", { name: "Choose a sync folder" }))
+        .toBeVisible();
+      expect(screen.getAllByRole("group", { name: "Note text" })[0])
+        .toHaveTextContent("First thought");
+    } finally {
+      delete (window as { localStorage?: unknown }).localStorage;
+    }
   });
 
   it("lists Pages above Library and keeps search behind the header icon", async () => {

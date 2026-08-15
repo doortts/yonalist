@@ -239,6 +239,38 @@ mod tests {
     }
 
     #[test]
+    fn a_vault_marker_past_the_probe_is_not_read() {
+        let (_directory, data, vault) = workspace();
+        let mut readme = String::from("---\n");
+        readme.push_str(&"# padding\n".repeat(600));
+        readme.push_str("kind: yonalist-notes\n---\n");
+        assert!(readme.len() > 4096, "the marker has to sit past the probe");
+        std::fs::write(vault.join("README.md"), readme).expect("document");
+
+        assert_eq!(
+            set_vault_path(&data, &vault).expect("set"),
+            SyncVaultFolderState::NonEmpty,
+            "answering a yes-or-no question must not mean reading a whole document"
+        );
+    }
+
+    #[test]
+    fn the_two_failures_reach_the_screen_as_different_errors() {
+        let (_directory, data, vault) = workspace();
+        let inside = data.join("vault");
+        std::fs::create_dir_all(&inside).expect("inside");
+
+        let refused: NotesError = set_vault_path(&data, &inside).expect_err("refused").into();
+        assert_eq!(refused.code, NotesErrorCode::InvalidDestination);
+        assert!(!refused.retryable, "another folder is the user's to pick");
+
+        std::fs::remove_dir_all(&data).expect("remove");
+        let broken: NotesError = set_vault_path(&data, &vault).expect_err("broken").into();
+        assert_eq!(broken.code, NotesErrorCode::StorageUnavailable);
+        assert!(broken.retryable, "nothing the user picks fixes this one");
+    }
+
+    #[test]
     fn an_unrelated_readme_is_not_a_vault() {
         let (_directory, data, vault) = workspace();
         std::fs::write(vault.join("README.md"), b"# Some project\n").expect("document");

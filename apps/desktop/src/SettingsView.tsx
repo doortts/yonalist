@@ -9,6 +9,7 @@ import {
   type OutlineMarkerShape,
   type OutlineMarkerStyle
 } from "./outlineMarkers";
+import { messageFrom } from "./store/storeSupport";
 import { pickVaultFolder } from "./vaultPicker";
 import type {
   CaretColor,
@@ -208,9 +209,10 @@ function SyncFolderSection({
       await setVaultPath(chosen);
       setPath(chosen);
     } catch (cause) {
-      setError(cause instanceof Error
-        ? cause.message
-        : "Notes could not use that folder.");
+      // Tauri rejects with the serialized NotesError, a plain object rather
+      // than an Error, so `instanceof` would throw away the one sentence that
+      // tells the user which folder to pick instead.
+      setError(messageFrom(cause));
     } finally {
       setBusy(false);
     }

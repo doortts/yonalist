@@ -2,6 +2,7 @@ import { FolderSync } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import type { SyncVaultFolderState } from "../../../packages/contracts/generated/SyncVaultFolderState";
+import { messageFrom } from "./store/storeSupport";
 import { pickVaultFolder } from "./vaultPicker";
 
 const dismissedStorageKey = "yonalist.vaultPromptDismissed.v1";
@@ -88,9 +89,9 @@ export function VaultSetupCard({
       }
       setNotice(sentence);
     } catch (cause) {
-      setError(cause instanceof Error
-        ? cause.message
-        : "Notes could not use that folder.");
+      // The backend distinguishes a folder it will not take from storage it
+      // cannot reach; `instanceof` on a serialized error erases both.
+      setError(messageFrom(cause));
     } finally {
       setBusy(false);
     }

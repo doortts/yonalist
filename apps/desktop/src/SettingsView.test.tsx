@@ -45,6 +45,50 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsView>[0]> =
 vi.mock("./vaultPicker", () => ({ pickVaultFolder: vi.fn() }));
 
 describe("SettingsView", () => {
+  beforeEach(() => {
+    const backing = new Map<string, string>();
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => backing.get(key) ?? null,
+        setItem: (key: string, value: string) => backing.set(key, value),
+        removeItem: (key: string) => backing.delete(key),
+        clear: () => backing.clear()
+      }
+    });
+  });
+
+  afterEach(() => {
+    delete (window as { localStorage?: unknown }).localStorage;
+  });
+
+  it("reports why a folder was refused, in the words the backend used", async () => {
+    vi.mocked(pickVaultFolder).mockResolvedValue("/Users/me/Library/App");
+    renderSettings({
+      setVaultPath: vi.fn().mockRejectedValue({
+        code: "invalidDestination",
+        message: "A vault cannot live inside the app's own storage, or hold it.",
+        retryable: false
+      })
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "A vault cannot live inside the app's own storage, or hold it."
+    );
+  });
+
+  it("keeps the settings entrance open after the first-run card was dismissed", async () => {
+    window.localStorage.setItem("yonalist.vaultPromptDismissed.v1", "1");
+    renderSettings({
+      readVaultPath: vi.fn().mockResolvedValue("/Users/me/Yonalist")
+    });
+
+    expect(await screen.findByRole("button", { name: "Change folder" }))
+      .toBeInTheDocument();
+  });
+
   it("shows the vault folder that is already chosen", async () => {
     renderSettings({
       readVaultPath: vi.fn().mockResolvedValue("/Users/me/Yonalist")
