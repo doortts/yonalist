@@ -231,7 +231,8 @@ red 테스트 없음 — 문서 항목의 게이트는 적대적 리뷰다. 스�
 **M1.0 — 도메인 정합 수리 (외부 리뷰 3·4 수용).** 파일 계약이 요구하는 것을 도메인이 먼저 지킨다.
 - 복제 자식 id를 `{uuid}/n` 파생([tree.rs:139](../../crates/notes-core/src/tree.rs#L139)) 대신 `uuid v5(부모 새 id, 순번)`으로 — 결정적이라 core에 난수원이 안 들어온다.
 - 온보딩 시드 id(`seed.rs:8`의 `onboarding-page` 일가)를 고정 UUID 상수로. 개발 데이터라 리셋으로 끝난다.
-- 공통 캡(필드 100,000바이트·depth 128·노드 20,000)과 **root 직계 이미지 금지**를 도메인 검증에 — `UpdateText`/`UpdateNote` 변환과 `NotesTree::validate` 양쪽. 파일에서 격리될 값은 커밋 전에 거절되어야 한다(스펙 §4.1).
+- 공통 캡(필드 100,000바이트·depth 128)과 **root 직계 이미지 금지**를 `NotesTree::validate`에 — 모든 명령이 `plan`을 지나므로 한 곳이면 된다. 변환 쪽은 기존 `MAX_IMPORT_TEXT_BYTES`를 도메인 상수에 배선해 둘이 어긋나지 않게 한다. 파일에서 격리될 값은 커밋 전에 거절되어야 한다(스펙 §4.1).
+- **노드 20,000 캡은 `validate`에 두지 않는다**(적대적 리뷰 결과). 명령은 컨텍스트로 하이드레이트한 부분 트리에 plan하므로(`service.rs:305`, `repository.rs:43-56`) 거기서 센 수는 커 가는 페이지를 못 보고, 반대로 그 페이지를 고치는 대량 삭제가 하이드레이션 중에 거절된다. 문서 하나가 온전히 보이는 자리 — 커밋 시점의 SQL 카운트 또는 M4 방출 계획 — 로 옮긴다.
 - 커밋: `fix(notes): make every id a uuid and enforce the file format caps in the domain`
 - 테스트: `cargo test -p notes-core` + `cargo test -p notes-application` (테스트 설계 §2.0). 의존: 없음 — M1의 다른 항목보다 먼저.
 
