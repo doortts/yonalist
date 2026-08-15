@@ -133,19 +133,18 @@ vault/
 | 1 | `kind` | `yonalist-notes` 또는 `yonalist-trash` | 필수 | — |
 | 2 | `format_version` | `1` | 필수 | 없거나 다르면 격리 |
 | 3 | `id` | 문서 루트의 UUID. **home 문서만 리터럴 `root`** | 필수 | 없으면 격리 |
-| 4 | `title` | 문서 루트의 원래 제목. 큰따옴표로 감싸고 `\`와 `"`를 이스케이프 | 렌더 필수 | 파스에서 없으면 `#` 헤딩에서 파생 |
-| 5 | `parent` | 부모 노드 UUID | 분할 문서만 | 없으면 페이지 문서 — home은 `id`가 가른다 |
-| 6 | `sort_key` | i64 10진 | 선택 | `0`. 부모 문서의 줄 순서가 이긴다 |
-| 7 | `max_hlc` | HLC | 렌더 필수 | 파스에서 없거나 내용과 어긋나면 내용에서 재계산 |
-| 8 | `root_hlc` | HLC | 렌더 필수 | 파스에서 없으면 `''` |
-| 9 | `root_marker_kind` | `bullet`\|`todo`\|`ordered` | 선택 | `bullet` |
-| 10 | `root_ordered_start` | i64 10진 | 선택 | `1` |
-| 11 | `root_collapsed` | `true`\|`false` | 선택 | `false` |
-| 12 | `root_completed` | `true`\|`false` | 선택 | `false` |
-| 13 | `root_starred` | `true`\|`false` | 선택 | `false` |
+| 4 | `parent` | 부모 노드 UUID | 분할 문서만 | 없으면 페이지 문서 — home은 `id`가 가른다 |
+| 5 | `sort_key` | i64 10진 | 선택 | `0`. 부모 문서의 줄 순서가 이긴다 |
+| 6 | `max_hlc` | HLC | 렌더 필수 | 파스에서 없거나 내용과 어긋나면 내용에서 재계산 |
+| 7 | `root_hlc` | HLC | 렌더 필수 | 파스에서 없으면 `''` |
+| 8 | `root_marker_kind` | `bullet`\|`todo`\|`ordered` | 선택 | `bullet` |
+| 9 | `root_ordered_start` | i64 10진 | 선택 | `1` |
+| 10 | `root_collapsed` | `true`\|`false` | 선택 | `false` |
+| 11 | `root_completed` | `true`\|`false` | 선택 | `false` |
+| 12 | `root_starred` | `true`\|`false` | 선택 | `false` |
 | — | (미지 키 보존분) | 원문 라인 | — | 인정 키 전부 뒤, 닫는 `---` 앞 |
 
-`title`과 `#` 헤딩이 다르면 **헤딩이 이긴다** — 헤딩이 본문이고 title은 도구용 사본이다. 다음 방출이 title을 헤딩에 맞춘다. boolean은 소문자 `true`/`false`만. 인정 스칼라 키의 중복은 격리다. **HLC가 비어 있으면 그 키를 쓰지 않는다** — `max_hlc: ` 처럼 후행 공백으로 끝나는 줄은 손편집기의 trim에 사라지고 `git diff --check`에도 걸린다.
+**제목은 `#` 헤딩 하나가 진실 소스다.** frontmatter에 제목 키를 두지 않는다 — 헤딩이 이미 절단되지 않은 원본을 싣고 있어 사본을 둘 이유가 없다. 사본을 두면 우선순위 규칙과 수리 경로, 그리고 이스케이프 스킴 두 벌이 따라온다. boolean은 소문자 `true`/`false`만. 인정 스칼라 키의 중복은 격리다. **HLC가 비어 있으면 그 키를 쓰지 않는다** — `max_hlc: ` 처럼 후행 공백으로 끝나는 줄은 손편집기의 trim에 사라지고 `git diff --check`에도 걸린다.
 
 **루트 note**: 헤딩 직후 depth-0 blockquote. 줄마다 `> {escape_markdown(줄)}`, 빈 줄은 `>` 단독. note가 비면 블록을 생략한다. 블록(또는 헤딩) 뒤에 빈 줄 1개를 항상 렌더하고, 파서는 빈 줄 없이 바로 bullet이 와도 수용한다.
 
@@ -227,7 +226,7 @@ max_hlc: <hlc>
 
 - **trash 루트** = `deleted = 1`이고 부모가 살아 있거나 없는 노드. `from:`의 parent는 UUID이거나, 삭제된 노드가 페이지였으면 리터럴 `root`다. 값은 sort_key다.
 - trash 루트의 정렬은 `(sort_key, id)` 오름차순. 자식은 `from:`을 쓰지 않는다 — 부모가 같이 왔으므로 자리를 안다.
-- `trash.md`는 `id`와 `title`을 갖지 않는다. 격리 상태는 리터럴 키 `yonalist-trash`로 기록한다.
+- `trash.md`는 `id`를 갖지 않는다. 격리 상태는 리터럴 키 `yonalist-trash`로 기록한다.
 - trash 항목이 하나도 없으면 `trash.md`를 쓰지 않고, 있던 파일은 지운다. 파일 부재 = 삭제 없음.
 - frontmatter 미지 키는 실을 노드 행이 없어 보존하지 않는다. 손으로 넣은 키는 다음 렌더에서 사라진다.
 - 이미지 라인은 언제나 `../assets/…`를 가리킨다 — 휴지통에 들어간 이미지의 바이트는 루트 저장소로 승격돼 있다(§3.3).
@@ -357,7 +356,7 @@ v2 개정 3건:
 | 13 | 첨부 목록·참조는 DB, 참조 0은 2주 보존 | §3.3 |
 | 14 | 분할 임계 256KB·2,000노드, 오래된 것부터 | §7 |
 | 15 | 개발 중 마이그레이션 없음 | §4.2의 `format_version: 1` |
-| 16 | `title` 신설, 기본값 키 생략, 체크박스는 todo 전용 | §4.2, §4.3 |
+| 16 | 기본값 키 생략, 체크박스는 todo 전용. 제목은 헤딩 하나가 진실 소스 | §4.2, §4.3 |
 
 git 미보증 문구는 설정 화면의 vault 절에 둔다: "git으로도 동기화할 수 있지만 보증하지 않습니다. 충돌 마커가 들어간 파일은 앱이 건드리지 않고 남겨 둡니다."
 
@@ -383,7 +382,6 @@ M2가 커밋할 fixture 4종의 원본이다. 지어낸 값은 아래로 고정�
 kind: yonalist-notes
 format_version: 1
 id: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1
-title: "Projects"
 max_hlc: 0swkd7qz9-00-a3f2
 root_hlc: 0swkd7qz5-00-a3f2
 root_starred: true
@@ -412,7 +410,7 @@ max_hlc: 0swkd7qzc-00-a3f2
   - Child <!-- yid: 8a201f33-0000-4c91-8d02-000000000007 t: 0swkd7qzc-00-a3f2 done -->
 ```
 
-덮는 계약: 삭제된 페이지의 `from: root@…`, 일반 trash 루트의 `from: <uuid>@<sort_key>`, `from` 없는 자식, trash 루트 `(sort_key, id)` 정렬, `id`·`title` 키 없음.
+덮는 계약: 삭제된 페이지의 `from: root@…`, 일반 trash 루트의 `from: <uuid>@<sort_key>`, `from` 없는 자식, trash 루트 `(sort_key, id)` 정렬, `id` 키 없음.
 
 ### C. `Projects-4f1c8e20a3b7/2024-아카이브-9d3f21b8c440/README.md`
 
@@ -421,7 +419,6 @@ max_hlc: 0swkd7qzc-00-a3f2
 kind: yonalist-notes
 format_version: 1
 id: 9d3f21b8-c440-4c91-8d02-2e77a05fb163
-title: "2024 아카이브"
 parent: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1
 sort_key: 4294967296
 max_hlc: 0swkd7qze-00-a3f2
@@ -447,7 +444,6 @@ root_hlc: 0swkd7qzd-00-a3f2
 kind: yonalist-notes
 format_version: 1
 id: root
-title: "Home"
 max_hlc: 0swkd7qz6-00-a3f2
 root_hlc: 0swkd7qz4-00-a3f2
 ---
