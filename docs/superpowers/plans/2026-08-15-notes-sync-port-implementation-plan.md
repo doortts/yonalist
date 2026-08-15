@@ -167,7 +167,7 @@ M5에서 `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }`를 
 
 - `notes_nodes`에 컬럼 2개: `hlc TEXT NOT NULL DEFAULT ''`, `sync_extras TEXT NOT NULL DEFAULT ''`(미지 조각 보존용, 스펙 §5.3).
 - 신규 테이블(전부 STRICT, 기존 관례):
-  - `sync_meta`(singleton, device_id, vault_uuid, hlc_millis, hlc_counter)
+  - `sync_meta`(singleton, device_id, vault_uuid) — **클록 컬럼 없음**: HLC 클록은 파생 상태라 부팅 때 DB 최대 HLC를 observe해 재시드한다(스펙 §4.1). 저장하면 크래시 후 행보다 뒤처진 클록이라는 역행 버그 유형이 생긴다
   - `sync_documents`(root_id PK, folder_path UNIQUE, applied_max_hlc, exported_hash, file_mtime_ms, file_size, quarantined) — 문서 하나가 한 행이다. 페이지 문서·home 문서·분할 문서를 구분하지 않는다. `file_mtime_ms`·`file_size`가 M5 증분 재색인 게이트다
   - `sync_dirty_nodes`(node_id PK, marked_at)
   - `sync_node_exports`(node_id PK, content_hash, exported_hlc) — 내용이 그대로면 HLC를 전진시키지 않는 규칙(스펙 §9)의 근거
@@ -242,7 +242,7 @@ red 테스트 없음 — 문서 항목의 게이트는 적대적 리뷰다. 스�
 - 테스트 명령: `npm run test:v2:architecture`. red: 스크립트를 먼저 고치면 "missing v2 workspace package: notes-sync"로 실패(테스트 설계 §2.1). 의존: 없음.
 
 **M1.2 — hlc 이식.**
-- 바뀌는 것: `crates/notes-sync/src/hlc.rs` — `src-tauri/src/notes/hlc.rs`(437줄, 테스트 8) 이식. `Hlc` encode/decode(9-2-4 base36, 총 17자), 전역 클록 now/observe, `sync_meta` 영속 helper, `register(&Connection)`(`yona_hlc` 스칼라 함수).
+- 바뀌는 것: `crates/notes-sync/src/hlc.rs` — `src-tauri/src/notes/hlc.rs`(437줄, 테스트 8) 이식. `Hlc` encode/decode(9-2-4 base36, 총 17자), 전역 클록 now/observe(counter 넘침 = millis 올림), 부팅 재시드(`observe(max(저장된 hlc))`), `register(&Connection)`(`yona_hlc` 스칼라 함수). v1의 sync_meta 클록 영속은 이식하지 않는다.
 - 무수정: v1 원본(복사이지 이동이 아니다. v1은 동결 oracle로 남는다).
 - 커밋: `feat(sync): port the HLC clock and its fixed-width encoding`
 - 테스트: `cargo test -p notes-sync hlc` (테스트 설계 §2.2). 의존: M1.1.

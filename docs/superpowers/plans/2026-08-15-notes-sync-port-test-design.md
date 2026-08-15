@@ -18,7 +18,7 @@
 | 9 | 성능 계약 | `crates/notes-sync/tests/` + 기존 `notes-sqlite/tests/performance.rs` | `cargo test -p notes-sync --test perf_contracts` · `npm run test:v2:performance` |
 | 10 | 멀티 디바이스 통합 (M6) | `crates/notes-sync/tests/multi_device.rs` | `cargo test -p notes-sync --test multi_device` |
 
-설계 테스트 수: §2 17 · §3 7 · §4 7 · §5 14 · §6 21(property 4 포함) · §7 5 · §8 34 · §9 5(+기존 7 무회귀) · §10 17 = **신규 127개** (v1에서 계약 단위로 추가 이식되는 단위 테스트는 별도).
+설계 테스트 수: §2 19 · §3 7 · §4 7 · §5 14 · §6 21(property 4 포함) · §7 5 · §8 34 · §9 5(+기존 7 무회귀) · §10 17 = **신규 129개** (v1에서 계약 단위로 추가 이식되는 단위 테스트는 별도).
 
 ## 1. M0 — red 테스트 없음 (명시)
 
@@ -42,7 +42,7 @@ M0.1은 문서다. 게이트는 적대적 리뷰이고 이 스펙이 확정하�
 
 - **파일**: `crates/notes-sync/src/hlc.rs` `#[cfg(test)]`.
 - **첫 red**: `encoding_orders_lexicographically_like_time` — millis/counter가 커질수록 인코딩 문자열의 사전순도 커진다(모듈이 없으므로 컴파일 red).
-- 이어서: `encode_decode_round_trips_canonically`(비정규 인코딩 거부 포함), `now_is_monotonic_across_clock_regression`(시스템 시계 역행 주입), `observe_makes_the_next_now_beat_the_remote`, v1의 8개 테스트 이식.
+- 이어서: `encode_decode_round_trips_canonically`(비정규 인코딩 거부 포함), `now_is_monotonic_across_clock_regression`(시스템 시계 역행 주입), `observe_makes_the_next_now_beat_the_remote`, `counter_overflow_carries_into_millis`(한 밀리초에 1,297번 발급 — 대량 붙여넣기 경로), `the_clock_reseeds_from_stored_hlcs_on_boot`(재기동 후 첫 발급이 저장된 전 행을 이긴다), v1의 8개 테스트 이식.
 - **property** (proptest — `crates/notes-core`가 이미 dev-dep로 쓰는 1.9.0을 notes-sync dev-deps에 추가. 근거: 워크스페이스 기존 의존 + 실패 시 축소 재현이 quickcheck보다 좋고 손제작 시드 케이스보다 공간을 넓게 덮는다):
   - `prop_hlc_string_order_equals_component_order`: 임의 (millis ≤ 36^9-1, counter ≤ 1295, device 4 hex) 두 개에 대해 `encode(a) < encode(b) ⇔ (a.millis, a.counter, a.device) < (b.millis, b.counter, b.device)`. 17자 고정폭도 함께 단언.
 - 러너: `cargo test -p notes-sync hlc`.
