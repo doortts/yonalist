@@ -2582,6 +2582,20 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "unicode-normalization",
+ "uuid",
+]
+
+[[package]]
+name = "notes-sync"
+version = "0.2.0"
+dependencies = [
+ "notes-application",
+ "notes-core",
+ "proptest",
+ "rusqlite",
+ "sha2 0.10.9",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]
