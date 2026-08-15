@@ -1,6 +1,6 @@
 # Notes 파일 SSOT 동기화 v2 이식 — TDD 테스트 설계
 
-- 작성: 2026-08-15. 짝 문서: [구현 계획](2026-08-15-notes-sync-port-implementation-plan.md). 계획의 각 항목이 여기 정의된 테스트를 소유하고, M0·M1 항목은 먼저 red가 되는 테스트의 이름과 경로까지 이 문서가 확정한다.
+- 작성: 2026-08-15, 개정 2026-08-16(스펙 재작성 반영). 짝 문서: [구현 계획](2026-08-15-notes-sync-port-implementation-plan.md). 계획의 각 항목이 여기 정의된 테스트를 소유하고, M0·M1 항목은 먼저 red가 되는 테스트의 이름과 경로까지 이 문서가 확정한다.
 - 원칙: 테스트는 **계약**을 잠근다. 구현을 비추는 거울 테스트는 받지 않는다. v1 테스트 494개는 이식 시 계약 단위로 골라 옮기고, 아래는 그중 새 v2 접합이 요구하는 최소 골격이다.
 - 금지: 시간 측정 단언(flaky — §9에서 카운터로 대체), `toHaveBeenNthCalledWith`/`invocationCallOrder`(저장소 규칙), 실사용 Vault·실 `app_data_dir` 접촉(§11).
 
@@ -14,11 +14,11 @@
 | 5 | 파서 관대함·보존 | `crates/notes-sync/src/topic_parser.rs` 테스트 | `cargo test -p notes-sync topic_parser` |
 | 6 | 병합 대수·워커 seam·충돌 IPC | notes-sync property + `crates/notes-sqlite/tests/sync_merge_seam.rs` | `cargo test -p notes-sync merger` · `cargo test -p notes-sqlite --test sync_merge_seam` |
 | 7 | undo 배리어 | `crates/notes-application/tests/merge_barrier.rs` | `cargo test -p notes-application --test merge_barrier` |
-| 8 | 방출·감시·이벤트 | notes-sync exporter/watcher 테스트 + adapter + 프런트 | 항목별 |
+| 8 | 방출·배치·첨부·감시·이벤트 | notes-sync exporter/watcher 테스트 + adapter + 프런트 | 항목별 |
 | 9 | 성능 계약 | `crates/notes-sync/tests/` + 기존 `notes-sqlite/tests/performance.rs` | `cargo test -p notes-sync --test perf_contracts` · `npm run test:v2:performance` |
 | 10 | 멀티 디바이스 통합 (M6) | `crates/notes-sync/tests/multi_device.rs` | `cargo test -p notes-sync --test multi_device` |
 
-설계 테스트 수: §2 13 · §3 6 · §4 7 · §5 12 · §6 19(property 4 포함) · §7 4 · §8 17 · §9 3(+기존 7 무회귀) · §10 14 = **신규 95개** (v1에서 계약 단위로 추가 이식되는 단위 테스트는 별도).
+설계 테스트 수: §2 13 · §3 7 · §4 7 · §5 14 · §6 20(property 4 포함) · §7 4 · §8 32 · §9 5(+기존 7 무회귀) · §10 17 = **신규 119개** (v1에서 계약 단위로 추가 이식되는 단위 테스트는 별도).
 
 ## 1. M0 — red 테스트 없음 (명시)
 
@@ -73,6 +73,7 @@ M0.1은 문서다. 게이트는 적대적 리뷰이고 이 스펙이 확정하�
 | `a_delete_marks_the_dirty_row` | AD 트리거 |
 | `sync_meta_is_seeded_once_with_a_stable_device_id` | 재기동해도 device_id/vault_uuid 불변 |
 | `user_version_stays_one` | 스키마 창이 버전을 올리지 않는다 (마이그레이션 금지 결정의 기계 증거) |
+| `there_is_no_tombstone_table` | 결정 7의 기계 증거 — `sync_purged_tombstones`가 존재하지 않는다 |
 
 기존 스위트(`vertical_slice.rs`, `viewport_queries.rs` 등) 전체 green 유지가 이 항목의 두 번째 합격 조건이다.
 
@@ -96,11 +97,11 @@ M2.1의 첫 red: `golden_topic_renders_byte_identical`(fixture는 있는데 렌�
 
 ### 5.1 수용 (행마다 1테스트)
 
-`a_bullet_without_yid_is_accepted_for_id_issue`(발급은 병합 몫 — 파서는 None id로 통과), `an_unparsable_hlc_becomes_empty_and_loses_lww`(v1의 `t: too-new` 케이스 계승, `topic_parser.rs:1724`), `odd_indent_and_tabs_normalize_to_two_spaces`, `a_bare_dash_line_is_a_plain_bullet`(**체크박스가 없으면 할 일이 아니다** — marker=bullet, completed=false), `a_checkbox_line_is_always_a_todo`(`- [ ]`·`- [x]` 둘 다 marker=todo), `a_completed_plain_bullet_round_trips_through_the_done_token`(프리픽스가 아니라 주석이 싣는다), `missing_frontmatter_keys_take_defaults`, `crlf_normalizes_to_lf`.
+`a_bullet_without_yid_is_accepted_for_id_issue`(발급은 병합 몫 — 파서는 None id로 통과), `an_unparsable_hlc_becomes_empty_and_loses_lww`(v1의 `t: too-new` 케이스 계승, `topic_parser.rs:1724`), `odd_indent_and_tabs_normalize_to_two_spaces`, `a_bare_dash_line_is_a_plain_bullet`(**체크박스가 없으면 할 일이 아니다** — marker=bullet, completed=false), `a_checkbox_line_is_always_a_todo`(`- [ ]`·`- [x]` 둘 다 marker=todo), `a_completed_plain_bullet_round_trips_through_the_done_token`(프리픽스가 아니라 주석이 싣는다), `missing_frontmatter_keys_take_defaults`, `crlf_normalizes_to_lf`, `a_colon_token_swallows_the_next_word`(미지 토큰 `foo: collapsed`의 값이 상태로 오인되지 않는다 — 스펙 §4.3의 분해 규칙), `a_split_link_without_its_document_waits`(격리가 아니라 재시도).
 
 ### 5.2 격리 (부분 적용 금지)
 
-`a_foreign_format_version_quarantines`(`format_version`이 `1`이 아니다), `a_missing_topic_id_quarantines`, `an_oversized_file_quarantines`(16MiB 캡), `a_git_conflict_marker_quarantines`(`<<<<<<<`, 결정 1의 "git 미보증"이 안전한 이유). 격리는 문서 전체 거부다. 절반만 파싱된 결과가 나오면 실패다.
+`a_foreign_format_version_quarantines`(`format_version`이 `1`이 아니다), `a_missing_topic_id_quarantines`, `an_oversized_file_quarantines`(16MiB 캡), `a_git_conflict_marker_quarantines`(`<<<<<<<`, 결정 1의 "git 미보증"이 안전한 이유). 격리는 문서 전체 거부다. 절반만 파싱된 결과가 나오면 실패다. 여기에 `an_unexplainable_line_quarantines`(문법으로 설명할 수 없는 줄)와 `an_image_document_root_quarantines`, `a_link_escaping_the_assets_folder_quarantines`를 더한다 — 표가 전수가 아니라는 스펙 §5.2의 기본 거부를 잠근다.
 
 ### 5.3 미지 필드 보존 (M2.3 — 첫 red)
 
@@ -119,16 +120,16 @@ M2.1의 첫 red: `golden_topic_renders_byte_identical`(fixture는 있는데 렌�
 | `prop_two_dbs_converge_by_exchanging_exports` | 수렴 — 서로의 render를 병합하면 동일 상태 (M4 이후 render 사용, M3 시점엔 문서 구조 교환으로 선행) |
 | §2.2의 `prop_hlc_string_order_equals_component_order` | HLC 전순서가 위 셋의 전제 |
 
-단위 테스트(발췌): `a_hand_edit_with_equal_hlc_is_adopted_under_a_fresh_hlc`(A4), `a_cycle_parks_the_same_node_for_the_same_input`(결정성), `a_future_hlc_beyond_drift_is_restamped_and_logged`(신규 정책, 24h), `a_loser_is_recorded_once_in_the_conflict_log`(중복 금지), `unknown_extras_are_upserted_with_the_node`.
+단위 테스트(발췌): `a_cycle_parks_the_same_node_for_the_same_input`(결정성), `a_future_hlc_beyond_drift_is_restamped_and_logged`(24h), `a_drifted_hlc_is_not_observed`(흡수하면 이후 로컬 편집이 전부 미래 스탬프를 받는다), `a_hand_edit_with_the_same_hlc_is_adopted_under_a_fresh_one`(스펙 §6 — 본문만 고친 파일이 이긴다), `a_loser_is_recorded_once_in_the_conflict_log`(중복 금지), `unknown_extras_are_upserted_with_the_node`.
 
 **부재 ≠ 삭제와 이중 증거** (불변 규칙 1):
 
 | 테스트 | 계약 |
 |---|---|
 | `a_node_missing_from_the_file_is_never_deleted` | 파일에 없는 로컬 노드는 병합 후에도 산다 |
-| `deletion_needs_trash_evidence` | trash.md의 LWW 이동만이 soft delete를 전파한다 |
-| `a_purge_tombstone_removes_only_older_nodes` | tombstone hlc보다 새 노드는 산다(부활 경로) |
-| `an_older_snapshot_cannot_resurrect_a_purged_node` | 두 증거 중 tombstone이 이긴다 |
+| `deletion_needs_trash_evidence` | trash.md 이동만이 삭제를 전파한다 — 이 포맷의 유일한 증거다 |
+| `a_deletion_and_an_edit_compete_by_hlc` | 삭제도 노드의 한 상태다. 진 쪽은 충돌 로그에 남는다 |
+| `restoring_from_trash_puts_the_node_back_where_it_was` | `from:`이 실은 parent·sort_key로 제자리 복구 |
 
 ### 6.2 워커 seam (M3.2 — 통합)
 
@@ -165,28 +166,56 @@ M2.1의 첫 red: `golden_topic_renders_byte_identical`(fixture는 있는데 렌�
 
 ### 8.1 exporter 코어 (M4.1)
 
-`crates/notes-sync/src/exporter.rs` 테스트 모듈: `self_validation_failure_leaves_the_file_untouched`(불변 규칙 4 — 파스백 불일치 주입 시 기존 바이트 보존 + dirty 유지), `an_export_clears_only_the_exported_dirty_rows`, `deleted_nodes_emit_into_trash_md`, `a_purge_emits_a_tombstone_line`, `exported_hash_records_the_written_bytes`(에코 skip의 근거).
+`crates/notes-sync/src/exporter.rs` 테스트 모듈: `self_validation_failure_leaves_the_file_untouched`(불변 규칙 4 — 파스백 불일치 주입 시 기존 바이트 보존 + dirty 유지), `an_export_clears_only_the_exported_dirty_rows`, `deleted_nodes_emit_into_trash_md`, `exported_hash_records_the_written_bytes`(에코 skip의 근거), `an_export_refuses_to_overwrite_a_changed_file`(**쓰기 직전 해시가 `exported_hash`와 다르면 쓰지 않고 병합 먼저** — 스펙 §6의 손편집 보호).
 
-### 8.2 자산 방출 (M4.2)
+### 8.2 폴더 배치와 이름 (M4.2)
 
-`a_dirty_image_node_copies_its_bytes_to_the_vault`(정규 경로 `<sha256>.<ext>`, 이미 있으면 복사 0회), `a_path_escaping_link_is_rejected`(불변 규칙 7).
+- `a_page_folder_name_follows_the_seven_steps` — 스펙 §3.1의 정제 표 전 행(위험 문자, 선두 점, 40자·120바이트 절단, 예약어, 빈 제목).
+- `the_id_suffix_is_always_appended` — 겹치지 않는 제목에도 붙는다.
+- `two_pages_with_the_same_title_get_different_folders` — 비교 로직이 없다는 것의 관찰면.
+- `a_page_document_lands_at_readme_md`, `a_split_document_lands_under_its_parent_folder`.
+- `a_deleted_page_folder_is_removed_after_export`, `a_page_that_stops_being_top_level_loses_its_folder` — 문서 수명.
 
-### 8.3 SyncRuntime 디바운스 (M4.3)
+### 8.3 첨부 배치와 이동 (M4.3)
 
-디바운스 계산은 순수 함수로 분리해 단위 테스트: `a_topic_exports_after_3s_idle_or_30s_total`(가짜 시계 주입, 실제 sleep 금지), `flush_ignores_the_debounce`. 스레드 자체는 M6 통합이 돌린다.
+- `a_single_reference_attachment_stays_in_the_page_folder`.
+- `a_second_reference_promotes_the_file_to_the_root_store` — 두 문서의 링크가 `../assets/…`로 바뀐다.
+- `dropping_back_to_one_reference_demotes_it` — 남은 페이지 폴더로 돌아온다.
+- `a_promotion_writes_before_it_deletes` — 새 자리에 파일이 생긴 뒤에 옛 자리를 지운다. 중간에 끊겨도 사라지지 않는다.
+- `the_same_bytes_under_a_different_name_reuse_the_file` — 디스크 이름은 먼저 들어온 것, 블릿이 쓴 이름은 노드마다 따로.
+- `an_unreferenced_attachment_records_when_it_hit_zero` — 삭제하지 않는다.
 
-### 8.4 watcher (M5.1)
+### 8.4 디바운스와 압축 (M4.4)
 
-v1 방식대로 notify를 우회해 콜백을 직접 호출한다: `an_echo_of_our_own_write_is_skipped`(sha256 == exported_hash), `a_conflicted_copy_merges_and_retires`(`* (conflicted copy)*.md` 병합 → canonical 재작성 → `sync-cleanup` 이동), `an_unreadable_placeholder_is_retried_not_fatal`(v1 `watcher.rs:2104` 계승), `events_coalesce_within_the_window`.
+디바운스 계산은 순수 함수로 분리해 단위 테스트한다(가짜 시계 주입, 실제 sleep 금지): `a_document_exports_after_3s_idle_or_30s_total`, `flush_ignores_the_debounce`.
 
-### 8.5 자산 인입 (M5.2)
+압축 계약이 여기 붙는다:
 
-`an_arriving_asset_fills_the_local_cache_and_notifies`(notes-assets에 파일 생성 → `images/` 복사 + 변경 통지).
+| 테스트 | 계약 |
+|---|---|
+| `a_node_returned_to_its_previous_value_does_not_advance_its_hlc` | 내용 해시가 같으면 직전 방출 HLC를 그대로 쓴다 (스펙 §9) |
+| `an_unchanged_document_is_not_written_at_all` | 상태를 바꿨다 되돌린 뒤 방출하면 쓰기 횟수 0 |
+| `a_merge_and_a_split_within_the_window_do_write` | 정체성이 실제로 바뀐 경우는 쓴다 — 압축이 과하게 먹지 않는다는 반대편 |
 
-### 8.6 이벤트·listener (M5.4)
+### 8.5 watcher (M5.1)
+
+notify를 우회해 콜백을 직접 호출한다: `an_echo_of_our_own_write_is_skipped`(해시 == `exported_hash`), `an_unchanged_mtime_and_size_never_opens_the_file`, `a_max_hlc_that_is_not_greater_skips_the_merge`, `a_conflicted_copy_merges_and_retires`, `a_placeholder_file_is_retried_not_treated_as_truncation`, `events_coalesce_within_the_window`, `a_startup_scan_and_the_safety_net_enter_the_same_gates`.
+
+우선순위 입구: `a_burst_of_merge_requests_does_not_delay_a_user_command` — 병합 요청으로 큐를 채운 뒤 명령 하나를 넣어 순서를 본다.
+
+### 8.6 첨부 인입 (M5.2)
+
+`an_arriving_attachment_fills_the_local_cache_and_notifies`, `an_unresolved_image_row_resolves_when_its_bytes_arrive`.
+
+### 8.7 이벤트·listener (M5.4)
 
 - Rust: `a_merge_emits_sync_changed_with_the_receipt_shape` — 페이로드 serde_json 직렬화를 camelCase wire로 고정(adapter `lib.rs:565` 테스트 관례).
-- 프런트(신규 listener 파일의 co-located `.test.ts`): `"이벤트 수신이 coalesce 후 반영 콜백을 한 번 부른다"`, `"StrictMode 이중 mount에서 등록·해제가 멱등이다"`. 러너: `npm run test:v2:frontend`.
+- 프런트(신규 listener 파일의 co-located `.test.ts`): `"이벤트 수신이 coalesce 후 반영 콜백을 한 번 부른다"`, `"StrictMode 이중 mount에서 등록·해제가 멱등이다"`, `"바뀐 노드가 많으면 목록 대신 뷰포트를 다시 조회한다"`. 러너: `npm run test:v2:frontend`.
+
+### 8.8 첨부 목록 페이지 (M5.5)
+
+- Rust: `the_attachment_list_reports_its_page_and_parent_bullet`(`notes_nodes.path`로 조상 해석), `a_file_used_twice_appears_on_two_rows`, `the_list_counts_trashed_nodes_as_references`.
+- 프런트: `"첨부 목록이 크기 큰 순으로 뜨고 미사용 줄에 남은 기간이 보인다"`, `"삭제 버튼이 명령을 보낸다"`. 러너: `npm run test:v2:frontend`.
 
 ## 9. 성능 계약 (M5.3·M6.3) — 카운터로, 시간으로 하지 않는다
 
@@ -196,12 +225,12 @@ v1 방식대로 notify를 우회해 콜백을 직접 호출한다: `an_echo_of_o
 
 **파일**: `crates/notes-sync/tests/perf_contracts.rs`. `reconcile` 보고서 `{ parsed_files, skipped_files }`가 관찰면이다.
 - `bootstrap_reparses_only_changed_files`: 파일 10개 조정 → 전부 skip. 1개의 mtime을 바꾸면 parsed_files == 1.
-- `the_gate_is_mtime_and_size_not_content`: mtime·size를 보존한 채 내용만 바꾼 파일은 skip된다 — 게이트가 정말 mtime+size임을 증거로 잠근다(내용 훼손은 다음 mtime 변경 때 해시 확인이 잡는다는 한계도 이 테스트가 문서화한다).
+- `reindex_is_refused_while_edits_are_unexported`: dirty가 남은 채 재색인을 부르면 거절된다 (스펙 §9).\n- `the_gate_is_mtime_and_size_not_content`: mtime·size를 보존한 채 내용만 바꾼 파일은 skip된다 — 게이트가 정말 mtime+size임을 증거로 잠근다(내용 훼손은 다음 mtime 변경 때 해시 확인이 잡는다는 한계도 이 테스트가 문서화한다).
 
 ### 9.2 exporter 질의 수 상한 (M6.3, M4.1이 예비 실행)
 
 **방법**: rusqlite `trace` feature를 워크스페이스 의존(`Cargo.toml:22`)에 추가하고 테스트가 `Connection::trace`로 실행 SQL을 센다. 근거: 프로덕션 코드는 trace를 호출하지 않고 bundled SQLite라 feature 추가 비용이 없으며 질의 수는 입력이 같으면 결정적이다.
-- `pending_export_resolution_runs_a_constant_number_of_queries`: topic 10개에 dirty 노드 1,000개 → dirty→대상 해석의 질의 수 ≤ 고정 상수(노드 수와 무관). v1 방식이라면 2,000~3,000회가 나와 red가 된다. N+1 수리의 직접 증거다.
+- `a_merge_loads_the_document_nodes_in_one_query`: 노드 1,000개 문서를 병합할 때 질의 수가 노드 수와 무관하다. exporter와 같은 종류의 N+1을 병합에서 미리 막는다.\n- `pending_export_resolution_runs_a_constant_number_of_queries`: topic 10개에 dirty 노드 1,000개 → dirty→대상 해석의 질의 수 ≤ 고정 상수(노드 수와 무관). v1 방식이라면 2,000~3,000회가 나와 red가 된다. N+1 수리의 직접 증거다.
 
 ### 9.3 기존 계약 무회귀
 
@@ -215,14 +244,17 @@ v1 방식대로 notify를 우회해 콜백을 직접 호출한다: `an_echo_of_o
 
 1. `edits_propagate_a_to_b` 2. `concurrent_edits_converge_with_a_logged_loser` 3. `disjoint_edits_merge_without_conflict` 4. `a_move_and_a_rename_of_the_same_node_converge`(X는 한 topic에 1개, 제목은 hlc 승자) 5. `trash_and_restore_round_trip_between_devices` 6. `a_purge_propagates_and_a_late_old_node_lands_in_trash`(90일 GC 후 도착 = trash 부활, 허용 동작 문서화) 7. `a_truncated_file_quarantines_without_data_loss_then_reexports` 8. `a_bounced_copy_is_digested_and_retired` 9. `a_hand_edited_bullet_gets_an_id_and_writes_back` 10. `a_concurrent_move_cycle_parks_the_same_node_on_both_devices`
 
-### 10.2 신규 시나리오 (4)
+### 10.2 신규 시나리오
 
-| 테스트 | 계약 (계획 §6 M6.2) |
+| 테스트 | 계약 |
 |---|---|
-| `a_snapshot_older_than_the_tombstone_window_is_isolated` | 기기별 마지막 병합 HLC 대비 90일 초과 스냅샷 → 자동 병합 대신 격리 + 상태 통지 |
-| `a_far_future_clock_is_restamped_on_merge` | 24h 드리프트 초과 HLC가 fresh HLC로 재스탬프되어 이후 정상 편집을 영구히 이기지 못한다 |
-| `conflicted_copies_from_transport_converge_to_one_canonical_file` | `.sync-conflict-*`/`(conflicted copy)` 병합 승격 후 canonical 1개 + 두 DB 동일 |
-| `same_node_concurrent_edits_keep_the_loser_recoverable` | LWW 패자가 conflict log에 남고 복구가 전파된다(결정 2·5의 끝점) |
+| `a_far_future_clock_is_restamped_and_not_observed` | 24h 드리프트 초과 HLC가 재스탬프되고, 그 값을 흡수하지 않아 이후 로컬 편집이 정상 범위에 남는다 |
+| `conflicted_copies_from_transport_converge_to_one_canonical_file` | 병합 승격 후 정본 1개 + 두 DB 동일 |
+| `two_devices_create_the_same_title_without_contending` | 폴더가 애초에 다르다 — 충돌 사본이 생기지 않는다 |
+| `an_overwritten_file_recovers_through_merge` | A 판이 B의 파일을 덮어도, B가 병합 후 재방출해 양쪽 편집이 다 남는다. iCloud의 조용한 덮어쓰기를 모사한다 |
+| `a_hand_edit_survives_a_concurrent_export` | 손편집과 디바운스 방출이 겹쳐도 방출이 덮지 않는다 |
+| `same_node_concurrent_edits_keep_the_loser_recoverable` | LWW 패자가 충돌 로그에 남고 복구가 전파된다 |
+| `an_attachment_shared_by_two_pages_converges_to_the_root_store` | 두 기기가 각자 참조를 만들어도 같은 자리로 수렴한다 |
 
 ## 11. fixture와 격리
 
