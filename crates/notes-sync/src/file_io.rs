@@ -4,10 +4,12 @@
 //! reader never follows a symbolic link out of the vault, a write is never
 //! observable half-done, and a move never silently replaces what it lands on.
 
+use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// A document the parser would refuse anyway; reading stops here so a runaway
 /// file cannot be pulled into memory first.
@@ -41,16 +43,49 @@ fn sync_directory(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("Could not flush the directory: {error}"))
 }
 
-/// Reads a regular file without following a symbolic link, refusing anything
-/// past the cap. The link check is the open flag rather than a prior `stat`:
-/// checking and then opening leaves a window for the path to change underneath.
-pub fn read_regular_bounded(path: &Path, max_bytes: usize) -> Result<Vec<u8>, String> {
-    let mut file = OpenOptions::new()
+/// Resolves everything above the file and refuses a result that left the vault.
+fn resolve_inside(vault_root: &Path, path: &Path) -> Result<PathBuf, String> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("{} does not name a file.", path.display()))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no directory.", path.display()))?;
+    let root = fs::canonicalize(vault_root)
+        .map_err(|error| format!("Could not resolve the vault: {error}"))?;
+    let parent = fs::canonicalize(parent)
+        .map_err(|error| format!("Could not resolve {}: {error}", parent.display()))?;
+    if !parent.starts_with(&root) {
+        return Err(format!("{} is outside the vault.", path.display()));
+    }
+    Ok(parent.join(name))
+}
+
+/// Reads a regular file that lives inside the vault, refusing anything past the
+/// cap.
+///
+/// Confinement is two moves, because one is not enough. The parent is resolved
+/// first and checked to still land under the vault: a symbolic link anywhere
+/// along the way resolves out, and the check catches it. Refusing every link on
+/// the path instead would be wrong — the vault itself commonly sits behind one
+/// (`/var` is a link on macOS). The leaf is then guarded by the open flag
+/// rather than a prior `stat`, since checking and then opening leaves a window,
+/// and the path opened is the resolved one, so nothing between the root and the
+/// file can be swapped for a link in between. `O_NONBLOCK` is there so a fifo
+/// planted at a vault path fails instead of parking the worker on the open.
+pub fn read_regular_bounded(
+    vault_root: &Path,
+    path: &Path,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    let resolved = resolve_inside(vault_root, path)?;
+    let file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&resolved)
         .map_err(|error| format!("Could not open {}: {error}", path.display()))?;
-    let metadata = File::metadata(&file)
+    let metadata = file
+        .metadata()
         .map_err(|error| format!("Could not inspect {}: {error}", path.display()))?;
     if !metadata.is_file() {
         return Err(format!("{} is not a regular file.", path.display()));
@@ -58,8 +93,7 @@ pub fn read_regular_bounded(path: &Path, max_bytes: usize) -> Result<Vec<u8>, St
     // One byte past the cap, so a file exactly at it still reads and anything
     // larger is caught without loading the rest of it.
     let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(max_bytes as u64 + 1)
+    file.take(max_bytes.saturating_add(1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
     if bytes.len() > max_bytes {
@@ -71,22 +105,62 @@ pub fn read_regular_bounded(path: &Path, max_bytes: usize) -> Result<Vec<u8>, St
     Ok(bytes)
 }
 
-/// Moves a file only onto free ground. `rename` would overwrite whatever sits
-/// at the destination, so the link is made first — that fails when the name is
-/// taken — and the original is dropped only once the new name holds the same
-/// bytes.
+/// Moves a file only onto free ground, in one step. A link-then-unlink pair
+/// would leave both names alive if the unlink never ran, and the cloud client
+/// replicates each of them as its own document; hard links are also absent on
+/// some of the folders this has to work in. `RENAME_EXCL` gives the whole move
+/// atomically and fails when the destination is taken.
+///
+/// The source has to be a regular file: `rename` moves a symbolic link as
+/// itself, which would plant one under a vault name by the app's own hand.
 pub fn move_no_replace(from: &Path, to: &Path) -> Result<(), String> {
-    fs::hard_link(from, to).map_err(|error| {
-        format!(
-            "Could not move {} to {}: {error}",
-            from.display(),
-            to.display()
+    if !fs::symlink_metadata(from)
+        .map_err(|error| format!("Could not inspect {}: {error}", from.display()))?
+        .is_file()
+    {
+        return Err(format!("{} is not a regular file.", from.display()));
+    }
+    rename_no_replace(from, to)?;
+    // Both ends, because this is the one operation whose two names live in
+    // different directories: a flush of only the destination can let a power
+    // cut resurrect the source and leave the file under both names.
+    let from_parent = from.parent().ok_or("A vault path must name a directory.")?;
+    let to_parent = to.parent().ok_or("A vault path must name a directory.")?;
+    sync_directory(to_parent)?;
+    if from_parent != to_parent {
+        sync_directory(from_parent)?;
+    }
+    Ok(())
+}
+
+fn rename_no_replace(from: &Path, to: &Path) -> Result<(), String> {
+    let from_c = c_path(from)?;
+    let to_c = c_path(to)?;
+    // SAFETY: both paths are NUL-terminated and live across the call, and the
+    // fds are the "resolve relative to cwd" sentinel with absolute paths.
+    let outcome = unsafe {
+        libc::renameatx_np(
+            libc::AT_FDCWD,
+            from_c.as_ptr(),
+            libc::AT_FDCWD,
+            to_c.as_ptr(),
+            libc::RENAME_EXCL,
         )
-    })?;
-    fs::remove_file(from)
-        .map_err(|error| format!("Could not drop {} after moving it: {error}", from.display()))?;
-    let parent = to.parent().ok_or("A vault path must name a directory.")?;
-    sync_directory(parent)
+    };
+    if outcome == 0 {
+        return Ok(());
+    }
+    Err(format!(
+        "Could not move {} to {}: {}",
+        from.display(),
+        to.display(),
+        std::io::Error::last_os_error()
+    ))
+}
+
+fn c_path(path: &Path) -> Result<CString, String> {
+    CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| format!("{} contains a NUL byte.", path.display()))
 }
 
 #[cfg(test)]
@@ -106,8 +180,38 @@ mod tests {
         std::os::unix::fs::symlink(&outside, &inside).expect("symlink");
 
         assert!(
-            read_regular_bounded(&inside, MAX_FILE_BYTES).is_err(),
+            read_regular_bounded(directory.path(), &inside, MAX_FILE_BYTES).is_err(),
             "a link is how a vault path reaches a file that is not in the vault"
+        );
+    }
+
+    #[test]
+    fn a_read_refuses_a_symlinked_directory_on_the_way() {
+        let directory = dir();
+        let vault = directory.path().join("vault");
+        let outside = directory.path().join("outside");
+        std::fs::create_dir_all(&vault).expect("vault");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::fs::write(outside.join("README.md"), b"not yours").expect("write");
+        std::os::unix::fs::symlink(&outside, vault.join("page")).expect("symlink");
+
+        assert!(
+            read_regular_bounded(&vault, &vault.join("page/README.md"), MAX_FILE_BYTES).is_err(),
+            "a link anywhere along the path reaches outside the vault, not just at the end"
+        );
+    }
+
+    #[test]
+    fn a_no_replace_move_refuses_a_source_that_is_not_a_regular_file() {
+        let directory = dir();
+        let outside = directory.path().join("secret");
+        std::fs::write(&outside, b"not yours").expect("write");
+        let link = directory.path().join("source.md");
+        std::os::unix::fs::symlink(&outside, &link).expect("symlink");
+
+        assert!(
+            move_no_replace(&link, &directory.path().join("moved.md")).is_err(),
+            "moving a link would transplant it under a vault name"
         );
     }
 
@@ -115,7 +219,7 @@ mod tests {
     fn a_read_refuses_anything_that_is_not_a_regular_file() {
         let directory = dir();
 
-        assert!(read_regular_bounded(directory.path(), MAX_FILE_BYTES).is_err());
+        assert!(read_regular_bounded(directory.path(), directory.path(), MAX_FILE_BYTES).is_err());
     }
 
     #[test]
@@ -125,10 +229,12 @@ mod tests {
         std::fs::write(&path, vec![b'a'; 64]).expect("write");
 
         assert_eq!(
-            read_regular_bounded(&path, 64).expect("at the cap").len(),
+            read_regular_bounded(directory.path(), &path, 64)
+                .expect("at the cap")
+                .len(),
             64
         );
-        assert!(read_regular_bounded(&path, 63).is_err());
+        assert!(read_regular_bounded(directory.path(), &path, 63).is_err());
     }
 
     #[test]

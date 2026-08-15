@@ -164,6 +164,12 @@ impl Clock {
 
     /// Pulls the clock up to a reading seen elsewhere, so everything issued
     /// after a merge beats what the merge brought in.
+    ///
+    /// Callers must not hand this a reading from far in the future. A device
+    /// with a broken clock can stamp one near the encoding ceiling, and taking
+    /// it would leave `now` unable to issue anything at all — including the
+    /// delete that would remove the row it came from. Spec §9 puts that guard
+    /// on the merge; `reseed` applies it to what the database already holds.
     pub fn observe(&self, remote: &Hlc) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if (remote.millis, remote.counter) > (state.millis, state.counter) {
@@ -171,11 +177,26 @@ impl Clock {
             state.counter = remote.counter;
         }
     }
+
+    /// How far ahead of the wall clock a reading may be before it counts as a
+    /// broken device rather than a fast one (spec §9).
+    pub fn is_beyond_drift(&self, remote: &Hlc) -> bool {
+        const MAX_DRIFT_MILLIS: u64 = 24 * 60 * 60 * 1_000;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let now = u64::try_from(now).unwrap_or(u64::MAX);
+        remote.millis > now.saturating_add(MAX_DRIFT_MILLIS)
+    }
 }
 
-// `the_clock_reseeds_from_stored_hlcs_on_boot` (test design §2.2) lives with
-// the schema window in M1.4: `notes_nodes.hlc` does not exist yet, so the test
-// cannot build the state it reads.
+// Two pieces of this wait for M1.4, when the schema window creates the columns
+// they read: `the_clock_reseeds_from_stored_hlcs_on_boot` (test design §2.2),
+// and the second half of the spec's reseed source — §4.1 unions
+// `max(notes_nodes.hlc)` with `max(sync_documents.applied_max_hlc)`, and only
+// the first table exists. Without the second, a row merged and then deleted
+// locally can leave the largest stored reading below what this device applied.
 
 /// Rebuilds the clock from what the database already holds. The clock is
 /// derived state, not stored: persisting it invites a crash to leave a saved
@@ -186,7 +207,13 @@ pub fn reseed(clock: &Clock, connection: &Connection) -> Result<(), String> {
         .query_row("SELECT MAX(hlc) FROM notes_nodes", [], |row| row.get(0))
         .map_err(|error| format!("Could not read the stored Notes HLCs: {error}"))?;
     if let Some(value) = stored.filter(|value| !value.is_empty()) {
-        clock.observe(&Hlc::decode(&value)?);
+        let stored = Hlc::decode(&value)?;
+        // A reading from a device whose clock ran away would pin this one to the
+        // same place forever, so it is left behind rather than adopted. The row
+        // keeps its value; the merge re-stamps it when it next comes past.
+        if !clock.is_beyond_drift(&stored) {
+            clock.observe(&stored);
+        }
     }
     Ok(())
 }
@@ -214,6 +241,23 @@ mod tests {
 
     fn clock() -> Clock {
         Clock::new("a3f2").expect("clock")
+    }
+
+    #[test]
+    fn a_reading_from_the_far_future_is_left_behind() {
+        let clock = clock();
+        let runaway = Hlc::new(MAX_MILLIS, MAX_COUNTER, "b1c2").expect("runaway");
+
+        assert!(clock.is_beyond_drift(&runaway));
+        // Taking it carries past the encoding ceiling and leaves `now` erroring
+        // for every caller after it — the wedge the guard exists to keep out.
+        clock.observe(&runaway);
+        assert!(clock.now_at(1).is_err());
+    }
+
+    #[test]
+    fn a_non_ascii_reading_is_refused_without_panicking() {
+        assert!(Hlc::decode("00000000é-0-a3f2").is_err());
     }
 
     #[test]
@@ -279,9 +323,9 @@ mod tests {
     proptest! {
         #[test]
         fn prop_hlc_string_order_equals_component_order(
-            left_millis in 0u64..MAX_MILLIS,
+            left_millis in 0u64..=MAX_MILLIS,
             left_counter in 0u32..=MAX_COUNTER,
-            right_millis in 0u64..MAX_MILLIS,
+            right_millis in 0u64..=MAX_MILLIS,
             right_counter in 0u32..=MAX_COUNTER,
         ) {
             let left = Hlc::new(left_millis, left_counter, "a3f2").expect("left");
