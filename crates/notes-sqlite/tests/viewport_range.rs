@@ -82,8 +82,8 @@ const LIVE_MAIN: [&str; 17] = [
     "n09", "n10", "n11", "n12",
 ];
 
-/// Writes the rows straight in, then hands the database back to the migration
-/// that fills `path`, so the column under test is the one production computes.
+/// Writes the rows straight in with no path, then reopens so the schema's own
+/// repair fills the column — the value under test is the one production computes.
 fn build(database: &Path) {
     SqliteStorage::open(database).expect("create the schema and the root row");
     let connection = Connection::open(database).expect("fixture connection");
@@ -96,15 +96,8 @@ fn build(database: &Path) {
             )
             .expect("fixture row");
     }
-    connection
-        .execute_batch(
-            "DROP INDEX notes_nodes_path;
-             ALTER TABLE notes_nodes DROP COLUMN path;
-             PRAGMA user_version = 1;",
-        )
-        .expect("wind the path column back off");
     drop(connection);
-    SqliteStorage::open(database).expect("migrate the paths back in");
+    SqliteStorage::open(database).expect("fill the paths the raw inserts left null");
 }
 
 fn revision(database: &Path) -> u64 {

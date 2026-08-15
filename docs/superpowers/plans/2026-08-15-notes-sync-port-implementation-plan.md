@@ -112,9 +112,9 @@ golden fixture: `src-tauri/src/notes/sync/fixtures/topic_golden.md`(format_versi
 
 | 행 | 관찰 가능한 합격 조건 | 항목 |
 |---|---|---|
-| A1 | v5 스펙 문서가 존재하고 결정 6건·불변 규칙·golden 초안을 담는다 | M0 |
+| A1 | 스펙 문서가 존재하고 확정 결정·불변 규칙·golden 초안을 담는다 | M0 |
 | A2 | 기존 mutation 명령이 무수정으로 HLC 스탬프·dirty 기록을 남기고 vault 위치를 설정에서 지정·유지할 수 있다 | M1 |
-| A3 | 같은 DB 상태는 바이트 동일한 v5 파일로 렌더되고 v5·v4 파일이 손실 없이 왕복한다 | M2 |
+| A3 | 같은 DB 상태는 바이트 동일한 파일로 렌더되고 그 파일이 손실 없이 왕복한다 | M2 |
 | A4 | 파일 병합이 워커 큐를 지나 revision을 올리고 undo가 병합된 노드를 넘어 내려가지 않으며 충돌이 설정 화면에서 복구된다 | M3 |
 | A5 | 편집 후 디바운스 안에 vault 파일과 자산이 자가 검증을 거쳐 원자적으로 방출된다 | M4 |
 | A6 | 외부 파일 변경이 감시·병합·이벤트로 UI에 반영되고 재시작 시 변경분만 재색인된다 | M5 |
@@ -127,7 +127,7 @@ golden fixture: `src-tauri/src/notes/sync/fixtures/topic_golden.md`(format_versi
 ```
 apps/desktop/src-tauri        SyncRuntime 수명주기(스레드 시작/정지, 이벤트 emit), vault 설정, StartupGate 편승
 crates/notes-sqlite           워커(Request::MergeTopic 등 신규 요청), 스키마 창, yona_hlc 등록   ── depends on ──▶
-crates/notes-sync (신규)      file_io · hlc · topic_file/parser(v5) · merger · exporter 코어 · watcher 코어 · bootstrap 코어
+crates/notes-sync (신규)      file_io · hlc · topic_file/parser · merger · exporter 코어 · watcher 코어 · bootstrap 코어
 crates/notes-application      SyncStatus/SyncConflict 계약(ts-rs), absorb_external + undo 배리어
 crates/notes-core             무수정. sync를 모른다
 ```
@@ -188,20 +188,20 @@ M5에서 `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }`를 
 | 필드 | 내용 |
 |---|---|
 | Goal | 이후 모든 단계의 진실 소스가 될 v2 sync 스펙 확정 |
-| Acceptance | 스펙 문서가 v5 문법 전체·결정 6건·불변 규칙·리스크 정책 4건·golden 초안을 담고 적대적 리뷰를 통과한다 |
+| Acceptance | 스펙 문서가 문법 전체·확정 결정·불변 규칙·리스크 정책·golden 초안을 담고 적대적 리뷰를 통과한다 |
 | Non-goals | 코드 변경 없음 |
 | Boundaries | 문서만 |
 | Manual proof | N/A |
 
 **M0.1** — `docs/v2/sync-spec.md` 신규 작성. 내용:
-- 포맷 v5 문법 전체: frontmatter 키 셋(v2 도메인 정합: kind/text/note/marker/ordered_start/collapsed/completed/starred), 노드 주석 토큰(`yid`/`t`/star/collapsed/ordered_start), 이미지 라인(정규형 `.yonalist/notes-assets/<sha256>.<ext>` + `ya:` 메타), trash.md(v2는 `deleted` boolean이고 삭제 행이 parent_id·sort_key를 유지하므로 `from:` 메타는 행 자체에서 파생), purge 이중 증거의 v2 대응 — `NotesCommand::Delete`가 purge다(결정 7). 이 명령이 tombstone을 남기는 유일한 경로임을 스펙이 못 박는다.
+- 포맷 문법 전체: frontmatter 키 셋(v2 도메인 정합: kind/text/note/marker/ordered_start/collapsed/completed/starred), 노드 주석 토큰(`yid`/`t`/star/collapsed/ordered_start), 이미지 라인(정규형 `.yonalist/notes-assets/<sha256>.<ext>` + `ya:` 메타), trash.md(v2는 `deleted` boolean이고 삭제 행이 parent_id·sort_key를 유지하므로 `from:` 메타는 행 자체에서 파생), 삭제 증거는 trash.md 하나다(결정 7 — purge tombstone 없음).
 - v4 대비 삭제 필드(readonly, plugin, plugin_children, collapsed_groups, miw)와 보존 규칙: 파서는 미지 frontmatter 키·주석 토큰을 원문 그대로 `sync_extras`에 실어 왕복시킨다(결정 6). 재방출 위치·순서 규칙을 결정적으로 고정.
-- 관대함 표(v1 §7.3 계승 + `format_version <= 5` 수용), 불변 규칙 10건 계승 선언 + v2 개정 3건(병합은 워커 큐 경유·revision 규약, undo 배리어, 이벤트 계약).
+- 관대함 표(v1 §7.3 계승, `format_version`은 `1`만 수용), 불변 규칙 10건 계승 선언 + v2 개정 3건(병합은 워커 큐 경유·revision 규약, undo 배리어, 이벤트 계약).
 - 신규 리스크 정책 4건: 90일 창 초과 스냅샷 격리, 24h 초과 미래 HLC fresh 재스탬프 + 로그, transport 겹침 문서 경고, conflicted copy 병합 승격(병합·재작성 성공 시 `sync-cleanup` 은퇴 이동, v1 메커니즘 유지).
-- v5 golden 초안 3종(topic/이미지 포함 topic/trash)을 v1 golden(§1.1)에서 파생해 부록으로 싣는다.
+- golden 초안 3종(topic/이미지 포함 topic/trash)을 v1 golden(§1.1)에서 파생해 부록으로 싣는다.
 - git 미보증 문구(결정 1)의 게재 위치 지정.
 
-커밋: `docs(sync): rewrite the sync spec for v2 (format v5)`. red 테스트 없음 — 문서 항목의 게이트는 적대적 리뷰다. 이 스펙의 계약들은 M1·M2에서 red 테스트로 물화된다(테스트 설계 §1).
+커밋: `docs(sync): write the v2 sync spec`. red 테스트 없음 — 문서 항목의 게이트는 적대적 리뷰다. 이 스펙의 계약들은 M1·M2에서 red 테스트로 물화된다(테스트 설계 §1).
 
 ### M1 — 골격 (6항목, 실행 수준)
 
@@ -260,7 +260,7 @@ M5에서 `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }`를 
 
 | 필드 | 내용 |
 |---|---|
-| Goal | v5 렌더러·파서가 결정성·왕복·관대함 계약을 만족한다 |
+| Goal | 렌더러·파서가 결정성·왕복·관대함 계약을 만족한다 |
 | Acceptance | M2-1 같은 상태 = 같은 바이트 + golden 일치 / M2-2 관대함 표 전 행 + v4/v1 수용 + 격리 판정 / M2-3 미지 필드가 파일 왕복에서 보존 |
 | Non-goals | DB 접촉 없음(순수 문서 구조 대상). 병합·export 없음 |
 | Boundaries | Rust(notes-sync만) |
@@ -268,8 +268,8 @@ M5에서 `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }`를 
 
 | 항목 | 내용 | 완료 조건 | 의존 |
 |---|---|---|---|
-| M2.1 | `topic_file.rs` v5 렌더러 이식·개정(910줄 원본). BTreeMap/명시 정렬만, hand-rolled frontmatter | 결정성 + M0 golden 3종 바이트 일치 (테스트 설계 §4.1) | M0, M1.2 |
-| M2.2 | `topic_parser.rs` v5 파서 이식·개정(2,785줄 원본). `format_version <= 5` 수용, 격리 판정, CRLF·들여쓰기 정규화 | 관대함 표 전 행 + `render(parse(render(s))) == render(s)` fixpoint + v4 golden 파싱 (테스트 설계 §4.2·§5) | M2.1 |
+| M2.1 | `topic_file.rs` 렌더러 이식·개정(910줄 원본). BTreeMap/명시 정렬만, hand-rolled frontmatter | 결정성 + M0 golden 3종 바이트 일치 (테스트 설계 §4.1) | M0, M1.2 |
+| M2.2 | `topic_parser.rs` 파서 이식·개정(2,785줄 원본). `format_version`은 `1`만 수용, 격리 판정, CRLF·들여쓰기 정규화 | 관대함 표 전 행 + `render(parse(render(s))) == render(s)` fixpoint (테스트 설계 §4.2·§5) | M2.1 |
 | M2.3 | 미지 필드 파일층 보존 — 파서가 미지 키·토큰을 구조체에 실어 렌더러가 결정적 위치에 재방출 | v4 golden(plugin/readonly 포함) parse→render에서 미지 필드 무손실 (테스트 설계 §5.3) | M2.2 |
 
 ### M3 — 병합 (5항목)

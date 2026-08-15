@@ -22,7 +22,7 @@
 
 ## 1. M0 — red 테스트 없음 (명시)
 
-M0.1은 문서다. 게이트는 적대적 리뷰이고 이 스펙이 확정하는 계약은 아래에서 red 테스트가 된다: v5 문법 → §4 golden, 관대함 표 → §5, 리스크 정책 → §10.2. M0의 golden 초안(부록)이 §4가 커밋할 fixture의 원본이다.
+M0.1은 문서다. 게이트는 적대적 리뷰이고 이 스펙이 확정하는 계약은 아래에서 red 테스트가 된다: 문법 → §4 golden, 관대함 표 → §5, 리스크 정책 → §10.2. M0의 golden 초안(부록)이 §4가 커밋할 fixture의 원본이다.
 
 ## 2. M1 골격 — 항목별 첫 red 테스트
 
@@ -78,7 +78,7 @@ M0.1은 문서다. 게이트는 적대적 리뷰이고 이 스펙이 확정하�
 
 ## 4. 결정성·golden 왕복 (M2)
 
-**fixture**: `crates/notes-sync/fixtures/topic_golden_v5.md`, `topic_images_golden_v5.md`, `trash_golden_v5.md` — M0 부록에서 확정한 v5 판. 원본은 v1의 `src-tauri/src/notes/sync/fixtures/topic_golden.md`(format_version 4), `github_notifications_golden.md`, `TRASH_GOLDEN`(`topic_parser.rs:1325`)이다.
+**fixture**: `crates/notes-sync/fixtures/topic_golden.md`, `topic_images_golden.md`, `trash_golden.md` — M0 부록에서 확정한 판. 원본은 v1의 `src-tauri/src/notes/sync/fixtures/topic_golden.md`(format_version 4), `github_notifications_golden.md`, `TRASH_GOLDEN`(`topic_parser.rs:1325`)이다.
 
 | 테스트 (`topic_file.rs`/`topic_parser.rs` 테스트 모듈) | 계약 |
 |---|---|
@@ -96,15 +96,15 @@ M2.1의 첫 red: `golden_topic_renders_byte_identical`(fixture는 있는데 렌�
 
 ### 5.1 수용 (행마다 1테스트)
 
-`a_bullet_without_yid_is_accepted_for_id_issue`(발급은 병합 몫 — 파서는 None id로 통과), `an_unparsable_hlc_becomes_empty_and_loses_lww`(v1의 `t: too-new` 케이스 계승, `topic_parser.rs:1724`), `odd_indent_and_tabs_normalize_to_two_spaces`, `a_bare_dash_line_is_a_plain_bullet`(**체크박스가 없으면 할 일이 아니다** — marker=bullet, completed=false), `a_checkbox_line_is_always_a_todo`(`- [ ]`·`- [x]` 둘 다 marker=todo), `a_completed_plain_bullet_round_trips_through_the_done_token`(프리픽스가 아니라 주석이 싣는다), `a_v4_completed_bullet_becomes_done_on_write_back`(v4의 `- [x]` + todo 토큰 없음 → `- ` + `done`, `needs_write_back`), `missing_frontmatter_keys_take_defaults`, `crlf_normalizes_to_lf`, `a_v4_golden_parses_with_v5_semantics`(v1/v4 vault 수용 — 결정 6).
+`a_bullet_without_yid_is_accepted_for_id_issue`(발급은 병합 몫 — 파서는 None id로 통과), `an_unparsable_hlc_becomes_empty_and_loses_lww`(v1의 `t: too-new` 케이스 계승, `topic_parser.rs:1724`), `odd_indent_and_tabs_normalize_to_two_spaces`, `a_bare_dash_line_is_a_plain_bullet`(**체크박스가 없으면 할 일이 아니다** — marker=bullet, completed=false), `a_checkbox_line_is_always_a_todo`(`- [ ]`·`- [x]` 둘 다 marker=todo), `a_completed_plain_bullet_round_trips_through_the_done_token`(프리픽스가 아니라 주석이 싣는다), `missing_frontmatter_keys_take_defaults`, `crlf_normalizes_to_lf`.
 
 ### 5.2 격리 (부분 적용 금지)
 
-`a_future_format_version_quarantines`(`format_version > 5`), `a_missing_topic_id_quarantines`, `an_oversized_file_quarantines`(16MiB 캡), `a_git_conflict_marker_quarantines`(`<<<<<<<`, 결정 1의 "git 미보증"이 안전한 이유). 격리는 문서 전체 거부다. 절반만 파싱된 결과가 나오면 실패다.
+`a_foreign_format_version_quarantines`(`format_version`이 `1`이 아니다), `a_missing_topic_id_quarantines`, `an_oversized_file_quarantines`(16MiB 캡), `a_git_conflict_marker_quarantines`(`<<<<<<<`, 결정 1의 "git 미보증"이 안전한 이유). 격리는 문서 전체 거부다. 절반만 파싱된 결과가 나오면 실패다.
 
 ### 5.3 미지 필드 보존 (M2.3 — 첫 red)
 
-`unknown_fields_survive_a_parse_render_round_trip` — v4 golden의 `plugin:`·`root_readonly:`·`miw:` 등 v5가 모르는 키·토큰이 parse→render 왕복 후 원문 그대로 남는다. 재방출 위치는 스펙이 고정한 결정적 규칙을 따른다(같은 입력 2회 렌더 바이트 동일까지 함께 단언).
+`unknown_fields_survive_a_parse_render_round_trip` — 파서가 모르는 frontmatter 키와 주석 토큰이 parse→render 왕복 후 원문 그대로 남는다. 재방출 위치는 스펙이 고정한 결정적 규칙을 따른다(같은 입력 2회 렌더 바이트 동일까지 함께 단언).
 
 ## 6. 병합 (M3)
 

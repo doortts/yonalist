@@ -1,26 +1,18 @@
 use notes_application::StorageError;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 
-pub(crate) const SCHEMA_VERSION: i64 = 2;
+pub(crate) const SCHEMA_VERSION: i64 = 1;
 pub(crate) const ROOT_ID: &str = "root";
 
 /// `MIGRATIONS[i]` carries a database from version `i + 1` to `i + 2`, so the
 /// list length pins `SCHEMA_VERSION` and adding a step means bumping it.
+///
+/// Empty while the format is still moving: a schema change edits `create_schema`
+/// in place and development databases get regenerated. The ladder stays because
+/// the first release needs it; nothing rides it until then.
 type Migration = fn(&Transaction<'_>) -> Result<(), StorageError>;
-const MIGRATIONS: &[Migration] = &[add_node_paths];
+const MIGRATIONS: &[Migration] = &[];
 const _: () = assert!(MIGRATIONS.len() as i64 + 1 == SCHEMA_VERSION);
-
-/// The DDL here and the mirror inside `create_schema` have to stay one shape:
-/// a migrated database and a fresh one order the same outline off this column.
-fn add_node_paths(transaction: &Transaction<'_>) -> Result<(), StorageError> {
-    transaction
-        .execute_batch(
-            "ALTER TABLE notes_nodes ADD COLUMN path TEXT;
-             CREATE INDEX notes_nodes_path ON notes_nodes(path);",
-        )
-        .map_err(internal)?;
-    crate::node_paths::rebuild_all(transaction)
-}
 
 /// Guarantees the single root row every outline hangs from and adopts legacy
 /// top-level pages as its children, so a "page" is only ever a root child.
@@ -71,9 +63,18 @@ pub(crate) fn ensure_root(connection: &mut Connection) -> Result<(), StorageErro
         )
         .map_err(internal)?;
     // An adopted page hangs one level deeper than it did, so its whole branch
-    // gets a new path. Nothing moved means nothing to rewrite, which is what
-    // keeps a normal open from touching every row.
-    if rewritten || adopted > 0 {
+    // gets a new path. A row that has no path at all cannot be ordered, so it
+    // gets one here too — that is the only repair left now that the ladder is
+    // empty. Nothing moved and nothing missing means nothing to rewrite, which
+    // is what keeps a normal open from touching every row.
+    let unpathed: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes_nodes WHERE path IS NULL)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(internal)?;
+    if rewritten || adopted > 0 || unpathed {
         crate::node_paths::rebuild_all(&transaction)?;
     }
     transaction.commit().map_err(internal)
@@ -261,7 +262,7 @@ fn create_schema(connection: &Connection) -> Result<(), StorageError> {
                 value TEXT NOT NULL
             ) STRICT;
 
-            PRAGMA user_version = 2;
+            PRAGMA user_version = 1;
             COMMIT;
             ",
         )
@@ -435,8 +436,8 @@ mod tests {
 
         let message = error.to_string();
         assert!(
-            message.contains("unsupported Notes schema version 3")
-                && message.contains("expected 2"),
+            message.contains("unsupported Notes schema version 2")
+                && message.contains("expected 1"),
             "unexpected error: {message}"
         );
     }
@@ -450,7 +451,7 @@ mod tests {
         let message = error.to_string();
         assert!(
             message.contains("unsupported Notes schema version -1")
-                && message.contains("expected 2"),
+                && message.contains("expected 1"),
             "unexpected error: {message}"
         );
     }
