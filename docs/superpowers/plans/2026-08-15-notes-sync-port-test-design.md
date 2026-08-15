@@ -18,13 +18,19 @@
 | 9 | 성능 계약 | `crates/notes-sync/tests/` + 기존 `notes-sqlite/tests/performance.rs` | `cargo test -p notes-sync --test perf_contracts` · `npm run test:v2:performance` |
 | 10 | 멀티 디바이스 통합 (M6) | `crates/notes-sync/tests/multi_device.rs` | `cargo test -p notes-sync --test multi_device` |
 
-설계 테스트 수: §2 13 · §3 7 · §4 7 · §5 14 · §6 20(property 4 포함) · §7 4 · §8 32 · §9 5(+기존 7 무회귀) · §10 17 = **신규 119개** (v1에서 계약 단위로 추가 이식되는 단위 테스트는 별도).
+설계 테스트 수: §2 17 · §3 7 · §4 7 · §5 14 · §6 21(property 4 포함) · §7 5 · §8 34 · §9 5(+기존 7 무회귀) · §10 17 = **신규 127개** (v1에서 계약 단위로 추가 이식되는 단위 테스트는 별도).
 
 ## 1. M0 — red 테스트 없음 (명시)
 
 M0.1은 문서다. 게이트는 적대적 리뷰이고 이 스펙이 확정하는 계약은 아래에서 red 테스트가 된다: 문법 → §4 golden, 관대함 표 → §5, 리스크 정책 → §10.2. M0의 golden 초안(부록)이 §4가 커밋할 fixture의 원본이다.
 
 ## 2. M1 골격 — 항목별 첫 red 테스트
+
+### 2.0 M1.0 도메인 정합 수리
+
+- **첫 red**: `duplicated_children_get_uuid_ids`(`crates/notes-core/src/tree.rs` 테스트 모듈) — 복제 자식 id가 전부 UUID이고 같은 입력이면 같은 id다(uuid v5 파생).
+- 이어서: `the_onboarding_seed_uses_uuids`(notes-sqlite), `a_field_over_the_cap_is_rejected_before_commit`(text·note 각각 100,000바이트 초과), `an_image_cannot_become_a_root_child`(생성·이동 둘 다).
+- 러너: `cargo test -p notes-core` · `cargo test -p notes-application` · `cargo test -p notes-sqlite`.
 
 ### 2.1 M1.1 크레이트 골격
 
@@ -120,7 +126,7 @@ M2.1의 첫 red: `golden_topic_renders_byte_identical`(fixture는 있는데 렌�
 | `prop_two_dbs_converge_by_exchanging_exports` | 수렴 — 서로의 render를 병합하면 동일 상태 (M4 이후 render 사용, M3 시점엔 문서 구조 교환으로 선행) |
 | §2.2의 `prop_hlc_string_order_equals_component_order` | HLC 전순서가 위 셋의 전제 |
 
-단위 테스트(발췌): `a_cycle_parks_the_same_node_for_the_same_input`(결정성), `a_future_hlc_beyond_drift_is_restamped_and_logged`(24h), `a_drifted_hlc_is_not_observed`(흡수하면 이후 로컬 편집이 전부 미래 스탬프를 받는다), `a_hand_edit_with_the_same_hlc_is_adopted_under_a_fresh_one`(스펙 §6 — 본문만 고친 파일이 이긴다), `a_loser_is_recorded_once_in_the_conflict_log`(중복 금지), `unknown_extras_are_upserted_with_the_node`.
+단위 테스트(발췌): `a_cycle_parks_the_same_node_for_the_same_input`(결정성), `a_future_hlc_beyond_drift_is_restamped_and_logged`(24h), `a_drifted_hlc_is_not_observed`(흡수하면 이후 로컬 편집이 전부 미래 스탬프를 받는다), `a_local_hand_edit_is_restamped_as_authoring`(자기 vault의 해시 불일치 = 저작 — fresh HLC + write-back), `a_remote_same_hlc_conflict_breaks_ties_by_content_hash`(**양방향 병합이 같은 승자** — fresh HLC 없음, 진 쪽은 충돌 로그), `a_loser_is_recorded_once_in_the_conflict_log`(중복 금지), `unknown_extras_are_upserted_with_the_node`.
 
 **부재 ≠ 삭제와 이중 증거** (불변 규칙 1):
 
@@ -159,6 +165,7 @@ M2.1의 첫 red: `golden_topic_renders_byte_identical`(fixture는 있는데 렌�
 | `entries_above_the_barrier_still_undo` | 병합과 교차하지 않는 위쪽 항목은 전부 되돌아간다. 전체 절단 대안과의 차이를 잠근다 |
 | `a_merge_with_no_overlap_leaves_history_alone` | 교차 없으면 floor 불변, undo_depth 불변 |
 | `redo_clears_when_the_merge_touches_a_redone_node` | undo 후 X를 바꾼 병합 → redo 불가 |
+| `the_barrier_counts_deleted_ids` | affected = 변경 ∪ 삭제 — `TreeMutation::Delete`가 낀 병합도 배리어를 세운다 |
 
 첫 red: `undo_stops_at_an_entry_touching_a_merged_node`(absorb_external이 없어 컴파일 red).
 
@@ -166,7 +173,7 @@ M2.1의 첫 red: `golden_topic_renders_byte_identical`(fixture는 있는데 렌�
 
 ### 8.1 exporter 코어 (M4.1)
 
-`crates/notes-sync/src/exporter.rs` 테스트 모듈: `self_validation_failure_leaves_the_file_untouched`(불변 규칙 4 — 파스백 불일치 주입 시 기존 바이트 보존 + dirty 유지), `an_export_clears_only_the_exported_dirty_rows`, `deleted_nodes_emit_into_trash_md`, `exported_hash_records_the_written_bytes`(에코 skip의 근거), `an_export_refuses_to_overwrite_a_changed_file`(**쓰기 직전 해시가 `exported_hash`와 다르면 쓰지 않고 병합 먼저** — 스펙 §6의 손편집 보호).
+`crates/notes-sync/src/exporter.rs` 테스트 모듈: `self_validation_failure_leaves_the_file_untouched`(불변 규칙 4 — 파스백 불일치 주입 시 기존 바이트 보존 + dirty 유지), `an_export_clears_only_the_exported_dirty_rows`, `deleted_nodes_emit_into_trash_md`, `an_empty_trash_writes_no_file`(항목 0 = 파일 부재), `exported_hash_records_the_written_bytes`(에코 skip의 근거), `an_export_refuses_to_overwrite_a_changed_file`(**쓰기 직전 해시가 `exported_hash`와 다르면 쓰지 않고 병합 먼저** — 스펙 §6의 손편집 보호).
 
 ### 8.2 폴더 배치와 이름 (M4.2)
 
@@ -204,9 +211,9 @@ M2.1의 첫 red: `golden_topic_renders_byte_identical`(fixture는 있는데 렌�
 
 ### 8.5 watcher (M5.1)
 
-notify를 우회해 콜백을 직접 호출한다: `an_echo_of_our_own_write_is_skipped`(해시 == `exported_hash`), `an_unchanged_mtime_and_size_never_opens_the_file`, `a_max_hlc_that_is_not_greater_skips_the_merge`, `a_conflicted_copy_merges_and_retires`, `a_placeholder_file_is_retried_not_treated_as_truncation`, `events_coalesce_within_the_window`, `a_startup_scan_and_the_safety_net_enter_the_same_gates`.
+notify를 우회해 콜백을 직접 호출한다: `an_echo_of_our_own_write_is_skipped`(해시 == `exported_hash`), `an_unchanged_mtime_and_size_never_opens_the_file`, `a_changed_hash_parses_even_with_a_stale_max_hlc`(**P0 재발 방지** — 손편집은 max_hlc를 안 바꾼다. 파일 생략 근거는 해시뿐), `a_conflicted_copy_merges_and_retires`, `a_placeholder_file_is_retried_not_treated_as_truncation`, `events_coalesce_within_the_window`, `a_startup_scan_and_the_safety_net_enter_the_same_gates`.
 
-우선순위 입구: `a_burst_of_merge_requests_does_not_delay_a_user_command` — 병합 요청으로 큐를 채운 뒤 명령 하나를 넣어 순서를 본다.
+배압: `a_user_command_waits_behind_at_most_one_merge` — watcher가 문서 100개 변경을 들고 있어도 요청은 한 번에 하나만 큐에 있다. 명령 하나를 사이에 넣어 대기가 병합 1건임을 단언한다.
 
 ### 8.6 첨부 인입 (M5.2)
 

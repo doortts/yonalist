@@ -129,7 +129,7 @@ apps/desktop/src-tauri        SyncRuntime 수명주기(스레드 시작/정지, 
 crates/notes-sqlite           워커(Request::MergeTopic 등 신규 요청), 스키마 창, yona_hlc 등록   ── depends on ──▶
 crates/notes-sync (신규)      file_io · hlc · topic_file/parser · merger · exporter 코어 · watcher 코어 · bootstrap 코어
 crates/notes-application      SyncStatus/SyncConflict 계약(ts-rs), absorb_external + undo 배리어
-crates/notes-core             무수정. sync를 모른다
+crates/notes-core             sync를 모른다. M1.0의 정합 수리 3건만 예외
 ```
 
 의존 방향(§2-2에서 역전 확정): `notes-sqlite → notes-sync → notes-application → notes-core`. `scripts/checkV2Architecture.mjs:7-11`의 `expectedDependencies`에 `["notes-sync", ["notes-application", "notes-core"]]`를 넣고 M1.4에서 `notes-sqlite` 행에 `notes-sync`를 추가해 기계로 강제한다.
@@ -146,7 +146,7 @@ crates/notes-core             무수정. sync를 모른다
 
 병합이 DB revision만 올리면 `NotesService`의 메모리 사본(`service.rs:30`)이 낡아서 이후 모든 프런트 명령이 `mutations.rs:25`에서 `RevisionConflict`로 죽는다. 따라서 병합은 반드시 서비스를 지난다.
 
-- `NotesService`에 `absorb_external(operation)`을 신설한다. session lock 안에서 operation(워커 병합 호출)을 실행하고 반환된 `{ revision, changed_node_ids }`로 `session.revision`을 갱신한다. lock을 잡은 채 워커 왕복을 기다리는 것은 기존 명령 경로(`service.rs:146→307`)와 같은 모양이다.
+- `NotesService`에 `absorb_external(operation)`을 신설한다. session lock 안에서 operation(워커 병합 호출)을 실행하고 반환된 `{ revision, affected_ids }`(affected = 변경 ∪ 삭제 — `StorageCommit`의 두 목록 합집합)로 `session.revision`을 갱신한다. lock을 잡은 채 워커 왕복을 기다리는 것은 기존 명령 경로(`service.rs:146→307`)와 같은 모양이다.
 - undo 배리어: `SessionState`에 `undo_floor: usize` 하나. absorb 시 undo 스택 위에서부터 changed set과 교차하는 최상위 항목 인덱스 i를 찾아 `undo_floor = max(undo_floor, i + 1)`. `can_undo = undo.len() > undo_floor`. `push_bounded_history`의 `remove(0)`(`service.rs:91`) 때 floor를 `saturating_sub(1)`. 교차 판정은 `TreeMutation`의 Upsert 노드 id·Delete id로.
 - redo: changed set과 교차하는 항목이 있으면 redo 스택 전체를 비운다(병합 뒤 forward 재적용은 병합 결과를 되돌릴 수 있다).
 - `HistoryState`(can_undo/undo_depth)가 이미 영수증에 실려 나가므로 배리어에 프런트 수정은 필요 없다.
@@ -208,24 +208,32 @@ M5에서 `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }`를 
 
 red 테스트 없음 — 문서 항목의 게이트는 적대적 리뷰다. 스펙의 계약들은 M1·M2에서 red 테스트로 물화된다(테스트 설계 §1).
 
-### M1 — 골격 (6항목, 실행 수준)
+### M1 — 골격 (7항목, 실행 수준)
 
 | 필드 | 내용 |
 |---|---|
 | Goal | notes-sync 크레이트·HLC·원자적 파일 계층·스키마 창·vault 설정이 착지하고 기존 명령은 무수정 |
-| Acceptance | 아래 6행. 각 행 = 항목 하나 |
+| Acceptance | 아래 7행. 각 행 = 항목 하나 |
 | Non-goals | 렌더러·파서·병합·export 없음. notify 미도입 |
 | Boundaries | Rust(신규 크레이트, notes-sqlite, adapter), SQLite(제자리), IPC(명령 2개), React(설정 화면 한 절) |
 | Manual proof | 격리 실행 → 설정에서 vault 폴더 지정 → 재시작 후 유지 확인 (M1.5·M1.6 이후) |
 
 | 행 | 합격 조건 | 항목 |
 |---|---|---|
+| M1-0 | 도메인 id가 전부 UUID이고(복제·시드 포함) 캡과 root 직계 이미지 금지가 커밋 전에 걸린다 | M1.0 |
 | M1-1 | 워크스페이스에 notes-sync가 있고 의존 그래프 검사가 방향을 강제한다 | M1.1 |
 | M1-2 | HLC 17자 인코딩이 왕복하고 사전순 = 시간순이며 observe 후 now()가 원격을 이긴다 | M1.2 |
 | M1-3 | 원자적 쓰기·guarded read·no-replace 이동이 notes-sync에서 v1과 같은 계약으로 동작한다 | M1.3 |
 | M1-4 | 기존 mutation 명령이 무수정으로 hlc 스탬프 + dirty 기록을 남기고 명시 hlc는 보존된다 | M1.4 |
 | M1-5 | vault 경로가 IPC로 지정·조회되고 재시작을 견딘다 | M1.5 |
 | M1-6 | 설정 화면에서 vault 폴더를 고르고 현재 값을 본다 | M1.6 |
+
+**M1.0 — 도메인 정합 수리 (외부 리뷰 3·4 수용).** 파일 계약이 요구하는 것을 도메인이 먼저 지킨다.
+- 복제 자식 id를 `{uuid}/n` 파생([tree.rs:139](../../crates/notes-core/src/tree.rs#L139)) 대신 `uuid v5(부모 새 id, 순번)`으로 — 결정적이라 core에 난수원이 안 들어온다.
+- 온보딩 시드 id(`seed.rs:8`의 `onboarding-page` 일가)를 고정 UUID 상수로. 개발 데이터라 리셋으로 끝난다.
+- 공통 캡(필드 100,000바이트·depth 128·노드 20,000)과 **root 직계 이미지 금지**를 도메인 검증에 — `UpdateText`/`UpdateNote` 변환과 `NotesTree::validate` 양쪽. 파일에서 격리될 값은 커밋 전에 거절되어야 한다(스펙 §4.1).
+- 커밋: `fix(notes): make every id a uuid and enforce the file format caps in the domain`
+- 테스트: `cargo test -p notes-core` + `cargo test -p notes-application` (테스트 설계 §2.0). 의존: 없음 — M1의 다른 항목보다 먼저.
 
 **M1.1 — notes-sync 크레이트 골격.**
 - 바뀌는 것: `crates/notes-sync/{Cargo.toml, src/lib.rs}` 신규(빈 모듈 트리), 루트 `Cargo.toml` members·workspace.dependencies에 notes-sync 추가, `scripts/checkV2Architecture.mjs:7-11`에 `["notes-sync", ["notes-application", "notes-core"]]` 추가. 의존: notes-application, notes-core, rusqlite(workspace), uuid, sha2. dev: tempfile, proptest.
@@ -324,7 +332,7 @@ red 테스트 없음 — 문서 항목의 게이트는 적대적 리뷰다. 스�
 
 | 항목 | 내용 | 완료 조건 | 의존 |
 |---|---|---|---|
-| M5.1 | watcher 이식(2,591줄 원본): notify(FSEvents) 감시 + 500ms coalesce + mtime·크기 게이트 + `exported_hash` 에코 skip + `max_hlc` 조기 탈출 + guarded read + conflicted copy 병합 승격 + 자리표시 파일 재시도 + 60s 안전망 스캔. **병합 요청은 낮은 우선순위 입구로** 넣어 타이핑이 뒤에 서지 않게 한다 | watcher 콜백 직접 호출 + 우선순위 테스트 (테스트 설계 §8.5) | M3.3, M4 |
+| M5.1 | watcher 이식(2,591줄 원본): notify(FSEvents) 감시 + 500ms coalesce + mtime·크기 게이트 + `exported_hash` 에코 skip + `max_hlc` 조기 탈출 + guarded read + conflicted copy 병합 승격 + 자리표시 파일 재시도 + 60s 안전망 스캔. **병합은 문서당 요청 1개, watcher는 응답을 받고 다음을 보낸다**(배압) — 큐는 FIFO 그대로이고 사용자 명령의 대기는 병합 최대 1건이다 | watcher 콜백 직접 호출 + 배압 테스트 (테스트 설계 §8.5) | M3.3, M4 |
 | M5.2 | 첨부 인입: vault의 첨부 도착 감지 → 로컬 `images/` 캐시 채우기 → 미해소 이미지 행 해소 알림 | 첨부 인입 테스트 (테스트 설계 §8.6) | M5.1 |
 | M5.3 | bootstrap 이식(3,089줄 원본): 시작 조정 4분기(v1 §9.4), `file_mtime_ms`+`file_size` 게이트 통과분만 해시 확인, StartupGate 뒤에 비차단 편승, **미방출 편집이 있으면 재색인 거부**(스펙 §9) | 증분 재색인 + 재색인 거부 테스트 (테스트 설계 §9.1) | M5.1 |
 | M5.4 | `notes://sync-changed`·`notes://sync-status` emit(어댑터) + 프런트 listener(신규 파일, 500ms coalesce, StrictMode 멱등 등록/해제) + `applyReceipt` 모양 반영, 페이로드가 크면 뷰포트 재조회 | 이벤트 페이로드·listener 테스트 (테스트 설계 §8.7) | M3.3, M5.1 |
