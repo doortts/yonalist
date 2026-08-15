@@ -2332,21 +2332,69 @@ body.is-resizing-pane {
   gap: 10px;
 }
 
+/* The level's name and its remove icon travel together, so the icon reads as
+   "remove this level" rather than as one more control on the row. */
+.marker-level-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 82px;
+}
+
 .marker-level-label {
-  min-width: 52px;
   color: var(--text-2);
   font-size: 13px;
 }
 
-.marker-shape-row,
-.marker-color-row {
+/* The slot holds its width whether or not the icon is in it: without that,
+   adding or removing a level shifts every control on the row sideways. */
+.marker-level-remove-slot {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+}
+
+.marker-level-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.marker-level-remove:hover {
+  background: var(--bg-hover);
+  color: var(--danger);
+}
+
+.marker-level-add {
+  padding: 5px 11px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.marker-level-add:hover {
+  border-color: var(--accent);
+  color: var(--text-1);
+}
+
+.marker-shape-row {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 
-.marker-shape-button,
-.marker-color-default {
+.marker-shape-button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2359,13 +2407,11 @@ body.is-resizing-pane {
   cursor: pointer;
 }
 
-.marker-shape-button:hover,
-.marker-color-default:hover {
+.marker-shape-button:hover {
   background: var(--bg-hover);
 }
 
-.marker-shape-button[aria-pressed="true"],
-.marker-color-default[aria-pressed="true"] {
+.marker-shape-button[aria-pressed="true"] {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--text-1);
@@ -2420,19 +2466,66 @@ body.is-resizing-pane {
   text-align: center;
 }
 
-.settings-section label.marker-color-custom {
+.marker-color-field {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  color: var(--text-2);
-  font-size: 12.5px;
+  gap: 8px;
+}
+
+.marker-color-label {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.marker-color-slot {
+  position: relative;
+  display: inline-flex;
+}
+
+.marker-color-swatch {
+  width: 24px;
+  height: 24px;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: transparent;
   cursor: pointer;
 }
 
-.marker-color-custom input[type="color"] {
-  width: 30px;
-  height: 26px;
-  padding: 2px;
+/* No colour of its own: the slash reads as "none", the mark the caret colour
+   setting already uses for its auto swatch. The input still opens the picker,
+   which is the only way a colour gets chosen. */
+.marker-color-swatch-auto::-webkit-color-swatch {
+  border: 0;
+  border-radius: 4px;
+  background: linear-gradient(
+    to bottom right,
+    var(--bg-card) calc(50% - 1px),
+    var(--text-2) calc(50% - 1px) calc(50% + 1px),
+    var(--bg-card) calc(50% + 1px)
+  );
+}
+
+.marker-color-clear {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--bg-card);
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+.marker-color-clear:hover {
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .caret-swatch-row {

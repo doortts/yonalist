@@ -21,8 +21,12 @@ export interface OutlineMarkerStyle {
   readonly color: string | null;
 }
 
-/** Levels the settings hold. A deeper row repeats the last one. */
-export const OUTLINE_MARKER_LEVELS = 3;
+/**
+ * The most levels the settings will hold. A row past the last configured level
+ * keeps that level's marker, so this is a bound on the settings screen rather
+ * than on how deep an outline can go.
+ */
+export const MAX_OUTLINE_MARKER_LEVELS = 6;
 
 const storageKey = "yonalist.outlineMarkers.v1";
 const shapes: readonly OutlineMarkerShape[] = [
@@ -33,12 +37,9 @@ const shapes: readonly OutlineMarkerShape[] = [
   "custom"
 ];
 
+/** One level, the dot the rows drew before any of this was configurable. */
 export function defaultOutlineMarkerStyles(): OutlineMarkerStyle[] {
-  return Array.from({ length: OUTLINE_MARKER_LEVELS }, () => ({
-    shape: "dot" as const,
-    char: "",
-    color: null
-  }));
+  return [{ shape: "dot", char: "", color: null }];
 }
 
 /** One code point, so an emoji survives and a pasted word does not. */
@@ -46,8 +47,14 @@ export function normalizeMarkerChar(value: string): string {
   return [...value][0] ?? "";
 }
 
+/**
+ * The level a row of this depth stamps. A row cannot know how many levels the
+ * settings hold -- it would have to re-render on every change to find out -- so
+ * it clamps to the highest slot there could be and the variables do the rest:
+ * every slot above the last configured level repeats that level.
+ */
 export function markerLevelOfDepth(depth: number): number {
-  return Math.min(Math.max(depth, 0), OUTLINE_MARKER_LEVELS - 1);
+  return Math.min(Math.max(depth, 0), MAX_OUTLINE_MARKER_LEVELS - 1);
 }
 
 function readStyle(value: unknown): OutlineMarkerStyle | null {
@@ -84,7 +91,11 @@ export function loadOutlineMarkerStyles(): OutlineMarkerStyle[] {
   } catch {
     return defaultOutlineMarkerStyles();
   }
-  if (!Array.isArray(parsed) || parsed.length !== OUTLINE_MARKER_LEVELS) {
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length < 1 ||
+    parsed.length > MAX_OUTLINE_MARKER_LEVELS
+  ) {
     return defaultOutlineMarkerStyles();
   }
   const levels = parsed.map(readStyle);
@@ -136,7 +147,14 @@ export function outlineMarkerVariables(
   styles: readonly OutlineMarkerStyle[]
 ): Record<string, string> {
   const variables: Record<string, string> = {};
-  styles.forEach((level, index) => {
+  const last = styles.at(-1) ?? defaultOutlineMarkerStyles()[0]!;
+  // Every slot is written, configured or not: the ones past the last level
+  // repeat it, which is what makes a deep row keep the marker its parent drew.
+  const slots = Array.from(
+    { length: MAX_OUTLINE_MARKER_LEVELS },
+    (_, slot) => styles[slot] ?? last
+  );
+  slots.forEach((level, index) => {
     const box = boxes[level.shape];
     const drawsGlyph = level.shape === "hyphen" || level.shape === "custom";
     const glyph = level.shape === "hyphen"
@@ -176,14 +194,10 @@ export function useOutlineMarkerStyles() {
     applyOutlineMarkerVariables(document.documentElement, styles);
   }, [styles]);
 
-  const setLevel = useCallback((level: number, next: OutlineMarkerStyle) => {
-    setStyles((current) => {
-      const updated = current.map((value, index) =>
-        index === level ? next : value);
-      saveOutlineMarkerStyles(updated);
-      return updated;
-    });
+  const setAll = useCallback((next: OutlineMarkerStyle[]) => {
+    setStyles(next);
+    saveOutlineMarkerStyles(next);
   }, []);
 
-  return { markerStyles: styles, setMarkerStyle: setLevel };
+  return { markerStyles: styles, setMarkerStyles: setAll };
 }

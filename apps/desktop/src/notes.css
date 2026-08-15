@@ -2017,6 +2017,45 @@ body.is-outline-dragging * {
   font-family: var(--notes-marker-2-font, inherit);
 }
 
+.notes-node[data-marker-level="3"] .notes-node-bullet-dot {
+  width: var(--notes-marker-3-w, 7px);
+  height: var(--notes-marker-3-h, 7px);
+  border-radius: var(--notes-marker-3-r, 50%);
+  background: var(--notes-marker-3-bg, currentColor);
+  color: var(--notes-marker-3-color, inherit);
+}
+
+.notes-node[data-marker-level="3"] .notes-node-bullet-dot::after {
+  content: var(--notes-marker-3-char, "");
+  font-family: var(--notes-marker-3-font, inherit);
+}
+
+.notes-node[data-marker-level="4"] .notes-node-bullet-dot {
+  width: var(--notes-marker-4-w, 7px);
+  height: var(--notes-marker-4-h, 7px);
+  border-radius: var(--notes-marker-4-r, 50%);
+  background: var(--notes-marker-4-bg, currentColor);
+  color: var(--notes-marker-4-color, inherit);
+}
+
+.notes-node[data-marker-level="4"] .notes-node-bullet-dot::after {
+  content: var(--notes-marker-4-char, "");
+  font-family: var(--notes-marker-4-font, inherit);
+}
+
+.notes-node[data-marker-level="5"] .notes-node-bullet-dot {
+  width: var(--notes-marker-5-w, 7px);
+  height: var(--notes-marker-5-h, 7px);
+  border-radius: var(--notes-marker-5-r, 50%);
+  background: var(--notes-marker-5-bg, currentColor);
+  color: var(--notes-marker-5-color, inherit);
+}
+
+.notes-node[data-marker-level="5"] .notes-node-bullet-dot::after {
+  content: var(--notes-marker-5-char, "");
+  font-family: var(--notes-marker-5-font, inherit);
+}
+
 .notes-node-bullet-dot::after {
   font-size: 13px;
   line-height: 1;

@@ -26,13 +26,16 @@ function bullet(id: string, parentId: string, sortKey: number): NoteView {
   };
 }
 
-// One chain four levels deep: the fourth row is what proves a depth past the
-// configured levels keeps the last level's marker instead of losing one.
+// One chain seven levels deep: the seventh row is what proves a depth past the
+// last slot the settings could hold keeps stamping that slot.
 const nodes = [
   bullet("one", "page-1", 1_024),
   bullet("two", "one", 1_024),
   bullet("three", "two", 1_024),
   bullet("four", "three", 1_024),
+  bullet("deep-five", "four", 1_024),
+  bullet("deep-six", "deep-five", 1_024),
+  bullet("deep-seven", "deep-six", 1_024),
   { ...bullet("five", "page-1", 2_048), marker: { ordered: { start: 5 } } },
   { ...bullet("six", "page-1", 3_072), marker: { ordered: { start: 5 } } }
 ] as const;
@@ -106,10 +109,11 @@ describe("outline marker styles", () => {
   it("stamps the marker level a row's depth falls in", async () => {
     const { container } = await outline();
 
-    expect(levelOf(container, "one")).toBe("0");
-    expect(levelOf(container, "two")).toBe("1");
-    expect(levelOf(container, "three")).toBe("2");
-    expect(levelOf(container, "four")).toBe("2");
+    expect(["one", "two", "three", "four", "deep-five", "deep-six"]
+      .map((id) => levelOf(container, id)))
+      .toEqual(["0", "1", "2", "3", "4", "5"]);
+    // Deeper than the settings could ever reach: it holds the last slot.
+    expect(levelOf(container, "deep-seven")).toBe("5");
   });
 
   // The number is the marker, so it stands where the shaped bullet would and
@@ -131,7 +135,7 @@ describe("outline marker styles", () => {
   // The variables carry the whole shape, so a level that nobody configured
   // still has to fall back to the dot the rows drew before the setting existed.
   it("reads each level's shape off its own variables, dot by default", () => {
-    for (const level of [0, 1, 2]) {
+    for (const level of [0, 1, 2, 3, 4, 5]) {
       const declarations = rule(
         notesStyles,
         `.notes-node[data-marker-level="${level}"] .notes-node-bullet-dot`

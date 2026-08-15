@@ -1,6 +1,9 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 
-import { defaultOutlineMarkerStyles } from "./outlineMarkers";
+import {
+  defaultOutlineMarkerStyles,
+  MAX_OUTLINE_MARKER_LEVELS
+} from "./outlineMarkers";
 import { SettingsView } from "./SettingsView";
 import type { TextFont } from "./useTheme";
 
@@ -14,7 +17,7 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsView>[0]> =
     onDarkThemeChange: vi.fn(),
     onCaretColorChange: vi.fn(),
     onTextFontChange: vi.fn(),
-    onMarkerStyleChange: vi.fn(),
+    onMarkerStylesChange: vi.fn(),
     onClose: vi.fn(),
     unusedAssets: vi.fn().mockResolvedValue({
       count: 0,
@@ -156,70 +159,126 @@ describe("SettingsView", () => {
     expect(handlers.deleteAllData).toHaveBeenCalledOnce();
   });
 
-  it("changes one outline level's marker shape without touching the others", () => {
+  it("shows one level and an invitation to add the next", () => {
+    renderSettings();
+
+    expect(screen.getByRole("button", { name: "Dot marker for level 1" }))
+      .toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Dot marker for level 2" }))
+      .toBeNull();
+    expect(screen.getByRole("button", { name: "Add level 2" }))
+      .toBeInTheDocument();
+  });
+
+  it("appends a plain level and reports the whole set", () => {
     const handlers = renderSettings();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add level 2" }));
+    expect(handlers.onMarkerStylesChange).toHaveBeenCalledWith([
+      { shape: "dot", char: "", color: null },
+      { shape: "dot", char: "", color: null }
+    ]);
+  });
+
+  it("stops inviting a new level once the last one is configured", () => {
+    renderSettings({
+      markerStyles: Array.from({ length: MAX_OUTLINE_MARKER_LEVELS }, () => (
+        { shape: "dot" as const, char: "", color: null }
+      ))
+    });
+
+    expect(screen.queryByRole("button", { name: /^Add level/u })).toBeNull();
+  });
+
+  // Removing a level in the middle pulls every level below it up a place, which
+  // changes markers nobody asked to change. Only the last one goes.
+  it("offers removal on the last level alone, and never on the only one", () => {
+    renderSettings();
+    expect(screen.queryByRole("button", { name: /^Remove level/u })).toBeNull();
+
+    renderSettings({
+      markerStyles: [
+        { shape: "dot", char: "", color: null },
+        { shape: "dash", char: "", color: null },
+        { shape: "square", char: "", color: null }
+      ]
+    });
+    expect(screen.queryByRole("button", { name: "Remove level 2" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove level 3" }))
+      .toBeInTheDocument();
+  });
+
+  it("drops the level its remove icon sits beside", () => {
+    const handlers = renderSettings({
+      markerStyles: [
+        { shape: "dot", char: "", color: null },
+        { shape: "dash", char: "", color: null }
+      ]
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove level 2" }));
+    expect(handlers.onMarkerStylesChange).toHaveBeenCalledWith([
+      { shape: "dot", char: "", color: null }
+    ]);
+  });
+
+  it("changes one level's marker shape without touching the others", () => {
+    const handlers = renderSettings({
+      markerStyles: [
+        { shape: "dot", char: "", color: null },
+        { shape: "dot", char: "", color: null }
+      ]
+    });
 
     fireEvent.click(
       screen.getByRole("button", { name: "Square marker for level 2" })
     );
-    expect(handlers.onMarkerStyleChange).toHaveBeenCalledWith(
-      1, { shape: "square", char: "", color: null }
-    );
+    expect(handlers.onMarkerStylesChange).toHaveBeenCalledWith([
+      { shape: "dot", char: "", color: null },
+      { shape: "square", char: "", color: null }
+    ]);
   });
 
   // Turning a level custom has to hand it a character to draw, or the level
   // would show nothing until the field is typed into.
   it("seeds a custom level with a marker and takes an edited one", () => {
     const handlers = renderSettings({
-      markerStyles: [
-        { shape: "custom", char: "▸", color: null },
-        { shape: "dot", char: "", color: null },
-        { shape: "dot", char: "", color: null }
-      ]
+      markerStyles: [{ shape: "custom", char: "▸", color: null }]
     });
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Custom marker for level 2" })
-    );
-    expect(handlers.onMarkerStyleChange).toHaveBeenCalledWith(
-      1, { shape: "custom", char: "▸", color: null }
-    );
 
     fireEvent.change(
       screen.getByRole("textbox", { name: "Level 1 marker character" }),
       { target: { value: "★★" } }
     );
-    expect(handlers.onMarkerStyleChange).toHaveBeenCalledWith(
-      0, { shape: "custom", char: "★", color: null }
-    );
+    expect(handlers.onMarkerStylesChange).toHaveBeenCalledWith([
+      { shape: "custom", char: "★", color: null }
+    ]);
   });
 
-  it("moves a level between the theme colour and a picked one", () => {
+  // The picker always answers with a colour -- there is no "none" in it -- so
+  // the only way back to the theme's own colour is a control of our own, and it
+  // shows up on a level that has a colour to clear.
+  it("takes a picked colour and clears it only where there is one", () => {
+    const handlers = renderSettings();
+    expect(screen.getByText("Color")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Clear level/u })).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Level 1 marker color"), {
+      target: { value: "#123456" }
+    });
+    expect(handlers.onMarkerStylesChange).toHaveBeenCalledWith([
+      { shape: "dot", char: "", color: "#123456" }
+    ]);
+  });
+
+  it("puts a level back on the theme colour", () => {
     const handlers = renderSettings({
-      markerStyles: [
-        { shape: "dot", char: "", color: "#e8734a" },
-        { shape: "dot", char: "", color: null },
-        { shape: "dot", char: "", color: null }
-      ]
+      markerStyles: [{ shape: "dot", char: "", color: "#e8734a" }]
     });
 
-    expect(
-      screen.getByRole("button", { name: "Theme colour for level 2" })
-    ).toHaveAttribute("aria-pressed", "true");
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Theme colour for level 1" })
-    );
-    expect(handlers.onMarkerStyleChange).toHaveBeenCalledWith(
-      0, { shape: "dot", char: "", color: null }
-    );
-
-    fireEvent.change(
-      screen.getByLabelText("Custom colour for level 2"),
-      { target: { value: "#123456" } }
-    );
-    expect(handlers.onMarkerStyleChange).toHaveBeenCalledWith(
-      1, { shape: "dot", char: "", color: "#123456" }
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Clear level 1 color" }));
+    expect(handlers.onMarkerStylesChange).toHaveBeenCalledWith([
+      { shape: "dot", char: "", color: null }
+    ]);
   });
 });
