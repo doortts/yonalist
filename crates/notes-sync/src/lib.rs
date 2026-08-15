@@ -5,3 +5,5 @@
 //! owns no thread, opens no database and knows nothing of Tauri: `notes-sqlite`
 //! calls it from inside the single worker that owns the connection, and the
 //! desktop adapter owns the lifetimes above that.
+
+pub mod hlc;
