@@ -304,6 +304,11 @@ fn apply_pending_data_deletion(data_directory: &Path) -> std::io::Result<()> {
             std::fs::remove_file(path)?;
         }
     }
+    // The vault holds the user's documents and is not this app's to delete, so
+    // the reset forgets where it is and stops there. Leaving the path instead
+    // would re-adopt the folder on the next boot and make "delete all data"
+    // mean nothing.
+    sync_settings::clear_vault_path(data_directory).map_err(std::io::Error::other)?;
     for directory in ["images", "original-views"] {
         let path = data_directory.join(directory);
         if path.exists() {
@@ -581,6 +586,32 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn a_data_reset_clears_the_stored_vault_path() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let data = directory.path().join("app-data");
+        let vault = directory.path().join("Notes");
+        std::fs::create_dir_all(&data).expect("data");
+        std::fs::create_dir_all(&vault).expect("vault");
+        std::fs::write(vault.join("README.md"), b"# Home\n").expect("document");
+        sync_settings::set_vault_path(&data, &vault).expect("set");
+        std::fs::write(data.join(DELETE_DATA_MARKER), b"1").expect("marker");
+
+        apply_pending_data_deletion(&data).expect("reset");
+
+        assert_eq!(
+            sync_settings::read_vault_path(&data),
+            None,
+            "clearing the data returns the app to first run"
+        );
+        assert!(
+            vault.join("README.md").exists(),
+            "and leaves the documents in the folder alone"
+        );
+    }
+
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;

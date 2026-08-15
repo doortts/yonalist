@@ -25,6 +25,17 @@ pub(crate) fn set_vault_path(data_directory: &Path, vault: &Path) -> Result<(), 
         .map_err(|error| format!("Could not remember the vault location: {error}"))
 }
 
+/// Forgets where the vault is without going near it. The documents belong to
+/// the user, not to this app's storage, so clearing the app's data returns to
+/// first run and leaves the folder exactly as it stands.
+pub(crate) fn clear_vault_path(data_directory: &Path) -> Result<(), String> {
+    match fs::remove_file(data_directory.join(VAULT_PATH_FILE)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Could not forget the vault location: {error}")),
+    }
+}
+
 fn path_bytes(vault: &Path) -> Result<String, String> {
     vault
         .to_str()
