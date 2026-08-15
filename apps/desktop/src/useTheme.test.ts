@@ -95,4 +95,18 @@ describe("useTheme", () => {
     ).toBe("");
     expect(window.localStorage.getItem("yonalist.caretColor.v1")).toBe("auto");
   });
+
+  // The setting has to survive a restart, and the stylesheet keys off the
+  // attribute rather than a class, so both halves are worth pinning.
+  it("keeps the outline text font on the document and in storage", () => {
+    const { result } = renderHook(() => useTheme());
+
+    expect(result.current.textFont).toBe("sans");
+    expect(document.documentElement.dataset.textFont).toBe("sans");
+
+    act(() => result.current.setTextFont("mono"));
+
+    expect(document.documentElement.dataset.textFont).toBe("mono");
+    expect(window.localStorage.getItem("yonalist.textFont.v1")).toBe("mono");
+  });
 });

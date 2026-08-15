@@ -11,11 +11,14 @@ export type DarkTheme = "dark" | "yona-dark" | "base-dark";
 export type ResolvedTheme = LightTheme | DarkTheme;
 /** "auto" leaves the caret to the theme stylesheet; anything else is a #rrggbb. */
 export type CaretColor = "auto" | string;
+/** What the outline's own text is set in; the rest of the app never changes. */
+export type TextFont = "sans" | "mono";
 
 const themeModeStorageKey = "yonalist.themeMode.v1";
 const lightThemeStorageKey = "yonalist.lightTheme.v1";
 const darkThemeStorageKey = "yonalist.darkTheme.v1";
 const caretColorStorageKey = "yonalist.caretColor.v1";
+const textFontStorageKey = "yonalist.textFont.v1";
 
 function readStoredValue(key: string): string | null {
   try {
@@ -71,6 +74,10 @@ function loadCaretColor(): CaretColor {
   return stored && /^#[0-9a-f]{6}$/i.test(stored) ? stored : "auto";
 }
 
+function loadTextFont(): TextFont {
+  return readStoredValue(textFontStorageKey) === "mono" ? "mono" : "sans";
+}
+
 function systemPrefersDark(): boolean {
   return (
     typeof window.matchMedia === "function" &&
@@ -84,6 +91,7 @@ export function useTheme() {
   const [darkTheme, setDarkThemeState] = useState<DarkTheme>(() => loadDarkTheme());
   const [systemDark, setSystemDark] = useState(() => systemPrefersDark());
   const [caretColor, setCaretColorState] = useState<CaretColor>(() => loadCaretColor());
+  const [textFont, setTextFontState] = useState<TextFont>(() => loadTextFont());
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") {
@@ -122,6 +130,10 @@ export function useTheme() {
     document.documentElement.style.setProperty("--caret-strong", caretColor);
   }, [caretColor]);
 
+  useEffect(() => {
+    document.documentElement.dataset.textFont = textFont;
+  }, [textFont]);
+
   const setMode = useCallback((next: ThemeMode) => {
     setModeState(next);
     writeStoredValue(themeModeStorageKey, next);
@@ -142,6 +154,11 @@ export function useTheme() {
     writeStoredValue(caretColorStorageKey, next);
   }, []);
 
+  const setTextFont = useCallback((next: TextFont) => {
+    setTextFontState(next);
+    writeStoredValue(textFontStorageKey, next);
+  }, []);
+
   return {
     mode,
     setMode,
@@ -151,6 +168,8 @@ export function useTheme() {
     setDarkTheme,
     caretColor,
     setCaretColor,
+    textFont,
+    setTextFont,
     resolvedTheme
   };
 }

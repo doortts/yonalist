@@ -2,15 +2,18 @@ import { fireEvent, render, screen } from "@testing-library/react";
 
 import { defaultOutlineMarkerStyles } from "./outlineMarkers";
 import { SettingsView } from "./SettingsView";
+import type { TextFont } from "./useTheme";
 
 function renderSettings(overrides: Partial<Parameters<typeof SettingsView>[0]> = {}) {
   const handlers = {
     caretColor: "auto",
+    textFont: "sans" as TextFont,
     markerStyles: defaultOutlineMarkerStyles(),
     onThemeModeChange: vi.fn(),
     onLightThemeChange: vi.fn(),
     onDarkThemeChange: vi.fn(),
     onCaretColorChange: vi.fn(),
+    onTextFontChange: vi.fn(),
     onMarkerStyleChange: vi.fn(),
     onClose: vi.fn(),
     unusedAssets: vi.fn().mockResolvedValue({
@@ -97,6 +100,15 @@ describe("SettingsView", () => {
       screen.getByRole("button", { name: "Auto (theme default)" })
     ).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByLabelText("Custom")).toHaveValue("#bf5af2");
+  });
+
+  // Only the outline's own text changes; the rest of the window stays in the
+  // interface font, which is what the stylesheet scopes the setting to.
+  it("moves the outline text between the sans and monospace fonts", () => {
+    const handlers = renderSettings();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Monospace outline text" }));
+    expect(handlers.onTextFontChange).toHaveBeenCalledWith("mono");
   });
 
   it("checks unused assets and purges only after confirmation", async () => {
