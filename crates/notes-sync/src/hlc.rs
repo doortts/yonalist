@@ -191,20 +191,24 @@ impl Clock {
     }
 }
 
-// Two pieces of this wait for M1.4, when the schema window creates the columns
-// they read: `the_clock_reseeds_from_stored_hlcs_on_boot` (test design §2.2),
-// and the second half of the spec's reseed source — §4.1 unions
-// `max(notes_nodes.hlc)` with `max(sync_documents.applied_max_hlc)`, and only
-// the first table exists. Without the second, a row merged and then deleted
-// locally can leave the largest stored reading below what this device applied.
-
 /// Rebuilds the clock from what the database already holds. The clock is
 /// derived state, not stored: persisting it invites a crash to leave a saved
 /// reading behind the rows it already stamped, and a clock that went backwards
 /// silently loses the next edit.
 pub fn reseed(clock: &Clock, connection: &Connection) -> Result<(), String> {
+    // Both halves of the spec's source: a row that was merged and then deleted
+    // locally leaves nothing behind in `notes_nodes`, so the largest reading
+    // this device applied has to come from the documents table as well.
     let stored: Option<String> = connection
-        .query_row("SELECT MAX(hlc) FROM notes_nodes", [], |row| row.get(0))
+        .query_row(
+            "SELECT MAX(value) FROM (
+                 SELECT MAX(hlc) AS value FROM notes_nodes
+                 UNION ALL
+                 SELECT MAX(applied_max_hlc) FROM sync_documents
+             )",
+            [],
+            |row| row.get(0),
+        )
         .map_err(|error| format!("Could not read the stored Notes HLCs: {error}"))?;
     if let Some(value) = stored.filter(|value| !value.is_empty()) {
         let stored = Hlc::decode(&value)?;

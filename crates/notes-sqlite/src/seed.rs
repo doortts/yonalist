@@ -101,6 +101,10 @@ mod tests {
     fn open() -> Connection {
         let mut connection = Connection::open_in_memory().expect("in-memory db");
         schema::initialize(&mut connection).expect("schema");
+        // The stamping triggers call `yona_hlc()`, which is registered per
+        // connection; a writer without one cannot insert a row.
+        let clock = std::sync::Arc::new(notes_sync::hlc::Clock::new("c0de").expect("clock"));
+        notes_sync::hlc::register(&connection, clock).expect("register");
         connection
     }
 

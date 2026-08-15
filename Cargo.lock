@@ -2577,6 +2577,7 @@ dependencies = [
  "image",
  "notes-application",
  "notes-core",
+ "notes-sync",
  "rusqlite",
  "sha2 0.10.9",
  "tempfile",

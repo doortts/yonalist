@@ -162,6 +162,14 @@ fn create_schema(connection: &Connection) -> Result<(), StorageError> {
                 starred INTEGER NOT NULL DEFAULT 0 CHECK (starred IN (0, 1)),
                 deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
                 path TEXT,
+                -- Stamped by trigger, not by the mutation code: that is what
+                -- lets every existing command path carry a clock reading
+                -- without one of them being rewritten.
+                hlc TEXT NOT NULL DEFAULT '',
+                -- Whatever the parser met in the file and had no field for,
+                -- carried back out unchanged so a newer app's values survive
+                -- a round trip through this one.
+                sync_extras TEXT NOT NULL DEFAULT '',
                 FOREIGN KEY(parent_id) REFERENCES notes_nodes(id)
                     DEFERRABLE INITIALLY DEFERRED,
                 CHECK (
@@ -244,6 +252,34 @@ fn create_schema(connection: &Connection) -> Result<(), StorageError> {
                 note,
                 tokenize = 'unicode61'
             );
+            -- The three stamping triggers. They fire only when the row
+            -- arrives without a reading of its own, so a merge that carries one
+            -- from another device keeps it (spec invariant 6).
+            CREATE TRIGGER notes_nodes_hlc_ai AFTER INSERT ON notes_nodes
+            WHEN NEW.hlc = ''
+            BEGIN
+              UPDATE notes_nodes SET hlc = yona_hlc() WHERE id = NEW.id;
+              INSERT INTO sync_dirty_nodes(node_id, marked_at)
+              VALUES (NEW.id, unixepoch())
+              ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+            END;
+
+            CREATE TRIGGER notes_nodes_hlc_au AFTER UPDATE ON notes_nodes
+            WHEN NEW.hlc = OLD.hlc
+            BEGIN
+              UPDATE notes_nodes SET hlc = yona_hlc() WHERE id = NEW.id;
+              INSERT INTO sync_dirty_nodes(node_id, marked_at)
+              VALUES (NEW.id, unixepoch())
+              ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+            END;
+
+            CREATE TRIGGER notes_nodes_hlc_ad AFTER DELETE ON notes_nodes
+            BEGIN
+              INSERT INTO sync_dirty_nodes(node_id, marked_at)
+              VALUES (OLD.id, unixepoch())
+              ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+            END;
+
             CREATE TRIGGER notes_fts_insert AFTER INSERT ON notes_nodes BEGIN
                 INSERT INTO notes_fts(node_id, text, note)
                 VALUES (new.id, new.text, new.note);
@@ -256,6 +292,59 @@ fn create_schema(connection: &Connection) -> Result<(), StorageError> {
             CREATE TRIGGER notes_fts_delete AFTER DELETE ON notes_nodes BEGIN
                 DELETE FROM notes_fts WHERE node_id = old.id;
             END;
+
+            CREATE TABLE sync_meta (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                device_id TEXT NOT NULL,
+                vault_uuid TEXT NOT NULL
+            ) STRICT;
+
+            -- One row per document. Page, home and split documents are the
+            -- same thing here.
+            CREATE TABLE sync_documents (
+                root_id TEXT PRIMARY KEY NOT NULL,
+                folder_path TEXT NOT NULL UNIQUE,
+                applied_max_hlc TEXT NOT NULL DEFAULT '',
+                exported_hash TEXT NOT NULL DEFAULT '',
+                file_mtime_ms INTEGER,
+                file_size INTEGER,
+                quarantined INTEGER NOT NULL DEFAULT 0
+                    CHECK (quarantined IN (0, 1))
+            ) STRICT;
+
+            CREATE TABLE sync_dirty_nodes (
+                node_id TEXT PRIMARY KEY NOT NULL,
+                marked_at INTEGER NOT NULL DEFAULT 0
+            ) STRICT;
+
+            -- What each node looked like when it last went out, so an edit that
+            -- returns a value to where it was does not advance its clock and
+            -- does not rewrite the file.
+            CREATE TABLE sync_node_exports (
+                node_id TEXT PRIMARY KEY NOT NULL,
+                content_hash TEXT NOT NULL,
+                exported_hlc TEXT NOT NULL
+            ) STRICT;
+
+            CREATE TABLE sync_conflict_log (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id TEXT NOT NULL,
+                loser_json TEXT NOT NULL,
+                loser_hlc TEXT NOT NULL,
+                winner_hlc TEXT NOT NULL,
+                recorded_at INTEGER NOT NULL
+            ) STRICT;
+
+            -- Where an attachment's bytes currently sit, and when it stopped
+            -- being referenced. The reference count itself is not stored: it is
+            -- counted off the nodes, so it cannot drift into deleting a file
+            -- something still points at.
+            CREATE TABLE sync_assets (
+                content_hash TEXT PRIMARY KEY NOT NULL,
+                disk_name TEXT NOT NULL,
+                location TEXT NOT NULL,
+                unreferenced_at INTEGER
+            ) STRICT;
 
             CREATE TABLE notes_ui_state (
                 key TEXT PRIMARY KEY NOT NULL,
@@ -291,6 +380,10 @@ mod tests {
     fn open() -> Connection {
         let mut connection = Connection::open_in_memory().expect("in-memory db");
         initialize(&mut connection).expect("schema");
+        // The stamping triggers call `yona_hlc()`, which is registered per
+        // connection; a writer without one cannot insert a row.
+        let clock = std::sync::Arc::new(notes_sync::hlc::Clock::new("c0de").expect("clock"));
+        notes_sync::hlc::register(&connection, clock).expect("register");
         connection
     }
 

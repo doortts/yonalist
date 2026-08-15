@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{self, SyncSender};
 use std::thread::{self, JoinHandle};
 
@@ -9,7 +10,8 @@ use notes_application::{
     ViewportRequest,
 };
 use notes_core::{DomainPatch, NoteNode, NotesCommand, NotesTree};
-use rusqlite::Connection;
+use notes_sync::hlc::{self, Clock};
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::{forest_queries, queries, repository, schema};
 
@@ -74,6 +76,32 @@ enum Request {
 pub struct SqliteStorage {
     sender: SyncSender<Request>,
     worker: Option<JoinHandle<()>>,
+}
+
+/// The four hexadecimal characters an HLC carries to break ties between
+/// devices. Seeded once per database and never changed: a device that renamed
+/// itself would look like a different one to every merge.
+fn device_id(connection: &Connection) -> Result<String, StorageError> {
+    let existing: Option<String> = connection
+        .query_row(
+            "SELECT device_id FROM sync_meta WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| StorageError::Internal(error.to_string()))?;
+    if let Some(device_id) = existing {
+        return Ok(device_id);
+    }
+    let device_id = uuid::Uuid::new_v4().simple().to_string()[..4].to_owned();
+    let vault_uuid = uuid::Uuid::new_v4().to_string();
+    connection
+        .execute(
+            "INSERT INTO sync_meta(singleton, device_id, vault_uuid) VALUES (1, ?1, ?2)",
+            rusqlite::params![device_id, vault_uuid],
+        )
+        .map_err(|error| StorageError::Internal(error.to_string()))?;
+    Ok(device_id)
 }
 
 impl SqliteStorage {
@@ -165,12 +193,23 @@ impl SqliteStorage {
                 .map_err(|error| StorageError::Unavailable(error.to_string()))
                 .and_then(|mut connection| {
                     schema::initialize(&mut connection)?;
+                    // Between the schema and the first row: the tables have to
+                    // exist to read the device from, and the stamping triggers
+                    // call `yona_hlc()` on every insert after this point.
+                    let clock = Arc::new(
+                        Clock::new(&device_id(&connection)?).map_err(StorageError::Internal)?,
+                    );
+                    hlc::register(&connection, Arc::clone(&clock))
+                        .map_err(StorageError::Internal)?;
                     if seed_onboarding {
                         crate::seed::seed_onboarding(&mut connection)?;
                     }
                     // After the seed so the onboarding page is adopted like any
                     // other legacy top-level page.
                     schema::ensure_root(&mut connection)?;
+                    // The clock is derived state: it catches up to whatever the
+                    // rows already carry rather than being stored and restored.
+                    hlc::reseed(&clock, &connection).map_err(StorageError::Internal)?;
                     Ok(connection)
                 });
                 let mut connection = match connection {

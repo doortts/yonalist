@@ -8,7 +8,7 @@ const expectedDependencies = new Map([
   ["notes-core", []],
   ["notes-application", ["notes-core"]],
   ["notes-sync", ["notes-application", "notes-core"]],
-  ["notes-sqlite", ["notes-application", "notes-core"]]
+  ["notes-sqlite", ["notes-application", "notes-core", "notes-sync"]]
 ]);
 
 const metadata = JSON.parse(
