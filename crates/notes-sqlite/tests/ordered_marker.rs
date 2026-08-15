@@ -1,6 +1,4 @@
-use notes_application::{
-    CommandEnvelope, IpcMarkerKind, IpcNotesCommand, NotesService, StoragePort,
-};
+use notes_application::{CommandEnvelope, IpcMarkerKind, IpcNotesCommand, NotesService};
 use notes_core::NoteMarkerKind;
 use notes_sqlite::SqliteStorage;
 

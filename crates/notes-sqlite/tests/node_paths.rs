@@ -101,33 +101,6 @@ fn seeded_page(database: &Path) -> String {
         .expect("seeded onboarding page")
 }
 
-/// A workspace with a nested branch, a negative sort key and a trashed subtree,
-/// which is every shape the path construction branches on.
-fn build_workspace(database: &Path) {
-    let storage = SqliteStorage::open(database).expect("open storage");
-    let service = NotesService::new(&storage, "session", 0);
-    let mut outline = Outline {
-        database: database.to_path_buf(),
-        ordinal: 0,
-        revision: 0,
-    };
-    for command in [
-        create("page", "root", None),
-        create("first", "page", None),
-        create("second", "page", None),
-        create("first-child", "first", None),
-        create("first-grandchild", "first-child", None),
-        create("head", "page", Some("first")),
-        create("above-head", "page", Some("head")),
-        move_to("first-child", "second", None),
-        IpcNotesCommand::DeleteSubtree {
-            id: "second".into(),
-        },
-    ] {
-        outline.run(&service, command);
-    }
-}
-
 fn create(id: &str, parent_id: &str, before_id: Option<&str>) -> IpcNotesCommand {
     IpcNotesCommand::CreateNode {
         id: id.into(),
