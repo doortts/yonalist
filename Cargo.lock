@@ -2589,6 +2589,7 @@ dependencies = [
 name = "notes-sync"
 version = "0.2.0"
 dependencies = [
+ "libc",
  "notes-application",
  "notes-core",
  "proptest",
