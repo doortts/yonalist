@@ -385,8 +385,16 @@ fn duplicating_a_bullet_copies_its_descendants_with_fresh_ids() {
         },
     );
 
-    let child_copy_id = tree.children_of(&id("copy"))[0].clone();
-    let grandchild_copy_id = tree.children_of(&child_copy_id)[0].clone();
+    let child_copy_id = tree
+        .children_of(&id("copy"))
+        .first()
+        .cloned()
+        .expect("copied child");
+    let grandchild_copy_id = tree
+        .children_of(&child_copy_id)
+        .first()
+        .cloned()
+        .expect("copied grandchild");
     let child_copy = tree.node(&child_copy_id).expect("copied child");
     let grandchild_copy = tree.node(&grandchild_copy_id).expect("copied grandchild");
     assert_eq!(child_copy.parent_id(), Some(&id("copy")));
@@ -690,7 +698,11 @@ fn duplicating_many_subtrees_is_one_atomic_reversible_patch() {
             id("after")
         ]
     );
-    let copied_child_id = tree.children_of(&id("b-copy"))[0].clone();
+    let copied_child_id = tree
+        .children_of(&id("b-copy"))
+        .first()
+        .cloned()
+        .expect("copied child");
     assert_eq!(tree.node(&copied_child_id).unwrap().text(), "Child");
     tree.apply(&patch.inverse).unwrap();
     assert_eq!(tree, original);

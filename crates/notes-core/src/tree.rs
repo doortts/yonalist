@@ -21,15 +21,18 @@ const DERIVED_ID_NAMESPACE: uuid::Uuid =
 /// The copy of a subtree needs an id per node, and only the top one arrives
 /// with the command. The rest are derived from it so every device that
 /// duplicates the same subtree lands on the same ids, and they are uuids
-/// because that is the only shape the file format carries.
+/// because that is the only shape the file format carries. The key is
+/// lowercased first: a uuid's identity is case-insensitive, so two spellings
+/// of one id have to derive one set of children.
 fn derived_child_id(new_id: &NodeId, ordinal: usize) -> Result<NodeId, DomainError> {
-    let name = format!("{new_id}/{ordinal}");
+    let name = format!("{}/{ordinal}", new_id.as_str().to_ascii_lowercase());
     let derived = uuid::Uuid::new_v5(&DERIVED_ID_NAMESPACE, name.as_bytes());
     NodeId::try_from(derived.to_string())
 }
 
 /// Children go onto the stack reversed so popping hands them back in document
-/// order: `duplicate_node` numbers the copies in the order they arrive here.
+/// order: `duplicate_node` feeds that position to `derived_child_id`, so this
+/// order is part of the copied ids and not just of the copied shape.
 fn walk_subtree(index: &BTreeMap<&NodeId, Vec<&NoteNode>>, root_id: &NodeId) -> Vec<NodeId> {
     let mut result = Vec::new();
     let mut pending = vec![root_id.clone()];

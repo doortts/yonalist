@@ -36,6 +36,10 @@ fn plan_and_apply(tree: &mut NotesTree, command: NotesCommand) {
     tree.apply(&patch.forward).unwrap();
 }
 
+/// The uuid the duplication is keyed on. Fixed so the derived ids below stay
+/// reproducible.
+const COPY_ID: &str = "0f3c5a71-2b64-4d18-8e05-9a6c3d21b7f4";
+
 #[test]
 fn duplicating_a_deep_subtree_copies_it_in_document_order_without_deleted_rows() {
     let mut tree = NotesTree::default();
@@ -60,32 +64,37 @@ fn duplicating_a_deep_subtree_copies_it_in_document_order_without_deleted_rows()
         &mut tree,
         NotesCommand::DuplicateNode {
             source_id: id("source"),
-            new_id: id("copy"),
+            new_id: id(COPY_ID),
             parent_id: id("page"),
             position: Position::at_end(),
         },
     );
 
-    // Copied ids are derived from the order the walk reaches the source rows,
-    // so reading the copy back in document order pins the traversal and not
-    // just the shape. The deleted rows stay behind.
-    let texts = |parent: &NodeId| {
-        tree.children_of(parent)
-            .into_iter()
-            .map(|child| tree.node(&child).unwrap().text().to_owned())
-            .collect::<Vec<_>>()
-    };
-    let copied = tree.children_of(&id("copy"));
-    assert_eq!(texts(&id("copy")), vec!["zeta", "alpha"]);
-    assert_eq!(texts(&copied[0]), vec!["yak", "beta"]);
-    assert_eq!(texts(&copied[1]), vec!["omega"]);
+    // Copied ids are a uuid v5 derivation over the ordinal the walk hands out,
+    // so these golden values pin the namespace, the name format and the walk
+    // order together. Change any one of the three and these strings move.
+    let zeta = id("35a2fca0-9399-5157-8bdf-2442731c491a");
+    let yak = id("74884284-e696-5c05-9c70-04d14a156fcc");
+    let beta = id("5603c89b-011e-54d5-9e4d-6c95054f50a7");
+    let alpha = id("00be4057-0812-5770-b6be-83f6fe8e5720");
+    let omega = id("772c206f-32e5-525f-8ab8-cb9202d599d6");
     assert_eq!(
-        tree.children_of(&copied[0])
-            .iter()
-            .map(|child| tree.children_of(child).len())
-            .sum::<usize>(),
-        0,
-        "the copy is five rows deep and no deeper"
+        tree.children_of(&id(COPY_ID)),
+        vec![zeta.clone(), alpha.clone()]
+    );
+    assert_eq!(tree.children_of(&zeta), vec![yak.clone(), beta.clone()]);
+    assert_eq!(tree.children_of(&alpha), vec![omega.clone()]);
+    assert_eq!(tree.node(&zeta).unwrap().text(), "zeta");
+    assert_eq!(tree.node(&yak).unwrap().text(), "yak");
+    assert_eq!(tree.node(&beta).unwrap().text(), "beta");
+    assert_eq!(tree.node(&alpha).unwrap().text(), "alpha");
+    assert_eq!(tree.node(&omega).unwrap().text(), "omega");
+    // The deleted source rows stay behind: five copied rows, no sixth.
+    assert_eq!(
+        tree.children_of(&yak).len()
+            + tree.children_of(&beta).len()
+            + tree.children_of(&omega).len(),
+        0
     );
 }
 
