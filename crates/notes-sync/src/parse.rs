@@ -180,13 +180,10 @@ fn parse_page(keys: &Frontmatter, body: &[&str]) -> Result<VaultFile, Quarantine
         return Err("A node claims the document's own id.".to_owned());
     }
 
-    let stated = optional_hlc(keys.get("max_hlc"));
-    let observed = highest_hlc(&nodes).max(root.hlc.clone());
-    let max_hlc = if stated >= observed && !stated.is_empty() {
-        stated
-    } else {
-        observed
-    };
+    // The content is the only evidence. A stated key that runs ahead of it is a
+    // hand edit, and keeping it would push the boot clock into the future and
+    // future-stamp every later local edit.
+    let max_hlc = highest_hlc(&nodes).max(root.hlc.clone());
 
     Ok(VaultFile::Page(PageDocument {
         id,
@@ -206,13 +203,7 @@ fn parse_trash(keys: &Frontmatter, body: &[&str]) -> Result<VaultFile, Quarantin
     }
     let mut reader = NodeReader::new(true);
     let nodes = reader.read(body.iter().peekable())?;
-    let stated = optional_hlc(keys.get("max_hlc"));
-    let observed = highest_hlc(&nodes);
-    let max_hlc = if stated >= observed && !stated.is_empty() {
-        stated
-    } else {
-        observed
-    };
+    let max_hlc = highest_hlc(&nodes);
     Ok(VaultFile::Trash(TrashDocument { max_hlc, nodes }))
 }
 
@@ -276,8 +267,11 @@ impl NodeReader {
                 continue;
             }
             let (indent, rest) = split_indentation(line);
-            // A note belongs to the line above it, which is whatever is still
-            // open at the top of the stack.
+            // A note belongs to the line above it, whatever its own indentation
+            // says. The renderer only ever writes a note directly under its own
+            // bullet, so a note indented at some ancestor's level is a hand
+            // edit — and reading it as the ancestor's would move text the
+            // person meant to leave where they typed it.
             if let Some(text) = rest.strip_prefix('>') {
                 let Some((_, open)) = stack.last_mut() else {
                     return Err(format!("A note has no line to belong to: `{line}`"));
@@ -357,12 +351,7 @@ fn read_node_line(rest: &str, trash: bool) -> Result<Option<DocumentNode>, Quara
         return Ok(None);
     };
 
-    // The last comment on the line is the node's own; an image line carries its
-    // own comment before it, and that one stays with the body.
-    let (body, comment) = match body.rfind(" <!--") {
-        Some(at) => (&body[..at], &body[at + 1..]),
-        None => (body, ""),
-    };
+    let (body, comment) = split_trailing_comment(body);
     let tokens = read_tokens(comment)?;
 
     let mut node = DocumentNode {
@@ -400,6 +389,32 @@ fn read_node_line(rest: &str, trash: bool) -> Result<Option<DocumentNode>, Quara
         NodeBody::Text(text)
     };
     Ok(Some(node))
+}
+
+/// The renderer writes exactly one space before the node comment, so the
+/// boundary is the last ` <!--`. Two shapes deliberately keep the tail in the
+/// body instead: a comment this reader cannot close, which is still the user's
+/// bytes, and an image line whose only comment is its own `ya:` — a person
+/// added it by hand and the merge issues the id. Dropping either would delete
+/// text, and dropping a broken `yid:` would hand the node a new identity.
+fn split_trailing_comment(line: &str) -> (&str, &str) {
+    let Some(separator) = line.rfind(" <!--") else {
+        return (line, "");
+    };
+    // Whitespace after the comment is an editor's, not the format's, so it does
+    // not cost the node the identity the comment carries. Whitespace *before*
+    // the comment belongs to the text and stays where it is.
+    let candidate = line[separator + 1..].trim_end();
+    let Some(inner) = candidate
+        .strip_prefix("<!--")
+        .and_then(|rest| rest.strip_suffix("-->"))
+    else {
+        return (line, "");
+    };
+    if inner.trim_start().starts_with("ya:") {
+        return (line, "");
+    }
+    (&line[..separator], candidate)
 }
 
 #[derive(Default)]
@@ -517,6 +532,7 @@ fn read_image(body: &str) -> Result<ImageReference, Quarantine> {
         .rsplit_once(" <!--")
         .map(|(head, tail)| (head, format!("<!--{tail}")))
         .ok_or_else(|| format!("An image line has no metadata: `{body}`"))?;
+    let comment = comment.trim_end();
     let (name, path) = read_link(body.strip_prefix('!').unwrap_or(body))
         .ok_or_else(|| format!("An image line is not a link: `{body}`"))?;
     check_asset_path(&path)?;
@@ -528,8 +544,14 @@ fn read_image(body: &str) -> Result<ImageReference, Quarantine> {
     let mut width = None;
     let mut pixels = None;
     let mut bytes = None;
+    // Same rule as a node comment: only a token ending in `:` takes the next
+    // word. Pairing every two words would let one unknown flag shift every
+    // token after it out of place.
     let mut words = inner.split_whitespace();
     while let Some(word) = words.next() {
+        if !word.ends_with(':') {
+            continue;
+        }
         let value = words.next().unwrap_or_default();
         match word {
             "w:" => width = value.parse::<u32>().ok(),
@@ -554,22 +576,24 @@ fn read_image(body: &str) -> Result<ImageReference, Quarantine> {
     })
 }
 
-/// A link that climbs out of the document's own folder would let a file decide
-/// what this app reads, which is exactly what the vault boundary exists to stop.
+/// Shared attachments live in the vault's own root `assets/`, so a legal link
+/// climbs: `../assets/…` from a page, `../../assets/…` from a split document.
+/// The parser never learns how deep its file sits, so it checks the shape it
+/// can own — any number of `../`, then `assets/`, then one file name — and the
+/// loader resolves what that shape actually reaches.
 fn check_asset_path(path: &str) -> Result<(), Quarantine> {
-    if path.starts_with('/') || path.contains("://") {
-        return Err(format!("`{path}` is not a relative asset path."));
+    let mut rest = path;
+    while let Some(next) = rest.strip_prefix("../") {
+        rest = next;
     }
-    let mut depth: i32 = 0;
-    for segment in path.split('/') {
-        match segment {
-            ".." => depth -= 1,
-            "." | "" => return Err(format!("`{path}` is not a canonical asset path.")),
-            _ => depth += 1,
-        }
-        if depth < 0 {
-            return Err(format!("`{path}` climbs out of the vault."));
-        }
+    let Some(name) = rest.strip_prefix("assets/") else {
+        return Err(format!("`{path}` does not point into an assets folder."));
+    };
+    if name.is_empty() || name.contains('/') {
+        return Err(format!("`{path}` is not one file in an assets folder."));
+    }
+    if name.contains("..") {
+        return Err(format!("`{path}` is not a canonical asset path."));
     }
     Ok(())
 }
@@ -607,10 +631,11 @@ fn field_fits(value: &str, field: &str) -> Result<(), Quarantine> {
     Ok(())
 }
 
-/// The inverse of the renderer's escaping, and the same shape: entities first,
-/// then a backslash before punctuation. A backslash with nothing to escape is
-/// left alone rather than guessed at.
-fn unescape(value: &str) -> String {
+/// The inverse of the renderer's escaping, ported from the frozen v1 reader:
+/// one left-to-right pass, so a backslash is consumed before what follows it
+/// can match anything else. Splitting on `\n` first would turn a user's two
+/// literal characters into a line break they never typed.
+fn unescape_scan(value: &str, inline: bool) -> String {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
     while !rest.is_empty() {
@@ -623,33 +648,37 @@ fn unescape(value: &str) -> String {
         } else if let Some(next) = rest.strip_prefix("&gt;") {
             out.push('>');
             rest = next;
-        } else {
-            let mut characters = rest.chars();
-            let character = characters.next().expect("the rest is not empty");
-            if character == '\\' {
-                let mut ahead = characters.clone();
-                match ahead.next() {
-                    Some(escaped) if escaped.is_ascii_punctuation() => {
-                        out.push(escaped);
-                        rest = ahead.as_str();
-                        continue;
-                    }
-                    _ => {}
+        } else if let Some(next) = rest.strip_prefix('\\') {
+            match next.chars().next() {
+                Some('n') if inline => {
+                    out.push('\n');
+                    rest = &next[1..];
+                }
+                Some(character) if character.is_ascii_punctuation() => {
+                    out.push(character);
+                    rest = &next[character.len_utf8()..];
+                }
+                // A backslash with nothing to escape is the user's backslash.
+                _ => {
+                    out.push('\\');
+                    rest = next;
                 }
             }
+        } else {
+            let character = rest.chars().next().expect("the rest is not empty");
             out.push(character);
-            rest = characters.as_str();
+            rest = &rest[character.len_utf8()..];
         }
     }
     out
 }
 
-/// Inline text also carries its newlines as the two characters `\n`, so those
-/// come back before the ordinary unescaping runs on each line.
+fn unescape(value: &str) -> String {
+    unescape_scan(value, false)
+}
+
+/// Inline text carries its newlines as the two characters `\n`, which only the
+/// same scan can tell apart from an escaped backslash.
 fn unescape_inline(value: &str) -> String {
-    value
-        .split("\\n")
-        .map(unescape)
-        .collect::<Vec<_>>()
-        .join("\n")
+    unescape_scan(value, true)
 }

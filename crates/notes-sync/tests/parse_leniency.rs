@@ -405,3 +405,188 @@ fn unknown_fields_survive_a_parse_render_round_trip() {
     );
     assert_eq!(once, twice, "and they land in the same place every time");
 }
+
+/// Every shared attachment sits in the vault's root `assets/`, which from a
+/// page is `../assets/` and from a split document `../../assets/`. A trash
+/// image is always `../assets/`. Refusing those would make every trash file
+/// holding an image unreadable.
+#[test]
+fn a_link_climbing_to_the_root_assets_folder_is_accepted() {
+    let source = "---\nkind: yonalist-trash\nformat_version: 1\n\
+                  max_hlc: 0swkd7qzc-00-a3f2\n---\n\
+                  - ![shot.png](../assets/shot-9f3a1c8e2044.png) \
+                  <!-- ya: w: 320 px: 10x10 bytes: 4 --> \
+                  <!-- yid: 8a201f33-0000-4c91-8d02-000000000005 t: 0swkd7qza-00-a3f2 -->\n";
+
+    let parsed = nodes(source);
+
+    assert_eq!(parsed.len(), 1, "a deleted image still has to come back");
+}
+
+#[test]
+fn a_link_that_is_not_an_asset_quarantines() {
+    for path in ["README.md", "assets/../README.md", "assets/deep/shot.png"] {
+        let source = page(&format!(
+            "- ![shot.png]({path}) <!-- ya: w: 320 px: 10x10 bytes: 4 --> \
+             <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 -->\n"
+        ));
+
+        assert!(
+            parse(source.as_bytes()).is_err(),
+            "`{path}` is not a shape this format writes"
+        );
+    }
+}
+
+/// Text holding the two characters `\n` is not a newline. Unescaping has to
+/// read left to right so the backslash before it is consumed first — otherwise
+/// the file comes back rewritten with a line break the user never typed.
+#[test]
+fn a_literal_backslash_n_in_text_is_not_a_newline() {
+    let source =
+        page("- a\\\\nb <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 -->\n");
+
+    let parsed = nodes(&source);
+
+    assert_eq!(parsed[0].body, NodeBody::Text("a\\nb".to_owned()));
+    let rendered = notes_sync::render::render(&accepted(&source)).expect("render");
+    assert_eq!(String::from_utf8(rendered).expect("utf-8"), source);
+}
+
+/// A comment the parser cannot read is still the user's bytes. Dropping it
+/// would delete text, and dropping a broken `yid:` would hand the node a new
+/// identity at the next merge — one invisible trailing space, one duplicate.
+#[test]
+fn a_malformed_comment_stays_in_the_body() {
+    let parsed = nodes(&page("- keep this <!-- and this too\n"));
+
+    assert_eq!(
+        parsed[0].body,
+        NodeBody::Text("keep this <!-- and this too".to_owned())
+    );
+}
+
+#[test]
+fn a_trailing_space_does_not_cost_a_node_its_identity() {
+    let parsed = nodes(&page(
+        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 --> \n",
+    ));
+
+    assert_eq!(parsed[0].id, "8a201f33-0000-4c91-8d02-000000000001");
+}
+
+/// An image line a person added by hand has no node comment yet. The merge
+/// issues the id; refusing the line would lose the image instead.
+#[test]
+fn an_image_line_without_a_node_comment_is_accepted() {
+    let parsed = nodes(&page(
+        "- ![shot.png](assets/shot-9f3a1c8e2044.png) <!-- ya: w: 320 px: 10x10 bytes: 4 -->\n",
+    ));
+
+    assert_eq!(parsed.len(), 1);
+    assert!(matches!(parsed[0].body, NodeBody::Image(_)));
+    assert_eq!(parsed[0].id, "");
+}
+
+/// A stamp the content cannot account for is exactly what §4.2 calls
+/// disagreeing with the content. Keeping it would let one hand edit push the
+/// boot clock into the future and future-stamp every later local edit.
+#[test]
+fn a_stated_max_hlc_the_content_cannot_account_for_is_recomputed() {
+    let source =
+        page("- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 -->\n")
+            .replace("max_hlc: 0swkd7qz9-00-a3f2", "max_hlc: zzzzzzzzz-zz-ffff");
+    let VaultFile::Page(parsed) = accepted(&source) else {
+        panic!("a page");
+    };
+
+    assert_eq!(parsed.max_hlc, "0swkd7qz6-00-a3f2");
+}
+
+#[test]
+fn an_unknown_ya_token_does_not_shift_the_ones_after_it() {
+    let parsed = nodes(&page(
+        "- ![shot.png](assets/shot-9f3a1c8e2044.png) \
+         <!-- ya: w: 320 future px: 10x10 bytes: 4 --> \
+         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 -->\n",
+    ));
+
+    let NodeBody::Image(image) = &parsed[0].body else {
+        panic!("an image");
+    };
+    assert_eq!((image.pixel_width, image.pixel_height), (10, 10));
+    assert_eq!(image.byte_size, 4);
+}
+
+#[test]
+fn a_document_with_more_nodes_than_the_cap_quarantines() {
+    let body = "- Text\n".repeat(20_001);
+
+    assert!(parse(page(&body).as_bytes()).is_err());
+}
+
+/// The goldens only cover the states the spec drew. This walks the space they
+/// left out — notes, ordered markers, stars, escape-heavy text, empty titles,
+/// climbing asset links — and holds the one property that matters: writing what
+/// was read has to land on the same bytes, or every read looks like an edit.
+#[test]
+fn a_document_holding_every_shape_survives_two_round_trips() {
+    let awkward = [
+        "plain",
+        "",
+        r"a\nb",
+        "punctuation .,:;!?*_`~[](){}#+-",
+        "&amp; &lt; &gt; already-looking text",
+        "trailing space ",
+        "  leading spaces",
+        "한글과 emoji 🌱",
+        "<!-- not a comment -->",
+        // A real newline inside one node's text: the renderer folds it to the
+        // two characters `\n`, which is exactly what the literal above must
+        // not be confused with.
+        "two\nlines",
+    ];
+    let mut body = String::new();
+    for (index, text) in awkward.iter().enumerate() {
+        body.push_str(&format!(
+            "- {} <!-- yid: 8a201f33-0000-4c91-8d02-{:012} t: 0swkd7qz6-00-a3f2 \
+             star ordered: {} collapsed -->\n",
+            escaped(text),
+            index + 1,
+            index as i64 - 3
+        ));
+        body.push_str(&format!("  > note for {}\n  >\n  > second line\n", index));
+    }
+    body.push_str(
+        "- ![shot \\.png](../assets/shot-9f3a1c8e2044.png) \
+         <!-- ya: w: 320 px: 10x10 bytes: 4 --> \
+         <!-- yid: 8a201f33-0000-4c91-8d02-000000000099 t: 0swkd7qz6-00-a3f2 -->\n",
+    );
+    let source = page(&body).replace("max_hlc: 0swkd7qz9-00-a3f2", "max_hlc: 0swkd7qz6-00-a3f2");
+
+    let once = notes_sync::render::render(&accepted(&source)).expect("render");
+    let text = String::from_utf8(once.clone()).expect("utf-8");
+    let twice = notes_sync::render::render(&accepted(&text)).expect("render");
+
+    assert_eq!(
+        text, source,
+        "the file came back different from how it went in"
+    );
+    assert_eq!(once, twice, "and a second trip has to change nothing");
+}
+
+/// Matches the renderer's escaping so the fixture above states a document the
+/// renderer would actually write.
+fn escaped(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            '&' => "&amp;".to_owned(),
+            '<' => "&lt;".to_owned(),
+            '>' => "&gt;".to_owned(),
+            '\n' => "\\n".to_owned(),
+            other if other.is_ascii_punctuation() => format!("\\{other}"),
+            other => other.to_string(),
+        })
+        .collect()
+}

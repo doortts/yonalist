@@ -12,8 +12,10 @@ use std::fmt::Write;
 use uuid::Uuid;
 
 pub const FORMAT_VERSION: u32 = 1;
-/// Both the file cap and the field cap exist so nothing reaches the vault that
-/// the parser would then have to quarantine on the way back in.
+/// The field cap exists so nothing reaches the vault that the parser would then
+/// have to quarantine on the way back in. The depth and node-count caps are the
+/// exporter's to check (M4's self-verifying emission), since only it sees the
+/// whole document before deciding to write.
 pub const MAX_FIELD_BYTES: usize = 100_000;
 
 pub fn render(file: &VaultFile) -> Result<Vec<u8>, String> {
@@ -35,7 +37,9 @@ fn render_page(document: &PageDocument) -> Result<Vec<u8>, String> {
     if let Some(parent) = &document.parent {
         let _ = writeln!(out, "parent: {}", canonical_uuid(parent)?);
     }
-    if let Some(sort_key) = document.sort_key {
+    // Zero is the default, and §4.2 omits a key at its default: written out it
+    // would be one more line for every merge to compare over nothing.
+    if let Some(sort_key) = document.sort_key.filter(|key| *key != 0) {
         let _ = writeln!(out, "sort_key: {sort_key}");
     }
     // An empty HLC would leave a key ending in a space, which a hand editor
