@@ -65,6 +65,15 @@ work, but it puts the decision at the far end of the wire, one call site away
 from the outcome that knows the answer. The caller would still have to ask which
 kind of outcome it is holding, and nothing in the outcome would answer.
 
+### Rejected: a type the watcher owns
+
+`settled_ids` lands on a `notes-sync` type that `notes-sync` never writes — every
+`merge_document` path leaves it empty, and the only producer is the watcher.
+The honest shape would be a watcher-owned outcome, or a second callback threaded
+through `start` / `start_with` / `run`. Both are a much larger diff for the same
+answer, and `vault_watch` already hand-builds a `MergeOutcome` for this branch of
+the sweep, so the type was already carrying the concept in everything but name.
+
 ### Rejected: leave it and let the caller filter
 
 `lib.rs` could drop the ids when `outcome` looks like an attachment. There is
@@ -80,9 +89,12 @@ Touches:
 - `crates/notes-sync/src/merger.rs` — `MergeOutcome` gains `settled_ids`.
 - `apps/desktop/src-tauri/src/vault_watch.rs` — the attachment branch of the
   sweep fills `settled_ids`, not `changed_ids`.
-- `apps/desktop/src-tauri/src/lib.rs` — the window's redraw list is
-  `changed_ids` + `settled_ids`; what goes to `absorb_external` stays
-  `changed_ids` + `deleted_ids`, which now excludes an arrival by construction.
+- `apps/desktop/src-tauri/src/lib.rs` — one `announce` answers both directions
+  at once: the ids that fell out of reach (`changed_ids` + `deleted_ids`, which
+  now excludes an arrival by construction) and the `SyncChanged` the window
+  gets (`changed_ids` + `settled_ids`). Two lists of the same type would let a
+  swap at the call site put the bug straight back and still compile; the pair's
+  halves have different types, so it cannot be written.
 
 Tests, both red first:
 
@@ -90,9 +102,9 @@ Tests, both red first:
   — the existing test, tightened: the settled node is named in `settled_ids`,
   and `changed_ids` is empty. Red says the ids are still in `changed_ids`.
 - `apps/desktop/src-tauri/src/lib.rs::an_arriving_picture_puts_no_history_out_of_reach`
-  — the split itself: an outcome that only settled rows hands the barrier
-  nothing, while one that changed rows hands it those. Red says the settled row
-  reaches the barrier.
+  — the split itself, over one outcome carrying all three kinds at once: the
+  settled row reaches the window and not the barrier, while the edited and the
+  removed reach both. Dropping either chain fails it.
 
 ### Item 2 — the earlier design doc says the opposite (no code)
 

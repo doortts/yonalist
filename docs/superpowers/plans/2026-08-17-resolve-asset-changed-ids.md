@@ -132,6 +132,14 @@ IPC 페이로드의 모양도, 스키마도, 프런트엔드 코드도 바뀌지
   규칙으로 산다. 실제로 잘릴 항목은 드물다(그 이미지 노드를 이 창이 직접 편집한
   경우뿐이고, 그런 행을 만든 병합이 이미 한 번 잘랐다).
 
+  > **뒤집혔다 — `2026-08-17-an-arrival-is-not-a-merge.md`.** 방향이 맞지 않았다.
+  > `resolve_asset`은 그 행이 이미 기다리던 해시를 채울 뿐이고 파일 이름의 해시
+  > 앞자리로 한 번 더 걸러진다. 버릴 것이 없으니 손 닿지 않는 곳으로 보낼 것도
+  > 없는데, 다운로드가 끝났다는 이유로 사용자가 undo를 잃었다. 드물지도 않았다 —
+  > 기다리는 그림에 별표를 다는 것으로 충분했다. 도착한 행은 이제
+  > `MergeOutcome::settled_ids`로 나가고, 창은 그대로 다시 그리지만 장벽은 세지
+  > 않는다.
+
 ## 계약
 
 | 필드 | 내용 |
@@ -191,6 +199,7 @@ IPC 페이로드의 모양도, 스키마도, 프런트엔드 코드도 바뀌지
   `BTreeSet<String>`을 답한다. 실패 갈래는 빈 집합, 주석의 "몇 개"는 "어느
   것"으로. `:184`의 호출부는 비어 있지 않을 때
   `MergeOutcome { applied: resolved.len(), changed_ids: resolved, ..default() }`.
+  (`changed_ids`는 나중에 `settled_ids`로 옮겨졌다 — 위 인용 참고.)
   `use std::collections::BTreeSet;` 한 줄이 는다.
 - `crates/notes-sqlite/tests/sync_merge_seam.rs`의 단언 네 곳
   (718·745·1240·1265)이 집합 단언으로 바뀐다. `two_devices.rs`는 그대로다.
