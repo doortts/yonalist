@@ -257,7 +257,10 @@ pub(crate) fn resolve_asset(
     let resolved = transaction
         .prepare_cached(
             // The path goes with the hash: from here on the row can say which
-            // picture it is, so it stops holding the link it was found by.
+            // picture it is, so it stops holding the link it was found by. The
+            // extension is spelled out again here because SQL cannot call the
+            // Rust that spells it elsewhere; the `mime_type` CHECK in
+            // schema.sql names the others that have to agree with this one.
             "UPDATE notes_images
                 SET content_hash = ?2,
                     relative_path = ?2 || '.' || CASE mime_type
