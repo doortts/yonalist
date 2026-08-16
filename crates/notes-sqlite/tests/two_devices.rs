@@ -939,12 +939,15 @@ fn a_row_poisoned_by_an_old_merge_reads_healthy() {
 fn starring_a_waiting_picture_keeps_its_metadata() {
     let (one, two) = seeded_pair();
     let page = one.first_page();
+    let elsewhere = add_bullet(&one, "root", "Another page");
     let shot = add_bullet(&one, &page, "holiday.png");
     picture(&one, &shot);
     one.export();
     carry(&one, &two);
-    for (location, _) in attachments(&two.vault) {
+    let mut held_back = String::new();
+    for (location, disk_name) in attachments(&two.vault) {
         std::fs::remove_file(two.vault.join(location)).expect("hold the bytes back");
+        held_back = disk_name;
     }
     two.absorb();
 
@@ -952,19 +955,35 @@ fn starring_a_waiting_picture_keeps_its_metadata() {
         id: shot.clone(),
         starred: true,
     });
+    two.run(IpcNotesCommand::MoveNode {
+        id: shot.clone(),
+        parent_id: elsewhere.clone(),
+        before_id: None,
+    });
 
-    let rows: i64 = rusqlite::Connection::open(two._home.path().join("notes.sqlite"))
+    let (hash, path, name) = stored_waiting_image(&two, &shot);
+    assert_eq!(hash, "", "the bytes are still not here");
+    assert_eq!(
+        path.rsplit('/').next(),
+        Some(held_back.as_str()),
+        "and the link still names the file they will arrive as — how \
+         `resolve_asset` finds this row when they do"
+    );
+    assert_eq!(name, "holiday.png");
+}
+
+/// What a row still waiting for its bytes is holding, all of which is what the
+/// file said and none of which this device can recover from anywhere else.
+fn stored_waiting_image(device: &Device, node_id: &str) -> (String, String, String) {
+    rusqlite::Connection::open(device._home.path().join("notes.sqlite"))
         .expect("open")
         .query_row(
-            "SELECT count(*) FROM notes_images WHERE node_id = ?1",
-            [&shot],
-            |row| row.get(0),
+            "SELECT content_hash, relative_path, original_name FROM notes_images
+             WHERE node_id = ?1",
+            [node_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
-        .expect("count");
-    assert_eq!(
-        rows, 1,
-        "the row is still waiting for its bytes, not gone with them"
-    );
+        .expect("the row is still waiting for its bytes, not gone with them")
 }
 
 /// The other device resized the picture, so the line comes back stamped later
