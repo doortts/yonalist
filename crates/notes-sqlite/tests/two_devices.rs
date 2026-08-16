@@ -1285,6 +1285,11 @@ fn bytes_that_land_before_the_redo_still_reach_the_copy() {
         "the copy took the picture the source held by the time the redo ran, \
          but only these are settled: {settled:?}"
     );
+    let (hash, _, _) = stored_image(&two, &copy);
+    assert_eq!(
+        hash, HASH,
+        "and it is the picture the source had, not another"
+    );
 }
 
 /// The other device resized the picture, so the line comes back stamped later

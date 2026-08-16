@@ -83,7 +83,7 @@ what makes the redo case fall out correctly rather than needing its own rule:
 | duplicate, undo | The copy's node is deleted; `notes_images` has `ON DELETE CASCADE`, so its row goes with it. |
 | duplicate, undo, redo, bytes arrive | Redo re-inserts the copy and re-copies the row, still waiting. Same as the first case. |
 | duplicate, undo, bytes arrive, redo | The source's row is resolved by then, so the copy is given a resolved row. Stored, not yet drawn — see "Known limits". |
-| duplicate, undo, another device edits the source, redo | Refused. Reading the source's current row makes the source a thing the entry depends on, and the merge barrier has to count it — see below. |
+| duplicate, undo, another device edits the source, redo | Refused, and so is undoing back past that entry. Reading the source's current row makes the source a thing the entry depends on, and the merge barrier has to count it — see below. |
 
 Byte arrival is not the same event as a merge: `resolve_asset` never calls
 `absorb_external`, so a picture simply landing cannot raise the barrier and the
@@ -133,8 +133,9 @@ Touches:
 - `crates/notes-sqlite/src/mutations.rs` — `commit` copies each named row after
   the forward loop, so the copy's own node row already exists for the foreign
   key.
-- Existing `DomainPatch { forward, inverse }` literals across tests take
-  `..DomainPatch::default()`.
+- Existing `DomainPatch { forward, inverse }` literals across tests name the new
+  field. An exhaustive literal is what makes the next field added a decision at
+  each of those sites rather than a silent default.
 
 Tests, both in `crates/notes-sqlite/tests/two_devices.rs`, both red first:
 
@@ -173,6 +174,12 @@ Tests, red after item 1:
 - `crates/notes-application/tests/merge_barrier.rs::the_barrier_counts_the_picture_a_duplicate_had_to_borrow`
   — duplicate, undo, another device edits the source, redo; assert the redo is
   refused.
+- `crates/notes-sqlite/tests/two_devices.rs::bytes_that_land_before_the_redo_still_reach_the_copy`
+  — the decision that the storage layer reads the source's record at commit
+  time rather than remembering it. Bytes land while the duplicate is undone;
+  assert the redone copy is settled. Red evidence came from simulating the
+  snapshot bug (`AND content_hash = ''` on the carried `SELECT`), since the
+  fix was already in by then.
 
 Red evidence to expect: after redo the copy has no picture record, so the
 arriving bytes never reach it — the same failure as item 1, one step later. And
