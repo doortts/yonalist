@@ -388,6 +388,7 @@ impl<S: StoragePort> NotesService<S> {
             &DomainPatch {
                 forward: entry.inverse.clone(),
                 inverse: entry.forward.clone(),
+                carried_pictures: Vec::new(),
             },
         )?;
         session.undo.pop();
@@ -410,6 +411,7 @@ impl<S: StoragePort> NotesService<S> {
             &DomainPatch {
                 forward: entry.forward.clone(),
                 inverse: entry.inverse.clone(),
+                carried_pictures: Vec::new(),
             },
         )?;
         session.redo.pop();

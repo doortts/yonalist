@@ -110,6 +110,7 @@ fn invalid_node_image_ownership_rolls_back_the_whole_revision() {
             TreeMutation::upsert(invalid_page),
         ],
         inverse: Vec::new(),
+        ..DomainPatch::default()
     };
 
     assert!(storage.commit(1, &patch).is_err());

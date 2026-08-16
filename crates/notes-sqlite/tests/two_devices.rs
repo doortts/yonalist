@@ -1001,6 +1001,122 @@ fn stored_waiting_image(device: &Device, node_id: &str) -> (String, String, Stri
         .expect("the row is still waiting for its bytes, not gone with them")
 }
 
+/// Takes every picture out of this device's folder and keeps it, the way a
+/// client brings a page's text down and leaves its attachments for later.
+fn hold_pictures_back(device: &Device) -> Vec<(String, Vec<u8>)> {
+    attachments(&device.vault)
+        .into_iter()
+        .map(|(location, _)| {
+            let at = device.vault.join(&location);
+            let bytes = std::fs::read(&at).expect("the picture's bytes");
+            std::fs::remove_file(&at).expect("hold the bytes back");
+            (location, bytes)
+        })
+        .collect()
+}
+
+/// The rest of the sync catching up: the bytes appear where their link always
+/// said they would be, and the next `absorb` is what notices.
+fn let_pictures_land(device: &Device, held: Vec<(String, Vec<u8>)>) {
+    for (location, bytes) in held {
+        std::fs::write(device.vault.join(location), bytes).expect("the bytes land");
+    }
+}
+
+/// Every live node on this device that can say which picture it is — the bytes
+/// landed and its row learned their hash.
+fn settled_pictures(device: &Device) -> Vec<String> {
+    let connection =
+        rusqlite::Connection::open(device._home.path().join("notes.sqlite")).expect("open");
+    let mut statement = connection
+        .prepare(
+            "SELECT image.node_id FROM notes_images image
+             JOIN notes_nodes node ON node.id = image.node_id
+             WHERE image.content_hash <> '' AND node.deleted = 0
+             ORDER BY image.node_id",
+        )
+        .expect("prepare");
+    let found = statement
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .map(|row| row.expect("row"))
+        .collect();
+    found
+}
+
+/// Duplicating a picture whose bytes have not landed has to carry the wait
+/// itself, not only the node. A waiting picture reads as a node without one,
+/// so nothing about which picture it is survives the gesture on its own — and
+/// with no record of its own the copy has nothing for the arriving bytes to
+/// settle, which leaves it a bullet for ever.
+#[test]
+fn duplicating_a_waiting_picture_lets_the_copy_meet_its_bytes() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    one.export();
+    carry(&one, &two);
+    let held = hold_pictures_back(&two);
+    two.absorb();
+
+    let copy = uuid::Uuid::new_v4().hyphenated().to_string();
+    two.run(IpcNotesCommand::Duplicate {
+        id: shot.clone(),
+        new_id: copy.clone(),
+        parent_id: page.clone(),
+        before_id: None,
+    });
+
+    let_pictures_land(&two, held);
+    two.absorb();
+
+    let read = page_of(&two, &page).expect("the page still opens");
+    let copied = read
+        .nodes
+        .iter()
+        .find(|node| node.id == copy)
+        .expect("the copy");
+    let image = copied
+        .image
+        .as_ref()
+        .expect("the copy was waiting for the same bytes, and they came");
+    assert_eq!(image.content_hash, HASH);
+    assert_eq!(image.original_name, "holiday.png");
+}
+
+/// The same defect one level down: a duplicate copies the whole subtree, so a
+/// waiting picture hanging under the duplicated bullet is copied by the same
+/// walk and needs the same record.
+#[test]
+fn a_waiting_picture_under_a_duplicated_bullet_meets_its_bytes_too() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let section = add_bullet(&one, &page, "Trip");
+    let shot = add_bullet(&one, &section, "holiday.png");
+    picture(&one, &shot);
+    one.export();
+    carry(&one, &two);
+    let held = hold_pictures_back(&two);
+    two.absorb();
+
+    two.run(IpcNotesCommand::Duplicate {
+        id: section.clone(),
+        new_id: uuid::Uuid::new_v4().hyphenated().to_string(),
+        parent_id: page.clone(),
+        before_id: None,
+    });
+
+    let_pictures_land(&two, held);
+    two.absorb();
+
+    assert_eq!(
+        settled_pictures(&two).len(),
+        2,
+        "the original and the copy under the duplicated bullet both met the bytes"
+    );
+}
+
 /// The other device resized the picture, so the line comes back stamped later
 /// and genuinely changed. Taking that edit in must not put the vault's own
 /// link where the row keeps the picture's own name.

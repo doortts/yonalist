@@ -60,7 +60,11 @@ fn insertion_patch(forward: Vec<TreeMutation>) -> DomainPatch {
             TreeMutation::Delete { .. } => None,
         })
         .collect();
-    DomainPatch { forward, inverse }
+    DomainPatch {
+        forward,
+        inverse,
+        ..DomainPatch::default()
+    }
 }
 
 fn seeded_storage() -> SqliteStorage {

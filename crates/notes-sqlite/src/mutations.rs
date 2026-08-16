@@ -60,6 +60,26 @@ pub(crate) fn commit(
             }
         }
     }
+    // After the loop, because the copy's own node row has to exist first. Read
+    // from the source as it stands right now rather than from anything the
+    // duplication remembered: if the bytes landed in between — an undo, the
+    // picture arriving, then a redo — the copy is handed a picture that is
+    // already settled instead of a wait that would never end.
+    for (source_id, copy_id) in &patch.carried_pictures {
+        transaction
+            .execute(
+                "INSERT INTO notes_images(
+                    node_id, content_hash, relative_path, original_name, mime_type,
+                    byte_length, pixel_width, pixel_height, display_width
+                 )
+                 SELECT ?2, content_hash, relative_path, original_name, mime_type,
+                    byte_length, pixel_width, pixel_height, display_width
+                 FROM notes_images WHERE node_id = ?1
+                 ON CONFLICT(node_id) DO NOTHING",
+                [source_id.as_str(), copy_id.as_str()],
+            )
+            .map_err(internal)?;
+    }
     // After the whole patch: a row's path reads its ancestors, which an earlier
     // mutation in this same loop may not have written yet.
     crate::node_paths::refresh(&transaction, patch)?;

@@ -654,6 +654,7 @@ fn invalid_patch_rolls_back_nodes_and_revision_atomically() {
             inverse: vec![TreeMutation::Delete {
                 id: NodeId::try_from("orphan").unwrap(),
             }],
+            ..DomainPatch::default()
         },
     );
 
@@ -673,6 +674,7 @@ fn stale_commit_never_applies_a_patch() {
             &DomainPatch {
                 forward: vec![TreeMutation::upsert(page)],
                 inverse: vec![TreeMutation::Delete { id: page_id }],
+                ..DomainPatch::default()
             },
         )
         .unwrap();
@@ -684,6 +686,7 @@ fn stale_commit_never_applies_a_patch() {
         &DomainPatch {
             forward: vec![TreeMutation::upsert(other)],
             inverse: vec![TreeMutation::Delete { id: other_id }],
+            ..DomainPatch::default()
         },
     );
 

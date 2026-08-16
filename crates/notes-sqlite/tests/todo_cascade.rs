@@ -77,7 +77,14 @@ fn stored_chain() -> SqliteStorage {
         })
         .collect();
     storage
-        .commit(0, &DomainPatch { forward, inverse })
+        .commit(
+            0,
+            &DomainPatch {
+                forward,
+                inverse,
+                ..DomainPatch::default()
+            },
+        )
         .unwrap();
     storage
 }

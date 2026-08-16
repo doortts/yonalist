@@ -20,6 +20,7 @@ fn reopening_a_legacy_workspace_adopts_its_pages_under_the_root() {
                 "Page",
             ))],
             inverse: vec![TreeMutation::Delete { id: page_id }],
+            ..DomainPatch::default()
         };
         storage.commit(0, &patch).expect("page commit");
     }
