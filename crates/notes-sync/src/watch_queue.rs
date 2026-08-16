@@ -13,13 +13,18 @@
 //! put the next keystroke behind all of them. One at a time means the longest
 //! anything waits is a single merge.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug)]
 pub struct WatchQueue {
     quiet: u64,
     /// Path to the reading of the last event seen for it.
     pending: BTreeMap<String, u64>,
+    /// Files nobody reported, which the verification pass wants read anyway.
+    /// They wait behind everything in `pending`: what the user just typed is
+    /// worth more than a check on a file nobody has touched, and the pass
+    /// names every file in the folder.
+    verifying: BTreeSet<String>,
     in_flight: Option<String>,
 }
 
@@ -28,13 +33,26 @@ impl WatchQueue {
         Self {
             quiet: quiet_millis,
             pending: BTreeMap::new(),
+            verifying: BTreeSet::new(),
             in_flight: None,
         }
     }
 
     /// The watcher saw something happen to this path.
     pub fn saw(&mut self, path: &str, at: u64) {
+        // An event says everything a check would have said and more, so the
+        // check has nothing left to do.
+        self.verifying.remove(path);
         self.pending.insert(path.to_owned(), at);
+    }
+
+    /// The verification pass wants this file read, whatever its stat says.
+    /// No quiet window: nobody is writing these — that is the whole reason
+    /// the pass exists — so there is no half-saved file to wait out.
+    pub fn verify(&mut self, path: &str) {
+        if !self.pending.contains_key(path) {
+            self.verifying.insert(path.to_owned());
+        }
     }
 
     /// The next path to merge, if nothing is already being merged and that path
@@ -48,12 +66,23 @@ impl WatchQueue {
         }
         // One path, not the whole ready set: draining them here would take work
         // off the queue that nothing is going to do yet.
-        let path = self
+        let reported = self
             .pending
             .iter()
             .find(|(_, seen)| now.saturating_sub(**seen) >= self.quiet)
-            .map(|(path, _)| path.clone())?;
-        self.pending.remove(&path);
+            .map(|(path, _)| path.clone());
+        let path = match reported {
+            Some(path) => {
+                self.pending.remove(&path);
+                path
+            }
+            // Only once nothing reported is waiting.
+            None => {
+                let path = self.verifying.iter().next().cloned()?;
+                self.verifying.remove(&path);
+                path
+            }
+        };
         self.in_flight = Some(path.clone());
         Some(path)
     }

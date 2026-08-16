@@ -65,6 +65,55 @@ fn a_user_command_waits_behind_at_most_one_merge() {
     assert!(queue.next_in_flight(1_500).is_some());
 }
 
+/// The verification pass reads the whole folder. A file somebody is editing
+/// right now must not queue behind all of it — what the user just typed is
+/// worth more than a check on a file nobody has touched.
+#[test]
+fn verification_yields_to_events() {
+    let mut queue = WatchQueue::new(WINDOW);
+    for index in 0..50 {
+        queue.verify(&format!("page-{index:02}/README.md"));
+    }
+    queue.saw("edited/README.md", 1_000);
+
+    assert_eq!(
+        queue.next_in_flight(1_500).as_deref(),
+        Some("edited/README.md"),
+        "the file that just changed goes first"
+    );
+}
+
+/// A file the pass was going to check, changed before it got there: the event
+/// carries the same reading and more, so the check has nothing left to do.
+#[test]
+fn an_event_takes_over_from_a_pending_verification() {
+    let mut queue = WatchQueue::new(WINDOW);
+    queue.verify("Projects/README.md");
+    queue.saw("Projects/README.md", 1_000);
+
+    let first = queue.next_in_flight(1_500).expect("something to do");
+    queue.finished(&first);
+
+    assert_eq!(
+        queue.next_in_flight(1_500),
+        None,
+        "the same file twice is the same read twice"
+    );
+}
+
+/// Nothing to wait for: the pass names files nobody is writing, so there is
+/// no editor half way through a save to be careful of.
+#[test]
+fn verification_does_not_wait_out_a_quiet_window() {
+    let mut queue = WatchQueue::new(WINDOW);
+    queue.verify("Projects/README.md");
+
+    assert_eq!(
+        queue.next_in_flight(0).as_deref(),
+        Some("Projects/README.md")
+    );
+}
+
 #[test]
 fn nothing_seen_means_nothing_to_do() {
     let mut queue = WatchQueue::new(WINDOW);

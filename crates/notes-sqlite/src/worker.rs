@@ -52,6 +52,12 @@ enum Request {
         vault_root: Option<std::path::PathBuf>,
         reply: SyncSender<Result<bool, StorageError>>,
     },
+    RefusedFiles {
+        reply: SyncSender<Result<Vec<notes_application::RefusedFile>, StorageError>>,
+    },
+    VaultStatRecords {
+        reply: SyncSender<Result<Vec<(String, notes_sync::intake::Known)>, StorageError>>,
+    },
     ForgetMissingRefusals {
         present: Vec<String>,
         reply: SyncSender<Result<usize, StorageError>>,
@@ -65,6 +71,7 @@ enum Request {
     Quarantine {
         relative: String,
         file_hash: String,
+        reason: String,
         reply: SyncSender<Result<(), StorageError>>,
     },
     ResolveAsset {
@@ -254,6 +261,22 @@ impl SqliteStorage {
     /// The bytes for an attachment arrived. Every row whose link names it and
     /// which is still waiting learns its hash — which is what turns a note
     /// showing nothing into a note showing its picture.
+    /// Every file this app looked at and could not read, in the order they
+    /// sit in the folder.
+    pub fn refused_files(&self) -> Result<Vec<notes_application::RefusedFile>, StorageError> {
+        self.request(|reply| Request::RefusedFiles { reply })
+    }
+
+    /// What this app last dealt with at every path it knows, in one answer.
+    /// The scan asks about every file in the folder, and a question per file
+    /// would be a worker round trip per document — the queue that a keystroke
+    /// waits in.
+    pub fn vault_stat_records(
+        &self,
+    ) -> Result<Vec<(String, notes_sync::intake::Known)>, StorageError> {
+        self.request(|reply| Request::VaultStatRecords { reply })
+    }
+
     /// Files this app refused that are not in the folder any more. A refusal
     /// is about a file; once the file is gone, so is what it was about — and a
     /// file that comes back is read rather than skipped as already answered.
@@ -277,10 +300,16 @@ impl SqliteStorage {
     /// Writes down that this app could not make sense of a file. The hash is
     /// what keeps it from being read again on every sweep — a file that is
     /// still the same file has already been answered.
-    pub fn quarantine(&self, relative: &str, file_hash: &str) -> Result<(), StorageError> {
+    pub fn quarantine(
+        &self,
+        relative: &str,
+        file_hash: &str,
+        reason: &str,
+    ) -> Result<(), StorageError> {
         self.request(|reply| Request::Quarantine {
             relative: relative.to_owned(),
             file_hash: file_hash.to_owned(),
+            reason: reason.to_owned(),
             reply,
         })
     }
@@ -526,6 +555,49 @@ impl SqliteStorage {
                                 vault_root.as_deref(),
                             ));
                         }
+                        Request::RefusedFiles { reply } => {
+                            let _ = reply.send(
+                                connection
+                                    .prepare_cached(
+                                        "SELECT relative_path, reason FROM sync_quarantine
+                                         ORDER BY relative_path",
+                                    )
+                                    .and_then(|mut statement| {
+                                        let rows = statement.query_map([], |row| {
+                                            Ok(notes_application::RefusedFile {
+                                                path: row.get(0)?,
+                                                reason: row.get(1)?,
+                                            })
+                                        })?;
+                                        rows.collect::<Result<Vec<_>, _>>()
+                                    })
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
+                        }
+                        Request::VaultStatRecords { reply } => {
+                            let _ = reply.send(
+                                connection
+                                    .prepare_cached(
+                                        "SELECT folder_path, exported_hash,
+                                                file_mtime_ms, file_size
+                                         FROM sync_documents",
+                                    )
+                                    .and_then(|mut statement| {
+                                        let rows = statement.query_map([], |row| {
+                                            Ok((
+                                                row.get::<_, String>(0)?,
+                                                notes_sync::intake::Known {
+                                                    recorded_hash: row.get(1)?,
+                                                    file_mtime_ms: row.get(2)?,
+                                                    file_size: row.get(3)?,
+                                                },
+                                            ))
+                                        })?;
+                                        rows.collect::<Result<Vec<_>, _>>()
+                                    })
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
+                        }
                         Request::ForgetMissingRefusals { present, reply } => {
                             let _ = reply.send(
                                 connection
@@ -554,18 +626,20 @@ impl SqliteStorage {
                         Request::Quarantine {
                             relative,
                             file_hash,
+                            reason,
                             reply,
                         } => {
                             let _ = reply.send(
                                 connection
                                     .execute(
                                         "INSERT INTO sync_quarantine(
-                                             relative_path, file_hash, noticed_at)
-                                         VALUES (?1, ?2, unixepoch())
+                                             relative_path, file_hash, reason, noticed_at)
+                                         VALUES (?1, ?2, ?3, unixepoch())
                                          ON CONFLICT(relative_path) DO UPDATE SET
                                              file_hash = excluded.file_hash,
+                                             reason = excluded.reason,
                                              noticed_at = excluded.noticed_at",
-                                        rusqlite::params![&relative, &file_hash],
+                                        rusqlite::params![&relative, &file_hash, &reason],
                                     )
                                     .map(|_| ())
                                     .map_err(|error| StorageError::Internal(error.to_string())),
