@@ -18,3 +18,4 @@ pub mod merger;
 pub mod parse;
 pub mod render;
 pub mod watch_queue;
+pub mod watcher;
