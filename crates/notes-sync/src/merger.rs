@@ -47,6 +47,11 @@ pub struct MergeOutcome {
     /// The file disagrees with what won, so the exporter has to rewrite it.
     pub needs_write_back: bool,
     pub conflicts_recorded: usize,
+    /// The file this came from is a copy some sync client wrote, and its
+    /// notes are now in the document they belong to. Whoever handed it over
+    /// removes it — left there, every device reads it again for ever, and
+    /// each one writes it back out.
+    pub retire_file: bool,
 }
 
 pub type MergeError = String;
@@ -176,7 +181,20 @@ fn merge_page(
         // rewriting, and the dirty mark is how anything learns that.
         mark_dirty(transaction, &root_id)?;
     }
-    record_document(transaction, &root_id, input, page.max_hlc.as_str())?;
+    if crate::watcher::is_conflicted_copy(&input.file_path) {
+        // Its notes are in the document they belong to now, and the document
+        // owes a write because of them.
+        outcome.retire_file = true;
+        outcome.needs_write_back = true;
+        mark_dirty(transaction, &root_id)?;
+    }
+    record_document(
+        transaction,
+        &root_id,
+        input,
+        page.max_hlc.as_str(),
+        page.parent.is_none(),
+    )?;
     Ok(outcome)
 }
 
@@ -191,7 +209,23 @@ fn merge_trash(
     flatten(&trash.nodes, "", &mut incoming);
     apply(transaction, clock, &incoming, &mut outcome, true)?;
     repair_structure(transaction, clock, &mut outcome)?;
-    record_document(transaction, "yonalist-trash", input, trash.max_hlc.as_str())?;
+    if crate::watcher::is_conflicted_copy(&input.file_path) {
+        outcome.retire_file = true;
+        // The copy is about to be removed, and what it stated has to reach the
+        // file every device reads. A deleted row's mark is what queues the
+        // trash, and the rows this merge wrote had theirs taken back — they
+        // came from a file, and that file is the one going away.
+        for entry in &incoming {
+            mark_dirty(transaction, &entry.id)?;
+        }
+    }
+    record_document(
+        transaction,
+        "yonalist-trash",
+        input,
+        trash.max_hlc.as_str(),
+        false,
+    )?;
     Ok(outcome)
 }
 
@@ -495,6 +529,12 @@ fn park(
         )
         .and_then(|mut statement| statement.execute(rusqlite::params![id, page, sort_key, stamp]))
         .map_err(|error| error.to_string())?;
+    // The stamping trigger cannot: this write carries its own reading, which
+    // is what tells it to keep out of the way. So the marks are made here — a
+    // rescue no file states is one no other device ever sees, and one this
+    // device would undo the moment it read the vault as the truth.
+    mark_dirty(transaction, id)?;
+    mark_dirty(transaction, page)?;
     outcome.applied += 1;
     outcome.changed_ids.insert(id.to_owned());
     outcome.needs_write_back = true;
@@ -543,6 +583,10 @@ fn recovery_page(
         )
         .and_then(|mut statement| statement.execute(rusqlite::params![id, i64::MAX / 2, stamp]))
         .map_err(|error| error.to_string())?;
+    // Same reason as `park`: the insert carries a reading, so nothing marks it
+    // for us. Home states every page, and this is a new one.
+    mark_dirty(transaction, &id)?;
+    mark_dirty(transaction, "root")?;
     *cached = Some(id.clone());
     Ok(id)
 }
@@ -621,7 +665,11 @@ fn place_missing_parents(
         if parent == "root" {
             continue;
         }
-        transaction
+        // Asked before the insert, because everything after it is only for a
+        // row this statement made. A note that is already here is somebody's:
+        // emptying its reading would lose it every later comparison, and
+        // taking its mark would drop a write it is owed.
+        let inserted = transaction
             .prepare_cached(
                 "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, deleted, hlc)
                  VALUES (?1, 'root', ?2, 'bullet', '', 1, '')
@@ -629,11 +677,14 @@ fn place_missing_parents(
             )
             .and_then(|mut statement| statement.execute(rusqlite::params![parent, SORT_KEY_STEP]))
             .map_err(|error| error.to_string())?;
+        if inserted == 0 {
+            continue;
+        }
         // The insert trigger stamps anything that arrives without a reading,
         // and a stamped placeholder would outrank the document it is waiting
         // for. Put the emptiness back, and take the dirty mark with it.
         transaction
-            .prepare_cached("UPDATE notes_nodes SET hlc = '' WHERE id = ?1 AND text = ''")
+            .prepare_cached("UPDATE notes_nodes SET hlc = '' WHERE id = ?1")
             .and_then(|mut statement| statement.execute([parent]))
             .map_err(|error| error.to_string())?;
         transaction
@@ -1059,6 +1110,9 @@ fn write_row(
     row: Option<&Row>,
     place: Option<&(String, String)>,
 ) -> Result<(), MergeError> {
+    // Before the write, so a parent that was already waiting for something
+    // else is not counted as this write's doing.
+    let holder = undirty_holder(transaction, &entry.id)?;
     let (marker, ordered_start) = match entry.node.marker {
         Marker::Bullet => ("bullet", 1),
         Marker::Todo => ("todo", 1),
@@ -1189,9 +1243,14 @@ fn write_row(
         .map_err(|error| error.to_string())?;
     // Adopting what another device decided is not a local edit, so it leaves
     // nothing for the exporter to pick up — including whatever the trigger just
-    // marked on the way through.
+    // marked on the way through, which is the row *and* the file that holds it.
+    unmark(transaction, &entry.id)?;
+    unmark_holder(transaction, &entry.id, holder)?;
+    // What was last written for this node is no longer what this device holds
+    // — it holds what the file said. Leaving the old record would have the
+    // export put a reading back that no file anywhere carries.
     transaction
-        .prepare_cached("DELETE FROM sync_dirty_nodes WHERE node_id = ?1")
+        .prepare_cached("DELETE FROM sync_node_exports WHERE node_id = ?1")
         .and_then(|mut statement| statement.execute([&entry.id]))
         .map_err(|error| error.to_string())?;
     Ok(())
@@ -1263,6 +1322,7 @@ fn decide_place(
 /// marks it dirty. Both are put back, and a row that was already dirty stays
 /// dirty: that flag belongs to a local edit this has no business clearing.
 fn respace_sibling(transaction: &Transaction<'_>, id: &str, key: i64) -> Result<(), MergeError> {
+    let holder = undirty_holder(transaction, id)?;
     let (stamp, was_dirty): (String, bool) = transaction
         .prepare_cached(
             "SELECT n.hlc, d.node_id IS NOT NULL FROM notes_nodes n
@@ -1281,10 +1341,60 @@ fn respace_sibling(transaction: &Transaction<'_>, id: &str, key: i64) -> Result<
         .and_then(|mut statement| statement.execute(rusqlite::params![id, stamp]))
         .map_err(|error| error.to_string())?;
     if !was_dirty {
-        transaction
-            .prepare_cached("DELETE FROM sync_dirty_nodes WHERE node_id = ?1")
-            .and_then(|mut statement| statement.execute([id]))
-            .map_err(|error| error.to_string())?;
+        unmark(transaction, id)?;
+    }
+    // Respacing never moves a row out of its parent, so this always applies.
+    unmark_holder(transaction, id, holder)?;
+    Ok(())
+}
+
+fn unmark(transaction: &Transaction<'_>, id: &str) -> Result<(), MergeError> {
+    transaction
+        .prepare_cached("DELETE FROM sync_dirty_nodes WHERE node_id = ?1")
+        .and_then(|mut statement| statement.execute([id]))
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// The file that held this row before the write, if it owed nothing at the
+/// time. A parent already waiting is waiting for something else, and that is
+/// not this write's to take back.
+fn undirty_holder(transaction: &Transaction<'_>, id: &str) -> Result<Option<String>, MergeError> {
+    transaction
+        .prepare_cached(
+            "SELECT parent_id FROM notes_nodes
+             WHERE id = ?1 AND parent_id IS NOT NULL
+               AND parent_id NOT IN (SELECT node_id FROM sync_dirty_nodes)",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_row([id], |row| row.get::<_, String>(0))
+                .optional()
+        })
+        .map_err(|error| error.to_string())
+}
+
+/// Takes back the mark on the file that held this row, but only if the row is
+/// still in it. A row that moved leaves two files stating something untrue —
+/// the one it left still lists it — and both of those writes are owed.
+fn unmark_holder(
+    transaction: &Transaction<'_>,
+    id: &str,
+    before: Option<String>,
+) -> Result<(), MergeError> {
+    let Some(before) = before else {
+        return Ok(());
+    };
+    let still_there: bool = transaction
+        .prepare_cached("SELECT parent_id IS ?2 FROM notes_nodes WHERE id = ?1")
+        .and_then(|mut statement| {
+            statement.query_row(rusqlite::params![id, &before], |row| {
+                row.get::<_, i64>(0).map(|same| same == 1)
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    if still_there {
+        unmark(transaction, &before)?;
     }
     Ok(())
 }
@@ -1471,20 +1581,85 @@ fn content_of_row(row: &Row, split: bool) -> String {
         ),
         None => row.text.clone(),
     };
-    [
-        "v1".to_owned(),
-        row.kind.clone(),
-        text,
-        row.note.clone(),
-        row.marker.clone(),
-        row.ordered_start.to_string(),
-        row.collapsed.to_string(),
-        row.completed.to_string(),
-        row.starred.to_string(),
-        row.deleted.to_string(),
-        row.extras.clone(),
-    ]
-    .join("\u{0}")
+    LineState {
+        kind: &row.kind,
+        text: &text,
+        note: &row.note,
+        marker: &row.marker,
+        ordered_start: row.ordered_start,
+        collapsed: row.collapsed,
+        completed: row.completed,
+        starred: row.starred,
+        deleted: row.deleted,
+        extras: &row.extras,
+    }
+    .content()
+}
+
+/// One node's state, as the two places that need to compare states build it:
+/// the merge's equal-stamp tie-break, and the export record that says whether
+/// anything about a node has actually changed since it was last written.
+///
+/// Field order is fixed, and so is the separator, because two devices have to
+/// build the same bytes from the same state.
+pub struct LineState<'a> {
+    pub kind: &'a str,
+    /// For an image, the whole of what the line says about it — the picture is
+    /// part of the state, not a pointer to it.
+    pub text: &'a str,
+    pub note: &'a str,
+    pub marker: &'a str,
+    pub ordered_start: i64,
+    pub collapsed: bool,
+    pub completed: bool,
+    pub starred: bool,
+    pub deleted: bool,
+    pub extras: &'a str,
+}
+
+impl LineState<'_> {
+    pub fn content(&self) -> String {
+        [
+            "v1".to_owned(),
+            self.kind.to_owned(),
+            self.text.to_owned(),
+            self.note.to_owned(),
+            self.marker.to_owned(),
+            self.ordered_start.to_string(),
+            self.collapsed.to_string(),
+            self.completed.to_string(),
+            self.starred.to_string(),
+            self.deleted.to_string(),
+            self.extras.to_owned(),
+        ]
+        .join("\u{0}")
+    }
+
+    /// The digest the export record stores. The same function the merge uses,
+    /// so "unchanged" means the same thing in both places.
+    pub fn fingerprint(&self) -> String {
+        use sha2::Digest;
+        format!("{:x}", sha2::Sha256::digest(self.content().as_bytes()))
+    }
+}
+
+/// The whole of what a line says about a picture, for the state above.
+pub fn image_state(
+    name: &str,
+    path: &str,
+    display_width: i64,
+    pixel_width: i64,
+    pixel_height: i64,
+    byte_length: i64,
+) -> String {
+    image_content(
+        name,
+        path,
+        display_width,
+        pixel_width,
+        pixel_height,
+        byte_length,
+    )
 }
 
 /// A defeated state, complete enough that the conflict screen can show it and
@@ -1715,12 +1890,29 @@ fn document_is_missing_nodes(
         .map_err(|error| error.to_string())
 }
 
+/// Where a document is kept, and what was last read from it.
+///
+/// A conflicted copy is read but never recorded: it holds the same document
+/// id, so recording it would move that document's file to the copy's name.
+/// Every later write would go into the copy while the real file went stale,
+/// and two devices would swap the name back and forth for ever.
 fn record_document(
     transaction: &Transaction<'_>,
     root_id: &str,
     input: &MergeInput,
     max_hlc: &str,
+    is_page: bool,
 ) -> Result<(), MergeError> {
+    if crate::watcher::is_conflicted_copy(&input.file_path) {
+        return Ok(());
+    }
+    // Somebody fixed it, or the transport finished delivering it. Either way
+    // this file is readable now, and the note saying it was not would keep
+    // every later version of it from ever being read.
+    transaction
+        .prepare_cached("DELETE FROM sync_quarantine WHERE relative_path = ?1")
+        .and_then(|mut statement| statement.execute([&input.file_path]))
+        .map_err(|error| error.to_string())?;
     // The bytes on disk are exactly what was just absorbed, so replacing them
     // loses nothing — recording anything else would leave the exporter
     // answering "somebody's edit" forever and the canonical form would never
@@ -1728,16 +1920,22 @@ fn record_document(
     let exported_hash = input.file_hash.clone();
     transaction
         .execute(
+            // The file itself says which it is: a split document states the
+            // node it hangs from, and a page does not. Written every time,
+            // because it can change — a subtree that arrived as a split
+            // document can become a page of its own, and a first impression
+            // kept for ever would leave a later demotion unnoticed.
             "INSERT INTO sync_documents(
                  root_id, folder_path, applied_max_hlc, exported_hash,
-                 file_mtime_ms, file_size, quarantined)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)
+                 file_mtime_ms, file_size, quarantined, is_page)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)
              ON CONFLICT(root_id) DO UPDATE SET
                  folder_path = excluded.folder_path,
                  applied_max_hlc = max(sync_documents.applied_max_hlc, excluded.applied_max_hlc),
                  exported_hash = excluded.exported_hash,
                  file_mtime_ms = excluded.file_mtime_ms,
                  file_size = excluded.file_size,
+                 is_page = excluded.is_page,
                  quarantined = 0",
             rusqlite::params![
                 root_id,
@@ -1746,6 +1944,7 @@ fn record_document(
                 exported_hash,
                 input.file_mtime_ms,
                 input.file_size,
+                i64::from(is_page),
             ],
         )
         .map_err(|error| error.to_string())?;

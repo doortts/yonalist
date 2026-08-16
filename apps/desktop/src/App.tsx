@@ -121,6 +121,25 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     };
   }, [store]);
   useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let stop: (() => void) | undefined;
+    let active = true;
+    void Promise.all([
+      import("@tauri-apps/api/event"),
+      import("./syncChanged")
+    ]).then(([{ listen }, { listenForVaultChanges }]) => {
+      if (!active) return;
+      stop = listenForVaultChanges(
+        (event, handler) => listen(event, () => handler()),
+        () => store.absorbVaultChange()
+      );
+    });
+    return () => {
+      active = false;
+      stop?.();
+    };
+  }, [store]);
+  useEffect(() => {
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       // Shares this listener with undo rather than registering a second one:
       // the window has no menu bar, so the inspector has to be reachable from
@@ -266,6 +285,27 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     await applyNavigation(after);
     recordNavigation(before, after);
   }, [applyNavigation, captureNavigation, recordNavigation, store]);
+  // A row in the attachment list names a bullet on a page. Following it leaves
+  // the settings screen — what the user asked to see is the note, not the file
+  // — and lands on the bullet itself, selected, rather than at the top of a
+  // page they then have to search.
+  const openAttachment = useCallback(
+    (pageId: string, nodeId: string) => {
+      setSettingsOpen(false);
+      const before = captureNavigation();
+      afterDraftFlush(() => {
+        void openPage(pageId).then(async () => {
+          const after = {
+            ...emptyPaneLocation(pageId),
+            primarySelectedIds: nodeId ? [nodeId] : []
+          };
+          await applyNavigation(after);
+          recordNavigation(before, after);
+        });
+      });
+    },
+    [afterDraftFlush, applyNavigation, captureNavigation, openPage, recordNavigation]
+  );
   // Home is the root page like any other page, house crumb included.
   const openHome = useCallback(() => void openPage(ROOT_ID), [openPage]);
   // Creating a page and trashing one both move the view as part of the
@@ -596,6 +636,9 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             setVaultPath={setVaultPath}
             readConflicts={readConflicts}
             restoreConflict={restoreConflict}
+            readAttachments={(limit) => api.syncAttachments(limit)}
+            deleteAttachment={(contentHash) => api.syncDeleteAttachment(contentHash)}
+            openNode={openAttachment}
           />
         </Suspense>
       ) : (

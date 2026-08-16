@@ -266,6 +266,11 @@ fn record_place_claims(
     // too. Rule 9 of the merge design: a move touches three rows, not a family.
     let mut parents: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut moved: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // The ones that changed *where they are*, as opposed to merely what number
+    // they hold. Making room for a new line renumbers its neighbours, and a
+    // neighbour that still follows whoever it followed has not moved — taking
+    // the new reading there would beat somebody else's real move.
+    let mut relocated: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for mutation in &patch.forward {
         match mutation {
             TreeMutation::Upsert(node) => {
@@ -279,6 +284,12 @@ fn record_place_claims(
                 if !changed_place {
                     continue;
                 }
+                if before.is_none_or(|before| {
+                    before.parent_id() != node.parent_id()
+                        || before.is_deleted() != node.is_deleted()
+                }) {
+                    relocated.insert(id.clone());
+                }
                 moved.insert(id);
                 if let Some(parent) = node.parent_id() {
                     parents.insert(parent.as_str().to_owned());
@@ -289,6 +300,7 @@ fn record_place_claims(
             }
             TreeMutation::Delete { id } => {
                 moved.insert(id.as_str().to_owned());
+                relocated.insert(id.as_str().to_owned());
                 if let Some(parent) = previous
                     .get(id.as_str())
                     .and_then(|before| before.parent_id())
@@ -307,7 +319,9 @@ fn record_place_claims(
     let at: String = transaction
         .query_row(
             "SELECT max(hlc) FROM notes_nodes WHERE id IN (SELECT value FROM json_each(?1))",
-            [json_list(&moved.iter().cloned().collect::<Vec<_>>())],
+            [notes_sync::export::json_list(
+                &moved.iter().cloned().collect::<Vec<_>>(),
+            )],
             |row| row.get::<_, Option<String>>(0),
         )
         .map_err(internal)?
@@ -315,39 +329,39 @@ fn record_place_claims(
     if at.is_empty() {
         return Ok(());
     }
+    let relocated_list =
+        notes_sync::export::json_list(&relocated.iter().cloned().collect::<Vec<_>>());
     for parent in parents {
         transaction
             .execute(
+                // Only the rows whose claim actually changed — which for one
+                // move is the row itself and whoever now follows it, not every
+                // sibling it happens to have. Writing them all made an append
+                // cost the length of the page, twice over: once for the write
+                // and once for the lookup inside it.
                 "WITH ordered AS (
-                     SELECT id, lag(id) OVER (ORDER BY sort_key, id) AS previous
+                     SELECT id, coalesce(lag(id) OVER (ORDER BY sort_key, id), '') AS previous
                      FROM notes_nodes
                      WHERE parent_id = ?1 AND deleted = 0
                  )
                  UPDATE notes_nodes SET
-                     sync_prev = coalesce(
-                         (SELECT previous FROM ordered WHERE ordered.id = notes_nodes.id), ''),
+                     sync_prev = ordered.previous,
                      sync_prev_hlc = ?2
-                 WHERE id IN (SELECT id FROM ordered)",
-                rusqlite::params![parent, at],
+                 FROM ordered
+                 WHERE notes_nodes.id = ordered.id
+                   AND (notes_nodes.sync_prev IS NOT ordered.previous
+                        -- A node that moved to the front of another page
+                        -- follows nobody in both places, so what it claims
+                        -- does not change — but when it claims it has to, or
+                        -- an older reorder somewhere else beats this move.
+                        -- Only rows that changed parent, though: a renumbered
+                        -- neighbour has not moved.
+                        OR notes_nodes.id IN (SELECT value FROM json_each(?3)))",
+                rusqlite::params![parent, at, &relocated_list],
             )
             .map_err(internal)?;
     }
     Ok(())
-}
-
-/// A JSON array of ids, for `json_each`.
-fn json_list(ids: &[String]) -> String {
-    let mut json = String::from("[");
-    for (index, id) in ids.iter().enumerate() {
-        if index > 0 {
-            json.push(',');
-        }
-        json.push('"');
-        json.push_str(&id.replace('\\', "\\\\").replace('"', "\\\""));
-        json.push('"');
-    }
-    json.push(']');
-    json
 }
 
 fn refresh_derived_data(

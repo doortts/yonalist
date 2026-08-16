@@ -525,6 +525,46 @@ pub enum CloseOutcome {
     AlreadyClosed,
 }
 
+/// One attachment, as the list shows it: one row per bullet rather than one
+/// per file, because the user finds a picture by the note they put it in. A
+/// file two pages use is two rows, each saying so.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SyncAttachment {
+    /// Empty for bytes no note mentions any more — there is no bullet to go to.
+    pub node_id: String,
+    /// What the bullet called the file.
+    pub name: String,
+    #[ts(type = "number")]
+    pub byte_length: i64,
+    pub content_hash: String,
+    pub page_id: String,
+    pub page_title: String,
+    /// The bullet this one sits under, empty when it sits on the page itself.
+    pub parent_title: String,
+    pub references: u32,
+    pub trashed: bool,
+    /// When the last note stopped pointing at it. The screen counts the two
+    /// weeks from here; `None` means something still points at it.
+    #[ts(type = "number | null")]
+    pub unreferenced_at: Option<i64>,
+}
+
+/// What a merge changed, pushed to the window rather than answered to it.
+/// This is the app's first event: every other change the window learns about
+/// is the receipt for something it asked for, and a file arriving from another
+/// device is nobody's request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SyncChanged {
+    #[ts(type = "number")]
+    pub revision: u64,
+    pub changed_node_ids: Vec<String>,
+    pub deleted_node_ids: Vec<String>,
+}
+
 /// One defeat, complete enough for the settings screen to show it and to put
 /// it back. By the time anyone looks, the file that lost is long gone — so
 /// everything the screen needs lives in the row rather than being fetched.

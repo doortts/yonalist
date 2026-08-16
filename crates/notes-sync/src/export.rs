@@ -50,8 +50,10 @@ pub fn export_document(
     vault_root: &Path,
     root_id: &str,
 ) -> Result<ExportOutcome, ExportError> {
-    let document = load_document(transaction, root_id)?;
     let relative = document_path(transaction, root_id)?;
+    // Before the rows are read, because it can put a reading back.
+    settle_readings(transaction, root_id)?;
+    let document = load_document(transaction, root_id, folder_of(&relative))?;
     let outcome = write_checked(
         transaction,
         vault_root,
@@ -61,6 +63,11 @@ pub fn export_document(
     )?;
     if outcome.written || !outcome.needs_merge {
         clear_dirty(transaction, root_id)?;
+        // Only now, and only for a file that was actually written or already
+        // said the same thing. Recording a reading no file carries would have
+        // this device put that reading back later — onto rows every other
+        // device holds at a different one.
+        record_readings(transaction, root_id)?;
     }
     Ok(outcome)
 }
@@ -153,14 +160,16 @@ pub fn pending_documents(transaction: &Transaction<'_>) -> Result<Vec<String>, E
                    -- A node that owns a document of its own is where the climb
                    -- ends: its subtree is that document's, not its parent's.
                    AND NOT EXISTS (
-                       SELECT 1 FROM sync_documents d WHERE d.root_id = climb.at
+                       SELECT 1 FROM sync_documents d
+                       WHERE d.root_id = climb.at AND d.retiring = 0
                    )
              )
              -- A deleted row belongs to the trash *and* to the page it left:
              -- that page's file still carries its line until it is rewritten.
              SELECT DISTINCT at FROM climb
              WHERE at = 'root'
-                OR EXISTS (SELECT 1 FROM sync_documents d WHERE d.root_id = at)
+                OR EXISTS (SELECT 1 FROM sync_documents d
+                           WHERE d.root_id = at AND d.retiring = 0)
                 OR (SELECT parent_id FROM notes_nodes WHERE id = at) = 'root'
              UNION
              SELECT 'yonalist-trash' FROM climb WHERE deleted = 1
@@ -256,13 +265,22 @@ pub fn export_home(
         nodes,
         unknown_frontmatter: Vec::new(),
     };
-    write_checked(
+    let outcome = write_checked(
         transaction,
         vault_root,
         "root",
         "README.md",
         &VaultFile::Page(document),
-    )
+    )?;
+    if !outcome.needs_merge {
+        // Its own row only. Home's children each own a file of their own, and
+        // clearing those here would drop marks nothing has written out yet.
+        transaction
+            .prepare_cached("DELETE FROM sync_dirty_nodes WHERE node_id = 'root'")
+            .and_then(|mut statement| statement.execute([]))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(outcome)
 }
 
 /// Folders for pages that no longer exist. A vault folder is something the user
@@ -278,10 +296,30 @@ pub fn retire_missing_documents(
             "SELECT d.root_id, d.folder_path FROM sync_documents d
              LEFT JOIN notes_nodes n ON n.id = d.root_id
              WHERE d.root_id NOT IN ('root', 'yonalist-trash')
-               -- Gone, deleted, or no longer a page at all: a folder standing
-               -- for something that is not a page any more tells the user they
-               -- still have one.
-               AND (n.id IS NULL OR n.deleted = 1 OR n.parent_id IS NOT 'root')",
+               -- Gone, deleted, or on its way out: a folder standing for
+               -- something that is not a page any more tells the user they
+               -- still have one. A document marked as leaving has just had its
+               -- subtree written into the page it joined, which is what makes
+               -- this the moment its folder can go.
+               AND (n.id IS NULL OR n.deleted = 1
+                    OR (d.retiring = 1
+                        -- Its notes have actually landed: the page that took
+                        -- them in was written, which is what clears the mark.
+                        -- A page somebody had open in an editor is not written
+                        -- that pass, and the folder waits for the one that is.
+                        AND NOT EXISTS (
+                            SELECT 1 FROM sync_dirty_nodes q WHERE q.node_id = d.root_id
+                        )))
+               -- A folder holding another document's file is not this one's to
+               -- remove. Split documents live inside their page's folder, and
+               -- taking the folder would take their files with it.
+               AND NOT EXISTS (
+                   SELECT 1 FROM sync_documents inner_d
+                   WHERE inner_d.root_id <> d.root_id
+                     AND inner_d.retiring = 0
+                     AND inner_d.folder_path LIKE rtrim(d.folder_path, replace(
+                         d.folder_path, '/', '')) || '%'
+               )",
         )
         .map_err(|error| error.to_string())?;
     let rows = statement
@@ -289,9 +327,13 @@ pub fn retire_missing_documents(
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|error| error.to_string())?;
-    let mut retired = Vec::new();
+    let mut found = Vec::new();
     for row in rows {
-        let (root_id, folder_path) = row.map_err(|error| error.to_string())?;
+        found.push(row.map_err(|error| error.to_string())?);
+    }
+
+    let mut retired = Vec::new();
+    for (root_id, folder_path) in found {
         // Resolved, not merely prefixed: a recorded path is a value the watcher
         // supplied, and `..` in it would walk a plain prefix check straight out
         // of the vault with a recursive delete behind it.
@@ -315,6 +357,62 @@ pub fn retire_missing_documents(
             .map_err(|error| error.to_string())?;
     }
     Ok(retired)
+}
+
+/// A page dragged under another page is not gone: its notes belong to the page
+/// it joined, and that page has not said so yet. Taking the folder now would
+/// leave the whole subtree in no file at all, so the document is marked as
+/// leaving instead — nothing reads it as a document from here on, which is
+/// what makes the next render put its subtree inside its new home — and it is
+/// queued so that render happens in this same pass.
+///
+/// Called before the documents are written; `retire_missing_documents`
+/// finishes the job after them.
+pub fn begin_retirement(transaction: &Transaction<'_>) -> Result<usize, ExportError> {
+    // A node that became a page again — dragged back out, or an undo — is a
+    // document once more. Left marked, its file would never be written again.
+    transaction
+        .prepare_cached(
+            "UPDATE sync_documents SET retiring = 0
+             WHERE retiring = 1
+               AND root_id IN (SELECT id FROM notes_nodes
+                               WHERE parent_id = 'root' AND deleted = 0)",
+        )
+        .and_then(|mut statement| statement.execute([]))
+        .map_err(|error| error.to_string())?;
+    let mut statement = transaction
+        .prepare_cached(
+            "SELECT d.root_id FROM sync_documents d
+             JOIN notes_nodes n ON n.id = d.root_id
+             WHERE d.root_id NOT IN ('root', 'yonalist-trash')
+               -- Pages only. A split document is *supposed* to sit under a
+               -- node that is not root; it never was a page and cannot stop
+               -- being one.
+               AND d.is_page = 1
+               AND d.retiring = 0 AND n.deleted = 0 AND n.parent_id IS NOT 'root'",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    let mut leaving = Vec::new();
+    for row in rows {
+        leaving.push(row.map_err(|error| error.to_string())?);
+    }
+    for root_id in &leaving {
+        transaction
+            .prepare_cached("UPDATE sync_documents SET retiring = 1 WHERE root_id = ?1")
+            .and_then(|mut statement| statement.execute([root_id]))
+            .map_err(|error| error.to_string())?;
+        transaction
+            .prepare_cached(
+                "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES (?1, unixepoch())
+                 ON CONFLICT(node_id) DO NOTHING",
+            )
+            .and_then(|mut statement| statement.execute([root_id]))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(leaving.len())
 }
 
 /// The trash, which is the only evidence a deletion ever gets: a node simply
@@ -342,13 +440,51 @@ pub fn export_trash(
         });
     }
     let max_hlc = nodes.iter().map(highest).max().unwrap_or_default();
-    write_checked(
+    let ids: Vec<String> = nodes.iter().flat_map(collect_ids).collect();
+    let outcome = write_checked(
         transaction,
         vault_root,
         "yonalist-trash",
         &relative,
         &VaultFile::Trash(crate::document::TrashDocument { max_hlc, nodes }),
-    )
+    )?;
+    if !outcome.needs_merge {
+        // The deleted rows this file just stated. No page clears them: their
+        // lines live here, and losing the marks would lose the evidence.
+        let list = json_list(&ids);
+        transaction
+            .prepare_cached(
+                "DELETE FROM sync_dirty_nodes
+                 WHERE node_id IN (SELECT value FROM json_each(?1))",
+            )
+            .and_then(|mut statement| statement.execute([list]))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(outcome)
+}
+
+fn collect_ids(node: &DocumentNode) -> Vec<String> {
+    let mut ids = vec![node.id.clone()];
+    for child in &node.children {
+        ids.extend(collect_ids(child));
+    }
+    ids
+}
+
+/// SQLite has no array parameter, so a list of ids travels as JSON and comes
+/// back apart through `json_each`.
+pub fn json_list(ids: &[String]) -> String {
+    let mut json = String::from("[");
+    for (index, id) in ids.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('"');
+        json.push_str(&id.replace('\\', "\\\\").replace('"', "\\\""));
+        json.push('"');
+    }
+    json.push(']');
+    json
 }
 
 /// What the trash holds: every deleted node whose parent is still alive, with
@@ -467,9 +603,150 @@ fn recorded_hash(
 
 /// One statement for the whole document rather than one per node: the cost of
 /// an export has to follow what changed, not how large the page grew.
+/// Spec §9: a reading moves when the content moves, and not otherwise.
+///
+/// An edit and an undo are two real changes to what was there a moment before,
+/// so the row is stamped twice and ends where it started. Writing that reading
+/// out would hand every other device an edit that changes nothing — and beat a
+/// real edit somebody made in the meantime. So each node's state is compared
+/// with what was last written for it: unchanged, and the reading that was
+/// written with it is put back; changed, and the new pair is recorded.
+///
+/// The record is per node rather than per file because a file is rewritten
+/// whenever any line in it moves, and the lines that did not move must not be
+/// dragged forward with it. What counts as unchanged includes where the line
+/// sits: a node that moved says the same words, and the reading is what
+/// decides whose move wins.
+fn settle_readings(transaction: &Transaction<'_>, root_id: &str) -> Result<(), ExportError> {
+    for (id, fingerprint, hlc, recorded_hash, recorded_hlc) in readings(transaction, root_id)? {
+        let (Some(recorded_hash), Some(recorded_hlc)) = (recorded_hash, recorded_hlc) else {
+            continue;
+        };
+        if recorded_hash == fingerprint && recorded_hlc != hlc {
+            // `hlc` alone, which the stamping trigger deliberately ignores —
+            // putting a reading back is not an edit.
+            transaction
+                .prepare_cached("UPDATE notes_nodes SET hlc = ?2 WHERE id = ?1")
+                .and_then(|mut statement| statement.execute(rusqlite::params![&id, &recorded_hlc]))
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// What each node said when the file that was just written said it. Read back
+/// by `settle_readings` on a later pass.
+fn record_readings(transaction: &Transaction<'_>, root_id: &str) -> Result<(), ExportError> {
+    for (id, fingerprint, hlc, recorded_hash, _) in readings(transaction, root_id)? {
+        if recorded_hash.as_deref() == Some(fingerprint.as_str()) {
+            continue;
+        }
+        transaction
+            .prepare_cached(
+                "INSERT INTO sync_node_exports(node_id, content_hash, exported_hlc)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(node_id) DO UPDATE SET
+                     content_hash = excluded.content_hash,
+                     exported_hlc = excluded.exported_hlc",
+            )
+            .and_then(|mut statement| statement.execute(rusqlite::params![&id, &fingerprint, &hlc]))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+type Reading = (String, String, String, Option<String>, Option<String>);
+
+fn readings(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<Reading>, ExportError> {
+    let mut statement = transaction
+        .prepare_cached(
+            "WITH RECURSIVE subtree(id) AS (
+                 SELECT ?1
+                 UNION ALL
+                 SELECT n.id FROM notes_nodes n JOIN subtree s ON n.parent_id = s.id
+                 WHERE s.id = ?1
+                    OR NOT EXISTS (SELECT 1 FROM sync_documents d
+                                    WHERE d.root_id = s.id AND d.retiring = 0)
+             )
+             SELECT n.id, n.kind, n.text, n.note, n.marker, n.ordered_start,
+                    n.collapsed, n.completed, n.starred, n.deleted, n.sync_extras, n.hlc,
+                    i.relative_path, i.display_width, i.pixel_width, i.pixel_height,
+                    i.byte_length,
+                    e.content_hash, e.exported_hlc,
+                    -- Where the line sits is not its content, but it is
+                    -- something the reading arbitrates: a node that moved has
+                    -- earned its new reading even though it says the same
+                    -- words.
+                    n.parent_id, n.sync_prev, n.sync_prev_hlc
+             FROM notes_nodes n
+             LEFT JOIN notes_images i ON i.node_id = n.id
+             LEFT JOIN sync_node_exports e ON e.node_id = n.id
+             WHERE n.id IN (SELECT id FROM subtree) AND n.hlc <> ''",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([root_id], |row| {
+            let text = match row.get::<_, Option<String>>(12)? {
+                Some(path) => crate::merger::image_state(
+                    &row.get::<_, String>(2)?,
+                    &path,
+                    row.get(13)?,
+                    row.get(14)?,
+                    row.get(15)?,
+                    row.get(16)?,
+                ),
+                None => row.get::<_, String>(2)?,
+            };
+            let fingerprint = crate::merger::LineState {
+                kind: &row.get::<_, String>(1)?,
+                text: &text,
+                note: &row.get::<_, String>(3)?,
+                marker: &row.get::<_, String>(4)?,
+                ordered_start: row.get(5)?,
+                collapsed: row.get::<_, i64>(6)? == 1,
+                completed: row.get::<_, i64>(7)? == 1,
+                starred: row.get::<_, i64>(8)? == 1,
+                deleted: row.get::<_, i64>(9)? == 1,
+                extras: &row.get::<_, String>(10)?,
+            }
+            .fingerprint();
+            // The claim's own stamp too: a node moved away and back holds its
+            // old neighbour at a fresh reading, and that reading is what
+            // decides whose move wins. Putting the old one back would have
+            // this device quietly keep an order nobody else has.
+            let fingerprint = format!(
+                "{fingerprint}:{}:{}:{}",
+                row.get::<_, Option<String>>(19)?.unwrap_or_default(),
+                row.get::<_, String>(20)?,
+                row.get::<_, String>(21)?
+            );
+            Ok((
+                row.get::<_, String>(0)?,
+                fingerprint,
+                row.get::<_, String>(11)?,
+                row.get::<_, Option<String>>(17)?,
+                row.get::<_, Option<String>>(18)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+
+    let mut settled = Vec::new();
+    for row in rows {
+        settled.push(row.map_err(|error| error.to_string())?);
+    }
+    Ok(settled)
+}
+
+/// The folder a document sits in, which is what its links are relative to.
+/// Home's is the vault root itself, and that is the empty string.
+fn folder_of(relative: &str) -> &str {
+    relative.rsplit_once('/').map_or("", |(folder, _)| folder)
+}
+
 fn load_document(
     transaction: &Transaction<'_>,
     root_id: &str,
+    document_folder: &str,
 ) -> Result<PageDocument, ExportError> {
     let mut statement = transaction
         .prepare_cached(
@@ -483,16 +760,26 @@ fn load_document(
                  WHERE n.deleted = 0
                    AND (s.id = ?1
                         OR NOT EXISTS (
-                            SELECT 1 FROM sync_documents d WHERE d.root_id = s.id
+                            SELECT 1 FROM sync_documents d
+                            WHERE d.root_id = s.id AND d.retiring = 0
                         ))
              )
              SELECT n.id, n.parent_id, n.sort_key, n.kind, n.text, n.note, n.marker,
                     n.ordered_start, n.collapsed, n.completed, n.starred, n.hlc,
                     n.sync_extras, n.sync_prev, n.sync_prev_hlc,
-                    i.relative_path, i.original_name, i.display_width,
+                    -- Where the attachment pass put the bytes. Only that pass
+                    -- knows: the answer depends on how many nodes point at
+                    -- them, which is not a fact about this document.
+                    -- `NULLIF` because a record can be there without knowing
+                    -- where the bytes are yet: the row is written when they
+                    -- resolve, and the placement pass fills the location in.
+                    -- Empty is not an answer, and rendering one is refused.
+                    COALESCE(NULLIF(a.location, ''), i.relative_path),
+                    i.original_name, i.display_width,
                     i.pixel_width, i.pixel_height, i.byte_length
              FROM notes_nodes n
              LEFT JOIN notes_images i ON i.node_id = n.id
+             LEFT JOIN sync_assets a ON a.content_hash = i.content_hash
              WHERE n.id IN (SELECT id FROM subtree) AND n.deleted = 0
                AND (n.hlc <> '' OR n.id = ?1)
              ORDER BY n.parent_id, n.sort_key, n.id",
@@ -515,10 +802,15 @@ fn load_document(
                 extras: row.get(12)?,
                 prev: row.get(13)?,
                 prev_hlc: row.get(14)?,
+                sort_key: row.get(2)?,
                 image: row
                     .get::<_, Option<String>>(15)?
-                    .map(|path| ImageReference {
-                        path,
+                    .map(|location| ImageReference {
+                        path: crate::attachments::Placement {
+                            location,
+                            moves: Vec::new(),
+                        }
+                        .link_from(document_folder),
                         original_name: row.get(16).unwrap_or_default(),
                         display_width: row.get::<_, i64>(17).unwrap_or_default() as u32,
                         pixel_width: row.get::<_, i64>(18).unwrap_or_default() as u32,
@@ -558,8 +850,12 @@ fn load_document(
         } else {
             DocumentId::Node(root_id.to_owned())
         },
-        parent: None,
-        sort_key: None,
+        // Where this document hangs. Home has no parent and a page's parent is
+        // home, which the format leaves unsaid; a split document has to say
+        // it, or a device reading the vault fresh makes it a page of its own.
+        parent: Some(root.parent_id.clone())
+            .filter(|parent| parent != "root" && !parent.is_empty()),
+        sort_key: root.sort_key,
         max_hlc,
         root: DocumentRoot {
             title: root.text,
@@ -591,6 +887,7 @@ struct Loaded {
     extras: String,
     prev: String,
     prev_hlc: String,
+    sort_key: Option<i64>,
     image: Option<ImageReference>,
 }
 
@@ -657,7 +954,8 @@ fn clear_dirty(transaction: &Transaction<'_>, root_id: &str) -> Result<(), Expor
                      SELECT n.id FROM notes_nodes n JOIN subtree s ON n.parent_id = s.id
                      WHERE s.id = ?1
                         OR NOT EXISTS (
-                            SELECT 1 FROM sync_documents d WHERE d.root_id = s.id
+                            SELECT 1 FROM sync_documents d
+                            WHERE d.root_id = s.id AND d.retiring = 0
                         )
                  )
                  -- Only what this document actually wrote. A deleted row's line
@@ -680,11 +978,20 @@ fn record_document(
 ) -> Result<(), ExportError> {
     transaction
         .prepare_cached(
-            "INSERT INTO sync_documents(root_id, folder_path, exported_hash, quarantined)
-             VALUES (?1, ?2, ?3, 0)
+            // Which it is, from the node itself: home and the children of root
+            // are pages, and anything else this writes is a split document
+            // inside one. Stated every time because it can change — a subtree
+            // that arrived as a split document and has become a page of its
+            // own has to be noticed if it is ever demoted, and a page that
+            // became a split document must stop being retired for it.
+            "INSERT INTO sync_documents(root_id, folder_path, exported_hash, quarantined, is_page)
+             VALUES (?1, ?2, ?3, 0,
+                 ?1 = 'root' OR EXISTS (
+                     SELECT 1 FROM notes_nodes WHERE id = ?1 AND parent_id = 'root'))
              ON CONFLICT(root_id) DO UPDATE SET
                  folder_path = excluded.folder_path,
-                 exported_hash = excluded.exported_hash",
+                 exported_hash = excluded.exported_hash,
+                 is_page = excluded.is_page",
         )
         .and_then(|mut statement| statement.execute(rusqlite::params![root_id, relative, hash]))
         .map_err(|error| error.to_string())?;

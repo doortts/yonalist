@@ -3,7 +3,9 @@ mod image_file_actions;
 mod image_ipc;
 mod image_replace_ipc;
 mod startup;
+mod sync_runtime;
 mod sync_settings;
+mod vault_watch;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -14,12 +16,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use notes_application::{
     BootSnapshot, CloseOutcome, CommandEnvelope, ForestRequest, ForestSnapshot, HistoryRequest,
     ImageAssetPort, MutationReceipt, NotesError, NotesErrorCode, NotesService, SearchPage,
-    SearchQuery, SyncConflict, SyncVaultFolderState, UnusedAssetsReport, ViewportPage,
-    ViewportRequest,
+    SearchQuery, SyncAttachment, SyncChanged, SyncConflict, SyncVaultFolderState,
+    UnusedAssetsReport, ViewportPage, ViewportRequest,
 };
 use notes_export::{NativeExportPublisher, NativeExportRenderer};
 use notes_sqlite::{LocalImageAssets, SqliteStorage};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 use crate::startup::StartupGate;
 
@@ -33,6 +35,13 @@ struct DesktopRuntime {
     export_renderer: Arc<NativeExportRenderer>,
     export_publisher: Arc<NativeExportPublisher>,
     initial_boot: Mutex<Option<BootSnapshot>>,
+    /// Held rather than dropped: the watch ends when this does. Absent until
+    /// the user has picked a folder, and replaced when they pick another.
+    watch: Mutex<Option<vault_watch::VaultWatch>>,
+    /// Its own `Arc` on the storage is what keeps the exporter's last write
+    /// safe, not this field's place in the struct: fields drop in declaration
+    /// order, so being last means dropping after `storage`, not before.
+    sync: sync_runtime::SyncRuntime,
 }
 
 struct DesktopState {
@@ -110,9 +119,11 @@ async fn notes_execute(
         runtime.clear_initial_boot()?;
         // A pasted image references an existing asset, so the command path needs
         // the store to reject a hash that is no longer there.
-        runtime
-            .service
-            .execute_with_assets(envelope, runtime.assets.as_ref())
+        runtime.changed(
+            runtime
+                .service
+                .execute_with_assets(envelope, runtime.assets.as_ref()),
+        )
     })
     .await
 }
@@ -126,7 +137,7 @@ async fn notes_undo(
     run_blocking(move || {
         let runtime = gate.wait()?;
         runtime.clear_initial_boot()?;
-        runtime.service.undo(request)
+        runtime.changed(runtime.service.undo(request))
     })
     .await
 }
@@ -140,7 +151,7 @@ async fn notes_redo(
     run_blocking(move || {
         let runtime = gate.wait()?;
         runtime.clear_initial_boot()?;
-        runtime.service.redo(request)
+        runtime.changed(runtime.service.redo(request))
     })
     .await
 }
@@ -160,6 +171,9 @@ async fn notes_close_session(state: State<'_, DesktopState>) -> Result<CloseOutc
     run_close_attempt(&state.closed, async move {
         run_blocking(move || {
             let runtime = gate.wait()?;
+            // Before anything else this does: quitting with edits still only in
+            // the database is how notes go missing.
+            runtime.sync.flush().map_err(internal_error)?;
             runtime.storage.optimize().map_err(NotesError::from)?;
             let live_hashes = runtime
                 .storage
@@ -281,10 +295,53 @@ async fn notes_sync_restore_conflict(
             })?;
         // Through the service, so this session learns the revision it moved —
         // a bypass would leave every later edit failing until a restart.
-        runtime.service.restore_conflict(&node_id, &text)?;
+        runtime.changed(runtime.service.restore_conflict(&node_id, &text))?;
         Ok(())
     })
     .await
+}
+
+/// Every attachment this vault holds, biggest first.
+#[tauri::command]
+async fn notes_sync_attachments(
+    state: State<'_, DesktopState>,
+    limit: u32,
+) -> Result<Vec<SyncAttachment>, NotesError> {
+    let gate = Arc::clone(&state.runtime);
+    run_blocking(move || {
+        gate.wait()?
+            .storage
+            .attachments(limit)
+            .map_err(NotesError::from)
+    })
+    .await
+}
+
+/// Removes an attachment nothing points at. Answers `false` when something
+/// started pointing at it again since the list was drawn — the count is taken
+/// with the removal rather than from the screen.
+#[tauri::command]
+async fn notes_sync_delete_attachment(
+    state: State<'_, DesktopState>,
+    content_hash: String,
+) -> Result<bool, NotesError> {
+    let gate = Arc::clone(&state.runtime);
+    let vault = sync_settings::read_vault_path(&state.data_directory);
+    run_blocking(move || {
+        gate.wait()?
+            .storage
+            .delete_attachment(&content_hash, vault.as_deref())
+            .map_err(NotesError::from)
+    })
+    .await
+}
+
+/// Write what is waiting now instead of when the window closes. What the user
+/// reaches for when they want to see their notes in the folder this second.
+#[tauri::command]
+async fn notes_sync_flush(state: State<'_, DesktopState>) -> Result<(), NotesError> {
+    let gate = Arc::clone(&state.runtime);
+    run_blocking(move || gate.wait()?.sync.flush().map_err(internal_error)).await
 }
 
 #[tauri::command]
@@ -297,10 +354,21 @@ async fn notes_sync_vault_get(
 
 #[tauri::command]
 async fn notes_sync_vault_set(
+    app: tauri::AppHandle,
     state: State<'_, DesktopState>,
     path: String,
 ) -> Result<SyncVaultFolderState, NotesError> {
-    sync_settings::set_vault_path(&state.data_directory, Path::new(&path)).map_err(NotesError::from)
+    let folder = sync_settings::set_vault_path(&state.data_directory, Path::new(&path))
+        .map_err(NotesError::from)?;
+    // The folder is only watched once it is known, and this is where it
+    // becomes known — on first run there was nothing to watch at startup.
+    let gate = Arc::clone(&state.runtime);
+    run_blocking(move || {
+        gate.wait()?.watch_vault(&app);
+        Ok(())
+    })
+    .await?;
+    Ok(folder)
 }
 
 #[tauri::command]
@@ -491,7 +559,24 @@ impl DesktopRuntime {
             data_directory.join("images"),
             original_directory.clone(),
         ]));
-        Ok(Self {
+        let exporter = {
+            let storage = Arc::clone(&storage);
+            let data_directory = data_directory.clone();
+            let store_root = data_directory.join("images");
+            move || {
+                // Read every time: the vault can be picked, or changed, long
+                // after this thread started.
+                let Some(vault) = sync_settings::read_vault_path(&data_directory) else {
+                    return;
+                };
+                if let Err(error) = storage.export_pending(&vault, &store_root) {
+                    // Nothing here can fix it, and the marks stay put — the next
+                    // pass tries the same documents again.
+                    eprintln!("The vault could not be written: {error}");
+                }
+            }
+        };
+        let runtime = Self {
             session_id,
             storage,
             assets,
@@ -501,7 +586,81 @@ impl DesktopRuntime {
             export_renderer,
             export_publisher,
             initial_boot: Mutex::new(Some(initial_boot)),
-        })
+            watch: Mutex::new(None),
+            sync: sync_runtime::SyncRuntime::start(exporter),
+        };
+        // A session can end with work still queued — a crash, a folder that
+        // was unreachable, a vault picked after the edits were made. Nothing
+        // else would ask.
+        runtime.sync.poke();
+        Ok(runtime)
+    }
+
+    /// Every command that changes anything ends here, and this is the only
+    /// thing that wakes the export thread. A mutation that forgets it is a
+    /// note the folder never learns about until something else is edited.
+    pub(crate) fn changed<T>(&self, outcome: Result<T, NotesError>) -> Result<T, NotesError> {
+        if outcome.is_ok() {
+            self.sync.poke();
+        }
+        outcome
+    }
+
+    /// Starts watching the folder the user picked, replacing any earlier
+    /// watch. Nothing here is fatal: a folder that cannot be watched still
+    /// exports, and the app is more use without a watch than not at all.
+    fn watch_vault(&self, app: &tauri::AppHandle) {
+        let Some(vault) = sync_settings::read_vault_path(&self.data_directory) else {
+            return;
+        };
+        let storage = Arc::clone(&self.storage);
+        let service = Arc::clone(&self.service);
+        let exporting = self.sync.handle();
+        let window = app.clone();
+        let started = vault_watch::VaultWatch::start(
+            Arc::clone(&self.storage),
+            Arc::clone(&self.assets),
+            vault,
+            move |outcome: notes_sync::merger::MergeOutcome| {
+                // Whatever the merge decided, the folder may now owe a
+                // write — this is the only thing that wakes the exporter for
+                // it.
+                exporting.poke();
+                let Ok(revision) = storage.revision() else {
+                    return;
+                };
+                if outcome.applied == 0 {
+                    // Nothing in the outline moved, so there is nothing for
+                    // the window to redraw.
+                    return;
+                }
+                let affected: Vec<String> = outcome
+                    .changed_ids
+                    .iter()
+                    .chain(outcome.deleted_ids.iter())
+                    .cloned()
+                    .collect();
+                // The session first: a window told about a revision the service
+                // does not know about would have every later edit rejected.
+                let _ = service.absorb_external(revision, &affected);
+                let _ = window.emit(
+                    "notes://sync-changed",
+                    SyncChanged {
+                        revision,
+                        changed_node_ids: outcome.changed_ids.iter().cloned().collect(),
+                        deleted_node_ids: outcome.deleted_ids.iter().cloned().collect(),
+                    },
+                );
+            },
+        );
+        match started {
+            Ok(watch) => {
+                if let Ok(mut held) = self.watch.lock() {
+                    *held = Some(watch);
+                }
+            }
+            Err(reason) => eprintln!("The vault is not being watched: {reason}"),
+        }
     }
 
     fn clear_initial_boot(&self) -> Result<(), NotesError> {
@@ -585,6 +744,7 @@ pub fn run() {
                 .join("resources")
                 .join("NanumGothic-Regular.ttf");
             let runtime = Arc::new(StartupGate::pending());
+            let watching = app.handle().clone();
             app.manage(DesktopState {
                 runtime: Arc::clone(&runtime),
                 data_directory: data_directory.clone(),
@@ -593,7 +753,13 @@ pub fn run() {
             std::thread::Builder::new()
                 .name("notes-v2-startup".into())
                 .spawn(move || {
-                    runtime.complete(DesktopRuntime::initialize(data_directory, font_path))
+                    runtime.complete(DesktopRuntime::initialize(data_directory, font_path));
+                    // After the gate opens, so a command arriving mid-startup
+                    // waits for the same runtime this is about to hand a
+                    // watcher rather than a second one.
+                    if let Ok(ready) = runtime.wait() {
+                        ready.watch_vault(&watching);
+                    }
                 })?;
             Ok(())
         })
@@ -610,6 +776,9 @@ pub fn run() {
             notes_delete_all_data,
             notes_sync_conflicts,
             notes_sync_restore_conflict,
+            notes_sync_attachments,
+            notes_sync_delete_attachment,
+            notes_sync_flush,
             notes_sync_vault_get,
             notes_sync_vault_set,
             export_ipc::notes_export,

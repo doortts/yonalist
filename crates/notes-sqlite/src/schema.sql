@@ -140,6 +140,10 @@ BEGIN
   INSERT INTO sync_dirty_nodes(node_id, marked_at)
   VALUES (NEW.id, unixepoch())
   ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+  -- The file that holds this line states it, so it owes a write too.
+  INSERT INTO sync_dirty_nodes(node_id, marked_at)
+  SELECT NEW.parent_id, unixepoch() WHERE NEW.parent_id IS NOT NULL
+  ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
 END;
 
 -- Named columns, not the whole row: `path` is derived, and a move
@@ -150,18 +154,72 @@ CREATE TRIGGER notes_nodes_hlc_au AFTER UPDATE OF
     parent_id, sort_key, kind, text, note, marker, ordered_start,
     collapsed, completed, starred, deleted, sync_extras
 ON notes_nodes
-WHEN NEW.hlc = OLD.hlc
+-- A write that leaves every stamped column as it was is not an edit, whoever
+-- made it. Stamping it anyway would hand this device a reading it did not
+-- earn, and that reading then beats a real edit made elsewhere. `IS NOT`
+-- rather than `<>` so a column that is null on both sides counts as unchanged.
+WHEN NEW.hlc = OLD.hlc AND (
+       NEW.parent_id IS NOT OLD.parent_id
+    OR NEW.sort_key IS NOT OLD.sort_key
+    OR NEW.kind IS NOT OLD.kind
+    OR NEW.text IS NOT OLD.text
+    OR NEW.note IS NOT OLD.note
+    OR NEW.marker IS NOT OLD.marker
+    OR NEW.ordered_start IS NOT OLD.ordered_start
+    OR NEW.collapsed IS NOT OLD.collapsed
+    OR NEW.completed IS NOT OLD.completed
+    OR NEW.starred IS NOT OLD.starred
+    OR NEW.deleted IS NOT OLD.deleted
+    OR NEW.sync_extras IS NOT OLD.sync_extras
+)
 BEGIN
   UPDATE notes_nodes SET hlc = yona_hlc() WHERE id = NEW.id;
   INSERT INTO sync_dirty_nodes(node_id, marked_at)
   VALUES (NEW.id, unixepoch())
   ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+  -- Both ends of a move: the file it left still states the line, and the
+  -- file it arrived in does not state it yet.
+  -- Aliased and qualified on both sides: a bare `id` in the EXISTS would
+  -- resolve to `notes_nodes.id` and compare the row with itself, which is
+  -- true for every row and filters nothing.
+  INSERT INTO sync_dirty_nodes(node_id, marked_at)
+  SELECT ends.id, unixepoch() FROM (
+      SELECT NEW.parent_id AS id UNION SELECT OLD.parent_id
+  ) AS ends WHERE ends.id IS NOT NULL AND EXISTS (
+      SELECT 1 FROM notes_nodes WHERE notes_nodes.id = ends.id
+  )
+  ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
 END;
 
-CREATE TRIGGER notes_nodes_hlc_ad AFTER DELETE ON notes_nodes
+-- Where a line sits is stated in the file beside it, so a claim changing is
+-- a change to the file. It is not a change to the node — which is why these
+-- columns are deliberately absent from the stamping trigger above, and why
+-- this one only marks.
+CREATE TRIGGER notes_nodes_place_au AFTER UPDATE OF sync_prev, sync_prev_hlc
+ON notes_nodes
+WHEN NEW.sync_prev IS NOT OLD.sync_prev OR NEW.sync_prev_hlc IS NOT OLD.sync_prev_hlc
 BEGIN
   INSERT INTO sync_dirty_nodes(node_id, marked_at)
-  VALUES (OLD.id, unixepoch())
+  VALUES (NEW.id, unixepoch())
+  ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+END;
+
+-- A hard delete is undo taking back a create, or a cascade following one.
+-- The row is gone, so nothing can ever work out which file owed it a write:
+-- its mark would sit in the queue for good, and a queue that never empties
+-- blocks the reindex that reads the vault as the truth. What is owed is the
+-- rewrite of the file that still states the line, which is the parent's.
+CREATE TRIGGER notes_nodes_hlc_ad AFTER DELETE ON notes_nodes
+BEGIN
+  DELETE FROM sync_dirty_nodes WHERE node_id = OLD.id;
+  INSERT INTO sync_dirty_nodes(node_id, marked_at)
+  SELECT OLD.parent_id, unixepoch()
+  WHERE OLD.parent_id IS NOT NULL AND EXISTS (
+      -- `OLD.parent_id` is unambiguous here, unlike the update trigger's
+      -- derived column: it names the row that left, not a column of the
+      -- table being searched.
+      SELECT 1 FROM notes_nodes WHERE notes_nodes.id = OLD.parent_id
+  )
   ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
 END;
 
@@ -194,7 +252,23 @@ CREATE TABLE sync_documents (
     file_mtime_ms INTEGER,
     file_size INTEGER,
     quarantined INTEGER NOT NULL DEFAULT 0
-        CHECK (quarantined IN (0, 1))
+        CHECK (quarantined IN (0, 1)),
+    -- This document is on its way out: its node is still here but is
+    -- no longer a page, so its notes belong to the page it joined.
+    -- Nothing reads it as a document while this is set — the export
+    -- renders its subtree inside its new home first, and the folder
+    -- goes at the end of the same pass. Removing the folder before
+    -- that leaves the subtree in no file at all.
+    retiring INTEGER NOT NULL DEFAULT 0
+        CHECK (retiring IN (0, 1)),
+    -- Whether this document is a page, as opposed to a split
+    -- document living inside one. A split document sits under a
+    -- node that is not root by design, so "no longer a child of
+    -- root" says nothing about it — only a page can stop being one.
+    -- The file itself is the evidence: a split document states the
+    -- node it hangs from, and a page does not.
+    is_page INTEGER NOT NULL DEFAULT 1
+        CHECK (is_page IN (0, 1))
 ) STRICT;
 
 CREATE TABLE sync_dirty_nodes (
@@ -228,7 +302,22 @@ CREATE TABLE sync_assets (
     content_hash TEXT PRIMARY KEY NOT NULL,
     disk_name TEXT NOT NULL,
     location TEXT NOT NULL,
+    -- Kept here as well as on the node, because the node is the
+    -- thing that goes away: the attachment list still has to say
+    -- how big the file nobody points at any more is.
+    byte_length INTEGER,
     unreferenced_at INTEGER
+) STRICT;
+
+-- Files in the vault this app could not read. Keyed by path, and
+-- deliberately not in `sync_documents`: a row there means "this is
+-- one of our documents", and the folder retirement deletes the
+-- folder of any such row whose node is gone. A file we cannot read
+-- is not our document, and its folder is not ours to remove.
+CREATE TABLE sync_quarantine (
+    relative_path TEXT PRIMARY KEY NOT NULL,
+    file_hash TEXT NOT NULL,
+    noticed_at INTEGER NOT NULL
 ) STRICT;
 
 CREATE TABLE notes_ui_state (

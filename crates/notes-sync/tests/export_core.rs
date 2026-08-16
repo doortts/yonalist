@@ -172,8 +172,8 @@ fn self_validation_failure_leaves_the_file_untouched() {
         )
         .expect("dirty");
 
-    let mut transaction = connection.transaction().expect("begin");
-    let refused = export_document(&mut transaction, root.path(), PAGE_ID);
+    let transaction = connection.transaction().expect("begin");
+    let refused = export_document(&transaction, root.path(), PAGE_ID);
     transaction.commit().expect("commit");
 
     assert!(
@@ -224,8 +224,8 @@ fn an_export_refuses_to_overwrite_a_changed_file() {
         )
         .expect("dirty");
 
-    let mut transaction = connection.transaction().expect("begin");
-    let outcome = export_document(&mut transaction, root.path(), PAGE_ID).expect("export");
+    let transaction = connection.transaction().expect("begin");
+    let outcome = export_document(&transaction, root.path(), PAGE_ID).expect("export");
     transaction.commit().expect("commit");
 
     assert!(
@@ -318,6 +318,37 @@ fn deleted_nodes_emit_into_trash_md() {
     assert!(
         file.contains(&format!("from: {PAGE_ID}@")),
         "a deleted node states where it was taken from, or nothing can put it back: {file}"
+    );
+}
+
+/// A deleted row's mark is nobody else's to clear — its page skips it on
+/// purpose, so that the deletion keeps its evidence until the trash states it.
+/// If the trash does not clear it either, the queue never empties: every
+/// export runs again forever and a reindex stays refused for good.
+#[test]
+fn stating_a_deletion_takes_it_off_the_queue() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    connection
+        .execute(
+            "UPDATE notes_nodes SET deleted = 1 WHERE id = ?1",
+            [NODE_ID],
+        )
+        .expect("delete");
+
+    export_trash(&mut connection, root.path());
+
+    let still_waiting: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(
+        still_waiting, 0,
+        "the trash has stated this deletion, so nothing is still owed for it"
     );
 }
 
@@ -506,6 +537,187 @@ fn a_dirty_page_root_resolves_to_its_own_document() {
     let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
 
     assert_eq!(pending, vec![PAGE_ID.to_owned()]);
+}
+
+/// The whole reason home is ever queued. A page nobody has opened yet is one
+/// row under `root` and nothing else — if that does not put home in the queue,
+/// the page never appears in the vault's own README and the user cannot reach
+/// it from the folder they opened. The marking is the schema's, so the row
+/// arrives the way a real one does: unstamped, for the trigger to stamp.
+#[test]
+fn a_new_page_puts_home_in_the_queue() {
+    let mut connection = database();
+    seed(&connection);
+    let fresh = "8a201f33-0000-4c91-8d02-000000000009";
+    connection
+        .execute("DELETE FROM sync_dirty_nodes", ())
+        .expect("clear");
+    connection
+        .execute(
+            "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
+             VALUES (?1, 'root', 8589934592, 'bullet', 'Fresh', '')",
+            [fresh],
+        )
+        .expect("page");
+
+    let transaction = connection.transaction().expect("begin");
+    let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
+
+    assert!(
+        pending.contains(&"root".to_owned()),
+        "a page that reaches no file is a page the user cannot open: {pending:?}"
+    );
+}
+
+/// A split document says which node it hangs from. Writing it without that
+/// line makes it a top-level page to any device reading the vault fresh — the
+/// subtree leaves the page it belonged to and turns up beside it.
+#[test]
+fn a_split_document_states_the_node_it_hangs_from() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    connection
+        .execute(
+            "INSERT INTO sync_documents(root_id, folder_path) VALUES (?1, ?2)",
+            rusqlite::params![
+                NODE_ID,
+                format!("Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md")
+            ],
+        )
+        .expect("split document");
+
+    {
+        let transaction = connection.transaction().expect("begin");
+        export_document(&transaction, root.path(), NODE_ID).expect("export");
+        transaction.commit().expect("commit");
+    }
+
+    let file = std::fs::read_to_string(
+        root.path()
+            .join("Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md"),
+    )
+    .expect("the split document");
+    assert!(
+        file.contains(&format!("parent: {PAGE_ID}")),
+        "without it the subtree becomes a page of its own on the next device \
+         that reads the vault: {file}"
+    );
+}
+
+/// Spec §9. Typing a word and taking it back leaves the note exactly as it
+/// was, but each of those two edits is a real change to what was there a
+/// moment before, so both stamp the row. Writing that stamp out would hand
+/// every other device an edit that changes nothing — and beat a real edit
+/// somebody made in the meantime.
+#[test]
+fn content_that_comes_back_to_what_was_written_keeps_its_reading() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    export(&mut connection, root.path());
+    let first = written(root.path()).expect("the page");
+
+    // There and back again, the way an edit and an undo leave it.
+    for text in ["Changed", "Thought"] {
+        connection
+            .execute(
+                "UPDATE notes_nodes SET text = ?2 WHERE id = ?1",
+                rusqlite::params![NODE_ID, text],
+            )
+            .expect("edit");
+    }
+    let stamped: String = connection
+        .query_row(
+            "SELECT hlc FROM notes_nodes WHERE id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("hlc");
+    export(&mut connection, root.path());
+
+    assert_eq!(
+        written(root.path()).expect("the page"),
+        first,
+        "the file says the same thing it said, so it says it the same way"
+    );
+    let after: String = connection
+        .query_row(
+            "SELECT hlc FROM notes_nodes WHERE id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("hlc");
+    assert_ne!(
+        after, stamped,
+        "the reading the edits earned is given back, or the next file this \
+         device writes carries it"
+    );
+}
+
+/// A split document is not a page and never was one. It lives inside its
+/// page's folder by design, so "no longer a child of root" says nothing about
+/// it — treating that as a demotion flattens it into its page and takes its
+/// folder.
+#[test]
+fn a_split_document_is_not_retired_for_living_inside_its_page() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    connection
+        .execute(
+            "INSERT INTO sync_documents(root_id, folder_path, is_page)
+             VALUES (?1, ?2, 0)",
+            rusqlite::params![
+                NODE_ID,
+                "Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md"
+            ],
+        )
+        .expect("split document");
+
+    let transaction = connection.transaction().expect("begin");
+    let leaving = notes_sync::export::begin_retirement(&transaction).expect("retirement");
+    transaction.commit().expect("commit");
+
+    assert_eq!(
+        leaving, 0,
+        "it is where it has always been, and where it belongs"
+    );
+    let _ = root;
+}
+
+/// A file somebody edited by hand is not this app's to replace, and what was
+/// waiting to go into it is still waiting. Clearing the mark there would leave
+/// the vault holding an older version of a note for good.
+#[test]
+fn a_hand_edited_file_keeps_its_place_in_the_queue() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    export_home(&mut connection, root.path());
+    std::fs::write(root.path().join("README.md"), b"somebody's own words\n").expect("hand edit");
+    connection
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES ('root', 0)",
+            (),
+        )
+        .expect("dirty");
+
+    let outcome = export_home(&mut connection, root.path());
+
+    assert!(outcome.needs_merge, "somebody's edit comes first");
+    let waiting: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = 'root'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("dirty");
+    assert_eq!(
+        waiting, 1,
+        "what this device is holding still has to reach the file, once the \
+         merge has dealt with what the file already says"
+    );
 }
 
 /// A deleted row belongs to the trash, whatever page it used to sit in.

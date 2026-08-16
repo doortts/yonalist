@@ -37,6 +37,36 @@ fn folder_suffix(id: &str) -> Result<String, String> {
     Ok(canonical[..12].to_owned())
 }
 
+/// What an attachment is called in the vault: what the user called the file,
+/// cleaned the same way a page title is, with enough of the content hash to
+/// keep two different pictures of the same name apart. Every device computes
+/// the same answer from the same bytes, which is what lets them agree on where
+/// an attachment lives without talking to each other.
+pub fn asset_disk_name(original_name: &str, content_hash: &str, mime_type: &str) -> String {
+    let stem = original_name
+        .rsplit_once('.')
+        .map(|(stem, _)| stem)
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or(original_name);
+    let hash = &content_hash[..content_hash.len().min(12)];
+    format!("{}-{hash}.{}", clean_title(stem), extension(mime_type))
+}
+
+/// From the decoded type, never from what the file was called: a `.png` that
+/// is really a jpeg would otherwise keep lying about itself in the vault.
+pub fn asset_extension(mime_type: &str) -> &'static str {
+    extension(mime_type)
+}
+
+fn extension(mime_type: &str) -> &'static str {
+    match mime_type {
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "png",
+    }
+}
+
 fn clean_title(title: &str) -> String {
     // Anything that would break a path or a markdown link target. Brackets and
     // parentheses go too: these names land inside `](…)`, and a `)` would close

@@ -2,7 +2,9 @@ import { Radio, RadioGroup } from "@base-ui/react";
 import { Database, FolderSync, History, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
+import type { SyncAttachment } from "../../../packages/contracts/generated/SyncAttachment";
 import type { SyncConflict } from "../../../packages/contracts/generated/SyncConflict";
+import { AttachmentsSection } from "./AttachmentsSection";
 import type { UnusedAssetsReport } from "../../../packages/contracts/generated/UnusedAssetsReport";
 import {
   MAX_OUTLINE_MARKER_LEVELS,
@@ -86,7 +88,10 @@ export function SettingsView({
   readVaultPath,
   setVaultPath,
   readConflicts,
-  restoreConflict
+  restoreConflict,
+  readAttachments,
+  deleteAttachment,
+  openNode
 }: {
   readonly themeMode: ThemeMode;
   readonly lightTheme: LightTheme;
@@ -107,6 +112,9 @@ export function SettingsView({
   readonly setVaultPath: (path: string) => Promise<void>;
   readonly readConflicts: () => Promise<readonly SyncConflict[]>;
   readonly restoreConflict: (seq: number) => Promise<void>;
+  readonly readAttachments: (limit: number) => Promise<readonly SyncAttachment[]>;
+  readonly deleteAttachment: (contentHash: string) => Promise<boolean>;
+  readonly openNode: (pageId: string, nodeId: string) => void;
 }) {
   return (
     <section className="settings-page" aria-label="Settings page">
@@ -165,6 +173,12 @@ export function SettingsView({
         <OverwrittenNotesSection
           readConflicts={readConflicts}
           restoreConflict={restoreConflict}
+        />
+
+        <AttachmentsSection
+          readAttachments={readAttachments}
+          deleteAttachment={deleteAttachment}
+          openNode={openNode}
         />
 
         <SyncFolderSection

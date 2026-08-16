@@ -19,6 +19,25 @@ use notes_sync::merger::{MergeInput, merge_document};
 use proptest::prelude::*;
 use rusqlite::Connection;
 
+/// Every column of one row, in the order the query names them. A tuple this
+/// wide says nothing about what it holds when it is written out inline.
+type Row = (
+    String,
+    String,
+    i64,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    i64,
+    i64,
+    String,
+    String,
+);
+
 /// The device the database belongs to. Generated stamps never carry it: a stamp
 /// this device issued means a hand edit, which is deliberately order-dependent
 /// (it is an edit, after all) and belongs in a unit test rather than here.
@@ -86,22 +105,7 @@ fn dump(connection: &Connection, known_stamps: &[String]) -> Vec<String> {
              FROM notes_nodes ORDER BY parent_id, sort_key, id",
         )
         .expect("prepare");
-    let rows: Vec<(
-        String,
-        String,
-        i64,
-        String,
-        String,
-        String,
-        String,
-        i64,
-        i64,
-        i64,
-        i64,
-        i64,
-        String,
-        String,
-    )> = statement
+    let rows: Vec<Row> = statement
         .query_map([], |row| {
             Ok((
                 row.get(0)?,
@@ -153,21 +157,6 @@ fn dump(connection: &Connection, known_stamps: &[String]) -> Vec<String> {
         ));
     }
     out
-}
-
-fn freshly_stamped(connection: &Connection, known_stamps: &[String]) -> Vec<String> {
-    let mut statement = connection
-        .prepare("SELECT id, hlc FROM notes_nodes ORDER BY id")
-        .expect("prepare");
-    statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .expect("query")
-        .map(|row| row.expect("row"))
-        .filter(|(_, hlc)| !hlc.is_empty() && !known_stamps.contains(hlc))
-        .map(|(id, _)| id)
-        .collect()
 }
 
 fn node_id(index: usize) -> String {
@@ -283,10 +272,10 @@ fn apply_changes(base: &PageDocument, changes: &[Change], device: &str) -> PageD
                     document.nodes[at - 1].id.clone()
                 };
                 let mut moved = document.nodes.remove(at);
-                if let Some(follower) = orphaned_follower {
-                    if let Some(node) = document.nodes.iter_mut().find(|node| node.id == follower) {
-                        node.place = Some((left_behind, mark.clone()));
-                    }
+                if let Some(follower) = orphaned_follower
+                    && let Some(node) = document.nodes.iter_mut().find(|node| node.id == follower)
+                {
+                    node.place = Some((left_behind, mark.clone()));
                 }
                 if let Some(displaced) = document.nodes.first_mut() {
                     displaced.place = Some((moved.id.clone(), mark.clone()));

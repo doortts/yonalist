@@ -43,8 +43,54 @@ enum Request {
         limit: u32,
         reply: SyncSender<Result<Vec<notes_application::SyncConflict>, StorageError>>,
     },
+    Attachments {
+        limit: u32,
+        reply: SyncSender<Result<Vec<notes_application::SyncAttachment>, StorageError>>,
+    },
+    DeleteAttachment {
+        content_hash: String,
+        vault_root: Option<std::path::PathBuf>,
+        reply: SyncSender<Result<bool, StorageError>>,
+    },
+    ForgetMissingRefusals {
+        present: Vec<String>,
+        reply: SyncSender<Result<usize, StorageError>>,
+    },
+    AssetKnown {
+        location: String,
+        reply: SyncSender<Result<bool, StorageError>>,
+    },
+    /// A file this app could not read, recorded so it is not read again on
+    /// every sweep, and so the user can be shown which one.
+    Quarantine {
+        relative: String,
+        file_hash: String,
+        reply: SyncSender<Result<(), StorageError>>,
+    },
+    ResolveAsset {
+        disk_name: String,
+        content_hash: String,
+        location: String,
+        reply: SyncSender<Result<usize, StorageError>>,
+    },
+    ImageHash {
+        node_id: String,
+        reply: SyncSender<Result<Option<String>, StorageError>>,
+    },
+    VaultFileHash {
+        relative: String,
+        reply: SyncSender<Result<Option<String>, StorageError>>,
+    },
+    PendingCount {
+        reply: SyncSender<Result<i64, StorageError>>,
+    },
+    ReindexVault {
+        vault_root: std::path::PathBuf,
+        reply: SyncSender<Result<crate::sync_merge::ReindexReport, StorageError>>,
+    },
     ExportPending {
         vault_root: std::path::PathBuf,
+        store_root: std::path::PathBuf,
         reply: SyncSender<Result<usize, StorageError>>,
     },
     PlaceClaim {
@@ -182,11 +228,128 @@ impl SqliteStorage {
         self.request(|reply| Request::Conflicts { limit, reply })
     }
 
+    /// Every attachment, biggest first — one row per bullet that shows one.
+    pub fn attachments(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<notes_application::SyncAttachment>, StorageError> {
+        self.request(|reply| Request::Attachments { limit, reply })
+    }
+
+    /// Removes an attachment nothing points at, and answers whether it went.
+    /// `false` means something started pointing at it again since the list was
+    /// drawn — the count is taken with the removal, not before it.
+    pub fn delete_attachment(
+        &self,
+        content_hash: &str,
+        vault_root: Option<&std::path::Path>,
+    ) -> Result<bool, StorageError> {
+        self.request(|reply| Request::DeleteAttachment {
+            content_hash: content_hash.to_owned(),
+            vault_root: vault_root.map(std::path::Path::to_path_buf),
+            reply,
+        })
+    }
+
+    /// The bytes for an attachment arrived. Every row whose link names it and
+    /// which is still waiting learns its hash — which is what turns a note
+    /// showing nothing into a note showing its picture.
+    /// Files this app refused that are not in the folder any more. A refusal
+    /// is about a file; once the file is gone, so is what it was about — and a
+    /// file that comes back is read rather than skipped as already answered.
+    pub fn forget_missing_refusals(&self, present: &[String]) -> Result<usize, StorageError> {
+        self.request(|reply| Request::ForgetMissingRefusals {
+            present: present.to_vec(),
+            reply,
+        })
+    }
+
+    /// Whether the bytes at this place in the vault have already been taken
+    /// in. The name carries the content hash, so a file that is still called
+    /// what it was called holds what it held.
+    pub fn asset_known(&self, location: &str) -> Result<bool, StorageError> {
+        self.request(|reply| Request::AssetKnown {
+            location: location.to_owned(),
+            reply,
+        })
+    }
+
+    /// Writes down that this app could not make sense of a file. The hash is
+    /// what keeps it from being read again on every sweep — a file that is
+    /// still the same file has already been answered.
+    pub fn quarantine(&self, relative: &str, file_hash: &str) -> Result<(), StorageError> {
+        self.request(|reply| Request::Quarantine {
+            relative: relative.to_owned(),
+            file_hash: file_hash.to_owned(),
+            reply,
+        })
+    }
+
+    /// `location` is where the file sits in the vault, relative to its root:
+    /// the arrival is the only thing that knows, and the export writes its
+    /// links from it.
+    pub fn resolve_asset(
+        &self,
+        disk_name: &str,
+        content_hash: &str,
+        location: &str,
+    ) -> Result<usize, StorageError> {
+        self.request(|reply| Request::ResolveAsset {
+            disk_name: disk_name.to_owned(),
+            content_hash: content_hash.to_owned(),
+            location: location.to_owned(),
+            reply,
+        })
+    }
+
+    /// Empty while the bytes have not arrived, `None` when the node has no
+    /// picture at all.
+    pub fn image_hash(&self, node_id: &str) -> Result<Option<String>, StorageError> {
+        self.request(|reply| Request::ImageHash {
+            node_id: node_id.to_owned(),
+            reply,
+        })
+    }
+
+    /// What this app last dealt with at that path — what it wrote, or what it
+    /// refused. Either answer keeps a file from being read again on every
+    /// event the transport delivers for it.
+    pub fn vault_file_hash(&self, relative: &str) -> Result<Option<String>, StorageError> {
+        self.request(|reply| Request::VaultFileHash {
+            relative: relative.to_owned(),
+            reply,
+        })
+    }
+
+    /// How many rows are still waiting to be written out.
+    pub fn pending_count(&self) -> Result<i64, StorageError> {
+        self.request(|reply| Request::PendingCount { reply })
+    }
+
+    /// Reads every document in the vault back in, ignoring what the records say
+    /// about them. Refused while this device is still holding edits.
+    pub fn reindex_vault(
+        &self,
+        vault_root: &std::path::Path,
+    ) -> Result<crate::sync_merge::ReindexReport, StorageError> {
+        self.request(|reply| Request::ReindexVault {
+            vault_root: vault_root.to_path_buf(),
+            reply,
+        })
+    }
+
     /// Writes everything waiting into the vault, answering how many documents
     /// actually changed on disk.
-    pub fn export_pending(&self, vault_root: &std::path::Path) -> Result<usize, StorageError> {
+    /// `store_root` is this app's own image store: the vault's copy of an
+    /// attachment is made from it, and it is where the bytes stay.
+    pub fn export_pending(
+        &self,
+        vault_root: &std::path::Path,
+        store_root: &std::path::Path,
+    ) -> Result<usize, StorageError> {
         self.request(|reply| Request::ExportPending {
             vault_root: vault_root.to_path_buf(),
+            store_root: store_root.to_path_buf(),
             reply,
         })
     }
@@ -345,10 +508,144 @@ impl SqliteStorage {
                         Request::Conflicts { limit, reply } => {
                             let _ = reply.send(crate::sync_merge::conflicts(&connection, limit));
                         }
-                        Request::ExportPending { vault_root, reply } => {
+                        Request::Attachments { limit, reply } => {
+                            let _ =
+                                reply.send(crate::attachment_list::attachments(&connection, limit));
+                        }
+                        Request::DeleteAttachment {
+                            content_hash,
+                            vault_root,
+                            reply,
+                        } => {
+                            let _ = reply.send(crate::attachment_list::delete_attachment(
+                                &mut connection,
+                                &content_hash,
+                                vault_root.as_deref(),
+                            ));
+                        }
+                        Request::ForgetMissingRefusals { present, reply } => {
+                            let _ = reply.send(
+                                connection
+                                    .execute(
+                                        "DELETE FROM sync_quarantine
+                                         WHERE relative_path NOT IN
+                                             (SELECT value FROM json_each(?1))",
+                                        [notes_sync::export::json_list(&present)],
+                                    )
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
+                        }
+                        Request::AssetKnown { location, reply } => {
+                            let _ = reply.send(
+                                connection
+                                    .query_row(
+                                        "SELECT 1 FROM sync_assets WHERE location = ?1",
+                                        [&location],
+                                        |_| Ok(()),
+                                    )
+                                    .optional()
+                                    .map(|found| found.is_some())
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
+                        }
+                        Request::Quarantine {
+                            relative,
+                            file_hash,
+                            reply,
+                        } => {
+                            let _ = reply.send(
+                                connection
+                                    .execute(
+                                        "INSERT INTO sync_quarantine(
+                                             relative_path, file_hash, noticed_at)
+                                         VALUES (?1, ?2, unixepoch())
+                                         ON CONFLICT(relative_path) DO UPDATE SET
+                                             file_hash = excluded.file_hash,
+                                             noticed_at = excluded.noticed_at",
+                                        rusqlite::params![&relative, &file_hash],
+                                    )
+                                    .map(|_| ())
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
+                        }
+                        Request::ResolveAsset {
+                            disk_name,
+                            content_hash,
+                            location,
+                            reply,
+                        } => {
+                            let _ = reply.send(crate::sync_merge::resolve_asset(
+                                &mut connection,
+                                &disk_name,
+                                &content_hash,
+                                &location,
+                            ));
+                        }
+                        Request::ImageHash { node_id, reply } => {
+                            let _ = reply.send(
+                                connection
+                                    .query_row(
+                                        "SELECT content_hash FROM notes_images WHERE node_id = ?1",
+                                        [&node_id],
+                                        |row| row.get::<_, String>(0),
+                                    )
+                                    .optional()
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
+                        }
+                        Request::VaultFileHash { relative, reply } => {
+                            let _ = reply.send(
+                                connection
+                                    .query_row(
+                                        // Either answer keeps a file from being
+                                        // read again: what this app wrote, and
+                                        // what it looked at and could not read.
+                                        // The refusal first: it records the
+                                        // most recent look at that path, and a
+                                        // merge that reads the file takes it
+                                        // back. Answering with the document's
+                                        // hash instead would have the sweep
+                                        // re-read and re-refuse the same
+                                        // unreadable bytes every minute.
+                                        "SELECT file_hash FROM sync_quarantine
+                                         WHERE relative_path = ?1
+                                         UNION ALL
+                                         SELECT exported_hash FROM sync_documents
+                                         WHERE folder_path = ?1
+                                         LIMIT 1",
+                                        [&relative],
+                                        |row| row.get::<_, String>(0),
+                                    )
+                                    .optional()
+                                    .map(|hash| hash.filter(|hash| !hash.is_empty()))
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
+                        }
+                        Request::PendingCount { reply } => {
+                            let _ = reply.send(
+                                connection
+                                    .query_row("SELECT count(*) FROM sync_dirty_nodes", [], |row| {
+                                        row.get::<_, i64>(0)
+                                    })
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
+                        }
+                        Request::ReindexVault { vault_root, reply } => {
+                            let _ = reply.send(crate::sync_merge::reindex_vault(
+                                &mut connection,
+                                &clock,
+                                &vault_root,
+                            ));
+                        }
+                        Request::ExportPending {
+                            vault_root,
+                            store_root,
+                            reply,
+                        } => {
                             let _ = reply.send(crate::sync_merge::export_pending(
                                 &mut connection,
                                 &vault_root,
+                                &store_root,
                             ));
                         }
                         Request::PlaceClaim { id, reply } => {

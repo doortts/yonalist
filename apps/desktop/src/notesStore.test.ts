@@ -65,6 +65,9 @@ function api(queryViewport: NotesApi["queryViewport"]): NotesApi {
     syncVaultGet: vi.fn().mockResolvedValue(null),
     syncVaultSet: vi.fn(),
     syncConflicts: vi.fn().mockResolvedValue([]),
+    syncFlush: vi.fn(),
+    syncAttachments: vi.fn(),
+    syncDeleteAttachment: vi.fn(),
     syncRestoreConflict: vi.fn()
   };
 }
@@ -1385,3 +1388,42 @@ describe("NotesStore draft flushing before commands", () => {
     ]);
   });
 });
+
+describe("다른 기기의 변경 흡수", () => {
+  it("보고 있는 페이지와 페이지 목록을 다시 읽는다", async () => {
+    // Home now holds a page this window has never heard of, and the page it
+    // is looking at gained a row.
+    const store = new NotesStore(
+      api(async (request) =>
+        request.pageId === "root"
+          ? {
+              pageId: "root",
+              anchorId: null,
+              beforeCursor: null,
+              afterCursor: null,
+              nodes: [page("page-1", "Today"), page("page-2", "Made there")]
+            }
+          : {
+              pageId: "page-1",
+              anchorId: null,
+              beforeCursor: null,
+              afterCursor: null,
+              nodes: [bullet("three", 3072)]
+            }
+      )
+    );
+    await store.bootstrap();
+
+    await store.absorbVaultChange();
+
+    expect(store.getSnapshot().pages.map((entry) => entry.id)).toEqual([
+      "page-1",
+      "page-2"
+    ]);
+    expect(store.getSnapshot().nodes.map((row) => row.id)).toEqual(["three"]);
+  });
+});
+
+function page(id: string, title: string): NoteView {
+  return { ...bullet(id, 1_024), parentId: "root", text: title };
+}

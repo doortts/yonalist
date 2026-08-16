@@ -178,12 +178,20 @@ fn prune_conflicts(transaction: &rusqlite::Transaction<'_>) -> Result<(), Storag
 pub(crate) fn export_pending(
     connection: &mut Connection,
     vault_root: &std::path::Path,
+    store_root: &std::path::Path,
 ) -> Result<usize, StorageError> {
     let transaction = connection
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(internal)?;
-    // Order does not matter: home derives a page's folder the same way the page
-    // export does, so its links are right whichever is written first.
+    // Before the documents, because a document's image line states where the
+    // attachment pass put the bytes.
+    notes_sync::attachments::place_attachments(&transaction, vault_root, store_root)
+        .map_err(StorageError::Internal)?;
+    // Before the queue is read: a page that stopped being a page has to be out
+    // of the way for the render that states its notes in their new home.
+    notes_sync::export::begin_retirement(&transaction).map_err(StorageError::Internal)?;
+    // Order does not matter among the documents: each carries its own marks,
+    // and home derives a page's folder the same way the page export does.
     let pending =
         notes_sync::export::pending_documents(&transaction).map_err(StorageError::Internal)?;
     let mut written = 0;
@@ -207,4 +215,152 @@ pub(crate) fn export_pending(
         .map_err(StorageError::Internal)?;
     transaction.commit().map_err(internal)?;
     Ok(written)
+}
+
+/// Reads every document in the vault back in, ignoring what the records say
+/// about them — the last net under the startup scan's stat gate.
+///
+/// Refused while this device is still holding edits it has not written out.
+/// A reindex treats the vault as the truth, and the vault does not yet know
+/// about those edits, so running it then would throw them away.
+/// An attachment's bytes arrived. Every image row still waiting for them —
+/// its link names this file and it has no hash of its own yet — learns the
+/// hash, and the app's own store is now where those bytes live.
+///
+/// The name carries the first twelve characters of the hash, so bytes that do
+/// not hash to it are not the bytes those lines are about, whatever the file
+/// is called. Nothing is resolved then: the rows go on waiting for the file
+/// they asked for.
+pub(crate) fn resolve_asset(
+    connection: &mut Connection,
+    disk_name: &str,
+    content_hash: &str,
+    location: &str,
+) -> Result<usize, StorageError> {
+    let Some((_, stated)) = disk_name.rsplit_once('-') else {
+        return Ok(0);
+    };
+    let stated = stated.split('.').next().unwrap_or_default();
+    if !content_hash.starts_with(stated) {
+        return Ok(0);
+    }
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(internal)?;
+    let resolved = transaction
+        .prepare_cached(
+            "UPDATE notes_images SET content_hash = ?2
+             WHERE content_hash = ''
+               -- The link's own file name, so a page's `assets/x.png` and the
+               -- root store's `../assets/x.png` are the same attachment.
+               AND (relative_path = ?1 OR relative_path LIKE '%/' || ?1)",
+        )
+        .and_then(|mut statement| statement.execute(rusqlite::params![disk_name, content_hash]))
+        .map_err(internal)?;
+    transaction
+        .prepare_cached(
+            // Where the file actually is, which the arrival knows and nothing
+            // else does. A record saying "nowhere" cannot be rendered into a
+            // link, and a document that cannot be rendered is owed for ever.
+            "INSERT INTO sync_assets(content_hash, disk_name, location, unreferenced_at)
+             VALUES (?1, ?2, ?3, NULL)
+             ON CONFLICT(content_hash) DO UPDATE SET
+                 disk_name = excluded.disk_name,
+                 location = excluded.location",
+        )
+        .and_then(|mut statement| {
+            statement.execute(rusqlite::params![content_hash, disk_name, location])
+        })
+        .map_err(internal)?;
+    transaction.commit().map_err(internal)?;
+    Ok(resolved)
+}
+
+/// What a reindex did, and what it could not do. The second number is the
+/// point: a net that silently drops what it cannot read reports the same
+/// "nothing changed" as one that read the whole vault.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ReindexReport {
+    pub merged: usize,
+    pub skipped: usize,
+}
+
+pub(crate) fn reindex_vault(
+    connection: &mut Connection,
+    clock: &Clock,
+    vault_root: &std::path::Path,
+) -> Result<ReindexReport, StorageError> {
+    let waiting: i64 = connection
+        .query_row("SELECT count(*) FROM sync_dirty_nodes", [], |row| {
+            row.get(0)
+        })
+        .map_err(internal)?;
+    if waiting > 0 {
+        return Err(StorageError::Internal(
+            "This device is still holding edits the vault has not been told about. \
+             They have to be written out before the vault can be read as the truth."
+                .to_owned(),
+        ));
+    }
+    let mut report = ReindexReport::default();
+    let mut stack = vec![vault_root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(at) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&at) else {
+            report.skipped += 1;
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            // The link itself, never what it points at: following one walks
+            // out of the vault, and a link to a folder above itself walks for
+            // ever — inside the thread that owns the database.
+            let Ok(kind) = std::fs::symlink_metadata(&path) else {
+                report.skipped += 1;
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "md") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    for path in files {
+        // Every file, by content: this is what closes the gap the scan gate
+        // leaves for a change that kept both its mtime and its size.
+        let Ok(bytes) = notes_sync::file_io::read_regular_bounded(
+            vault_root,
+            &path,
+            notes_sync::parse::MAX_FILE_BYTES,
+        ) else {
+            report.skipped += 1;
+            continue;
+        };
+        let Ok(file) = notes_sync::parse::parse(&bytes) else {
+            // Somebody's own markdown, or a document this version cannot read.
+            // Either way it is left alone and counted, never merged.
+            report.skipped += 1;
+            continue;
+        };
+        let relative = path
+            .strip_prefix(vault_root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
+        let input = notes_sync::merger::MergeInput {
+            file_path: relative,
+            file_hash: notes_sync::export::hash_bytes(&bytes),
+            file_mtime_ms: None,
+            file_size: None,
+        };
+        if merge(connection, clock, &file, &input)?.applied > 0 {
+            report.merged += 1;
+        }
+    }
+    Ok(report)
 }

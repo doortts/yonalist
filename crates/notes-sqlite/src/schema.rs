@@ -216,12 +216,11 @@ mod tests {
         let mut statement = connection
             .prepare("SELECT step FROM marks ORDER BY rowid")
             .expect("prepare");
-        let marks = statement
+        statement
             .query_map([], |row| row.get(0))
             .expect("query")
             .collect::<Result<Vec<String>, _>>()
-            .expect("marks");
-        marks
+            .expect("marks")
     }
 
     fn mark(transaction: &Transaction<'_>, step: &str) -> Result<(), StorageError> {
@@ -261,7 +260,7 @@ mod tests {
                  ORDER BY sort_key, id",
             )
             .expect("prepare");
-        let rows = statement
+        statement
             .query_map([], |row| {
                 Ok(Row {
                     id: row.get(0)?,
@@ -274,8 +273,7 @@ mod tests {
             })
             .expect("query")
             .collect::<Result<Vec<_>, _>>()
-            .expect("rows");
-        rows
+            .expect("rows")
     }
 
     #[test]

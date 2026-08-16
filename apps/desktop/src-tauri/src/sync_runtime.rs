@@ -1,0 +1,333 @@
+//! The thread that turns edits into files.
+//!
+//! Every command that changes something pokes this thread. It does not export
+//! on the poke: it waits for the typing to stop, or for long enough since the
+//! first change, whichever comes first — `Debounce` holds that rule and this
+//! module only obeys it. Sleeping until the reading the rule names, rather than
+//! polling, is why an idle app costs nothing.
+//!
+//! Exports run here and nowhere else, so two of them can never overlap and the
+//! caller of a command never waits for a file to be written. A flush is the one
+//! exception the user can feel: closing the app asks for one and waits, because
+//! quitting with edits still only in the database is how notes go missing.
+
+use notes_sync::debounce::{Debounce, Decision};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel, sync_channel};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+/// Long enough that a pause in typing is a real pause.
+const IDLE_MILLIS: u64 = 3_000;
+/// And short enough that someone typing steadily still sees their notes reach
+/// the vault.
+const CEILING_MILLIS: u64 = 30_000;
+
+/// What the user is told when the export thread is not there any more. They
+/// can still copy the folder; what they cannot do is trust that it is current.
+const WRITER_GONE: &str = "The vault could not be written: this app stopped writing to it during \
+     this session. Your notes are safe here, but the folder is out of date.";
+
+enum Signal {
+    /// Something changed.
+    Touched,
+    /// Write what is waiting, now. The sender is told when it is done — that is
+    /// the whole point of asking.
+    Flush(SyncSender<()>),
+}
+
+#[derive(Clone)]
+pub(crate) struct Poke {
+    signals: Sender<Signal>,
+}
+
+impl Poke {
+    pub(crate) fn poke(&self) {
+        let _ = self.signals.send(Signal::Touched);
+    }
+}
+
+pub(crate) struct SyncRuntime {
+    signals: Sender<Signal>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl SyncRuntime {
+    /// `export` is everything this thread knows how to do. It is handed in so
+    /// the schedule can be tested without a vault, and so this module owns no
+    /// part of what an export actually means.
+    pub(crate) fn start(export: impl FnMut() + Send + 'static) -> Self {
+        Self::with_windows(IDLE_MILLIS, CEILING_MILLIS, export)
+    }
+
+    fn with_windows(idle: u64, ceiling: u64, mut export: impl FnMut() + Send + 'static) -> Self {
+        let (signals, inbox) = channel();
+        let thread = std::thread::Builder::new()
+            .name("yonalist-sync-export".to_owned())
+            .spawn(move || run(&inbox, Debounce::new(idle, ceiling), &mut export))
+            .expect("the export thread could not be started");
+        Self {
+            signals,
+            thread: Some(thread),
+        }
+    }
+
+    /// Something changed. Cheap enough to call from every command, because all
+    /// it does is wake a sleeping thread.
+    pub(crate) fn poke(&self) {
+        let _ = self.signals.send(Signal::Touched);
+    }
+
+    /// A way to poke from somewhere that cannot hold the runtime itself — the
+    /// watcher thread, which outlives the call that started it.
+    pub(crate) fn handle(&self) -> Poke {
+        Poke {
+            signals: self.signals.clone(),
+        }
+    }
+
+    /// Write what is waiting and wait for it.
+    ///
+    /// Answers whether the writing actually happened. A thread that has died —
+    /// an export that panicked rather than returned an error — cannot write
+    /// anything, and saying so is the difference between the user seeing their
+    /// notes in the folder and being told they are there. It does not refuse
+    /// to return, though: hanging the app on quit would be worse than either.
+    pub(crate) fn flush(&self) -> Result<(), String> {
+        let (done, wait) = sync_channel(0);
+        if self.signals.send(Signal::Flush(done)).is_err() {
+            return Err(WRITER_GONE.to_owned());
+        }
+        wait.recv().map_err(|_| WRITER_GONE.to_owned())
+    }
+}
+
+impl Drop for SyncRuntime {
+    /// Closing the app is a flush. Dropping the sender is what ends the loop,
+    /// and the loop writes whatever is still waiting before it returns — so
+    /// quitting mid-sentence still puts that sentence in the vault.
+    fn drop(&mut self) {
+        drop(std::mem::replace(&mut self.signals, channel().0));
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn run(inbox: &Receiver<Signal>, mut debounce: Debounce, export: &mut impl FnMut()) {
+    let started = Instant::now();
+    let now = || started.elapsed().as_millis() as u64;
+    loop {
+        let waiting_for = match debounce.decide(now()) {
+            Decision::Export => {
+                export();
+                debounce.exported();
+                continue;
+            }
+            // Nothing pending: sleep until something arrives, however long that
+            // takes. There is no work a timeout could find.
+            Decision::Idle => None,
+            Decision::Wait { until } => Some(Duration::from_millis(until.saturating_sub(now()))),
+        };
+        let signal = match waiting_for {
+            Some(timeout) => match inbox.recv_timeout(timeout) {
+                Ok(signal) => signal,
+                // The window closed. Round again, where `decide` says export.
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
+            },
+            None => match inbox.recv() {
+                Ok(signal) => signal,
+                Err(_) => break,
+            },
+        };
+        match signal {
+            Signal::Touched => debounce.touched(now()),
+            Signal::Flush(done) => {
+                // Unconditionally, not "if the window thinks something is
+                // waiting". What is owed is written in the database, and not
+                // every write to it comes through a poke — an export with
+                // nothing to do is a cheap read, where a flush that skips is
+                // a note that never reaches the folder.
+                export();
+                debounce.exported();
+                // After the writing, so that whoever asked knows the files are
+                // there when they hear back.
+                let _ = done.send(());
+            }
+        }
+    }
+    // The app is closing. Whatever is still owed goes out now, for the same
+    // reason a flush does not ask first.
+    export();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SyncRuntime;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    fn counter() -> (Arc<AtomicUsize>, impl FnMut() + Send + 'static) {
+        let count = Arc::new(AtomicUsize::new(0));
+        let writer = Arc::clone(&count);
+        (count, move || {
+            writer.fetch_add(1, Ordering::SeqCst);
+        })
+    }
+
+    fn eventually(count: &AtomicUsize, at_least: usize) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if count.load(Ordering::SeqCst) >= at_least {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        false
+    }
+
+    #[test]
+    fn a_poke_reaches_the_vault_once_the_typing_stops() {
+        let (count, export) = counter();
+        let runtime = SyncRuntime::with_windows(20, 200, export);
+
+        runtime.poke();
+
+        assert!(
+            eventually(&count, 1),
+            "an edit nobody follows up on still has to be written"
+        );
+    }
+
+    #[test]
+    fn steady_typing_still_reaches_the_vault_at_the_ceiling() {
+        let (count, export) = counter();
+        // Never quiet for the idle window: only the ceiling can fire.
+        let runtime = SyncRuntime::with_windows(10_000, 60, export);
+
+        let until = Instant::now() + Duration::from_millis(300);
+        while Instant::now() < until {
+            runtime.poke();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        assert!(
+            count.load(Ordering::SeqCst) >= 1,
+            "someone typing without pause would otherwise never see their notes leave this device"
+        );
+    }
+
+    #[test]
+    fn nothing_is_written_while_nothing_has_changed() {
+        let (count, export) = counter();
+        let _runtime = SyncRuntime::with_windows(5, 10, export);
+
+        std::thread::sleep(Duration::from_millis(60));
+
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "an idle app rewriting the vault would hand every other device edits nobody made"
+        );
+    }
+
+    /// Not everything that changes the database comes through a poke: an
+    /// image import writes rows, a merge can leave a document owing a
+    /// rewrite, and a previous session can end with work still queued. A
+    /// flush that asks the debounce whether anything is waiting answers "no"
+    /// in every one of those, and the notes never reach the folder.
+    #[test]
+    fn a_flush_writes_what_nothing_poked_it_about() {
+        let (count, export) = counter();
+        let runtime = SyncRuntime::with_windows(60_000, 60_000, export);
+
+        assert!(runtime.flush().is_ok());
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    /// An export that panics takes the thread with it. Reporting success then
+    /// tells the user their notes are in the folder when nothing has written
+    /// to it since — the one thing a flush must never say.
+    #[test]
+    fn a_flush_says_so_when_nothing_can_write_any_more() {
+        let runtime = SyncRuntime::with_windows(60_000, 60_000, || panic!("the disk went away"));
+
+        let first = runtime.flush();
+        let second = runtime.flush();
+
+        assert!(first.is_err() || second.is_err(), "{first:?} {second:?}");
+    }
+
+    #[test]
+    fn closing_the_app_writes_what_nothing_poked_it_about() {
+        let (count, export) = counter();
+        let runtime = SyncRuntime::with_windows(60_000, 60_000, export);
+
+        drop(runtime);
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_flush_does_not_wait_out_the_window() {
+        let (count, export) = counter();
+        let runtime = SyncRuntime::with_windows(60_000, 60_000, export);
+
+        runtime.poke();
+        assert!(runtime.flush().is_ok());
+
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "a flush that returns before the writing tells the caller a lie"
+        );
+    }
+
+    #[test]
+    fn closing_the_app_writes_what_is_still_waiting() {
+        let (count, export) = counter();
+        let runtime = SyncRuntime::with_windows(60_000, 60_000, export);
+        runtime.poke();
+
+        drop(runtime);
+
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "quitting mid-sentence is how that sentence goes missing"
+        );
+    }
+
+    #[test]
+    fn exports_never_overlap() {
+        let overlapping = Arc::new(Mutex::new(false));
+        let inside = Arc::new(AtomicUsize::new(0));
+        let done = Arc::new(AtomicUsize::new(0));
+        let (seen, counting, finished) = (
+            Arc::clone(&overlapping),
+            Arc::clone(&inside),
+            Arc::clone(&done),
+        );
+        let runtime = SyncRuntime::with_windows(5, 20, move || {
+            if counting.fetch_add(1, Ordering::SeqCst) > 0 {
+                *seen.lock().expect("overlap flag") = true;
+            }
+            std::thread::sleep(Duration::from_millis(15));
+            counting.fetch_sub(1, Ordering::SeqCst);
+            finished.fetch_add(1, Ordering::SeqCst);
+        });
+
+        for _ in 0..20 {
+            runtime.poke();
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        assert!(eventually(&done, 1));
+
+        assert!(
+            !*overlapping.lock().expect("overlap flag"),
+            "two exports at once would have them fighting over the same files"
+        );
+    }
+}

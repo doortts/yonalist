@@ -19,6 +19,12 @@ const NODE_ID: &str = "8a201f33-0000-4c91-8d02-000000000001";
 
 /// A file-backed database: the bypass this suite hunts for would open its own
 /// connection, and an in-memory one cannot be opened twice.
+/// This app's own image store. Empty here: these tests are about documents,
+/// and an attachment with no bytes anywhere is simply not placed.
+fn store() -> std::path::PathBuf {
+    std::env::temp_dir().join("yonalist-empty-store")
+}
+
 fn storage() -> (tempfile::TempDir, SqliteStorage) {
     let directory = tempfile::tempdir().expect("temporary directory");
     let storage = SqliteStorage::open(&directory.path().join("notes.sqlite")).expect("open");
@@ -54,6 +60,37 @@ fn page(text: &str, hlc: &str) -> VaultFile {
             ..DocumentRoot::default()
         },
         nodes: vec![node(NODE_ID, hlc, text)],
+        unknown_frontmatter: Vec::new(),
+    })
+}
+
+const IMAGE_NODE_ID: &str = "8a201f33-0000-4c91-8d02-00000000000f";
+
+/// A page whose one line is a picture, linked the way a document in a page
+/// folder links its own attachments.
+fn page_with_image(disk_name: &str) -> VaultFile {
+    let hlc = stamp(5);
+    let mut image = node(IMAGE_NODE_ID, &hlc, "");
+    image.body = NodeBody::Image(notes_sync::document::ImageReference {
+        original_name: "holiday.png".to_owned(),
+        path: format!("assets/{disk_name}"),
+        display_width: 480,
+        pixel_width: 800,
+        pixel_height: 600,
+        byte_size: 11,
+        unknown_tokens: Vec::new(),
+    });
+    VaultFile::Page(PageDocument {
+        id: DocumentId::Node(PAGE_ID.to_owned()),
+        parent: None,
+        sort_key: None,
+        max_hlc: hlc.clone(),
+        root: DocumentRoot {
+            title: "Projects".to_owned(),
+            hlc: hlc.clone(),
+            ..DocumentRoot::default()
+        },
+        nodes: vec![image],
         unknown_frontmatter: Vec::new(),
     })
 }
@@ -459,7 +496,9 @@ fn an_export_through_the_worker_writes_the_vault_without_moving_the_revision() {
         .expect("edit");
     let revision = storage.revision().expect("revision");
 
-    let written = storage.export_pending(vault.path()).expect("export");
+    let written = storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
 
     assert!(written > 0, "the waiting rows had somewhere to go");
     assert_eq!(
@@ -484,9 +523,13 @@ fn an_export_with_nothing_waiting_writes_nothing() {
     storage
         .merge_document(&page("Thought", &stamp(5)), &input())
         .expect("seed");
-    storage.export_pending(vault.path()).expect("first");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("first");
 
-    let written = storage.export_pending(vault.path()).expect("again");
+    let written = storage
+        .export_pending(vault.path(), &store())
+        .expect("again");
 
     assert_eq!(written, 0, "an export with nothing to say says nothing");
 }
@@ -517,7 +560,9 @@ fn a_hand_edited_file_gets_its_canonical_form_back() {
         "the file is missing the id it was given"
     );
 
-    let written = storage.export_pending(vault.path()).expect("export");
+    let written = storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
 
     assert!(written > 0, "the canonical form has to reach the file");
     let now = std::fs::read_to_string(folder.join("README.md")).expect("file");
@@ -566,7 +611,9 @@ fn a_placeholder_row_does_not_stop_the_export() {
     )
     .expect("local deletion");
 
-    let written = storage.export_pending(vault.path()).expect("export");
+    let written = storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
 
     assert!(written > 0, "home still had to be written");
     let trash = std::fs::read_to_string(vault.path().join(".yonalist").join("trash.md"))
@@ -633,11 +680,537 @@ fn one_document_that_cannot_be_written_does_not_stop_the_others() {
     )
     .expect("metadata");
 
-    let written = storage.export_pending(vault.path()).expect("export");
+    let written = storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
 
     assert!(
         written > 0,
         "the documents that could be written were written"
     );
     assert!(vault.path().join("README.md").exists(), "home included");
+}
+
+/// A file can state an image before its bytes have travelled: the note applies
+/// with everything but the picture, and stays that way until the attachment
+/// turns up. When it does, the rows waiting for it are the ones whose link
+/// names it.
+#[test]
+fn an_arriving_attachment_resolves_the_rows_waiting_for_it() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .expect("merge");
+    let waiting: String = storage
+        .image_hash(IMAGE_NODE_ID)
+        .expect("row")
+        .expect("an image row");
+    assert_eq!(waiting, "", "the bytes have not arrived yet");
+
+    let resolved = storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
+        )
+        .expect("resolve");
+
+    assert_eq!(resolved, 1, "one row was waiting for these bytes");
+    assert_eq!(
+        storage.image_hash(IMAGE_NODE_ID).expect("row"),
+        Some("9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081".to_owned()),
+        "the note can show its picture now"
+    );
+}
+
+/// The name carries the first twelve characters of the content hash, so bytes
+/// that do not hash to it are not the bytes that line is about — whatever the
+/// file is called.
+#[test]
+fn bytes_that_do_not_match_the_name_resolve_nothing() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .expect("merge");
+
+    let resolved = storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
+        )
+        .expect("resolve");
+
+    assert_eq!(
+        resolved, 0,
+        "these are somebody else's bytes under our name"
+    );
+    assert_eq!(
+        storage.image_hash(IMAGE_NODE_ID).expect("row"),
+        Some(String::new()),
+        "and the row keeps waiting for the ones it asked for"
+    );
+}
+
+/// The bytes arriving tell this device where they are, and the export writes
+/// the link from that. A record saying "nowhere" cannot be rendered — and a
+/// document that cannot be rendered keeps its marks and is tried again for
+/// ever, which is a page that never reaches the folder again.
+#[test]
+fn a_resolved_attachment_leaves_its_page_exportable() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .expect("merge");
+    storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
+        )
+        .expect("resolve");
+
+    // Something to write: the page changed after the picture resolved.
+    let command = NotesCommand::UpdateText {
+        id: notes_core::NodeId::try_from(PAGE_ID.to_owned()).expect("id"),
+        text: "Renamed".to_owned(),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("edit");
+
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+
+    assert_eq!(
+        storage.pending_count().expect("pending"),
+        0,
+        "the page could not be written, so it is owed for ever"
+    );
+    let written =
+        std::fs::read_to_string(vault.path().join("Projects-4f1c8e20a3b7").join("README.md"))
+            .expect("the page");
+    assert!(
+        written.contains("holiday-9f2c1b7a4e6d.png"),
+        "the line still has to say where its picture is: {written}"
+    );
+}
+
+/// The sweep re-reads the whole folder every minute. Every picture in it
+/// being decoded again each time — including the ones this app wrote there —
+/// is work that grows with the vault and never ends.
+#[test]
+fn bytes_already_taken_in_are_not_read_again() {
+    let (_directory, storage) = storage();
+    let location = "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png";
+    assert!(
+        !storage.asset_known(location).expect("ask"),
+        "nothing has been taken in yet"
+    );
+
+    storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
+            location,
+        )
+        .expect("resolve");
+
+    assert!(
+        storage.asset_known(location).expect("ask"),
+        "these bytes are already in this app's own store"
+    );
+}
+
+/// The user's own markdown in the vault is theirs. Writing down that this app
+/// cannot read a file must not make it one of this app's documents — the
+/// folder retirement removes the folder of any document whose node is gone,
+/// and that would delete the folder the user put their file in.
+#[test]
+fn a_file_this_app_cannot_read_is_not_one_of_its_documents() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    std::fs::create_dir_all(vault.path().join("journal")).expect("folder");
+    std::fs::write(
+        vault.path().join("journal/today.md"),
+        b"# Today\n\nSomebody's own notes.\n",
+    )
+    .expect("their file");
+
+    storage
+        .quarantine("journal/today.md", &"e".repeat(64))
+        .expect("quarantine");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+
+    assert!(
+        vault.path().join("journal/today.md").exists(),
+        "a file this app cannot read is not a file it may delete"
+    );
+    assert!(vault.path().join("journal").is_dir(), "nor its folder");
+}
+
+/// A file this app cannot read is written down. Without that it is read and
+/// refused again on every sweep, silently, for as long as it sits there.
+#[test]
+fn a_file_that_cannot_be_read_is_written_down() {
+    let (_directory, storage) = storage();
+
+    storage
+        .quarantine("Projects-4f1c8e20a3b7/README.md", &"c".repeat(64))
+        .expect("quarantine");
+
+    assert_eq!(
+        storage
+            .vault_file_hash("Projects-4f1c8e20a3b7/README.md")
+            .expect("hash")
+            .as_deref(),
+        Some("c".repeat(64).as_str()),
+        "the same bytes arriving again are not news"
+    );
+
+    // Somebody had a go at fixing it and it still cannot be read. What is
+    // written down has to be the file as it is now, or the next sweep reads
+    // the old answer and skips a file that has changed.
+    storage
+        .quarantine("Projects-4f1c8e20a3b7/README.md", &"d".repeat(64))
+        .expect("quarantine again");
+
+    assert_eq!(
+        storage
+            .vault_file_hash("Projects-4f1c8e20a3b7/README.md")
+            .expect("hash")
+            .as_deref(),
+        Some("d".repeat(64).as_str())
+    );
+}
+
+/// The file that gets mangled is usually one of ours — somebody saves over a
+/// page's README with something this format cannot read. Answering the sweep
+/// with what this app last *wrote* there would have it re-read and re-refuse
+/// the same bytes every minute, which is the loop the record exists to stop.
+#[test]
+fn a_document_that_becomes_unreadable_is_refused_only_once() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("merge");
+
+    storage
+        .quarantine("Projects-4f1c8e20a3b7/README.md", &"f".repeat(64))
+        .expect("quarantine");
+
+    assert_eq!(
+        storage
+            .vault_file_hash("Projects-4f1c8e20a3b7/README.md")
+            .expect("hash")
+            .as_deref(),
+        Some("f".repeat(64).as_str()),
+        "the most recent look at that path is what decides whether to look again"
+    );
+}
+
+/// A refusal is about a file. Once the file is gone, so is what it was about
+/// — and one the user puts back is read rather than skipped as answered.
+#[test]
+fn a_refusal_goes_when_its_file_does() {
+    let (directory, storage) = storage();
+    storage
+        .quarantine("journal/today.md", &"e".repeat(64))
+        .expect("quarantine");
+
+    storage
+        .forget_missing_refusals(&["Projects-4f1c8e20a3b7/README.md".to_owned()])
+        .expect("sweep");
+
+    let remembered: i64 = rusqlite::Connection::open(directory.path().join("notes.sqlite"))
+        .expect("read")
+        .query_row("SELECT COUNT(*) FROM sync_quarantine", [], |row| row.get(0))
+        .expect("quarantine");
+    assert_eq!(remembered, 0, "the file it was about is not there any more");
+}
+
+/// A file that could not be read once can be fixed, or can simply finish
+/// arriving. The note saying it was unreadable has to go with that, or every
+/// later version of it is skipped as "already answered".
+#[test]
+fn a_file_that_becomes_readable_stops_being_refused() {
+    let (directory, storage) = storage();
+    storage
+        .quarantine("Projects-4f1c8e20a3b7/README.md", &"c".repeat(64))
+        .expect("quarantine");
+
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("merge");
+
+    let still_refused: i64 = rusqlite::Connection::open(directory.path().join("notes.sqlite"))
+        .expect("read")
+        .query_row(
+            "SELECT COUNT(*) FROM sync_quarantine WHERE relative_path = ?1",
+            ["Projects-4f1c8e20a3b7/README.md"],
+            |row| row.get(0),
+        )
+        .expect("quarantine");
+    assert_eq!(
+        still_refused, 0,
+        "the refusal outlived the file it was about"
+    );
+}
+
+/// A split document lives inside its page's folder and is not a page. A whole
+/// export pass has to leave it exactly where it is — its file, its folder, and
+/// its record.
+#[test]
+fn a_split_document_rides_through_an_export_untouched() {
+    let (directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("seed");
+    let split = "Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md";
+    let connection =
+        rusqlite::Connection::open(directory.path().join("notes.sqlite")).expect("open");
+    connection
+        .execute(
+            "INSERT INTO sync_documents(root_id, folder_path, exported_hash, is_page)
+             VALUES (?1, ?2, 'b', 0)",
+            rusqlite::params![NODE_ID, split],
+        )
+        .expect("split document");
+    std::fs::create_dir_all(
+        vault
+            .path()
+            .join("Projects-4f1c8e20a3b7/Deeper-8a201f330000"),
+    )
+    .expect("folder");
+    std::fs::write(vault.path().join(split), b"the split document\n").expect("its file");
+
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+
+    assert!(
+        vault.path().join(split).exists(),
+        "the file a split document owns is not the page's to write over or remove"
+    );
+    let (retiring, still_recorded): (i64, i64) = connection
+        .query_row(
+            "SELECT coalesce(max(retiring), -1), count(*) FROM sync_documents
+             WHERE root_id = ?1",
+            [NODE_ID],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the document");
+    assert_eq!(still_recorded, 1, "and its record stays");
+    assert_eq!(retiring, 0, "it is where it belongs, not on its way out");
+}
+
+/// What a document is can change: a subtree that arrived as a split document
+/// can become a page of its own, and a page can stop being one. Whoever writes
+/// the record says which it is now — a first impression kept for ever would
+/// leave a demotion unnoticed and the folder standing.
+#[test]
+fn what_a_document_is_follows_what_it_says_now() {
+    let (directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    let connection =
+        rusqlite::Connection::open(directory.path().join("notes.sqlite")).expect("open");
+    connection
+        .execute(
+            "INSERT INTO sync_documents(root_id, folder_path, exported_hash, is_page)
+             VALUES (?1, 'Projects-4f1c8e20a3b7/Deeper/README.md', 'b', 0)",
+            [PAGE_ID],
+        )
+        .expect("as a split document");
+
+    // This device makes it a page of its own and writes it out. The export is
+    // the only writer here — nothing arrives from anywhere.
+    let command = NotesCommand::CreateNode {
+        id: notes_core::NodeId::try_from(PAGE_ID.to_owned()).expect("id"),
+        parent_id: notes_core::NodeId::try_from("root".to_owned()).expect("id"),
+        position: notes_core::Position::at_end(),
+        text: "A page now".to_owned(),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("make the page");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+
+    let is_page: i64 = connection
+        .query_row(
+            "SELECT is_page FROM sync_documents WHERE root_id = ?1",
+            [PAGE_ID],
+            |row| row.get(0),
+        )
+        .expect("the document");
+    assert_eq!(
+        is_page, 1,
+        "it is a page now, and a demotion later has to be noticed"
+    );
+}
+
+/// A reindex is the last net under the scan gate, so what it could not read
+/// has to come back as a number. Answering "nothing changed" about a vault it
+/// only half read is the one thing a net must not do.
+#[test]
+fn a_reindex_reports_what_it_could_not_read() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("seed");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+    std::fs::write(
+        vault.path().join("hand-written.md"),
+        b"nothing here is a document\n",
+    )
+    .expect("stray file");
+
+    let report = storage.reindex_vault(vault.path()).expect("reindex");
+
+    assert_eq!(
+        report.skipped, 1,
+        "a file this format cannot read is not a file that says nothing changed"
+    );
+}
+
+/// §3.4's no-follow contract. A link in the vault pointing at somebody's home
+/// directory would otherwise have the reindex read it, and a link pointing at
+/// a folder above itself would have it read forever — inside the one thread
+/// that owns the database, which freezes everything the app can do.
+#[test]
+fn a_reindex_does_not_follow_links_out_of_the_vault() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+    let outside = tempfile::tempdir().expect("outside");
+    std::fs::write(outside.path().join("elsewhere.md"), b"not ours\n").expect("file");
+    std::os::unix::fs::symlink(outside.path(), vault.path().join("linked")).expect("link");
+    std::os::unix::fs::symlink(vault.path(), vault.path().join("loop")).expect("loop");
+
+    let report = storage.reindex_vault(vault.path()).expect("reindex");
+
+    assert_eq!(
+        report.skipped, 0,
+        "a link is not a file this vault holds, so there is nothing to read \
+         and nothing to report"
+    );
+}
+
+/// Spec §9. A reindex reads the vault as the truth. Doing that while this
+/// device is holding edits it has not written out yet would throw them away —
+/// so it is refused until the export catches up.
+#[test]
+fn reindex_is_refused_while_edits_are_unexported() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("seed");
+    let command = NotesCommand::UpdateText {
+        id: notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id"),
+        text: "not written out yet".to_owned(),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("edit");
+
+    let refused = storage.reindex_vault(vault.path());
+
+    assert!(
+        refused.is_err(),
+        "reading the vault as the truth would discard what this device is still holding"
+    );
+
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+    assert_eq!(
+        storage.pending_count().expect("pending"),
+        0,
+        "the export left nothing behind"
+    );
+    assert!(
+        storage.reindex_vault(vault.path()).is_ok(),
+        "once everything is written out, the vault is safe to read as the truth"
+    );
+}
+
+/// A split document with an edit inside it has to survive two passes, not
+/// one. The first writes its file — and if that write says "page", the second
+/// retires it: the folder taken and the subtree flattened, one edit later.
+/// What the export states about a document has to come from the node, not
+/// from the fact that the export is writing it.
+#[test]
+fn an_edited_split_document_survives_two_export_passes() {
+    let (directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("seed");
+    let split = "Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md";
+    let connection =
+        rusqlite::Connection::open(directory.path().join("notes.sqlite")).expect("open");
+    connection
+        .execute(
+            "INSERT INTO sync_documents(root_id, folder_path, is_page)
+             VALUES (?1, ?2, 0)",
+            rusqlite::params![NODE_ID, split],
+        )
+        .expect("split document");
+    // An edit inside the split document — its normal life.
+    connection
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES (?1, unixepoch())
+             ON CONFLICT(node_id) DO NOTHING",
+            [NODE_ID],
+        )
+        .expect("dirty");
+
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("pass one");
+    let is_page: i64 = connection
+        .query_row(
+            "SELECT is_page FROM sync_documents WHERE root_id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("the document");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("pass two");
+
+    assert_eq!(
+        is_page, 0,
+        "exporting a split document must not make it a page"
+    );
+    assert!(
+        vault.path().join(split).exists(),
+        "two passes later the split document's file is still its own"
+    );
+    let still_recorded: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sync_documents WHERE root_id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(still_recorded, 1, "and so is its record");
 }
