@@ -1290,6 +1290,132 @@ fn adopting_another_devices_decision_leaves_the_queue_as_it_found_it() {
     assert_eq!(waiting, 0, "the file this came from already says all of it");
 }
 
+/// A note the trash says was taken from a page this device already has must
+/// leave that page exactly as it was. The stand-in row exists for a parent
+/// nobody has seen yet; running it over a real one wipes that note's reading
+/// — which loses it every later comparison — and drops whatever it was owed.
+#[test]
+fn the_trash_does_not_stand_in_for_a_parent_that_is_already_here() {
+    let parent = "8a201f33-0000-4c91-8d02-000000000001";
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let seeded = stamp(5, "a3f2");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(vec![node(parent, &seeded, "")], &seeded)),
+        &input(),
+    )
+    .expect("seed");
+    // A note with no words yet is an ordinary state — a row somebody just
+    // made and has not typed into.
+    let before: String = transaction
+        .query_row(
+            "SELECT hlc FROM notes_nodes WHERE id = ?1",
+            [parent],
+            |row| row.get(0),
+        )
+        .expect("hlc");
+    transaction
+        .execute("DELETE FROM sync_dirty_nodes", ())
+        .expect("clear");
+    transaction
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES (?1, 0)",
+            [parent],
+        )
+        .expect("owed");
+
+    let mut deleted = node("8a201f33-0000-4c91-8d02-00000000000e", &seeded, "Taken out");
+    deleted.from = Some((parent.to_owned(), 4_294_967_296));
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Trash(notes_sync::document::TrashDocument {
+            max_hlc: seeded.clone(),
+            nodes: vec![deleted],
+        }),
+        &notes_sync::merger::MergeInput {
+            file_path: ".yonalist/trash.md".to_owned(),
+            ..input()
+        },
+    )
+    .expect("merge the trash");
+
+    let after: String = transaction
+        .query_row(
+            "SELECT hlc FROM notes_nodes WHERE id = ?1",
+            [parent],
+            |row| row.get(0),
+        )
+        .expect("hlc");
+    assert_eq!(
+        after, before,
+        "a note that is already here keeps its reading, or it loses every \
+         comparison from now on"
+    );
+    let waiting: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+            [parent],
+            |row| row.get(0),
+        )
+        .expect("dirty");
+    assert_eq!(
+        waiting, 1,
+        "and it still owes the write it owed before the trash arrived"
+    );
+}
+
+/// A copy some sync client wrote holds the same document id, so recording it
+/// would move that document's file to the copy's name. Every later write would
+/// go into the copy while the real file went stale — and the other device,
+/// reading the same two files, would swap the name back.
+#[test]
+fn a_conflicted_copy_does_not_become_the_documents_own_file() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let seeded = stamp(5, "a3f2");
+    let file = notes_sync::document::VaultFile::Page(page(
+        vec![node(
+            "8a201f33-0000-4c91-8d02-000000000001",
+            &seeded,
+            "First",
+        )],
+        &seeded,
+    ));
+    merge_document(&transaction, &clock(), &file, &input()).expect("the page");
+
+    let outcome = merge_document(
+        &transaction,
+        &clock(),
+        &file,
+        &notes_sync::merger::MergeInput {
+            file_path: "Projects-4f1c8e20a3b7/README (conflicted copy 2026-08-16).md".to_owned(),
+            file_hash: "b".repeat(64),
+            ..input()
+        },
+    )
+    .expect("the copy");
+
+    let recorded: String = transaction
+        .query_row(
+            "SELECT folder_path FROM sync_documents WHERE root_id = ?1",
+            ["4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1"],
+            |row| row.get(0),
+        )
+        .expect("the document");
+    assert_eq!(
+        recorded, "Projects-4f1c8e20a3b7/README.md",
+        "the page keeps its own name"
+    );
+    assert!(
+        outcome.retire_file,
+        "and the copy is handed back to be removed, or every device reads it \
+         again for ever"
+    );
+}
+
 /// A rescue that no file states is a rescue nobody else ever sees — and on the
 /// device that did it, a reindex from the vault would take the node away
 /// again. The recovery page, the node put under it, and home all owe a write.

@@ -47,6 +47,11 @@ pub struct MergeOutcome {
     /// The file disagrees with what won, so the exporter has to rewrite it.
     pub needs_write_back: bool,
     pub conflicts_recorded: usize,
+    /// The file this came from is a copy some sync client wrote, and its
+    /// notes are now in the document they belong to. Whoever handed it over
+    /// removes it — left there, every device reads it again for ever, and
+    /// each one writes it back out.
+    pub retire_file: bool,
 }
 
 pub type MergeError = String;
@@ -176,6 +181,13 @@ fn merge_page(
         // rewriting, and the dirty mark is how anything learns that.
         mark_dirty(transaction, &root_id)?;
     }
+    if crate::watcher::is_conflicted_copy(&input.file_path) {
+        // Its notes are in the document they belong to now, and the document
+        // owes a write because of them.
+        outcome.retire_file = true;
+        outcome.needs_write_back = true;
+        mark_dirty(transaction, &root_id)?;
+    }
     record_document(transaction, &root_id, input, page.max_hlc.as_str())?;
     Ok(outcome)
 }
@@ -191,6 +203,7 @@ fn merge_trash(
     flatten(&trash.nodes, "", &mut incoming);
     apply(transaction, clock, &incoming, &mut outcome, true)?;
     repair_structure(transaction, clock, &mut outcome)?;
+    outcome.retire_file = crate::watcher::is_conflicted_copy(&input.file_path);
     record_document(transaction, "yonalist-trash", input, trash.max_hlc.as_str())?;
     Ok(outcome)
 }
@@ -631,7 +644,11 @@ fn place_missing_parents(
         if parent == "root" {
             continue;
         }
-        transaction
+        // Asked before the insert, because everything after it is only for a
+        // row this statement made. A note that is already here is somebody's:
+        // emptying its reading would lose it every later comparison, and
+        // taking its mark would drop a write it is owed.
+        let inserted = transaction
             .prepare_cached(
                 "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, deleted, hlc)
                  VALUES (?1, 'root', ?2, 'bullet', '', 1, '')
@@ -639,11 +656,14 @@ fn place_missing_parents(
             )
             .and_then(|mut statement| statement.execute(rusqlite::params![parent, SORT_KEY_STEP]))
             .map_err(|error| error.to_string())?;
+        if inserted == 0 {
+            continue;
+        }
         // The insert trigger stamps anything that arrives without a reading,
         // and a stamped placeholder would outrank the document it is waiting
         // for. Put the emptiness back, and take the dirty mark with it.
         transaction
-            .prepare_cached("UPDATE notes_nodes SET hlc = '' WHERE id = ?1 AND text = ''")
+            .prepare_cached("UPDATE notes_nodes SET hlc = '' WHERE id = ?1")
             .and_then(|mut statement| statement.execute([parent]))
             .map_err(|error| error.to_string())?;
         transaction
@@ -1777,12 +1797,21 @@ fn document_is_missing_nodes(
         .map_err(|error| error.to_string())
 }
 
+/// Where a document is kept, and what was last read from it.
+///
+/// A conflicted copy is read but never recorded: it holds the same document
+/// id, so recording it would move that document's file to the copy's name.
+/// Every later write would go into the copy while the real file went stale,
+/// and two devices would swap the name back and forth for ever.
 fn record_document(
     transaction: &Transaction<'_>,
     root_id: &str,
     input: &MergeInput,
     max_hlc: &str,
 ) -> Result<(), MergeError> {
+    if crate::watcher::is_conflicted_copy(&input.file_path) {
+        return Ok(());
+    }
     // The bytes on disk are exactly what was just absorbed, so replacing them
     // loses nothing — recording anything else would leave the exporter
     // answering "somebody's edit" forever and the canonical form would never

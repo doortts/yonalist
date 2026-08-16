@@ -151,10 +151,16 @@ fn take(storage: &SqliteStorage, vault_root: &Path, relative: &str) -> Option<Me
         // A merge that changed no row can still leave the file owing a
         // rewrite — it said something this device did not accept. Nothing
         // else would wake the exporter for that.
-        Ok(Verdict::Merge(file, input)) => storage
-            .merge_document(&file, &input)
-            .ok()
-            .filter(|outcome| outcome.applied > 0 || outcome.needs_write_back),
+        Ok(Verdict::Merge(file, input)) => {
+            let outcome = storage.merge_document(&file, &input).ok()?;
+            if outcome.retire_file {
+                // A copy some sync client wrote. Its notes are in the document
+                // they belong to now; left there, every device reads it again
+                // for ever and each one writes it back out.
+                let _ = std::fs::remove_file(vault_root.join(relative));
+            }
+            Some(outcome).filter(|outcome| outcome.applied > 0 || outcome.needs_write_back)
+        }
         // Nothing to do, nothing wrong. A placeholder comes back on the sweep
         // once its bytes arrive; an echo is this app's own writing.
         Ok(_) => None,

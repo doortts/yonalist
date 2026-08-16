@@ -76,7 +76,10 @@ impl Device {
             let recorded = self.storage.vault_file_hash(&relative).ok().flatten();
             match notes_sync::watcher::consider(&self.vault, &relative, recorded.as_deref()) {
                 Ok(notes_sync::watcher::Verdict::Merge(file, input)) => {
-                    self.storage.merge_document(&file, &input).expect("merge");
+                    let outcome = self.storage.merge_document(&file, &input).expect("merge");
+                    if outcome.retire_file {
+                        std::fs::remove_file(self.vault.join(&relative)).expect("retire");
+                    }
                 }
                 Ok(_) => {}
                 Err(reason) => panic!("{relative}: {reason}"),
@@ -410,6 +413,23 @@ fn a_conflicted_copy_is_taken_in() {
             .any(|(_, text)| text == "What the other device had"),
         "a copy the transport wrote is still somebody's notes: {:?}",
         two.outline()
+    );
+    assert!(
+        !copy.exists(),
+        "and once it has been read it is tidied away, or every device keeps \
+         merging it for ever"
+    );
+    let canonical = std::fs::read_to_string(folder.join("README.md")).expect("the page");
+    assert!(
+        canonical.contains("What the other device had"),
+        "the page itself is what states the notes, not the copy: {canonical}"
+    );
+    settle(&two, &one);
+    assert_eq!(one.outline(), two.outline());
+    assert!(
+        !copy.exists(),
+        "the copy came back, which means the document's own file is now the \
+         copy's name and the real page is going stale"
     );
 }
 
