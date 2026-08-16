@@ -1933,6 +1933,32 @@ body.is-resizing-pane {
   gap: 8px;
 }
 
+.settings-conflict-list {
+  display: grid;
+  gap: 8px;
+  max-width: 680px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-conflict-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+.settings-conflict-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .settings-path {
   max-width: 680px;
   margin: 0;

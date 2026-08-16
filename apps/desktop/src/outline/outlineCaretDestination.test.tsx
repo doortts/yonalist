@@ -145,7 +145,9 @@ function harness(seed: readonly NoteView[]) {
     unusedAssets: vi.fn(),
     deleteAllData: vi.fn(),
     syncVaultGet: vi.fn().mockResolvedValue(null),
-    syncVaultSet: vi.fn()
+    syncVaultSet: vi.fn(),
+    syncConflicts: vi.fn().mockResolvedValue([]),
+    syncRestoreConflict: vi.fn()
   } as unknown as NotesApi;
   return { notesApi, execute, nodes: () => nodes };
 }

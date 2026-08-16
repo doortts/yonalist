@@ -549,6 +549,13 @@ export const previewNotesApi: NotesApi = {
     // No vault outside the desktop app: there is no folder to sync into.
     return null;
   },
+  async syncConflicts() {
+    // The preview has no other device to disagree with.
+    return [];
+  },
+  async syncRestoreConflict() {
+    // Same reason — nothing was ever overwritten.
+  },
   async syncVaultSet() {
     // Same reason — the preview has nowhere to record a choice.
     return "empty" as const;

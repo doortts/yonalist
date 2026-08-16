@@ -1,7 +1,8 @@
 import { Radio, RadioGroup } from "@base-ui/react";
-import { Database, FolderSync, Trash2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Database, FolderSync, History, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 
+import type { SyncConflict } from "../../../packages/contracts/generated/SyncConflict";
 import type { UnusedAssetsReport } from "../../../packages/contracts/generated/UnusedAssetsReport";
 import {
   MAX_OUTLINE_MARKER_LEVELS,
@@ -83,7 +84,9 @@ export function SettingsView({
   unusedAssets,
   deleteAllData,
   readVaultPath,
-  setVaultPath
+  setVaultPath,
+  readConflicts,
+  restoreConflict
 }: {
   readonly themeMode: ThemeMode;
   readonly lightTheme: LightTheme;
@@ -102,6 +105,8 @@ export function SettingsView({
   readonly deleteAllData: () => Promise<void>;
   readonly readVaultPath: () => Promise<string | null>;
   readonly setVaultPath: (path: string) => Promise<void>;
+  readonly readConflicts: () => Promise<readonly SyncConflict[]>;
+  readonly restoreConflict: (seq: number) => Promise<void>;
 }) {
   return (
     <section className="settings-page" aria-label="Settings page">
@@ -157,6 +162,11 @@ export function SettingsView({
           />
         </section>
 
+        <OverwrittenNotesSection
+          readConflicts={readConflicts}
+          restoreConflict={restoreConflict}
+        />
+
         <SyncFolderSection
           readVaultPath={readVaultPath}
           setVaultPath={setVaultPath}
@@ -167,6 +177,81 @@ export function SettingsView({
           deleteAllData={deleteAllData}
         />
       </div>
+    </section>
+  );
+}
+
+/**
+ * What another device's copy replaced. Nothing is lost — the note that lost is
+ * kept here — but it only shows up when there is something to show: a heading
+ * about overwritten notes on a vault where nothing was overwritten reads as a
+ * warning rather than as a record.
+ */
+function OverwrittenNotesSection({
+  readConflicts,
+  restoreConflict
+}: {
+  readonly readConflicts: () => Promise<readonly SyncConflict[]>;
+  readonly restoreConflict: (seq: number) => Promise<void>;
+}) {
+  const [conflicts, setConflicts] = useState<readonly SyncConflict[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    try {
+      setConflicts(await readConflicts());
+    } catch (cause) {
+      setError(messageFrom(cause));
+    }
+  }, [readConflicts]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const restore = async (seq: number) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await restoreConflict(seq);
+      await reload();
+    } catch (cause) {
+      setError(messageFrom(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (conflicts.length === 0 && error === null) {
+    return null;
+  }
+
+  return (
+    <section className="settings-section" aria-label="Overwritten notes">
+      <div className="settings-section-title">
+        <History size={18} aria-hidden="true" />
+        <h3>Overwritten notes</h3>
+      </div>
+      {error && <p className="notes-inline-error" role="alert">{error}</p>}
+      <p className="settings-copy">
+        When two devices changed the same note, one version had to win. The
+        other one is here, and putting it back counts as a new edit.
+      </p>
+      <ul className="settings-conflict-list">
+        {conflicts.map((conflict) => (
+          <li key={conflict.seq}>
+            <span className="settings-conflict-text">{conflict.text}</span>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void restore(conflict.seq)}
+            >
+              Restore this note
+            </button>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

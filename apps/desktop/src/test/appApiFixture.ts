@@ -103,6 +103,8 @@ export function appApi(): NotesApi {
     unusedAssets: vi.fn(),
     deleteAllData: vi.fn(),
     syncVaultGet: vi.fn().mockResolvedValue(null),
-    syncVaultSet: vi.fn()
+    syncVaultSet: vi.fn(),
+    syncConflicts: vi.fn().mockResolvedValue([]),
+    syncRestoreConflict: vi.fn()
   };
 }
