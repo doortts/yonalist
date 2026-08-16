@@ -30,6 +30,17 @@ enum Signal {
     Flush(SyncSender<()>),
 }
 
+#[derive(Clone)]
+pub(crate) struct Poke {
+    signals: Sender<Signal>,
+}
+
+impl Poke {
+    pub(crate) fn poke(&self) {
+        let _ = self.signals.send(Signal::Touched);
+    }
+}
+
 pub(crate) struct SyncRuntime {
     signals: Sender<Signal>,
     thread: Option<JoinHandle<()>>,
@@ -59,6 +70,14 @@ impl SyncRuntime {
     /// it does is wake a sleeping thread.
     pub(crate) fn poke(&self) {
         let _ = self.signals.send(Signal::Touched);
+    }
+
+    /// A way to poke from somewhere that cannot hold the runtime itself — the
+    /// watcher thread, which outlives the call that started it.
+    pub(crate) fn handle(&self) -> Poke {
+        Poke {
+            signals: self.signals.clone(),
+        }
     }
 
     /// Write what is waiting and wait for it. A dead thread answers
@@ -114,22 +133,22 @@ fn run(inbox: &Receiver<Signal>, mut debounce: Debounce, export: &mut impl FnMut
         match signal {
             Signal::Touched => debounce.touched(now()),
             Signal::Flush(done) => {
-                debounce.flush_requested();
-                if matches!(debounce.decide(now()), Decision::Export) {
-                    export();
-                    debounce.exported();
-                }
+                // Unconditionally, not "if the window thinks something is
+                // waiting". What is owed is written in the database, and not
+                // every write to it comes through a poke — an export with
+                // nothing to do is a cheap read, where a flush that skips is
+                // a note that never reaches the folder.
+                export();
+                debounce.exported();
                 // After the writing, so that whoever asked knows the files are
                 // there when they hear back.
                 let _ = done.send(());
             }
         }
     }
-    // The app is closing. Whatever the window was still holding goes out now.
-    debounce.flush_requested();
-    if matches!(debounce.decide(now()), Decision::Export) {
-        export();
-    }
+    // The app is closing. Whatever is still owed goes out now, for the same
+    // reason a flush does not ask first.
+    export();
 }
 
 #[cfg(test)]
@@ -201,6 +220,31 @@ mod tests {
             0,
             "an idle app rewriting the vault would hand every other device edits nobody made"
         );
+    }
+
+    /// Not everything that changes the database comes through a poke: an
+    /// image import writes rows, a merge can leave a document owing a
+    /// rewrite, and a previous session can end with work still queued. A
+    /// flush that asks the debounce whether anything is waiting answers "no"
+    /// in every one of those, and the notes never reach the folder.
+    #[test]
+    fn a_flush_writes_what_nothing_poked_it_about() {
+        let (count, export) = counter();
+        let runtime = SyncRuntime::with_windows(60_000, 60_000, export);
+
+        runtime.flush();
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn closing_the_app_writes_what_nothing_poked_it_about() {
+        let (count, export) = counter();
+        let runtime = SyncRuntime::with_windows(60_000, 60_000, export);
+
+        drop(runtime);
+
+        assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
     #[test]

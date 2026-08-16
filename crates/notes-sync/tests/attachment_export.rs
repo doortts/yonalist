@@ -269,6 +269,43 @@ fn moving_the_bytes_does_not_restamp_the_note() {
     assert_eq!(after, before, "the note did not change; its picture moved");
 }
 
+/// A page travels as text and its pictures travel as files, and the two do not
+/// arrive together. Until the bytes turn up there is nothing to place — and
+/// nothing to place must not stop everything else from being placed, or a
+/// vault that is mid-arrival exports nothing at all.
+#[test]
+fn an_attachment_whose_bytes_have_not_arrived_stops_nothing_else() {
+    let mut connection = database();
+    let workspace = workspace();
+    page(&connection, FIRST_PAGE, "Notes", 4294967296);
+    image_node(&connection, IMAGE_NODE, FIRST_PAGE, "holiday.png", false);
+    // What a receiving device holds: the line names the file, the file is not
+    // in the vault yet, and this app's store has never seen it either.
+    connection
+        .execute(
+            "UPDATE notes_images SET relative_path = '../assets/elsewhere-000000000000.png'",
+            (),
+        )
+        .expect("link");
+    std::fs::remove_file(workspace.store.path().join(format!("{HASH}.png"))).expect("no bytes");
+
+    let placed = {
+        let transaction = connection.transaction().expect("begin");
+        let placed = notes_sync::attachments::place_attachments(
+            &transaction,
+            workspace.vault.path(),
+            workspace.store.path(),
+        );
+        transaction.commit().expect("commit");
+        placed
+    };
+
+    assert!(
+        placed.is_ok(),
+        "one picture nobody can find yet is not a reason to write no files at all: {placed:?}"
+    );
+}
+
 #[test]
 fn an_attachment_nobody_points_at_stays_where_it_is() {
     let mut connection = database();
@@ -360,6 +397,44 @@ fn bytes_that_have_not_arrived_yet_are_not_invented() {
     assert_eq!(
         placed, 0,
         "there is nothing to place until the bytes turn up"
+    );
+}
+
+/// Two pages that added the same picture under different names agree on one,
+/// and what is written down has to be the name the file actually got — the
+/// merge finds an attachment's hash by the name in the link, so a record
+/// naming the other one leaves every arriving line unable to find its bytes.
+#[test]
+fn the_recorded_name_is_the_name_on_disk() {
+    let mut connection = database();
+    let workspace = workspace();
+    page(&connection, FIRST_PAGE, "Notes", 4294967296);
+    page(&connection, SECOND_PAGE, "Other", 8589934592);
+    image_node(&connection, IMAGE_NODE, FIRST_PAGE, "shot-2.png", false);
+    image_node(
+        &connection,
+        OTHER_IMAGE_NODE,
+        SECOND_PAGE,
+        "shot.png",
+        false,
+    );
+
+    place(&mut connection, &workspace);
+
+    let (name, location): (String, String) = connection
+        .query_row(
+            "SELECT disk_name, location FROM sync_assets WHERE content_hash = ?1",
+            [HASH],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("asset row");
+    assert!(
+        location.ends_with(&name),
+        "`{name}` is not what was written at `{location}`"
+    );
+    assert!(
+        workspace.vault.path().join(&location).exists(),
+        "and the bytes are there under that name"
     );
 }
 

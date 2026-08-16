@@ -118,11 +118,11 @@ async fn notes_execute(
         runtime.clear_initial_boot()?;
         // A pasted image references an existing asset, so the command path needs
         // the store to reject a hash that is no longer there.
-        let receipt = runtime
-            .service
-            .execute_with_assets(envelope, runtime.assets.as_ref())?;
-        runtime.sync.poke();
-        Ok(receipt)
+        runtime.changed(
+            runtime
+                .service
+                .execute_with_assets(envelope, runtime.assets.as_ref()),
+        )
     })
     .await
 }
@@ -136,9 +136,7 @@ async fn notes_undo(
     run_blocking(move || {
         let runtime = gate.wait()?;
         runtime.clear_initial_boot()?;
-        let receipt = runtime.service.undo(request)?;
-        runtime.sync.poke();
-        Ok(receipt)
+        runtime.changed(runtime.service.undo(request))
     })
     .await
 }
@@ -152,9 +150,7 @@ async fn notes_redo(
     run_blocking(move || {
         let runtime = gate.wait()?;
         runtime.clear_initial_boot()?;
-        let receipt = runtime.service.redo(request)?;
-        runtime.sync.poke();
-        Ok(receipt)
+        runtime.changed(runtime.service.redo(request))
     })
     .await
 }
@@ -298,8 +294,7 @@ async fn notes_sync_restore_conflict(
             })?;
         // Through the service, so this session learns the revision it moved —
         // a bypass would leave every later edit failing until a restart.
-        runtime.service.restore_conflict(&node_id, &text)?;
-        runtime.sync.poke();
+        runtime.changed(runtime.service.restore_conflict(&node_id, &text))?;
         Ok(())
     })
     .await
@@ -549,7 +544,7 @@ impl DesktopRuntime {
                 }
             }
         };
-        Ok(Self {
+        let runtime = Self {
             session_id,
             storage,
             assets,
@@ -561,7 +556,22 @@ impl DesktopRuntime {
             initial_boot: Mutex::new(Some(initial_boot)),
             watch: Mutex::new(None),
             sync: sync_runtime::SyncRuntime::start(exporter),
-        })
+        };
+        // A session can end with work still queued — a crash, a folder that
+        // was unreachable, a vault picked after the edits were made. Nothing
+        // else would ask.
+        runtime.sync.poke();
+        Ok(runtime)
+    }
+
+    /// Every command that changes anything ends here, and this is the only
+    /// thing that wakes the export thread. A mutation that forgets it is a
+    /// note the folder never learns about until something else is edited.
+    pub(crate) fn changed<T>(&self, outcome: Result<T, NotesError>) -> Result<T, NotesError> {
+        if outcome.is_ok() {
+            self.sync.poke();
+        }
+        outcome
     }
 
     /// Starts watching the folder the user picked, replacing any earlier
@@ -573,6 +583,7 @@ impl DesktopRuntime {
         };
         let storage = Arc::clone(&self.storage);
         let service = Arc::clone(&self.service);
+        let exporting = self.sync.handle();
         let window = app.clone();
         let started = vault_watch::VaultWatch::start(
             Arc::clone(&self.storage),
@@ -591,6 +602,10 @@ impl DesktopRuntime {
                 // The session first: a window told about a revision the service
                 // does not know about would have every later edit rejected.
                 let _ = service.absorb_external(revision, &affected);
+                // A merge can leave a document owing a rewrite — the file said
+                // something the merge did not accept whole. Nothing else would
+                // wake the export thread for it.
+                exporting.poke();
                 let _ = window.emit(
                     "notes://sync-changed",
                     SyncChanged {

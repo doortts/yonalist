@@ -68,9 +68,11 @@ pub(crate) async fn notes_replace_image_bytes(
     run_blocking(move || {
         let runtime = gate.wait()?;
         runtime.clear_initial_boot()?;
-        runtime
-            .service
-            .replace_image(context, source, runtime.assets.as_ref())
+        runtime.changed(
+            runtime
+                .service
+                .replace_image(context, source, runtime.assets.as_ref()),
+        )
     })
     .await
 }
@@ -93,9 +95,11 @@ pub(crate) async fn notes_replace_image_path(
         };
         let runtime = gate.wait()?;
         runtime.clear_initial_boot()?;
-        runtime
-            .service
-            .replace_image(context, source, runtime.assets.as_ref())
+        runtime.changed(
+            runtime
+                .service
+                .replace_image(context, source, runtime.assets.as_ref()),
+        )
     })
     .await
 }

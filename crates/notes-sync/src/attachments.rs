@@ -147,7 +147,6 @@ pub fn place_attachments(
 ) -> Result<(), String> {
     let vault_root = &std::fs::canonicalize(vault_root)
         .map_err(|error| format!("Could not resolve the vault: {error}"))?;
-    let mut placed = Vec::new();
     for (hash, holders) in referenced_assets(transaction)? {
         let references: Vec<Reference> = holders
             .iter()
@@ -155,16 +154,26 @@ pub fn place_attachments(
             .collect();
         let current = recorded_location(transaction, &hash)?;
         let placement = plan_placement(&current, &references);
-        carry_bytes(
+        // Per attachment. A page travels as text and its pictures travel as
+        // files, so a line naming bytes that have not arrived yet is ordinary
+        // — and it must not stop every other document from being written.
+        if carry_bytes(
             vault_root,
             &store_root.join(&holders[0].store_name),
             &placement,
-        )?;
-        let disk_name = references
-            .iter()
-            .map(|reference| reference.disk_name.as_str())
-            .min()
-            .unwrap_or_default();
+        )
+        .is_err()
+        {
+            continue;
+        }
+        // From where the bytes actually went, so the name written down and the
+        // name on disk are one answer rather than two.
+        let disk_name = placement
+            .location
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
         transaction
             .prepare_cached(
                 "INSERT INTO sync_assets(content_hash, disk_name, location, unreferenced_at)
@@ -177,10 +186,9 @@ pub fn place_attachments(
                      unreferenced_at = NULL",
             )
             .and_then(|mut statement| {
-                statement.execute(rusqlite::params![&hash, disk_name, &placement.location])
+                statement.execute(rusqlite::params![&hash, &disk_name, &placement.location])
             })
             .map_err(|error| error.to_string())?;
-        placed.push(hash);
     }
     // Everything else: the bytes stay exactly where they are and only the
     // reading is written down, because deleting an attachment is something the
