@@ -51,6 +51,8 @@ pub fn export_document(
     root_id: &str,
 ) -> Result<ExportOutcome, ExportError> {
     let relative = document_path(transaction, root_id)?;
+    // Before the rows are read, because it can put a reading back.
+    settle_readings(transaction, root_id)?;
     let document = load_document(transaction, root_id, folder_of(&relative))?;
     let outcome = write_checked(
         transaction,
@@ -514,6 +516,127 @@ fn recorded_hash(
 
 /// One statement for the whole document rather than one per node: the cost of
 /// an export has to follow what changed, not how large the page grew.
+/// Spec §9: a reading moves when the content moves, and not otherwise.
+///
+/// An edit and an undo are two real changes to what was there a moment before,
+/// so the row is stamped twice and ends where it started. Writing that reading
+/// out would hand every other device an edit that changes nothing — and beat a
+/// real edit somebody made in the meantime. So each node's state is compared
+/// with what was last written for it: unchanged, and the reading that was
+/// written with it is put back; changed, and the new pair is recorded.
+///
+/// The record is per node rather than per file because a file is rewritten
+/// whenever any line in it moves, and the lines that did not move must not be
+/// dragged forward with it. What counts as unchanged includes where the line
+/// sits: a node that moved says the same words, and the reading is what
+/// decides whose move wins.
+fn settle_readings(transaction: &Transaction<'_>, root_id: &str) -> Result<(), ExportError> {
+    let mut statement = transaction
+        .prepare_cached(
+            "WITH RECURSIVE subtree(id) AS (
+                 SELECT ?1
+                 UNION ALL
+                 SELECT n.id FROM notes_nodes n JOIN subtree s ON n.parent_id = s.id
+                 WHERE s.id = ?1
+                    OR NOT EXISTS (SELECT 1 FROM sync_documents d WHERE d.root_id = s.id)
+             )
+             SELECT n.id, n.kind, n.text, n.note, n.marker, n.ordered_start,
+                    n.collapsed, n.completed, n.starred, n.deleted, n.sync_extras, n.hlc,
+                    i.relative_path, i.display_width, i.pixel_width, i.pixel_height,
+                    i.byte_length,
+                    e.content_hash, e.exported_hlc,
+                    -- Where the line sits is not its content, but it is
+                    -- something the reading arbitrates: a node that moved has
+                    -- earned its new reading even though it says the same
+                    -- words.
+                    n.parent_id, n.sync_prev
+             FROM notes_nodes n
+             LEFT JOIN notes_images i ON i.node_id = n.id
+             LEFT JOIN sync_node_exports e ON e.node_id = n.id
+             WHERE n.id IN (SELECT id FROM subtree) AND n.hlc <> ''",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([root_id], |row| {
+            let text = match row.get::<_, Option<String>>(12)? {
+                Some(path) => crate::merger::image_state(
+                    &row.get::<_, String>(2)?,
+                    &path,
+                    row.get(13)?,
+                    row.get(14)?,
+                    row.get(15)?,
+                    row.get(16)?,
+                ),
+                None => row.get::<_, String>(2)?,
+            };
+            let fingerprint = crate::merger::LineState {
+                kind: &row.get::<_, String>(1)?,
+                text: &text,
+                note: &row.get::<_, String>(3)?,
+                marker: &row.get::<_, String>(4)?,
+                ordered_start: row.get(5)?,
+                collapsed: row.get::<_, i64>(6)? == 1,
+                completed: row.get::<_, i64>(7)? == 1,
+                starred: row.get::<_, i64>(8)? == 1,
+                deleted: row.get::<_, i64>(9)? == 1,
+                extras: &row.get::<_, String>(10)?,
+            }
+            .fingerprint();
+            let fingerprint = format!(
+                "{fingerprint}:{}:{}",
+                row.get::<_, Option<String>>(19)?.unwrap_or_default(),
+                row.get::<_, String>(20)?
+            );
+            Ok((
+                row.get::<_, String>(0)?,
+                fingerprint,
+                row.get::<_, String>(11)?,
+                row.get::<_, Option<String>>(17)?,
+                row.get::<_, Option<String>>(18)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+
+    let mut settled = Vec::new();
+    for row in rows {
+        settled.push(row.map_err(|error| error.to_string())?);
+    }
+    for (id, fingerprint, hlc, recorded_hash, recorded_hlc) in settled {
+        match (recorded_hash, recorded_hlc) {
+            // Nothing about this node has changed since it was last written,
+            // so the reading that was written with it stands.
+            (Some(recorded_hash), Some(recorded_hlc))
+                if recorded_hash == fingerprint && recorded_hlc != hlc =>
+            {
+                // `hlc` alone, which the stamping trigger deliberately ignores
+                // — putting a reading back is not an edit.
+                transaction
+                    .prepare_cached("UPDATE notes_nodes SET hlc = ?2 WHERE id = ?1")
+                    .and_then(|mut statement| {
+                        statement.execute(rusqlite::params![&id, &recorded_hlc])
+                    })
+                    .map_err(|error| error.to_string())?;
+            }
+            (Some(recorded_hash), _) if recorded_hash == fingerprint => {}
+            _ => {
+                transaction
+                    .prepare_cached(
+                        "INSERT INTO sync_node_exports(node_id, content_hash, exported_hlc)
+                         VALUES (?1, ?2, ?3)
+                         ON CONFLICT(node_id) DO UPDATE SET
+                             content_hash = excluded.content_hash,
+                             exported_hlc = excluded.exported_hlc",
+                    )
+                    .and_then(|mut statement| {
+                        statement.execute(rusqlite::params![&id, &fingerprint, &hlc])
+                    })
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The folder a document sits in, which is what its links are relative to.
 /// Home's is the vault root itself, and that is the empty string.
 fn folder_of(relative: &str) -> &str {

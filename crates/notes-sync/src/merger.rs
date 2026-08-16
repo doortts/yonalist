@@ -1553,20 +1553,85 @@ fn content_of_row(row: &Row, split: bool) -> String {
         ),
         None => row.text.clone(),
     };
-    [
-        "v1".to_owned(),
-        row.kind.clone(),
-        text,
-        row.note.clone(),
-        row.marker.clone(),
-        row.ordered_start.to_string(),
-        row.collapsed.to_string(),
-        row.completed.to_string(),
-        row.starred.to_string(),
-        row.deleted.to_string(),
-        row.extras.clone(),
-    ]
-    .join("\u{0}")
+    LineState {
+        kind: &row.kind,
+        text: &text,
+        note: &row.note,
+        marker: &row.marker,
+        ordered_start: row.ordered_start,
+        collapsed: row.collapsed,
+        completed: row.completed,
+        starred: row.starred,
+        deleted: row.deleted,
+        extras: &row.extras,
+    }
+    .content()
+}
+
+/// One node's state, as the two places that need to compare states build it:
+/// the merge's equal-stamp tie-break, and the export record that says whether
+/// anything about a node has actually changed since it was last written.
+///
+/// Field order is fixed, and so is the separator, because two devices have to
+/// build the same bytes from the same state.
+pub struct LineState<'a> {
+    pub kind: &'a str,
+    /// For an image, the whole of what the line says about it — the picture is
+    /// part of the state, not a pointer to it.
+    pub text: &'a str,
+    pub note: &'a str,
+    pub marker: &'a str,
+    pub ordered_start: i64,
+    pub collapsed: bool,
+    pub completed: bool,
+    pub starred: bool,
+    pub deleted: bool,
+    pub extras: &'a str,
+}
+
+impl LineState<'_> {
+    pub fn content(&self) -> String {
+        [
+            "v1".to_owned(),
+            self.kind.to_owned(),
+            self.text.to_owned(),
+            self.note.to_owned(),
+            self.marker.to_owned(),
+            self.ordered_start.to_string(),
+            self.collapsed.to_string(),
+            self.completed.to_string(),
+            self.starred.to_string(),
+            self.deleted.to_string(),
+            self.extras.to_owned(),
+        ]
+        .join("\u{0}")
+    }
+
+    /// The digest the export record stores. The same function the merge uses,
+    /// so "unchanged" means the same thing in both places.
+    pub fn fingerprint(&self) -> String {
+        use sha2::Digest;
+        format!("{:x}", sha2::Sha256::digest(self.content().as_bytes()))
+    }
+}
+
+/// The whole of what a line says about a picture, for the state above.
+pub fn image_state(
+    name: &str,
+    path: &str,
+    display_width: i64,
+    pixel_width: i64,
+    pixel_height: i64,
+    byte_length: i64,
+) -> String {
+    image_content(
+        name,
+        path,
+        display_width,
+        pixel_width,
+        pixel_height,
+        byte_length,
+    )
 }
 
 /// A defeated state, complete enough that the conflict screen can show it and

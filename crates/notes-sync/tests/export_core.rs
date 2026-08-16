@@ -605,6 +605,56 @@ fn a_split_document_states_the_node_it_hangs_from() {
     );
 }
 
+/// Spec §9. Typing a word and taking it back leaves the note exactly as it
+/// was, but each of those two edits is a real change to what was there a
+/// moment before, so both stamp the row. Writing that stamp out would hand
+/// every other device an edit that changes nothing — and beat a real edit
+/// somebody made in the meantime.
+#[test]
+fn content_that_comes_back_to_what_was_written_keeps_its_reading() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    export(&mut connection, root.path());
+    let first = written(root.path()).expect("the page");
+
+    // There and back again, the way an edit and an undo leave it.
+    for text in ["Changed", "Thought"] {
+        connection
+            .execute(
+                "UPDATE notes_nodes SET text = ?2 WHERE id = ?1",
+                rusqlite::params![NODE_ID, text],
+            )
+            .expect("edit");
+    }
+    let stamped: String = connection
+        .query_row(
+            "SELECT hlc FROM notes_nodes WHERE id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("hlc");
+    export(&mut connection, root.path());
+
+    assert_eq!(
+        written(root.path()).expect("the page"),
+        first,
+        "the file says the same thing it said, so it says it the same way"
+    );
+    let after: String = connection
+        .query_row(
+            "SELECT hlc FROM notes_nodes WHERE id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("hlc");
+    assert_ne!(
+        after, stamped,
+        "the reading the edits earned is given back, or the next file this \
+         device writes carries it"
+    );
+}
+
 /// A file somebody edited by hand is not this app's to replace, and what was
 /// waiting to go into it is still waiting. Clearing the mark there would leave
 /// the vault holding an older version of a note for good.
