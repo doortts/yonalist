@@ -188,14 +188,19 @@ pub(crate) fn export_pending(
         notes_sync::export::pending_documents(&transaction).map_err(StorageError::Internal)?;
     let mut written = 0;
     for root_id in pending {
+        // Per document: one that cannot be written — an image row stating a
+        // path this format never writes, say — must not take every other
+        // document down with it, home and the trash included. It keeps its
+        // dirty marks and is tried again next time.
         let outcome = match root_id.as_str() {
             "yonalist-trash" => notes_sync::export::export_trash(&transaction, vault_root),
             "root" => notes_sync::export::export_home(&transaction, vault_root),
             id => notes_sync::export::export_document(&transaction, vault_root, id),
-        }
-        .map_err(StorageError::Internal)?;
-        if outcome.written {
-            written += 1;
+        };
+        match outcome {
+            Ok(outcome) if outcome.written => written += 1,
+            Ok(_) => {}
+            Err(_reason) => continue,
         }
     }
     notes_sync::export::retire_missing_documents(&transaction, vault_root)

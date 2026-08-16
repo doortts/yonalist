@@ -75,3 +75,16 @@ fn a_flush_with_nothing_pending_still_has_nothing_to_do() {
 
     assert_eq!(window.decide(1_000), Decision::Idle);
 }
+
+/// A flush asked for while nothing was waiting is spent. Leaving it armed would
+/// make the next thing typed skip its window and go straight to disk.
+#[test]
+fn a_flush_with_nothing_pending_is_not_saved_up() {
+    let mut window = debounce();
+    window.flush_requested();
+    assert_eq!(window.decide(1_000), Decision::Idle);
+
+    window.touched(2_000);
+
+    assert_eq!(window.decide(2_001), Decision::Wait { until: 5_000 });
+}

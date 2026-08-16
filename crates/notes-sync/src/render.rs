@@ -213,6 +213,9 @@ fn render_comment(node: &DocumentNode, implied_previous: &str) -> Result<String,
     // creation order renders exactly as it did before this token existed, which
     // is what lets the format version stay where it is.
     if let Some((previous, claim)) = &node.place
+        // An empty claim stamp means nothing has claimed this node's place yet,
+        // which the line order already says.
+        && !claim.is_empty()
         && (previous.as_str(), claim.as_str()) != (implied_previous, node.hlc.as_str())
     {
         let previous = if previous.is_empty() {

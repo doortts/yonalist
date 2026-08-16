@@ -87,3 +87,13 @@ fn two_pages_with_the_same_title_get_different_folders() {
 fn a_name_needs_a_real_id_to_be_built_from() {
     assert!(page_folder_name("Projects", "not-a-uuid").is_err());
 }
+
+/// A control character is nothing at all, not a word boundary: turning one into
+/// a separator would put a hyphen in a name the user never asked for.
+#[test]
+fn control_characters_leave_without_a_trace() {
+    assert_eq!(
+        page_folder_name("a\u{7}b", ID).expect("name"),
+        format!("ab-{SUFFIX}")
+    );
+}

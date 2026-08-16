@@ -43,6 +43,11 @@ impl Debounce {
 
     /// Something changed, at this reading.
     pub fn touched(&mut self, at: u64) {
+        if self.first_change.is_none() {
+            // A flush asked for while nothing was waiting is spent: it cannot
+            // sit there and skip the window for whatever is typed next.
+            self.flush = false;
+        }
         self.first_change.get_or_insert(at);
         self.last_change = at;
     }
