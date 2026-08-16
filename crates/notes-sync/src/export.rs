@@ -291,7 +291,8 @@ pub fn retire_missing_documents(
         .map_err(|error| format!("Could not resolve the vault: {error}"))?;
     let mut statement = transaction
         .prepare_cached(
-            "SELECT d.root_id, d.folder_path FROM sync_documents d
+            "SELECT d.root_id, d.folder_path, n.id IS NOT NULL AND n.deleted = 0
+             FROM sync_documents d
              LEFT JOIN notes_nodes n ON n.id = d.root_id
              WHERE d.root_id NOT IN ('root', 'yonalist-trash')
                -- Gone, deleted, or no longer a page at all: a folder standing
@@ -302,12 +303,33 @@ pub fn retire_missing_documents(
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)? == 1,
+            ))
         })
         .map_err(|error| error.to_string())?;
-    let mut retired = Vec::new();
+    let mut found = Vec::new();
     for row in rows {
-        let (root_id, folder_path) = row.map_err(|error| error.to_string())?;
+        found.push(row.map_err(|error| error.to_string())?);
+    }
+
+    let mut retired = Vec::new();
+    for (root_id, folder_path, still_alive) in found {
+        if still_alive {
+            // A page dragged under another page is not gone — its notes belong
+            // to the page it joined, and that page has not said so yet. Taking
+            // the folder now would leave the whole subtree in no file at all.
+            // The row goes, so the next pass renders the subtree inside its new
+            // document; the folder waits for that pass to find it.
+            transaction
+                .prepare_cached("DELETE FROM sync_documents WHERE root_id = ?1")
+                .and_then(|mut statement| statement.execute([&root_id]))
+                .map_err(|error| error.to_string())?;
+            mark_dirty_for_export(transaction, &root_id)?;
+            continue;
+        }
         // Resolved, not merely prefixed: a recorded path is a value the watcher
         // supplied, and `..` in it would walk a plain prefix check straight out
         // of the vault with a recursive delete behind it.
@@ -331,6 +353,20 @@ pub fn retire_missing_documents(
             .map_err(|error| error.to_string())?;
     }
     Ok(retired)
+}
+
+/// Queues the document that now holds this subtree. The row it used to own is
+/// gone by the time this runs, so the climb ends where the subtree's new home
+/// begins.
+fn mark_dirty_for_export(transaction: &Transaction<'_>, root_id: &str) -> Result<(), ExportError> {
+    transaction
+        .prepare_cached(
+            "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES (?1, unixepoch())
+             ON CONFLICT(node_id) DO NOTHING",
+        )
+        .and_then(|mut statement| statement.execute([root_id]))
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 /// The trash, which is the only evidence a deletion ever gets: a node simply

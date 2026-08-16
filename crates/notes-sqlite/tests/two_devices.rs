@@ -542,6 +542,47 @@ fn a_settled_pair_stops_writing() {
     assert_eq!(two.export(), 0);
 }
 
+/// A page dragged under another page stops being a page: its folder goes and
+/// its notes belong to the page it joined. Removing the folder before that
+/// page's file states them leaves the subtree in no file at all — and this
+/// device would then read the vault back and drop it.
+#[test]
+fn a_page_dragged_under_another_keeps_its_notes() {
+    let (one, two) = seeded_pair();
+    let host = one.first_page();
+    // A page of its own, with a note under it — one folder, two files, and a
+    // link from home.
+    let joining = add_bullet(&one, "root", "Joining page");
+    let carried = add_bullet(&one, &joining, "Carried along");
+    settle(&one, &two);
+
+    one.run(IpcNotesCommand::MoveNode {
+        id: joining.clone(),
+        parent_id: host.clone(),
+        before_id: None,
+    });
+    // One pass, which is what the export thread does when the debounce fires.
+    let _ = one.export();
+    // The folder is what the other devices read, so the question is whether
+    // any file in it still states these notes.
+    let stated = documents(&one.vault).into_iter().any(|relative| {
+        std::fs::read_to_string(one.vault.join(relative))
+            .unwrap_or_default()
+            .contains("Carried along")
+    });
+    assert!(
+        stated,
+        "the page's folder went before the page it joined said anything about \
+         its notes, so they are in no file at all"
+    );
+    settle(&one, &two);
+    assert_eq!(
+        two.text_of(&carried).as_deref(),
+        Some("Carried along"),
+        "and the other device never learned about them either"
+    );
+}
+
 /// The export is on a timer and the user is in a text editor. Both write the
 /// same file, and whichever order they land in, what the user typed has to be
 /// there afterwards.
