@@ -11,7 +11,9 @@
 //! cannot decide. Those have tests of their own, and the manual proof covers
 //! them together.
 
-use notes_application::{CommandEnvelope, HistoryRequest, IpcNotesCommand, NotesService};
+use notes_application::{
+    CommandEnvelope, HistoryRequest, IpcNodeDuplicate, IpcNotesCommand, NotesService,
+};
 use notes_sqlite::SqliteStorage;
 
 /// One device: its own database, its own image store, its own copy of the
@@ -900,9 +902,7 @@ fn a_page_arriving_before_its_picture_still_reads() {
     picture(&one, &shot);
     one.export();
     carry(&one, &two);
-    for (location, _) in attachments(&two.vault) {
-        std::fs::remove_file(two.vault.join(location)).expect("hold the bytes back");
-    }
+    hold_pictures_back(&two);
     two.absorb();
 
     let read = page_of(&two, &page).expect("the page still opens");
@@ -1036,12 +1036,11 @@ fn settled_pictures(device: &Device) -> Vec<String> {
              ORDER BY image.node_id",
         )
         .expect("prepare");
-    let found = statement
+    statement
         .query_map([], |row| row.get(0))
         .expect("query")
         .map(|row| row.expect("row"))
-        .collect();
-    found
+        .collect()
 }
 
 /// Duplicating a picture whose bytes have not landed has to carry the wait
@@ -1110,11 +1109,58 @@ fn a_waiting_picture_under_a_duplicated_bullet_meets_its_bytes_too() {
     let_pictures_land(&two, held);
     two.absorb();
 
+    let settled = settled_pictures(&two);
     assert_eq!(
-        settled_pictures(&two).len(),
+        settled.len(),
         2,
-        "the original and the copy under the duplicated bullet both met the bytes"
+        "the original and the copy under the duplicated bullet both met the bytes, \
+         but only these did: {settled:?}"
     );
+}
+
+/// The half of this that no undo can reach: a copy with no picture record is
+/// written into the folder as a plain bullet, and the next device to read that
+/// file takes the bullet as the truth. So the copy has to make the round trip
+/// while it is still waiting, not only after its bytes turn up — and the trip
+/// is where the batch duplicate, the other command the row menu sends, gets
+/// exercised.
+#[test]
+fn a_duplicated_waiting_picture_survives_the_trip_through_the_folder() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    one.export();
+    carry(&one, &two);
+    hold_pictures_back(&two);
+    two.absorb();
+
+    let copy = uuid::Uuid::new_v4().hyphenated().to_string();
+    two.run(IpcNotesCommand::DuplicateNodes {
+        duplicates: vec![IpcNodeDuplicate {
+            id: shot.clone(),
+            new_id: copy.clone(),
+            parent_id: page.clone(),
+            before_id: None,
+        }],
+    });
+    // Written out while the copy is still waiting: this is the line that used
+    // to go into the folder as a bullet.
+    two.export();
+    carry(&two, &one);
+    one.absorb();
+
+    let read = page_of(&one, &page).expect("the page still opens");
+    let copied = read
+        .nodes
+        .iter()
+        .find(|node| node.id == copy)
+        .expect("the copy reached the other device");
+    let image = copied
+        .image
+        .as_ref()
+        .expect("and arrived as a picture rather than as its file name");
+    assert_eq!(image.content_hash, HASH);
 }
 
 /// Undo takes the copy away and its picture record goes with it. Redo replays

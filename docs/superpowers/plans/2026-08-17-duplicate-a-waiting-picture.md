@@ -144,6 +144,11 @@ Tests, both in `crates/notes-sqlite/tests/two_devices.rs`, both red first:
 - `a_waiting_picture_under_a_duplicated_bullet_meets_its_bytes_too` — same, but
   duplicating the bullet the picture hangs under, proving the subtree walk
   records the pair too.
+- `a_duplicated_waiting_picture_survives_the_trip_through_the_folder` — the
+  third failure mode, the one no undo reaches: export the copy while it is
+  still waiting, carry the folder to the other device, and assert it arrives as
+  a picture rather than as its own file name. Driven through `DuplicateNodes`,
+  the other command the row menu sends.
 
 Red evidence to expect: the copy's node has `image: None` after the bytes
 arrive — or, if read through `stored_waiting_image`, the row is missing
