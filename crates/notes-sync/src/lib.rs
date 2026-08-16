@@ -7,8 +7,10 @@
 //! desktop adapter owns the lifetimes above that.
 
 pub mod document;
+pub mod export;
 pub mod file_io;
 pub mod hlc;
+pub mod layout;
 pub mod merger;
 pub mod parse;
 pub mod render;
