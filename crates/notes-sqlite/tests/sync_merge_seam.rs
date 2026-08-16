@@ -169,3 +169,79 @@ fn a_merge_leaves_the_derived_paths_correct() {
         "a subtree query reads this column, and the merge is what filled the rows: {path}"
     );
 }
+
+/// A move made in the app has to leave a claim behind, or the next merge
+/// rebuilds the order from stale claims and puts the node back — undoing the
+/// user's own move on screen.
+#[test]
+fn a_local_move_survives_an_unrelated_merge() {
+    let (_directory, storage) = storage();
+    let first = "8a201f33-0000-4c91-8d02-000000000001";
+    let second = "8a201f33-0000-4c91-8d02-000000000002";
+    let seeded = stamp(5);
+    let mut document = match page("One", &seeded) {
+        VaultFile::Page(page) => page,
+        VaultFile::Trash(_) => unreachable!(),
+    };
+    let third = "8a201f33-0000-4c91-8d02-000000000003";
+    document.nodes = vec![
+        node(first, &seeded, "One"),
+        node(second, &seeded, "Two"),
+        node(third, &seeded, "Three"),
+    ];
+    let file = VaultFile::Page(document.clone());
+    storage.merge_document(&file, &input()).expect("seed");
+
+    // The app moves `second` in front of `first`, the way a drag does.
+    let command = NotesCommand::MoveNode {
+        id: notes_core::NodeId::try_from(second.to_owned()).expect("id"),
+        parent_id: notes_core::NodeId::try_from(PAGE_ID.to_owned()).expect("parent"),
+        position: notes_core::Position::Before {
+            sibling_id: notes_core::NodeId::try_from(first.to_owned()).expect("sibling"),
+        },
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    let revision = storage.revision().expect("revision");
+    storage.commit(revision, &patch).expect("move");
+    assert_eq!(
+        order_of_children(&storage, PAGE_ID),
+        vec![second, first, third]
+    );
+
+    // A merge that only has news about the third node. It still rebuilds the
+    // order of every sibling under that parent, which is where a stale claim
+    // would put the moved node back.
+    let mut news = document;
+    let mut edited = node(third, &stamp(9), "Three, edited elsewhere");
+    // The other device edited the text and moved nothing, so its file still
+    // claims the place the node has always had.
+    edited.place = Some((first.to_owned(), seeded.clone()));
+    news.nodes[2] = edited;
+    news.max_hlc = stamp(9);
+    storage
+        .merge_document(&VaultFile::Page(news), &input())
+        .expect("merge");
+
+    assert_eq!(
+        order_of_children(&storage, PAGE_ID),
+        vec![second, first, third],
+        "a merge about somebody else cannot undo the move"
+    );
+}
+
+fn order_of_children(storage: &SqliteStorage, parent: &str) -> Vec<String> {
+    storage
+        .query_viewport(notes_application::ViewportRequest {
+            page_id: parent.to_owned(),
+            anchor_id: None,
+            before_cursor: None,
+            after_cursor: None,
+            limit: 32,
+        })
+        .expect("viewport")
+        .nodes
+        .into_iter()
+        .map(|node| node.id)
+        .collect()
+}

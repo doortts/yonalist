@@ -23,8 +23,8 @@ pub(crate) fn merge(
     let transaction = connection
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(internal)?;
-    let outcome = merge_document(&transaction, clock, file, input)
-        .map_err(StorageError::Internal)?;
+    let outcome =
+        merge_document(&transaction, clock, file, input).map_err(StorageError::Internal)?;
     if outcome.applied == 0 {
         // Nothing was written, so there is nothing to rebuild and nothing for a
         // session to have missed.

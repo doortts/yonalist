@@ -63,6 +63,10 @@ pub(crate) fn commit(
     // After the whole patch: a row's path reads its ancestors, which an earlier
     // mutation in this same loop may not have written yet.
     crate::node_paths::refresh(&transaction, patch)?;
+    // A move made here has to leave a claim behind. The merge rebuilds sibling
+    // order from those claims, so without one it would put the node back where
+    // the last merge had it — undoing the move on screen.
+    record_place_claims(&transaction, patch)?;
     let next_revision = actual_revision
         .checked_add(1)
         .ok_or_else(|| StorageError::Internal("revision overflowed".into()))?;
@@ -234,6 +238,41 @@ fn update_node(
         return Err(StorageError::Domain(DomainError::NodeNotFound(
             node.id().clone(),
         )));
+    }
+    Ok(())
+}
+
+/// Writes each touched parent's children back as claims: the sibling each one
+/// now follows, at that row's own stamp. Anything this commit did not touch
+/// keeps a claim that already matched, so the write is a no-op for it.
+fn record_place_claims(
+    transaction: &rusqlite::Transaction<'_>,
+    patch: &DomainPatch,
+) -> Result<(), StorageError> {
+    let mut parents: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for mutation in &patch.forward {
+        if let TreeMutation::Upsert(node) = mutation
+            && let Some(parent) = node.parent_id()
+        {
+            parents.insert(parent.as_str().to_owned());
+        }
+    }
+    for parent in parents {
+        transaction
+            .execute(
+                "WITH ordered AS (
+                     SELECT id, hlc,
+                            lag(id) OVER (ORDER BY sort_key, id) AS previous
+                     FROM notes_nodes
+                     WHERE parent_id = ?1 AND deleted = 0
+                 )
+                 UPDATE notes_nodes SET
+                     sync_prev = coalesce((SELECT previous FROM ordered WHERE ordered.id = notes_nodes.id), ''),
+                     sync_prev_hlc = notes_nodes.hlc
+                 WHERE id IN (SELECT id FROM ordered)",
+                [&parent],
+            )
+            .map_err(internal)?;
     }
     Ok(())
 }
