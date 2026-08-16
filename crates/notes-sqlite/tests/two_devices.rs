@@ -858,3 +858,75 @@ fn picture(device: &Device, node_id: &str) {
         )
         .expect("kind");
 }
+
+/// The whole page a picture sits on, read the way the window reads it.
+fn page_of(device: &Device, page_id: &str) -> Result<notes_application::ViewportPage, String> {
+    device
+        .storage
+        .query_viewport(notes_application::ViewportRequest {
+            page_id: page_id.to_owned(),
+            anchor_id: None,
+            before_cursor: None,
+            after_cursor: None,
+            limit: 50,
+        })
+        .map_err(|error| error.to_string())
+}
+
+/// iCloud brings a page's text down before its pictures, and a picture two
+/// devices share can be minutes behind. A page whose picture has not landed
+/// still has to open — a row waiting for its bytes is a state this app
+/// designed for, not a corrupt one.
+#[test]
+fn a_page_arriving_before_its_picture_still_reads() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    one.export();
+    carry(&one, &two);
+    for (location, _) in attachments(&two.vault) {
+        std::fs::remove_file(two.vault.join(location)).expect("hold the bytes back");
+    }
+    two.absorb();
+
+    let read = page_of(&two, &page).expect("the page still opens");
+    let node = read
+        .nodes
+        .iter()
+        .find(|node| node.id == shot)
+        .expect("the picture's node");
+    assert!(
+        node.image.is_none(),
+        "a row still waiting for its bytes has no image to show yet"
+    );
+}
+
+/// Rows an older build wrote hold the vault's own link where the domain form
+/// belongs. Reading is not where that gets adjudicated: the path is derived
+/// from the hash, so those rows read as they always should have.
+#[test]
+fn a_row_poisoned_by_an_old_merge_reads_healthy() {
+    let one = Device::new("one");
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    rusqlite::Connection::open(one._home.path().join("notes.sqlite"))
+        .expect("open")
+        .execute(
+            "UPDATE notes_images SET relative_path = 'assets/holiday-9f2c1b7a4e6d.png'
+             WHERE node_id = ?1",
+            [&shot],
+        )
+        .expect("poison the row the way an older merge did");
+
+    let read = page_of(&one, &page).expect("the page still opens");
+    let node = read
+        .nodes
+        .iter()
+        .find(|node| node.id == shot)
+        .expect("the picture's node");
+    let image = node.image.as_ref().expect("the picture is still there");
+    assert_eq!(image.content_hash, HASH);
+    assert_eq!(image.original_name, "holiday.png");
+}

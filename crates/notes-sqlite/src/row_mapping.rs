@@ -31,34 +31,23 @@ pub(crate) fn parse_node(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
             ));
         }
     };
-    let content_hash = row.get::<_, Option<String>>(11)?;
-    let image = content_hash
-        .map(|content_hash| {
-            NoteImage::try_new(
-                content_hash,
-                row.get::<_, String>(12)?,
-                row.get::<_, String>(13)?,
-                row.get::<_, String>(14)?,
-                u64::try_from(row.get::<_, i64>(15)?).map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        15,
-                        rusqlite::types::Type::Integer,
-                        Box::new(error),
-                    )
-                })?,
-                row.get::<_, u32>(16)?,
-                row.get::<_, u32>(17)?,
-                row.get::<_, u32>(18)?,
-            )
-            .map_err(|error| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    11,
-                    rusqlite::types::Type::Text,
-                    Box::new(error),
-                )
-            })
-        })
-        .transpose()?;
+    // Column 12 is not read: the path is derived from the hash, so a row an
+    // older build wrote with the vault's own link in it still reads as the
+    // picture it always was. A row that cannot make a picture — one still
+    // waiting for its bytes, so it has no hash yet — is a node without one
+    // rather than a page nobody can open.
+    let image = row.get::<_, Option<String>>(11)?.and_then(|content_hash| {
+        NoteImage::try_referenced(
+            content_hash,
+            row.get::<_, String>(13).ok()?,
+            row.get::<_, String>(14).ok()?,
+            u64::try_from(row.get::<_, i64>(15).ok()?).ok()?,
+            row.get::<_, u32>(16).ok()?,
+            row.get::<_, u32>(17).ok()?,
+            row.get::<_, u32>(18).ok()?,
+        )
+        .ok()
+    });
     Ok(NoteNode::from_persisted_with_image(
         id,
         parent_id,
@@ -102,4 +91,70 @@ pub(crate) fn kind_name(kind: NoteNodeKind) -> &'static str {
 
 pub(crate) fn internal(error: rusqlite::Error) -> StorageError {
     StorageError::Internal(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_node;
+    use rusqlite::Connection;
+
+    const HASH: &str = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
+
+    fn open() -> Connection {
+        let mut connection = Connection::open_in_memory().expect("in-memory db");
+        crate::schema::initialize(&mut connection).expect("schema");
+        let clock = std::sync::Arc::new(notes_sync::hlc::Clock::new("c0de").expect("clock"));
+        notes_sync::hlc::register(&connection, clock).expect("register");
+        crate::schema::ensure_root(&mut connection).expect("root");
+        connection
+    }
+
+    /// The path the row holds and the path the picture has are two different
+    /// questions, and only the hash answers the second one.
+    fn image_row(connection: &Connection, content_hash: &str, relative_path: &str) {
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text)
+                 VALUES ('shot', 'root', 1024, 'image', '')",
+                [],
+            )
+            .expect("node");
+        connection
+            .execute(
+                "INSERT INTO notes_images(node_id, content_hash, relative_path, original_name,
+                     mime_type, byte_length, pixel_width, pixel_height, display_width)
+                 VALUES ('shot', ?1, ?2, 'holiday.png', 'image/png', 11, 800, 600, 480)",
+                rusqlite::params![content_hash, relative_path],
+            )
+            .expect("image");
+    }
+
+    fn read(connection: &Connection) -> notes_core::NoteNode {
+        connection
+            .query_row(
+                "SELECT * FROM notes_node_records WHERE id = 'shot'",
+                [],
+                parse_node,
+            )
+            .expect("the row reads")
+    }
+
+    #[test]
+    fn a_stored_path_from_an_older_build_does_not_decide_the_picture() {
+        let connection = open();
+        image_row(&connection, HASH, "assets/holiday-9f2c1b7a4e6d.png");
+
+        let image = read(&connection).image().cloned().expect("the picture");
+
+        assert_eq!(image.relative_path(), format!("{HASH}.png"));
+        assert_eq!(image.content_hash(), HASH);
+    }
+
+    #[test]
+    fn a_row_still_waiting_for_its_bytes_reads_without_a_picture() {
+        let connection = open();
+        image_row(&connection, "", "assets/holiday-9f2c1b7a4e6d.png");
+
+        assert!(read(&connection).image().is_none());
+    }
 }
