@@ -44,9 +44,14 @@ CREATE INDEX notes_nodes_path ON notes_nodes(path);
 
 CREATE TABLE notes_images (
     node_id TEXT PRIMARY KEY NOT NULL,
+    -- Empty means the metadata arrived before the bytes did: a file can
+    -- state an image's size and name while its asset is still in flight,
+    -- and the node has to apply anyway or the line cannot be re-rendered.
     content_hash TEXT NOT NULL CHECK (
-        length(content_hash) = 64 AND
-        content_hash NOT GLOB '*[^0-9a-f]*'
+        content_hash = '' OR (
+            length(content_hash) = 64 AND
+            content_hash NOT GLOB '*[^0-9a-f]*'
+        )
     ),
     relative_path TEXT NOT NULL,
     original_name TEXT NOT NULL,

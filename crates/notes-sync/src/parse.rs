@@ -17,6 +17,11 @@ pub const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_DEPTH: usize = 128;
 pub const MAX_NODES: usize = 20_000;
 pub const MAX_FIELD_BYTES: usize = 100_000;
+/// The narrowest an image may be drawn, and the largest asset this app writes.
+/// Both are the domain's numbers; a file stating anything else is not one of
+/// ours.
+const MIN_DISPLAY_WIDTH: u32 = 120;
+const MAX_ASSET_BYTES: u64 = 20 * 1024 * 1024;
 
 /// Why a document was refused. The text goes to `notes://sync-status`, so it
 /// names the line rather than the rule's number.
@@ -571,13 +576,37 @@ fn read_image(body: &str) -> Result<ImageReference, Quarantine> {
     }
     let (pixel_width, pixel_height) =
         pixels.ok_or_else(|| "An image line has no pixel size.".to_owned())?;
+    // The bounds are facts about the format, so they are answered here, where a
+    // refusal is a quarantine with a reason — not later, where the same file
+    // would die on a database constraint with nothing to tell the user.
+    if pixel_width == 0 || pixel_height == 0 {
+        return Err(format!("`{path}` states no pixels."));
+    }
+    let display_width = width.ok_or_else(|| "An image line has no width.".to_owned())?;
+    if display_width < MIN_DISPLAY_WIDTH {
+        return Err(format!(
+            "A display width of {display_width} is under the {MIN_DISPLAY_WIDTH} minimum."
+        ));
+    }
+    let byte_size = bytes.ok_or_else(|| "An image line has no byte size.".to_owned())?;
+    if byte_size == 0 || byte_size > MAX_ASSET_BYTES {
+        return Err(format!(
+            "An asset of {byte_size} bytes is not one this app writes."
+        ));
+    }
+    if !matches!(
+        extension_of(&path).as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp"
+    ) {
+        return Err(format!("`{path}` is not an image type this format writes."));
+    }
     Ok(ImageReference {
         original_name: name,
         path,
-        display_width: width.ok_or_else(|| "An image line has no width.".to_owned())?,
+        display_width,
         pixel_width,
         pixel_height,
-        byte_size: bytes.ok_or_else(|| "An image line has no byte size.".to_owned())?,
+        byte_size,
         unknown_tokens: unknown,
     })
 }
@@ -587,6 +616,15 @@ fn read_image(body: &str) -> Result<ImageReference, Quarantine> {
 /// The parser never learns how deep its file sits, so it checks the shape it
 /// can own — any number of `../`, then `assets/`, then one file name — and the
 /// loader resolves what that shape actually reaches.
+fn extension_of(path: &str) -> String {
+    path.rsplit('/')
+        .next()
+        .unwrap_or(path)
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
 fn check_asset_path(path: &str) -> Result<(), Quarantine> {
     let mut rest = path;
     while let Some(next) = rest.strip_prefix("../") {
