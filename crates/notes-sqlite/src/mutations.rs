@@ -117,12 +117,18 @@ fn sync_image(
     node: &NoteNode,
 ) -> Result<(), StorageError> {
     let Some(image) = node.image() else {
-        transaction
-            .execute(
-                "DELETE FROM notes_images WHERE node_id = ?1",
-                [node.id().as_str()],
-            )
-            .map_err(internal)?;
+        // An image node without a picture is one whose bytes have not landed
+        // yet, and the row is where everything the file said about that
+        // picture is being kept until they do. Only a node that stopped being
+        // a picture has a row to clear.
+        if node.kind() != NoteNodeKind::Image {
+            transaction
+                .execute(
+                    "DELETE FROM notes_images WHERE node_id = ?1",
+                    [node.id().as_str()],
+                )
+                .map_err(internal)?;
+        }
         return Ok(());
     };
     transaction

@@ -6,6 +6,7 @@ import {
 import "./styles.css";
 import "./notes.css";
 import "./formControls.css";
+import type { SyncChanged } from "../../../packages/contracts/generated/SyncChanged";
 import { tauriNotesApi, type NotesApi } from "./api";
 import { useTheme } from "./useTheme";
 import { useOutlineMarkerStyles } from "./outlineMarkers";
@@ -130,8 +131,9 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     ]).then(([{ listen }, { listenForVaultChanges }]) => {
       if (!active) return;
       stop = listenForVaultChanges(
-        (event, handler) => listen(event, () => handler()),
-        () => store.absorbVaultChange()
+        (event, handler) =>
+          listen<SyncChanged>(event, ({ payload }) => handler(payload)),
+        (change) => store.absorbVaultChange(change)
       );
     });
     return () => {

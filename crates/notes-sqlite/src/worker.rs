@@ -52,6 +52,9 @@ enum Request {
         vault_root: Option<std::path::PathBuf>,
         reply: SyncSender<Result<bool, StorageError>>,
     },
+    VaultStatRecords {
+        reply: SyncSender<Result<Vec<(String, notes_sync::intake::Known)>, StorageError>>,
+    },
     ForgetMissingRefusals {
         present: Vec<String>,
         reply: SyncSender<Result<usize, StorageError>>,
@@ -254,6 +257,16 @@ impl SqliteStorage {
     /// The bytes for an attachment arrived. Every row whose link names it and
     /// which is still waiting learns its hash — which is what turns a note
     /// showing nothing into a note showing its picture.
+    /// What this app last dealt with at every path it knows, in one answer.
+    /// The scan asks about every file in the folder, and a question per file
+    /// would be a worker round trip per document — the queue that a keystroke
+    /// waits in.
+    pub fn vault_stat_records(
+        &self,
+    ) -> Result<Vec<(String, notes_sync::intake::Known)>, StorageError> {
+        self.request(|reply| Request::VaultStatRecords { reply })
+    }
+
     /// Files this app refused that are not in the folder any more. A refusal
     /// is about a file; once the file is gone, so is what it was about — and a
     /// file that comes back is read rather than skipped as already answered.
@@ -525,6 +538,30 @@ impl SqliteStorage {
                                 &content_hash,
                                 vault_root.as_deref(),
                             ));
+                        }
+                        Request::VaultStatRecords { reply } => {
+                            let _ = reply.send(
+                                connection
+                                    .prepare_cached(
+                                        "SELECT folder_path, exported_hash,
+                                                file_mtime_ms, file_size
+                                         FROM sync_documents",
+                                    )
+                                    .and_then(|mut statement| {
+                                        let rows = statement.query_map([], |row| {
+                                            Ok((
+                                                row.get::<_, String>(0)?,
+                                                notes_sync::intake::Known {
+                                                    recorded_hash: row.get(1)?,
+                                                    file_mtime_ms: row.get(2)?,
+                                                    file_size: row.get(3)?,
+                                                },
+                                            ))
+                                        })?;
+                                        rows.collect::<Result<Vec<_>, _>>()
+                                    })
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
                         }
                         Request::ForgetMissingRefusals { present, reply } => {
                             let _ = reply.send(

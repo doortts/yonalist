@@ -1214,3 +1214,65 @@ fn an_edited_split_document_survives_two_export_passes() {
         .expect("count");
     assert_eq!(still_recorded, 1, "and so is its record");
 }
+
+/// The bytes arriving is the moment the row can finally say which picture it
+/// is, so that is when it stops holding the vault's link and starts holding
+/// the picture's own name. And a row that changed is a revision that moved:
+/// without it the open window has nothing to tell it the placeholder is a
+/// picture now, and waits for a restart.
+#[test]
+fn resolving_an_attachment_normalizes_the_row_and_bumps_the_revision() {
+    const HASH: &str = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
+    let (directory, storage) = storage();
+    storage
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .expect("merge");
+    let before = storage.revision().expect("revision");
+
+    let resolved = storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            HASH,
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
+        )
+        .expect("resolve");
+
+    assert_eq!(resolved, 1);
+    assert_eq!(image_path(&directory, IMAGE_NODE_ID), format!("{HASH}.png"));
+    assert!(
+        storage.revision().expect("revision") > before,
+        "a row changed, so the revision has to have moved"
+    );
+}
+
+/// Bytes nobody was waiting for change no row, so nothing has to be redrawn.
+#[test]
+fn an_attachment_no_row_wanted_leaves_the_revision_alone() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .expect("merge");
+    let before = storage.revision().expect("revision");
+
+    let resolved = storage
+        .resolve_asset(
+            "elsewhere-000000000000.png",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "assets/elsewhere-000000000000.png",
+        )
+        .expect("resolve");
+
+    assert_eq!(resolved, 0);
+    assert_eq!(storage.revision().expect("revision"), before);
+}
+
+fn image_path(directory: &tempfile::TempDir, node_id: &str) -> String {
+    rusqlite::Connection::open(directory.path().join("notes.sqlite"))
+        .expect("read")
+        .query_row(
+            "SELECT relative_path FROM notes_images WHERE node_id = ?1",
+            [node_id],
+            |row| row.get(0),
+        )
+        .expect("image row")
+}
