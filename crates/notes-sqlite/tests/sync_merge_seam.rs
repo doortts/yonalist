@@ -435,3 +435,58 @@ fn adopting_only_a_place_still_counts_as_a_write() {
         "and every open session has to learn it"
     );
 }
+
+/// Exporting is the other half of the seam. It reads and writes the same rows
+/// the worker owns, so it goes through the same door — and it must not move
+/// the revision, because nothing about the notes changed by writing them down.
+#[test]
+fn an_export_through_the_worker_writes_the_vault_without_moving_the_revision() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("seed");
+    // A merge leaves nothing waiting — it adopted what another device already
+    // wrote. A local edit is what puts a document in the queue.
+    let command = NotesCommand::UpdateText {
+        id: notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id"),
+        text: "Thought, typed here".to_owned(),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("edit");
+    let revision = storage.revision().expect("revision");
+
+    let written = storage.export_pending(vault.path()).expect("export");
+
+    assert!(written > 0, "the waiting rows had somewhere to go");
+    assert_eq!(
+        storage.revision().expect("revision"),
+        revision,
+        "writing the notes down did not change them"
+    );
+    let home = std::fs::read_to_string(vault.path().join("README.md")).expect("home");
+    assert!(home.contains("id: root"), "{home}");
+    let file =
+        std::fs::read_to_string(vault.path().join("Projects-4f1c8e20a3b7").join("README.md"))
+            .expect("the page");
+    // The comma is escaped: every ASCII punctuation mark is, so a user's text
+    // can never turn into markup or into a node comment.
+    assert!(file.contains(r"- Thought\, typed here <!-- yid:"), "{file}");
+}
+
+#[test]
+fn an_export_with_nothing_waiting_writes_nothing() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("seed");
+    storage.export_pending(vault.path()).expect("first");
+
+    let written = storage.export_pending(vault.path()).expect("again");
+
+    assert_eq!(written, 0, "an export with nothing to say says nothing");
+}
