@@ -2452,3 +2452,83 @@ fn a_picture_whose_bytes_are_known_lands_in_domain_form() {
         .expect("image row");
     assert_eq!(path, format!("{HASH}.png"));
 }
+
+/// The other half of the same rule. A line that names a different picture is
+/// a different state, and under an equal stamp this device's own row wins and
+/// is restamped — otherwise a comparison that ignored the picture entirely
+/// would settle every replacement as "nothing happened".
+#[test]
+fn a_replaced_picture_under_an_equal_stamp_is_an_edit() {
+    const HASH: &str = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let file = page_with_picture("assets/holiday-9f2c1b7a4e6d.png");
+    merge_document(&transaction, &clock(), &file, &input()).expect("first");
+    resolve_picture(&transaction, HASH);
+    let before = hlc_of(&transaction, NODE_ID);
+
+    let replaced = page_with_picture("assets/holiday-aaaabbbbcccc.png");
+    let outcome = merge_document(&transaction, &clock(), &replaced, &input()).expect("replace");
+
+    assert_eq!(
+        outcome.applied, 1,
+        "a different picture is a different state"
+    );
+    assert_ne!(hlc_of(&transaction, NODE_ID), before, "so the stamp moves");
+}
+
+/// The attachment moved — a page's own `assets/` to the vault's, which the
+/// placement pass does whenever a second note points at the same bytes. The
+/// link changed and the bytes did not, so nothing was edited.
+#[test]
+fn a_repositioned_picture_is_not_an_edit() {
+    const HASH: &str = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let file = page_with_picture("assets/holiday-9f2c1b7a4e6d.png");
+    merge_document(&transaction, &clock(), &file, &input()).expect("first");
+    resolve_picture(&transaction, HASH);
+    let before = hlc_of(&transaction, NODE_ID);
+
+    let moved = page_with_picture("../assets/holiday-9f2c1b7a4e6d.png");
+    let outcome = merge_document(&transaction, &clock(), &moved, &input()).expect("replay");
+
+    assert_eq!(
+        outcome.applied, 0,
+        "the same bytes, somewhere else in the vault"
+    );
+    assert_eq!(hlc_of(&transaction, NODE_ID), before);
+}
+
+/// One page, one picture, at whatever link the caller wants to state.
+fn page_with_picture(link: &str) -> notes_sync::document::VaultFile {
+    let mut picture = node(NODE_ID, &stamp(5, DEVICE), "");
+    picture.body = NodeBody::Image(notes_sync::document::ImageReference {
+        original_name: "holiday.png".to_owned(),
+        path: link.to_owned(),
+        display_width: 320,
+        pixel_width: 1280,
+        pixel_height: 720,
+        byte_size: 421_904,
+        unknown_tokens: Vec::new(),
+    });
+    notes_sync::document::VaultFile::Page(page(vec![picture], &stamp(5, DEVICE)))
+}
+
+/// The bytes landed: the row learns its hash and takes the domain form.
+fn resolve_picture(transaction: &rusqlite::Transaction<'_>, hash: &str) {
+    transaction
+        .execute(
+            "UPDATE notes_images SET content_hash = ?1, relative_path = ?1 || '.png'
+             WHERE node_id = ?2",
+            rusqlite::params![hash, NODE_ID],
+        )
+        .expect("resolve");
+    transaction
+        .execute(
+            "INSERT INTO sync_assets(content_hash, disk_name, location, unreferenced_at)
+             VALUES (?1, 'holiday-9f2c1b7a4e6d.png', 'assets/holiday-9f2c1b7a4e6d.png', NULL)",
+            [hash],
+        )
+        .expect("asset");
+}

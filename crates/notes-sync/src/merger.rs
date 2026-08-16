@@ -1524,12 +1524,13 @@ fn extras_of(entry: &Incoming<'_>) -> String {
 /// characters of that hash, which is what makes the two sides meet. A name
 /// without that tail is not one this app wrote, so it stands for itself.
 pub(crate) fn image_identity(content_hash: &str, link: &str) -> String {
-    if content_hash.len() >= 12 {
+    // The column holds a full hash or nothing at all — the schema's own CHECK.
+    if content_hash.len() == 64 {
         return content_hash[..12].to_owned();
     }
-    let name = link.rsplit('/').next().unwrap_or(link);
+    let name = link.rsplit('/').next().unwrap_or_default();
     match name.rsplit_once('-') {
-        Some((_, tail)) => tail.split('.').next().unwrap_or(tail).to_owned(),
+        Some((_, tail)) => tail.split('.').next().unwrap_or_default().to_owned(),
         None => name.to_owned(),
     }
 }
