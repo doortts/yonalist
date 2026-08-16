@@ -6,6 +6,7 @@ import type { NotesExportResult } from "../../../packages/contracts/generated/No
 import type { SearchPage } from "../../../packages/contracts/generated/SearchPage";
 import type { ForestSnapshot } from "../../../packages/contracts/generated/ForestSnapshot";
 import type { PaneSnapshot } from "./appNavigation";
+import type { VaultChange } from "./syncChanged";
 import type { NotesApi } from "./api";
 import { initialNotesState, type NotesState } from "./notesState";
 import {
@@ -167,16 +168,54 @@ export class NotesStore {
   }
 
   /**
-   * Another device's edit arrived. The rows it touched are anywhere in the
-   * page, including rows this window is not showing, so the page is read
-   * again rather than patched.
+   * Another device's edit arrived. What it touched is named, so the named
+   * rows are fetched and applied the way this window applies its own edits —
+   * the caret and the scroll stay where the user left them, which a re-read
+   * cannot promise.
    *
-   * The page list is read again too: a page made, renamed or deleted on
-   * another device is a change to Home, which is a page this window is
-   * probably not looking at.
+   * Two things send it down the other path. A change too wide to be worth
+   * naming row by row, and an answer that came back incomplete: in both, the
+   * page and the page list are read again, which is always correct and merely
+   * more expensive.
    */
-  async absorbVaultChange(): Promise<void> {
+  async absorbVaultChange(change?: VaultChange): Promise<void> {
+    if (change && await this.patchFromVault(change)) return;
     await Promise.all([this.viewport.reload(), this.refreshPages()]);
+  }
+
+  /** Answers whether the change was applied; `false` asks for the re-read. */
+  private async patchFromVault(change: VaultChange): Promise<boolean> {
+    const named = change.changedNodeIds.length + change.deletedNodeIds.length;
+    if (named === 0 || named > VIEWPORT_LIMIT) return false;
+    try {
+      const snapshot = change.changedNodeIds.length === 0
+        ? { revision: change.revision, nodes: [], complete: true }
+        : await this.api.queryForest({
+          rootIds: [...change.changedNodeIds],
+          limit: VIEWPORT_LIMIT
+        });
+      // An answer that had to stop short describes less than what happened.
+      if (!snapshot.complete) return false;
+      this.applyReceipt({
+        revision: snapshot.revision,
+        changedNodes: snapshot.nodes,
+        deletedIds: [...change.deletedNodeIds],
+        // This window's own history, unchanged: what another device did is
+        // not something it can undo, and the receipt shape carries the flags
+        // whether or not they moved.
+        history: {
+          canUndo: this.state.canUndo,
+          canRedo: this.state.canRedo,
+          undoDepth: this.state.undoDepth,
+          redoDepth: this.state.redoDepth
+        }
+      });
+      return true;
+    } catch {
+      // Whatever went wrong, reading the page again is the answer that always
+      // works.
+      return false;
+    }
   }
 
   private async refreshPages(): Promise<void> {

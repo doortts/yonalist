@@ -1424,6 +1424,92 @@ describe("다른 기기의 변경 흡수", () => {
   });
 });
 
+describe("다른 기기의 변경 흡수 — 이름이 온 경우", () => {
+  it("바뀐 노드만 가져와 반영하고 페이지를 다시 읽지 않는다", async () => {
+    const queryViewport = vi.fn(async () => boot.viewport as ViewportPage);
+    const notes = api(queryViewport);
+    notes.queryForest = vi.fn(async () => ({
+      revision: 9,
+      nodes: [{ ...bullet("one", 1024), text: "그쪽에서 고친 것" }],
+      complete: true
+    }));
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+    queryViewport.mockClear();
+
+    await store.absorbVaultChange({
+      revision: 9,
+      changedNodeIds: ["one"],
+      deletedNodeIds: []
+    });
+
+    expect(store.getSnapshot().nodes.map((row) => row.text)).toEqual([
+      "그쪽에서 고친 것",
+      "two"
+    ]);
+    expect(queryViewport).not.toHaveBeenCalled();
+    expect(store.getSnapshot().revision).toBe(9);
+  });
+
+  it("삭제된 줄은 사라지고 나머지는 그대로다", async () => {
+    const notes = api(async () => boot.viewport as ViewportPage);
+    notes.queryForest = vi.fn(async () => ({
+      revision: 9,
+      nodes: [],
+      complete: true
+    }));
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+
+    await store.absorbVaultChange({
+      revision: 9,
+      changedNodeIds: [],
+      deletedNodeIds: ["one"]
+    });
+
+    expect(store.getSnapshot().nodes.map((row) => row.id)).toEqual(["two"]);
+  });
+
+  it("한 화면보다 넓게 바뀌면 페이지를 다시 읽는다", async () => {
+    const queryViewport = vi.fn(async () => boot.viewport as ViewportPage);
+    const notes = api(queryViewport);
+    notes.queryForest = vi.fn();
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+    queryViewport.mockClear();
+
+    await store.absorbVaultChange({
+      revision: 9,
+      changedNodeIds: Array.from({ length: 200 }, (_, index) => `node-${index}`),
+      deletedNodeIds: []
+    });
+
+    expect(notes.queryForest).not.toHaveBeenCalled();
+    expect(queryViewport).toHaveBeenCalled();
+  });
+
+  it("돌아온 답이 잘렸으면 페이지를 다시 읽는다", async () => {
+    const queryViewport = vi.fn(async () => boot.viewport as ViewportPage);
+    const notes = api(queryViewport);
+    notes.queryForest = vi.fn(async () => ({
+      revision: 9,
+      nodes: [bullet("one", 1024)],
+      complete: false
+    }));
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+    queryViewport.mockClear();
+
+    await store.absorbVaultChange({
+      revision: 9,
+      changedNodeIds: ["one"],
+      deletedNodeIds: []
+    });
+
+    expect(queryViewport).toHaveBeenCalled();
+  });
+});
+
 function page(id: string, title: string): NoteView {
   return { ...bullet(id, 1_024), parentId: "root", text: title };
 }
