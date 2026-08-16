@@ -70,8 +70,10 @@ fn render_page(document: &PageDocument) -> Result<Vec<u8>, String> {
     render_note(&mut out, &document.root.note, 0);
     out.push('\n');
 
+    let mut previous = String::new();
     for node in &document.nodes {
-        render_node(&mut out, node, 0)?;
+        render_node(&mut out, node, 0, &previous)?;
+        previous = node.id.clone();
     }
     Ok(out.into_bytes())
 }
@@ -112,13 +114,20 @@ fn render_trash(document: &TrashDocument) -> Result<Vec<u8>, String> {
         required_hlc(&document.max_hlc, "max_hlc")?
     );
     out.push_str("---\n");
+    let mut previous = String::new();
     for node in &document.nodes {
-        render_node(&mut out, node, 0)?;
+        render_node(&mut out, node, 0, &previous)?;
+        previous = node.id.clone();
     }
     Ok(out.into_bytes())
 }
 
-fn render_node(out: &mut String, node: &DocumentNode, depth: usize) -> Result<(), String> {
+fn render_node(
+    out: &mut String,
+    node: &DocumentNode,
+    depth: usize,
+    implied_previous: &str,
+) -> Result<(), String> {
     field_fits(&node.note, "note")?;
     let indentation = "  ".repeat(depth);
     // A split line says nothing about the node beyond where it lives, and the
@@ -142,12 +151,14 @@ fn render_node(out: &mut String, node: &DocumentNode, depth: usize) -> Result<()
             format!("[{}]({path})", escape_inline(title))
         }
     };
-    let comment = render_comment(node)?;
+    let comment = render_comment(node, implied_previous)?;
     let _ = writeln!(out, "{indentation}{prefix}{body} {comment}");
 
     render_note(out, &node.note, depth + 1);
+    let mut previous = String::new();
     for child in &node.children {
-        render_node(out, child, depth + 1)?;
+        render_node(out, child, depth + 1, &previous)?;
+        previous = child.id.clone();
     }
     Ok(())
 }
@@ -171,7 +182,7 @@ fn render_note(out: &mut String, note: &str, depth: usize) {
 /// Token order is fixed, and each token appears only when it applies. A split
 /// line carries no state tokens at all: the child document's frontmatter owns
 /// that state, and two authorities would make the merge order matter.
-fn render_comment(node: &DocumentNode) -> Result<String, String> {
+fn render_comment(node: &DocumentNode, implied_previous: &str) -> Result<String, String> {
     let mut comment = format!(
         "<!-- yid: {} t: {}",
         canonical_uuid(&node.id)?,
@@ -197,6 +208,19 @@ fn render_comment(node: &DocumentNode) -> Result<String, String> {
     }
     if split {
         comment.push_str(" split");
+    }
+    // Omitted when it says only what the line order already says: a document in
+    // creation order renders exactly as it did before this token existed, which
+    // is what lets the format version stay where it is.
+    if let Some((previous, claim)) = &node.place
+        && (previous.as_str(), claim.as_str()) != (implied_previous, node.hlc.as_str())
+    {
+        let previous = if previous.is_empty() {
+            String::new()
+        } else {
+            canonical_uuid(previous)?
+        };
+        let _ = write!(comment, " prev: {previous}@{claim}");
     }
     if let Some((parent, sort_key)) = &node.from {
         let parent = if parent == "root" {

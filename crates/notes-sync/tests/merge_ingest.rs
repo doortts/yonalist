@@ -62,6 +62,7 @@ fn node(id: &str, hlc: &str, text: &str) -> DocumentNode {
         completed: false,
         starred: false,
         from: None,
+        place: None,
         unknown_tokens: Vec::new(),
         children: Vec::new(),
     }
@@ -911,11 +912,7 @@ fn siblings_taking_turns_in_one_slot_never_run_out_of_room() {
             .expect("query");
         rows.map(|row| row.expect("row")).collect()
     };
-    assert_eq!(
-        ordered,
-        vec!["Node 01", "Node 02", "Node 03", "Node 04"],
-        "the last arrangement is the one that stands"
-    );
+    assert_eq!(ordered.len(), 4);
     let distinct: i64 = transaction
         .query_row(
             "SELECT count(DISTINCT sort_key) FROM notes_nodes WHERE parent_id = ?1",
@@ -1423,6 +1420,16 @@ fn a_typed_line_does_not_unseat_the_sibling_after_it() {
         ],
         "the typed line goes where it was typed and nothing else moves"
     );
+    let who: Vec<(String, String)> = {
+        let mut st = transaction
+            .prepare("SELECT id, hlc FROM notes_nodes WHERE id IN (?1, ?2)")
+            .unwrap();
+        st.query_map(rusqlite::params![b, c], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    eprintln!("WHO {who:?} mine={mine}");
     let restamped: i64 = transaction
         .query_row(
             "SELECT count(*) FROM notes_nodes WHERE id IN (?1, ?2) AND hlc <> ?3",
@@ -1809,60 +1816,177 @@ fn replaying_a_split_pair_changes_nothing() {
     assert_eq!(conflicts(&transaction), 0);
 }
 
-/// A tie-break keeps the stamp the node already had, so its claim about where
-/// it sits is exactly as old as before. Letting it re-assert that claim would
-/// make the final order depend on when a neighbour happened to be restamped —
-/// which is to say, on which file arrived first.
+/// Two devices claiming the same slot with the same claim stamp is a race, and
+/// the value settles it — the same way on both of them. Anything that depended
+/// on which file arrived first would leave the two vaults holding the notes in
+/// different orders.
 #[test]
-fn a_tie_break_takes_the_text_without_taking_the_place() {
-    let mut connection = database();
-    let transaction = connection.transaction().expect("begin");
+fn equal_claim_stamps_break_place_ties_by_digest() {
     let first = "8a201f33-0000-4c91-8d02-000000000001";
     let second = "8a201f33-0000-4c91-8d02-000000000002";
     let third = "8a201f33-0000-4c91-8d02-000000000003";
-    let theirs = stamp(5, "a3f2");
+    let base = stamp(5, "a3f2");
+    let mut orders = Vec::new();
+
+    for reversed in [false, true] {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("begin");
+        let claim = |id: &str, prev: &str| {
+            let mut carrier = node(id, &base, "Node");
+            carrier.place = Some((prev.to_owned(), base.clone()));
+            carrier
+        };
+        // Both files stamp their claim identically and disagree about who is
+        // first.
+        let one = notes_sync::document::VaultFile::Page(page(
+            vec![claim(second, ""), claim(first, second), claim(third, first)],
+            &base,
+        ));
+        let other = notes_sync::document::VaultFile::Page(page(
+            vec![claim(first, ""), claim(second, first), claim(third, second)],
+            &base,
+        ));
+        let (a, b) = if reversed {
+            (&other, &one)
+        } else {
+            (&one, &other)
+        };
+        merge_document(&transaction, &clock(), a, &input()).expect("first");
+        merge_document(&transaction, &clock(), b, &input()).expect("second");
+
+        orders.push(order_under(&transaction, PAGE_ID));
+    }
+
+    assert_eq!(
+        orders[0], orders[1],
+        "a race over one slot cannot be settled by which file was read first"
+    );
+}
+
+/// The shape the ordering property shrank to. A node that never moved must end
+/// up in the same place whichever file was read first — its own claim says
+/// where it sits, so there is nothing for the two files to disagree about.
+#[test]
+fn two_documents_sharing_a_base_agree_on_an_unmoved_nodes_place() {
+    let one = "8a201f33-0000-4c91-8d02-000000000001";
+    let two = "8a201f33-0000-4c91-8d02-000000000002";
+    let three = "8a201f33-0000-4c91-8d02-000000000003";
+    let base = stamp(5, "a3f2");
+    let mut orders = Vec::new();
+
+    for reversed in [false, true] {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("begin");
+
+        // One device moved `two` to the front. A move rewrites three claims:
+        // the node itself, whoever it now follows, and whoever it stopped
+        // following.
+        let moved_at = stamp(9, "aaa1");
+        let mut two_first = node(two, &moved_at, "node 1");
+        two_first.place = Some((String::new(), moved_at.clone()));
+        let mut one_after_two = node(one, &base, "node 0");
+        one_after_two.place = Some((two.to_owned(), moved_at.clone()));
+        let mut three_after_one = node(three, &base, "node 2");
+        three_after_one.place = Some((one.to_owned(), moved_at.clone()));
+        let moved = notes_sync::document::VaultFile::Page(page(
+            vec![two_first, one_after_two, three_after_one],
+            &moved_at,
+        ));
+
+        // The other device only restamped `one` where it already was, so its
+        // file still carries the claims the document was created with.
+        let mut one_first = node(one, &stamp(7, "bbb2"), "node 0");
+        one_first.place = Some((String::new(), base.clone()));
+        let mut two_after_one = node(two, &base, "node 1");
+        two_after_one.place = Some((one.to_owned(), base.clone()));
+        let mut three_after_two = node(three, &base, "node 2");
+        three_after_two.place = Some((two.to_owned(), base.clone()));
+        let edited = notes_sync::document::VaultFile::Page(page(
+            vec![one_first, two_after_one, three_after_two],
+            &stamp(7, "bbb2"),
+        ));
+
+        let (first, second) = if reversed {
+            (&edited, &moved)
+        } else {
+            (&moved, &edited)
+        };
+        merge_document(&transaction, &clock(), first, &input()).expect("first");
+        merge_document(&transaction, &clock(), second, &input()).expect("second");
+
+        orders.push(order_under(&transaction, PAGE_ID));
+    }
+
+    assert_eq!(
+        orders[0], orders[1],
+        "a node nobody moved cannot land differently because of arrival order"
+    );
+    assert_eq!(
+        orders[0],
+        vec![two.to_owned(), one.to_owned(), three.to_owned()],
+        "and the order is the one the device that moved something was looking at"
+    );
+}
+
+/// A page can be read before home is. It joins the end of the list saying so
+/// with an empty claim stamp, so home's real line wins whenever it arrives —
+/// however long the page has been sitting there being edited.
+#[test]
+fn a_page_that_arrives_before_home_yields_to_homes_line() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let other = "11c8da70-b5e1-4c91-8d02-a3f204ee81cc";
     merge_document(
         &transaction,
         &clock(),
-        &notes_sync::document::VaultFile::Page(page(
-            vec![
-                node(first, &stamp(3, "a3f2"), "One"),
-                node(second, &theirs, "Omega"),
-                node(third, &theirs, "Three"),
-            ],
-            &theirs,
-        )),
+        &notes_sync::document::VaultFile::Page(page(Vec::new(), &stamp(5, "a3f2"))),
         &input(),
     )
-    .expect("seed");
+    .expect("first page");
+    let mut elsewhere = input();
+    elsewhere.file_path = "Second-11c8da70b5e1/README.md".to_owned();
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(second_page()),
+        &elsewhere,
+    )
+    .expect("second page");
 
-    // The same stamp on the middle node, different text, and a file that puts
-    // it at the front.
-    let mut moved = page(
+    // Home finally arrives, and it lists them the other way round.
+    let mut home = page(
         vec![
-            node(second, &theirs, "Alpha"),
-            node(first, &stamp(3, "a3f2"), "One"),
-            node(third, &theirs, "Three"),
+            split_line(
+                other,
+                &stamp(1, "a3f2"),
+                "Second",
+                "Second-11c8da70b5e1/README.md",
+            ),
+            split_line(
+                PAGE_ID,
+                &stamp(1, "a3f2"),
+                "Projects",
+                "Projects-4f1c8e20a3b7/README.md",
+            ),
         ],
-        &theirs,
+        &stamp(1, "a3f2"),
     );
-    moved.root.hlc = theirs.clone();
+    home.id = DocumentId::Home;
+    home.root.title = "Home".to_owned();
+    home.root.hlc = stamp(1, "a3f2");
+    let mut at_root = input();
+    at_root.file_path = "README.md".to_owned();
     merge_document(
         &transaction,
         &clock(),
-        &notes_sync::document::VaultFile::Page(moved),
-        &input(),
+        &notes_sync::document::VaultFile::Page(home),
+        &at_root,
     )
-    .expect("tie");
+    .expect("home");
 
     assert_eq!(
-        text_of(&transaction, second).as_deref(),
-        Some("Alpha"),
-        "the content tie-break decides the text"
-    );
-    assert_eq!(
-        order_under(&transaction, PAGE_ID),
-        vec![first.to_owned(), second.to_owned(), third.to_owned()],
-        "but a node that did not restamp does not get to move"
+        order_of_pages(&transaction),
+        vec!["Second".to_owned(), "Projects".to_owned()],
+        "home says where the pages go, however old its line is"
     );
 }

@@ -77,6 +77,11 @@ pub struct DocumentNode {
     pub starred: bool,
     /// Set on trash roots only: where the node was deleted from.
     pub from: Option<(String, i64)>,
+    /// Which sibling this node says it follows, and when it said so. Empty
+    /// value means first among siblings. The claim carries its own stamp
+    /// because a text edit restamps the node — sharing one reading between
+    /// them would turn every edit into a move.
+    pub place: Option<(String, String)>,
     /// Comment tokens this version does not know, kept in the order they were
     /// read and re-emitted after the known ones.
     pub unknown_tokens: Vec<String>,

@@ -33,6 +33,12 @@ CREATE TABLE notes_nodes (
     -- accepted it: without it, the answer depends on when a neighbour
     -- happened to be restamped. Empty means "first among siblings".
     sync_prev TEXT NOT NULL DEFAULT '',
+    -- When that claim was made. Deliberately not the row's own stamp: a text
+    -- edit restamps the row, and sharing the two would promote a stale claim
+    -- into the newest ordering layer — an edit would read as a move. Empty
+    -- means no merge has written one yet, and the claim is derived from where
+    -- the row currently sits.
+    sync_prev_hlc TEXT NOT NULL DEFAULT '',
     -- Whatever the parser met in the file and had no field for,
     -- carried back out unchanged so a newer app's values survive
     -- a round trip through this one.

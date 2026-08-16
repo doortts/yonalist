@@ -19,6 +19,7 @@ fn node(id: &str, hlc: &str, text: &str) -> DocumentNode {
         completed: false,
         starred: false,
         from: None,
+        place: None,
         unknown_tokens: Vec::new(),
         children: Vec::new(),
     }

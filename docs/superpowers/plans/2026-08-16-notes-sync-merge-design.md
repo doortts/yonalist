@@ -358,7 +358,8 @@ B의 (빈 값, t0)을 이긴다. 두 순서 모두 [n2, n1, n3] — 이동한 �
 | 같은 주장 스탬프의 digest 동률 | `equal_claim_stamps_break_place_ties_by_digest` (신규 — 양방향 병합이 같은 답) |
 | 내 vault 손 이동 저작 | `a_hand_moved_line_in_my_vault_is_adopted_as_authoring` (신규) |
 | 생략 규칙(기본값 켤레는 토큰 없음) | golden 결정성(M2) + `a_default_place_claim_renders_no_token` (신규) |
-| fallback 적재(로컬 저작분) | `a_local_move_survives_an_unrelated_merge_flush` (신규 — 지금 코드에서 red인 버그의 재현이기도 하다) |
+| fallback 적재(청구 없는 행) | **삭제로 관측되지 않는다.** 병합이 쓰는 모든 행은 그 자리에서 청구를 함께 남기므로, 청구가 빈 행은 **병합 밖이 만든 행**뿐이다 — 시드와 M3.2의 명령 경로다. 관측면은 M3.2의 seam 테스트이고 M3.1f는 규칙만 둔다 |
+| ~~로컬 이동 뒤 flush 생존~~ | **M3.2로 넘긴다.** 규칙 9대로 이동 명령이 켤레를 써야 성립한다. 이미 청구가 있는 행에서 "행의 hlc가 청구보다 새면 자리를 다시 읽는다"로 때우려 했더니 **텍스트 편집이 자리를 무효화**해 교환 property가 깨졌다 — 편집과 이동을 스탬프만으로 가를 수 없다. 이동을 만든 쪽이 쓰는 것이 유일한 길이다 |
 | 첫 도착 append의 빈 스탬프 | `a_page_that_arrives_before_home_yields_to_homes_line` (신규) |
 | 교환·수렴 | `prop_merge_order_of_two_docs_does_not_change_the_state`, `prop_two_dbs_converge_by_exchanging_exports` |
 

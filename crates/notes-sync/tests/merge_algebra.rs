@@ -191,6 +191,7 @@ fn canonical_document() -> impl Strategy<Value = PageDocument> {
                     completed: false,
                     starred: false,
                     from: None,
+                    place: None,
                     unknown_tokens: Vec::new(),
                     children: Vec::new(),
                 })
@@ -271,8 +272,27 @@ fn apply_changes(base: &PageDocument, changes: &[Change], device: &str) -> PageD
             }
             Change::MoveToFront { at, millis } => {
                 let at = at % count;
+                let mark = stamp(*millis, device);
+                // A move rewrites three claims: the node itself, whoever it now
+                // follows, and whoever it stopped following. Anything less and
+                // the file states an order nobody claimed.
+                let orphaned_follower = document.nodes.get(at + 1).map(|node| node.id.clone());
+                let left_behind = if at == 0 {
+                    String::new()
+                } else {
+                    document.nodes[at - 1].id.clone()
+                };
                 let mut moved = document.nodes.remove(at);
-                moved.hlc = stamp(*millis, device);
+                if let Some(follower) = orphaned_follower {
+                    if let Some(node) = document.nodes.iter_mut().find(|node| node.id == follower) {
+                        node.place = Some((left_behind, mark.clone()));
+                    }
+                }
+                if let Some(displaced) = document.nodes.first_mut() {
+                    displaced.place = Some((moved.id.clone(), mark.clone()));
+                }
+                moved.hlc = mark.clone();
+                moved.place = Some((String::new(), mark.clone()));
                 document.nodes.insert(0, moved);
             }
             Change::HandEdit { at } => {
@@ -331,26 +351,58 @@ proptest! {
         prop_assert_eq!(dump(&connection, &known), after_first);
     }
 
-}
 
-// The other two properties — commutativity and convergence of *order* — are not
-// here yet, and deliberately not written in a weakened form that would pass.
-// The generator found a case the current design cannot satisfy: a node that
-// never moves still records which sibling it follows the first time it is seen,
-// and which file was seen first decides that claim. Two vaults then hold the
-// same notes in different orders.
-//
-// The reproducing shape, from the shrunk counterexample:
-//
-//   base:  [n1, n2, n3], every stamp equal
-//   file A: n2 moved to the front and restamped
-//   file B: n1 restamped in place, order unchanged
-//
-//   A then B  ->  n3 claims "after n1"
-//   B then A  ->  n3 claims "after n2"
-//
-// State converges in both orders; only the sequence differs. Settling it needs
-// a rule the format does not have yet — see the merge design's open question on
-// ordering convergence. Until that lands, `prop_merge_order_of_two_docs_does_
-// not_change_the_state` and `prop_two_dbs_converge_by_exchanging_exports` stay
-// unwritten rather than narrowed.
+    /// Two devices' files reaching one vault in either order have to leave it
+    /// in the same state. Otherwise the answer depends on network timing.
+    #[test]
+    fn prop_merge_order_of_two_docs_does_not_change_the_state(
+        base in canonical_document(),
+        first in changes(),
+        second in changes(),
+    ) {
+        let a = apply_changes(&base, &first, "aaa1");
+        let b = apply_changes(&base, &second, "bbb2");
+        let known = stamps_of(&[&base, &a, &b]);
+
+        let mut forwards = database();
+        merge(&mut forwards, &VaultFile::Page(a.clone()));
+        merge(&mut forwards, &VaultFile::Page(b.clone()));
+
+        let mut backwards = database();
+        merge(&mut backwards, &VaultFile::Page(b));
+        merge(&mut backwards, &VaultFile::Page(a));
+
+        prop_assert_eq!(
+            dump(&forwards, &known),
+            dump(&backwards, &known),
+            "the order the files arrived in changed the answer"
+        );
+    }
+
+    /// Two vaults that each saw one file, then swapped, hold the same notes.
+    /// This is the property the whole design exists for.
+    #[test]
+    fn prop_two_dbs_converge_by_exchanging_exports(
+        base in canonical_document(),
+        first in changes(),
+        second in changes(),
+    ) {
+        let a = apply_changes(&base, &first, "aaa1");
+        let b = apply_changes(&base, &second, "bbb2");
+        let known = stamps_of(&[&base, &a, &b]);
+
+        let mut mine = database();
+        merge(&mut mine, &VaultFile::Page(a.clone()));
+        let mut theirs = database();
+        merge(&mut theirs, &VaultFile::Page(b.clone()));
+
+        merge(&mut mine, &VaultFile::Page(b));
+        merge(&mut theirs, &VaultFile::Page(a));
+
+        prop_assert_eq!(
+            dump(&mine, &known),
+            dump(&theirs, &known),
+            "the two vaults disagree about the same notes"
+        );
+    }
+}
