@@ -966,3 +966,52 @@ fn starring_a_waiting_picture_keeps_its_metadata() {
         "the row is still waiting for its bytes, not gone with them"
     );
 }
+
+/// The other device resized the picture, so the line comes back stamped later
+/// and genuinely changed. Taking that edit in must not put the vault's own
+/// link where the row keeps the picture's own name.
+#[test]
+fn an_edited_echo_keeps_the_row_in_domain_form() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    settle(&one, &two);
+
+    let file = page_file(&one);
+    let echoed = std::fs::read_to_string(&file)
+        .expect("read")
+        .lines()
+        .map(|line| {
+            if !line.contains("![") {
+                return line.to_owned();
+            }
+            let start = line.find(" t: ").expect("a stamp") + 4;
+            let end = start + line[start..].find(' ').expect("the end of it");
+            format!("{}zzzzzzzzz-00-dddd{}", &line[..start], &line[end..])
+                .replace("w: 480", "w: 300")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&file, format!("{echoed}\n")).expect("write");
+    one.absorb();
+
+    let (hash, path) = stored_image(&one, &shot);
+    assert_eq!(
+        hash, HASH,
+        "the picture is the one this device already holds"
+    );
+    assert_eq!(path, format!("{HASH}.png"));
+}
+
+/// What the row holds for a picture whose bytes this device already has.
+fn stored_image(device: &Device, node_id: &str) -> (String, String) {
+    rusqlite::Connection::open(device._home.path().join("notes.sqlite"))
+        .expect("open")
+        .query_row(
+            "SELECT content_hash, relative_path FROM notes_images WHERE node_id = ?1",
+            [node_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("image row")
+}

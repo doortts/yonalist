@@ -1461,6 +1461,18 @@ fn write_image(
         })
         .map_err(|error| error.to_string())?
         .unwrap_or_default();
+    // Which picture it is, once this device knows. Until the bytes arrive
+    // there is no hash to say it with, and the row holds the link the file
+    // used instead — that is what `resolve_asset` looks the row up by, and
+    // what an export writes back while the bytes are still missing.
+    let relative_path = if content_hash.is_empty() {
+        image.path.clone()
+    } else {
+        format!(
+            "{content_hash}.{}",
+            crate::layout::asset_extension(mime_type)
+        )
+    };
     transaction
         .prepare_cached(
             "INSERT INTO notes_images(
@@ -1481,7 +1493,7 @@ fn write_image(
             statement.execute(rusqlite::params![
                 id,
                 content_hash,
-                image.path,
+                relative_path,
                 image.original_name,
                 mime_type,
                 i64::from(image.display_width),

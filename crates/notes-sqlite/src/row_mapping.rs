@@ -148,6 +148,13 @@ mod tests {
 
         assert_eq!(image.relative_path(), format!("{HASH}.png"));
         assert_eq!(image.content_hash(), HASH);
+        // Asymmetric on purpose: the columns are read by position, and two of
+        // them transposed would draw every picture at the wrong shape while
+        // every other assertion here still passed.
+        assert_eq!(image.pixel_width(), 800);
+        assert_eq!(image.pixel_height(), 600);
+        assert_eq!(image.display_width(), 480);
+        assert_eq!(image.byte_length(), 11);
     }
 
     #[test]

@@ -2413,3 +2413,42 @@ fn a_resolved_picture_replayed_is_not_an_edit() {
     );
     assert_eq!(conflicts_for(&transaction, NODE_ID), 0);
 }
+
+/// When the bytes are already here, the row can say which picture it is from
+/// the first merge. The link the file used is the vault's business, not the
+/// row's.
+#[test]
+fn a_picture_whose_bytes_are_known_lands_in_domain_form() {
+    const HASH: &str = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    transaction
+        .execute(
+            "INSERT INTO sync_assets(content_hash, disk_name, location, unreferenced_at)
+             VALUES (?1, 'holiday-9f2c1b7a4e6d.png', 'assets/holiday-9f2c1b7a4e6d.png', NULL)",
+            [HASH],
+        )
+        .expect("asset");
+    let mut picture = node(NODE_ID, &stamp(5, DEVICE), "");
+    picture.body = NodeBody::Image(notes_sync::document::ImageReference {
+        original_name: "holiday.png".to_owned(),
+        path: "assets/holiday-9f2c1b7a4e6d.png".to_owned(),
+        display_width: 320,
+        pixel_width: 1280,
+        pixel_height: 720,
+        byte_size: 421_904,
+        unknown_tokens: Vec::new(),
+    });
+    let file = notes_sync::document::VaultFile::Page(page(vec![picture], &stamp(5, DEVICE)));
+
+    merge_document(&transaction, &clock(), &file, &input()).expect("merge");
+
+    let path: String = transaction
+        .query_row(
+            "SELECT relative_path FROM notes_images WHERE node_id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("image row");
+    assert_eq!(path, format!("{HASH}.png"));
+}
