@@ -155,21 +155,6 @@ fn dump(connection: &Connection, known_stamps: &[String]) -> Vec<String> {
     out
 }
 
-fn freshly_stamped(connection: &Connection, known_stamps: &[String]) -> Vec<String> {
-    let mut statement = connection
-        .prepare("SELECT id, hlc FROM notes_nodes ORDER BY id")
-        .expect("prepare");
-    statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .expect("query")
-        .map(|row| row.expect("row"))
-        .filter(|(_, hlc)| !hlc.is_empty() && !known_stamps.contains(hlc))
-        .map(|(id, _)| id)
-        .collect()
-}
-
 fn node_id(index: usize) -> String {
     format!("8a201f33-0000-4c91-8d02-{index:012}")
 }

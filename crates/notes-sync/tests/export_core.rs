@@ -172,8 +172,8 @@ fn self_validation_failure_leaves_the_file_untouched() {
         )
         .expect("dirty");
 
-    let mut transaction = connection.transaction().expect("begin");
-    let refused = export_document(&mut transaction, root.path(), PAGE_ID);
+    let transaction = connection.transaction().expect("begin");
+    let refused = export_document(&transaction, root.path(), PAGE_ID);
     transaction.commit().expect("commit");
 
     assert!(
@@ -224,8 +224,8 @@ fn an_export_refuses_to_overwrite_a_changed_file() {
         )
         .expect("dirty");
 
-    let mut transaction = connection.transaction().expect("begin");
-    let outcome = export_document(&mut transaction, root.path(), PAGE_ID).expect("export");
+    let transaction = connection.transaction().expect("begin");
+    let outcome = export_document(&transaction, root.path(), PAGE_ID).expect("export");
     transaction.commit().expect("commit");
 
     assert!(
