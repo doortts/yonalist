@@ -94,7 +94,10 @@ Touches:
   now excludes an arrival by construction) and the `SyncChanged` the window
   gets (`changed_ids` + `settled_ids`). Two lists of the same type would let a
   swap at the call site put the bug straight back and still compile; the pair's
-  halves have different types, so it cannot be written.
+  halves have different types, so that particular slip cannot be written. Not
+  every slip — `absorb_external(revision, &changed.changed_node_ids)` still
+  compiles. The call site itself needs a Tauri `AppHandle`, so no test reaches
+  it; what the shapes buy is one fewer way to get it wrong, not none.
 
 Tests, both red first:
 
@@ -105,6 +108,14 @@ Tests, both red first:
   — the split itself, over one outcome carrying all three kinds at once: the
   settled row reaches the window and not the barrier, while the edited and the
   removed reach both. Dropping either chain fails it.
+
+### Item 0 — `npm run build` was already failing on `main`
+
+Off the item list and off the Boundaries row, taken because the gate could not
+otherwise run: `src/features/notes/notesWorkspaceRuntime.ts` imported
+`canonicalizeTagFilters` and `tagFilterKey` and read neither, which `tsc`
+refuses under `noUnusedLocals`. `main` fails the same way without this branch.
+No test — deleting an unused import is not behaviour.
 
 ### Item 2 — the earlier design doc says the opposite (no code)
 

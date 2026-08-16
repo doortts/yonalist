@@ -210,7 +210,8 @@ IPC 페이로드의 모양도, 스키마도, 프런트엔드 코드도 바뀌지
 
 `apps/desktop/src-tauri/src/vault_watch.rs`의
 `an_arriving_picture_wakes_the_window`(:571) — 이미 있는 테스트를 고친다. 채널이
-`()` 대신 `MergeOutcome`을 나르게 하고, 도착한 통보의 `changed_ids`가 대기 중이던
+`()` 대신 `MergeOutcome`을 나르게 하고, 도착한 통보의 `changed_ids`(나중에
+`settled_ids`로 옮겨졌다)가 대기 중이던
 이미지 노드(`8a201f33-0000-4c91-8d02-00000000000f`, `waiting_picture()`가 심는
 그 id) 하나를 담고 `applied == 1`임을 단언한다. red: `left: {}`,
 `right: {"8a201f33-0000-4c91-8d02-00000000000f"}` — 창은 깨어나지만 무엇이

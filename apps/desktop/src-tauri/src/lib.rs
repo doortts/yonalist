@@ -853,8 +853,11 @@ mod tests {
     /// lists as one and the user loses an undo because a download finished.
     #[test]
     fn an_arriving_picture_puts_no_history_out_of_reach() {
-        // All three at once, the way a sweep that read a document and took in a
-        // picture in the same pass would report them.
+        // All three at once, which the sweep never actually reports in one
+        // outcome — it calls back per queue entry, so a document and a picture
+        // arrive as two. Deliberately stronger than production: one outcome
+        // carrying every kind is what makes both halves answerable in one
+        // assertion.
         let outcome = notes_sync::merger::MergeOutcome {
             applied: 3,
             changed_ids: std::collections::BTreeSet::from(["edited".to_owned()]),
