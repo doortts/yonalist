@@ -121,6 +121,25 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     };
   }, [store]);
   useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let stop: (() => void) | undefined;
+    let active = true;
+    void Promise.all([
+      import("@tauri-apps/api/event"),
+      import("./syncChanged")
+    ]).then(([{ listen }, { listenForVaultChanges }]) => {
+      if (!active) return;
+      stop = listenForVaultChanges(
+        (event, handler) => listen(event, () => handler()),
+        () => store.absorbVaultChange()
+      );
+    });
+    return () => {
+      active = false;
+      stop?.();
+    };
+  }, [store]);
+  useEffect(() => {
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       // Shares this listener with undo rather than registering a second one:
       // the window has no menu bar, so the inspector has to be reachable from

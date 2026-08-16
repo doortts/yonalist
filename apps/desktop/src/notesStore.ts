@@ -164,6 +164,15 @@ export class NotesStore {
     await this.viewport.loadMore();
   }
 
+  /**
+   * Another device's edit arrived. The rows it touched are anywhere in the
+   * page, including rows this window is not showing, so the page is read
+   * again rather than patched.
+   */
+  async absorbVaultChange(): Promise<void> {
+    await this.viewport.reload();
+  }
+
   queryForest(rootIds: readonly string[]): Promise<ForestSnapshot> {
     return this.api.queryForest({ rootIds: [...rootIds], limit: 2_000 });
   }
