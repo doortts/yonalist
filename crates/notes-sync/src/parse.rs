@@ -369,6 +369,7 @@ fn read_node_line(rest: &str, trash: bool) -> Result<Option<DocumentNode>, Quara
         completed: prefix_completed || tokens.completed,
         starred: tokens.starred,
         from: tokens.from,
+        place: tokens.place,
         unknown_tokens: tokens.unknown,
         children: Vec::new(),
     };
@@ -432,6 +433,7 @@ struct Tokens {
     collapsed: bool,
     split: bool,
     from: Option<(String, i64)>,
+    place: Option<(String, String)>,
     unknown: Vec<String>,
 }
 
@@ -490,6 +492,22 @@ fn read_tokens(comment: &str) -> Result<Tokens, Quarantine> {
             "split" => {
                 once("split")?;
                 tokens.split = true;
+            }
+            "prev:" => {
+                once("prev")?;
+                let value = words.next().unwrap_or_default();
+                // Split at the last `@`, the same shape `from:` uses. An empty
+                // value means "first among siblings", which is why the split
+                // has to tolerate an empty left half.
+                let (previous, stamp) = value
+                    .rsplit_once('@')
+                    .ok_or_else(|| format!("`{value}` is not a place claim."))?;
+                let previous = if previous.is_empty() {
+                    String::new()
+                } else {
+                    canonical_uuid(previous)?
+                };
+                tokens.place = Some((previous, optional_hlc(Some(&stamp.to_owned()))));
             }
             "collapsed" => {
                 once("collapsed")?;
