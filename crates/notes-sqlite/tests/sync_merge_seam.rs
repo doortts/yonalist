@@ -729,24 +729,30 @@ fn an_arriving_attachment_resolves_the_rows_waiting_for_it() {
 /// thrown away, because deleting a subtree upserts it too.
 #[test]
 fn a_picture_a_file_turned_back_into_text_is_not_stranded() {
-    let (_directory, storage) = storage();
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("notes.sqlite");
+    let storage = SqliteStorage::open(&path).expect("open");
+    let hash = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
     storage
         .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
         .expect("the picture");
-    // The bytes, in the spelling the app's own image record uses: it names the
-    // file by its hash. A merge writes the link its document states instead,
-    // which the app cannot read back — a separate defect, and not this one.
-    rusqlite::Connection::open(_directory.path().join("notes.sqlite"))
-        .expect("open")
-        .execute(
-            "UPDATE notes_images SET content_hash = ?2, relative_path = ?2 || '.png'
-             WHERE node_id = ?1",
-            rusqlite::params![
-                IMAGE_NODE_ID,
-                "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081"
-            ],
+    storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            hash,
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
         )
         .expect("the bytes");
+    // The app's own record names the file by its hash, and a merge writes the
+    // link its document states instead — which the app cannot read back. That
+    // is a separate defect, so the row is given the app's spelling here.
+    rusqlite::Connection::open(&path)
+        .expect("open")
+        .execute(
+            "UPDATE notes_images SET relative_path = ?2 || '.png' WHERE node_id = ?1",
+            rusqlite::params![IMAGE_NODE_ID, hash],
+        )
+        .expect("the app's own spelling");
     let mut document = match page("just words", &stamp(9)) {
         VaultFile::Page(page) => page,
         VaultFile::Trash(_) => unreachable!(),
@@ -755,6 +761,15 @@ fn a_picture_a_file_turned_back_into_text_is_not_stranded() {
     storage
         .merge_document(&VaultFile::Page(document), &input())
         .expect("the hand edit");
+    assert_eq!(
+        storage
+            .node(IMAGE_NODE_ID)
+            .expect("node")
+            .expect("the line")
+            .kind(),
+        notes_core::NoteNodeKind::Bullet,
+        "the file's word: this line is no longer a picture"
+    );
 
     let id = notes_core::NodeId::try_from(IMAGE_NODE_ID.to_owned()).expect("id");
     let edit = NotesCommand::UpdateText {

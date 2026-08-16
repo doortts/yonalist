@@ -50,9 +50,28 @@ that export defect is not fixed here.
 
 **What the orphan row misleads.** Four readers gate on nothing:
 
-- `parse_node` (`crates/notes-sqlite/src/row_mapping.rs:34-61`) attaches the
-  image regardless of kind, so the node reads back as `Bullet` + `Some(image)`
-  and `validate_image_ownership` refuses every command — the stuck node.
+- `parse_node` (`crates/notes-sqlite/src/row_mapping.rs:34-61`) builds the image
+  from the row regardless of kind. Which gate then refuses the node depends on
+  the row's shape, and `validate_image_ownership` is not any of them:
+  - The shape a merge actually writes fails inside `parse_node` itself.
+    `NoteImage::try_new` demands `relative_path == "{content_hash}.{extension}"`
+    (`crates/notes-core/src/image.rs:48`) while `write_image` stores the
+    document's link (`assets/….png`), so the read is a
+    `FromSqlConversionFailure` — a separate pre-existing defect, fixed on
+    `fix/image-relative-path-normalization`, not here.
+  - Given a row in the app's own spelling, `parse_node` succeeds and the node
+    reads back as `Bullet` + `Some(image)`. `NotesTree::validate` then refuses
+    it at load: the `(Bullet, Some(parent_id))` arm requires
+    `node.image().is_none()` (`crates/notes-core/src/tree.rs:388`), so the node
+    falls through to `ParentNotFound(parent_id)`
+    (`crates/notes-core/src/tree.rs:405`) — an error naming the *page*, not the
+    node. That is the stuck node, and it is stuck one gate earlier than
+    `validate_image_ownership` ever runs.
+
+  `collect_command_context` hydrates siblings as well as ancestors
+  (`crates/notes-sqlite/src/repository.rs:431-458`), so one orphan row also
+  refuses commands on *neighbouring* lines — creating a bullet at the end of the
+  same parent, say — not only on the node that owns it.
 - `content_of_row` (`merger.rs:1569-1583`) builds the compare string from
   `row.image` regardless of kind, so the row can never again compare equal to
   the text line the file holds. The node re-decides on every merge of that file.
@@ -88,6 +107,19 @@ invariant again for the other three.
 image row, so the three remaining ungated readers have no input to mis-read. A
 gate in `parse_node` or `content_of_row` would guard a state nothing can create.
 
+**Also rejected: a trigger on `notes_nodes`.** The schema states half the
+invariant already, so stating the other half there —
+`AFTER UPDATE OF kind ... WHEN NEW.kind <> 'image'`, four lines — is the obvious
+third option, and it would retire the writer census above that every future
+writer of `kind` re-opens. It loses on one specific ground: `write_row` already
+has to fight the triggers on this table. It writes the merged stamp in a
+separate statement precisely to slip past the update trigger
+(`crates/notes-sync/src/merger.rs:1245-1252`), so every trigger added here is
+another rule the merge has to reason around, invisible at the call site. A
+second implicit deleter of `notes_images` — beside the FK cascade — also makes
+the ownership of those rows harder to state than the census is to keep. The
+explicit DELETE says what it does where it happens.
+
 ## Contract
 
 **Goal** — a merge that writes a non-image line over a picture leaves a plain
@@ -96,7 +128,7 @@ bullet the user can edit, trash and restore, and leaves no image row behind.
 | # | Acceptance (observable) |
 | --- | --- |
 | A1 | After a merge writes a text line over an image node, `notes_images` holds no row for that node. Today the row survives (`merger.rs:1232` has no else). |
-| A2 | That node still takes app commands: an edit and a trash both commit. Today both fail with `non-image node <id> cannot own image metadata`. |
+| A2 | That node still takes app commands: an edit and a trash both commit. Today the edit does not even load: `load_command_tree` fails with `ParentNotFound(<page id>)`, the domain's way of refusing a bullet that owns image metadata. |
 
 Both rows are carried by one production change and are listed as one item; each
 names its own failing test.
@@ -110,11 +142,20 @@ names its own failing test.
   (`export.rs:492-515`). It is a lossy-export defect with its own contract ("a
   trashed picture keeps its picture") and its own questions (how `.yonalist/`
   links resolve, what the compare then does with the two spellings of the same
-  path). It makes the flip common but is not what strands the node, and item 1
-  neither helps nor hurts it: on either side of this change, a restore from the
-  device that still holds the picture repairs the receiving row through the
-  ordinary page merge, because the page document does state the image. Worth its
-  own change; not this one.
+  path). It makes the flip common but is not what strands the node. Worth its
+  own change; not this one — but it is the **top follow-up**, because item 1
+  changes how it fails on the receiving device, and not only for the better:
+
+  | On the device that only saw the trash file | Before | After |
+  | --- | --- | --- |
+  | Restoring the trashed picture | refused at load (`tree.rs:405`) | succeeds, as a plain bullet titled with the file name |
+  | Deleting its bytes from the attachment list | refused — the orphan row still counted (`attachment_list.rs:170`) | allowed, and the vault file goes (`attachment_list.rs:198`) |
+
+  So this path failed closed before and fails open now. The blast radius is
+  bounded — the device that trashed the picture keeps its own row and its store
+  copy, and re-places the bytes on restore there — and the cause is the export
+  defect, not this item: the merge is correctly following the file's word, and
+  the file wrongly says "text". Fixing `load_trash` closes it at the source.
 - No repair of databases already holding an orphan. Pre-release policy
   (`delivering-yonalist-changes` §1): the schema is fixed and development data
   is reset, not migrated. Nothing to migrate here anyway — the schema does not
@@ -169,32 +210,47 @@ writes `kind = "bullet"` for a split line whatever the row held, so the picture
 row has to go with it.
 
 **Failing test (A1)** — `crates/notes-sync/tests/merge_ingest.rs`, beside
-`an_image_node_keeps_its_metadata_and_settles:710`:
-`a_line_that_stops_being_a_picture_takes_its_image_row_with_it`. Build the image
-file exactly as lines 713-723 and merge it, then merge
+`an_image_node_keeps_its_metadata_and_settles`:
+`a_line_that_stops_being_a_picture_takes_its_image_row_with_it`. Merge an image
+file, then merge
 `page(vec![node(NODE_ID, &stamp(9, DEVICE), "just words")], &stamp(9, DEVICE))`
 through the same `input()` — a newer stamp, so the file wins outright at
 `merger.rs:964` with no conflict logged. Assert `kind` is `bullet` (proving the
 flip is what the test exercises) and
-`SELECT count(*) FROM notes_images WHERE node_id = ?1` is 0.
+`SELECT count(*) FROM notes_images WHERE node_id = ?1` is 0. The image line is
+built by a local `picture(id, hlc)` helper both image tests share, rather than
+the same ten-line literal twice.
 
-Red today: the count assertion fails with `1`.
+Red: the count assertion fails with `left: 1 / right: 0`.
 
 Selector: `cargo test -p notes-sync a_line_that_stops_being_a_picture`
 
 **Failing test (A2)** — `crates/notes-sqlite/tests/sync_merge_seam.rs`, beside
 `an_arriving_attachment_resolves_the_rows_waiting_for_it`:
 `a_picture_a_file_turned_back_into_text_is_not_stranded`. Merge
-`page_with_image("holiday-9f2c1b7a4e6d.png")` (`:70`), then merge a page whose
-one line is `node(IMAGE_NODE_ID, &stamp(9), "just words")` at `stamp(9)` — give
-the existing `page()` helper (`:52`) an id parameter rather than copying it.
-Then run two commands through the real seam the file's other tests use
+`page_with_image("holiday-9f2c1b7a4e6d.png")` (`:70`), let the bytes arrive
+through `resolve_asset`, then merge a page whose one line is
+`node(IMAGE_NODE_ID, &stamp(9), "just words")` at `stamp(9)`. Assert the kind
+flipped to `Bullet` first — without that precondition the test would pass on a
+merge that never flipped anything, because an image node takes both commands
+too. Then run them through the real seam the file's other tests use
 (`load_command_tree` → `plan` → `commit`): `UpdateText` on `IMAGE_NODE_ID`, then
 `DeleteSubtree` on it. Both must return `Ok`.
 
-Red today: the first `commit` returns
-`Err(StorageError::Domain(Invariant("non-image node 8a201f33-0000-4c91-8d02-00000000000f cannot own image metadata")))`,
-so the test panics on that message.
+Two departures from what this doc first specified, both forced:
+
+- The row needs the app's own `relative_path` spelling, written directly, or
+  `parse_node` fails on the merge-written link before any gate is reached — the
+  separate `image.rs:48` defect named in the root cause. The test says so in a
+  comment; only `relative_path` is written by hand, the hash arrives the
+  ordinary way through `resolve_asset`.
+- The page is built by destructuring `page(...)` and replacing `nodes`, the
+  idiom already at `a_text_edit_leaves_the_place_claim_where_it_was`, rather
+  than by giving `page()` an id parameter — which would have touched about
+  fifteen call sites for one test.
+
+Red: `load_command_tree` fails before any commit —
+`load: Domain(ParentNotFound(NodeId("4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1")))`.
 
 Selector: `cargo test -p notes-sqlite a_picture_a_file_turned_back_into_text`
 
