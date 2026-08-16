@@ -102,6 +102,114 @@ fn a_command_commit_stamps_hlc_and_marks_dirty() {
     assert_eq!(dirty, 1, "the export has to be told which rows moved");
 }
 
+/// The rule has to sit in the trigger, not in whoever writes. The merge writes
+/// every row it looked at, most of them with the values they already had, and a
+/// restamp there hands this device a reading it did not earn — one that then
+/// beats every other device's real edit.
+#[test]
+fn a_row_written_with_the_values_it_already_had_is_not_restamped() {
+    let (_directory, database) = workspace();
+    let _storage = SqliteStorage::open(&database).expect("open");
+    let page = seeded_page(&database);
+    let connection = writer(&database);
+    let before: String = connection
+        .query_row(
+            "SELECT hlc FROM notes_nodes WHERE id = ?1",
+            [&page],
+            |row| row.get(0),
+        )
+        .expect("hlc");
+    connection
+        .execute("DELETE FROM sync_dirty_nodes", [])
+        .expect("clear");
+
+    connection
+        .execute(
+            "UPDATE notes_nodes SET text = text, sort_key = sort_key, \
+             collapsed = collapsed WHERE id = ?1",
+            [&page],
+        )
+        .expect("write");
+
+    let after: String = connection
+        .query_row(
+            "SELECT hlc FROM notes_nodes WHERE id = ?1",
+            [&page],
+            |row| row.get(0),
+        )
+        .expect("hlc");
+    assert_eq!(after, before, "nothing changed, so nothing is newer");
+    let dirty: i64 = connection
+        .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+            row.get(0)
+        })
+        .expect("dirty");
+    assert_eq!(dirty, 0, "and there is nothing to write out");
+}
+
+/// Typing a word and taking it back again leaves the row exactly as it was.
+/// Without this the reading advances anyway, and that later reading beats a
+/// real edit another device made in the meantime — a note lost to a keystroke
+/// that changed nothing.
+#[test]
+fn a_write_that_changes_nothing_does_not_move_the_reading() {
+    let (_directory, database) = workspace();
+    let storage = SqliteStorage::open(&database).expect("open");
+    let page = seeded_page(&database);
+    let title: String = inspect(&database)
+        .query_row(
+            "SELECT text FROM notes_nodes WHERE id = ?1",
+            [&page],
+            |row| row.get(0),
+        )
+        .expect("title");
+    let before: String = inspect(&database)
+        .query_row(
+            "SELECT hlc FROM notes_nodes WHERE id = ?1",
+            [&page],
+            |row| row.get(0),
+        )
+        .expect("hlc");
+    inspect(&database)
+        .execute("DELETE FROM sync_dirty_nodes", [])
+        .expect("clear");
+
+    run(
+        &storage,
+        IpcNotesCommand::UpdateText {
+            id: page.clone(),
+            text: title,
+        },
+        inspect(&database)
+            .query_row("SELECT revision FROM notes_meta", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("revision") as u64,
+    );
+
+    let connection = inspect(&database);
+    let after: String = connection
+        .query_row(
+            "SELECT hlc FROM notes_nodes WHERE id = ?1",
+            [&page],
+            |row| row.get(0),
+        )
+        .expect("hlc");
+    assert_eq!(after, before, "nothing changed, so nothing is newer");
+    let dirty: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+            [&page],
+            |row| row.get(0),
+        )
+        .expect("dirty");
+    assert_eq!(
+        dirty, 0,
+        "a file rewritten with the bytes it already had is an edit to every \
+         other device"
+    );
+}
+
 #[test]
 fn moving_a_parent_leaves_its_descendants_unstamped() {
     let (_directory, database) = workspace();

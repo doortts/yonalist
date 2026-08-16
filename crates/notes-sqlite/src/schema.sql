@@ -150,7 +150,24 @@ CREATE TRIGGER notes_nodes_hlc_au AFTER UPDATE OF
     parent_id, sort_key, kind, text, note, marker, ordered_start,
     collapsed, completed, starred, deleted, sync_extras
 ON notes_nodes
-WHEN NEW.hlc = OLD.hlc
+-- A write that leaves every stamped column as it was is not an edit, whoever
+-- made it. Stamping it anyway would hand this device a reading it did not
+-- earn, and that reading then beats a real edit made elsewhere. `IS NOT`
+-- rather than `<>` so a column that is null on both sides counts as unchanged.
+WHEN NEW.hlc = OLD.hlc AND (
+       NEW.parent_id IS NOT OLD.parent_id
+    OR NEW.sort_key IS NOT OLD.sort_key
+    OR NEW.kind IS NOT OLD.kind
+    OR NEW.text IS NOT OLD.text
+    OR NEW.note IS NOT OLD.note
+    OR NEW.marker IS NOT OLD.marker
+    OR NEW.ordered_start IS NOT OLD.ordered_start
+    OR NEW.collapsed IS NOT OLD.collapsed
+    OR NEW.completed IS NOT OLD.completed
+    OR NEW.starred IS NOT OLD.starred
+    OR NEW.deleted IS NOT OLD.deleted
+    OR NEW.sync_extras IS NOT OLD.sync_extras
+)
 BEGIN
   UPDATE notes_nodes SET hlc = yona_hlc() WHERE id = NEW.id;
   INSERT INTO sync_dirty_nodes(node_id, marked_at)
