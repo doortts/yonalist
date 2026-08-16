@@ -674,8 +674,8 @@ fn readings(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<Reading>
              )
              SELECT n.id, n.kind, n.text, n.note, n.marker, n.ordered_start,
                     n.collapsed, n.completed, n.starred, n.deleted, n.sync_extras, n.hlc,
-                    i.relative_path, i.display_width, i.pixel_width, i.pixel_height,
-                    i.byte_length,
+                    i.relative_path, i.content_hash, i.display_width, i.pixel_width,
+                    i.pixel_height, i.byte_length,
                     e.content_hash, e.exported_hlc,
                     -- Where the line sits is not its content, but it is
                     -- something the reading arbitrates: a node that moved has
@@ -693,11 +693,12 @@ fn readings(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<Reading>
             let text = match row.get::<_, Option<String>>(12)? {
                 Some(path) => crate::merger::image_state(
                     &row.get::<_, String>(2)?,
+                    &row.get::<_, String>(13)?,
                     &path,
-                    row.get(13)?,
                     row.get(14)?,
                     row.get(15)?,
                     row.get(16)?,
+                    row.get(17)?,
                 ),
                 None => row.get::<_, String>(2)?,
             };
@@ -720,16 +721,16 @@ fn readings(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<Reading>
             // this device quietly keep an order nobody else has.
             let fingerprint = format!(
                 "{fingerprint}:{}:{}:{}",
-                row.get::<_, Option<String>>(19)?.unwrap_or_default(),
-                row.get::<_, String>(20)?,
-                row.get::<_, String>(21)?
+                row.get::<_, Option<String>>(20)?.unwrap_or_default(),
+                row.get::<_, String>(21)?,
+                row.get::<_, String>(22)?
             );
             Ok((
                 row.get::<_, String>(0)?,
                 fingerprint,
                 row.get::<_, String>(11)?,
-                row.get::<_, Option<String>>(17)?,
                 row.get::<_, Option<String>>(18)?,
+                row.get::<_, Option<String>>(19)?,
             ))
         })
         .map_err(|error| error.to_string())?;

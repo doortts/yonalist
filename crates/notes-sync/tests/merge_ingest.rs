@@ -2363,3 +2363,53 @@ fn a_page_that_arrives_before_home_yields_to_homes_line() {
         "home says where the pages go, however old its line is"
     );
 }
+
+/// The bytes of a picture arrive after the line that points at them, and from
+/// then on the row names the picture by its hash while the file still names it
+/// by its link. If the comparison keeps reading those two as different states,
+/// every replay of the same file looks like a hand edit on this device and the
+/// stamp moves — a phantom edit that ping-pongs between two devices for ever.
+#[test]
+fn a_resolved_picture_replayed_is_not_an_edit() {
+    const HASH: &str = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let mut picture = node(NODE_ID, &stamp(5, DEVICE), "");
+    picture.body = NodeBody::Image(notes_sync::document::ImageReference {
+        original_name: "holiday.png".to_owned(),
+        path: "assets/holiday-9f2c1b7a4e6d.png".to_owned(),
+        display_width: 320,
+        pixel_width: 1280,
+        pixel_height: 720,
+        byte_size: 421_904,
+        unknown_tokens: Vec::new(),
+    });
+    let file = notes_sync::document::VaultFile::Page(page(vec![picture], &stamp(5, DEVICE)));
+    merge_document(&transaction, &clock(), &file, &input()).expect("first");
+    // The bytes land: the row learns its hash and takes the domain form.
+    transaction
+        .execute(
+            "UPDATE notes_images SET content_hash = ?1, relative_path = ?1 || '.png'
+             WHERE node_id = ?2",
+            rusqlite::params![HASH, NODE_ID],
+        )
+        .expect("resolve");
+    transaction
+        .execute(
+            "INSERT INTO sync_assets(content_hash, disk_name, location, unreferenced_at)
+             VALUES (?1, 'holiday-9f2c1b7a4e6d.png', 'assets/holiday-9f2c1b7a4e6d.png', NULL)",
+            [HASH],
+        )
+        .expect("asset");
+    let before = hlc_of(&transaction, NODE_ID);
+
+    let outcome = merge_document(&transaction, &clock(), &file, &input()).expect("replay");
+
+    assert_eq!(outcome.applied, 0, "the same picture is not a new edit");
+    assert_eq!(
+        hlc_of(&transaction, NODE_ID),
+        before,
+        "and is not restamped"
+    );
+    assert_eq!(conflicts_for(&transaction, NODE_ID), 0);
+}

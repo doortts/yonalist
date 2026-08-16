@@ -97,6 +97,7 @@ struct Row {
 /// way back. Without it every replay of the same file reads as an edit.
 #[derive(Clone, Debug)]
 struct ImageRow {
+    content_hash: String,
     path: String,
     display_width: i64,
     pixel_width: i64,
@@ -1036,7 +1037,8 @@ fn load_rows(
             "SELECT n.id, n.hlc, n.kind, n.text, n.note, n.marker, n.ordered_start, n.collapsed,
                     n.completed, n.starred, n.deleted, n.parent_id, n.sort_key, n.sync_extras,
                     d.node_id IS NOT NULL, n.sync_prev, n.sync_prev_hlc,
-                    i.relative_path, i.display_width, i.pixel_width, i.pixel_height, i.byte_length
+                    i.relative_path, i.content_hash, i.display_width, i.pixel_width,
+                    i.pixel_height, i.byte_length
              FROM notes_nodes n
              LEFT JOIN sync_dirty_nodes d ON d.node_id = n.id
              LEFT JOIN notes_images i ON i.node_id = n.id
@@ -1069,10 +1071,11 @@ fn load_rows(
                     image: match row.get::<_, Option<String>>(17)? {
                         Some(path) => Some(ImageRow {
                             path,
-                            display_width: row.get(18)?,
-                            pixel_width: row.get(19)?,
-                            pixel_height: row.get(20)?,
-                            byte_length: row.get(21)?,
+                            content_hash: row.get(18)?,
+                            display_width: row.get(19)?,
+                            pixel_width: row.get(20)?,
+                            pixel_height: row.get(21)?,
+                            byte_length: row.get(22)?,
                         }),
                         None => None,
                     },
@@ -1500,20 +1503,23 @@ fn extras_of(entry: &Incoming<'_>) -> String {
     tokens.join(" ")
 }
 
-/// One shape for an image's state, built the same way from a file line and from
-/// a row — otherwise the two could never compare equal and every replay of the
-/// same picture would read as an edit.
-fn image_content(
-    name: &str,
-    path: &str,
-    display_width: i64,
-    pixel_width: i64,
-    pixel_height: i64,
-    byte_length: i64,
-) -> String {
-    format!(
-        "{name}\u{0}{path}\u{0}{display_width}\u{0}{pixel_width}x{pixel_height}\u{0}{byte_length}"
-    )
+/// Which picture a line is about, named the one way both sides can say it. A
+/// file states a link and a row states a hash, so comparing links would read
+/// every resolved picture as an edit — and re-placing an attachment, which
+/// changes the link and not the bytes, would read as one too.
+///
+/// The tail `asset_disk_name` puts on every file it writes is the first twelve
+/// characters of that hash, which is what makes the two sides meet. A name
+/// without that tail is not one this app wrote, so it stands for itself.
+pub(crate) fn image_identity(content_hash: &str, link: &str) -> String {
+    if content_hash.len() >= 12 {
+        return content_hash[..12].to_owned();
+    }
+    let name = link.rsplit('/').next().unwrap_or(link);
+    match name.rsplit_once('-') {
+        Some((_, tail)) => tail.split('.').next().unwrap_or(tail).to_owned(),
+        None => name.to_owned(),
+    }
 }
 
 /// What the merge compares when two stamps are equal, and what M4 will hash for
@@ -1528,8 +1534,9 @@ fn content_of_file(entry: &Incoming<'_>, trash: bool) -> String {
         NodeBody::Text(text) => ("bullet", text.clone()),
         NodeBody::Image(image) => (
             "image",
-            image_content(
+            image_state(
                 &image.original_name,
+                "",
                 &image.path,
                 i64::from(image.display_width),
                 i64::from(image.pixel_width),
@@ -1571,8 +1578,9 @@ fn content_of_row(row: &Row, split: bool) -> String {
         return ["v1".to_owned(), "split".to_owned()].join("\u{0}");
     }
     let text = match &row.image {
-        Some(image) => image_content(
+        Some(image) => image_state(
             &row.text,
+            &image.content_hash,
             &image.path,
             image.display_width,
             image.pixel_width,
@@ -1643,22 +1651,22 @@ impl LineState<'_> {
     }
 }
 
-/// The whole of what a line says about a picture, for the state above.
+/// The whole of what a line says about a picture, for the state above — built
+/// the same way from a file line and from a row, otherwise the two could never
+/// compare equal and every replay of the same picture would read as an edit.
+/// A file line has no hash to give, and passes the empty string for it.
 pub fn image_state(
     name: &str,
-    path: &str,
+    content_hash: &str,
+    link: &str,
     display_width: i64,
     pixel_width: i64,
     pixel_height: i64,
     byte_length: i64,
 ) -> String {
-    image_content(
-        name,
-        path,
-        display_width,
-        pixel_width,
-        pixel_height,
-        byte_length,
+    let identity = image_identity(content_hash, link);
+    format!(
+        "{name}\u{0}{identity}\u{0}{display_width}\u{0}{pixel_width}x{pixel_height}\u{0}{byte_length}"
     )
 }
 
