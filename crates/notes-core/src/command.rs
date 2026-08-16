@@ -179,4 +179,11 @@ impl TreeMutation {
 pub struct DomainPatch {
     pub forward: Vec<TreeMutation>,
     pub inverse: Vec<TreeMutation>,
+    /// Pictures a copied node cannot bring with it. A picture still waiting for
+    /// its bytes reads as a node without one, so a duplicate of it would land
+    /// holding nothing at all — and nothing the arriving bytes could settle.
+    /// Source first, then the copy that has to be given the same picture. The
+    /// mutations cannot say this: what has to be copied is not tree state,
+    /// which is the whole reason the node arrives empty.
+    pub carried_pictures: Vec<(NodeId, NodeId)>,
 }

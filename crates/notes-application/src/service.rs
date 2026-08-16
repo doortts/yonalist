@@ -22,6 +22,10 @@ const MAX_COMPLETED_REQUESTS: usize = 4_096;
 pub(crate) struct NotesServiceHistoryEntry {
     forward: Vec<TreeMutation>,
     inverse: Vec<TreeMutation>,
+    /// Only a redo replays these. The mutations alone cannot put a duplicated
+    /// picture back: the copy's node carries no picture, which is why the
+    /// duplication had to name one in the first place.
+    carried_pictures: Vec<(NodeId, NodeId)>,
     group: Option<String>,
 }
 
@@ -71,6 +75,7 @@ impl SessionState {
             let mut combined_inverse = entry.inverse;
             combined_inverse.extend(std::mem::take(&mut previous.inverse));
             previous.inverse = combined_inverse;
+            previous.carried_pictures.extend(entry.carried_pictures);
         } else {
             // The floor is a position in this stack, so it moves down with it
             // when the oldest entry is dropped.
@@ -105,6 +110,16 @@ fn entry_touches(entry: &NotesServiceHistoryEntry, affected: &HashSet<&str>) -> 
             TreeMutation::Upsert(node) => affected.contains(node.id().as_str()),
             TreeMutation::Delete { id } => affected.contains(id.as_str()),
         })
+        // The node a copy borrowed its picture from is in neither list — the
+        // duplication left it exactly as it found it. It is still what the
+        // entry depends on, so a merge that lands there puts this entry in
+        // question too: replaying it would give the copy whichever picture the
+        // other device has since put on the source. The copy itself needs no
+        // check; the mutation that creates it is already in `forward`.
+        || entry
+            .carried_pictures
+            .iter()
+            .any(|(source_id, _)| affected.contains(source_id.as_str()))
 }
 
 /// Answers whether the oldest entry was dropped to make room.
@@ -337,6 +352,7 @@ impl<S: StoragePort> NotesService<S> {
         let entry = NotesServiceHistoryEntry {
             forward: patch.forward,
             inverse: patch.inverse,
+            carried_pictures: patch.carried_pictures,
             group: history_group.clone(),
         };
         session.record_history(entry);
@@ -388,6 +404,10 @@ impl<S: StoragePort> NotesService<S> {
             &DomainPatch {
                 forward: entry.inverse.clone(),
                 inverse: entry.forward.clone(),
+                // Never on the way back: an undo deletes the copy, and handing
+                // a picture to a node that is going away is at best undone a
+                // statement later by the cascade.
+                carried_pictures: Vec::new(),
             },
         )?;
         session.undo.pop();
@@ -410,6 +430,7 @@ impl<S: StoragePort> NotesService<S> {
             &DomainPatch {
                 forward: entry.forward.clone(),
                 inverse: entry.inverse.clone(),
+                carried_pictures: entry.carried_pictures.clone(),
             },
         )?;
         session.redo.pop();

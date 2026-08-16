@@ -26,6 +26,7 @@ fn session_history_and_idempotency_cache_are_bounded() {
         session.record_history(NotesServiceHistoryEntry {
             forward: Vec::new(),
             inverse: Vec::new(),
+            carried_pictures: Vec::new(),
             group: Some(index.to_string()),
         });
     }
@@ -53,6 +54,7 @@ fn a_single_coalesced_history_group_cannot_grow_without_bound() {
         session.record_history(NotesServiceHistoryEntry {
             forward: vec![mutation.clone()],
             inverse: vec![mutation],
+            carried_pictures: Vec::new(),
             group: Some("typing:node".into()),
         });
     }

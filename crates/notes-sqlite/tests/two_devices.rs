@@ -11,7 +11,9 @@
 //! cannot decide. Those have tests of their own, and the manual proof covers
 //! them together.
 
-use notes_application::{CommandEnvelope, IpcNotesCommand, NotesService};
+use notes_application::{
+    CommandEnvelope, HistoryRequest, IpcNodeDuplicate, IpcNotesCommand, NotesService,
+};
 use notes_sqlite::SqliteStorage;
 
 /// One device: its own database, its own image store, its own copy of the
@@ -900,9 +902,7 @@ fn a_page_arriving_before_its_picture_still_reads() {
     picture(&one, &shot);
     one.export();
     carry(&one, &two);
-    for (location, _) in attachments(&two.vault) {
-        std::fs::remove_file(two.vault.join(location)).expect("hold the bytes back");
-    }
+    hold_pictures_back(&two);
     two.absorb();
 
     let read = page_of(&two, &page).expect("the page still opens");
@@ -1055,6 +1055,300 @@ fn stored_waiting_image(device: &Device, node_id: &str) -> (String, String, Stri
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .expect("the row is still waiting for its bytes, not gone with them")
+}
+
+/// Takes every picture out of this device's folder and keeps it, the way a
+/// client brings a page's text down and leaves its attachments for later.
+fn hold_pictures_back(device: &Device) -> Vec<(String, Vec<u8>)> {
+    attachments(&device.vault)
+        .into_iter()
+        .map(|(location, _)| {
+            let at = device.vault.join(&location);
+            let bytes = std::fs::read(&at).expect("the picture's bytes");
+            std::fs::remove_file(&at).expect("hold the bytes back");
+            (location, bytes)
+        })
+        .collect()
+}
+
+/// The rest of the sync catching up: the bytes appear where their link always
+/// said they would be, and the next `absorb` is what notices.
+fn let_pictures_land(device: &Device, held: Vec<(String, Vec<u8>)>) {
+    for (location, bytes) in held {
+        std::fs::write(device.vault.join(location), bytes).expect("the bytes land");
+    }
+}
+
+/// Every live node on this device that can say which picture it is — the bytes
+/// landed and its row learned their hash.
+fn settled_pictures(device: &Device) -> Vec<String> {
+    let connection =
+        rusqlite::Connection::open(device._home.path().join("notes.sqlite")).expect("open");
+    let mut statement = connection
+        .prepare(
+            "SELECT image.node_id FROM notes_images image
+             JOIN notes_nodes node ON node.id = image.node_id
+             WHERE image.content_hash <> '' AND node.deleted = 0
+             ORDER BY image.node_id",
+        )
+        .expect("prepare");
+    statement
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .map(|row| row.expect("row"))
+        .collect()
+}
+
+/// Duplicating a picture whose bytes have not landed has to carry the wait
+/// itself, not only the node. A waiting picture reads as a node without one,
+/// so nothing about which picture it is survives the gesture on its own — and
+/// with no record of its own the copy has nothing for the arriving bytes to
+/// settle, which leaves it a bullet for ever.
+#[test]
+fn duplicating_a_waiting_picture_lets_the_copy_meet_its_bytes() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    one.export();
+    carry(&one, &two);
+    let held = hold_pictures_back(&two);
+    two.absorb();
+
+    let copy = uuid::Uuid::new_v4().hyphenated().to_string();
+    two.run(IpcNotesCommand::Duplicate {
+        id: shot.clone(),
+        new_id: copy.clone(),
+        parent_id: page.clone(),
+        before_id: None,
+    });
+
+    let_pictures_land(&two, held);
+    two.absorb();
+
+    let read = page_of(&two, &page).expect("the page still opens");
+    let copied = read
+        .nodes
+        .iter()
+        .find(|node| node.id == copy)
+        .expect("the copy");
+    let image = copied
+        .image
+        .as_ref()
+        .expect("the copy was waiting for the same bytes, and they came");
+    assert_eq!(image.content_hash, HASH);
+    assert_eq!(image.original_name, "holiday.png");
+}
+
+/// The same defect one level down: a duplicate copies the whole subtree, so a
+/// waiting picture hanging under the duplicated bullet is copied by the same
+/// walk and needs the same record.
+#[test]
+fn a_waiting_picture_under_a_duplicated_bullet_meets_its_bytes_too() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let section = add_bullet(&one, &page, "Trip");
+    let shot = add_bullet(&one, &section, "holiday.png");
+    picture(&one, &shot);
+    one.export();
+    carry(&one, &two);
+    let held = hold_pictures_back(&two);
+    two.absorb();
+
+    two.run(IpcNotesCommand::Duplicate {
+        id: section.clone(),
+        new_id: uuid::Uuid::new_v4().hyphenated().to_string(),
+        parent_id: page.clone(),
+        before_id: None,
+    });
+
+    let_pictures_land(&two, held);
+    two.absorb();
+
+    let settled = settled_pictures(&two);
+    assert_eq!(
+        settled.len(),
+        2,
+        "the original and the copy under the duplicated bullet both met the bytes, \
+         but only these did: {settled:?}"
+    );
+}
+
+/// The half of this that no undo can reach: a copy with no picture record is
+/// written into the folder as a plain bullet, and the next device to read that
+/// file takes the bullet as the truth. So the copy has to make the round trip
+/// while it is still waiting, not only after its bytes turn up — and the trip
+/// is where the batch duplicate, the other command the row menu sends, gets
+/// exercised.
+#[test]
+fn a_duplicated_waiting_picture_survives_the_trip_through_the_folder() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    one.export();
+    carry(&one, &two);
+    hold_pictures_back(&two);
+    two.absorb();
+
+    let copy = uuid::Uuid::new_v4().hyphenated().to_string();
+    two.run(IpcNotesCommand::DuplicateNodes {
+        duplicates: vec![IpcNodeDuplicate {
+            id: shot.clone(),
+            new_id: copy.clone(),
+            parent_id: page.clone(),
+            before_id: None,
+        }],
+    });
+    // Written out while the copy is still waiting: this is the line that used
+    // to go into the folder as a bullet.
+    two.export();
+    carry(&two, &one);
+    one.absorb();
+
+    let read = page_of(&one, &page).expect("the page still opens");
+    let copied = read
+        .nodes
+        .iter()
+        .find(|node| node.id == copy)
+        .expect("the copy reached the other device");
+    let image = copied
+        .image
+        .as_ref()
+        .expect("and arrived as a picture rather than as its file name");
+    assert_eq!(image.content_hash, HASH);
+}
+
+/// Undo takes the copy away and its picture record goes with it. Redo replays
+/// what the duplication left behind in the history and nothing else, so unless
+/// the picture is in there too the copy comes back dead in exactly the way the
+/// duplicate itself used to be.
+#[test]
+fn redoing_a_duplicated_waiting_picture_lets_it_meet_its_bytes() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    one.export();
+    carry(&one, &two);
+    let held = hold_pictures_back(&two);
+    two.absorb();
+
+    // One service across all three steps: the undo stack lives in the session,
+    // and `Device::run` opens a new one every time.
+    let copy = uuid::Uuid::new_v4().hyphenated().to_string();
+    let service = two.service();
+    let duplicated = service
+        .execute(CommandEnvelope {
+            session_id: two.session.clone(),
+            request_id: "duplicate".into(),
+            base_revision: two.storage.revision().expect("revision"),
+            history_group: None,
+            command: IpcNotesCommand::Duplicate {
+                id: shot.clone(),
+                new_id: copy.clone(),
+                parent_id: page.clone(),
+                before_id: None,
+            },
+        })
+        .expect("duplicate");
+    let undone = service
+        .undo(HistoryRequest {
+            session_id: two.session.clone(),
+            base_revision: duplicated.revision,
+        })
+        .expect("undo");
+    service
+        .redo(HistoryRequest {
+            session_id: two.session.clone(),
+            base_revision: undone.revision,
+        })
+        .expect("redo");
+
+    let_pictures_land(&two, held);
+    two.absorb();
+
+    let read = page_of(&two, &page).expect("the page still opens");
+    let copied = read
+        .nodes
+        .iter()
+        .find(|node| node.id == copy)
+        .expect("the copy redo put back");
+    assert!(
+        copied.image.is_some(),
+        "the copy came back still waiting for those bytes, and they came"
+    );
+}
+
+/// Bytes that turn up while the duplicate is undone still have to reach the
+/// copy when a redo brings it back. What the copy is given is the source's
+/// record as it stands at that moment, never as the duplication once saw it:
+/// a snapshot taken back then would leave the copy waiting for bytes that
+/// already came and will not come again.
+#[test]
+fn bytes_that_land_before_the_redo_still_reach_the_copy() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    one.export();
+    carry(&one, &two);
+    let held = hold_pictures_back(&two);
+    two.absorb();
+
+    let copy = uuid::Uuid::new_v4().hyphenated().to_string();
+    let service = two.service();
+    let duplicated = service
+        .execute(CommandEnvelope {
+            session_id: two.session.clone(),
+            request_id: "duplicate".into(),
+            base_revision: two.storage.revision().expect("revision"),
+            history_group: None,
+            command: IpcNotesCommand::Duplicate {
+                id: shot.clone(),
+                new_id: copy.clone(),
+                parent_id: page.clone(),
+                before_id: None,
+            },
+        })
+        .expect("duplicate");
+    service
+        .undo(HistoryRequest {
+            session_id: two.session.clone(),
+            base_revision: duplicated.revision,
+        })
+        .expect("undo");
+
+    // The bytes arrive while the copy is not there. Named nobody on purpose:
+    // the real watcher names the rows it settled, and the barrier one layer up
+    // then refuses this redo outright — the over-block written down under
+    // "Known limits" in the design. What is being held down here is the layer
+    // underneath that, which has to be right whichever way the announcement
+    // is made.
+    let_pictures_land(&two, held);
+    two.absorb();
+    let revision = service
+        .absorb_external(two.storage.revision().expect("revision"), &[])
+        .expect("absorb");
+
+    service
+        .redo(HistoryRequest {
+            session_id: two.session.clone(),
+            base_revision: revision,
+        })
+        .expect("redo");
+
+    let settled = settled_pictures(&two);
+    assert!(
+        settled.contains(&copy),
+        "the copy took the picture the source held by the time the redo ran, \
+         but only these are settled: {settled:?}"
+    );
+    let (hash, _, _) = stored_image(&two, &copy);
+    assert_eq!(
+        hash, HASH,
+        "and it is the picture the source had, not another"
+    );
 }
 
 /// The other device resized the picture, so the line comes back stamped later

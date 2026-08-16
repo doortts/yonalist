@@ -43,6 +43,31 @@ impl Default for FakeStorage {
 }
 
 impl FakeStorage {
+    /// A picture whose bytes have not landed: the node is a picture and holds
+    /// none, which is exactly what the tree carries while the file waits.
+    fn add_waiting_picture(&self, parent_id: &str, id: &str) {
+        let node = notes_core::NoteNode::from_persisted_with_image(
+            NodeId::try_from(id).unwrap(),
+            Some(NodeId::try_from(parent_id).unwrap()),
+            1_024,
+            notes_core::NoteNodeKind::Image,
+            None,
+            "holiday.png".to_owned(),
+            String::new(),
+            notes_core::NoteMarkerKind::Bullet,
+            false,
+            false,
+            false,
+            false,
+        );
+        self.state
+            .lock()
+            .unwrap()
+            .tree
+            .apply(&[TreeMutation::upsert(node)])
+            .expect("apply");
+    }
+
     /// What a merge looks like from here: the revision moves without this
     /// session having asked for anything.
     fn merged_elsewhere(&self) -> u64 {
@@ -148,6 +173,7 @@ fn undo(service: &NotesService<&FakeStorage>, revision: u64) -> Result<u64, Note
 
 const FIRST: &str = "8a201f33-0000-4c91-8d02-000000000001";
 const SECOND: &str = "8a201f33-0000-4c91-8d02-000000000002";
+const THIRD: &str = "8a201f33-0000-4c91-8d02-000000000003";
 
 #[test]
 fn undo_stops_at_an_entry_touching_a_merged_node() {
@@ -341,6 +367,63 @@ fn work_after_the_barrier_does_not_join_the_entry_below_it() {
         "what the user types next is theirs to take back"
     );
     assert!(undo(&service, revision).is_ok());
+}
+
+/// A picture still waiting for its bytes reads as a node without one, so the
+/// copy a duplicate makes depends on the source's own record rather than on
+/// anything in its mutations. The barrier reads an entry to decide what is
+/// still reversible, and it has to count that source too: otherwise a redo
+/// hands the copy whatever picture the other device has since put there — one
+/// the user never duplicated, with nothing on screen saying so.
+#[test]
+fn the_barrier_counts_the_picture_a_duplicate_had_to_borrow() {
+    let storage = FakeStorage::default();
+    let service = service(&storage);
+    // A picture may not hang directly below the root, so it gets the bullet a
+    // real one would sit on.
+    let revision = create(&service, FIRST, 0);
+    storage.add_waiting_picture(FIRST, SECOND);
+    let revision = duplicate(&service, SECOND, THIRD, FIRST, revision);
+    undo(&service, revision).expect("undo");
+
+    // The other device changed the picture the copy is still waiting on.
+    let revision = service
+        .absorb_external(storage.merged_elsewhere(), &[SECOND.to_owned()])
+        .expect("absorb");
+
+    let refused = service.redo(HistoryRequest {
+        session_id: session_id(&service),
+        base_revision: revision,
+    });
+    assert_eq!(
+        refused.map_err(|error| error.code),
+        Err(NotesErrorCode::HistoryEmpty),
+        "redoing the copy would take whichever picture the merge left on the source"
+    );
+}
+
+fn duplicate(
+    service: &NotesService<&FakeStorage>,
+    source_id: &str,
+    new_id: &str,
+    parent_id: &str,
+    revision: u64,
+) -> u64 {
+    service
+        .execute(CommandEnvelope {
+            session_id: session_id(service),
+            base_revision: revision,
+            request_id: format!("duplicate-{new_id}"),
+            history_group: None,
+            command: IpcNotesCommand::Duplicate {
+                id: source_id.to_owned(),
+                new_id: new_id.to_owned(),
+                parent_id: parent_id.to_owned(),
+                before_id: None,
+            },
+        })
+        .expect("duplicate")
+        .revision
 }
 
 fn grouped_edit(
