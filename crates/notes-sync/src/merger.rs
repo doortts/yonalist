@@ -1893,6 +1893,13 @@ fn record_document(
     if crate::watcher::is_conflicted_copy(&input.file_path) {
         return Ok(());
     }
+    // Somebody fixed it, or the transport finished delivering it. Either way
+    // this file is readable now, and the note saying it was not would keep
+    // every later version of it from ever being read.
+    transaction
+        .prepare_cached("DELETE FROM sync_quarantine WHERE relative_path = ?1")
+        .and_then(|mut statement| statement.execute([&input.file_path]))
+        .map_err(|error| error.to_string())?;
     // The bytes on disk are exactly what was just absorbed, so replacing them
     // loses nothing — recording anything else would leave the exporter
     // answering "somebody's edit" forever and the canonical form would never

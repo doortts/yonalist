@@ -890,6 +890,34 @@ fn a_file_that_cannot_be_read_is_written_down() {
     );
 }
 
+/// A file that could not be read once can be fixed, or can simply finish
+/// arriving. The note saying it was unreadable has to go with that, or every
+/// later version of it is skipped as "already answered".
+#[test]
+fn a_file_that_becomes_readable_stops_being_refused() {
+    let (directory, storage) = storage();
+    storage
+        .quarantine("Projects-4f1c8e20a3b7/README.md", &"c".repeat(64))
+        .expect("quarantine");
+
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("merge");
+
+    let still_refused: i64 = rusqlite::Connection::open(directory.path().join("notes.sqlite"))
+        .expect("read")
+        .query_row(
+            "SELECT COUNT(*) FROM sync_quarantine WHERE relative_path = ?1",
+            ["Projects-4f1c8e20a3b7/README.md"],
+            |row| row.get(0),
+        )
+        .expect("quarantine");
+    assert_eq!(
+        still_refused, 0,
+        "the refusal outlived the file it was about"
+    );
+}
+
 /// A reindex is the last net under the scan gate, so what it could not read
 /// has to come back as a number. Answering "nothing changed" about a vault it
 /// only half read is the one thing a net must not do.
