@@ -433,6 +433,61 @@ fn a_deleted_note_still_counts_as_a_reference() {
     );
 }
 
+fn export_trash(connection: &mut Connection, workspace: &Workspace) {
+    let transaction = connection.transaction().expect("begin");
+    notes_sync::export::export_trash(&transaction, workspace.vault.path()).expect("export");
+    transaction.commit().expect("commit");
+}
+
+/// The trash is a document like any other, and a line in it says what the node
+/// is. Stating a picture as its file name in plain text is the file telling
+/// every other device the picture was removed — which the user never said.
+#[test]
+fn a_trashed_picture_is_stated_as_a_picture() {
+    let mut connection = database();
+    let workspace = workspace();
+    page(&connection, FIRST_PAGE, "Notes", 4294967296);
+    image_node(&connection, IMAGE_NODE, FIRST_PAGE, "holiday.png", true);
+    place(&mut connection, &workspace);
+
+    export_trash(&mut connection, &workspace);
+
+    let file = read(&workspace, ".yonalist/trash.md").expect("the trash");
+    assert!(
+        file.contains(&format!("![holiday\\.png](../assets/{DISK_NAME})")),
+        "the trash sits one folder down, and the line still says which picture: {file}"
+    );
+}
+
+/// A device that only ever saw the trash file holds the link that file wrote,
+/// which is a place in the document it came from, not in this vault. Read as a
+/// vault path it climbs one folder further out every round.
+#[test]
+fn a_trashed_picture_waiting_for_its_bytes_links_inside_the_vault() {
+    let mut connection = database();
+    let workspace = workspace();
+    page(&connection, FIRST_PAGE, "Notes", 4294967296);
+    image_node(&connection, IMAGE_NODE, FIRST_PAGE, "holiday.png", true);
+    connection
+        .execute(
+            "UPDATE notes_images SET content_hash = '', relative_path = ?1",
+            [format!("../assets/{DISK_NAME}")],
+        )
+        .expect("the bytes have not arrived");
+
+    export_trash(&mut connection, &workspace);
+
+    let file = read(&workspace, ".yonalist/trash.md").expect("the trash");
+    assert!(
+        file.contains(&format!("![holiday\\.png](../assets/{DISK_NAME})")),
+        "a waiting row still states its picture: {file}"
+    );
+    assert!(
+        !file.contains("../../"),
+        "a link out of the vault is not a place: {file}"
+    );
+}
+
 #[test]
 fn bytes_that_have_not_arrived_yet_are_not_invented() {
     let mut connection = database();

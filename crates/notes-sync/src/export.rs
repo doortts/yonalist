@@ -430,7 +430,7 @@ pub fn export_trash(
 ) -> Result<ExportOutcome, ExportError> {
     let relative = ".yonalist/trash.md".to_owned();
     let path = vault_root.join(&relative);
-    let nodes = load_trash(transaction)?;
+    let nodes = load_trash(transaction, folder_of(&relative))?;
     if nodes.is_empty() {
         let existed = path.exists();
         if existed {
@@ -493,14 +493,21 @@ pub fn json_list(ids: &[String]) -> String {
 
 /// What the trash holds: every deleted node whose parent is still alive, with
 /// the children that went down with it.
-fn load_trash(transaction: &Transaction<'_>) -> Result<Vec<DocumentNode>, ExportError> {
+fn load_trash(
+    transaction: &Transaction<'_>,
+    document_folder: &str,
+) -> Result<Vec<DocumentNode>, ExportError> {
     let mut statement = transaction
         .prepare_cached(
             "SELECT n.id, n.parent_id, n.sort_key, n.text, n.note, n.marker, n.ordered_start,
                     n.collapsed, n.completed, n.starred, n.hlc, n.sync_extras,
-                    p.deleted IS NOT 1
+                    p.deleted IS NOT 1, n.kind, NULLIF(a.location, ''), i.relative_path,
+                    i.original_name, i.display_width, i.pixel_width, i.pixel_height,
+                    i.byte_length
              FROM notes_nodes n
              LEFT JOIN notes_nodes p ON p.id = n.parent_id
+             LEFT JOIN notes_images i ON i.node_id = n.id
+             LEFT JOIN sync_assets a ON a.content_hash = i.content_hash
              -- A row waiting for the document that will describe it carries no
              -- stamp, and nothing can render that. It has nothing to say yet.
              WHERE n.deleted = 1 AND n.hlc <> ''
@@ -516,7 +523,12 @@ fn load_trash(transaction: &Transaction<'_>) -> Result<Vec<DocumentNode>, Export
                 DocumentNode {
                     id: row.get(0)?,
                     hlc: row.get(10)?,
-                    body: NodeBody::Text(row.get(3)?),
+                    body: match trash_image(row, document_folder)? {
+                        Some(image) if row.get::<_, String>(13)? == "image" => {
+                            NodeBody::Image(image)
+                        }
+                        _ => NodeBody::Text(row.get(3)?),
+                    },
                     note: row.get(4)?,
                     marker: marker_of(&row.get::<_, String>(5)?, row.get(6)?),
                     collapsed: row.get::<_, i64>(7)? == 1,
@@ -555,6 +567,39 @@ fn load_trash(transaction: &Transaction<'_>) -> Result<Vec<DocumentNode>, Export
         attach(&mut children, root);
     }
     Ok(roots)
+}
+
+/// The picture a trashed line states, linked from the trash's own folder.
+///
+/// Only a row that has its bytes has a placement to read. One still waiting
+/// holds the link some *other* document wrote, which is not a place in this
+/// vault — read as one it would climb out of it, a folder further each round.
+/// Its file name is the part every device agrees on, and the vault's own store
+/// is where a trashed picture's bytes belong: `plan_placement` sends them there
+/// for any holder that is deleted.
+fn trash_image(
+    row: &rusqlite::Row<'_>,
+    document_folder: &str,
+) -> rusqlite::Result<Option<ImageReference>> {
+    let location = match row.get::<_, Option<String>>(14)? {
+        Some(location) => Some(location),
+        None => row
+            .get::<_, Option<String>>(15)?
+            .map(|waiting| format!("assets/{}", waiting.rsplit('/').next().unwrap_or_default())),
+    };
+    Ok(location.map(|location| ImageReference {
+        path: crate::attachments::Placement {
+            location,
+            moves: Vec::new(),
+        }
+        .link_from(document_folder),
+        original_name: row.get(16).unwrap_or_default(),
+        display_width: row.get::<_, i64>(17).unwrap_or_default() as u32,
+        pixel_width: row.get::<_, i64>(18).unwrap_or_default() as u32,
+        pixel_height: row.get::<_, i64>(19).unwrap_or_default() as u32,
+        byte_size: row.get::<_, i64>(20).unwrap_or_default() as u64,
+        unknown_tokens: Vec::new(),
+    }))
 }
 
 fn attach(children: &mut BTreeMap<String, Vec<DocumentNode>>, node: &mut DocumentNode) {

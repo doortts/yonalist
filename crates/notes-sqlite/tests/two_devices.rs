@@ -917,6 +917,42 @@ fn a_page_arriving_before_its_picture_still_reads() {
     );
 }
 
+/// Throwing a picture away and taking it back is one round trip through the
+/// trash file, and the picture has to survive it on the device that only ever
+/// saw that file. The restore has to happen on `two`: `one` never lost its row,
+/// and its page states the picture again at a newer stamp, so restoring there
+/// would heal `two` whatever the trash said.
+#[test]
+fn a_trashed_picture_comes_back_as_a_picture() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    settle(&one, &two);
+
+    one.run(IpcNotesCommand::DeleteSubtree { id: shot.clone() });
+    settle(&one, &two);
+    two.run(IpcNotesCommand::RestoreSubtree { id: shot.clone() });
+    settle(&two, &one);
+
+    for device in [&one, &two] {
+        let read = page_of(device, &page).expect("the page opens");
+        let node = read
+            .nodes
+            .iter()
+            .find(|node| node.id == shot)
+            .expect("the restored node");
+        let image = node.image.as_ref().expect("it came back as a picture");
+        assert_eq!(image.original_name, "holiday.png");
+    }
+    assert_eq!(
+        one.export(),
+        0,
+        "and neither device has anything left to say"
+    );
+    assert_eq!(two.export(), 0);
+}
+
 /// Rows an older build wrote hold the vault's own link where the domain form
 /// belongs. Reading is not where that gets adjudicated: the path is derived
 /// from the hash, so those rows read as they always should have.
