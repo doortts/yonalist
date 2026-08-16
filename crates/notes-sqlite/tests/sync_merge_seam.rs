@@ -1011,6 +1011,54 @@ fn a_split_document_rides_through_an_export_untouched() {
     assert_eq!(retiring, 0, "it is where it belongs, not on its way out");
 }
 
+/// What a document is can change: a subtree that arrived as a split document
+/// can become a page of its own, and a page can stop being one. Whoever writes
+/// the record says which it is now — a first impression kept for ever would
+/// leave a demotion unnoticed and the folder standing.
+#[test]
+fn what_a_document_is_follows_what_it_says_now() {
+    let (directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    let connection =
+        rusqlite::Connection::open(directory.path().join("notes.sqlite")).expect("open");
+    connection
+        .execute(
+            "INSERT INTO sync_documents(root_id, folder_path, exported_hash, is_page)
+             VALUES (?1, 'Projects-4f1c8e20a3b7/Deeper/README.md', 'b', 0)",
+            [PAGE_ID],
+        )
+        .expect("as a split document");
+
+    // This device makes it a page of its own and writes it out. The export is
+    // the only writer here — nothing arrives from anywhere.
+    let command = NotesCommand::CreateNode {
+        id: notes_core::NodeId::try_from(PAGE_ID.to_owned()).expect("id"),
+        parent_id: notes_core::NodeId::try_from("root".to_owned()).expect("id"),
+        position: notes_core::Position::at_end(),
+        text: "A page now".to_owned(),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("make the page");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+
+    let is_page: i64 = connection
+        .query_row(
+            "SELECT is_page FROM sync_documents WHERE root_id = ?1",
+            [PAGE_ID],
+            |row| row.get(0),
+        )
+        .expect("the document");
+    assert_eq!(
+        is_page, 1,
+        "it is a page now, and a demotion later has to be noticed"
+    );
+}
+
 /// A reindex is the last net under the scan gate, so what it could not read
 /// has to come back as a number. Answering "nothing changed" about a vault it
 /// only half read is the one thing a net must not do.
@@ -1102,4 +1150,67 @@ fn reindex_is_refused_while_edits_are_unexported() {
         storage.reindex_vault(vault.path()).is_ok(),
         "once everything is written out, the vault is safe to read as the truth"
     );
+}
+
+/// A split document with an edit inside it has to survive two passes, not
+/// one. The first writes its file — and if that write says "page", the second
+/// retires it: the folder taken and the subtree flattened, one edit later.
+/// What the export states about a document has to come from the node, not
+/// from the fact that the export is writing it.
+#[test]
+fn an_edited_split_document_survives_two_export_passes() {
+    let (directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("seed");
+    let split = "Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md";
+    let connection =
+        rusqlite::Connection::open(directory.path().join("notes.sqlite")).expect("open");
+    connection
+        .execute(
+            "INSERT INTO sync_documents(root_id, folder_path, is_page)
+             VALUES (?1, ?2, 0)",
+            rusqlite::params![NODE_ID, split],
+        )
+        .expect("split document");
+    // An edit inside the split document — its normal life.
+    connection
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES (?1, unixepoch())
+             ON CONFLICT(node_id) DO NOTHING",
+            [NODE_ID],
+        )
+        .expect("dirty");
+
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("pass one");
+    let is_page: i64 = connection
+        .query_row(
+            "SELECT is_page FROM sync_documents WHERE root_id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("the document");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("pass two");
+
+    assert_eq!(
+        is_page, 0,
+        "exporting a split document must not make it a page"
+    );
+    assert!(
+        vault.path().join(split).exists(),
+        "two passes later the split document's file is still its own"
+    );
+    let still_recorded: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sync_documents WHERE root_id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(still_recorded, 1, "and so is its record");
 }

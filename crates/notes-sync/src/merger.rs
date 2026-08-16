@@ -1921,9 +1921,10 @@ fn record_document(
     transaction
         .execute(
             // The file itself says which it is: a split document states the
-            // node it hangs from, and a page does not. Recorded on arrival and
-            // left alone after — a document does not change kind, and a later
-            // write is about where it is and what it says.
+            // node it hangs from, and a page does not. Written every time,
+            // because it can change — a subtree that arrived as a split
+            // document can become a page of its own, and a first impression
+            // kept for ever would leave a later demotion unnoticed.
             "INSERT INTO sync_documents(
                  root_id, folder_path, applied_max_hlc, exported_hash,
                  file_mtime_ms, file_size, quarantined, is_page)
@@ -1934,6 +1935,7 @@ fn record_document(
                  exported_hash = excluded.exported_hash,
                  file_mtime_ms = excluded.file_mtime_ms,
                  file_size = excluded.file_size,
+                 is_page = excluded.is_page,
                  quarantined = 0",
             rusqlite::params![
                 root_id,

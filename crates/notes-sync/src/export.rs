@@ -978,14 +978,20 @@ fn record_document(
 ) -> Result<(), ExportError> {
     transaction
         .prepare_cached(
-            // `is_page` is not touched on conflict: what a document is was
-            // decided when it first appeared, and this write is about where it
-            // is and what it says.
-            "INSERT INTO sync_documents(root_id, folder_path, exported_hash, quarantined)
-             VALUES (?1, ?2, ?3, 0)
+            // Which it is, from the node itself: home and the children of root
+            // are pages, and anything else this writes is a split document
+            // inside one. Stated every time because it can change — a subtree
+            // that arrived as a split document and has become a page of its
+            // own has to be noticed if it is ever demoted, and a page that
+            // became a split document must stop being retired for it.
+            "INSERT INTO sync_documents(root_id, folder_path, exported_hash, quarantined, is_page)
+             VALUES (?1, ?2, ?3, 0,
+                 ?1 = 'root' OR EXISTS (
+                     SELECT 1 FROM notes_nodes WHERE id = ?1 AND parent_id = 'root'))
              ON CONFLICT(root_id) DO UPDATE SET
                  folder_path = excluded.folder_path,
-                 exported_hash = excluded.exported_hash",
+                 exported_hash = excluded.exported_hash,
+                 is_page = excluded.is_page",
         )
         .and_then(|mut statement| statement.execute(rusqlite::params![root_id, relative, hash]))
         .map_err(|error| error.to_string())?;
