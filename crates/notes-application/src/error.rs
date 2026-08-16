@@ -40,6 +40,18 @@ impl NotesError {
         }
     }
 
+    /// The entry underneath is about a node another device has since changed.
+    /// Reversing it would replay an inverse against a state that has moved and
+    /// discard their change without saying so.
+    pub(crate) fn history_blocked_by_merge() -> Self {
+        Self {
+            code: NotesErrorCode::InvalidCommand,
+            message: "That step cannot be undone: another device has changed one of its notes."
+                .into(),
+            retryable: false,
+        }
+    }
+
     pub(crate) fn history_empty() -> Self {
         Self {
             code: NotesErrorCode::HistoryEmpty,
