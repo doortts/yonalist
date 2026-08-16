@@ -118,7 +118,8 @@ pub(crate) fn initialize(connection: &mut Connection) -> Result<(), StorageError
             "unsupported Notes schema version {version}; expected {SCHEMA_VERSION}"
         )));
     }
-    migrate(connection, version, MIGRATIONS)
+    migrate(connection, version, MIGRATIONS)?;
+    matches_shipped_schema(connection)
 }
 
 fn migrate(
@@ -143,6 +144,81 @@ fn migrate(
 
 fn create_schema(connection: &Connection) -> Result<(), StorageError> {
     connection.execute_batch(SCHEMA_SQL).map_err(internal)
+}
+
+/// Refuses a database whose shape is not the one this build was written
+/// against.
+///
+/// Development does not migrate: the schema is edited in place and the
+/// development database is made again. That rule works — until an older file
+/// is opened by a newer build. The version says 1 and always will, every
+/// `CREATE TABLE` is skipped because the table is there, and the app comes up
+/// looking perfectly well. The first edit then dies on a column the file has
+/// never had, and the message names the column rather than the cause.
+///
+/// So the shapes are compared at open, and the answer is given before anything
+/// is typed. What the user does about it — a reset from the settings screen —
+/// is a sentence they can act on, which "no such column: sync_prev" is not.
+fn matches_shipped_schema(connection: &Connection) -> Result<(), StorageError> {
+    let shipped = Connection::open_in_memory().map_err(internal)?;
+    shipped.execute_batch(SCHEMA_SQL).map_err(internal)?;
+    let expected = shape(&shipped)?;
+    let found = shape(connection)?;
+    if let Some(difference) = expected
+        .iter()
+        .zip(found.iter())
+        .find(|(expected, found)| expected != found)
+        .map(|(expected, _)| expected.0.clone())
+        .or_else(|| {
+            expected
+                .len()
+                .ne(&found.len())
+                .then(|| {
+                    expected
+                        .iter()
+                        .find(|(name, _)| !found.iter().any(|(found, _)| found == name))
+                        .map(|(name, _)| name.clone())
+                })
+                .flatten()
+        })
+    {
+        return Err(StorageError::Internal(format!(
+            "This Notes database was made by an older build and cannot be used by \
+             this one — `{difference}` is not what this build expects. There is no \
+             upgrade for it yet: reset the Notes data from the settings screen, \
+             which makes the database again."
+        )));
+    }
+    Ok(())
+}
+
+/// Every table, index, trigger and view the database holds, by name and by the
+/// statement that made it. Two databases with the same list are the same shape.
+fn shape(connection: &Connection) -> Result<Vec<(String, String)>, StorageError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT name, sql FROM sqlite_master
+             WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+             ORDER BY name",
+        )
+        .map_err(internal)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                // Whitespace is the formatter's, not the schema's.
+                row.get::<_, String>(1)?
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ))
+        })
+        .map_err(internal)?;
+    let mut shape = Vec::new();
+    for row in rows {
+        shape.push(row.map_err(internal)?);
+    }
+    Ok(shape)
 }
 
 fn internal(error: rusqlite::Error) -> StorageError {
