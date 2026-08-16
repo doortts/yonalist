@@ -34,6 +34,19 @@ fn derived_child_id(new_id: &NodeId, ordinal: usize) -> Result<NodeId, DomainErr
     NodeId::try_from(derived.to_string())
 }
 
+/// A picture the copy cannot carry itself, so the storage layer is told to hand
+/// it over. Only a picture still waiting for its bytes: one that has them
+/// travels on the node, the way everything else about it does.
+fn carry_picture(
+    carried_pictures: &mut Vec<(NodeId, NodeId)>,
+    source: &NoteNode,
+    copy_id: &NodeId,
+) {
+    if source.kind() == NoteNodeKind::Image && source.image().is_none() {
+        carried_pictures.push((source.id().clone(), copy_id.clone()));
+    }
+}
+
 /// Children go onto the stack reversed so popping hands them back in document
 /// order: `duplicate_node` feeds that position to `derived_child_id`, so this
 /// order is part of the copied ids and not just of the copied shape.
@@ -131,19 +144,6 @@ impl NotesTree {
         self.place_child(&id, &parent_id, position)
     }
 
-    /// A picture the copy cannot carry itself, so the storage layer is told to
-    /// hand it over. Only a picture still waiting for its bytes: one that has
-    /// them travels on the node, the way everything else about it does.
-    fn carry_picture(
-        carried_pictures: &mut Vec<(NodeId, NodeId)>,
-        source: &NoteNode,
-        copy_id: &NodeId,
-    ) {
-        if source.kind() == NoteNodeKind::Image && source.image().is_none() {
-            carried_pictures.push((source.id().clone(), copy_id.clone()));
-        }
-    }
-
     fn duplicate_node(
         &mut self,
         source_id: NodeId,
@@ -163,7 +163,7 @@ impl NotesTree {
         }
         let source_ids = self.visible_subtree_ids(&source_id);
         let source = source.clone();
-        Self::carry_picture(carried_pictures, &source, &new_id);
+        carry_picture(carried_pictures, &source, &new_id);
         let copy = NoteNode::from_persisted_with_image(
             new_id.clone(),
             Some(parent_id.clone()),
@@ -195,7 +195,7 @@ impl NotesTree {
                 .get(source_parent_id)
                 .cloned()
                 .ok_or_else(|| DomainError::ParentNotFound(source_parent_id.clone()))?;
-            Self::carry_picture(carried_pictures, &source_child, &copied_id);
+            carry_picture(carried_pictures, &source_child, &copied_id);
             self.nodes.insert(
                 copied_id.clone(),
                 NoteNode::from_persisted_with_image(

@@ -185,6 +185,5 @@ pub struct DomainPatch {
     /// Source first, then the copy that has to be given the same picture. The
     /// mutations cannot say this: what has to be copied is not tree state,
     /// which is the whole reason the node arrives empty.
-    #[serde(default)]
     pub carried_pictures: Vec<(NodeId, NodeId)>,
 }

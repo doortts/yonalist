@@ -63,7 +63,7 @@ fn insertion_patch(forward: Vec<TreeMutation>) -> DomainPatch {
     DomainPatch {
         forward,
         inverse,
-        ..DomainPatch::default()
+        carried_pictures: Vec::new(),
     }
 }
 

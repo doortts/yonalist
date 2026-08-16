@@ -61,7 +61,7 @@ fn sparse_batch_storage() -> SqliteStorage {
             &DomainPatch {
                 forward: nodes.into_iter().map(TreeMutation::upsert).collect(),
                 inverse,
-                ..DomainPatch::default()
+                carried_pictures: Vec::new(),
             },
         )
         .unwrap();

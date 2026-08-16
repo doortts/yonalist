@@ -82,7 +82,7 @@ fn stored_chain() -> SqliteStorage {
             &DomainPatch {
                 forward,
                 inverse,
-                ..DomainPatch::default()
+                carried_pictures: Vec::new(),
             },
         )
         .unwrap();
