@@ -492,3 +492,96 @@ fn an_overwritten_file_comes_back_through_the_merge() {
     );
     assert_eq!(one.outline(), two.outline());
 }
+
+/// The export is on a timer and the user is in a text editor. Both write the
+/// same file, and whichever order they land in, what the user typed has to be
+/// there afterwards.
+#[test]
+fn a_hand_edit_is_not_overwritten_by_an_export_that_was_already_coming() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let bullet = add_bullet(&one, &page, "Written in the app");
+    settle(&one, &two);
+
+    // The user types into the file while this device is holding an edit of its
+    // own — which is exactly what a debounce window is.
+    let readme = page_file(&two);
+    let mut document = std::fs::read_to_string(&readme).expect("document");
+    document.push_str("- Typed while the app was about to write\n");
+    std::fs::write(&readme, document).expect("hand edit");
+    two.run(IpcNotesCommand::UpdateText {
+        id: bullet.clone(),
+        text: "Changed in the app".to_owned(),
+    });
+
+    two.absorb();
+
+    let written = std::fs::read_to_string(&readme).expect("document");
+    assert!(
+        written.contains("Typed while the app was about to write"),
+        "the export wrote over what the user typed: {written}"
+    );
+    assert!(
+        written.contains("Changed in the app"),
+        "and the app's own edit went with it: {written}"
+    );
+}
+
+/// Two devices that each put the same picture in a note have to agree on where
+/// it lives, without asking each other.
+#[test]
+fn a_picture_two_pages_share_ends_up_in_the_vault_store() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let second_page = add_bullet(&one, &page, "Another page");
+    settle(&one, &two);
+
+    let shot = add_bullet(&one, &page, "holiday.png");
+    let copy = add_bullet(&one, &second_page, "holiday.png");
+    for node in [&shot, &copy] {
+        picture(&one, node);
+    }
+    settle(&one, &two);
+
+    assert!(
+        one.vault.join("assets").exists(),
+        "two notes point at it, so it belongs to neither of their folders"
+    );
+    let placed: Vec<String> = std::fs::read_dir(one.vault.join("assets"))
+        .expect("read")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(placed.len(), 1, "{placed:?}");
+    assert!(
+        two.vault.join("assets").join(&placed[0]).exists(),
+        "and the other device has it under the same name"
+    );
+}
+
+fn page_file(device: &Device) -> std::path::PathBuf {
+    std::fs::read_dir(&device.vault)
+        .expect("read")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.is_dir() && path.join("README.md").exists())
+        .expect("a page folder")
+        .join("README.md")
+}
+
+/// A picture on this bullet, with its bytes in this device's own store — what
+/// an import leaves behind, without going through the image pipeline.
+fn picture(device: &Device, node_id: &str) {
+    const HASH: &str = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
+    std::fs::write(device.store.join(format!("{HASH}.png")), b"pretend png").expect("bytes");
+    rusqlite::Connection::open(device._home.path().join("notes.sqlite"))
+        .expect("open")
+        .execute(
+            "INSERT INTO notes_images(node_id, content_hash, relative_path, original_name,
+                 mime_type, byte_length, pixel_width, pixel_height, display_width)
+             VALUES (?1, ?2, ?3, 'holiday.png', 'image/png', 11, 800, 600, 480)
+             ON CONFLICT(node_id) DO NOTHING",
+            rusqlite::params![node_id, HASH, format!("{HASH}.png")],
+        )
+        .expect("image");
+}
