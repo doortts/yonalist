@@ -729,9 +729,8 @@ fn an_arriving_attachment_resolves_the_rows_waiting_for_it() {
 /// thrown away, because deleting a subtree upserts it too.
 #[test]
 fn a_picture_a_file_turned_back_into_text_is_not_stranded() {
-    let directory = tempfile::tempdir().expect("temporary directory");
+    let (directory, storage) = storage();
     let path = directory.path().join("notes.sqlite");
-    let storage = SqliteStorage::open(&path).expect("open");
     let hash = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
     storage
         .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())

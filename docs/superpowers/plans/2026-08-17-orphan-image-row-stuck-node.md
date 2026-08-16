@@ -68,10 +68,13 @@ that export defect is not fixed here.
     node. That is the stuck node, and it is stuck one gate earlier than
     `validate_image_ownership` ever runs.
 
-  `collect_command_context` hydrates siblings as well as ancestors
-  (`crates/notes-sqlite/src/repository.rs:431-458`), so one orphan row also
-  refuses commands on *neighbouring* lines — creating a bullet at the end of the
-  same parent, say — not only on the node that owns it.
+  `collect_command_context` (`crates/notes-sqlite/src/repository.rs:58`)
+  hydrates siblings as well as ancestors, so one orphan row also refuses
+  commands on *neighbouring* lines, not only on the node that owns it: an
+  import under the same parent pulls in every child
+  (`crates/notes-sqlite/src/repository.rs:88`, `:99`), and a create at the end
+  of it pulls in the last sibling (`crates/notes-sqlite/src/repository.rs:439-450`)
+  — so that one refuses only when the orphan is the line at the end.
 - `content_of_row` (`merger.rs:1569-1583`) builds the compare string from
   `row.image` regardless of kind, so the row can never again compare equal to
   the text line the file holds. The node re-decides on every merge of that file.
@@ -114,7 +117,7 @@ third option, and it would retire the writer census above that every future
 writer of `kind` re-opens. It loses on one specific ground: `write_row` already
 has to fight the triggers on this table. It writes the merged stamp in a
 separate statement precisely to slip past the update trigger
-(`crates/notes-sync/src/merger.rs:1245-1252`), so every trigger added here is
+(`crates/notes-sync/src/merger.rs:1246-1253`), so every trigger added here is
 another rule the merge has to reason around, invisible at the call site. A
 second implicit deleter of `notes_images` — beside the FK cascade — also makes
 the ownership of those rows harder to state than the census is to keep. The
@@ -148,7 +151,7 @@ names its own failing test.
 
   | On the device that only saw the trash file | Before | After |
   | --- | --- | --- |
-  | Restoring the trashed picture | refused at load (`tree.rs:405`) | succeeds, as a plain bullet titled with the file name |
+  | Restoring the trashed picture | refused at load (`image.rs:48` today, `tree.rs:405` once the path defect is fixed) | succeeds, as a plain bullet titled with the file name |
   | Deleting its bytes from the attachment list | refused — the orphan row still counted (`attachment_list.rs:170`) | allowed, and the vault file goes (`attachment_list.rs:198`) |
 
   So this path failed closed before and fails open now. The blast radius is
