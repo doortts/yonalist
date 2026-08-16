@@ -613,6 +613,95 @@ fn a_page_dragged_under_another_keeps_its_notes() {
     );
 }
 
+/// The page that takes the notes in may not be writable that moment —
+/// somebody has the file open in an editor. The folder the notes came from
+/// must not go until they have actually landed somewhere.
+#[test]
+fn a_dragged_page_keeps_its_folder_until_its_new_home_is_written() {
+    let (one, two) = seeded_pair();
+    let host = one.first_page();
+    let joining = add_bullet(&one, "root", "Joining page");
+    let carried = add_bullet(&one, &joining, "Carried along");
+    settle(&one, &two);
+    let host_file = page_file(&one);
+
+    // Somebody edited the page it is joining, so this app may not write it.
+    std::fs::write(&host_file, b"somebody's own words\n").expect("hand edit");
+    one.run(IpcNotesCommand::MoveNode {
+        id: joining.clone(),
+        parent_id: host.clone(),
+        before_id: None,
+    });
+    let _ = one.export();
+
+    let stated = documents(&one.vault).into_iter().any(|relative| {
+        std::fs::read_to_string(one.vault.join(relative))
+            .unwrap_or_default()
+            .contains("Carried along")
+    });
+    assert!(
+        stated,
+        "the folder went while the page it joined could not be written, so the \
+         notes are in no file at all"
+    );
+    // And once that page can be written, the folder goes with the same pass.
+    std::fs::remove_file(&host_file).expect("the editor's version");
+    one.absorb();
+    let _ = one.export();
+    assert_eq!(
+        documents(&one.vault).len(),
+        2,
+        "{:?}",
+        documents(&one.vault)
+    );
+    assert_eq!(one.text_of(&carried).as_deref(), Some("Carried along"));
+}
+
+/// Dragged in and dragged back out, which is what an undo is. It is a page
+/// again, so it gets its folder and its file back — a document left marked as
+/// leaving would never be written again.
+#[test]
+fn a_page_dragged_back_out_is_a_page_again() {
+    let (one, two) = seeded_pair();
+    let host = one.first_page();
+    let joining = add_bullet(&one, "root", "Joining page");
+    let carried = add_bullet(&one, &joining, "Carried along");
+    settle(&one, &two);
+
+    // The page it joins cannot be written — somebody has it open — so the old
+    // folder is still there, marked as leaving, when the user changes their
+    // mind.
+    std::fs::write(page_file(&one), b"somebody's own words\n").expect("hand edit");
+    one.run(IpcNotesCommand::MoveNode {
+        id: joining.clone(),
+        parent_id: host.clone(),
+        before_id: None,
+    });
+    let _ = one.export();
+    one.run(IpcNotesCommand::MoveNode {
+        id: joining.clone(),
+        parent_id: "root".to_owned(),
+        before_id: None,
+    });
+    let _ = one.export();
+
+    let stated = documents(&one.vault).into_iter().any(|relative| {
+        relative != "README.md"
+            && std::fs::read_to_string(one.vault.join(&relative))
+                .unwrap_or_default()
+                .contains("Carried along")
+            && relative.starts_with("Joining")
+    });
+    assert!(
+        stated,
+        "it is a page again and has to have a page's file: {:?}",
+        documents(&one.vault)
+    );
+    let _ = carried;
+    settle(&one, &two);
+    assert_eq!(one.outline(), two.outline());
+}
+
 /// The export is on a timer and the user is in a text editor. Both write the
 /// same file, and whichever order they land in, what the user typed has to be
 /// there afterwards.

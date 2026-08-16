@@ -301,7 +301,25 @@ pub fn retire_missing_documents(
                -- still have one. A document marked as leaving has just had its
                -- subtree written into the page it joined, which is what makes
                -- this the moment its folder can go.
-               AND (n.id IS NULL OR n.deleted = 1 OR d.retiring = 1)",
+               AND (n.id IS NULL OR n.deleted = 1
+                    OR (d.retiring = 1
+                        -- Its notes have actually landed: the page that took
+                        -- them in was written, which is what clears the mark.
+                        -- A page somebody had open in an editor is not written
+                        -- that pass, and the folder waits for the one that is.
+                        AND NOT EXISTS (
+                            SELECT 1 FROM sync_dirty_nodes q WHERE q.node_id = d.root_id
+                        )))
+               -- A folder holding another document's file is not this one's to
+               -- remove. Split documents live inside their page's folder, and
+               -- taking the folder would take their files with it.
+               AND NOT EXISTS (
+                   SELECT 1 FROM sync_documents inner_d
+                   WHERE inner_d.root_id <> d.root_id
+                     AND inner_d.retiring = 0
+                     AND inner_d.folder_path LIKE rtrim(d.folder_path, replace(
+                         d.folder_path, '/', '')) || '%'
+               )",
         )
         .map_err(|error| error.to_string())?;
     let rows = statement
@@ -351,6 +369,17 @@ pub fn retire_missing_documents(
 /// Called before the documents are written; `retire_missing_documents`
 /// finishes the job after them.
 pub fn begin_retirement(transaction: &Transaction<'_>) -> Result<usize, ExportError> {
+    // A node that became a page again — dragged back out, or an undo — is a
+    // document once more. Left marked, its file would never be written again.
+    transaction
+        .prepare_cached(
+            "UPDATE sync_documents SET retiring = 0
+             WHERE retiring = 1
+               AND root_id IN (SELECT id FROM notes_nodes
+                               WHERE parent_id = 'root' AND deleted = 0)",
+        )
+        .and_then(|mut statement| statement.execute([]))
+        .map_err(|error| error.to_string())?;
     let mut statement = transaction
         .prepare_cached(
             "SELECT d.root_id FROM sync_documents d
