@@ -272,9 +272,7 @@ function NotesDataSection({
       const next = await unusedAssets(purge);
       setReport(purge ? { ...next, count: 0, totalBytes: 0 } : next);
     } catch (cause) {
-      setError(cause instanceof Error
-        ? cause.message
-        : "Notes could not complete the request.");
+      setError(messageFrom(cause));
     } finally {
       setBusy(false);
     }
@@ -288,9 +286,7 @@ function NotesDataSection({
       await deleteAllData();
     } catch (cause) {
       setDeleting(false);
-      setError(cause instanceof Error
-        ? cause.message
-        : "Notes could not complete the request.");
+      setError(messageFrom(cause));
     }
   };
 

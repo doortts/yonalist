@@ -79,6 +79,27 @@ describe("SettingsView", () => {
     );
   });
 
+  it("reports why a reset failed, in the words the backend used", async () => {
+    renderSettings({
+      deleteAllData: vi.fn().mockRejectedValue({
+        code: "storageUnavailable",
+        message: "The reset marker could not be written.",
+        retryable: true
+      })
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Delete all Yonalist data..." })
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Delete everything and restart" })
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The reset marker could not be written."
+    );
+  });
+
   it("keeps the settings entrance open after the first-run card was dismissed", async () => {
     window.localStorage.setItem("yonalist.vaultPromptDismissed.v1", "1");
     renderSettings({
