@@ -947,3 +947,202 @@ fn siblings_taking_turns_in_one_slot_never_run_out_of_room() {
         "a sibling's own unexported edit survives being moved along"
     );
 }
+
+fn trash(nodes: Vec<DocumentNode>, max_hlc: &str) -> notes_sync::document::VaultFile {
+    notes_sync::document::VaultFile::Trash(notes_sync::document::TrashDocument {
+        max_hlc: max_hlc.to_owned(),
+        nodes,
+    })
+}
+
+fn trash_input() -> MergeInput {
+    let mut input = input();
+    input.file_path = ".yonalist/trash.md".to_owned();
+    input
+}
+
+fn deleted_flag(connection: &Connection, id: &str) -> i64 {
+    connection
+        .query_row(
+            "SELECT deleted FROM notes_nodes WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .expect("deleted")
+}
+
+/// A page document that stops mentioning a node says nothing about it. Only
+/// trash.md carries a deletion, because only trash.md is evidence one happened.
+#[test]
+fn deletion_needs_trash_evidence() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(5, "a3f2"), "Thought")],
+            &stamp(5, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("seed");
+    assert_eq!(deleted_flag(&transaction, NODE_ID), 0);
+
+    let mut gone = node(NODE_ID, &stamp(9, "a3f2"), "Thought");
+    gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
+    merge_document(
+        &transaction,
+        &clock(),
+        &trash(vec![gone], &stamp(9, "a3f2")),
+        &trash_input(),
+    )
+    .expect("trash");
+
+    assert_eq!(deleted_flag(&transaction, NODE_ID), 1);
+}
+
+/// A deletion is one of a node's states, so it competes on its stamp like any
+/// other. The stale side loses and is kept.
+#[test]
+fn a_deletion_and_an_edit_compete_by_hlc() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let mut gone = node(NODE_ID, &stamp(5, "a3f2"), "Thought");
+    gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
+    merge_document(
+        &transaction,
+        &clock(),
+        &trash(vec![gone], &stamp(5, "a3f2")),
+        &trash_input(),
+    )
+    .expect("trash");
+
+    // A newer edit from elsewhere brings the node back.
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(9, "a3f2"), "Still wanted")],
+            &stamp(9, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("edit");
+
+    assert_eq!(
+        deleted_flag(&transaction, NODE_ID),
+        0,
+        "a newer edit outranks an older deletion"
+    );
+    assert_eq!(
+        text_of(&transaction, NODE_ID).as_deref(),
+        Some("Still wanted")
+    );
+    assert_eq!(
+        conflicts_for(&transaction, NODE_ID),
+        1,
+        "the deletion is kept"
+    );
+}
+
+/// The row remembers where it was, so restoring is just clearing the flag.
+/// Nothing else has to be stored for the trash to be undoable.
+#[test]
+fn restoring_from_trash_puts_the_node_back_where_it_was() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let mut gone = node(NODE_ID, &stamp(5, "a3f2"), "Thought");
+    gone.from = Some((PAGE_ID.to_owned(), 8_589_934_592));
+    merge_document(
+        &transaction,
+        &clock(),
+        &trash(vec![gone], &stamp(5, "a3f2")),
+        &trash_input(),
+    )
+    .expect("trash");
+
+    let (parent, key): (String, i64) = transaction
+        .query_row(
+            "SELECT parent_id, sort_key FROM notes_nodes WHERE id = ?1",
+            [NODE_ID],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("row");
+
+    assert_eq!(parent, PAGE_ID, "the node still belongs where it was");
+    assert_eq!(key, 8_589_934_592, "at the place it was deleted from");
+}
+
+/// A trash child's parent came with it, so its place is its line. Only the
+/// roots of the trash state where they were taken from.
+#[test]
+fn a_trash_child_takes_its_place_from_its_line() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let child_id = "8a201f33-0000-4c91-8d02-000000000007";
+    let mut parent = node(NODE_ID, &stamp(5, "a3f2"), "Deleted");
+    parent.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
+    parent.children = vec![node(child_id, &stamp(5, "a3f2"), "Child")];
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &trash(vec![parent], &stamp(5, "a3f2")),
+        &trash_input(),
+    )
+    .expect("trash");
+
+    assert_eq!(deleted_flag(&transaction, child_id), 1);
+    let parent_of_child: String = transaction
+        .query_row(
+            "SELECT parent_id FROM notes_nodes WHERE id = ?1",
+            [child_id],
+            |row| row.get(0),
+        )
+        .expect("parent");
+    assert_eq!(parent_of_child, NODE_ID);
+}
+
+/// Trash can arrive before the document holding the node it was taken from. A
+/// placeholder keeps the place open with an empty stamp, so the real document
+/// wins everything the moment it lands.
+#[test]
+fn a_trash_root_whose_parent_is_unknown_gets_a_placeholder() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let unknown_parent = "9d3f21b8-c440-4c91-8d02-2e77a05fb163";
+    let mut gone = node(NODE_ID, &stamp(5, "a3f2"), "Thought");
+    gone.from = Some((unknown_parent.to_owned(), 4_294_967_296));
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &trash(vec![gone], &stamp(5, "a3f2")),
+        &trash_input(),
+    )
+    .expect("trash");
+
+    assert_eq!(
+        hlc_of(&transaction, unknown_parent),
+        "",
+        "an empty stamp loses to the real document the moment it arrives"
+    );
+    assert_eq!(deleted_flag(&transaction, unknown_parent), 1);
+}
+
+/// Merging the same trash file twice is not two deletions.
+#[test]
+fn merging_the_same_trash_twice_changes_nothing() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let mut gone = node(NODE_ID, &stamp(5, "a3f2"), "Thought");
+    gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
+    let file = trash(vec![gone], &stamp(5, "a3f2"));
+    merge_document(&transaction, &clock(), &file, &trash_input()).expect("first");
+
+    let outcome = merge_document(&transaction, &clock(), &file, &trash_input()).expect("replay");
+
+    assert_eq!(outcome.applied, 0);
+    assert_eq!(conflicts(&transaction), 0);
+}

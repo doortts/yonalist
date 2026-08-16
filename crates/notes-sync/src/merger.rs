@@ -187,12 +187,18 @@ fn merge_trash(
 fn flatten<'a>(nodes: &'a [DocumentNode], parent_id: &str, out: &mut Vec<Incoming<'a>>) {
     let mut predecessor = String::new();
     for node in nodes {
+        // A trash root states where it was taken from, and that is its place —
+        // the line it sits on in the trash says nothing about where it belongs.
+        let (parent_id, positioned) = match &node.from {
+            Some((from, _)) => (from.clone(), false),
+            None => (parent_id.to_owned(), true),
+        };
         out.push(Incoming {
             id: node.id.clone(),
             node,
-            parent_id: parent_id.to_owned(),
+            parent_id,
             predecessor_id: predecessor.clone(),
-            positioned: true,
+            positioned,
         });
         predecessor = node.id.clone();
         let owner = node.id.clone();
@@ -220,6 +226,9 @@ fn apply(
     // snapshot taken before the writes would make every sibling after a moved
     // one look reordered too, and each would be dragged through the conflict
     // machinery for a move it never made.
+    if trash {
+        place_missing_parents(transaction, incoming)?;
+    }
     let mut order = SiblingOrder::load(transaction, incoming, &existing)?;
 
     for entry in incoming.iter() {
@@ -235,11 +244,13 @@ fn apply(
             clock.observe(&reading);
         }
         let row = existing.get(&entry.id);
+        let deleted_now = trash;
         let file_content = content_of_file(entry, trash);
         let row_content = row.map(|row| content_of_row(row, entry.positioned, &order));
 
         let (verdict, stamp, reason) = decide(
             row,
+            deleted_now,
             &file_content,
             row_content.as_deref(),
             &file_hlc,
@@ -289,6 +300,44 @@ fn apply(
                 outcome.needs_write_back = true;
             }
         }
+    }
+    Ok(())
+}
+
+/// Trash can arrive before the document holding the node it was taken from.
+/// The place is held open by a deleted row with an empty stamp, which loses
+/// every comparison — so the real document takes it over the moment it lands.
+/// A fresh stamp here would beat the real evidence instead.
+fn place_missing_parents(
+    transaction: &Transaction<'_>,
+    incoming: &[Incoming<'_>],
+) -> Result<(), MergeError> {
+    for entry in incoming {
+        let Some((parent, _)) = &entry.node.from else {
+            continue;
+        };
+        if parent == "root" {
+            continue;
+        }
+        transaction
+            .prepare_cached(
+                "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, deleted, hlc)
+                 VALUES (?1, 'root', ?2, 'bullet', '', 1, '')
+                 ON CONFLICT(id) DO NOTHING",
+            )
+            .and_then(|mut statement| statement.execute(rusqlite::params![parent, SORT_KEY_STEP]))
+            .map_err(|error| error.to_string())?;
+        // The insert trigger stamps anything that arrives without a reading,
+        // and a stamped placeholder would outrank the document it is waiting
+        // for. Put the emptiness back, and take the dirty mark with it.
+        transaction
+            .prepare_cached("UPDATE notes_nodes SET hlc = '' WHERE id = ?1 AND text = ''")
+            .and_then(|mut statement| statement.execute([parent]))
+            .map_err(|error| error.to_string())?;
+        transaction
+            .prepare_cached("DELETE FROM sync_dirty_nodes WHERE node_id = ?1")
+            .and_then(|mut statement| statement.execute([parent]))
+            .map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -474,6 +523,8 @@ enum Reason {
     ClockDrift,
     /// Two devices carrying the same stamp and different content.
     SameStamp,
+    /// A plain defeat on the stamps, where what lost was worth keeping.
+    Lww,
 }
 
 impl Reason {
@@ -482,6 +533,7 @@ impl Reason {
             Reason::DirtyOverwrite => "dirty_overwrite",
             Reason::ClockDrift => "clock_drift",
             Reason::SameStamp => "same_t",
+            Reason::Lww => "lww",
         }
     }
 }
@@ -489,6 +541,7 @@ impl Reason {
 #[allow(clippy::too_many_arguments)]
 fn decide(
     row: Option<&Row>,
+    deleted_now: bool,
     file_content: &str,
     row_content: Option<&str>,
     file_hlc: &str,
@@ -532,7 +585,11 @@ fn decide(
     }
 
     if file_hlc > row.hlc.as_str() {
-        let reason = if row.dirty && !same_content {
+        // A deletion is one of a node's states, so a merge that reverses one —
+        // in either direction — has beaten something worth keeping.
+        let reason = if row.deleted != deleted_now {
+            Some(Reason::Lww)
+        } else if row.dirty && !same_content {
             Some(Reason::DirtyOverwrite)
         } else {
             None
@@ -684,7 +741,7 @@ fn write_row(
             return Err("A split line has no state of its own to write.".to_owned());
         }
     };
-    let parent_id = if entry.positioned {
+    let parent_id = if entry.positioned || entry.node.from.is_some() {
         Some(entry.parent_id.clone())
     } else {
         // A page's place is its line in home, so its own file cannot move it.
@@ -706,13 +763,19 @@ fn write_row(
                 key
             }
         }
+    } else if let Some((_, from_key)) = &entry.node.from {
+        // Where it was deleted from. The row remembering that is the whole of
+        // restoring: clearing the flag puts it back exactly where it stood.
+        *from_key
     } else {
         match row.map(|row| row.sort_key).or_else(|| order.key(&entry.id)) {
             Some(key) => key,
             None => order.append(&parent, &entry.id),
         }
     };
-    let deleted = trash || entry.node.from.is_some();
+    // In a page document a node's presence is the statement that it is live;
+    // in the trash it is the statement that it is not.
+    let deleted = trash;
     let extras = extras_of(entry);
 
     // The stamp is written with the row, so the stamping triggers leave it
