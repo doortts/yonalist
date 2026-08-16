@@ -136,6 +136,42 @@ fn documents(vault: &std::path::Path) -> Vec<String> {
     found
 }
 
+/// The stat gate the boot scan leans on compares what the folder says now
+/// with what was recorded when this app last dealt with the file. The merge
+/// records that; the export never did — so on a vault of this app's own
+/// files, every record was empty and the gate would answer "read it" for all
+/// of them, every launch, with nothing to notice.
+#[test]
+fn the_export_records_the_stat_of_what_it_wrote() {
+    let workspace = workspace();
+    workspace.pages(1);
+    workspace.export();
+
+    let (relative, recorded_mtime, recorded_size): (String, Option<i64>, Option<i64>) =
+        rusqlite::Connection::open(workspace.home.path().join("notes.sqlite"))
+            .expect("open")
+            .query_row(
+                "SELECT folder_path, file_mtime_ms, file_size FROM sync_documents
+                 WHERE root_id <> 'root' AND root_id <> 'yonalist-trash'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("the page's document");
+    let on_disk = std::fs::metadata(workspace.vault.join(&relative)).expect("the file");
+    assert_eq!(
+        recorded_size,
+        Some(on_disk.len() as i64),
+        "what the export wrote is what it has to write down"
+    );
+    let modified = on_disk
+        .modified()
+        .expect("mtime")
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("since the epoch")
+        .as_millis() as i64;
+    assert_eq!(recorded_mtime, Some(modified));
+}
+
 /// The one that matters: an app that opens on a folder nobody has touched does
 /// no work at all. Every device runs this on every start, so a per-document
 /// cost here is a cost every user pays for having notes.
