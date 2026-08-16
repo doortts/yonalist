@@ -869,3 +869,184 @@ fn picture(device: &Device, node_id: &str) {
         )
         .expect("kind");
 }
+
+/// The whole page a picture sits on, read the way the window reads it.
+fn page_of(device: &Device, page_id: &str) -> Result<notes_application::ViewportPage, String> {
+    device
+        .storage
+        .query_viewport(notes_application::ViewportRequest {
+            page_id: page_id.to_owned(),
+            anchor_id: None,
+            before_cursor: None,
+            after_cursor: None,
+            limit: 50,
+        })
+        .map_err(|error| error.to_string())
+}
+
+/// iCloud brings a page's text down before its pictures, and a picture two
+/// devices share can be minutes behind. A page whose picture has not landed
+/// still has to open — a row waiting for its bytes is a state this app
+/// designed for, not a corrupt one.
+#[test]
+fn a_page_arriving_before_its_picture_still_reads() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    one.export();
+    carry(&one, &two);
+    for (location, _) in attachments(&two.vault) {
+        std::fs::remove_file(two.vault.join(location)).expect("hold the bytes back");
+    }
+    two.absorb();
+
+    let read = page_of(&two, &page).expect("the page still opens");
+    let node = read
+        .nodes
+        .iter()
+        .find(|node| node.id == shot)
+        .expect("the picture's node");
+    assert!(
+        node.image.is_none(),
+        "a row still waiting for its bytes has no image to show yet"
+    );
+}
+
+/// Rows an older build wrote hold the vault's own link where the domain form
+/// belongs. Reading is not where that gets adjudicated: the path is derived
+/// from the hash, so those rows read as they always should have.
+#[test]
+fn a_row_poisoned_by_an_old_merge_reads_healthy() {
+    let one = Device::new("one");
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    rusqlite::Connection::open(one._home.path().join("notes.sqlite"))
+        .expect("open")
+        .execute(
+            "UPDATE notes_images SET relative_path = 'assets/holiday-9f2c1b7a4e6d.png'
+             WHERE node_id = ?1",
+            [&shot],
+        )
+        .expect("poison the row the way an older merge did");
+
+    let read = page_of(&one, &page).expect("the page still opens");
+    let node = read
+        .nodes
+        .iter()
+        .find(|node| node.id == shot)
+        .expect("the picture's node");
+    let image = node.image.as_ref().expect("the picture is still there");
+    assert_eq!(image.content_hash, HASH);
+    assert_eq!(image.original_name, "holiday.png");
+}
+
+/// A picture whose bytes have not landed reads as a node without one, so any
+/// command that carries that node back through the store carries a `None`
+/// where the picture used to be. Acting on the note around it must not throw
+/// away what the file already said about the picture.
+#[test]
+fn starring_a_waiting_picture_keeps_its_metadata() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let elsewhere = add_bullet(&one, "root", "Another page");
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    one.export();
+    carry(&one, &two);
+    let mut held_back = String::new();
+    for (location, disk_name) in attachments(&two.vault) {
+        std::fs::remove_file(two.vault.join(location)).expect("hold the bytes back");
+        held_back = disk_name;
+    }
+    two.absorb();
+
+    two.run(IpcNotesCommand::SetStarred {
+        id: shot.clone(),
+        starred: true,
+    });
+    two.run(IpcNotesCommand::MoveNode {
+        id: shot.clone(),
+        parent_id: elsewhere.clone(),
+        before_id: None,
+    });
+
+    let (hash, path, name) = stored_waiting_image(&two, &shot);
+    assert_eq!(hash, "", "the bytes are still not here");
+    assert_eq!(
+        path.rsplit('/').next(),
+        Some(held_back.as_str()),
+        "and the link still names the file they will arrive as — how \
+         `resolve_asset` finds this row when they do"
+    );
+    assert_eq!(name, "holiday.png");
+}
+
+/// What a row still waiting for its bytes is holding, all of which is what the
+/// file said and none of which this device can recover from anywhere else.
+fn stored_waiting_image(device: &Device, node_id: &str) -> (String, String, String) {
+    rusqlite::Connection::open(device._home.path().join("notes.sqlite"))
+        .expect("open")
+        .query_row(
+            "SELECT content_hash, relative_path, original_name FROM notes_images
+             WHERE node_id = ?1",
+            [node_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("the row is still waiting for its bytes, not gone with them")
+}
+
+/// The other device resized the picture, so the line comes back stamped later
+/// and genuinely changed. Taking that edit in must not put the vault's own
+/// link where the row keeps the picture's own name.
+#[test]
+fn an_edited_echo_keeps_the_row_in_domain_form() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    settle(&one, &two);
+
+    let file = page_file_of(&one, &page);
+    let echoed = std::fs::read_to_string(&file)
+        .expect("read")
+        .lines()
+        .map(|line| {
+            if !line.contains("![") {
+                return line.to_owned();
+            }
+            let start = line.find(" t: ").expect("a stamp") + 4;
+            let end = start + line[start..].find(' ').expect("the end of it");
+            format!("{}zzzzzzzzz-00-dddd{}", &line[..start], &line[end..])
+                .replace("w: 480", "w: 300")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&file, format!("{echoed}\n")).expect("write");
+    one.absorb();
+
+    let (hash, path, width) = stored_image(&one, &shot);
+    // First, because the fixture seeded the row in domain form already: if the
+    // edit was never applied, the two assertions below hold without this test
+    // having proved anything at all.
+    assert_eq!(width, 300, "the resize was taken in");
+    assert_eq!(
+        hash, HASH,
+        "the picture is the one this device already holds"
+    );
+    assert_eq!(path, format!("{HASH}.png"));
+}
+
+/// What the row holds for a picture whose bytes this device already has.
+fn stored_image(device: &Device, node_id: &str) -> (String, String, i64) {
+    rusqlite::Connection::open(device._home.path().join("notes.sqlite"))
+        .expect("open")
+        .query_row(
+            "SELECT content_hash, relative_path, display_width FROM notes_images
+             WHERE node_id = ?1",
+            [node_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("image row")
+}
