@@ -22,6 +22,10 @@ const MAX_COMPLETED_REQUESTS: usize = 4_096;
 pub(crate) struct NotesServiceHistoryEntry {
     forward: Vec<TreeMutation>,
     inverse: Vec<TreeMutation>,
+    /// Only a redo replays these. The mutations alone cannot put a duplicated
+    /// picture back: the copy's node carries no picture, which is why the
+    /// duplication had to name one in the first place.
+    carried_pictures: Vec<(NodeId, NodeId)>,
     group: Option<String>,
 }
 
@@ -71,6 +75,7 @@ impl SessionState {
             let mut combined_inverse = entry.inverse;
             combined_inverse.extend(std::mem::take(&mut previous.inverse));
             previous.inverse = combined_inverse;
+            previous.carried_pictures.extend(entry.carried_pictures);
         } else {
             // The floor is a position in this stack, so it moves down with it
             // when the oldest entry is dropped.
@@ -337,6 +342,7 @@ impl<S: StoragePort> NotesService<S> {
         let entry = NotesServiceHistoryEntry {
             forward: patch.forward,
             inverse: patch.inverse,
+            carried_pictures: patch.carried_pictures,
             group: history_group.clone(),
         };
         session.record_history(entry);
@@ -388,6 +394,9 @@ impl<S: StoragePort> NotesService<S> {
             &DomainPatch {
                 forward: entry.inverse.clone(),
                 inverse: entry.forward.clone(),
+                // Never on the way back: an undo deletes the copy, and handing
+                // a picture to a node that is going away is at best undone a
+                // statement later by the cascade.
                 carried_pictures: Vec::new(),
             },
         )?;
@@ -411,7 +420,7 @@ impl<S: StoragePort> NotesService<S> {
             &DomainPatch {
                 forward: entry.forward.clone(),
                 inverse: entry.inverse.clone(),
-                carried_pictures: Vec::new(),
+                carried_pictures: entry.carried_pictures.clone(),
             },
         )?;
         session.redo.pop();

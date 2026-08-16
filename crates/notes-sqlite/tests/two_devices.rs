@@ -11,7 +11,7 @@
 //! cannot decide. Those have tests of their own, and the manual proof covers
 //! them together.
 
-use notes_application::{CommandEnvelope, IpcNotesCommand, NotesService};
+use notes_application::{CommandEnvelope, HistoryRequest, IpcNotesCommand, NotesService};
 use notes_sqlite::SqliteStorage;
 
 /// One device: its own database, its own image store, its own copy of the
@@ -1114,6 +1114,67 @@ fn a_waiting_picture_under_a_duplicated_bullet_meets_its_bytes_too() {
         settled_pictures(&two).len(),
         2,
         "the original and the copy under the duplicated bullet both met the bytes"
+    );
+}
+
+/// Undo takes the copy away and its picture record goes with it. Redo replays
+/// what the duplication left behind in the history and nothing else, so unless
+/// the picture is in there too the copy comes back dead in exactly the way the
+/// duplicate itself used to be.
+#[test]
+fn redoing_a_duplicated_waiting_picture_lets_it_meet_its_bytes() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    one.export();
+    carry(&one, &two);
+    let held = hold_pictures_back(&two);
+    two.absorb();
+
+    // One service across all three steps: the undo stack lives in the session,
+    // and `Device::run` opens a new one every time.
+    let copy = uuid::Uuid::new_v4().hyphenated().to_string();
+    let service = two.service();
+    let duplicated = service
+        .execute(CommandEnvelope {
+            session_id: two.session.clone(),
+            request_id: "duplicate".into(),
+            base_revision: two.storage.revision().expect("revision"),
+            history_group: None,
+            command: IpcNotesCommand::Duplicate {
+                id: shot.clone(),
+                new_id: copy.clone(),
+                parent_id: page.clone(),
+                before_id: None,
+            },
+        })
+        .expect("duplicate");
+    let undone = service
+        .undo(HistoryRequest {
+            session_id: two.session.clone(),
+            base_revision: duplicated.revision,
+        })
+        .expect("undo");
+    service
+        .redo(HistoryRequest {
+            session_id: two.session.clone(),
+            base_revision: undone.revision,
+        })
+        .expect("redo");
+
+    let_pictures_land(&two, held);
+    two.absorb();
+
+    let read = page_of(&two, &page).expect("the page still opens");
+    let copied = read
+        .nodes
+        .iter()
+        .find(|node| node.id == copy)
+        .expect("the copy redo put back");
+    assert!(
+        copied.image.is_some(),
+        "the copy came back still waiting for those bytes, and they came"
     );
 }
 
