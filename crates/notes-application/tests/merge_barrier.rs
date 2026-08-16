@@ -156,7 +156,7 @@ fn undo_stops_at_an_entry_touching_a_merged_node() {
     let revision = create(&service, FIRST, 0);
     let revision = create(&service, SECOND, revision);
     let revision = edit(&service, FIRST, revision, "mine");
-    let revision = edit(&service, SECOND, revision, "also mine");
+    edit(&service, SECOND, revision, "also mine");
 
     // Another device's edit lands on the first node.
     let revision = service
@@ -191,7 +191,7 @@ fn entries_above_the_barrier_still_undo() {
     let revision = create(&service, SECOND, revision);
     let revision = edit(&service, FIRST, revision, "mine");
     let revision = edit(&service, SECOND, revision, "one");
-    let revision = edit(&service, SECOND, revision, "two");
+    edit(&service, SECOND, revision, "two");
 
     let mut revision = service
         .absorb_external(storage.merged_elsewhere(), &[FIRST.to_owned()])
@@ -214,7 +214,7 @@ fn a_merge_with_no_overlap_leaves_history_alone() {
     let storage = FakeStorage::default();
     let service = service(&storage);
     let revision = create(&service, FIRST, 0);
-    let revision = edit(&service, FIRST, revision, "mine");
+    edit(&service, FIRST, revision, "mine");
     let depth = service.history_depth();
 
     let revision = service
@@ -234,7 +234,7 @@ fn redo_clears_when_the_merge_touches_a_redone_node() {
     let service = service(&storage);
     let revision = create(&service, FIRST, 0);
     let revision = edit(&service, FIRST, revision, "mine");
-    let revision = undo(&service, revision).expect("undo");
+    undo(&service, revision).expect("undo");
 
     let revision = service
         .absorb_external(storage.merged_elsewhere(), &[FIRST.to_owned()])
@@ -257,7 +257,7 @@ fn the_barrier_counts_deleted_ids() {
     let storage = FakeStorage::default();
     let service = service(&storage);
     let revision = create(&service, FIRST, 0);
-    let revision = edit(&service, FIRST, revision, "mine");
+    edit(&service, FIRST, revision, "mine");
 
     // A merge that deleted the node rather than editing it.
     let revision = service
@@ -298,7 +298,7 @@ fn the_barrier_moves_with_a_stack_that_rotates() {
     let service = service(&storage);
     let mut revision = create(&service, FIRST, 0);
     revision = create(&service, SECOND, revision);
-    revision = edit(&service, FIRST, revision, "mine");
+    edit(&service, FIRST, revision, "mine");
     revision = service
         .absorb_external(storage.merged_elsewhere(), &[FIRST.to_owned()])
         .expect("absorb");
@@ -327,7 +327,7 @@ fn work_after_the_barrier_does_not_join_the_entry_below_it() {
     let service = service(&storage);
     let revision = create(&service, FIRST, 0);
     let revision = create(&service, SECOND, revision);
-    let revision = grouped_edit(&service, FIRST, revision, "one", "typing");
+    grouped_edit(&service, FIRST, revision, "one", "typing");
     let revision = service
         .absorb_external(storage.merged_elsewhere(), &[FIRST.to_owned()])
         .expect("absorb");

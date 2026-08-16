@@ -348,7 +348,7 @@ fn an_id_key_in_the_trash_quarantines() {
 #[test]
 fn an_oversized_file_quarantines() {
     let mut source = page("");
-    source.push_str(&"- Text\n".repeat(1));
+    source.push_str("- Text\n");
     let padded = format!("{source}{}", "x".repeat(17 * 1024 * 1024));
 
     assert!(parse(padded.as_bytes()).is_err());
