@@ -1520,6 +1520,41 @@ fn a_trash_copy_leaves_the_real_trash_owing_a_write() {
     );
 }
 
+/// A document that states the node it hangs from is a split document, not a
+/// page. The difference decides whether "no longer a child of root" means it
+/// stopped being a page — for a split document that is where it has always
+/// been, and treating it as a demotion flattens it into its page.
+#[test]
+fn a_document_that_states_its_parent_is_recorded_as_a_split_document() {
+    let node_id = "8a201f33-0000-4c91-8d02-000000000001";
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let seeded = stamp(5, "a3f2");
+    let mut split = page(vec![node(node_id, &seeded, "Inside")], &seeded);
+    split.id = DocumentId::Node(node_id.to_owned());
+    split.parent = Some(PAGE_ID.to_owned());
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(split),
+        &notes_sync::merger::MergeInput {
+            file_path: "Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md".to_owned(),
+            ..input()
+        },
+    )
+    .expect("merge");
+
+    let is_page: i64 = transaction
+        .query_row(
+            "SELECT is_page FROM sync_documents WHERE root_id = ?1",
+            [node_id],
+            |row| row.get(0),
+        )
+        .expect("the document");
+    assert_eq!(is_page, 0, "it says which node it hangs from");
+}
+
 /// A rescue that no file states is a rescue nobody else ever sees — and on the
 /// device that did it, a reindex from the vault would take the node away
 /// again. The recovery page, the node put under it, and home all owe a write.

@@ -260,7 +260,15 @@ CREATE TABLE sync_documents (
     -- goes at the end of the same pass. Removing the folder before
     -- that leaves the subtree in no file at all.
     retiring INTEGER NOT NULL DEFAULT 0
-        CHECK (retiring IN (0, 1))
+        CHECK (retiring IN (0, 1)),
+    -- Whether this document is a page, as opposed to a split
+    -- document living inside one. A split document sits under a
+    -- node that is not root by design, so "no longer a child of
+    -- root" says nothing about it — only a page can stop being one.
+    -- The file itself is the evidence: a split document states the
+    -- node it hangs from, and a page does not.
+    is_page INTEGER NOT NULL DEFAULT 1
+        CHECK (is_page IN (0, 1))
 ) STRICT;
 
 CREATE TABLE sync_dirty_nodes (

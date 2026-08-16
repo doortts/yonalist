@@ -385,6 +385,10 @@ pub fn begin_retirement(transaction: &Transaction<'_>) -> Result<usize, ExportEr
             "SELECT d.root_id FROM sync_documents d
              JOIN notes_nodes n ON n.id = d.root_id
              WHERE d.root_id NOT IN ('root', 'yonalist-trash')
+               -- Pages only. A split document is *supposed* to sit under a
+               -- node that is not root; it never was a page and cannot stop
+               -- being one.
+               AND d.is_page = 1
                AND d.retiring = 0 AND n.deleted = 0 AND n.parent_id IS NOT 'root'",
         )
         .map_err(|error| error.to_string())?;
@@ -974,6 +978,9 @@ fn record_document(
 ) -> Result<(), ExportError> {
     transaction
         .prepare_cached(
+            // `is_page` is not touched on conflict: what a document is was
+            // decided when it first appeared, and this write is about where it
+            // is and what it says.
             "INSERT INTO sync_documents(root_id, folder_path, exported_hash, quarantined)
              VALUES (?1, ?2, ?3, 0)
              ON CONFLICT(root_id) DO UPDATE SET

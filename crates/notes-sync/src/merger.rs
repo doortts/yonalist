@@ -188,7 +188,13 @@ fn merge_page(
         outcome.needs_write_back = true;
         mark_dirty(transaction, &root_id)?;
     }
-    record_document(transaction, &root_id, input, page.max_hlc.as_str())?;
+    record_document(
+        transaction,
+        &root_id,
+        input,
+        page.max_hlc.as_str(),
+        page.parent.is_none(),
+    )?;
     Ok(outcome)
 }
 
@@ -213,7 +219,13 @@ fn merge_trash(
             mark_dirty(transaction, &entry.id)?;
         }
     }
-    record_document(transaction, "yonalist-trash", input, trash.max_hlc.as_str())?;
+    record_document(
+        transaction,
+        "yonalist-trash",
+        input,
+        trash.max_hlc.as_str(),
+        false,
+    )?;
     Ok(outcome)
 }
 
@@ -1889,6 +1901,7 @@ fn record_document(
     root_id: &str,
     input: &MergeInput,
     max_hlc: &str,
+    is_page: bool,
 ) -> Result<(), MergeError> {
     if crate::watcher::is_conflicted_copy(&input.file_path) {
         return Ok(());
@@ -1907,10 +1920,14 @@ fn record_document(
     let exported_hash = input.file_hash.clone();
     transaction
         .execute(
+            // The file itself says which it is: a split document states the
+            // node it hangs from, and a page does not. Recorded on arrival and
+            // left alone after — a document does not change kind, and a later
+            // write is about where it is and what it says.
             "INSERT INTO sync_documents(
                  root_id, folder_path, applied_max_hlc, exported_hash,
-                 file_mtime_ms, file_size, quarantined)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)
+                 file_mtime_ms, file_size, quarantined, is_page)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)
              ON CONFLICT(root_id) DO UPDATE SET
                  folder_path = excluded.folder_path,
                  applied_max_hlc = max(sync_documents.applied_max_hlc, excluded.applied_max_hlc),
@@ -1925,6 +1942,7 @@ fn record_document(
                 exported_hash,
                 input.file_mtime_ms,
                 input.file_size,
+                i64::from(is_page),
             ],
         )
         .map_err(|error| error.to_string())?;

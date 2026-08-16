@@ -655,6 +655,37 @@ fn content_that_comes_back_to_what_was_written_keeps_its_reading() {
     );
 }
 
+/// A split document is not a page and never was one. It lives inside its
+/// page's folder by design, so "no longer a child of root" says nothing about
+/// it — treating that as a demotion flattens it into its page and takes its
+/// folder.
+#[test]
+fn a_split_document_is_not_retired_for_living_inside_its_page() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    connection
+        .execute(
+            "INSERT INTO sync_documents(root_id, folder_path, is_page)
+             VALUES (?1, ?2, 0)",
+            rusqlite::params![
+                NODE_ID,
+                "Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md"
+            ],
+        )
+        .expect("split document");
+
+    let transaction = connection.transaction().expect("begin");
+    let leaving = notes_sync::export::begin_retirement(&transaction).expect("retirement");
+    transaction.commit().expect("commit");
+
+    assert_eq!(
+        leaving, 0,
+        "it is where it has always been, and where it belongs"
+    );
+    let _ = root;
+}
+
 /// A file somebody edited by hand is not this app's to replace, and what was
 /// waiting to go into it is still waiting. Clearing the mark there would leave
 /// the vault holding an older version of a note for good.
