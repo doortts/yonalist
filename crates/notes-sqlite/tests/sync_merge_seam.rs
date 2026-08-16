@@ -727,6 +727,60 @@ fn an_arriving_attachment_resolves_the_rows_waiting_for_it() {
     );
 }
 
+/// A hand edit can turn a picture line back into plain text. If the picture row
+/// stays behind, the node reads back as a bullet owning image metadata and
+/// every command on it is refused — it cannot be edited, and cannot even be
+/// thrown away, because deleting a subtree upserts it too.
+#[test]
+fn a_picture_a_file_turned_back_into_text_is_not_stranded() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .expect("the picture");
+    storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
+        )
+        .expect("the bytes");
+    let mut document = match page("just words", &stamp(9)) {
+        VaultFile::Page(page) => page,
+        VaultFile::Trash(_) => unreachable!(),
+    };
+    document.nodes = vec![node(IMAGE_NODE_ID, &stamp(9), "just words")];
+    storage
+        .merge_document(&VaultFile::Page(document), &input())
+        .expect("the hand edit");
+    assert_eq!(
+        storage
+            .node(IMAGE_NODE_ID)
+            .expect("node")
+            .expect("the line")
+            .kind(),
+        notes_core::NoteNodeKind::Bullet,
+        "the file's word: this line is no longer a picture"
+    );
+
+    let id = notes_core::NodeId::try_from(IMAGE_NODE_ID.to_owned()).expect("id");
+    let edit = NotesCommand::UpdateText {
+        id: id.clone(),
+        text: "edited here".to_owned(),
+    };
+    let tree = storage.load_command_tree(&edit).expect("load");
+    let patch = tree.plan(edit).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("the line takes an edit");
+
+    let trash = NotesCommand::DeleteSubtree { id };
+    let tree = storage.load_command_tree(&trash).expect("load");
+    let patch = tree.plan(trash).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("and can be thrown away");
+}
+
 /// The same picture pasted onto two lines leaves two rows waiting for one
 /// file, and both stop waiting when it lands. A window told about only the
 /// first draws a placeholder over the second until it is restarted.
