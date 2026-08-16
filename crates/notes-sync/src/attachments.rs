@@ -195,11 +195,14 @@ pub fn place_attachments(
             .to_owned();
         transaction
             .prepare_cached(
-                "INSERT INTO sync_assets(content_hash, disk_name, location, unreferenced_at)
-                 VALUES (?1, ?2, ?3, NULL)
+                "INSERT INTO sync_assets(
+                     content_hash, disk_name, location, byte_length, unreferenced_at)
+                 VALUES (?1, ?2, ?3,
+                     (SELECT byte_length FROM notes_images WHERE content_hash = ?1), NULL)
                  ON CONFLICT(content_hash) DO UPDATE SET
                      disk_name = excluded.disk_name,
                      location = excluded.location,
+                     byte_length = coalesce(excluded.byte_length, sync_assets.byte_length),
                      -- Something points at it again: whatever it was counting
                      -- down to is off.
                      unreferenced_at = NULL",

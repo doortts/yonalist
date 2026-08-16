@@ -86,6 +86,21 @@ impl Device {
                 Err(reason) => panic!("{relative}: {reason}"),
             }
         }
+        // The pictures too. The watcher hands the bytes to this app's own
+        // store and then says where they are; here the bytes are taken as
+        // read, since what is being tested is where two devices put them.
+        for (location, disk_name) in attachments(&self.vault) {
+            let hash = disk_name
+                .rsplit_once('-')
+                .and_then(|(_, tail)| tail.split('.').next())
+                .unwrap_or_default();
+            if hash.len() == 12 {
+                let full = format!("{hash}{}", HASH[hash.len()..].to_owned());
+                self.storage
+                    .resolve_asset(&disk_name, &full, &location)
+                    .expect("resolve");
+            }
+        }
         // What the merge decided, and anything this device was already
         // holding. The export thread runs behind the watcher exactly so.
         let _ = self.export();
@@ -591,6 +606,55 @@ fn a_picture_two_pages_share_ends_up_in_the_vault_store() {
         two.vault.join("assets").join(&placed[0]).exists(),
         "and the other device has it under the same name"
     );
+    let (shared, location): (i64, String) =
+        rusqlite::Connection::open(two._home.path().join("notes.sqlite"))
+            .expect("open")
+            .query_row(
+                "SELECT (SELECT count(*) FROM notes_images WHERE content_hash = ?1),
+                        (SELECT coalesce(max(location), '') FROM sync_assets
+                         WHERE content_hash = ?1)",
+                [HASH],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("what the other device knows");
+    assert_eq!(
+        shared, 2,
+        "the other device has to know both notes point at it, or it will \
+         decide the picture belongs in a page folder"
+    );
+    assert_eq!(
+        location,
+        format!("assets/{}", placed[0]),
+        "and it has to agree about where that is"
+    );
+}
+
+const HASH: &str = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
+
+/// Every picture in the folder, as (where it is, what it is called).
+fn attachments(vault: &std::path::Path) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    let mut stack = vec![vault.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        for entry in std::fs::read_dir(&at).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "png") {
+                found.push((
+                    path.strip_prefix(vault)
+                        .expect("inside")
+                        .to_string_lossy()
+                        .into_owned(),
+                    path.file_name()
+                        .expect("name")
+                        .to_string_lossy()
+                        .into_owned(),
+                ));
+            }
+        }
+    }
+    found
 }
 
 fn page_file(device: &Device) -> std::path::PathBuf {
@@ -606,10 +670,16 @@ fn page_file(device: &Device) -> std::path::PathBuf {
 /// A picture on this bullet, with its bytes in this device's own store — what
 /// an import leaves behind, without going through the image pipeline.
 fn picture(device: &Device, node_id: &str) {
-    const HASH: &str = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
     std::fs::write(device.store.join(format!("{HASH}.png")), b"pretend png").expect("bytes");
-    rusqlite::Connection::open(device._home.path().join("notes.sqlite"))
-        .expect("open")
+    let connection =
+        rusqlite::Connection::open(device._home.path().join("notes.sqlite")).expect("open");
+    // The stamping triggers call it, and it is registered per connection.
+    notes_sync::hlc::register(
+        &connection,
+        std::sync::Arc::new(notes_sync::hlc::Clock::new("cccc").expect("clock")),
+    )
+    .expect("register");
+    connection
         .execute(
             "INSERT INTO notes_images(node_id, content_hash, relative_path, original_name,
                  mime_type, byte_length, pixel_width, pixel_height, display_width)
@@ -618,4 +688,13 @@ fn picture(device: &Device, node_id: &str) {
             rusqlite::params![node_id, HASH, format!("{HASH}.png")],
         )
         .expect("image");
+    // A bullet with an image row beside it is still a bullet: what makes the
+    // line a picture is the node's own kind, and without it nothing about the
+    // picture is ever written to a file.
+    connection
+        .execute(
+            "UPDATE notes_nodes SET kind = 'image' WHERE id = ?1",
+            [node_id],
+        )
+        .expect("kind");
 }

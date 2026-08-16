@@ -25,7 +25,12 @@ const LIST_SQL: &str = "SELECT i.node_id, i.original_name, i.byte_length, i.cont
      UNION ALL
      -- Bytes in the vault that no note mentions any more. They have no row to
      -- belong to, which is exactly why they need a line of their own.
-     SELECT '', a.disk_name, 0, a.content_hash, 0, NULL, 0, a.unreferenced_at
+     -- The size is the last one any note stated for those bytes. Nothing
+     -- points at them now, but the file is the same file, and a list about
+     -- what is taking up room cannot show zero for the rows it offers to
+     -- delete.
+     SELECT '', a.disk_name, coalesce(a.byte_length, 0), a.content_hash, 0, NULL, 0,
+            a.unreferenced_at
      FROM sync_assets a
      WHERE a.content_hash NOT IN (SELECT content_hash FROM notes_images)
      ORDER BY 3 DESC, 2
@@ -106,6 +111,9 @@ fn ancestors(path: Option<&str>) -> (String, String) {
         .split('/')
         .filter(|step| !step.is_empty())
         .filter_map(|step| step.split_once(':').map(|(_, id)| id))
+        // The path starts at the tree's own root, which is not a page and has
+        // no title anyone put there.
+        .filter(|id| *id != "root")
         .collect();
     // The node's own step is the last one. A node directly on a page has the
     // page as both, and the list shows the page once.

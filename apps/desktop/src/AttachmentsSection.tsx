@@ -13,8 +13,10 @@ function messageFrom(cause: unknown): string {
 }
 
 export function formatSize(bytes: number): string {
-  if (bytes >= 1_000_000) return `${(bytes / 1_048_576).toFixed(1)} MB`;
-  if (bytes >= 1_000) return `${Math.round(bytes / 1_024)} KB`;
+  // Binary units throughout, thresholds included — mixing the two reports a
+  // file as smaller than it is, in a list whose whole job is size.
+  if (bytes >= 1_048_576) return `${(bytes / 1_048_576).toFixed(1)} MB`;
+  if (bytes >= 1_024) return `${Math.round(bytes / 1_024)} KB`;
   return `${bytes} bytes`;
 }
 
@@ -26,15 +28,6 @@ export function formatSize(bytes: number): string {
 export function daysLeft(unreferencedAt: number, now: number): number {
   const elapsed = now - unreferencedAt * 1_000;
   return Math.max(0, KEPT_DAYS - Math.floor(elapsed / 86_400_000));
-}
-
-/** Where a picture sits, said the way the user would say it. */
-function place(row: SyncAttachment): string {
-  if (row.nodeId === "") return "Not used by any note";
-  const under = row.parentTitle && row.parentTitle !== row.pageTitle
-    ? ` › ${row.parentTitle}`
-    : "";
-  return `${row.pageTitle || "Home"}${under}`;
 }
 
 export function AttachmentsSection({
@@ -59,6 +52,17 @@ export function AttachmentsSection({
       setError(messageFrom(cause));
     }
   }, [readAttachments]);
+
+  // What the row says about where it is. A note in the trash is on no page,
+  // and sending the user to Home for it would be a lie.
+  const place = (row: SyncAttachment): string => {
+    if (row.nodeId === "") return "Not used by any note";
+    if (row.trashed) return "In the trash";
+    const under = row.parentTitle && row.parentTitle !== row.pageTitle
+      ? ` › ${row.parentTitle}`
+      : "";
+    return `${row.pageTitle || "Home"}${under}`;
+  };
 
   useEffect(() => {
     void reload();

@@ -4,6 +4,7 @@
 //! carry is where the picture is — the page and the bullet above it — because
 //! that is how the user decides whether they still want it.
 
+use notes_application::{CommandEnvelope, IpcNotesCommand, NotesService};
 use notes_sqlite::SqliteStorage;
 use rusqlite::Connection;
 
@@ -31,38 +32,40 @@ fn writer(database: &std::path::Path) -> Connection {
 
 /// A page, a bullet under it, and a picture under that — the shape the list has
 /// to describe back.
-fn seed(connection: &Connection) {
-    connection
-        .execute(
-            "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
-             VALUES (?1, 'root', 4294967296, 'bullet', 'Projects', ''),
-                    (?2, 'root', 8589934592, 'bullet', 'Archive', ''),
-                    (?3, ?1, 4294967296, 'bullet', 'Trip notes', ''),
-                    (?4, ?3, 4294967296, 'image', 'holiday.png', ''),
-                    (?5, ?2, 4294967296, 'image', 'holiday.png', '')",
-            rusqlite::params![PAGE, OTHER_PAGE, SECTION, SHOT, COPY],
-        )
-        .expect("rows");
-    // What every write through the app leaves behind. These rows go in raw, so
-    // the ancestor paths the list reads are built here the same way.
-    connection
-        .execute_batch(
-            "WITH RECURSIVE walk(id, path) AS (
-                 SELECT id, printf('1%019lld:%s', sort_key, id)
-                 FROM notes_nodes WHERE parent_id = 'root'
-                 UNION ALL
-                 SELECT child.id, walk.path || '/' || printf('1%019lld:%s', child.sort_key, child.id)
-                 FROM notes_nodes child JOIN walk ON child.parent_id = walk.id
-             )
-             UPDATE notes_nodes SET path = walk.path FROM walk WHERE notes_nodes.id = walk.id",
-        )
-        .expect("paths");
+///
+/// The tree is built through the app's own commands, because the ancestor path
+/// the list reads is written by them: a hand-rolled one would be this test
+/// agreeing with itself about a format production does not produce.
+fn seed(storage: &SqliteStorage, connection: &Connection) {
+    for (id, parent, text) in [
+        (PAGE, "root", "Projects"),
+        (OTHER_PAGE, "root", "Archive"),
+        (SECTION, PAGE, "Trip notes"),
+        (SHOT, SECTION, "holiday.png"),
+        (COPY, OTHER_PAGE, "holiday.png"),
+    ] {
+        let revision = storage.revision().expect("revision");
+        NotesService::new(storage, "session".to_owned(), revision)
+            .execute(CommandEnvelope {
+                session_id: "session".to_owned(),
+                request_id: format!("make-{id}"),
+                base_revision: revision,
+                history_group: None,
+                command: IpcNotesCommand::CreateNode {
+                    id: id.to_owned(),
+                    parent_id: parent.to_owned(),
+                    before_id: None,
+                    text: text.to_owned(),
+                },
+            })
+            .expect("command");
+    }
     for (node, hash, bytes) in [(SHOT, HASH, 2_048), (COPY, HASH, 2_048)] {
         connection
             .execute(
                 "INSERT INTO notes_images(node_id, content_hash, relative_path, original_name,
                      mime_type, byte_length, pixel_width, pixel_height, display_width)
-                 VALUES (?1, ?2, 'assets/holiday-9f2c1b7a4e6d.png', 'holiday.png',
+                 VALUES (?1, ?2, ?2 || '.png', 'holiday.png',
                      'image/png', ?3, 800, 600, 480)",
                 rusqlite::params![node, hash, bytes],
             )
@@ -73,7 +76,7 @@ fn seed(connection: &Connection) {
 #[test]
 fn a_row_says_which_page_and_which_bullet_it_sits_under() {
     let (_directory, storage, database) = workspace();
-    seed(&writer(&database));
+    seed(&storage, &writer(&database));
 
     let rows = storage.attachments(50).expect("list");
 
@@ -94,7 +97,7 @@ fn a_row_says_which_page_and_which_bullet_it_sits_under() {
 #[test]
 fn a_file_used_twice_appears_on_two_rows() {
     let (_directory, storage, database) = workspace();
-    seed(&writer(&database));
+    seed(&storage, &writer(&database));
 
     let rows = storage.attachments(50).expect("list");
 
@@ -115,9 +118,14 @@ fn a_file_used_twice_appears_on_two_rows() {
 fn a_trashed_note_still_counts_as_a_reference() {
     let (_directory, storage, database) = workspace();
     let connection = writer(&database);
-    seed(&connection);
+    seed(&storage, &connection);
+    // A deleted row as the app leaves one: in the trash, and with no ancestor
+    // path — the path is where a row sits, and a row in the trash sits nowhere.
     connection
-        .execute("UPDATE notes_nodes SET deleted = 1 WHERE id = ?1", [COPY])
+        .execute(
+            "UPDATE notes_nodes SET deleted = 1, path = NULL WHERE id = ?1",
+            [COPY],
+        )
         .expect("trash");
 
     let rows = storage.attachments(50).expect("list");
@@ -127,6 +135,11 @@ fn a_trashed_note_still_counts_as_a_reference() {
         .find(|row| row.node_id == COPY)
         .expect("the deleted note's picture");
     assert!(trashed.trashed, "the row says where it is");
+    assert_eq!(
+        trashed.page_title, "",
+        "a note in the trash is not on a page any more, and saying it is on \
+         Home would send the user somewhere it is not"
+    );
     assert_eq!(
         trashed.references, 2,
         "a note in the trash is one the user can still restore"
@@ -145,7 +158,7 @@ fn a_trashed_note_still_counts_as_a_reference() {
 fn the_biggest_files_come_first() {
     let (_directory, storage, database) = workspace();
     let connection = writer(&database);
-    seed(&connection);
+    seed(&storage, &connection);
     connection
         .execute(
             "UPDATE notes_images SET content_hash = ?2, byte_length = 9999 WHERE node_id = ?1",
@@ -169,13 +182,14 @@ fn bytes_nothing_points_at_get_a_line_and_can_be_removed() {
     let (_directory, storage, database) = workspace();
     let vault = tempfile::tempdir().expect("vault");
     let connection = writer(&database);
-    seed(&connection);
+    seed(&storage, &connection);
     std::fs::create_dir_all(vault.path().join("assets")).expect("folder");
     std::fs::write(vault.path().join("assets/old-1111.png"), b"old bytes").expect("bytes");
     connection
         .execute(
-            "INSERT INTO sync_assets(content_hash, disk_name, location, unreferenced_at)
-             VALUES (?1, 'old-1111.png', 'assets/old-1111.png', 1750000000)",
+            "INSERT INTO sync_assets(
+                 content_hash, disk_name, location, byte_length, unreferenced_at)
+             VALUES (?1, 'old-1111.png', 'assets/old-1111.png', 4096, 1750000000)",
             [OTHER_HASH],
         )
         .expect("unreferenced");
@@ -186,6 +200,11 @@ fn bytes_nothing_points_at_get_a_line_and_can_be_removed() {
         .find(|row| row.content_hash == OTHER_HASH)
         .expect("the line");
     assert_eq!(orphan.references, 0);
+    assert_eq!(
+        orphan.byte_length, 4_096,
+        "the rows the user can actually act on are the ones that have to say \
+         how much room they take"
+    );
     assert_eq!(
         orphan.unreferenced_at,
         Some(1_750_000_000),
@@ -209,7 +228,7 @@ fn bytes_nothing_points_at_get_a_line_and_can_be_removed() {
 fn an_attachment_that_is_used_again_is_not_removed() {
     let (_directory, storage, database) = workspace();
     let vault = tempfile::tempdir().expect("vault");
-    seed(&writer(&database));
+    seed(&storage, &writer(&database));
 
     let removed = storage
         .delete_attachment(HASH, Some(vault.path()))

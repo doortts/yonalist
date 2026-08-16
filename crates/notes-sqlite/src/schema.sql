@@ -286,6 +286,10 @@ CREATE TABLE sync_assets (
     content_hash TEXT PRIMARY KEY NOT NULL,
     disk_name TEXT NOT NULL,
     location TEXT NOT NULL,
+    -- Kept here as well as on the node, because the node is the
+    -- thing that goes away: the attachment list still has to say
+    -- how big the file nobody points at any more is.
+    byte_length INTEGER,
     unreferenced_at INTEGER
 ) STRICT;
 

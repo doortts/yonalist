@@ -91,6 +91,21 @@ describe("첨부 목록", () => {
     await waitFor(() => expect(readAttachments).toHaveBeenCalledTimes(2));
   });
 
+  it("휴지통에 있는 그림은 페이지 대신 휴지통이라고 말한다", async () => {
+    render(
+      <AttachmentsSection
+        readAttachments={vi.fn(async () => [
+          attachment({ trashed: true, pageTitle: "", parentTitle: "" })
+        ])}
+        deleteAttachment={vi.fn(async () => true)}
+        openNode={vi.fn()}
+        now={() => NOW}
+      />
+    );
+
+    expect(await screen.findByText("In the trash")).toBeTruthy();
+  });
+
   it("그 사이 다시 쓰이기 시작한 파일은 지워지지 않았다고 알린다", async () => {
     render(
       <AttachmentsSection
@@ -117,6 +132,8 @@ describe("표시 계산", () => {
 
   it("크기는 사람이 읽는 단위로 쓴다", () => {
     expect(formatSize(900)).toBe("900 bytes");
+    // Binary units all the way down: a kilobyte starts at 1,024, not 1,000.
+    expect(formatSize(1_000)).toBe("1000 bytes");
     expect(formatSize(2_048)).toBe("2 KB");
     expect(formatSize(2_400_000)).toBe("2.3 MB");
   });

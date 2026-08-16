@@ -285,15 +285,26 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     await applyNavigation(after);
     recordNavigation(before, after);
   }, [applyNavigation, captureNavigation, recordNavigation, store]);
-  /// A row in the attachment list names a bullet on a page. Following it
-  /// leaves the settings screen, because what the user asked to see is the
-  /// note rather than the file.
+  // A row in the attachment list names a bullet on a page. Following it leaves
+  // the settings screen — what the user asked to see is the note, not the file
+  // — and lands on the bullet itself, selected, rather than at the top of a
+  // page they then have to search.
   const openAttachment = useCallback(
-    (pageId: string, _nodeId: string) => {
+    (pageId: string, nodeId: string) => {
       setSettingsOpen(false);
-      void openPage(pageId);
+      const before = captureNavigation();
+      afterDraftFlush(() => {
+        void openPage(pageId).then(async () => {
+          const after = {
+            ...emptyPaneLocation(pageId),
+            primarySelectedIds: nodeId ? [nodeId] : []
+          };
+          await applyNavigation(after);
+          recordNavigation(before, after);
+        });
+      });
     },
-    [openPage]
+    [afterDraftFlush, applyNavigation, captureNavigation, openPage, recordNavigation]
   );
   // Home is the root page like any other page, house crumb included.
   const openHome = useCallback(() => void openPage(ROOT_ID), [openPage]);
