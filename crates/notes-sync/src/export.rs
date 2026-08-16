@@ -50,8 +50,8 @@ pub fn export_document(
     vault_root: &Path,
     root_id: &str,
 ) -> Result<ExportOutcome, ExportError> {
-    let document = load_document(transaction, root_id)?;
     let relative = document_path(transaction, root_id)?;
+    let document = load_document(transaction, root_id, folder_of(&relative))?;
     let outcome = write_checked(
         transaction,
         vault_root,
@@ -522,9 +522,16 @@ fn recorded_hash(
 
 /// One statement for the whole document rather than one per node: the cost of
 /// an export has to follow what changed, not how large the page grew.
+/// The folder a document sits in, which is what its links are relative to.
+/// Home's is the vault root itself, and that is the empty string.
+fn folder_of(relative: &str) -> &str {
+    relative.rsplit_once('/').map_or("", |(folder, _)| folder)
+}
+
 fn load_document(
     transaction: &Transaction<'_>,
     root_id: &str,
+    document_folder: &str,
 ) -> Result<PageDocument, ExportError> {
     let mut statement = transaction
         .prepare_cached(
@@ -544,10 +551,14 @@ fn load_document(
              SELECT n.id, n.parent_id, n.sort_key, n.kind, n.text, n.note, n.marker,
                     n.ordered_start, n.collapsed, n.completed, n.starred, n.hlc,
                     n.sync_extras, n.sync_prev, n.sync_prev_hlc,
-                    i.relative_path, i.original_name, i.display_width,
+                    -- Where the attachment pass put the bytes. Only that pass
+                    -- knows: the answer depends on how many nodes point at
+                    -- them, which is not a fact about this document.
+                    COALESCE(a.location, i.relative_path), i.original_name, i.display_width,
                     i.pixel_width, i.pixel_height, i.byte_length
              FROM notes_nodes n
              LEFT JOIN notes_images i ON i.node_id = n.id
+             LEFT JOIN sync_assets a ON a.content_hash = i.content_hash
              WHERE n.id IN (SELECT id FROM subtree) AND n.deleted = 0
                AND (n.hlc <> '' OR n.id = ?1)
              ORDER BY n.parent_id, n.sort_key, n.id",
@@ -572,8 +583,12 @@ fn load_document(
                 prev_hlc: row.get(14)?,
                 image: row
                     .get::<_, Option<String>>(15)?
-                    .map(|path| ImageReference {
-                        path,
+                    .map(|location| ImageReference {
+                        path: crate::attachments::Placement {
+                            location,
+                            moves: Vec::new(),
+                        }
+                        .link_from(document_folder),
                         original_name: row.get(16).unwrap_or_default(),
                         display_width: row.get::<_, i64>(17).unwrap_or_default() as u32,
                         pixel_width: row.get::<_, i64>(18).unwrap_or_default() as u32,

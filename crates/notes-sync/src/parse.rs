@@ -21,7 +21,7 @@ pub const MAX_FIELD_BYTES: usize = 100_000;
 /// Both are the domain's numbers; a file stating anything else is not one of
 /// ours.
 const MIN_DISPLAY_WIDTH: u32 = 120;
-const MAX_ASSET_BYTES: u64 = 20 * 1024 * 1024;
+pub const MAX_ASSET_BYTES: u64 = 20 * 1024 * 1024;
 
 /// Why a document was refused. The text goes to `notes://sync-status`, so it
 /// names the line rather than the rule's number.
