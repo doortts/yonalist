@@ -69,6 +69,7 @@ pub fn merge_document(
 #[derive(Clone, Debug)]
 struct Row {
     hlc: String,
+    kind: String,
     text: String,
     note: String,
     marker: String,
@@ -81,6 +82,9 @@ struct Row {
     sort_key: i64,
     extras: String,
     dirty: bool,
+    /// The live sibling this row follows, so position compares the same way on
+    /// both sides.
+    predecessor_id: String,
 }
 
 /// A node as the file states it, flattened with the place it claims.
@@ -93,7 +97,6 @@ struct Incoming<'a> {
     /// quantises to `ordinal * SORT_KEY_STEP` while the database uses midpoints,
     /// and every echo would then look like a move.
     predecessor_id: String,
-    ordinal: usize,
 }
 
 fn merge_page(
@@ -128,7 +131,6 @@ fn merge_page(
             node: &root_node,
             parent_id: page.parent.clone().unwrap_or_else(|| "root".to_owned()),
             predecessor_id: String::new(),
-            ordinal: 1,
         });
     }
     flatten(&page.nodes, &root_id, &mut incoming);
@@ -167,13 +169,12 @@ fn merge_trash(
 
 fn flatten<'a>(nodes: &'a [DocumentNode], parent_id: &str, out: &mut Vec<Incoming<'a>>) {
     let mut predecessor = String::new();
-    for (index, node) in nodes.iter().enumerate() {
+    for node in nodes {
         out.push(Incoming {
             id: node.id.clone(),
             node,
             parent_id: parent_id.to_owned(),
             predecessor_id: predecessor.clone(),
-            ordinal: index + 1,
         });
         predecessor = node.id.clone();
         let owner = node.id.clone();
@@ -232,8 +233,8 @@ fn apply(
                         )?;
                         outcome.conflicts_recorded += 1;
                     }
-                    Some(Reason::DirtyOverwrite) => {
-                        let row = row.expect("a dirty overwrite means a row exists");
+                    Some(Reason::DirtyOverwrite) | Some(Reason::SameStamp) => {
+                        let row = row.expect("either reason means a row exists");
                         log_conflict(transaction, &entry.id, &loser_of_row(row), &row.hlc, &stamp)?;
                         outcome.conflicts_recorded += 1;
                     }
@@ -279,6 +280,8 @@ enum Reason {
     DirtyOverwrite,
     /// A stamp from a clock running more than a day fast.
     ClockDrift,
+    /// Two devices carrying the same stamp and different content.
+    SameStamp,
 }
 
 fn decide(
@@ -287,7 +290,7 @@ fn decide(
     file_hlc: &str,
     drifted: bool,
     clock: &Clock,
-    _device: &str,
+    device: &str,
 ) -> Result<(Verdict, String, Option<Reason>), MergeError> {
     let Some(row) = row else {
         // Nothing local to compare against. A hand-written line with no stamp
@@ -333,9 +336,29 @@ fn decide(
     if file_hlc < row.hlc.as_str() {
         return Ok((Verdict::LocalWins, row.hlc.clone(), None));
     }
-    // Equal stamps. Telling a hand edit apart from a remote one is M3.1b's
-    // job; until then the conservative reading is that nothing changed.
-    Ok((Verdict::Skip, row.hlc.clone(), None))
+    // Equal stamps, so whoever changed the content did not restamp it — a hand
+    // edit. Which machine it happened on is the only thing that matters, and
+    // the stamp's own device field is the one piece of evidence that survives
+    // the trip: the watcher cannot tell iCloud from vim, and a hash mismatch
+    // looks the same either way.
+    if content_of_row(row) == content_of_file(entry) {
+        return Ok((Verdict::Skip, row.hlc.clone(), None));
+    }
+    let mine = Hlc::decode(file_hlc).map(|reading| reading.device() == device);
+    if mine.unwrap_or(false) {
+        // My stamp under content I did not write: someone edited this vault in
+        // another editor. That is authoring, not a merge, so the text is
+        // adopted and stamped afresh to propagate normally.
+        return Ok((Verdict::Write, clock.now()?.encode(), None));
+    }
+    // Their stamp. A fresh one here would make the answer depend on which
+    // device merged first, so the normalized content decides and every device
+    // reaches the same winner while the stamp stays put.
+    if content_of_file(entry) > content_of_row(row) {
+        Ok((Verdict::Write, row.hlc.clone(), Some(Reason::SameStamp)))
+    } else {
+        Ok((Verdict::LocalWins, row.hlc.clone(), None))
+    }
 }
 
 fn load_rows(
@@ -355,9 +378,15 @@ fn load_rows(
     // merge's cost on the node count, which is what the query budget forbids.
     let mut statement = transaction
         .prepare(
-            "SELECT n.id, n.hlc, n.text, n.note, n.marker, n.ordered_start, n.collapsed,
+            "SELECT n.id, n.hlc, n.kind, n.text, n.note, n.marker, n.ordered_start, n.collapsed,
                     n.completed, n.starred, n.deleted, n.parent_id, n.sort_key, n.sync_extras,
-                    d.node_id IS NOT NULL
+                    d.node_id IS NOT NULL,
+                    coalesce((
+                        SELECT p.id FROM notes_nodes p
+                        WHERE p.parent_id IS n.parent_id AND p.deleted = 0
+                          AND (p.sort_key, p.id) < (n.sort_key, n.id)
+                        ORDER BY p.sort_key DESC, p.id DESC LIMIT 1
+                    ), '')
              FROM notes_nodes n
              LEFT JOIN sync_dirty_nodes d ON d.node_id = n.id
              WHERE lower(n.id) IN (SELECT value FROM json_each(?1))",
@@ -369,18 +398,20 @@ fn load_rows(
                 row.get::<_, String>(0)?.to_ascii_lowercase(),
                 Row {
                     hlc: row.get(1)?,
-                    text: row.get(2)?,
-                    note: row.get(3)?,
-                    marker: row.get(4)?,
-                    ordered_start: row.get(5)?,
-                    collapsed: row.get::<_, i64>(6)? == 1,
-                    completed: row.get::<_, i64>(7)? == 1,
-                    starred: row.get::<_, i64>(8)? == 1,
-                    deleted: row.get::<_, i64>(9)? == 1,
-                    parent_id: row.get(10)?,
-                    sort_key: row.get(11)?,
-                    extras: row.get(12)?,
-                    dirty: row.get::<_, i64>(13)? == 1,
+                    kind: row.get(2)?,
+                    text: row.get(3)?,
+                    note: row.get(4)?,
+                    marker: row.get(5)?,
+                    ordered_start: row.get(6)?,
+                    collapsed: row.get::<_, i64>(7)? == 1,
+                    completed: row.get::<_, i64>(8)? == 1,
+                    starred: row.get::<_, i64>(9)? == 1,
+                    deleted: row.get::<_, i64>(10)? == 1,
+                    parent_id: row.get(11)?,
+                    sort_key: row.get(12)?,
+                    extras: row.get(13)?,
+                    dirty: row.get::<_, i64>(14)? == 1,
+                    predecessor_id: row.get(15)?,
                 },
             ))
         })
@@ -424,7 +455,7 @@ fn write_row(
         NodeBody::Image(image) => ("image", image.original_name.clone()),
         NodeBody::Split { title, .. } => ("bullet", title.clone()),
     };
-    let (parent_id, sort_key) = place(entry, row);
+    let (parent_id, sort_key) = place(transaction, entry, row)?;
     let deleted = trash || entry.node.from.is_some();
     let extras = extras_of(entry);
 
@@ -468,8 +499,19 @@ fn write_row(
             ],
         )
         .map_err(|error| error.to_string())?;
+    // Keeping a stamp while changing the content is the one write the stamping
+    // triggers would undo: the update trigger fires precisely when the hlc did
+    // not change, and replaces it. Putting the stamp back in its own statement
+    // slips past it, because `hlc` is not in the trigger's column list.
+    transaction
+        .execute(
+            "UPDATE notes_nodes SET hlc = ?2 WHERE id = ?1 AND hlc <> ?2",
+            rusqlite::params![entry.id, stamp],
+        )
+        .map_err(|error| error.to_string())?;
     // Adopting what another device decided is not a local edit, so it leaves
-    // nothing for the exporter to pick up.
+    // nothing for the exporter to pick up — including whatever the trigger just
+    // marked on the way through.
     transaction
         .execute(
             "DELETE FROM sync_dirty_nodes WHERE node_id = ?1",
@@ -480,20 +522,75 @@ fn write_row(
 }
 
 /// The file states order, not keys. A node keeps the key it already had unless
-/// its place changed, so re-reading a file the exporter wrote does not renumber
-/// every sibling.
-fn place(entry: &Incoming<'_>, row: Option<&Row>) -> (Option<String>, i64) {
+/// its place actually changed, so re-reading a file the exporter wrote does not
+/// renumber every sibling — and moving one sibling leaves the rest untouched.
+///
+/// Position is compared as "under this parent, after this sibling". A raw
+/// sort_key could never match: the parser quantises to `ordinal * STEP` while
+/// the database holds midpoints, so every echo would look like a move.
+fn place(
+    transaction: &Transaction<'_>,
+    entry: &Incoming<'_>,
+    row: Option<&Row>,
+) -> Result<(Option<String>, i64), MergeError> {
     let parent = if entry.parent_id.is_empty() {
         row.and_then(|row| row.parent_id.clone())
             .or_else(|| Some("root".to_owned()))
     } else {
         Some(entry.parent_id.clone())
     };
-    let key = match row {
-        Some(row) if row.parent_id == parent => row.sort_key,
-        _ => entry.ordinal as i64 * SORT_KEY_STEP,
+    if let Some(row) = row
+        && row.parent_id == parent
+        && row.predecessor_id == entry.predecessor_id
+    {
+        return Ok((parent, row.sort_key));
+    }
+    let key = key_after(
+        transaction,
+        parent.as_deref().unwrap_or("root"),
+        &entry.predecessor_id,
+        &entry.id,
+    )?;
+    Ok((parent, key))
+}
+
+/// A key between the sibling the file says this node follows and whatever comes
+/// next, so the neighbours keep the keys they have.
+fn key_after(
+    transaction: &Transaction<'_>,
+    parent: &str,
+    predecessor_id: &str,
+    id: &str,
+) -> Result<i64, MergeError> {
+    let after: Option<i64> = if predecessor_id.is_empty() {
+        None
+    } else {
+        transaction
+            .query_row(
+                "SELECT sort_key FROM notes_nodes WHERE id = ?1",
+                [predecessor_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
     };
-    (parent, key)
+    let next: Option<i64> = transaction
+        .query_row(
+            "SELECT min(sort_key) FROM notes_nodes
+             WHERE parent_id = ?1 AND deleted = 0 AND id <> ?2
+               AND (?3 IS NULL OR sort_key > ?3)",
+            rusqlite::params![parent, id, after],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .flatten();
+    Ok(match (after, next) {
+        (None, None) => SORT_KEY_STEP,
+        (None, Some(next)) => next - SORT_KEY_STEP,
+        (Some(after), None) => after.saturating_add(SORT_KEY_STEP),
+        (Some(after), Some(next)) => after + (next - after) / 2,
+    })
 }
 
 fn extras_of(entry: &Incoming<'_>) -> String {
@@ -552,7 +649,7 @@ fn content_of_file(entry: &Incoming<'_>) -> String {
 fn content_of_row(row: &Row) -> String {
     [
         "v1".to_owned(),
-        "bullet".to_owned(),
+        row.kind.clone(),
         row.text.clone(),
         row.note.clone(),
         row.marker.clone(),
@@ -562,7 +659,7 @@ fn content_of_row(row: &Row) -> String {
         row.starred.to_string(),
         row.deleted.to_string(),
         row.parent_id.clone().unwrap_or_default(),
-        String::new(),
+        row.predecessor_id.clone(),
         row.extras.clone(),
     ]
     .join("\u{0}")

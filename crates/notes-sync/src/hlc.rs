@@ -44,6 +44,13 @@ impl Hlc {
         })
     }
 
+    /// Which device issued this reading. The merge uses it to tell an edit made
+    /// in this vault from one that arrived from elsewhere — no other evidence
+    /// of that survives the trip through a file.
+    pub fn device(&self) -> &str {
+        &self.device
+    }
+
     pub fn encode(&self) -> String {
         format!(
             "{}-{}-{}",

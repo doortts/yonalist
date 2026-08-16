@@ -499,3 +499,150 @@ fn merging_the_same_document_twice_changes_nothing() {
     assert_eq!(outcome.applied, 0, "a replay is not a write");
     assert_eq!(conflicts(&transaction), 0);
 }
+
+/// A stamp I issued, under content I did not write, means someone edited this
+/// vault's file in another editor. That is authoring, not a merge: the file's
+/// text is adopted and given a fresh stamp so it propagates normally.
+#[test]
+fn a_local_hand_edit_is_restamped_as_authoring() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let mine = stamp(5, DEVICE);
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &mine, "As exported")],
+            &mine,
+        )),
+        &input(),
+    )
+    .expect("seed");
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &mine, "Edited in vim")],
+            &mine,
+        )),
+        &input(),
+    )
+    .expect("hand edit");
+
+    assert_eq!(
+        text_of(&transaction, NODE_ID).as_deref(),
+        Some("Edited in vim")
+    );
+    assert!(
+        hlc_of(&transaction, NODE_ID) > mine,
+        "an edit needs a stamp that can beat what it replaced"
+    );
+    assert_eq!(
+        conflicts_for(&transaction, NODE_ID),
+        0,
+        "editing your own file is not a conflict with anyone"
+    );
+}
+
+/// Someone else's stamp under changed content is a hand edit on *their*
+/// machine. Issuing a fresh stamp here would make the answer depend on which
+/// device merged first, so the content decides and both sides agree.
+#[test]
+fn a_remote_same_hlc_conflict_breaks_ties_by_content_hash() {
+    let theirs = stamp(5, "a3f2");
+    let mut winners = Vec::new();
+    for order in [("Alpha", "Omega"), ("Omega", "Alpha")] {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("begin");
+        for text in [order.0, order.1] {
+            merge_document(
+                &transaction,
+                &clock(),
+                &notes_sync::document::VaultFile::Page(page(
+                    vec![node(NODE_ID, &theirs, text)],
+                    &theirs,
+                )),
+                &input(),
+            )
+            .expect("merge");
+        }
+        assert_eq!(
+            hlc_of(&transaction, NODE_ID),
+            theirs,
+            "a tie-break keeps the stamp, or the next device would see a new edit"
+        );
+        assert_eq!(conflicts_for(&transaction, NODE_ID), 1, "the loser is kept");
+        winners.push(text_of(&transaction, NODE_ID).expect("text"));
+    }
+
+    assert_eq!(
+        winners[0], winners[1],
+        "whichever arrived first, both devices land on the same text"
+    );
+}
+
+/// Moving one sibling must not restamp the ones that did not move. Position is
+/// compared as "under this parent, after this sibling" — a raw sort_key would
+/// never match, because the parser quantises and the database uses midpoints.
+#[test]
+fn a_reorder_touches_only_the_moved_sibling() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let second_id = "8a201f33-0000-4c91-8d02-000000000002";
+    let third_id = "8a201f33-0000-4c91-8d02-000000000003";
+    let ordered = |ids: [&str; 3], hlc: &str| {
+        notes_sync::document::VaultFile::Page(page(
+            ids.iter()
+                .map(|id| node(id, hlc, &format!("Node {}", &id[34..])))
+                .collect(),
+            hlc,
+        ))
+    };
+    merge_document(
+        &transaction,
+        &clock(),
+        &ordered([NODE_ID, second_id, third_id], &stamp(5, "a3f2")),
+        &input(),
+    )
+    .expect("seed");
+    let untouched_first = hlc_of(&transaction, NODE_ID);
+    let untouched_second = hlc_of(&transaction, second_id);
+
+    // The third moves to the front, and only its line gets a new stamp.
+    let mut moved = page(
+        vec![
+            node(third_id, &stamp(9, "a3f2"), "Node 03"),
+            node(NODE_ID, &stamp(5, "a3f2"), "Node 01"),
+            node(second_id, &stamp(5, "a3f2"), "Node 02"),
+        ],
+        &stamp(9, "a3f2"),
+    );
+    moved.root.hlc = stamp(5, "a3f2");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(moved),
+        &input(),
+    )
+    .expect("reorder");
+
+    assert_eq!(hlc_of(&transaction, NODE_ID), untouched_first);
+    assert_eq!(hlc_of(&transaction, second_id), untouched_second);
+    let keys: Vec<i64> = ["03", "01", "02"]
+        .iter()
+        .map(|suffix| {
+            transaction
+                .query_row(
+                    "SELECT sort_key FROM notes_nodes WHERE text = ?1",
+                    [format!("Node {suffix}")],
+                    |row| row.get(0),
+                )
+                .expect("key")
+        })
+        .collect();
+    assert!(
+        keys[0] < keys[1] && keys[1] < keys[2],
+        "the file's order is the order: {keys:?}"
+    );
+}
