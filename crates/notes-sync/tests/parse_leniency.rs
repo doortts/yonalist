@@ -642,3 +642,19 @@ fn an_image_with_an_unreadable_extension_quarantines() {
 
     assert!(parse(source.as_bytes()).is_err());
 }
+
+/// A person writing an image line by hand leaves the alt text out — every
+/// markdown editor does. The name is not decoration: a picture without one
+/// has no metadata a row can be built from, and the note draws a placeholder
+/// over bytes it has. The file already says what the file is called.
+#[test]
+fn an_image_line_with_no_alt_takes_its_file_name() {
+    let parsed = nodes(&page(
+        "- ![](assets/shot-9f3a1c8e2044.png) <!-- ya: w: 320 px: 10x10 bytes: 4 -->\n",
+    ));
+
+    let NodeBody::Image(image) = &parsed[0].body else {
+        panic!("an image");
+    };
+    assert_eq!(image.original_name, "shot-9f3a1c8e2044.png");
+}

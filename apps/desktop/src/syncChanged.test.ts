@@ -1,10 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
+import type { SyncChanged } from "../../../packages/contracts/generated/SyncChanged";
 import { SYNC_CHANGED, listenForVaultChanges, type Unlisten } from "./syncChanged";
 
+function change(over: Partial<SyncChanged> = {}): SyncChanged {
+  return {
+    revision: 7,
+    changedNodeIds: ["one"],
+    deletedNodeIds: [],
+    ...over
+  };
+}
+
 function tauri() {
-  const handlers: Array<() => void> = [];
+  const handlers: Array<(change: SyncChanged) => void> = [];
   const stops = vi.fn();
-  const listen = vi.fn(async (event: string, handler: () => void) => {
+  const listen = vi.fn(async (event: string, handler: (change: SyncChanged) => void) => {
     expect(event).toBe(SYNC_CHANGED);
     handlers.push(handler);
     return stops as unknown as Unlisten;
@@ -20,7 +30,9 @@ describe("듣기: vault 변경 알림", () => {
 
     listenForVaultChanges(listen, absorb, 500);
     await vi.waitFor(() => expect(handlers).toHaveLength(1));
-    for (let index = 0; index < 20; index += 1) handlers[0]();
+    for (let index = 0; index < 20; index += 1) {
+      handlers[0](change({ changedNodeIds: [`node-${index}`] }));
+    }
     vi.advanceTimersByTime(499);
 
     expect(absorb).not.toHaveBeenCalled();
@@ -31,6 +43,45 @@ describe("듣기: vault 변경 알림", () => {
     vi.useRealTimers();
   });
 
+  it("도착한 문서들이 말한 것을 합쳐서 한 번에 넘긴다", async () => {
+    vi.useFakeTimers();
+    const { handlers, listen } = tauri();
+    const absorb = vi.fn(async () => undefined);
+
+    listenForVaultChanges(listen, absorb, 500);
+    await vi.waitFor(() => expect(handlers).toHaveLength(1));
+    handlers[0](change({ revision: 4, changedNodeIds: ["one", "two"] }));
+    handlers[0](change({ revision: 9, changedNodeIds: ["three"], deletedNodeIds: ["two"] }));
+    vi.advanceTimersByTime(500);
+
+    expect(absorb).toHaveBeenCalledWith({
+      revision: 9,
+      changedNodeIds: ["one", "three"],
+      deletedNodeIds: ["two"]
+    });
+    vi.useRealTimers();
+  });
+
+  it("한 번 넘긴 것은 다음 묶음에 다시 오지 않는다", async () => {
+    vi.useFakeTimers();
+    const { handlers, listen } = tauri();
+    const absorb = vi.fn(async () => undefined);
+
+    listenForVaultChanges(listen, absorb, 500);
+    await vi.waitFor(() => expect(handlers).toHaveLength(1));
+    handlers[0](change({ changedNodeIds: ["one"] }));
+    vi.advanceTimersByTime(500);
+    handlers[0](change({ changedNodeIds: ["two"] }));
+    vi.advanceTimersByTime(500);
+
+    expect(absorb).toHaveBeenNthCalledWith(2, {
+      revision: 7,
+      changedNodeIds: ["two"],
+      deletedNodeIds: []
+    });
+    vi.useRealTimers();
+  });
+
   it("구독을 끊으면 이미 예약된 다시 읽기도 취소한다", async () => {
     vi.useFakeTimers();
     const { handlers, listen, stops } = tauri();
@@ -38,7 +89,7 @@ describe("듣기: vault 변경 알림", () => {
 
     const stop = listenForVaultChanges(listen, absorb, 500);
     await vi.waitFor(() => expect(handlers).toHaveLength(1));
-    handlers[0]();
+    handlers[0](change());
     stop();
     vi.advanceTimersByTime(1_000);
 

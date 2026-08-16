@@ -51,22 +51,14 @@ that export defect is not fixed here.
 **What the orphan row misleads.** Four readers gate on nothing:
 
 - `parse_node` (`crates/notes-sqlite/src/row_mapping.rs:34-61`) builds the image
-  from the row regardless of kind. Which gate then refuses the node depends on
-  the row's shape, and `validate_image_ownership` is not any of them:
-  - The shape a merge actually writes fails inside `parse_node` itself.
-    `NoteImage::try_new` demands `relative_path == "{content_hash}.{extension}"`
-    (`crates/notes-core/src/image.rs:48`) while `write_image` stores the
-    document's link (`assets/….png`), so the read is a
-    `FromSqlConversionFailure` — a separate pre-existing defect, fixed on
-    `fix/image-relative-path-normalization`, not here.
-  - Given a row in the app's own spelling, `parse_node` succeeds and the node
-    reads back as `Bullet` + `Some(image)`. `NotesTree::validate` then refuses
-    it at load: the `(Bullet, Some(parent_id))` arm requires
-    `node.image().is_none()` (`crates/notes-core/src/tree.rs:388`), so the node
-    falls through to `ParentNotFound(parent_id)`
-    (`crates/notes-core/src/tree.rs:405`) — an error naming the *page*, not the
-    node. That is the stuck node, and it is stuck one gate earlier than
-    `validate_image_ownership` ever runs.
+  from the row regardless of kind, so the node reads back as `Bullet` +
+  `Some(image)`. `NotesTree::validate` then refuses it at load: the
+  `(Bullet, Some(parent_id))` arm requires `node.image().is_none()`
+  (`crates/notes-core/src/tree.rs:388`), so the node falls through to
+  `ParentNotFound(parent_id)` (`crates/notes-core/src/tree.rs:405`) — an error
+  naming the *page*, not the node. That is the stuck node, and it is stuck one
+  gate earlier than `validate_image_ownership` ever runs; that check, which the
+  bug report named, is never reached.
 
   `collect_command_context` (`crates/notes-sqlite/src/repository.rs:58`)
   hydrates siblings as well as ancestors, so one orphan row also refuses
@@ -151,7 +143,7 @@ names its own failing test.
 
   | On the device that only saw the trash file | Before | After |
   | --- | --- | --- |
-  | Restoring the trashed picture | refused at load (`image.rs:48` today, `tree.rs:405` once the path defect is fixed) | succeeds, as a plain bullet titled with the file name |
+  | Restoring the trashed picture | refused at load (`tree.rs:405`) | succeeds, as a plain bullet titled with the file name |
   | Deleting its bytes from the attachment list | refused — the orphan row still counted (`attachment_list.rs:170`) | allowed, and the vault file goes (`attachment_list.rs:198`) |
 
   So this path failed closed before and fails open now. The blast radius is
@@ -240,13 +232,8 @@ too. Then run them through the real seam the file's other tests use
 (`load_command_tree` → `plan` → `commit`): `UpdateText` on `IMAGE_NODE_ID`, then
 `DeleteSubtree` on it. Both must return `Ok`.
 
-Two departures from what this doc first specified, both forced:
+One departure from what this doc first specified:
 
-- The row needs the app's own `relative_path` spelling, written directly, or
-  `parse_node` fails on the merge-written link before any gate is reached — the
-  separate `image.rs:48` defect named in the root cause. The test says so in a
-  comment; only `relative_path` is written by hand, the hash arrives the
-  ordinary way through `resolve_asset`.
 - The page is built by destructuring `page(...)` and replacing `nodes`, the
   idiom already at `a_text_edit_leaves_the_place_claim_where_it_was`, rather
   than by giving `page()` an id parameter — which would have touched about

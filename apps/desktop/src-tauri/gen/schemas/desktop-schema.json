@@ -297,6 +297,12 @@
           "markdownDescription": "Enables the notes_sync_restore_conflict command without any pre-configured scope."
         },
         {
+          "description": "Enables the notes_sync_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-sync-status",
+          "markdownDescription": "Enables the notes_sync_status command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notes_sync_vault_get command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notes-sync-vault-get",
@@ -457,6 +463,12 @@
           "type": "string",
           "const": "deny-notes-sync-restore-conflict",
           "markdownDescription": "Denies the notes_sync_restore_conflict command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_sync_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-sync-status",
+          "markdownDescription": "Denies the notes_sync_status command without any pre-configured scope."
         },
         {
           "description": "Denies the notes_sync_vault_get command without any pre-configured scope.",

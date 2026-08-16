@@ -110,7 +110,7 @@ fn write_checked(
         if existing_hash == hash {
             // The same bytes going out again would look like an edit to every
             // other device.
-            record_document(transaction, root_id, &relative, &hash)?;
+            record_document(transaction, root_id, &relative, &hash, stat_of(&path))?;
             return Ok(ExportOutcome {
                 written: false,
                 needs_merge: false,
@@ -132,7 +132,11 @@ fn write_checked(
             .map_err(|error| format!("Could not make the page's folder: {error}"))?;
     }
     write_atomic(vault_root, &path, &bytes)?;
-    record_document(transaction, root_id, &relative, &hash)?;
+    // Read back after the write, not guessed from the bytes: the size on disk
+    // is the size the scan will stat, and the reading is the filesystem's to
+    // give. A gate comparing this app's guess with the disk's answer would
+    // report a change on every launch.
+    record_document(transaction, root_id, &relative, &hash, stat_of(&path))?;
     Ok(ExportOutcome {
         written: true,
         needs_merge: false,
@@ -670,8 +674,8 @@ fn readings(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<Reading>
              )
              SELECT n.id, n.kind, n.text, n.note, n.marker, n.ordered_start,
                     n.collapsed, n.completed, n.starred, n.deleted, n.sync_extras, n.hlc,
-                    i.relative_path, i.display_width, i.pixel_width, i.pixel_height,
-                    i.byte_length,
+                    i.relative_path, i.content_hash, i.display_width, i.pixel_width,
+                    i.pixel_height, i.byte_length,
                     e.content_hash, e.exported_hlc,
                     -- Where the line sits is not its content, but it is
                     -- something the reading arbitrates: a node that moved has
@@ -689,11 +693,12 @@ fn readings(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<Reading>
             let text = match row.get::<_, Option<String>>(12)? {
                 Some(path) => crate::merger::image_state(
                     &row.get::<_, String>(2)?,
+                    &row.get::<_, String>(13)?,
                     &path,
-                    row.get(13)?,
                     row.get(14)?,
                     row.get(15)?,
                     row.get(16)?,
+                    row.get(17)?,
                 ),
                 None => row.get::<_, String>(2)?,
             };
@@ -716,16 +721,16 @@ fn readings(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<Reading>
             // this device quietly keep an order nobody else has.
             let fingerprint = format!(
                 "{fingerprint}:{}:{}:{}",
-                row.get::<_, Option<String>>(19)?.unwrap_or_default(),
-                row.get::<_, String>(20)?,
-                row.get::<_, String>(21)?
+                row.get::<_, Option<String>>(20)?.unwrap_or_default(),
+                row.get::<_, String>(21)?,
+                row.get::<_, String>(22)?
             );
             Ok((
                 row.get::<_, String>(0)?,
                 fingerprint,
                 row.get::<_, String>(11)?,
-                row.get::<_, Option<String>>(17)?,
                 row.get::<_, Option<String>>(18)?,
+                row.get::<_, Option<String>>(19)?,
             ))
         })
         .map_err(|error| error.to_string())?;
@@ -970,11 +975,27 @@ fn clear_dirty(transaction: &Transaction<'_>, root_id: &str) -> Result<(), Expor
     Ok(())
 }
 
+/// What the folder now says about a file, for the scan gate to compare with.
+/// Nothing here fails on a stat that cannot be taken — an unreadable reading
+/// means the gate has nothing to skip on, which costs a hash and no more.
+fn stat_of(path: &Path) -> (Option<i64>, Option<i64>) {
+    let Ok(facts) = std::fs::metadata(path) else {
+        return (None, None);
+    };
+    let modified = facts
+        .modified()
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|since| i64::try_from(since.as_millis()).ok());
+    (modified, i64::try_from(facts.len()).ok())
+}
+
 fn record_document(
     transaction: &Transaction<'_>,
     root_id: &str,
     relative: &str,
     hash: &str,
+    (file_mtime_ms, file_size): (Option<i64>, Option<i64>),
 ) -> Result<(), ExportError> {
     transaction
         .prepare_cached(
@@ -984,16 +1005,29 @@ fn record_document(
             // that arrived as a split document and has become a page of its
             // own has to be noticed if it is ever demoted, and a page that
             // became a split document must stop being retired for it.
-            "INSERT INTO sync_documents(root_id, folder_path, exported_hash, quarantined, is_page)
+            "INSERT INTO sync_documents(
+                 root_id, folder_path, exported_hash, quarantined, is_page,
+                 file_mtime_ms, file_size)
              VALUES (?1, ?2, ?3, 0,
                  ?1 = 'root' OR EXISTS (
-                     SELECT 1 FROM notes_nodes WHERE id = ?1 AND parent_id = 'root'))
+                     SELECT 1 FROM notes_nodes WHERE id = ?1 AND parent_id = 'root'),
+                 ?4, ?5)
              ON CONFLICT(root_id) DO UPDATE SET
                  folder_path = excluded.folder_path,
                  exported_hash = excluded.exported_hash,
-                 is_page = excluded.is_page",
+                 is_page = excluded.is_page,
+                 file_mtime_ms = excluded.file_mtime_ms,
+                 file_size = excluded.file_size",
         )
-        .and_then(|mut statement| statement.execute(rusqlite::params![root_id, relative, hash]))
+        .and_then(|mut statement| {
+            statement.execute(rusqlite::params![
+                root_id,
+                relative,
+                hash,
+                file_mtime_ms,
+                file_size
+            ])
+        })
         .map_err(|error| error.to_string())?;
     Ok(())
 }
