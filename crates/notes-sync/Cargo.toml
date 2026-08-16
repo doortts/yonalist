@@ -12,6 +12,7 @@ notes-core.workspace = true
 rusqlite.workspace = true
 sha2 = "0.10"
 tempfile = "3.27.0"
+unicode-normalization = "0.1.25"
 uuid.workspace = true
 
 [dev-dependencies]
