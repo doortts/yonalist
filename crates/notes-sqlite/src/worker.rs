@@ -48,7 +48,7 @@ enum Request {
     },
     ReindexVault {
         vault_root: std::path::PathBuf,
-        reply: SyncSender<Result<usize, StorageError>>,
+        reply: SyncSender<Result<crate::sync_merge::ReindexReport, StorageError>>,
     },
     ExportPending {
         vault_root: std::path::PathBuf,
@@ -197,7 +197,10 @@ impl SqliteStorage {
 
     /// Reads every document in the vault back in, ignoring what the records say
     /// about them. Refused while this device is still holding edits.
-    pub fn reindex_vault(&self, vault_root: &std::path::Path) -> Result<usize, StorageError> {
+    pub fn reindex_vault(
+        &self,
+        vault_root: &std::path::Path,
+    ) -> Result<crate::sync_merge::ReindexReport, StorageError> {
         self.request(|reply| Request::ReindexVault {
             vault_root: vault_root.to_path_buf(),
             reply,

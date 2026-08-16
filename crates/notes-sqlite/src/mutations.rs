@@ -307,7 +307,9 @@ fn record_place_claims(
     let at: String = transaction
         .query_row(
             "SELECT max(hlc) FROM notes_nodes WHERE id IN (SELECT value FROM json_each(?1))",
-            [json_list(&moved.iter().cloned().collect::<Vec<_>>())],
+            [notes_sync::export::json_list(
+                &moved.iter().cloned().collect::<Vec<_>>(),
+            )],
             |row| row.get::<_, Option<String>>(0),
         )
         .map_err(internal)?
@@ -333,21 +335,6 @@ fn record_place_claims(
             .map_err(internal)?;
     }
     Ok(())
-}
-
-/// A JSON array of ids, for `json_each`.
-fn json_list(ids: &[String]) -> String {
-    let mut json = String::from("[");
-    for (index, id) in ids.iter().enumerate() {
-        if index > 0 {
-            json.push(',');
-        }
-        json.push('"');
-        json.push_str(&id.replace('\\', "\\\\").replace('"', "\\\""));
-        json.push('"');
-    }
-    json.push(']');
-    json
 }
 
 fn refresh_derived_data(

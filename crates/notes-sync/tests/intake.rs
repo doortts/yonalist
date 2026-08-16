@@ -89,16 +89,3 @@ fn the_scan_gate_is_mtime_and_size_not_content() {
 fn a_scan_reads_a_file_it_has_no_record_of() {
     assert_eq!(scan_verdict(None, 1, 1), Verdict::Hash);
 }
-
-/// The last net. A reindex the user asks for ignores stat entirely, which is
-/// what closes the one gap the scan gate leaves: a change that preserved both
-/// the mtime and the size and whose event was missed.
-#[test]
-fn a_manual_reindex_verifies_every_file_by_hash() {
-    let known = known();
-
-    assert_eq!(
-        notes_sync::intake::reindex_verdict(Some(&known), known.file_mtime_ms.unwrap(), 256),
-        Verdict::Hash
-    );
-}

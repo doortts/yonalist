@@ -19,11 +19,11 @@ fn events_for_one_path_coalesce_within_the_window() {
 
     // Still being written: the window runs from the *last* event, not the
     // first, or a file an editor is halfway through saving gets read.
-    assert_eq!(queue.take_ready(1_400), Vec::<String>::new());
-    assert_eq!(queue.take_ready(1_600), Vec::<String>::new());
+    assert_eq!(queue.next_in_flight(1_400), None);
+    assert_eq!(queue.next_in_flight(1_600), None);
     assert_eq!(
-        queue.take_ready(1_900),
-        vec!["Projects/README.md".to_owned()],
+        queue.next_in_flight(1_900),
+        Some("Projects/README.md".to_owned()),
         "an editor saving a file three times is one thing to read"
     );
 }
@@ -34,8 +34,12 @@ fn separate_paths_are_separate_work() {
     queue.saw("a/README.md", 1_000);
     queue.saw("b/README.md", 1_000);
 
+    let first = queue.next_in_flight(1_500).expect("something to do");
+    queue.finished(&first);
+    let second = queue.next_in_flight(1_500).expect("the other one");
+
     assert_eq!(
-        queue.take_ready(1_500),
+        vec![first, second],
         vec!["a/README.md".to_owned(), "b/README.md".to_owned()]
     );
 }
@@ -66,7 +70,6 @@ fn nothing_seen_means_nothing_to_do() {
     let mut queue = WatchQueue::new(WINDOW);
 
     assert_eq!(queue.next_in_flight(9_999), None);
-    assert_eq!(queue.take_ready(9_999), Vec::<String>::new());
 }
 
 /// A path touched again while its merge is running is read again afterwards —
@@ -81,7 +84,7 @@ fn a_path_touched_again_while_in_flight_is_read_again() {
     queue.finished(&path);
 
     assert_eq!(
-        queue.take_ready(2_200),
-        vec!["Projects/README.md".to_owned()]
+        queue.next_in_flight(2_200),
+        Some("Projects/README.md".to_owned())
     );
 }

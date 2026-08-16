@@ -12,8 +12,8 @@
 //! A startup scan walks thousands of files at once, where hashing all of them
 //! costs more than it saves. There the stat is allowed to answer. What that
 //! misses — a change that kept both the mtime and the size, whose event was also
-//! missed — is closed by the reindex the user can ask for, which ignores stat
-//! entirely.
+//! missed — is closed by the reindex the user can ask for, which reads every
+//! file whatever its stat says and so needs no verdict from here at all.
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Known {
@@ -52,10 +52,4 @@ pub fn scan_verdict(known: Option<&Known>, mtime_ms: i64, size: i64) -> Verdict 
         }
         _ => Verdict::Hash,
     }
-}
-
-/// During a reindex the user asked for. Every file is read, whatever its stat
-/// says — this is the net under the scan gate.
-pub fn reindex_verdict(_known: Option<&Known>, _mtime_ms: i64, _size: i64) -> Verdict {
-    Verdict::Hash
 }

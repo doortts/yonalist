@@ -220,11 +220,20 @@ pub(crate) fn export_pending(
 /// Refused while this device is still holding edits it has not written out.
 /// A reindex treats the vault as the truth, and the vault does not yet know
 /// about those edits, so running it then would throw them away.
+/// What a reindex did, and what it could not do. The second number is the
+/// point: a net that silently drops what it cannot read reports the same
+/// "nothing changed" as one that read the whole vault.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ReindexReport {
+    pub merged: usize,
+    pub skipped: usize,
+}
+
 pub(crate) fn reindex_vault(
     connection: &mut Connection,
     clock: &Clock,
     vault_root: &std::path::Path,
-) -> Result<usize, StorageError> {
+) -> Result<ReindexReport, StorageError> {
     let waiting: i64 = connection
         .query_row("SELECT count(*) FROM sync_dirty_nodes", [], |row| {
             row.get(0)
@@ -237,16 +246,27 @@ pub(crate) fn reindex_vault(
                 .to_owned(),
         ));
     }
-    let mut merged = 0;
+    let mut report = ReindexReport::default();
     let mut stack = vec![vault_root.to_path_buf()];
     let mut files = Vec::new();
     while let Some(at) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&at) else {
+            report.skipped += 1;
             continue;
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_dir() {
+            // The link itself, never what it points at: following one walks
+            // out of the vault, and a link to a folder above itself walks for
+            // ever — inside the thread that owns the database.
+            let Ok(kind) = std::fs::symlink_metadata(&path) else {
+                report.skipped += 1;
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
                 stack.push(path);
             } else if path.extension().is_some_and(|extension| extension == "md") {
                 files.push(path);
@@ -262,9 +282,13 @@ pub(crate) fn reindex_vault(
             &path,
             notes_sync::parse::MAX_FILE_BYTES,
         ) else {
+            report.skipped += 1;
             continue;
         };
         let Ok(file) = notes_sync::parse::parse(&bytes) else {
+            // Somebody's own markdown, or a document this version cannot read.
+            // Either way it is left alone and counted, never merged.
+            report.skipped += 1;
             continue;
         };
         let relative = path
@@ -279,8 +303,8 @@ pub(crate) fn reindex_vault(
             file_size: None,
         };
         if merge(connection, clock, &file, &input)?.applied > 0 {
-            merged += 1;
+            report.merged += 1;
         }
     }
-    Ok(merged)
+    Ok(report)
 }

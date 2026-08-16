@@ -37,23 +37,11 @@ impl WatchQueue {
         self.pending.insert(path.to_owned(), at);
     }
 
-    /// Every path that has been quiet long enough, taken off the queue.
-    pub fn take_ready(&mut self, now: u64) -> Vec<String> {
-        let ready: Vec<String> = self
-            .pending
-            .iter()
-            .filter(|(_, seen)| now.saturating_sub(**seen) >= self.quiet)
-            .map(|(path, _)| path.clone())
-            .collect();
-        for path in &ready {
-            self.pending.remove(path);
-        }
-        ready
-    }
-
-    /// The next path to merge, if nothing is already being merged. Answering
-    /// `None` while one is in flight is the back pressure: it is what keeps a
-    /// user's command from queuing behind a folder's worth of them.
+    /// The next path to merge, if nothing is already being merged and that path
+    /// has been quiet long enough. Answering `None` while one is in flight is
+    /// the back pressure: it is what keeps a user's command from queuing behind
+    /// a folder's worth of them. It is also the only way work leaves this
+    /// queue — a second way out would be a second way past that rule.
     pub fn next_in_flight(&mut self, now: u64) -> Option<String> {
         if self.in_flight.is_some() {
             return None;

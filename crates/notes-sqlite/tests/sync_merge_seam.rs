@@ -660,6 +660,58 @@ fn one_document_that_cannot_be_written_does_not_stop_the_others() {
     assert!(vault.path().join("README.md").exists(), "home included");
 }
 
+/// A reindex is the last net under the scan gate, so what it could not read
+/// has to come back as a number. Answering "nothing changed" about a vault it
+/// only half read is the one thing a net must not do.
+#[test]
+fn a_reindex_reports_what_it_could_not_read() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("seed");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+    std::fs::write(
+        vault.path().join("hand-written.md"),
+        b"nothing here is a document\n",
+    )
+    .expect("stray file");
+
+    let report = storage.reindex_vault(vault.path()).expect("reindex");
+
+    assert_eq!(
+        report.skipped, 1,
+        "a file this format cannot read is not a file that says nothing changed"
+    );
+}
+
+/// §3.4's no-follow contract. A link in the vault pointing at somebody's home
+/// directory would otherwise have the reindex read it, and a link pointing at
+/// a folder above itself would have it read forever — inside the one thread
+/// that owns the database, which freezes everything the app can do.
+#[test]
+fn a_reindex_does_not_follow_links_out_of_the_vault() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+    let outside = tempfile::tempdir().expect("outside");
+    std::fs::write(outside.path().join("elsewhere.md"), b"not ours\n").expect("file");
+    std::os::unix::fs::symlink(outside.path(), vault.path().join("linked")).expect("link");
+    std::os::unix::fs::symlink(vault.path(), vault.path().join("loop")).expect("loop");
+
+    let report = storage.reindex_vault(vault.path()).expect("reindex");
+
+    assert_eq!(
+        report.skipped, 0,
+        "a link is not a file this vault holds, so there is nothing to read \
+         and nothing to report"
+    );
+}
+
 /// Spec §9. A reindex reads the vault as the truth. Doing that while this
 /// device is holding edits it has not written out yet would throw them away —
 /// so it is refused until the export catches up.
@@ -690,10 +742,13 @@ fn reindex_is_refused_while_edits_are_unexported() {
     storage
         .export_pending(vault.path(), &store())
         .expect("export");
-    let waiting = storage.pending_count().expect("pending");
+    assert_eq!(
+        storage.pending_count().expect("pending"),
+        0,
+        "the export left nothing behind"
+    );
     assert!(
         storage.reindex_vault(vault.path()).is_ok(),
-        "once everything is written out, the vault is safe to read as the truth \
-         ({waiting} rows still waiting)"
+        "once everything is written out, the vault is safe to read as the truth"
     );
 }

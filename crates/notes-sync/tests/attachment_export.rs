@@ -116,7 +116,6 @@ fn read(workspace: &Workspace, relative: &str) -> Option<String> {
 }
 
 const FIRST_FOLDER: &str = "Notes-4f1c8e20a3b7";
-const SECOND_FOLDER: &str = "Other-4f1c8e20a3b7";
 const DISK_NAME: &str = "holiday-9f2c1b7a4e6d.png";
 
 #[test]

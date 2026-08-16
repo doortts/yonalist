@@ -382,7 +382,9 @@ fn collect_ids(node: &DocumentNode) -> Vec<String> {
     ids
 }
 
-fn json_list(ids: &[String]) -> String {
+/// SQLite has no array parameter, so a list of ids travels as JSON and comes
+/// back apart through `json_each`.
+pub fn json_list(ids: &[String]) -> String {
     let mut json = String::from("[");
     for (index, id) in ids.iter().enumerate() {
         if index > 0 {
