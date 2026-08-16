@@ -203,7 +203,16 @@ fn merge_trash(
     flatten(&trash.nodes, "", &mut incoming);
     apply(transaction, clock, &incoming, &mut outcome, true)?;
     repair_structure(transaction, clock, &mut outcome)?;
-    outcome.retire_file = crate::watcher::is_conflicted_copy(&input.file_path);
+    if crate::watcher::is_conflicted_copy(&input.file_path) {
+        outcome.retire_file = true;
+        // The copy is about to be removed, and what it stated has to reach the
+        // file every device reads. A deleted row's mark is what queues the
+        // trash, and the rows this merge wrote had theirs taken back — they
+        // came from a file, and that file is the one going away.
+        for entry in &incoming {
+            mark_dirty(transaction, &entry.id)?;
+        }
+    }
     record_document(transaction, "yonalist-trash", input, trash.max_hlc.as_str())?;
     Ok(outcome)
 }

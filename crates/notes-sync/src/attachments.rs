@@ -171,17 +171,11 @@ pub fn place_attachments(
         // files, so a line naming bytes that have not arrived yet is ordinary
         // — and it must not stop every other document from being written.
         // Where this app's own store keeps them, which is the hash and the
-        // type — never `notes_images.relative_path`, which for a row that
-        // arrived in a file is the link that file wrote, not a store name.
-        let in_store = store_root.join(format!(
-            "{hash}.{}",
-            holders[0]
-                .store_name
-                .rsplit('.')
-                .next()
-                .unwrap_or("png")
-                .to_ascii_lowercase()
-        ));
+        // decoded type — never `notes_images.relative_path`, which for a row
+        // that arrived in a file is the link that file wrote, and never a
+        // guess from one of the holders, which would depend on which row the
+        // query happened to return first.
+        let in_store = store_root.join(format!("{hash}.{}", holders[0].extension));
         if carry_bytes(vault_root, &in_store, &placement).is_err() {
             continue;
         }
@@ -230,7 +224,10 @@ pub fn place_attachments(
 /// which is how the pass finds them when no copy is in the vault yet.
 struct Holder {
     reference: Reference,
-    store_name: String,
+    /// From the decoded type rather than from any file name: every reference
+    /// to the same bytes agrees on it, so which row is read first cannot
+    /// change where the bytes are looked for.
+    extension: &'static str,
 }
 
 fn referenced_assets(
@@ -280,7 +277,7 @@ fn referenced_assets(
 
     let mut assets: BTreeMap<String, Vec<Holder>> = BTreeMap::new();
     for row in rows {
-        let (hash, name, mime, store_name, trashed, folder_path, page, title) =
+        let (hash, name, mime, _store_name, trashed, folder_path, page, title) =
             row.map_err(|error| error.to_string())?;
         let page_folder = match folder_path {
             // The recorded path names the file; the attachment goes beside it.
@@ -296,7 +293,7 @@ fn referenced_assets(
                 disk_name: crate::layout::asset_disk_name(&name, &hash, &mime),
                 trashed,
             },
-            store_name,
+            extension: crate::layout::asset_extension(&mime),
         });
     }
     Ok(assets)

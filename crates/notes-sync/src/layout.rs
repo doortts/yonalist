@@ -54,6 +54,10 @@ pub fn asset_disk_name(original_name: &str, content_hash: &str, mime_type: &str)
 
 /// From the decoded type, never from what the file was called: a `.png` that
 /// is really a jpeg would otherwise keep lying about itself in the vault.
+pub fn asset_extension(mime_type: &str) -> &'static str {
+    extension(mime_type)
+}
+
 fn extension(mime_type: &str) -> &'static str {
     match mime_type {
         "image/jpeg" => "jpg",

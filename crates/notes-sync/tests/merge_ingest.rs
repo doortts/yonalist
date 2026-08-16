@@ -1468,6 +1468,58 @@ fn adopting_another_devices_version_forgets_what_this_one_last_wrote() {
     );
 }
 
+/// A copy of the trash is read and taken away like any other copy — and the
+/// deletions it stated have to reach the canonical `trash.md`, which is the
+/// only evidence a deletion ever gets. Without that they exist in this
+/// database and nowhere else: every other device keeps the notes alive and
+/// hands them back.
+#[test]
+fn a_trash_copy_leaves_the_real_trash_owing_a_write() {
+    let node_id = "8a201f33-0000-4c91-8d02-000000000001";
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let seeded = stamp(5, "a3f2");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(node_id, &seeded, "Taken out")],
+            &seeded,
+        )),
+        &input(),
+    )
+    .expect("seed");
+    transaction
+        .execute("DELETE FROM sync_dirty_nodes", ())
+        .expect("clear");
+
+    let mut deleted = node(node_id, &stamp(9, "bbb2"), "Taken out");
+    deleted.from = Some((
+        "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1".to_owned(),
+        4_294_967_296,
+    ));
+    let outcome = merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Trash(notes_sync::document::TrashDocument {
+            max_hlc: stamp(9, "bbb2"),
+            nodes: vec![deleted],
+        }),
+        &notes_sync::merger::MergeInput {
+            file_path: ".yonalist/trash (conflicted copy 2026-08-16).md".to_owned(),
+            ..input()
+        },
+    )
+    .expect("the copy");
+
+    assert!(outcome.retire_file, "the copy is handed back to be removed");
+    let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
+    assert!(
+        pending.contains(&"yonalist-trash".to_owned()),
+        "the deletion has to be stated in the file every device reads: {pending:?}"
+    );
+}
+
 /// A rescue that no file states is a rescue nobody else ever sees — and on the
 /// device that did it, a reindex from the vault would take the node away
 /// again. The recovery page, the node put under it, and home all owe a write.
