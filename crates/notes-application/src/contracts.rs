@@ -525,6 +525,33 @@ pub enum CloseOutcome {
     AlreadyClosed,
 }
 
+/// What sync cannot do right now, as the window shows it. Asked for rather
+/// than pushed: a watch that failed at startup does so before the window is
+/// listening, so the answer has to be available to whoever asks late.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SyncStatus {
+    /// Files in the folder this app looked at and could not read.
+    pub refused: Vec<RefusedFile>,
+    /// Why the last write into the folder failed. A write that succeeds
+    /// clears it.
+    pub write_error: Option<String>,
+    /// Why the folder is not being watched. A watch that succeeds clears it.
+    /// Kept apart from the write: a successful export saying nothing about
+    /// the watch would be a lie about the one that failed.
+    pub watch_error: Option<String>,
+}
+
+/// A file this app refused, and the sentence the parser gave for it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RefusedFile {
+    pub path: String,
+    pub reason: String,
+}
+
 /// One attachment, as the list shows it: one row per bullet rather than one
 /// per file, because the user finds a picture by the note they put it in. A
 /// file two pages use is two rows, each saying so.

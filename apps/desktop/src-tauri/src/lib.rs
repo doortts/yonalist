@@ -5,6 +5,7 @@ mod image_replace_ipc;
 mod startup;
 mod sync_runtime;
 mod sync_settings;
+mod sync_status;
 mod vault_watch;
 
 use std::future::Future;
@@ -16,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use notes_application::{
     BootSnapshot, CloseOutcome, CommandEnvelope, ForestRequest, ForestSnapshot, HistoryRequest,
     ImageAssetPort, MutationReceipt, NotesError, NotesErrorCode, NotesService, SearchPage,
-    SearchQuery, SyncAttachment, SyncChanged, SyncConflict, SyncVaultFolderState,
+    SearchQuery, SyncAttachment, SyncChanged, SyncConflict, SyncStatus, SyncVaultFolderState,
     UnusedAssetsReport, ViewportPage, ViewportRequest,
 };
 use notes_export::{NativeExportPublisher, NativeExportRenderer};
@@ -35,6 +36,9 @@ struct DesktopRuntime {
     export_renderer: Arc<NativeExportRenderer>,
     export_publisher: Arc<NativeExportPublisher>,
     initial_boot: Mutex<Option<BootSnapshot>>,
+    /// What sync cannot do right now. Asked for by the window rather than
+    /// pushed to it, so an answer is there for whoever asks late.
+    status: Arc<sync_status::SyncErrors>,
     /// Held rather than dropped: the watch ends when this does. Absent until
     /// the user has picked a folder, and replaced when they pick another.
     watch: Mutex<Option<vault_watch::VaultWatch>>,
@@ -297,6 +301,22 @@ async fn notes_sync_restore_conflict(
         // a bypass would leave every later edit failing until a restart.
         runtime.changed(runtime.service.restore_conflict(&node_id, &text))?;
         Ok(())
+    })
+    .await
+}
+
+/// What sync cannot do right now: the files it could not read, and whether
+/// writing or watching the folder is failing.
+#[tauri::command]
+async fn notes_sync_status(state: State<'_, DesktopState>) -> Result<SyncStatus, NotesError> {
+    let gate = Arc::clone(&state.runtime);
+    run_blocking(move || {
+        let runtime = gate.wait()?;
+        Ok(SyncStatus {
+            refused: runtime.storage.refused_files().map_err(NotesError::from)?,
+            write_error: runtime.status.write_error(),
+            watch_error: runtime.status.watch_error(),
+        })
     })
     .await
 }
@@ -586,6 +606,7 @@ impl DesktopRuntime {
             export_renderer,
             export_publisher,
             initial_boot: Mutex::new(Some(initial_boot)),
+            status: Arc::new(sync_status::SyncErrors::default()),
             watch: Mutex::new(None),
             sync: sync_runtime::SyncRuntime::start(exporter),
         };
@@ -777,6 +798,7 @@ pub fn run() {
             notes_sync_conflicts,
             notes_sync_restore_conflict,
             notes_sync_attachments,
+            notes_sync_status,
             notes_sync_delete_attachment,
             notes_sync_flush,
             notes_sync_vault_get,
@@ -911,6 +933,34 @@ mod tests {
         assert_eq!(round_trip["command"]["kind"], "createNode");
         assert_eq!(round_trip["command"]["parent_id"], "page-1");
         assert!(round_trip.get("base_revision").is_none());
+    }
+
+    /// The wire shape the window reads, pinned against the generated
+    /// TypeScript: `packages/contracts/generated/SyncStatus.ts` says these
+    /// names, and a rename on either side has to fail here rather than in a
+    /// badge that quietly shows nothing.
+    #[test]
+    fn sync_status_serializes_the_generated_typescript_wire_shape() {
+        let status = SyncStatus {
+            refused: vec![notes_application::RefusedFile {
+                path: "journal/today.md".to_owned(),
+                reason: "이 앱이 읽는 문서가 아니다".to_owned(),
+            }],
+            write_error: Some("the folder is read only".to_owned()),
+            watch_error: None,
+        };
+
+        let wire = serde_json::to_value(&status).expect("status must serialize");
+
+        assert_eq!(wire["refused"][0]["path"], "journal/today.md");
+        assert_eq!(wire["refused"][0]["reason"], "이 앱이 읽는 문서가 아니다");
+        assert_eq!(wire["writeError"], "the folder is read only");
+        assert!(wire["watchError"].is_null());
+        assert!(wire.get("write_error").is_none());
+        assert_eq!(
+            serde_json::from_value::<SyncStatus>(wire).expect("and read back"),
+            status
+        );
     }
 
     #[test]

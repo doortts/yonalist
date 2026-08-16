@@ -715,11 +715,49 @@ fn an_arriving_attachment_resolves_the_rows_waiting_for_it() {
         )
         .expect("resolve");
 
-    assert_eq!(resolved, 1, "one row was waiting for these bytes");
+    assert_eq!(
+        resolved,
+        std::collections::BTreeSet::from([IMAGE_NODE_ID.to_owned()]),
+        "the row that was waiting for these bytes is named"
+    );
     assert_eq!(
         storage.image_hash(IMAGE_NODE_ID).expect("row"),
         Some("9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081".to_owned()),
         "the note can show its picture now"
+    );
+}
+
+/// The same picture pasted onto two lines leaves two rows waiting for one
+/// file, and both stop waiting when it lands. A window told about only the
+/// first draws a placeholder over the second until it is restarted.
+#[test]
+fn every_row_waiting_for_the_same_picture_is_named() {
+    const TWIN_NODE_ID: &str = "8a201f33-0000-4c91-8d02-00000000000e";
+    let (_directory, storage) = storage();
+    let mut file = page_with_image("holiday-9f2c1b7a4e6d.png");
+    let VaultFile::Page(document) = &mut file else {
+        panic!("a page");
+    };
+    // The same line twice: one picture, one link, two notes showing it.
+    let twin = DocumentNode {
+        id: TWIN_NODE_ID.to_owned(),
+        ..document.nodes[0].clone()
+    };
+    document.nodes.push(twin);
+    storage.merge_document(&file, &input()).expect("merge");
+
+    let resolved = storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
+        )
+        .expect("resolve");
+
+    assert_eq!(
+        resolved,
+        std::collections::BTreeSet::from([IMAGE_NODE_ID.to_owned(), TWIN_NODE_ID.to_owned()]),
+        "both notes were waiting for this file, so both have to be named"
     );
 }
 
@@ -741,8 +779,8 @@ fn bytes_that_do_not_match_the_name_resolve_nothing() {
         )
         .expect("resolve");
 
-    assert_eq!(
-        resolved, 0,
+    assert!(
+        resolved.is_empty(),
         "these are somebody else's bytes under our name"
     );
     assert_eq!(
@@ -842,7 +880,11 @@ fn a_file_this_app_cannot_read_is_not_one_of_its_documents() {
     .expect("their file");
 
     storage
-        .quarantine("journal/today.md", &"e".repeat(64))
+        .quarantine(
+            "journal/today.md",
+            &"e".repeat(64),
+            "이 앱이 읽는 문서가 아니다",
+        )
         .expect("quarantine");
     storage
         .export_pending(vault.path(), &store())
@@ -862,7 +904,11 @@ fn a_file_that_cannot_be_read_is_written_down() {
     let (_directory, storage) = storage();
 
     storage
-        .quarantine("Projects-4f1c8e20a3b7/README.md", &"c".repeat(64))
+        .quarantine(
+            "Projects-4f1c8e20a3b7/README.md",
+            &"c".repeat(64),
+            "이 앱이 읽는 문서가 아니다",
+        )
         .expect("quarantine");
 
     assert_eq!(
@@ -878,7 +924,11 @@ fn a_file_that_cannot_be_read_is_written_down() {
     // written down has to be the file as it is now, or the next sweep reads
     // the old answer and skips a file that has changed.
     storage
-        .quarantine("Projects-4f1c8e20a3b7/README.md", &"d".repeat(64))
+        .quarantine(
+            "Projects-4f1c8e20a3b7/README.md",
+            &"d".repeat(64),
+            "이 앱이 읽는 문서가 아니다",
+        )
         .expect("quarantine again");
 
     assert_eq!(
@@ -902,7 +952,11 @@ fn a_document_that_becomes_unreadable_is_refused_only_once() {
         .expect("merge");
 
     storage
-        .quarantine("Projects-4f1c8e20a3b7/README.md", &"f".repeat(64))
+        .quarantine(
+            "Projects-4f1c8e20a3b7/README.md",
+            &"f".repeat(64),
+            "이 앱이 읽는 문서가 아니다",
+        )
         .expect("quarantine");
 
     assert_eq!(
@@ -921,7 +975,11 @@ fn a_document_that_becomes_unreadable_is_refused_only_once() {
 fn a_refusal_goes_when_its_file_does() {
     let (directory, storage) = storage();
     storage
-        .quarantine("journal/today.md", &"e".repeat(64))
+        .quarantine(
+            "journal/today.md",
+            &"e".repeat(64),
+            "이 앱이 읽는 문서가 아니다",
+        )
         .expect("quarantine");
 
     storage
@@ -935,6 +993,57 @@ fn a_refusal_goes_when_its_file_does() {
     assert_eq!(remembered, 0, "the file it was about is not there any more");
 }
 
+/// A refusal the user cannot see the reason for is a refusal they cannot act
+/// on. The parser already says why it would not read a file; that sentence
+/// has to survive as far as the screen.
+#[test]
+fn a_refusal_records_why() {
+    let (directory, storage) = storage();
+
+    storage
+        .quarantine(
+            "journal/today.md",
+            &"e".repeat(64),
+            "yonalist frontmatter가 없다",
+        )
+        .expect("quarantine");
+
+    let reason: String = rusqlite::Connection::open(directory.path().join("notes.sqlite"))
+        .expect("read")
+        .query_row(
+            "SELECT reason FROM sync_quarantine WHERE relative_path = ?1",
+            ["journal/today.md"],
+            |row| row.get(0),
+        )
+        .expect("the refusal");
+    assert_eq!(reason, "yonalist frontmatter가 없다");
+}
+
+/// What the screen shows: the path and the sentence, in folder order.
+#[test]
+fn refused_files_lists_path_and_reason() {
+    let (_directory, storage) = storage();
+    storage
+        .quarantine("b/second.md", &"b".repeat(64), "두 번째 이유")
+        .expect("quarantine");
+    storage
+        .quarantine("a/first.md", &"a".repeat(64), "첫 번째 이유")
+        .expect("quarantine");
+
+    let refused = storage.refused_files().expect("refused");
+
+    assert_eq!(
+        refused
+            .iter()
+            .map(|file| (file.path.as_str(), file.reason.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("a/first.md", "첫 번째 이유"),
+            ("b/second.md", "두 번째 이유")
+        ]
+    );
+}
+
 /// A file that could not be read once can be fixed, or can simply finish
 /// arriving. The note saying it was unreadable has to go with that, or every
 /// later version of it is skipped as "already answered".
@@ -942,7 +1051,11 @@ fn a_refusal_goes_when_its_file_does() {
 fn a_file_that_becomes_readable_stops_being_refused() {
     let (directory, storage) = storage();
     storage
-        .quarantine("Projects-4f1c8e20a3b7/README.md", &"c".repeat(64))
+        .quarantine(
+            "Projects-4f1c8e20a3b7/README.md",
+            &"c".repeat(64),
+            "이 앱이 읽는 문서가 아니다",
+        )
         .expect("quarantine");
 
     storage
@@ -1237,7 +1350,10 @@ fn resolving_an_attachment_normalizes_the_row_and_bumps_the_revision() {
         )
         .expect("resolve");
 
-    assert_eq!(resolved, 1);
+    assert_eq!(
+        resolved,
+        std::collections::BTreeSet::from([IMAGE_NODE_ID.to_owned()])
+    );
     assert_eq!(image_path(&directory, IMAGE_NODE_ID), format!("{HASH}.png"));
     assert!(
         storage.revision().expect("revision") > before,
@@ -1262,7 +1378,7 @@ fn an_attachment_no_row_wanted_leaves_the_revision_alone() {
         )
         .expect("resolve");
 
-    assert_eq!(resolved, 0);
+    assert!(resolved.is_empty());
     assert_eq!(storage.revision().expect("revision"), before);
 }
 

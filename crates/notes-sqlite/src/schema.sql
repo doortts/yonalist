@@ -73,6 +73,17 @@ CREATE TABLE notes_images (
     -- path from the hash.
     relative_path TEXT NOT NULL,
     original_name TEXT NOT NULL,
+    -- A type added to this list alone goes wrong without a word. Four mappings
+    -- turn one of these into a file extension and none of them can read this
+    -- list: `extension_for_mime` in notes-core's image.rs, `extension` in
+    -- notes-sync's layout.rs, `format_details` in this crate's image_assets.rs,
+    -- and the `CASE mime_type` in its sync_merge.rs. Two of those — `extension`
+    -- and the `CASE` — answer `png` for a type they have never heard of, so the
+    -- vault's own file name and `relative_path` both come out wrong and nothing
+    -- is raised. The other two refuse what they do not know. A fifth
+    -- mapping, in notes-export's markdown.rs, names an export's image files
+    -- the same way but refuses a type it does not know, so that one speaks for
+    -- itself.
     mime_type TEXT NOT NULL CHECK (
         mime_type IN (
             'image/png', 'image/jpeg', 'image/gif', 'image/webp'
@@ -323,6 +334,10 @@ CREATE TABLE sync_assets (
 CREATE TABLE sync_quarantine (
     relative_path TEXT PRIMARY KEY NOT NULL,
     file_hash TEXT NOT NULL,
+    -- What the parser said. A refusal the user cannot see the reason
+    -- for is a refusal they cannot act on, and the parser already
+    -- names it.
+    reason TEXT NOT NULL DEFAULT '',
     noticed_at INTEGER NOT NULL
 ) STRICT;
 

@@ -17,6 +17,7 @@ use notes_sync::merger::MergeOutcome;
 use notes_sync::watch_queue::WatchQueue;
 use notes_sync::watcher::{Verdict, consider};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
@@ -27,6 +28,16 @@ const QUIET_MILLIS: u64 = 500;
 /// The net under the watcher. Events are dropped by every platform under load,
 /// and a note that never arrives is worse than a folder read once a minute.
 const SWEEP: Duration = Duration::from_secs(60);
+/// A sweep reports every attachment it finds, and every document the stat gate
+/// cannot answer for — a refusal never updates a file's stat record, so the
+/// gate has nothing that can match and reports it on every sweep there will
+/// ever be. A report puts the quiet window back to the start, so a sweep that
+/// comes round faster than that window is up means nothing it reports is ever
+/// still long enough to be read.
+/// Held against the constant rather than the interval `start_with` takes,
+/// because the interval is short only where a test asked for it and knows what
+/// it bought; production reaches this by way of `start`.
+const _: () = assert!(SWEEP.as_millis() > QUIET_MILLIS as u128);
 
 pub(crate) struct VaultWatch {
     /// Dropped first, which is what ends the loop. The thread cannot end
@@ -67,6 +78,12 @@ impl VaultWatch {
         sweep: Duration,
         changed: impl Fn(MergeOutcome) + Send + 'static,
     ) -> Result<Self, String> {
+        // Every event names the folder's real path. A root that reaches it
+        // through a link — macOS keeps one in front of `/tmp` and `/var`, and
+        // people make their own — cannot be taken off the front of those, so
+        // the folder is watched and nothing that happens in it is recognised.
+        let vault_root = std::fs::canonicalize(&vault_root)
+            .map_err(|error| format!("Could not watch the vault: {error}"))?;
         let (events, inbox) = channel();
         let mut watcher = RecommendedWatcher::new(
             move |event: notify::Result<notify::Event>| {
@@ -180,11 +197,14 @@ fn run(
                 // An attachment. Nothing in the outline moved, but the notes
                 // that were waiting for these bytes are drawing a placeholder
                 // over a picture this device now has, and this is the only
-                // thing that tells the window otherwise.
+                // thing that tells the window otherwise. Named, so the window
+                // redraws those notes rather than reading the page again —
+                // which would move the caret out from under the user.
                 let resolved = take_asset(storage, assets, vault_root, &relative);
-                if resolved > 0 {
+                if !resolved.is_empty() {
                     changed(MergeOutcome {
-                        applied: resolved,
+                        applied: resolved.len(),
+                        changed_ids: resolved,
                         ..MergeOutcome::default()
                     });
                 }
@@ -214,13 +234,14 @@ fn take(storage: &SqliteStorage, vault_root: &Path, relative: &str) -> Option<Me
         }
         // Written down so the sweep does not read and refuse it again every
         // minute, and so the user can be shown which file it was.
-        Ok(Verdict::Unreadable(_)) => {
+        Ok(Verdict::Unreadable(reason)) => {
             if let Ok(bytes) = notes_sync::file_io::read_regular_bounded(
                 vault_root,
                 &vault_root.join(relative),
                 notes_sync::parse::MAX_FILE_BYTES,
             ) {
-                let _ = storage.quarantine(relative, &notes_sync::export::hash_bytes(&bytes));
+                let _ =
+                    storage.quarantine(relative, &notes_sync::export::hash_bytes(&bytes), &reason);
             }
             None
         }
@@ -281,29 +302,29 @@ fn modified_millis(facts: &std::fs::Metadata) -> Option<i64> {
 
 /// The bytes for a picture a note is waiting on. Copied into this app's own
 /// store, which is where every reader of an image looks — the vault's copy is
-/// the one the user can take away, not the one the app reads. Answers how many
-/// notes were waiting for them, which is how many are drawn differently now.
+/// the one the user can take away, not the one the app reads. Answers which
+/// notes were waiting for them, since those are the ones drawn differently now.
 fn take_asset(
     storage: &SqliteStorage,
     assets: &LocalImageAssets,
     vault_root: &Path,
     relative: &str,
-) -> usize {
+) -> BTreeSet<String> {
     let Some(disk_name) = relative.rsplit('/').next().map(str::to_owned) else {
-        return 0;
+        return BTreeSet::new();
     };
     // The same echo gate the documents get. Without it the sweep decodes every
     // picture in the vault once a minute, for ever — including the ones this
     // app wrote there itself.
     if storage.asset_known(relative).unwrap_or(false) {
-        return 0;
+        return BTreeSet::new();
     }
     let Ok(bytes) = notes_sync::file_io::read_regular_bounded(
         vault_root,
         &vault_root.join(relative),
         notes_sync::parse::MAX_ASSET_BYTES as usize,
     ) else {
-        return 0;
+        return BTreeSet::new();
     };
     // Through the store's own import, so the bytes are decoded and checked
     // rather than trusted: what is written here is read back as an image.
@@ -313,10 +334,10 @@ fn take_asset(
         declared_mime_type: None,
         source: ImageSource::Bytes(bytes),
     }]) else {
-        return 0;
+        return BTreeSet::new();
     };
     let Some(first) = published.first() else {
-        return 0;
+        return BTreeSet::new();
     };
     match storage.resolve_asset(&disk_name, first.image.content_hash(), relative) {
         Ok(resolved) => resolved,
@@ -324,7 +345,7 @@ fn take_asset(
             // The bytes are in the store either way; the rows waiting for them
             // are tried again on the next sweep.
             assets.rollback(&published);
-            0
+            BTreeSet::new()
         }
     }
 }
@@ -562,6 +583,9 @@ mod tests {
         0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
     const SHOT_NAME: &str = "shot-2e9b06dc65a4.png";
+    /// The note holding that picture: the row that waits for the bytes, and
+    /// the one the window has to be told about by name when they arrive.
+    const WAITING_NODE: &str = "8a201f33-0000-4c91-8d02-00000000000f";
 
     /// iCloud usually brings a page's text down before its pictures, so the
     /// note is drawn with a placeholder and the bytes land a moment later.
@@ -578,10 +602,6 @@ mod tests {
         );
         let vault = home.path().join("vault");
         std::fs::create_dir_all(&vault).expect("vault");
-        // The events name the real path, and on macOS a temporary folder is
-        // reached through a symlink — a watch rooted at the unresolved one
-        // recognises nothing it is told about.
-        let vault = std::fs::canonicalize(&vault).expect("the folder's real path");
         storage
             .export_pending(&vault, &home.path().join("images"))
             .expect("export");
@@ -594,8 +614,8 @@ mod tests {
         // window re-reports the picture before it has been still long enough,
         // and it never comes off the queue. The boot scan runs at once anyway,
         // and the bytes arrive by event.
-        let _watch = VaultWatch::start(storage, assets, vault.clone(), move |_| {
-            let _ = told.send(());
+        let _watch = VaultWatch::start(storage, assets, vault.clone(), move |outcome| {
+            let _ = told.send(outcome);
         })
         .expect("watch");
         // Let the boot scan finish first, so what wakes the window afterwards
@@ -605,9 +625,73 @@ mod tests {
         std::fs::create_dir_all(vault.join("assets")).expect("assets");
         std::fs::write(vault.join("assets").join(SHOT_NAME), SHOT).expect("the bytes");
 
+        let outcome = changes
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the note is still drawing a placeholder over a picture it has");
+        // Waking the window is not enough. A notice that cannot say which note
+        // changed sends it back to re-reading the whole page, and that path
+        // does not promise the caret and the scroll stay where they were.
+        assert_eq!(
+            outcome.changed_ids,
+            std::collections::BTreeSet::from([WAITING_NODE.to_owned()]),
+            "the window is told something changed but not what"
+        );
+        assert_eq!(outcome.applied, 1, "one row stopped waiting");
+    }
+
+    /// The folder the user picks is often reached through a link — macOS puts
+    /// one in front of `/tmp` and `/var`, and people make their own. Every
+    /// event names the folder's real path instead, so a watch rooted at the
+    /// link recognises nothing it is told about and says so to nobody.
+    #[cfg(unix)]
+    #[test]
+    fn a_vault_reached_through_a_symlink_still_notices_a_change() {
+        let directory = tempfile::tempdir().expect("home");
+        // Resolved first, so the link this test makes is the only one in the
+        // path: a temporary folder is behind one already on macOS, and what
+        // fails has to be the link under test rather than that one.
+        let home = std::fs::canonicalize(directory.path()).expect("the real home");
+        let storage =
+            Arc::new(notes_sqlite::SqliteStorage::open(&home.join("notes.sqlite")).expect("open"));
+        let assets =
+            Arc::new(notes_sqlite::LocalImageAssets::open(&home.join("images")).expect("store"));
+        let vault = home.join("vault");
+        std::fs::create_dir_all(&vault).expect("vault");
+        let linked = home.join("vault-link");
+        std::os::unix::fs::symlink(&vault, &linked).expect("the path the user picked");
+        storage
+            .export_pending(&linked, &home.join("images"))
+            .expect("export");
+        storage
+            .merge_document(&waiting_picture(), &picture_input())
+            .expect("a note waiting for its picture");
+
+        let (told, changes) = std::sync::mpsc::channel();
+        // Spelled out rather than taken from `SWEEP`. The sweep is the net
+        // this failure falls into, and it finds an attachment by walking the
+        // folder from whatever root it was handed — which works whether or not
+        // the root is the one the events use. Tied to the constant, this test
+        // would pass again the day somebody lowers it.
+        let _watch = VaultWatch::start_with(
+            storage,
+            assets,
+            linked.clone(),
+            Duration::from_secs(60),
+            move |_| {
+                let _ = told.send(());
+            },
+        )
+        .expect("watch");
+        // Let the boot scan finish first, so what wakes the window afterwards
+        // can only be the picture.
+        std::thread::sleep(Duration::from_millis(1_500));
+        while changes.try_recv().is_ok() {}
+        std::fs::create_dir_all(linked.join("assets")).expect("assets");
+        std::fs::write(linked.join("assets").join(SHOT_NAME), SHOT).expect("the bytes");
+
         assert!(
             changes.recv_timeout(Duration::from_secs(10)).is_ok(),
-            "the note is still drawing a placeholder over a picture it has"
+            "the folder is being watched by a name none of its events use"
         );
     }
 
@@ -632,7 +716,7 @@ mod tests {
                 ..DocumentRoot::default()
             },
             nodes: vec![DocumentNode {
-                id: "8a201f33-0000-4c91-8d02-00000000000f".to_owned(),
+                id: WAITING_NODE.to_owned(),
                 hlc,
                 body: NodeBody::Image(ImageReference {
                     original_name: "shot.png".to_owned(),
