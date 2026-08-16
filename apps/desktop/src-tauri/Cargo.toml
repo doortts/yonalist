@@ -22,6 +22,7 @@ notes-application.workspace = true
 notes-core.workspace = true
 notes-export.workspace = true
 notes-sqlite = { path = "../../../crates/notes-sqlite" }
+notes-sync = { path = "../../../crates/notes-sync" }
 open = "5.4"
 serde_json = "1"
 tauri = { version = "=2.11.5", features = [] }

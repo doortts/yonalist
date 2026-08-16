@@ -65,6 +65,7 @@ function api(queryViewport: NotesApi["queryViewport"]): NotesApi {
     syncVaultGet: vi.fn().mockResolvedValue(null),
     syncVaultSet: vi.fn(),
     syncConflicts: vi.fn().mockResolvedValue([]),
+    syncFlush: vi.fn(),
     syncRestoreConflict: vi.fn()
   };
 }

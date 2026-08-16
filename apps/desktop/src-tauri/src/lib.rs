@@ -3,6 +3,7 @@ mod image_file_actions;
 mod image_ipc;
 mod image_replace_ipc;
 mod startup;
+mod sync_runtime;
 mod sync_settings;
 
 use std::future::Future;
@@ -33,6 +34,9 @@ struct DesktopRuntime {
     export_renderer: Arc<NativeExportRenderer>,
     export_publisher: Arc<NativeExportPublisher>,
     initial_boot: Mutex<Option<BootSnapshot>>,
+    /// Last, so that closing the app writes what is waiting before the storage
+    /// it reads from goes away.
+    sync: sync_runtime::SyncRuntime,
 }
 
 struct DesktopState {
@@ -110,9 +114,11 @@ async fn notes_execute(
         runtime.clear_initial_boot()?;
         // A pasted image references an existing asset, so the command path needs
         // the store to reject a hash that is no longer there.
-        runtime
+        let receipt = runtime
             .service
-            .execute_with_assets(envelope, runtime.assets.as_ref())
+            .execute_with_assets(envelope, runtime.assets.as_ref())?;
+        runtime.sync.poke();
+        Ok(receipt)
     })
     .await
 }
@@ -126,7 +132,9 @@ async fn notes_undo(
     run_blocking(move || {
         let runtime = gate.wait()?;
         runtime.clear_initial_boot()?;
-        runtime.service.undo(request)
+        let receipt = runtime.service.undo(request)?;
+        runtime.sync.poke();
+        Ok(receipt)
     })
     .await
 }
@@ -140,7 +148,9 @@ async fn notes_redo(
     run_blocking(move || {
         let runtime = gate.wait()?;
         runtime.clear_initial_boot()?;
-        runtime.service.redo(request)
+        let receipt = runtime.service.redo(request)?;
+        runtime.sync.poke();
+        Ok(receipt)
     })
     .await
 }
@@ -160,6 +170,9 @@ async fn notes_close_session(state: State<'_, DesktopState>) -> Result<CloseOutc
     run_close_attempt(&state.closed, async move {
         run_blocking(move || {
             let runtime = gate.wait()?;
+            // Before anything else this does: quitting with edits still only in
+            // the database is how notes go missing.
+            runtime.sync.flush();
             runtime.storage.optimize().map_err(NotesError::from)?;
             let live_hashes = runtime
                 .storage
@@ -282,6 +295,19 @@ async fn notes_sync_restore_conflict(
         // Through the service, so this session learns the revision it moved —
         // a bypass would leave every later edit failing until a restart.
         runtime.service.restore_conflict(&node_id, &text)?;
+        runtime.sync.poke();
+        Ok(())
+    })
+    .await
+}
+
+/// Write what is waiting now instead of when the window closes. What the user
+/// reaches for when they want to see their notes in the folder this second.
+#[tauri::command]
+async fn notes_sync_flush(state: State<'_, DesktopState>) -> Result<(), NotesError> {
+    let gate = Arc::clone(&state.runtime);
+    run_blocking(move || {
+        gate.wait()?.sync.flush();
         Ok(())
     })
     .await
@@ -491,6 +517,22 @@ impl DesktopRuntime {
             data_directory.join("images"),
             original_directory.clone(),
         ]));
+        let exporter = {
+            let storage = Arc::clone(&storage);
+            let data_directory = data_directory.clone();
+            move || {
+                // Read every time: the vault can be picked, or changed, long
+                // after this thread started.
+                let Some(vault) = sync_settings::read_vault_path(&data_directory) else {
+                    return;
+                };
+                if let Err(error) = storage.export_pending(&vault) {
+                    // Nothing here can fix it, and the marks stay put — the next
+                    // pass tries the same documents again.
+                    eprintln!("The vault could not be written: {error}");
+                }
+            }
+        };
         Ok(Self {
             session_id,
             storage,
@@ -501,6 +543,7 @@ impl DesktopRuntime {
             export_renderer,
             export_publisher,
             initial_boot: Mutex::new(Some(initial_boot)),
+            sync: sync_runtime::SyncRuntime::start(exporter),
         })
     }
 
@@ -610,6 +653,7 @@ pub fn run() {
             notes_delete_all_data,
             notes_sync_conflicts,
             notes_sync_restore_conflict,
+            notes_sync_flush,
             notes_sync_vault_get,
             notes_sync_vault_set,
             export_ipc::notes_export,

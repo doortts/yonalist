@@ -273,6 +273,12 @@
           "markdownDescription": "Enables the notes_sync_conflicts command without any pre-configured scope."
         },
         {
+          "description": "Enables the notes_sync_flush command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-sync-flush",
+          "markdownDescription": "Enables the notes_sync_flush command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notes_sync_restore_conflict command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notes-sync-restore-conflict",
@@ -415,6 +421,12 @@
           "type": "string",
           "const": "deny-notes-sync-conflicts",
           "markdownDescription": "Denies the notes_sync_conflicts command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_sync_flush command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-sync-flush",
+          "markdownDescription": "Denies the notes_sync_flush command without any pre-configured scope."
         },
         {
           "description": "Denies the notes_sync_restore_conflict command without any pre-configured scope.",

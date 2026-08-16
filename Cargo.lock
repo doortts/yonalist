@@ -5894,6 +5894,7 @@ dependencies = [
  "notes-core",
  "notes-export",
  "notes-sqlite",
+ "notes-sync",
  "objc2-foundation",
  "open",
  "serde_json",

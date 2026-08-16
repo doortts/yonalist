@@ -45,6 +45,7 @@ export interface NotesApi {
   deleteAllData(): Promise<void>;
   syncVaultGet(): Promise<string | null>;
   syncVaultSet(path: string): Promise<SyncVaultFolderState>;
+  syncFlush(): Promise<void>;
   syncConflicts(limit: number): Promise<SyncConflict[]>;
   syncRestoreConflict(seq: number): Promise<void>;
 }
@@ -92,6 +93,7 @@ export const tauriNotesApi: NotesApi = {
   deleteAllData: () => invoke("notes_delete_all_data"),
   syncVaultGet: () => invoke("notes_sync_vault_get"),
   syncVaultSet: (path) => invoke("notes_sync_vault_set", { path }),
+  syncFlush: () => invoke("notes_sync_flush"),
   syncConflicts: (limit) => invoke("notes_sync_conflicts", { limit }),
   syncRestoreConflict: (seq) => invoke("notes_sync_restore_conflict", { seq })
 };

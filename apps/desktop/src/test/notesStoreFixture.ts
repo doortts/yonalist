@@ -60,6 +60,7 @@ export async function readyRealStore(): Promise<NotesStore> {
     syncVaultGet: vi.fn().mockResolvedValue(null),
     syncVaultSet: vi.fn(),
     syncConflicts: vi.fn().mockResolvedValue([]),
+    syncFlush: vi.fn(),
     syncRestoreConflict: vi.fn()
   };
   const store = new NotesStore(api);

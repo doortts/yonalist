@@ -7,6 +7,7 @@ const APP_COMMANDS: &[&str] = &[
     "notes_redo",
     "notes_search",
     "notes_sync_conflicts",
+    "notes_sync_flush",
     "notes_sync_restore_conflict",
     "notes_sync_vault_get",
     "notes_sync_vault_set",
