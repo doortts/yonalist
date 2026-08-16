@@ -126,6 +126,46 @@ fn write_checked(
     })
 }
 
+/// Which documents the waiting rows belong to.
+///
+/// One statement, not one per row: a vault where every edit costs a walk up the
+/// tree is a vault that stops keeping up with typing. A row belongs to the
+/// nearest ancestor that owns a document — a page root, or home — and a deleted
+/// row belongs to the trash whatever page it used to sit in.
+pub fn pending_documents(transaction: &Transaction<'_>) -> Result<Vec<String>, ExportError> {
+    let mut statement = transaction
+        .prepare_cached(
+            "WITH RECURSIVE climb(node_id, at, deleted) AS (
+                 SELECT d.node_id, n.id, n.deleted
+                 FROM sync_dirty_nodes d JOIN notes_nodes n ON n.id = d.node_id
+                 UNION ALL
+                 SELECT climb.node_id, p.id, climb.deleted
+                 FROM climb JOIN notes_nodes n ON n.id = climb.at
+                 JOIN notes_nodes p ON p.id = n.parent_id
+                 WHERE n.parent_id IS NOT NULL AND n.parent_id <> 'root'
+             )
+             SELECT DISTINCT CASE
+                 WHEN deleted = 1 THEN 'yonalist-trash'
+                 WHEN at = 'root' THEN 'root'
+                 ELSE at
+             END
+             FROM climb
+             WHERE deleted = 1
+                OR at = 'root'
+                OR (SELECT parent_id FROM notes_nodes WHERE id = at) = 'root'
+             ORDER BY 1",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|error| error.to_string())?);
+    }
+    Ok(out)
+}
+
 /// The vault's index. Home is not a page: every top-level page is one link
 /// line, and their contents live in their own folders. What the line grants is
 /// existence and order — a page's own file owns everything else about it.

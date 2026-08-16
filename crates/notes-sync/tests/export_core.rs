@@ -461,3 +461,70 @@ fn a_live_page_keeps_its_folder() {
 
     assert!(root.path().join("Projects-4f1c8e20a3b7").is_dir());
 }
+
+/// Which documents a set of dirty rows belongs to, in one question rather than
+/// one per row. A vault where every edit costs a walk up the tree is a vault
+/// that stops keeping up with typing.
+#[test]
+fn dirty_rows_resolve_to_the_documents_that_hold_them() {
+    let mut connection = database();
+    seed(&connection);
+    let deep = "8a201f33-0000-4c91-8d02-000000000002";
+    connection
+        .execute(
+            "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
+             VALUES (?1, ?2, 4294967296, 'bullet', 'Deeper', ?3)",
+            rusqlite::params![deep, NODE_ID, stamp(5)],
+        )
+        .expect("deep");
+    connection
+        .execute("DELETE FROM sync_dirty_nodes", ())
+        .expect("clear");
+    connection
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES (?1, 0)",
+            [deep],
+        )
+        .expect("dirty");
+
+    let transaction = connection.transaction().expect("begin");
+    let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
+
+    assert_eq!(
+        pending,
+        vec![PAGE_ID.to_owned()],
+        "a node deep in a page belongs to that page's document"
+    );
+}
+
+#[test]
+fn a_dirty_page_root_resolves_to_its_own_document() {
+    let mut connection = database();
+    seed(&connection);
+
+    let transaction = connection.transaction().expect("begin");
+    let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
+
+    assert_eq!(pending, vec![PAGE_ID.to_owned()]);
+}
+
+/// A deleted row belongs to the trash, whatever page it used to sit in.
+#[test]
+fn a_deleted_row_puts_the_trash_in_the_queue() {
+    let mut connection = database();
+    seed(&connection);
+    connection
+        .execute(
+            "UPDATE notes_nodes SET deleted = 1 WHERE id = ?1",
+            [NODE_ID],
+        )
+        .expect("delete");
+
+    let transaction = connection.transaction().expect("begin");
+    let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
+
+    assert!(
+        pending.contains(&"yonalist-trash".to_owned()),
+        "{pending:?}"
+    );
+}
