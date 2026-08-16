@@ -930,3 +930,39 @@ fn a_row_poisoned_by_an_old_merge_reads_healthy() {
     assert_eq!(image.content_hash, HASH);
     assert_eq!(image.original_name, "holiday.png");
 }
+
+/// A picture whose bytes have not landed reads as a node without one, so any
+/// command that carries that node back through the store carries a `None`
+/// where the picture used to be. Acting on the note around it must not throw
+/// away what the file already said about the picture.
+#[test]
+fn starring_a_waiting_picture_keeps_its_metadata() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    one.export();
+    carry(&one, &two);
+    for (location, _) in attachments(&two.vault) {
+        std::fs::remove_file(two.vault.join(location)).expect("hold the bytes back");
+    }
+    two.absorb();
+
+    two.run(IpcNotesCommand::SetStarred {
+        id: shot.clone(),
+        starred: true,
+    });
+
+    let rows: i64 = rusqlite::Connection::open(two._home.path().join("notes.sqlite"))
+        .expect("open")
+        .query_row(
+            "SELECT count(*) FROM notes_images WHERE node_id = ?1",
+            [&shot],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(
+        rows, 1,
+        "the row is still waiting for its bytes, not gone with them"
+    );
+}
