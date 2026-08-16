@@ -67,6 +67,12 @@ impl VaultWatch {
         sweep: Duration,
         changed: impl Fn(MergeOutcome) + Send + 'static,
     ) -> Result<Self, String> {
+        // Every event names the folder's real path. A root that reaches it
+        // through a link — macOS keeps one in front of `/tmp` and `/var`, and
+        // people make their own — cannot be taken off the front of those, so
+        // the folder is watched and nothing that happens in it is recognised.
+        let vault_root = std::fs::canonicalize(&vault_root)
+            .map_err(|error| format!("Could not watch the vault: {error}"))?;
         let (events, inbox) = channel();
         let mut watcher = RecommendedWatcher::new(
             move |event: notify::Result<notify::Event>| {
@@ -578,10 +584,6 @@ mod tests {
         );
         let vault = home.path().join("vault");
         std::fs::create_dir_all(&vault).expect("vault");
-        // The events name the real path, and on macOS a temporary folder is
-        // reached through a symlink — a watch rooted at the unresolved one
-        // recognises nothing it is told about.
-        let vault = std::fs::canonicalize(&vault).expect("the folder's real path");
         storage
             .export_pending(&vault, &home.path().join("images"))
             .expect("export");
@@ -608,6 +610,62 @@ mod tests {
         assert!(
             changes.recv_timeout(Duration::from_secs(10)).is_ok(),
             "the note is still drawing a placeholder over a picture it has"
+        );
+    }
+
+    /// The folder the user picks is often reached through a link — macOS puts
+    /// one in front of `/tmp` and `/var`, and people make their own. Every
+    /// event names the folder's real path instead, so a watch rooted at the
+    /// link recognises nothing it is told about and says so to nobody.
+    #[cfg(unix)]
+    #[test]
+    fn a_vault_reached_through_a_symlink_still_notices_a_change() {
+        let directory = tempfile::tempdir().expect("home");
+        // Resolved first, so the link this test makes is the only one in the
+        // path: a temporary folder is behind one already on macOS, and what
+        // fails has to be the link under test rather than that one.
+        let home = std::fs::canonicalize(directory.path()).expect("the real home");
+        let storage =
+            Arc::new(notes_sqlite::SqliteStorage::open(&home.join("notes.sqlite")).expect("open"));
+        let assets =
+            Arc::new(notes_sqlite::LocalImageAssets::open(&home.join("images")).expect("store"));
+        let vault = home.join("vault");
+        std::fs::create_dir_all(&vault).expect("vault");
+        let linked = home.join("vault-link");
+        std::os::unix::fs::symlink(&vault, &linked).expect("the path the user picked");
+        storage
+            .export_pending(&linked, &home.join("images"))
+            .expect("export");
+        storage
+            .merge_document(&waiting_picture(), &picture_input())
+            .expect("a note waiting for its picture");
+
+        let (told, changes) = std::sync::mpsc::channel();
+        // Spelled out rather than taken from `SWEEP`. The sweep is the net
+        // this failure falls into, and it finds an attachment by walking the
+        // folder from whatever root it was handed — which works whether or not
+        // the root is the one the events use. Tied to the constant, this test
+        // would pass again the day somebody lowers it.
+        let _watch = VaultWatch::start_with(
+            storage,
+            assets,
+            linked.clone(),
+            Duration::from_secs(60),
+            move |_| {
+                let _ = told.send(());
+            },
+        )
+        .expect("watch");
+        // Let the boot scan finish first, so what wakes the window afterwards
+        // can only be the picture.
+        std::thread::sleep(Duration::from_millis(1_500));
+        while changes.try_recv().is_ok() {}
+        std::fs::create_dir_all(linked.join("assets")).expect("assets");
+        std::fs::write(linked.join("assets").join(SHOT_NAME), SHOT).expect("the bytes");
+
+        assert!(
+            changes.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "the folder is being watched by a name none of its events use"
         );
     }
 
