@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { pickVaultFolder } from "./vaultPicker";
 
@@ -28,6 +28,8 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsView>[0]> =
     }),
     deleteAllData: vi.fn().mockResolvedValue(undefined),
     readVaultPath: vi.fn().mockResolvedValue(null),
+    readConflicts: vi.fn().mockResolvedValue([]),
+    restoreConflict: vi.fn().mockResolvedValue(undefined),
     setVaultPath: vi.fn().mockResolvedValue(undefined),
     ...overrides
   };
@@ -43,6 +45,13 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsView>[0]> =
 }
 
 vi.mock("./vaultPicker", () => ({ pickVaultFolder: vi.fn() }));
+
+/** Lets the mounting reads resolve before an absence is asserted. */
+async function settle() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
 
 describe("SettingsView", () => {
   beforeEach(() => {
@@ -108,6 +117,37 @@ describe("SettingsView", () => {
 
     expect(await screen.findByRole("button", { name: "Change folder" }))
       .toBeInTheDocument();
+  });
+
+  it("lists the notes another device overwrote, and puts one back", async () => {
+    const restoreConflict = vi.fn().mockResolvedValue(undefined);
+    // The row stays in the log after a restore — the list is a record, not an
+    // inbox — so the reader has to be told the write happened.
+    const readConflicts = vi.fn().mockResolvedValue([
+      {
+        seq: 7,
+        nodeId: "8a201f33-0000-4c91-8d02-000000000001",
+        text: "the note that lost",
+        reason: "lww",
+        recordedAt: 1_700_000_000
+      }
+    ]);
+    renderSettings({ readConflicts, restoreConflict });
+
+    expect(await screen.findByText("the note that lost")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Put this text back" }));
+
+    await waitFor(() => expect(restoreConflict).toHaveBeenCalledWith(7));
+    expect(await screen.findByRole("status")).toHaveTextContent("Put back");
+  });
+
+  it("says nothing at all when no note has been overwritten", async () => {
+    renderSettings();
+
+    await settle();
+
+    expect(screen.queryByRole("heading", { name: "Overwritten notes" }))
+      .not.toBeInTheDocument();
   });
 
   it("shows the vault folder that is already chosen", async () => {

@@ -114,7 +114,9 @@ function api(firstText = "First thought", extra: readonly NoteView[] = []): {
     unusedAssets: vi.fn(),
     deleteAllData: vi.fn(),
     syncVaultGet: vi.fn().mockResolvedValue(null),
-    syncVaultSet: vi.fn()
+    syncVaultSet: vi.fn(),
+    syncConflicts: vi.fn().mockResolvedValue([]),
+    syncRestoreConflict: vi.fn()
   } as unknown as NotesApi;
   return { notesApi, createdId: () => created };
 }

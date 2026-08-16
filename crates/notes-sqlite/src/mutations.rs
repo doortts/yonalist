@@ -63,6 +63,10 @@ pub(crate) fn commit(
     // After the whole patch: a row's path reads its ancestors, which an earlier
     // mutation in this same loop may not have written yet.
     crate::node_paths::refresh(&transaction, patch)?;
+    // A move made here has to leave a claim behind. The merge rebuilds sibling
+    // order from those claims, so without one it would put the node back where
+    // the last merge had it — undoing the move on screen.
+    record_place_claims(&transaction, patch)?;
     let next_revision = actual_revision
         .checked_add(1)
         .ok_or_else(|| StorageError::Internal("revision overflowed".into()))?;
@@ -236,6 +240,114 @@ fn update_node(
         )));
     }
     Ok(())
+}
+
+/// Records where a node now sits, for the rows this patch actually moved and
+/// for the siblings its move re-linked.
+///
+/// Only those: a text edit leaves a node exactly where it was, and writing its
+/// claim anyway would stamp it with the fresh reading the trigger just issued.
+/// That promoted claim would then beat a move another device made a moment
+/// earlier — and win everywhere, which is the one thing a claim's own stamp
+/// exists to prevent.
+fn record_place_claims(
+    transaction: &rusqlite::Transaction<'_>,
+    patch: &DomainPatch,
+) -> Result<(), StorageError> {
+    let previous: std::collections::BTreeMap<_, _> = patch
+        .inverse
+        .iter()
+        .filter_map(|mutation| match mutation {
+            TreeMutation::Upsert(node) => Some((node.id().as_str().to_owned(), node.as_ref())),
+            TreeMutation::Delete { .. } => None,
+        })
+        .collect();
+    // Where a node used to sit, so the sibling it is leaving behind is re-linked
+    // too. Rule 9 of the merge design: a move touches three rows, not a family.
+    let mut parents: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut moved: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for mutation in &patch.forward {
+        match mutation {
+            TreeMutation::Upsert(node) => {
+                let id = node.id().as_str().to_owned();
+                let before = previous.get(&id);
+                let changed_place = before.is_none_or(|before| {
+                    before.parent_id() != node.parent_id()
+                        || before.sort_key() != node.sort_key()
+                        || before.is_deleted() != node.is_deleted()
+                });
+                if !changed_place {
+                    continue;
+                }
+                moved.insert(id);
+                if let Some(parent) = node.parent_id() {
+                    parents.insert(parent.as_str().to_owned());
+                }
+                if let Some(parent) = before.and_then(|before| before.parent_id()) {
+                    parents.insert(parent.as_str().to_owned());
+                }
+            }
+            TreeMutation::Delete { id } => {
+                moved.insert(id.as_str().to_owned());
+                if let Some(parent) = previous
+                    .get(id.as_str())
+                    .and_then(|before| before.parent_id())
+                {
+                    parents.insert(parent.as_str().to_owned());
+                }
+            }
+        }
+    }
+    if moved.is_empty() {
+        return Ok(());
+    }
+    // The stamp a move states its claim at is the one the trigger just gave the
+    // row that moved. Its followers claim at the same reading: they were
+    // re-linked by that move, not by anything of their own.
+    let at: String = transaction
+        .query_row(
+            "SELECT max(hlc) FROM notes_nodes WHERE id IN (SELECT value FROM json_each(?1))",
+            [json_list(&moved.iter().cloned().collect::<Vec<_>>())],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .map_err(internal)?
+        .unwrap_or_default();
+    if at.is_empty() {
+        return Ok(());
+    }
+    for parent in parents {
+        transaction
+            .execute(
+                "WITH ordered AS (
+                     SELECT id, lag(id) OVER (ORDER BY sort_key, id) AS previous
+                     FROM notes_nodes
+                     WHERE parent_id = ?1 AND deleted = 0
+                 )
+                 UPDATE notes_nodes SET
+                     sync_prev = coalesce(
+                         (SELECT previous FROM ordered WHERE ordered.id = notes_nodes.id), ''),
+                     sync_prev_hlc = ?2
+                 WHERE id IN (SELECT id FROM ordered)",
+                rusqlite::params![parent, at],
+            )
+            .map_err(internal)?;
+    }
+    Ok(())
+}
+
+/// A JSON array of ids, for `json_each`.
+fn json_list(ids: &[String]) -> String {
+    let mut json = String::from("[");
+    for (index, id) in ids.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('"');
+        json.push_str(&id.replace('\\', "\\\\").replace('"', "\\\""));
+        json.push('"');
+    }
+    json.push(']');
+    json
 }
 
 fn refresh_derived_data(

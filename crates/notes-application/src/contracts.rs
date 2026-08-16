@@ -525,6 +525,24 @@ pub enum CloseOutcome {
     AlreadyClosed,
 }
 
+/// One defeat, complete enough for the settings screen to show it and to put
+/// it back. By the time anyone looks, the file that lost is long gone — so
+/// everything the screen needs lives in the row rather than being fetched.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SyncConflict {
+    #[ts(type = "number")]
+    pub seq: i64,
+    pub node_id: String,
+    /// What the losing side said, for the reader to recognise it by.
+    pub text: String,
+    /// `lww`, `same_t`, `clock_drift` or `dirty_overwrite`.
+    pub reason: String,
+    #[ts(type = "number")]
+    pub recorded_at: i64,
+}
+
 /// What the app found in the folder the user picked. Every state is accepted —
 /// this only tells the screen which sentence to show, so a wrong reading costs
 /// a misleading hint and nothing more. Whether the files inside are actually

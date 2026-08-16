@@ -14,7 +14,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use notes_application::{
     BootSnapshot, CloseOutcome, CommandEnvelope, ForestRequest, ForestSnapshot, HistoryRequest,
     ImageAssetPort, MutationReceipt, NotesError, NotesErrorCode, NotesService, SearchPage,
-    SearchQuery, SyncVaultFolderState, UnusedAssetsReport, ViewportPage, ViewportRequest,
+    SearchQuery, SyncConflict, SyncVaultFolderState, UnusedAssetsReport, ViewportPage,
+    ViewportRequest,
 };
 use notes_export::{NativeExportPublisher, NativeExportRenderer};
 use notes_sqlite::{LocalImageAssets, SqliteStorage};
@@ -242,6 +243,46 @@ async fn notes_unused_assets(
             total_bytes,
             purged: purge,
         })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn notes_sync_conflicts(
+    state: State<'_, DesktopState>,
+    limit: u32,
+) -> Result<Vec<SyncConflict>, NotesError> {
+    let gate = Arc::clone(&state.runtime);
+    run_blocking(move || {
+        gate.wait()?
+            .storage
+            .sync_conflicts(limit)
+            .map_err(NotesError::from)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn notes_sync_restore_conflict(
+    state: State<'_, DesktopState>,
+    seq: i64,
+) -> Result<(), NotesError> {
+    let gate = Arc::clone(&state.runtime);
+    run_blocking(move || {
+        let runtime = gate.wait()?;
+        let (node_id, text) = runtime
+            .storage
+            .conflict_loser(seq)
+            .map_err(NotesError::from)?
+            .ok_or_else(|| NotesError {
+                code: NotesErrorCode::InvalidCommand,
+                message: "That note is no longer in the list.".to_owned(),
+                retryable: false,
+            })?;
+        // Through the service, so this session learns the revision it moved —
+        // a bypass would leave every later edit failing until a restart.
+        runtime.service.restore_conflict(&node_id, &text)?;
+        Ok(())
     })
     .await
 }
@@ -567,6 +608,8 @@ pub fn run() {
             notes_close_session,
             notes_unused_assets,
             notes_delete_all_data,
+            notes_sync_conflicts,
+            notes_sync_restore_conflict,
             notes_sync_vault_get,
             notes_sync_vault_set,
             export_ipc::notes_export,

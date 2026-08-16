@@ -64,6 +64,11 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     (path: string) => api.syncVaultSet(path),
     [api]
   );
+  const readConflicts = useCallback(() => api.syncConflicts(200), [api]);
+  const restoreConflict = useCallback(
+    (seq: number) => api.syncRestoreConflict(seq),
+    [api]
+  );
   const setVaultPath = useCallback(async (path: string) => {
     await chooseVaultPath(path);
   }, [chooseVaultPath]);
@@ -589,6 +594,8 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             deleteAllData={() => api.deleteAllData()}
             readVaultPath={readVaultPath}
             setVaultPath={setVaultPath}
+            readConflicts={readConflicts}
+            restoreConflict={restoreConflict}
           />
         </Suspense>
       ) : (

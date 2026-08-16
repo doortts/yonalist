@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, PoisonError};
 
 use notes_core::{
@@ -28,6 +28,11 @@ pub(crate) struct NotesServiceHistoryEntry {
 struct SessionState {
     session_id: String,
     revision: u64,
+    /// How far down the undo stack this session may still go. A merge that
+    /// landed on a node an entry touches raises this above that entry: undoing
+    /// it would replay an inverse recorded against a state that has since
+    /// moved, throwing the other device's change away without saying so.
+    undo_floor: usize,
     undo: Vec<NotesServiceHistoryEntry>,
     redo: Vec<NotesServiceHistoryEntry>,
     completed_requests: HashMap<String, MutationReceipt>,
@@ -39,6 +44,7 @@ impl SessionState {
         Self {
             session_id,
             revision,
+            undo_floor: 0,
             undo: Vec::new(),
             redo: Vec::new(),
             completed_requests: HashMap::new(),
@@ -47,7 +53,11 @@ impl SessionState {
     }
 
     fn record_history(&mut self, entry: NotesServiceHistoryEntry) {
+        // Never into an entry the barrier has already blocked: what the user
+        // types after a merge is theirs to take back, and folding it into an
+        // unreachable entry would take that away with nothing said.
         if entry.group.is_some()
+            && self.undo.len() > self.undo_floor
             && self.undo.last().is_some_and(|previous| {
                 previous.group == entry.group
                     && previous.forward.len().saturating_add(entry.forward.len())
@@ -62,7 +72,11 @@ impl SessionState {
             combined_inverse.extend(std::mem::take(&mut previous.inverse));
             previous.inverse = combined_inverse;
         } else {
-            push_bounded_history(&mut self.undo, entry);
+            // The floor is a position in this stack, so it moves down with it
+            // when the oldest entry is dropped.
+            if push_bounded_history(&mut self.undo, entry) {
+                self.undo_floor = self.undo_floor.saturating_sub(1);
+            }
         }
         self.redo.clear();
     }
@@ -82,14 +96,28 @@ impl SessionState {
     }
 }
 
+fn entry_touches(entry: &NotesServiceHistoryEntry, affected: &HashSet<&str>) -> bool {
+    entry
+        .forward
+        .iter()
+        .chain(entry.inverse.iter())
+        .any(|mutation| match mutation {
+            TreeMutation::Upsert(node) => affected.contains(node.id().as_str()),
+            TreeMutation::Delete { id } => affected.contains(id.as_str()),
+        })
+}
+
+/// Answers whether the oldest entry was dropped to make room.
 fn push_bounded_history(
     history: &mut Vec<NotesServiceHistoryEntry>,
     entry: NotesServiceHistoryEntry,
-) {
+) -> bool {
     history.push(entry);
     if history.len() > MAX_HISTORY_ENTRIES {
         history.remove(0);
+        return true;
     }
+    false
 }
 
 pub struct NotesService<S: StoragePort> {
@@ -317,6 +345,29 @@ impl<S: StoragePort> NotesService<S> {
         Ok(receipt)
     }
 
+    /// Puts a defeated note's text back. It is an ordinary edit and takes the
+    /// ordinary path: a write that moved the stored revision without telling
+    /// this session would leave every later edit, undo and redo failing until
+    /// the app was restarted.
+    pub fn restore_conflict(
+        &self,
+        node_id: &str,
+        text: &str,
+    ) -> Result<MutationReceipt, NotesError> {
+        let mut session = self.session.lock().unwrap_or_else(PoisonError::into_inner);
+        let id = NodeId::try_from(node_id.to_owned())?;
+        let request_id = format!("restore-{node_id}-{}", session.revision);
+        self.execute_checked(
+            &mut session,
+            request_id,
+            None,
+            NotesCommand::UpdateText {
+                id,
+                text: text.to_owned(),
+            },
+        )
+    }
+
     pub fn undo(&self, request: HistoryRequest) -> Result<MutationReceipt, NotesError> {
         let mut session = self.session.lock().unwrap_or_else(PoisonError::into_inner);
         self.ensure_session(&session, &request.session_id)?;
@@ -326,6 +377,12 @@ impl<S: StoragePort> NotesService<S> {
             .last()
             .cloned()
             .ok_or_else(NotesError::history_empty)?;
+        // An empty stack is "nothing to undo"; a stack whose remaining entries
+        // all sit under the barrier is a different answer, and the reader
+        // deserves the difference.
+        if session.undo.len() <= session.undo_floor {
+            return Err(NotesError::history_blocked_by_merge());
+        }
         let commit = self.storage.commit(
             session.revision,
             &DomainPatch {
@@ -359,6 +416,41 @@ impl<S: StoragePort> NotesService<S> {
         push_bounded_history(&mut session.undo, entry);
         session.revision = commit.revision;
         Ok(Self::receipt(&session, commit))
+    }
+
+    /// Takes in what a merge changed. Everything this session could still
+    /// reverse that touches one of those nodes stops being reversible — an
+    /// undo replays an inverse recorded against a state that has since moved,
+    /// and a redo replays a forward onto one. Entries that touch nothing the
+    /// merge touched are untouched themselves: cutting the whole history
+    /// instead would throw away work nobody is in doubt about.
+    pub fn absorb_external(&self, revision: u64, affected: &[String]) -> Result<u64, NotesError> {
+        let mut session = self.session.lock().unwrap_or_else(PoisonError::into_inner);
+        session.revision = revision;
+        let affected: HashSet<&str> = affected.iter().map(String::as_str).collect();
+        // The deepest entry still in question, counted from the bottom: every
+        // entry at or below it is now unreachable.
+        if let Some(deepest) = session
+            .undo
+            .iter()
+            .rposition(|entry| entry_touches(entry, &affected))
+        {
+            session.undo_floor = session.undo_floor.max(deepest + 1);
+        }
+        if session
+            .redo
+            .iter()
+            .any(|entry| entry_touches(entry, &affected))
+        {
+            session.redo.clear();
+        }
+        Ok(revision)
+    }
+
+    /// How many entries this session can still undo.
+    pub fn history_depth(&self) -> usize {
+        let session = self.session.lock().unwrap_or_else(PoisonError::into_inner);
+        session.undo.len().saturating_sub(session.undo_floor)
     }
 
     fn ensure_session(&self, session: &SessionState, session_id: &str) -> Result<(), NotesError> {
@@ -395,9 +487,9 @@ impl<S: StoragePort> NotesService<S> {
                 .map(|id| id.to_string())
                 .collect(),
             history: HistoryState {
-                can_undo: !session.undo.is_empty(),
+                can_undo: session.undo.len() > session.undo_floor,
                 can_redo: !session.redo.is_empty(),
-                undo_depth: session.undo.len() as u32,
+                undo_depth: session.undo.len().saturating_sub(session.undo_floor) as u32,
                 redo_depth: session.redo.len() as u32,
             },
         }
