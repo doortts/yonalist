@@ -83,6 +83,20 @@ what makes the redo case fall out correctly rather than needing its own rule:
 | duplicate, undo | The copy's node is deleted; `notes_images` has `ON DELETE CASCADE`, so its row goes with it. |
 | duplicate, undo, redo, bytes arrive | Redo re-inserts the copy and re-copies the row, still waiting. Same as the first case. |
 | duplicate, undo, bytes arrive, redo | The source's row is resolved by then, so the copy is given a resolved row and is a live picture immediately. |
+| duplicate, undo, another device edits the source, redo | Refused. Reading the source's current row makes the source a thing the entry depends on, and the merge barrier has to count it — see below. |
+
+Byte arrival is not the same event as a merge: `resolve_asset` never calls
+`absorb_external`, so a picture simply landing cannot raise the barrier and the
+row above it stands.
+
+#### The source is a dependency the mutations do not name
+
+`entry_touches` decides what a merge puts out of reach by scanning an entry's
+mutations. A duplication leaves the source exactly as it found it, so the
+source appears in neither list — and yet the redo reads its row. Without
+counting it, a merge that rewrites the source's image line leaves the redo
+reachable, and replaying it hands the copy a picture the user never duplicated,
+with nothing on screen saying so. So the barrier counts the carried pair too.
 
 #### Why the patch, and not the command or a second call
 
@@ -143,16 +157,21 @@ Touches:
   `carried_pictures`, filled from the patch in `execute_checked`, extended on
   coalescing in `record_history`, replayed by `redo` and deliberately **not**
   by `undo` (undo deletes the copy; handing it a row would be writing to a node
-  that is going away).
+  that is going away). `entry_touches` counts the carried pair, so the merge
+  barrier sees the source the redo depends on.
 
-Test in `crates/notes-sqlite/tests/two_devices.rs`, red after item 1:
+Tests, red after item 1:
 
-- `redoing_a_duplicated_waiting_picture_lets_it_meet_its_bytes` — duplicate,
-  undo, redo, then let the bytes arrive; assert the redone copy reads with an
-  image.
+- `crates/notes-sqlite/tests/two_devices.rs::redoing_a_duplicated_waiting_picture_lets_it_meet_its_bytes`
+  — duplicate, undo, redo, then let the bytes arrive; assert the redone copy
+  reads with an image.
+- `crates/notes-application/tests/merge_barrier.rs::the_barrier_counts_the_picture_a_duplicate_had_to_borrow`
+  — duplicate, undo, another device edits the source, redo; assert the redo is
+  refused.
 
 Red evidence to expect: after redo the copy has no picture record, so the
-arriving bytes never reach it — the same failure as item 1, one step later.
+arriving bytes never reach it — the same failure as item 1, one step later. And
+the barrier lets a redo through that would take the merge's picture.
 
 ## Known limits
 

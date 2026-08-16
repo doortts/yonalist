@@ -110,6 +110,14 @@ fn entry_touches(entry: &NotesServiceHistoryEntry, affected: &HashSet<&str>) -> 
             TreeMutation::Upsert(node) => affected.contains(node.id().as_str()),
             TreeMutation::Delete { id } => affected.contains(id.as_str()),
         })
+        // The node a copy borrowed its picture from is in neither list — the
+        // duplication left it exactly as it found it. It is still what the
+        // entry depends on, so a merge that lands there puts this entry in
+        // question too: replaying it would give the copy whichever picture the
+        // other device has since put on the source.
+        || entry.carried_pictures.iter().any(|(source_id, copy_id)| {
+            affected.contains(source_id.as_str()) || affected.contains(copy_id.as_str())
+        })
 }
 
 /// Answers whether the oldest entry was dropped to make room.
