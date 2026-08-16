@@ -230,6 +230,45 @@ fn an_attachment_inside_a_split_document_belongs_to_the_page() {
     );
 }
 
+/// Where a file sits is not something the note said. If moving an attachment
+/// restamped the node holding it, this device would beat every other device's
+/// real edit to that note — for doing nothing but tidying a folder.
+#[test]
+fn moving_the_bytes_does_not_restamp_the_note() {
+    let mut connection = database();
+    let workspace = workspace();
+    page(&connection, FIRST_PAGE, "Notes", 4294967296);
+    image_node(&connection, IMAGE_NODE, FIRST_PAGE, "holiday.png", false);
+    place(&mut connection, &workspace);
+    let before: String = connection
+        .query_row(
+            "SELECT hlc FROM notes_nodes WHERE id = ?1",
+            [IMAGE_NODE],
+            |row| row.get(0),
+        )
+        .expect("hlc");
+
+    // A second page points at the same bytes, so they move to the root store.
+    page(&connection, SECOND_PAGE, "Other", 8589934592);
+    image_node(
+        &connection,
+        OTHER_IMAGE_NODE,
+        SECOND_PAGE,
+        "holiday.png",
+        false,
+    );
+    place(&mut connection, &workspace);
+
+    let after: String = connection
+        .query_row(
+            "SELECT hlc FROM notes_nodes WHERE id = ?1",
+            [IMAGE_NODE],
+            |row| row.get(0),
+        )
+        .expect("hlc");
+    assert_eq!(after, before, "the note did not change; its picture moved");
+}
+
 #[test]
 fn an_attachment_nobody_points_at_stays_where_it_is() {
     let mut connection = database();

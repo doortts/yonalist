@@ -569,6 +569,40 @@ fn a_new_page_puts_home_in_the_queue() {
     );
 }
 
+/// A file somebody edited by hand is not this app's to replace, and what was
+/// waiting to go into it is still waiting. Clearing the mark there would leave
+/// the vault holding an older version of a note for good.
+#[test]
+fn a_hand_edited_file_keeps_its_place_in_the_queue() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    export_home(&mut connection, root.path());
+    std::fs::write(root.path().join("README.md"), b"somebody's own words\n").expect("hand edit");
+    connection
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES ('root', 0)",
+            (),
+        )
+        .expect("dirty");
+
+    let outcome = export_home(&mut connection, root.path());
+
+    assert!(outcome.needs_merge, "somebody's edit comes first");
+    let waiting: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = 'root'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("dirty");
+    assert_eq!(
+        waiting, 1,
+        "what this device is holding still has to reach the file, once the \
+         merge has dealt with what the file already says"
+    );
+}
+
 /// A deleted row belongs to the trash, whatever page it used to sit in.
 #[test]
 fn a_deleted_row_puts_the_trash_in_the_queue() {
