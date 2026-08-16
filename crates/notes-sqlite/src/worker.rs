@@ -52,6 +52,9 @@ enum Request {
         vault_root: Option<std::path::PathBuf>,
         reply: SyncSender<Result<bool, StorageError>>,
     },
+    RefusedFiles {
+        reply: SyncSender<Result<Vec<notes_application::RefusedFile>, StorageError>>,
+    },
     VaultStatRecords {
         reply: SyncSender<Result<Vec<(String, notes_sync::intake::Known)>, StorageError>>,
     },
@@ -258,6 +261,12 @@ impl SqliteStorage {
     /// The bytes for an attachment arrived. Every row whose link names it and
     /// which is still waiting learns its hash — which is what turns a note
     /// showing nothing into a note showing its picture.
+    /// Every file this app looked at and could not read, in the order they
+    /// sit in the folder.
+    pub fn refused_files(&self) -> Result<Vec<notes_application::RefusedFile>, StorageError> {
+        self.request(|reply| Request::RefusedFiles { reply })
+    }
+
     /// What this app last dealt with at every path it knows, in one answer.
     /// The scan asks about every file in the folder, and a question per file
     /// would be a worker round trip per document — the queue that a keystroke
@@ -545,6 +554,25 @@ impl SqliteStorage {
                                 &content_hash,
                                 vault_root.as_deref(),
                             ));
+                        }
+                        Request::RefusedFiles { reply } => {
+                            let _ = reply.send(
+                                connection
+                                    .prepare_cached(
+                                        "SELECT relative_path, reason FROM sync_quarantine
+                                         ORDER BY relative_path",
+                                    )
+                                    .and_then(|mut statement| {
+                                        let rows = statement.query_map([], |row| {
+                                            Ok(notes_application::RefusedFile {
+                                                path: row.get(0)?,
+                                                reason: row.get(1)?,
+                                            })
+                                        })?;
+                                        rows.collect::<Result<Vec<_>, _>>()
+                                    })
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
                         }
                         Request::VaultStatRecords { reply } => {
                             let _ = reply.send(

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-sync-status"
+description = "Enables the notes_sync_status command without any pre-configured scope."
+commands.allow = ["notes_sync_status"]
+
+[[permission]]
+identifier = "deny-notes-sync-status"
+description = "Denies the notes_sync_status command without any pre-configured scope."
+commands.deny = ["notes_sync_status"]

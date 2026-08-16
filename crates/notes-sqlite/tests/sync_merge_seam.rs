@@ -981,6 +981,31 @@ fn a_refusal_records_why() {
     assert_eq!(reason, "yonalist frontmatter가 없다");
 }
 
+/// What the screen shows: the path and the sentence, in folder order.
+#[test]
+fn refused_files_lists_path_and_reason() {
+    let (_directory, storage) = storage();
+    storage
+        .quarantine("b/second.md", &"b".repeat(64), "두 번째 이유")
+        .expect("quarantine");
+    storage
+        .quarantine("a/first.md", &"a".repeat(64), "첫 번째 이유")
+        .expect("quarantine");
+
+    let refused = storage.refused_files().expect("refused");
+
+    assert_eq!(
+        refused
+            .iter()
+            .map(|file| (file.path.as_str(), file.reason.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("a/first.md", "첫 번째 이유"),
+            ("b/second.md", "두 번째 이유")
+        ]
+    );
+}
+
 /// A file that could not be read once can be fixed, or can simply finish
 /// arriving. The note saying it was unreadable has to go with that, or every
 /// later version of it is skipped as "already answered".
