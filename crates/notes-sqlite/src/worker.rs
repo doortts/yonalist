@@ -74,7 +74,7 @@ enum Request {
         disk_name: String,
         content_hash: String,
         location: String,
-        reply: SyncSender<Result<usize, StorageError>>,
+        reply: SyncSender<Result<BTreeSet<String>, StorageError>>,
     },
     ImageHash {
         node_id: String,
@@ -301,12 +301,15 @@ impl SqliteStorage {
     /// `location` is where the file sits in the vault, relative to its root:
     /// the arrival is the only thing that knows, and the export writes its
     /// links from it.
+    ///
+    /// Answers with the nodes that stopped waiting, so whoever asked can name
+    /// them to the window instead of making it read the page again.
     pub fn resolve_asset(
         &self,
         disk_name: &str,
         content_hash: &str,
         location: &str,
-    ) -> Result<usize, StorageError> {
+    ) -> Result<BTreeSet<String>, StorageError> {
         self.request(|reply| Request::ResolveAsset {
             disk_name: disk_name.to_owned(),
             content_hash: content_hash.to_owned(),

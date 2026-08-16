@@ -715,7 +715,11 @@ fn an_arriving_attachment_resolves_the_rows_waiting_for_it() {
         )
         .expect("resolve");
 
-    assert_eq!(resolved, 1, "one row was waiting for these bytes");
+    assert_eq!(
+        resolved,
+        std::collections::BTreeSet::from([IMAGE_NODE_ID.to_owned()]),
+        "the row that was waiting for these bytes is named"
+    );
     assert_eq!(
         storage.image_hash(IMAGE_NODE_ID).expect("row"),
         Some("9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081".to_owned()),
@@ -741,8 +745,8 @@ fn bytes_that_do_not_match_the_name_resolve_nothing() {
         )
         .expect("resolve");
 
-    assert_eq!(
-        resolved, 0,
+    assert!(
+        resolved.is_empty(),
         "these are somebody else's bytes under our name"
     );
     assert_eq!(
@@ -1237,7 +1241,10 @@ fn resolving_an_attachment_normalizes_the_row_and_bumps_the_revision() {
         )
         .expect("resolve");
 
-    assert_eq!(resolved, 1);
+    assert_eq!(
+        resolved,
+        std::collections::BTreeSet::from([IMAGE_NODE_ID.to_owned()])
+    );
     assert_eq!(image_path(&directory, IMAGE_NODE_ID), format!("{HASH}.png"));
     assert!(
         storage.revision().expect("revision") > before,
@@ -1262,7 +1269,7 @@ fn an_attachment_no_row_wanted_leaves_the_revision_alone() {
         )
         .expect("resolve");
 
-    assert_eq!(resolved, 0);
+    assert!(resolved.is_empty());
     assert_eq!(storage.revision().expect("revision"), before);
 }
 
