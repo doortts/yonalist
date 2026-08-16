@@ -82,7 +82,7 @@ what makes the redo case fall out correctly rather than needing its own rule:
 | duplicate, then bytes arrive | Copy holds a waiting row with the same link, so `resolve_asset`'s `UPDATE … WHERE content_hash = '' AND relative_path …` settles both rows at once. |
 | duplicate, undo | The copy's node is deleted; `notes_images` has `ON DELETE CASCADE`, so its row goes with it. |
 | duplicate, undo, redo, bytes arrive | Redo re-inserts the copy and re-copies the row, still waiting. Same as the first case. |
-| duplicate, undo, bytes arrive, redo | The source's row is resolved by then, so the copy is given a resolved row and is a live picture immediately. |
+| duplicate, undo, bytes arrive, redo | The source's row is resolved by then, so the copy is given a resolved row. Stored, not yet drawn — see "Known limits". |
 | duplicate, undo, another device edits the source, redo | Refused. Reading the source's current row makes the source a thing the entry depends on, and the merge barrier has to count it — see below. |
 
 Byte arrival is not the same event as a merge: `resolve_asset` never calls
@@ -180,7 +180,25 @@ the barrier lets a redo through that would take the merge's picture.
 
 ## Known limits
 
-If the source's row is gone by the time a redo replays — which today needs a
-hard `DELETE FROM notes_nodes` on an image node, a path no current gesture
-reaches — the copy is given nothing and degrades exactly as it does today. Not
-worth a guard until such a gesture exists.
+**A redo's receipt is one read behind the row it just settled.** `commit`
+builds `changed_nodes` from `patch.forward`, and a redo's forward mutations are
+the copy exactly as the duplication captured it — with no picture, because the
+source had none then. So in the one sequence where the bytes arrive between the
+undo and the redo, the row is settled and correct while the window is still
+told the copy has no picture; it draws right on the next read of that page, and
+nothing schedules one. The stored state is never wrong, and the copy is no
+longer dead either way. Fixing it means re-reading the carried copies inside
+`commit` and substituting them into `changed_nodes` — worth doing if anyone
+meets it, not before.
+
+**If the source's row is gone by the time a redo replays**, the copy is given
+nothing and degrades exactly as it did before this change. Today that needs a
+hard `DELETE FROM notes_nodes` on an image node, a path no gesture reaches:
+`DeleteSubtree` is a soft flag, `remove_empty_node` refuses image nodes, and
+`merge_node_backward` requires two bullets. Not worth a guard until such a
+gesture exists.
+
+**Chained pairs inside one `DuplicateNodes` batch** (`A→B` in the same batch as
+`B→C`) work because the pairs keep their order from `plan` through to the SQL
+loop. Correct today; it would break if anything ever sorted or deduplicated
+them.

@@ -75,6 +75,9 @@ pub(crate) fn commit(
                  SELECT ?2, content_hash, relative_path, original_name, mime_type,
                     byte_length, pixel_width, pixel_height, display_width
                  FROM notes_images WHERE node_id = ?1
+                 -- Running after the forward loop and yielding to what is
+                 -- already there is what lets a coalesced group keep a settled
+                 -- row its own mutations wrote for the copy.
                  ON CONFLICT(node_id) DO NOTHING",
                 [source_id.as_str(), copy_id.as_str()],
             )

@@ -1224,6 +1224,69 @@ fn redoing_a_duplicated_waiting_picture_lets_it_meet_its_bytes() {
     );
 }
 
+/// Bytes that turn up while the duplicate is undone still have to reach the
+/// copy when a redo brings it back. What the copy is given is the source's
+/// record as it stands at that moment, never as the duplication once saw it:
+/// a snapshot taken back then would leave the copy waiting for bytes that
+/// already came and will not come again.
+#[test]
+fn bytes_that_land_before_the_redo_still_reach_the_copy() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    one.export();
+    carry(&one, &two);
+    let held = hold_pictures_back(&two);
+    two.absorb();
+
+    let copy = uuid::Uuid::new_v4().hyphenated().to_string();
+    let service = two.service();
+    let duplicated = service
+        .execute(CommandEnvelope {
+            session_id: two.session.clone(),
+            request_id: "duplicate".into(),
+            base_revision: two.storage.revision().expect("revision"),
+            history_group: None,
+            command: IpcNotesCommand::Duplicate {
+                id: shot.clone(),
+                new_id: copy.clone(),
+                parent_id: page.clone(),
+                before_id: None,
+            },
+        })
+        .expect("duplicate");
+    service
+        .undo(HistoryRequest {
+            session_id: two.session.clone(),
+            base_revision: duplicated.revision,
+        })
+        .expect("undo");
+
+    // The bytes arrive while the copy is not there. The watcher tells the
+    // session the revision moved and names nobody — nothing in the outline
+    // changed, only the row that had been waiting.
+    let_pictures_land(&two, held);
+    two.absorb();
+    let revision = service
+        .absorb_external(two.storage.revision().expect("revision"), &[])
+        .expect("absorb");
+
+    service
+        .redo(HistoryRequest {
+            session_id: two.session.clone(),
+            base_revision: revision,
+        })
+        .expect("redo");
+
+    let settled = settled_pictures(&two);
+    assert!(
+        settled.contains(&copy),
+        "the copy took the picture the source held by the time the redo ran, \
+         but only these are settled: {settled:?}"
+    );
+}
+
 /// The other device resized the picture, so the line comes back stamped later
 /// and genuinely changed. Taking that edit in must not put the vault's own
 /// link where the row keeps the picture's own name.
