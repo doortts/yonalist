@@ -276,7 +276,7 @@ mod tests {
         let runtime = SyncRuntime::with_windows(60_000, 60_000, export);
 
         runtime.poke();
-        runtime.flush();
+        assert!(runtime.flush().is_ok());
 
         assert_eq!(
             count.load(Ordering::SeqCst),

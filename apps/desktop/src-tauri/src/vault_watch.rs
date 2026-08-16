@@ -303,7 +303,7 @@ mod tests {
             seen("Projects-4f1c8e20a3b7/assets/shot-9f3a1c8e2044.png").as_deref(),
             Some("Projects-4f1c8e20a3b7/assets/shot-9f3a1c8e2044.png")
         );
-        assert_eq!(seen("assets/shot-9f3a1c8e2044.png").is_some(), true);
+        assert!(seen("assets/shot-9f3a1c8e2044.png").is_some());
     }
 
     /// The user's own files are theirs. A folder whose name merely ends in
