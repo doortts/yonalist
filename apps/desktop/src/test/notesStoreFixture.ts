@@ -1,6 +1,7 @@
 import type { BootSnapshot } from "../../../../packages/contracts/generated/BootSnapshot";
 import type { NotesApi } from "../api";
 import { NotesStore } from "../notesStore";
+import { appApi } from "./appApiFixture";
 
 export async function readyRealStore(): Promise<NotesStore> {
   const boot: BootSnapshot = {
@@ -35,28 +36,15 @@ export async function readyRealStore(): Promise<NotesStore> {
     }
   };
   const api: NotesApi = {
+    ...appApi(),
     bootstrap: vi.fn().mockResolvedValue(boot),
-    queryViewport: vi.fn(),
     queryForest: vi.fn().mockResolvedValue({
       revision: 1,
       nodes: [],
       complete: true
     }),
     execute: vi.fn(),
-    importImageBytes: vi.fn(),
-    importImagePaths: vi.fn(),
-    replaceImageBytes: vi.fn(),
-    replaceImagePath: vi.fn(),
-    readImage: vi.fn(),
-    viewImageOriginal: vi.fn(),
-    downloadImage: vi.fn(),
-    undo: vi.fn(),
-    redo: vi.fn(),
-    search: vi.fn(),
-    exportNotes: vi.fn(),
-    closeSession: vi.fn(),
-    unusedAssets: vi.fn(),
-    deleteAllData: vi.fn()
+    search: vi.fn()
   };
   const store = new NotesStore(api);
   await store.bootstrap();

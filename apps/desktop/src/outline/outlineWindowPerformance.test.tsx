@@ -6,6 +6,7 @@ import { focusOutlineEditor } from "./outlineFocus";
 import { NotesOutline } from "../NotesOutline";
 import { NotesStore } from "../notesStore";
 import { stubGeometry } from "../test/outlineGeometry";
+import { appApi } from "../test/appApiFixture";
 
 
 function outlineNode(index: number): NoteView {
@@ -46,7 +47,8 @@ async function readyStore(
   count: number,
   afterCursor: string | null = null
 ): Promise<NotesStore> {
-  const api = {
+  const api: NotesApi = {
+    ...appApi(),
     bootstrap: vi.fn().mockResolvedValue(bootSnapshot(count, afterCursor)),
     queryViewport: vi.fn().mockResolvedValue({
       pageId: "page-1",
@@ -66,19 +68,8 @@ async function readyStore(
       deletedIds: [],
       history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
     }),
-    importImageBytes: vi.fn(),
-    importImagePaths: vi.fn(),
-    replaceImageBytes: vi.fn(),
-    replaceImagePath: vi.fn(),
-    readImage: vi.fn(),
-    viewImageOriginal: vi.fn(),
-    downloadImage: vi.fn(),
-    undo: vi.fn(),
-    redo: vi.fn(),
-    search: vi.fn(),
-    exportNotes: vi.fn(),
-    closeSession: vi.fn()
-  } as unknown as NotesApi;
+    search: vi.fn()
+  };
   const store = new NotesStore(api);
   await store.bootstrap();
   return store;

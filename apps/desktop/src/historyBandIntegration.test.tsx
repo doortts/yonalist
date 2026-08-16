@@ -3,6 +3,7 @@ import type { BootSnapshot } from "../../../packages/contracts/generated/BootSna
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "./api";
 import { App } from "./App";
+import { appApi } from "./test/appApiFixture";
 
 const ROWS: readonly NoteView[] = [
   "CUT ME", "CUT ME TOO", "CUT ME THREE", "KEEP ME"
@@ -44,8 +45,8 @@ const snapshot: BootSnapshot = {
 function api(): NotesApi {
   let cut: readonly string[] = [];
   return {
+    ...appApi(),
     bootstrap: vi.fn().mockResolvedValue(snapshot),
-    queryViewport: vi.fn(),
     queryForest: vi.fn().mockImplementation(async (request) => ({
       revision: snapshot.revision,
       nodes: ROWS.filter((row) => request.rootIds.includes(row.id)),
@@ -61,13 +62,6 @@ function api(): NotesApi {
         history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
       };
     }),
-    importImageBytes: vi.fn(),
-    importImagePaths: vi.fn(),
-    replaceImageBytes: vi.fn(),
-    replaceImagePath: vi.fn(),
-    readImage: vi.fn(),
-    viewImageOriginal: vi.fn(),
-    downloadImage: vi.fn(),
     undo: vi.fn().mockImplementation(async () => ({
       revision: 9,
       changedNodes: ROWS.filter((row) => cut.includes(row.id)),
@@ -79,13 +73,8 @@ function api(): NotesApi {
       changedNodes: [],
       deletedIds: [...cut],
       history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
-    })),
-    search: vi.fn().mockResolvedValue({ hits: [], nextCursor: null }),
-    exportNotes: vi.fn(),
-    closeSession: vi.fn(),
-    unusedAssets: vi.fn(),
-    deleteAllData: vi.fn()
-  } as unknown as NotesApi;
+    }))
+  };
 }
 
 function row(text: string): HTMLElement {

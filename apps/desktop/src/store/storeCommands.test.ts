@@ -3,6 +3,7 @@ import type { PaneSnapshot } from "../appNavigation";
 import type { NotesApi } from "../api";
 import { initialNotesState, type NotesState } from "../notesState";
 import { StoreCommands } from "./storeCommands";
+import { appApi } from "../test/appApiFixture";
 
 function caret(offset: number): PaneSnapshot {
   return {
@@ -33,24 +34,11 @@ function receipt(revision: number): MutationReceipt {
 
 function api(execute: NotesApi["execute"]): NotesApi {
   return {
+    ...appApi(),
     bootstrap: vi.fn(),
-    queryViewport: vi.fn(),
     queryForest: vi.fn(),
     execute,
-    importImageBytes: vi.fn(),
-    importImagePaths: vi.fn(),
-    replaceImageBytes: vi.fn(),
-    replaceImagePath: vi.fn(),
-    readImage: vi.fn(),
-    viewImageOriginal: vi.fn(),
-    downloadImage: vi.fn(),
-    undo: vi.fn(),
-    redo: vi.fn(),
-    search: vi.fn(),
-    exportNotes: vi.fn(),
-    closeSession: vi.fn(),
-    unusedAssets: vi.fn(),
-    deleteAllData: vi.fn()
+    search: vi.fn()
   };
 }
 

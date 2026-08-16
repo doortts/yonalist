@@ -5,6 +5,7 @@ import type { MutationReceipt } from "../../../../packages/contracts/generated/M
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "../api";
 import { App } from "../App";
+import { appApi } from "../test/appApiFixture";
 
 function bullet(
   id: string,
@@ -123,28 +124,15 @@ function harness(seed: readonly NoteView[]) {
     },
     history: { canUndo: false, canRedo: false, undoDepth: 0, redoDepth: 0 }
   };
-  const notesApi = {
+  const notesApi: NotesApi = {
+    ...appApi(),
     bootstrap: vi.fn().mockResolvedValue(boot),
-    queryViewport: vi.fn(),
     queryForest: vi.fn().mockResolvedValue({
       revision: 1, nodes: [], complete: true
     }),
     execute,
-    importImageBytes: vi.fn(),
-    importImagePaths: vi.fn(),
-    replaceImageBytes: vi.fn(),
-    replaceImagePath: vi.fn(),
-    readImage: vi.fn().mockRejectedValue(new Error("no bytes in this test")),
-    viewImageOriginal: vi.fn(),
-    downloadImage: vi.fn(),
-    undo: vi.fn(),
-    redo: vi.fn(),
-    search: vi.fn().mockResolvedValue({ hits: [], nextCursor: null }),
-    exportNotes: vi.fn(),
-    closeSession: vi.fn(),
-    unusedAssets: vi.fn(),
-    deleteAllData: vi.fn()
-  } as unknown as NotesApi;
+    readImage: vi.fn().mockRejectedValue(new Error("no bytes in this test"))
+  };
   return { notesApi, execute, nodes: () => nodes };
 }
 

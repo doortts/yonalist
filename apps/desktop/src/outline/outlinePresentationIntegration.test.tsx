@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { BootSnapshot } from "../../../../packages/contracts/generated/BootSnapshot";
 import type { NotesApi } from "../api";
 import { App } from "../App";
+import { appApi } from "../test/appApiFixture";
 
 const markdownSnapshot: BootSnapshot = {
   sessionId: "markdown-session",
@@ -32,29 +33,15 @@ const markdownSnapshot: BootSnapshot = {
 
 function markdownApi(): NotesApi {
   return {
+    ...appApi(),
     bootstrap: vi.fn().mockResolvedValue(markdownSnapshot),
-    queryViewport: vi.fn(),
     queryForest: vi.fn().mockImplementation(async (request) => ({
       revision: markdownSnapshot.revision,
       nodes: markdownSnapshot.viewport?.nodes.filter((node) =>
         request.rootIds.includes(node.id)) ?? [],
       complete: true
     })),
-    execute: vi.fn(),
-    importImageBytes: vi.fn(),
-    importImagePaths: vi.fn(),
-    replaceImageBytes: vi.fn(),
-    replaceImagePath: vi.fn(),
-    readImage: vi.fn(),
-    viewImageOriginal: vi.fn(),
-    downloadImage: vi.fn(),
-    undo: vi.fn(),
-    redo: vi.fn(),
-    search: vi.fn().mockResolvedValue({ hits: [], nextCursor: null }),
-    exportNotes: vi.fn(),
-    closeSession: vi.fn(),
-    unusedAssets: vi.fn(),
-    deleteAllData: vi.fn()
+    execute: vi.fn()
   };
 }
 

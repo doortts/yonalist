@@ -7,6 +7,7 @@ import { NotesOutline } from "../NotesOutline";
 import { NotesStore } from "../notesStore";
 import { allocateSiblingSortKey, SORT_KEY_STEP } from "./outlineSortKeys";
 import { stubGeometry } from "../test/outlineGeometry";
+import { appApi } from "../test/appApiFixture";
 
 const BURST = 30;
 
@@ -121,9 +122,9 @@ async function deferredStore(
   server?: ReturnType<typeof serverModel>
 ) {
   const inflight: (() => void)[] = [];
-  const api = {
+  const api: NotesApi = {
+    ...appApi(),
     bootstrap: vi.fn().mockResolvedValue(bootSnapshot(nodes)),
-    queryViewport: vi.fn(),
     queryForest: vi.fn().mockResolvedValue({
       revision: 1,
       nodes: [],
@@ -134,19 +135,8 @@ async function deferredStore(
         inflight.push(() =>
           resolve(server ? server.execute(envelope) : EMPTY_RECEIPT));
       })),
-    importImageBytes: vi.fn(),
-    importImagePaths: vi.fn(),
-    replaceImageBytes: vi.fn(),
-    replaceImagePath: vi.fn(),
-    readImage: vi.fn(),
-    viewImageOriginal: vi.fn(),
-    downloadImage: vi.fn(),
-    undo: vi.fn(),
-    redo: vi.fn(),
-    search: vi.fn(),
-    exportNotes: vi.fn(),
-    closeSession: vi.fn()
-  } as unknown as NotesApi;
+    search: vi.fn()
+  };
   const store = new NotesStore(api);
   await store.bootstrap();
   // Commands are serialized, so releasing one lets the next reach the fake

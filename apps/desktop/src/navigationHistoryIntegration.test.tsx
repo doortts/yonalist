@@ -6,6 +6,7 @@ import type { MutationReceipt } from "../../../packages/contracts/generated/Muta
 import type { NotesApi } from "./api";
 import { App } from "./App";
 import { ROOT_ID } from "./store/storeSupport";
+import { appApi } from "./test/appApiFixture";
 
 const snapshot: BootSnapshot = {
   sessionId: "navigation-session",
@@ -55,8 +56,8 @@ function receipt(text: string): MutationReceipt {
 
 function api(): NotesApi {
   return {
+    ...appApi(),
     bootstrap: vi.fn().mockResolvedValue(snapshot),
-    queryViewport: vi.fn(),
     queryForest: vi.fn().mockImplementation(async (request) => ({
       revision: snapshot.revision,
       nodes: snapshot.viewport?.nodes.filter((node) =>
@@ -68,21 +69,7 @@ function api(): NotesApi {
         envelope.command.kind === "updateText"
           ? envelope.command.text
           : "First thought"
-      ))),
-    importImageBytes: vi.fn(),
-    importImagePaths: vi.fn(),
-    replaceImageBytes: vi.fn(),
-    replaceImagePath: vi.fn(),
-    readImage: vi.fn(),
-    viewImageOriginal: vi.fn(),
-    downloadImage: vi.fn(),
-    undo: vi.fn(),
-    redo: vi.fn(),
-    search: vi.fn().mockResolvedValue({ hits: [], nextCursor: null }),
-    exportNotes: vi.fn(),
-    closeSession: vi.fn(),
-    unusedAssets: vi.fn(),
-    deleteAllData: vi.fn()
+      )))
   };
 }
 

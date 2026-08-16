@@ -6,6 +6,7 @@ import type { NotesApi } from "../api";
 import { NotesOutline } from "../NotesOutline";
 import { NotesStore } from "../notesStore";
 import { SORT_KEY_STEP } from "./outlineSortKeys";
+import { appApi } from "../test/appApiFixture";
 
 function bullet(
   id: string,
@@ -53,9 +54,9 @@ function bootSnapshot(nodes: readonly NoteView[]): BootSnapshot {
 async function outline(nodes: readonly NoteView[]) {
   const commands: IpcNotesCommand[] = [];
   let revision = 1;
-  const api = {
+  const api: NotesApi = {
+    ...appApi(),
     bootstrap: vi.fn().mockResolvedValue(bootSnapshot(nodes)),
-    queryViewport: vi.fn(),
     queryForest: vi.fn().mockResolvedValue({
       revision: 1,
       nodes: [],
@@ -73,19 +74,8 @@ async function outline(nodes: readonly NoteView[]) {
         }
       });
     }),
-    importImageBytes: vi.fn(),
-    importImagePaths: vi.fn(),
-    replaceImageBytes: vi.fn(),
-    replaceImagePath: vi.fn(),
-    readImage: vi.fn(),
-    viewImageOriginal: vi.fn(),
-    downloadImage: vi.fn(),
-    undo: vi.fn(),
-    redo: vi.fn(),
-    search: vi.fn(),
-    exportNotes: vi.fn(),
-    closeSession: vi.fn()
-  } as unknown as NotesApi;
+    search: vi.fn()
+  };
   const store = new NotesStore(api);
   await store.bootstrap();
   const view = render(
