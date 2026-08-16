@@ -29,6 +29,9 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsView>[0]> =
     deleteAllData: vi.fn().mockResolvedValue(undefined),
     readVaultPath: vi.fn().mockResolvedValue(null),
     readConflicts: vi.fn().mockResolvedValue([]),
+    readAttachments: vi.fn().mockResolvedValue([]),
+    deleteAttachment: vi.fn().mockResolvedValue(true),
+    openNode: vi.fn(),
     restoreConflict: vi.fn().mockResolvedValue(undefined),
     setVaultPath: vi.fn().mockResolvedValue(undefined),
     ...overrides

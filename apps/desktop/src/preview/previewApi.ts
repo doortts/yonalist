@@ -549,6 +549,13 @@ export const previewNotesApi: NotesApi = {
     // No vault outside the desktop app: there is no folder to sync into.
     return null;
   },
+  async syncAttachments() {
+    // The preview has no folder to keep attachments in.
+    return [];
+  },
+  async syncDeleteAttachment() {
+    return false;
+  },
   async syncFlush() {
     // The preview holds nothing on its way to a folder.
   },

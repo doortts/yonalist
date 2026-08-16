@@ -1959,6 +1959,50 @@ body.is-resizing-pane {
   white-space: nowrap;
 }
 
+.settings-attachment-list {
+  display: grid;
+  gap: 8px;
+  max-width: 680px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-attachment-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+
+/* The name takes the room it needs and everything else lines up after it. */
+.settings-attachment-list li > :nth-child(2) {
+  margin-left: auto;
+}
+
+.settings-attachment-name {
+  overflow: hidden;
+  max-width: 300px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.settings-attachment-name {
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--border);
+  text-underline-offset: 3px;
+}
+
 .settings-path {
   max-width: 680px;
   margin: 0;

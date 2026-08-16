@@ -285,6 +285,16 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     await applyNavigation(after);
     recordNavigation(before, after);
   }, [applyNavigation, captureNavigation, recordNavigation, store]);
+  /// A row in the attachment list names a bullet on a page. Following it
+  /// leaves the settings screen, because what the user asked to see is the
+  /// note rather than the file.
+  const openAttachment = useCallback(
+    (pageId: string, _nodeId: string) => {
+      setSettingsOpen(false);
+      void openPage(pageId);
+    },
+    [openPage]
+  );
   // Home is the root page like any other page, house crumb included.
   const openHome = useCallback(() => void openPage(ROOT_ID), [openPage]);
   // Creating a page and trashing one both move the view as part of the
@@ -615,6 +625,9 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             setVaultPath={setVaultPath}
             readConflicts={readConflicts}
             restoreConflict={restoreConflict}
+            readAttachments={(limit) => api.syncAttachments(limit)}
+            deleteAttachment={(contentHash) => api.syncDeleteAttachment(contentHash)}
+            openNode={openAttachment}
           />
         </Suspense>
       ) : (

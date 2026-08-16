@@ -16,8 +16,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use notes_application::{
     BootSnapshot, CloseOutcome, CommandEnvelope, ForestRequest, ForestSnapshot, HistoryRequest,
     ImageAssetPort, MutationReceipt, NotesError, NotesErrorCode, NotesService, SearchPage,
-    SearchQuery, SyncChanged, SyncConflict, SyncVaultFolderState, UnusedAssetsReport, ViewportPage,
-    ViewportRequest,
+    SearchQuery, SyncAttachment, SyncChanged, SyncConflict, SyncVaultFolderState,
+    UnusedAssetsReport, ViewportPage, ViewportRequest,
 };
 use notes_export::{NativeExportPublisher, NativeExportRenderer};
 use notes_sqlite::{LocalImageAssets, SqliteStorage};
@@ -297,6 +297,41 @@ async fn notes_sync_restore_conflict(
         // a bypass would leave every later edit failing until a restart.
         runtime.changed(runtime.service.restore_conflict(&node_id, &text))?;
         Ok(())
+    })
+    .await
+}
+
+/// Every attachment this vault holds, biggest first.
+#[tauri::command]
+async fn notes_sync_attachments(
+    state: State<'_, DesktopState>,
+    limit: u32,
+) -> Result<Vec<SyncAttachment>, NotesError> {
+    let gate = Arc::clone(&state.runtime);
+    run_blocking(move || {
+        gate.wait()?
+            .storage
+            .attachments(limit)
+            .map_err(NotesError::from)
+    })
+    .await
+}
+
+/// Removes an attachment nothing points at. Answers `false` when something
+/// started pointing at it again since the list was drawn — the count is taken
+/// with the removal rather than from the screen.
+#[tauri::command]
+async fn notes_sync_delete_attachment(
+    state: State<'_, DesktopState>,
+    content_hash: String,
+) -> Result<bool, NotesError> {
+    let gate = Arc::clone(&state.runtime);
+    let vault = sync_settings::read_vault_path(&state.data_directory);
+    run_blocking(move || {
+        gate.wait()?
+            .storage
+            .delete_attachment(&content_hash, vault.as_deref())
+            .map_err(NotesError::from)
     })
     .await
 }
@@ -736,6 +771,8 @@ pub fn run() {
             notes_delete_all_data,
             notes_sync_conflicts,
             notes_sync_restore_conflict,
+            notes_sync_attachments,
+            notes_sync_delete_attachment,
             notes_sync_flush,
             notes_sync_vault_get,
             notes_sync_vault_set,

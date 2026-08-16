@@ -55,6 +55,8 @@ function api(execute: NotesApi["execute"]): NotesApi {
     syncVaultSet: vi.fn(),
     syncConflicts: vi.fn().mockResolvedValue([]),
     syncFlush: vi.fn(),
+    syncAttachments: vi.fn(),
+    syncDeleteAttachment: vi.fn(),
     syncRestoreConflict: vi.fn()
   };
 }

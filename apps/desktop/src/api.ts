@@ -12,6 +12,7 @@ import type { MutationReceipt } from "../../../packages/contracts/generated/Muta
 import type { NotesExportRequest } from "../../../packages/contracts/generated/NotesExportRequest";
 import type { NotesExportResult } from "../../../packages/contracts/generated/NotesExportResult";
 import type { SearchPage } from "../../../packages/contracts/generated/SearchPage";
+import type { SyncAttachment } from "../../../packages/contracts/generated/SyncAttachment";
 import type { SyncConflict } from "../../../packages/contracts/generated/SyncConflict";
 import type { SyncVaultFolderState } from "../../../packages/contracts/generated/SyncVaultFolderState";
 import type { UnusedAssetsReport } from "../../../packages/contracts/generated/UnusedAssetsReport";
@@ -46,6 +47,8 @@ export interface NotesApi {
   syncVaultGet(): Promise<string | null>;
   syncVaultSet(path: string): Promise<SyncVaultFolderState>;
   syncFlush(): Promise<void>;
+  syncAttachments(limit: number): Promise<SyncAttachment[]>;
+  syncDeleteAttachment(contentHash: string): Promise<boolean>;
   syncConflicts(limit: number): Promise<SyncConflict[]>;
   syncRestoreConflict(seq: number): Promise<void>;
 }
@@ -94,6 +97,9 @@ export const tauriNotesApi: NotesApi = {
   syncVaultGet: () => invoke("notes_sync_vault_get"),
   syncVaultSet: (path) => invoke("notes_sync_vault_set", { path }),
   syncFlush: () => invoke("notes_sync_flush"),
+  syncAttachments: (limit) => invoke("notes_sync_attachments", { limit }),
+  syncDeleteAttachment: (contentHash) =>
+    invoke("notes_sync_delete_attachment", { contentHash }),
   syncConflicts: (limit) => invoke("notes_sync_conflicts", { limit }),
   syncRestoreConflict: (seq) => invoke("notes_sync_restore_conflict", { seq })
 };

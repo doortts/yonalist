@@ -43,6 +43,15 @@ enum Request {
         limit: u32,
         reply: SyncSender<Result<Vec<notes_application::SyncConflict>, StorageError>>,
     },
+    Attachments {
+        limit: u32,
+        reply: SyncSender<Result<Vec<notes_application::SyncAttachment>, StorageError>>,
+    },
+    DeleteAttachment {
+        content_hash: String,
+        vault_root: Option<std::path::PathBuf>,
+        reply: SyncSender<Result<bool, StorageError>>,
+    },
     ResolveAsset {
         disk_name: String,
         content_hash: String,
@@ -201,6 +210,29 @@ impl SqliteStorage {
         limit: u32,
     ) -> Result<Vec<notes_application::SyncConflict>, StorageError> {
         self.request(|reply| Request::Conflicts { limit, reply })
+    }
+
+    /// Every attachment, biggest first — one row per bullet that shows one.
+    pub fn attachments(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<notes_application::SyncAttachment>, StorageError> {
+        self.request(|reply| Request::Attachments { limit, reply })
+    }
+
+    /// Removes an attachment nothing points at, and answers whether it went.
+    /// `false` means something started pointing at it again since the list was
+    /// drawn — the count is taken with the removal, not before it.
+    pub fn delete_attachment(
+        &self,
+        content_hash: &str,
+        vault_root: Option<&std::path::Path>,
+    ) -> Result<bool, StorageError> {
+        self.request(|reply| Request::DeleteAttachment {
+            content_hash: content_hash.to_owned(),
+            vault_root: vault_root.map(std::path::Path::to_path_buf),
+            reply,
+        })
     }
 
     /// The bytes for an attachment arrived. Every row whose link names it and
@@ -423,6 +455,21 @@ impl SqliteStorage {
                         }
                         Request::Conflicts { limit, reply } => {
                             let _ = reply.send(crate::sync_merge::conflicts(&connection, limit));
+                        }
+                        Request::Attachments { limit, reply } => {
+                            let _ =
+                                reply.send(crate::attachment_list::attachments(&connection, limit));
+                        }
+                        Request::DeleteAttachment {
+                            content_hash,
+                            vault_root,
+                            reply,
+                        } => {
+                            let _ = reply.send(crate::attachment_list::delete_attachment(
+                                &mut connection,
+                                &content_hash,
+                                vault_root.as_deref(),
+                            ));
                         }
                         Request::ResolveAsset {
                             disk_name,
