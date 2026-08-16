@@ -30,12 +30,25 @@ enum Request {
         patch: DomainPatch,
         reply: SyncSender<Result<StorageCommit, StorageError>>,
     },
+    /// A vault file landing on the rows. It goes through the worker for the
+    /// same reason every other write does: the revision is what open sessions
+    /// hold, and a write that skipped it would leave them committing against a
+    /// state that had already moved.
+    MergeDocument {
+        file: Box<notes_sync::document::VaultFile>,
+        input: Box<notes_sync::merger::MergeInput>,
+        reply: SyncSender<Result<notes_sync::merger::MergeOutcome, StorageError>>,
+    },
     Revision {
         reply: SyncSender<Result<u64, StorageError>>,
     },
     Node {
         id: String,
         reply: SyncSender<Result<Option<NoteNode>, StorageError>>,
+    },
+    NodePath {
+        id: String,
+        reply: SyncSender<Result<Option<String>, StorageError>>,
     },
     LiveImageHashes {
         reply: SyncSender<Result<BTreeSet<String>, StorageError>>,
@@ -121,6 +134,28 @@ impl SqliteStorage {
 
     pub fn open_in_memory() -> Result<Self, StorageError> {
         Self::start(DatabaseLocation::Memory)
+    }
+
+    /// Lands a parsed vault file on the rows. The outcome says whether anything
+    /// was written, which is what decides the revision.
+    pub fn merge_document(
+        &self,
+        file: &notes_sync::document::VaultFile,
+        input: &notes_sync::merger::MergeInput,
+    ) -> Result<notes_sync::merger::MergeOutcome, StorageError> {
+        self.request(|reply| Request::MergeDocument {
+            file: Box::new(file.clone()),
+            input: Box::new(input.clone()),
+            reply,
+        })
+    }
+
+    /// The materialised ancestor path of a node, which subtree queries read.
+    pub fn node_path(&self, id: &str) -> Result<Option<String>, StorageError> {
+        self.request(|reply| Request::NodePath {
+            id: id.to_owned(),
+            reply,
+        })
     }
 
     pub fn revision(&self) -> Result<u64, StorageError> {
@@ -224,12 +259,12 @@ impl SqliteStorage {
                     // After the seed so the onboarding page is adopted like any
                     // other legacy top-level page.
                     schema::ensure_root(&mut connection)?;
-                    Ok(connection)
+                    Ok((connection, clock))
                 });
-                let mut connection = match connection {
-                    Ok(connection) => {
+                let (mut connection, clock) = match connection {
+                    Ok(ready) => {
                         let _ = ready_sender.send(Ok(()));
-                        connection
+                        ready
                     }
                     Err(error) => {
                         let _ = ready_sender.send(Err(error));
@@ -253,8 +288,29 @@ impl SqliteStorage {
                                 &patch,
                             ));
                         }
+                        Request::MergeDocument { file, input, reply } => {
+                            let _ = reply.send(crate::sync_merge::merge(
+                                &mut connection,
+                                &clock,
+                                &file,
+                                &input,
+                            ));
+                        }
                         Request::Revision { reply } => {
                             let _ = reply.send(repository::revision(&connection));
+                        }
+                        Request::NodePath { id, reply } => {
+                            let _ = reply.send(
+                                connection
+                                    .query_row(
+                                        "SELECT path FROM notes_nodes WHERE id = ?1",
+                                        [&id],
+                                        |row| row.get::<_, Option<String>>(0),
+                                    )
+                                    .optional()
+                                    .map(Option::flatten)
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
                         }
                         Request::Node { id, reply } => {
                             let _ = reply.send(repository::node(&connection, &id));

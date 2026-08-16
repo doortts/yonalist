@@ -12,6 +12,7 @@ mod repository;
 mod row_mapping;
 mod schema;
 mod seed;
+mod sync_merge;
 mod worker;
 
 pub use image_assets::LocalImageAssets;
