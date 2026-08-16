@@ -114,10 +114,12 @@ fn entry_touches(entry: &NotesServiceHistoryEntry, affected: &HashSet<&str>) -> 
         // duplication left it exactly as it found it. It is still what the
         // entry depends on, so a merge that lands there puts this entry in
         // question too: replaying it would give the copy whichever picture the
-        // other device has since put on the source.
-        || entry.carried_pictures.iter().any(|(source_id, copy_id)| {
-            affected.contains(source_id.as_str()) || affected.contains(copy_id.as_str())
-        })
+        // other device has since put on the source. The copy itself needs no
+        // check; the mutation that creates it is already in `forward`.
+        || entry
+            .carried_pictures
+            .iter()
+            .any(|(source_id, _)| affected.contains(source_id.as_str()))
 }
 
 /// Answers whether the oldest entry was dropped to make room.
