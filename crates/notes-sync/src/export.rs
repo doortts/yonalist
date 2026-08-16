@@ -501,9 +501,9 @@ fn load_trash(
         .prepare_cached(
             "SELECT n.id, n.parent_id, n.sort_key, n.text, n.note, n.marker, n.ordered_start,
                     n.collapsed, n.completed, n.starred, n.hlc, n.sync_extras,
-                    p.deleted IS NOT 1, n.kind, NULLIF(a.location, ''), i.relative_path,
-                    i.original_name, i.display_width, i.pixel_width, i.pixel_height,
-                    i.byte_length
+                    p.deleted IS NOT 1, n.kind, NULLIF(a.location, '') AS location,
+                    i.content_hash, i.mime_type, i.relative_path, i.original_name,
+                    i.display_width, i.pixel_width, i.pixel_height, i.byte_length
              FROM notes_nodes n
              LEFT JOIN notes_nodes p ON p.id = n.parent_id
              LEFT JOIN notes_images i ON i.node_id = n.id
@@ -523,9 +523,9 @@ fn load_trash(
                 DocumentNode {
                     id: row.get(0)?,
                     hlc: row.get(10)?,
-                    body: match trash_image(row, document_folder)? {
-                        Some(image) if row.get::<_, String>(13)? == "image" => {
-                            NodeBody::Image(image)
+                    body: match trash_asset(row)? {
+                        Some(location) if row.get::<_, String>("kind")? == "image" => {
+                            NodeBody::Image(image_of(row, location, document_folder)?)
                         }
                         _ => NodeBody::Text(row.get(3)?),
                     },
@@ -569,37 +569,64 @@ fn load_trash(
     Ok(roots)
 }
 
-/// The picture a trashed line states, linked from the trash's own folder.
+/// Where a trashed picture's bytes are to be linked from, or `None` when the
+/// row is not a picture at all.
 ///
-/// Only a row that has its bytes has a placement to read. One still waiting
-/// holds the link some *other* document wrote, which is not a place in this
-/// vault — read as one it would climb out of it, a folder further each round.
-/// Its file name is the part every device agrees on, and the vault's own store
-/// is where a trashed picture's bytes belong: `plan_placement` sends them there
-/// for any holder that is deleted.
-fn trash_image(
-    row: &rusqlite::Row<'_>,
-    document_folder: &str,
-) -> rusqlite::Result<Option<ImageReference>> {
-    let location = match row.get::<_, Option<String>>(14)? {
-        Some(location) => Some(location),
-        None => row
-            .get::<_, Option<String>>(15)?
-            .map(|waiting| format!("assets/{}", waiting.rsplit('/').next().unwrap_or_default())),
+/// A trashed picture's bytes belong in the vault's own store whatever page the
+/// note came from — `plan_placement` sends them there for any holder that is
+/// deleted — so every answer here names that store. Which name is the question,
+/// and there are three rows to tell apart:
+///
+/// - placed: the placement pass has said where the file is, and that is the
+///   answer;
+/// - bytes but no placement, because carrying them failed: the name is the rule
+///   the placement would have applied, not the app store's own hash name, which
+///   no other device could ever match to these bytes;
+/// - still waiting: the row holds the link some *other* document wrote, which
+///   is not a place in this vault — read as one it would climb out of it, a
+///   folder further each round. Only its file name means anything, and that is
+///   the part every device agrees on.
+fn trash_asset(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<String>> {
+    if let Some(location) = row.get::<_, Option<String>>("location")? {
+        return Ok(Some(location));
+    }
+    let Some(content_hash) = row.get::<_, Option<String>>("content_hash")? else {
+        return Ok(None);
     };
-    Ok(location.map(|location| ImageReference {
+    let name = if content_hash.is_empty() {
+        let waiting: String = row.get("relative_path")?;
+        waiting.rsplit('/').next().unwrap_or_default().to_owned()
+    } else {
+        crate::layout::asset_disk_name(
+            &row.get::<_, String>("original_name")?,
+            &content_hash,
+            &row.get::<_, String>("mime_type")?,
+        )
+    };
+    Ok(Some(format!("assets/{name}")))
+}
+
+/// The picture a line states, linked from the folder its document sits in. The
+/// columns are read by name so that the two callers' different SELECTs — which
+/// share these columns and nothing else — cannot drift out from under it.
+fn image_of(
+    row: &rusqlite::Row<'_>,
+    location: String,
+    document_folder: &str,
+) -> rusqlite::Result<ImageReference> {
+    Ok(ImageReference {
         path: crate::attachments::Placement {
             location,
             moves: Vec::new(),
         }
         .link_from(document_folder),
-        original_name: row.get(16).unwrap_or_default(),
-        display_width: row.get::<_, i64>(17).unwrap_or_default() as u32,
-        pixel_width: row.get::<_, i64>(18).unwrap_or_default() as u32,
-        pixel_height: row.get::<_, i64>(19).unwrap_or_default() as u32,
-        byte_size: row.get::<_, i64>(20).unwrap_or_default() as u64,
+        original_name: row.get("original_name")?,
+        display_width: row.get::<_, i64>("display_width")? as u32,
+        pixel_width: row.get::<_, i64>("pixel_width")? as u32,
+        pixel_height: row.get::<_, i64>("pixel_height")? as u32,
+        byte_size: row.get::<_, i64>("byte_length")? as u64,
         unknown_tokens: Vec::new(),
-    }))
+    })
 }
 
 fn attach(children: &mut BTreeMap<String, Vec<DocumentNode>>, node: &mut DocumentNode) {
@@ -824,7 +851,7 @@ fn load_document(
                     -- where the bytes are yet: the row is written when they
                     -- resolve, and the placement pass fills the location in.
                     -- Empty is not an answer, and rendering one is refused.
-                    COALESCE(NULLIF(a.location, ''), i.relative_path),
+                    COALESCE(NULLIF(a.location, ''), i.relative_path) AS location,
                     i.original_name, i.display_width,
                     i.pixel_width, i.pixel_height, i.byte_length
              FROM notes_nodes n
@@ -854,20 +881,9 @@ fn load_document(
                 prev_hlc: row.get(14)?,
                 sort_key: row.get(2)?,
                 image: row
-                    .get::<_, Option<String>>(15)?
-                    .map(|location| ImageReference {
-                        path: crate::attachments::Placement {
-                            location,
-                            moves: Vec::new(),
-                        }
-                        .link_from(document_folder),
-                        original_name: row.get(16).unwrap_or_default(),
-                        display_width: row.get::<_, i64>(17).unwrap_or_default() as u32,
-                        pixel_width: row.get::<_, i64>(18).unwrap_or_default() as u32,
-                        pixel_height: row.get::<_, i64>(19).unwrap_or_default() as u32,
-                        byte_size: row.get::<_, i64>(20).unwrap_or_default() as u64,
-                        unknown_tokens: Vec::new(),
-                    }),
+                    .get::<_, Option<String>>("location")?
+                    .map(|location| image_of(row, location, document_folder))
+                    .transpose()?,
             })
         })
         .map_err(|error| error.to_string())?;

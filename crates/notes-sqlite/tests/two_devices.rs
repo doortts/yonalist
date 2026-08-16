@@ -932,6 +932,17 @@ fn a_trashed_picture_comes_back_as_a_picture() {
 
     one.run(IpcNotesCommand::DeleteSubtree { id: shot.clone() });
     settle(&one, &two);
+    // Reading the trash again, as a device that had never seen the file would.
+    // A picture line the rows already agree with is not an edit; if it were,
+    // every device would restamp that node on every round.
+    let replay = match notes_sync::watcher::consider(&two.vault, ".yonalist/trash.md", None) {
+        Ok(notes_sync::watcher::Verdict::Merge(file, input)) => {
+            two.storage.merge_document(&file, &input).expect("replay")
+        }
+        _ => panic!("the trash is a document, and this one holds a deleted picture"),
+    };
+    assert_eq!(replay.applied, 0, "the file says what the rows already say");
+
     two.run(IpcNotesCommand::RestoreSubtree { id: shot.clone() });
     settle(&two, &one);
 
@@ -944,13 +955,22 @@ fn a_trashed_picture_comes_back_as_a_picture() {
             .expect("the restored node");
         let image = node.image.as_ref().expect("it came back as a picture");
         assert_eq!(image.original_name, "holiday.png");
+        // The row alone would say this much: the path is derived from the hash.
+        // What the restore owes is the bytes, back beside the page that uses
+        // them — the trash promoted them to the vault's own store on the way in.
+        let folder = page_file(device, &page)
+            .parent()
+            .expect("the page's folder")
+            .to_owned();
+        assert!(
+            folder
+                .join("assets")
+                .join("holiday-9f2c1b7a4e6d.png")
+                .exists(),
+            "the bytes came back with it: {:?}",
+            attachments(&device.vault)
+        );
     }
-    assert_eq!(
-        one.export(),
-        0,
-        "and neither device has anything left to say"
-    );
-    assert_eq!(two.export(), 0);
 }
 
 /// Rows an older build wrote hold the vault's own link where the domain form

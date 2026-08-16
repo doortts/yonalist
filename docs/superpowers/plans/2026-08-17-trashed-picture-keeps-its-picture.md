@@ -8,16 +8,18 @@ fable-opus-loop phase 1 · follows `2026-08-17-orphan-image-row-stuck-node.md`
 `load_trash` (`crates/notes-sync/src/export.rs:496`) has a SELECT of its own
 that never joins `notes_images`, and it hardcodes the body:
 `NodeBody::Text(row.get(3)?)` (`:519`). So a trashed picture reaches
-`.yonalist/trash.md` as a plain text line carrying the file's name.
+`.yonalist/trash.md` as a text line — and an empty one, since an image node's
+`text` is empty: `UpdateText` refuses an image node outright
+(`notes-core/src/tree/command_execution.rs:46-53`), so there is nothing in that
+column to carry. The file does not even keep the picture's name.
 
 Every other device merges that line through `write_row`
 (`merger.rs:201` → `apply(.., trash = true)`), which takes the file at its word:
 `kind` becomes `bullet` and — since the preceding change — the `notes_images`
-row is deleted with it. Restoring there yields a bullet titled `holiday.png`,
-the attachment list counts the bytes as unreferenced, and the user can delete
-them. Restore that bullet and its page file states a *text* line at a newer
-stamp, which the device that still had the picture then merges: the picture is
-gone on both.
+row is deleted with it. Restoring there yields an empty bullet, the attachment
+list counts the bytes as unreferenced, and the user can delete them. Restore
+that bullet and its page file states a *text* line at a newer stamp, which the
+device that still had the picture then merges: the picture is gone on both.
 
 The page-side loader has the gate this one lacks. `build` (`export.rs:917`)
 reads `Some(image) if row.kind == "image"`, which is why a page file states a
@@ -43,9 +45,12 @@ relativise from `.yonalist`. One departure from `load_document`, below.
 image node outright (`notes-core/src/tree/command_execution.rs:46-53`) and
 `set_image` writes both (`notes-core/src/node.rs:213`).
 
-**No shared helper with `load_document`.** Two call sites, different row
-bases, one building a `Loaded` struct and the other a `DocumentNode` inline. A
-helper taking a `&Row` and a base index costs more than the ten lines it saves.
+**One helper shared with `load_document`, reading its columns by name.** The
+two SELECTs share these six columns and nothing else, and a helper taking a base
+index would be as brittle as the indices it replaced — a column inserted in
+either query would silently shift it. By name the helper is immune to both
+queries' shapes, which is what makes the sharing worth having; the location rule
+differs between the two, so each caller works that out and hands the answer in.
 
 ## The four open questions
 
@@ -90,7 +95,7 @@ records readings for its *deleted* children too (`readings`' subtree has no
 them. It behaves identically for a trashed text node today. Not this change's
 business — Non-goals.
 
-### 3. The empty-hash case is in scope
+### 3. A picture whose bytes are not in the vault is in scope
 
 A row whose bytes never arrived has `content_hash = ''`, no `sync_assets` row,
 and `relative_path` holding *the link the source file wrote* — the schema says
@@ -105,13 +110,22 @@ It has to write an image line all the same. Falling back to text here is the
 worst instance of the defect, not a safe one: the device that *does* hold the
 bytes merges that text line and destroys a healthy picture.
 
-**Decision.** Keep `a.location` when there is one — the honest answer, and the
-same rule the page side follows. When there is not, take only the file name and
-put it under the vault's own store: `assets/{name}`. That is where a trashed
-picture's bytes belong by `plan_placement`'s own rule, and the file name is the
-only part of a waiting link every consumer reads — `resolve_asset` matches on
-it (`sync_merge.rs:282`) and `image_identity` reads its hash tail. Four lines,
-and it makes the common waiting case right by rule rather than by coincidence.
+**Decision.** Every answer names the vault's own store — `assets/{name}` — since
+that is where `plan_placement` sends a trashed picture's bytes. Which name is
+the question, and the rows fall in three:
+
+| The row | The name |
+| --- | --- |
+| Placed: `sync_assets.location` says where the file is | that location, unchanged — the honest answer, and the rule the page side follows |
+| Bytes, but no placement — carrying them failed (`attachments.rs:176`) | the name the placement *would* have given: `asset_disk_name(original_name, hash, mime)` |
+| Still waiting, `content_hash = ''` | the tail of the link it holds — the only part of another document's link that means anything here, and what `resolve_asset` matches on (`sync_merge.rs:282`) |
+
+The middle row is the one an earlier draft of this design missed, and it is not
+a corner. Its `relative_path` is the app store's own name for the file, a bare
+`<hash>.png` (`sync_merge.rs:271-277`). Writing that into the trash gives every
+other device a link whose name no `resolve_asset` can ever match — it bails at
+`sync_merge.rs:254` because the name has no `-` — so the picture becomes a
+placeholder there with no way back. The name has to be a rule, not a lookup.
 
 ### 4. The compare settles
 
@@ -129,8 +143,11 @@ A trash document carrying an image line replays as `Verdict::Skip`
   stay empty, exactly as `build` does it (`export.rs:824`).
 
 This is the same set of properties the page side already relies on, reached the
-same way, so no new test earns its place. The round-trip test asserts
-`export() == 0` on both devices at the end as the guard.
+same way, so no new test earns its place — but the guard has to be a real one.
+`export() == 0` is not: `settle` ends with `absorb`, which ends with an export,
+so nothing is pending whatever the compare decided, and the assertion passes
+with the fix reverted. The round-trip test reads the trash file again through
+`watcher::consider(.., None)` and asserts the merge applied nothing.
 
 ## Contract
 
@@ -140,8 +157,8 @@ other one, and comes back as a picture when it is restored.
 | # | Acceptance (observable) |
 | --- | --- |
 | A1 | `.yonalist/trash.md` states a trashed picture as an image line linking `../assets/<disk name>`. Today the line is the file's name as plain text. |
-| A2 | A picture trashed on one device and restored on the other is a picture on both afterwards. Today the restore yields a bullet titled `holiday.png`, and merging it back destroys the picture on the device that still had it. |
-| A3 | A trashed picture whose bytes never reached this device still states an image line, and its link names the vault's own store rather than climbing out of the vault. Today there is no image line; with the obvious fix the link is `../../assets/…`. |
+| A2 | A picture trashed on one device and restored on the other is a picture on both afterwards, bytes included. Today the restore yields an empty bullet, and merging it back destroys the picture on the device that still had it. |
+| A3 | A trashed picture whose bytes are not in the vault — never arrived, or not yet placed — still states an image line, under a name another device can match to those bytes. Today there is no image line; the obvious fixes write `../../assets/…` or the app store's `<hash>.png`, neither of which any device can resolve. |
 
 All three are carried by one production change and land as one item; each names
 its own failing test.
@@ -234,8 +251,8 @@ trashed image node and places its bytes:
 local helper mirroring `export_core.rs:287`, and assert the file contains
 ``![holiday.png](../assets/holiday-9f2c1b7a4e6d.png)``.
 
-Red: the assertion fails; the line is `- holiday.png <!-- yid: … -->` with no
-`![` in the file at all.
+Red: the assertion fails; the line is `-  <!-- yid: … -->` — no `![` in the
+file, and no name either.
 
 Selector: `cargo test -p notes-sync a_trashed_picture_is_stated_as_a_picture`
 
@@ -254,6 +271,18 @@ the obvious fix, which writes `../../assets/holiday-9f2c1b7a4e6d.png`.
 
 Selector: `cargo test -p notes-sync a_trashed_picture_waiting_for_its_bytes`
 
+**Failing test (A3, the middle row of question 3)** — same file:
+`a_trashed_picture_with_bytes_but_no_placement_states_the_name_it_will_get`. The
+plain `image_node(.., deleted = true)` fixture with no `place`, so the row holds
+its hash and the app store's own `<hash>.png`. Assert the link is
+`../assets/holiday-9f2c1b7a4e6d.png` and that the hash does not appear in the
+file at all.
+
+Red against the tail-of-link rule alone: the line links
+`../assets/<64 hex>.png`, a name no device's `resolve_asset` can match.
+
+Selector: `cargo test -p notes-sync a_trashed_picture_with_bytes_but_no_placement`
+
 **Failing test (A2)** — `crates/notes-sqlite/tests/two_devices.rs`, beside
 `a_page_arriving_before_its_picture_still_reads` (`:896`):
 `a_trashed_picture_comes_back_as_a_picture`. Uses the file's own helpers
@@ -264,9 +293,15 @@ throughout — `seeded_pair`, `add_bullet`, `picture` (`:847`), `settle`,
 2. `one.run(DeleteSubtree { shot })`; `settle` — `two` now holds the deletion
    as `trash.md` stated it.
 3. `two.run(RestoreSubtree { shot })`; `settle(&two, &one)`.
-4. Assert `page_of` on **both** devices reads the node with
-   `image.is_some()` and `original_name == "holiday.png"`. Then
-   `one.export() == 0` and `two.export() == 0` — question 4's guard.
+4. Assert `page_of` on **both** devices reads the node with `image.is_some()`
+   and `original_name == "holiday.png"`, and that the bytes are back beside the
+   page — the row alone would say the first part whatever happened to the file,
+   since its path is derived from the hash.
+
+Between 2 and 3, question 4's guard: read the trash file again through
+`watcher::consider(.., None)` and assert the merge applied nothing. Not
+`export() == 0`, which passes with the fix reverted — `settle` ends with an
+export, so nothing is ever pending by then.
 
 The restore has to happen on `two`, the device that only ever saw the trash
 file. Restoring on `one` proves nothing: `one` never lost its row, and its page

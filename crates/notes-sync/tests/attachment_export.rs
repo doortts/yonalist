@@ -454,8 +454,51 @@ fn a_trashed_picture_is_stated_as_a_picture() {
 
     let file = read(&workspace, ".yonalist/trash.md").expect("the trash");
     assert!(
-        file.contains(&format!("![holiday\\.png](../assets/{DISK_NAME})")),
-        "the trash sits one folder down, and the line still says which picture: {file}"
+        file.contains(&format!("](../assets/{DISK_NAME})")),
+        "the trash sits one folder down: {file}"
+    );
+    // `![holiday`, not the whole escaped alt text: what it proves is that the
+    // name came from the picture's own record. An image node's `text` is empty,
+    // so reading the alt text from there would leave `![](…)`.
+    assert!(
+        file.contains("![holiday"),
+        "and the line is the picture, under the name the user gave it: {file}"
+    );
+}
+
+/// Bytes this device holds but has not managed to carry into the vault. The
+/// row's own `relative_path` names them the way the app's store does — by their
+/// hash — and no other device could ever match that name to these bytes. The
+/// line has to state the name the placement would have given them.
+#[test]
+fn a_trashed_picture_with_bytes_but_no_placement_states_the_name_it_will_get() {
+    let mut connection = database();
+    let workspace = workspace();
+    page(&connection, FIRST_PAGE, "Notes", 4294967296);
+    image_node(&connection, IMAGE_NODE, FIRST_PAGE, "holiday.png", true);
+    // The hash is known, so the row holds the app store's own name for the
+    // file — but nothing has placed it, so there is no asset record to read.
+    assert_eq!(
+        connection
+            .query_row("SELECT relative_path FROM notes_images", [], |row| row
+                .get::<_, String>(
+                0
+            ))
+            .expect("the row"),
+        format!("{HASH}.png"),
+        "the fixture is the row an unplaced picture leaves"
+    );
+
+    export_trash(&mut connection, &workspace);
+
+    let file = read(&workspace, ".yonalist/trash.md").expect("the trash");
+    assert!(
+        file.contains(&format!("](../assets/{DISK_NAME})")),
+        "the name every device can match to these bytes: {file}"
+    );
+    assert!(
+        !file.contains(HASH),
+        "the app store's own name means nothing in a vault: {file}"
     );
 }
 
@@ -479,7 +522,7 @@ fn a_trashed_picture_waiting_for_its_bytes_links_inside_the_vault() {
 
     let file = read(&workspace, ".yonalist/trash.md").expect("the trash");
     assert!(
-        file.contains(&format!("![holiday\\.png](../assets/{DISK_NAME})")),
+        file.contains(&format!("](../assets/{DISK_NAME})")) && file.contains("![holiday"),
         "a waiting row still states its picture: {file}"
     );
     assert!(
