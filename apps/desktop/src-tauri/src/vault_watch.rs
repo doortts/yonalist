@@ -123,6 +123,12 @@ fn run(
     let mut swept = Instant::now()
         .checked_sub(sweep)
         .unwrap_or_else(Instant::now);
+    // The stat gate is a shortcut, and a shortcut is a thing that can be
+    // wrong. Once, after the app is up and the folder has been read the cheap
+    // way, every document is read for real — a transport that preserves the
+    // reading and the size, which Syncthing does, hides an edit from the gate
+    // and from nothing else.
+    let mut sweeps = 0_u32;
     loop {
         // Asked before every round rather than only when an event arrives: a
         // folder nobody is touching still has to let go when it is replaced.
@@ -148,11 +154,21 @@ fn run(
         }
         if swept.elapsed() >= sweep {
             swept = Instant::now();
+            sweeps += 1;
             let present = documents_on_disk(vault_root);
             // A refusal is about a file. Once the file is gone so is what it
             // was about, and one that comes back is read rather than skipped.
             let _ = storage.forget_missing_refusals(&present);
-            sweep_into(&mut queue, storage, vault_root, &present, now());
+            // The first sweep is the boot scan and the third onwards are the
+            // safety net — both take the gate. The second is the verification
+            // pass, and it is the one that does not.
+            if sweeps == 2 {
+                for relative in present.iter().filter(|path| path.ends_with(".md")) {
+                    queue.verify(relative);
+                }
+            } else {
+                sweep_into(&mut queue, storage, vault_root, &present, now());
+            }
         }
         // One, and only after the last one came back: the queue's own rule.
         while let Some(relative) = queue.next_in_flight(now()) {
@@ -431,6 +447,70 @@ mod tests {
             changes.recv_timeout(Duration::from_secs(10)).is_ok(),
             "nothing read the folder at start, so the window shows what the \
              file no longer says"
+        );
+    }
+
+    /// The stat gate is a shortcut and a shortcut can be wrong. A transport
+    /// that preserves the reading and the size — Syncthing does — hands over
+    /// an edit the gate cannot see, and only reading the file finds it.
+    #[test]
+    fn a_change_that_kept_mtime_and_size_is_caught_by_the_verification_pass() {
+        let home = tempfile::tempdir().expect("home");
+        let storage = Arc::new(
+            notes_sqlite::SqliteStorage::open(&home.path().join("notes.sqlite")).expect("open"),
+        );
+        let assets = Arc::new(
+            notes_sqlite::LocalImageAssets::open(&home.path().join("images")).expect("store"),
+        );
+        let vault = home.path().join("vault");
+        std::fs::create_dir_all(&vault).expect("vault");
+        storage
+            .export_pending(&vault, &home.path().join("images"))
+            .expect("export");
+        let page = super::documents_on_disk(&vault)
+            .into_iter()
+            .find(|relative| relative != "README.md")
+            .expect("a page");
+        let path = vault.join(&page);
+        let was = std::fs::metadata(&path).expect("stat");
+        // The same length, different words, and the reading put back: every
+        // one of those is what the transport does.
+        let document = std::fs::read_to_string(&path).expect("read");
+        std::fs::write(&path, document.replacen("Enter", "Enter", 1)).expect("rewrite");
+        let document = std::fs::read_to_string(&path).expect("read");
+        std::fs::write(&path, document.replacen("항목 만들기", "항목 만들기", 1)).expect("same");
+        let edited = document.replacen("Enter — 새 항목", "Enter — 헌 항목", 1);
+        assert_eq!(edited.len(), document.len(), "the same size on disk");
+        std::fs::write(&path, &edited).expect("their edit");
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("open")
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(was.modified().expect("mtime"))
+                    .set_accessed(
+                        was.accessed()
+                            .unwrap_or_else(|_| std::time::SystemTime::now()),
+                    ),
+            )
+            .expect("put the reading back");
+
+        let (told, changes) = std::sync::mpsc::channel();
+        let _watch = VaultWatch::start_with(
+            storage,
+            assets,
+            vault,
+            Duration::from_millis(200),
+            move |_| {
+                let _ = told.send(());
+            },
+        )
+        .expect("watch");
+
+        assert!(
+            changes.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "the gate answered `nothing changed` and nothing looked again"
         );
     }
 
