@@ -43,6 +43,10 @@ enum Request {
         limit: u32,
         reply: SyncSender<Result<Vec<notes_application::SyncConflict>, StorageError>>,
     },
+    VaultFileHash {
+        relative: String,
+        reply: SyncSender<Result<Option<String>, StorageError>>,
+    },
     PendingCount {
         reply: SyncSender<Result<i64, StorageError>>,
     },
@@ -188,6 +192,16 @@ impl SqliteStorage {
         limit: u32,
     ) -> Result<Vec<notes_application::SyncConflict>, StorageError> {
         self.request(|reply| Request::Conflicts { limit, reply })
+    }
+
+    /// What this app last dealt with at that path — what it wrote, or what it
+    /// refused. Either answer keeps a file from being read again on every
+    /// event the transport delivers for it.
+    pub fn vault_file_hash(&self, relative: &str) -> Result<Option<String>, StorageError> {
+        self.request(|reply| Request::VaultFileHash {
+            relative: relative.to_owned(),
+            reply,
+        })
     }
 
     /// How many rows are still waiting to be written out.
@@ -376,6 +390,20 @@ impl SqliteStorage {
                         }
                         Request::Conflicts { limit, reply } => {
                             let _ = reply.send(crate::sync_merge::conflicts(&connection, limit));
+                        }
+                        Request::VaultFileHash { relative, reply } => {
+                            let _ = reply.send(
+                                connection
+                                    .query_row(
+                                        "SELECT exported_hash FROM sync_documents
+                                         WHERE folder_path = ?1",
+                                        [&relative],
+                                        |row| row.get::<_, String>(0),
+                                    )
+                                    .optional()
+                                    .map(|hash| hash.filter(|hash| !hash.is_empty()))
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
                         }
                         Request::PendingCount { reply } => {
                             let _ = reply.send(

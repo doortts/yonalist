@@ -5,6 +5,7 @@ mod image_replace_ipc;
 mod startup;
 mod sync_runtime;
 mod sync_settings;
+mod vault_watch;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -15,12 +16,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use notes_application::{
     BootSnapshot, CloseOutcome, CommandEnvelope, ForestRequest, ForestSnapshot, HistoryRequest,
     ImageAssetPort, MutationReceipt, NotesError, NotesErrorCode, NotesService, SearchPage,
-    SearchQuery, SyncConflict, SyncVaultFolderState, UnusedAssetsReport, ViewportPage,
+    SearchQuery, SyncChanged, SyncConflict, SyncVaultFolderState, UnusedAssetsReport, ViewportPage,
     ViewportRequest,
 };
 use notes_export::{NativeExportPublisher, NativeExportRenderer};
 use notes_sqlite::{LocalImageAssets, SqliteStorage};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 use crate::startup::StartupGate;
 
@@ -34,6 +35,9 @@ struct DesktopRuntime {
     export_renderer: Arc<NativeExportRenderer>,
     export_publisher: Arc<NativeExportPublisher>,
     initial_boot: Mutex<Option<BootSnapshot>>,
+    /// Held rather than dropped: the watch ends when this does. Absent until
+    /// the user has picked a folder, and replaced when they pick another.
+    watch: Mutex<Option<vault_watch::VaultWatch>>,
     /// Last, so that closing the app writes what is waiting before the storage
     /// it reads from goes away.
     sync: sync_runtime::SyncRuntime,
@@ -323,10 +327,21 @@ async fn notes_sync_vault_get(
 
 #[tauri::command]
 async fn notes_sync_vault_set(
+    app: tauri::AppHandle,
     state: State<'_, DesktopState>,
     path: String,
 ) -> Result<SyncVaultFolderState, NotesError> {
-    sync_settings::set_vault_path(&state.data_directory, Path::new(&path)).map_err(NotesError::from)
+    let folder = sync_settings::set_vault_path(&state.data_directory, Path::new(&path))
+        .map_err(NotesError::from)?;
+    // The folder is only watched once it is known, and this is where it
+    // becomes known — on first run there was nothing to watch at startup.
+    let gate = Arc::clone(&state.runtime);
+    run_blocking(move || {
+        gate.wait()?.watch_vault(&app);
+        Ok(())
+    })
+    .await?;
+    Ok(folder)
 }
 
 #[tauri::command]
@@ -544,8 +559,52 @@ impl DesktopRuntime {
             export_renderer,
             export_publisher,
             initial_boot: Mutex::new(Some(initial_boot)),
+            watch: Mutex::new(None),
             sync: sync_runtime::SyncRuntime::start(exporter),
         })
+    }
+
+    /// Starts watching the folder the user picked, replacing any earlier
+    /// watch. Nothing here is fatal: a folder that cannot be watched still
+    /// exports, and the app is more use without a watch than not at all.
+    fn watch_vault(&self, app: &tauri::AppHandle) {
+        let Some(vault) = sync_settings::read_vault_path(&self.data_directory) else {
+            return;
+        };
+        let storage = Arc::clone(&self.storage);
+        let service = Arc::clone(&self.service);
+        let window = app.clone();
+        let started =
+            vault_watch::VaultWatch::start(Arc::clone(&self.storage), vault, move |outcome| {
+                let Ok(revision) = storage.revision() else {
+                    return;
+                };
+                let affected: Vec<String> = outcome
+                    .changed_ids
+                    .iter()
+                    .chain(outcome.deleted_ids.iter())
+                    .cloned()
+                    .collect();
+                // The session first: a window told about a revision the service
+                // does not know about would have every later edit rejected.
+                let _ = service.absorb_external(revision, &affected);
+                let _ = window.emit(
+                    "notes://sync-changed",
+                    SyncChanged {
+                        revision,
+                        changed_node_ids: outcome.changed_ids.iter().cloned().collect(),
+                        deleted_node_ids: outcome.deleted_ids.iter().cloned().collect(),
+                    },
+                );
+            });
+        match started {
+            Ok(watch) => {
+                if let Ok(mut held) = self.watch.lock() {
+                    *held = Some(watch);
+                }
+            }
+            Err(reason) => eprintln!("The vault is not being watched: {reason}"),
+        }
     }
 
     fn clear_initial_boot(&self) -> Result<(), NotesError> {
@@ -629,6 +688,7 @@ pub fn run() {
                 .join("resources")
                 .join("NanumGothic-Regular.ttf");
             let runtime = Arc::new(StartupGate::pending());
+            let watching = app.handle().clone();
             app.manage(DesktopState {
                 runtime: Arc::clone(&runtime),
                 data_directory: data_directory.clone(),
@@ -637,7 +697,13 @@ pub fn run() {
             std::thread::Builder::new()
                 .name("notes-v2-startup".into())
                 .spawn(move || {
-                    runtime.complete(DesktopRuntime::initialize(data_directory, font_path))
+                    runtime.complete(DesktopRuntime::initialize(data_directory, font_path));
+                    // After the gate opens, so a command arriving mid-startup
+                    // waits for the same runtime this is about to hand a
+                    // watcher rather than a second one.
+                    if let Ok(ready) = runtime.wait() {
+                        ready.watch_vault(&watching);
+                    }
                 })?;
             Ok(())
         })

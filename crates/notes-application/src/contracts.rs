@@ -525,6 +525,20 @@ pub enum CloseOutcome {
     AlreadyClosed,
 }
 
+/// What a merge changed, pushed to the window rather than answered to it.
+/// This is the app's first event: every other change the window learns about
+/// is the receipt for something it asked for, and a file arriving from another
+/// device is nobody's request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SyncChanged {
+    #[ts(type = "number")]
+    pub revision: u64,
+    pub changed_node_ids: Vec<String>,
+    pub deleted_node_ids: Vec<String>,
+}
+
 /// One defeat, complete enough for the settings screen to show it and to put
 /// it back. By the time anyone looks, the file that lost is long gone — so
 /// everything the screen needs lives in the row rather than being fetched.

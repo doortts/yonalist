@@ -23,11 +23,6 @@ use crate::document::VaultFile;
 use crate::merger::MergeInput;
 use std::path::Path;
 
-/// A file the sync client has not filled in yet. Cloud clients leave one
-/// behind when a file is "online only", and it reads as empty rather than as
-/// missing.
-const PLACEHOLDER_MAX_BYTES: u64 = 0;
-
 pub enum Verdict {
     /// This app wrote these bytes. Reading them back as news would have two
     /// devices handing each other the same document for ever.
@@ -57,7 +52,11 @@ pub fn consider(
     if !facts.is_file() {
         return Err(format!("`{relative}` is not a file this vault holds."));
     }
-    if facts.len() <= PLACEHOLDER_MAX_BYTES {
+    // A file the sync client has not filled in yet. Cloud clients leave one
+    // behind when a file is "online only", and it reads as empty rather than
+    // as missing. Empty is the whole test: this format always writes
+    // frontmatter, so a document of ours is never zero bytes.
+    if facts.len() == 0 {
         return Ok(Verdict::NotYetArrived);
     }
     let bytes =
