@@ -49,7 +49,7 @@ fn sync_directory(path: &Path) -> Result<(), String> {
 /// Resolves everything above the file and refuses a result that left the vault.
 /// All three operations run through it, so a link planted in the folder cannot
 /// redirect a read, a write, or a move past the root.
-fn resolve_inside(vault_root: &Path, path: &Path) -> Result<PathBuf, String> {
+pub(crate) fn resolve_inside(vault_root: &Path, path: &Path) -> Result<PathBuf, String> {
     let name = path
         .file_name()
         .ok_or_else(|| format!("{} does not name a file.", path.display()))?;

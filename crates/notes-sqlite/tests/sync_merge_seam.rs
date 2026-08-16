@@ -490,3 +490,154 @@ fn an_export_with_nothing_waiting_writes_nothing() {
 
     assert_eq!(written, 0, "an export with nothing to say says nothing");
 }
+
+/// The write-back loop has to close. A merge that absorbed a hand edit records
+/// exactly those bytes as what is on disk, so the next export is allowed to
+/// replace them with the canonical form — otherwise the exporter answers
+/// "somebody's edit" forever and the vault never catches up.
+#[test]
+fn a_hand_edited_file_gets_its_canonical_form_back() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    let folder = vault.path().join("Projects-4f1c8e20a3b7");
+    std::fs::create_dir_all(&folder).expect("folder");
+    // A file somebody typed into: same node, no comment, so the merge issues an
+    // id and marks the document for a rewrite.
+    let by_hand = "---\nkind: yonalist-notes\nformat_version: 1\n\
+                   id: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1\n\
+                   max_hlc: 000000005-00-a3f2\nroot_hlc: 000000005-00-a3f2\n---\n\
+                   # Projects\n\n- typed by hand\n";
+    std::fs::write(folder.join("README.md"), by_hand).expect("write");
+    let parsed = notes_sync::parse::parse(by_hand.as_bytes()).expect("parse");
+    let mut input = input();
+    input.file_hash = notes_sync::export::hash_bytes(by_hand.as_bytes());
+    let outcome = storage.merge_document(&parsed, &input).expect("merge");
+    assert!(
+        outcome.needs_write_back,
+        "the file is missing the id it was given"
+    );
+
+    let written = storage.export_pending(vault.path()).expect("export");
+
+    assert!(written > 0, "the canonical form has to reach the file");
+    let now = std::fs::read_to_string(folder.join("README.md")).expect("file");
+    assert!(
+        now.contains("yid:"),
+        "the id the merge issued belongs in the file: {now}"
+    );
+}
+
+/// A vault that has seen a deletion referencing a document it has not received
+/// yet holds a placeholder with no stamp. Nothing can render that, and one such
+/// row must not stop every other document from going out.
+#[test]
+fn a_placeholder_row_does_not_stop_the_export() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let db_path = directory.path().join("notes.sqlite");
+    let storage = SqliteStorage::open(&db_path).expect("open");
+    let vault = tempfile::tempdir().expect("vault");
+    let unknown_parent = "9d3f21b8-c440-4c91-8d02-2e77a05fb163";
+    let mut gone = node(NODE_ID, &stamp(5), "Gone");
+    gone.from = Some((unknown_parent.to_owned(), 4_294_967_296));
+    let mut trash_input = input();
+    trash_input.file_path = ".yonalist/trash.md".to_owned();
+    storage
+        .merge_document(
+            &VaultFile::Trash(notes_sync::document::TrashDocument {
+                max_hlc: stamp(5),
+                nodes: vec![gone],
+            }),
+            &trash_input,
+        )
+        .expect("trash");
+    // A deletion made here is what puts the trash in the queue, so the trash
+    // export actually runs alongside the placeholder.
+    let side = rusqlite::Connection::open(&db_path).expect("open");
+    notes_sync::hlc::register(
+        &side,
+        std::sync::Arc::new(notes_sync::hlc::Clock::new("dddd").expect("clock")),
+    )
+    .expect("register");
+    side.execute(
+        "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, deleted, hlc)
+         VALUES ('8a201f33-0000-4c91-8d02-00000000000f', 'root', 4294967296, 'bullet',
+                 'Deleted here', 1, '')",
+        (),
+    )
+    .expect("local deletion");
+
+    let written = storage.export_pending(vault.path()).expect("export");
+
+    assert!(written > 0, "home still had to be written");
+    let trash = std::fs::read_to_string(vault.path().join(".yonalist").join("trash.md"))
+        .expect("the trash was written");
+    assert!(trash.contains("Deleted here"), "{trash}");
+    let mut found = Vec::new();
+    let mut stack = vec![vault.path().to_path_buf()];
+    while let Some(at) = stack.pop() {
+        for entry in std::fs::read_dir(&at).expect("read") {
+            let entry = entry.expect("entry");
+            if entry.path().is_dir() {
+                stack.push(entry.path());
+            } else if let Ok(text) = std::fs::read_to_string(entry.path()) {
+                found.push(text);
+            }
+        }
+    }
+    assert!(
+        !found.iter().any(|text| text.contains(unknown_parent)),
+        "a row waiting for its document has nothing to say yet"
+    );
+}
+
+/// A page whose image row holds a path this format never writes must not take
+/// the rest of the vault down with it.
+#[test]
+fn one_document_that_cannot_be_written_does_not_stop_the_others() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("notes.sqlite");
+    let storage = SqliteStorage::open(&path).expect("open");
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("seed");
+    let command = NotesCommand::UpdateText {
+        id: notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id"),
+        text: "typed here".to_owned(),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("edit");
+    // The onboarding page is dirty from the seed, and this one becomes a page
+    // whose image states a path this format never writes — the shape every
+    // real image row has until attachments are placed.
+    let side = rusqlite::Connection::open(&path).expect("open");
+    notes_sync::hlc::register(
+        &side,
+        std::sync::Arc::new(notes_sync::hlc::Clock::new("dddd").expect("clock")),
+    )
+    .expect("register");
+    side.execute(
+        "UPDATE notes_nodes SET kind = 'image' WHERE id = ?1",
+        [NODE_ID],
+    )
+    .expect("image");
+    side.execute(
+        "INSERT INTO notes_images(
+             node_id, content_hash, relative_path, original_name, mime_type,
+             display_width, pixel_width, pixel_height, byte_length)
+         VALUES (?1, '', 'elsewhere/shot.png', 'shot.png', 'image/png', 320, 10, 10, 4)",
+        [NODE_ID],
+    )
+    .expect("metadata");
+
+    let written = storage.export_pending(vault.path()).expect("export");
+
+    assert!(
+        written > 0,
+        "the documents that could be written were written"
+    );
+    assert!(vault.path().join("README.md").exists(), "home included");
+}

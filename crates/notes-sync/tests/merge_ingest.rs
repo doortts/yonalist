@@ -1504,17 +1504,18 @@ fn a_drift_echo_still_asks_for_the_file_to_be_rewritten() {
     let outcome = merge_document(&transaction, &clock(), &file, &input()).expect("replay");
 
     assert!(outcome.needs_write_back);
-    let exported: String = transaction
+    // What says the file is behind is the dirty mark, not a hash that disagrees
+    // with the bytes on disk: recording anything but the absorbed bytes would
+    // leave the exporter answering "somebody's edit" forever and the canonical
+    // form would never reach the file.
+    let waiting: i64 = transaction
         .query_row(
-            "SELECT exported_hash FROM sync_documents WHERE root_id = ?1",
+            "SELECT count(*) FROM sync_dirty_nodes WHERE node_id = ?1",
             [PAGE_ID],
             |row| row.get(0),
         )
-        .expect("document");
-    assert_eq!(
-        exported, "",
-        "the file on disk is not what this device holds, and the record has to say so"
-    );
+        .expect("dirty");
+    assert_eq!(waiting, 1, "the document is queued for a rewrite");
 }
 
 /// The conflict log is read back by the settings screen and re-applied from.

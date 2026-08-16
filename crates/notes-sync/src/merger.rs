@@ -171,13 +171,12 @@ fn merge_page(
     repair_structure(transaction, clock, &mut outcome)?;
     outcome.needs_write_back |=
         document_is_missing_nodes(transaction, &root_id, &page.max_hlc, &incoming)?;
-    record_document(
-        transaction,
-        &root_id,
-        input,
-        page.max_hlc.as_str(),
-        &outcome,
-    )?;
+    if outcome.needs_write_back {
+        // Queued for the exporter the same way a local edit is: the file needs
+        // rewriting, and the dirty mark is how anything learns that.
+        mark_dirty(transaction, &root_id)?;
+    }
+    record_document(transaction, &root_id, input, page.max_hlc.as_str())?;
     Ok(outcome)
 }
 
@@ -192,13 +191,7 @@ fn merge_trash(
     flatten(&trash.nodes, "", &mut incoming);
     apply(transaction, clock, &incoming, &mut outcome, true)?;
     repair_structure(transaction, clock, &mut outcome)?;
-    record_document(
-        transaction,
-        "yonalist-trash",
-        input,
-        trash.max_hlc.as_str(),
-        &outcome,
-    )?;
+    record_document(transaction, "yonalist-trash", input, trash.max_hlc.as_str())?;
     Ok(outcome)
 }
 
@@ -1727,15 +1720,12 @@ fn record_document(
     root_id: &str,
     input: &MergeInput,
     max_hlc: &str,
-    outcome: &MergeOutcome,
 ) -> Result<(), MergeError> {
-    // A merge that has to be written back deliberately leaves a stale exported
-    // hash, so the exporter knows the file is not what this device holds.
-    let exported_hash = if outcome.needs_write_back {
-        String::new()
-    } else {
-        input.file_hash.clone()
-    };
+    // The bytes on disk are exactly what was just absorbed, so replacing them
+    // loses nothing — recording anything else would leave the exporter
+    // answering "somebody's edit" forever and the canonical form would never
+    // reach the file. What says the file is behind is the root's dirty mark.
+    let exported_hash = input.file_hash.clone();
     transaction
         .execute(
             "INSERT INTO sync_documents(
@@ -1758,6 +1748,17 @@ fn record_document(
                 input.file_size,
             ],
         )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn mark_dirty(transaction: &Transaction<'_>, id: &str) -> Result<(), MergeError> {
+    transaction
+        .prepare_cached(
+            "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES (?1, unixepoch())
+             ON CONFLICT(node_id) DO NOTHING",
+        )
+        .and_then(|mut statement| statement.execute([id]))
         .map_err(|error| error.to_string())?;
     Ok(())
 }

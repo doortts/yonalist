@@ -74,6 +74,11 @@ fn write_checked(
     relative: &str,
     file: &VaultFile,
 ) -> Result<ExportOutcome, ExportError> {
+    // The root the guarded read checks against has to be the resolved one:
+    // a temporary directory reached through a symlink would otherwise read as
+    // outside its own vault.
+    let vault_root = &std::fs::canonicalize(vault_root)
+        .map_err(|error| format!("Could not resolve the vault: {error}"))?;
     let bytes = render(file)?;
 
     // Invariant 4, before anything touches the disk: a document that cannot be
@@ -91,7 +96,9 @@ fn write_checked(
     let hash = hash_bytes(&bytes);
     let recorded = recorded_hash(transaction, root_id)?;
 
-    if let Ok(existing) = std::fs::read(&path) {
+    if let Ok(existing) =
+        crate::file_io::read_regular_bounded(vault_root, &path, crate::parse::MAX_FILE_BYTES)
+    {
         let existing_hash = hash_bytes(&existing);
         if existing_hash == hash {
             // The same bytes going out again would look like an edit to every
@@ -143,16 +150,20 @@ pub fn pending_documents(transaction: &Transaction<'_>) -> Result<Vec<String>, E
                  FROM climb JOIN notes_nodes n ON n.id = climb.at
                  JOIN notes_nodes p ON p.id = n.parent_id
                  WHERE n.parent_id IS NOT NULL AND n.parent_id <> 'root'
+                   -- A node that owns a document of its own is where the climb
+                   -- ends: its subtree is that document's, not its parent's.
+                   AND NOT EXISTS (
+                       SELECT 1 FROM sync_documents d WHERE d.root_id = climb.at
+                   )
              )
-             SELECT DISTINCT CASE
-                 WHEN deleted = 1 THEN 'yonalist-trash'
-                 WHEN at = 'root' THEN 'root'
-                 ELSE at
-             END
-             FROM climb
-             WHERE deleted = 1
-                OR at = 'root'
+             -- A deleted row belongs to the trash *and* to the page it left:
+             -- that page's file still carries its line until it is rewritten.
+             SELECT DISTINCT at FROM climb
+             WHERE at = 'root'
+                OR EXISTS (SELECT 1 FROM sync_documents d WHERE d.root_id = at)
                 OR (SELECT parent_id FROM notes_nodes WHERE id = at) = 'root'
+             UNION
+             SELECT 'yonalist-trash' FROM climb WHERE deleted = 1
              ORDER BY 1",
         )
         .map_err(|error| error.to_string())?;
@@ -175,7 +186,7 @@ pub fn export_home(
 ) -> Result<ExportOutcome, ExportError> {
     let mut statement = transaction
         .prepare_cached(
-            "SELECT n.id, n.text, n.hlc, d.folder_path
+            "SELECT n.id, n.text, n.hlc, d.folder_path, n.sync_prev, n.sync_prev_hlc
              FROM notes_nodes n
              LEFT JOIN sync_documents d ON d.root_id = n.id
              WHERE n.parent_id = 'root' AND n.deleted = 0
@@ -189,12 +200,14 @@ pub fn export_home(
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
             ))
         })
         .map_err(|error| error.to_string())?;
     let mut nodes = Vec::new();
     for row in rows {
-        let (id, title, hlc, folder) = row.map_err(|error| error.to_string())?;
+        let (id, title, hlc, folder, prev, prev_hlc) = row.map_err(|error| error.to_string())?;
         let path = match folder {
             Some(folder) => folder,
             None => format!("{}/README.md", page_folder_name(&title, &id)?),
@@ -209,7 +222,9 @@ pub fn export_home(
             completed: false,
             starred: false,
             from: None,
-            place: None,
+            // Where a page sits is stated on this line, so the claim travels
+            // with it — home is the file that owns page order.
+            place: Some((prev, prev_hlc)),
             unknown_tokens: Vec::new(),
             children: Vec::new(),
         });
@@ -256,12 +271,17 @@ pub fn retire_missing_documents(
     transaction: &Transaction<'_>,
     vault_root: &Path,
 ) -> Result<Vec<String>, ExportError> {
+    let vault_root = &std::fs::canonicalize(vault_root)
+        .map_err(|error| format!("Could not resolve the vault: {error}"))?;
     let mut statement = transaction
         .prepare_cached(
             "SELECT d.root_id, d.folder_path FROM sync_documents d
              LEFT JOIN notes_nodes n ON n.id = d.root_id
              WHERE d.root_id NOT IN ('root', 'yonalist-trash')
-               AND (n.id IS NULL OR n.deleted = 1 OR n.parent_id IS NULL)",
+               -- Gone, deleted, or no longer a page at all: a folder standing
+               -- for something that is not a page any more tells the user they
+               -- still have one.
+               AND (n.id IS NULL OR n.deleted = 1 OR n.parent_id IS NOT 'root')",
         )
         .map_err(|error| error.to_string())?;
     let rows = statement
@@ -272,15 +292,18 @@ pub fn retire_missing_documents(
     let mut retired = Vec::new();
     for row in rows {
         let (root_id, folder_path) = row.map_err(|error| error.to_string())?;
+        // Resolved, not merely prefixed: a recorded path is a value the watcher
+        // supplied, and `..` in it would walk a plain prefix check straight out
+        // of the vault with a recursive delete behind it.
         let folder = std::path::Path::new(&folder_path)
             .parent()
             .map(|parent| vault_root.join(parent));
         if let Some(folder) = folder
-            && folder.starts_with(vault_root)
-            && folder != vault_root
             && folder.is_dir()
+            && let Ok(resolved) = crate::file_io::resolve_inside(vault_root, &folder)
+            && &resolved != vault_root
         {
-            std::fs::remove_dir_all(&folder)
+            std::fs::remove_dir_all(&resolved)
                 .map_err(|error| format!("Could not clear a retired folder: {error}"))?;
         }
         retired.push(root_id);
@@ -319,46 +342,13 @@ pub fn export_trash(
         });
     }
     let max_hlc = nodes.iter().map(highest).max().unwrap_or_default();
-    let bytes = render(&VaultFile::Trash(crate::document::TrashDocument {
-        max_hlc,
-        nodes,
-    }))?;
-    let read_back = parse(&bytes).map_err(|reason| {
-        format!("The trash this app just rendered could not be read back: {reason}")
-    })?;
-    if render(&read_back)? != bytes {
-        return Err("The trash this app just rendered did not survive a read back.".to_owned());
-    }
-    let hash = hash_bytes(&bytes);
-    let recorded = recorded_hash(transaction, "yonalist-trash")?;
-    if let Ok(existing) = std::fs::read(&path) {
-        let existing_hash = hash_bytes(&existing);
-        if existing_hash == hash {
-            return Ok(ExportOutcome {
-                written: false,
-                needs_merge: false,
-                path: relative,
-            });
-        }
-        if recorded.as_deref() != Some(existing_hash.as_str()) {
-            return Ok(ExportOutcome {
-                written: false,
-                needs_merge: true,
-                path: relative,
-            });
-        }
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("Could not make the vault's own folder: {error}"))?;
-    }
-    write_atomic(vault_root, &path, &bytes)?;
-    record_document(transaction, "yonalist-trash", &relative, &hash)?;
-    Ok(ExportOutcome {
-        written: true,
-        needs_merge: false,
-        path: relative,
-    })
+    write_checked(
+        transaction,
+        vault_root,
+        "yonalist-trash",
+        &relative,
+        &VaultFile::Trash(crate::document::TrashDocument { max_hlc, nodes }),
+    )
 }
 
 /// What the trash holds: every deleted node whose parent is still alive, with
@@ -371,7 +361,9 @@ fn load_trash(transaction: &Transaction<'_>) -> Result<Vec<DocumentNode>, Export
                     p.deleted IS NOT 1
              FROM notes_nodes n
              LEFT JOIN notes_nodes p ON p.id = n.parent_id
-             WHERE n.deleted = 1
+             -- A row waiting for the document that will describe it carries no
+             -- stamp, and nothing can render that. It has nothing to say yet.
+             WHERE n.deleted = 1 AND n.hlc <> ''
              ORDER BY n.sort_key, n.id",
         )
         .map_err(|error| error.to_string())?;
@@ -484,8 +476,15 @@ fn load_document(
             "WITH RECURSIVE subtree(id) AS (
                  SELECT ?1
                  UNION ALL
+                 -- Stops where another document begins: a split child's nodes
+                 -- belong to its own file, and inlining them here would make
+                 -- two files authoritative for one node.
                  SELECT n.id FROM notes_nodes n JOIN subtree s ON n.parent_id = s.id
                  WHERE n.deleted = 0
+                   AND (s.id = ?1
+                        OR NOT EXISTS (
+                            SELECT 1 FROM sync_documents d WHERE d.root_id = s.id
+                        ))
              )
              SELECT n.id, n.parent_id, n.sort_key, n.kind, n.text, n.note, n.marker,
                     n.ordered_start, n.collapsed, n.completed, n.starred, n.hlc,
@@ -495,6 +494,7 @@ fn load_document(
              FROM notes_nodes n
              LEFT JOIN notes_images i ON i.node_id = n.id
              WHERE n.id IN (SELECT id FROM subtree) AND n.deleted = 0
+               AND (n.hlc <> '' OR n.id = ?1)
              ORDER BY n.parent_id, n.sort_key, n.id",
         )
         .map_err(|error| error.to_string())?;
@@ -655,8 +655,16 @@ fn clear_dirty(transaction: &Transaction<'_>, root_id: &str) -> Result<(), Expor
                      SELECT ?1
                      UNION ALL
                      SELECT n.id FROM notes_nodes n JOIN subtree s ON n.parent_id = s.id
+                     WHERE s.id = ?1
+                        OR NOT EXISTS (
+                            SELECT 1 FROM sync_documents d WHERE d.root_id = s.id
+                        )
                  )
-                 SELECT id FROM subtree
+                 -- Only what this document actually wrote. A deleted row's line
+                 -- is the trash's to clear, and clearing it here would lose the
+                 -- one piece of evidence a deletion gets.
+                 SELECT id FROM subtree WHERE (SELECT deleted FROM notes_nodes
+                     WHERE notes_nodes.id = subtree.id) = 0
              )",
         )
         .and_then(|mut statement| statement.execute([root_id]))

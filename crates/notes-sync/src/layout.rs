@@ -43,9 +43,11 @@ fn clean_title(title: &str) -> String {
     // the link. With all of it gone the link target needs no escaping at all.
     let replaced: String = title
         .nfc()
+        // A control character is not a word boundary — it is nothing at all, so
+        // it leaves without a trace rather than becoming a separator.
+        .filter(|character| !character.is_control())
         .map(|character| {
-            if character.is_control()
-                || character.is_whitespace()
+            if character.is_whitespace()
                 || matches!(
                     character,
                     '/' | '\\'
