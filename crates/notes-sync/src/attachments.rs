@@ -108,7 +108,7 @@ fn given_name(disk_name: &str) -> &str {
 /// file, since what follows it is the same hash and the same extension for
 /// both, and comparing across that boundary would let a hyphen inside one name
 /// decide the answer.
-pub fn chosen_disk_name<'a>(disk_names: impl Iterator<Item = &'a str>) -> String {
+pub(crate) fn chosen_disk_name<'a>(disk_names: impl Iterator<Item = &'a str>) -> String {
     disk_names
         .min_by_key(|disk_name| given_name(disk_name).to_owned())
         .unwrap_or_default()

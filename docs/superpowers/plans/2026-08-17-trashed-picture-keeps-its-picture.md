@@ -21,7 +21,7 @@ them. Restore that bullet and its page file states a *text* line at a newer
 stamp, which the device that still had the picture then merges: the picture is
 gone on both.
 
-The page-side loader has the gate this one lacks. `build` (`export.rs:1026`)
+The page-side loader has the gate this one lacks. `build` (`export.rs:1024`)
 reads `Some(image) if row.kind == "image"`, which is why a page file states a
 picture as a picture. The trash is the one document that does not.
 
@@ -36,7 +36,7 @@ picture as a picture. The trash is the one document that does not.
 | The link | `Placement::link_from` (`attachments.rs:54`) turns a vault-relative location into a document-relative link; for `.yonalist` and `assets/x-<hash12>.png` that is `../assets/x-<hash12>.png`, a spelling `resolve_asset` already matches (`sync_merge.rs:282`). |
 | The merge | `write_row` calls `write_image` on `NodeBody::Image` whatever `trash` is (`merger.rs:1235`). Nothing to change. |
 
-So: add the two joins `load_document` already has (`export.rs:906-907`), select
+So: add the two joins `load_document` already has (`export.rs:904-905`), select
 `n.kind` and the image columns, gate on kind exactly as `build` does, and
 relativise from `.yonalist`. One departure from `load_document`, below.
 
@@ -70,7 +70,7 @@ that is observable to a user is a picture coming back as a picture.
 
 ### 2. `readings` does not change
 
-`readings` (`export.rs:784`) is reached only from `settle_readings` and
+`readings` (`export.rs:782`) is reached only from `settle_readings` and
 `record_readings`, both called only from `export_document` (`:55`, `:70`).
 `export_trash` calls neither. So the trash's own export records no reading at
 all, and this change gives `readings` no new input.
@@ -91,7 +91,7 @@ The trash/restore direction is not in that blind spot: `deleted` is a
 
 One thing this leaves standing, unchanged and pre-existing: a page's export
 records readings for its *deleted* children too (`readings`' subtree has no
-`deleted = 0` filter, unlike `load_document`'s at `:908`) while its file omits
+`deleted = 0` filter, unlike `load_document`'s at `:906`) while its file omits
 them. It behaves identically for a trashed text node today. Not this change's
 business — Non-goals.
 
@@ -117,7 +117,7 @@ the question, and the rows fall in three:
 | The row | The name |
 | --- | --- |
 | Placed: `sync_assets.location` says where the file is | that location, unchanged — the honest answer, and the rule the page side follows |
-| Bytes, but no placement — carrying them failed (`attachments.rs:176`) | the name the placement is *going* to give: `chosen_disk_name` over every note holding those bytes, the same rule `plan_placement` applies. Not this row's own spelling — the smallest of the names the users gave wins, so a row cannot answer for the group it is in |
+| Bytes, but no placement — carrying them failed (`attachments.rs:187`) | the name the placement is *going* to give: `chosen_disk_name` over every note holding those bytes, the same rule `plan_placement` applies. Not this row's own spelling — the smallest of the names the users gave wins, so a row cannot answer for the group it is in |
 | Still waiting, `content_hash = ''` | the tail of the link it holds — the only part of another document's link that means anything here, and what `resolve_asset` matches on (`sync_merge.rs:282`) |
 
 The middle row is the one an earlier draft of this design missed, and it is not
@@ -190,8 +190,8 @@ its own failing test.
 
 | Boundary | Touch |
 | --- | --- |
-| Rust | `crates/notes-sync/src/export.rs` — `load_trash` and its one caller's argument |
-| SQLite | Two LEFT JOINs in one SELECT. No schema change, no migration |
+| Rust | `crates/notes-sync/src/export.rs` — `load_trash`, its one caller's argument, and two new helpers beside it (`trash_asset`, `unplaced_names`); the picture line is read by `image_of`, shared with `load_document`. `crates/notes-sync/src/attachments.rs` — the name rule `plan_placement` already applied, extracted as `chosen_disk_name` so the trash can apply the same one |
+| SQLite | Two LEFT JOINs in one SELECT, plus one read of `notes_images` per trash export to work out the unplaced names. No schema change, no migration |
 | React / IPC / macOS | Untouched |
 
 **Manual proof (shortest real path)**
@@ -212,38 +212,37 @@ its own failing test.
 `load_trash` (`crates/notes-sync/src/export.rs:496`) takes the document folder
 the way `load_document` does, and `export_trash` passes `folder_of(&relative)`
 (`:431`, the idiom at `:56`). Its SELECT gains what `load_document` already
-selects (`:782-787`), plus `n.kind`, and splits the placement from the waiting
+selects (`:900-905`), plus `n.kind`, and splits the placement from the waiting
 link rather than coalescing them:
 
 ```sql
-       n.kind, NULLIF(a.location, ''), i.relative_path, i.original_name,
-       i.display_width, i.pixel_width, i.pixel_height, i.byte_length
+       n.kind, NULLIF(a.location, '') AS location, i.content_hash, i.mime_type,
+       i.relative_path, i.original_name, i.display_width, i.pixel_width,
+       i.pixel_height, i.byte_length
 FROM notes_nodes n
 LEFT JOIN notes_nodes p ON p.id = n.parent_id
 LEFT JOIN notes_images i ON i.node_id = n.id
 LEFT JOIN sync_assets a ON a.content_hash = i.content_hash
 ```
 
-and the body is chosen the way `build` chooses it (`:917`):
+and the body is chosen the way `build` chooses it (`:1024`), with the location
+worked out by the three-row rule in question 3 — `sync_assets.location` when
+there is one, otherwise the name the placement is going to choose, which
+`unplaced_names` computes per hash through `attachments::chosen_disk_name`
+before the rows are read:
 
 ```rust
-// Only a row that has its bytes has a placement to read. One still waiting
-// holds the link some *other* document wrote — not a place in this vault, and
-// read as one it would climb out of it. Its file name is the only part every
-// device agrees on, and a picture in the trash belongs in the vault's own
-// store: `plan_placement` sends it there for any holder that is deleted.
-let location = placed.or_else(|| {
-    waiting.map(|link| format!("assets/{}", link.rsplit('/').next().unwrap_or_default()))
-});
-body: match location {
-    Some(location) if kind == "image" => NodeBody::Image(ImageReference {
-        path: Placement { location, moves: Vec::new() }.link_from(document_folder),
-        original_name: ...,
-        ...
-    }),
+body: match row.get::<_, String>("kind")?.as_str() {
+    "image" => match trash_asset(row, &unplaced)? {
+        Some(location) => NodeBody::Image(image_of(row, location, document_folder)?),
+        None => NodeBody::Text(row.get(3)?),
+    },
     _ => NodeBody::Text(row.get(3)?),
 },
 ```
+
+`image_of` is shared with `load_document` and reads its columns by name, so the
+two SELECTs cannot shift each other's columns.
 
 **Failing test (A1)** — `crates/notes-sync/tests/attachment_export.rs`, beside
 `a_deleted_note_still_counts_as_a_reference` (`:405`), which already seeds a
