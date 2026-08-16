@@ -325,21 +325,43 @@ mod tests {
     }
 
     proptest! {
+        /// Every merge property downstream rests on this one: the whole point of
+        /// the fixed-width encoding is that comparing two strings is comparing
+        /// two times, device included. Two readings from different devices in
+        /// the same millisecond still have to order the same way on both of
+        /// them, or a merge would reach different answers depending on where it
+        /// ran.
         #[test]
         fn prop_hlc_string_order_equals_component_order(
             left_millis in 0u64..=MAX_MILLIS,
             left_counter in 0u32..=MAX_COUNTER,
+            left_device in "[0-9a-f]{4}",
             right_millis in 0u64..=MAX_MILLIS,
             right_counter in 0u32..=MAX_COUNTER,
+            right_device in "[0-9a-f]{4}",
         ) {
-            let left = Hlc::new(left_millis, left_counter, "a3f2").expect("left");
-            let right = Hlc::new(right_millis, right_counter, "a3f2").expect("right");
+            let left = Hlc::new(left_millis, left_counter, &left_device).expect("left");
+            let right = Hlc::new(right_millis, right_counter, &right_device).expect("right");
 
             prop_assert_eq!(left.encode().len(), 17);
             prop_assert_eq!(
                 left.encode() < right.encode(),
-                (left_millis, left_counter) < (right_millis, right_counter)
+                (left_millis, left_counter, left_device.as_str())
+                    < (right_millis, right_counter, right_device.as_str())
             );
+        }
+
+        /// Decoding is exact, so a reading survives the trip through a file and
+        /// comes back the same reading rather than a nearby one.
+        #[test]
+        fn prop_an_encoded_hlc_decodes_to_itself(
+            millis in 0u64..=MAX_MILLIS,
+            counter in 0u32..=MAX_COUNTER,
+            device in "[0-9a-f]{4}",
+        ) {
+            let hlc = Hlc::new(millis, counter, &device).expect("hlc");
+
+            prop_assert_eq!(Hlc::decode(&hlc.encode()).expect("decode"), hlc);
         }
     }
 
