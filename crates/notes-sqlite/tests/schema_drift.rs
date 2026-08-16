@@ -1,10 +1,10 @@
 //! Opening a database an older build made.
 //!
-//! Development does not migrate — the schema is edited in place and the
-//! development database is made again. The failure that rule leaves behind is
-//! the one this file is about: an older file opens without complaint, because
-//! the version is the same and every `CREATE TABLE` is skipped, and the app
-//! only falls over when somebody types.
+//! Development has no migrations and keeps no old databases: the schema is
+//! edited in place and the database is made again. The failure that leaves
+//! behind is what this file is about — an older file opens without complaint,
+//! because the version is the same and every `CREATE TABLE` is skipped, and
+//! the app only falls over when somebody types.
 
 use notes_sqlite::SqliteStorage;
 
@@ -23,21 +23,30 @@ fn older_database(path: &std::path::Path) {
     connection.execute_batch(&older).expect("older schema");
 }
 
+/// A development build makes it again itself rather than asking anyone to
+/// press reset. The notes are in the vault; what the database holds it holds
+/// again the moment the folder is read.
 #[test]
-fn a_database_from_an_older_build_is_refused_at_the_door() {
+#[cfg(debug_assertions)]
+fn a_database_from_an_older_build_is_made_again() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let path = directory.path().join("notes-v2.sqlite");
     older_database(&path);
 
-    let refused = SqliteStorage::open(&path);
+    let storage = SqliteStorage::open(&path).expect("it makes the database again");
 
-    let message = match refused {
-        Ok(_) => panic!("it opened, and the first edit is where the user finds out"),
-        Err(error) => error.to_string(),
-    };
-    assert!(
-        message.contains("older build") && message.contains("reset"),
-        "the message has to say what happened and what to do: {message}"
+    drop(storage);
+    let connection = rusqlite::Connection::open(&path).expect("open");
+    let has_the_column: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('notes_nodes') WHERE name = 'sync_prev'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("columns");
+    assert_eq!(
+        has_the_column, 1,
+        "the file this build opened has to be the shape this build knows"
     );
 }
 

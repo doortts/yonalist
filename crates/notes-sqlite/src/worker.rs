@@ -440,6 +440,9 @@ impl SqliteStorage {
             .name("notes-v2-db".into())
             .spawn(move || {
                 let seed_onboarding = matches!(location, DatabaseLocation::File(_));
+                if let DatabaseLocation::File(path) = &location {
+                    schema::remake_if_an_older_build_made_it(path);
+                }
                 let connection = match location {
                     DatabaseLocation::File(path) => Connection::open(path),
                     DatabaseLocation::Memory => Connection::open_in_memory(),

@@ -146,6 +146,39 @@ fn create_schema(connection: &Connection) -> Result<(), StorageError> {
     connection.execute_batch(SCHEMA_SQL).map_err(internal)
 }
 
+/// Development has no migrations and keeps no old databases: the schema is
+/// edited in place and the database is made again. So a development build
+/// makes it again itself, rather than asking someone to press reset — the
+/// notes live in the vault, and what the database holds it holds again the
+/// moment the folder is read.
+///
+/// A release build does no such thing. There the database is what somebody
+/// has, and throwing it away on a shape this build does not recognise is not
+/// a decision to make on their behalf: `initialize` refuses instead, and the
+/// message tells them what to do.
+#[cfg(debug_assertions)]
+pub(crate) fn remake_if_an_older_build_made_it(path: &std::path::Path) {
+    let Ok(connection) = Connection::open(path) else {
+        return;
+    };
+    if matches_shipped_schema(&connection).is_ok() {
+        return;
+    }
+    drop(connection);
+    eprintln!(
+        "This database was made by an older build; making it again. \
+         Development does not migrate — the notes are in the vault."
+    );
+    for suffix in ["", "-wal", "-shm"] {
+        let mut beside = path.as_os_str().to_owned();
+        beside.push(suffix);
+        let _ = std::fs::remove_file(std::path::PathBuf::from(beside));
+    }
+}
+
+#[cfg(not(debug_assertions))]
+pub(crate) fn remake_if_an_older_build_made_it(_path: &std::path::Path) {}
+
 /// Refuses a database whose shape is not the one this build was written
 /// against.
 ///
@@ -227,6 +260,28 @@ fn internal(error: rusqlite::Error) -> StorageError {
 
 #[cfg(test)]
 mod tests {
+    /// A release build does not throw a database away: it is what somebody
+    /// has, and a shape this build does not recognise is not a reason to
+    /// decide that for them. The message is what they act on.
+    #[test]
+    fn a_database_from_an_older_build_is_refused_with_something_to_do() {
+        let older = SCHEMA_SQL.replace("    sync_prev TEXT NOT NULL DEFAULT '',\n", "");
+        assert_ne!(older, SCHEMA_SQL, "the column is named here");
+        let connection = Connection::open_in_memory().expect("in-memory db");
+        connection.execute_batch(&older).expect("older schema");
+
+        let refused = matches_shipped_schema(&connection);
+
+        let message = match refused {
+            Ok(()) => panic!("it passed, and the first edit is where the user finds out"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            message.contains("older build") && message.contains("reset"),
+            "the message has to say what happened and what to do: {message}"
+        );
+    }
+
     use super::*;
     use rusqlite::params;
 
