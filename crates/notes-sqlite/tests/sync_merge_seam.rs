@@ -963,6 +963,54 @@ fn a_file_that_becomes_readable_stops_being_refused() {
     );
 }
 
+/// A split document lives inside its page's folder and is not a page. A whole
+/// export pass has to leave it exactly where it is — its file, its folder, and
+/// its record.
+#[test]
+fn a_split_document_rides_through_an_export_untouched() {
+    let (directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("seed");
+    let split = "Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md";
+    let connection =
+        rusqlite::Connection::open(directory.path().join("notes.sqlite")).expect("open");
+    connection
+        .execute(
+            "INSERT INTO sync_documents(root_id, folder_path, exported_hash, is_page)
+             VALUES (?1, ?2, 'b', 0)",
+            rusqlite::params![NODE_ID, split],
+        )
+        .expect("split document");
+    std::fs::create_dir_all(
+        vault
+            .path()
+            .join("Projects-4f1c8e20a3b7/Deeper-8a201f330000"),
+    )
+    .expect("folder");
+    std::fs::write(vault.path().join(split), b"the split document\n").expect("its file");
+
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+
+    assert!(
+        vault.path().join(split).exists(),
+        "the file a split document owns is not the page's to write over or remove"
+    );
+    let (retiring, still_recorded): (i64, i64) = connection
+        .query_row(
+            "SELECT coalesce(max(retiring), -1), count(*) FROM sync_documents
+             WHERE root_id = ?1",
+            [NODE_ID],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("the document");
+    assert_eq!(still_recorded, 1, "and its record stays");
+    assert_eq!(retiring, 0, "it is where it belongs, not on its way out");
+}
+
 /// A reindex is the last net under the scan gate, so what it could not read
 /// has to come back as a number. Answering "nothing changed" about a vault it
 /// only half read is the one thing a net must not do.
