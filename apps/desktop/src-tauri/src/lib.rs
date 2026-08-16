@@ -267,20 +267,22 @@ async fn notes_delete_all_data(
     app: tauri::AppHandle,
     state: State<'_, DesktopState>,
 ) -> Result<(), NotesError> {
-    let gate = Arc::clone(&state.runtime);
-    let marker = run_blocking(move || {
-        let runtime = gate.wait()?;
-        let marker = runtime.data_directory.join(DELETE_DATA_MARKER);
-        std::fs::write(&marker, b"1").map_err(|error| NotesError {
-            code: NotesErrorCode::StorageUnavailable,
-            message: error.to_string(),
-            retryable: true,
-        })?;
-        Ok(marker)
-    })
-    .await?;
-    let _ = marker;
+    // The state's own copy of the directory, not the runtime's: the reset is
+    // what a failed startup leaves the user, and asking the gate for a runtime
+    // would hand back that startup's error instead of clearing it.
+    let data_directory = state.data_directory.clone();
+    run_blocking(move || request_data_deletion(&data_directory)).await?;
     app.restart();
+}
+
+/// Records the request; the deletion itself happens on the next start, before
+/// anything opens the database.
+fn request_data_deletion(data_directory: &Path) -> Result<(), NotesError> {
+    std::fs::write(data_directory.join(DELETE_DATA_MARKER), b"1").map_err(|error| NotesError {
+        code: NotesErrorCode::StorageUnavailable,
+        message: error.to_string(),
+        retryable: true,
+    })
 }
 
 fn apply_pending_data_deletion(data_directory: &Path) -> std::io::Result<()> {
@@ -603,6 +605,30 @@ mod tests {
         assert!(
             vault.join("README.md").exists(),
             "and leaves the documents in the folder alone"
+        );
+    }
+
+    /// The reset exists for a startup that failed, so it cannot ask the
+    /// startup gate for anything: the gate answers a failed start with that
+    /// same failure forever, which would kill the one way out.
+    #[test]
+    fn a_reset_requested_without_a_runtime_clears_the_database_on_next_start() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let data = directory.path().join("app-data");
+        std::fs::create_dir_all(&data).expect("data");
+        let database = data.join("notes-v2.sqlite");
+        std::fs::write(&database, b"not a working database").expect("database");
+
+        request_data_deletion(&data).expect("request");
+        apply_pending_data_deletion(&data).expect("reset");
+
+        assert!(
+            !database.exists(),
+            "the next start opens a fresh database, not the broken one"
+        );
+        assert!(
+            !data.join(DELETE_DATA_MARKER).exists(),
+            "and the request is spent, so the start after it keeps its data"
         );
     }
 
