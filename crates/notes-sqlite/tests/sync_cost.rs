@@ -36,13 +36,39 @@ fn workspace() -> Workspace {
 }
 
 impl Workspace {
-    /// Rows written since the database was opened. SQLite counts these itself,
-    /// so nothing here has to guess what a write is.
-    fn rows_written(&self) -> i64 {
+    /// Everything a write would move: the readings, where each line sits, and
+    /// what is still owed. Two of these being equal is what "nothing was
+    /// written" means — `total_changes` cannot answer it, because it counts
+    /// per connection and the writes happen on the worker's.
+    fn state(&self) -> (String, String, i64) {
         rusqlite::Connection::open(self.home.path().join("notes.sqlite"))
             .expect("open")
-            .query_row("SELECT total_changes()", [], |row| row.get(0))
-            .unwrap_or(0)
+            .query_row(
+                "SELECT coalesce(group_concat(hlc, ''), ''),
+                        coalesce(group_concat(sync_prev || sync_prev_hlc, ''), ''),
+                        (SELECT count(*) FROM sync_dirty_nodes)
+                 FROM (SELECT hlc, sync_prev, sync_prev_hlc FROM notes_nodes ORDER BY id)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("state")
+    }
+
+    /// How many lines on this page had their claim rewritten by whatever just
+    /// happened — every claim written by one command carries that command's
+    /// reading.
+    fn relinked(&self, parent: &str) -> i64 {
+        rusqlite::Connection::open(self.home.path().join("notes.sqlite"))
+            .expect("open")
+            .query_row(
+                "SELECT count(*) FROM notes_nodes
+                 WHERE parent_id = ?1
+                   AND sync_prev_hlc = (SELECT max(sync_prev_hlc) FROM notes_nodes
+                                        WHERE parent_id = ?1)",
+                [parent],
+                |row| row.get(0),
+            )
+            .expect("relinked")
     }
 
     fn pages(&self, count: usize) {
@@ -134,12 +160,12 @@ fn opening_an_untouched_vault_writes_nothing() {
     let workspace = workspace();
     workspace.pages(DOCUMENTS);
     workspace.export();
-    let before = workspace.rows_written();
+    let before = workspace.state();
 
     workspace.sweep();
 
     assert_eq!(
-        workspace.rows_written(),
+        workspace.state(),
         before,
         "reading a folder that has not changed is not an edit"
     );
@@ -207,7 +233,7 @@ fn one_edit_rewrites_one_document() {
 /// each row — so an append cost the length of the page twice over.
 #[test]
 fn adding_a_note_costs_the_same_whatever_else_is_on_the_page() {
-    let mut written = Vec::new();
+    let mut relinked = Vec::new();
     for siblings in [40usize, 160] {
         let workspace = workspace();
         let page = {
@@ -233,14 +259,13 @@ fn adding_a_note_costs_the_same_whatever_else_is_on_the_page() {
         for index in 0..siblings {
             add(&workspace, &page, index);
         }
-        let before = workspace.rows_written();
         add(&workspace, &page, siblings);
-        written.push(workspace.rows_written() - before);
+        relinked.push(workspace.relinked(&page));
     }
 
     assert!(
-        written[1] <= written[0] * 2,
-        "four times the page, four times the writing: {written:?}"
+        relinked[1] <= relinked[0] * 2,
+        "four times the page, four times the writing: {relinked:?}"
     );
 }
 
@@ -288,7 +313,7 @@ fn the_same_document_arriving_twice_is_applied_once() {
         .storage
         .merge_document(&file, &input)
         .expect("merge");
-    let before = workspace.rows_written();
+    let before = workspace.state();
     let again = workspace
         .storage
         .merge_document(&file, &input)
@@ -296,8 +321,8 @@ fn the_same_document_arriving_twice_is_applied_once() {
 
     assert_eq!(again.applied, 0, "{first:?} then {again:?}");
     assert_eq!(
-        workspace.rows_written() - before,
-        0,
+        workspace.state(),
+        before,
         "a replay is not an edit, and writing one makes it look like one"
     );
 }
