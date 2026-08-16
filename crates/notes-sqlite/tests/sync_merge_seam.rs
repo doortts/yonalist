@@ -890,6 +890,31 @@ fn a_file_that_cannot_be_read_is_written_down() {
     );
 }
 
+/// The file that gets mangled is usually one of ours — somebody saves over a
+/// page's README with something this format cannot read. Answering the sweep
+/// with what this app last *wrote* there would have it re-read and re-refuse
+/// the same bytes every minute, which is the loop the record exists to stop.
+#[test]
+fn a_document_that_becomes_unreadable_is_refused_only_once() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("merge");
+
+    storage
+        .quarantine("Projects-4f1c8e20a3b7/README.md", &"f".repeat(64))
+        .expect("quarantine");
+
+    assert_eq!(
+        storage
+            .vault_file_hash("Projects-4f1c8e20a3b7/README.md")
+            .expect("hash")
+            .as_deref(),
+        Some("f".repeat(64).as_str()),
+        "the most recent look at that path is what decides whether to look again"
+    );
+}
+
 /// A file that could not be read once can be fixed, or can simply finish
 /// arriving. The note saying it was unreadable has to go with that, or every
 /// later version of it is skipped as "already answered".

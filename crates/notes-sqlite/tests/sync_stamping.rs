@@ -1,7 +1,7 @@
 //! The schema window: every existing mutation path has to stamp an HLC and mark
 //! the row dirty without a line of mutation code changing.
 
-use notes_application::{CommandEnvelope, IpcNotesCommand, NotesService};
+use notes_application::{CommandEnvelope, IpcNotesCommand, NotesService, StoragePort};
 use notes_sqlite::SqliteStorage;
 use rusqlite::Connection;
 
@@ -223,6 +223,63 @@ fn a_parent_that_is_not_there_is_not_queued() {
     assert_eq!(
         unresolvable, 0,
         "nothing can work out which file owes a write for a row that is not there"
+    );
+}
+
+/// A node moved to the front of another page follows nobody in both places, so
+/// what it claims does not change — but *when* it claims it has to. The reading
+/// on the claim is what decides whose move wins, and a move that keeps an old
+/// one loses to a reorder somebody made before it.
+#[test]
+fn a_move_that_changes_no_neighbour_still_says_when_it_moved() {
+    let (_directory, database) = workspace();
+    let storage = SqliteStorage::open(&database).expect("open");
+    let first = seeded_page(&database);
+    let connection = writer(&database);
+    let second = "4f1c8e20-a3b7-4c91-8d02-0000000000dd";
+    let moving = "8a201f33-0000-4c91-8d02-0000000000ee";
+    connection
+        .execute(
+            "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
+             VALUES (?1, 'root', 8589934592, 'bullet', 'Second', ''),
+                    (?2, ?3, 1, 'bullet', 'Moves', '')",
+            rusqlite::params![second, moving, &first],
+        )
+        .expect("seed");
+    let before: String = connection
+        .query_row(
+            "SELECT sync_prev_hlc FROM notes_nodes WHERE id = ?1",
+            [moving],
+            |row| row.get(0),
+        )
+        .expect("claim");
+
+    let command = notes_core::NotesCommand::MoveNode {
+        id: notes_core::NodeId::try_from(moving.to_owned()).expect("id"),
+        parent_id: notes_core::NodeId::try_from(second.to_owned()).expect("id"),
+        position: notes_core::Position::at_end(),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("move");
+
+    let (prev, at): (String, String) = connection
+        .query_row(
+            "SELECT sync_prev, sync_prev_hlc FROM notes_nodes WHERE id = ?1",
+            [moving],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("claim");
+    assert_eq!(
+        prev, "",
+        "it is first in its new page, as it was in the old one"
+    );
+    assert_ne!(
+        at, before,
+        "the claim has to carry this move's reading, or somebody else's older \
+         reorder beats it and the node lands back where it was"
     );
 }
 

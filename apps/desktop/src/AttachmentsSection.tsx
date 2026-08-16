@@ -103,7 +103,9 @@ export function AttachmentsSection({
       <ul className="settings-attachment-list">
         {rows.map((row) => (
           <li key={`${row.contentHash}:${row.nodeId}`}>
-            {row.nodeId === "" ? (
+            {row.nodeId === "" || row.pageId === "" ? (
+              // Nothing to follow: either no note points at these bytes, or
+              // the note that does is in the trash and sits on no page.
               <span className="settings-attachment-name">{row.name}</span>
             ) : (
               <button

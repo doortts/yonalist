@@ -574,11 +574,18 @@ impl SqliteStorage {
                                         // Either answer keeps a file from being
                                         // read again: what this app wrote, and
                                         // what it looked at and could not read.
-                                        "SELECT exported_hash FROM sync_documents
-                                         WHERE folder_path = ?1
-                                         UNION ALL
-                                         SELECT file_hash FROM sync_quarantine
+                                        // The refusal first: it records the
+                                        // most recent look at that path, and a
+                                        // merge that reads the file takes it
+                                        // back. Answering with the document's
+                                        // hash instead would have the sweep
+                                        // re-read and re-refuse the same
+                                        // unreadable bytes every minute.
+                                        "SELECT file_hash FROM sync_quarantine
                                          WHERE relative_path = ?1
+                                         UNION ALL
+                                         SELECT exported_hash FROM sync_documents
+                                         WHERE folder_path = ?1
                                          LIMIT 1",
                                         [&relative],
                                         |row| row.get::<_, String>(0),

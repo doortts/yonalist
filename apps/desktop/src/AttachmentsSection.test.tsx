@@ -95,7 +95,7 @@ describe("첨부 목록", () => {
     render(
       <AttachmentsSection
         readAttachments={vi.fn(async () => [
-          attachment({ trashed: true, pageTitle: "", parentTitle: "" })
+          attachment({ trashed: true, pageId: "", pageTitle: "", parentTitle: "" })
         ])}
         deleteAttachment={vi.fn(async () => true)}
         openNode={vi.fn()}
@@ -104,6 +104,10 @@ describe("첨부 목록", () => {
     );
 
     expect(await screen.findByText("In the trash")).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "holiday.png" }),
+      "a note in the trash is on no page, so there is nowhere for the click to go"
+    ).toBeNull();
   });
 
   it("그 사이 다시 쓰이기 시작한 파일은 지워지지 않았다고 알린다", async () => {

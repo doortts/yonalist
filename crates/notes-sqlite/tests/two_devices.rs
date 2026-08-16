@@ -95,7 +95,13 @@ impl Device {
                 .and_then(|(_, tail)| tail.split('.').next())
                 .unwrap_or_default();
             if hash.len() == 12 {
-                let full = format!("{hash}{}", HASH[hash.len()..].to_owned());
+                assert_eq!(
+                    hash,
+                    &HASH[..12],
+                    "these tests know one picture; a second would need its own \
+                     bytes rather than this one's tail"
+                );
+                let full = HASH.to_owned();
                 self.storage
                     .resolve_asset(&disk_name, &full, &location)
                     .expect("resolve");
@@ -538,8 +544,16 @@ fn a_settled_pair_stops_writing() {
     assert_eq!(two.export(), 0, "nor the second");
     one.absorb();
     two.absorb();
-    assert_eq!(one.export(), 0, "and reading the folder again changes that");
+    assert_eq!(
+        one.export(),
+        0,
+        "and reading the folder again changes nothing"
+    );
     assert_eq!(two.export(), 0);
+    // A document that fails to write answers zero as well, and keeps its
+    // marks — the count alone cannot tell quiet from stuck.
+    assert_eq!(one.storage.pending_count().expect("pending"), 0);
+    assert_eq!(two.storage.pending_count().expect("pending"), 0);
 }
 
 /// A page dragged under another page stops being a page: its folder goes and

@@ -317,6 +317,7 @@ fn record_place_claims(
     if at.is_empty() {
         return Ok(());
     }
+    let moved_list = notes_sync::export::json_list(&moved.iter().cloned().collect::<Vec<_>>());
     for parent in parents {
         transaction
             .execute(
@@ -335,8 +336,13 @@ fn record_place_claims(
                      sync_prev_hlc = ?2
                  FROM ordered
                  WHERE notes_nodes.id = ordered.id
-                   AND notes_nodes.sync_prev IS NOT ordered.previous",
-                rusqlite::params![parent, at],
+                   AND (notes_nodes.sync_prev IS NOT ordered.previous
+                        -- A node that moved to the front of another page
+                        -- follows nobody in both places, so what it claims
+                        -- does not change — but when it claims it has to, or
+                        -- an older reorder somewhere else beats this move.
+                        OR notes_nodes.id IN (SELECT value FROM json_each(?3)))",
+                rusqlite::params![parent, at, &moved_list],
             )
             .map_err(internal)?;
     }
