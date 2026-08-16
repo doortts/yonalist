@@ -105,6 +105,145 @@ pub fn export_document(
     })
 }
 
+/// The trash, which is the only evidence a deletion ever gets: a node simply
+/// missing from a page's file says nothing at all.
+///
+/// No entries means no file. Absence is what "nothing was deleted" looks like,
+/// and a file that still said something was deleted would keep deleting it.
+pub fn export_trash(
+    transaction: &Transaction<'_>,
+    vault_root: &Path,
+) -> Result<ExportOutcome, ExportError> {
+    let relative = ".yonalist/trash.md".to_owned();
+    let path = vault_root.join(&relative);
+    let nodes = load_trash(transaction)?;
+    if nodes.is_empty() {
+        let existed = path.exists();
+        if existed {
+            std::fs::remove_file(&path)
+                .map_err(|error| format!("Could not clear the trash file: {error}"))?;
+        }
+        return Ok(ExportOutcome {
+            written: false,
+            needs_merge: false,
+            path: relative,
+        });
+    }
+    let max_hlc = nodes.iter().map(highest).max().unwrap_or_default();
+    let bytes = render(&VaultFile::Trash(crate::document::TrashDocument {
+        max_hlc,
+        nodes,
+    }))?;
+    let read_back = parse(&bytes).map_err(|reason| {
+        format!("The trash this app just rendered could not be read back: {reason}")
+    })?;
+    if render(&read_back)? != bytes {
+        return Err("The trash this app just rendered did not survive a read back.".to_owned());
+    }
+    let hash = hash_bytes(&bytes);
+    let recorded = recorded_hash(transaction, "yonalist-trash")?;
+    if let Ok(existing) = std::fs::read(&path) {
+        let existing_hash = hash_bytes(&existing);
+        if existing_hash == hash {
+            return Ok(ExportOutcome {
+                written: false,
+                needs_merge: false,
+                path: relative,
+            });
+        }
+        if recorded.as_deref() != Some(existing_hash.as_str()) {
+            return Ok(ExportOutcome {
+                written: false,
+                needs_merge: true,
+                path: relative,
+            });
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("Could not make the vault's own folder: {error}"))?;
+    }
+    write_atomic(vault_root, &path, &bytes)?;
+    record_document(transaction, "yonalist-trash", &relative, &hash)?;
+    Ok(ExportOutcome {
+        written: true,
+        needs_merge: false,
+        path: relative,
+    })
+}
+
+/// What the trash holds: every deleted node whose parent is still alive, with
+/// the children that went down with it.
+fn load_trash(transaction: &Transaction<'_>) -> Result<Vec<DocumentNode>, ExportError> {
+    let mut statement = transaction
+        .prepare_cached(
+            "SELECT n.id, n.parent_id, n.sort_key, n.text, n.note, n.marker, n.ordered_start,
+                    n.collapsed, n.completed, n.starred, n.hlc, n.sync_extras,
+                    p.deleted IS NOT 1
+             FROM notes_nodes n
+             LEFT JOIN notes_nodes p ON p.id = n.parent_id
+             WHERE n.deleted = 1
+             ORDER BY n.sort_key, n.id",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, bool>(12)?,
+                DocumentNode {
+                    id: row.get(0)?,
+                    hlc: row.get(10)?,
+                    body: NodeBody::Text(row.get(3)?),
+                    note: row.get(4)?,
+                    marker: marker_of(&row.get::<_, String>(5)?, row.get(6)?),
+                    collapsed: row.get::<_, i64>(7)? == 1,
+                    completed: row.get::<_, i64>(8)? == 1,
+                    starred: row.get::<_, i64>(9)? == 1,
+                    from: None,
+                    place: None,
+                    unknown_tokens: {
+                        let extras: String = row.get(11)?;
+                        if extras.is_empty() {
+                            Vec::new()
+                        } else {
+                            extras.split(' ').map(str::to_owned).collect()
+                        }
+                    },
+                    children: Vec::new(),
+                },
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+
+    let mut roots = Vec::new();
+    let mut children: BTreeMap<String, Vec<DocumentNode>> = BTreeMap::new();
+    for row in rows {
+        let (parent, sort_key, parent_alive, mut node) = row.map_err(|error| error.to_string())?;
+        if parent_alive {
+            // A trash root says where it was taken from; its children came with
+            // it and their line says where they sit.
+            node.from = Some((parent.clone(), sort_key));
+            roots.push(node);
+        } else {
+            children.entry(parent).or_default().push(node);
+        }
+    }
+    for root in &mut roots {
+        attach(&mut children, root);
+    }
+    Ok(roots)
+}
+
+fn attach(children: &mut BTreeMap<String, Vec<DocumentNode>>, node: &mut DocumentNode) {
+    let mut mine = children.remove(&node.id).unwrap_or_default();
+    for child in &mut mine {
+        attach(children, child);
+    }
+    node.children = mine;
+}
+
 /// Where the document sits under the vault root. A page keeps the folder it was
 /// first given: renaming on a title change is the operation file sync handles
 /// worst, so the recorded path wins over a freshly derived one.

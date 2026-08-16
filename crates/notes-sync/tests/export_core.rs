@@ -283,3 +283,83 @@ fn writing_the_same_document_twice_writes_nothing_the_second_time() {
         "the same bytes going out again would look like an edit to every other device"
     );
 }
+
+fn export_trash(connection: &mut Connection, root: &std::path::Path) -> ExportOutcome {
+    let transaction = connection.transaction().expect("begin");
+    let outcome = notes_sync::export::export_trash(&transaction, root).expect("export");
+    transaction.commit().expect("commit");
+    outcome
+}
+
+fn trash_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join(".yonalist").join("trash.md")
+}
+
+/// The only evidence a deletion ever gets. Without it the other devices see a
+/// node missing from a file, which says nothing at all.
+#[test]
+fn deleted_nodes_emit_into_trash_md() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    connection
+        .execute(
+            "UPDATE notes_nodes SET deleted = 1 WHERE id = ?1",
+            [NODE_ID],
+        )
+        .expect("delete");
+
+    let outcome = export_trash(&mut connection, root.path());
+
+    assert!(outcome.written);
+    let file = std::fs::read_to_string(trash_path(root.path())).expect("the trash");
+    assert!(file.contains("kind: yonalist-trash"), "{file}");
+    assert!(file.contains("Thought"), "{file}");
+    assert!(
+        file.contains(&format!("from: {PAGE_ID}@")),
+        "a deleted node states where it was taken from, or nothing can put it back: {file}"
+    );
+}
+
+/// No file at all rather than an empty one: absence is what "nothing was
+/// deleted" looks like, and an empty document would have to be parsed to learn
+/// the same thing.
+#[test]
+fn an_empty_trash_writes_no_file() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+
+    let outcome = export_trash(&mut connection, root.path());
+
+    assert!(!outcome.written);
+    assert!(!trash_path(root.path()).exists());
+}
+
+#[test]
+fn a_trash_that_empties_takes_its_file_with_it() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    connection
+        .execute(
+            "UPDATE notes_nodes SET deleted = 1 WHERE id = ?1",
+            [NODE_ID],
+        )
+        .expect("delete");
+    export_trash(&mut connection, root.path());
+    assert!(trash_path(root.path()).exists());
+
+    connection
+        .execute(
+            "UPDATE notes_nodes SET deleted = 0 WHERE id = ?1",
+            [NODE_ID],
+        )
+        .expect("restore");
+    export_trash(&mut connection, root.path());
+
+    assert!(
+        !trash_path(root.path()).exists(),
+        "a file that still said something was deleted would keep deleting it"
+    );
+}
