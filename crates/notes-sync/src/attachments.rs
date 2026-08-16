@@ -18,8 +18,12 @@ use std::path::Path;
 /// One node pointing at these bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Reference {
-    /// The folder of the document holding the node, relative to the vault root.
-    pub document_folder: String,
+    /// The folder of the *page* holding the node, relative to the vault root.
+    /// The page, not the document: a split document sits inside its page's
+    /// folder, and §3.4 gives an attachment two legal homes — the page's
+    /// `assets/` or the vault's. A split folder's own `assets/` is neither, so
+    /// a link into one is quarantined by every device that reads it.
+    pub page_folder: String,
     /// What the file is called on disk — `<name>-<hash12>.<ext>`.
     pub disk_name: String,
     /// A deleted node still counts. Its line lives in the trash, which sits at
@@ -35,8 +39,8 @@ pub struct Move {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Placement {
-    /// Where the bytes belong, relative to the vault root. Empty when nothing
-    /// points at them any more.
+    /// Where the bytes belong, relative to the vault root. Where they already
+    /// are, when nothing points at them any more.
     pub location: String,
     /// Written to the new place first, then removed from the old one. An
     /// interruption leaves the same bytes in two places, which is harmless;
@@ -48,22 +52,40 @@ impl Placement {
     /// How a document in this folder writes the link. The path is always
     /// relative, so moving the whole vault never rewrites a single line.
     pub fn link_from(&self, document_folder: &str) -> String {
-        let Some((folder, name)) = self.location.rsplit_once('/') else {
-            return self.location.clone();
-        };
-        if folder == format!("{document_folder}/assets") {
-            return format!("assets/{name}");
-        }
-        if folder == "assets" {
-            // One `../` for each folder between this document and the root.
-            let depth = document_folder
-                .split('/')
+        let parts = |path: &str| {
+            path.split('/')
                 .filter(|part| !part.is_empty())
-                .count();
-            return format!("{}assets/{name}", "../".repeat(depth));
+                .map(str::to_owned)
+                .collect::<Vec<String>>()
+        };
+        let from = parts(document_folder);
+        let mut to = parts(&self.location);
+        let Some(name) = to.pop() else {
+            return String::new();
+        };
+        // Up to the folder they have in common, then down. A document knows
+        // its own depth, so both halves are decided rather than guessed.
+        let shared = from
+            .iter()
+            .zip(to.iter())
+            .take_while(|(here, there)| here == there)
+            .count();
+        let mut link = "../".repeat(from.len() - shared);
+        for folder in &to[shared..] {
+            link.push_str(folder);
+            link.push('/');
         }
-        self.location.clone()
+        link.push_str(&name);
+        link
     }
+}
+
+/// What the user called the file, without the hash and extension this app
+/// appended to it.
+fn given_name(disk_name: &str) -> &str {
+    disk_name
+        .rsplit_once('-')
+        .map_or(disk_name, |(given, _)| given)
 }
 
 /// `current` is where the bytes are now, as the asset record remembers it.
@@ -81,10 +103,13 @@ pub fn plan_placement(current: &str, references: &[Reference]) -> Placement {
     }
     // Two pages that each added the same bytes under their own name have to
     // agree on one, whichever device works it out — so the smallest name wins.
+    // On the name the user gave the file: what follows it is the same hash and
+    // the same extension for both, and comparing across that boundary lets a
+    // hyphen inside one name decide the answer.
     let name = references
         .iter()
         .map(|reference| reference.disk_name.as_str())
-        .min()
+        .min_by_key(|disk_name| given_name(disk_name).to_owned())
         .unwrap_or_default()
         .to_owned();
 
@@ -94,7 +119,7 @@ pub fn plan_placement(current: &str, references: &[Reference]) -> Placement {
     let location = if shared {
         format!("assets/{name}")
     } else {
-        format!("{}/assets/{name}", references[0].document_folder)
+        format!("{}/assets/{name}", references[0].page_folder)
     };
 
     let moves = if current.is_empty() || current == location {
@@ -183,6 +208,10 @@ fn referenced_assets(
 ) -> Result<BTreeMap<String, Vec<Holder>>, String> {
     let mut statement = transaction
         .prepare_cached(
+            // Up to the page, not to the nearest document: a split document
+            // sits inside its page's folder and its attachments belong to the
+            // page, which is the only home other than the vault root a link
+            // may resolve to.
             "WITH RECURSIVE climb(node_id, at) AS (
                  SELECT i.node_id, i.node_id FROM notes_images i
                  UNION ALL
@@ -191,9 +220,6 @@ fn referenced_assets(
                  JOIN notes_nodes n ON n.id = climb.at
                  JOIN notes_nodes p ON p.id = n.parent_id
                  WHERE n.parent_id IS NOT NULL AND n.parent_id <> 'root'
-                   AND NOT EXISTS (
-                       SELECT 1 FROM sync_documents d WHERE d.root_id = climb.at
-                   )
              )
              SELECT i.content_hash, i.original_name, i.mime_type, i.relative_path,
                     (SELECT deleted FROM notes_nodes WHERE id = i.node_id),
@@ -204,7 +230,6 @@ fn referenced_assets(
              LEFT JOIN sync_documents d ON d.root_id = c.at
              WHERE i.content_hash <> ''
                AND (c.at = 'root'
-                    OR d.root_id IS NOT NULL
                     OR (SELECT parent_id FROM notes_nodes WHERE id = c.at) = 'root')",
         )
         .map_err(|error| error.to_string())?;
@@ -225,19 +250,19 @@ fn referenced_assets(
 
     let mut assets: BTreeMap<String, Vec<Holder>> = BTreeMap::new();
     for row in rows {
-        let (hash, name, mime, store_name, trashed, folder_path, document, title) =
+        let (hash, name, mime, store_name, trashed, folder_path, page, title) =
             row.map_err(|error| error.to_string())?;
-        let document_folder = match folder_path {
+        let page_folder = match folder_path {
+            // The recorded path names the file; the attachment goes beside it.
             Some(path) => path
                 .rsplit_once('/')
-                .map(|(folder, _)| folder.to_owned())
-                .unwrap_or_default(),
-            None if document == "root" => String::new(),
-            None => crate::layout::page_folder_name(&title, &document)?,
+                .map_or(String::new(), |(folder, _)| folder.to_owned()),
+            None if page == "root" => String::new(),
+            None => crate::layout::page_folder_name(&title, &page)?,
         };
         assets.entry(hash.clone()).or_default().push(Holder {
             reference: Reference {
-                document_folder,
+                page_folder,
                 disk_name: crate::layout::asset_disk_name(&name, &hash, &mime),
                 trashed,
             },

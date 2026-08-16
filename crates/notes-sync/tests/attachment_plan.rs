@@ -7,9 +7,9 @@
 
 use notes_sync::attachments::{Move, Reference, plan_placement};
 
-fn reference(document: &str, disk_name: &str) -> Reference {
+fn reference(page: &str, disk_name: &str) -> Reference {
     Reference {
-        document_folder: document.to_owned(),
+        page_folder: page.to_owned(),
         disk_name: disk_name.to_owned(),
         trashed: false,
     }
@@ -77,6 +77,64 @@ fn a_promotion_merges_names_deterministically() {
     );
 }
 
+/// The tie-break is on the name the user gave the file, not on the whole disk
+/// name: the hash and the extension are the same for both, but a `-` inside a
+/// cleaned name sorts before the hash's first character and would otherwise
+/// hand the longer name the win.
+#[test]
+fn the_tie_break_reads_the_cleaned_name_not_the_hash_after_it() {
+    let plain = reference("Projects-4f1c8e20a3b7", "shot-c93a1c8e2044.png");
+    let hyphenated = reference("Second-11c8da70b5e1", "shot-2-c93a1c8e2044.png");
+
+    let plan = plan_placement("", &[hyphenated, plain]);
+
+    assert_eq!(
+        plan.location, "assets/shot-c93a1c8e2044.png",
+        "`shot` is the smaller name; `shot-2` only looks smaller because the \
+         hyphen sorts under the hash that follows it"
+    );
+}
+
+/// A split document sits one folder deeper than its page, and its attachments
+/// belong to the page, not to it. Both halves of that have to hold: the bytes
+/// go in the page's folder, and the link climbs out of the split folder to
+/// reach them. A link resolving anywhere else is quarantined by every device
+/// that reads it.
+#[test]
+fn a_split_document_reaches_its_page_folder() {
+    let plan = plan_placement(
+        "",
+        &[reference("Projects-4f1c8e20a3b7", "shot-9f3a1c8e2044.png")],
+    );
+
+    assert_eq!(
+        plan.location,
+        "Projects-4f1c8e20a3b7/assets/shot-9f3a1c8e2044.png"
+    );
+    assert_eq!(
+        plan.link_from("Projects-4f1c8e20a3b7/Deeper-8a201f330000"),
+        "../assets/shot-9f3a1c8e2044.png",
+        "one `../` out of the split folder, and the page's assets are right there"
+    );
+}
+
+#[test]
+fn a_split_document_climbs_all_the_way_to_the_root_store() {
+    let plan = plan_placement(
+        "",
+        &[
+            reference("Projects-4f1c8e20a3b7", "shot-9f3a1c8e2044.png"),
+            reference("Second-11c8da70b5e1", "shot-9f3a1c8e2044.png"),
+        ],
+    );
+
+    assert_eq!(
+        plan.link_from("Projects-4f1c8e20a3b7/Deeper-8a201f330000"),
+        "../../assets/shot-9f3a1c8e2044.png",
+        "one `../` for each folder between the document and the vault root"
+    );
+}
+
 #[test]
 fn dropping_back_to_one_reference_brings_it_home() {
     let plan = plan_placement(
@@ -104,7 +162,7 @@ fn a_trashed_reference_keeps_the_bytes_in_the_root_store() {
     let plan = plan_placement(
         "assets/shot-9f3a1c8e2044.png",
         &[Reference {
-            document_folder: "Projects-4f1c8e20a3b7".to_owned(),
+            page_folder: "Projects-4f1c8e20a3b7".to_owned(),
             disk_name: "shot-9f3a1c8e2044.png".to_owned(),
             trashed: true,
         }],

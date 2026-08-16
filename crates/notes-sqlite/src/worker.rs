@@ -52,6 +52,7 @@ enum Request {
     },
     ExportPending {
         vault_root: std::path::PathBuf,
+        store_root: std::path::PathBuf,
         reply: SyncSender<Result<usize, StorageError>>,
     },
     PlaceClaim {
@@ -205,9 +206,16 @@ impl SqliteStorage {
 
     /// Writes everything waiting into the vault, answering how many documents
     /// actually changed on disk.
-    pub fn export_pending(&self, vault_root: &std::path::Path) -> Result<usize, StorageError> {
+    /// `store_root` is this app's own image store: the vault's copy of an
+    /// attachment is made from it, and it is where the bytes stay.
+    pub fn export_pending(
+        &self,
+        vault_root: &std::path::Path,
+        store_root: &std::path::Path,
+    ) -> Result<usize, StorageError> {
         self.request(|reply| Request::ExportPending {
             vault_root: vault_root.to_path_buf(),
+            store_root: store_root.to_path_buf(),
             reply,
         })
     }
@@ -382,10 +390,15 @@ impl SqliteStorage {
                                 &vault_root,
                             ));
                         }
-                        Request::ExportPending { vault_root, reply } => {
+                        Request::ExportPending {
+                            vault_root,
+                            store_root,
+                            reply,
+                        } => {
                             let _ = reply.send(crate::sync_merge::export_pending(
                                 &mut connection,
                                 &vault_root,
+                                &store_root,
                             ));
                         }
                         Request::PlaceClaim { id, reply } => {

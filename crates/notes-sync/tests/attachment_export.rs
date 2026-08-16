@@ -190,6 +190,47 @@ fn a_second_page_using_the_same_bytes_moves_them_to_the_vault_store() {
     );
 }
 
+/// A split document sits inside its page's folder, and its attachments belong
+/// to the page. Bytes put in a split folder's own `assets/` would be reachable
+/// only through a link every device quarantines.
+#[test]
+fn an_attachment_inside_a_split_document_belongs_to_the_page() {
+    let mut connection = database();
+    let workspace = workspace();
+    page(&connection, FIRST_PAGE, "Notes", 4294967296);
+    let split = "8a201f33-0000-4c91-8d02-0000000000dd";
+    connection
+        .execute(
+            "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
+             VALUES (?1, ?2, 4294967296, 'bullet', 'Deeper', ?3)",
+            rusqlite::params![split, FIRST_PAGE, stamp(6)],
+        )
+        .expect("split root");
+    connection
+        .execute(
+            "INSERT INTO sync_documents(root_id, folder_path) VALUES (?1, ?2)",
+            rusqlite::params![
+                split,
+                format!("{FIRST_FOLDER}/Deeper-8a201f330000/README.md")
+            ],
+        )
+        .expect("split document");
+    image_node(&connection, IMAGE_NODE, split, "holiday.png", false);
+
+    place(&mut connection, &workspace);
+
+    assert!(
+        workspace
+            .vault
+            .path()
+            .join(FIRST_FOLDER)
+            .join("assets")
+            .join(DISK_NAME)
+            .exists(),
+        "an attachment has two legal homes — its page's assets and the vault's"
+    );
+}
+
 #[test]
 fn an_attachment_nobody_points_at_stays_where_it_is() {
     let mut connection = database();

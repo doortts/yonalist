@@ -178,12 +178,17 @@ fn prune_conflicts(transaction: &rusqlite::Transaction<'_>) -> Result<(), Storag
 pub(crate) fn export_pending(
     connection: &mut Connection,
     vault_root: &std::path::Path,
+    store_root: &std::path::Path,
 ) -> Result<usize, StorageError> {
     let transaction = connection
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(internal)?;
-    // Order does not matter: home derives a page's folder the same way the page
-    // export does, so its links are right whichever is written first.
+    // Before the documents, because a document's image line states where the
+    // attachment pass put the bytes.
+    notes_sync::attachments::place_attachments(&transaction, vault_root, store_root)
+        .map_err(StorageError::Internal)?;
+    // Order does not matter among the documents: each carries its own marks,
+    // and home derives a page's folder the same way the page export does.
     let pending =
         notes_sync::export::pending_documents(&transaction).map_err(StorageError::Internal)?;
     let mut written = 0;

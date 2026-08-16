@@ -19,6 +19,12 @@ const NODE_ID: &str = "8a201f33-0000-4c91-8d02-000000000001";
 
 /// A file-backed database: the bypass this suite hunts for would open its own
 /// connection, and an in-memory one cannot be opened twice.
+/// This app's own image store. Empty here: these tests are about documents,
+/// and an attachment with no bytes anywhere is simply not placed.
+fn store() -> std::path::PathBuf {
+    std::env::temp_dir().join("yonalist-empty-store")
+}
+
 fn storage() -> (tempfile::TempDir, SqliteStorage) {
     let directory = tempfile::tempdir().expect("temporary directory");
     let storage = SqliteStorage::open(&directory.path().join("notes.sqlite")).expect("open");
@@ -459,7 +465,9 @@ fn an_export_through_the_worker_writes_the_vault_without_moving_the_revision() {
         .expect("edit");
     let revision = storage.revision().expect("revision");
 
-    let written = storage.export_pending(vault.path()).expect("export");
+    let written = storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
 
     assert!(written > 0, "the waiting rows had somewhere to go");
     assert_eq!(
@@ -484,9 +492,13 @@ fn an_export_with_nothing_waiting_writes_nothing() {
     storage
         .merge_document(&page("Thought", &stamp(5)), &input())
         .expect("seed");
-    storage.export_pending(vault.path()).expect("first");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("first");
 
-    let written = storage.export_pending(vault.path()).expect("again");
+    let written = storage
+        .export_pending(vault.path(), &store())
+        .expect("again");
 
     assert_eq!(written, 0, "an export with nothing to say says nothing");
 }
@@ -517,7 +529,9 @@ fn a_hand_edited_file_gets_its_canonical_form_back() {
         "the file is missing the id it was given"
     );
 
-    let written = storage.export_pending(vault.path()).expect("export");
+    let written = storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
 
     assert!(written > 0, "the canonical form has to reach the file");
     let now = std::fs::read_to_string(folder.join("README.md")).expect("file");
@@ -566,7 +580,9 @@ fn a_placeholder_row_does_not_stop_the_export() {
     )
     .expect("local deletion");
 
-    let written = storage.export_pending(vault.path()).expect("export");
+    let written = storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
 
     assert!(written > 0, "home still had to be written");
     let trash = std::fs::read_to_string(vault.path().join(".yonalist").join("trash.md"))
@@ -633,7 +649,9 @@ fn one_document_that_cannot_be_written_does_not_stop_the_others() {
     )
     .expect("metadata");
 
-    let written = storage.export_pending(vault.path()).expect("export");
+    let written = storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
 
     assert!(
         written > 0,
@@ -669,7 +687,9 @@ fn reindex_is_refused_while_edits_are_unexported() {
         "reading the vault as the truth would discard what this device is still holding"
     );
 
-    storage.export_pending(vault.path()).expect("export");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
     let waiting = storage.pending_count().expect("pending");
     assert!(
         storage.reindex_vault(vault.path()).is_ok(),

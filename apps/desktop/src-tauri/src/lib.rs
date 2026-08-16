@@ -520,13 +520,14 @@ impl DesktopRuntime {
         let exporter = {
             let storage = Arc::clone(&storage);
             let data_directory = data_directory.clone();
+            let store_root = data_directory.join("images");
             move || {
                 // Read every time: the vault can be picked, or changed, long
                 // after this thread started.
                 let Some(vault) = sync_settings::read_vault_path(&data_directory) else {
                     return;
                 };
-                if let Err(error) = storage.export_pending(&vault) {
+                if let Err(error) = storage.export_pending(&vault, &store_root) {
                     // Nothing here can fix it, and the marks stay put — the next
                     // pass tries the same documents again.
                     eprintln!("The vault could not be written: {error}");
