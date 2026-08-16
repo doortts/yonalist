@@ -1146,3 +1146,229 @@ fn merging_the_same_trash_twice_changes_nothing() {
     assert_eq!(outcome.applied, 0);
     assert_eq!(conflicts(&transaction), 0);
 }
+
+fn parent_of(connection: &Connection, id: &str) -> String {
+    connection
+        .query_row(
+            "SELECT parent_id FROM notes_nodes WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .expect("parent")
+}
+
+fn recovery_page(connection: &Connection) -> Option<String> {
+    connection
+        .query_row(
+            "SELECT id FROM notes_nodes WHERE parent_id = 'root' AND text = 'Recovered'",
+            [],
+            |row| row.get(0),
+        )
+        .ok()
+}
+
+/// Two devices each moving the other's node underneath their own leave a parent
+/// chain that closes on itself — a state no file can express, which is exactly
+/// why the repair has to be able to reach it. One node has to come out, and
+/// every device has to pick the same one, or the vaults never converge.
+#[test]
+fn a_cycle_parks_the_same_node_for_the_same_input() {
+    let first = "8a201f33-0000-4c91-8d02-000000000001";
+    let second = "8a201f33-0000-4c91-8d02-000000000002";
+    let mut parked = Vec::new();
+
+    // The same ring, built from either end.
+    for rotation in [false, true] {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("begin");
+        let seeded = stamp(5, "a3f2");
+        merge_document(
+            &transaction,
+            &clock(),
+            &notes_sync::document::VaultFile::Page(page(
+                vec![
+                    node(first, &seeded, "First"),
+                    node(second, &seeded, "Second"),
+                ],
+                &seeded,
+            )),
+            &input(),
+        )
+        .expect("seed");
+        let pairs = if rotation {
+            [
+                (first, second, stamp(11, "bbb2")),
+                (second, first, stamp(9, "a3f2")),
+            ]
+        } else {
+            [
+                (second, first, stamp(9, "a3f2")),
+                (first, second, stamp(11, "bbb2")),
+            ]
+        };
+        for (child, parent, mark) in pairs {
+            transaction
+                .execute(
+                    "UPDATE notes_nodes SET parent_id = ?2, hlc = ?3 WHERE id = ?1",
+                    rusqlite::params![child, parent, mark],
+                )
+                .expect("close the ring");
+        }
+
+        // Any merge at all is enough: the repair runs at the end of every one.
+        merge_document(
+            &transaction,
+            &clock(),
+            &notes_sync::document::VaultFile::Page(page(Vec::new(), &seeded)),
+            &input(),
+        )
+        .expect("merge");
+
+        let recovery = recovery_page(&transaction).expect("a recovery page was made");
+        let moved: Vec<String> = {
+            let mut statement = transaction
+                .prepare("SELECT id FROM notes_nodes WHERE parent_id = ?1 ORDER BY id")
+                .expect("prepare");
+            let rows = statement
+                .query_map([&recovery], |row| row.get::<_, String>(0))
+                .expect("query");
+            rows.map(|row| row.expect("row")).collect()
+        };
+        assert_eq!(moved.len(), 1, "exactly one node comes out of the ring");
+        parked.push(moved[0].clone());
+    }
+
+    assert_eq!(
+        parked[0], parked[1],
+        "both build orders take the same node out, or the two vaults never agree"
+    );
+    assert_eq!(
+        parked[0], second,
+        "the ring gives up its smallest stamp, and that stamp came from a file"
+    );
+}
+
+/// A deletion winning over a parent while an edit wins over its child leaves
+/// the child alive under a parent that is gone. It goes where the user can
+/// find it rather than staying invisible.
+#[test]
+fn an_orphaned_live_child_parks_on_the_recovery_page() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let parent_id = "8a201f33-0000-4c91-8d02-000000000001";
+    let child_id = "8a201f33-0000-4c91-8d02-000000000002";
+    let mut parent = node(parent_id, &stamp(5, "a3f2"), "Parent");
+    parent.children = vec![node(child_id, &stamp(5, "a3f2"), "Child")];
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(vec![parent], &stamp(5, "a3f2"))),
+        &input(),
+    )
+    .expect("seed");
+
+    // The parent is deleted elsewhere; the child is edited elsewhere, later.
+    let mut gone = node(parent_id, &stamp(9, "a3f2"), "Parent");
+    gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
+    merge_document(
+        &transaction,
+        &clock(),
+        &trash(vec![gone], &stamp(9, "a3f2")),
+        &trash_input(),
+    )
+    .expect("trash");
+
+    let recovery = recovery_page(&transaction).expect("a recovery page was made");
+    assert_eq!(
+        parent_of(&transaction, child_id),
+        recovery,
+        "a live child of a deleted parent is not left where nobody can see it"
+    );
+    assert_eq!(deleted_flag(&transaction, child_id), 0);
+}
+
+/// Two devices that both had to rescue the same nodes have to lay them out the
+/// same way, or their recovery pages differ and each keeps rewriting the
+/// other's. Each key comes from the node's own id — one key for all of them
+/// would stack the rescues on top of each other and leave the order to chance.
+#[test]
+fn rescued_nodes_land_in_the_same_order_whichever_was_rescued_first() {
+    let one = "8a201f33-0000-4c91-8d02-0000000000aa";
+    let two = "1b201f33-0000-4c91-8d02-0000000000bb";
+    let mut orders = Vec::new();
+
+    for reversed in [false, true] {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("begin");
+        let seeded = stamp(5, "a3f2");
+        let ids = if reversed { [two, one] } else { [one, two] };
+        let mut parent = node(NODE_ID, &seeded, "Parent");
+        parent.children = ids.iter().map(|id| node(id, &seeded, "Child")).collect();
+        merge_document(
+            &transaction,
+            &clock(),
+            &notes_sync::document::VaultFile::Page(page(vec![parent], &seeded)),
+            &input(),
+        )
+        .expect("seed");
+
+        let mut gone = node(NODE_ID, &stamp(9, "a3f2"), "Parent");
+        gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
+        merge_document(
+            &transaction,
+            &clock(),
+            &trash(vec![gone], &stamp(9, "a3f2")),
+            &trash_input(),
+        )
+        .expect("trash");
+
+        let recovery = recovery_page(&transaction).expect("a recovery page was made");
+        let mut statement = transaction
+            .prepare("SELECT id FROM notes_nodes WHERE parent_id = ?1 ORDER BY sort_key, id")
+            .expect("prepare");
+        let rows = statement
+            .query_map([&recovery], |row| row.get::<_, String>(0))
+            .expect("query");
+        orders.push(rows.map(|row| row.expect("row")).collect::<Vec<_>>());
+    }
+
+    assert_eq!(orders[0].len(), 2);
+    assert_eq!(orders[0], orders[1]);
+
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let seeded = stamp(5, "a3f2");
+    let mut parent = node(NODE_ID, &seeded, "Parent");
+    parent.children = [one, two]
+        .iter()
+        .map(|id| node(id, &seeded, "Child"))
+        .collect();
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(vec![parent], &seeded)),
+        &input(),
+    )
+    .expect("seed");
+    let mut gone = node(NODE_ID, &stamp(9, "a3f2"), "Parent");
+    gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
+    merge_document(
+        &transaction,
+        &clock(),
+        &trash(vec![gone], &stamp(9, "a3f2")),
+        &trash_input(),
+    )
+    .expect("trash");
+    let recovery = recovery_page(&transaction).expect("a recovery page was made");
+    let distinct: i64 = transaction
+        .query_row(
+            "SELECT count(DISTINCT sort_key) FROM notes_nodes WHERE parent_id = ?1",
+            [&recovery],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(
+        distinct, 2,
+        "each rescued node gets its own place, not one shared with the rest"
+    );
+}

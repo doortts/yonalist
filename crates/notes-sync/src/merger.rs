@@ -152,6 +152,7 @@ fn merge_page(
     flatten(&page.nodes, &root_id, &mut incoming);
 
     apply(transaction, clock, &mut incoming, &mut outcome, false)?;
+    repair_structure(transaction, clock, &mut outcome)?;
     outcome.needs_write_back |=
         document_is_missing_nodes(transaction, &root_id, &page.max_hlc, &incoming)?;
     record_document(
@@ -174,6 +175,7 @@ fn merge_trash(
     let mut incoming = Vec::new();
     flatten(&trash.nodes, "", &mut incoming);
     apply(transaction, clock, &mut incoming, &mut outcome, true)?;
+    repair_structure(transaction, clock, &mut outcome)?;
     record_document(
         transaction,
         "yonalist-trash",
@@ -302,6 +304,172 @@ fn apply(
         }
     }
     Ok(())
+}
+
+/// The vault-wide bookkeeping every merge ends with: a parent chain that closes
+/// on itself, or a live node whose parent is gone, leaves the tree in a state
+/// nothing downstream can draw. Both are repaired the same way — the node moves
+/// to a page the user can actually find.
+///
+/// Determinism is the whole contract. Two devices merging the same files in
+/// different orders must take the *same* node out of a cycle, or their vaults
+/// never agree again.
+fn repair_structure(
+    transaction: &Transaction<'_>,
+    clock: &Clock,
+    outcome: &mut MergeOutcome,
+) -> Result<(), MergeError> {
+    let mut recovery: Option<String> = None;
+    // Orphans first: a deletion that won over a parent while an edit won over
+    // its child leaves the child alive and unreachable.
+    loop {
+        let orphan: Option<String> = transaction
+            .prepare_cached(
+                "SELECT n.id FROM notes_nodes n
+                 LEFT JOIN notes_nodes p ON p.id = n.parent_id
+                 WHERE n.deleted = 0 AND n.parent_id IS NOT NULL
+                   AND (p.id IS NULL OR p.deleted = 1)
+                 ORDER BY n.id LIMIT 1",
+            )
+            .and_then(|mut statement| {
+                statement
+                    .query_row([], |row| row.get::<_, String>(0))
+                    .optional()
+            })
+            .map_err(|error| error.to_string())?;
+        let Some(orphan) = orphan else { break };
+        let page = recovery_page(transaction, clock, &mut recovery)?;
+        park(transaction, clock, &orphan, &page, outcome)?;
+    }
+    while let Some(node) = cycle_member(transaction)? {
+        let page = recovery_page(transaction, clock, &mut recovery)?;
+        park(transaction, clock, &node, &page, outcome)?;
+    }
+    Ok(())
+}
+
+/// The node a cycle gives up: the smallest `(stamp, id)` on the ring. The stamp
+/// came out of the file, so every device walking the same ring picks the same
+/// node without talking to any other device.
+fn cycle_member(transaction: &Transaction<'_>) -> Result<Option<String>, MergeError> {
+    let mut statement = transaction
+        .prepare_cached(
+            "SELECT id, parent_id, hlc FROM notes_nodes WHERE deleted = 0 AND parent_id IS NOT NULL",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut parents = BTreeMap::new();
+    let mut stamps = BTreeMap::new();
+    for row in rows {
+        let (id, parent, hlc) = row.map_err(|error| error.to_string())?;
+        parents.insert(id.clone(), parent);
+        stamps.insert(id, hlc);
+    }
+    // Every id is walked, so the ring is found no matter which node this merge
+    // happened to touch. The map is ordered, so the walk is too.
+    for start in parents.keys() {
+        let mut seen = BTreeSet::new();
+        let mut at = start.clone();
+        while let Some(parent) = parents.get(&at) {
+            if !seen.insert(at.clone()) {
+                // Back where we have been: collect the ring itself, which is
+                // everything reachable from here.
+                let mut ring = BTreeSet::new();
+                let mut walk = at.clone();
+                while ring.insert(walk.clone()) {
+                    walk = parents.get(&walk).cloned().unwrap_or_default();
+                }
+                let chosen = ring
+                    .into_iter()
+                    .min_by(|left, right| {
+                        let left_stamp = stamps.get(left).cloned().unwrap_or_default();
+                        let right_stamp = stamps.get(right).cloned().unwrap_or_default();
+                        (left_stamp, left).cmp(&(right_stamp, right))
+                    })
+                    .expect("a ring holds at least one node");
+                return Ok(Some(chosen));
+            }
+            at = parent.clone();
+        }
+    }
+    Ok(None)
+}
+
+/// Where a rescued node goes. Its key comes from its own id, so the page reads
+/// the same on every device that had to rescue the same node.
+fn park(
+    transaction: &Transaction<'_>,
+    clock: &Clock,
+    id: &str,
+    page: &str,
+    outcome: &mut MergeOutcome,
+) -> Result<(), MergeError> {
+    let sort_key = recovery_sort_key(id)?;
+    let stamp = clock.now()?.encode();
+    transaction
+        .prepare_cached(
+            "UPDATE notes_nodes SET parent_id = ?2, sort_key = ?3, hlc = ?4 WHERE id = ?1",
+        )
+        .and_then(|mut statement| statement.execute(rusqlite::params![id, page, sort_key, stamp]))
+        .map_err(|error| error.to_string())?;
+    outcome.applied += 1;
+    outcome.changed_ids.insert(id.to_owned());
+    outcome.needs_write_back = true;
+    Ok(())
+}
+
+/// A stable key inside the range JavaScript can hold exactly, derived from the
+/// node's own id (ported from v1's `safe_recovery_sort_key`).
+fn recovery_sort_key(id: &str) -> Result<i64, MergeError> {
+    let canonical = Uuid::parse_str(id)
+        .map_err(|_| format!("`{id}` is not a UUID."))?
+        .simple()
+        .to_string();
+    let prefix = u64::from_str_radix(&canonical[..13], 16)
+        .map_err(|_| format!("`{id}` has no readable prefix."))?;
+    i64::try_from(prefix).map_err(|_| "A recovery key is too large.".to_owned())
+}
+
+/// Made only when something actually has to be rescued. Its id comes from this
+/// vault's own uuid, so two devices can each make one and they merge like any
+/// other pair of nodes.
+fn recovery_page(
+    transaction: &Transaction<'_>,
+    clock: &Clock,
+    cached: &mut Option<String>,
+) -> Result<String, MergeError> {
+    if let Some(page) = cached {
+        return Ok(page.clone());
+    }
+    let vault_uuid: String = transaction
+        .prepare_cached("SELECT vault_uuid FROM sync_meta WHERE singleton = 1")
+        .and_then(|mut statement| statement.query_row([], |row| row.get(0)))
+        .map_err(|error| error.to_string())?;
+    let id = Uuid::new_v5(
+        &Uuid::parse_str(&vault_uuid).map_err(|_| "The vault uuid is not a UUID.".to_owned())?,
+        b"yonalist-recovery-page",
+    )
+    .hyphenated()
+    .to_string();
+    let stamp = clock.now()?.encode();
+    transaction
+        .prepare_cached(
+            "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
+             VALUES (?1, 'root', ?2, 'bullet', 'Recovered', ?3)
+             ON CONFLICT(id) DO NOTHING",
+        )
+        .and_then(|mut statement| statement.execute(rusqlite::params![id, i64::MAX / 2, stamp]))
+        .map_err(|error| error.to_string())?;
+    *cached = Some(id.clone());
+    Ok(id)
 }
 
 /// Trash can arrive before the document holding the node it was taken from.
