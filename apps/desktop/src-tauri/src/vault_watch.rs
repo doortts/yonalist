@@ -27,6 +27,16 @@ const QUIET_MILLIS: u64 = 500;
 /// The net under the watcher. Events are dropped by every platform under load,
 /// and a note that never arrives is worse than a folder read once a minute.
 const SWEEP: Duration = Duration::from_secs(60);
+/// A sweep reports every attachment it finds, and every document the stat gate
+/// cannot answer for — a refusal never updates a file's stat record, so the
+/// gate has nothing that can match and reports it on every sweep there will
+/// ever be. A report puts the quiet window back to the start, so a sweep that
+/// comes round faster than that window is up means nothing it reports is ever
+/// still long enough to be read.
+/// Held against the constant rather than the interval `start_with` takes,
+/// because the interval is short only where a test asked for it and knows what
+/// it bought; production reaches this by way of `start`.
+const _: () = assert!(SWEEP.as_millis() > QUIET_MILLIS as u128);
 
 pub(crate) struct VaultWatch {
     /// Dropped first, which is what ends the loop. The thread cannot end
