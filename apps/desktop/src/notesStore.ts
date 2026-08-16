@@ -8,7 +8,9 @@ import type { ForestSnapshot } from "../../../packages/contracts/generated/Fores
 import type { PaneSnapshot } from "./appNavigation";
 import type { NotesApi } from "./api";
 import { initialNotesState, type NotesState } from "./notesState";
-import { freshId, messageFrom, ROOT_ID } from "./store/storeSupport";
+import {
+  freshId, messageFrom, ROOT_ID, VIEWPORT_LIMIT
+} from "./store/storeSupport";
 import { flattenPastedOutline, type PastedOutlineNode } from "./outline/outlinePaste";
 import { receiptState, subtreeIds, viewportState } from "./store/storeState";
 import { runSlashEdit } from "./store/storeSlash";
@@ -168,9 +170,37 @@ export class NotesStore {
    * Another device's edit arrived. The rows it touched are anywhere in the
    * page, including rows this window is not showing, so the page is read
    * again rather than patched.
+   *
+   * The page list is read again too: a page made, renamed or deleted on
+   * another device is a change to Home, which is a page this window is
+   * probably not looking at.
    */
   async absorbVaultChange(): Promise<void> {
-    await this.viewport.reload();
+    await Promise.all([this.viewport.reload(), this.refreshPages()]);
+  }
+
+  private async refreshPages(): Promise<void> {
+    try {
+      const home = await this.api.queryViewport({
+        pageId: ROOT_ID,
+        anchorId: null,
+        beforeCursor: null,
+        afterCursor: null,
+        limit: VIEWPORT_LIMIT
+      });
+      this.update({
+        pages: home.nodes
+          .filter((node) => !node.deleted)
+          .map((node) => ({
+            id: node.id,
+            title: node.text,
+            sortKey: node.sortKey
+          }))
+      });
+    } catch {
+      // The list stays as it was. A window showing a page list one edit
+      // behind is better than one showing an error over it.
+    }
   }
 
   queryForest(rootIds: readonly string[]): Promise<ForestSnapshot> {

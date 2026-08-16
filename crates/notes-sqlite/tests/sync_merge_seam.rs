@@ -800,6 +800,67 @@ fn a_resolved_attachment_leaves_its_page_exportable() {
     );
 }
 
+/// The sweep re-reads the whole folder every minute. Every picture in it
+/// being decoded again each time — including the ones this app wrote there —
+/// is work that grows with the vault and never ends.
+#[test]
+fn bytes_already_taken_in_are_not_read_again() {
+    let (_directory, storage) = storage();
+    let location = "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png";
+    assert!(
+        !storage.asset_known(location).expect("ask"),
+        "nothing has been taken in yet"
+    );
+
+    storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
+            location,
+        )
+        .expect("resolve");
+
+    assert!(
+        storage.asset_known(location).expect("ask"),
+        "these bytes are already in this app's own store"
+    );
+}
+
+/// A file this app cannot read is written down. Without that it is read and
+/// refused again on every sweep, silently, for as long as it sits there.
+#[test]
+fn a_file_that_cannot_be_read_is_written_down() {
+    let (_directory, storage) = storage();
+
+    storage
+        .quarantine("Projects-4f1c8e20a3b7/README.md", &"c".repeat(64))
+        .expect("quarantine");
+
+    assert_eq!(
+        storage
+            .vault_file_hash("Projects-4f1c8e20a3b7/README.md")
+            .expect("hash")
+            .as_deref(),
+        Some("c".repeat(64).as_str()),
+        "the same bytes arriving again are not news"
+    );
+
+    // Somebody had a go at fixing it and it still cannot be read. What is
+    // written down has to be the file as it is now, or the next sweep reads
+    // the old answer and skips a file that has changed.
+    storage
+        .quarantine("Projects-4f1c8e20a3b7/README.md", &"d".repeat(64))
+        .expect("quarantine again");
+
+    assert_eq!(
+        storage
+            .vault_file_hash("Projects-4f1c8e20a3b7/README.md")
+            .expect("hash")
+            .as_deref(),
+        Some("d".repeat(64).as_str())
+    );
+}
+
 /// A reindex is the last net under the scan gate, so what it could not read
 /// has to come back as a number. Answering "nothing changed" about a vault it
 /// only half read is the one thing a net must not do.

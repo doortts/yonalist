@@ -52,6 +52,17 @@ enum Request {
         vault_root: Option<std::path::PathBuf>,
         reply: SyncSender<Result<bool, StorageError>>,
     },
+    AssetKnown {
+        location: String,
+        reply: SyncSender<Result<bool, StorageError>>,
+    },
+    /// A file this app could not read, recorded so it is not read again on
+    /// every sweep, and so the user can be shown which one.
+    Quarantine {
+        relative: String,
+        file_hash: String,
+        reply: SyncSender<Result<(), StorageError>>,
+    },
     ResolveAsset {
         disk_name: String,
         content_hash: String,
@@ -239,6 +250,27 @@ impl SqliteStorage {
     /// The bytes for an attachment arrived. Every row whose link names it and
     /// which is still waiting learns its hash — which is what turns a note
     /// showing nothing into a note showing its picture.
+    /// Whether the bytes at this place in the vault have already been taken
+    /// in. The name carries the content hash, so a file that is still called
+    /// what it was called holds what it held.
+    pub fn asset_known(&self, location: &str) -> Result<bool, StorageError> {
+        self.request(|reply| Request::AssetKnown {
+            location: location.to_owned(),
+            reply,
+        })
+    }
+
+    /// Writes down that this app could not make sense of a file. The hash is
+    /// what keeps it from being read again on every sweep — a file that is
+    /// still the same file has already been answered.
+    pub fn quarantine(&self, relative: &str, file_hash: &str) -> Result<(), StorageError> {
+        self.request(|reply| Request::Quarantine {
+            relative: relative.to_owned(),
+            file_hash: file_hash.to_owned(),
+            reply,
+        })
+    }
+
     /// `location` is where the file sits in the vault, relative to its root:
     /// the arrival is the only thing that knows, and the export writes its
     /// links from it.
@@ -476,6 +508,40 @@ impl SqliteStorage {
                                 &content_hash,
                                 vault_root.as_deref(),
                             ));
+                        }
+                        Request::AssetKnown { location, reply } => {
+                            let _ = reply.send(
+                                connection
+                                    .query_row(
+                                        "SELECT 1 FROM sync_assets WHERE location = ?1",
+                                        [&location],
+                                        |_| Ok(()),
+                                    )
+                                    .optional()
+                                    .map(|found| found.is_some())
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
+                        }
+                        Request::Quarantine {
+                            relative,
+                            file_hash,
+                            reply,
+                        } => {
+                            let _ = reply.send(
+                                connection
+                                    .execute(
+                                        "INSERT INTO sync_documents(
+                                             root_id, folder_path, applied_max_hlc,
+                                             exported_hash, quarantined)
+                                         VALUES (?1, ?1, '', ?2, 1)
+                                         ON CONFLICT(root_id) DO UPDATE SET
+                                             exported_hash = excluded.exported_hash,
+                                             quarantined = 1",
+                                        rusqlite::params![&relative, &file_hash],
+                                    )
+                                    .map(|_| ())
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
                         }
                         Request::ResolveAsset {
                             disk_name,

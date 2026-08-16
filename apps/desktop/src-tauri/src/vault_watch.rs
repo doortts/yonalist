@@ -161,6 +161,18 @@ fn take(storage: &SqliteStorage, vault_root: &Path, relative: &str) -> Option<Me
             }
             Some(outcome).filter(|outcome| outcome.applied > 0 || outcome.needs_write_back)
         }
+        // Written down so the sweep does not read and refuse it again every
+        // minute, and so the user can be shown which file it was.
+        Ok(Verdict::Unreadable(_)) => {
+            if let Ok(bytes) = notes_sync::file_io::read_regular_bounded(
+                vault_root,
+                &vault_root.join(relative),
+                notes_sync::parse::MAX_FILE_BYTES,
+            ) {
+                let _ = storage.quarantine(relative, &notes_sync::export::hash_bytes(&bytes));
+            }
+            None
+        }
         // Nothing to do, nothing wrong. A placeholder comes back on the sweep
         // once its bytes arrive; an echo is this app's own writing.
         Ok(_) => None,
@@ -180,6 +192,12 @@ fn take_asset(
     let Some(disk_name) = relative.rsplit('/').next().map(str::to_owned) else {
         return;
     };
+    // The same echo gate the documents get. Without it the sweep decodes every
+    // picture in the vault once a minute, for ever — including the ones this
+    // app wrote there itself.
+    if storage.asset_known(relative).unwrap_or(false) {
+        return;
+    }
     let Ok(bytes) = notes_sync::file_io::read_regular_bounded(
         vault_root,
         &vault_root.join(relative),
