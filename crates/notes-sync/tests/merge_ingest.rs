@@ -1416,6 +1416,58 @@ fn a_conflicted_copy_does_not_become_the_documents_own_file() {
     );
 }
 
+/// What was last written for a node is only true until another device's
+/// version wins. Keeping the old record would have the export put that
+/// reading back — onto a row every other device now holds at a different one,
+/// which is two devices rewriting the same file at each other for ever.
+#[test]
+fn adopting_another_devices_version_forgets_what_this_one_last_wrote() {
+    let node_id = "8a201f33-0000-4c91-8d02-000000000001";
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let seeded = stamp(5, "a3f2");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(node_id, &seeded, "First")],
+            &seeded,
+        )),
+        &input(),
+    )
+    .expect("seed");
+    transaction
+        .execute(
+            "INSERT INTO sync_node_exports(node_id, content_hash, exported_hlc)
+             VALUES (?1, 'whatever this device last wrote', ?2)",
+            rusqlite::params![node_id, &seeded],
+        )
+        .expect("record");
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(node_id, &stamp(9, "bbb2"), "Theirs")],
+            &stamp(9, "bbb2"),
+        )),
+        &input(),
+    )
+    .expect("their version");
+
+    let kept: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM sync_node_exports WHERE node_id = ?1",
+            [node_id],
+            |row| row.get(0),
+        )
+        .expect("records");
+    assert_eq!(
+        kept, 0,
+        "this row says what their file said now, not what this device wrote"
+    );
+}
+
 /// A rescue that no file states is a rescue nobody else ever sees — and on the
 /// device that did it, a reindex from the vault would take the node away
 /// again. The recovery page, the node put under it, and home all owe a write.

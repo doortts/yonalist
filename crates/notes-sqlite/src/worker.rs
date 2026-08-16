@@ -530,13 +530,12 @@ impl SqliteStorage {
                             let _ = reply.send(
                                 connection
                                     .execute(
-                                        "INSERT INTO sync_documents(
-                                             root_id, folder_path, applied_max_hlc,
-                                             exported_hash, quarantined)
-                                         VALUES (?1, ?1, '', ?2, 1)
-                                         ON CONFLICT(root_id) DO UPDATE SET
-                                             exported_hash = excluded.exported_hash,
-                                             quarantined = 1",
+                                        "INSERT INTO sync_quarantine(
+                                             relative_path, file_hash, noticed_at)
+                                         VALUES (?1, ?2, unixepoch())
+                                         ON CONFLICT(relative_path) DO UPDATE SET
+                                             file_hash = excluded.file_hash,
+                                             noticed_at = excluded.noticed_at",
                                         rusqlite::params![&relative, &file_hash],
                                     )
                                     .map(|_| ())
@@ -572,8 +571,15 @@ impl SqliteStorage {
                             let _ = reply.send(
                                 connection
                                     .query_row(
+                                        // Either answer keeps a file from being
+                                        // read again: what this app wrote, and
+                                        // what it looked at and could not read.
                                         "SELECT exported_hash FROM sync_documents
-                                         WHERE folder_path = ?1",
+                                         WHERE folder_path = ?1
+                                         UNION ALL
+                                         SELECT file_hash FROM sync_quarantine
+                                         WHERE relative_path = ?1
+                                         LIMIT 1",
                                         [&relative],
                                         |row| row.get::<_, String>(0),
                                     )

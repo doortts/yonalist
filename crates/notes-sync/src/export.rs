@@ -63,6 +63,11 @@ pub fn export_document(
     )?;
     if outcome.written || !outcome.needs_merge {
         clear_dirty(transaction, root_id)?;
+        // Only now, and only for a file that was actually written or already
+        // said the same thing. Recording a reading no file carries would have
+        // this device put that reading back later — onto rows every other
+        // device holds at a different one.
+        record_readings(transaction, root_id)?;
     }
     Ok(outcome)
 }
@@ -531,6 +536,46 @@ fn recorded_hash(
 /// sits: a node that moved says the same words, and the reading is what
 /// decides whose move wins.
 fn settle_readings(transaction: &Transaction<'_>, root_id: &str) -> Result<(), ExportError> {
+    for (id, fingerprint, hlc, recorded_hash, recorded_hlc) in readings(transaction, root_id)? {
+        let (Some(recorded_hash), Some(recorded_hlc)) = (recorded_hash, recorded_hlc) else {
+            continue;
+        };
+        if recorded_hash == fingerprint && recorded_hlc != hlc {
+            // `hlc` alone, which the stamping trigger deliberately ignores —
+            // putting a reading back is not an edit.
+            transaction
+                .prepare_cached("UPDATE notes_nodes SET hlc = ?2 WHERE id = ?1")
+                .and_then(|mut statement| statement.execute(rusqlite::params![&id, &recorded_hlc]))
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// What each node said when the file that was just written said it. Read back
+/// by `settle_readings` on a later pass.
+fn record_readings(transaction: &Transaction<'_>, root_id: &str) -> Result<(), ExportError> {
+    for (id, fingerprint, hlc, recorded_hash, _) in readings(transaction, root_id)? {
+        if recorded_hash.as_deref() == Some(fingerprint.as_str()) {
+            continue;
+        }
+        transaction
+            .prepare_cached(
+                "INSERT INTO sync_node_exports(node_id, content_hash, exported_hlc)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(node_id) DO UPDATE SET
+                     content_hash = excluded.content_hash,
+                     exported_hlc = excluded.exported_hlc",
+            )
+            .and_then(|mut statement| statement.execute(rusqlite::params![&id, &fingerprint, &hlc]))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+type Reading = (String, String, String, Option<String>, Option<String>);
+
+fn readings(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<Reading>, ExportError> {
     let mut statement = transaction
         .prepare_cached(
             "WITH RECURSIVE subtree(id) AS (
@@ -549,7 +594,7 @@ fn settle_readings(transaction: &Transaction<'_>, root_id: &str) -> Result<(), E
                     -- something the reading arbitrates: a node that moved has
                     -- earned its new reading even though it says the same
                     -- words.
-                    n.parent_id, n.sync_prev
+                    n.parent_id, n.sync_prev, n.sync_prev_hlc
              FROM notes_nodes n
              LEFT JOIN notes_images i ON i.node_id = n.id
              LEFT JOIN sync_node_exports e ON e.node_id = n.id
@@ -582,10 +627,15 @@ fn settle_readings(transaction: &Transaction<'_>, root_id: &str) -> Result<(), E
                 extras: &row.get::<_, String>(10)?,
             }
             .fingerprint();
+            // The claim's own stamp too: a node moved away and back holds its
+            // old neighbour at a fresh reading, and that reading is what
+            // decides whose move wins. Putting the old one back would have
+            // this device quietly keep an order nobody else has.
             let fingerprint = format!(
-                "{fingerprint}:{}:{}",
+                "{fingerprint}:{}:{}:{}",
                 row.get::<_, Option<String>>(19)?.unwrap_or_default(),
-                row.get::<_, String>(20)?
+                row.get::<_, String>(20)?,
+                row.get::<_, String>(21)?
             );
             Ok((
                 row.get::<_, String>(0)?,
@@ -601,40 +651,7 @@ fn settle_readings(transaction: &Transaction<'_>, root_id: &str) -> Result<(), E
     for row in rows {
         settled.push(row.map_err(|error| error.to_string())?);
     }
-    for (id, fingerprint, hlc, recorded_hash, recorded_hlc) in settled {
-        match (recorded_hash, recorded_hlc) {
-            // Nothing about this node has changed since it was last written,
-            // so the reading that was written with it stands.
-            (Some(recorded_hash), Some(recorded_hlc))
-                if recorded_hash == fingerprint && recorded_hlc != hlc =>
-            {
-                // `hlc` alone, which the stamping trigger deliberately ignores
-                // — putting a reading back is not an edit.
-                transaction
-                    .prepare_cached("UPDATE notes_nodes SET hlc = ?2 WHERE id = ?1")
-                    .and_then(|mut statement| {
-                        statement.execute(rusqlite::params![&id, &recorded_hlc])
-                    })
-                    .map_err(|error| error.to_string())?;
-            }
-            (Some(recorded_hash), _) if recorded_hash == fingerprint => {}
-            _ => {
-                transaction
-                    .prepare_cached(
-                        "INSERT INTO sync_node_exports(node_id, content_hash, exported_hlc)
-                         VALUES (?1, ?2, ?3)
-                         ON CONFLICT(node_id) DO UPDATE SET
-                             content_hash = excluded.content_hash,
-                             exported_hlc = excluded.exported_hlc",
-                    )
-                    .and_then(|mut statement| {
-                        statement.execute(rusqlite::params![&id, &fingerprint, &hlc])
-                    })
-                    .map_err(|error| error.to_string())?;
-            }
-        }
-    }
-    Ok(())
+    Ok(settled)
 }
 
 /// The folder a document sits in, which is what its links are relative to.

@@ -60,10 +60,11 @@ impl Device {
     }
 
     /// Everything this device is holding, written into its folder.
-    fn export(&self) {
+    /// Answers how many documents actually changed on disk.
+    fn export(&self) -> usize {
         self.storage
             .export_pending(&self.vault, &self.store)
-            .expect("export");
+            .expect("export")
     }
 
     /// Everything the folder is holding that this device has not seen, read
@@ -87,7 +88,7 @@ impl Device {
         }
         // What the merge decided, and anything this device was already
         // holding. The export thread runs behind the watcher exactly so.
-        self.export();
+        let _ = self.export();
     }
 
     /// What the outline actually says, in order, deleted rows left out. Two
@@ -189,7 +190,7 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
 /// because a merge can leave the receiving device with something to say.
 fn settle(first: &Device, second: &Device) {
     for _ in 0..2 {
-        first.export();
+        let _ = first.export();
         carry(first, second);
         second.absorb();
         carry(second, first);
@@ -336,7 +337,7 @@ fn a_file_nobody_can_read_costs_nothing() {
         before,
         "reading a file that makes no sense must not empty the notes it describes"
     );
-    two.export();
+    let _ = two.export();
     settle(&two, &one);
     assert_eq!(
         one.text_of(&bullet).as_deref(),
@@ -365,7 +366,7 @@ fn a_bullet_typed_in_by_hand_is_adopted_and_written_back() {
     document.push_str("- Typed in by hand\n");
     std::fs::write(&readme, document).expect("hand edit");
     two.absorb();
-    two.export();
+    let _ = two.export();
 
     let written = std::fs::read_to_string(&readme).expect("document");
     assert!(
@@ -480,7 +481,7 @@ fn an_overwritten_file_comes_back_through_the_merge() {
         id: shared.clone(),
         text: "Changed on the first device".to_owned(),
     });
-    one.export();
+    let _ = one.export();
     carry(&one, &two);
     two.absorb();
     settle(&two, &one);
@@ -491,6 +492,39 @@ fn an_overwritten_file_comes_back_through_the_merge() {
         "the overwrite took a note that was never written out"
     );
     assert_eq!(one.outline(), two.outline());
+}
+
+/// Two devices that have said everything they have to say stop writing. A
+/// pair that keeps rewriting the same file at each other converges on content
+/// while churning the folder for ever — and every one of those writes is a
+/// document the other device merges again.
+#[test]
+fn a_settled_pair_stops_writing() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let bullet = add_bullet(&one, &page, "Something");
+    settle(&one, &two);
+
+    // The other device changes its mind and puts it back. Both readings are
+    // real edits, so the row ends up saying what it said at a reading this
+    // device has never written — and this device has a record of its own for
+    // the same words.
+    two.run(IpcNotesCommand::UpdateText {
+        id: bullet.clone(),
+        text: "Something else".to_owned(),
+    });
+    two.run(IpcNotesCommand::UpdateText {
+        id: bullet,
+        text: "Something".to_owned(),
+    });
+    settle(&two, &one);
+
+    assert_eq!(one.export(), 0, "the first device has nothing left to say");
+    assert_eq!(two.export(), 0, "nor the second");
+    one.absorb();
+    two.absorb();
+    assert_eq!(one.export(), 0, "and reading the folder again changes that");
+    assert_eq!(two.export(), 0);
 }
 
 /// The export is on a timer and the user is in a text editor. Both write the

@@ -1225,6 +1225,13 @@ fn write_row(
     // marked on the way through, which is the row *and* the file that holds it.
     unmark(transaction, &entry.id)?;
     unmark_holder(transaction, &entry.id, holder)?;
+    // What was last written for this node is no longer what this device holds
+    // — it holds what the file said. Leaving the old record would have the
+    // export put a reading back that no file anywhere carries.
+    transaction
+        .prepare_cached("DELETE FROM sync_node_exports WHERE node_id = ?1")
+        .and_then(|mut statement| statement.execute([&entry.id]))
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 

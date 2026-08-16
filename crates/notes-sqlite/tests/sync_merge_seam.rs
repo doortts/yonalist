@@ -826,6 +826,35 @@ fn bytes_already_taken_in_are_not_read_again() {
     );
 }
 
+/// The user's own markdown in the vault is theirs. Writing down that this app
+/// cannot read a file must not make it one of this app's documents — the
+/// folder retirement removes the folder of any document whose node is gone,
+/// and that would delete the folder the user put their file in.
+#[test]
+fn a_file_this_app_cannot_read_is_not_one_of_its_documents() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    std::fs::create_dir_all(vault.path().join("journal")).expect("folder");
+    std::fs::write(
+        vault.path().join("journal/today.md"),
+        b"# Today\n\nSomebody's own notes.\n",
+    )
+    .expect("their file");
+
+    storage
+        .quarantine("journal/today.md", &"e".repeat(64))
+        .expect("quarantine");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+
+    assert!(
+        vault.path().join("journal/today.md").exists(),
+        "a file this app cannot read is not a file it may delete"
+    );
+    assert!(vault.path().join("journal").is_dir(), "nor its folder");
+}
+
 /// A file this app cannot read is written down. Without that it is read and
 /// refused again on every sweep, silently, for as long as it sits there.
 #[test]

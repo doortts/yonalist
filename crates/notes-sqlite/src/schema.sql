@@ -289,6 +289,17 @@ CREATE TABLE sync_assets (
     unreferenced_at INTEGER
 ) STRICT;
 
+-- Files in the vault this app could not read. Keyed by path, and
+-- deliberately not in `sync_documents`: a row there means "this is
+-- one of our documents", and the folder retirement deletes the
+-- folder of any such row whose node is gone. A file we cannot read
+-- is not our document, and its folder is not ours to remove.
+CREATE TABLE sync_quarantine (
+    relative_path TEXT PRIMARY KEY NOT NULL,
+    file_hash TEXT NOT NULL,
+    noticed_at INTEGER NOT NULL
+) STRICT;
+
 CREATE TABLE notes_ui_state (
     key TEXT PRIMARY KEY NOT NULL,
     value TEXT NOT NULL
