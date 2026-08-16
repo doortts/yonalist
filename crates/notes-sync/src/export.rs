@@ -176,7 +176,19 @@ pub fn pending_documents(transaction: &Transaction<'_>) -> Result<Vec<String>, E
                            WHERE d.root_id = at AND d.retiring = 0)
                 OR (SELECT parent_id FROM notes_nodes WHERE id = at) = 'root'
              UNION
-             SELECT 'yonalist-trash' FROM climb WHERE deleted = 1
+             -- A deletion being undone leaves nothing dirty that says so: the
+             -- restored row is back at `deleted = 0`, and a row hard deleted
+             -- out of the trash marks its living parent instead. Only the file
+             -- still claims it. So while the trash claims anything at all, any
+             -- pass could be the one that proves the claim wrong, and the
+             -- trash is rebuilt from the deleted rows to find out. That claim
+             -- is dropped by `export_trash` the moment the trash comes back
+             -- empty; without that this would be true for good after the first
+             -- deletion the vault ever makes.
+             SELECT 'yonalist-trash' FROM climb
+             WHERE deleted = 1
+                OR EXISTS (SELECT 1 FROM sync_documents
+                           WHERE root_id = 'yonalist-trash' AND exported_hash <> '')
              ORDER BY 1",
         )
         .map_err(|error| error.to_string())?;
@@ -432,11 +444,55 @@ pub fn export_trash(
     let path = vault_root.join(&relative);
     let nodes = load_trash(transaction)?;
     if nodes.is_empty() {
-        let existed = path.exists();
-        if existed {
+        // Not `exists`: a symlink pointing nowhere is still something standing
+        // in that path, and this branch is about to remove whatever is.
+        if path.symlink_metadata().is_ok() {
+            let ours = match crate::file_io::read_regular_bounded(
+                vault_root,
+                &path,
+                crate::parse::MAX_FILE_BYTES,
+            ) {
+                Ok(existing) => {
+                    recorded_hash(transaction, "yonalist-trash")?.as_deref()
+                        == Some(hash_bytes(&existing).as_str())
+                }
+                // Unreadable is not gone. Too big, a symlink, bytes the cloud
+                // has not brought down yet — whatever it says, it still says
+                // it, and this app has not read a word of it.
+                Err(_) => false,
+            };
+            if !ours {
+                // Removing is the one thing that cannot be taken back: a newer
+                // trash from another device states deletions this one has
+                // never heard of, and taking it away would undo them
+                // everywhere. Left where it is, and the claim below stays so
+                // this comes back. Readable bytes the merge picks up, and the
+                // pass after that finds its own writing and clears it. A link
+                // or a file too big to read is skipped by the scan as well as
+                // by this, and waits for the next deletion to write over it.
+                return Ok(ExportOutcome {
+                    written: false,
+                    needs_merge: true,
+                    path: relative,
+                });
+            }
             std::fs::remove_file(&path)
                 .map_err(|error| format!("Could not clear the trash file: {error}"))?;
         }
+        // The trash claims nothing now, and `pending_documents` reads this
+        // claim to decide whether to come back. Leaving it would have every
+        // dirty pass rebuild an empty trash for good. The stat goes with it:
+        // the same file can come back from a device that has not caught up,
+        // carrying the mtime it was written with, and a scan matching this
+        // record would call that arrival our own and never read it.
+        transaction
+            .prepare_cached(
+                "UPDATE sync_documents
+                    SET exported_hash = '', file_mtime_ms = NULL, file_size = NULL
+                  WHERE root_id = 'yonalist-trash'",
+            )
+            .and_then(|mut statement| statement.execute([]))
+            .map_err(|error| error.to_string())?;
         return Ok(ExportOutcome {
             written: false,
             needs_merge: false,

@@ -572,6 +572,46 @@ fn a_hand_edited_file_gets_its_canonical_form_back() {
     );
 }
 
+/// A restore is the one change to the trash that the restored row itself no
+/// longer says anything about: it is dirty with `deleted = 0`, like any other
+/// edit. Nothing but the file it left still claims the deletion, so the export
+/// has to go back and look at the trash anyway.
+#[test]
+fn a_restored_node_takes_the_trash_file_with_it() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("seed");
+    let id = notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id");
+    let trash = vault.path().join(".yonalist").join("trash.md");
+
+    run(&storage, NotesCommand::DeleteSubtree { id: id.clone() });
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+    assert!(trash.exists(), "the deletion has to reach the vault first");
+
+    run(&storage, NotesCommand::RestoreSubtree { id });
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+
+    assert!(
+        !trash.exists(),
+        "a file that still said something was deleted would keep deleting it"
+    );
+}
+
+/// A command, the way the app makes one: loaded, planned, committed.
+fn run(storage: &SqliteStorage, command: NotesCommand) {
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("commit");
+}
+
 /// A vault that has seen a deletion referencing a document it has not received
 /// yet holds a placeholder with no stamp. Nothing can render that, and one such
 /// row must not stop every other document from going out.
@@ -1391,4 +1431,39 @@ fn image_path(directory: &tempfile::TempDir, node_id: &str) -> String {
             |row| row.get(0),
         )
         .expect("image row")
+}
+
+/// A restore made on another device arrives as a page whose node is live
+/// again, not as anything that mentions the trash. This device's trash file
+/// still states the deletion it accepted earlier, and the merge is the only
+/// thing that knows better.
+#[test]
+fn a_restore_from_another_device_takes_the_trash_file_too() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("seed");
+    let id = notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id");
+    let trash = vault.path().join(".yonalist").join("trash.md");
+    run(&storage, NotesCommand::DeleteSubtree { id });
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+    assert!(trash.exists(), "the deletion has to reach the vault first");
+
+    // Later than any reading this device has made, so it wins. A stamp this
+    // far out is the only way to say that here: the deletion above carries a
+    // real clock reading.
+    storage
+        .merge_document(&page("Thought", &stamp(4_000_000_000_000)), &input())
+        .expect("the restore arrives");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+
+    assert!(
+        !trash.exists(),
+        "the node is alive again everywhere, and the file says otherwise"
+    );
 }
