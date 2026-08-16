@@ -122,7 +122,11 @@ fn run(
         }
         if swept.elapsed() >= SWEEP {
             swept = Instant::now();
-            for relative in documents_on_disk(vault_root) {
+            let present = documents_on_disk(vault_root);
+            // A refusal is about a file. Once the file is gone so is what it
+            // was about, and one that comes back is read rather than skipped.
+            let _ = storage.forget_missing_refusals(&present);
+            for relative in present {
                 queue.saw(&relative, now());
             }
         }

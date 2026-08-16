@@ -52,6 +52,10 @@ enum Request {
         vault_root: Option<std::path::PathBuf>,
         reply: SyncSender<Result<bool, StorageError>>,
     },
+    ForgetMissingRefusals {
+        present: Vec<String>,
+        reply: SyncSender<Result<usize, StorageError>>,
+    },
     AssetKnown {
         location: String,
         reply: SyncSender<Result<bool, StorageError>>,
@@ -250,6 +254,16 @@ impl SqliteStorage {
     /// The bytes for an attachment arrived. Every row whose link names it and
     /// which is still waiting learns its hash — which is what turns a note
     /// showing nothing into a note showing its picture.
+    /// Files this app refused that are not in the folder any more. A refusal
+    /// is about a file; once the file is gone, so is what it was about — and a
+    /// file that comes back is read rather than skipped as already answered.
+    pub fn forget_missing_refusals(&self, present: &[String]) -> Result<usize, StorageError> {
+        self.request(|reply| Request::ForgetMissingRefusals {
+            present: present.to_vec(),
+            reply,
+        })
+    }
+
     /// Whether the bytes at this place in the vault have already been taken
     /// in. The name carries the content hash, so a file that is still called
     /// what it was called holds what it held.
@@ -508,6 +522,18 @@ impl SqliteStorage {
                                 &content_hash,
                                 vault_root.as_deref(),
                             ));
+                        }
+                        Request::ForgetMissingRefusals { present, reply } => {
+                            let _ = reply.send(
+                                connection
+                                    .execute(
+                                        "DELETE FROM sync_quarantine
+                                         WHERE relative_path NOT IN
+                                             (SELECT value FROM json_each(?1))",
+                                        [notes_sync::export::json_list(&present)],
+                                    )
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
                         }
                         Request::AssetKnown { location, reply } => {
                             let _ = reply.send(

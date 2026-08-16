@@ -915,6 +915,26 @@ fn a_document_that_becomes_unreadable_is_refused_only_once() {
     );
 }
 
+/// A refusal is about a file. Once the file is gone, so is what it was about
+/// — and one the user puts back is read rather than skipped as answered.
+#[test]
+fn a_refusal_goes_when_its_file_does() {
+    let (directory, storage) = storage();
+    storage
+        .quarantine("journal/today.md", &"e".repeat(64))
+        .expect("quarantine");
+
+    storage
+        .forget_missing_refusals(&["Projects-4f1c8e20a3b7/README.md".to_owned()])
+        .expect("sweep");
+
+    let remembered: i64 = rusqlite::Connection::open(directory.path().join("notes.sqlite"))
+        .expect("read")
+        .query_row("SELECT COUNT(*) FROM sync_quarantine", [], |row| row.get(0))
+        .expect("quarantine");
+    assert_eq!(remembered, 0, "the file it was about is not there any more");
+}
+
 /// A file that could not be read once can be fixed, or can simply finish
 /// arriving. The note saying it was unreadable has to go with that, or every
 /// later version of it is skipped as "already answered".
