@@ -187,6 +187,9 @@ pub(crate) fn export_pending(
     // attachment pass put the bytes.
     notes_sync::attachments::place_attachments(&transaction, vault_root, store_root)
         .map_err(StorageError::Internal)?;
+    // Before the queue is read: a page that stopped being a page has to be out
+    // of the way for the render that states its notes in their new home.
+    notes_sync::export::begin_retirement(&transaction).map_err(StorageError::Internal)?;
     // Order does not matter among the documents: each carries its own marks,
     // and home derives a page's folder the same way the page export does.
     let pending =

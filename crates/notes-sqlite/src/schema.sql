@@ -252,7 +252,15 @@ CREATE TABLE sync_documents (
     file_mtime_ms INTEGER,
     file_size INTEGER,
     quarantined INTEGER NOT NULL DEFAULT 0
-        CHECK (quarantined IN (0, 1))
+        CHECK (quarantined IN (0, 1)),
+    -- This document is on its way out: its node is still here but is
+    -- no longer a page, so its notes belong to the page it joined.
+    -- Nothing reads it as a document while this is set — the export
+    -- renders its subtree inside its new home first, and the folder
+    -- goes at the end of the same pass. Removing the folder before
+    -- that leaves the subtree in no file at all.
+    retiring INTEGER NOT NULL DEFAULT 0
+        CHECK (retiring IN (0, 1))
 ) STRICT;
 
 CREATE TABLE sync_dirty_nodes (

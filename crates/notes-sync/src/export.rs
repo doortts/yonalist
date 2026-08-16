@@ -160,14 +160,16 @@ pub fn pending_documents(transaction: &Transaction<'_>) -> Result<Vec<String>, E
                    -- A node that owns a document of its own is where the climb
                    -- ends: its subtree is that document's, not its parent's.
                    AND NOT EXISTS (
-                       SELECT 1 FROM sync_documents d WHERE d.root_id = climb.at
+                       SELECT 1 FROM sync_documents d
+                       WHERE d.root_id = climb.at AND d.retiring = 0
                    )
              )
              -- A deleted row belongs to the trash *and* to the page it left:
              -- that page's file still carries its line until it is rewritten.
              SELECT DISTINCT at FROM climb
              WHERE at = 'root'
-                OR EXISTS (SELECT 1 FROM sync_documents d WHERE d.root_id = at)
+                OR EXISTS (SELECT 1 FROM sync_documents d
+                           WHERE d.root_id = at AND d.retiring = 0)
                 OR (SELECT parent_id FROM notes_nodes WHERE id = at) = 'root'
              UNION
              SELECT 'yonalist-trash' FROM climb WHERE deleted = 1
@@ -291,23 +293,20 @@ pub fn retire_missing_documents(
         .map_err(|error| format!("Could not resolve the vault: {error}"))?;
     let mut statement = transaction
         .prepare_cached(
-            "SELECT d.root_id, d.folder_path, n.id IS NOT NULL AND n.deleted = 0
-             FROM sync_documents d
+            "SELECT d.root_id, d.folder_path FROM sync_documents d
              LEFT JOIN notes_nodes n ON n.id = d.root_id
              WHERE d.root_id NOT IN ('root', 'yonalist-trash')
-               -- Gone, deleted, or no longer a page at all: a folder standing
-               -- for something that is not a page any more tells the user they
-               -- still have one.
-               AND (n.id IS NULL OR n.deleted = 1 OR n.parent_id IS NOT 'root')",
+               -- Gone, deleted, or on its way out: a folder standing for
+               -- something that is not a page any more tells the user they
+               -- still have one. A document marked as leaving has just had its
+               -- subtree written into the page it joined, which is what makes
+               -- this the moment its folder can go.
+               AND (n.id IS NULL OR n.deleted = 1 OR d.retiring = 1)",
         )
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)? == 1,
-            ))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|error| error.to_string())?;
     let mut found = Vec::new();
@@ -316,20 +315,7 @@ pub fn retire_missing_documents(
     }
 
     let mut retired = Vec::new();
-    for (root_id, folder_path, still_alive) in found {
-        if still_alive {
-            // A page dragged under another page is not gone — its notes belong
-            // to the page it joined, and that page has not said so yet. Taking
-            // the folder now would leave the whole subtree in no file at all.
-            // The row goes, so the next pass renders the subtree inside its new
-            // document; the folder waits for that pass to find it.
-            transaction
-                .prepare_cached("DELETE FROM sync_documents WHERE root_id = ?1")
-                .and_then(|mut statement| statement.execute([&root_id]))
-                .map_err(|error| error.to_string())?;
-            mark_dirty_for_export(transaction, &root_id)?;
-            continue;
-        }
+    for (root_id, folder_path) in found {
         // Resolved, not merely prefixed: a recorded path is a value the watcher
         // supplied, and `..` in it would walk a plain prefix check straight out
         // of the vault with a recursive delete behind it.
@@ -355,18 +341,45 @@ pub fn retire_missing_documents(
     Ok(retired)
 }
 
-/// Queues the document that now holds this subtree. The row it used to own is
-/// gone by the time this runs, so the climb ends where the subtree's new home
-/// begins.
-fn mark_dirty_for_export(transaction: &Transaction<'_>, root_id: &str) -> Result<(), ExportError> {
-    transaction
+/// A page dragged under another page is not gone: its notes belong to the page
+/// it joined, and that page has not said so yet. Taking the folder now would
+/// leave the whole subtree in no file at all, so the document is marked as
+/// leaving instead — nothing reads it as a document from here on, which is
+/// what makes the next render put its subtree inside its new home — and it is
+/// queued so that render happens in this same pass.
+///
+/// Called before the documents are written; `retire_missing_documents`
+/// finishes the job after them.
+pub fn begin_retirement(transaction: &Transaction<'_>) -> Result<usize, ExportError> {
+    let mut statement = transaction
         .prepare_cached(
-            "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES (?1, unixepoch())
-             ON CONFLICT(node_id) DO NOTHING",
+            "SELECT d.root_id FROM sync_documents d
+             JOIN notes_nodes n ON n.id = d.root_id
+             WHERE d.root_id NOT IN ('root', 'yonalist-trash')
+               AND d.retiring = 0 AND n.deleted = 0 AND n.parent_id IS NOT 'root'",
         )
-        .and_then(|mut statement| statement.execute([root_id]))
         .map_err(|error| error.to_string())?;
-    Ok(())
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    let mut leaving = Vec::new();
+    for row in rows {
+        leaving.push(row.map_err(|error| error.to_string())?);
+    }
+    for root_id in &leaving {
+        transaction
+            .prepare_cached("UPDATE sync_documents SET retiring = 1 WHERE root_id = ?1")
+            .and_then(|mut statement| statement.execute([root_id]))
+            .map_err(|error| error.to_string())?;
+        transaction
+            .prepare_cached(
+                "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES (?1, unixepoch())
+                 ON CONFLICT(node_id) DO NOTHING",
+            )
+            .and_then(|mut statement| statement.execute([root_id]))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(leaving.len())
 }
 
 /// The trash, which is the only evidence a deletion ever gets: a node simply
@@ -619,7 +632,8 @@ fn readings(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<Reading>
                  UNION ALL
                  SELECT n.id FROM notes_nodes n JOIN subtree s ON n.parent_id = s.id
                  WHERE s.id = ?1
-                    OR NOT EXISTS (SELECT 1 FROM sync_documents d WHERE d.root_id = s.id)
+                    OR NOT EXISTS (SELECT 1 FROM sync_documents d
+                                    WHERE d.root_id = s.id AND d.retiring = 0)
              )
              SELECT n.id, n.kind, n.text, n.note, n.marker, n.ordered_start,
                     n.collapsed, n.completed, n.starred, n.deleted, n.sync_extras, n.hlc,
@@ -713,7 +727,8 @@ fn load_document(
                  WHERE n.deleted = 0
                    AND (s.id = ?1
                         OR NOT EXISTS (
-                            SELECT 1 FROM sync_documents d WHERE d.root_id = s.id
+                            SELECT 1 FROM sync_documents d
+                            WHERE d.root_id = s.id AND d.retiring = 0
                         ))
              )
              SELECT n.id, n.parent_id, n.sort_key, n.kind, n.text, n.note, n.marker,
@@ -906,7 +921,8 @@ fn clear_dirty(transaction: &Transaction<'_>, root_id: &str) -> Result<(), Expor
                      SELECT n.id FROM notes_nodes n JOIN subtree s ON n.parent_id = s.id
                      WHERE s.id = ?1
                         OR NOT EXISTS (
-                            SELECT 1 FROM sync_documents d WHERE d.root_id = s.id
+                            SELECT 1 FROM sync_documents d
+                            WHERE d.root_id = s.id AND d.retiring = 0
                         )
                  )
                  -- Only what this document actually wrote. A deleted row's line

@@ -283,6 +283,65 @@ fn a_move_that_changes_no_neighbour_still_says_when_it_moved() {
     );
 }
 
+/// Making room for a new line renumbers the lines around it. None of them
+/// moved — each still follows whoever it followed — so none of their claims
+/// may take on the new reading, or somebody else's real move loses to a
+/// neighbour that only had its number changed.
+#[test]
+fn making_room_for_a_line_does_not_promote_its_neighbours_claims() {
+    let (_directory, database) = workspace();
+    let storage = SqliteStorage::open(&database).expect("open");
+    let page = seeded_page(&database);
+    let connection = writer(&database);
+    // Packed tight, which is what a run of inserts in one spot leaves.
+    let ids: Vec<String> = (0..3)
+        .map(|index| format!("8a201f33-0000-4c91-8d02-00000000ee{index:02}"))
+        .collect();
+    for (index, id) in ids.iter().enumerate() {
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
+                 VALUES (?1, ?2, ?3, 'bullet', 'Line', '')",
+                rusqlite::params![id, &page, (index as i64) + 1],
+            )
+            .expect("line");
+    }
+    connection
+        .execute(
+            "UPDATE notes_nodes SET sync_prev = ?2, sync_prev_hlc = '000000001-00-aaaa'
+             WHERE id = ?1",
+            rusqlite::params![&ids[2], &ids[1]],
+        )
+        .expect("an older claim");
+
+    let command = notes_core::NotesCommand::CreateNode {
+        id: notes_core::NodeId::try_from("8a201f33-0000-4c91-8d02-00000000eeff".to_owned())
+            .expect("id"),
+        parent_id: notes_core::NodeId::try_from(page.clone()).expect("id"),
+        position: notes_core::Position::Before {
+            sibling_id: notes_core::NodeId::try_from(ids[1].clone()).expect("id"),
+        },
+        text: "Squeezed in".to_owned(),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("insert");
+
+    let bystander: String = connection
+        .query_row(
+            "SELECT sync_prev_hlc FROM notes_nodes WHERE id = ?1",
+            [&ids[2]],
+            |row| row.get(0),
+        )
+        .expect("claim");
+    assert_eq!(
+        bystander, "000000001-00-aaaa",
+        "this line follows who it always followed; only its number changed"
+    );
+}
+
 /// Where a node sits is written in the file next to it, so a claim changing is
 /// a change to the file — but not to the node, which is why the stamping
 /// trigger deliberately ignores these columns.

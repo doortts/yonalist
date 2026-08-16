@@ -266,6 +266,11 @@ fn record_place_claims(
     // too. Rule 9 of the merge design: a move touches three rows, not a family.
     let mut parents: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut moved: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // The ones that changed *where they are*, as opposed to merely what number
+    // they hold. Making room for a new line renumbers its neighbours, and a
+    // neighbour that still follows whoever it followed has not moved — taking
+    // the new reading there would beat somebody else's real move.
+    let mut relocated: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for mutation in &patch.forward {
         match mutation {
             TreeMutation::Upsert(node) => {
@@ -279,6 +284,12 @@ fn record_place_claims(
                 if !changed_place {
                     continue;
                 }
+                if before.is_none_or(|before| {
+                    before.parent_id() != node.parent_id()
+                        || before.is_deleted() != node.is_deleted()
+                }) {
+                    relocated.insert(id.clone());
+                }
                 moved.insert(id);
                 if let Some(parent) = node.parent_id() {
                     parents.insert(parent.as_str().to_owned());
@@ -289,6 +300,7 @@ fn record_place_claims(
             }
             TreeMutation::Delete { id } => {
                 moved.insert(id.as_str().to_owned());
+                relocated.insert(id.as_str().to_owned());
                 if let Some(parent) = previous
                     .get(id.as_str())
                     .and_then(|before| before.parent_id())
@@ -317,7 +329,8 @@ fn record_place_claims(
     if at.is_empty() {
         return Ok(());
     }
-    let moved_list = notes_sync::export::json_list(&moved.iter().cloned().collect::<Vec<_>>());
+    let relocated_list =
+        notes_sync::export::json_list(&relocated.iter().cloned().collect::<Vec<_>>());
     for parent in parents {
         transaction
             .execute(
@@ -341,8 +354,10 @@ fn record_place_claims(
                         -- follows nobody in both places, so what it claims
                         -- does not change — but when it claims it has to, or
                         -- an older reorder somewhere else beats this move.
+                        -- Only rows that changed parent, though: a renumbered
+                        -- neighbour has not moved.
                         OR notes_nodes.id IN (SELECT value FROM json_each(?3)))",
-                rusqlite::params![parent, at, &moved_list],
+                rusqlite::params![parent, at, &relocated_list],
             )
             .map_err(internal)?;
     }

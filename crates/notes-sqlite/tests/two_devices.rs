@@ -577,6 +577,22 @@ fn a_page_dragged_under_another_keeps_its_notes() {
     });
     // One pass, which is what the export thread does when the debounce fires.
     let _ = one.export();
+    // One pass has to finish the job: state the notes in their new home and
+    // take the old folder with it. A folder left behind is read again on every
+    // sweep, and what it says is the subtree as it was before the move.
+    assert_eq!(
+        documents(&one.vault).len(),
+        2,
+        "home and the page it joined, and nothing left of the folder it had: {:?}",
+        documents(&one.vault)
+    );
+    assert_eq!(
+        one.storage.pending_count().expect("pending"),
+        0,
+        "and nothing is still owed"
+    );
+    assert_eq!(one.export(), 0, "so a second pass writes nothing");
+
     // The folder is what the other devices read, so the question is whether
     // any file in it still states these notes.
     let stated = documents(&one.vault).into_iter().any(|relative| {
