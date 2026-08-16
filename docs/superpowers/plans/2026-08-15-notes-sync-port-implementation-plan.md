@@ -174,7 +174,7 @@ M5에서 `notes://sync-changed { revision, changedNodeIds, deletedNodeIds }`를 
   - `sync_conflict_log`(seq INTEGER PK AUTOINCREMENT, node_id, loser_json, loser_hlc, winner_hlc, recorded_at)
   - `sync_assets`(content_hash PK, disk_name, location, unreferenced_at) — 첨부가 페이지 폴더에 있는지 루트에 있는지, 참조 0이 된 시각. **참조 수는 저장하지 않고 노드에서 센다**(결정 13)
 - `sync_purged_tombstones`는 만들지 않는다(결정 7).
-- 트리거 3개: v1 `src-tauri/src/notes/schema.rs:208-228`의 `notes_nodes_hlc_ai / _au / _ad`를 그대로 가져온다. INSERT는 `WHEN NEW.hlc = ''`, UPDATE는 `WHEN NEW.hlc = OLD.hlc`일 때만 `yona_hlc()`로 스탬프하고 dirty에 upsert. 병합이 hlc를 명시하면 미발화(불변 규칙 6). `PRAGMA recursive_triggers`는 기본 OFF 전제 — 어디서도 켜지 않는다. hlc UPDATE는 `text, note`를 건드리지 않아 FTS 트리거(`schema.rs:199`)와 간섭 없다.
+- 트리거 3개: v1 `src-tauri/src/notes/schema.rs:208-228`의 `notes_nodes_hlc_ai / _au / _ad`를 가져오되 **UPDATE 트리거는 컬럼을 한정한다**(적대적 리뷰 결과). v1의 `notes_nodes`에는 없던 파생 컬럼 `path`가 v2에 있고, 이동 한 번이 서브트리 전체의 `path`를 다시 쓴다. 컬럼을 안 적으면 손대지 않은 자손이 전부 재스탬프되어, 그 판독이 다른 기기의 진짜 편집을 이긴다 — 스펙 §9의 "HLC는 내용이 바뀔 때만 전진한다"가 DB 층에서 깨진다. INSERT는 `WHEN NEW.hlc = ''`, UPDATE는 `WHEN NEW.hlc = OLD.hlc`일 때만 `yona_hlc()`로 스탬프하고 dirty에 upsert. 병합이 hlc를 명시하면 미발화(불변 규칙 6). `PRAGMA recursive_triggers`는 기본 OFF 전제 — 어디서도 켜지 않는다. hlc UPDATE는 `text, note`를 건드리지 않아 FTS 트리거(`schema.rs:199`)와 간섭 없다.
 - `yona_hlc()` 등록: 워커 스레드가 Connection을 만든 직후(`worker.rs:160-175`) `notes_sync::hlc::register(&connection)` 호출. rusqlite `functions` feature는 이미 켜져 있다(루트 `Cargo.toml:22`).
 - `user_version`은 1 그대로(`SCHEMA_VERSION = 1`, `MIGRATIONS`는 빈 목록). 버전 분기 없음.
 
@@ -231,7 +231,8 @@ red 테스트 없음 — 문서 항목의 게이트는 적대적 리뷰다. 스�
 **M1.0 — 도메인 정합 수리 (외부 리뷰 3·4 수용).** 파일 계약이 요구하는 것을 도메인이 먼저 지킨다.
 - 복제 자식 id를 `{uuid}/n` 파생([tree.rs:139](../../crates/notes-core/src/tree.rs#L139)) 대신 `uuid v5(부모 새 id, 순번)`으로 — 결정적이라 core에 난수원이 안 들어온다.
 - 온보딩 시드 id(`seed.rs:8`의 `onboarding-page` 일가)를 고정 UUID 상수로. 개발 데이터라 리셋으로 끝난다.
-- 공통 캡(필드 100,000바이트·depth 128·노드 20,000)과 **root 직계 이미지 금지**를 도메인 검증에 — `UpdateText`/`UpdateNote` 변환과 `NotesTree::validate` 양쪽. 파일에서 격리될 값은 커밋 전에 거절되어야 한다(스펙 §4.1).
+- 공통 캡(필드 100,000바이트·depth 128)과 **root 직계 이미지 금지**를 `NotesTree::validate`에 — 모든 명령이 `plan`을 지나므로 한 곳이면 된다. 변환 쪽은 기존 `MAX_IMPORT_TEXT_BYTES`를 도메인 상수에 배선해 둘이 어긋나지 않게 한다. 파일에서 격리될 값은 커밋 전에 거절되어야 한다(스펙 §4.1).
+- **노드 20,000 캡은 `validate`에 두지 않는다**(적대적 리뷰 결과). 명령은 컨텍스트로 하이드레이트한 부분 트리에 plan하므로(`service.rs:305`, `repository.rs:43-56`) 거기서 센 수는 커 가는 페이지를 못 보고, 반대로 그 페이지를 고치는 대량 삭제가 하이드레이션 중에 거절된다. 문서 하나가 온전히 보이는 자리 — 커밋 시점의 SQL 카운트 또는 M4 방출 계획 — 로 옮긴다.
 - 커밋: `fix(notes): make every id a uuid and enforce the file format caps in the domain`
 - 테스트: `cargo test -p notes-core` + `cargo test -p notes-application` (테스트 설계 §2.0). 의존: 없음 — M1의 다른 항목보다 먼저.
 
@@ -259,7 +260,7 @@ red 테스트 없음 — 문서 항목의 게이트는 적대적 리뷰다. 스�
 - 테스트: `cargo test -p notes-sqlite --test sync_stamping` (테스트 설계 §3). 기존 notes-sqlite 테스트 전체 green 유지 확인. 의존: M1.2.
 
 **M1.5 — vault 위치 IPC와 영속.**
-- 바뀌는 것: `apps/desktop/src-tauri/src/sync_settings.rs` 신규 — `notes_sync_vault_get` / `notes_sync_vault_set(path)` 명령, 검증(절대 경로·생성 가능 디렉터리·`app_data_dir` 내부 금지), `app_data_dir/vault-path` 한 줄 텍스트 파일에 영속. `lib.rs` generate_handler 등록. 명령 추가 리플: `scripts/checkV2Architecture.mjs:137-149` expectedCommands, `apps/desktop/src-tauri/permissions/main-window.toml`, `apps/desktop/src-tauri/build.rs`. 계약: notes-application `contracts.rs`에 `SyncVaultStatus` ts-rs 타입 + `packages/contracts/generated` 재생성 커밋.
+- 바뀌는 것: `apps/desktop/src-tauri/src/sync_settings.rs` 신규 — `notes_sync_vault_get` / `notes_sync_vault_set(path)` 명령, 검증(절대 경로·생성 가능 디렉터리·`app_data_dir` 내부 금지), `app_data_dir/vault-path` 한 줄 텍스트 파일에 영속. `lib.rs` generate_handler 등록. 명령 추가 리플: `scripts/checkV2Architecture.mjs:137-149` expectedCommands, `apps/desktop/src-tauri/permissions/main-window.toml`, `apps/desktop/src-tauri/build.rs`. 계약: **`SyncVaultStatus` 타입은 만들지 않는다**(M1.5 구현 중 확정). get이 돌려줄 것이 경로 하나뿐이라 한 필드짜리 struct는 이름만 늘리고, 실제로 계약 타입이 필요해진 자리는 set의 반환값이어서 M1.7이 `SyncVaultFolderState`로 만들었다. get은 `Option<String>`으로 남는다.
 - 무수정: 워커·notes_ui_state(vault 경로는 어댑터 소유다. DB보다 먼저 필요하고 워커 표면을 늘리지 않는다).
 - 커밋: `feat(sync): persist the vault location behind new IPC commands`
 - 테스트: `cargo test -p yonalist-v2-desktop sync_settings` + `npm run test:v2:architecture` + `npm run test:v2:contracts` (테스트 설계 §2.4). 의존: M1.1.

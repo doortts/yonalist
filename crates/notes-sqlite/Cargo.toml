@@ -12,11 +12,12 @@ bench-fixtures = []
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 notes-application.workspace = true
 notes-core.workspace = true
+notes-sync.workspace = true
 rusqlite.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
 unicode-normalization = "0.1.25"
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile = "3.27.0"
-uuid.workspace = true

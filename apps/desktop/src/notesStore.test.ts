@@ -61,7 +61,9 @@ function api(queryViewport: NotesApi["queryViewport"]): NotesApi {
     exportNotes: vi.fn(),
     closeSession: vi.fn(),
     unusedAssets: vi.fn(),
-    deleteAllData: vi.fn()
+    deleteAllData: vi.fn(),
+    syncVaultGet: vi.fn().mockResolvedValue(null),
+    syncVaultSet: vi.fn()
   };
 }
 

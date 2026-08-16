@@ -3,6 +3,7 @@ mod image_file_actions;
 mod image_ipc;
 mod image_replace_ipc;
 mod startup;
+mod sync_settings;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -13,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use notes_application::{
     BootSnapshot, CloseOutcome, CommandEnvelope, ForestRequest, ForestSnapshot, HistoryRequest,
     ImageAssetPort, MutationReceipt, NotesError, NotesErrorCode, NotesService, SearchPage,
-    SearchQuery, UnusedAssetsReport, ViewportPage, ViewportRequest,
+    SearchQuery, SyncVaultFolderState, UnusedAssetsReport, ViewportPage, ViewportRequest,
 };
 use notes_export::{NativeExportPublisher, NativeExportRenderer};
 use notes_sqlite::{LocalImageAssets, SqliteStorage};
@@ -35,6 +36,10 @@ struct DesktopRuntime {
 
 struct DesktopState {
     runtime: Arc<StartupGate<DesktopRuntime, NotesError>>,
+    /// Held here rather than inside the runtime because the vault commands
+    /// answer before the worker is up: the first-run screen asks where the
+    /// vault is while the database is still opening.
+    data_directory: PathBuf,
     closed: AtomicBool,
 }
 
@@ -242,24 +247,46 @@ async fn notes_unused_assets(
 }
 
 #[tauri::command]
+async fn notes_sync_vault_get(
+    state: State<'_, DesktopState>,
+) -> Result<Option<String>, NotesError> {
+    Ok(sync_settings::read_vault_path(&state.data_directory)
+        .map(|path| path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+async fn notes_sync_vault_set(
+    state: State<'_, DesktopState>,
+    path: String,
+) -> Result<SyncVaultFolderState, NotesError> {
+    sync_settings::set_vault_path(&state.data_directory, Path::new(&path)).map_err(NotesError::from)
+}
+
+#[tauri::command]
 async fn notes_delete_all_data(
     app: tauri::AppHandle,
     state: State<'_, DesktopState>,
 ) -> Result<(), NotesError> {
-    let gate = Arc::clone(&state.runtime);
-    let marker = run_blocking(move || {
-        let runtime = gate.wait()?;
-        let marker = runtime.data_directory.join(DELETE_DATA_MARKER);
-        std::fs::write(&marker, b"1").map_err(|error| NotesError {
+    // The state's own copy of the directory, not the runtime's: the reset is
+    // what a failed startup leaves the user, and asking the gate for a runtime
+    // would hand back that startup's error instead of clearing it.
+    let data_directory = state.data_directory.clone();
+    run_blocking(move || request_data_deletion(&data_directory)).await?;
+    app.restart();
+}
+
+/// Records the request; the deletion itself happens on the next start, before
+/// anything opens the database.
+fn request_data_deletion(data_directory: &Path) -> Result<(), NotesError> {
+    // Nothing is waited on before this runs, so the directory the startup
+    // thread makes may not be there yet.
+    std::fs::create_dir_all(data_directory)
+        .and_then(|()| std::fs::write(data_directory.join(DELETE_DATA_MARKER), b"1"))
+        .map_err(|error| NotesError {
             code: NotesErrorCode::StorageUnavailable,
             message: error.to_string(),
             retryable: true,
-        })?;
-        Ok(marker)
-    })
-    .await?;
-    let _ = marker;
-    app.restart();
+        })
 }
 
 fn apply_pending_data_deletion(data_directory: &Path) -> std::io::Result<()> {
@@ -277,6 +304,11 @@ fn apply_pending_data_deletion(data_directory: &Path) -> std::io::Result<()> {
             std::fs::remove_file(path)?;
         }
     }
+    // The vault holds the user's documents and is not this app's to delete, so
+    // the reset forgets where it is and stops there. Leaving the path instead
+    // would re-adopt the folder on the next boot and make "delete all data"
+    // mean nothing.
+    sync_settings::clear_vault_path(data_directory).map_err(std::io::Error::other)?;
     for directory in ["images", "original-views"] {
         let path = data_directory.join(directory);
         if path.exists() {
@@ -514,6 +546,7 @@ pub fn run() {
             let runtime = Arc::new(StartupGate::pending());
             app.manage(DesktopState {
                 runtime: Arc::clone(&runtime),
+                data_directory: data_directory.clone(),
                 closed: AtomicBool::new(false),
             });
             std::thread::Builder::new()
@@ -534,6 +567,8 @@ pub fn run() {
             notes_close_session,
             notes_unused_assets,
             notes_delete_all_data,
+            notes_sync_vault_get,
+            notes_sync_vault_set,
             export_ipc::notes_export,
             image_ipc::notes_import_image_bytes,
             image_ipc::notes_import_image_paths,
@@ -551,6 +586,71 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn a_data_reset_clears_the_stored_vault_path() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let data = directory.path().join("app-data");
+        let vault = directory.path().join("Notes");
+        std::fs::create_dir_all(&data).expect("data");
+        std::fs::create_dir_all(&vault).expect("vault");
+        std::fs::write(vault.join("README.md"), b"# Home\n").expect("document");
+        sync_settings::set_vault_path(&data, &vault).expect("set");
+        std::fs::write(data.join(DELETE_DATA_MARKER), b"1").expect("marker");
+
+        apply_pending_data_deletion(&data).expect("reset");
+
+        assert_eq!(
+            sync_settings::read_vault_path(&data),
+            None,
+            "clearing the data returns the app to first run"
+        );
+        assert!(
+            vault.join("README.md").exists(),
+            "and leaves the documents in the folder alone"
+        );
+    }
+
+    /// The reset exists for a startup that failed, so it cannot ask the
+    /// startup gate for anything: the gate answers a failed start with that
+    /// same failure forever, which would kill the one way out.
+    #[test]
+    fn a_reset_requested_without_a_runtime_clears_the_database_on_next_start() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let data = directory.path().join("app-data");
+        std::fs::create_dir_all(&data).expect("data");
+        let database = data.join("notes-v2.sqlite");
+        std::fs::write(&database, b"not a working database").expect("database");
+
+        request_data_deletion(&data).expect("request");
+        apply_pending_data_deletion(&data).expect("reset");
+
+        assert!(
+            !database.exists(),
+            "the next start opens a fresh database, not the broken one"
+        );
+        assert!(
+            !data.join(DELETE_DATA_MARKER).exists(),
+            "and the request is spent, so the start after it keeps its data"
+        );
+    }
+
+    /// Nothing waits on the startup thread any more, so the request can now
+    /// arrive before that thread has made the directory it writes into.
+    #[test]
+    fn a_reset_can_be_requested_before_the_data_directory_exists() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let data = directory.path().join("app-data");
+
+        request_data_deletion(&data).expect("request");
+
+        assert!(
+            data.join(DELETE_DATA_MARKER).exists(),
+            "the request survives to the start that carries it out"
+        );
+    }
+
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicBool;

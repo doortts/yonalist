@@ -524,3 +524,16 @@ pub enum CloseOutcome {
     Flushed,
     AlreadyClosed,
 }
+
+/// What the app found in the folder the user picked. Every state is accepted —
+/// this only tells the screen which sentence to show, so a wrong reading costs
+/// a misleading hint and nothing more. Whether the files inside are actually
+/// well formed is the parser's question, not this one's.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum SyncVaultFolderState {
+    Empty,
+    ExistingVault,
+    NonEmpty,
+}

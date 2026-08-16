@@ -1,6 +1,6 @@
 import { Radio, RadioGroup } from "@base-ui/react";
-import { Database, Trash2, X } from "lucide-react";
-import { useState } from "react";
+import { Database, FolderSync, Trash2, X } from "lucide-react";
+import { useEffect, useState } from "react";
 
 import type { UnusedAssetsReport } from "../../../packages/contracts/generated/UnusedAssetsReport";
 import {
@@ -9,6 +9,8 @@ import {
   type OutlineMarkerShape,
   type OutlineMarkerStyle
 } from "./outlineMarkers";
+import { messageFrom } from "./store/storeSupport";
+import { pickVaultFolder } from "./vaultPicker";
 import type {
   CaretColor,
   DarkTheme,
@@ -79,7 +81,9 @@ export function SettingsView({
   onMarkerStylesChange,
   onClose,
   unusedAssets,
-  deleteAllData
+  deleteAllData,
+  readVaultPath,
+  setVaultPath
 }: {
   readonly themeMode: ThemeMode;
   readonly lightTheme: LightTheme;
@@ -96,6 +100,8 @@ export function SettingsView({
   readonly onClose: () => void;
   readonly unusedAssets: (purge: boolean) => Promise<UnusedAssetsReport>;
   readonly deleteAllData: () => Promise<void>;
+  readonly readVaultPath: () => Promise<string | null>;
+  readonly setVaultPath: (path: string) => Promise<void>;
 }) {
   return (
     <section className="settings-page" aria-label="Settings page">
@@ -151,10 +157,94 @@ export function SettingsView({
           />
         </section>
 
+        <SyncFolderSection
+          readVaultPath={readVaultPath}
+          setVaultPath={setVaultPath}
+        />
+
         <NotesDataSection
           unusedAssets={unusedAssets}
           deleteAllData={deleteAllData}
         />
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Where the markdown files live. The folder is the user's to keep, so this
+ * section only ever records the choice — nothing is written into it here.
+ */
+function SyncFolderSection({
+  readVaultPath,
+  setVaultPath
+}: {
+  readonly readVaultPath: () => Promise<string | null>;
+  readonly setVaultPath: (path: string) => Promise<void>;
+}) {
+  const [path, setPath] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void readVaultPath()
+      .then((stored) => {
+        if (!cancelled) setPath(stored);
+      })
+      .catch(() => {
+        if (!cancelled) setError("Notes could not read the sync folder.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [readVaultPath]);
+
+  const choose = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const chosen = await pickVaultFolder();
+      if (chosen === null) return;
+      await setVaultPath(chosen);
+      setPath(chosen);
+    } catch (cause) {
+      // Tauri rejects with the serialized NotesError, a plain object rather
+      // than an Error, so `instanceof` would throw away the one sentence that
+      // tells the user which folder to pick instead.
+      setError(messageFrom(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="settings-section" aria-label="Sync folder">
+      <div className="settings-section-title">
+        <FolderSync size={18} aria-hidden="true" />
+        <h3>Sync folder</h3>
+      </div>
+      {error && (
+        <p className="notes-inline-error" role="alert">{error}</p>
+      )}
+
+      <div className="settings-field-grid">
+        <div>
+          <strong>Markdown folder</strong>
+          <p className="settings-copy">
+            Yonalist keeps a markdown copy of your notes here so another device
+            can pick them up through iCloud, Dropbox, or any folder that syncs.
+            Leaving it unset keeps everything on this device.
+          </p>
+          {path ? (
+            <p className="settings-path">{path}</p>
+          ) : (
+            <p className="settings-copy">No folder chosen yet.</p>
+          )}
+          <button type="button" disabled={busy} onClick={() => void choose()}>
+            {path ? "Change folder" : "Choose folder"}
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -182,9 +272,7 @@ function NotesDataSection({
       const next = await unusedAssets(purge);
       setReport(purge ? { ...next, count: 0, totalBytes: 0 } : next);
     } catch (cause) {
-      setError(cause instanceof Error
-        ? cause.message
-        : "Notes could not complete the request.");
+      setError(messageFrom(cause));
     } finally {
       setBusy(false);
     }
@@ -198,9 +286,7 @@ function NotesDataSection({
       await deleteAllData();
     } catch (cause) {
       setDeleting(false);
-      setError(cause instanceof Error
-        ? cause.message
-        : "Notes could not complete the request.");
+      setError(messageFrom(cause));
     }
   };
 
@@ -270,7 +356,8 @@ function NotesDataSection({
           <strong>Delete local Yonalist data</strong>
           <p className="settings-copy">
             Removes the local Yonalist database and attachments, then restarts
-            the app with a fresh workspace.
+            the app with a fresh workspace. The sync folder and the markdown
+            files in it stay where they are.
           </p>
           {confirmingDelete ? (
             <>

@@ -12,6 +12,10 @@ pub struct NotesTree {
     nodes: BTreeMap<NodeId, NoteNode>,
 }
 
+/// Same reason as `MAX_FIELD_BYTES`, for the shape of the outline itself. The
+/// node count has no home here yet — see `validate`.
+pub const MAX_TREE_DEPTH: usize = 128;
+
 /// Namespace for ids the domain derives rather than receives. Fixed forever:
 /// changing it would give the same duplication a different id on a later
 /// release, and two devices on different releases would then disagree.
@@ -364,12 +368,11 @@ impl NotesTree {
         // so a shape the file could not carry is refused here. Otherwise the
         // edit commits, the export rejects it, and that page silently stops
         // syncing.
-        if self.nodes.len() > crate::MAX_TREE_NODES {
-            return Err(DomainError::Invariant(format!(
-                "an outline holds at most {} nodes",
-                crate::MAX_TREE_NODES
-            )));
-        }
+        //
+        // The node-count cap is not among these. A command plans against the
+        // rows its context hydrated, not the whole outline, so a count taken
+        // here never sees a growing page and would instead refuse the bulk
+        // delete that repairs one. It belongs where a whole document is known.
         for node in self.nodes.values() {
             for (field, value) in [("text", node.text()), ("note", node.note())] {
                 if value.len() > crate::MAX_FIELD_BYTES {
@@ -420,6 +423,11 @@ impl NotesTree {
                 }
                 current = self.nodes.get(parent_id).and_then(NoteNode::parent_id);
             }
+            // Ancestors up to the vault root, where the file counts indent
+            // from its own document root. That makes this the stricter of the
+            // two, which is the safe direction: nothing the file would
+            // quarantine survives, and a legal row is only ever refused within
+            // a document's own depth of the limit.
             if visited.len() > crate::MAX_TREE_DEPTH {
                 return Err(DomainError::Invariant(format!(
                     "node {} hangs deeper than {}",

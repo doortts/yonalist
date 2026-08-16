@@ -33,6 +33,9 @@ const SearchPanel = lazy(() => import("./SearchPanel").then((module) =>
 // outline never needs. It stays out of the entry chunk like the row menus do.
 const SettingsView = lazy(() => import("./SettingsView").then((module) =>
   ({ default: module.SettingsView })));
+// Shown at most once per install, so it stays out of the startup bundle.
+const VaultSetupCard = lazy(() => import("./VaultSetupCard").then((module) =>
+  ({ default: module.VaultSetupCard })));
 
 export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   const theme = useTheme();
@@ -52,6 +55,18 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     setQuery("");
     setSearchOpen(false);
   }, []);
+  // The settings section re-reads the folder whenever this identity changes, so
+  // both stay pinned to the api rather than to a render.
+  const readVaultPath = useCallback(() => api.syncVaultGet(), [api]);
+  // The settings screen only needs the choice recorded; what the folder held
+  // is the first-run card's business.
+  const chooseVaultPath = useCallback(
+    (path: string) => api.syncVaultSet(path),
+    [api]
+  );
+  const setVaultPath = useCallback(async (path: string) => {
+    await chooseVaultPath(path);
+  }, [chooseVaultPath]);
   const [libraryView, setLibraryView] = useState<LibraryView>("all");
   const [sidebarWidth, setSidebarWidth] = useState(336);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -546,6 +561,14 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           document.body.classList.add("is-resizing-pane");
         }}
       />
+      {!settingsOpen && (
+        <Suspense fallback={null}>
+          <VaultSetupCard
+            readVaultPath={readVaultPath}
+            setVaultPath={chooseVaultPath}
+          />
+        </Suspense>
+      )}
       {settingsOpen ? (
         <Suspense fallback={<p className="notes-pane-state">Loading settings...</p>}>
           <SettingsView
@@ -564,6 +587,8 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             onClose={() => setSettingsOpen(false)}
             unusedAssets={(purge) => api.unusedAssets(purge)}
             deleteAllData={() => api.deleteAllData()}
+            readVaultPath={readVaultPath}
+            setVaultPath={setVaultPath}
           />
         </Suspense>
       ) : (

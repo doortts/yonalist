@@ -10,7 +10,15 @@ pub(crate) const ROOT_ID: &str = "root";
 /// Empty while the format is still moving: a schema change edits `create_schema`
 /// in place and development databases get regenerated. The ladder stays because
 /// the first release needs it; nothing rides it until then.
+/// A step that touches `notes_nodes` will need the HLC function registered
+/// first: the ladder runs inside `initialize`, before the worker builds the
+/// clock, so today a stamping trigger would fire with no `yona_hlc()` to call.
 type Migration = fn(&Transaction<'_>) -> Result<(), StorageError>;
+/// The one copy of the DDL. notes-sync's merge tests read the same file
+/// through `include_str!` — they need the real schema, and the architecture
+/// check forbids them depending on this crate, so a second copy would drift.
+pub const SCHEMA_SQL: &str = include_str!("schema.sql");
+
 const MIGRATIONS: &[Migration] = &[];
 const _: () = assert!(MIGRATIONS.len() as i64 + 1 == SCHEMA_VERSION);
 
@@ -134,139 +142,7 @@ fn migrate(
 }
 
 fn create_schema(connection: &Connection) -> Result<(), StorageError> {
-    connection
-        .execute_batch(
-            "
-            BEGIN IMMEDIATE;
-            CREATE TABLE notes_meta (
-                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                revision INTEGER NOT NULL CHECK (revision >= 0)
-            ) STRICT;
-            INSERT INTO notes_meta(singleton, revision) VALUES (1, 0);
-
-            CREATE TABLE notes_nodes (
-                id TEXT PRIMARY KEY NOT NULL,
-                parent_id TEXT,
-                sort_key INTEGER NOT NULL,
-                kind TEXT NOT NULL CHECK (kind IN ('page', 'bullet', 'image')),
-                text TEXT NOT NULL,
-                note TEXT NOT NULL DEFAULT '',
-                marker TEXT NOT NULL DEFAULT 'bullet'
-                    CHECK (marker IN ('bullet', 'todo', 'ordered')),
-                -- Only an `ordered` row reads this; every other marker leaves
-                -- it at the default rather than carrying a number nobody draws.
-                ordered_start INTEGER NOT NULL DEFAULT 1,
-                collapsed INTEGER NOT NULL DEFAULT 0
-                    CHECK (collapsed IN (0, 1)),
-                completed INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1)),
-                starred INTEGER NOT NULL DEFAULT 0 CHECK (starred IN (0, 1)),
-                deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
-                path TEXT,
-                FOREIGN KEY(parent_id) REFERENCES notes_nodes(id)
-                    DEFERRABLE INITIALLY DEFERRED,
-                CHECK (
-                    (kind = 'page' AND parent_id IS NULL) OR
-                    (kind IN ('bullet', 'image') AND parent_id IS NOT NULL)
-                )
-            ) STRICT;
-            CREATE INDEX notes_nodes_parent_order
-                ON notes_nodes(parent_id, deleted, sort_key, id);
-            CREATE INDEX notes_nodes_path ON notes_nodes(path);
-
-            CREATE TABLE notes_images (
-                node_id TEXT PRIMARY KEY NOT NULL,
-                content_hash TEXT NOT NULL CHECK (
-                    length(content_hash) = 64 AND
-                    content_hash NOT GLOB '*[^0-9a-f]*'
-                ),
-                relative_path TEXT NOT NULL,
-                original_name TEXT NOT NULL,
-                mime_type TEXT NOT NULL CHECK (
-                    mime_type IN (
-                        'image/png', 'image/jpeg', 'image/gif', 'image/webp'
-                    )
-                ),
-                byte_length INTEGER NOT NULL
-                    CHECK (byte_length BETWEEN 1 AND 20971520),
-                pixel_width INTEGER NOT NULL CHECK (pixel_width > 0),
-                pixel_height INTEGER NOT NULL CHECK (pixel_height > 0),
-                display_width INTEGER NOT NULL CHECK (display_width >= 120),
-                FOREIGN KEY(node_id) REFERENCES notes_nodes(id) ON DELETE CASCADE
-            ) STRICT;
-
-            CREATE VIEW notes_node_records AS
-            SELECT
-                node.id,
-                node.parent_id,
-                node.sort_key,
-                node.kind,
-                node.text,
-                node.note,
-                node.marker,
-                node.collapsed,
-                node.completed,
-                node.starred,
-                node.deleted,
-                image.content_hash,
-                image.relative_path,
-                image.original_name,
-                image.mime_type,
-                image.byte_length,
-                image.pixel_width,
-                image.pixel_height,
-                image.display_width,
-                -- Last, so the image columns above keep the positions the row
-                -- mapping reads them at.
-                node.ordered_start
-            FROM notes_nodes node
-            LEFT JOIN notes_images image ON image.node_id = node.id;
-
-            CREATE TABLE notes_tags (
-                node_id TEXT NOT NULL,
-                token TEXT NOT NULL,
-                display_tag TEXT NOT NULL,
-                PRIMARY KEY(node_id, token),
-                FOREIGN KEY(node_id) REFERENCES notes_nodes(id) ON DELETE CASCADE
-            ) STRICT;
-            CREATE INDEX notes_tags_token ON notes_tags(token, node_id);
-
-            CREATE TABLE notes_dates (
-                node_id TEXT NOT NULL,
-                date_key TEXT NOT NULL,
-                PRIMARY KEY(node_id, date_key),
-                FOREIGN KEY(node_id) REFERENCES notes_nodes(id) ON DELETE CASCADE
-            ) STRICT;
-            CREATE INDEX notes_dates_key ON notes_dates(date_key, node_id);
-
-            CREATE VIRTUAL TABLE notes_fts USING fts5(
-                node_id UNINDEXED,
-                text,
-                note,
-                tokenize = 'unicode61'
-            );
-            CREATE TRIGGER notes_fts_insert AFTER INSERT ON notes_nodes BEGIN
-                INSERT INTO notes_fts(node_id, text, note)
-                VALUES (new.id, new.text, new.note);
-            END;
-            CREATE TRIGGER notes_fts_update AFTER UPDATE OF text, note ON notes_nodes BEGIN
-                DELETE FROM notes_fts WHERE node_id = old.id;
-                INSERT INTO notes_fts(node_id, text, note)
-                VALUES (new.id, new.text, new.note);
-            END;
-            CREATE TRIGGER notes_fts_delete AFTER DELETE ON notes_nodes BEGIN
-                DELETE FROM notes_fts WHERE node_id = old.id;
-            END;
-
-            CREATE TABLE notes_ui_state (
-                key TEXT PRIMARY KEY NOT NULL,
-                value TEXT NOT NULL
-            ) STRICT;
-
-            PRAGMA user_version = 1;
-            COMMIT;
-            ",
-        )
-        .map_err(internal)
+    connection.execute_batch(SCHEMA_SQL).map_err(internal)
 }
 
 fn internal(error: rusqlite::Error) -> StorageError {
@@ -291,6 +167,10 @@ mod tests {
     fn open() -> Connection {
         let mut connection = Connection::open_in_memory().expect("in-memory db");
         initialize(&mut connection).expect("schema");
+        // The stamping triggers call `yona_hlc()`, which is registered per
+        // connection; a writer without one cannot insert a row.
+        let clock = std::sync::Arc::new(notes_sync::hlc::Clock::new("c0de").expect("clock"));
+        notes_sync::hlc::register(&connection, clock).expect("register");
         connection
     }
 

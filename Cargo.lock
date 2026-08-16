@@ -2577,11 +2577,27 @@ dependencies = [
  "image",
  "notes-application",
  "notes-core",
+ "notes-sync",
  "rusqlite",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.19",
  "unicode-normalization",
+ "uuid",
+]
+
+[[package]]
+name = "notes-sync"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "notes-application",
+ "notes-core",
+ "proptest",
+ "rusqlite",
+ "sha2 0.10.9",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]
@@ -5883,6 +5899,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-single-instance",
+ "tempfile",
  "uuid",
  "windows-sys 0.61.2",
 ]

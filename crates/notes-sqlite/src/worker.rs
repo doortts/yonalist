@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{self, SyncSender};
 use std::thread::{self, JoinHandle};
 
@@ -9,7 +10,8 @@ use notes_application::{
     ViewportRequest,
 };
 use notes_core::{DomainPatch, NoteNode, NotesCommand, NotesTree};
-use rusqlite::Connection;
+use notes_sync::hlc::{self, Clock};
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::{forest_queries, queries, repository, schema};
 
@@ -74,6 +76,42 @@ enum Request {
 pub struct SqliteStorage {
     sender: SyncSender<Request>,
     worker: Option<JoinHandle<()>>,
+}
+
+/// The four hexadecimal characters an HLC carries to break ties between
+/// devices, provisioning the row on first open along with the vault's own id.
+/// Never changed after that: a device that renamed itself would look like a
+/// different one to every merge.
+fn ensure_device_id(connection: &Connection) -> Result<String, StorageError> {
+    let existing: Option<String> = connection
+        .query_row(
+            "SELECT device_id FROM sync_meta WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| StorageError::Internal(error.to_string()))?;
+    if let Some(device_id) = existing {
+        return Ok(device_id);
+    }
+    let device_id = uuid::Uuid::new_v4().simple().to_string()[..4].to_owned();
+    let vault_uuid = uuid::Uuid::new_v4().to_string();
+    // Two processes can both find it empty; the one that loses reads back what
+    // the other wrote rather than failing the open on the singleton key.
+    connection
+        .execute(
+            "INSERT INTO sync_meta(singleton, device_id, vault_uuid) VALUES (1, ?1, ?2)
+             ON CONFLICT(singleton) DO NOTHING",
+            rusqlite::params![device_id, vault_uuid],
+        )
+        .map_err(|error| StorageError::Internal(error.to_string()))?;
+    connection
+        .query_row(
+            "SELECT device_id FROM sync_meta WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| StorageError::Internal(error.to_string()))
 }
 
 impl SqliteStorage {
@@ -165,6 +203,21 @@ impl SqliteStorage {
                 .map_err(|error| StorageError::Unavailable(error.to_string()))
                 .and_then(|mut connection| {
                     schema::initialize(&mut connection)?;
+                    // Between the schema and the first row: the tables have to
+                    // exist to read the device from, and the stamping triggers
+                    // call `yona_hlc()` on every insert after this point.
+                    let clock = Arc::new(
+                        Clock::new(&ensure_device_id(&connection)?)
+                            .map_err(StorageError::Internal)?,
+                    );
+                    hlc::register(&connection, Arc::clone(&clock))
+                        .map_err(StorageError::Internal)?;
+                    // Before anything writes. The seed and the root repair both
+                    // stamp, and stamping from a clock that has not caught up to
+                    // the stored readings is the non-monotonicity the reseed
+                    // exists to prevent. It only reads, so on a first boot this
+                    // is a no-op against empty tables.
+                    hlc::reseed(&clock, &connection).map_err(StorageError::Internal)?;
                     if seed_onboarding {
                         crate::seed::seed_onboarding(&mut connection)?;
                     }
