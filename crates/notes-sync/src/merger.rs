@@ -83,6 +83,7 @@ struct Row {
     sort_key: i64,
     extras: String,
     dirty: bool,
+    prev: String,
     image: Option<ImageRow>,
 }
 
@@ -107,6 +108,11 @@ struct Incoming<'a> {
     /// quantises to `ordinal * SORT_KEY_STEP` while the database uses midpoints,
     /// and every echo would then look like a move.
     predecessor_id: String,
+    /// True only for a document root this vault has never applied before. The
+    /// split line that announced the node had to show *something*, and the
+    /// child document's real state arrives carrying the same stamp — that is
+    /// the two file shapes meeting, not two devices disagreeing.
+    first_arrival: bool,
     /// False for a document root. A page's own file states no position — its
     /// place is its line in home — and reading that absence as "first child of
     /// root" would drag the page to the front every time its file was read,
@@ -139,6 +145,13 @@ fn merge_page(
         children: Vec::new(),
     };
 
+    // A child document can arrive before the document holding the node it hangs
+    // under. The place is held open with an empty stamp, which loses to the
+    // real parent the moment it lands — a fresh stamp would beat the real
+    // evidence instead.
+    if let Some(parent) = &page.parent {
+        place_missing_parent(transaction, clock, parent)?;
+    }
     let mut incoming = Vec::new();
     if root_id != "root" {
         incoming.push(Incoming {
@@ -147,6 +160,7 @@ fn merge_page(
             parent_id: page.parent.clone().unwrap_or_else(|| "root".to_owned()),
             predecessor_id: String::new(),
             positioned: false,
+            first_arrival: !document_was_applied(transaction, &root_id)?,
         });
     }
     flatten(&page.nodes, &root_id, &mut incoming);
@@ -210,6 +224,7 @@ fn flatten<'a>(nodes: &'a [DocumentNode], parent_id: &str, out: &mut Vec<Incomin
             parent_id,
             predecessor_id: predecessor.clone(),
             positioned,
+            first_arrival: false,
         });
         predecessor = id.clone();
         flatten(&node.children, &id, out);
@@ -249,13 +264,19 @@ fn apply(
         let row = existing.get(&entry.id);
         let deleted_now = trash;
         let file_content = content_of_file(entry, trash);
-        let row_content = row.map(|row| content_of_row(row, entry.positioned, &order));
+        let split = matches!(entry.node.body, NodeBody::Split { .. });
+        let row_content = row.map(|row| content_of_row(row, split));
+        let file_place = place_of_file(entry);
+        let row_place = row.map(|row| place_of_row(row, entry.positioned, &order));
 
         let (verdict, stamp, reason) = decide(
             row,
+            entry.first_arrival,
             deleted_now,
             &file_content,
             row_content.as_deref(),
+            &file_place,
+            row_place.as_deref(),
             &file_hlc,
             drifted,
             clock,
@@ -291,7 +312,12 @@ fn apply(
                     log_conflict(transaction, &entry.id, &loser, &loser_hlc, &stamp)?;
                     outcome.conflicts_recorded += 1;
                 }
-                write_row(transaction, entry, &stamp, trash, row, &mut order)?;
+                // Only a node whose stamp moved forward may claim a new place.
+                // A tie-break keeps the stamp it had, so its ordering claim is
+                // exactly as old — re-asserting it would let the answer depend
+                // on when a neighbour happened to be restamped.
+                let advanced = row.is_none_or(|row| stamp.as_str() > row.hlc.as_str());
+                write_row(transaction, entry, &stamp, trash, row, advanced, &mut order)?;
                 outcome.applied += 1;
                 outcome.changed_ids.insert(entry.id.clone());
                 if trash {
@@ -316,6 +342,9 @@ fn apply(
             }
         }
     }
+    // The keys the claims add up to, written once for every parent something
+    // moved under.
+    order.flush(transaction)?;
     Ok(())
 }
 
@@ -485,6 +514,65 @@ fn recovery_page(
     Ok(id)
 }
 
+/// Whether this vault has ever applied the document with this root. The absence
+/// of the row is the evidence — it is written the first time the document is
+/// merged, and nothing else records that fact.
+fn document_was_applied(transaction: &Transaction<'_>, root_id: &str) -> Result<bool, MergeError> {
+    transaction
+        .prepare_cached("SELECT 1 FROM sync_documents WHERE root_id = ?1")
+        .and_then(|mut statement| statement.query_row([root_id], |_| Ok(())).optional())
+        .map(|found| found.is_some())
+        .map_err(|error| error.to_string())
+}
+
+/// A live stand-in for a parent that has not arrived. Empty stamp, so the real
+/// document takes over the moment it lands; parked out of the way rather than
+/// at the top level, where it would look like a page.
+fn place_missing_parent(
+    transaction: &Transaction<'_>,
+    clock: &Clock,
+    parent: &str,
+) -> Result<(), MergeError> {
+    if parent == "root" || document_row_exists(transaction, parent)? {
+        return Ok(());
+    }
+    let mut cached = None;
+    let page = recovery_page(transaction, clock, &mut cached)?;
+    transaction
+        .prepare_cached(
+            "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
+             VALUES (?1, ?2, ?3, 'bullet', '', '')
+             ON CONFLICT(id) DO NOTHING",
+        )
+        .and_then(|mut statement| {
+            statement.execute(rusqlite::params![
+                parent,
+                page,
+                recovery_sort_key(parent).unwrap_or(SORT_KEY_STEP)
+            ])
+        })
+        .map_err(|error| error.to_string())?;
+    // The insert trigger stamps anything without a reading, and a stamped
+    // stand-in would outrank the document it is waiting for.
+    transaction
+        .prepare_cached("UPDATE notes_nodes SET hlc = '' WHERE id = ?1 AND text = ''")
+        .and_then(|mut statement| statement.execute([parent]))
+        .map_err(|error| error.to_string())?;
+    transaction
+        .prepare_cached("DELETE FROM sync_dirty_nodes WHERE node_id = ?1")
+        .and_then(|mut statement| statement.execute([parent]))
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn document_row_exists(transaction: &Transaction<'_>, id: &str) -> Result<bool, MergeError> {
+    transaction
+        .prepare_cached("SELECT 1 FROM notes_nodes WHERE id = ?1")
+        .and_then(|mut statement| statement.query_row([id], |_| Ok(())).optional())
+        .map(|found| found.is_some())
+        .map_err(|error| error.to_string())
+}
+
 /// Trash can arrive before the document holding the node it was taken from.
 /// The place is held open by a deleted row with an empty stamp, which loses
 /// every comparison — so the real document takes it over the moment it lands.
@@ -523,11 +611,26 @@ fn place_missing_parents(
     Ok(())
 }
 
-/// Who follows whom under each parent this merge touches, and with what keys.
-/// Held in memory because the answer changes as the merge writes.
+/// The order siblings are in, rebuilt from what each of them claims rather than
+/// from the keys they happen to hold.
+///
+/// Each node remembers which sibling its last accepted move said it follows.
+/// Replaying those claims newest-first gives the same sequence on every device,
+/// whichever file each one read first — which is the whole point. Deciding a
+/// contested slot by looking at a neighbour's *current* stamp cannot do that:
+/// the neighbour's stamp changes as the merge runs, so the answer would depend
+/// on the order the files arrived in.
 struct SiblingOrder {
-    children: BTreeMap<String, Vec<String>>,
-    keys: BTreeMap<String, i64>,
+    claims: BTreeMap<String, Vec<Claim>>,
+    dirty: BTreeSet<String>,
+}
+
+#[derive(Clone, Debug)]
+struct Claim {
+    id: String,
+    /// The sibling this node says it follows; empty means first.
+    prev: String,
+    stamp: String,
 }
 
 impl SiblingOrder {
@@ -542,9 +645,7 @@ impl SiblingOrder {
                 if entry.positioned {
                     entry.parent_id.clone()
                 } else {
-                    // Where a first arrival would be appended. Without the list
-                    // loaded, every new page would take the same key and the
-                    // order would fall to whichever id sorted first.
+                    // Where a first arrival would be appended.
                     "root".to_owned()
                 }
             })
@@ -555,15 +656,16 @@ impl SiblingOrder {
             }
         }
         parents.remove("");
-        let mut children = BTreeMap::new();
-        let mut keys = BTreeMap::new();
+        let mut claims: BTreeMap<String, Vec<Claim>> = BTreeMap::new();
         if parents.is_empty() {
-            return Ok(Self { children, keys });
+            return Ok(Self {
+                claims,
+                dirty: BTreeSet::new(),
+            });
         }
-        // One statement for every parent this merge can touch, not one each.
         let mut statement = transaction
             .prepare_cached(
-                "SELECT parent_id, id, sort_key FROM notes_nodes
+                "SELECT parent_id, id, sync_prev, hlc FROM notes_nodes
                  WHERE parent_id IN (SELECT value FROM json_each(?1)) AND deleted = 0
                  ORDER BY parent_id, sort_key, id",
             )
@@ -573,128 +675,102 @@ impl SiblingOrder {
             .query_map([list], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
+                    Claim {
+                        id: row.get(1)?,
+                        prev: row.get(2)?,
+                        stamp: row.get(3)?,
+                    },
                 ))
             })
             .map_err(|error| error.to_string())?;
         for row in rows {
-            let (parent, id, key) = row.map_err(|error| error.to_string())?;
-            children
-                .entry(parent)
-                .or_insert_with(Vec::new)
-                .push(id.clone());
-            keys.insert(id, key);
+            let (parent, claim) = row.map_err(|error| error.to_string())?;
+            claims.entry(parent).or_default().push(claim);
         }
-        Ok(Self { children, keys })
+        Ok(Self {
+            claims,
+            dirty: BTreeSet::new(),
+        })
+    }
+
+    /// The sequence the claims add up to. Oldest claim is laid down first and
+    /// newer ones insert over it, so the most recent move gets the slot it
+    /// asked for. A claim whose predecessor has not been laid down yet waits
+    /// its turn rather than falling to the end.
+    fn sequence(&self, parent: &str) -> Vec<String> {
+        let Some(claims) = self.claims.get(parent) else {
+            return Vec::new();
+        };
+        let mut pending: Vec<&Claim> = claims.iter().collect();
+        // Ties by id, so two claims stamped identically land the same way on
+        // every device.
+        pending.sort_by(|left, right| {
+            left.stamp
+                .cmp(&right.stamp)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let mut sequence: Vec<String> = Vec::with_capacity(pending.len());
+        while !pending.is_empty() {
+            let ready = pending.iter().position(|claim| {
+                claim.prev.is_empty() || sequence.iter().any(|id| id == &claim.prev)
+            });
+            // Nothing is ready only when the remaining claims point at each
+            // other; the oldest of them goes down first and the rest follow.
+            let at = ready.unwrap_or(0);
+            let claim = pending.remove(at);
+            let index = if claim.prev.is_empty() {
+                0
+            } else {
+                sequence
+                    .iter()
+                    .position(|id| id == &claim.prev)
+                    .map_or(sequence.len(), |found| found + 1)
+            };
+            sequence.insert(index, claim.id.clone());
+        }
+        sequence
     }
 
     fn predecessor(&self, parent: &str, id: &str) -> String {
-        let Some(siblings) = self.children.get(parent) else {
-            return String::new();
-        };
-        let Some(at) = siblings.iter().position(|sibling| sibling == id) else {
-            return String::new();
-        };
-        if at == 0 {
-            String::new()
-        } else {
-            siblings[at - 1].clone()
+        let sequence = self.sequence(parent);
+        match sequence.iter().position(|sibling| sibling == id) {
+            Some(0) | None => String::new(),
+            Some(at) => sequence[at - 1].clone(),
         }
     }
 
-    /// Places a node after the sibling the file says it follows, and answers
-    /// with the key it should carry.
-    fn place_after(&mut self, parent: &str, id: &str, predecessor: &str) -> Placement {
-        let siblings = self.children.entry(parent.to_owned()).or_default();
-        siblings.retain(|sibling| sibling != id);
-        let at = if predecessor.is_empty() {
-            0
-        } else {
-            siblings
-                .iter()
-                .position(|sibling| sibling == predecessor)
-                .map_or(siblings.len(), |index| index + 1)
-        };
-        siblings.insert(at, id.to_owned());
-        let before = at
-            .checked_sub(1)
-            .and_then(|index| self.keys.get(&siblings[index]).copied());
-        let after = siblings
-            .get(at + 1)
-            .and_then(|sibling| self.keys.get(sibling).copied());
-        match (before, after) {
-            (None, None) => {
-                self.keys.insert(id.to_owned(), SORT_KEY_STEP);
-                Placement::Key(SORT_KEY_STEP)
-            }
-            (None, Some(after)) => {
-                let key = after - SORT_KEY_STEP;
-                if key >= after {
-                    return self.renumber(parent);
-                }
-                self.keys.insert(id.to_owned(), key);
-                Placement::Key(key)
-            }
-            (Some(before), None) => {
-                let Some(key) = before.checked_add(SORT_KEY_STEP) else {
-                    return self.renumber(parent);
-                };
-                self.keys.insert(id.to_owned(), key);
-                Placement::Key(key)
-            }
-            (Some(before), Some(after)) => {
-                // Midpoint only while there is room. Halving a gap thirty-two
-                // times reaches one, and a midpoint of a gap of one is the
-                // predecessor's own key — a duplicate that sorts by id and puts
-                // the node in front of what it must follow.
-                if after - before > 1 {
-                    let key = before + (after - before) / 2;
-                    self.keys.insert(id.to_owned(), key);
-                    Placement::Key(key)
-                } else {
-                    self.renumber(parent)
-                }
+    /// Records what a node now claims. The keys are not touched here — they are
+    /// rewritten once, at the end, from the sequence the claims produce.
+    fn claim(&mut self, parent: &str, id: &str, prev: &str, stamp: &str) {
+        let siblings = self.claims.entry(parent.to_owned()).or_default();
+        siblings.retain(|claim| claim.id != id);
+        siblings.push(Claim {
+            id: id.to_owned(),
+            prev: prev.to_owned(),
+            stamp: stamp.to_owned(),
+        });
+        self.dirty.insert(parent.to_owned());
+    }
+
+    /// A node with no place of its own goes last, and says so, so that the
+    /// order survives the next merge.
+    fn append(&mut self, parent: &str, id: &str, stamp: &str) {
+        let last = self.sequence(parent).last().cloned().unwrap_or_default();
+        self.claim(parent, id, &last, stamp);
+    }
+
+    /// Writes the keys the sequences imply, for every parent something moved
+    /// under. `sort_key` is in the stamping trigger's column list, so each row
+    /// keeps its stamp and a row that was already dirty stays dirty.
+    fn flush(&self, transaction: &Transaction<'_>) -> Result<(), MergeError> {
+        for parent in &self.dirty {
+            for (index, id) in self.sequence(parent).iter().enumerate() {
+                let key = (index as i64 + 1) * SORT_KEY_STEP;
+                respace_sibling(transaction, id, key)?;
             }
         }
+        Ok(())
     }
-
-    /// Out of room between two neighbours, so the whole sibling list is spaced
-    /// out again. Every one of them has to be written, which is why it only
-    /// happens when the gap is actually gone.
-    fn renumber(&mut self, parent: &str) -> Placement {
-        let siblings = self.children.get(parent).cloned().unwrap_or_default();
-        let mut spaced = Vec::with_capacity(siblings.len());
-        for (index, sibling) in siblings.iter().enumerate() {
-            let key = (index as i64 + 1) * SORT_KEY_STEP;
-            self.keys.insert(sibling.clone(), key);
-            spaced.push((sibling.clone(), key));
-        }
-        Placement::Renumbered(spaced)
-    }
-
-    fn key(&self, id: &str) -> Option<i64> {
-        self.keys.get(id).copied()
-    }
-
-    /// A page arriving for the first time goes at the end of the list. Where it
-    /// really belongs is home's business, and home will say so.
-    fn append(&mut self, parent: &str, id: &str) -> i64 {
-        let siblings = self.children.entry(parent.to_owned()).or_default();
-        let key = siblings
-            .last()
-            .and_then(|last| self.keys.get(last).copied())
-            .map_or(SORT_KEY_STEP, |last| last.saturating_add(SORT_KEY_STEP));
-        siblings.push(id.to_owned());
-        self.keys.insert(id.to_owned(), key);
-        key
-    }
-}
-
-enum Placement {
-    Key(i64),
-    /// The keys every sibling now carries, this node included.
-    Renumbered(Vec<(String, i64)>),
 }
 
 enum Verdict {
@@ -732,9 +808,12 @@ impl Reason {
 #[allow(clippy::too_many_arguments)]
 fn decide(
     row: Option<&Row>,
+    first_arrival: bool,
     deleted_now: bool,
     file_content: &str,
     row_content: Option<&str>,
+    file_place: &str,
+    row_place: Option<&str>,
     file_hlc: &str,
     drifted: bool,
     clock: &Clock,
@@ -758,7 +837,18 @@ fn decide(
         return Ok((Verdict::Write, file_hlc.to_owned(), None));
     };
     let row_content = row_content.expect("a row was loaded, so its content was built");
+    let row_place = row_place.expect("a row was loaded, so its place was built");
     let same_content = digest(file_content) == digest(row_content);
+    // Whether a file's ordering claim counts depends on whose stamp it is. A
+    // device that moved a node restamped it, so an equal stamp stating a
+    // different order is a file written before somebody else's move — stale,
+    // and worth nothing. Only this vault's own stamp under a different order
+    // means a person dragged lines around in another editor, and that is an
+    // edit rather than a race.
+    let mine = Hlc::decode(file_hlc)
+        .map(|reading| reading.device() == device)
+        .unwrap_or(false);
+    let same_place = file_place == row_place;
 
     if drifted {
         // Replaying the same broken file before the write-back lands must not
@@ -792,8 +882,14 @@ fn decide(
     if file_hlc < row.hlc.as_str() {
         return Ok((Verdict::LocalWins, row.hlc.clone(), None));
     }
-    if same_content {
+    if same_content && (same_place || !mine) {
         return Ok((Verdict::Skip, row.hlc.clone(), None));
+    }
+    if first_arrival {
+        // The row is whatever the parent's split line could show; this document
+        // is the first description of the node this vault has ever had. Nothing
+        // is in conflict — the two halves of one node are meeting.
+        return Ok((Verdict::Write, file_hlc.to_owned(), None));
     }
 
     // Equal stamps, different content: whoever changed it did not restamp it,
@@ -801,8 +897,7 @@ fn decide(
     // thing that matters, and the stamp's own device field is the one piece of
     // evidence that survives the trip — the watcher cannot tell iCloud from
     // vim, and a hash mismatch looks the same either way.
-    let mine = Hlc::decode(file_hlc).map(|reading| reading.device() == device);
-    if mine.unwrap_or(false) {
+    if mine {
         // My stamp under content I did not write. That is authoring, so the
         // text is adopted and stamped afresh to propagate normally.
         return Ok((Verdict::Write, clock.now()?.encode(), None));
@@ -846,7 +941,7 @@ fn load_rows(
             // this matches the primary key directly rather than scanning.
             "SELECT n.id, n.hlc, n.kind, n.text, n.note, n.marker, n.ordered_start, n.collapsed,
                     n.completed, n.starred, n.deleted, n.parent_id, n.sort_key, n.sync_extras,
-                    d.node_id IS NOT NULL,
+                    d.node_id IS NOT NULL, n.sync_prev,
                     i.relative_path, i.display_width, i.pixel_width, i.pixel_height, i.byte_length
              FROM notes_nodes n
              LEFT JOIN sync_dirty_nodes d ON d.node_id = n.id
@@ -875,13 +970,14 @@ fn load_rows(
                     sort_key: row.get(12)?,
                     extras: row.get(13)?,
                     dirty: row.get::<_, i64>(14)? == 1,
-                    image: match row.get::<_, Option<String>>(15)? {
+                    prev: row.get(15)?,
+                    image: match row.get::<_, Option<String>>(16)? {
                         Some(path) => Some(ImageRow {
                             path,
-                            display_width: row.get(16)?,
-                            pixel_width: row.get(17)?,
-                            pixel_height: row.get(18)?,
-                            byte_length: row.get(19)?,
+                            display_width: row.get(17)?,
+                            pixel_width: row.get(18)?,
+                            pixel_height: row.get(19)?,
+                            byte_length: row.get(20)?,
                         }),
                         None => None,
                     },
@@ -917,6 +1013,7 @@ fn write_row(
     stamp: &str,
     trash: bool,
     row: Option<&Row>,
+    advanced: bool,
     order: &mut SiblingOrder,
 ) -> Result<(), MergeError> {
     let (marker, ordered_start) = match entry.node.marker {
@@ -927,14 +1024,14 @@ fn write_row(
     let (kind, text) = match &entry.node.body {
         NodeBody::Text(text) => ("bullet", text.clone()),
         NodeBody::Image(image) => ("image", image.original_name.clone()),
-        // The line's title is a display copy; the child document's frontmatter
-        // is what owns this node's state, and giving the line authority here
-        // would make merge order decide the answer. Wiring that up is M3.1e's.
-        NodeBody::Split { .. } => {
-            return Err("A split line has no state of its own to write.".to_owned());
-        }
+        // The line's title is a display copy. Which one is written is decided
+        // below: a node arriving for the first time needs something to show,
+        // and a node the child document has already described keeps that.
+        NodeBody::Split { title, .. } => ("bullet", title.clone()),
     };
-    let parent_id = if entry.positioned || entry.node.from.is_some() {
+    let parent_id = if entry.positioned && !advanced && row.is_some() {
+        row.and_then(|row| row.parent_id.clone())
+    } else if entry.positioned || entry.node.from.is_some() {
         Some(entry.parent_id.clone())
     } else if let Some(row) = row {
         // A page's place is its line in home, so its own file cannot move it.
@@ -946,34 +1043,59 @@ fn write_row(
         Some(entry.parent_id.clone()).filter(|parent| !parent.is_empty())
     };
     let parent = parent_id.clone().unwrap_or_else(|| "root".to_owned());
-    let mut renumbered = Vec::new();
-    let sort_key = if entry.positioned {
-        match order.place_after(&parent, &entry.id, &entry.predecessor_id) {
-            Placement::Key(key) => key,
-            Placement::Renumbered(all) => {
-                let key = all
-                    .iter()
-                    .find(|(id, _)| id == &entry.id)
-                    .map(|(_, key)| *key)
-                    .unwrap_or(SORT_KEY_STEP);
-                renumbered = all;
-                key
-            }
-        }
-    } else if let Some((_, from_key)) = &entry.node.from {
+    // Only a node whose stamp moved forward states a new place. A tie-break
+    // keeps the stamp it had, so its claim is exactly as old as before and
+    // re-asserting it would let a neighbour's timing decide the order.
+    let claim = if entry.positioned && (advanced || row.is_none()) {
+        Some(entry.predecessor_id.clone())
+    } else {
+        None
+    };
+    if let Some(prev) = &claim {
+        order.claim(&parent, &entry.id, prev, stamp);
+    } else if !entry.positioned && entry.node.from.is_none() && row.is_none() {
+        // A page arriving for the first time joins the end of the list; where
+        // it really belongs is home's business, and home will say so.
+        order.append(&parent, &entry.id, stamp);
+    }
+    let sort_key = match (&entry.node.from, row) {
         // Where it was deleted from. The row remembering that is the whole of
         // restoring: clearing the flag puts it back exactly where it stood.
-        *from_key
-    } else {
-        match row.map(|row| row.sort_key).or_else(|| order.key(&entry.id)) {
-            Some(key) => key,
-            None => order.append(&parent, &entry.id),
-        }
+        (Some((_, from_key)), _) => *from_key,
+        (None, Some(row)) => row.sort_key,
+        (None, None) => SORT_KEY_STEP,
     };
     // In a page document a node's presence is the statement that it is live;
     // in the trash it is the statement that it is not.
     let deleted = trash;
     let extras = extras_of(entry);
+    // A split node lives in two files and only one of them owns its state. The
+    // line gives existence, parent and order; everything else stays as the
+    // child document left it, or takes the line's title only because nothing
+    // has described the node yet.
+    let split = matches!(entry.node.body, NodeBody::Split { .. });
+    let state = match (split, row) {
+        (true, Some(row)) => NodeState {
+            text: row.text.clone(),
+            note: row.note.clone(),
+            marker: row.marker.clone(),
+            ordered_start: row.ordered_start,
+            collapsed: row.collapsed,
+            completed: row.completed,
+            starred: row.starred,
+            extras: row.extras.clone(),
+        },
+        _ => NodeState {
+            text,
+            note: entry.node.note.clone(),
+            marker: marker.to_owned(),
+            ordered_start,
+            collapsed: entry.node.collapsed,
+            completed: entry.node.completed,
+            starred: entry.node.starred,
+            extras,
+        },
+    };
 
     // The stamp is written with the row, so the stamping triggers leave it
     // alone: they only fire when the value is unchanged or empty.
@@ -981,8 +1103,8 @@ fn write_row(
         .prepare_cached(
             "INSERT INTO notes_nodes(
                  id, parent_id, sort_key, kind, text, note, marker, ordered_start,
-                 collapsed, completed, starred, deleted, hlc, sync_extras)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                 collapsed, completed, starred, deleted, hlc, sync_extras, sync_prev)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(id) DO UPDATE SET
                  parent_id = excluded.parent_id,
                  sort_key = excluded.sort_key,
@@ -996,7 +1118,8 @@ fn write_row(
                  starred = excluded.starred,
                  deleted = excluded.deleted,
                  hlc = excluded.hlc,
-                 sync_extras = excluded.sync_extras",
+                 sync_extras = excluded.sync_extras,
+                 sync_prev = excluded.sync_prev",
         )
         .and_then(|mut statement| {
             statement.execute(rusqlite::params![
@@ -1004,28 +1127,25 @@ fn write_row(
                 parent_id,
                 sort_key,
                 kind,
-                text,
-                entry.node.note,
-                marker,
-                ordered_start,
-                i64::from(entry.node.collapsed),
-                i64::from(entry.node.completed),
-                i64::from(entry.node.starred),
+                state.text,
+                state.note,
+                state.marker,
+                state.ordered_start,
+                i64::from(state.collapsed),
+                i64::from(state.completed),
+                i64::from(state.starred),
                 i64::from(deleted),
                 stamp,
-                extras,
+                state.extras,
+                claim
+                    .clone()
+                    .unwrap_or_else(|| { row.map(|row| row.prev.clone()).unwrap_or_default() }),
             ])
         })
         .map_err(|error| error.to_string())?;
 
     if let NodeBody::Image(image) = &entry.node.body {
         write_image(transaction, &entry.id, image)?;
-    }
-    for (id, key) in renumbered {
-        if id == entry.id {
-            continue;
-        }
-        respace_sibling(transaction, &id, key)?;
     }
 
     // Keeping a stamp while changing the content is the one write the stamping
@@ -1084,6 +1204,19 @@ fn disk_extension(path: &str) -> String {
         .rsplit_once('.')
         .map(|(_, extension)| extension.to_ascii_lowercase())
         .unwrap_or_default()
+}
+
+/// What actually lands in the row's state columns. A split line contributes
+/// none of it once the child document has spoken.
+struct NodeState {
+    text: String,
+    note: String,
+    marker: String,
+    ordered_start: i64,
+    collapsed: bool,
+    completed: bool,
+    starred: bool,
+    extras: String,
 }
 
 /// The line states the file's name, its size on screen and its real dimensions.
@@ -1165,6 +1298,24 @@ fn extras_of(entry: &Incoming<'_>) -> String {
     tokens.join(" ")
 }
 
+/// Where the file says a node sits. Kept apart from its state on purpose: a
+/// tie-break that included position could not be commutative, because a row's
+/// position depends on what was applied before it.
+fn place_of_file(entry: &Incoming<'_>) -> String {
+    if !entry.positioned {
+        return String::new();
+    }
+    format!("{}\u{0}{}", entry.parent_id, entry.predecessor_id)
+}
+
+fn place_of_row(row: &Row, positioned: bool, order: &SiblingOrder) -> String {
+    if !positioned {
+        return String::new();
+    }
+    let parent = row.parent_id.clone().unwrap_or_default();
+    format!("{}\u{0}{}", parent, order.predecessor(&parent, &row.id))
+}
+
 /// One shape for an image's state, built the same way from a file line and from
 /// a row — otherwise the two could never compare equal and every replay of the
 /// same picture would read as an edit.
@@ -1202,8 +1353,16 @@ fn content_of_file(entry: &Incoming<'_>, trash: bool) -> String {
                 image.byte_size as i64,
             ),
         ),
-        NodeBody::Split { title, .. } => ("split", title.clone()),
+        // Position and existence are all a split line asserts, so nothing
+        // else may enter its comparison — otherwise a stale display title
+        // would read as an edit on every merge.
+        NodeBody::Split { .. } => ("split", String::new()),
     };
+    if kind == "split" {
+        // A split line asserts existence and place, and place is compared
+        // separately, so a line has no state of its own to compare at all.
+        return ["v1".to_owned(), kind.to_owned()].join("\u{0}");
+    }
     [
         "v1".to_owned(),
         kind.to_owned(),
@@ -1215,23 +1374,18 @@ fn content_of_file(entry: &Incoming<'_>, trash: bool) -> String {
         entry.node.completed.to_string(),
         entry.node.starred.to_string(),
         (trash || entry.node.from.is_some()).to_string(),
-        if entry.positioned {
-            entry.parent_id.clone()
-        } else {
-            String::new()
-        },
-        if entry.positioned {
-            entry.predecessor_id.clone()
-        } else {
-            String::new()
-        },
         extras_of(entry),
     ]
     .join("\u{0}")
 }
 
-fn content_of_row(row: &Row, positioned: bool, order: &SiblingOrder) -> String {
-    let parent = row.parent_id.clone().unwrap_or_default();
+/// `split` comes from the file's line, not the row: the row cannot tell whether
+/// the node currently lives in a document of its own, and the comparison has to
+/// be the same shape on both sides.
+fn content_of_row(row: &Row, split: bool) -> String {
+    if split {
+        return ["v1".to_owned(), "split".to_owned()].join("\u{0}");
+    }
     let text = match &row.image {
         Some(image) => image_content(
             &row.text,
@@ -1254,16 +1408,6 @@ fn content_of_row(row: &Row, positioned: bool, order: &SiblingOrder) -> String {
         row.completed.to_string(),
         row.starred.to_string(),
         row.deleted.to_string(),
-        if positioned {
-            parent.clone()
-        } else {
-            String::new()
-        },
-        if positioned {
-            order.predecessor(&parent, &row.id)
-        } else {
-            String::new()
-        },
         row.extras.clone(),
     ]
     .join("\u{0}")

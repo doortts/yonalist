@@ -27,6 +27,12 @@ CREATE TABLE notes_nodes (
     -- lets every existing command path carry a clock reading
     -- without one of them being rewritten.
     hlc TEXT NOT NULL DEFAULT '',
+    -- Which sibling this node's last accepted move said it follows. The
+    -- order two devices reach has to be the same whichever file each read
+    -- first, and that is only possible if the claim outlives the merge that
+    -- accepted it: without it, the answer depends on when a neighbour
+    -- happened to be restamped. Empty means "first among siblings".
+    sync_prev TEXT NOT NULL DEFAULT '',
     -- Whatever the parser met in the file and had no field for,
     -- carried back out unchanged so a newer app's values survive
     -- a round trip through this one.

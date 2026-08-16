@@ -1639,3 +1639,230 @@ fn replaying_a_trash_with_several_roots_changes_nothing() {
     assert_eq!(outcome.applied, 0);
     assert_eq!(conflicts(&transaction), 0);
 }
+
+fn split_line(id: &str, hlc: &str, title: &str, path: &str) -> DocumentNode {
+    let mut line = node(id, hlc, "");
+    line.body = NodeBody::Split {
+        title: title.to_owned(),
+        path: path.to_owned(),
+    };
+    line
+}
+
+const CHILD_ID: &str = "9d3f21b8-c440-4c91-8d02-2e77a05fb163";
+
+fn child_document(hlc: &str, title: &str, starred: bool) -> PageDocument {
+    PageDocument {
+        id: DocumentId::Node(CHILD_ID.to_owned()),
+        parent: Some(PAGE_ID.to_owned()),
+        sort_key: Some(4_294_967_296),
+        max_hlc: hlc.to_owned(),
+        root: DocumentRoot {
+            title: title.to_owned(),
+            hlc: hlc.to_owned(),
+            starred,
+            ..DocumentRoot::default()
+        },
+        nodes: Vec::new(),
+        unknown_frontmatter: Vec::new(),
+    }
+}
+
+fn child_input() -> MergeInput {
+    let mut input = input();
+    input.file_path = "Projects-4f1c8e20a3b7/Archive-9d3f21b8c440/README.md".to_owned();
+    input
+}
+
+fn starred_flag(connection: &Connection, id: &str) -> i64 {
+    connection
+        .query_row(
+            "SELECT starred FROM notes_nodes WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )
+        .expect("starred")
+}
+
+/// A split line says a node exists and where it sits, and nothing else. Its
+/// title is a display copy the child document owns, so believing the line
+/// would give one node two authorities and let merge order decide the answer.
+#[test]
+fn a_split_line_grants_existence_and_position_only() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let mark = stamp(5, "a3f2");
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![split_line(
+                CHILD_ID,
+                &mark,
+                "Stale display title",
+                "Archive-9d3f21b8c440/README.md",
+            )],
+            &mark,
+        )),
+        &input(),
+    )
+    .expect("parent");
+
+    assert_eq!(
+        parent_of(&transaction, CHILD_ID),
+        PAGE_ID,
+        "the line is what says the node is here at all"
+    );
+    assert_eq!(hlc_of(&transaction, CHILD_ID), mark);
+    let document_rows: i64 = transaction
+        .query_row(
+            "SELECT count(*) FROM sync_documents WHERE root_id = ?1",
+            [CHILD_ID],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(
+        document_rows, 0,
+        "no row yet: that absence is how the merge knows the child never arrived"
+    );
+}
+
+/// The child document is the authority on its own state, whichever file lands
+/// first. Both orders have to reach the same rows or the two devices never
+/// agree about the same node.
+#[test]
+fn a_child_document_converges_in_either_arrival_order() {
+    let mark = stamp(5, "a3f2");
+    let mut states = Vec::new();
+
+    for child_first in [false, true] {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("begin");
+        let parent_file = notes_sync::document::VaultFile::Page(page(
+            vec![split_line(
+                CHILD_ID,
+                &mark,
+                "Stale display title",
+                "Archive-9d3f21b8c440/README.md",
+            )],
+            &mark,
+        ));
+        let child_file =
+            notes_sync::document::VaultFile::Page(child_document(&mark, "2024 Archive", true));
+
+        if child_first {
+            merge_document(&transaction, &clock(), &child_file, &child_input()).expect("child");
+            merge_document(&transaction, &clock(), &parent_file, &input()).expect("parent");
+        } else {
+            merge_document(&transaction, &clock(), &parent_file, &input()).expect("parent");
+            merge_document(&transaction, &clock(), &child_file, &child_input()).expect("child");
+        }
+
+        states.push((
+            text_of(&transaction, CHILD_ID).expect("text"),
+            starred_flag(&transaction, CHILD_ID),
+            parent_of(&transaction, CHILD_ID),
+            hlc_of(&transaction, CHILD_ID),
+        ));
+    }
+
+    assert_eq!(
+        states[0], states[1],
+        "arrival order cannot decide the answer"
+    );
+    assert_eq!(
+        states[0].0, "2024 Archive",
+        "the child document owns the title"
+    );
+    assert_eq!(states[0].1, 1, "and every other piece of its state");
+    assert_eq!(states[0].2, PAGE_ID, "the parent's line owns where it sits");
+}
+
+/// Replaying the pair changes nothing. A split node lives in two files, so a
+/// second reading of either must not read as an edit.
+#[test]
+fn replaying_a_split_pair_changes_nothing() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let mark = stamp(5, "a3f2");
+    let parent_file = notes_sync::document::VaultFile::Page(page(
+        vec![split_line(
+            CHILD_ID,
+            &mark,
+            "2024 Archive",
+            "Archive-9d3f21b8c440/README.md",
+        )],
+        &mark,
+    ));
+    let child_file =
+        notes_sync::document::VaultFile::Page(child_document(&mark, "2024 Archive", true));
+    merge_document(&transaction, &clock(), &parent_file, &input()).expect("parent");
+    merge_document(&transaction, &clock(), &child_file, &child_input()).expect("child");
+
+    let again = merge_document(&transaction, &clock(), &parent_file, &input()).expect("replay");
+    let and_again =
+        merge_document(&transaction, &clock(), &child_file, &child_input()).expect("replay");
+
+    assert_eq!(again.applied, 0, "the parent's line states nothing new");
+    assert_eq!(and_again.applied, 0, "and neither does the child");
+    assert_eq!(conflicts(&transaction), 0);
+}
+
+/// A tie-break keeps the stamp the node already had, so its claim about where
+/// it sits is exactly as old as before. Letting it re-assert that claim would
+/// make the final order depend on when a neighbour happened to be restamped —
+/// which is to say, on which file arrived first.
+#[test]
+fn a_tie_break_takes_the_text_without_taking_the_place() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let first = "8a201f33-0000-4c91-8d02-000000000001";
+    let second = "8a201f33-0000-4c91-8d02-000000000002";
+    let third = "8a201f33-0000-4c91-8d02-000000000003";
+    let theirs = stamp(5, "a3f2");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![
+                node(first, &stamp(3, "a3f2"), "One"),
+                node(second, &theirs, "Omega"),
+                node(third, &theirs, "Three"),
+            ],
+            &theirs,
+        )),
+        &input(),
+    )
+    .expect("seed");
+
+    // The same stamp on the middle node, different text, and a file that puts
+    // it at the front.
+    let mut moved = page(
+        vec![
+            node(second, &theirs, "Alpha"),
+            node(first, &stamp(3, "a3f2"), "One"),
+            node(third, &theirs, "Three"),
+        ],
+        &theirs,
+    );
+    moved.root.hlc = theirs.clone();
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(moved),
+        &input(),
+    )
+    .expect("tie");
+
+    assert_eq!(
+        text_of(&transaction, second).as_deref(),
+        Some("Alpha"),
+        "the content tie-break decides the text"
+    );
+    assert_eq!(
+        order_under(&transaction, PAGE_ID),
+        vec![first.to_owned(), second.to_owned(), third.to_owned()],
+        "but a node that did not restamp does not get to move"
+    );
+}
