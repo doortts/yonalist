@@ -609,3 +609,36 @@ fn an_unknown_ya_token_survives_a_parse_render_round_trip() {
     assert_eq!(text, source, "the token came back changed or not at all");
     assert_eq!(once, twice);
 }
+
+/// The bounds an image has to satisfy are facts about the format, so a line
+/// that breaks one is refused here — where the answer is a quarantine with a
+/// reason — rather than surviving into a merge that dies on a constraint.
+#[test]
+fn an_image_line_outside_the_formats_bounds_quarantines() {
+    for metadata in [
+        "w: 10 px: 10x10 bytes: 4",
+        "w: 320 px: 0x10 bytes: 4",
+        "w: 320 px: 10x10 bytes: 0",
+        "w: 320 px: 10x10 bytes: 20971521",
+    ] {
+        let source = page(&format!(
+            "- ![shot.png](assets/shot-9f3a1c8e2044.png) <!-- ya: {metadata} --> \
+             <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 -->\n"
+        ));
+
+        assert!(
+            parse(source.as_bytes()).is_err(),
+            "`{metadata}` is outside what this format writes"
+        );
+    }
+}
+
+#[test]
+fn an_image_with_an_unreadable_extension_quarantines() {
+    let source = page(
+        "- ![shot.bmp](assets/shot-9f3a1c8e2044.bmp) <!-- ya: w: 320 px: 10x10 bytes: 4 --> \
+         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 -->\n",
+    );
+
+    assert!(parse(source.as_bytes()).is_err());
+}

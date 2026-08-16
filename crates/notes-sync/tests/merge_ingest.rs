@@ -1372,3 +1372,270 @@ fn rescued_nodes_land_in_the_same_order_whichever_was_rescued_first() {
         "each rescued node gets its own place, not one shared with the rest"
     );
 }
+
+/// A line someone typed has no id yet, and the line after it says it follows
+/// that line. If the id is issued after the following line's evidence is
+/// captured, the follower claims to be first — and the document reorders
+/// itself around a single typed line.
+#[test]
+fn a_typed_line_does_not_unseat_the_sibling_after_it() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let a = "8a201f33-0000-4c91-8d02-000000000001";
+    let b = "8a201f33-0000-4c91-8d02-000000000002";
+    let c = "8a201f33-0000-4c91-8d02-000000000003";
+    let mine = stamp(5, DEVICE);
+    let seed = |ids: Vec<DocumentNode>| notes_sync::document::VaultFile::Page(page(ids, &mine));
+    merge_document(
+        &transaction,
+        &clock(),
+        &seed(vec![
+            node(a, &mine, "A"),
+            node(b, &mine, "B"),
+            node(c, &mine, "C"),
+        ]),
+        &input(),
+    )
+    .expect("seed");
+    let before: Vec<String> = order_under(&transaction, PAGE_ID);
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &seed(vec![
+            node(a, &mine, "A"),
+            node("", "", "Typed"),
+            node(b, &mine, "B"),
+            node(c, &mine, "C"),
+        ]),
+        &input(),
+    )
+    .expect("typed");
+
+    let after = order_under(&transaction, PAGE_ID);
+    assert_eq!(
+        after,
+        vec![
+            before[0].clone(),
+            after[1].clone(),
+            before[1].clone(),
+            before[2].clone()
+        ],
+        "the typed line goes where it was typed and nothing else moves"
+    );
+    let restamped: i64 = transaction
+        .query_row(
+            "SELECT count(*) FROM notes_nodes WHERE id IN (?1, ?2) AND hlc <> ?3",
+            rusqlite::params![b, c, mine],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(restamped, 0, "and its neighbours keep the stamps they had");
+}
+
+fn order_under(connection: &Connection, parent: &str) -> Vec<String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id FROM notes_nodes WHERE parent_id = ?1 AND deleted = 0
+             ORDER BY sort_key, id",
+        )
+        .expect("prepare");
+    let rows = statement
+        .query_map([parent], |row| row.get::<_, String>(0))
+        .expect("query");
+    rows.map(|row| row.expect("row")).collect()
+}
+
+/// A page arriving for the first time joins the end of the list. Giving every
+/// new page the same key leaves the order to whichever id happens to sort
+/// first.
+#[test]
+fn a_new_page_lands_after_the_pages_already_there() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(Vec::new(), &stamp(5, "a3f2"))),
+        &input(),
+    )
+    .expect("first");
+    let mut elsewhere = input();
+    elsewhere.file_path = "Second-11c8da70b5e1/README.md".to_owned();
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(second_page()),
+        &elsewhere,
+    )
+    .expect("second");
+
+    assert_eq!(
+        order_of_pages(&transaction),
+        vec!["Projects".to_owned(), "Second".to_owned()],
+        "a page that arrives second is second"
+    );
+}
+
+/// The write-back is what replaces the broken stamp in the file. A replay
+/// arriving before the exporter runs must not cancel it, or the far-future
+/// stamp stays in the vault and every device guards against it forever.
+#[test]
+fn a_drift_echo_still_asks_for_the_file_to_be_rewritten() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let far = Hlc::new(FAR_FUTURE_MILLIS, 0, "a3f2")
+        .expect("far")
+        .encode();
+    let file = notes_sync::document::VaultFile::Page(page(
+        vec![node(NODE_ID, &far, "From a broken clock")],
+        &far,
+    ));
+    merge_document(&transaction, &clock(), &file, &input()).expect("first");
+
+    let outcome = merge_document(&transaction, &clock(), &file, &input()).expect("replay");
+
+    assert!(outcome.needs_write_back);
+    let exported: String = transaction
+        .query_row(
+            "SELECT exported_hash FROM sync_documents WHERE root_id = ?1",
+            [PAGE_ID],
+            |row| row.get(0),
+        )
+        .expect("document");
+    assert_eq!(
+        exported, "",
+        "the file on disk is not what this device holds, and the record has to say so"
+    );
+}
+
+/// The conflict log is read back by the settings screen and re-applied from.
+/// A payload that is not JSON is a defeat nobody can recover.
+#[test]
+fn a_loser_with_a_newline_is_still_json() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let mut multiline = node(NODE_ID, &stamp(5, "a3f2"), "first line\nsecond line");
+    // A tab, and a control character with no name of its own — the second is
+    // what the escape range has to catch.
+    multiline.note = "a\tnote\u{1}here".to_owned();
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(vec![multiline], &stamp(5, "a3f2"))),
+        &input(),
+    )
+    .expect("seed");
+    // Never exported, so this device holds the only copy of it.
+    transaction
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES (?1, 0)",
+            [NODE_ID],
+        )
+        .expect("dirty");
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(9, "a3f2"), "theirs")],
+            &stamp(9, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("newer");
+
+    let (valid, raw_newlines): (i64, i64) = transaction
+        .query_row(
+            "SELECT min(json_valid(loser_json)), sum(instr(loser_json, char(10)) > 0)
+             FROM sync_conflict_log",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("valid");
+    assert_eq!(valid, 1, "every recorded defeat has to be readable again");
+    assert_eq!(
+        raw_newlines, 0,
+        "a line break inside a JSON string is written as an escape, not as itself"
+    );
+    let text: String = transaction
+        .query_row(
+            "SELECT json_extract(loser_json, '$.text') FROM sync_conflict_log
+             WHERE node_id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("text");
+    assert_eq!(text, "first line\nsecond line", "and it comes back whole");
+}
+
+/// A tie-break the file loses is a tie-break, not a plain defeat on the
+/// stamps. The screen shows the reason, so it has to be the true one.
+#[test]
+fn a_same_stamp_defeat_is_labelled_as_one() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let theirs = stamp(5, "a3f2");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &theirs, "Omega")],
+            &theirs,
+        )),
+        &input(),
+    )
+    .expect("seed");
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &theirs, "Alpha")],
+            &theirs,
+        )),
+        &input(),
+    )
+    .expect("tie");
+
+    let reason: String = transaction
+        .query_row(
+            "SELECT json_extract(loser_json, '$.reason') FROM sync_conflict_log
+             WHERE node_id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("reason");
+    assert_eq!(reason, "same_t");
+}
+
+/// Replaying the same trash is not a second deletion, however many nodes it
+/// holds. Comparing them against an order that never included deleted rows
+/// makes each one look moved.
+#[test]
+fn replaying_a_trash_with_several_roots_changes_nothing() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let mine = stamp(5, DEVICE);
+    let roots: Vec<DocumentNode> = ["000000000005", "000000000006", "000000000007"]
+        .iter()
+        .enumerate()
+        .map(|(index, tail)| {
+            let mut gone = node(
+                &format!("8a201f33-0000-4c91-8d02-{tail}"),
+                &mine,
+                &format!("Gone {index}"),
+            );
+            gone.from = Some((PAGE_ID.to_owned(), (index as i64 + 1) * 4_294_967_296));
+            gone
+        })
+        .collect();
+    let file = trash(roots, &mine);
+    merge_document(&transaction, &clock(), &file, &trash_input()).expect("first");
+
+    let outcome = merge_document(&transaction, &clock(), &file, &trash_input()).expect("replay");
+
+    assert_eq!(outcome.applied, 0);
+    assert_eq!(conflicts(&transaction), 0);
+}

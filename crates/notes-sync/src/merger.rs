@@ -151,7 +151,7 @@ fn merge_page(
     }
     flatten(&page.nodes, &root_id, &mut incoming);
 
-    apply(transaction, clock, &mut incoming, &mut outcome, false)?;
+    apply(transaction, clock, &incoming, &mut outcome, false)?;
     repair_structure(transaction, clock, &mut outcome)?;
     outcome.needs_write_back |=
         document_is_missing_nodes(transaction, &root_id, &page.max_hlc, &incoming)?;
@@ -174,7 +174,7 @@ fn merge_trash(
     let mut outcome = MergeOutcome::default();
     let mut incoming = Vec::new();
     flatten(&trash.nodes, "", &mut incoming);
-    apply(transaction, clock, &mut incoming, &mut outcome, true)?;
+    apply(transaction, clock, &incoming, &mut outcome, true)?;
     repair_structure(transaction, clock, &mut outcome)?;
     record_document(
         transaction,
@@ -186,9 +186,18 @@ fn merge_trash(
     Ok(outcome)
 }
 
+/// Ids are issued here rather than later: the line after a hand-typed one
+/// records which line it follows, and an id issued after that is recorded would
+/// leave the follower claiming to be first — one typed line would reorder the
+/// document around it.
 fn flatten<'a>(nodes: &'a [DocumentNode], parent_id: &str, out: &mut Vec<Incoming<'a>>) {
     let mut predecessor = String::new();
     for node in nodes {
+        let id = if node.id.is_empty() {
+            Uuid::new_v4().hyphenated().to_string()
+        } else {
+            node.id.clone()
+        };
         // A trash root states where it was taken from, and that is its place —
         // the line it sits on in the trash says nothing about where it belongs.
         let (parent_id, positioned) = match &node.from {
@@ -196,34 +205,26 @@ fn flatten<'a>(nodes: &'a [DocumentNode], parent_id: &str, out: &mut Vec<Incomin
             None => (parent_id.to_owned(), true),
         };
         out.push(Incoming {
-            id: node.id.clone(),
+            id: id.clone(),
             node,
             parent_id,
             predecessor_id: predecessor.clone(),
             positioned,
         });
-        predecessor = node.id.clone();
-        let owner = node.id.clone();
-        flatten(&node.children, &owner, out);
+        predecessor = id.clone();
+        flatten(&node.children, &id, out);
     }
 }
 
 fn apply(
     transaction: &Transaction<'_>,
     clock: &Clock,
-    incoming: &mut [Incoming<'_>],
+    incoming: &[Incoming<'_>],
     outcome: &mut MergeOutcome,
     trash: bool,
 ) -> Result<(), MergeError> {
     let device = device_id(transaction)?;
     let existing = load_rows(transaction, incoming)?;
-    for entry in incoming.iter_mut() {
-        // A line with no id was typed by a person. The merge issues one; the
-        // write-back that follows from the stamp teaches the file about it.
-        if entry.id.is_empty() {
-            entry.id = Uuid::new_v4().hyphenated().to_string();
-        }
-    }
     // The order siblings are actually in, kept up to date as rows land. A
     // snapshot taken before the writes would make every sibling after a moved
     // one look reordered too, and each would be dragged through the conflict
@@ -263,6 +264,7 @@ fn apply(
 
         match verdict {
             Verdict::Skip => {}
+            Verdict::RewriteFile => outcome.needs_write_back = true,
             Verdict::Write => {
                 if let Some(reason) = reason {
                     // What was lost is the row when there was one — a drifted
@@ -270,7 +272,17 @@ fn apply(
                     // a dirty row's content exists nowhere else at all. With no
                     // row, only the file's own stamp was discarded.
                     let (loser, loser_hlc) = match row {
-                        Some(row) => (loser_of_row(row, reason.as_str()), row.hlc.clone()),
+                        Some(row) => (
+                            loser_of_row(
+                                row,
+                                &order.predecessor(
+                                    row.parent_id.as_deref().unwrap_or_default(),
+                                    &row.id,
+                                ),
+                                reason.as_str(),
+                            ),
+                            row.hlc.clone(),
+                        ),
                         None => (
                             loser_of_file(entry, trash, reason.as_str()),
                             file_hlc.clone(),
@@ -291,10 +303,11 @@ fn apply(
             }
             Verdict::LocalWins => {
                 let row = row.expect("a local win means a row exists");
+                let reason = if file_hlc == row.hlc { "same_t" } else { "lww" };
                 log_conflict(
                     transaction,
                     &entry.id,
-                    &loser_of_file(entry, trash, "lww"),
+                    &loser_of_file(entry, trash, reason),
                     &file_hlc,
                     &row.hlc,
                 )?;
@@ -525,8 +538,16 @@ impl SiblingOrder {
     ) -> Result<Self, MergeError> {
         let mut parents: BTreeSet<String> = incoming
             .iter()
-            .filter(|entry| entry.positioned)
-            .map(|entry| entry.parent_id.clone())
+            .map(|entry| {
+                if entry.positioned {
+                    entry.parent_id.clone()
+                } else {
+                    // Where a first arrival would be appended. Without the list
+                    // loaded, every new page would take the same key and the
+                    // order would fall to whichever id sorted first.
+                    "root".to_owned()
+                }
+            })
             .collect();
         for row in existing.values() {
             if let Some(parent) = &row.parent_id {
@@ -679,6 +700,8 @@ enum Placement {
 enum Verdict {
     Write,
     Skip,
+    /// The row is right and the file is not, with nothing to record.
+    RewriteFile,
     LocalWins,
 }
 
@@ -741,7 +764,9 @@ fn decide(
         // Replaying the same broken file before the write-back lands must not
         // mint a new stamp each round, or the replay never settles.
         if same_content {
-            return Ok((Verdict::Skip, row.hlc.clone(), None));
+            // Nothing to write, but the file still holds the broken stamp and
+            // the exporter is what replaces it.
+            return Ok((Verdict::RewriteFile, row.hlc.clone(), None));
         }
         // The content being replaced is the thing worth keeping — the file's
         // content is what just won, only its stamp lost.
@@ -911,10 +936,14 @@ fn write_row(
     };
     let parent_id = if entry.positioned || entry.node.from.is_some() {
         Some(entry.parent_id.clone())
-    } else {
+    } else if let Some(row) = row {
         // A page's place is its line in home, so its own file cannot move it.
-        row.and_then(|row| row.parent_id.clone())
-            .or_else(|| Some("root".to_owned()))
+        row.parent_id.clone().or_else(|| Some("root".to_owned()))
+    } else {
+        // Nothing local yet. A split document's frontmatter states which node
+        // it hangs under, and it is the only thing that knows until the parent
+        // document arrives; a page states nothing and belongs at the top.
+        Some(entry.parent_id.clone()).filter(|parent| !parent.is_empty())
     };
     let parent = parent_id.clone().unwrap_or_else(|| "root".to_owned());
     let mut renumbered = Vec::new();
@@ -1242,23 +1271,41 @@ fn content_of_row(row: &Row, positioned: bool, order: &SiblingOrder) -> String {
 
 /// A defeated state, complete enough that the conflict screen can show it and
 /// re-apply it with nothing else on hand. Re-applying is a new edit, so it
-/// needs everything a new edit would carry — including where the node sat.
-fn loser_of_row(row: &Row, reason: &str) -> String {
+/// carries everything a new edit would — including where the node sat, which is
+/// a parent *and* the sibling it followed.
+fn loser_of_row(row: &Row, predecessor: &str, reason: &str) -> String {
     json_object(&[
-        ("v", "1".to_owned()),
-        ("id", row.id.clone()),
-        ("parent_id", row.parent_id.clone().unwrap_or_default()),
-        ("kind", row.kind.clone()),
-        ("text", row.text.clone()),
-        ("note", row.note.clone()),
-        ("marker", row.marker.clone()),
-        ("ordered_start", row.ordered_start.to_string()),
-        ("collapsed", row.collapsed.to_string()),
-        ("completed", row.completed.to_string()),
-        ("starred", row.starred.to_string()),
-        ("deleted", row.deleted.to_string()),
-        ("extras", row.extras.clone()),
-        ("reason", reason.to_owned()),
+        ("v", Value::Number(1)),
+        ("id", Value::Text(row.id.clone())),
+        (
+            "parent_id",
+            Value::Text(row.parent_id.clone().unwrap_or_default()),
+        ),
+        ("predecessor_id", Value::Text(predecessor.to_owned())),
+        ("kind", Value::Text(row.kind.clone())),
+        ("text", Value::Text(row.text.clone())),
+        ("note", Value::Text(row.note.clone())),
+        ("marker", Value::Text(row.marker.clone())),
+        ("ordered_start", Value::Number(row.ordered_start)),
+        ("collapsed", Value::Bool(row.collapsed)),
+        ("completed", Value::Bool(row.completed)),
+        ("starred", Value::Bool(row.starred)),
+        ("deleted", Value::Bool(row.deleted)),
+        (
+            "image",
+            match &row.image {
+                Some(image) => Value::Strings(vec![
+                    image.path.clone(),
+                    image.display_width.to_string(),
+                    image.pixel_width.to_string(),
+                    image.pixel_height.to_string(),
+                    image.byte_length.to_string(),
+                ]),
+                None => Value::Null,
+            },
+        ),
+        ("extras", Value::Strings(split_extras(&row.extras))),
+        ("reason", Value::Text(reason.to_owned())),
     ])
 }
 
@@ -1274,24 +1321,49 @@ fn loser_of_file(entry: &Incoming<'_>, trash: bool, reason: &str) -> String {
         Marker::Ordered(start) => ("ordered", start),
     };
     json_object(&[
-        ("v", "1".to_owned()),
-        ("id", entry.id.clone()),
-        ("parent_id", entry.parent_id.clone()),
-        ("kind", kind.to_owned()),
-        ("text", text),
-        ("note", entry.node.note.clone()),
-        ("marker", marker.to_owned()),
-        ("ordered_start", ordered_start.to_string()),
-        ("collapsed", entry.node.collapsed.to_string()),
-        ("completed", entry.node.completed.to_string()),
-        ("starred", entry.node.starred.to_string()),
-        ("deleted", (trash || entry.node.from.is_some()).to_string()),
-        ("extras", extras_of(entry)),
-        ("reason", reason.to_owned()),
+        ("v", Value::Number(1)),
+        ("id", Value::Text(entry.id.clone())),
+        ("parent_id", Value::Text(entry.parent_id.clone())),
+        ("predecessor_id", Value::Text(entry.predecessor_id.clone())),
+        ("kind", Value::Text(kind.to_owned())),
+        ("text", Value::Text(text)),
+        ("note", Value::Text(entry.node.note.clone())),
+        ("marker", Value::Text(marker.to_owned())),
+        ("ordered_start", Value::Number(ordered_start)),
+        ("collapsed", Value::Bool(entry.node.collapsed)),
+        ("completed", Value::Bool(entry.node.completed)),
+        ("starred", Value::Bool(entry.node.starred)),
+        ("deleted", Value::Bool(trash || entry.node.from.is_some())),
+        (
+            "image",
+            match &entry.node.body {
+                NodeBody::Image(image) => Value::Strings(vec![
+                    image.path.clone(),
+                    image.display_width.to_string(),
+                    image.pixel_width.to_string(),
+                    image.pixel_height.to_string(),
+                    image.byte_size.to_string(),
+                ]),
+                _ => Value::Null,
+            },
+        ),
+        ("extras", Value::Strings(split_extras(&extras_of(entry)))),
+        ("reason", Value::Text(reason.to_owned())),
     ])
 }
 
-fn json_object(fields: &[(&str, String)]) -> String {
+fn split_extras(extras: &str) -> Vec<String> {
+    if extras.is_empty() {
+        Vec::new()
+    } else {
+        extras.split(' ').map(str::to_owned).collect()
+    }
+}
+
+/// A JSON object built by hand. Control characters have to be escaped or the
+/// value is not JSON at all, and a defeat nobody can parse is a defeat nobody
+/// can recover.
+fn json_object(fields: &[(&str, Value)]) -> String {
     let mut json = String::from("{");
     for (index, (key, value)) in fields.iter().enumerate() {
         if index > 0 {
@@ -1299,12 +1371,56 @@ fn json_object(fields: &[(&str, String)]) -> String {
         }
         json.push('"');
         json.push_str(key);
-        json.push_str("\":\"");
-        json.push_str(&value.replace('\\', "\\\\").replace('"', "\\\""));
-        json.push('"');
+        json.push_str("\":");
+        match value {
+            Value::Text(text) => json.push_str(&json_string(text)),
+            Value::Number(number) => json.push_str(&number.to_string()),
+            Value::Bool(flag) => json.push_str(if *flag { "true" } else { "false" }),
+            Value::Strings(items) => {
+                json.push('[');
+                for (at, item) in items.iter().enumerate() {
+                    if at > 0 {
+                        json.push(',');
+                    }
+                    json.push_str(&json_string(item));
+                }
+                json.push(']');
+            }
+            Value::Null => json.push_str("null"),
+        }
     }
     json.push('}');
     json
+}
+
+enum Value {
+    Text(String),
+    Number(i64),
+    Bool(bool),
+    Strings(Vec<String>),
+    Null,
+}
+
+fn json_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            // The named escapes are only for readability; the range below is
+            // what makes the value JSON at all.
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            character if (character as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", character as u32));
+            }
+            character => out.push(character),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Recorded once per defeat. The winner is deliberately not part of the key:
@@ -1344,37 +1460,41 @@ fn document_is_missing_nodes(
     max_hlc: &str,
     incoming: &[Incoming<'_>],
 ) -> Result<bool, MergeError> {
-    let seen: BTreeSet<String> = incoming.iter().map(|entry| entry.id.clone()).collect();
-    let mut frontier = vec![root_id.to_owned()];
-    let mut statement = transaction
+    let seen = json_list(
+        &incoming
+            .iter()
+            .map(|entry| entry.id.clone())
+            .collect::<Vec<_>>(),
+    );
+    // One statement for the whole subtree: this runs on every merge, echoes
+    // included, so its cost must not follow the document's size in round trips.
+    // The walk stops at nodes that own a document of their own — a split child
+    // is supposed to be absent here — and a placeholder waiting for its real
+    // document carries no stamp, which is not the same as being older than one.
+    transaction
         .prepare_cached(
-            "SELECT n.id, n.hlc, d.root_id IS NOT NULL
-             FROM notes_nodes n
-             LEFT JOIN sync_documents d ON d.root_id = n.id
-             WHERE n.parent_id = ?1 AND n.deleted = 0",
+            "WITH RECURSIVE subtree(id) AS (
+                 SELECT id FROM notes_nodes WHERE parent_id = ?1 AND deleted = 0
+                 UNION ALL
+                 SELECT n.id FROM notes_nodes n
+                 JOIN subtree s ON n.parent_id = s.id
+                 WHERE n.deleted = 0
+                   AND NOT EXISTS (SELECT 1 FROM sync_documents d WHERE d.root_id = s.id)
+             )
+             SELECT EXISTS (
+                 SELECT 1 FROM subtree
+                 JOIN notes_nodes n ON n.id = subtree.id
+                 WHERE n.hlc <> '' AND n.hlc < ?2
+                   AND subtree.id NOT IN (SELECT value FROM json_each(?3))
+             )",
         )
-        .map_err(|error| error.to_string())?;
-    while let Some(parent) = frontier.pop() {
-        let children = statement
-            .query_map([&parent], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)? == 1,
-                ))
+        .and_then(|mut statement| {
+            statement.query_row(rusqlite::params![root_id, max_hlc, seen], |row| {
+                row.get::<_, i64>(0)
             })
-            .map_err(|error| error.to_string())?;
-        for child in children {
-            let (id, hlc, own_document) = child.map_err(|error| error.to_string())?;
-            if !seen.contains(&id) && hlc.as_str() < max_hlc {
-                return Ok(true);
-            }
-            if !own_document {
-                frontier.push(id);
-            }
-        }
-    }
-    Ok(false)
+        })
+        .map(|found| found == 1)
+        .map_err(|error| error.to_string())
 }
 
 fn record_document(
