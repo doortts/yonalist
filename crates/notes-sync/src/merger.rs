@@ -44,6 +44,12 @@ pub struct MergeOutcome {
     pub applied: usize,
     pub changed_ids: BTreeSet<String>,
     pub deleted_ids: BTreeSet<String>,
+    /// Rows a picture's bytes turning up settled. The window redraws these the
+    /// same way it redraws the ones above, but nobody edited them — the row was
+    /// already waiting for exactly those bytes — so there is nothing here to
+    /// put a history entry out of reach. Kept apart from `changed_ids` for
+    /// that one difference, which is the whole of it.
+    pub settled_ids: BTreeSet<String>,
     /// The file disagrees with what won, so the exporter has to rewrite it.
     pub needs_write_back: bool,
     pub conflicts_recorded: usize,

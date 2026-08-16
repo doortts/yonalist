@@ -655,20 +655,14 @@ impl DesktopRuntime {
                     // the window to redraw.
                     return;
                 }
-                let affected: Vec<String> = outcome
-                    .changed_ids
-                    .iter()
-                    .chain(outcome.deleted_ids.iter())
-                    .cloned()
-                    .collect();
                 // The session first: a window told about a revision the service
                 // does not know about would have every later edit rejected.
-                let _ = service.absorb_external(revision, &affected);
+                let _ = service.absorb_external(revision, &out_of_reach(&outcome));
                 let _ = window.emit(
                     "notes://sync-changed",
                     SyncChanged {
                         revision,
-                        changed_node_ids: outcome.changed_ids.iter().cloned().collect(),
+                        changed_node_ids: redrawn(&outcome),
                         deleted_node_ids: outcome.deleted_ids.iter().cloned().collect(),
                     },
                 );
@@ -818,9 +812,60 @@ pub fn run() {
         .expect("Yonalist v2 desktop runtime failed");
 }
 
+/// What a merge put beyond this session's reach. Another device's edit landed
+/// on these, so replaying a history entry that touches one would throw that
+/// edit away with nothing said.
+///
+/// A picture's bytes turning up is not that: the row was already waiting for
+/// exactly those bytes, and settling it discarded nothing. Those rows are in
+/// `settled_ids`, and they are deliberately not here.
+fn out_of_reach(outcome: &notes_sync::merger::MergeOutcome) -> Vec<String> {
+    outcome
+        .changed_ids
+        .iter()
+        .chain(outcome.deleted_ids.iter())
+        .cloned()
+        .collect()
+}
+
+/// Which lines the window has to draw again. Both kinds count: a notice that
+/// cannot say which note changed sends the window back to re-reading the whole
+/// page, and that path does not promise the caret stays where it was.
+fn redrawn(outcome: &notes_sync::merger::MergeOutcome) -> Vec<String> {
+    outcome
+        .changed_ids
+        .iter()
+        .chain(outcome.settled_ids.iter())
+        .cloned()
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A picture's bytes turning up settles rows without anyone editing them,
+    /// so nothing about it can put a history entry out of reach. Naming those
+    /// rows is for the window's redraw and for nothing else — read the two
+    /// lists as one and the user loses an undo because a download finished.
+    #[test]
+    fn an_arriving_picture_puts_no_history_out_of_reach() {
+        let arrival = notes_sync::merger::MergeOutcome {
+            applied: 1,
+            settled_ids: std::collections::BTreeSet::from(["shot".to_owned()]),
+            ..notes_sync::merger::MergeOutcome::default()
+        };
+        assert!(out_of_reach(&arrival).is_empty());
+        assert_eq!(redrawn(&arrival), vec!["shot".to_owned()]);
+
+        let merge = notes_sync::merger::MergeOutcome {
+            applied: 1,
+            changed_ids: std::collections::BTreeSet::from(["note".to_owned()]),
+            ..notes_sync::merger::MergeOutcome::default()
+        };
+        assert_eq!(out_of_reach(&merge), vec!["note".to_owned()]);
+        assert_eq!(redrawn(&merge), vec!["note".to_owned()]);
+    }
 
     #[test]
     fn a_data_reset_clears_the_stored_vault_path() {
