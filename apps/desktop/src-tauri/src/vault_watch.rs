@@ -55,6 +55,18 @@ impl VaultWatch {
         vault_root: PathBuf,
         changed: impl Fn(MergeOutcome) + Send + 'static,
     ) -> Result<Self, String> {
+        Self::start_with(storage, assets, vault_root, SWEEP, changed)
+    }
+
+    /// The sweep interval is an argument so a test can ask for the behaviour
+    /// without waiting a minute for it.
+    pub(crate) fn start_with(
+        storage: Arc<SqliteStorage>,
+        assets: Arc<LocalImageAssets>,
+        vault_root: PathBuf,
+        sweep: Duration,
+        changed: impl Fn(MergeOutcome) + Send + 'static,
+    ) -> Result<Self, String> {
         let (events, inbox) = channel();
         let mut watcher = RecommendedWatcher::new(
             move |event: notify::Result<notify::Event>| {
@@ -75,7 +87,15 @@ impl VaultWatch {
                 // Moved in so the subscription lives exactly as long as the
                 // loop that reads from it.
                 let _watcher = watcher;
-                run(&storage, &assets, &vault_root, &inbox, &stopped, &changed);
+                run(
+                    &storage,
+                    &assets,
+                    &vault_root,
+                    sweep,
+                    &inbox,
+                    &stopped,
+                    &changed,
+                );
             })
             .map_err(|error| format!("Could not watch the vault: {error}"))?;
         Ok(Self {
@@ -89,6 +109,7 @@ fn run(
     storage: &SqliteStorage,
     assets: &LocalImageAssets,
     vault_root: &Path,
+    sweep: Duration,
     inbox: &Receiver<Vec<PathBuf>>,
     stopped: &Receiver<()>,
     changed: &impl Fn(MergeOutcome),
@@ -96,7 +117,12 @@ fn run(
     let started = Instant::now();
     let now = || started.elapsed().as_millis() as u64;
     let mut queue = WatchQueue::new(QUIET_MILLIS);
-    let mut swept = Instant::now();
+    // Expired, so the first round sweeps: a change made while the app was
+    // closed reaches nobody by event — it already happened — and waiting a
+    // minute to look means a minute of showing notes that are not current.
+    let mut swept = Instant::now()
+        .checked_sub(sweep)
+        .unwrap_or_else(Instant::now);
     loop {
         // Asked before every round rather than only when an event arrives: a
         // folder nobody is touching still has to let go when it is replaced.
@@ -120,15 +146,13 @@ fn run(
             // The subscription is gone, so nothing else will arrive.
             Err(RecvTimeoutError::Disconnected) => return,
         }
-        if swept.elapsed() >= SWEEP {
+        if swept.elapsed() >= sweep {
             swept = Instant::now();
             let present = documents_on_disk(vault_root);
             // A refusal is about a file. Once the file is gone so is what it
             // was about, and one that comes back is read rather than skipped.
             let _ = storage.forget_missing_refusals(&present);
-            for relative in present {
-                queue.saw(&relative, now());
-            }
+            sweep_into(&mut queue, storage, vault_root, &present, now());
         }
         // One, and only after the last one came back: the queue's own rule.
         while let Some(relative) = queue.next_in_flight(now()) {
@@ -182,6 +206,54 @@ fn take(storage: &SqliteStorage, vault_root: &Path, relative: &str) -> Option<Me
         Ok(_) => None,
         Err(_) => None,
     }
+}
+
+/// Everything the folder holds, weighed against what this app last dealt with
+/// there. The stat answers for most of it — a file whose reading and size are
+/// what they were when this app wrote it has nothing to say — which is what
+/// makes opening a large vault cheap. What the stat cannot answer, the read
+/// does: a change that kept both is what the verification pass is for.
+fn sweep_into(
+    queue: &mut WatchQueue,
+    storage: &SqliteStorage,
+    vault_root: &Path,
+    present: &[String],
+    now: u64,
+) {
+    let records: std::collections::BTreeMap<String, notes_sync::intake::Known> = storage
+        .vault_stat_records()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    for relative in present {
+        // An attachment is not a document and has no record of this shape;
+        // the bytes gate already keeps it from being read twice.
+        if !relative.ends_with(".md") {
+            queue.saw(relative, now);
+            continue;
+        }
+        let stat = std::fs::symlink_metadata(vault_root.join(relative)).ok();
+        let verdict = match stat {
+            Some(facts) => notes_sync::intake::scan_verdict(
+                records.get(relative),
+                modified_millis(&facts).unwrap_or_default(),
+                i64::try_from(facts.len()).unwrap_or_default(),
+            ),
+            // No answer from the folder is not an answer that nothing changed.
+            None => notes_sync::intake::Verdict::Hash,
+        };
+        if verdict != notes_sync::intake::Verdict::Skip {
+            queue.saw(relative, now);
+        }
+    }
+}
+
+fn modified_millis(facts: &std::fs::Metadata) -> Option<i64> {
+    facts
+        .modified()
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|since| i64::try_from(since.as_millis()).ok())
 }
 
 /// The bytes for a picture a note is waiting on. Copied into this app's own
@@ -318,6 +390,48 @@ mod tests {
         assert_eq!(seen("MyPassets/photo.png"), None);
         assert_eq!(seen("Holiday/photo.png"), None);
         assert_eq!(seen("Projects-4f1c8e20a3b7/notes.txt"), None);
+    }
+
+    /// A change made while the app was closed reaches nobody by event — it
+    /// already happened. Waiting a minute to look means a minute of showing
+    /// notes that are not current, on every launch.
+    #[test]
+    fn a_change_made_while_the_app_was_closed_is_merged_at_start() {
+        let home = tempfile::tempdir().expect("home");
+        let storage = Arc::new(
+            notes_sqlite::SqliteStorage::open(&home.path().join("notes.sqlite")).expect("open"),
+        );
+        let assets = Arc::new(
+            notes_sqlite::LocalImageAssets::open(&home.path().join("images")).expect("store"),
+        );
+        let vault = home.path().join("vault");
+        let store = home.path().join("images");
+        std::fs::create_dir_all(&vault).expect("vault");
+        storage.export_pending(&vault, &store).expect("export");
+
+        // Somebody else's edit, landed while this app was not running.
+        let page = super::documents_on_disk(&vault)
+            .into_iter()
+            .find(|relative| relative != "README.md")
+            .expect("a page");
+        let document = std::fs::read_to_string(vault.join(&page)).expect("read");
+        std::fs::write(
+            vault.join(&page),
+            document.replace("Yonalist", "Somebody else's word"),
+        )
+        .expect("their edit");
+
+        let (told, changes) = std::sync::mpsc::channel();
+        let _watch = VaultWatch::start(storage, assets, vault, move |_| {
+            let _ = told.send(());
+        })
+        .expect("watch");
+
+        assert!(
+            changes.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "nothing read the folder at start, so the window shows what the \
+             file no longer says"
+        );
     }
 
     /// The folder can be changed while the app is running. A watch that

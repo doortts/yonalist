@@ -189,6 +189,47 @@ fn opening_an_untouched_vault_reads_nothing_as_news() {
     );
 }
 
+/// What the boot scan costs on a folder nobody touched: a stat for each file
+/// and not one read. The gate is the whole point — a vault of a thousand
+/// notes must not be a thousand file reads on every launch.
+#[test]
+fn opening_an_untouched_vault_stats_every_file_and_reads_none() {
+    let workspace = workspace();
+    workspace.pages(DOCUMENTS);
+    workspace.export();
+
+    let records: std::collections::BTreeMap<String, notes_sync::intake::Known> = workspace
+        .storage
+        .vault_stat_records()
+        .expect("records")
+        .into_iter()
+        .collect();
+    let mut read_anyway = Vec::new();
+    for relative in documents(&workspace.vault) {
+        let facts = std::fs::metadata(workspace.vault.join(&relative)).expect("stat");
+        let verdict = notes_sync::intake::scan_verdict(
+            records.get(&relative),
+            facts
+                .modified()
+                .expect("mtime")
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("since the epoch")
+                .as_millis() as i64,
+            facts.len() as i64,
+        );
+        if verdict != notes_sync::intake::Verdict::Skip {
+            read_anyway.push(relative);
+        }
+    }
+
+    assert_eq!(
+        read_anyway,
+        Vec::<String>::new(),
+        "every one of these is what this app itself wrote, and the folder \
+         still says exactly that"
+    );
+}
+
 /// And it writes nothing. A sweep that decided correctly but still touched a
 /// row would hand every other device a document to merge.
 #[test]
