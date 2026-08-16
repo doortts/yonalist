@@ -68,6 +68,7 @@ enum Request {
     Quarantine {
         relative: String,
         file_hash: String,
+        reason: String,
         reply: SyncSender<Result<(), StorageError>>,
     },
     ResolveAsset {
@@ -290,10 +291,16 @@ impl SqliteStorage {
     /// Writes down that this app could not make sense of a file. The hash is
     /// what keeps it from being read again on every sweep — a file that is
     /// still the same file has already been answered.
-    pub fn quarantine(&self, relative: &str, file_hash: &str) -> Result<(), StorageError> {
+    pub fn quarantine(
+        &self,
+        relative: &str,
+        file_hash: &str,
+        reason: &str,
+    ) -> Result<(), StorageError> {
         self.request(|reply| Request::Quarantine {
             relative: relative.to_owned(),
             file_hash: file_hash.to_owned(),
+            reason: reason.to_owned(),
             reply,
         })
     }
@@ -591,18 +598,20 @@ impl SqliteStorage {
                         Request::Quarantine {
                             relative,
                             file_hash,
+                            reason,
                             reply,
                         } => {
                             let _ = reply.send(
                                 connection
                                     .execute(
                                         "INSERT INTO sync_quarantine(
-                                             relative_path, file_hash, noticed_at)
-                                         VALUES (?1, ?2, unixepoch())
+                                             relative_path, file_hash, reason, noticed_at)
+                                         VALUES (?1, ?2, ?3, unixepoch())
                                          ON CONFLICT(relative_path) DO UPDATE SET
                                              file_hash = excluded.file_hash,
+                                             reason = excluded.reason,
                                              noticed_at = excluded.noticed_at",
-                                        rusqlite::params![&relative, &file_hash],
+                                        rusqlite::params![&relative, &file_hash, &reason],
                                     )
                                     .map(|_| ())
                                     .map_err(|error| StorageError::Internal(error.to_string())),

@@ -207,13 +207,14 @@ fn take(storage: &SqliteStorage, vault_root: &Path, relative: &str) -> Option<Me
         }
         // Written down so the sweep does not read and refuse it again every
         // minute, and so the user can be shown which file it was.
-        Ok(Verdict::Unreadable(_)) => {
+        Ok(Verdict::Unreadable(reason)) => {
             if let Ok(bytes) = notes_sync::file_io::read_regular_bounded(
                 vault_root,
                 &vault_root.join(relative),
                 notes_sync::parse::MAX_FILE_BYTES,
             ) {
-                let _ = storage.quarantine(relative, &notes_sync::export::hash_bytes(&bytes));
+                let _ =
+                    storage.quarantine(relative, &notes_sync::export::hash_bytes(&bytes), &reason);
             }
             None
         }

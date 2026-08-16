@@ -842,7 +842,11 @@ fn a_file_this_app_cannot_read_is_not_one_of_its_documents() {
     .expect("their file");
 
     storage
-        .quarantine("journal/today.md", &"e".repeat(64))
+        .quarantine(
+            "journal/today.md",
+            &"e".repeat(64),
+            "이 앱이 읽는 문서가 아니다",
+        )
         .expect("quarantine");
     storage
         .export_pending(vault.path(), &store())
@@ -862,7 +866,11 @@ fn a_file_that_cannot_be_read_is_written_down() {
     let (_directory, storage) = storage();
 
     storage
-        .quarantine("Projects-4f1c8e20a3b7/README.md", &"c".repeat(64))
+        .quarantine(
+            "Projects-4f1c8e20a3b7/README.md",
+            &"c".repeat(64),
+            "이 앱이 읽는 문서가 아니다",
+        )
         .expect("quarantine");
 
     assert_eq!(
@@ -878,7 +886,11 @@ fn a_file_that_cannot_be_read_is_written_down() {
     // written down has to be the file as it is now, or the next sweep reads
     // the old answer and skips a file that has changed.
     storage
-        .quarantine("Projects-4f1c8e20a3b7/README.md", &"d".repeat(64))
+        .quarantine(
+            "Projects-4f1c8e20a3b7/README.md",
+            &"d".repeat(64),
+            "이 앱이 읽는 문서가 아니다",
+        )
         .expect("quarantine again");
 
     assert_eq!(
@@ -902,7 +914,11 @@ fn a_document_that_becomes_unreadable_is_refused_only_once() {
         .expect("merge");
 
     storage
-        .quarantine("Projects-4f1c8e20a3b7/README.md", &"f".repeat(64))
+        .quarantine(
+            "Projects-4f1c8e20a3b7/README.md",
+            &"f".repeat(64),
+            "이 앱이 읽는 문서가 아니다",
+        )
         .expect("quarantine");
 
     assert_eq!(
@@ -921,7 +937,11 @@ fn a_document_that_becomes_unreadable_is_refused_only_once() {
 fn a_refusal_goes_when_its_file_does() {
     let (directory, storage) = storage();
     storage
-        .quarantine("journal/today.md", &"e".repeat(64))
+        .quarantine(
+            "journal/today.md",
+            &"e".repeat(64),
+            "이 앱이 읽는 문서가 아니다",
+        )
         .expect("quarantine");
 
     storage
@@ -935,6 +955,32 @@ fn a_refusal_goes_when_its_file_does() {
     assert_eq!(remembered, 0, "the file it was about is not there any more");
 }
 
+/// A refusal the user cannot see the reason for is a refusal they cannot act
+/// on. The parser already says why it would not read a file; that sentence
+/// has to survive as far as the screen.
+#[test]
+fn a_refusal_records_why() {
+    let (directory, storage) = storage();
+
+    storage
+        .quarantine(
+            "journal/today.md",
+            &"e".repeat(64),
+            "yonalist frontmatter가 없다",
+        )
+        .expect("quarantine");
+
+    let reason: String = rusqlite::Connection::open(directory.path().join("notes.sqlite"))
+        .expect("read")
+        .query_row(
+            "SELECT reason FROM sync_quarantine WHERE relative_path = ?1",
+            ["journal/today.md"],
+            |row| row.get(0),
+        )
+        .expect("the refusal");
+    assert_eq!(reason, "yonalist frontmatter가 없다");
+}
+
 /// A file that could not be read once can be fixed, or can simply finish
 /// arriving. The note saying it was unreadable has to go with that, or every
 /// later version of it is skipped as "already answered".
@@ -942,7 +988,11 @@ fn a_refusal_goes_when_its_file_does() {
 fn a_file_that_becomes_readable_stops_being_refused() {
     let (directory, storage) = storage();
     storage
-        .quarantine("Projects-4f1c8e20a3b7/README.md", &"c".repeat(64))
+        .quarantine(
+            "Projects-4f1c8e20a3b7/README.md",
+            &"c".repeat(64),
+            "이 앱이 읽는 문서가 아니다",
+        )
         .expect("quarantine");
 
     storage

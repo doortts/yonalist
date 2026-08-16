@@ -623,7 +623,7 @@ fn a_dragged_page_keeps_its_folder_until_its_new_home_is_written() {
     let joining = add_bullet(&one, "root", "Joining page");
     let carried = add_bullet(&one, &joining, "Carried along");
     settle(&one, &two);
-    let host_file = page_file(&one);
+    let host_file = page_file_of(&one, &host);
 
     // Somebody edited the page it is joining, so this app may not write it.
     std::fs::write(&host_file, b"somebody's own words\n").expect("hand edit");
@@ -671,7 +671,7 @@ fn a_page_dragged_back_out_is_a_page_again() {
     // The page it joins cannot be written — somebody has it open — so the old
     // folder is still there, marked as leaving, when the user changes their
     // mind.
-    std::fs::write(page_file(&one), b"somebody's own words\n").expect("hand edit");
+    std::fs::write(page_file_of(&one, &host), b"somebody's own words\n").expect("hand edit");
     one.run(IpcNotesCommand::MoveNode {
         id: joining.clone(),
         parent_id: host.clone(),
@@ -815,6 +815,17 @@ fn attachments(vault: &std::path::Path) -> Vec<(String, String)> {
         }
     }
     found
+}
+
+/// The file of one particular page. Folder names carry the page's id, so this
+/// says which page rather than whichever the folder listing answered first.
+fn page_file_of(device: &Device, page_id: &str) -> std::path::PathBuf {
+    let suffix: String = page_id.chars().filter(|c| *c != '-').take(12).collect();
+    documents(&device.vault)
+        .into_iter()
+        .find(|relative| relative.contains(&suffix))
+        .map(|relative| device.vault.join(relative))
+        .expect("that page's file")
 }
 
 fn page_file(device: &Device) -> std::path::PathBuf {

@@ -317,6 +317,10 @@ CREATE TABLE sync_assets (
 CREATE TABLE sync_quarantine (
     relative_path TEXT PRIMARY KEY NOT NULL,
     file_hash TEXT NOT NULL,
+    -- What the parser said. A refusal the user cannot see the reason
+    -- for is a refusal they cannot act on, and the parser already
+    -- names it.
+    reason TEXT NOT NULL DEFAULT '',
     noticed_at INTEGER NOT NULL
 ) STRICT;
 
