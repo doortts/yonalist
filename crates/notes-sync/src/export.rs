@@ -51,7 +51,30 @@ pub fn export_document(
     root_id: &str,
 ) -> Result<ExportOutcome, ExportError> {
     let document = load_document(transaction, root_id)?;
-    let bytes = render(&VaultFile::Page(document))?;
+    let relative = document_path(transaction, root_id)?;
+    let outcome = write_checked(
+        transaction,
+        vault_root,
+        root_id,
+        &relative,
+        &VaultFile::Page(document),
+    )?;
+    if outcome.written || !outcome.needs_merge {
+        clear_dirty(transaction, root_id)?;
+    }
+    Ok(outcome)
+}
+
+/// Render, prove it reads back, and only then decide whether the bytes may
+/// replace what is on disk. Every document goes through here.
+fn write_checked(
+    transaction: &Transaction<'_>,
+    vault_root: &Path,
+    root_id: &str,
+    relative: &str,
+    file: &VaultFile,
+) -> Result<ExportOutcome, ExportError> {
+    let bytes = render(file)?;
 
     // Invariant 4, before anything touches the disk: a document that cannot be
     // read back is one every device would quarantine.
@@ -63,7 +86,7 @@ pub fn export_document(
         return Err("The document this app just rendered did not survive a read back.".to_owned());
     }
 
-    let relative = document_path(transaction, root_id)?;
+    let relative = relative.to_owned();
     let path = vault_root.join(&relative);
     let hash = hash_bytes(&bytes);
     let recorded = recorded_hash(transaction, root_id)?;
@@ -73,7 +96,6 @@ pub fn export_document(
         if existing_hash == hash {
             // The same bytes going out again would look like an edit to every
             // other device.
-            clear_dirty(transaction, root_id)?;
             record_document(transaction, root_id, &relative, &hash)?;
             return Ok(ExportOutcome {
                 written: false,
@@ -96,13 +118,180 @@ pub fn export_document(
             .map_err(|error| format!("Could not make the page's folder: {error}"))?;
     }
     write_atomic(vault_root, &path, &bytes)?;
-    clear_dirty(transaction, root_id)?;
     record_document(transaction, root_id, &relative, &hash)?;
     Ok(ExportOutcome {
         written: true,
         needs_merge: false,
         path: relative,
     })
+}
+
+/// Which documents the waiting rows belong to.
+///
+/// One statement, not one per row: a vault where every edit costs a walk up the
+/// tree is a vault that stops keeping up with typing. A row belongs to the
+/// nearest ancestor that owns a document — a page root, or home — and a deleted
+/// row belongs to the trash whatever page it used to sit in.
+pub fn pending_documents(transaction: &Transaction<'_>) -> Result<Vec<String>, ExportError> {
+    let mut statement = transaction
+        .prepare_cached(
+            "WITH RECURSIVE climb(node_id, at, deleted) AS (
+                 SELECT d.node_id, n.id, n.deleted
+                 FROM sync_dirty_nodes d JOIN notes_nodes n ON n.id = d.node_id
+                 UNION ALL
+                 SELECT climb.node_id, p.id, climb.deleted
+                 FROM climb JOIN notes_nodes n ON n.id = climb.at
+                 JOIN notes_nodes p ON p.id = n.parent_id
+                 WHERE n.parent_id IS NOT NULL AND n.parent_id <> 'root'
+             )
+             SELECT DISTINCT CASE
+                 WHEN deleted = 1 THEN 'yonalist-trash'
+                 WHEN at = 'root' THEN 'root'
+                 ELSE at
+             END
+             FROM climb
+             WHERE deleted = 1
+                OR at = 'root'
+                OR (SELECT parent_id FROM notes_nodes WHERE id = at) = 'root'
+             ORDER BY 1",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|error| error.to_string())?);
+    }
+    Ok(out)
+}
+
+/// The vault's index. Home is not a page: every top-level page is one link
+/// line, and their contents live in their own folders. What the line grants is
+/// existence and order — a page's own file owns everything else about it.
+pub fn export_home(
+    transaction: &Transaction<'_>,
+    vault_root: &Path,
+) -> Result<ExportOutcome, ExportError> {
+    let mut statement = transaction
+        .prepare_cached(
+            "SELECT n.id, n.text, n.hlc, d.folder_path
+             FROM notes_nodes n
+             LEFT JOIN sync_documents d ON d.root_id = n.id
+             WHERE n.parent_id = 'root' AND n.deleted = 0
+             ORDER BY n.sort_key, n.id",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut nodes = Vec::new();
+    for row in rows {
+        let (id, title, hlc, folder) = row.map_err(|error| error.to_string())?;
+        let path = match folder {
+            Some(folder) => folder,
+            None => format!("{}/README.md", page_folder_name(&title, &id)?),
+        };
+        nodes.push(DocumentNode {
+            id,
+            hlc,
+            body: NodeBody::Split { title, path },
+            note: String::new(),
+            marker: Marker::Bullet,
+            collapsed: false,
+            completed: false,
+            starred: false,
+            from: None,
+            place: None,
+            unknown_tokens: Vec::new(),
+            children: Vec::new(),
+        });
+    }
+    let root_hlc: String = transaction
+        .prepare_cached("SELECT hlc FROM notes_nodes WHERE id = 'root'")
+        .and_then(|mut statement| statement.query_row([], |row| row.get(0)))
+        .map_err(|error| error.to_string())?;
+    let title: String = transaction
+        .prepare_cached("SELECT text FROM notes_nodes WHERE id = 'root'")
+        .and_then(|mut statement| statement.query_row([], |row| row.get(0)))
+        .map_err(|error| error.to_string())?;
+    let max_hlc = nodes
+        .iter()
+        .map(|node| node.hlc.clone())
+        .max()
+        .unwrap_or_default()
+        .max(root_hlc.clone());
+    let document = PageDocument {
+        id: DocumentId::Home,
+        parent: None,
+        sort_key: None,
+        max_hlc,
+        root: DocumentRoot {
+            title,
+            hlc: root_hlc,
+            ..DocumentRoot::default()
+        },
+        nodes,
+        unknown_frontmatter: Vec::new(),
+    };
+    write_checked(
+        transaction,
+        vault_root,
+        "root",
+        "README.md",
+        &VaultFile::Page(document),
+    )
+}
+
+/// Folders for pages that no longer exist. A vault folder is something the user
+/// opens, so one standing for a page that is gone tells them they still have it.
+pub fn retire_missing_documents(
+    transaction: &Transaction<'_>,
+    vault_root: &Path,
+) -> Result<Vec<String>, ExportError> {
+    let mut statement = transaction
+        .prepare_cached(
+            "SELECT d.root_id, d.folder_path FROM sync_documents d
+             LEFT JOIN notes_nodes n ON n.id = d.root_id
+             WHERE d.root_id NOT IN ('root', 'yonalist-trash')
+               AND (n.id IS NULL OR n.deleted = 1 OR n.parent_id IS NULL)",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut retired = Vec::new();
+    for row in rows {
+        let (root_id, folder_path) = row.map_err(|error| error.to_string())?;
+        let folder = std::path::Path::new(&folder_path)
+            .parent()
+            .map(|parent| vault_root.join(parent));
+        if let Some(folder) = folder
+            && folder.starts_with(vault_root)
+            && folder != vault_root
+            && folder.is_dir()
+        {
+            std::fs::remove_dir_all(&folder)
+                .map_err(|error| format!("Could not clear a retired folder: {error}"))?;
+        }
+        retired.push(root_id);
+    }
+    for root_id in &retired {
+        transaction
+            .prepare_cached("DELETE FROM sync_documents WHERE root_id = ?1")
+            .and_then(|mut statement| statement.execute([root_id]))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(retired)
 }
 
 /// The trash, which is the only evidence a deletion ever gets: a node simply

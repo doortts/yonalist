@@ -43,6 +43,10 @@ enum Request {
         limit: u32,
         reply: SyncSender<Result<Vec<notes_application::SyncConflict>, StorageError>>,
     },
+    ExportPending {
+        vault_root: std::path::PathBuf,
+        reply: SyncSender<Result<usize, StorageError>>,
+    },
     PlaceClaim {
         id: String,
         reply: SyncSender<Result<Option<(String, String)>, StorageError>>,
@@ -176,6 +180,15 @@ impl SqliteStorage {
         limit: u32,
     ) -> Result<Vec<notes_application::SyncConflict>, StorageError> {
         self.request(|reply| Request::Conflicts { limit, reply })
+    }
+
+    /// Writes everything waiting into the vault, answering how many documents
+    /// actually changed on disk.
+    pub fn export_pending(&self, vault_root: &std::path::Path) -> Result<usize, StorageError> {
+        self.request(|reply| Request::ExportPending {
+            vault_root: vault_root.to_path_buf(),
+            reply,
+        })
     }
 
     /// Which sibling a node claims to follow, and when it said so.
@@ -331,6 +344,12 @@ impl SqliteStorage {
                         }
                         Request::Conflicts { limit, reply } => {
                             let _ = reply.send(crate::sync_merge::conflicts(&connection, limit));
+                        }
+                        Request::ExportPending { vault_root, reply } => {
+                            let _ = reply.send(crate::sync_merge::export_pending(
+                                &mut connection,
+                                &vault_root,
+                            ));
                         }
                         Request::PlaceClaim { id, reply } => {
                             let _ = reply.send(

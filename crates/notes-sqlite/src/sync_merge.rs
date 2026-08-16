@@ -169,3 +169,37 @@ fn prune_conflicts(transaction: &rusqlite::Transaction<'_>) -> Result<(), Storag
         .map_err(internal)?;
     Ok(())
 }
+
+/// Writes everything waiting into the vault.
+///
+/// The revision does not move: writing the notes down did not change them, and
+/// a bump here would invalidate every open session for no reason at all. The
+/// documents a set of dirty rows belongs to are resolved in one question.
+pub(crate) fn export_pending(
+    connection: &mut Connection,
+    vault_root: &std::path::Path,
+) -> Result<usize, StorageError> {
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(internal)?;
+    // Order does not matter: home derives a page's folder the same way the page
+    // export does, so its links are right whichever is written first.
+    let pending =
+        notes_sync::export::pending_documents(&transaction).map_err(StorageError::Internal)?;
+    let mut written = 0;
+    for root_id in pending {
+        let outcome = match root_id.as_str() {
+            "yonalist-trash" => notes_sync::export::export_trash(&transaction, vault_root),
+            "root" => notes_sync::export::export_home(&transaction, vault_root),
+            id => notes_sync::export::export_document(&transaction, vault_root, id),
+        }
+        .map_err(StorageError::Internal)?;
+        if outcome.written {
+            written += 1;
+        }
+    }
+    notes_sync::export::retire_missing_documents(&transaction, vault_root)
+        .map_err(StorageError::Internal)?;
+    transaction.commit().map_err(internal)?;
+    Ok(written)
+}

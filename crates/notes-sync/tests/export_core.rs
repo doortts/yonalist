@@ -363,3 +363,168 @@ fn a_trash_that_empties_takes_its_file_with_it() {
         "a file that still said something was deleted would keep deleting it"
     );
 }
+
+fn export_home(connection: &mut Connection, root: &std::path::Path) -> ExportOutcome {
+    let transaction = connection.transaction().expect("begin");
+    let outcome = notes_sync::export::export_home(&transaction, root).expect("export");
+    transaction.commit().expect("commit");
+    outcome
+}
+
+/// Home is an index, not a page: every top-level page is one link line, and the
+/// order of those lines is the order of the pages. Their contents live in their
+/// own folders.
+#[test]
+fn the_home_index_lists_every_page_as_a_split_line() {
+    let mut connection = database();
+    seed(&connection);
+    let other = "11c8da70-b5e1-4c91-8d02-a3f204ee81cc";
+    connection
+        .execute(
+            "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
+             VALUES (?1, 'root', 8589934592, 'bullet', 'Second', ?2)",
+            rusqlite::params![other, stamp(5)],
+        )
+        .expect("second page");
+    let root = vault();
+    export(&mut connection, root.path());
+
+    let outcome = export_home(&mut connection, root.path());
+
+    assert!(outcome.written);
+    let file = std::fs::read_to_string(root.path().join("README.md")).expect("home");
+    assert!(file.contains("id: root"), "{file}");
+    assert!(
+        file.contains("- [Projects](Projects-4f1c8e20a3b7/README.md)"),
+        "{file}"
+    );
+    assert!(
+        file.contains("split -->"),
+        "a page's own file owns its state: {file}"
+    );
+    assert!(
+        !file.contains("Thought"),
+        "the page's contents belong in the page's folder: {file}"
+    );
+    assert!(
+        file.find("Projects").unwrap() < file.find("Second").unwrap(),
+        "the order of the lines is the order of the pages"
+    );
+}
+
+/// A page that is deleted, or stops being top-level, leaves a folder behind
+/// that nothing points at. Vault folders are the user's to look at, so a folder
+/// for a page that no longer exists is a lie about what they have.
+#[test]
+fn a_page_that_stops_being_a_page_loses_its_folder() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    export(&mut connection, root.path());
+    let folder = root.path().join("Projects-4f1c8e20a3b7");
+    assert!(folder.is_dir());
+
+    connection
+        .execute(
+            "UPDATE notes_nodes SET deleted = 1 WHERE id = ?1",
+            [PAGE_ID],
+        )
+        .expect("delete");
+    let transaction = connection.transaction().expect("begin");
+    notes_sync::export::retire_missing_documents(&transaction, root.path()).expect("retire");
+    transaction.commit().expect("commit");
+
+    assert!(
+        !folder.exists(),
+        "a folder for a page that is gone tells the user they still have it"
+    );
+    let recorded: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sync_documents WHERE root_id = ?1",
+            [PAGE_ID],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(recorded, 0, "and the record of it goes too");
+}
+
+#[test]
+fn a_live_page_keeps_its_folder() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    export(&mut connection, root.path());
+
+    let transaction = connection.transaction().expect("begin");
+    notes_sync::export::retire_missing_documents(&transaction, root.path()).expect("retire");
+    transaction.commit().expect("commit");
+
+    assert!(root.path().join("Projects-4f1c8e20a3b7").is_dir());
+}
+
+/// Which documents a set of dirty rows belongs to, in one question rather than
+/// one per row. A vault where every edit costs a walk up the tree is a vault
+/// that stops keeping up with typing.
+#[test]
+fn dirty_rows_resolve_to_the_documents_that_hold_them() {
+    let mut connection = database();
+    seed(&connection);
+    let deep = "8a201f33-0000-4c91-8d02-000000000002";
+    connection
+        .execute(
+            "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
+             VALUES (?1, ?2, 4294967296, 'bullet', 'Deeper', ?3)",
+            rusqlite::params![deep, NODE_ID, stamp(5)],
+        )
+        .expect("deep");
+    connection
+        .execute("DELETE FROM sync_dirty_nodes", ())
+        .expect("clear");
+    connection
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES (?1, 0)",
+            [deep],
+        )
+        .expect("dirty");
+
+    let transaction = connection.transaction().expect("begin");
+    let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
+
+    assert_eq!(
+        pending,
+        vec![PAGE_ID.to_owned()],
+        "a node deep in a page belongs to that page's document"
+    );
+}
+
+#[test]
+fn a_dirty_page_root_resolves_to_its_own_document() {
+    let mut connection = database();
+    seed(&connection);
+
+    let transaction = connection.transaction().expect("begin");
+    let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
+
+    assert_eq!(pending, vec![PAGE_ID.to_owned()]);
+}
+
+/// A deleted row belongs to the trash, whatever page it used to sit in.
+#[test]
+fn a_deleted_row_puts_the_trash_in_the_queue() {
+    let mut connection = database();
+    seed(&connection);
+    connection
+        .execute(
+            "UPDATE notes_nodes SET deleted = 1 WHERE id = ?1",
+            [NODE_ID],
+        )
+        .expect("delete");
+
+    let transaction = connection.transaction().expect("begin");
+    let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
+
+    assert!(
+        pending.contains(&"yonalist-trash".to_owned()),
+        "{pending:?}"
+    );
+}
