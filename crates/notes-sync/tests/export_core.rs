@@ -569,6 +569,42 @@ fn a_new_page_puts_home_in_the_queue() {
     );
 }
 
+/// A split document says which node it hangs from. Writing it without that
+/// line makes it a top-level page to any device reading the vault fresh — the
+/// subtree leaves the page it belonged to and turns up beside it.
+#[test]
+fn a_split_document_states_the_node_it_hangs_from() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    connection
+        .execute(
+            "INSERT INTO sync_documents(root_id, folder_path) VALUES (?1, ?2)",
+            rusqlite::params![
+                NODE_ID,
+                format!("Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md")
+            ],
+        )
+        .expect("split document");
+
+    {
+        let transaction = connection.transaction().expect("begin");
+        export_document(&transaction, root.path(), NODE_ID).expect("export");
+        transaction.commit().expect("commit");
+    }
+
+    let file = std::fs::read_to_string(
+        root.path()
+            .join("Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md"),
+    )
+    .expect("the split document");
+    assert!(
+        file.contains(&format!("parent: {PAGE_ID}")),
+        "without it the subtree becomes a page of its own on the next device \
+         that reads the vault: {file}"
+    );
+}
+
 /// A file somebody edited by hand is not this app's to replace, and what was
 /// waiting to go into it is still waiting. Clearing the mark there would leave
 /// the vault holding an older version of a note for good.

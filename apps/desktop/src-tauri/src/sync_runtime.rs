@@ -22,6 +22,11 @@ const IDLE_MILLIS: u64 = 3_000;
 /// the vault.
 const CEILING_MILLIS: u64 = 30_000;
 
+/// What the user is told when the export thread is not there any more. They
+/// can still copy the folder; what they cannot do is trust that it is current.
+const WRITER_GONE: &str = "The vault could not be written: this app stopped writing to it during \
+     this session. Your notes are safe here, but the folder is out of date.";
+
 enum Signal {
     /// Something changed.
     Touched,
@@ -80,14 +85,19 @@ impl SyncRuntime {
         }
     }
 
-    /// Write what is waiting and wait for it. A dead thread answers
-    /// immediately: refusing to return would hang the app on quit, and there is
-    /// nothing left that could do the writing anyway.
-    pub(crate) fn flush(&self) {
+    /// Write what is waiting and wait for it.
+    ///
+    /// Answers whether the writing actually happened. A thread that has died —
+    /// an export that panicked rather than returned an error — cannot write
+    /// anything, and saying so is the difference between the user seeing their
+    /// notes in the folder and being told they are there. It does not refuse
+    /// to return, though: hanging the app on quit would be worse than either.
+    pub(crate) fn flush(&self) -> Result<(), String> {
         let (done, wait) = sync_channel(0);
-        if self.signals.send(Signal::Flush(done)).is_ok() {
-            let _ = wait.recv();
+        if self.signals.send(Signal::Flush(done)).is_err() {
+            return Err(WRITER_GONE.to_owned());
         }
+        wait.recv().map_err(|_| WRITER_GONE.to_owned())
     }
 }
 
@@ -232,9 +242,22 @@ mod tests {
         let (count, export) = counter();
         let runtime = SyncRuntime::with_windows(60_000, 60_000, export);
 
-        runtime.flush();
+        assert!(runtime.flush().is_ok());
 
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    /// An export that panics takes the thread with it. Reporting success then
+    /// tells the user their notes are in the folder when nothing has written
+    /// to it since — the one thing a flush must never say.
+    #[test]
+    fn a_flush_says_so_when_nothing_can_write_any_more() {
+        let runtime = SyncRuntime::with_windows(60_000, 60_000, || panic!("the disk went away"));
+
+        let first = runtime.flush();
+        let second = runtime.flush();
+
+        assert!(first.is_err() || second.is_err(), "{first:?} {second:?}");
     }
 
     #[test]

@@ -80,6 +80,19 @@ impl Placement {
     }
 }
 
+/// A vault path names a place in the vault. Anything else — an absolute path,
+/// or one climbing out with `..` — is a record that has been tampered with or
+/// has gone wrong, and is refused rather than acted on.
+fn under_vault(location: &str) -> Result<&str, String> {
+    let climbs = std::path::Path::new(location)
+        .components()
+        .any(|part| !matches!(part, std::path::Component::Normal(_)));
+    if climbs {
+        return Err(format!("`{location}` is not a place in this vault."));
+    }
+    Ok(location)
+}
+
 /// What the user called the file, without the hash and extension this app
 /// appended to it.
 fn given_name(disk_name: &str) -> &str {
@@ -296,7 +309,11 @@ fn recorded_location(transaction: &Transaction<'_>, hash: &str) -> Result<String
 /// interruption leaves the same bytes in two places, which is harmless, where
 /// the other order can leave them in none.
 fn carry_bytes(vault_root: &Path, in_store: &Path, placement: &Placement) -> Result<(), String> {
-    let target = vault_root.join(&placement.location);
+    // Before a folder is made for it: a location comes out of a record, and a
+    // record is data. `write_atomic` catches a link on the way out, but only
+    // once the folders exist — by which point this would already have made
+    // them wherever the record said.
+    let target = vault_root.join(under_vault(&placement.location)?);
     if !target.exists() {
         let bytes = placement
             .moves
@@ -316,14 +333,22 @@ fn carry_bytes(vault_root: &Path, in_store: &Path, placement: &Placement) -> Res
                 },
                 Ok,
             )?;
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("Could not make the attachment folder: {error}"))?;
-        }
+        let folder = target
+            .parent()
+            .ok_or("An attachment path must name a folder.")?;
+        std::fs::create_dir_all(folder)
+            .map_err(|error| format!("Could not make the attachment folder: {error}"))?;
         crate::file_io::write_atomic(vault_root, &target, &bytes)?;
     }
     for move_ in &placement.moves {
-        let from = vault_root.join(&move_.from);
+        // Checked the same way, and then resolved: removing a file the vault
+        // does not reach is nobody's to do, whatever the record says.
+        let Ok(relative) = under_vault(&move_.from) else {
+            continue;
+        };
+        let Ok(from) = crate::file_io::inside_vault(vault_root, &vault_root.join(relative)) else {
+            continue;
+        };
         if from != target && from.is_file() {
             std::fs::remove_file(&from)
                 .map_err(|error| format!("Could not tidy the old copy: {error}"))?;

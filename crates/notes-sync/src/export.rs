@@ -573,6 +573,7 @@ fn load_document(
                 extras: row.get(12)?,
                 prev: row.get(13)?,
                 prev_hlc: row.get(14)?,
+                sort_key: row.get(2)?,
                 image: row
                     .get::<_, Option<String>>(15)?
                     .map(|location| ImageReference {
@@ -620,8 +621,12 @@ fn load_document(
         } else {
             DocumentId::Node(root_id.to_owned())
         },
-        parent: None,
-        sort_key: None,
+        // Where this document hangs. Home has no parent and a page's parent is
+        // home, which the format leaves unsaid; a split document has to say
+        // it, or a device reading the vault fresh makes it a page of its own.
+        parent: Some(root.parent_id.clone())
+            .filter(|parent| parent != "root" && !parent.is_empty()),
+        sort_key: root.sort_key,
         max_hlc,
         root: DocumentRoot {
             title: root.text,
@@ -653,6 +658,7 @@ struct Loaded {
     extras: String,
     prev: String,
     prev_hlc: String,
+    sort_key: Option<i64>,
     image: Option<ImageReference>,
 }
 

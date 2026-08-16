@@ -306,6 +306,61 @@ fn an_attachment_whose_bytes_have_not_arrived_stops_nothing_else() {
     );
 }
 
+/// A recorded path is data, and data can be wrong — a folder path carrying
+/// `..` is the case the folder retirement already guards against. Neither
+/// making a folder for the new copy nor removing the old one may act on one
+/// without checking where it lands.
+#[test]
+fn a_recorded_path_cannot_reach_outside_the_vault() {
+    let mut connection = database();
+    let workspace = workspace();
+    let outside = tempfile::tempdir().expect("outside");
+    let victim = outside.path().join("keep-me.png");
+    std::fs::write(&victim, b"somebody else's file").expect("victim");
+    page(&connection, FIRST_PAGE, "Notes", 4294967296);
+    image_node(&connection, IMAGE_NODE, FIRST_PAGE, "holiday.png", false);
+    place(&mut connection, &workspace);
+    // What a poisoned record looks like: the bytes are said to be somewhere
+    // the vault does not reach.
+    let escape = format!(
+        "../{}/keep-me.png",
+        outside.path().file_name().expect("name").to_string_lossy()
+    );
+    connection
+        .execute(
+            "UPDATE sync_assets SET location = ?1",
+            [format!(
+                "../../{}/{}/keep-me.png",
+                outside
+                    .path()
+                    .parent()
+                    .expect("parent")
+                    .file_name()
+                    .expect("name")
+                    .to_string_lossy(),
+                outside.path().file_name().expect("name").to_string_lossy()
+            )],
+        )
+        .expect("poison");
+    let _ = escape;
+
+    // A second page: the bytes have to move, which is what reads the record.
+    page(&connection, SECOND_PAGE, "Other", 8589934592);
+    image_node(
+        &connection,
+        OTHER_IMAGE_NODE,
+        SECOND_PAGE,
+        "holiday.png",
+        false,
+    );
+    place(&mut connection, &workspace);
+
+    assert!(
+        victim.exists(),
+        "a file outside the vault is nobody's to remove, whatever a record says"
+    );
+}
+
 #[test]
 fn an_attachment_nobody_points_at_stays_where_it_is() {
     let mut connection = database();

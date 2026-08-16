@@ -38,8 +38,9 @@ struct DesktopRuntime {
     /// Held rather than dropped: the watch ends when this does. Absent until
     /// the user has picked a folder, and replaced when they pick another.
     watch: Mutex<Option<vault_watch::VaultWatch>>,
-    /// Last, so that closing the app writes what is waiting before the storage
-    /// it reads from goes away.
+    /// Its own `Arc` on the storage is what keeps the exporter's last write
+    /// safe, not this field's place in the struct: fields drop in declaration
+    /// order, so being last means dropping after `storage`, not before.
     sync: sync_runtime::SyncRuntime,
 }
 
@@ -172,7 +173,7 @@ async fn notes_close_session(state: State<'_, DesktopState>) -> Result<CloseOutc
             let runtime = gate.wait()?;
             // Before anything else this does: quitting with edits still only in
             // the database is how notes go missing.
-            runtime.sync.flush();
+            runtime.sync.flush().map_err(internal_error)?;
             runtime.storage.optimize().map_err(NotesError::from)?;
             let live_hashes = runtime
                 .storage
@@ -305,11 +306,7 @@ async fn notes_sync_restore_conflict(
 #[tauri::command]
 async fn notes_sync_flush(state: State<'_, DesktopState>) -> Result<(), NotesError> {
     let gate = Arc::clone(&state.runtime);
-    run_blocking(move || {
-        gate.wait()?.sync.flush();
-        Ok(())
-    })
-    .await
+    run_blocking(move || gate.wait()?.sync.flush().map_err(internal_error)).await
 }
 
 #[tauri::command]
