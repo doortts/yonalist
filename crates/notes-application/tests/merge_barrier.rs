@@ -270,3 +270,97 @@ fn the_barrier_counts_deleted_ids() {
         "a deletion is a change like any other"
     );
 }
+
+/// Putting a defeated note back is an edit, so it has to go through the same
+/// door every other edit does. A write that moved the stored revision without
+/// telling this session would leave every later edit, undo and redo failing
+/// until the app was restarted.
+#[test]
+fn a_session_keeps_working_after_a_note_is_restored() {
+    let storage = FakeStorage::default();
+    let service = service(&storage);
+    let revision = create(&service, FIRST, 0);
+    let revision = edit(&service, FIRST, revision, "theirs");
+
+    let receipt = service.restore_conflict(FIRST, "mine").expect("restore");
+
+    assert!(receipt.revision > revision, "a restore is a write");
+    let after = edit(&service, FIRST, receipt.revision, "and life goes on");
+    assert!(after > receipt.revision);
+}
+
+/// The floor is a position in a stack that drops its oldest entry when it
+/// fills. If it did not move down with the stack, every rotation would convert
+/// one reachable entry into a blocked one.
+#[test]
+fn the_barrier_moves_with_a_stack_that_rotates() {
+    let storage = FakeStorage::default();
+    let service = service(&storage);
+    let mut revision = create(&service, FIRST, 0);
+    revision = create(&service, SECOND, revision);
+    revision = edit(&service, FIRST, revision, "mine");
+    revision = service
+        .absorb_external(storage.merged_elsewhere(), &[FIRST.to_owned()])
+        .expect("absorb");
+    let reachable = service.history_depth();
+
+    // Well past the stack's own limit, all about the other node.
+    for round in 0..1_200 {
+        revision = edit(&service, SECOND, revision, &format!("round {round}"));
+    }
+
+    let _ = reachable;
+    assert_eq!(
+        service.history_depth(),
+        1_000,
+        "once the blocked entry has itself rotated out, everything left is reachable — \
+         a floor that stayed put would keep blocking whatever slid into its place"
+    );
+}
+
+/// Typing after a merge is new work, and new work is undoable. Folding it into
+/// the entry the merge blocked would make it un-undoable without anything
+/// saying so.
+#[test]
+fn work_after_the_barrier_does_not_join_the_entry_below_it() {
+    let storage = FakeStorage::default();
+    let service = service(&storage);
+    let revision = create(&service, FIRST, 0);
+    let revision = create(&service, SECOND, revision);
+    let revision = grouped_edit(&service, FIRST, revision, "one", "typing");
+    let revision = service
+        .absorb_external(storage.merged_elsewhere(), &[FIRST.to_owned()])
+        .expect("absorb");
+    assert_eq!(service.history_depth(), 0, "the barrier is up");
+
+    let revision = grouped_edit(&service, SECOND, revision, "after", "typing");
+
+    assert_eq!(
+        service.history_depth(),
+        1,
+        "what the user types next is theirs to take back"
+    );
+    assert!(undo(&service, revision).is_ok());
+}
+
+fn grouped_edit(
+    service: &NotesService<&FakeStorage>,
+    id: &str,
+    revision: u64,
+    text: &str,
+    group: &str,
+) -> u64 {
+    service
+        .execute(CommandEnvelope {
+            session_id: session_id(service),
+            base_revision: revision,
+            request_id: format!("grouped-{id}-{text}"),
+            history_group: Some(group.to_owned()),
+            command: IpcNotesCommand::UpdateText {
+                id: id.to_owned(),
+                text: text.to_owned(),
+            },
+        })
+        .expect("edit")
+        .revision
+}

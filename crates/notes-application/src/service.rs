@@ -53,7 +53,11 @@ impl SessionState {
     }
 
     fn record_history(&mut self, entry: NotesServiceHistoryEntry) {
+        // Never into an entry the barrier has already blocked: what the user
+        // types after a merge is theirs to take back, and folding it into an
+        // unreachable entry would take that away with nothing said.
         if entry.group.is_some()
+            && self.undo.len() > self.undo_floor
             && self.undo.last().is_some_and(|previous| {
                 previous.group == entry.group
                     && previous.forward.len().saturating_add(entry.forward.len())
@@ -68,7 +72,11 @@ impl SessionState {
             combined_inverse.extend(std::mem::take(&mut previous.inverse));
             previous.inverse = combined_inverse;
         } else {
-            push_bounded_history(&mut self.undo, entry);
+            // The floor is a position in this stack, so it moves down with it
+            // when the oldest entry is dropped.
+            if push_bounded_history(&mut self.undo, entry) {
+                self.undo_floor = self.undo_floor.saturating_sub(1);
+            }
         }
         self.redo.clear();
     }
@@ -99,14 +107,17 @@ fn entry_touches(entry: &NotesServiceHistoryEntry, affected: &HashSet<&str>) -> 
         })
 }
 
+/// Answers whether the oldest entry was dropped to make room.
 fn push_bounded_history(
     history: &mut Vec<NotesServiceHistoryEntry>,
     entry: NotesServiceHistoryEntry,
-) {
+) -> bool {
     history.push(entry);
     if history.len() > MAX_HISTORY_ENTRIES {
         history.remove(0);
+        return true;
     }
+    false
 }
 
 pub struct NotesService<S: StoragePort> {
@@ -332,6 +343,29 @@ impl<S: StoragePort> NotesService<S> {
         let receipt = Self::receipt(session, commit);
         session.record_completed(request_id, receipt.clone());
         Ok(receipt)
+    }
+
+    /// Puts a defeated note's text back. It is an ordinary edit and takes the
+    /// ordinary path: a write that moved the stored revision without telling
+    /// this session would leave every later edit, undo and redo failing until
+    /// the app was restarted.
+    pub fn restore_conflict(
+        &self,
+        node_id: &str,
+        text: &str,
+    ) -> Result<MutationReceipt, NotesError> {
+        let mut session = self.session.lock().unwrap_or_else(PoisonError::into_inner);
+        let id = NodeId::try_from(node_id.to_owned())?;
+        let request_id = format!("restore-{node_id}-{}", session.revision);
+        self.execute_checked(
+            &mut session,
+            request_id,
+            None,
+            NotesCommand::UpdateText {
+                id,
+                text: text.to_owned(),
+            },
+        )
     }
 
     pub fn undo(&self, request: HistoryRequest) -> Result<MutationReceipt, NotesError> {

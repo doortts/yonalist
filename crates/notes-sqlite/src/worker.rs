@@ -43,9 +43,13 @@ enum Request {
         limit: u32,
         reply: SyncSender<Result<Vec<notes_application::SyncConflict>, StorageError>>,
     },
-    RestoreConflict {
+    PlaceClaim {
+        id: String,
+        reply: SyncSender<Result<Option<(String, String)>, StorageError>>,
+    },
+    ConflictLoser {
         seq: i64,
-        reply: SyncSender<Result<(), StorageError>>,
+        reply: SyncSender<Result<Option<(String, String)>, StorageError>>,
     },
     Revision {
         reply: SyncSender<Result<u64, StorageError>>,
@@ -174,9 +178,17 @@ impl SqliteStorage {
         self.request(|reply| Request::Conflicts { limit, reply })
     }
 
-    /// Puts one back as a new edit.
-    pub fn restore_conflict(&self, seq: i64) -> Result<(), StorageError> {
-        self.request(|reply| Request::RestoreConflict { seq, reply })
+    /// Which sibling a node claims to follow, and when it said so.
+    pub fn place_claim(&self, id: &str) -> Result<Option<(String, String)>, StorageError> {
+        self.request(|reply| Request::PlaceClaim {
+            id: id.to_owned(),
+            reply,
+        })
+    }
+
+    /// What one of them said, for whoever is putting it back.
+    pub fn conflict_loser(&self, seq: i64) -> Result<Option<(String, String)>, StorageError> {
+        self.request(|reply| Request::ConflictLoser { seq, reply })
     }
 
     pub fn revision(&self) -> Result<u64, StorageError> {
@@ -320,9 +332,21 @@ impl SqliteStorage {
                         Request::Conflicts { limit, reply } => {
                             let _ = reply.send(crate::sync_merge::conflicts(&connection, limit));
                         }
-                        Request::RestoreConflict { seq, reply } => {
-                            let _ = reply
-                                .send(crate::sync_merge::restore_conflict(&mut connection, seq));
+                        Request::PlaceClaim { id, reply } => {
+                            let _ = reply.send(
+                                connection
+                                    .query_row(
+                                        "SELECT sync_prev, sync_prev_hlc FROM notes_nodes
+                                         WHERE id = ?1",
+                                        [&id],
+                                        |row| Ok((row.get(0)?, row.get(1)?)),
+                                    )
+                                    .optional()
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
+                        }
+                        Request::ConflictLoser { seq, reply } => {
+                            let _ = reply.send(crate::sync_merge::conflict_loser(&connection, seq));
                         }
                         Request::Revision { reply } => {
                             let _ = reply.send(repository::revision(&connection));

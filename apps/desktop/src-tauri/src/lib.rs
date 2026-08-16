@@ -269,10 +269,20 @@ async fn notes_sync_restore_conflict(
 ) -> Result<(), NotesError> {
     let gate = Arc::clone(&state.runtime);
     run_blocking(move || {
-        gate.wait()?
+        let runtime = gate.wait()?;
+        let (node_id, text) = runtime
             .storage
-            .restore_conflict(seq)
-            .map_err(NotesError::from)
+            .conflict_loser(seq)
+            .map_err(NotesError::from)?
+            .ok_or_else(|| NotesError {
+                code: NotesErrorCode::InvalidCommand,
+                message: "That note is no longer in the list.".to_owned(),
+                retryable: false,
+            })?;
+        // Through the service, so this session learns the revision it moved —
+        // a bypass would leave every later edit failing until a restart.
+        runtime.service.restore_conflict(&node_id, &text)?;
+        Ok(())
     })
     .await
 }

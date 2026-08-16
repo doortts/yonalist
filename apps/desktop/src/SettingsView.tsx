@@ -196,6 +196,7 @@ function OverwrittenNotesSection({
 }) {
   const [conflicts, setConflicts] = useState<readonly SyncConflict[]>([]);
   const [busy, setBusy] = useState(false);
+  const [restored, setRestored] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
@@ -215,6 +216,9 @@ function OverwrittenNotesSection({
     setError(null);
     try {
       await restoreConflict(seq);
+      // The row stays: the list is a record of what happened, not a queue that
+      // empties. So the write has to announce itself.
+      setRestored(seq);
       await reload();
     } catch (cause) {
       setError(messageFrom(cause));
@@ -236,18 +240,22 @@ function OverwrittenNotesSection({
       {error && <p className="notes-inline-error" role="alert">{error}</p>}
       <p className="settings-copy">
         When two devices changed the same note, one version had to win. The
-        other one is here, and putting it back counts as a new edit.
+        text the other one had is kept here — putting it back writes that text
+        again as a new edit, and it travels to your other devices from there.
       </p>
       <ul className="settings-conflict-list">
         {conflicts.map((conflict) => (
           <li key={conflict.seq}>
             <span className="settings-conflict-text">{conflict.text}</span>
+            {restored === conflict.seq && (
+              <span role="status" className="settings-copy">Put back</span>
+            )}
             <button
               type="button"
               disabled={busy}
               onClick={() => void restore(conflict.seq)}
             >
-              Restore this note
+              Put this text back
             </button>
           </li>
         ))}

@@ -12,7 +12,7 @@ use notes_application::{StorageError, SyncConflict};
 use notes_sync::document::VaultFile;
 use notes_sync::hlc::Clock;
 use notes_sync::merger::{MergeInput, MergeOutcome, merge_document};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 pub(crate) fn merge(
     connection: &mut Connection,
@@ -73,6 +73,14 @@ pub(crate) fn conflicts(
     connection: &Connection,
     limit: u32,
 ) -> Result<Vec<SyncConflict>, StorageError> {
+    // Age is swept here too: a vault that stops having disagreements would
+    // otherwise keep the last ones forever.
+    connection
+        .execute(
+            "DELETE FROM sync_conflict_log WHERE recorded_at < unixepoch() - ?1",
+            [MAX_CONFLICT_AGE_SECONDS],
+        )
+        .map_err(internal)?;
     let mut statement = connection
         .prepare(
             "SELECT seq, node_id, loser_json, recorded_at FROM sync_conflict_log
@@ -114,50 +122,35 @@ pub(crate) fn conflicts(
     Ok(out)
 }
 
-/// Puts a defeated state back as a new edit rather than as a rewind: it takes a
-/// fresh stamp and travels like anything the user types, which is the only way
-/// the other devices ever learn about it.
-pub(crate) fn restore_conflict(connection: &mut Connection, seq: i64) -> Result<(), StorageError> {
-    let transaction = connection
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(internal)?;
-    let (node_id, loser_json): (String, String) = transaction
+/// What a defeat said, for whoever is putting it back. The write itself is not
+/// this crate's to make: a restore is an edit, and an edit that moved the
+/// revision without telling the session would leave every later one failing.
+pub(crate) fn conflict_loser(
+    connection: &Connection,
+    seq: i64,
+) -> Result<Option<(String, String)>, StorageError> {
+    let row: Option<(String, String)> = connection
         .query_row(
             "SELECT node_id, loser_json FROM sync_conflict_log WHERE seq = ?1",
             [seq],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
+        .optional()
         .map_err(internal)?;
+    let Some((node_id, loser_json)) = row else {
+        return Ok(None);
+    };
     let loser: serde_json::Value = serde_json::from_str(&loser_json).map_err(|error| {
         StorageError::Internal(format!("a recorded defeat is not readable: {error}"))
     })?;
-    let text = loser
-        .get("text")
-        .and_then(|value| value.as_str())
-        .unwrap_or_default();
-    // No stamp is written: leaving the row's own alone lets the stamping
-    // trigger issue a fresh one, which is what makes this an edit.
-    transaction
-        .execute(
-            "UPDATE notes_nodes SET text = ?2 WHERE id = ?1",
-            rusqlite::params![node_id, text],
-        )
-        .map_err(internal)?;
-    let revision: i64 = transaction
-        .query_row(
-            "SELECT revision FROM notes_meta WHERE singleton = 1",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(internal)?;
-    transaction
-        .execute(
-            "UPDATE notes_meta SET revision = ?1 WHERE singleton = 1",
-            [revision + 1],
-        )
-        .map_err(internal)?;
-    transaction.commit().map_err(internal)?;
-    Ok(())
+    Ok(Some((
+        node_id,
+        loser
+            .get("text")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_owned(),
+    )))
 }
 
 /// Trimmed after every merge that recorded something, so the bound is kept by
@@ -171,7 +164,7 @@ fn prune_conflicts(transaction: &rusqlite::Transaction<'_>) -> Result<(), Storag
                     SELECT seq FROM sync_conflict_log
                     ORDER BY seq DESC LIMIT 1 OFFSET ?2
                 )",
-            rusqlite::params![MAX_CONFLICT_AGE_SECONDS, MAX_CONFLICTS as i64 - 1],
+            rusqlite::params![MAX_CONFLICT_AGE_SECONDS, MAX_CONFLICTS as i64],
         )
         .map_err(internal)?;
     Ok(())

@@ -318,8 +318,15 @@ fn apply(
         // moment this merge ends.
         if !matches!(verdict, Verdict::Write)
             && let Some((prev, claim_stamp)) = &place
+            && row
+                .is_none_or(|row| (row.prev.as_str(), row.prev_hlc.as_str()) != (prev, claim_stamp))
         {
             write_place(transaction, &entry.id, prev, claim_stamp)?;
+            // A place adoption rewrites sibling keys, so the caller has rows to
+            // rebuild and a revision to move: reporting nothing would leave the
+            // ordering column stale and every open session none the wiser.
+            outcome.applied += 1;
+            outcome.changed_ids.insert(entry.id.clone());
         }
         match verdict {
             Verdict::Skip => {}

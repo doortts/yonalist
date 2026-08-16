@@ -270,10 +270,11 @@ fn conflicts_page_returns_recorded_losers() {
     assert!(entry.recorded_at > 0, "the screen shows when it happened");
 }
 
-/// Restoring is a new edit, not a rewind: it takes a fresh stamp and travels
-/// like anything else the user types.
+/// The row keeps everything whoever puts it back will need. Making the write
+/// is not this layer's job — a restore is an edit, and it goes the way edits
+/// go.
 #[test]
-fn restoring_a_conflict_reapplies_the_loser_as_a_new_edit() {
+fn a_recorded_defeat_can_be_read_back_for_restoring() {
     let (_directory, storage) = storage();
     storage
         .merge_document(&page("Winner", &stamp(9)), &input())
@@ -282,22 +283,18 @@ fn restoring_a_conflict_reapplies_the_loser_as_a_new_edit() {
         .merge_document(&page("Loser", &stamp(5)), &input())
         .expect("stale");
     let entry = storage.sync_conflicts(10).expect("conflicts")[0].clone();
-    let revision = storage.revision().expect("revision");
 
-    storage.restore_conflict(entry.seq).expect("restore");
+    let (node_id, text) = storage
+        .conflict_loser(entry.seq)
+        .expect("loser")
+        .expect("the defeat is still there");
 
+    assert_eq!(node_id, entry.node_id);
+    assert_eq!(text, "Loser");
     assert_eq!(
-        storage
-            .node(NODE_ID)
-            .expect("node")
-            .expect("the node")
-            .text(),
-        "Loser",
-        "the defeated text is back"
-    );
-    assert!(
-        storage.revision().expect("revision") > revision,
-        "and it is a write like any other"
+        storage.conflict_loser(9_999).expect("missing"),
+        None,
+        "and one that is gone says so rather than pretending"
     );
 }
 
@@ -315,14 +312,15 @@ fn the_log_is_pruned_past_its_retention_count() {
 
     let kept = storage.sync_conflicts(5_000).expect("conflicts");
 
-    assert!(
-        kept.len() <= 1_000,
-        "an unbounded audit log eventually costs more than it is worth: {}",
-        kept.len()
+    assert_eq!(
+        kept.len(),
+        1_000,
+        "the bound is a thousand — not fewer, or the log forgets more than it was asked to"
     );
-    assert!(
-        kept.iter().any(|entry| entry.text == "Loser 1099"),
-        "and what it drops is the oldest, not the newest"
+    assert_eq!(
+        kept.first().map(|entry| entry.text.as_str()),
+        Some("Loser 1099"),
+        "newest first: the screen shows the most recent defeats, not the oldest"
     );
 }
 
@@ -356,5 +354,84 @@ fn the_log_is_pruned_past_its_retention_age() {
     assert!(
         kept.iter().all(|entry| entry.text != "Loser"),
         "a defeat nobody looked at in six months is not worth keeping"
+    );
+}
+
+/// A text edit must not promote a node's place claim. If it did, editing a note
+/// here would beat a move another device made a moment earlier — and that
+/// promoted claim would then win everywhere.
+#[test]
+fn a_text_edit_leaves_the_place_claim_where_it_was() {
+    let (_directory, storage) = storage();
+    let first = "8a201f33-0000-4c91-8d02-000000000001";
+    let second = "8a201f33-0000-4c91-8d02-000000000002";
+    let seeded = stamp(5);
+    let mut document = match page("One", &seeded) {
+        VaultFile::Page(page) => page,
+        VaultFile::Trash(_) => unreachable!(),
+    };
+    document.nodes = vec![node(first, &seeded, "One"), node(second, &seeded, "Two")];
+    storage
+        .merge_document(&VaultFile::Page(document), &input())
+        .expect("seed");
+    let before = claim_of(&storage, second);
+
+    let command = NotesCommand::UpdateText {
+        id: notes_core::NodeId::try_from(second.to_owned()).expect("id"),
+        text: "edited here".to_owned(),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    let revision = storage.revision().expect("revision");
+    storage.commit(revision, &patch).expect("edit");
+
+    assert_eq!(
+        claim_of(&storage, second),
+        before,
+        "the node did not move, so nothing about where it sits was decided"
+    );
+}
+
+fn claim_of(storage: &SqliteStorage, id: &str) -> (String, String) {
+    storage.place_claim(id).expect("claim").expect("the node")
+}
+
+/// A file can be behind on the text and still be the one that knows where a
+/// node moved to. That adoption rewrites sibling keys, so it is a write: the
+/// derived paths the viewport orders by have to be rebuilt and open sessions
+/// have to learn the revision moved.
+#[test]
+fn adopting_only_a_place_still_counts_as_a_write() {
+    let (_directory, storage) = storage();
+    let first = "8a201f33-0000-4c91-8d02-000000000001";
+    let second = "8a201f33-0000-4c91-8d02-000000000002";
+    let seeded = stamp(5);
+    let mut document = match page("One", &seeded) {
+        VaultFile::Page(page) => page,
+        VaultFile::Trash(_) => unreachable!(),
+    };
+    document.nodes = vec![node(first, &seeded, "One"), node(second, &seeded, "Two")];
+    storage
+        .merge_document(&VaultFile::Page(document.clone()), &input())
+        .expect("seed");
+    let revision = storage.revision().expect("revision");
+
+    // Same text, same stamps — only the claim moved, and later than what the
+    // rows hold.
+    let mut moved = document;
+    let at = stamp(11);
+    moved.nodes[1].place = Some((String::new(), at.clone()));
+    moved.nodes[0].place = Some((second.to_owned(), at.clone()));
+    let outcome = storage
+        .merge_document(&VaultFile::Page(moved), &input())
+        .expect("merge");
+
+    assert!(
+        outcome.applied > 0,
+        "rows moved, so the merge cannot report that nothing happened"
+    );
+    assert!(
+        storage.revision().expect("revision") > revision,
+        "and every open session has to learn it"
     );
 }
