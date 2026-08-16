@@ -727,6 +727,40 @@ fn an_arriving_attachment_resolves_the_rows_waiting_for_it() {
     );
 }
 
+/// The same picture pasted onto two lines leaves two rows waiting for one
+/// file, and both stop waiting when it lands. A window told about only the
+/// first draws a placeholder over the second until it is restarted.
+#[test]
+fn every_row_waiting_for_the_same_picture_is_named() {
+    const TWIN_NODE_ID: &str = "8a201f33-0000-4c91-8d02-00000000000e";
+    let (_directory, storage) = storage();
+    let mut file = page_with_image("holiday-9f2c1b7a4e6d.png");
+    let VaultFile::Page(document) = &mut file else {
+        panic!("a page");
+    };
+    // The same line twice: one picture, one link, two notes showing it.
+    let twin = DocumentNode {
+        id: TWIN_NODE_ID.to_owned(),
+        ..document.nodes[0].clone()
+    };
+    document.nodes.push(twin);
+    storage.merge_document(&file, &input()).expect("merge");
+
+    let resolved = storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
+        )
+        .expect("resolve");
+
+    assert_eq!(
+        resolved,
+        std::collections::BTreeSet::from([IMAGE_NODE_ID.to_owned(), TWIN_NODE_ID.to_owned()]),
+        "both notes were waiting for this file, so both have to be named"
+    );
+}
+
 /// The name carries the first twelve characters of the content hash, so bytes
 /// that do not hash to it are not the bytes that line is about — whatever the
 /// file is called.
