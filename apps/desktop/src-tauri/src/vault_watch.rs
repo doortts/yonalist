@@ -177,10 +177,17 @@ fn run(
                     changed(outcome);
                 }
             } else {
-                // An attachment. Nothing in the outline moved, so the window is
-                // not told: what changed is that a picture it already knows
-                // about can be shown.
-                take_asset(storage, assets, vault_root, &relative);
+                // An attachment. Nothing in the outline moved, but the notes
+                // that were waiting for these bytes are drawing a placeholder
+                // over a picture this device now has, and this is the only
+                // thing that tells the window otherwise.
+                let resolved = take_asset(storage, assets, vault_root, &relative);
+                if resolved > 0 {
+                    changed(MergeOutcome {
+                        applied: resolved,
+                        ..MergeOutcome::default()
+                    });
+                }
             }
             queue.finished(&relative);
         }
@@ -274,28 +281,29 @@ fn modified_millis(facts: &std::fs::Metadata) -> Option<i64> {
 
 /// The bytes for a picture a note is waiting on. Copied into this app's own
 /// store, which is where every reader of an image looks — the vault's copy is
-/// the one the user can take away, not the one the app reads.
+/// the one the user can take away, not the one the app reads. Answers how many
+/// notes were waiting for them, which is how many are drawn differently now.
 fn take_asset(
     storage: &SqliteStorage,
     assets: &LocalImageAssets,
     vault_root: &Path,
     relative: &str,
-) {
+) -> usize {
     let Some(disk_name) = relative.rsplit('/').next().map(str::to_owned) else {
-        return;
+        return 0;
     };
     // The same echo gate the documents get. Without it the sweep decodes every
     // picture in the vault once a minute, for ever — including the ones this
     // app wrote there itself.
     if storage.asset_known(relative).unwrap_or(false) {
-        return;
+        return 0;
     }
     let Ok(bytes) = notes_sync::file_io::read_regular_bounded(
         vault_root,
         &vault_root.join(relative),
         notes_sync::parse::MAX_ASSET_BYTES as usize,
     ) else {
-        return;
+        return 0;
     };
     // Through the store's own import, so the bytes are decoded and checked
     // rather than trusted: what is written here is read back as an image.
@@ -305,18 +313,19 @@ fn take_asset(
         declared_mime_type: None,
         source: ImageSource::Bytes(bytes),
     }]) else {
-        return;
+        return 0;
     };
     let Some(first) = published.first() else {
-        return;
+        return 0;
     };
-    if storage
-        .resolve_asset(&disk_name, first.image.content_hash(), relative)
-        .is_err()
-    {
-        // The bytes are in the store either way; the rows waiting for them are
-        // tried again on the next sweep.
-        assets.rollback(&published);
+    match storage.resolve_asset(&disk_name, first.image.content_hash(), relative) {
+        Ok(resolved) => resolved,
+        Err(_) => {
+            // The bytes are in the store either way; the rows waiting for them
+            // are tried again on the next sweep.
+            assets.rollback(&published);
+            0
+        }
     }
 }
 
@@ -541,5 +550,119 @@ mod tests {
             "the thread cannot end itself: the events it waits on come from a \
              sender its own subscription holds"
         );
+    }
+
+    /// A 1x1 PNG, and the SHA-256 the store will compute for exactly these
+    /// bytes — which is what the vault's own name for the file has to carry.
+    const SHOT: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+        0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8,
+        0xcf, 0xc0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0xf7, 0x03, 0x41, 0x43, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    const SHOT_NAME: &str = "shot-2e9b06dc65a4.png";
+
+    /// iCloud usually brings a page's text down before its pictures, so the
+    /// note is drawn with a placeholder and the bytes land a moment later.
+    /// Nothing in the outline moved, but what the window is showing is now
+    /// wrong — and if nobody tells it, the placeholder stays until a restart.
+    #[test]
+    fn an_arriving_picture_wakes_the_window() {
+        let home = tempfile::tempdir().expect("home");
+        let storage = Arc::new(
+            notes_sqlite::SqliteStorage::open(&home.path().join("notes.sqlite")).expect("open"),
+        );
+        let assets = Arc::new(
+            notes_sqlite::LocalImageAssets::open(&home.path().join("images")).expect("store"),
+        );
+        let vault = home.path().join("vault");
+        std::fs::create_dir_all(&vault).expect("vault");
+        // The events name the real path, and on macOS a temporary folder is
+        // reached through a symlink — a watch rooted at the unresolved one
+        // recognises nothing it is told about.
+        let vault = std::fs::canonicalize(&vault).expect("the folder's real path");
+        storage
+            .export_pending(&vault, &home.path().join("images"))
+            .expect("export");
+        storage
+            .merge_document(&waiting_picture(), &picture_input())
+            .expect("a note waiting for its picture");
+
+        let (told, changes) = std::sync::mpsc::channel();
+        // The sweep stays at its real interval: a sweep shorter than the quiet
+        // window re-reports the picture before it has been still long enough,
+        // and it never comes off the queue. The boot scan runs at once anyway,
+        // and the bytes arrive by event.
+        let _watch = VaultWatch::start(storage, assets, vault.clone(), move |_| {
+            let _ = told.send(());
+        })
+        .expect("watch");
+        // Let the boot scan finish first, so what wakes the window afterwards
+        // can only be the picture.
+        std::thread::sleep(Duration::from_millis(1_500));
+        while changes.try_recv().is_ok() {}
+        std::fs::create_dir_all(vault.join("assets")).expect("assets");
+        std::fs::write(vault.join("assets").join(SHOT_NAME), SHOT).expect("the bytes");
+
+        assert!(
+            changes.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "the note is still drawing a placeholder over a picture it has"
+        );
+    }
+
+    /// A note whose picture has not arrived: the row holds the link the file
+    /// used and no hash, which is the state the attachment resolves.
+    fn waiting_picture() -> notes_sync::document::VaultFile {
+        use notes_sync::document::{
+            DocumentId, DocumentNode, DocumentRoot, ImageReference, Marker, NodeBody, PageDocument,
+            VaultFile,
+        };
+        let hlc = notes_sync::hlc::Hlc::new(5, 0, "a3f2")
+            .expect("hlc")
+            .encode();
+        VaultFile::Page(PageDocument {
+            id: DocumentId::Node("4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1".to_owned()),
+            parent: None,
+            sort_key: None,
+            max_hlc: hlc.clone(),
+            root: DocumentRoot {
+                title: "Projects".to_owned(),
+                hlc: hlc.clone(),
+                ..DocumentRoot::default()
+            },
+            nodes: vec![DocumentNode {
+                id: "8a201f33-0000-4c91-8d02-00000000000f".to_owned(),
+                hlc,
+                body: NodeBody::Image(ImageReference {
+                    original_name: "shot.png".to_owned(),
+                    path: format!("assets/{SHOT_NAME}"),
+                    display_width: 480,
+                    pixel_width: 1,
+                    pixel_height: 1,
+                    byte_size: 69,
+                    unknown_tokens: Vec::new(),
+                }),
+                note: String::new(),
+                marker: Marker::Bullet,
+                collapsed: false,
+                completed: false,
+                starred: false,
+                from: None,
+                place: None,
+                unknown_tokens: Vec::new(),
+                children: Vec::new(),
+            }],
+            unknown_frontmatter: Vec::new(),
+        })
+    }
+
+    fn picture_input() -> notes_sync::merger::MergeInput {
+        notes_sync::merger::MergeInput {
+            file_path: "Projects-4f1c8e20a3b7/README.md".to_owned(),
+            file_hash: "a".repeat(64),
+            file_mtime_ms: Some(1_700_000_000_000),
+            file_size: Some(256),
+        }
     }
 }
