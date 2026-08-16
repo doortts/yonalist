@@ -245,3 +245,116 @@ fn order_of_children(storage: &SqliteStorage, parent: &str) -> Vec<String> {
         .map(|node| node.id)
         .collect()
 }
+
+/// The settings screen reads defeats from here and restores one by re-applying
+/// it. Everything it needs has to be in the row, because by then the file that
+/// lost is long gone.
+#[test]
+fn conflicts_page_returns_recorded_losers() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page("Winner", &stamp(9)), &input())
+        .expect("seed");
+    storage
+        .merge_document(&page("Loser", &stamp(5)), &input())
+        .expect("stale");
+
+    let page_of_losers = storage.sync_conflicts(10).expect("conflicts");
+
+    let entry = page_of_losers
+        .iter()
+        .find(|conflict| conflict.node_id == NODE_ID)
+        .expect("the defeat was kept");
+    assert_eq!(entry.text, "Loser");
+    assert_eq!(entry.reason, "lww");
+    assert!(entry.recorded_at > 0, "the screen shows when it happened");
+}
+
+/// Restoring is a new edit, not a rewind: it takes a fresh stamp and travels
+/// like anything else the user types.
+#[test]
+fn restoring_a_conflict_reapplies_the_loser_as_a_new_edit() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page("Winner", &stamp(9)), &input())
+        .expect("seed");
+    storage
+        .merge_document(&page("Loser", &stamp(5)), &input())
+        .expect("stale");
+    let entry = storage.sync_conflicts(10).expect("conflicts")[0].clone();
+    let revision = storage.revision().expect("revision");
+
+    storage.restore_conflict(entry.seq).expect("restore");
+
+    assert_eq!(
+        storage
+            .node(NODE_ID)
+            .expect("node")
+            .expect("the node")
+            .text(),
+        "Loser",
+        "the defeated text is back"
+    );
+    assert!(
+        storage.revision().expect("revision") > revision,
+        "and it is a write like any other"
+    );
+}
+
+#[test]
+fn the_log_is_pruned_past_its_retention_count() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page("Winner", &stamp(4000)), &input())
+        .expect("seed");
+    for millis in 1..1_100u64 {
+        storage
+            .merge_document(&page(&format!("Loser {millis}"), &stamp(millis)), &input())
+            .expect("stale");
+    }
+
+    let kept = storage.sync_conflicts(5_000).expect("conflicts");
+
+    assert!(
+        kept.len() <= 1_000,
+        "an unbounded audit log eventually costs more than it is worth: {}",
+        kept.len()
+    );
+    assert!(
+        kept.iter().any(|entry| entry.text == "Loser 1099"),
+        "and what it drops is the oldest, not the newest"
+    );
+}
+
+#[test]
+fn the_log_is_pruned_past_its_retention_age() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("notes.sqlite");
+    let storage = SqliteStorage::open(&path).expect("open");
+    storage
+        .merge_document(&page("Winner", &stamp(9)), &input())
+        .expect("seed");
+    storage
+        .merge_document(&page("Loser", &stamp(5)), &input())
+        .expect("stale");
+    // Six months pass, as far as the log is concerned. A second connection is
+    // the honest way to say that here: nothing in the app moves a clock, and
+    // the test is simulating time rather than bypassing the worker.
+    rusqlite::Connection::open(&path)
+        .expect("open")
+        .execute(
+            "UPDATE sync_conflict_log SET recorded_at = recorded_at - ?1",
+            [200 * 24 * 60 * 60],
+        )
+        .expect("age");
+
+    storage
+        .merge_document(&page("Loser again", &stamp(6)), &input())
+        .expect("stale");
+
+    let kept = storage.sync_conflicts(10).expect("conflicts");
+    assert!(
+        kept.iter().all(|entry| entry.text != "Loser"),
+        "a defeat nobody looked at in six months is not worth keeping"
+    );
+}

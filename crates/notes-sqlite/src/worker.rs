@@ -39,6 +39,14 @@ enum Request {
         input: Box<notes_sync::merger::MergeInput>,
         reply: SyncSender<Result<notes_sync::merger::MergeOutcome, StorageError>>,
     },
+    Conflicts {
+        limit: u32,
+        reply: SyncSender<Result<Vec<notes_application::SyncConflict>, StorageError>>,
+    },
+    RestoreConflict {
+        seq: i64,
+        reply: SyncSender<Result<(), StorageError>>,
+    },
     Revision {
         reply: SyncSender<Result<u64, StorageError>>,
     },
@@ -156,6 +164,19 @@ impl SqliteStorage {
             id: id.to_owned(),
             reply,
         })
+    }
+
+    /// The defeats this vault has recorded, newest first.
+    pub fn sync_conflicts(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<notes_application::SyncConflict>, StorageError> {
+        self.request(|reply| Request::Conflicts { limit, reply })
+    }
+
+    /// Puts one back as a new edit.
+    pub fn restore_conflict(&self, seq: i64) -> Result<(), StorageError> {
+        self.request(|reply| Request::RestoreConflict { seq, reply })
     }
 
     pub fn revision(&self) -> Result<u64, StorageError> {
@@ -295,6 +316,13 @@ impl SqliteStorage {
                                 &file,
                                 &input,
                             ));
+                        }
+                        Request::Conflicts { limit, reply } => {
+                            let _ = reply.send(crate::sync_merge::conflicts(&connection, limit));
+                        }
+                        Request::RestoreConflict { seq, reply } => {
+                            let _ = reply
+                                .send(crate::sync_merge::restore_conflict(&mut connection, seq));
                         }
                         Request::Revision { reply } => {
                             let _ = reply.send(repository::revision(&connection));

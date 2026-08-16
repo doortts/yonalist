@@ -14,6 +14,7 @@ notes-application.workspace = true
 notes-core.workspace = true
 notes-sync.workspace = true
 rusqlite.workspace = true
+serde_json = "1"
 sha2 = "0.10"
 thiserror.workspace = true
 unicode-normalization = "0.1.25"
