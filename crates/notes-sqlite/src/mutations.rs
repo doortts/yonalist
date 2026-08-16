@@ -320,16 +320,22 @@ fn record_place_claims(
     for parent in parents {
         transaction
             .execute(
+                // Only the rows whose claim actually changed — which for one
+                // move is the row itself and whoever now follows it, not every
+                // sibling it happens to have. Writing them all made an append
+                // cost the length of the page, twice over: once for the write
+                // and once for the lookup inside it.
                 "WITH ordered AS (
-                     SELECT id, lag(id) OVER (ORDER BY sort_key, id) AS previous
+                     SELECT id, coalesce(lag(id) OVER (ORDER BY sort_key, id), '') AS previous
                      FROM notes_nodes
                      WHERE parent_id = ?1 AND deleted = 0
                  )
                  UPDATE notes_nodes SET
-                     sync_prev = coalesce(
-                         (SELECT previous FROM ordered WHERE ordered.id = notes_nodes.id), ''),
+                     sync_prev = ordered.previous,
                      sync_prev_hlc = ?2
-                 WHERE id IN (SELECT id FROM ordered)",
+                 FROM ordered
+                 WHERE notes_nodes.id = ordered.id
+                   AND notes_nodes.sync_prev IS NOT ordered.previous",
                 rusqlite::params![parent, at],
             )
             .map_err(internal)?;

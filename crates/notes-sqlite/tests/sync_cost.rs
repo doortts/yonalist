@@ -201,6 +201,68 @@ fn one_edit_rewrites_one_document() {
     );
 }
 
+/// Adding a bullet to a page costs the same whether the page holds ten notes
+/// or ten thousand. It did not: every sibling's place claim was rewritten on
+/// every insert, and the lookup inside that write scanned the page again for
+/// each row — so an append cost the length of the page twice over.
+#[test]
+fn adding_a_note_costs_the_same_whatever_else_is_on_the_page() {
+    let mut written = Vec::new();
+    for siblings in [40usize, 160] {
+        let workspace = workspace();
+        let page = {
+            let session = "session".to_owned();
+            let id = uuid::Uuid::new_v4().hyphenated().to_string();
+            let revision = workspace.storage.revision().expect("revision");
+            NotesService::new(&workspace.storage, session.clone(), revision)
+                .execute(CommandEnvelope {
+                    session_id: session,
+                    request_id: "page".to_owned(),
+                    base_revision: revision,
+                    history_group: None,
+                    command: IpcNotesCommand::CreateNode {
+                        id: id.clone(),
+                        parent_id: "root".to_owned(),
+                        before_id: None,
+                        text: "Long page".to_owned(),
+                    },
+                })
+                .expect("page");
+            id
+        };
+        for index in 0..siblings {
+            add(&workspace, &page, index);
+        }
+        let before = workspace.rows_written();
+        add(&workspace, &page, siblings);
+        written.push(workspace.rows_written() - before);
+    }
+
+    assert!(
+        written[1] <= written[0] * 2,
+        "four times the page, four times the writing: {written:?}"
+    );
+}
+
+fn add(workspace: &Workspace, parent: &str, index: usize) {
+    let session = "session".to_owned();
+    let revision = workspace.storage.revision().expect("revision");
+    NotesService::new(&workspace.storage, session.clone(), revision)
+        .execute(CommandEnvelope {
+            session_id: session,
+            request_id: format!("bullet-{index}"),
+            base_revision: revision,
+            history_group: None,
+            command: IpcNotesCommand::CreateNode {
+                id: uuid::Uuid::new_v4().hyphenated().to_string(),
+                parent_id: parent.to_owned(),
+                before_id: None,
+                text: format!("Bullet {index}"),
+            },
+        })
+        .expect("bullet");
+}
+
 /// A document arriving again unchanged — the same bytes a second device keeps
 /// handing over — is read and dropped. Applying it would restamp rows and
 /// send it back, and the two devices would trade the same file for ever.
