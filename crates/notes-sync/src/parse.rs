@@ -618,6 +618,15 @@ fn read_image(body: &str) -> Result<ImageReference, Quarantine> {
     ) {
         return Err(format!("`{path}` is not an image type this format writes."));
     }
+    // Every markdown editor writes `![](…)`, and a picture with no name has no
+    // metadata a row can be built from — the note would draw a placeholder
+    // over bytes it has. What the file is called is the answer the file
+    // already gave, and this is the boundary that answers for the format.
+    let name = if name.is_empty() {
+        path.rsplit('/').next().unwrap_or_default().to_owned()
+    } else {
+        name
+    };
     Ok(ImageReference {
         original_name: name,
         path,
