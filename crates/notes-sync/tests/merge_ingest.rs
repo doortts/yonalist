@@ -1245,6 +1245,113 @@ fn a_cycle_parks_the_same_node_for_the_same_input() {
     );
 }
 
+/// Adopting what another device decided is not a local edit: the file already
+/// states it. The row's own mark is taken back — and so is the mark the
+/// trigger mints for the file that holds it, or a merge leaves the queue with
+/// work nothing will ever write, which is what blocks a reindex for good.
+#[test]
+fn adopting_another_devices_decision_leaves_the_queue_as_it_found_it() {
+    let node_id = "8a201f33-0000-4c91-8d02-000000000001";
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let seeded = stamp(5, "a3f2");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(node_id, &seeded, "First")],
+            &seeded,
+        )),
+        &input(),
+    )
+    .expect("seed");
+    transaction
+        .execute("DELETE FROM sync_dirty_nodes", ())
+        .expect("clear");
+
+    // The same reading, a different word: what another device wrote at a
+    // stamp this one already holds.
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(node_id, &seeded, "Second")],
+            &seeded,
+        )),
+        &input(),
+    )
+    .expect("merge");
+
+    let waiting: i64 = transaction
+        .query_row("SELECT COUNT(*) FROM sync_dirty_nodes", [], |row| {
+            row.get(0)
+        })
+        .expect("dirty");
+    assert_eq!(waiting, 0, "the file this came from already says all of it");
+}
+
+/// A rescue that no file states is a rescue nobody else ever sees — and on the
+/// device that did it, a reindex from the vault would take the node away
+/// again. The recovery page, the node put under it, and home all owe a write.
+#[test]
+fn a_rescued_node_and_the_page_holding_it_owe_a_file() {
+    let first = "8a201f33-0000-4c91-8d02-000000000001";
+    let second = "8a201f33-0000-4c91-8d02-000000000002";
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let seeded = stamp(5, "a3f2");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![
+                node(first, &seeded, "First"),
+                node(second, &seeded, "Second"),
+            ],
+            &seeded,
+        )),
+        &input(),
+    )
+    .expect("seed");
+    for (child, parent, mark) in [
+        (second, first, stamp(9, "a3f2")),
+        (first, second, stamp(11, "bbb2")),
+    ] {
+        transaction
+            .execute(
+                "UPDATE notes_nodes SET parent_id = ?2, hlc = ?3 WHERE id = ?1",
+                rusqlite::params![child, parent, mark],
+            )
+            .expect("close the ring");
+    }
+    transaction
+        .execute("DELETE FROM sync_dirty_nodes", ())
+        .expect("clear");
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(Vec::new(), &seeded)),
+        &input(),
+    )
+    .expect("merge");
+
+    let recovery = recovery_page(&transaction).expect("a recovery page was made");
+    for owed in [second, recovery.as_str(), "root"] {
+        let waiting: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+                [owed],
+                |row| row.get(0),
+            )
+            .expect("dirty");
+        assert_eq!(
+            waiting, 1,
+            "`{owed}` was rescued into a state no file states yet"
+        );
+    }
+}
+
 /// A deletion winning over a parent while an edit wins over its child leaves
 /// the child alive under a parent that is gone. It goes where the user can
 /// find it rather than staying invisible.

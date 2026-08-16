@@ -495,6 +495,12 @@ fn park(
         )
         .and_then(|mut statement| statement.execute(rusqlite::params![id, page, sort_key, stamp]))
         .map_err(|error| error.to_string())?;
+    // The stamping trigger cannot: this write carries its own reading, which
+    // is what tells it to keep out of the way. So the marks are made here — a
+    // rescue no file states is one no other device ever sees, and one this
+    // device would undo the moment it read the vault as the truth.
+    mark_dirty(transaction, id)?;
+    mark_dirty(transaction, page)?;
     outcome.applied += 1;
     outcome.changed_ids.insert(id.to_owned());
     outcome.needs_write_back = true;
@@ -543,6 +549,10 @@ fn recovery_page(
         )
         .and_then(|mut statement| statement.execute(rusqlite::params![id, i64::MAX / 2, stamp]))
         .map_err(|error| error.to_string())?;
+    // Same reason as `park`: the insert carries a reading, so nothing marks it
+    // for us. Home states every page, and this is a new one.
+    mark_dirty(transaction, &id)?;
+    mark_dirty(transaction, "root")?;
     *cached = Some(id.clone());
     Ok(id)
 }
@@ -1059,6 +1069,9 @@ fn write_row(
     row: Option<&Row>,
     place: Option<&(String, String)>,
 ) -> Result<(), MergeError> {
+    // Before the write, so a parent that was already waiting for something
+    // else is not counted as this write's doing.
+    let holder = undirty_holder(transaction, &entry.id)?;
     let (marker, ordered_start) = match entry.node.marker {
         Marker::Bullet => ("bullet", 1),
         Marker::Todo => ("todo", 1),
@@ -1189,11 +1202,9 @@ fn write_row(
         .map_err(|error| error.to_string())?;
     // Adopting what another device decided is not a local edit, so it leaves
     // nothing for the exporter to pick up — including whatever the trigger just
-    // marked on the way through.
-    transaction
-        .prepare_cached("DELETE FROM sync_dirty_nodes WHERE node_id = ?1")
-        .and_then(|mut statement| statement.execute([&entry.id]))
-        .map_err(|error| error.to_string())?;
+    // marked on the way through, which is the row *and* the file that holds it.
+    unmark(transaction, &entry.id)?;
+    unmark_holder(transaction, &entry.id, holder)?;
     Ok(())
 }
 
@@ -1263,6 +1274,7 @@ fn decide_place(
 /// marks it dirty. Both are put back, and a row that was already dirty stays
 /// dirty: that flag belongs to a local edit this has no business clearing.
 fn respace_sibling(transaction: &Transaction<'_>, id: &str, key: i64) -> Result<(), MergeError> {
+    let holder = undirty_holder(transaction, id)?;
     let (stamp, was_dirty): (String, bool) = transaction
         .prepare_cached(
             "SELECT n.hlc, d.node_id IS NOT NULL FROM notes_nodes n
@@ -1281,10 +1293,60 @@ fn respace_sibling(transaction: &Transaction<'_>, id: &str, key: i64) -> Result<
         .and_then(|mut statement| statement.execute(rusqlite::params![id, stamp]))
         .map_err(|error| error.to_string())?;
     if !was_dirty {
-        transaction
-            .prepare_cached("DELETE FROM sync_dirty_nodes WHERE node_id = ?1")
-            .and_then(|mut statement| statement.execute([id]))
-            .map_err(|error| error.to_string())?;
+        unmark(transaction, id)?;
+    }
+    // Respacing never moves a row out of its parent, so this always applies.
+    unmark_holder(transaction, id, holder)?;
+    Ok(())
+}
+
+fn unmark(transaction: &Transaction<'_>, id: &str) -> Result<(), MergeError> {
+    transaction
+        .prepare_cached("DELETE FROM sync_dirty_nodes WHERE node_id = ?1")
+        .and_then(|mut statement| statement.execute([id]))
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// The file that held this row before the write, if it owed nothing at the
+/// time. A parent already waiting is waiting for something else, and that is
+/// not this write's to take back.
+fn undirty_holder(transaction: &Transaction<'_>, id: &str) -> Result<Option<String>, MergeError> {
+    transaction
+        .prepare_cached(
+            "SELECT parent_id FROM notes_nodes
+             WHERE id = ?1 AND parent_id IS NOT NULL
+               AND parent_id NOT IN (SELECT node_id FROM sync_dirty_nodes)",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_row([id], |row| row.get::<_, String>(0))
+                .optional()
+        })
+        .map_err(|error| error.to_string())
+}
+
+/// Takes back the mark on the file that held this row, but only if the row is
+/// still in it. A row that moved leaves two files stating something untrue —
+/// the one it left still lists it — and both of those writes are owed.
+fn unmark_holder(
+    transaction: &Transaction<'_>,
+    id: &str,
+    before: Option<String>,
+) -> Result<(), MergeError> {
+    let Some(before) = before else {
+        return Ok(());
+    };
+    let still_there: bool = transaction
+        .prepare_cached("SELECT parent_id IS ?2 FROM notes_nodes WHERE id = ?1")
+        .and_then(|mut statement| {
+            statement.query_row(rusqlite::params![id, &before], |row| {
+                row.get::<_, i64>(0).map(|same| same == 1)
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    if still_there {
+        unmark(transaction, &before)?;
     }
     Ok(())
 }

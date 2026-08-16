@@ -187,6 +187,45 @@ fn moving_a_line_between_pages_queues_both_of_them() {
     );
 }
 
+/// The guard on the parent marks: a mark naming a row that is not there can
+/// never be resolved to a document, and a queue that cannot empty blocks the
+/// reindex for good. Foreign keys are off here because the rule under test is
+/// the trigger's own — it must not depend on something else having already
+/// made the case impossible.
+#[test]
+fn a_parent_that_is_not_there_is_not_queued() {
+    let (_directory, database) = workspace();
+    let _storage = SqliteStorage::open(&database).expect("open");
+    let page = seeded_page(&database);
+    let connection = writer(&database);
+    connection
+        .execute_batch("PRAGMA foreign_keys = OFF")
+        .expect("pragma");
+    connection
+        .execute("DELETE FROM sync_dirty_nodes", [])
+        .expect("clear");
+
+    connection
+        .execute(
+            "UPDATE notes_nodes SET parent_id = 'ghost' WHERE id = ?1",
+            [&page],
+        )
+        .expect("move");
+
+    let unresolvable: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sync_dirty_nodes d
+             WHERE NOT EXISTS (SELECT 1 FROM notes_nodes n WHERE n.id = d.node_id)",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(
+        unresolvable, 0,
+        "nothing can work out which file owes a write for a row that is not there"
+    );
+}
+
 /// Where a node sits is written in the file next to it, so a claim changing is
 /// a change to the file — but not to the node, which is why the stamping
 /// trigger deliberately ignores these columns.

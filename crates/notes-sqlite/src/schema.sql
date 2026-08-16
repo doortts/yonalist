@@ -179,11 +179,14 @@ BEGIN
   ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
   -- Both ends of a move: the file it left still states the line, and the
   -- file it arrived in does not state it yet.
+  -- Aliased and qualified on both sides: a bare `id` in the EXISTS would
+  -- resolve to `notes_nodes.id` and compare the row with itself, which is
+  -- true for every row and filters nothing.
   INSERT INTO sync_dirty_nodes(node_id, marked_at)
-  SELECT id, unixepoch() FROM (
+  SELECT ends.id, unixepoch() FROM (
       SELECT NEW.parent_id AS id UNION SELECT OLD.parent_id
-  ) WHERE id IS NOT NULL AND EXISTS (
-      SELECT 1 FROM notes_nodes WHERE notes_nodes.id = id
+  ) AS ends WHERE ends.id IS NOT NULL AND EXISTS (
+      SELECT 1 FROM notes_nodes WHERE notes_nodes.id = ends.id
   )
   ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
 END;
@@ -212,6 +215,9 @@ BEGIN
   INSERT INTO sync_dirty_nodes(node_id, marked_at)
   SELECT OLD.parent_id, unixepoch()
   WHERE OLD.parent_id IS NOT NULL AND EXISTS (
+      -- `OLD.parent_id` is unambiguous here, unlike the update trigger's
+      -- derived column: it names the row that left, not a column of the
+      -- table being searched.
       SELECT 1 FROM notes_nodes WHERE notes_nodes.id = OLD.parent_id
   )
   ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
