@@ -64,6 +64,37 @@ fn page(text: &str, hlc: &str) -> VaultFile {
     })
 }
 
+const IMAGE_NODE_ID: &str = "8a201f33-0000-4c91-8d02-00000000000f";
+
+/// A page whose one line is a picture, linked the way a document in a page
+/// folder links its own attachments.
+fn page_with_image(disk_name: &str) -> VaultFile {
+    let hlc = stamp(5);
+    let mut image = node(IMAGE_NODE_ID, &hlc, "");
+    image.body = NodeBody::Image(notes_sync::document::ImageReference {
+        original_name: "holiday.png".to_owned(),
+        path: format!("assets/{disk_name}"),
+        display_width: 480,
+        pixel_width: 800,
+        pixel_height: 600,
+        byte_size: 11,
+        unknown_tokens: Vec::new(),
+    });
+    VaultFile::Page(PageDocument {
+        id: DocumentId::Node(PAGE_ID.to_owned()),
+        parent: None,
+        sort_key: None,
+        max_hlc: hlc.clone(),
+        root: DocumentRoot {
+            title: "Projects".to_owned(),
+            hlc: hlc.clone(),
+            ..DocumentRoot::default()
+        },
+        nodes: vec![image],
+        unknown_frontmatter: Vec::new(),
+    })
+}
+
 fn input() -> MergeInput {
     MergeInput {
         file_path: "Projects-4f1c8e20a3b7/README.md".to_owned(),
@@ -658,6 +689,65 @@ fn one_document_that_cannot_be_written_does_not_stop_the_others() {
         "the documents that could be written were written"
     );
     assert!(vault.path().join("README.md").exists(), "home included");
+}
+
+/// A file can state an image before its bytes have travelled: the note applies
+/// with everything but the picture, and stays that way until the attachment
+/// turns up. When it does, the rows waiting for it are the ones whose link
+/// names it.
+#[test]
+fn an_arriving_attachment_resolves_the_rows_waiting_for_it() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .expect("merge");
+    let waiting: String = storage
+        .image_hash(IMAGE_NODE_ID)
+        .expect("row")
+        .expect("an image row");
+    assert_eq!(waiting, "", "the bytes have not arrived yet");
+
+    let resolved = storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
+        )
+        .expect("resolve");
+
+    assert_eq!(resolved, 1, "one row was waiting for these bytes");
+    assert_eq!(
+        storage.image_hash(IMAGE_NODE_ID).expect("row"),
+        Some("9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081".to_owned()),
+        "the note can show its picture now"
+    );
+}
+
+/// The name carries the first twelve characters of the content hash, so bytes
+/// that do not hash to it are not the bytes that line is about — whatever the
+/// file is called.
+#[test]
+fn bytes_that_do_not_match_the_name_resolve_nothing() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .expect("merge");
+
+    let resolved = storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        )
+        .expect("resolve");
+
+    assert_eq!(
+        resolved, 0,
+        "these are somebody else's bytes under our name"
+    );
+    assert_eq!(
+        storage.image_hash(IMAGE_NODE_ID).expect("row"),
+        Some(String::new()),
+        "and the row keeps waiting for the ones it asked for"
+    );
 }
 
 /// A reindex is the last net under the scan gate, so what it could not read

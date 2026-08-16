@@ -220,6 +220,51 @@ pub(crate) fn export_pending(
 /// Refused while this device is still holding edits it has not written out.
 /// A reindex treats the vault as the truth, and the vault does not yet know
 /// about those edits, so running it then would throw them away.
+/// An attachment's bytes arrived. Every image row still waiting for them —
+/// its link names this file and it has no hash of its own yet — learns the
+/// hash, and the app's own store is now where those bytes live.
+///
+/// The name carries the first twelve characters of the hash, so bytes that do
+/// not hash to it are not the bytes those lines are about, whatever the file
+/// is called. Nothing is resolved then: the rows go on waiting for the file
+/// they asked for.
+pub(crate) fn resolve_asset(
+    connection: &mut Connection,
+    disk_name: &str,
+    content_hash: &str,
+) -> Result<usize, StorageError> {
+    let Some((_, stated)) = disk_name.rsplit_once('-') else {
+        return Ok(0);
+    };
+    let stated = stated.split('.').next().unwrap_or_default();
+    if !content_hash.starts_with(stated) {
+        return Ok(0);
+    }
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(internal)?;
+    let resolved = transaction
+        .prepare_cached(
+            "UPDATE notes_images SET content_hash = ?2
+             WHERE content_hash = ''
+               -- The link's own file name, so a page's `assets/x.png` and the
+               -- root store's `../assets/x.png` are the same attachment.
+               AND (relative_path = ?1 OR relative_path LIKE '%/' || ?1)",
+        )
+        .and_then(|mut statement| statement.execute(rusqlite::params![disk_name, content_hash]))
+        .map_err(internal)?;
+    transaction
+        .prepare_cached(
+            "INSERT INTO sync_assets(content_hash, disk_name, location, unreferenced_at)
+             VALUES (?1, ?2, '', NULL)
+             ON CONFLICT(content_hash) DO UPDATE SET disk_name = excluded.disk_name",
+        )
+        .and_then(|mut statement| statement.execute(rusqlite::params![content_hash, disk_name]))
+        .map_err(internal)?;
+    transaction.commit().map_err(internal)?;
+    Ok(resolved)
+}
+
 /// What a reindex did, and what it could not do. The second number is the
 /// point: a net that silently drops what it cannot read reports the same
 /// "nothing changed" as one that read the whole vault.

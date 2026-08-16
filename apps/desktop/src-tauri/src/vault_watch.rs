@@ -11,7 +11,8 @@
 //! rule; this thread asks it for work and does not ask again until the answer
 //! comes back.
 
-use notes_sqlite::SqliteStorage;
+use notes_application::{ImageAssetPort, ImageImportSource, ImageSource};
+use notes_sqlite::{LocalImageAssets, SqliteStorage};
 use notes_sync::merger::MergeOutcome;
 use notes_sync::watch_queue::WatchQueue;
 use notes_sync::watcher::{Verdict, consider};
@@ -35,6 +36,7 @@ pub(crate) struct VaultWatch {
 impl VaultWatch {
     pub(crate) fn start(
         storage: Arc<SqliteStorage>,
+        assets: Arc<LocalImageAssets>,
         vault_root: PathBuf,
         changed: impl Fn(MergeOutcome) + Send + 'static,
     ) -> Result<Self, String> {
@@ -57,7 +59,7 @@ impl VaultWatch {
                 // Moved in so the subscription lives exactly as long as the
                 // loop that reads from it.
                 let _watcher = watcher;
-                run(&storage, &vault_root, &inbox, &changed);
+                run(&storage, &assets, &vault_root, &inbox, &changed);
             })
             .map_err(|error| format!("Could not watch the vault: {error}"))?;
         Ok(Self { _thread: thread })
@@ -66,6 +68,7 @@ impl VaultWatch {
 
 fn run(
     storage: &SqliteStorage,
+    assets: &LocalImageAssets,
     vault_root: &Path,
     inbox: &Receiver<Vec<PathBuf>>,
     changed: &impl Fn(MergeOutcome),
@@ -80,7 +83,7 @@ fn run(
         match inbox.recv_timeout(Duration::from_millis(QUIET_MILLIS / 2)) {
             Ok(paths) => {
                 for path in paths {
-                    if let Some(relative) = document_path(vault_root, &path) {
+                    if let Some(relative) = watched_path(vault_root, &path) {
                         queue.saw(&relative, now());
                     }
                 }
@@ -97,8 +100,15 @@ fn run(
         }
         // One, and only after the last one came back: the queue's own rule.
         while let Some(relative) = queue.next_in_flight(now()) {
-            if let Some(outcome) = take(storage, vault_root, &relative) {
-                changed(outcome);
+            if relative.ends_with(".md") {
+                if let Some(outcome) = take(storage, vault_root, &relative) {
+                    changed(outcome);
+                }
+            } else {
+                // An attachment. Nothing in the outline moved, so the window is
+                // not told: what changed is that a picture it already knows
+                // about can be shown.
+                take_asset(storage, assets, vault_root, &relative);
             }
             queue.finished(&relative);
         }
@@ -121,14 +131,68 @@ fn take(storage: &SqliteStorage, vault_root: &Path, relative: &str) -> Option<Me
     }
 }
 
-/// The path a document is known by: relative to the vault, and only if it is
-/// one of ours to read.
-fn document_path(vault_root: &Path, path: &Path) -> Option<String> {
-    if path.extension()? != "md" {
+/// The bytes for a picture a note is waiting on. Copied into this app's own
+/// store, which is where every reader of an image looks — the vault's copy is
+/// the one the user can take away, not the one the app reads.
+fn take_asset(
+    storage: &SqliteStorage,
+    assets: &LocalImageAssets,
+    vault_root: &Path,
+    relative: &str,
+) {
+    let Some(disk_name) = relative.rsplit('/').next().map(str::to_owned) else {
+        return;
+    };
+    let Ok(bytes) = notes_sync::file_io::read_regular_bounded(
+        vault_root,
+        &vault_root.join(relative),
+        notes_sync::parse::MAX_ASSET_BYTES as usize,
+    ) else {
+        return;
+    };
+    // Through the store's own import, so the bytes are decoded and checked
+    // rather than trusted: what is written here is read back as an image.
+    let Ok(published) = assets.prepare(&[ImageImportSource {
+        node_id: notes_core::NodeId::try_from(PLACEHOLDER_NODE.to_owned()).expect("a fixed id"),
+        original_name: disk_name.clone(),
+        declared_mime_type: None,
+        source: ImageSource::Bytes(bytes),
+    }]) else {
+        return;
+    };
+    let Some(first) = published.first() else {
+        return;
+    };
+    if storage
+        .resolve_asset(&disk_name, first.image.content_hash())
+        .is_err()
+    {
+        // The bytes are in the store either way; the rows waiting for them are
+        // tried again on the next sweep.
+        assets.rollback(&published);
+    }
+}
+
+/// The import wants a node id and this import belongs to no single node — the
+/// rows that were waiting are found by name once the bytes are in.
+const PLACEHOLDER_NODE: &str = "00000000-0000-4000-8000-000000000000";
+
+/// The path this app knows a file by: relative to the vault, and only if it is
+/// a file this app has something to do with.
+fn watched_path(vault_root: &Path, path: &Path) -> Option<String> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    let is_asset = matches!(extension.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp");
+    if extension != "md" && !is_asset {
         return None;
     }
     let relative = path.strip_prefix(vault_root).ok()?;
-    Some(relative.to_string_lossy().into_owned())
+    let relative = relative.to_string_lossy().into_owned();
+    // An image anywhere else in the folder is the user's own file, not an
+    // attachment this app put there.
+    if is_asset && !relative.contains("assets/") {
+        return None;
+    }
+    Some(relative)
 }
 
 fn documents_on_disk(vault_root: &Path) -> Vec<String> {
@@ -150,7 +214,7 @@ fn documents_on_disk(vault_root: &Path) -> Vec<String> {
             }
             if kind.is_dir() {
                 stack.push(path);
-            } else if let Some(relative) = document_path(vault_root, &path) {
+            } else if let Some(relative) = watched_path(vault_root, &path) {
                 found.push(relative);
             }
         }

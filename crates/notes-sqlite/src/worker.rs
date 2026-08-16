@@ -43,6 +43,15 @@ enum Request {
         limit: u32,
         reply: SyncSender<Result<Vec<notes_application::SyncConflict>, StorageError>>,
     },
+    ResolveAsset {
+        disk_name: String,
+        content_hash: String,
+        reply: SyncSender<Result<usize, StorageError>>,
+    },
+    ImageHash {
+        node_id: String,
+        reply: SyncSender<Result<Option<String>, StorageError>>,
+    },
     VaultFileHash {
         relative: String,
         reply: SyncSender<Result<Option<String>, StorageError>>,
@@ -192,6 +201,30 @@ impl SqliteStorage {
         limit: u32,
     ) -> Result<Vec<notes_application::SyncConflict>, StorageError> {
         self.request(|reply| Request::Conflicts { limit, reply })
+    }
+
+    /// The bytes for an attachment arrived. Every row whose link names it and
+    /// which is still waiting learns its hash — which is what turns a note
+    /// showing nothing into a note showing its picture.
+    pub fn resolve_asset(
+        &self,
+        disk_name: &str,
+        content_hash: &str,
+    ) -> Result<usize, StorageError> {
+        self.request(|reply| Request::ResolveAsset {
+            disk_name: disk_name.to_owned(),
+            content_hash: content_hash.to_owned(),
+            reply,
+        })
+    }
+
+    /// Empty while the bytes have not arrived, `None` when the node has no
+    /// picture at all.
+    pub fn image_hash(&self, node_id: &str) -> Result<Option<String>, StorageError> {
+        self.request(|reply| Request::ImageHash {
+            node_id: node_id.to_owned(),
+            reply,
+        })
     }
 
     /// What this app last dealt with at that path — what it wrote, or what it
@@ -390,6 +423,29 @@ impl SqliteStorage {
                         }
                         Request::Conflicts { limit, reply } => {
                             let _ = reply.send(crate::sync_merge::conflicts(&connection, limit));
+                        }
+                        Request::ResolveAsset {
+                            disk_name,
+                            content_hash,
+                            reply,
+                        } => {
+                            let _ = reply.send(crate::sync_merge::resolve_asset(
+                                &mut connection,
+                                &disk_name,
+                                &content_hash,
+                            ));
+                        }
+                        Request::ImageHash { node_id, reply } => {
+                            let _ = reply.send(
+                                connection
+                                    .query_row(
+                                        "SELECT content_hash FROM notes_images WHERE node_id = ?1",
+                                        [&node_id],
+                                        |row| row.get::<_, String>(0),
+                                    )
+                                    .optional()
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
                         }
                         Request::VaultFileHash { relative, reply } => {
                             let _ = reply.send(

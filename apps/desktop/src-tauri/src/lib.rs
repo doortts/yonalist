@@ -574,8 +574,11 @@ impl DesktopRuntime {
         let storage = Arc::clone(&self.storage);
         let service = Arc::clone(&self.service);
         let window = app.clone();
-        let started =
-            vault_watch::VaultWatch::start(Arc::clone(&self.storage), vault, move |outcome| {
+        let started = vault_watch::VaultWatch::start(
+            Arc::clone(&self.storage),
+            Arc::clone(&self.assets),
+            vault,
+            move |outcome: notes_sync::merger::MergeOutcome| {
                 let Ok(revision) = storage.revision() else {
                     return;
                 };
@@ -596,7 +599,8 @@ impl DesktopRuntime {
                         deleted_node_ids: outcome.deleted_ids.iter().cloned().collect(),
                     },
                 );
-            });
+            },
+        );
         match started {
             Ok(watch) => {
                 if let Ok(mut held) = self.watch.lock() {
