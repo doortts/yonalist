@@ -278,11 +278,15 @@ async fn notes_delete_all_data(
 /// Records the request; the deletion itself happens on the next start, before
 /// anything opens the database.
 fn request_data_deletion(data_directory: &Path) -> Result<(), NotesError> {
-    std::fs::write(data_directory.join(DELETE_DATA_MARKER), b"1").map_err(|error| NotesError {
-        code: NotesErrorCode::StorageUnavailable,
-        message: error.to_string(),
-        retryable: true,
-    })
+    // Nothing is waited on before this runs, so the directory the startup
+    // thread makes may not be there yet.
+    std::fs::create_dir_all(data_directory)
+        .and_then(|()| std::fs::write(data_directory.join(DELETE_DATA_MARKER), b"1"))
+        .map_err(|error| NotesError {
+            code: NotesErrorCode::StorageUnavailable,
+            message: error.to_string(),
+            retryable: true,
+        })
 }
 
 fn apply_pending_data_deletion(data_directory: &Path) -> std::io::Result<()> {
@@ -629,6 +633,21 @@ mod tests {
         assert!(
             !data.join(DELETE_DATA_MARKER).exists(),
             "and the request is spent, so the start after it keeps its data"
+        );
+    }
+
+    /// Nothing waits on the startup thread any more, so the request can now
+    /// arrive before that thread has made the directory it writes into.
+    #[test]
+    fn a_reset_can_be_requested_before_the_data_directory_exists() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let data = directory.path().join("app-data");
+
+        request_data_deletion(&data).expect("request");
+
+        assert!(
+            data.join(DELETE_DATA_MARKER).exists(),
+            "the request survives to the start that carries it out"
         );
     }
 
