@@ -140,6 +140,10 @@ BEGIN
   INSERT INTO sync_dirty_nodes(node_id, marked_at)
   VALUES (NEW.id, unixepoch())
   ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+  -- The file that holds this line states it, so it owes a write too.
+  INSERT INTO sync_dirty_nodes(node_id, marked_at)
+  SELECT NEW.parent_id, unixepoch() WHERE NEW.parent_id IS NOT NULL
+  ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
 END;
 
 -- Named columns, not the whole row: `path` is derived, and a move
@@ -173,12 +177,43 @@ BEGIN
   INSERT INTO sync_dirty_nodes(node_id, marked_at)
   VALUES (NEW.id, unixepoch())
   ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+  -- Both ends of a move: the file it left still states the line, and the
+  -- file it arrived in does not state it yet.
+  INSERT INTO sync_dirty_nodes(node_id, marked_at)
+  SELECT id, unixepoch() FROM (
+      SELECT NEW.parent_id AS id UNION SELECT OLD.parent_id
+  ) WHERE id IS NOT NULL AND EXISTS (
+      SELECT 1 FROM notes_nodes WHERE notes_nodes.id = id
+  )
+  ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
 END;
 
-CREATE TRIGGER notes_nodes_hlc_ad AFTER DELETE ON notes_nodes
+-- Where a line sits is stated in the file beside it, so a claim changing is
+-- a change to the file. It is not a change to the node — which is why these
+-- columns are deliberately absent from the stamping trigger above, and why
+-- this one only marks.
+CREATE TRIGGER notes_nodes_place_au AFTER UPDATE OF sync_prev, sync_prev_hlc
+ON notes_nodes
+WHEN NEW.sync_prev IS NOT OLD.sync_prev OR NEW.sync_prev_hlc IS NOT OLD.sync_prev_hlc
 BEGIN
   INSERT INTO sync_dirty_nodes(node_id, marked_at)
-  VALUES (OLD.id, unixepoch())
+  VALUES (NEW.id, unixepoch())
+  ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
+END;
+
+-- A hard delete is undo taking back a create, or a cascade following one.
+-- The row is gone, so nothing can ever work out which file owed it a write:
+-- its mark would sit in the queue for good, and a queue that never empties
+-- blocks the reindex that reads the vault as the truth. What is owed is the
+-- rewrite of the file that still states the line, which is the parent's.
+CREATE TRIGGER notes_nodes_hlc_ad AFTER DELETE ON notes_nodes
+BEGIN
+  DELETE FROM sync_dirty_nodes WHERE node_id = OLD.id;
+  INSERT INTO sync_dirty_nodes(node_id, marked_at)
+  SELECT OLD.parent_id, unixepoch()
+  WHERE OLD.parent_id IS NOT NULL AND EXISTS (
+      SELECT 1 FROM notes_nodes WHERE notes_nodes.id = OLD.parent_id
+  )
   ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at;
 END;
 

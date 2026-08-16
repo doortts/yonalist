@@ -529,46 +529,36 @@ fn dirty_rows_resolve_to_the_documents_that_hold_them() {
 }
 
 #[test]
-fn a_dirty_page_root_resolves_to_its_own_document_and_to_home() {
+fn a_dirty_page_root_resolves_to_its_own_document() {
     let mut connection = database();
     seed(&connection);
 
     let transaction = connection.transaction().expect("begin");
     let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
 
-    assert!(pending.contains(&PAGE_ID.to_owned()), "{pending:?}");
-    assert!(
-        pending.contains(&"root".to_owned()),
-        "home states this page's title and link, so a change to the page root \
-         changes home too: {pending:?}"
-    );
+    assert_eq!(pending, vec![PAGE_ID.to_owned()]);
 }
 
 /// The whole reason home is ever queued. A page nobody has opened yet is one
 /// row under `root` and nothing else — if that does not put home in the queue,
 /// the page never appears in the vault's own README and the user cannot reach
-/// it from the folder they opened.
+/// it from the folder they opened. The marking is the schema's, so the row
+/// arrives the way a real one does: unstamped, for the trigger to stamp.
 #[test]
 fn a_new_page_puts_home_in_the_queue() {
     let mut connection = database();
     seed(&connection);
     let fresh = "8a201f33-0000-4c91-8d02-000000000009";
     connection
-        .execute(
-            "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
-             VALUES (?1, 'root', 8589934592, 'bullet', 'Fresh', ?2)",
-            rusqlite::params![fresh, stamp(9)],
-        )
-        .expect("page");
-    connection
         .execute("DELETE FROM sync_dirty_nodes", ())
         .expect("clear");
     connection
         .execute(
-            "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES (?1, 0)",
+            "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
+             VALUES (?1, 'root', 8589934592, 'bullet', 'Fresh', '')",
             [fresh],
         )
-        .expect("dirty");
+        .expect("page");
 
     let transaction = connection.transaction().expect("begin");
     let pending = notes_sync::export::pending_documents(&transaction).expect("pending");

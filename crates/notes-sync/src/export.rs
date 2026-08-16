@@ -164,16 +164,6 @@ pub fn pending_documents(transaction: &Transaction<'_>) -> Result<Vec<String>, E
                 OR (SELECT parent_id FROM notes_nodes WHERE id = at) = 'root'
              UNION
              SELECT 'yonalist-trash' FROM climb WHERE deleted = 1
-             UNION
-             -- Home carries every page's title, link and order, so anything
-             -- happening to a page's own row happens to home as well. Without
-             -- this a new page reaches its own file and no other, and the
-             -- vault's README never mentions it.
-             -- The dirty row itself, not where its climb ended: a bullet deep
-             -- inside a page ends its climb at that page's root without
-             -- changing anything home states.
-             SELECT 'root' FROM climb
-             WHERE (SELECT parent_id FROM notes_nodes WHERE id = climb.node_id) = 'root'
              ORDER BY 1",
         )
         .map_err(|error| error.to_string())?;

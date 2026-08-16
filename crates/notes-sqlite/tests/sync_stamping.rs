@@ -102,6 +102,147 @@ fn a_command_commit_stamps_hlc_and_marks_dirty() {
     assert_eq!(dirty, 1, "the export has to be told which rows moved");
 }
 
+/// A file states its children's lines, so a child arriving, leaving or moving
+/// is a change to the file that held it. Only the row itself was ever marked,
+/// which left the holding document's file stating something that is no longer
+/// true.
+#[test]
+fn a_document_is_queued_by_what_happens_to_the_rows_it_holds() {
+    let (_directory, database) = workspace();
+    let _storage = SqliteStorage::open(&database).expect("open");
+    let page = seeded_page(&database);
+    let connection = writer(&database);
+    let child = "8a201f33-0000-4c91-8d02-0000000000aa";
+    connection
+        .execute("DELETE FROM sync_dirty_nodes", [])
+        .expect("clear");
+
+    connection
+        .execute(
+            "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
+             VALUES (?1, ?2, 4294967296, 'bullet', 'Added', '')",
+            rusqlite::params![child, &page],
+        )
+        .expect("insert");
+
+    assert!(
+        waiting(&connection, &page),
+        "the page's file has to state the line that just appeared in it"
+    );
+
+    // Undo taking the create back, with the row's own mark still in the queue
+    // from the create — which is how the orphan gets there.
+    connection
+        .execute("DELETE FROM notes_nodes WHERE id = ?1", [child])
+        .expect("delete");
+
+    assert!(
+        waiting(&connection, &page),
+        "and the line that just left it"
+    );
+    assert!(
+        !waiting(&connection, child),
+        "a row that is gone owes no file anything, and a mark nothing can \
+         resolve keeps the queue from ever emptying"
+    );
+}
+
+/// Both files, because both of them state something that is no longer true:
+/// the one it left still carries the line, and the one it arrived in does not
+/// carry it yet.
+#[test]
+fn moving_a_line_between_pages_queues_both_of_them() {
+    let (_directory, database) = workspace();
+    let _storage = SqliteStorage::open(&database).expect("open");
+    let first = seeded_page(&database);
+    let connection = writer(&database);
+    let second = "4f1c8e20-a3b7-4c91-8d02-0000000000bb";
+    let child = "8a201f33-0000-4c91-8d02-0000000000cc";
+    connection
+        .execute(
+            "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
+             VALUES (?1, 'root', 8589934592, 'bullet', 'Second', ''),
+                    (?2, ?3, 4294967296, 'bullet', 'Moves', '')",
+            rusqlite::params![second, child, &first],
+        )
+        .expect("seed");
+    connection
+        .execute("DELETE FROM sync_dirty_nodes", [])
+        .expect("clear");
+
+    connection
+        .execute(
+            "UPDATE notes_nodes SET parent_id = ?1 WHERE id = ?2",
+            rusqlite::params![second, child],
+        )
+        .expect("move");
+
+    assert!(
+        waiting(&connection, &first),
+        "the page it left still states a line that is not there any more"
+    );
+    assert!(
+        waiting(&connection, second),
+        "and the page it arrived in does not state it yet"
+    );
+}
+
+/// Where a node sits is written in the file next to it, so a claim changing is
+/// a change to the file — but not to the node, which is why the stamping
+/// trigger deliberately ignores these columns.
+#[test]
+fn a_place_claim_queues_the_document_without_restamping_the_row() {
+    let (_directory, database) = workspace();
+    let _storage = SqliteStorage::open(&database).expect("open");
+    let page = seeded_page(&database);
+    let connection = writer(&database);
+    let before: String = connection
+        .query_row(
+            "SELECT hlc FROM notes_nodes WHERE id = ?1",
+            [&page],
+            |row| row.get(0),
+        )
+        .expect("hlc");
+    connection
+        .execute("DELETE FROM sync_dirty_nodes", [])
+        .expect("clear");
+
+    connection
+        .execute(
+            "UPDATE notes_nodes SET sync_prev = 'somebody-else' WHERE id = ?1",
+            [&page],
+        )
+        .expect("claim");
+
+    assert!(
+        waiting(&connection, &page),
+        "a claim nothing writes out is a claim the other devices never see"
+    );
+    let after: String = connection
+        .query_row(
+            "SELECT hlc FROM notes_nodes WHERE id = ?1",
+            [&page],
+            |row| row.get(0),
+        )
+        .expect("hlc");
+    assert_eq!(
+        after, before,
+        "moving a line is not editing it — a restamp here would have the move \
+         beat somebody else's edit"
+    );
+}
+
+fn waiting(connection: &Connection, node_id: &str) -> bool {
+    connection
+        .query_row(
+            "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+            [node_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("dirty")
+        > 0
+}
+
 /// The rule has to sit in the trigger, not in whoever writes. The merge writes
 /// every row it looked at, most of them with the values they already had, and a
 /// restamp there hands this device a reading it did not earn — one that then
@@ -345,18 +486,18 @@ fn an_explicit_hlc_survives_a_merge_style_upsert() {
 }
 
 #[test]
-fn a_delete_marks_the_dirty_row() {
+fn a_delete_queues_the_file_that_still_states_the_line() {
     let (_directory, database) = workspace();
     drop(SqliteStorage::open(&database).expect("open"));
     let connection = writer(&database);
     // A leaf, since a parent cannot leave before its children.
-    let leaf: String = connection
+    let (leaf, holder): (String, String) = connection
         .query_row(
-            "SELECT id FROM notes_nodes
+            "SELECT id, parent_id FROM notes_nodes
              WHERE id NOT IN (SELECT parent_id FROM notes_nodes WHERE parent_id IS NOT NULL)
              LIMIT 1",
             [],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("leaf");
     connection
@@ -367,14 +508,15 @@ fn a_delete_marks_the_dirty_row() {
         .execute("DELETE FROM notes_nodes WHERE id = ?1", [&leaf])
         .expect("delete");
 
-    let dirty: i64 = connection
-        .query_row(
-            "SELECT COUNT(*) FROM sync_dirty_nodes WHERE node_id = ?1",
-            [&leaf],
-            |row| row.get(0),
-        )
-        .expect("dirty");
-    assert_eq!(dirty, 1, "the export has to learn the row went away");
+    assert!(
+        waiting(&connection, &holder),
+        "the file it left still states the line it no longer holds"
+    );
+    assert!(
+        !waiting(&connection, &leaf),
+        "and nothing can work out which file owes a write for a row that is \
+         gone, so that mark would sit in the queue for good"
+    );
 }
 
 #[test]
