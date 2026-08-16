@@ -164,6 +164,16 @@ pub fn pending_documents(transaction: &Transaction<'_>) -> Result<Vec<String>, E
                 OR (SELECT parent_id FROM notes_nodes WHERE id = at) = 'root'
              UNION
              SELECT 'yonalist-trash' FROM climb WHERE deleted = 1
+             UNION
+             -- Home carries every page's title, link and order, so anything
+             -- happening to a page's own row happens to home as well. Without
+             -- this a new page reaches its own file and no other, and the
+             -- vault's README never mentions it.
+             -- The dirty row itself, not where its climb ended: a bullet deep
+             -- inside a page ends its climb at that page's root without
+             -- changing anything home states.
+             SELECT 'root' FROM climb
+             WHERE (SELECT parent_id FROM notes_nodes WHERE id = climb.node_id) = 'root'
              ORDER BY 1",
         )
         .map_err(|error| error.to_string())?;
@@ -256,13 +266,22 @@ pub fn export_home(
         nodes,
         unknown_frontmatter: Vec::new(),
     };
-    write_checked(
+    let outcome = write_checked(
         transaction,
         vault_root,
         "root",
         "README.md",
         &VaultFile::Page(document),
-    )
+    )?;
+    if !outcome.needs_merge {
+        // Its own row only. Home's children each own a file of their own, and
+        // clearing those here would drop marks nothing has written out yet.
+        transaction
+            .prepare_cached("DELETE FROM sync_dirty_nodes WHERE node_id = 'root'")
+            .and_then(|mut statement| statement.execute([]))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(outcome)
 }
 
 /// Folders for pages that no longer exist. A vault folder is something the user
@@ -342,13 +361,49 @@ pub fn export_trash(
         });
     }
     let max_hlc = nodes.iter().map(highest).max().unwrap_or_default();
-    write_checked(
+    let ids: Vec<String> = nodes.iter().flat_map(collect_ids).collect();
+    let outcome = write_checked(
         transaction,
         vault_root,
         "yonalist-trash",
         &relative,
         &VaultFile::Trash(crate::document::TrashDocument { max_hlc, nodes }),
-    )
+    )?;
+    if !outcome.needs_merge {
+        // The deleted rows this file just stated. No page clears them: their
+        // lines live here, and losing the marks would lose the evidence.
+        let list = json_list(&ids);
+        transaction
+            .prepare_cached(
+                "DELETE FROM sync_dirty_nodes
+                 WHERE node_id IN (SELECT value FROM json_each(?1))",
+            )
+            .and_then(|mut statement| statement.execute([list]))
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(outcome)
+}
+
+fn collect_ids(node: &DocumentNode) -> Vec<String> {
+    let mut ids = vec![node.id.clone()];
+    for child in &node.children {
+        ids.extend(collect_ids(child));
+    }
+    ids
+}
+
+fn json_list(ids: &[String]) -> String {
+    let mut json = String::from("[");
+    for (index, id) in ids.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('"');
+        json.push_str(&id.replace('\\', "\\\\").replace('"', "\\\""));
+        json.push('"');
+    }
+    json.push(']');
+    json
 }
 
 /// What the trash holds: every deleted node whose parent is still alive, with

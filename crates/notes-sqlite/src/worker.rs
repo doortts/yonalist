@@ -43,6 +43,13 @@ enum Request {
         limit: u32,
         reply: SyncSender<Result<Vec<notes_application::SyncConflict>, StorageError>>,
     },
+    PendingCount {
+        reply: SyncSender<Result<i64, StorageError>>,
+    },
+    ReindexVault {
+        vault_root: std::path::PathBuf,
+        reply: SyncSender<Result<usize, StorageError>>,
+    },
     ExportPending {
         vault_root: std::path::PathBuf,
         reply: SyncSender<Result<usize, StorageError>>,
@@ -180,6 +187,20 @@ impl SqliteStorage {
         limit: u32,
     ) -> Result<Vec<notes_application::SyncConflict>, StorageError> {
         self.request(|reply| Request::Conflicts { limit, reply })
+    }
+
+    /// How many rows are still waiting to be written out.
+    pub fn pending_count(&self) -> Result<i64, StorageError> {
+        self.request(|reply| Request::PendingCount { reply })
+    }
+
+    /// Reads every document in the vault back in, ignoring what the records say
+    /// about them. Refused while this device is still holding edits.
+    pub fn reindex_vault(&self, vault_root: &std::path::Path) -> Result<usize, StorageError> {
+        self.request(|reply| Request::ReindexVault {
+            vault_root: vault_root.to_path_buf(),
+            reply,
+        })
     }
 
     /// Writes everything waiting into the vault, answering how many documents
@@ -344,6 +365,22 @@ impl SqliteStorage {
                         }
                         Request::Conflicts { limit, reply } => {
                             let _ = reply.send(crate::sync_merge::conflicts(&connection, limit));
+                        }
+                        Request::PendingCount { reply } => {
+                            let _ = reply.send(
+                                connection
+                                    .query_row("SELECT count(*) FROM sync_dirty_nodes", [], |row| {
+                                        row.get::<_, i64>(0)
+                                    })
+                                    .map_err(|error| StorageError::Internal(error.to_string())),
+                            );
+                        }
+                        Request::ReindexVault { vault_root, reply } => {
+                            let _ = reply.send(crate::sync_merge::reindex_vault(
+                                &mut connection,
+                                &clock,
+                                &vault_root,
+                            ));
                         }
                         Request::ExportPending { vault_root, reply } => {
                             let _ = reply.send(crate::sync_merge::export_pending(

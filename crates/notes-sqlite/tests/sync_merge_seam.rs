@@ -641,3 +641,39 @@ fn one_document_that_cannot_be_written_does_not_stop_the_others() {
     );
     assert!(vault.path().join("README.md").exists(), "home included");
 }
+
+/// Spec §9. A reindex reads the vault as the truth. Doing that while this
+/// device is holding edits it has not written out yet would throw them away —
+/// so it is refused until the export catches up.
+#[test]
+fn reindex_is_refused_while_edits_are_unexported() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("seed");
+    let command = NotesCommand::UpdateText {
+        id: notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id"),
+        text: "not written out yet".to_owned(),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("edit");
+
+    let refused = storage.reindex_vault(vault.path());
+
+    assert!(
+        refused.is_err(),
+        "reading the vault as the truth would discard what this device is still holding"
+    );
+
+    storage.export_pending(vault.path()).expect("export");
+    let waiting = storage.pending_count().expect("pending");
+    assert!(
+        storage.reindex_vault(vault.path()).is_ok(),
+        "once everything is written out, the vault is safe to read as the truth \
+         ({waiting} rows still waiting)"
+    );
+}

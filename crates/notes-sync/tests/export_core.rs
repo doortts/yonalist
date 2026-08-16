@@ -321,6 +321,37 @@ fn deleted_nodes_emit_into_trash_md() {
     );
 }
 
+/// A deleted row's mark is nobody else's to clear — its page skips it on
+/// purpose, so that the deletion keeps its evidence until the trash states it.
+/// If the trash does not clear it either, the queue never empties: every
+/// export runs again forever and a reindex stays refused for good.
+#[test]
+fn stating_a_deletion_takes_it_off_the_queue() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    connection
+        .execute(
+            "UPDATE notes_nodes SET deleted = 1 WHERE id = ?1",
+            [NODE_ID],
+        )
+        .expect("delete");
+
+    export_trash(&mut connection, root.path());
+
+    let still_waiting: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sync_dirty_nodes WHERE node_id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(
+        still_waiting, 0,
+        "the trash has stated this deletion, so nothing is still owed for it"
+    );
+}
+
 /// No file at all rather than an empty one: absence is what "nothing was
 /// deleted" looks like, and an empty document would have to be parsed to learn
 /// the same thing.
@@ -498,14 +529,54 @@ fn dirty_rows_resolve_to_the_documents_that_hold_them() {
 }
 
 #[test]
-fn a_dirty_page_root_resolves_to_its_own_document() {
+fn a_dirty_page_root_resolves_to_its_own_document_and_to_home() {
     let mut connection = database();
     seed(&connection);
 
     let transaction = connection.transaction().expect("begin");
     let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
 
-    assert_eq!(pending, vec![PAGE_ID.to_owned()]);
+    assert!(pending.contains(&PAGE_ID.to_owned()), "{pending:?}");
+    assert!(
+        pending.contains(&"root".to_owned()),
+        "home states this page's title and link, so a change to the page root \
+         changes home too: {pending:?}"
+    );
+}
+
+/// The whole reason home is ever queued. A page nobody has opened yet is one
+/// row under `root` and nothing else — if that does not put home in the queue,
+/// the page never appears in the vault's own README and the user cannot reach
+/// it from the folder they opened.
+#[test]
+fn a_new_page_puts_home_in_the_queue() {
+    let mut connection = database();
+    seed(&connection);
+    let fresh = "8a201f33-0000-4c91-8d02-000000000009";
+    connection
+        .execute(
+            "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
+             VALUES (?1, 'root', 8589934592, 'bullet', 'Fresh', ?2)",
+            rusqlite::params![fresh, stamp(9)],
+        )
+        .expect("page");
+    connection
+        .execute("DELETE FROM sync_dirty_nodes", ())
+        .expect("clear");
+    connection
+        .execute(
+            "INSERT INTO sync_dirty_nodes(node_id, marked_at) VALUES (?1, 0)",
+            [fresh],
+        )
+        .expect("dirty");
+
+    let transaction = connection.transaction().expect("begin");
+    let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
+
+    assert!(
+        pending.contains(&"root".to_owned()),
+        "a page that reaches no file is a page the user cannot open: {pending:?}"
+    );
 }
 
 /// A deleted row belongs to the trash, whatever page it used to sit in.

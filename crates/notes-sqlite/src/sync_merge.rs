@@ -208,3 +208,74 @@ pub(crate) fn export_pending(
     transaction.commit().map_err(internal)?;
     Ok(written)
 }
+
+/// Reads every document in the vault back in, ignoring what the records say
+/// about them — the last net under the startup scan's stat gate.
+///
+/// Refused while this device is still holding edits it has not written out.
+/// A reindex treats the vault as the truth, and the vault does not yet know
+/// about those edits, so running it then would throw them away.
+pub(crate) fn reindex_vault(
+    connection: &mut Connection,
+    clock: &Clock,
+    vault_root: &std::path::Path,
+) -> Result<usize, StorageError> {
+    let waiting: i64 = connection
+        .query_row("SELECT count(*) FROM sync_dirty_nodes", [], |row| {
+            row.get(0)
+        })
+        .map_err(internal)?;
+    if waiting > 0 {
+        return Err(StorageError::Internal(
+            "This device is still holding edits the vault has not been told about. \
+             They have to be written out before the vault can be read as the truth."
+                .to_owned(),
+        ));
+    }
+    let mut merged = 0;
+    let mut stack = vec![vault_root.to_path_buf()];
+    let mut files = Vec::new();
+    while let Some(at) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&at) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "md") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    for path in files {
+        // Every file, by content: this is what closes the gap the scan gate
+        // leaves for a change that kept both its mtime and its size.
+        let Ok(bytes) = notes_sync::file_io::read_regular_bounded(
+            vault_root,
+            &path,
+            notes_sync::parse::MAX_FILE_BYTES,
+        ) else {
+            continue;
+        };
+        let Ok(file) = notes_sync::parse::parse(&bytes) else {
+            continue;
+        };
+        let relative = path
+            .strip_prefix(vault_root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
+        let input = notes_sync::merger::MergeInput {
+            file_path: relative,
+            file_hash: notes_sync::export::hash_bytes(&bytes),
+            file_mtime_ms: None,
+            file_size: None,
+        };
+        if merge(connection, clock, &file, &input)?.applied > 0 {
+            merged += 1;
+        }
+    }
+    Ok(merged)
+}
