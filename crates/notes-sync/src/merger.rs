@@ -1234,6 +1234,16 @@ fn write_row(
 
     if let NodeBody::Image(image) = &entry.node.body {
         write_image(transaction, &entry.id, image)?;
+    } else {
+        // The kind written above is the file's word about this line, and the
+        // picture row is part of that word. Outliving it, the row makes a
+        // bullet that owns image metadata: the domain refuses the node on the
+        // way in, so it can no longer be edited or even thrown away, and its
+        // bytes stay reachable in the vault for ever.
+        transaction
+            .prepare_cached("DELETE FROM notes_images WHERE node_id = ?1")
+            .and_then(|mut statement| statement.execute([&entry.id]))
+            .map_err(|error| error.to_string())?;
     }
 
     // Keeping a stamp while changing the content is the one write the stamping

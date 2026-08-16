@@ -702,15 +702,10 @@ fn a_page_document_does_not_claim_a_position() {
     assert_eq!(outcome.applied, 0, "nothing about the document changed");
 }
 
-/// An image line states its file, its size and its bytes. If none of that
-/// reaches the row, the comparison can never match on the way back and every
-/// replay looks like an edit — and the metadata needed to re-render the line
-/// is simply gone.
-#[test]
-fn an_image_node_keeps_its_metadata_and_settles() {
-    let mut connection = database();
-    let transaction = connection.transaction().expect("begin");
-    let mut picture = node(NODE_ID, &stamp(5, DEVICE), "");
+/// A line that is a picture: the file states its name, its size on screen and
+/// its real dimensions.
+fn picture(id: &str, hlc: &str) -> DocumentNode {
+    let mut picture = node(id, hlc, "");
     picture.body = NodeBody::Image(notes_sync::document::ImageReference {
         original_name: "shot.png".to_owned(),
         path: "assets/shot-9f3a1c8e2044.png".to_owned(),
@@ -720,7 +715,21 @@ fn an_image_node_keeps_its_metadata_and_settles() {
         byte_size: 421_904,
         unknown_tokens: Vec::new(),
     });
-    let file = notes_sync::document::VaultFile::Page(page(vec![picture], &stamp(5, DEVICE)));
+    picture
+}
+
+/// An image line states its file, its size and its bytes. If none of that
+/// reaches the row, the comparison can never match on the way back and every
+/// replay looks like an edit — and the metadata needed to re-render the line
+/// is simply gone.
+#[test]
+fn an_image_node_keeps_its_metadata_and_settles() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let file = notes_sync::document::VaultFile::Page(page(
+        vec![picture(NODE_ID, &stamp(5, DEVICE))],
+        &stamp(5, DEVICE),
+    ));
     merge_document(&transaction, &clock(), &file, &input()).expect("first");
 
     let outcome = merge_document(&transaction, &clock(), &file, &input()).expect("replay");
@@ -737,6 +746,43 @@ fn an_image_node_keeps_its_metadata_and_settles() {
     assert_eq!(path, "assets/shot-9f3a1c8e2044.png");
     assert_eq!(width, 320);
     assert_eq!(bytes, 421_904);
+}
+
+/// A file can say a line stopped being a picture. The kind follows the file,
+/// and the picture row has to follow the kind: left behind, it makes a bullet
+/// that owns image metadata, which every command on that node refuses.
+#[test]
+fn a_line_that_stops_being_a_picture_takes_its_image_row_with_it() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let picture_file = notes_sync::document::VaultFile::Page(page(
+        vec![picture(NODE_ID, &stamp(5, DEVICE))],
+        &stamp(5, DEVICE),
+    ));
+    merge_document(&transaction, &clock(), &picture_file, &input()).expect("the picture");
+
+    let text_file = notes_sync::document::VaultFile::Page(page(
+        vec![node(NODE_ID, &stamp(9, DEVICE), "just words")],
+        &stamp(9, DEVICE),
+    ));
+    merge_document(&transaction, &clock(), &text_file, &input()).expect("the hand edit");
+
+    let kind: String = transaction
+        .query_row(
+            "SELECT kind FROM notes_nodes WHERE id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("the node");
+    assert_eq!(kind, "bullet", "the file's word about the line");
+    let rows: i64 = transaction
+        .query_row(
+            "SELECT count(*) FROM notes_images WHERE node_id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(rows, 0, "and the picture row went with it");
 }
 
 /// A drifted stamp over an existing row replaces content, not just a clock

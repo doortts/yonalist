@@ -13,6 +13,7 @@ use notes_sync::document::VaultFile;
 use notes_sync::hlc::Clock;
 use notes_sync::merger::{MergeInput, MergeOutcome, merge_document};
 use rusqlite::{Connection, OptionalExtension};
+use std::collections::BTreeSet;
 
 pub(crate) fn merge(
     connection: &mut Connection,
@@ -238,18 +239,24 @@ pub(crate) fn export_pending(
 /// not hash to it are not the bytes those lines are about, whatever the file
 /// is called. Nothing is resolved then: the rows go on waiting for the file
 /// they asked for.
+///
+/// The answer names the rows rather than counting them, because that is what
+/// the window needs to redraw those notes instead of re-reading the page.
+/// There can be more than one: the same picture pasted onto two notes leaves
+/// two rows waiting for the same file, and both stop waiting together. A set
+/// because that is the shape `MergeOutcome::changed_ids` is already in.
 pub(crate) fn resolve_asset(
     connection: &mut Connection,
     disk_name: &str,
     content_hash: &str,
     location: &str,
-) -> Result<usize, StorageError> {
+) -> Result<BTreeSet<String>, StorageError> {
     let Some((_, stated)) = disk_name.rsplit_once('-') else {
-        return Ok(0);
+        return Ok(BTreeSet::new());
     };
     let stated = stated.split('.').next().unwrap_or_default();
     if !content_hash.starts_with(stated) {
-        return Ok(0);
+        return Ok(BTreeSet::new());
     }
     let transaction = connection
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -269,9 +276,14 @@ pub(crate) fn resolve_asset(
              WHERE content_hash = ''
                -- The link's own file name, so a page's `assets/x.png` and the
                -- root store's `../assets/x.png` are the same attachment.
-               AND (relative_path = ?1 OR relative_path LIKE '%/' || ?1)",
+               AND (relative_path = ?1 OR relative_path LIKE '%/' || ?1)
+             RETURNING node_id",
         )
-        .and_then(|mut statement| statement.execute(rusqlite::params![disk_name, content_hash]))
+        .and_then(|mut statement| {
+            let rows = statement
+                .query_map(rusqlite::params![disk_name, content_hash], |row| row.get(0))?;
+            rows.collect::<Result<BTreeSet<String>, _>>()
+        })
         .map_err(internal)?;
     transaction
         .prepare_cached(
@@ -291,7 +303,7 @@ pub(crate) fn resolve_asset(
     // Rows changed, so the revision moves — the same rule the merge follows.
     // Nothing in the outline moved, but a note that was drawing a placeholder
     // is drawing a picture now, and the window learns that no other way.
-    if resolved > 0 {
+    if !resolved.is_empty() {
         bump_revision(&transaction)?;
     }
     transaction.commit().map_err(internal)?;

@@ -623,7 +623,7 @@ fn a_dragged_page_keeps_its_folder_until_its_new_home_is_written() {
     let joining = add_bullet(&one, "root", "Joining page");
     let carried = add_bullet(&one, &joining, "Carried along");
     settle(&one, &two);
-    let host_file = page_file_of(&one, &host);
+    let host_file = page_file(&one, &host);
 
     // Somebody edited the page it is joining, so this app may not write it.
     std::fs::write(&host_file, b"somebody's own words\n").expect("hand edit");
@@ -671,7 +671,7 @@ fn a_page_dragged_back_out_is_a_page_again() {
     // The page it joins cannot be written — somebody has it open — so the old
     // folder is still there, marked as leaving, when the user changes their
     // mind.
-    std::fs::write(page_file_of(&one, &host), b"somebody's own words\n").expect("hand edit");
+    std::fs::write(page_file(&one, &host), b"somebody's own words\n").expect("hand edit");
     one.run(IpcNotesCommand::MoveNode {
         id: joining.clone(),
         parent_id: host.clone(),
@@ -714,7 +714,7 @@ fn a_hand_edit_is_not_overwritten_by_an_export_that_was_already_coming() {
 
     // The user types into the file while this device is holding an edit of its
     // own — which is exactly what a debounce window is.
-    let readme = page_file(&two);
+    let readme = page_file(&two, &page);
     let mut document = std::fs::read_to_string(&readme).expect("document");
     document.push_str("- Typed while the app was about to write\n");
     std::fs::write(&readme, document).expect("hand edit");
@@ -817,24 +817,28 @@ fn attachments(vault: &std::path::Path) -> Vec<(String, String)> {
     found
 }
 
-/// The file of one particular page. Folder names carry the page's id, so this
-/// says which page rather than whichever the folder listing answered first.
-fn page_file_of(device: &Device, page_id: &str) -> std::path::PathBuf {
-    let suffix: String = page_id.chars().filter(|c| *c != '-').take(12).collect();
-    documents(&device.vault)
-        .into_iter()
-        .find(|relative| relative.contains(&suffix))
-        .map(|relative| device.vault.join(relative))
-        .expect("that page's file")
-}
-
-fn page_file(device: &Device) -> std::path::PathBuf {
+/// The document of one named page. Which page has to be said: more than one
+/// page folder is often there, and a folder is found by the tail of the id its
+/// name carries rather than by whichever one `read_dir` happens to hand back
+/// first.
+fn page_file(device: &Device, page_id: &str) -> std::path::PathBuf {
+    let canonical = uuid::Uuid::parse_str(page_id)
+        .expect("a page id")
+        .simple()
+        .to_string();
+    let tail = format!("-{}", &canonical[..12]);
     std::fs::read_dir(&device.vault)
         .expect("read")
         .flatten()
         .map(|entry| entry.path())
-        .find(|path| path.is_dir() && path.join("README.md").exists())
-        .expect("a page folder")
+        .find(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with(&tail))
+                && path.join("README.md").exists()
+        })
+        .expect("that page's folder")
         .join("README.md")
 }
 
@@ -1008,7 +1012,7 @@ fn an_edited_echo_keeps_the_row_in_domain_form() {
     picture(&one, &shot);
     settle(&one, &two);
 
-    let file = page_file_of(&one, &page);
+    let file = page_file(&one, &page);
     let echoed = std::fs::read_to_string(&file)
         .expect("read")
         .lines()

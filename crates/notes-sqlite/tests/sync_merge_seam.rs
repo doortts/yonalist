@@ -715,11 +715,103 @@ fn an_arriving_attachment_resolves_the_rows_waiting_for_it() {
         )
         .expect("resolve");
 
-    assert_eq!(resolved, 1, "one row was waiting for these bytes");
+    assert_eq!(
+        resolved,
+        std::collections::BTreeSet::from([IMAGE_NODE_ID.to_owned()]),
+        "the row that was waiting for these bytes is named"
+    );
     assert_eq!(
         storage.image_hash(IMAGE_NODE_ID).expect("row"),
         Some("9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081".to_owned()),
         "the note can show its picture now"
+    );
+}
+
+/// A hand edit can turn a picture line back into plain text. If the picture row
+/// stays behind, the node reads back as a bullet owning image metadata and
+/// every command on it is refused — it cannot be edited, and cannot even be
+/// thrown away, because deleting a subtree upserts it too.
+#[test]
+fn a_picture_a_file_turned_back_into_text_is_not_stranded() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .expect("the picture");
+    storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
+        )
+        .expect("the bytes");
+    let mut document = match page("just words", &stamp(9)) {
+        VaultFile::Page(page) => page,
+        VaultFile::Trash(_) => unreachable!(),
+    };
+    document.nodes = vec![node(IMAGE_NODE_ID, &stamp(9), "just words")];
+    storage
+        .merge_document(&VaultFile::Page(document), &input())
+        .expect("the hand edit");
+    assert_eq!(
+        storage
+            .node(IMAGE_NODE_ID)
+            .expect("node")
+            .expect("the line")
+            .kind(),
+        notes_core::NoteNodeKind::Bullet,
+        "the file's word: this line is no longer a picture"
+    );
+
+    let id = notes_core::NodeId::try_from(IMAGE_NODE_ID.to_owned()).expect("id");
+    let edit = NotesCommand::UpdateText {
+        id: id.clone(),
+        text: "edited here".to_owned(),
+    };
+    let tree = storage.load_command_tree(&edit).expect("load");
+    let patch = tree.plan(edit).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("the line takes an edit");
+
+    let trash = NotesCommand::DeleteSubtree { id };
+    let tree = storage.load_command_tree(&trash).expect("load");
+    let patch = tree.plan(trash).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("and can be thrown away");
+}
+
+/// The same picture pasted onto two lines leaves two rows waiting for one
+/// file, and both stop waiting when it lands. A window told about only the
+/// first draws a placeholder over the second until it is restarted.
+#[test]
+fn every_row_waiting_for_the_same_picture_is_named() {
+    const TWIN_NODE_ID: &str = "8a201f33-0000-4c91-8d02-00000000000e";
+    let (_directory, storage) = storage();
+    let mut file = page_with_image("holiday-9f2c1b7a4e6d.png");
+    let VaultFile::Page(document) = &mut file else {
+        panic!("a page");
+    };
+    // The same line twice: one picture, one link, two notes showing it.
+    let twin = DocumentNode {
+        id: TWIN_NODE_ID.to_owned(),
+        ..document.nodes[0].clone()
+    };
+    document.nodes.push(twin);
+    storage.merge_document(&file, &input()).expect("merge");
+
+    let resolved = storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
+        )
+        .expect("resolve");
+
+    assert_eq!(
+        resolved,
+        std::collections::BTreeSet::from([IMAGE_NODE_ID.to_owned(), TWIN_NODE_ID.to_owned()]),
+        "both notes were waiting for this file, so both have to be named"
     );
 }
 
@@ -741,8 +833,8 @@ fn bytes_that_do_not_match_the_name_resolve_nothing() {
         )
         .expect("resolve");
 
-    assert_eq!(
-        resolved, 0,
+    assert!(
+        resolved.is_empty(),
         "these are somebody else's bytes under our name"
     );
     assert_eq!(
@@ -1312,7 +1404,10 @@ fn resolving_an_attachment_normalizes_the_row_and_bumps_the_revision() {
         )
         .expect("resolve");
 
-    assert_eq!(resolved, 1);
+    assert_eq!(
+        resolved,
+        std::collections::BTreeSet::from([IMAGE_NODE_ID.to_owned()])
+    );
     assert_eq!(image_path(&directory, IMAGE_NODE_ID), format!("{HASH}.png"));
     assert!(
         storage.revision().expect("revision") > before,
@@ -1337,7 +1432,7 @@ fn an_attachment_no_row_wanted_leaves_the_revision_alone() {
         )
         .expect("resolve");
 
-    assert_eq!(resolved, 0);
+    assert!(resolved.is_empty());
     assert_eq!(storage.revision().expect("revision"), before);
 }
 
