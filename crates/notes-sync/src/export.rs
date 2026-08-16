@@ -546,7 +546,12 @@ fn load_document(
                     -- Where the attachment pass put the bytes. Only that pass
                     -- knows: the answer depends on how many nodes point at
                     -- them, which is not a fact about this document.
-                    COALESCE(a.location, i.relative_path), i.original_name, i.display_width,
+                    -- `NULLIF` because a record can be there without knowing
+                    -- where the bytes are yet: the row is written when they
+                    -- resolve, and the placement pass fills the location in.
+                    -- Empty is not an answer, and rendering one is refused.
+                    COALESCE(NULLIF(a.location, ''), i.relative_path),
+                    i.original_name, i.display_width,
                     i.pixel_width, i.pixel_height, i.byte_length
              FROM notes_nodes n
              LEFT JOIN notes_images i ON i.node_id = n.id

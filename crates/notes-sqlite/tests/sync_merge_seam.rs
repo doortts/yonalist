@@ -711,6 +711,7 @@ fn an_arriving_attachment_resolves_the_rows_waiting_for_it() {
         .resolve_asset(
             "holiday-9f2c1b7a4e6d.png",
             "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
         )
         .expect("resolve");
 
@@ -736,6 +737,7 @@ fn bytes_that_do_not_match_the_name_resolve_nothing() {
         .resolve_asset(
             "holiday-9f2c1b7a4e6d.png",
             "0000000000000000000000000000000000000000000000000000000000000000",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
         )
         .expect("resolve");
 
@@ -747,6 +749,54 @@ fn bytes_that_do_not_match_the_name_resolve_nothing() {
         storage.image_hash(IMAGE_NODE_ID).expect("row"),
         Some(String::new()),
         "and the row keeps waiting for the ones it asked for"
+    );
+}
+
+/// The bytes arriving tell this device where they are, and the export writes
+/// the link from that. A record saying "nowhere" cannot be rendered — and a
+/// document that cannot be rendered keeps its marks and is tried again for
+/// ever, which is a page that never reaches the folder again.
+#[test]
+fn a_resolved_attachment_leaves_its_page_exportable() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .expect("merge");
+    storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
+        )
+        .expect("resolve");
+
+    // Something to write: the page changed after the picture resolved.
+    let command = NotesCommand::UpdateText {
+        id: notes_core::NodeId::try_from(PAGE_ID.to_owned()).expect("id"),
+        text: "Renamed".to_owned(),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("edit");
+
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+
+    assert_eq!(
+        storage.pending_count().expect("pending"),
+        0,
+        "the page could not be written, so it is owed for ever"
+    );
+    let written =
+        std::fs::read_to_string(vault.path().join("Projects-4f1c8e20a3b7").join("README.md"))
+            .expect("the page");
+    assert!(
+        written.contains("holiday-9f2c1b7a4e6d.png"),
+        "the line still has to say where its picture is: {written}"
     );
 }
 

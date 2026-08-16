@@ -19,7 +19,7 @@ use notes_sync::watcher::{Verdict, consider};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::{Duration, Instant};
 
 /// Long enough that an editor writing a file three times is one thing to read.
@@ -29,8 +29,23 @@ const QUIET_MILLIS: u64 = 500;
 const SWEEP: Duration = Duration::from_secs(60);
 
 pub(crate) struct VaultWatch {
-    /// Dropping it ends the subscription, which ends the thread.
-    _thread: std::thread::JoinHandle<()>,
+    /// Dropped first, which is what ends the loop. The thread cannot end
+    /// itself: the events it waits on come from a sender the subscription
+    /// holds, and the subscription lives as long as the thread.
+    stop: Sender<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for VaultWatch {
+    /// Waits for the thread to go. A watch left running after the folder it
+    /// watches has been replaced keeps merging that folder's documents into
+    /// this database — two vaults, one set of notes.
+    fn drop(&mut self) {
+        drop(std::mem::replace(&mut self.stop, channel().0));
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 impl VaultWatch {
@@ -53,16 +68,20 @@ impl VaultWatch {
         watcher
             .watch(&vault_root, RecursiveMode::Recursive)
             .map_err(|error| format!("Could not watch the vault: {error}"))?;
+        let (stop, stopped) = channel();
         let thread = std::thread::Builder::new()
             .name("yonalist-vault-watch".to_owned())
             .spawn(move || {
                 // Moved in so the subscription lives exactly as long as the
                 // loop that reads from it.
                 let _watcher = watcher;
-                run(&storage, &assets, &vault_root, &inbox, &changed);
+                run(&storage, &assets, &vault_root, &inbox, &stopped, &changed);
             })
             .map_err(|error| format!("Could not watch the vault: {error}"))?;
-        Ok(Self { _thread: thread })
+        Ok(Self {
+            stop,
+            thread: Some(thread),
+        })
     }
 }
 
@@ -71,6 +90,7 @@ fn run(
     assets: &LocalImageAssets,
     vault_root: &Path,
     inbox: &Receiver<Vec<PathBuf>>,
+    stopped: &Receiver<()>,
     changed: &impl Fn(MergeOutcome),
 ) {
     let started = Instant::now();
@@ -78,6 +98,14 @@ fn run(
     let mut queue = WatchQueue::new(QUIET_MILLIS);
     let mut swept = Instant::now();
     loop {
+        // Asked before every round rather than only when an event arrives: a
+        // folder nobody is touching still has to let go when it is replaced.
+        if matches!(
+            stopped.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ) {
+            return;
+        }
         // Short enough that a file going quiet is noticed promptly, long
         // enough that an idle app is not doing this a hundred times a second.
         match inbox.recv_timeout(Duration::from_millis(QUIET_MILLIS / 2)) {
@@ -120,10 +148,13 @@ fn run(
 fn take(storage: &SqliteStorage, vault_root: &Path, relative: &str) -> Option<MergeOutcome> {
     let recorded = storage.vault_file_hash(relative).ok().flatten();
     match consider(vault_root, relative, recorded.as_deref()) {
+        // A merge that changed no row can still leave the file owing a
+        // rewrite — it said something this device did not accept. Nothing
+        // else would wake the exporter for that.
         Ok(Verdict::Merge(file, input)) => storage
             .merge_document(&file, &input)
             .ok()
-            .filter(|outcome| outcome.applied > 0),
+            .filter(|outcome| outcome.applied > 0 || outcome.needs_write_back),
         // Nothing to do, nothing wrong. A placeholder comes back on the sweep
         // once its bytes arrive; an echo is this app's own writing.
         Ok(_) => None,
@@ -164,7 +195,7 @@ fn take_asset(
         return;
     };
     if storage
-        .resolve_asset(&disk_name, first.image.content_hash())
+        .resolve_asset(&disk_name, first.image.content_hash(), relative)
         .is_err()
     {
         // The bytes are in the store either way; the rows waiting for them are
@@ -187,9 +218,14 @@ fn watched_path(vault_root: &Path, path: &Path) -> Option<String> {
     }
     let relative = path.strip_prefix(vault_root).ok()?;
     let relative = relative.to_string_lossy().into_owned();
-    // An image anywhere else in the folder is the user's own file, not an
-    // attachment this app put there.
-    if is_asset && !relative.contains("assets/") {
+    // A folder called exactly `assets`, not a name that ends in one: an image
+    // under `MyPassets/` is the user's own file, and importing it into this
+    // app's store would be helping itself to their pictures.
+    if is_asset
+        && !relative
+            .split('/')
+            .any(|segment| segment.eq_ignore_ascii_case("assets"))
+    {
         return None;
     }
     Some(relative)
@@ -220,4 +256,68 @@ fn documents_on_disk(vault_root: &Path) -> Vec<String> {
         }
     }
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{VaultWatch, watched_path};
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn seen(relative: &str) -> Option<String> {
+        watched_path(Path::new("/vault"), &Path::new("/vault").join(relative))
+    }
+
+    #[test]
+    fn documents_and_the_attachments_beside_them_are_watched() {
+        assert_eq!(
+            seen("Projects-4f1c8e20a3b7/README.md").as_deref(),
+            Some("Projects-4f1c8e20a3b7/README.md")
+        );
+        assert_eq!(
+            seen("Projects-4f1c8e20a3b7/assets/shot-9f3a1c8e2044.png").as_deref(),
+            Some("Projects-4f1c8e20a3b7/assets/shot-9f3a1c8e2044.png")
+        );
+        assert_eq!(seen("assets/shot-9f3a1c8e2044.png").is_some(), true);
+    }
+
+    /// The user's own files are theirs. A folder whose name merely ends in
+    /// "assets" is not this app's attachment store, and importing what is in
+    /// it would be helping itself to their pictures.
+    #[test]
+    fn images_outside_an_assets_folder_are_left_alone() {
+        assert_eq!(seen("MyPassets/photo.png"), None);
+        assert_eq!(seen("Holiday/photo.png"), None);
+        assert_eq!(seen("Projects-4f1c8e20a3b7/notes.txt"), None);
+    }
+
+    /// The folder can be changed while the app is running. A watch that
+    /// outlives its folder keeps merging that folder's documents into this
+    /// database — two vaults, one set of notes.
+    #[test]
+    fn a_watch_lets_go_of_its_folder_when_it_is_dropped() {
+        let home = tempfile::tempdir().expect("home");
+        let storage = Arc::new(
+            notes_sqlite::SqliteStorage::open(&home.path().join("notes.sqlite")).expect("open"),
+        );
+        let assets = Arc::new(
+            notes_sqlite::LocalImageAssets::open(&home.path().join("images")).expect("store"),
+        );
+        let vault = home.path().join("vault");
+        std::fs::create_dir_all(&vault).expect("vault");
+        let watch = VaultWatch::start(storage, assets, vault, |_| {}).expect("watch");
+
+        let (done, waiting) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(watch);
+            let _ = done.send(());
+        });
+
+        assert!(
+            waiting.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "the thread cannot end itself: the events it waits on come from a \
+             sender its own subscription holds"
+        );
+    }
 }

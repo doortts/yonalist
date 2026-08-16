@@ -55,6 +55,7 @@ enum Request {
     ResolveAsset {
         disk_name: String,
         content_hash: String,
+        location: String,
         reply: SyncSender<Result<usize, StorageError>>,
     },
     ImageHash {
@@ -238,14 +239,19 @@ impl SqliteStorage {
     /// The bytes for an attachment arrived. Every row whose link names it and
     /// which is still waiting learns its hash — which is what turns a note
     /// showing nothing into a note showing its picture.
+    /// `location` is where the file sits in the vault, relative to its root:
+    /// the arrival is the only thing that knows, and the export writes its
+    /// links from it.
     pub fn resolve_asset(
         &self,
         disk_name: &str,
         content_hash: &str,
+        location: &str,
     ) -> Result<usize, StorageError> {
         self.request(|reply| Request::ResolveAsset {
             disk_name: disk_name.to_owned(),
             content_hash: content_hash.to_owned(),
+            location: location.to_owned(),
             reply,
         })
     }
@@ -474,12 +480,14 @@ impl SqliteStorage {
                         Request::ResolveAsset {
                             disk_name,
                             content_hash,
+                            location,
                             reply,
                         } => {
                             let _ = reply.send(crate::sync_merge::resolve_asset(
                                 &mut connection,
                                 &disk_name,
                                 &content_hash,
+                                &location,
                             ));
                         }
                         Request::ImageHash { node_id, reply } => {

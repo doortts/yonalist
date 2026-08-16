@@ -170,13 +170,19 @@ pub fn place_attachments(
         // Per attachment. A page travels as text and its pictures travel as
         // files, so a line naming bytes that have not arrived yet is ordinary
         // — and it must not stop every other document from being written.
-        if carry_bytes(
-            vault_root,
-            &store_root.join(&holders[0].store_name),
-            &placement,
-        )
-        .is_err()
-        {
+        // Where this app's own store keeps them, which is the hash and the
+        // type — never `notes_images.relative_path`, which for a row that
+        // arrived in a file is the link that file wrote, not a store name.
+        let in_store = store_root.join(format!(
+            "{hash}.{}",
+            holders[0]
+                .store_name
+                .rsplit('.')
+                .next()
+                .unwrap_or("png")
+                .to_ascii_lowercase()
+        ));
+        if carry_bytes(vault_root, &in_store, &placement).is_err() {
             continue;
         }
         // From where the bytes actually went, so the name written down and the

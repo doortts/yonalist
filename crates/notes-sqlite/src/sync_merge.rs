@@ -232,6 +232,7 @@ pub(crate) fn resolve_asset(
     connection: &mut Connection,
     disk_name: &str,
     content_hash: &str,
+    location: &str,
 ) -> Result<usize, StorageError> {
     let Some((_, stated)) = disk_name.rsplit_once('-') else {
         return Ok(0);
@@ -255,11 +256,18 @@ pub(crate) fn resolve_asset(
         .map_err(internal)?;
     transaction
         .prepare_cached(
+            // Where the file actually is, which the arrival knows and nothing
+            // else does. A record saying "nowhere" cannot be rendered into a
+            // link, and a document that cannot be rendered is owed for ever.
             "INSERT INTO sync_assets(content_hash, disk_name, location, unreferenced_at)
-             VALUES (?1, ?2, '', NULL)
-             ON CONFLICT(content_hash) DO UPDATE SET disk_name = excluded.disk_name",
+             VALUES (?1, ?2, ?3, NULL)
+             ON CONFLICT(content_hash) DO UPDATE SET
+                 disk_name = excluded.disk_name,
+                 location = excluded.location",
         )
-        .and_then(|mut statement| statement.execute(rusqlite::params![content_hash, disk_name]))
+        .and_then(|mut statement| {
+            statement.execute(rusqlite::params![content_hash, disk_name, location])
+        })
         .map_err(internal)?;
     transaction.commit().map_err(internal)?;
     Ok(resolved)

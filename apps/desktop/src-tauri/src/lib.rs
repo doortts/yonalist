@@ -622,9 +622,18 @@ impl DesktopRuntime {
             Arc::clone(&self.assets),
             vault,
             move |outcome: notes_sync::merger::MergeOutcome| {
+                // Whatever the merge decided, the folder may now owe a
+                // write — this is the only thing that wakes the exporter for
+                // it.
+                exporting.poke();
                 let Ok(revision) = storage.revision() else {
                     return;
                 };
+                if outcome.applied == 0 {
+                    // Nothing in the outline moved, so there is nothing for
+                    // the window to redraw.
+                    return;
+                }
                 let affected: Vec<String> = outcome
                     .changed_ids
                     .iter()
@@ -634,10 +643,6 @@ impl DesktopRuntime {
                 // The session first: a window told about a revision the service
                 // does not know about would have every later edit rejected.
                 let _ = service.absorb_external(revision, &affected);
-                // A merge can leave a document owing a rewrite — the file said
-                // something the merge did not accept whole. Nothing else would
-                // wake the export thread for it.
-                exporting.poke();
                 let _ = window.emit(
                     "notes://sync-changed",
                     SyncChanged {
