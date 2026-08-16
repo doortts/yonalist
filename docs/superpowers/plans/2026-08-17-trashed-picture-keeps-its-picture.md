@@ -8,20 +8,20 @@ fable-opus-loop phase 1 · follows `2026-08-17-orphan-image-row-stuck-node.md`
 `load_trash` (`crates/notes-sync/src/export.rs:496`) has a SELECT of its own
 that never joins `notes_images`, and it hardcodes the body:
 `NodeBody::Text(row.get(3)?)` (`:519`). So a trashed picture reaches
-`.yonalist/trash.md` as a text line — and an empty one, since an image node's
-`text` is empty: `UpdateText` refuses an image node outright
-(`notes-core/src/tree/command_execution.rs:46-53`), so there is nothing in that
-column to carry. The file does not even keep the picture's name.
+`.yonalist/trash.md` as a plain text line carrying the file's name — `set_image`
+keeps `text` and `original_name` equal (`notes-core/src/node.rs:212-215`), and
+that equality is also what lets question 4 settle.
 
 Every other device merges that line through `write_row`
 (`merger.rs:201` → `apply(.., trash = true)`), which takes the file at its word:
 `kind` becomes `bullet` and — since the preceding change — the `notes_images`
-row is deleted with it. Restoring there yields an empty bullet, the attachment
-list counts the bytes as unreferenced, and the user can delete them. Restore
-that bullet and its page file states a *text* line at a newer stamp, which the
-device that still had the picture then merges: the picture is gone on both.
+row is deleted with it. Restoring there yields a bullet titled `holiday.png`,
+the attachment list counts the bytes as unreferenced, and the user can delete
+them. Restore that bullet and its page file states a *text* line at a newer
+stamp, which the device that still had the picture then merges: the picture is
+gone on both.
 
-The page-side loader has the gate this one lacks. `build` (`export.rs:917`)
+The page-side loader has the gate this one lacks. `build` (`export.rs:1026`)
 reads `Some(image) if row.kind == "image"`, which is why a page file states a
 picture as a picture. The trash is the one document that does not.
 
@@ -32,11 +32,11 @@ picture as a picture. The trash is the one document that does not.
 | Depends on | State |
 | --- | --- |
 | The parser | `read_node_line` (`parse.rs:348`) reads a `![`-prefixed body as `NodeBody::Image` for trash and page alike (`:390`); the `trash` flag gates only the `from` token (`:376`). Nothing to change. |
-| Where the bytes sit | `plan_placement` (`attachments.rs:131`) forces the vault-root `assets/` when any holder is trashed, and `referenced_assets` reads `deleted` per node (`:252`). A trashed picture's bytes are already reachable from `.yonalist/`. |
+| Where the bytes sit | `plan_placement` (`attachments.rs:139`) forces the vault-root `assets/` when any holder is trashed, and `referenced_assets` reads `deleted` per node (`:260`). A trashed picture's bytes are already reachable from `.yonalist/`. |
 | The link | `Placement::link_from` (`attachments.rs:54`) turns a vault-relative location into a document-relative link; for `.yonalist` and `assets/x-<hash12>.png` that is `../assets/x-<hash12>.png`, a spelling `resolve_asset` already matches (`sync_merge.rs:282`). |
 | The merge | `write_row` calls `write_image` on `NodeBody::Image` whatever `trash` is (`merger.rs:1235`). Nothing to change. |
 
-So: add the two joins `load_document` already has (`export.rs:786-787`), select
+So: add the two joins `load_document` already has (`export.rs:906-907`), select
 `n.kind` and the image columns, gate on kind exactly as `build` does, and
 relativise from `.yonalist`. One departure from `load_document`, below.
 
@@ -70,7 +70,7 @@ that is observable to a user is a picture coming back as a picture.
 
 ### 2. `readings` does not change
 
-`readings` (`export.rs:664`) is reached only from `settle_readings` and
+`readings` (`export.rs:784`) is reached only from `settle_readings` and
 `record_readings`, both called only from `export_document` (`:55`, `:70`).
 `export_trash` calls neither. So the trash's own export records no reading at
 all, and this change gives `readings` no new input.
@@ -91,7 +91,7 @@ The trash/restore direction is not in that blind spot: `deleted` is a
 
 One thing this leaves standing, unchanged and pre-existing: a page's export
 records readings for its *deleted* children too (`readings`' subtree has no
-`deleted = 0` filter, unlike `load_document`'s at `:788`) while its file omits
+`deleted = 0` filter, unlike `load_document`'s at `:908`) while its file omits
 them. It behaves identically for a trashed text node today. Not this change's
 business — Non-goals.
 
@@ -117,7 +117,7 @@ the question, and the rows fall in three:
 | The row | The name |
 | --- | --- |
 | Placed: `sync_assets.location` says where the file is | that location, unchanged — the honest answer, and the rule the page side follows |
-| Bytes, but no placement — carrying them failed (`attachments.rs:176`) | the name the placement *would* have given: `asset_disk_name(original_name, hash, mime)` |
+| Bytes, but no placement — carrying them failed (`attachments.rs:176`) | the name the placement is *going* to give: `chosen_disk_name` over every note holding those bytes, the same rule `plan_placement` applies. Not this row's own spelling — the smallest of the names the users gave wins, so a row cannot answer for the group it is in |
 | Still waiting, `content_hash = ''` | the tail of the link it holds — the only part of another document's link that means anything here, and what `resolve_asset` matches on (`sync_merge.rs:282`) |
 
 The middle row is the one an earlier draft of this design missed, and it is not
@@ -145,9 +145,11 @@ A trash document carrying an image line replays as `Verdict::Skip`
 This is the same set of properties the page side already relies on, reached the
 same way, so no new test earns its place — but the guard has to be a real one.
 `export() == 0` is not: `settle` ends with `absorb`, which ends with an export,
-so nothing is pending whatever the compare decided, and the assertion passes
-with the fix reverted. The round-trip test reads the trash file again through
-`watcher::consider(.., None)` and asserts the merge applied nothing.
+so nothing is pending whatever the compare decided. The round-trip test reads
+the trash file again through `watcher::consider(.., None)` and asserts the merge
+applied nothing — which drives the compare rather than asserting a tautology,
+though it re-reads a file those rows just produced. See the item for what it
+does and does not establish.
 
 ## Contract
 
@@ -251,8 +253,10 @@ trashed image node and places its bytes:
 local helper mirroring `export_core.rs:287`, and assert the file contains
 ``![holiday.png](../assets/holiday-9f2c1b7a4e6d.png)``.
 
-Red: the assertion fails; the line is `-  <!-- yid: … -->` — no `![` in the
-file, and no name either.
+Red: the assertion fails; no `![` in the file. The line is `-  <!-- yid: … -->`
+rather than `- holiday.png …`, because this fixture inserts the row's `text`
+straight into SQL and leaves it empty; through the domain it would carry the
+name. Either way the picture is gone from the file.
 
 Selector: `cargo test -p notes-sync a_trashed_picture_is_stated_as_a_picture`
 
@@ -298,10 +302,15 @@ throughout — `seeded_pair`, `add_bullet`, `picture` (`:847`), `settle`,
    page — the row alone would say the first part whatever happened to the file,
    since its path is derived from the hash.
 
-Between 2 and 3, question 4's guard: read the trash file again through
-`watcher::consider(.., None)` and assert the merge applied nothing. Not
-`export() == 0`, which passes with the fix reverted — `settle` ends with an
-export, so nothing is ever pending by then.
+Between 2 and 3, question 4's check: read the trash file again through
+`watcher::consider(.., None)` and assert the merge applied nothing. It is worth
+more than the `export() == 0` it replaced — that one asserts nothing at all,
+since `settle` ends with an export and leaves nothing pending whatever the
+compare decided, while this drives the per-node compare over a `NodeBody::Image`
+with `trash = true`. It is still not a guard in the strict sense: it re-reads a
+file the device merged moments earlier, so the rows agree with it by
+construction, and it stays green with the fix reverted. A real one would have to
+build the trash file independently of the rows it is compared against.
 
 The restore has to happen on `two`, the device that only ever saw the trash
 file. Restoring on `one` proves nothing: `one` never lost its row, and its page

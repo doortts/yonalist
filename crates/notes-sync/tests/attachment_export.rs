@@ -502,6 +502,38 @@ fn a_trashed_picture_with_bytes_but_no_placement_states_the_name_it_will_get() {
     );
 }
 
+/// Which name those bytes get is the whole group's to decide, not one row's:
+/// the placement takes the smallest of the names the users gave. A line naming
+/// the file by its own note's spelling would name a file nobody ever writes,
+/// and the note that arrives at the other device would wait for it for ever.
+#[test]
+fn an_unplaced_picture_two_notes_share_states_the_name_they_will_agree_on() {
+    let mut connection = database();
+    let workspace = workspace();
+    page(&connection, FIRST_PAGE, "Notes", 4294967296);
+    page(&connection, SECOND_PAGE, "Other", 8589934592);
+    image_node(&connection, IMAGE_NODE, FIRST_PAGE, "zebra.png", true);
+    image_node(
+        &connection,
+        OTHER_IMAGE_NODE,
+        SECOND_PAGE,
+        "apple.png",
+        true,
+    );
+
+    export_trash(&mut connection, &workspace);
+
+    let file = read(&workspace, ".yonalist/trash.md").expect("the trash");
+    assert!(
+        file.contains("](../assets/apple-9f2c1b7a4e6d.png)"),
+        "the smallest name wins, for both lines: {file}"
+    );
+    assert!(
+        !file.contains("zebra-9f2c1b7a4e6d.png"),
+        "one note's own spelling is not the answer: {file}"
+    );
+}
+
 /// A device that only ever saw the trash file holds the link that file wrote,
 /// which is a place in the document it came from, not in this vault. Read as a
 /// vault path it climbs one folder further out every round.
@@ -522,8 +554,12 @@ fn a_trashed_picture_waiting_for_its_bytes_links_inside_the_vault() {
 
     let file = read(&workspace, ".yonalist/trash.md").expect("the trash");
     assert!(
-        file.contains(&format!("](../assets/{DISK_NAME})")) && file.contains("![holiday"),
-        "a waiting row still states its picture: {file}"
+        file.contains(&format!("](../assets/{DISK_NAME})")),
+        "a waiting row still states where its picture will be: {file}"
+    );
+    assert!(
+        file.contains("![holiday"),
+        "and states it as a picture, under its own name: {file}"
     );
     assert!(
         !file.contains("../../"),

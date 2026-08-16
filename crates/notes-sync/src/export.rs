@@ -497,6 +497,7 @@ fn load_trash(
     transaction: &Transaction<'_>,
     document_folder: &str,
 ) -> Result<Vec<DocumentNode>, ExportError> {
+    let unplaced = unplaced_names(transaction)?;
     let mut statement = transaction
         .prepare_cached(
             "SELECT n.id, n.parent_id, n.sort_key, n.text, n.note, n.marker, n.ordered_start,
@@ -523,10 +524,13 @@ fn load_trash(
                 DocumentNode {
                     id: row.get(0)?,
                     hlc: row.get(10)?,
-                    body: match trash_asset(row)? {
-                        Some(location) if row.get::<_, String>("kind")? == "image" => {
-                            NodeBody::Image(image_of(row, location, document_folder)?)
-                        }
+                    body: match row.get::<_, String>("kind")?.as_str() {
+                        "image" => match trash_asset(row, &unplaced)? {
+                            Some(location) => {
+                                NodeBody::Image(image_of(row, location, document_folder)?)
+                            }
+                            None => NodeBody::Text(row.get(3)?),
+                        },
                         _ => NodeBody::Text(row.get(3)?),
                     },
                     note: row.get(4)?,
@@ -579,31 +583,73 @@ fn load_trash(
 ///
 /// - placed: the placement pass has said where the file is, and that is the
 ///   answer;
-/// - bytes but no placement, because carrying them failed: the name is the rule
-///   the placement would have applied, not the app store's own hash name, which
-///   no other device could ever match to these bytes;
+/// - bytes but no placement, because carrying them failed: the name the
+///   placement is going to choose, which is the whole group's to decide and not
+///   this row's — and never the app store's own hash name, which no other
+///   device could ever match to these bytes;
 /// - still waiting: the row holds the link some *other* document wrote, which
 ///   is not a place in this vault — read as one it would climb out of it, a
 ///   folder further each round. Only its file name means anything, and that is
 ///   the part every device agrees on.
-fn trash_asset(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<String>> {
+fn trash_asset(
+    row: &rusqlite::Row<'_>,
+    unplaced: &BTreeMap<String, String>,
+) -> rusqlite::Result<Option<String>> {
     if let Some(location) = row.get::<_, Option<String>>("location")? {
         return Ok(Some(location));
     }
     let Some(content_hash) = row.get::<_, Option<String>>("content_hash")? else {
         return Ok(None);
     };
-    let name = if content_hash.is_empty() {
-        let waiting: String = row.get("relative_path")?;
-        waiting.rsplit('/').next().unwrap_or_default().to_owned()
-    } else {
-        crate::layout::asset_disk_name(
-            &row.get::<_, String>("original_name")?,
-            &content_hash,
-            &row.get::<_, String>("mime_type")?,
-        )
+    let name = match unplaced.get(&content_hash) {
+        Some(name) => name.clone(),
+        None => {
+            let waiting: String = row.get("relative_path")?;
+            waiting.rsplit('/').next().unwrap_or_default().to_owned()
+        }
     };
     Ok(Some(format!("assets/{name}")))
+}
+
+/// The name each set of unplaced bytes is going to get, by the rule the
+/// placement pass will apply to it. Every note holding those bytes has a say in
+/// it — the smallest name wins — so it cannot be read off the one row being
+/// rendered, and a row still waiting for its bytes has no say at all.
+fn unplaced_names(transaction: &Transaction<'_>) -> Result<BTreeMap<String, String>, ExportError> {
+    let mut statement = transaction
+        .prepare_cached(
+            "SELECT content_hash, original_name, mime_type FROM notes_images
+             WHERE content_hash <> ''
+               AND content_hash NOT IN
+                   (SELECT content_hash FROM sync_assets WHERE location <> '')",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                crate::layout::asset_disk_name(
+                    &row.get::<_, String>(1)?,
+                    &row.get::<_, String>(0)?,
+                    &row.get::<_, String>(2)?,
+                ),
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut holders: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for row in rows {
+        let (content_hash, disk_name) = row.map_err(|error| error.to_string())?;
+        holders.entry(content_hash).or_default().push(disk_name);
+    }
+    Ok(holders
+        .into_iter()
+        .map(|(content_hash, disk_names)| {
+            (
+                content_hash,
+                crate::attachments::chosen_disk_name(disk_names.iter().map(String::as_str)),
+            )
+        })
+        .collect())
 }
 
 /// The picture a line states, linked from the folder its document sits in. The
