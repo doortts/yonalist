@@ -2443,13 +2443,17 @@ fn a_picture_whose_bytes_are_known_lands_in_domain_form() {
 
     merge_document(&transaction, &clock(), &file, &input()).expect("merge");
 
-    let path: String = transaction
+    let (hash, path): (String, String) = transaction
         .query_row(
-            "SELECT relative_path FROM notes_images WHERE node_id = ?1",
+            "SELECT content_hash, relative_path FROM notes_images WHERE node_id = ?1",
             [NODE_ID],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("image row");
+    // The pair, not the path alone: a domain-form path over an empty hash is
+    // a row `resolve_asset` can never rescue, since it names no file that
+    // will ever arrive.
+    assert_eq!(hash, HASH);
     assert_eq!(path, format!("{HASH}.png"));
 }
 

@@ -254,12 +254,21 @@ helper를 쓴다. 실패 테스트: `crates/notes-sync/tests/merge_ingest.rs`
 `crates/notes-sync/src/merger.rs` — 해시를 찾으면 `{hash}.{ext}`, 못 찾으면 원문
 링크. `crates/notes-sqlite/src/schema.sql` — `relative_path` 주석을 두 상태 의미로
 갱신(스키마 자체는 불변). 실패 테스트: `crates/notes-sqlite/tests/two_devices.rs`
-`an_edited_echo_keeps_the_row_in_domain_form` — 재현 2 그대로: 기기 1의 자기
-README에서 이미지 라인의 `t:`를 올리고 absorb하면 컬럼이 `{HASH}.png`. red: left:
-`"assets/holiday-9f2c1b7a4e6d.png"` — 메아리가 원문 링크를 앉힌다. 보조(같은
-커밋): `crates/notes-sync/tests/merge_ingest.rs`
+`an_edited_echo_keeps_the_row_in_domain_form` — 기기 1의 자기 README에서 이미지
+라인의 `t:`를 올리고 `w: 480`을 `w: 300`으로 바꾼 뒤 absorb하면 컬럼이
+`{HASH}.png`. red: left: `"assets/holiday-9f2c1b7a4e6d.png"` — 메아리가 원문 링크를
+앉힌다. 보조(같은 커밋): `crates/notes-sync/tests/merge_ingest.rs`
 `a_picture_whose_bytes_are_known_lands_in_domain_form` — `sync_assets`를 미리 심고
 첫 병합부터 규범형. red: 원문 링크.
+
+이 항목의 red 조건은 구현하면서 한 번 고쳤다. 처음 적은 "재현 2 그대로: `t:`만
+올린다"는 항목 3 이후로 red가 되지 않는다 — 스탬프만 다른 메아리는 정체 비교에서
+같은 내용이라 `decide`가 적용하지 않고 `write_image`까지 가지 않는다. 그래서 표시
+폭도 함께 바꿔 진짜 편집으로 만든다. 뒤집어 말하면 A5에 닿는 길은 이제 진짜 편집과
+바이트를 이미 아는 첫 병합 둘뿐이고, 이 항목은 읽기의 정확성 요건이 아니라 컬럼의
+두 상태 불변을 지키는 쪽이다(결정 4가 말한 그대로). 대기형과 규범형을 가르는 단언은
+`merge_ingest.rs`의 `an_image_node_keeps_its_metadata_and_settles`와
+`two_devices.rs`의 `starring_a_waiting_picture_keeps_its_metadata`가 맡는다.
 
 **5. 바이트 도착이 행을 규범화하고 창을 깨운다** (A6)
 `crates/notes-sqlite/src/sync_merge.rs` — `resolve_asset`의 UPDATE가 경로를

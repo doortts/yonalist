@@ -69,7 +69,8 @@ CREATE TABLE notes_images (
     -- own name for those bytes, `<content_hash>.<ext>`. Without one, the link
     -- the vault file used — how an arriving attachment finds the rows waiting
     -- for it, and what an export writes back until it can do better. Reading
-    -- never trusts this: the path is derived from the hash.
+    -- a picture's own metadata never trusts this: `parse_node` derives the
+    -- path from the hash.
     relative_path TEXT NOT NULL,
     original_name TEXT NOT NULL,
     mime_type TEXT NOT NULL CHECK (
