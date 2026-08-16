@@ -547,9 +547,11 @@ fn read_image(body: &str) -> Result<ImageReference, Quarantine> {
     // Same rule as a node comment: only a token ending in `:` takes the next
     // word. Pairing every two words would let one unknown flag shift every
     // token after it out of place.
+    let mut unknown = Vec::new();
     let mut words = inner.split_whitespace();
     while let Some(word) = words.next() {
         if !word.ends_with(':') {
+            unknown.push(word.to_owned());
             continue;
         }
         let value = words.next().unwrap_or_default();
@@ -561,7 +563,10 @@ fn read_image(body: &str) -> Result<ImageReference, Quarantine> {
                     .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
             }
             "bytes:" => bytes = value.parse::<u64>().ok(),
-            _ => {}
+            _ => {
+                unknown.push(word.to_owned());
+                unknown.push(value.to_owned());
+            }
         }
     }
     let (pixel_width, pixel_height) =
@@ -573,6 +578,7 @@ fn read_image(body: &str) -> Result<ImageReference, Quarantine> {
         pixel_width,
         pixel_height,
         byte_size: bytes.ok_or_else(|| "An image line has no byte size.".to_owned())?,
+        unknown_tokens: unknown,
     })
 }
 

@@ -590,3 +590,22 @@ fn escaped(value: &str) -> String {
         })
         .collect()
 }
+
+/// §5.3's third row: a `ya:` token this version has no meaning for belongs to
+/// whoever wrote it. Without a place to keep it, reading a newer device's file
+/// and writing it back would silently strip the value.
+#[test]
+fn an_unknown_ya_token_survives_a_parse_render_round_trip() {
+    let source = page(
+        "- ![shot\\.png](assets/shot-9f3a1c8e2044.png) \
+         <!-- ya: w: 320 px: 10x10 bytes: 4 focus: 0\\.5x0\\.3 lossless --> \
+         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 -->\n",
+    );
+
+    let once = notes_sync::render::render(&accepted(&source)).expect("render");
+    let text = String::from_utf8(once.clone()).expect("utf-8");
+    let twice = notes_sync::render::render(&accepted(&text)).expect("render");
+
+    assert_eq!(text, source, "the token came back changed or not at all");
+    assert_eq!(once, twice);
+}

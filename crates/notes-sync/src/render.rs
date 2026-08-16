@@ -222,14 +222,19 @@ fn render_image(image: &ImageReference) -> Result<String, String> {
     if image.path.is_empty() {
         return Err("A rendered image needs a path.".to_owned());
     }
+    let mut comment = format!(
+        "<!-- ya: w: {} px: {}x{} bytes: {}",
+        image.display_width, image.pixel_width, image.pixel_height, image.byte_size
+    );
+    for token in &image.unknown_tokens {
+        comment.push(' ');
+        comment.push_str(token);
+    }
+    comment.push_str(" -->");
     Ok(format!(
-        "![{}]({}) <!-- ya: w: {} px: {}x{} bytes: {} -->",
+        "![{}]({}) {comment}",
         escape_inline(&image.original_name),
-        image.path,
-        image.display_width,
-        image.pixel_width,
-        image.pixel_height,
-        image.byte_size
+        image.path
     ))
 }
 

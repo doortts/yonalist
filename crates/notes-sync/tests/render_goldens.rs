@@ -48,6 +48,7 @@ fn page() -> PageDocument {
         pixel_width: 1280,
         pixel_height: 720,
         byte_size: 421_904,
+        unknown_tokens: Vec::new(),
     });
     architecture.children = vec![boundaries, diagram];
 
