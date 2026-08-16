@@ -1030,7 +1030,11 @@ fn an_edited_echo_keeps_the_row_in_domain_form() {
     std::fs::write(&file, format!("{echoed}\n")).expect("write");
     one.absorb();
 
-    let (hash, path) = stored_image(&one, &shot);
+    let (hash, path, width) = stored_image(&one, &shot);
+    // First, because the fixture seeded the row in domain form already: if the
+    // edit was never applied, the two assertions below hold without this test
+    // having proved anything at all.
+    assert_eq!(width, 300, "the resize was taken in");
     assert_eq!(
         hash, HASH,
         "the picture is the one this device already holds"
@@ -1039,13 +1043,14 @@ fn an_edited_echo_keeps_the_row_in_domain_form() {
 }
 
 /// What the row holds for a picture whose bytes this device already has.
-fn stored_image(device: &Device, node_id: &str) -> (String, String) {
+fn stored_image(device: &Device, node_id: &str) -> (String, String, i64) {
     rusqlite::Connection::open(device._home.path().join("notes.sqlite"))
         .expect("open")
         .query_row(
-            "SELECT content_hash, relative_path FROM notes_images WHERE node_id = ?1",
+            "SELECT content_hash, relative_path, display_width FROM notes_images
+             WHERE node_id = ?1",
             [node_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .expect("image row")
 }
