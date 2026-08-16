@@ -6,6 +6,7 @@
 //! calls it from inside the single worker that owns the connection, and the
 //! desktop adapter owns the lifetimes above that.
 
+pub mod debounce;
 pub mod document;
 pub mod export;
 pub mod file_io;
