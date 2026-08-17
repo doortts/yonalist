@@ -1,5 +1,20 @@
 # 읽기 좋은 Markdown과 스냅샷 3-way 동기화 설계
 
+> **폐기 (2026-08-18).** 이 방향은 중단됐다. M1(포맷·yid)이 파일에서 HLC를 없애자
+> `merger.rs`의 `decide`가 기존 모든 행에 `LocalWins`를 답해 원격 변경이 들어오지
+> 못했고, 그 구멍을 메우려던 M3(3-way 병합)의 규모가 실제 이득에 비해 컸다. M1 두
+> 커밋은 main에서 revert했고 main은 green이다.
+>
+> **살아 있는 요구는 A1 하나뿐이다** — 일반 Markdown 편집기에서 본문을 자연스럽게
+> 읽고 고칠 수 있어야 한다. 후속 방향은 동작하는 HLC 최종 쓰기 승리 merge를 그대로
+> 두고, merge가 파일에서 읽는 셋(줄마다 `t:`, 줄마다 `prev:`, frontmatter
+> `max_hlc`/`root_*`)을 footer JSON의 `state[yid]`로 옮기는 것이다. 본문에는
+> `<!-- yid: X -->` 하나만 남는다.
+>
+> 이 문서의 §5~§9(정규 snapshot, `state_hash`, base 결정표, 3-way 병합, 충돌 보존)는
+> **구현 근거로 쓰지 않는다.** 3-way 구현은 브랜치 `claude/three-way-sync-handoff-7b9f01`에
+> 남아 있고 main에 병합하지 않는다.
+
 - 작성: 2026-08-17
 - 상태: 구현 전 설계안, 최신 코드 재검증 완료
 - 대상 정본: [`docs/v2/sync-spec.md`](../../v2/sync-spec.md)의 현재 개발 포맷
