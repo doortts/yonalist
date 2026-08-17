@@ -5,7 +5,7 @@ import type { BootSnapshot } from "../../../packages/contracts/generated/BootSna
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { NotesApi } from "./api";
 import { App } from "./App";
-import { ROOT_ID } from "./store/storeSupport";
+import { DRAFT_DEBOUNCE_MS, ROOT_ID } from "./store/storeSupport";
 import { appApi } from "./test/appApiFixture";
 
 const snapshot: BootSnapshot = {
@@ -165,6 +165,39 @@ describe("a mutation that moves the view", () => {
     expect(screen.queryByRole("button", {
       name: "Page actions for Untitled page"
     })).toBeNull();
+  });
+
+  it("keeps the page under the caret while its own creation is in flight", async () => {
+    const notesApi = pageApi();
+    render(<App api={notesApi} />);
+    await screen.findByDisplayValue("First thought");
+    const title = await newPageTitle();
+    let release!: () => void;
+    vi.mocked(notesApi.execute).mockImplementationOnce(() =>
+      new Promise<MutationReceipt>((resolve) => {
+        release = () => resolve({
+          revision: 20,
+          changedNodes: [pageNode(
+            title.getAttribute("data-node-id") ?? "", "", false)],
+          deletedIds: [],
+          history: {
+            canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0
+          }
+        });
+      }));
+
+    vi.useFakeTimers();
+    fireEvent.change(title, { target: { value: "Groceries" } });
+    await act(() => vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS));
+    vi.useRealTimers();
+
+    // The page list learns about this page only when the receipt lands. Until
+    // then the pane has to keep drawing it, or the field being typed into is
+    // unmounted mid-word for the length of a round trip.
+    expect(notesApi.execute).toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "Page title" })).toBe(title);
+    expect(title).toHaveFocus();
+    release();
   });
 
   it("takes one undo press to leave a page nobody wrote in", async () => {

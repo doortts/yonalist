@@ -1,4 +1,5 @@
 import type { BootSnapshot } from "../../../packages/contracts/generated/BootSnapshot";
+import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { CommandEnvelope } from "../../../packages/contracts/generated/CommandEnvelope";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "./api";
@@ -708,6 +709,46 @@ describe("NotesStore viewport recovery", () => {
         "parent_id" in envelope.command ? envelope.command.parent_id : null
       ]
     )).toEqual([["createNode", "root"], ["createNode", pageId]]);
+  });
+
+  it("stays unwritten while a command about another page goes out", async () => {
+    const { store, notesApi } = await openedNewPage();
+
+    await store.deleteSubtree("page-1");
+
+    expect(vi.mocked(notesApi.execute).mock.calls.map(
+      ([envelope]) => envelope.command.kind
+    )).toEqual(["deleteSubtree"]);
+  });
+
+  it("holds the page open across its own creation", async () => {
+    const { store, notesApi, pageId } = await openedNewPage();
+    let release!: (receipt: MutationReceipt) => void;
+    vi.mocked(notesApi.execute).mockReturnValueOnce(
+      new Promise<MutationReceipt>((resolve) => {
+        release = resolve;
+      })
+    );
+
+    const created = store.createNode(pageId);
+
+    // Until the row exists nothing else knows this page, so the window has to
+    // keep saying it holds one -- the pane reads this to decide whether it has
+    // a page to draw at all.
+    expect(store.getSnapshot().provisionalPageId).toBe(pageId);
+    release({
+      revision: 2,
+      changedNodes: [{ ...bullet(pageId, 4_096), parentId: "root", text: "" }],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    });
+    await created;
+    expect(store.getSnapshot().provisionalPageId).toBeNull();
+    expect(store.getSnapshot().pages).toContainEqual({
+      id: pageId,
+      title: "",
+      sortKey: 4_096
+    });
   });
 
   it("keeps the new page when the answer for the page it left lands late", async () => {

@@ -19,11 +19,15 @@ export interface StoreCommandHost {
   readonly applyReceipt: (receipt: MutationReceipt) => void;
   readonly flushDrafts: () => Promise<void>;
   /**
-   * Writes the page the user opened but has not written into yet, when there
-   * is one. Called before anything else here, so its creation takes the queue
-   * slot ahead of the command that asked for the page to exist.
+   * Writes the page the user opened but has not written into yet, when the
+   * command about to run is about that page. Called before anything else here,
+   * so the creation takes the queue slot ahead of it. The image commands carry
+   * no command object and pass none: those are always about the page in front
+   * of the user.
    */
-  readonly materializePage: () => Promise<void>;
+  readonly materializePage: (
+    command?: IpcNotesCommand
+  ) => Promise<void>;
   /**
    * The band and the caret as the app layer sees them right now. Injected the
    * same way `flushDrafts` is, so nothing in here has to reach into the DOM.
@@ -81,7 +85,7 @@ export class StoreCommands {
      */
     flushFirst = true
   ): Promise<MutationReceipt> {
-    const created = this.host.materializePage();
+    const created = this.host.materializePage(command);
     // Read before the flush below: a flush is itself a command, and its own
     // write can re-render the row out from under the caret this entry means to
     // remember.

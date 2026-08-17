@@ -35,8 +35,20 @@ import {
   type StoreInvalidation
 } from "./store/storeSubscriptions";
 
+/**
+ * Whether a command is about this page: the row itself, or a row going inside
+ * it. Nothing else can name a page nobody has written in -- it holds no rows
+ * of its own yet, and it has no entry in the page list to be acted on.
+ */
+function commandTouches(command: IpcNotesCommand, pageId: string): boolean {
+  return ("id" in command && command.id === pageId) ||
+    ("parent_id" in command && command.parent_id === pageId);
+}
+
 export class NotesStore {
   private state: NotesState = initialNotesState;
+  private creatingPageId: string | null = null;
+  private pageCreation: Promise<void> = Promise.resolve();
   private capturePaneSnapshot: () => PaneSnapshot | null = () => null;
   private readonly listeners = new Set<() => void>();
   private readonly subscriptions: StoreSubscriptions;
@@ -52,7 +64,7 @@ export class NotesStore {
       write: (patch, invalidation) => this.update(patch, invalidation),
       applyReceipt: (receipt) => this.applyReceipt(receipt),
       flushDrafts: () => this.drafts.flushPending(),
-      materializePage: () => this.materializePage(),
+      materializePage: (command) => this.materializePage(command),
       capturePaneSnapshot: () => this.capturePaneSnapshot()
     });
     this.images = new LazyStoreImages(api, this.commands, this.getSnapshot);
@@ -167,7 +179,8 @@ export class NotesStore {
   async openPage(pageId: string): Promise<void> {
     // Leaving a page nobody wrote in is all it takes to drop it: it was only
     // ever in this window.
-    if (pageId !== this.state.provisionalPageId) {
+    if (this.state.provisionalPageId !== null &&
+      pageId !== this.state.provisionalPageId) {
       this.update({ provisionalPageId: null });
     }
     await this.viewport.openPage(pageId);
@@ -335,32 +348,49 @@ export class NotesStore {
 
   /**
    * The page's own creation, run at the command choke point so that whatever
-   * the first write is -- a title keystroke, a row, an image -- the page is
-   * there before it. It is created empty and the drafts land right behind it:
-   * the flush that would otherwise run first would send an `updateText` to a
-   * row the backend has never seen, which is why this one command skips it.
+   * first writes into it -- a title keystroke, a row, an image -- finds it
+   * there. It is created empty and the drafts land right behind it: the flush
+   * that would otherwise run first would send an `updateText` to a row the
+   * backend has never seen, which is why this one command skips it.
+   *
+   * The page stays provisional until the row exists. Nothing else knows the
+   * page until then -- not the page list, not the vault -- so this is what the
+   * pane reads to know it has a page to draw at all, and a creation that fails
+   * leaves a page the next command tries again for.
    */
-  private readonly materializePage = (): Promise<void> => {
+  private readonly materializePage = (
+    command?: IpcNotesCommand
+  ): Promise<void> => {
     const id = this.state.provisionalPageId;
-    if (id === null) return Promise.resolve();
-    // Cleared before the command below, which re-enters this through the choke
-    // point and must find nothing left to do.
-    this.update({ provisionalPageId: null });
-    return this.commands.execute({
+    if (id === null || (command && !commandTouches(command, id))) {
+      return Promise.resolve();
+    }
+    // A command that arrives while the creation is in flight waits for it,
+    // and the creation itself -- which comes back through here -- waits for
+    // the attempt before it, if any. What is waited on is only ever the
+    // finishing: a failed attempt that stayed here as a rejection would be
+    // what the retry inherited, and no retry would ever be sent.
+    if (this.creatingPageId === id) return this.pageCreation;
+    this.creatingPageId = id;
+    const created = this.commands.execute({
       kind: "createNode",
       id,
       parent_id: ROOT_ID,
       before_id: null,
       text: ""
-    }, null, false).then(() => undefined, (cause) => {
-      // Nothing was written, so the page is what it was before this ran: one
-      // the next command has to create, rather than one every later write
-      // silently misses.
-      if (this.state.activePageId === id) {
-        this.update({ provisionalPageId: id });
+    }, null, false).then(() => {
+      this.creatingPageId = null;
+      // The receipt has already put the row in the page list, so the pane
+      // reads the page off the list from here on.
+      if (this.state.provisionalPageId === id) {
+        this.update({ provisionalPageId: null });
       }
+    }, (cause) => {
+      this.creatingPageId = null;
       throw cause;
     });
+    this.pageCreation = created.catch(() => undefined);
+    return created;
   };
 
   async createNode(
