@@ -509,12 +509,15 @@ fn split_trailing_comment(line: &str) -> (&str, &str) {
     // not cost the node the identity the comment carries. Whitespace *before*
     // the comment belongs to the text and stays where it is.
     let candidate = line[separator + 1..].trim_end();
-    let Some(inner) = candidate
+    // Only that it closes. What is inside is the token reader's business, and it
+    // is handed the comment whole.
+    if candidate
         .strip_prefix("<!--")
         .and_then(|rest| rest.strip_suffix("-->"))
-    else {
+        .is_none()
+    {
         return (line, "");
-    };
+    }
     (&line[..separator], candidate)
 }
 

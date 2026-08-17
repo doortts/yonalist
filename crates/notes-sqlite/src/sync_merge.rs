@@ -349,13 +349,93 @@ pub(crate) fn resolve_asset(
     Ok(live)
 }
 
+/// Reading the folder as the truth is only safe once the folder has been told
+/// everything this device knows. Shared by the reindex and the rebuild, and the
+/// rebuild has to call it before it clears anything.
+fn refuse_if_unexported(connection: &Connection) -> Result<(), StorageError> {
+    let waiting: i64 = connection
+        .query_row("SELECT count(*) FROM sync_dirty_nodes", [], |row| {
+            row.get(0)
+        })
+        .map_err(internal)?;
+    if waiting > 0 {
+        return Err(StorageError::Internal(
+            "This device is still holding edits the vault has not been told about. \
+             They have to be written out before the vault can be read as the truth."
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// What a reindex did, and what it could not do. The second number is the
 /// point: a net that silently drops what it cannot read reports the same
 /// "nothing changed" as one that read the whole vault.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ReindexReport {
+    /// Documents this pass actually read out of the folder. The count a person
+    /// can hold against their own folder, which is why it is here as well as the
+    /// two below: a vault the database already agrees with merges nothing, and
+    /// reporting only `merged` would say "nothing" where the truth is "all of
+    /// them, and all of them already matched".
+    pub read: usize,
     pub merged: usize,
     pub skipped: usize,
+}
+
+/// Throws the cached notes away and fills them in again from the folder.
+///
+/// The difference from `reindex_vault` is the throwing away, and it is the whole
+/// point. A reindex re-reads every file and *merges*, so a row the folder has
+/// stopped mentioning survives — absence is not evidence, and only `trash.md`
+/// deletes. That is right for a reindex, which is a net under the scan gate, and
+/// wrong for a rebuild: an action that says it rebuilds from the files while
+/// leaving rows no file mentions has not done what it said.
+///
+/// Home's own row stays. The vault never states it — home's file is a list of
+/// links to pages, not a description of itself — so it is the one row a rebuild
+/// could not put back, and deleting it would leave the folder unable to restore
+/// what the delete removed.
+///
+/// What is kept, and why: `notes_meta` because the revision only ever moves
+/// forward, `sync_meta` because it is this device's own identity rather than
+/// notes, `sync_conflict_log` because it holds the only copy of text a merge
+/// overwrote, and `sync_quarantine` and `sync_assets` because both describe files
+/// the rebuild is about to read rather than rows it is replacing.
+pub(crate) fn rebuild_from_vault(
+    connection: &mut Connection,
+    clock: &Clock,
+    vault_root: &std::path::Path,
+) -> Result<ReindexReport, StorageError> {
+    // Before the wipe, never after. A rebuild treats the folder as the truth, and
+    // an edit this device has not written out yet is not in it — so the refusal
+    // has to happen while the evidence for it still exists. Checking afterwards
+    // would find an empty queue, because the wipe is what emptied it.
+    refuse_if_unexported(connection)?;
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(internal)?;
+    // One statement per table rather than a loop over a name list: the order
+    // matters where a foreign key points, and a list would hide that.
+    for statement in [
+        "DELETE FROM notes_images",
+        "DELETE FROM notes_tags",
+        "DELETE FROM notes_dates",
+        "DELETE FROM notes_fts",
+        "DELETE FROM notes_nodes WHERE id <> 'root'",
+        "DELETE FROM sync_documents",
+        "DELETE FROM sync_node_exports",
+        "DELETE FROM sync_dirty_nodes",
+        // The one row that is an answer rather than a cache: whether the user has
+        // said where these notes live. The folder is still recorded on disk, so
+        // forgetting that they answered would have the first-run card ask a
+        // question it already holds the answer to.
+        "DELETE FROM notes_ui_state WHERE key <> 'onboarding_answered'",
+    ] {
+        transaction.execute(statement, []).map_err(internal)?;
+    }
+    transaction.commit().map_err(internal)?;
+    reindex_vault(connection, clock, vault_root)
 }
 
 /// Reads every document in the vault back in, ignoring what the records say
@@ -369,18 +449,7 @@ pub(crate) fn reindex_vault(
     clock: &Clock,
     vault_root: &std::path::Path,
 ) -> Result<ReindexReport, StorageError> {
-    let waiting: i64 = connection
-        .query_row("SELECT count(*) FROM sync_dirty_nodes", [], |row| {
-            row.get(0)
-        })
-        .map_err(internal)?;
-    if waiting > 0 {
-        return Err(StorageError::Internal(
-            "This device is still holding edits the vault has not been told about. \
-             They have to be written out before the vault can be read as the truth."
-                .to_owned(),
-        ));
-    }
+    refuse_if_unexported(connection)?;
     let mut report = ReindexReport::default();
     let mut stack = vec![vault_root.to_path_buf()];
     let mut files = Vec::new();
@@ -437,6 +506,7 @@ pub(crate) fn reindex_vault(
             file_mtime_ms: None,
             file_size: None,
         };
+        report.read += 1;
         if merge(connection, clock, &file, &input)?.applied > 0 {
             report.merged += 1;
         }

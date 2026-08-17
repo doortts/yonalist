@@ -95,6 +95,10 @@ enum Request {
         vault_root: std::path::PathBuf,
         reply: SyncSender<Result<crate::sync_merge::ReindexReport, StorageError>>,
     },
+    RebuildFromVault {
+        vault_root: std::path::PathBuf,
+        reply: SyncSender<Result<crate::sync_merge::ReindexReport, StorageError>>,
+    },
     ExportPending {
         vault_root: std::path::PathBuf,
         store_root: std::path::PathBuf,
@@ -376,6 +380,19 @@ impl SqliteStorage {
         vault_root: &std::path::Path,
     ) -> Result<crate::sync_merge::ReindexReport, StorageError> {
         self.request(|reply| Request::ReindexVault {
+            vault_root: vault_root.to_path_buf(),
+            reply,
+        })
+    }
+
+    /// Throws the cached notes away and fills them in again from the folder.
+    /// Refused, before anything is cleared, while this device is still holding
+    /// edits the folder has not been told about.
+    pub fn rebuild_from_vault(
+        &self,
+        vault_root: &std::path::Path,
+    ) -> Result<crate::sync_merge::ReindexReport, StorageError> {
+        self.request(|reply| Request::RebuildFromVault {
             vault_root: vault_root.to_path_buf(),
             reply,
         })
@@ -733,6 +750,13 @@ impl SqliteStorage {
                                     })
                                     .map_err(|error| StorageError::Internal(error.to_string())),
                             );
+                        }
+                        Request::RebuildFromVault { vault_root, reply } => {
+                            let _ = reply.send(crate::sync_merge::rebuild_from_vault(
+                                &mut connection,
+                                &clock,
+                                &vault_root,
+                            ));
                         }
                         Request::ReindexVault { vault_root, reply } => {
                             let _ = reply.send(crate::sync_merge::reindex_vault(

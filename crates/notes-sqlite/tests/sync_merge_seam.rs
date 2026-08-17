@@ -1658,3 +1658,198 @@ fn dropping_a_defeat_that_is_already_gone_says_so() {
 
     assert!(!storage.forget_conflict(entry.seq).expect("drop again"));
 }
+
+/// What a rebuild tells the user has to be what they can check. `merged` counts
+/// documents that changed a row, so a vault of five files that the database
+/// already agreed with reports zero — which reads as "nothing was found" when the
+/// truth is "all five were read and all five already matched". The count a person
+/// can compare against their own folder is how many files were read.
+#[test]
+fn a_reindex_counts_the_documents_it_read() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("notes.sqlite");
+    let storage = SqliteStorage::open(&path).expect("open");
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("merge");
+    // A merge leaves nothing waiting; a local edit is what puts a document in the
+    // queue and so gets the folder written.
+    let command = NotesCommand::UpdateText {
+        id: notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id"),
+        text: "Thought, typed here".to_owned(),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("edit");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+
+    // Every document in the folder already agrees with the database, so nothing
+    // merges — and that is exactly the case the old count could not describe.
+    let report = storage.reindex_vault(vault.path()).expect("reindex");
+
+    assert_eq!(
+        report.merged, 0,
+        "the database already agreed with the folder"
+    );
+    assert!(
+        report.read >= 2,
+        "home and the page were both read, so the count a person checks is {}",
+        report.read
+    );
+    assert_eq!(report.skipped, 0, "and nothing was unreadable");
+}
+
+/// A rebuild drops what the folder no longer says, which is the whole difference
+/// between it and a reindex.
+///
+/// `reindex_vault` re-reads every file and *merges*, so a row the folder has
+/// stopped mentioning survives — absence is not evidence, and only `trash.md`
+/// deletes. That is right for a reindex and wrong for a rebuild: a button that
+/// says it rebuilds from the files while leaving rows no file mentions has lied.
+#[test]
+fn a_rebuild_drops_what_the_vault_no_longer_states() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("notes.sqlite");
+    let storage = SqliteStorage::open(&path).expect("open");
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("merge");
+    let command = NotesCommand::UpdateText {
+        id: notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id"),
+        text: "Thought, typed here".to_owned(),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("edit");
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+
+    // A row the folder has never heard of. A reindex would leave it alone.
+    let side = rusqlite::Connection::open(&path).expect("open");
+    // The stamping trigger fires on this insert, and a connection opened here has
+    // no clock of its own.
+    notes_sync::hlc::register(
+        &side,
+        std::sync::Arc::new(notes_sync::hlc::Clock::new("dddd").expect("clock")),
+    )
+    .expect("register");
+    side.execute(
+        "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
+         VALUES ('Stranger0001', 'root', 99999999, 'bullet', 'No file says this', '')",
+        (),
+    )
+    .expect("a stranger");
+    // Not an unexported edit — a stale row, which is what a rebuild is for. The
+    // stamping trigger marks anything inserted here, and leaving that mark would
+    // make this a test of the refusal instead.
+    side.execute("DELETE FROM sync_dirty_nodes", ())
+        .expect("settle");
+
+    let report = storage.rebuild_from_vault(vault.path()).expect("rebuild");
+
+    assert!(report.read >= 2, "the folder was read: {}", report.read);
+    let survived: i64 = side
+        .query_row(
+            "SELECT count(*) FROM notes_nodes WHERE id = 'Stranger0001'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count");
+    assert_eq!(
+        survived, 0,
+        "a row no file mentions outlived a rebuild, so the database is not what the folder says"
+    );
+    // And what the folder does say came back.
+    let kept: String = side
+        .query_row(
+            "SELECT text FROM notes_nodes WHERE id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("the note");
+    assert_eq!(kept, "Thought, typed here");
+    // Home is the one row the vault never states, so a rebuild keeps it rather
+    // than deleting a row it could not put back.
+    let root: i64 = side
+        .query_row(
+            "SELECT count(*) FROM notes_nodes WHERE id = 'root'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("root");
+    assert_eq!(root, 1, "home is the row a rebuild cannot restore");
+}
+
+/// A refused rebuild changes nothing.
+///
+/// The order is the whole of it. A rebuild reads the folder as the truth, and an
+/// edit this device has not written out is not in the folder — so it refuses. That
+/// refusal has to happen *before* anything is cleared, because the wipe empties
+/// `sync_dirty_nodes` and a guard placed after it would find nothing to refuse and
+/// would have already thrown the edit away.
+#[test]
+fn a_refused_rebuild_leaves_every_row_where_it_was() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("notes.sqlite");
+    let storage = SqliteStorage::open(&path).expect("open");
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("merge");
+    let command = NotesCommand::UpdateText {
+        id: notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id"),
+        text: "Thought, typed here".to_owned(),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("edit");
+    // Deliberately not exported: this is the edit the folder has never been told
+    // about, and it exists nowhere else.
+    let before: i64 = rusqlite::Connection::open(&path)
+        .expect("open")
+        .query_row("SELECT count(*) FROM notes_nodes", [], |row| row.get(0))
+        .expect("count");
+
+    let refused = storage.rebuild_from_vault(vault.path());
+
+    assert!(
+        refused.is_err(),
+        "a rebuild over unexported edits was allowed"
+    );
+    let side = rusqlite::Connection::open(&path).expect("open");
+    let after: i64 = side
+        .query_row("SELECT count(*) FROM notes_nodes", [], |row| row.get(0))
+        .expect("count");
+    assert_eq!(after, before, "the refusal cleared rows on its way out");
+    let text: String = side
+        .query_row(
+            "SELECT text FROM notes_nodes WHERE id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("the note");
+    assert_eq!(
+        text, "Thought, typed here",
+        "the edit that had nowhere else to live was thrown away"
+    );
+    let waiting: i64 = side
+        .query_row("SELECT count(*) FROM sync_dirty_nodes", [], |row| {
+            row.get(0)
+        })
+        .expect("count");
+    assert!(
+        waiting > 0,
+        "and the queue that made the refusal true is still there to try again with"
+    );
+}
