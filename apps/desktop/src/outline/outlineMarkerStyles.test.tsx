@@ -143,4 +143,16 @@ describe("outline marker styles", () => {
       )).toContain(`content: var(--notes-marker-${level}-char, "");`);
     }
   });
+
+  // A checkbox reports done by being ticked. A bullet or a number has no box,
+  // so the only thing that can report it is the line itself.
+  it("strikes a completed row out unless its marker is a checkbox", () => {
+    expect(rule(
+      notesStyles,
+      '.notes-node[data-completed="true"]:not([data-marker-kind="todo"])'
+        + " .notes-node-title"
+    )).toContain("text-decoration: line-through;");
+    expect(rule(notesStyles, '.notes-node[data-completed="true"] .notes-node-title'))
+      .not.toContain("line-through");
+  });
 });
