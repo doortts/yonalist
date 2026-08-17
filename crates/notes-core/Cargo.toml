@@ -6,6 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+# Both already in `Cargo.lock` by way of the desktop build, so neither costs a
+# download. `getrandom` because a random source is not a thing to hand-roll, and
+# `base64` because nine bytes to twelve url-safe characters is a solved problem
+# whose edge cases — padding, the two unsafe characters — are the whole of it.
+base64 = "0.22"
+getrandom = "0.3"
 serde.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
