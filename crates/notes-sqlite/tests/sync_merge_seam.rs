@@ -1658,3 +1658,133 @@ fn dropping_a_defeat_that_is_already_gone_says_so() {
 
     assert!(!storage.forget_conflict(entry.seq).expect("drop again"));
 }
+
+/// The gesture that takes an empty bullet away used to remove the row outright,
+/// and a file is not evidence of what it does not say — so the copy another
+/// device still holds puts the line straight back, minutes later, under a caret
+/// that has moved on. A deletion has to be stated where the other device reads
+/// it, and the trash is the one place that states one.
+#[test]
+fn an_empty_bullet_taken_away_does_not_come_back_from_another_device() {
+    let (_directory, storage) = storage();
+    let file = page("", &stamp(5));
+    storage.merge_document(&file, &input()).expect("seed");
+    let id = notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id");
+
+    run(&storage, NotesCommand::RemoveEmptyNode { id });
+    assert!(
+        is_off_the_page(&storage, NODE_ID),
+        "the line goes the moment the gesture lands"
+    );
+
+    // The other device has not read the deletion yet, so it writes the page it
+    // still holds — the line included.
+    storage.merge_document(&file, &input()).expect("their copy");
+
+    assert!(
+        is_off_the_page(&storage, NODE_ID),
+        "their older copy of the line must not put it back on the page"
+    );
+}
+
+/// And the other device has to hear about it, which is what `trash.md` is for:
+/// their copy of the row is deleted by reading that file, not by noticing the
+/// line is missing from ours.
+#[test]
+fn the_gesture_states_its_deletion_in_the_trash() {
+    let (_directory, storage) = storage();
+    let vault = tempfile::tempdir().expect("vault");
+    storage
+        .merge_document(&page("", &stamp(5)), &input())
+        .expect("seed");
+    let id = notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id");
+
+    run(&storage, NotesCommand::RemoveEmptyNode { id });
+    storage
+        .export_pending(vault.path(), &store())
+        .expect("export");
+
+    let trash = std::fs::read_to_string(vault.path().join(".yonalist").join("trash.md"))
+        .expect("the trash states the deletion");
+    assert!(
+        trash.contains(NODE_ID),
+        "the deleted line has to be named where the other device reads it: {trash}"
+    );
+}
+
+/// A blank line opened and closed before anything wrote it out is nobody else's
+/// business. Trashing it would put every one of them in `trash.md`, which every
+/// device then reads.
+#[test]
+fn a_line_the_vault_never_saw_is_removed_without_a_word() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page("Thought", &stamp(5)), &input())
+        .expect("seed");
+    let blank = "Nd0000000009";
+    run(
+        &storage,
+        NotesCommand::CreateNode {
+            id: notes_core::NodeId::try_from(blank.to_owned()).expect("id"),
+            parent_id: notes_core::NodeId::try_from(PAGE_ID.to_owned()).expect("parent"),
+            position: notes_core::Position::at_end(),
+            text: String::new(),
+        },
+    );
+
+    run(
+        &storage,
+        NotesCommand::RemoveEmptyNode {
+            id: notes_core::NodeId::try_from(blank.to_owned()).expect("id"),
+        },
+    );
+
+    assert!(
+        storage.node(blank).expect("node").is_none(),
+        "a line no file ever stated leaves nothing behind"
+    );
+}
+
+/// Undo of a removal the trash now states. The row it left is the row coming
+/// back, and refusing it as a duplicate would cost the person their undo.
+#[test]
+fn undoing_the_removal_of_a_stated_line_puts_it_back() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page("", &stamp(5)), &input())
+        .expect("seed");
+    let command = NotesCommand::RemoveEmptyNode {
+        id: notes_core::NodeId::try_from(NODE_ID.to_owned()).expect("id"),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("remove");
+
+    let undo = notes_core::DomainPatch {
+        forward: patch.inverse.clone(),
+        inverse: patch.forward.clone(),
+        carried_pictures: Vec::new(),
+    };
+    storage
+        .commit(storage.revision().expect("revision"), &undo)
+        .expect("undo");
+
+    let row = storage.node(NODE_ID).expect("node").expect("the row");
+    assert!(!row.is_deleted(), "the line is back on the page");
+}
+
+/// Gone from the page, whether the row was trashed or removed outright. Which
+/// of the two it was is the vault's business, not the reader's.
+///
+/// The window that draws a page runs no `deleted` predicate — a trashed branch
+/// leaves it by carrying no path — so a row that kept its path is still on the
+/// page whatever its flag says.
+fn is_off_the_page(storage: &SqliteStorage, id: &str) -> bool {
+    storage
+        .node(id)
+        .expect("node")
+        .is_none_or(|node| node.is_deleted())
+        && storage.node_path(id).expect("path").is_none()
+}
