@@ -40,9 +40,9 @@ function bullet(
 
 /**
  * The page a New page click opens, before anything has been written into it.
- * It stands in for a row the backend has never heard of, so the sort key is
- * whatever keeps the outline ordering total -- the real one comes back with
- * the creation, once there is something worth creating it for.
+ * A page's own node never joins `nodes`, so nothing here is ordered against
+ * anything: the sort key the backend allocates arrives with the creation, once
+ * there is something worth creating the page for.
  */
 export function provisionalPage(id: string): NoteView {
   return bullet(id, ROOT_ID, SORT_KEY_STEP, "");

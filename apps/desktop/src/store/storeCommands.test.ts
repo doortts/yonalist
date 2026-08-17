@@ -189,4 +189,62 @@ describe("StoreCommands", () => {
     expect(history).toHaveBeenCalledOnce();
     expect(history.mock.calls[0][0].pane).toEqual(caret(1));
   });
+
+  /**
+   * The page a New page click opens is written by `materializePage`, and the
+   * drafts waiting to be flushed were typed into it. Both entry points have to
+   * put the creation first, or the flush names a row nothing has created.
+   */
+  describe.each([
+    ["execute", (commands: StoreCommands) => commands.execute(
+      { kind: "setStarred", id: "bullet-1", starred: true })],
+    ["executeExternal", (commands: StoreCommands) => commands.executeExternal(
+      () => Promise.resolve(receipt(4)))]
+  ])("a page written just in time, through %s", (_entry, run) => {
+    it("creates the page ahead of the flush and of the command itself", async () => {
+      let state: NotesState = {
+        ...initialNotesState,
+        status: "ready",
+        sessionId: "session-1",
+        revision: 1
+      };
+      const kinds: string[] = [];
+      const execute = vi.fn().mockImplementation(async (envelope) => {
+        kinds.push(envelope.command.kind);
+        return receipt(state.revision + 1);
+      });
+      // The store clears its own provisional page before writing it, so the
+      // creation's own trip through here finds nothing left to do.
+      let pageWritten = false;
+      let commands: StoreCommands;
+      commands = new StoreCommands(api(execute), {
+        read: () => state,
+        write: (patch) => {
+          state = { ...state, ...patch };
+        },
+        applyReceipt: (next) => {
+          state = { ...state, revision: next.revision };
+        },
+        flushDrafts: () => commands.execute(
+          { kind: "updateText", id: "page-1", text: "Groceries" }
+        ).then(() => undefined),
+        materializePage: () => {
+          if (pageWritten) return Promise.resolve();
+          pageWritten = true;
+          return commands.execute({
+            kind: "createNode",
+            id: "page-1",
+            parent_id: "root",
+            before_id: null,
+            text: ""
+          }, null, false).then(() => undefined);
+        },
+        capturePaneSnapshot: () => null
+      });
+
+      await run(commands);
+
+      expect(kinds.slice(0, 2)).toEqual(["createNode", "updateText"]);
+    });
+  });
 });

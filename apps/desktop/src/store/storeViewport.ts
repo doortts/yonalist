@@ -1,3 +1,4 @@
+import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
 import type { ViewportPage } from "../../../../packages/contracts/generated/ViewportPage";
 import type { NotesApi } from "../api";
 import type { NotesState } from "../notesState";
@@ -17,6 +18,24 @@ export class StoreViewport {
       append: boolean
     ) => void
   ) {}
+
+  /**
+   * Opens a page this window holds by itself, with no query behind it. The
+   * sequence still moves: an answer already in flight describes the page the
+   * user has just left, and letting it land would put that page back.
+   */
+  openLocalPage(pageId: string, pageNode: NoteView): void {
+    this.sequence += 1;
+    this.update({
+      status: "ready",
+      activePageId: pageId,
+      nodes: [],
+      pageNode,
+      beforeCursor: null,
+      afterCursor: null,
+      error: null
+    });
+  }
 
   async openPage(pageId: string): Promise<void> {
     if (pageId === this.getState().activePageId) return;

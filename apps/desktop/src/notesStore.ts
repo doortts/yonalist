@@ -10,7 +10,7 @@ import type { VaultChange } from "./syncChanged";
 import type { NotesApi } from "./api";
 import { initialNotesState, type NotesState } from "./notesState";
 import {
-  freshId, messageFrom, ROOT_ID, titleHistoryGroup, VIEWPORT_LIMIT
+  freshId, messageFrom, ROOT_ID, VIEWPORT_LIMIT
 } from "./store/storeSupport";
 import { provisionalPage } from "./optimisticOutline";
 import { flattenPastedOutline, type PastedOutlineNode } from "./outline/outlinePaste";
@@ -37,8 +37,6 @@ import {
 
 export class NotesStore {
   private state: NotesState = initialNotesState;
-  /** The open page nobody has written into yet, if this window has one. */
-  private provisionalPageId: string | null = null;
   private capturePaneSnapshot: () => PaneSnapshot | null = () => null;
   private readonly listeners = new Set<() => void>();
   private readonly subscriptions: StoreSubscriptions;
@@ -140,6 +138,7 @@ export class NotesStore {
         activePageId: boot.activePageId,
         nodes: boot.viewport?.nodes ?? [],
         pageNode: boot.viewport?.pageNode ?? null,
+        provisionalPageId: null,
         drafts: {},
         noteDrafts: {},
         canUndo: boot.history.canUndo,
@@ -168,7 +167,9 @@ export class NotesStore {
   async openPage(pageId: string): Promise<void> {
     // Leaving a page nobody wrote in is all it takes to drop it: it was only
     // ever in this window.
-    if (pageId !== this.provisionalPageId) this.provisionalPageId = null;
+    if (pageId !== this.state.provisionalPageId) {
+      this.update({ provisionalPageId: null });
+    }
     await this.viewport.openPage(pageId);
   }
 
@@ -206,7 +207,7 @@ export class NotesStore {
     await Promise.all([
       // A page the backend has never heard of cannot be read back; there is
       // also nothing in it for another device to have changed.
-      this.provisionalPageId === null ? this.viewport.reload() : null,
+      this.state.provisionalPageId === null ? this.viewport.reload() : null,
       this.refreshPages()
     ]);
   }
@@ -327,55 +328,39 @@ export class NotesStore {
    */
   async createPage(): Promise<string> {
     const id = freshId();
-    this.provisionalPageId = id;
-    this.update({
-      status: "ready",
-      activePageId: id,
-      nodes: [],
-      pageNode: provisionalPage(id),
-      beforeCursor: null,
-      afterCursor: null,
-      error: null
-    });
+    this.update({ provisionalPageId: id });
+    this.viewport.openLocalPage(id, provisionalPage(id));
     return id;
   }
 
   /**
    * The page's own creation, run at the command choke point so that whatever
    * the first write is -- a title keystroke, a row, an image -- the page is
-   * there before it.
-   *
-   * The drafts ride along in the creation rather than waiting for the flush
-   * that is about to run: an `updateText` for a row the backend has never seen
-   * would fail, and the flush takes the earlier queue slot. The creation wears
-   * the typing run's own history group, so the flush's own `updateText` for the
-   * same text folds into it and one ⌘Z gives back one thing.
+   * there before it. It is created empty and the drafts land right behind it:
+   * the flush that would otherwise run first would send an `updateText` to a
+   * row the backend has never seen, which is why this one command skips it.
    */
   private readonly materializePage = (): Promise<void> => {
-    const id = this.provisionalPageId;
+    const id = this.state.provisionalPageId;
     if (id === null) return Promise.resolve();
     // Cleared before the command below, which re-enters this through the choke
     // point and must find nothing left to do.
-    this.provisionalPageId = null;
-    const { drafts, noteDrafts, pageNode } = this.state;
-    const text = drafts[id] ?? pageNode?.text ?? "";
-    const note = noteDrafts[id] ?? pageNode?.note ?? "";
-    this.drafts.cancel([id]);
-    this.update({
-      pageNode: pageNode ? { ...pageNode, text, note } : pageNode,
-      drafts: omitKeys(drafts, [id]),
-      noteDrafts: omitKeys(noteDrafts, [id])
-    });
-    const created = this.commands.execute({
+    this.update({ provisionalPageId: null });
+    return this.commands.execute({
       kind: "createNode",
       id,
       parent_id: ROOT_ID,
       before_id: null,
-      text
-    }, titleHistoryGroup(id)).then(() => undefined);
-    if (note.length === 0) return created;
-    return this.commands.execute({ kind: "updateNote", id, note })
-      .then(() => undefined);
+      text: ""
+    }, null, false).then(() => undefined, (cause) => {
+      // Nothing was written, so the page is what it was before this ran: one
+      // the next command has to create, rather than one every later write
+      // silently misses.
+      if (this.state.activePageId === id) {
+        this.update({ provisionalPageId: id });
+      }
+      throw cause;
+    });
   };
 
   async createNode(

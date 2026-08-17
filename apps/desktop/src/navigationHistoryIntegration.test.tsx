@@ -182,6 +182,26 @@ describe("a mutation that moves the view", () => {
     expect(notesApi.execute).not.toHaveBeenCalled();
   });
 
+  it("offers nothing to type into when redo returns to a dropped page", async () => {
+    const notesApi = pageApi();
+    render(<App api={notesApi} />);
+    await screen.findByDisplayValue("First thought");
+    await newPageTitle();
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    await waitFor(() => expect(screen.getByDisplayValue("Today"))
+      .toHaveAttribute("aria-label", "Page title"));
+
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true, shiftKey: true });
+
+    // The page was dropped when its only reader left it, so what redo returns
+    // to is a page that never existed. The pane says it has nothing to show
+    // rather than offering a title field whose every keystroke would be
+    // refused by a backend that has no such row.
+    await screen.findByText("No outline yet.");
+    expect(screen.queryByRole("textbox", { name: "Page title" })).toBeNull();
+    expect(notesApi.execute).not.toHaveBeenCalled();
+  });
+
   it("takes one undo press to trash a page and give it back", async () => {
     const notesApi = pageApi();
     render(<App api={notesApi} />);

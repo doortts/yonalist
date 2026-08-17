@@ -2,7 +2,7 @@
 
 - 작성: 2026-08-18
 - 기준: `main@8ae7f36f`, 작업 worktree `claude/new-page-creation-ux-8bcfd0`
-- 설계·구현·리뷰 모두 Opus 5. Fable 5 한도 소진으로 `fable-opus-loop`의 모델 분리를 지키지 못했다
+- Fable 5 한도 소진으로 `fable-opus-loop`의 모델 분리를 지키지 못했다. 설계와 구현은 같은 Opus 5 세션이, 적대적 리뷰는 코드를 보지 않은 별도 Opus 5 에이전트가 맡았다. 그 리뷰가 REWORK를 냈고 항목 1의 초안 처리·경쟁 조건·실패 복구가 그 결과로 바뀌었다
 
 ## 1. 제공 계약
 
@@ -38,15 +38,17 @@ A1·A4·A5는 항목 1, A2는 항목 2, A3은 항목 3이 잠근다.
 
 `NotesStore.createPage()`는 IPC를 보내지 않는다. `provisionalPageId`를 세우고 빈 `pageNode`를 투영한 뒤 그 페이지를 연다. `StoreCommands`는 `execute`·`executeExternal` 첫 줄에서 host의 `materializePage()`를 부르고, 그 안에서 페이지의 `createNode`가 큐의 앞자리를 먼저 가져간다.
 
-제목·노트 초안은 생성 명령이 데려간다. 초안을 남겨두면 뒤이어 도는 `flushDrafts`가 아직 없는 행에 `updateText`를 먼저 보내 실패한다 — `storeCommands.ts`의 주석이 말하는 그 앞자리다. 생성 명령은 `flushTitle`과 같은 history group을 달아, 같은 타이핑에서 나온 중복 `updateText`가 undo 한 칸으로 접힌다.
+페이지는 빈 채로 태어나고 초안은 그 뒤를 따른다. 생성 명령만 초안 flush를 건너뛴다 — 건너뛰지 않으면 그 명령 자신의 `flushDrafts`가 아직 없는 행에 `updateText`를 먼저 큐에 넣고, `storeCommands.ts`의 주석이 말하는 그 앞자리를 가져가 실패한다.
 
-떠날 때는 지울 것이 없다. `openPage`가 다른 페이지로 가면 표식만 사라진다. 다른 기기의 변경이 도착해도 아직 백엔드가 모르는 페이지를 다시 읽지는 않는다.
+떠날 때는 지울 것이 없다. `openPage`가 다른 페이지로 가면 표식만 사라진다. 다른 기기의 변경이 도착해도 아직 백엔드가 모르는 페이지를 다시 읽지는 않는다. 페이지 전환은 `StoreViewport`가 계속 혼자 소유한다: 로컬로 여는 것도 sequence를 올려, 떠난 페이지의 늦은 응답이 화면을 되돌리지 못한다.
+
+생성이 실패하면 표식이 되살아난다. 아무것도 쓰이지 않았으므로 다음 명령이 다시 만들어보는 것이 맞고, 그러지 않으면 그 뒤의 모든 쓰기가 없는 부모를 향한다.
 
 - 실패 테스트: `apps/desktop/src/notesStore.test.ts` — "쓰기 전에는 아무것도 보내지 않는다", "안 쓴 페이지는 남지 않는다", "자식 불릿보다 페이지가 먼저 태어난다"
 
 ### 항목 2 — 앱: 목록에 없는 페이지를 열고, 커서를 제목에 둔다
 
-`App`의 열린 페이지 조회는 `state.pages`에서 못 찾으면 `activePageId`로 빈 제목의 페이지를 세운다. 제목은 어차피 `useNotesNode`가 노드에서 읽는다. New page는 `emptyPaneLocation`에 `primaryFocus`(제목 필드)를 얹어 기존 복원 경로로 커서를 보낸다. 그리고 이제 생성은 mutation이 아니므로 `recordMutationNavigation`이 아니라 `recordNavigation`으로 기록한다 — 전자는 스토어가 방금 밀어 넣은 mutation 칸을 뽑아내는데, 이제 그 칸은 남의 것이다.
+`App`의 열린 페이지 조회는 목록에 없는 페이지가 지금 열린 provisional 페이지일 때만 빈 제목의 페이지를 세운다. 제목은 어차피 `useNotesNode`가 노드에서 읽는다. 목록이 다른 이유로 잃어버린 id — 다른 기기가 버린 페이지, 낡은 히스토리 항목 — 는 없는 페이지이고, 그 위에 편집 가능한 제목 줄을 그리면 모든 타자가 거부된다. New page는 `emptyPaneLocation`에 `primaryFocus`(제목 필드)를 얹어 기존 복원 경로로 커서를 보낸다. 그리고 이제 생성은 mutation이 아니므로 `recordMutationNavigation`이 아니라 `recordNavigation`으로 기록한다 — 전자는 스토어가 방금 밀어 넣은 mutation 칸을 뽑아내는데, 이제 그 칸은 남의 것이다.
 
 - 실패 테스트: `apps/desktop/src/navigationHistoryIntegration.test.tsx` — "New page는 빈 제목에 커서만 두고 아무것도 쓰지 않는다"
 
@@ -58,5 +60,6 @@ A1·A4·A5는 항목 1, A2는 항목 2, A3은 항목 3이 잠근다.
 
 ## 4. 남는 위험
 
-- 첫 내용을 쓴 직후 ⌘Z를 누르면 페이지 생성까지 함께 물러난다. 그 순간 열려 있는 페이지는 백엔드에 없는 상태가 되고, 한 번 더 ⌘Z를 누르면 이전 페이지로 돌아간다. 되돌릴 수 없는 손실은 없다.
+- 새 페이지에 처음 쓴 글자는 undo 두 칸이다. 한 번은 글자를, 한 번은 페이지를 되돌린다.
+- 쓰지 않고 떠난 페이지로 redo가 돌아가면 그 페이지는 없다. 그때 창은 `No outline yet.`만 보여주고, 그 자리에서 할 수 있는 일은 다른 곳으로 가는 것뿐이다. 바뀌기 전에도 버려진 id에 대해 같은 화면이었다.
 - 마지막 자식을 지워 빈 페이지가 되는 것은 이 설계가 다루지 않는다. 한 번이라도 내용이 있었던 페이지는 정식 페이지다.

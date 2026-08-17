@@ -675,13 +675,20 @@ describe("NotesStore viewport recovery", () => {
     store.setDraft(pageId, "Groceries");
     await store.flushDraft(pageId);
 
-    expect(vi.mocked(notesApi.execute).mock.calls[0][0].command).toEqual({
-      kind: "createNode",
-      id: pageId,
-      parent_id: "root",
-      before_id: null,
-      text: "Groceries"
-    });
+    // The page is created empty and the typing lands right behind it: an
+    // `updateText` sent first would name a row the backend has never seen.
+    expect(vi.mocked(notesApi.execute).mock.calls.map(
+      ([envelope]) => envelope.command
+    )).toEqual([
+      {
+        kind: "createNode",
+        id: pageId,
+        parent_id: "root",
+        before_id: null,
+        text: ""
+      },
+      { kind: "updateText", id: pageId, text: "Groceries" }
+    ]);
     expect(store.getSnapshot().pages).toContainEqual({
       id: pageId,
       title: "Groceries",
@@ -701,6 +708,52 @@ describe("NotesStore viewport recovery", () => {
         "parent_id" in envelope.command ? envelope.command.parent_id : null
       ]
     )).toEqual([["createNode", "root"], ["createNode", pageId]]);
+  });
+
+  it("keeps the new page when the answer for the page it left lands late", async () => {
+    let release!: (viewport: ViewportPage) => void;
+    const notesApi = api(vi.fn().mockReturnValue(
+      new Promise<ViewportPage>((resolve) => {
+        release = resolve;
+      })
+    ));
+    const store = new NotesStore(notesApi);
+    await store.bootstrap();
+
+    const opening = store.openPage("page-2");
+    const pageId = await store.createPage();
+    release({
+      pageId: "page-2",
+      anchorId: null,
+      beforeCursor: null,
+      afterCursor: null,
+      nodes: []
+    });
+    await opening;
+
+    expect(store.getSnapshot().activePageId).toBe(pageId);
+    expect(store.getSnapshot().provisionalPageId).toBe(pageId);
+  });
+
+  it("tries the page's creation again after it fails", async () => {
+    const { store, notesApi, pageId } = await openedNewPage();
+    vi.mocked(notesApi.execute).mockRejectedValueOnce(new Error("Offline."));
+
+    await expect(store.createNode(pageId)).rejects.toThrow("Offline.");
+    await store.createNode(pageId);
+
+    // The failed creation, the one that worked, and only then the row that
+    // asked for it. A page left uncreated would swallow every later write.
+    expect(vi.mocked(notesApi.execute).mock.calls.map(
+      ([envelope]) => [
+        envelope.command.kind,
+        "parent_id" in envelope.command ? envelope.command.parent_id : null
+      ]
+    )).toEqual([
+      ["createNode", "root"],
+      ["createNode", "root"],
+      ["createNode", pageId]
+    ]);
   });
 
   it("opens Home after the active page moves to Trash", async () => {

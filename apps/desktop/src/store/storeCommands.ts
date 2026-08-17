@@ -72,7 +72,14 @@ export class StoreCommands {
 
   execute(
     command: IpcNotesCommand,
-    historyGroup: string | null = null
+    historyGroup: string | null = null,
+    /**
+     * The page's own creation passes `false`. The drafts waiting to be flushed
+     * are the ones typed into the row this command is about to make, so
+     * flushing first would send them ahead of it, to a row the backend has
+     * never seen. They go out right behind it instead.
+     */
+    flushFirst = true
   ): Promise<MutationReceipt> {
     const created = this.host.materializePage();
     // Read before the flush below: a flush is itself a command, and its own
@@ -82,7 +89,7 @@ export class StoreCommands {
     // Kicked off synchronously, before this command is queued, so the drafts'
     // own `updateText`/`updateNote` take the earlier slots and the queue runs
     // them first. Awaiting it inside the operation only propagates its failure.
-    const flushed = TEXT_OWNING_COMMANDS.has(command.kind)
+    const flushed = !flushFirst || TEXT_OWNING_COMMANDS.has(command.kind)
       ? null
       : this.host.flushDrafts();
     const scopedHistoryGroup = this.historyEvents.scopedGroup(historyGroup);

@@ -223,12 +223,15 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   // Home is the root page, and the root is no page's row, so the pane gets a
   // titleless stand-in rather than a lookup that can never hit.
   const atHome = state.activePageId === ROOT_ID;
-  // A page the list does not carry is a page nobody has written in yet: it is
-  // open, and its title is the store's to answer for, not the list's.
+  // The page nobody has written in yet is open and has no row in the list, so
+  // the store is what answers for it. Only that one: an id the list has lost
+  // for any other reason -- a page trashed on another device, a stale history
+  // entry -- names a page that is gone, and an editable page over a row the
+  // backend does not have would refuse every keystroke.
   const activePage = atHome
     ? { id: ROOT_ID, title: "" }
     : state.pages.find((page) => page.id === state.activePageId) ??
-      (state.activePageId
+      (state.provisionalPageId === state.activePageId && state.activePageId
         ? { id: state.activePageId, title: "" }
         : undefined);
   const captureNavigation = useCallback((): AppNavigationLocation => {
