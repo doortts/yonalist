@@ -38,16 +38,23 @@ function rememberDismissal() {
 }
 
 /**
- * Offered once, on the first launch that has no vault yet. It never blocks the
- * outliner: a single-device user loses nothing by skipping it, and the settings
- * screen keeps the choice open afterwards.
+ * Offered once, on the first launch that has no vault yet, and asked before
+ * anything is written: the guide notes are this device's own claim on every
+ * line they occupy, and a device joining a folder that already holds notes
+ * must not make that claim. So the folder is settled first, and only a device
+ * that is starting its notes here is given a guide.
+ *
+ * It still never blocks the outliner. Answering "Later" is a decision too —
+ * these notes start here — so it takes the guide.
  */
 export function VaultSetupCard({
   readVaultPath,
-  setVaultPath
+  setVaultPath,
+  writeGuide
 }: {
   readonly readVaultPath: () => Promise<string | null>;
   readonly setVaultPath: (path: string) => Promise<SyncVaultFolderState>;
+  readonly writeGuide: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -73,6 +80,10 @@ export function VaultSetupCard({
   const dismiss = () => {
     rememberDismissal();
     setOpen(false);
+    void writeGuide().catch(() => {
+      // Nothing to say to the user: they asked to be left alone, and an
+      // outline with no guide in it is the same outline they already have.
+    });
   };
 
   const choose = async () => {
@@ -82,6 +93,10 @@ export function VaultSetupCard({
       const chosen = await pickVaultFolder();
       if (chosen === null) return;
       const state = await setVaultPath(chosen);
+      // Only a folder that is not already somebody's notes. Writing a guide
+      // into a shared folder would restate every line of it as this device's
+      // own, newer than anything the other device has said about them.
+      if (state !== "existingVault") await writeGuide();
       const sentence = folderNotice[state];
       if (sentence === null) {
         setOpen(false);

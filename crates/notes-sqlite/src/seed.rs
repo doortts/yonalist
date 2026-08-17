@@ -54,12 +54,18 @@ pub(crate) fn seed_onboarding(connection: &mut Connection) -> Result<(), Storage
             |row| row.get(0),
         )
         .map_err(internal)?;
-    let has_nodes: bool = transaction
-        .query_row("SELECT EXISTS(SELECT 1 FROM notes_nodes)", [], |row| {
-            row.get(0)
-        })
+    // Home does not count. It is made when the database is, so counting it
+    // would mean this only ever ran on a database with no root — which is to
+    // say, never, now that the guide is written after the folder is chosen
+    // rather than before the root row exists.
+    let has_notes: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes_nodes WHERE id <> ?1)",
+            [crate::schema::ROOT_ID],
+            |row| row.get(0),
+        )
         .map_err(internal)?;
-    if !seeded && !has_nodes {
+    if !seeded && !has_notes {
         transaction
             .execute(
                 "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, note)

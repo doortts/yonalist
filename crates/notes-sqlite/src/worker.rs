@@ -111,6 +111,13 @@ enum Request {
     Revision {
         reply: SyncSender<Result<u64, StorageError>>,
     },
+    /// The guide notes, once somebody has decided what folder these notes live
+    /// in. Deliberately not part of opening the database: a device joining a
+    /// folder that already holds notes must not be given a fresh reading for
+    /// every line the guide occupies.
+    SeedOnboarding {
+        reply: SyncSender<Result<(), StorageError>>,
+    },
     Node {
         id: String,
         reply: SyncSender<Result<Option<NoteNode>, StorageError>>,
@@ -403,6 +410,13 @@ impl SqliteStorage {
         self.request(|reply| Request::Revision { reply })
     }
 
+    /// Writes the guide notes, unless this database already holds notes or has
+    /// been given them before. Called once the folder these notes live in has
+    /// been settled — see `Request::SeedOnboarding`.
+    pub fn seed_onboarding(&self) -> Result<(), StorageError> {
+        self.request(|reply| Request::SeedOnboarding { reply })
+    }
+
     pub fn node(&self, id: &str) -> Result<Option<NoteNode>, StorageError> {
         self.request(|reply| Request::Node {
             id: id.to_owned(),
@@ -471,7 +485,6 @@ impl SqliteStorage {
         let worker = thread::Builder::new()
             .name("notes-v2-db".into())
             .spawn(move || {
-                let seed_onboarding = matches!(location, DatabaseLocation::File(_));
                 if let DatabaseLocation::File(path) = &location {
                     schema::remake_if_an_older_build_made_it(path);
                 }
@@ -497,11 +510,13 @@ impl SqliteStorage {
                     // exists to prevent. It only reads, so on a first boot this
                     // is a no-op against empty tables.
                     hlc::reseed(&clock, &connection).map_err(StorageError::Internal)?;
-                    if seed_onboarding {
-                        crate::seed::seed_onboarding(&mut connection)?;
-                    }
-                    // After the seed so the onboarding page is adopted like any
-                    // other legacy top-level page.
+                    // The guide is not written here. Opening the database
+                    // happens before the app knows what folder these notes
+                    // live in, and a device joining a folder that already holds
+                    // notes must not be handed a fresh reading for every line
+                    // the guide occupies — that reading beats whatever the
+                    // other device said, deletions included. `seed_onboarding`
+                    // is called once that folder has been settled.
                     schema::ensure_root(&mut connection)?;
                     Ok((connection, clock))
                 });
@@ -746,6 +761,16 @@ impl SqliteStorage {
                         }
                         Request::Revision { reply } => {
                             let _ = reply.send(repository::revision(&connection));
+                        }
+                        Request::SeedOnboarding { reply } => {
+                            // Then the root repair, which is what adopts a
+                            // top-level page as a child of home — the guide is
+                            // written as a page like any other and needs the
+                            // same adoption an imported one gets.
+                            let _ = reply.send(
+                                crate::seed::seed_onboarding(&mut connection)
+                                    .and_then(|()| schema::ensure_root(&mut connection)),
+                            );
                         }
                         Request::NodePath { id, reply } => {
                             let _ = reply.send(

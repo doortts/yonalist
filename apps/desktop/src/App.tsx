@@ -69,6 +69,12 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     (path: string) => api.syncVaultSet(path),
     [api]
   );
+  // Written and then read back: the guide arrives behind the store's back, so
+  // nothing would show it until the next launch otherwise.
+  const writeGuide = useCallback(async () => {
+    await api.onboardingWriteGuide();
+    await store.bootstrap();
+  }, [api, store]);
   const readConflicts = useCallback(() => api.syncConflicts(200), [api]);
   const restoreConflict = useCallback(
     (seq: number) => api.syncRestoreConflict(seq),
@@ -620,6 +626,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           <VaultSetupCard
             readVaultPath={readVaultPath}
             setVaultPath={chooseVaultPath}
+            writeGuide={writeGuide}
           />
         </Suspense>
       )}
