@@ -31,6 +31,7 @@ Markdown은 다시 사람이 읽고 고칠 수 있는 본문이 된다. 문서 �
 | `apps/desktop/src-tauri/src/vault_watch.rs` | 시작 시 vault 전체를 스캔하고 이후 파일 이벤트를 처리함 | 별도 초기 동기화 서비스 없이 기존 startup scan을 사용 |
 | `crates/notes-sync/src/merger.rs` | HLC LWW, 위치 주장, 충돌 기록과 복구가 구현돼 있음 | 입출력 경계는 유지하고 핵심 판정만 B/L/R snapshot merge로 교체 |
 | `crates/notes-sqlite/src/sync_merge.rs` | import transaction, 경로 재구축, revision bump, 충돌 보존을 한곳에서 담당함 | 새 transaction coordinator를 만들지 않고 이 경로를 확장 |
+| onboarding seed와 vault setup | 사용자가 vault를 먼저 고른 뒤 guide 여부를 정하지만 현재 분류는 root `README.md`와 `.yonalist`만 확인함 | 하위 page가 먼저 도착한 기존 vault도 찾도록 분류를 보강하고 seed ID를 고정 yid로 교체 |
 | `notes_images`, attachment 처리 | 자산은 전체 content hash로 식별하고, bytes가 늦게 와도 이미지 row를 먼저 적용함 | `asset_hash`, 표시 폭, pixel·byte 크기를 하단에 보존해 placeholder도 복구 |
 | trash export | 복원된 노드가 있으면 trash도 재방출하고, 앱이 쓴 hash와 같을 때만 빈 trash 파일을 지움 | 이 삭제 안전 규칙을 그대로 유지 |
 | Settings 복구 화면 | 덮인 노트 후보를 보고 복원할 수 있음 | 별도 충돌 앱을 만들지 않고 같은 화면과 repository를 확장 |
@@ -210,7 +211,22 @@ metadata 무결성 검증과 현재 본문 변경 판정을 분리해야 정상�
 
 일반 create, split, duplicate root, Markdown import는 한 CSPRNG helper를 사용한다. 한 duplicate 명령의 자식은 현재 명령 모양을 유지하기 위해 새 root `yid`와 preorder ordinal의 domain-separated SHA-256 앞 9바이트로 결정적으로 파생한다. 누락된 부모의 recovery page도 `"yonalist-recovery-1\0" || missing_parent_yid`의 SHA-256 앞 9바이트로 만든다. 둘 다 base64url 12자로 인코딩하고 기존 ID와 충돌하면 부분 적용하지 않고 격리한다. UUID parser와 UUID v5 namespace는 남기지 않는다.
 
-onboarding seed는 예외적으로 source에 고정된 12자 yid 집합을 쓴다. startup seed가 vault scan보다 먼저 실행돼도 같은 seed 파일과 같은 block을 가리켜야 하기 때문이다. 이 상수 집합은 서로 고유하고 일반 생성 정규식을 만족해야 하며, 재실행은 기존처럼 idempotent해야 한다.
+onboarding seed는 예외적으로 source에 고정된 12자 yid 집합을 쓴다. vault를 먼저 고른 뒤 다음 규칙으로 guide 여부를 정한다.
+
+- 빈 새 vault 또는 “나중에”: seed
+- root marker나 하위 `README.md`의 Yonalist frontmatter를 찾은 기존 vault: seed하지 않고 import
+- 비어 있지 않지만 Yonalist 여부를 확정할 수 없는 폴더: 자동 seed하지 않고 사용자의 명시적 “새 노트로 사용” 확인을 기다림
+
+하위 문서 감지는 symlink를 따라가지 않고 최대 10,000개 directory entry, 깊이 32까지만 훑는다. `README.md`의 `kind`와 `format_version` frontmatter만 읽어 판정한다. 한도에 닿으면 “없음”이 아니라 `nonEmptyUnknown`이다. 이 보수적 분류는 클라우드가 page 폴더를 root `README.md`보다 먼저 내려보낸 경우 새 guide가 기존 ID에 대한 최신 주장이 되는 일을 막는다. 고정 seed 집합은 guide fixture와 새 vault가 언제나 같은 block identity를 쓰게 하고 재호출을 idempotent하게 만든다. 각 상수는 서로 고유하고 일반 생성 정규식을 만족해야 한다.
+
+UI 확인과 vault 활성화 사이의 경쟁을 막기 위해 backend 계약을 둘로 나눈다.
+
+1. `notes_sync_vault_inspect(path)`는 경로를 저장하거나 watcher를 시작하지 않고 위 분류만 반환한다.
+2. first-run과 Settings는 결과를 보여 주고 `nonEmptyUnknown`이면 명시적 “새 노트로 사용”을 받는다.
+3. `notes_sync_vault_set(path, intent)`는 backend에서 같은 분류를 다시 실행한다. 현재 분류와 `intent`가 맞을 때만 경로 저장과 watcher 시작을 한 번에 진행한다.
+4. inspect 뒤 파일 상태가 달라졌거나 확인이 없으면 아무 side effect 없이 `confirmation_required`를 반환한다.
+
+기존 로컬 DB에 노트가 있는 Settings 경로도 이 계약을 반드시 거친다. 그래야 미확정 폴더를 활성화한 직후 기존 로컬 노트를 먼저 방출하는 일을 막을 수 있다.
 
 ## 5. canonical snapshot과 hash
 
@@ -549,7 +565,7 @@ asset의 정체성은 상대 경로가 아니라 전체 SHA-256이다. 하단에
 - `notes-sync/render.rs`: 새 포맷 1과 문맥별 escape
 - `notes-sync/merger.rs`: 외부 무ID 줄 발급, UUID 기반 recovery sort key, recovery page UUID v5를 yid 규칙으로 교체
 - `notes-sync/layout.rs`: UUID parsing을 제거하고 폴더 suffix를 문서 `yid`로 변경
-- `notes-sqlite/seed.rs`: onboarding seed를 compile-time 고정 yid 집합으로 교체하고 startup scan 전 재실행의 idempotence 유지
+- `notes-sqlite/seed.rs`: onboarding seed를 compile-time 고정 yid 집합으로 교체하고 재호출 idempotence 유지
 - fixture와 parser/render round-trip test를 새 포맷으로 교체
 
 ### M2. snapshot 저장
@@ -570,6 +586,10 @@ asset의 정체성은 상대 경로가 아니라 전체 SHA-256이다. 하단에
 
 - startup scan과 `is_conflicted_copy` 재사용. 이름 후보를 parse한 뒤 frontmatter `id`가 정본과 같을 때만 충돌 사본으로 확정
 - `vault_watch.rs`, `watch_queue.rs`: 문서 간 이동의 짧은 vault-wide claim 수집을 기존 path queue 바깥에 추가
+- `sync_settings.rs`, Tauri command/API contract: side effect 없는 `vault_inspect`와 활성화 직전 재검증하는 `vault_set(path, intent)` 구현
+- `VaultSetupCard.tsx`, `SettingsView.tsx`: 같은 `empty`/`existingYonalist`/`nonEmptyUnknown` 확인 흐름 사용
+- 하위 page가 root보다 먼저 도착한 vault와 비어 있지 않은 미확정 폴더에 자동 seed하지 않는 회귀 test
+- 기존 로컬 노트가 있는 Settings 폴더 변경도 확인 전 경로 저장·watcher 시작·export를 하지 않는 회귀 test
 - `sync_merge.rs` transaction에서 snapshot/head/DB tree 동시 적용
 - `export.rs`의 `write_checked` 뒤 조건부 publish
 - current trash/asset dirty와 삭제 안전 규칙 회귀 test: `restored_node_queues_trash`, `empty_trash_removes_only_owned_bytes`, `empty_trash_clears_echo_record`
@@ -602,7 +622,10 @@ asset의 정체성은 상대 경로가 아니라 전체 SHA-256이다. 하단에
 ### 데이터 보존
 
 - DB를 지운 뒤 새 포맷 vault에서 본문, 계층, 순서, 상태, 이미지 폭을 복원한다.
-- 빈 DB의 onboarding seed와 뒤이은 vault scan이 같은 고정 yid를 합치며 중복 문서를 만들지 않는다.
+- root 또는 하위 page에서 Yonalist frontmatter를 찾은 기존 vault를 선택하면 guide를 seed하지 않고 파일의 block identity를 그대로 가져온다.
+- 비어 있지 않은 미확정 폴더는 명시적 사용자 확인 전 guide를 seed하지 않는다.
+- first-run과 Settings 모두 확인 전에는 vault 경로를 저장하거나 watcher/export를 시작하지 않는다.
+- 새·빈 vault의 onboarding seed는 고정 yid를 쓰며 두 번 호출해도 중복 문서를 만들지 않는다.
 - 같은 블릿의 양쪽 수정, 삭제/수정, 상반된 이동은 pending이며 세 후보가 남는다.
 - 충돌 해결 직전 파일 또는 DB가 바뀌면 오래된 결과를 쓰지 않는다.
 - write hash 검사와 교체 사이에 외부 편집이 들어와도 두 후보 중 어느 것도 사라지지 않는다.
