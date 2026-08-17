@@ -10,7 +10,7 @@ fn page(body: &str) -> String {
     format!(
         "---\nkind: yonalist-notes\nformat_version: 1\n\
          id: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1\n\
-         max_hlc: 0swkd7qz9-00-a3f2\nroot_hlc: 0swkd7qz5-00-a3f2\n---\n# Projects\n\n{body}"
+         max_hlc: 0swkd7qz9-00-a3f2\nupdated: 2041-10-11T06:19:09Z\nroot_hlc: 0swkd7qz5-00-a3f2\n---\n# Projects\n\n{body}"
     )
 }
 
@@ -152,7 +152,7 @@ fn a_colon_token_swallows_the_next_word() {
 #[test]
 fn the_home_document_accepts_the_literal_root_id() {
     let source = "---\nkind: yonalist-notes\nformat_version: 1\nid: root\n\
-                  max_hlc: 0swkd7qz6-00-a3f2\nroot_hlc: 0swkd7qz4-00-a3f2\n---\n# Home\n\n";
+                  max_hlc: 0swkd7qz6-00-a3f2\nupdated: 2041-10-11T06:19:09Z\nroot_hlc: 0swkd7qz4-00-a3f2\n---\n# Home\n\n";
     let VaultFile::Page(parsed) = accepted(source) else {
         panic!("a page");
     };
@@ -386,10 +386,68 @@ fn every_golden_survives_a_parse_render_round_trip() {
     }
 }
 
+/// The stamp is the fact; the readable time is a reading of it. So the file's own
+/// copy is never believed — a hand-edited one is replaced, and a file written by
+/// something that never heard of the key gains it, which is what any ordinary
+/// Markdown editor leaves behind after somebody fixes a typo.
+#[test]
+fn the_readable_time_is_derived_rather_than_believed() {
+    let canonical =
+        page("- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 -->\n");
+    assert!(
+        canonical.contains("updated: 2041-10-11T06:19:09Z"),
+        "the stamp reads 2041, so the file has to say so where a person can check it:\n{canonical}"
+    );
+
+    for (name, source) in [
+        (
+            "a hand-edited time",
+            canonical.replace(
+                "updated: 2041-10-11T06:19:09Z",
+                "updated: 1999-01-01T00:00:00Z",
+            ),
+        ),
+        (
+            "no time at all",
+            canonical.replace("updated: 2041-10-11T06:19:09Z\n", ""),
+        ),
+    ] {
+        let rendered =
+            String::from_utf8(notes_sync::render::render(&accepted(&source)).expect("render"))
+                .expect("utf-8");
+
+        assert_eq!(
+            rendered, canonical,
+            "{name} did not come back as the time the stamp states"
+        );
+    }
+}
+
+/// One instant, one spelling, whatever the device's own clock is set to. A local
+/// offset here would have two devices in different zones write different bytes
+/// for one document, and each would then read the other's file as an edit and
+/// write it back.
+#[test]
+fn the_readable_time_does_not_depend_on_where_the_device_is() {
+    let canonical =
+        page("- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 -->\n");
+
+    let line = canonical
+        .lines()
+        .find(|line| line.starts_with("updated: "))
+        .expect("the readable time");
+
+    assert!(
+        line.ends_with('Z'),
+        "a time carrying an offset is a time that differs per device: `{line}`"
+    );
+}
+
 #[test]
 fn unknown_fields_survive_a_parse_render_round_trip() {
     let source = "---\nkind: yonalist-notes\nformat_version: 1\n\
                   id: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1\nmax_hlc: 0swkd7qz9-00-a3f2\n\
+                  updated: 2041-10-11T06:19:09Z\n\
                   root_hlc: 0swkd7qz5-00-a3f2\nfuture_key: kept\n---\n# Projects\n\n\
                   - Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 \
                   t: 0swkd7qz9-00-a3f2 star future: value lone -->\n";

@@ -78,6 +78,12 @@ const KNOWN_KEYS: &[&str] = &[
     "parent",
     "sort_key",
     "max_hlc",
+    // Derived from `max_hlc`, and known so that it is not carried through as a
+    // key this version has never heard of — which would have the renderer write
+    // its own line and the stranger's copy of it, one file growing a duplicate
+    // per round trip. Nothing reads the value: `max_hlc` is the fact and this is
+    // a reading of it, so a hand-edited one is simply replaced.
+    "updated",
     "root_hlc",
     "root_marker_kind",
     "root_ordered_start",

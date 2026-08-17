@@ -2641,6 +2641,7 @@ dependencies = [
 name = "notes-sync"
 version = "0.2.0"
 dependencies = [
+ "chrono",
  "libc",
  "notes-application",
  "notes-core",

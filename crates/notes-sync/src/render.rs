@@ -45,11 +45,9 @@ fn render_page(document: &PageDocument) -> Result<Vec<u8>, String> {
     // An empty HLC would leave a key ending in a space, which a hand editor
     // trims away and `git diff --check` flags. Both are required at render, so
     // this reports rather than writes one.
-    let _ = writeln!(
-        out,
-        "max_hlc: {}",
-        required_hlc(&document.max_hlc, "max_hlc")?
-    );
+    let max_hlc = required_hlc(&document.max_hlc, "max_hlc")?;
+    let _ = writeln!(out, "max_hlc: {max_hlc}");
+    let _ = writeln!(out, "updated: {}", readable(&max_hlc)?);
     let _ = writeln!(
         out,
         "root_hlc: {}",
@@ -76,6 +74,24 @@ fn render_page(document: &PageDocument) -> Result<Vec<u8>, String> {
         previous = node.id.clone();
     }
     Ok(out.into_bytes())
+}
+
+/// The instant a stamp stands for, in a form a person can read.
+///
+/// `max_hlc` is base36 and says nothing to anyone opening the file; this is the
+/// same fact in the one notation every editor, log and calendar agrees on. It is
+/// derived rather than recorded, so it cannot drift from the stamp it describes.
+///
+/// UTC, and deliberately. The value has to be a function of the stamp alone: a
+/// local offset would have two devices in different zones render different bytes
+/// for one document, and each would then read the other's file as an edit and
+/// write it back — a loop over a difference nobody made.
+fn readable(stamp: &str) -> Result<String, String> {
+    let millis = crate::hlc::Hlc::decode(stamp)?.millis();
+    let millis = i64::try_from(millis).map_err(|_| "A stamp's time is out of range.".to_owned())?;
+    chrono::DateTime::from_timestamp_millis(millis)
+        .ok_or_else(|| "A stamp's time is out of range.".to_owned())
+        .map(|at| at.format("%Y-%m-%dT%H:%M:%SZ").to_string())
 }
 
 /// Only what differs from the default is written: a file full of keys nobody
@@ -108,11 +124,9 @@ fn render_trash(document: &TrashDocument) -> Result<Vec<u8>, String> {
     out.push_str("---\n");
     out.push_str("kind: yonalist-trash\n");
     let _ = writeln!(out, "format_version: {FORMAT_VERSION}");
-    let _ = writeln!(
-        out,
-        "max_hlc: {}",
-        required_hlc(&document.max_hlc, "max_hlc")?
-    );
+    let max_hlc = required_hlc(&document.max_hlc, "max_hlc")?;
+    let _ = writeln!(out, "max_hlc: {max_hlc}");
+    let _ = writeln!(out, "updated: {}", readable(&max_hlc)?);
     out.push_str("---\n");
     let mut previous = String::new();
     for node in &document.nodes {

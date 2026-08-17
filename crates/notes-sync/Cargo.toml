@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 libc = "0.2"
 notes-application.workspace = true
 notes-core.workspace = true

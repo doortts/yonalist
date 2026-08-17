@@ -47,6 +47,13 @@ impl Hlc {
     /// Which device issued this reading. The merge uses it to tell an edit made
     /// in this vault from one that arrived from elsewhere — no other evidence
     /// of that survives the trip through a file.
+    /// The wall clock the reading carries. Encoded base36, a stamp says nothing
+    /// to the person reading the file; this is what lets the renderer write the
+    /// same instant in a form they can check against their own memory.
+    pub fn millis(&self) -> u64 {
+        self.millis
+    }
+
     pub fn device(&self) -> &str {
         &self.device
     }
