@@ -3,14 +3,26 @@
 //! half applied is worse than one that is skipped, because nothing downstream
 //! can tell which half it got.
 
+use chrono::FixedOffset;
 use notes_sync::document::{DocumentId, Marker, NodeBody, VaultFile};
 use notes_sync::parse::parse;
+
+/// Every document here is rendered by a device in Seoul, which is the zone the
+/// goldens are written at. The readable time carries the offset of whoever wrote
+/// the file, so a test comparing bytes has to say which device wrote them.
+fn render(file: &VaultFile) -> Result<Vec<u8>, String> {
+    notes_sync::render::render(file, seoul())
+}
+
+fn seoul() -> FixedOffset {
+    FixedOffset::east_opt(9 * 3600).expect("+09:00")
+}
 
 fn page(body: &str) -> String {
     format!(
         "---\nkind: yonalist-notes\nformat_version: 1\n\
          id: PrJects00001\n\
-         max_hlc: 0swkd7qz9-00-a3f2\nupdated: 2041-10-11T06:19:09Z\nroot_hlc: 0swkd7qz5-00-a3f2\n---\n# Projects\n\n{body}"
+         max_hlc: 0swkd7qz9-00-a3f2\nupdated: 2041-10-11T15:19:09+09:00\nroot_hlc: 0swkd7qz5-00-a3f2\n---\n# Projects\n\n{body}"
     )
 }
 
@@ -176,7 +188,7 @@ fn a_colon_token_swallows_the_next_word() {
 #[test]
 fn the_home_document_accepts_the_literal_root_id() {
     let source = "---\nkind: yonalist-notes\nformat_version: 1\nid: root\n\
-                  max_hlc: 0swkd7qz6-00-a3f2\nupdated: 2041-10-11T06:19:09Z\nroot_hlc: 0swkd7qz4-00-a3f2\n---\n# Home\n\n";
+                  max_hlc: 0swkd7qz6-00-a3f2\nupdated: 2041-10-11T15:19:09+09:00\nroot_hlc: 0swkd7qz4-00-a3f2\n---\n# Home\n\n";
     let VaultFile::Page(parsed) = accepted(source) else {
         panic!("a page");
     };
@@ -421,15 +433,13 @@ fn a_footer_entry_for_a_line_that_is_gone_is_dropped() {
         "the body says which blocks a document holds"
     );
 
-    let once = String::from_utf8(notes_sync::render::render(&accepted(&source)).expect("render"))
-        .expect("utf-8");
+    let once = String::from_utf8(render(&accepted(&source)).expect("render")).expect("utf-8");
     assert!(
         !once.contains("Nd0000000002"),
         "an entry no line claims has nowhere to live: {once}"
     );
 
-    let twice = String::from_utf8(notes_sync::render::render(&accepted(&once)).expect("render"))
-        .expect("utf-8");
+    let twice = String::from_utf8(render(&accepted(&once)).expect("render")).expect("utf-8");
     assert_eq!(twice, once, "and the trip after that changes nothing");
 }
 
@@ -542,7 +552,7 @@ fn every_golden_survives_a_parse_render_round_trip() {
         ("home", include_str!("../fixtures/home.md")),
     ] {
         let parsed = accepted(source);
-        let rendered = notes_sync::render::render(&parsed).expect("render");
+        let rendered = render(&parsed).expect("render");
 
         assert_eq!(
             String::from_utf8(rendered).expect("utf-8"),
@@ -563,7 +573,7 @@ fn the_readable_time_is_derived_rather_than_believed() {
         &["yid: Nd0000000001 t: 0swkd7qz9-00-a3f2"],
     );
     assert!(
-        canonical.contains("updated: 2041-10-11T06:19:09Z"),
+        canonical.contains("updated: 2041-10-11T15:19:09+09:00"),
         "the stamp reads 2041, so the file has to say so where a person can check it:\n{canonical}"
     );
 
@@ -571,18 +581,17 @@ fn the_readable_time_is_derived_rather_than_believed() {
         (
             "a hand-edited time",
             canonical.replace(
-                "updated: 2041-10-11T06:19:09Z",
+                "updated: 2041-10-11T15:19:09+09:00",
                 "updated: 1999-01-01T00:00:00Z",
             ),
         ),
         (
             "no time at all",
-            canonical.replace("updated: 2041-10-11T06:19:09Z\n", ""),
+            canonical.replace("updated: 2041-10-11T15:19:09+09:00\n", ""),
         ),
     ] {
         let rendered =
-            String::from_utf8(notes_sync::render::render(&accepted(&source)).expect("render"))
-                .expect("utf-8");
+            String::from_utf8(render(&accepted(&source)).expect("render")).expect("utf-8");
 
         assert_eq!(
             rendered, canonical,
@@ -591,25 +600,36 @@ fn the_readable_time_is_derived_rather_than_believed() {
     }
 }
 
-/// One instant, one spelling, whatever the device's own clock is set to. A local
-/// offset here would have two devices in different zones write different bytes
-/// for one document, and each would then read the other's file as an edit and
-/// write it back.
+/// The reading is written at the offset of the device writing it, so the line
+/// says the wall clock the person who made the edit was looking at. One instant,
+/// two devices, two spellings of it — and each carries the offset it was written
+/// at, so neither has lost the instant.
 #[test]
-fn the_readable_time_does_not_depend_on_where_the_device_is() {
-    let canonical = page_with_footer(
+fn the_readable_time_says_where_the_writing_device_was() {
+    let document = accepted(&page_with_footer(
         "- Text <!-- yid: Nd0000000001 -->\n",
         &["yid: Nd0000000001 t: 0swkd7qz9-00-a3f2"],
+    ));
+    let reading = |offset: FixedOffset| {
+        let bytes = notes_sync::render::render(&document, offset).expect("render");
+        String::from_utf8(bytes)
+            .expect("utf-8")
+            .lines()
+            .find(|line| line.starts_with("updated: "))
+            .expect("the readable time")
+            .to_owned()
+    };
+
+    assert_eq!(reading(seoul()), "updated: 2041-10-11T15:19:09+09:00");
+    assert_eq!(
+        reading(FixedOffset::west_opt(5 * 3600).expect("-05:00")),
+        "updated: 2041-10-11T01:19:09-05:00",
+        "the same stamp, read where the device that wrote it stands"
     );
-
-    let line = canonical
-        .lines()
-        .find(|line| line.starts_with("updated: "))
-        .expect("the readable time");
-
-    assert!(
-        line.ends_with('Z'),
-        "a time carrying an offset is a time that differs per device: `{line}`"
+    assert_eq!(
+        reading(FixedOffset::east_opt(0).expect("+00:00")),
+        "updated: 2041-10-11T06:19:09+00:00",
+        "a device at UTC says so the same way every other device says where it is"
     );
 }
 
@@ -617,7 +637,7 @@ fn the_readable_time_does_not_depend_on_where_the_device_is() {
 fn unknown_fields_survive_a_parse_render_round_trip() {
     let source = "---\nkind: yonalist-notes\nformat_version: 1\n\
                   id: PrJects00001\nmax_hlc: 0swkd7qz9-00-a3f2\n\
-                  updated: 2041-10-11T06:19:09Z\n\
+                  updated: 2041-10-11T15:19:09+09:00\n\
                   root_hlc: 0swkd7qz5-00-a3f2\nfuture_key: kept\n---\n# Projects\n\n\
                   - Text <!-- yid: Nd0000000001 -->\n\n\
                   <!-- yonalist\n\
@@ -625,9 +645,8 @@ fn unknown_fields_survive_a_parse_render_round_trip() {
                   t: 0swkd7qz9-00-a3f2 star future: value lone\n\
                   -->\n";
 
-    let once = notes_sync::render::render(&accepted(source)).expect("render");
-    let twice = notes_sync::render::render(&accepted(std::str::from_utf8(&once).expect("utf-8")))
-        .expect("render");
+    let once = render(&accepted(source)).expect("render");
+    let twice = render(&accepted(std::str::from_utf8(&once).expect("utf-8"))).expect("render");
 
     assert_eq!(
         String::from_utf8(once.clone()).expect("utf-8"),
@@ -686,7 +705,7 @@ fn a_literal_backslash_n_in_text_is_not_a_newline() {
     let parsed = nodes(&source);
 
     assert_eq!(parsed[0].body, NodeBody::Text("a\\nb".to_owned()));
-    let rendered = notes_sync::render::render(&accepted(&source)).expect("render");
+    let rendered = render(&accepted(&source)).expect("render");
     assert_eq!(String::from_utf8(rendered).expect("utf-8"), source);
 }
 
@@ -834,9 +853,9 @@ fn a_document_holding_every_shape_survives_two_round_trips() {
     let source = page_with_footer(&body, &entries)
         .replace("max_hlc: 0swkd7qz9-00-a3f2", "max_hlc: 0swkd7qz6-00-a3f2");
 
-    let once = notes_sync::render::render(&accepted(&source)).expect("render");
+    let once = render(&accepted(&source)).expect("render");
     let text = String::from_utf8(once.clone()).expect("utf-8");
-    let twice = notes_sync::render::render(&accepted(&text)).expect("render");
+    let twice = render(&accepted(&text)).expect("render");
 
     assert_eq!(
         text, source,
@@ -880,9 +899,9 @@ fn an_unknown_footer_token_survives_a_parse_render_round_trip() {
              w: 320 px: 10x10 bytes: 4 focus: 0\\.5x0\\.3 lossless"],
     );
 
-    let once = notes_sync::render::render(&accepted(&source)).expect("render");
+    let once = render(&accepted(&source)).expect("render");
     let text = String::from_utf8(once.clone()).expect("utf-8");
-    let twice = notes_sync::render::render(&accepted(&text)).expect("render");
+    let twice = render(&accepted(&text)).expect("render");
 
     assert_eq!(text, source, "the token came back changed or not at all");
     assert_eq!(once, twice);
@@ -1003,7 +1022,7 @@ proptest::proptest! {
         };
         document.root.note = String::new();
         document.nodes = vec![node];
-        let bytes = notes_sync::render::render(&VaultFile::Page(document)).expect("render");
+        let bytes = render(&VaultFile::Page(document)).expect("render");
 
         let VaultFile::Page(read_back) = parse(&bytes).unwrap_or_else(|reason| {
             panic!("a document this build wrote it cannot read: {reason}\n{}",
@@ -1042,7 +1061,7 @@ fn a_title_that_begins_like_an_image_survives_instead_of_quarantining() {
     };
     document.root.title = "![not a picture] 회고".to_owned();
 
-    let bytes = notes_sync::render::render(&VaultFile::Page(document)).expect("render");
+    let bytes = render(&VaultFile::Page(document)).expect("render");
 
     let VaultFile::Page(read_back) = parse(&bytes).unwrap_or_else(|reason| {
         panic!(
@@ -1078,7 +1097,7 @@ fn a_bullet_whose_text_begins_with_a_checkbox_keeps_it() {
             panic!("a page");
         };
         document.nodes[0].body = NodeBody::Text(typed.to_owned());
-        let bytes = notes_sync::render::render(&VaultFile::Page(document)).expect("render");
+        let bytes = render(&VaultFile::Page(document)).expect("render");
 
         let VaultFile::Page(read_back) = parse(&bytes).expect("parse") else {
             panic!("a page");
@@ -1118,7 +1137,7 @@ fn a_note_that_opens_with_a_blank_line_keeps_it() {
             panic!("a page");
         };
         document.nodes[0].note = typed.to_owned();
-        let bytes = notes_sync::render::render(&VaultFile::Page(document)).expect("render");
+        let bytes = render(&VaultFile::Page(document)).expect("render");
 
         let VaultFile::Page(read_back) = parse(&bytes).expect("parse") else {
             panic!("a page");

@@ -1,13 +1,15 @@
-//! Turns a document into the bytes that go in the vault. The same state has to
-//! produce the same bytes every time — a re-render that only reorders keys
-//! would look like an edit to every other device and start a merge over
-//! nothing. Nothing here iterates a hash map or reads a clock.
+//! Turns a document into the bytes that go in the vault. The same state and the
+//! same offset have to produce the same bytes every time — a re-render that only
+//! reorders keys would look like an edit to every other device and start a merge
+//! over nothing. Nothing here iterates a hash map or reads a clock: the one line
+//! that says where the device is takes the offset as an argument.
 
 use crate::document::{
     DocumentId, DocumentNode, DocumentRoot, ImageReference, Marker, NodeBody, PageDocument,
     TrashDocument, VaultFile,
 };
 use crate::hlc::Hlc;
+use chrono::FixedOffset;
 use std::fmt::Write;
 
 pub const FORMAT_VERSION: u32 = 1;
@@ -17,14 +19,21 @@ pub const FORMAT_VERSION: u32 = 1;
 /// whole document before deciding to write.
 pub const MAX_FIELD_BYTES: usize = 100_000;
 
-pub fn render(file: &VaultFile) -> Result<Vec<u8>, String> {
+pub fn render(file: &VaultFile, offset: FixedOffset) -> Result<Vec<u8>, String> {
     match file {
-        VaultFile::Page(page) => render_page(page),
-        VaultFile::Trash(trash) => render_trash(trash),
+        VaultFile::Page(page) => render_page(page, offset),
+        VaultFile::Trash(trash) => render_trash(trash, offset),
     }
 }
 
-fn render_page(document: &PageDocument) -> Result<Vec<u8>, String> {
+/// The zone this device is set to, which is the zone whatever it writes is
+/// written at. Asked once per export and handed to the renderer, so the renderer
+/// stays a function of what it is given.
+pub fn device_offset() -> FixedOffset {
+    *chrono::Local::now().offset()
+}
+
+fn render_page(document: &PageDocument, offset: FixedOffset) -> Result<Vec<u8>, String> {
     let mut out = String::new();
     field_fits(&document.root.title, "root title")?;
     field_fits(&document.root.note, "root note")?;
@@ -46,7 +55,7 @@ fn render_page(document: &PageDocument) -> Result<Vec<u8>, String> {
     // this reports rather than writes one.
     let max_hlc = required_hlc(&document.max_hlc, "max_hlc")?;
     let _ = writeln!(out, "max_hlc: {max_hlc}");
-    let _ = writeln!(out, "updated: {}", readable(&max_hlc)?);
+    let _ = writeln!(out, "updated: {}", readable(&max_hlc, offset)?);
     let _ = writeln!(
         out,
         "root_hlc: {}",
@@ -83,16 +92,26 @@ fn render_page(document: &PageDocument) -> Result<Vec<u8>, String> {
 /// same fact in the one notation every editor, log and calendar agrees on. It is
 /// derived rather than recorded, so it cannot drift from the stamp it describes.
 ///
-/// UTC, and deliberately. The value has to be a function of the stamp alone: a
-/// local offset would have two devices in different zones render different bytes
-/// for one document, and each would then read the other's file as an edit and
-/// write it back — a loop over a difference nobody made.
-fn readable(stamp: &str) -> Result<String, String> {
+/// Written at the offset of the device that wrote the file, so the line says the
+/// wall clock the person making the edit was reading rather than one they have to
+/// convert. The offset is carried in the value, so the instant is still stated
+/// exactly and any reader can put it back in its own zone.
+///
+/// Two devices in different zones therefore spell one instant two ways, and that
+/// is only ever a difference in bytes: the merge compares a file block by block
+/// and this line belongs to no block, so meeting the other spelling is not an
+/// edit and nothing writes back over it. A file is rewritten when the document
+/// changes, and then it is this device's turn to say where it was.
+fn readable(stamp: &str, offset: FixedOffset) -> Result<String, String> {
     let millis = crate::hlc::Hlc::decode(stamp)?.millis();
     let millis = i64::try_from(millis).map_err(|_| "A stamp's time is out of range.".to_owned())?;
     chrono::DateTime::from_timestamp_millis(millis)
         .ok_or_else(|| "A stamp's time is out of range.".to_owned())
-        .map(|at| at.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+        .map(|at| {
+            at.with_timezone(&offset)
+                .format("%Y-%m-%dT%H:%M:%S%:z")
+                .to_string()
+        })
 }
 
 /// Only what differs from the default is written: a file full of keys nobody
@@ -120,14 +139,14 @@ fn render_root_state(out: &mut String, root: &DocumentRoot) {
     }
 }
 
-fn render_trash(document: &TrashDocument) -> Result<Vec<u8>, String> {
+fn render_trash(document: &TrashDocument, offset: FixedOffset) -> Result<Vec<u8>, String> {
     let mut out = String::new();
     out.push_str("---\n");
     out.push_str("kind: yonalist-trash\n");
     let _ = writeln!(out, "format_version: {FORMAT_VERSION}");
     let max_hlc = required_hlc(&document.max_hlc, "max_hlc")?;
     let _ = writeln!(out, "max_hlc: {max_hlc}");
-    let _ = writeln!(out, "updated: {}", readable(&max_hlc)?);
+    let _ = writeln!(out, "updated: {}", readable(&max_hlc, offset)?);
     out.push_str("---\n");
     let mut footer = Vec::new();
     let mut previous = String::new();

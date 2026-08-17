@@ -2735,10 +2735,13 @@ fn resolve_picture(transaction: &rusqlite::Transaction<'_>, hash: &str) {
 fn a_file_whose_footer_was_lost_still_asks_to_be_rewritten() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let whole = notes_sync::render::render(&notes_sync::document::VaultFile::Page(page(
-        vec![node(NODE_ID, &stamp(5, "a3f2"), "Thought")],
-        &stamp(5, "a3f2"),
-    )))
+    let whole = notes_sync::render::render(
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(5, "a3f2"), "Thought")],
+            &stamp(5, "a3f2"),
+        )),
+        notes_sync::render::device_offset(),
+    )
     .expect("render");
     notes_sync::merger::merge_document(
         &transaction,
