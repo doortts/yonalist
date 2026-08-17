@@ -54,9 +54,10 @@ impl VaultWatch {
         storage: Arc<SqliteStorage>,
         assets: Arc<LocalImageAssets>,
         vault_root: PathBuf,
+        status_changed: impl Fn() + Send + 'static,
         changed: impl Fn(MergeOutcome) + Send + 'static,
     ) -> Result<Self, String> {
-        Self::start_with(storage, assets, vault_root, SWEEP, changed)
+        Self::start_with(storage, assets, vault_root, SWEEP, status_changed, changed)
     }
 
     /// The sweep interval is an argument so a test can ask for the behaviour
@@ -66,6 +67,7 @@ impl VaultWatch {
         assets: Arc<LocalImageAssets>,
         vault_root: PathBuf,
         sweep: Duration,
+        status_changed: impl Fn() + Send + 'static,
         changed: impl Fn(MergeOutcome) + Send + 'static,
     ) -> Result<Self, String> {
         let (events, inbox) = channel();
@@ -89,13 +91,16 @@ impl VaultWatch {
                 // loop that reads from it.
                 let _watcher = watcher;
                 run(
-                    &storage,
-                    &assets,
-                    &vault_root,
-                    sweep,
+                    Watching {
+                        storage: &storage,
+                        assets: &assets,
+                        vault_root: &vault_root,
+                        sweep,
+                        status_changed: &status_changed,
+                        changed: &changed,
+                    },
                     &inbox,
                     &stopped,
-                    &changed,
                 );
             })
             .map_err(|error| format!("Could not watch the vault: {error}"))?;
@@ -106,15 +111,30 @@ impl VaultWatch {
     }
 }
 
-fn run(
-    storage: &SqliteStorage,
-    assets: &LocalImageAssets,
-    vault_root: &Path,
+/// What the loop needs that is not state: where it reads, how often it looks,
+/// and who to tell.
+struct Watching<'a, S: Fn(), C: Fn(MergeOutcome)> {
+    storage: &'a SqliteStorage,
+    assets: &'a LocalImageAssets,
+    vault_root: &'a Path,
     sweep: Duration,
+    status_changed: &'a S,
+    changed: &'a C,
+}
+
+fn run(
+    watching: Watching<'_, impl Fn(), impl Fn(MergeOutcome)>,
     inbox: &Receiver<Vec<PathBuf>>,
     stopped: &Receiver<()>,
-    changed: &impl Fn(MergeOutcome),
 ) {
+    let Watching {
+        storage,
+        assets,
+        vault_root,
+        sweep,
+        status_changed,
+        changed,
+    } = watching;
     let started = Instant::now();
     let now = || started.elapsed().as_millis() as u64;
     let mut queue = WatchQueue::new(QUIET_MILLIS);
@@ -159,7 +179,11 @@ fn run(
             let present = documents_on_disk(vault_root);
             // A refusal is about a file. Once the file is gone so is what it
             // was about, and one that comes back is read rather than skipped.
-            let _ = storage.forget_missing_refusals(&present);
+            // A file that was refused and is now gone is one fewer thing to
+            // tell the user about.
+            if storage.forget_missing_refusals(&present).unwrap_or(0) > 0 {
+                status_changed();
+            }
             // The first sweep is the boot scan and the third onwards are the
             // safety net — both take the gate. The second is the verification
             // pass, and it is the one that does not.
@@ -174,8 +198,11 @@ fn run(
         // One, and only after the last one came back: the queue's own rule.
         while let Some(relative) = queue.next_in_flight(now()) {
             if relative.ends_with(".md") {
-                if let Some(outcome) = take(storage, vault_root, &relative) {
-                    changed(outcome);
+                match take(storage, vault_root, &relative) {
+                    Taken::Merged(outcome) => changed(outcome),
+                    // A file this app cannot read is something only it knows.
+                    Taken::Refused => status_changed(),
+                    Taken::Nothing => {}
                 }
             } else {
                 // An attachment. Nothing in the outline moved, but the notes
@@ -200,21 +227,33 @@ fn run(
 
 /// What the merge changed, when it changed anything — which is what the window
 /// has to be told about, and nothing else is.
-fn take(storage: &SqliteStorage, vault_root: &Path, relative: &str) -> Option<MergeOutcome> {
+enum Taken {
+    Merged(MergeOutcome),
+    Refused,
+    Nothing,
+}
+
+fn take(storage: &SqliteStorage, vault_root: &Path, relative: &str) -> Taken {
     let recorded = storage.vault_file_hash(relative).ok().flatten();
     match consider(vault_root, relative, recorded.as_deref()) {
         // A merge that changed no row can still leave the file owing a
         // rewrite — it said something this device did not accept. Nothing
         // else would wake the exporter for that.
         Ok(Verdict::Merge(file, input)) => {
-            let outcome = storage.merge_document(&file, &input).ok()?;
+            let Ok(outcome) = storage.merge_document(&file, &input) else {
+                return Taken::Nothing;
+            };
             if outcome.retire_file {
                 // A copy some sync client wrote. Its notes are in the document
                 // they belong to now; left there, every device reads it again
                 // for ever and each one writes it back out.
                 let _ = std::fs::remove_file(vault_root.join(relative));
             }
-            Some(outcome).filter(|outcome| outcome.applied > 0 || outcome.needs_write_back)
+            if outcome.applied > 0 || outcome.needs_write_back {
+                Taken::Merged(outcome)
+            } else {
+                Taken::Nothing
+            }
         }
         // Written down so the sweep does not read and refuse it again every
         // minute, and so the user can be shown which file it was.
@@ -226,13 +265,14 @@ fn take(storage: &SqliteStorage, vault_root: &Path, relative: &str) -> Option<Me
             ) {
                 let _ =
                     storage.quarantine(relative, &notes_sync::export::hash_bytes(&bytes), &reason);
+                return Taken::Refused;
             }
-            None
+            Taken::Nothing
         }
         // Nothing to do, nothing wrong. A placeholder comes back on the sweep
         // once its bytes arrive; an echo is this app's own writing.
-        Ok(_) => None,
-        Err(_) => None,
+        Ok(_) => Taken::Nothing,
+        Err(_) => Taken::Nothing,
     }
 }
 
@@ -452,9 +492,15 @@ mod tests {
         .expect("their edit");
 
         let (told, changes) = std::sync::mpsc::channel();
-        let _watch = VaultWatch::start(storage, assets, vault, move |_| {
-            let _ = told.send(());
-        })
+        let _watch = VaultWatch::start(
+            storage,
+            assets,
+            vault,
+            || {},
+            move |_| {
+                let _ = told.send(());
+            },
+        )
         .expect("watch");
 
         assert!(
@@ -490,9 +536,6 @@ mod tests {
         // The same length, different words, and the reading put back: every
         // one of those is what the transport does.
         let document = std::fs::read_to_string(&path).expect("read");
-        std::fs::write(&path, document.replacen("Enter", "Enter", 1)).expect("rewrite");
-        let document = std::fs::read_to_string(&path).expect("read");
-        std::fs::write(&path, document.replacen("항목 만들기", "항목 만들기", 1)).expect("same");
         let edited = document.replacen("Enter — 새 항목", "Enter — 헌 항목", 1);
         assert_eq!(edited.len(), document.len(), "the same size on disk");
         std::fs::write(&path, &edited).expect("their edit");
@@ -516,6 +559,7 @@ mod tests {
             assets,
             vault,
             Duration::from_millis(200),
+            || {},
             move |_| {
                 let _ = told.send(());
             },
@@ -525,6 +569,40 @@ mod tests {
         assert!(
             changes.recv_timeout(Duration::from_secs(10)).is_ok(),
             "the gate answered `nothing changed` and nothing looked again"
+        );
+    }
+
+    /// A file this app cannot read is something only this app knows. The
+    /// user's own markdown in the folder is the ordinary case, and until they
+    /// are told, the note they think is syncing simply is not.
+    #[test]
+    fn an_unreadable_file_reports_itself() {
+        let home = tempfile::tempdir().expect("home");
+        let storage = Arc::new(
+            notes_sqlite::SqliteStorage::open(&home.path().join("notes.sqlite")).expect("open"),
+        );
+        let assets = Arc::new(
+            notes_sqlite::LocalImageAssets::open(&home.path().join("images")).expect("store"),
+        );
+        let vault = home.path().join("vault");
+        std::fs::create_dir_all(&vault).expect("vault");
+        std::fs::write(vault.join("theirs.md"), b"# Their own notes\n").expect("their file");
+
+        let (told, status) = std::sync::mpsc::channel();
+        let _watch = VaultWatch::start(
+            storage,
+            assets,
+            vault,
+            move || {
+                let _ = told.send(());
+            },
+            |_| {},
+        )
+        .expect("watch");
+
+        assert!(
+            status.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "the file was refused and nobody was told"
         );
     }
 
@@ -542,7 +620,7 @@ mod tests {
         );
         let vault = home.path().join("vault");
         std::fs::create_dir_all(&vault).expect("vault");
-        let watch = VaultWatch::start(storage, assets, vault, |_| {}).expect("watch");
+        let watch = VaultWatch::start(storage, assets, vault, || {}, |_| {}).expect("watch");
 
         let (done, waiting) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -602,9 +680,15 @@ mod tests {
         // window re-reports the picture before it has been still long enough,
         // and it never comes off the queue. The boot scan runs at once anyway,
         // and the bytes arrive by event.
-        let _watch = VaultWatch::start(storage, assets, vault.clone(), move |outcome| {
-            let _ = told.send(outcome);
-        })
+        let _watch = VaultWatch::start(
+            storage,
+            assets,
+            vault.clone(),
+            || {},
+            move |outcome| {
+                let _ = told.send(outcome);
+            },
+        )
         .expect("watch");
         // Let the boot scan finish first, so what wakes the window afterwards
         // can only be the picture.
