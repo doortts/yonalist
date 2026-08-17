@@ -87,24 +87,9 @@ for (const path of v2Sources) {
 
 const frontendSources = sourceFiles(join(root, "apps", "desktop", "src"), [".ts", ".tsx"]);
 const frontendSet = new Set(frontendSources.map((path) => resolve(path)));
-const legacyFrontend = join(root, "src");
 const dependencyGraph = new Map();
 for (const path of frontendSources) {
   const source = readFileSync(path, "utf8");
-  // Resolve rather than match a literal `../../../src/`: the number of `../`
-  // that reaches the frozen v1 tree depends on how deep the importer sits, so a
-  // hardcoded depth stops guarding the moment a file lives in a subfolder.
-  const outsideDesktopImport = [...source.matchAll(
-    /(?:from\s+|import\s*(?:\(|))\s*["'](\.[^"']+)["']/gu
-  )].filter(
-    (match) => !relative(legacyFrontend, resolve(dirname(path), match[1])).startsWith("..")
-  );
-  if (outsideDesktopImport.length > 0) {
-    throw new Error(
-      `v2 production source imports legacy frontend code: ${relative(root, path)} -> ` +
-        outsideDesktopImport[0][1]
-    );
-  }
   const dependencies = [...source.matchAll(/(?:from\s+|import\s*\()\s*["'](\.[^"']+)["']/gu)]
     .map((match) => match[1])
     .flatMap((specifier) => {

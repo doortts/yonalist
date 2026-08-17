@@ -30,10 +30,10 @@ jobs:
       # Root install covers the apps/desktop and packages/contracts workspaces;
       # apps/desktop/node_modules holds only vite's cache, never packages.
       - run: npm ci
-      # One step on purpose: whatever `test:v2` covers is what CI covers, so a
+      # One step on purpose: whatever `test:all` covers is what CI covers, so a
       # check cannot rot by being left out of the composite.
       - name: v2 gate
-        run: npm run test:v2
+        run: npm run test:all
 
   v2-performance:
     # Timing assertions on a shared runner are flaky and the suite builds
@@ -53,4 +53,4 @@ jobs:
           node-version: 22
           cache: npm
       - name: Release performance suite
-        run: npm run test:v2:performance
+        run: npm run test:performance

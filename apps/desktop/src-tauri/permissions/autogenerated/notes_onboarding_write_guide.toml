@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-onboarding-write-guide"
+description = "Enables the notes_onboarding_write_guide command without any pre-configured scope."
+commands.allow = ["notes_onboarding_write_guide"]
+
+[[permission]]
+identifier = "deny-notes-onboarding-write-guide"
+description = "Denies the notes_onboarding_write_guide command without any pre-configured scope."
+commands.deny = ["notes_onboarding_write_guide"]
