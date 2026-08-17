@@ -12,6 +12,7 @@ import { initialNotesState, type NotesState } from "./notesState";
 import {
   freshId, messageFrom, ROOT_ID, VIEWPORT_LIMIT
 } from "./store/storeSupport";
+import { provisionalPage } from "./optimisticOutline";
 import { flattenPastedOutline, type PastedOutlineNode } from "./outline/outlinePaste";
 import {
   omitKeys, receiptState, subtreeIds, viewportState
@@ -34,8 +35,21 @@ import {
   type StoreInvalidation
 } from "./store/storeSubscriptions";
 
+/**
+ * Whether a command is about this page: the row itself, or a row going inside
+ * it. Everything else a command can name is a row inside some page, and a page
+ * nobody has written in holds none: a move or a duplicate can only carry rows
+ * that already exist, which means the page they came from already does too.
+ */
+function commandTouches(command: IpcNotesCommand, pageId: string): boolean {
+  return ("id" in command && command.id === pageId) ||
+    ("parent_id" in command && command.parent_id === pageId);
+}
+
 export class NotesStore {
   private state: NotesState = initialNotesState;
+  private creatingPageId: string | null = null;
+  private pageCreation: Promise<void> = Promise.resolve();
   private capturePaneSnapshot: () => PaneSnapshot | null = () => null;
   private readonly listeners = new Set<() => void>();
   private readonly subscriptions: StoreSubscriptions;
@@ -51,6 +65,7 @@ export class NotesStore {
       write: (patch, invalidation) => this.update(patch, invalidation),
       applyReceipt: (receipt) => this.applyReceipt(receipt),
       flushDrafts: () => this.drafts.flushPending(),
+      materializePage: (command) => this.materializePage(command),
       capturePaneSnapshot: () => this.capturePaneSnapshot()
     });
     this.images = new LazyStoreImages(api, this.commands, this.getSnapshot);
@@ -136,6 +151,7 @@ export class NotesStore {
         activePageId: boot.activePageId,
         nodes: boot.viewport?.nodes ?? [],
         pageNode: boot.viewport?.pageNode ?? null,
+        provisionalPageId: null,
         drafts: {},
         noteDrafts: {},
         canUndo: boot.history.canUndo,
@@ -162,6 +178,12 @@ export class NotesStore {
   }
 
   async openPage(pageId: string): Promise<void> {
+    // Leaving a page nobody wrote in is all it takes to drop it: it was only
+    // ever in this window.
+    if (this.state.provisionalPageId !== null &&
+      pageId !== this.state.provisionalPageId) {
+      this.update({ provisionalPageId: null });
+    }
     await this.viewport.openPage(pageId);
   }
 
@@ -196,7 +218,12 @@ export class NotesStore {
       });
     }
     if (change && await this.patchFromVault(change)) return;
-    await Promise.all([this.viewport.reload(), this.refreshPages()]);
+    await Promise.all([
+      // A page the backend has never heard of cannot be read back; there is
+      // also nothing in it for another device to have changed.
+      this.state.provisionalPageId === null ? this.viewport.reload() : null,
+      this.refreshPages()
+    ]);
   }
 
   /** Answers whether the change was applied; `false` asks for the re-read. */
@@ -308,21 +335,74 @@ export class NotesStore {
   }
 
   /**
-   * A page is the root's child, so a new one lands at the end of Home. The
-   * command goes out unprojected: the row belongs to a page this view is about
-   * to leave, not to the outline on screen.
+   * A page opens the moment it is asked for, but nothing is written: an empty
+   * page nobody typed into is not a page yet, and one that is never typed into
+   * has to leave nothing behind -- no row in the list, nothing to sync, nothing
+   * to undo. `materializePage` below writes it as soon as anything does.
    */
   async createPage(): Promise<string> {
     const id = freshId();
-    await this.executeCommand({
+    this.update({ provisionalPageId: id });
+    this.viewport.openLocalPage(id, provisionalPage(id));
+    return id;
+  }
+
+  /**
+   * The page's own creation, run at the command choke point so that whatever
+   * first writes into it -- a title keystroke, a row, an image -- finds it
+   * there. It is created empty and the drafts land right behind it: the flush
+   * that would otherwise run first would send an `updateText` to a row the
+   * backend has never seen, which is why this one command skips it.
+   *
+   * The page stays provisional until the row exists. Nothing else knows the
+   * page until then -- not the page list, not the vault -- so this is what the
+   * pane reads to know it has a page to draw at all, and a creation that fails
+   * leaves a page the next command tries again for.
+   */
+  private readonly materializePage = (
+    command?: IpcNotesCommand
+  ): Promise<void> => {
+    const id = this.state.provisionalPageId;
+    if (id === null || (command && !commandTouches(command, id))) {
+      return Promise.resolve();
+    }
+    // A command that arrives while the creation is in flight waits for it, and
+    // fails with it: writing into a page that was never created only earns a
+    // second error. The creation itself comes back through here, and what it
+    // must not wait on is itself, so the field below is emptied for the length
+    // of the call that sends it.
+    if (this.creatingPageId === id) return this.pageCreation;
+    this.creatingPageId = id;
+    this.pageCreation = Promise.resolve();
+    this.pageCreation = this.commands.execute({
       kind: "createNode",
       id,
       parent_id: ROOT_ID,
       before_id: null,
-      text: "Untitled page"
+      text: ""
+    }, null, false).then(() => {
+      this.settleCreation(id);
+      // The receipt has already put the row in the page list, so the pane
+      // reads the page off the list from here on.
+      if (this.state.provisionalPageId === id) {
+        this.update({ provisionalPageId: null });
+      }
+    }, (cause) => {
+      // Nothing was written, so the marker stands and the next command tries
+      // again.
+      this.settleCreation(id);
+      throw cause;
     });
-    await this.openPage(id);
-    return id;
+    return this.pageCreation;
+  };
+
+  /**
+   * Only the creation that is still the one under way may declare it over: a
+   * second page opened while the first was in flight owns the field by then,
+   * and taking it would send that page's creation a second time.
+   */
+  private settleCreation(id: string): void {
+    if (this.creatingPageId === id) this.creatingPageId = null;
   }
 
   async createNode(

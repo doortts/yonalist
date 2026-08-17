@@ -5,7 +5,7 @@ import type { BootSnapshot } from "../../../packages/contracts/generated/BootSna
 import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { NotesApi } from "./api";
 import { App } from "./App";
-import { ROOT_ID } from "./store/storeSupport";
+import { DRAFT_DEBOUNCE_MS, ROOT_ID } from "./store/storeSupport";
 import { appApi } from "./test/appApiFixture";
 
 const snapshot: BootSnapshot = {
@@ -140,23 +140,99 @@ function pageApi(): NotesApi {
 }
 
 describe("a mutation that moves the view", () => {
-  it("takes one undo press to create a page and give it back", async () => {
+  /** A new page, waited for by the caret it puts in its own empty title. */
+  async function newPageTitle(): Promise<HTMLElement> {
+    fireEvent.click(screen.getByRole("button", { name: "New page" }));
+    return await waitFor(() => {
+      const title = screen.getByRole("textbox", { name: "Page title" });
+      expect(title).toHaveFocus();
+      return title;
+    });
+  }
+
+  it("opens a new page on an empty title and writes nothing", async () => {
     const notesApi = pageApi();
     render(<App api={notesApi} />);
     await screen.findByDisplayValue("First thought");
 
-    fireEvent.click(screen.getByRole("button", { name: "New page" }));
-    await waitFor(() => expect(screen.getByDisplayValue("Untitled page"))
-      .toHaveAttribute("aria-label", "Page title"));
+    const title = await newPageTitle();
+
+    expect(title).toHaveValue("");
+    // An empty page says nothing about being empty: the title is the only
+    // thing to look at, and the caret is already in it.
+    expect(screen.queryByText("No outline yet.")).toBeNull();
+    expect(notesApi.execute).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", {
+      name: "Page actions for Untitled page"
+    })).toBeNull();
+  });
+
+  it("keeps the page under the caret while its own creation is in flight", async () => {
+    const notesApi = pageApi();
+    render(<App api={notesApi} />);
+    await screen.findByDisplayValue("First thought");
+    const title = await newPageTitle();
+    let release!: () => void;
+    vi.mocked(notesApi.execute).mockImplementationOnce(() =>
+      new Promise<MutationReceipt>((resolve) => {
+        release = () => resolve({
+          revision: 20,
+          changedNodes: [pageNode(
+            title.getAttribute("data-node-id") ?? "", "", false)],
+          deletedIds: [],
+          history: {
+            canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0
+          }
+        });
+      }));
+
+    vi.useFakeTimers();
+    fireEvent.change(title, { target: { value: "Groceries" } });
+    await act(() => vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS));
+    vi.useRealTimers();
+
+    // The page list learns about this page only when the receipt lands. Until
+    // then the pane has to keep drawing it, or the field being typed into is
+    // unmounted mid-word for the length of a round trip.
+    expect(notesApi.execute).toHaveBeenCalled();
+    expect(screen.getByRole("textbox", { name: "Page title" })).toBe(title);
+    expect(title).toHaveFocus();
+    await act(async () => release());
+  });
+
+  it("takes one undo press to leave a page nobody wrote in", async () => {
+    const notesApi = pageApi();
+    render(<App api={notesApi} />);
+    await screen.findByDisplayValue("First thought");
+    await newPageTitle();
 
     fireEvent.keyDown(window, { key: "z", ctrlKey: true });
 
     await waitFor(() => expect(screen.getByDisplayValue("Today"))
       .toHaveAttribute("aria-label", "Page title"));
-    expect(notesApi.undo).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("button", {
-      name: "Page actions for Untitled page"
-    })).toBeNull();
+    // Nothing was written, so there is nothing for the store to take back.
+    expect(notesApi.undo).not.toHaveBeenCalled();
+    expect(notesApi.execute).not.toHaveBeenCalled();
+  });
+
+  it("offers nothing to type into when redo returns to a dropped page", async () => {
+    const notesApi = pageApi();
+    render(<App api={notesApi} />);
+    await screen.findByDisplayValue("First thought");
+    await newPageTitle();
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true });
+    await waitFor(() => expect(screen.getByDisplayValue("Today"))
+      .toHaveAttribute("aria-label", "Page title"));
+
+    fireEvent.keyDown(window, { key: "z", ctrlKey: true, shiftKey: true });
+
+    // The page was dropped when its only reader left it, so what redo returns
+    // to is a page that never existed. The pane says it has nothing to show
+    // rather than offering a title field whose every keystroke would be
+    // refused by a backend that has no such row.
+    await screen.findByText("No outline yet.");
+    expect(screen.queryByRole("textbox", { name: "Page title" })).toBeNull();
+    expect(notesApi.execute).not.toHaveBeenCalled();
   });
 
   it("takes one undo press to trash a page and give it back", async () => {

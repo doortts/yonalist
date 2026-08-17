@@ -10,6 +10,7 @@ export interface NotesShellSnapshot {
   readonly revision: number;
   readonly pages: readonly PageSummary[];
   readonly activePageId: string | null;
+  readonly provisionalPageId: string | null;
   readonly canUndo: boolean;
   readonly canRedo: boolean;
   readonly undoDepth: number;
@@ -65,7 +66,7 @@ export function invalidationForPatch(
 ): StoreInvalidation {
   const shell = [
     "status", "sessionId", "revision", "pages", "activePageId",
-    "canUndo", "canRedo", "undoDepth", "redoDepth",
+    "provisionalPageId", "canUndo", "canRedo", "undoDepth", "redoDepth",
     "beforeCursor", "afterCursor", "error", "pendingWrites"
   ].some((key) => key in patch);
   const outline = [
@@ -97,6 +98,7 @@ function shellSnapshot(state: NotesState): NotesShellSnapshot {
     revision: state.revision,
     pages: state.pages,
     activePageId: state.activePageId,
+    provisionalPageId: state.provisionalPageId,
     canUndo: state.canUndo,
     canRedo: state.canRedo,
     undoDepth: state.undoDepth,

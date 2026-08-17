@@ -8,6 +8,7 @@ import {
   SORT_KEY_STEP
 } from "./outline/outlineSortKeys";
 import { omitKeys } from "./store/storeState";
+import { ROOT_ID } from "./store/storeSupport";
 
 export interface OptimisticOutlineState {
   readonly nodes: readonly NoteView[];
@@ -35,6 +36,16 @@ function bullet(
     starred: false,
     deleted: false
   };
+}
+
+/**
+ * The page a New page click opens, before anything has been written into it.
+ * A page's own node never joins `nodes`, so nothing here is ordered against
+ * anything: the sort key the backend allocates arrives with the creation, once
+ * there is something worth creating the page for.
+ */
+export function provisionalPage(id: string): NoteView {
+  return bullet(id, ROOT_ID, SORT_KEY_STEP, "");
 }
 
 export function projectCreateNode(

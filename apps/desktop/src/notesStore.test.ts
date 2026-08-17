@@ -1,4 +1,5 @@
 import type { BootSnapshot } from "../../../packages/contracts/generated/BootSnapshot";
+import type { MutationReceipt } from "../../../packages/contracts/generated/MutationReceipt";
 import type { CommandEnvelope } from "../../../packages/contracts/generated/CommandEnvelope";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "./api";
@@ -617,49 +618,218 @@ describe("NotesStore viewport recovery", () => {
     )).toEqual(["updateText", "updateNote", "duplicateNodes"]);
   });
 
-  it("creates a page as a child of the root outline and opens it", async () => {
-    const queryViewport = vi.fn().mockResolvedValue({
-      pageId: "created",
+  /** A page the user asked for: open, empty, and not written anywhere yet. */
+  async function openedNewPage(): Promise<{
+    readonly store: NotesStore;
+    readonly notesApi: NotesApi;
+    readonly pageId: string;
+  }> {
+    const notesApi = api(vi.fn().mockResolvedValue({
+      pageId: "root",
       anchorId: null,
       beforeCursor: null,
       afterCursor: null,
       nodes: []
-    });
-    const notesApi = api(queryViewport);
+    }));
     notesApi.execute = vi.fn().mockImplementation(async (envelope) => ({
       revision: 2,
-      // The backend answers with the row it wrote: a bullet under the root,
+      // The backend answers with the row the command named. Every command
+      // these tests send is about a page or a row directly inside one, so a
+      // command that names no parent is about a page: the root's own child,
       // which is all a page is.
       changedNodes: [{
         ...bullet(envelope.command.id, 4_096),
-        parentId: "root",
-        text: envelope.command.text
+        parentId: envelope.command.parent_id ?? "root",
+        text: envelope.command.text ?? ""
       }],
       deletedIds: [],
       history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
     }));
     const store = new NotesStore(notesApi);
-
     await store.bootstrap();
     const pageId = await store.createPage();
+    return { store, notesApi, pageId };
+  }
 
+  it("opens a new page without writing anything", async () => {
+    const { store, notesApi, pageId } = await openedNewPage();
+
+    expect(notesApi.execute).not.toHaveBeenCalled();
+    expect(notesApi.queryViewport).not.toHaveBeenCalled();
+    expect(store.getSnapshot().activePageId).toBe(pageId);
+    expect(store.getNodeSnapshot(pageId).title).toBe("");
+    expect(store.getSnapshot().pages).toEqual(boot.pages);
+  });
+
+  it("leaves nothing behind when the new page is never written in", async () => {
+    const { store, notesApi } = await openedNewPage();
+
+    await store.openPage("root");
+
+    expect(notesApi.execute).not.toHaveBeenCalled();
+    expect(store.getSnapshot().pages).toEqual(boot.pages);
+  });
+
+  it("creates the page the moment its title is typed into", async () => {
+    const { store, notesApi, pageId } = await openedNewPage();
+
+    store.setDraft(pageId, "Groceries");
+    await store.flushDraft(pageId);
+
+    // The page is created empty and the typing lands right behind it: an
+    // `updateText` sent first would name a row the backend has never seen.
     expect(vi.mocked(notesApi.execute).mock.calls.map(
       ([envelope]) => envelope.command
-    )).toEqual([{
-      kind: "createNode",
-      id: pageId,
-      parent_id: "root",
-      before_id: null,
-      text: "Untitled page"
-    }]);
-    expect(queryViewport).toHaveBeenCalledWith(
-      expect.objectContaining({ pageId })
-    );
+    )).toEqual([
+      {
+        kind: "createNode",
+        id: pageId,
+        parent_id: "root",
+        before_id: null,
+        text: ""
+      },
+      { kind: "updateText", id: pageId, text: "Groceries" }
+    ]);
     expect(store.getSnapshot().pages).toContainEqual({
       id: pageId,
-      title: "Untitled page",
+      title: "Groceries",
       sortKey: 4_096
     });
+  });
+
+  it("creates the page before the first row written into it", async () => {
+    const { store, notesApi, pageId } = await openedNewPage();
+
+    expect(notesApi.execute).not.toHaveBeenCalled();
+    await store.createNode(pageId);
+
+    expect(vi.mocked(notesApi.execute).mock.calls.map(
+      ([envelope]) => [
+        envelope.command.kind,
+        "parent_id" in envelope.command ? envelope.command.parent_id : null
+      ]
+    )).toEqual([["createNode", "root"], ["createNode", pageId]]);
+  });
+
+  it("stays unwritten while a command about another page goes out", async () => {
+    const { store, notesApi } = await openedNewPage();
+
+    await store.deleteSubtree("page-1");
+
+    expect(vi.mocked(notesApi.execute).mock.calls.map(
+      ([envelope]) => envelope.command.kind
+    )).toEqual(["deleteSubtree"]);
+  });
+
+  it("holds the page open across its own creation", async () => {
+    const { store, notesApi, pageId } = await openedNewPage();
+    let release!: (receipt: MutationReceipt) => void;
+    vi.mocked(notesApi.execute).mockReturnValueOnce(
+      new Promise<MutationReceipt>((resolve) => {
+        release = resolve;
+      })
+    );
+
+    const created = store.createNode(pageId);
+
+    // Until the row exists nothing else knows this page, so the window has to
+    // keep saying it holds one -- the pane reads this to decide whether it has
+    // a page to draw at all.
+    expect(store.getSnapshot().provisionalPageId).toBe(pageId);
+    release({
+      revision: 2,
+      changedNodes: [{ ...bullet(pageId, 4_096), parentId: "root", text: "" }],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    });
+    await created;
+    expect(store.getSnapshot().provisionalPageId).toBeNull();
+    expect(store.getSnapshot().pages).toContainEqual({
+      id: pageId,
+      title: "",
+      sortKey: 4_096
+    });
+  });
+
+  it("writes a second new page once, with the first still in flight", async () => {
+    const { store, notesApi, pageId } = await openedNewPage();
+    // Every page creation waits to be let through by hand, so the second one
+    // is still in flight when the first one finishes.
+    const held = new Map<string, () => void>();
+    const answered = vi.mocked(notesApi.execute).getMockImplementation()!;
+    vi.mocked(notesApi.execute).mockImplementation(async (envelope) => {
+      const { command } = envelope;
+      const first = command.kind === "createNode" &&
+        command.parent_id === "root" && !held.has(command.id);
+      if (first) {
+        await new Promise<void>((resolve) => held.set(command.id, resolve));
+      }
+      return answered(envelope);
+    });
+    void store.setCompleted(pageId, true);
+    const secondId = await store.createPage();
+    void store.setCompleted(secondId, true);
+
+    await vi.waitFor(() => expect(held.has(pageId)).toBe(true));
+    held.get(pageId)!();
+    await vi.waitFor(() => expect(held.has(secondId)).toBe(true));
+    const lastWrite = store.setCompleted(secondId, false);
+    held.get(secondId)!();
+    await lastWrite;
+
+    // One creation per page. The first one finishing must not hand the second
+    // page's creation back to be sent again -- the backend refuses an id it
+    // already has, and the write that asked for it dies with the refusal.
+    expect(vi.mocked(notesApi.execute).mock.calls.filter(
+      ([envelope]) => envelope.command.kind === "createNode"
+    ).map(([envelope]) => "id" in envelope.command ? envelope.command.id : null))
+      .toEqual([pageId, secondId]);
+  });
+
+  it("keeps the new page when the answer for the page it left lands late", async () => {
+    let release!: (viewport: ViewportPage) => void;
+    const notesApi = api(vi.fn().mockReturnValue(
+      new Promise<ViewportPage>((resolve) => {
+        release = resolve;
+      })
+    ));
+    const store = new NotesStore(notesApi);
+    await store.bootstrap();
+
+    const opening = store.openPage("page-2");
+    const pageId = await store.createPage();
+    release({
+      pageId: "page-2",
+      anchorId: null,
+      beforeCursor: null,
+      afterCursor: null,
+      nodes: []
+    });
+    await opening;
+
+    expect(store.getSnapshot().activePageId).toBe(pageId);
+    expect(store.getSnapshot().provisionalPageId).toBe(pageId);
+  });
+
+  it("tries the page's creation again after it fails", async () => {
+    const { store, notesApi, pageId } = await openedNewPage();
+    vi.mocked(notesApi.execute).mockRejectedValueOnce(new Error("Offline."));
+
+    await expect(store.createNode(pageId)).rejects.toThrow("Offline.");
+    await store.createNode(pageId);
+
+    // The failed creation, the one that worked, and only then the row that
+    // asked for it. A page left uncreated would swallow every later write.
+    expect(vi.mocked(notesApi.execute).mock.calls.map(
+      ([envelope]) => [
+        envelope.command.kind,
+        "parent_id" in envelope.command ? envelope.command.parent_id : null
+      ]
+    )).toEqual([
+      ["createNode", "root"],
+      ["createNode", "root"],
+      ["createNode", pageId]
+    ]);
   });
 
   it("opens Home after the active page moves to Trash", async () => {
