@@ -443,6 +443,26 @@ export function resolveOutlineKey(
     if (!validSelection(input)) return null;
     const node = nodeById(structureNodes, input.nodeId, input.structureIndex);
     if (!node) return null;
+    // Enter at the head of the text opens a blank line above instead of
+    // splitting. A split hands the half after the caret to the new row, so with
+    // the whole text in that half the row would give away its text -- and with
+    // children, the new row goes inside the source, which reads as the parent
+    // demoting itself into its own first child. The row keeps its text, its
+    // children, its note and its tick; the blank becomes its previous sibling.
+    // A held Enter is the gesture's to place: it stacks blanks off the row that
+    // carries the caret, and the first press already decided where that is.
+    if (
+      !input.repeat &&
+      input.selectionStart === 0 &&
+      input.selectionEnd === 0 &&
+      input.value.length > 0
+    ) {
+      return {
+        kind: "createSibling",
+        parentId: node.parentId ?? input.pageId,
+        beforeId: input.nodeId
+      };
+    }
     // A bullet with children always takes Enter as "make a first child": the
     // subtree hangs off the source, so the half after the caret goes inside it
     // rather than beside it, and a caret at the end just makes that half empty.
