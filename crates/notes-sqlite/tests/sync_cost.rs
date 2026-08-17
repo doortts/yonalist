@@ -82,7 +82,7 @@ impl Workspace {
                     base_revision: revision,
                     history_group: None,
                     command: IpcNotesCommand::CreateNode {
-                        id: notes_core::new_yid(),
+                        id: uuid::Uuid::new_v4().hyphenated().to_string(),
                         parent_id: "root".to_owned(),
                         before_id: None,
                         text: format!("Page {index}"),
@@ -315,7 +315,7 @@ fn adding_a_note_costs_the_same_whatever_else_is_on_the_page() {
         let workspace = workspace();
         let page = {
             let session = "session".to_owned();
-            let id = notes_core::new_yid();
+            let id = uuid::Uuid::new_v4().hyphenated().to_string();
             let revision = workspace.storage.revision().expect("revision");
             NotesService::new(&workspace.storage, session.clone(), revision)
                 .execute(CommandEnvelope {
@@ -356,7 +356,7 @@ fn add(workspace: &Workspace, parent: &str, index: usize) {
             base_revision: revision,
             history_group: None,
             command: IpcNotesCommand::CreateNode {
-                id: notes_core::new_yid(),
+                id: uuid::Uuid::new_v4().hyphenated().to_string(),
                 parent_id: parent.to_owned(),
                 before_id: None,
                 text: format!("Bullet {index}"),

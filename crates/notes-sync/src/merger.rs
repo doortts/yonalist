@@ -161,7 +161,6 @@ fn merge_page(
         from: None,
         place: None,
         unknown_tokens: Vec::new(),
-        unknown_state: Default::default(),
         children: Vec::new(),
     };
 
@@ -568,22 +567,15 @@ fn park(
 }
 
 /// A stable key inside the range JavaScript can hold exactly, derived from the
-/// node's own id. Six bytes is 48 bits, comfortably under the 53 a double holds
-/// exactly, and the same id always lands on the same key so two devices rescuing
-/// the same node put it in the same place.
+/// node's own id (ported from v1's `safe_recovery_sort_key`).
 fn recovery_sort_key(id: &str) -> Result<i64, MergeError> {
-    use sha2::Digest;
-    if !notes_core::is_block_id(id) {
-        return Err(format!("`{id}` is not a block id."));
-    }
-    let digest = sha2::Sha256::digest(id.as_bytes());
-    let mut bytes = [0u8; 8];
-    bytes[2..].copy_from_slice(&digest[..6]);
-    Ok(i64::from(u32::from_be_bytes(
-        bytes[4..].try_into().expect("four bytes"),
-    )) | (i64::from(u16::from_be_bytes(
-        bytes[2..4].try_into().expect("two bytes"),
-    )) << 32))
+    let canonical = Uuid::parse_str(id)
+        .map_err(|_| format!("`{id}` is not a UUID."))?
+        .simple()
+        .to_string();
+    let prefix = u64::from_str_radix(&canonical[..13], 16)
+        .map_err(|_| format!("`{id}` has no readable prefix."))?;
+    i64::try_from(prefix).map_err(|_| "A recovery key is too large.".to_owned())
 }
 
 /// Made only when something actually has to be rescued. Its id comes from this
@@ -601,16 +593,12 @@ fn recovery_page(
         .prepare_cached("SELECT vault_uuid FROM sync_meta WHERE singleton = 1")
         .and_then(|mut statement| statement.query_row([], |row| row.get(0)))
         .map_err(|error| error.to_string())?;
-    // The derivation is unchanged — same namespace, same name — so a vault that
-    // already made one keeps making the same one. Only the shape moved: the
-    // first nine bytes, encoded the way every block id is.
-    let derived = Uuid::new_v5(
+    let id = Uuid::new_v5(
         &Uuid::parse_str(&vault_uuid).map_err(|_| "The vault uuid is not a UUID.".to_owned())?,
         b"yonalist-recovery-page",
-    );
-    let mut head = [0u8; 9];
-    head.copy_from_slice(&derived.as_bytes()[..9]);
-    let id = notes_core::encode_yid(&head);
+    )
+    .hyphenated()
+    .to_string();
     let stamp = clock.now()?.encode();
     transaction
         .prepare_cached(

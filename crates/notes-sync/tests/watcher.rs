@@ -8,11 +8,13 @@ use notes_sync::watcher::{Verdict, consider, is_conflicted_copy};
 const DOCUMENT: &[u8] = b"---\n\
     kind: yonalist-notes\n\
     format_version: 1\n\
-    id: 26VJSt4Rw5eO\n\
+    id: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1\n\
+    max_hlc: 0swkd7qz9-00-a3f2\n\
+    root_hlc: 0swkd7qz5-00-a3f2\n\
     ---\n\
     # Projects\n\
     \n\
-    - Thought <!-- yid: vTnXZwnGL468 -->\n";
+    - Thought <!-- ya: yid=8a201f33-0000-4c91-8d02-000000000001 t=0swkd7qz9-00-a3f2 -->\n";
 
 fn vault() -> tempfile::TempDir {
     tempfile::tempdir().expect("vault")
@@ -33,9 +35,9 @@ fn hash(bytes: &[u8]) -> String {
 #[test]
 fn a_file_this_app_did_not_write_is_merged() {
     let vault = vault();
-    write(&vault, "Projects-26VJSt4Rw5eO/README.md", DOCUMENT);
+    write(&vault, "Projects-4f1c8e20a3b7/README.md", DOCUMENT);
 
-    let verdict = consider(vault.path(), "Projects-26VJSt4Rw5eO/README.md", None).expect("look");
+    let verdict = consider(vault.path(), "Projects-4f1c8e20a3b7/README.md", None).expect("look");
 
     let Verdict::Merge(_, input) = verdict else {
         panic!("a document nobody here has seen is news");
@@ -48,11 +50,11 @@ fn a_file_this_app_did_not_write_is_merged() {
 #[test]
 fn an_echo_of_our_own_write_is_skipped() {
     let vault = vault();
-    write(&vault, "Projects-26VJSt4Rw5eO/README.md", DOCUMENT);
+    write(&vault, "Projects-4f1c8e20a3b7/README.md", DOCUMENT);
 
     let verdict = consider(
         vault.path(),
-        "Projects-26VJSt4Rw5eO/README.md",
+        "Projects-4f1c8e20a3b7/README.md",
         Some(&hash(DOCUMENT)),
     )
     .expect("look");
@@ -66,20 +68,19 @@ fn an_echo_of_our_own_write_is_skipped() {
 /// The one rule the event path must not share with the startup scan. A
 /// transport that preserves mtime — Syncthing does — would otherwise report
 /// "nothing changed" about a file somebody just edited, and a hand edit moves
-/// neither the footer nor anything else the app writes, so the hash is the only
-/// thing that answers.
+/// neither `max_hlc` nor any stamp, so the hash is the only thing that answers.
 #[test]
 fn a_watch_event_hashes_even_when_the_stat_has_not_moved() {
     let vault = vault();
-    write(&vault, "Projects-26VJSt4Rw5eO/README.md", DOCUMENT);
+    write(&vault, "Projects-4f1c8e20a3b7/README.md", DOCUMENT);
     let recorded = hash(DOCUMENT);
     let edited = DOCUMENT
         .to_vec()
         .iter()
         .copied()
-        .chain(b"- Another <!-- yid: V3F6tu7wEImb -->\n".iter().copied())
+        .chain(b"- Another <!-- ya: yid=8a201f33-0000-4c91-8d02-000000000002 t=0swkd7qz9-01-a3f2 -->\n".iter().copied())
         .collect::<Vec<u8>>();
-    let path = vault.path().join("Projects-26VJSt4Rw5eO/README.md");
+    let path = vault.path().join("Projects-4f1c8e20a3b7/README.md");
     let was = std::fs::metadata(&path).expect("stat");
     std::fs::write(&path, &edited).expect("edit");
     // Exactly what a transport that preserves mtime hands over.
@@ -104,7 +105,7 @@ fn a_watch_event_hashes_even_when_the_stat_has_not_moved() {
 
     let verdict = consider(
         vault.path(),
-        "Projects-26VJSt4Rw5eO/README.md",
+        "Projects-4f1c8e20a3b7/README.md",
         Some(&recorded),
     )
     .expect("look");
@@ -120,9 +121,9 @@ fn a_watch_event_hashes_even_when_the_stat_has_not_moved() {
 #[test]
 fn a_placeholder_file_waits_rather_than_emptying_the_document() {
     let vault = vault();
-    write(&vault, "Projects-26VJSt4Rw5eO/README.md", b"");
+    write(&vault, "Projects-4f1c8e20a3b7/README.md", b"");
 
-    let verdict = consider(vault.path(), "Projects-26VJSt4Rw5eO/README.md", None).expect("look");
+    let verdict = consider(vault.path(), "Projects-4f1c8e20a3b7/README.md", None).expect("look");
 
     assert!(
         matches!(verdict, Verdict::NotYetArrived),
@@ -169,10 +170,10 @@ fn a_link_is_not_a_file_this_vault_holds() {
 #[test]
 fn a_conflicted_copy_is_recognised_whatever_wrote_it() {
     assert!(is_conflicted_copy(
-        "Projects-26VJSt4Rw5eO/README (conflicted copy 2026-08-16).md"
+        "Projects-4f1c8e20a3b7/README (conflicted copy 2026-08-16).md"
     ));
     assert!(is_conflicted_copy(
-        "Projects-26VJSt4Rw5eO/README.sync-conflict-20260816-desktop.md"
+        "Projects-4f1c8e20a3b7/README.sync-conflict-20260816-desktop.md"
     ));
-    assert!(!is_conflicted_copy("Projects-26VJSt4Rw5eO/README.md"));
+    assert!(!is_conflicted_copy("Projects-4f1c8e20a3b7/README.md"));
 }

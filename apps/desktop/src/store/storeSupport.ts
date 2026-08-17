@@ -18,17 +18,12 @@ export function hasErrorCode(cause: unknown, code: string): boolean {
 
 /**
  * Every id ends up in the vault as `<!-- yid: ... -->`, the node's identity
- * across devices, so it has to be twelve base64url characters — nine bytes,
- * which the encoding maps exactly, leaving no padding to strip and no modulo
- * bias to correct for. Both runtimes that reach this — the Tauri webview and
- * jsdom under vitest — have `getRandomValues`; a runtime that does not should
- * stop here rather than mint an unexportable node.
+ * across devices, so it has to be a UUID. Both runtimes that reach this —
+ * the Tauri webview and jsdom under vitest — have `randomUUID`; a runtime
+ * that does not should stop here rather than mint an unexportable node.
  */
 export function freshId(): string {
-  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(9));
-  return btoa(String.fromCharCode(...bytes))
-    .replaceAll("+", "-")
-    .replaceAll("/", "_");
+  return globalThis.crypto.randomUUID();
 }
 
 export function confirmedText(

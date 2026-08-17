@@ -6,8 +6,8 @@
 
 use notes_sync::layout::page_folder_name;
 
-const ID: &str = "26VJSt4Rw5eO";
-const SUFFIX: &str = "26VJSt4Rw5eO";
+const ID: &str = "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1";
+const SUFFIX: &str = "4f1c8e20a3b7";
 
 #[test]
 fn a_page_folder_name_follows_the_seven_steps() {
@@ -75,7 +75,7 @@ fn the_id_suffix_is_always_appended() {
 
 #[test]
 fn two_pages_with_the_same_title_get_different_folders() {
-    let other = "HFu8ZQ2yPdGr";
+    let other = "11c8da70-b5e1-4c91-8d02-a3f204ee81cc";
 
     assert_ne!(
         page_folder_name("Notes", ID).expect("name"),

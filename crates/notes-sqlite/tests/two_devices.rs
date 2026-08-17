@@ -245,7 +245,7 @@ fn seeded_pair() -> (Device, Device) {
 }
 
 fn add_bullet(device: &Device, parent: &str, text: &str) -> String {
-    let id = notes_core::new_yid();
+    let id = uuid::Uuid::new_v4().hyphenated().to_string();
     device.run(IpcNotesCommand::CreateNode {
         id: id.clone(),
         parent_id: parent.to_owned(),
@@ -1131,7 +1131,7 @@ fn duplicating_a_waiting_picture_lets_the_copy_meet_its_bytes() {
     let held = hold_pictures_back(&two);
     two.absorb();
 
-    let copy = notes_core::new_yid();
+    let copy = uuid::Uuid::new_v4().hyphenated().to_string();
     two.run(IpcNotesCommand::Duplicate {
         id: shot.clone(),
         new_id: copy.clone(),
@@ -1173,7 +1173,7 @@ fn a_waiting_picture_under_a_duplicated_bullet_meets_its_bytes_too() {
 
     two.run(IpcNotesCommand::Duplicate {
         id: section.clone(),
-        new_id: notes_core::new_yid(),
+        new_id: uuid::Uuid::new_v4().hyphenated().to_string(),
         parent_id: page.clone(),
         before_id: None,
     });
@@ -1207,7 +1207,7 @@ fn a_duplicated_waiting_picture_survives_the_trip_through_the_folder() {
     hold_pictures_back(&two);
     two.absorb();
 
-    let copy = notes_core::new_yid();
+    let copy = uuid::Uuid::new_v4().hyphenated().to_string();
     two.run(IpcNotesCommand::DuplicateNodes {
         duplicates: vec![IpcNodeDuplicate {
             id: shot.clone(),
@@ -1252,7 +1252,7 @@ fn redoing_a_duplicated_waiting_picture_lets_it_meet_its_bytes() {
 
     // One service across all three steps: the undo stack lives in the session,
     // and `Device::run` opens a new one every time.
-    let copy = notes_core::new_yid();
+    let copy = uuid::Uuid::new_v4().hyphenated().to_string();
     let service = two.service();
     let duplicated = service
         .execute(CommandEnvelope {
@@ -1312,7 +1312,7 @@ fn bytes_that_land_before_the_redo_still_reach_the_copy() {
     let held = hold_pictures_back(&two);
     two.absorb();
 
-    let copy = notes_core::new_yid();
+    let copy = uuid::Uuid::new_v4().hyphenated().to_string();
     let service = two.service();
     let duplicated = service
         .execute(CommandEnvelope {

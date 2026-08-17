@@ -14,8 +14,8 @@ use notes_sync::document::{
 };
 use notes_sync::merger::MergeInput;
 
-const PAGE_ID: &str = "26VJSt4Rw5eO";
-const NODE_ID: &str = "vTnXZwnGL468";
+const PAGE_ID: &str = "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1";
+const NODE_ID: &str = "8a201f33-0000-4c91-8d02-000000000001";
 
 /// A file-backed database: the bypass this suite hunts for would open its own
 /// connection, and an in-memory one cannot be opened twice.
@@ -44,7 +44,6 @@ fn node(id: &str, hlc: &str, text: &str) -> DocumentNode {
         from: None,
         place: None,
         unknown_tokens: Vec::new(),
-        unknown_state: Default::default(),
         children: Vec::new(),
     }
 }
@@ -55,8 +54,6 @@ fn page(text: &str, hlc: &str) -> VaultFile {
         parent: None,
         sort_key: None,
         max_hlc: hlc.to_owned(),
-        state_hash: String::new(),
-        base: String::new(),
         root: DocumentRoot {
             title: "Projects".to_owned(),
             hlc: hlc.to_owned(),
@@ -67,9 +64,9 @@ fn page(text: &str, hlc: &str) -> VaultFile {
     })
 }
 
-const IMAGE_NODE_ID: &str = "TueFvJq1xQdA";
+const IMAGE_NODE_ID: &str = "8a201f33-0000-4c91-8d02-00000000000f";
 /// The second note showing the same picture.
-const TWIN_NODE_ID: &str = "21YGHv7ZppHj";
+const TWIN_NODE_ID: &str = "8a201f33-0000-4c91-8d02-00000000000e";
 
 /// A page whose one line is a picture, linked the way a document in a page
 /// folder links its own attachments.
@@ -79,7 +76,6 @@ fn page_with_image(disk_name: &str) -> VaultFile {
     image.body = NodeBody::Image(notes_sync::document::ImageReference {
         original_name: "holiday.png".to_owned(),
         path: format!("assets/{disk_name}"),
-        asset_hash: String::new(),
         display_width: 480,
         pixel_width: 800,
         pixel_height: 600,
@@ -91,8 +87,6 @@ fn page_with_image(disk_name: &str) -> VaultFile {
         parent: None,
         sort_key: None,
         max_hlc: hlc.clone(),
-        state_hash: String::new(),
-        base: String::new(),
         root: DocumentRoot {
             title: "Projects".to_owned(),
             hlc: hlc.clone(),
@@ -119,7 +113,7 @@ fn page_with_twin_images(disk_name: &str) -> VaultFile {
 
 fn input() -> MergeInput {
     MergeInput {
-        file_path: "Projects-26VJSt4Rw5eO/README.md".to_owned(),
+        file_path: "Projects-4f1c8e20a3b7/README.md".to_owned(),
         file_hash: "a".repeat(64),
         file_mtime_ms: Some(1_700_000_000_000),
         file_size: Some(256),
@@ -201,15 +195,13 @@ fn an_identical_merge_replay_keeps_the_revision() {
 fn a_merge_leaves_the_derived_paths_correct() {
     let (_directory, storage) = storage();
     let mut parent = node(NODE_ID, &stamp(5), "Parent");
-    let child_id = "V3F6tu7wEImb";
+    let child_id = "8a201f33-0000-4c91-8d02-000000000002";
     parent.children = vec![node(child_id, &stamp(5), "Child")];
     let file = VaultFile::Page(PageDocument {
         id: DocumentId::Node(PAGE_ID.to_owned()),
         parent: None,
         sort_key: None,
         max_hlc: stamp(5),
-        state_hash: String::new(),
-        base: String::new(),
         root: DocumentRoot {
             title: "Projects".to_owned(),
             hlc: stamp(5),
@@ -237,14 +229,14 @@ fn a_merge_leaves_the_derived_paths_correct() {
 #[test]
 fn a_local_move_survives_an_unrelated_merge() {
     let (_directory, storage) = storage();
-    let first = "vTnXZwnGL468";
-    let second = "V3F6tu7wEImb";
+    let first = "8a201f33-0000-4c91-8d02-000000000001";
+    let second = "8a201f33-0000-4c91-8d02-000000000002";
     let seeded = stamp(5);
     let mut document = match page("One", &seeded) {
         VaultFile::Page(page) => page,
         VaultFile::Trash(_) => unreachable!(),
     };
-    let third = "K0J91lhlBPWo";
+    let third = "8a201f33-0000-4c91-8d02-000000000003";
     document.nodes = vec![
         node(first, &seeded, "One"),
         node(second, &seeded, "Two"),
@@ -424,8 +416,8 @@ fn the_log_is_pruned_past_its_retention_age() {
 #[test]
 fn a_text_edit_leaves_the_place_claim_where_it_was() {
     let (_directory, storage) = storage();
-    let first = "vTnXZwnGL468";
-    let second = "V3F6tu7wEImb";
+    let first = "8a201f33-0000-4c91-8d02-000000000001";
+    let second = "8a201f33-0000-4c91-8d02-000000000002";
     let seeded = stamp(5);
     let mut document = match page("One", &seeded) {
         VaultFile::Page(page) => page,
@@ -464,8 +456,8 @@ fn claim_of(storage: &SqliteStorage, id: &str) -> (String, String) {
 #[test]
 fn adopting_only_a_place_still_counts_as_a_write() {
     let (_directory, storage) = storage();
-    let first = "vTnXZwnGL468";
-    let second = "V3F6tu7wEImb";
+    let first = "8a201f33-0000-4c91-8d02-000000000001";
+    let second = "8a201f33-0000-4c91-8d02-000000000002";
     let seeded = stamp(5);
     let mut document = match page("One", &seeded) {
         VaultFile::Page(page) => page,
@@ -533,11 +525,11 @@ fn an_export_through_the_worker_writes_the_vault_without_moving_the_revision() {
     let home = std::fs::read_to_string(vault.path().join("README.md")).expect("home");
     assert!(home.contains("id: root"), "{home}");
     let file =
-        std::fs::read_to_string(vault.path().join("Projects-26VJSt4Rw5eO").join("README.md"))
+        std::fs::read_to_string(vault.path().join("Projects-4f1c8e20a3b7").join("README.md"))
             .expect("the page");
-    // The comma is not escaped. Only what actually opens markdown syntax is,
-    // which is what makes the body worth reading in another editor at all.
-    assert!(file.contains("- Thought, typed here <!-- yid:"), "{file}");
+    // The comma is escaped: every ASCII punctuation mark is, so a user's text
+    // can never turn into markup or into a node comment.
+    assert!(file.contains(r"- Thought\, typed here <!-- yid:"), "{file}");
 }
 
 #[test]
@@ -566,12 +558,14 @@ fn an_export_with_nothing_waiting_writes_nothing() {
 fn a_hand_edited_file_gets_its_canonical_form_back() {
     let (_directory, storage) = storage();
     let vault = tempfile::tempdir().expect("vault");
-    let folder = vault.path().join("Projects-26VJSt4Rw5eO");
+    let folder = vault.path().join("Projects-4f1c8e20a3b7");
     std::fs::create_dir_all(&folder).expect("folder");
     // A file somebody typed into: same node, no comment, so the merge issues an
     // id and marks the document for a rewrite.
     let by_hand = "---\nkind: yonalist-notes\nformat_version: 1\n\
-                   id: 26VJSt4Rw5eO\n---\n# Projects\n\n- typed by hand\n";
+                   id: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1\n\
+                   max_hlc: 000000005-00-a3f2\nroot_hlc: 000000005-00-a3f2\n---\n\
+                   # Projects\n\n- typed by hand\n";
     std::fs::write(folder.join("README.md"), by_hand).expect("write");
     let parsed = notes_sync::parse::parse(by_hand.as_bytes()).expect("parse");
     let mut input = input();
@@ -643,7 +637,7 @@ fn a_placeholder_row_does_not_stop_the_export() {
     let db_path = directory.path().join("notes.sqlite");
     let storage = SqliteStorage::open(&db_path).expect("open");
     let vault = tempfile::tempdir().expect("vault");
-    let unknown_parent = "krRBAnjO0XQL";
+    let unknown_parent = "9d3f21b8-c440-4c91-8d02-2e77a05fb163";
     let mut gone = node(NODE_ID, &stamp(5), "Gone");
     gone.from = Some((unknown_parent.to_owned(), 4_294_967_296));
     let mut trash_input = input();
@@ -652,8 +646,6 @@ fn a_placeholder_row_does_not_stop_the_export() {
         .merge_document(
             &VaultFile::Trash(notes_sync::document::TrashDocument {
                 max_hlc: stamp(5),
-                state_hash: String::new(),
-                base: String::new(),
                 nodes: vec![gone],
             }),
             &trash_input,
@@ -669,7 +661,7 @@ fn a_placeholder_row_does_not_stop_the_export() {
     .expect("register");
     side.execute(
         "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, deleted, hlc)
-         VALUES ('TueFvJq1xQdA', 'root', 4294967296, 'bullet',
+         VALUES ('8a201f33-0000-4c91-8d02-00000000000f', 'root', 4294967296, 'bullet',
                  'Deleted here', 1, '')",
         (),
     )
@@ -775,7 +767,7 @@ fn an_arriving_attachment_resolves_the_rows_waiting_for_it() {
         .resolve_asset(
             "holiday-9f2c1b7a4e6d.png",
             "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
-            "Projects-26VJSt4Rw5eO/assets/holiday-9f2c1b7a4e6d.png",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
         )
         .expect("resolve");
 
@@ -886,7 +878,7 @@ fn a_picture_a_file_turned_back_into_text_is_not_stranded() {
         .resolve_asset(
             "holiday-9f2c1b7a4e6d.png",
             "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
-            "Projects-26VJSt4Rw5eO/assets/holiday-9f2c1b7a4e6d.png",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
         )
         .expect("the bytes");
     let mut document = match page("just words", &stamp(9)) {
@@ -940,7 +932,7 @@ fn every_row_waiting_for_the_same_picture_is_named() {
         .resolve_asset(
             "holiday-9f2c1b7a4e6d.png",
             "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
-            "Projects-26VJSt4Rw5eO/assets/holiday-9f2c1b7a4e6d.png",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
         )
         .expect("resolve");
 
@@ -964,8 +956,8 @@ fn bytes_that_do_not_match_the_name_resolve_nothing() {
     let resolved = storage
         .resolve_asset(
             "holiday-9f2c1b7a4e6d.png",
-            "AcnSSU4wyaI3AcnSSU4wyaI3AcnSSU4wyaI3AcnSSU4wyaI3AcnSSU4wyaI30000",
-            "Projects-26VJSt4Rw5eO/assets/holiday-9f2c1b7a4e6d.png",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
         )
         .expect("resolve");
 
@@ -995,7 +987,7 @@ fn a_resolved_attachment_leaves_its_page_exportable() {
         .resolve_asset(
             "holiday-9f2c1b7a4e6d.png",
             "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
-            "Projects-26VJSt4Rw5eO/assets/holiday-9f2c1b7a4e6d.png",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
         )
         .expect("resolve");
 
@@ -1020,7 +1012,7 @@ fn a_resolved_attachment_leaves_its_page_exportable() {
         "the page could not be written, so it is owed for ever"
     );
     let written =
-        std::fs::read_to_string(vault.path().join("Projects-26VJSt4Rw5eO").join("README.md"))
+        std::fs::read_to_string(vault.path().join("Projects-4f1c8e20a3b7").join("README.md"))
             .expect("the page");
     assert!(
         written.contains("holiday-9f2c1b7a4e6d.png"),
@@ -1034,7 +1026,7 @@ fn a_resolved_attachment_leaves_its_page_exportable() {
 #[test]
 fn bytes_already_taken_in_are_not_read_again() {
     let (_directory, storage) = storage();
-    let location = "Projects-26VJSt4Rw5eO/assets/holiday-9f2c1b7a4e6d.png";
+    let location = "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png";
     assert!(
         !storage.asset_known(location).expect("ask"),
         "nothing has been taken in yet"
@@ -1095,7 +1087,7 @@ fn a_file_that_cannot_be_read_is_written_down() {
 
     storage
         .quarantine(
-            "Projects-26VJSt4Rw5eO/README.md",
+            "Projects-4f1c8e20a3b7/README.md",
             &"c".repeat(64),
             "이 앱이 읽는 문서가 아니다",
         )
@@ -1103,7 +1095,7 @@ fn a_file_that_cannot_be_read_is_written_down() {
 
     assert_eq!(
         storage
-            .vault_file_hash("Projects-26VJSt4Rw5eO/README.md")
+            .vault_file_hash("Projects-4f1c8e20a3b7/README.md")
             .expect("hash")
             .as_deref(),
         Some("c".repeat(64).as_str()),
@@ -1115,7 +1107,7 @@ fn a_file_that_cannot_be_read_is_written_down() {
     // the old answer and skips a file that has changed.
     storage
         .quarantine(
-            "Projects-26VJSt4Rw5eO/README.md",
+            "Projects-4f1c8e20a3b7/README.md",
             &"d".repeat(64),
             "이 앱이 읽는 문서가 아니다",
         )
@@ -1123,7 +1115,7 @@ fn a_file_that_cannot_be_read_is_written_down() {
 
     assert_eq!(
         storage
-            .vault_file_hash("Projects-26VJSt4Rw5eO/README.md")
+            .vault_file_hash("Projects-4f1c8e20a3b7/README.md")
             .expect("hash")
             .as_deref(),
         Some("d".repeat(64).as_str())
@@ -1143,7 +1135,7 @@ fn a_document_that_becomes_unreadable_is_refused_only_once() {
 
     storage
         .quarantine(
-            "Projects-26VJSt4Rw5eO/README.md",
+            "Projects-4f1c8e20a3b7/README.md",
             &"f".repeat(64),
             "이 앱이 읽는 문서가 아니다",
         )
@@ -1151,7 +1143,7 @@ fn a_document_that_becomes_unreadable_is_refused_only_once() {
 
     assert_eq!(
         storage
-            .vault_file_hash("Projects-26VJSt4Rw5eO/README.md")
+            .vault_file_hash("Projects-4f1c8e20a3b7/README.md")
             .expect("hash")
             .as_deref(),
         Some("f".repeat(64).as_str()),
@@ -1173,7 +1165,7 @@ fn a_refusal_goes_when_its_file_does() {
         .expect("quarantine");
 
     storage
-        .forget_missing_refusals(&["Projects-26VJSt4Rw5eO/README.md".to_owned()])
+        .forget_missing_refusals(&["Projects-4f1c8e20a3b7/README.md".to_owned()])
         .expect("sweep");
 
     let remembered: i64 = rusqlite::Connection::open(directory.path().join("notes.sqlite"))
@@ -1242,7 +1234,7 @@ fn a_file_that_becomes_readable_stops_being_refused() {
     let (directory, storage) = storage();
     storage
         .quarantine(
-            "Projects-26VJSt4Rw5eO/README.md",
+            "Projects-4f1c8e20a3b7/README.md",
             &"c".repeat(64),
             "이 앱이 읽는 문서가 아니다",
         )
@@ -1256,7 +1248,7 @@ fn a_file_that_becomes_readable_stops_being_refused() {
         .expect("read")
         .query_row(
             "SELECT COUNT(*) FROM sync_quarantine WHERE relative_path = ?1",
-            ["Projects-26VJSt4Rw5eO/README.md"],
+            ["Projects-4f1c8e20a3b7/README.md"],
             |row| row.get(0),
         )
         .expect("quarantine");
@@ -1276,7 +1268,7 @@ fn a_split_document_rides_through_an_export_untouched() {
     storage
         .merge_document(&page("Thought", &stamp(5)), &input())
         .expect("seed");
-    let split = "Projects-26VJSt4Rw5eO/Deeper-vTnXZwnGL468/README.md";
+    let split = "Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md";
     let connection =
         rusqlite::Connection::open(directory.path().join("notes.sqlite")).expect("open");
     connection
@@ -1289,7 +1281,7 @@ fn a_split_document_rides_through_an_export_untouched() {
     std::fs::create_dir_all(
         vault
             .path()
-            .join("Projects-26VJSt4Rw5eO/Deeper-vTnXZwnGL468"),
+            .join("Projects-4f1c8e20a3b7/Deeper-8a201f330000"),
     )
     .expect("folder");
     std::fs::write(vault.path().join(split), b"the split document\n").expect("its file");
@@ -1327,7 +1319,7 @@ fn what_a_document_is_follows_what_it_says_now() {
     connection
         .execute(
             "INSERT INTO sync_documents(root_id, folder_path, exported_hash, is_page)
-             VALUES (?1, 'Projects-26VJSt4Rw5eO/Deeper/README.md', 'b', 0)",
+             VALUES (?1, 'Projects-4f1c8e20a3b7/Deeper/README.md', 'b', 0)",
             [PAGE_ID],
         )
         .expect("as a split document");
@@ -1467,7 +1459,7 @@ fn an_edited_split_document_survives_two_export_passes() {
     storage
         .merge_document(&page("Thought", &stamp(5)), &input())
         .expect("seed");
-    let split = "Projects-26VJSt4Rw5eO/Deeper-vTnXZwnGL468/README.md";
+    let split = "Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md";
     let connection =
         rusqlite::Connection::open(directory.path().join("notes.sqlite")).expect("open");
     connection
@@ -1536,7 +1528,7 @@ fn resolving_an_attachment_normalizes_the_row_and_bumps_the_revision() {
         .resolve_asset(
             "holiday-9f2c1b7a4e6d.png",
             HASH,
-            "Projects-26VJSt4Rw5eO/assets/holiday-9f2c1b7a4e6d.png",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
         )
         .expect("resolve");
 
@@ -1562,9 +1554,9 @@ fn an_attachment_no_row_wanted_leaves_the_revision_alone() {
 
     let resolved = storage
         .resolve_asset(
-            "elsewhere-AcnSSU4wyaI3.png",
-            "AcnSSU4wyaI3AcnSSU4wyaI3AcnSSU4wyaI3AcnSSU4wyaI3AcnSSU4wyaI30000",
-            "assets/elsewhere-AcnSSU4wyaI3.png",
+            "elsewhere-000000000000.png",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "assets/elsewhere-000000000000.png",
         )
         .expect("resolve");
 

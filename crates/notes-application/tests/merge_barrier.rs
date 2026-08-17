@@ -171,9 +171,9 @@ fn undo(service: &NotesService<&FakeStorage>, revision: u64) -> Result<u64, Note
         .map_err(|error| error.code)
 }
 
-const FIRST: &str = "vTnXZwnGL468";
-const SECOND: &str = "V3F6tu7wEImb";
-const THIRD: &str = "K0J91lhlBPWo";
+const FIRST: &str = "8a201f33-0000-4c91-8d02-000000000001";
+const SECOND: &str = "8a201f33-0000-4c91-8d02-000000000002";
+const THIRD: &str = "8a201f33-0000-4c91-8d02-000000000003";
 
 #[test]
 fn undo_stops_at_an_entry_touching_a_merged_node() {
@@ -244,7 +244,10 @@ fn a_merge_with_no_overlap_leaves_history_alone() {
     let depth = service.history_depth();
 
     let revision = service
-        .absorb_external(storage.merged_elsewhere(), &["krRBAnjO0XQL".to_owned()])
+        .absorb_external(
+            storage.merged_elsewhere(),
+            &["9d3f21b8-c440-4c91-8d02-2e77a05fb163".to_owned()],
+        )
         .expect("absorb");
 
     assert_eq!(service.history_depth(), depth, "nothing was in question");

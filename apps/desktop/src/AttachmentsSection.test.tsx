@@ -8,11 +8,11 @@ const NOW = 1_760_000_000_000;
 
 function attachment(over: Partial<SyncAttachment> = {}): SyncAttachment {
   return {
-    nodeId: "V3F6tu7wEImb",
+    nodeId: "8a201f33-0000-4c91-8d02-000000000002",
     name: "holiday.png",
     byteLength: 2_400_000,
     contentHash: "9f2c1b7a4e6d",
-    pageId: "26VJSt4Rw5eO",
+    pageId: "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1",
     pageTitle: "Projects",
     parentTitle: "Trip notes",
     references: 1,
@@ -66,8 +66,8 @@ describe("첨부 목록", () => {
     await userEvent.click(await screen.findByRole("button", { name: "holiday.png" }));
 
     expect(openNode).toHaveBeenCalledWith(
-      "26VJSt4Rw5eO",
-      "V3F6tu7wEImb"
+      "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1",
+      "8a201f33-0000-4c91-8d02-000000000002"
     );
   });
 

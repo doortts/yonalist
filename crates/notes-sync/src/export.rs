@@ -240,13 +240,7 @@ pub fn export_home(
         nodes.push(DocumentNode {
             id,
             hlc,
-            // Home's children are pages by definition; a split document hangs
-            // under a node inside a page, never under home itself.
-            body: NodeBody::Split {
-                title,
-                path,
-                child_kind: crate::document::ChildKind::Page,
-            },
+            body: NodeBody::Split { title, path },
             note: String::new(),
             marker: Marker::Bullet,
             collapsed: false,
@@ -257,7 +251,6 @@ pub fn export_home(
             // with it — home is the file that owns page order.
             place: Some((prev, prev_hlc)),
             unknown_tokens: Vec::new(),
-            unknown_state: Default::default(),
             children: Vec::new(),
         });
     }
@@ -280,8 +273,6 @@ pub fn export_home(
         parent: None,
         sort_key: None,
         max_hlc,
-        state_hash: String::new(),
-        base: String::new(),
         root: DocumentRoot {
             title,
             hlc: root_hlc,
@@ -515,12 +506,7 @@ pub fn export_trash(
         vault_root,
         "yonalist-trash",
         &relative,
-        &VaultFile::Trash(crate::document::TrashDocument {
-            max_hlc,
-            state_hash: String::new(),
-            base: String::new(),
-            nodes,
-        }),
+        &VaultFile::Trash(crate::document::TrashDocument { max_hlc, nodes }),
     )?;
     if !outcome.needs_merge {
         // The deleted rows this file just stated. No page clears them: their
@@ -618,7 +604,6 @@ fn load_trash(
                             extras.split(' ').map(str::to_owned).collect()
                         }
                     },
-                    unknown_state: Default::default(),
                     children: Vec::new(),
                 },
             ))
@@ -738,7 +723,6 @@ fn image_of(
         }
         .link_from(document_folder),
         original_name: row.get("original_name")?,
-        asset_hash: row.get("content_hash")?,
         display_width: row.get::<_, i64>("display_width")? as u32,
         pixel_width: row.get::<_, i64>("pixel_width")? as u32,
         pixel_height: row.get::<_, i64>("pixel_height")? as u32,
@@ -970,7 +954,7 @@ fn load_document(
                     -- resolve, and the placement pass fills the location in.
                     -- Empty is not an answer, and rendering one is refused.
                     COALESCE(NULLIF(a.location, ''), i.relative_path) AS location,
-                    i.original_name, i.content_hash, i.display_width,
+                    i.original_name, i.display_width,
                     i.pixel_width, i.pixel_height, i.byte_length
              FROM notes_nodes n
              LEFT JOIN notes_images i ON i.node_id = n.id
@@ -1041,8 +1025,6 @@ fn load_document(
             .filter(|parent| parent != "root" && !parent.is_empty()),
         sort_key: root.sort_key,
         max_hlc,
-        state_hash: String::new(),
-        base: String::new(),
         root: DocumentRoot {
             title: root.text,
             note: root.note,
@@ -1051,7 +1033,6 @@ fn load_document(
             collapsed: root.collapsed,
             completed: root.completed,
             starred: root.starred,
-            unknown_state: Default::default(),
         },
         nodes,
         unknown_frontmatter: Vec::new(),
@@ -1113,7 +1094,6 @@ fn build(children: &mut BTreeMap<String, Vec<Loaded>>, parent: &str) -> Vec<Docu
                 } else {
                     row.extras.split(' ').map(str::to_owned).collect()
                 },
-                unknown_state: Default::default(),
                 children: build(children, &id),
                 id,
             }

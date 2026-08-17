@@ -24,19 +24,14 @@ const DERIVED_ID_NAMESPACE: uuid::Uuid =
 
 /// The copy of a subtree needs an id per node, and only the top one arrives
 /// with the command. The rest are derived from it so every device that
-/// duplicates the same subtree lands on the same ids.
-///
-/// The v5 hash stays: it is already fixed, already deterministic, and reusing
-/// it means no new derivation to keep two devices agreeing on. Only its shape
-/// changes — the first nine bytes, base64url — because that is the one shape
-/// the vault carries. A `yid` is case sensitive where a uuid was not, so the
-/// key is no longer lowercased: two spellings are two different ids now.
+/// duplicates the same subtree lands on the same ids, and they are uuids
+/// because that is the only shape the file format carries. The key is
+/// lowercased first: a uuid's identity is case-insensitive, so two spellings
+/// of one id have to derive one set of children.
 fn derived_child_id(new_id: &NodeId, ordinal: usize) -> Result<NodeId, DomainError> {
-    let name = format!("{}/{ordinal}", new_id.as_str());
+    let name = format!("{}/{ordinal}", new_id.as_str().to_ascii_lowercase());
     let derived = uuid::Uuid::new_v5(&DERIVED_ID_NAMESPACE, name.as_bytes());
-    let mut head = [0u8; 9];
-    head.copy_from_slice(&derived.as_bytes()[..9]);
-    NodeId::try_from(crate::encode_yid(&head))
+    NodeId::try_from(derived.to_string())
 }
 
 /// A picture the copy cannot carry itself, so the storage layer is told to hand

@@ -8,11 +8,11 @@ use notes_application::{CommandEnvelope, IpcNotesCommand, NotesService};
 use notes_sqlite::SqliteStorage;
 use rusqlite::Connection;
 
-const PAGE: &str = "26VJSt4Rw5eO";
-const OTHER_PAGE: &str = "SAu1WnG-Neew";
-const SECTION: &str = "vTnXZwnGL468";
-const SHOT: &str = "V3F6tu7wEImb";
-const COPY: &str = "K0J91lhlBPWo";
+const PAGE: &str = "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1";
+const OTHER_PAGE: &str = "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e2";
+const SECTION: &str = "8a201f33-0000-4c91-8d02-000000000001";
+const SHOT: &str = "8a201f33-0000-4c91-8d02-000000000002";
+const COPY: &str = "8a201f33-0000-4c91-8d02-000000000003";
 const HASH: &str = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
 const OTHER_HASH: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 

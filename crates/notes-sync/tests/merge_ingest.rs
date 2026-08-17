@@ -10,8 +10,8 @@ use notes_sync::merger::{MergeInput, merge_document};
 use rusqlite::Connection;
 
 const DEVICE: &str = "cccc";
-const PAGE_ID: &str = "26VJSt4Rw5eO";
-const NODE_ID: &str = "vTnXZwnGL468";
+const PAGE_ID: &str = "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1";
+const NODE_ID: &str = "8a201f33-0000-4c91-8d02-000000000001";
 /// Inside the encoding, far outside the day the drift guard allows: about the
 /// year 4821 by the wall clock.
 const FAR_FUTURE_MILLIS: u64 = 90_000_000_000_000;
@@ -25,7 +25,7 @@ fn database() -> Connection {
     connection
         .execute(
             "INSERT INTO sync_meta(singleton, device_id, vault_uuid) VALUES (1, ?1, ?2)",
-            (DEVICE, "6c2f1b90-4a17-4d2e-9f03-8b5c7e14a2d6"),
+            (DEVICE, "3f2a1c8e-0000-4c91-8d02-000000000000"),
         )
         .expect("sync meta");
     // The stamping triggers call it, so every connection that writes a node
@@ -64,7 +64,6 @@ fn node(id: &str, hlc: &str, text: &str) -> DocumentNode {
         from: None,
         place: None,
         unknown_tokens: Vec::new(),
-        unknown_state: Default::default(),
         children: Vec::new(),
     }
 }
@@ -75,8 +74,6 @@ fn page(nodes: Vec<DocumentNode>, max_hlc: &str) -> PageDocument {
         parent: None,
         sort_key: None,
         max_hlc: max_hlc.to_owned(),
-        state_hash: String::new(),
-        base: String::new(),
         root: DocumentRoot {
             title: "Projects".to_owned(),
             hlc: max_hlc.to_owned(),
@@ -89,7 +86,7 @@ fn page(nodes: Vec<DocumentNode>, max_hlc: &str) -> PageDocument {
 
 fn input() -> MergeInput {
     MergeInput {
-        file_path: "Projects-26VJSt4Rw5eO/README.md".to_owned(),
+        file_path: "Projects-4f1c8e20a3b7/README.md".to_owned(),
         file_hash: "a".repeat(64),
         file_mtime_ms: Some(1_700_000_000_000),
         file_size: Some(256),
@@ -593,12 +590,12 @@ fn a_remote_same_hlc_conflict_breaks_ties_by_content_hash() {
 fn a_reorder_touches_only_the_moved_sibling() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let second_id = "V3F6tu7wEImb";
-    let third_id = "K0J91lhlBPWo";
+    let second_id = "8a201f33-0000-4c91-8d02-000000000002";
+    let third_id = "8a201f33-0000-4c91-8d02-000000000003";
     let ordered = |ids: [&str; 3], hlc: &str| {
         notes_sync::document::VaultFile::Page(page(
             ids.iter()
-                .map(|id| node(id, hlc, &format!("Node {}", label(id))))
+                .map(|id| node(id, hlc, &format!("Node {}", &id[34..])))
                 .collect(),
             hlc,
         ))
@@ -653,7 +650,7 @@ fn a_reorder_touches_only_the_moved_sibling() {
 
 fn second_page() -> PageDocument {
     let mut document = page(Vec::new(), &stamp(5, "a3f2"));
-    document.id = DocumentId::Node("HFu8ZQ2yPdGr".to_owned());
+    document.id = DocumentId::Node("11c8da70-b5e1-4c91-8d02-a3f204ee81cc".to_owned());
     document.root.title = "Second".to_owned();
     document
 }
@@ -683,7 +680,7 @@ fn a_page_document_does_not_claim_a_position() {
     let second = notes_sync::document::VaultFile::Page(second_page());
     merge_document(&transaction, &clock(), &first, &input()).expect("first");
     let mut elsewhere = input();
-    elsewhere.file_path = "Second-HFu8ZQ2yPdGr/README.md".to_owned();
+    elsewhere.file_path = "Second-11c8da70b5e1/README.md".to_owned();
     merge_document(&transaction, &clock(), &second, &elsewhere).expect("second");
     let ordered = order_of_pages(&transaction);
     let stamps: Vec<String> = ordered.iter().map(|_| String::new()).collect::<Vec<_>>();
@@ -712,7 +709,6 @@ fn picture(id: &str, hlc: &str) -> DocumentNode {
     picture.body = NodeBody::Image(notes_sync::document::ImageReference {
         original_name: "shot.png".to_owned(),
         path: "assets/shot-9f3a1c8e2044.png".to_owned(),
-        asset_hash: String::new(),
         display_width: 320,
         pixel_width: 1280,
         pixel_height: 720,
@@ -841,8 +837,8 @@ fn a_drifted_file_logs_the_row_it_overwrote() {
 fn a_reorder_logs_nothing_against_the_siblings_that_stayed() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let second_id = "V3F6tu7wEImb";
-    let third_id = "K0J91lhlBPWo";
+    let second_id = "8a201f33-0000-4c91-8d02-000000000002";
+    let third_id = "8a201f33-0000-4c91-8d02-000000000003";
     let seeded = stamp(5, "a3f2");
     merge_document(
         &transaction,
@@ -850,7 +846,7 @@ fn a_reorder_logs_nothing_against_the_siblings_that_stayed() {
         &notes_sync::document::VaultFile::Page(page(
             [NODE_ID, second_id, third_id]
                 .iter()
-                .map(|id| node(id, &seeded, &format!("Node {}", label(id))))
+                .map(|id| node(id, &seeded, &format!("Node {}", &id[34..])))
                 .collect(),
             &seeded,
         )),
@@ -894,10 +890,10 @@ fn a_reorder_logs_nothing_against_the_siblings_that_stayed() {
 fn siblings_taking_turns_in_one_slot_never_run_out_of_room() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let first = "vTnXZwnGL468";
-    let a = "V3F6tu7wEImb";
-    let b = "K0J91lhlBPWo";
-    let last = "X4Ooj1GHCm1K";
+    let first = "8a201f33-0000-4c91-8d02-000000000001";
+    let a = "8a201f33-0000-4c91-8d02-000000000002";
+    let b = "8a201f33-0000-4c91-8d02-000000000003";
+    let last = "8a201f33-0000-4c91-8d02-000000000004";
     let seeded = stamp(5, "a3f2");
     // Only the node that actually moved carries a new stamp — the others are
     // unchanged, which is what leaves the gap to be eaten.
@@ -910,7 +906,7 @@ fn siblings_taking_turns_in_one_slot_never_run_out_of_room() {
                     } else {
                         seeded.clone()
                     };
-                    node(id, &mark, &format!("Node {}", label(id)))
+                    node(id, &mark, &format!("Node {}", &id[34..]))
                 })
                 .collect(),
             &stamp(millis, "a3f2"),
@@ -998,8 +994,6 @@ fn siblings_taking_turns_in_one_slot_never_run_out_of_room() {
 fn trash(nodes: Vec<DocumentNode>, max_hlc: &str) -> notes_sync::document::VaultFile {
     notes_sync::document::VaultFile::Trash(notes_sync::document::TrashDocument {
         max_hlc: max_hlc.to_owned(),
-        state_hash: String::new(),
-        base: String::new(),
         nodes,
     })
 }
@@ -1129,7 +1123,7 @@ fn restoring_from_trash_puts_the_node_back_where_it_was() {
 fn a_trash_child_takes_its_place_from_its_line() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let child_id = "0hnLvtp_9ig6";
+    let child_id = "8a201f33-0000-4c91-8d02-000000000007";
     let mut parent = node(NODE_ID, &stamp(5, "a3f2"), "Deleted");
     parent.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
     parent.children = vec![node(child_id, &stamp(5, "a3f2"), "Child")];
@@ -1160,7 +1154,7 @@ fn a_trash_child_takes_its_place_from_its_line() {
 fn a_trash_root_whose_parent_is_unknown_gets_a_placeholder() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let unknown_parent = "krRBAnjO0XQL";
+    let unknown_parent = "9d3f21b8-c440-4c91-8d02-2e77a05fb163";
     let mut gone = node(NODE_ID, &stamp(5, "a3f2"), "Thought");
     gone.from = Some((unknown_parent.to_owned(), 4_294_967_296));
 
@@ -1362,8 +1356,8 @@ fn recovery_page(connection: &Connection) -> Option<String> {
 /// every device has to pick the same one, or the vaults never converge.
 #[test]
 fn a_cycle_parks_the_same_node_for_the_same_input() {
-    let first = "vTnXZwnGL468";
-    let second = "V3F6tu7wEImb";
+    let first = "8a201f33-0000-4c91-8d02-000000000001";
+    let second = "8a201f33-0000-4c91-8d02-000000000002";
     let mut parked = Vec::new();
 
     // The same ring, built from either end.
@@ -1443,7 +1437,7 @@ fn a_cycle_parks_the_same_node_for_the_same_input() {
 /// work nothing will ever write, which is what blocks a reindex for good.
 #[test]
 fn adopting_another_devices_decision_leaves_the_queue_as_it_found_it() {
-    let node_id = "vTnXZwnGL468";
+    let node_id = "8a201f33-0000-4c91-8d02-000000000001";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let seeded = stamp(5, "a3f2");
@@ -1488,7 +1482,7 @@ fn adopting_another_devices_decision_leaves_the_queue_as_it_found_it() {
 /// — which loses it every later comparison — and drops whatever it was owed.
 #[test]
 fn the_trash_does_not_stand_in_for_a_parent_that_is_already_here() {
-    let parent = "vTnXZwnGL468";
+    let parent = "8a201f33-0000-4c91-8d02-000000000001";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let seeded = stamp(5, "a3f2");
@@ -1518,15 +1512,13 @@ fn the_trash_does_not_stand_in_for_a_parent_that_is_already_here() {
         )
         .expect("owed");
 
-    let mut deleted = node("21YGHv7ZppHj", &seeded, "Taken out");
+    let mut deleted = node("8a201f33-0000-4c91-8d02-00000000000e", &seeded, "Taken out");
     deleted.from = Some((parent.to_owned(), 4_294_967_296));
     merge_document(
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Trash(notes_sync::document::TrashDocument {
             max_hlc: seeded.clone(),
-            state_hash: String::new(),
-            base: String::new(),
             nodes: vec![deleted],
         }),
         &notes_sync::merger::MergeInput {
@@ -1571,7 +1563,11 @@ fn a_conflicted_copy_does_not_become_the_documents_own_file() {
     let transaction = connection.transaction().expect("begin");
     let seeded = stamp(5, "a3f2");
     let file = notes_sync::document::VaultFile::Page(page(
-        vec![node("vTnXZwnGL468", &seeded, "First")],
+        vec![node(
+            "8a201f33-0000-4c91-8d02-000000000001",
+            &seeded,
+            "First",
+        )],
         &seeded,
     ));
     merge_document(&transaction, &clock(), &file, &input()).expect("the page");
@@ -1581,7 +1577,7 @@ fn a_conflicted_copy_does_not_become_the_documents_own_file() {
         &clock(),
         &file,
         &notes_sync::merger::MergeInput {
-            file_path: "Projects-26VJSt4Rw5eO/README (conflicted copy 2026-08-16).md".to_owned(),
+            file_path: "Projects-4f1c8e20a3b7/README (conflicted copy 2026-08-16).md".to_owned(),
             file_hash: "b".repeat(64),
             ..input()
         },
@@ -1591,12 +1587,12 @@ fn a_conflicted_copy_does_not_become_the_documents_own_file() {
     let recorded: String = transaction
         .query_row(
             "SELECT folder_path FROM sync_documents WHERE root_id = ?1",
-            ["26VJSt4Rw5eO"],
+            ["4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1"],
             |row| row.get(0),
         )
         .expect("the document");
     assert_eq!(
-        recorded, "Projects-26VJSt4Rw5eO/README.md",
+        recorded, "Projects-4f1c8e20a3b7/README.md",
         "the page keeps its own name"
     );
     assert!(
@@ -1612,7 +1608,7 @@ fn a_conflicted_copy_does_not_become_the_documents_own_file() {
 /// which is two devices rewriting the same file at each other for ever.
 #[test]
 fn adopting_another_devices_version_forgets_what_this_one_last_wrote() {
-    let node_id = "vTnXZwnGL468";
+    let node_id = "8a201f33-0000-4c91-8d02-000000000001";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let seeded = stamp(5, "a3f2");
@@ -1665,7 +1661,7 @@ fn adopting_another_devices_version_forgets_what_this_one_last_wrote() {
 /// hands them back.
 #[test]
 fn a_trash_copy_leaves_the_real_trash_owing_a_write() {
-    let node_id = "vTnXZwnGL468";
+    let node_id = "8a201f33-0000-4c91-8d02-000000000001";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let seeded = stamp(5, "a3f2");
@@ -1684,14 +1680,15 @@ fn a_trash_copy_leaves_the_real_trash_owing_a_write() {
         .expect("clear");
 
     let mut deleted = node(node_id, &stamp(9, "bbb2"), "Taken out");
-    deleted.from = Some(("26VJSt4Rw5eO".to_owned(), 4_294_967_296));
+    deleted.from = Some((
+        "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1".to_owned(),
+        4_294_967_296,
+    ));
     let outcome = merge_document(
         &transaction,
         &clock(),
         &notes_sync::document::VaultFile::Trash(notes_sync::document::TrashDocument {
             max_hlc: stamp(9, "bbb2"),
-            state_hash: String::new(),
-            base: String::new(),
             nodes: vec![deleted],
         }),
         &notes_sync::merger::MergeInput {
@@ -1715,7 +1712,7 @@ fn a_trash_copy_leaves_the_real_trash_owing_a_write() {
 /// been, and treating it as a demotion flattens it into its page.
 #[test]
 fn a_document_that_states_its_parent_is_recorded_as_a_split_document() {
-    let node_id = "vTnXZwnGL468";
+    let node_id = "8a201f33-0000-4c91-8d02-000000000001";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let seeded = stamp(5, "a3f2");
@@ -1728,7 +1725,7 @@ fn a_document_that_states_its_parent_is_recorded_as_a_split_document() {
         &clock(),
         &notes_sync::document::VaultFile::Page(split),
         &notes_sync::merger::MergeInput {
-            file_path: "Projects-26VJSt4Rw5eO/Deeper-vTnXZwnGL468/README.md".to_owned(),
+            file_path: "Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md".to_owned(),
             ..input()
         },
     )
@@ -1749,8 +1746,8 @@ fn a_document_that_states_its_parent_is_recorded_as_a_split_document() {
 /// again. The recovery page, the node put under it, and home all owe a write.
 #[test]
 fn a_rescued_node_and_the_page_holding_it_owe_a_file() {
-    let first = "vTnXZwnGL468";
-    let second = "V3F6tu7wEImb";
+    let first = "8a201f33-0000-4c91-8d02-000000000001";
+    let second = "8a201f33-0000-4c91-8d02-000000000002";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let seeded = stamp(5, "a3f2");
@@ -1813,8 +1810,8 @@ fn a_rescued_node_and_the_page_holding_it_owe_a_file() {
 fn an_orphaned_live_child_parks_on_the_recovery_page() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let parent_id = "vTnXZwnGL468";
-    let child_id = "V3F6tu7wEImb";
+    let parent_id = "8a201f33-0000-4c91-8d02-000000000001";
+    let child_id = "8a201f33-0000-4c91-8d02-000000000002";
     let mut parent = node(parent_id, &stamp(5, "a3f2"), "Parent");
     parent.children = vec![node(child_id, &stamp(5, "a3f2"), "Child")];
     merge_document(
@@ -1851,8 +1848,8 @@ fn an_orphaned_live_child_parks_on_the_recovery_page() {
 /// would stack the rescues on top of each other and leave the order to chance.
 #[test]
 fn rescued_nodes_land_in_the_same_order_whichever_was_rescued_first() {
-    let one = "uFoTxkDi1ajD";
-    let two = "iHHte9FJ2ZzZ";
+    let one = "8a201f33-0000-4c91-8d02-0000000000aa";
+    let two = "1b201f33-0000-4c91-8d02-0000000000bb";
     let mut orders = Vec::new();
 
     for reversed in [false, true] {
@@ -1939,9 +1936,9 @@ fn rescued_nodes_land_in_the_same_order_whichever_was_rescued_first() {
 fn a_typed_line_does_not_unseat_the_sibling_after_it() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let a = "vTnXZwnGL468";
-    let b = "V3F6tu7wEImb";
-    let c = "K0J91lhlBPWo";
+    let a = "8a201f33-0000-4c91-8d02-000000000001";
+    let b = "8a201f33-0000-4c91-8d02-000000000002";
+    let c = "8a201f33-0000-4c91-8d02-000000000003";
     let mine = stamp(5, DEVICE);
     let seed = |ids: Vec<DocumentNode>| notes_sync::document::VaultFile::Page(page(ids, &mine));
     merge_document(
@@ -2029,7 +2026,7 @@ fn a_new_page_lands_after_the_pages_already_there() {
     )
     .expect("first");
     let mut elsewhere = input();
-    elsewhere.file_path = "Second-HFu8ZQ2yPdGr/README.md".to_owned();
+    elsewhere.file_path = "Second-11c8da70b5e1/README.md".to_owned();
 
     merge_document(
         &transaction,
@@ -2214,12 +2211,11 @@ fn split_line(id: &str, hlc: &str, title: &str, path: &str) -> DocumentNode {
     line.body = NodeBody::Split {
         title: title.to_owned(),
         path: path.to_owned(),
-        child_kind: notes_sync::document::ChildKind::Page,
     };
     line
 }
 
-const CHILD_ID: &str = "krRBAnjO0XQL";
+const CHILD_ID: &str = "9d3f21b8-c440-4c91-8d02-2e77a05fb163";
 
 fn child_document(hlc: &str, title: &str, starred: bool) -> PageDocument {
     PageDocument {
@@ -2227,8 +2223,6 @@ fn child_document(hlc: &str, title: &str, starred: bool) -> PageDocument {
         parent: Some(PAGE_ID.to_owned()),
         sort_key: Some(4_294_967_296),
         max_hlc: hlc.to_owned(),
-        state_hash: String::new(),
-        base: String::new(),
         root: DocumentRoot {
             title: title.to_owned(),
             hlc: hlc.to_owned(),
@@ -2242,7 +2236,7 @@ fn child_document(hlc: &str, title: &str, starred: bool) -> PageDocument {
 
 fn child_input() -> MergeInput {
     let mut input = input();
-    input.file_path = "Projects-26VJSt4Rw5eO/Archive-krRBAnjO0XQL/README.md".to_owned();
+    input.file_path = "Projects-4f1c8e20a3b7/Archive-9d3f21b8c440/README.md".to_owned();
     input
 }
 
@@ -2273,7 +2267,7 @@ fn a_split_line_grants_existence_and_position_only() {
                 CHILD_ID,
                 &mark,
                 "Stale display title",
-                "Archive-krRBAnjO0XQL/README.md",
+                "Archive-9d3f21b8c440/README.md",
             )],
             &mark,
         )),
@@ -2316,7 +2310,7 @@ fn a_child_document_converges_in_either_arrival_order() {
                 CHILD_ID,
                 &mark,
                 "Stale display title",
-                "Archive-krRBAnjO0XQL/README.md",
+                "Archive-9d3f21b8c440/README.md",
             )],
             &mark,
         ));
@@ -2363,7 +2357,7 @@ fn replaying_a_split_pair_changes_nothing() {
             CHILD_ID,
             &mark,
             "2024 Archive",
-            "Archive-krRBAnjO0XQL/README.md",
+            "Archive-9d3f21b8c440/README.md",
         )],
         &mark,
     ));
@@ -2387,9 +2381,9 @@ fn replaying_a_split_pair_changes_nothing() {
 /// different orders.
 #[test]
 fn equal_claim_stamps_break_place_ties_by_digest() {
-    let first = "vTnXZwnGL468";
-    let second = "V3F6tu7wEImb";
-    let third = "K0J91lhlBPWo";
+    let first = "8a201f33-0000-4c91-8d02-000000000001";
+    let second = "8a201f33-0000-4c91-8d02-000000000002";
+    let third = "8a201f33-0000-4c91-8d02-000000000003";
     let base = stamp(5, "a3f2");
     let mut orders = Vec::new();
 
@@ -2433,9 +2427,9 @@ fn equal_claim_stamps_break_place_ties_by_digest() {
 /// where it sits, so there is nothing for the two files to disagree about.
 #[test]
 fn two_documents_sharing_a_base_agree_on_an_unmoved_nodes_place() {
-    let one = "vTnXZwnGL468";
-    let two = "V3F6tu7wEImb";
-    let three = "K0J91lhlBPWo";
+    let one = "8a201f33-0000-4c91-8d02-000000000001";
+    let two = "8a201f33-0000-4c91-8d02-000000000002";
+    let three = "8a201f33-0000-4c91-8d02-000000000003";
     let base = stamp(5, "a3f2");
     let mut orders = Vec::new();
 
@@ -2500,7 +2494,7 @@ fn two_documents_sharing_a_base_agree_on_an_unmoved_nodes_place() {
 fn a_page_that_arrives_before_home_yields_to_homes_line() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let other = "HFu8ZQ2yPdGr";
+    let other = "11c8da70-b5e1-4c91-8d02-a3f204ee81cc";
     merge_document(
         &transaction,
         &clock(),
@@ -2509,7 +2503,7 @@ fn a_page_that_arrives_before_home_yields_to_homes_line() {
     )
     .expect("first page");
     let mut elsewhere = input();
-    elsewhere.file_path = "Second-HFu8ZQ2yPdGr/README.md".to_owned();
+    elsewhere.file_path = "Second-11c8da70b5e1/README.md".to_owned();
     merge_document(
         &transaction,
         &clock(),
@@ -2525,13 +2519,13 @@ fn a_page_that_arrives_before_home_yields_to_homes_line() {
                 other,
                 &stamp(1, "a3f2"),
                 "Second",
-                "Second-HFu8ZQ2yPdGr/README.md",
+                "Second-11c8da70b5e1/README.md",
             ),
             split_line(
                 PAGE_ID,
                 &stamp(1, "a3f2"),
                 "Projects",
-                "Projects-26VJSt4Rw5eO/README.md",
+                "Projects-4f1c8e20a3b7/README.md",
             ),
         ],
         &stamp(1, "a3f2"),
@@ -2570,7 +2564,6 @@ fn a_resolved_picture_replayed_is_not_an_edit() {
     picture.body = NodeBody::Image(notes_sync::document::ImageReference {
         original_name: "holiday.png".to_owned(),
         path: "assets/holiday-9f2c1b7a4e6d.png".to_owned(),
-        asset_hash: String::new(),
         display_width: 320,
         pixel_width: 1280,
         pixel_height: 720,
@@ -2626,7 +2619,6 @@ fn a_picture_whose_bytes_are_known_lands_in_domain_form() {
     picture.body = NodeBody::Image(notes_sync::document::ImageReference {
         original_name: "holiday.png".to_owned(),
         path: "assets/holiday-9f2c1b7a4e6d.png".to_owned(),
-        asset_hash: String::new(),
         display_width: 320,
         pixel_width: 1280,
         pixel_height: 720,
@@ -2704,7 +2696,6 @@ fn page_with_picture(link: &str) -> notes_sync::document::VaultFile {
     picture.body = NodeBody::Image(notes_sync::document::ImageReference {
         original_name: "holiday.png".to_owned(),
         path: link.to_owned(),
-        asset_hash: String::new(),
         display_width: 320,
         pixel_width: 1280,
         pixel_height: 720,
@@ -2730,16 +2721,4 @@ fn resolve_picture(transaction: &rusqlite::Transaction<'_>, hash: &str) {
             [hash],
         )
         .expect("asset");
-}
-
-/// The three reorder fixtures by name. A uuid's last two digits used to say
-/// which was which; a yid has no such tail, so the mapping is written out.
-fn label(id: &str) -> &'static str {
-    match id {
-        "vTnXZwnGL468" => "01",
-        "V3F6tu7wEImb" => "02",
-        "K0J91lhlBPWo" => "03",
-        "X4Ooj1GHCm1K" => "04",
-        other => panic!("no label for {other}"),
-    }
 }

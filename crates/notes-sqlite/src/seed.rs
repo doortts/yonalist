@@ -5,21 +5,40 @@ use rusqlite::{Connection, TransactionBehavior, params};
 use crate::repository::internal;
 
 const ONBOARDING_MARKER_KEY: &str = "onboarding_seeded";
-/// Fixed ids rather than readable strings: every id the vault carries is a
-/// `yid`, and the seed writes rows like any other producer. They are constants
-/// so a reseeded database lands on the same ids it had before, and so a guide
-/// fixture and a fresh vault always use the same block identity. Each one is
-/// unique and satisfies the ordinary generation rule.
-const ONBOARDING_PAGE_ID: &str = "Ft6Ts_1ENGI-";
+/// Fixed uuids rather than readable strings: every id the vault carries is a
+/// uuid, and the seed writes rows like any other producer. They are constants
+/// so a reseeded database lands on the same ids it had before. Their values are
+/// uuid v5 over the sync namespace `7f9c2b14-5d63-4a08-9e21-3c6f0d8b4a52` with
+/// the names `onboarding/page` and `onboarding/guide/N`, so the family extends
+/// without guessing at collisions.
+const ONBOARDING_PAGE_ID: &str = "f4556d3d-868c-5fab-914a-614c84331c53";
 const ONBOARDING_TITLE: &str = "Yonalist 시작하기";
 const ONBOARDING_NOTE: &str = "이 노트는 자유롭게 수정하거나 삭제할 수 있어요.";
 const ONBOARDING_CHILDREN: [(&str, &str); 6] = [
-    ("6mm6r7xRjEDW", "Enter — 새 항목 만들기"),
-    ("Pd95nKBRgcDZ", "Tab / Shift+Tab — 들여쓰기 / 내어쓰기"),
-    ("36QisBAraYs_", "Shift+Enter — 설명 입력하기"),
-    ("9TokmOff9ZnA", "⌘/Ctrl+Enter — 완료 표시"),
-    ("6cX4eqi-JFFW", "↑/↓ — 항목 사이 이동"),
-    ("UvmuQAYzzdQI", "불릿을 드래그해 순서와 계층 바꾸기"),
+    (
+        "5c64635d-db37-5efc-b331-fd3687acbd5d",
+        "Enter — 새 항목 만들기",
+    ),
+    (
+        "a18820a4-633c-5bd2-abcf-91a98b9f775c",
+        "Tab / Shift+Tab — 들여쓰기 / 내어쓰기",
+    ),
+    (
+        "89c02706-d65d-5691-a17c-397339acdeff",
+        "Shift+Enter — 설명 입력하기",
+    ),
+    (
+        "5915228f-fbc6-5d8d-8206-e0eab04009f1",
+        "⌘/Ctrl+Enter — 완료 표시",
+    ),
+    (
+        "36c840c3-4964-5ea8-8a1e-2e94880821eb",
+        "↑/↓ — 항목 사이 이동",
+    ),
+    (
+        "8b425319-cfc2-5dac-b7a1-553473556311",
+        "불릿을 드래그해 순서와 계층 바꾸기",
+    ),
 ];
 
 /// Seeds the first-run onboarding page exactly once per database. Existing
@@ -125,29 +144,26 @@ mod tests {
             "a reseeded database has to land on the ids it had before"
         );
         for id in &first {
-            assert!(
-                notes_core::is_yid(id),
-                "the renderer only writes twelve-character block ids, got {id}"
+            let parsed = uuid::Uuid::try_parse(id).expect("uuid");
+            assert_eq!(
+                parsed.hyphenated().to_string(),
+                *id,
+                "the renderer only writes lowercase hyphenated uuids"
             );
         }
     }
 
     #[test]
-    fn the_onboarding_seed_uses_yids() {
+    fn the_onboarding_seed_uses_uuids() {
         let mut connection = open();
         seed_onboarding(&mut connection).expect("seed");
 
         let ids = seeded_ids(&connection);
         assert_eq!(ids.len(), 7);
-        assert_eq!(
-            ids.iter().collect::<std::collections::BTreeSet<_>>().len(),
-            ids.len(),
-            "two seeded rows sharing an id would be one row after a merge"
-        );
         for id in &ids {
             assert!(
-                notes_core::is_yid(id),
-                "the vault can only carry block ids, got {id}"
+                uuid::Uuid::try_parse(id).is_ok(),
+                "the vault can only carry uuid ids, got {id}"
             );
         }
     }

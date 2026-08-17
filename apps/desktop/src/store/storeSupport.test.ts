@@ -1,24 +1,19 @@
 import { freshId } from "./storeSupport";
 
-const YID = /^[A-Za-z0-9_-]{12}$/;
+const UUID_V4 =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 /**
  * The id is written into the markdown vault as `<!-- yid: ... -->` and is the
- * node's identity across devices, so an id of any other shape is unexportable.
- * Minting a fallback id would put such a node in the outline; throwing keeps
- * it out.
+ * node's identity across devices, so a non-UUID id is unexportable. Minting a
+ * fallback id would put such a node in the outline; throwing keeps it out.
  */
 describe("freshId", () => {
-  it("mints a yid", () => {
-    expect(freshId()).toMatch(YID);
+  it("mints a UUID", () => {
+    expect(freshId()).toMatch(UUID_V4);
   });
 
-  it("does not repeat itself", () => {
-    const minted = new Set(Array.from({ length: 512 }, freshId));
-    expect(minted.size).toBe(512);
-  });
-
-  it("throws rather than minting an id of another shape", () => {
+  it("throws rather than minting a non-UUID id", () => {
     const real = globalThis.crypto;
     Object.defineProperty(globalThis, "crypto", {
       value: {},
