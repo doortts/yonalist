@@ -154,34 +154,98 @@ fn sync_image(
         }
         return Ok(());
     };
+    let byte_length = i64::try_from(image.byte_length())
+        .map_err(|_| StorageError::Internal("image byte length exceeded SQLite INTEGER".into()))?;
+    let values = params![
+        node.id().as_str(),
+        image.content_hash(),
+        image.relative_path(),
+        image.original_name(),
+        image.mime_type(),
+        byte_length,
+        image.pixel_width(),
+        image.pixel_height(),
+        image.display_width(),
+    ];
+    // Update first, and only where something actually differs, so the answer
+    // says whether this was an edit. An upsert cannot say: it reports a row
+    // written either way, and a picture resized to the width it already had
+    // would then be stamped as an edit it never was.
+    let edited = transaction
+        .execute(
+            "UPDATE notes_images SET
+                content_hash = ?2,
+                relative_path = ?3,
+                original_name = ?4,
+                mime_type = ?5,
+                byte_length = ?6,
+                pixel_width = ?7,
+                pixel_height = ?8,
+                display_width = ?9
+             WHERE node_id = ?1 AND (
+                    content_hash IS NOT ?2
+                 OR relative_path IS NOT ?3
+                 OR original_name IS NOT ?4
+                 OR mime_type IS NOT ?5
+                 OR byte_length IS NOT ?6
+                 OR pixel_width IS NOT ?7
+                 OR pixel_height IS NOT ?8
+                 OR display_width IS NOT ?9
+             )",
+            values,
+        )
+        .map_err(internal)?;
+    if edited == 0 {
+        // Either there was no row, or there was nothing to change. A row that
+        // arrives here for the first time belongs to a node that was just
+        // written too, and that write did the stamping.
+        transaction
+            .execute(
+                "INSERT INTO notes_images(
+                    node_id, content_hash, relative_path, original_name, mime_type,
+                    byte_length, pixel_width, pixel_height, display_width
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(node_id) DO NOTHING",
+                values,
+            )
+            .map_err(internal)?;
+        return Ok(());
+    }
+    stamp_for_its_picture(transaction, node.id().as_str())
+}
+
+/// What a picture's own columns say is part of the note, but none of it lives
+/// on the node's row, so the stamping trigger there never sees it. Without
+/// this a resize is invisible to the folder: nothing is owed a write, the
+/// file keeps stating the old size, and the next read of that file meets a
+/// node whose stamp has not moved — an equal-stamp comparison the stale line
+/// can win, undoing the resize on the device that made it.
+///
+/// Deliberately here and not in a trigger on `notes_images`: a merge writes
+/// that table too, carrying another device's reading, and a trigger could not
+/// tell the two apart. This runs only on the path a command takes.
+fn stamp_for_its_picture(
+    transaction: &rusqlite::Transaction<'_>,
+    node_id: &str,
+) -> Result<(), StorageError> {
     transaction
         .execute(
-            "INSERT INTO notes_images(
-                node_id, content_hash, relative_path, original_name, mime_type,
-                byte_length, pixel_width, pixel_height, display_width
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(node_id) DO UPDATE SET
-                content_hash = excluded.content_hash,
-                relative_path = excluded.relative_path,
-                original_name = excluded.original_name,
-                mime_type = excluded.mime_type,
-                byte_length = excluded.byte_length,
-                pixel_width = excluded.pixel_width,
-                pixel_height = excluded.pixel_height,
-                display_width = excluded.display_width",
-            params![
-                node.id().as_str(),
-                image.content_hash(),
-                image.relative_path(),
-                image.original_name(),
-                image.mime_type(),
-                i64::try_from(image.byte_length()).map_err(|_| {
-                    StorageError::Internal("image byte length exceeded SQLite INTEGER".into())
-                })?,
-                image.pixel_width(),
-                image.pixel_height(),
-                image.display_width(),
-            ],
+            "UPDATE notes_nodes SET hlc = yona_hlc() WHERE id = ?1",
+            [node_id],
+        )
+        .map_err(internal)?;
+    transaction
+        .execute(
+            // The node, and the file that states its line — the same two the
+            // stamping trigger marks when a node's own column changes.
+            "INSERT INTO sync_dirty_nodes(node_id, marked_at)
+             SELECT id, unixepoch() FROM (
+                 SELECT ?1 AS id
+                 UNION
+                 SELECT parent_id FROM notes_nodes WHERE id = ?1
+             ) WHERE id IS NOT NULL
+             ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+            [node_id],
         )
         .map_err(internal)?;
     Ok(())
