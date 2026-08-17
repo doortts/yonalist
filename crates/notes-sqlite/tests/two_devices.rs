@@ -1402,3 +1402,82 @@ fn stored_image(device: &Device, node_id: &str) -> (String, String, i64) {
         )
         .expect("image row")
 }
+
+/// A picture's size on screen is part of the note, and the only place it is
+/// written down is the image row. Nothing about the node itself changes when
+/// it is resized, so unless the resize says so, the file is never rewritten,
+/// the other device never hears, and the stale line eventually wins the
+/// stamp-for-stamp comparison and undoes the resize where it was made.
+#[test]
+fn a_resize_travels_and_stays() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    settle(&one, &two);
+
+    one.run(IpcNotesCommand::ResizeImage {
+        id: shot.clone(),
+        display_width: 300,
+    });
+    settle(&one, &two);
+
+    assert_eq!(width_of(&two, &shot), 300, "the other device never heard");
+    assert_eq!(
+        width_of(&one, &shot),
+        300,
+        "the device that resized it had the resize undone"
+    );
+}
+
+/// The same rule the node's own columns follow: a write that leaves the row
+/// as it was is not an edit, and stamping it anyway would hand this device a
+/// reading it did not earn.
+#[test]
+fn resizing_to_the_width_it_already_has_is_not_an_edit() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    settle(&one, &two);
+    let before = stamp_of(&one, &shot);
+
+    one.run(IpcNotesCommand::ResizeImage {
+        id: shot.clone(),
+        display_width: width_of(&one, &shot) as u32,
+    });
+
+    assert_eq!(stamp_of(&one, &shot), before);
+    assert_eq!(dirty_count(&one), 0, "nothing changed, so nothing is owed");
+}
+
+fn width_of(device: &Device, node_id: &str) -> i64 {
+    rusqlite::Connection::open(device._home.path().join("notes.sqlite"))
+        .expect("open")
+        .query_row(
+            "SELECT display_width FROM notes_images WHERE node_id = ?1",
+            [node_id],
+            |row| row.get(0),
+        )
+        .expect("image row")
+}
+
+fn stamp_of(device: &Device, node_id: &str) -> String {
+    rusqlite::Connection::open(device._home.path().join("notes.sqlite"))
+        .expect("open")
+        .query_row(
+            "SELECT hlc FROM notes_nodes WHERE id = ?1",
+            [node_id],
+            |row| row.get(0),
+        )
+        .expect("node")
+}
+
+fn dirty_count(device: &Device) -> i64 {
+    rusqlite::Connection::open(device._home.path().join("notes.sqlite"))
+        .expect("open")
+        .query_row("SELECT count(*) FROM sync_dirty_nodes", [], |row| {
+            row.get(0)
+        })
+        .expect("count")
+}
