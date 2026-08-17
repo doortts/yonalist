@@ -1162,3 +1162,81 @@ fn two_ids_differing_only_in_case_are_two_blocks() {
     );
     assert_eq!(parsed[1].hlc, "0swkd7qz7-00-a3f2");
 }
+
+/// An invisible character must not cost a document its whole footer.
+///
+/// The delimiters used to be exact-line matches, so one trailing space on
+/// `<!-- yonalist` refused the document with "This line is not part of the
+/// grammar" and one on `-->` refused it with "The footer is never closed" —
+/// both naming something nobody can see. `split_trailing_comment` twelve lines
+/// away already trims trailing whitespace off a body comment on the grounds that
+/// it is an editor's and not the format's; the footer, now the load-bearing half,
+/// had the opposite rule.
+#[test]
+fn whitespace_around_the_footer_delimiters_is_an_editors_and_not_the_formats() {
+    let canonical = page_with_footer(
+        "- One <!-- yid: Nd0000000abc -->\n",
+        &["yid: Nd0000000abc t: 0swkd7qz6-00-a3f2"],
+    );
+
+    for (what, source) in [
+        (
+            "a space after the opener",
+            canonical.replace("<!-- yonalist\n", "<!-- yonalist \n"),
+        ),
+        (
+            "a space after the closer",
+            canonical.replace("\n-->\n", "\n--> \n"),
+        ),
+        (
+            "an indented opener",
+            canonical.replace("<!-- yonalist\n", "  <!-- yonalist\n"),
+        ),
+        (
+            "an indented closer",
+            canonical.replace("\n-->\n", "\n  -->\n"),
+        ),
+    ] {
+        let parsed = nodes(&source);
+
+        assert_eq!(parsed.len(), 1, "{what} lost the body:\n{source}");
+        assert_eq!(
+            parsed[0].hlc, "0swkd7qz6-00-a3f2",
+            "{what} lost the footer:\n{source}"
+        );
+    }
+}
+
+/// A hand-typed picture line is refused, and the refusal says where to look.
+///
+/// §7 accepts the refusal — a picture whose dimensions nobody stated has nothing
+/// a row could be built from, and the database will not take a zero. What it does
+/// not accept is a reason a person cannot act on: `An image line is not a link`
+/// about a line that plainly is one, which is what the dead `ya:` special case in
+/// the comment splitter produced.
+#[test]
+fn a_hand_typed_picture_line_is_refused_by_naming_the_footer() {
+    let no_entry = page("- ![shot.png](assets/shot-9f3a1c8e2044.png) <!-- yid: Nd0000000abc -->\n");
+    let refusal = parse(no_entry.as_bytes()).expect_err("a picture with no metadata");
+
+    assert!(
+        refusal.contains("footer"),
+        "the refusal has to name the place a person can fix it: {refusal}"
+    );
+
+    // The old on-line comment, which somebody may copy out of an older file. It
+    // is not a channel any more, so what is left is a link with text after it —
+    // and "not a link" is the honest thing to say about that, rather than a
+    // reference to a footer entry that would not have helped. Reading the old
+    // comment instead would be a compatibility reader, which is a non-goal.
+    let old_comment = page(
+        "- ![shot.png](assets/shot-9f3a1c8e2044.png) \
+         <!-- ya: w: 320 px: 10x10 bytes: 4 --> <!-- yid: Nd0000000abc -->\n",
+    );
+    let refusal = parse(old_comment.as_bytes()).expect_err("a line with two comments");
+
+    assert!(
+        refusal.contains("not a link") && refusal.contains("ya:"),
+        "the refusal has to quote the line so a person sees the leftover: {refusal}"
+    );
+}

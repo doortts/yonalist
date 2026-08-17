@@ -54,6 +54,7 @@ fn page(text: &str, hlc: &str) -> VaultFile {
         parent: None,
         sort_key: None,
         max_hlc: hlc.to_owned(),
+        stated_max_hlc: hlc.to_owned(),
         root: DocumentRoot {
             title: "Projects".to_owned(),
             hlc: hlc.to_owned(),
@@ -86,6 +87,7 @@ fn page_with_image(disk_name: &str) -> VaultFile {
         parent: None,
         sort_key: None,
         max_hlc: hlc.clone(),
+        stated_max_hlc: hlc.clone(),
         root: DocumentRoot {
             title: "Projects".to_owned(),
             hlc: hlc.clone(),
@@ -201,6 +203,7 @@ fn a_merge_leaves_the_derived_paths_correct() {
         parent: None,
         sort_key: None,
         max_hlc: stamp(5),
+        stated_max_hlc: stamp(5),
         root: DocumentRoot {
             title: "Projects".to_owned(),
             hlc: stamp(5),

@@ -272,7 +272,9 @@ pub fn export_home(
         id: DocumentId::Home,
         parent: None,
         sort_key: None,
-        max_hlc,
+        max_hlc: max_hlc.clone(),
+        // Built from the rows, so there is no file that could have been short.
+        stated_max_hlc: max_hlc,
         root: DocumentRoot {
             title,
             hlc: root_hlc,
@@ -1023,7 +1025,9 @@ fn load_document(
         parent: Some(root.parent_id.clone())
             .filter(|parent| parent != "root" && !parent.is_empty()),
         sort_key: root.sort_key,
-        max_hlc,
+        max_hlc: max_hlc.clone(),
+        // Built from the rows, so there is no file that could have been short.
+        stated_max_hlc: max_hlc,
         root: DocumentRoot {
             title: root.text,
             note: root.note,

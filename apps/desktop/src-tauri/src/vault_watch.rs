@@ -819,6 +819,7 @@ mod tests {
             parent: None,
             sort_key: None,
             max_hlc: hlc.clone(),
+            stated_max_hlc: hlc.clone(),
             root: DocumentRoot {
                 title: "Projects".to_owned(),
                 hlc: hlc.clone(),

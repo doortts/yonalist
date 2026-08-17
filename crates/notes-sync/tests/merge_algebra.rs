@@ -195,7 +195,9 @@ fn canonical_document() -> impl Strategy<Value = PageDocument> {
                 id: DocumentId::Node(PAGE_ID.to_owned()),
                 parent: None,
                 sort_key: None,
-                max_hlc: max,
+                max_hlc: max.clone(),
+                // Built in memory, so there is no file that could have been cut short.
+                stated_max_hlc: max,
                 root: DocumentRoot {
                     title: "Projects".to_owned(),
                     hlc: stamp(root_millis, "a3f2"),

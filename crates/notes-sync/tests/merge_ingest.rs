@@ -74,6 +74,8 @@ fn page(nodes: Vec<DocumentNode>, max_hlc: &str) -> PageDocument {
         parent: None,
         sort_key: None,
         max_hlc: max_hlc.to_owned(),
+        // Built in memory, so there is no file that could have been cut short.
+        stated_max_hlc: max_hlc.to_owned(),
         root: DocumentRoot {
             title: "Projects".to_owned(),
             hlc: max_hlc.to_owned(),
@@ -2218,6 +2220,8 @@ fn child_document(hlc: &str, title: &str, starred: bool) -> PageDocument {
         parent: Some(PAGE_ID.to_owned()),
         sort_key: Some(4_294_967_296),
         max_hlc: hlc.to_owned(),
+        // Built in memory, so there is no file that could have been cut short.
+        stated_max_hlc: hlc.to_owned(),
         root: DocumentRoot {
             title: title.to_owned(),
             hlc: hlc.to_owned(),
@@ -2713,4 +2717,117 @@ fn resolve_picture(transaction: &rusqlite::Transaction<'_>, hash: &str) {
             [hash],
         )
         .expect("asset");
+}
+
+/// A file whose tail was lost still asks to be rewritten.
+///
+/// The bound on "is this file incomplete" is the newest stamp the file mentions,
+/// and every node's stamp now lives in the footer — so a truncation that takes the
+/// bullets takes the evidence with it, and the document read as complete. The
+/// frontmatter survives a truncation, and its stated `max_hlc` is the one thing
+/// left that says how much the file ought to have held.
+///
+/// The stated value is trusted for this and for nothing else. It is not the clock:
+/// a hand edit that pushed it into the future would future-stamp every later local
+/// edit, which is why the value the document carries is still recomputed from its
+/// content. Inflating it here only asks for more rewrites, and a rewrite is safe.
+#[test]
+fn a_file_whose_footer_was_lost_still_asks_to_be_rewritten() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let whole = notes_sync::render::render(&notes_sync::document::VaultFile::Page(page(
+        vec![node(NODE_ID, &stamp(5, "a3f2"), "Thought")],
+        &stamp(5, "a3f2"),
+    )))
+    .expect("render");
+    notes_sync::merger::merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::parse::parse(&whole).expect("parse"),
+        &input(),
+    )
+    .expect("first");
+
+    // The transport dropped the end of the file: the bullet and the footer that
+    // stated its stamp went together, which is the correlated case.
+    let text = String::from_utf8(whole).expect("utf-8");
+    let (frontmatter, _) = text.split_once("\n# ").expect("a heading");
+    let truncated = format!("{frontmatter}\n# Projects\n\n");
+
+    let outcome = notes_sync::merger::merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::parse::parse(truncated.as_bytes()).expect("parse"),
+        &input(),
+    )
+    .expect("second");
+
+    assert_eq!(
+        text_of(&transaction, NODE_ID).as_deref(),
+        Some("Thought"),
+        "absence is not evidence — only trash.md deletes"
+    );
+    assert!(
+        outcome.needs_write_back,
+        "a file that lost its tail read as complete, so nothing would put the \
+         missing bullet back into it"
+    );
+}
+
+/// A picture's unknown tokens reach `sync_extras` in the order the file wrote
+/// them, and that string is what the merge compares.
+///
+/// This is the item's one merge-visible risk, and it needs saying out loud rather
+/// than being left to a byte-level round trip. `extras_of` used to join two lists
+/// — the node's tokens and the picture's, which arrived in two separate comments.
+/// One footer line carries both now, so it joins one list, and the two have to
+/// spell the same string: `content_of_file` hashes it, so a different spelling of
+/// the same unknown tokens is an edit on every device that meets it.
+///
+/// The footer writes a picture's own facts ahead of the tokens it cannot name,
+/// which is what makes file order and list order agree. A test carrying only a
+/// text node cannot fail here — it is the shape where the old and new bodies of
+/// `extras_of` are identical by construction.
+#[test]
+fn a_pictures_unknown_tokens_reach_the_row_in_the_order_the_file_wrote_them() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let mut shot = node(NODE_ID, &stamp(5, "a3f2"), "");
+    shot.body = notes_sync::document::NodeBody::Image(notes_sync::document::ImageReference {
+        original_name: "shot.png".to_owned(),
+        path: "assets/shot-9f3a1c8e2044.png".to_owned(),
+        display_width: 320,
+        pixel_width: 10,
+        pixel_height: 10,
+        byte_size: 4,
+    });
+    // One of each: a token about the node and a token about the picture, which in
+    // the old format arrived through two different comments.
+    shot.unknown_tokens = vec![
+        "nodeside:".to_owned(),
+        "one".to_owned(),
+        "pictureside:".to_owned(),
+        "two".to_owned(),
+    ];
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(vec![shot], &stamp(5, "a3f2"))),
+        &input(),
+    )
+    .expect("merge");
+
+    let extras: String = transaction
+        .query_row(
+            "SELECT sync_extras FROM notes_nodes WHERE id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("extras");
+
+    assert_eq!(
+        extras, "nodeside: one pictureside: two",
+        "the string the merge hashes has to be the tokens in file order, once"
+    );
 }

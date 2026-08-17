@@ -19,12 +19,36 @@ pub struct PageDocument {
     pub parent: Option<String>,
     /// Written only on a split document; a page's place is its line in home.
     pub sort_key: Option<i64>,
+    /// The high-water mark this document's own content adds up to. Recomputed
+    /// from the nodes rather than believed, because it seeds the boot clock: a
+    /// hand edit that pushed the stated key into the future would future-stamp
+    /// every later local edit on this device.
     pub max_hlc: String,
+    /// What the file *said* its high-water mark was, believed for exactly one
+    /// question — how much this file ought to have held.
+    ///
+    /// Every node's stamp lives in the footer now, so a truncation that takes the
+    /// bullets takes the evidence with it and the document adds up to almost
+    /// nothing. The frontmatter survives a truncation, and this is the only thing
+    /// left that says the file is short. Trusted here and nowhere else: inflating
+    /// it only asks for more rewrites, and a rewrite is safe.
+    pub stated_max_hlc: String,
     pub root: DocumentRoot,
     pub nodes: Vec<DocumentNode>,
     /// Frontmatter keys this version does not know, kept verbatim so a newer
     /// device's file survives a round trip through an older one.
     pub unknown_frontmatter: Vec<String>,
+}
+
+impl PageDocument {
+    /// How much this file ought to have held, for the one reader that asks.
+    ///
+    /// The higher of what the content adds up to and what the frontmatter stated.
+    /// A full file agrees with itself and the two are equal; a truncated one has
+    /// lost its content and only the stated key is left to say so.
+    pub fn completeness_bound(&self) -> String {
+        self.max_hlc.clone().max(self.stated_max_hlc.clone())
+    }
 }
 
 /// The home document is the one place a literal, non-UUID id is legal.

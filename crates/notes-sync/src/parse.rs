@@ -90,10 +90,14 @@ type Footer = BTreeMap<String, Tokens>;
 /// whole, because a footer half-read hands some blocks somebody else's state.
 fn split_footer<'a>(body: &[&'a str]) -> Result<(Vec<&'a str>, Footer), Quarantine> {
     const OPEN: &str = "<!-- yonalist";
+    // Trimmed, because a trailing space is an editor's and not the format's — the
+    // same grounds `split_trailing_comment` already trims a body comment on. Left
+    // exact, one invisible character refused the whole document and named
+    // something nobody could see.
     let opens: Vec<usize> = body
         .iter()
         .enumerate()
-        .filter(|(_, line)| **line == OPEN)
+        .filter(|(_, line)| line.trim() == OPEN)
         .map(|(index, _)| index)
         .collect();
     if opens.len() > 1 {
@@ -104,7 +108,7 @@ fn split_footer<'a>(body: &[&'a str]) -> Result<(Vec<&'a str>, Footer), Quaranti
     };
     let close = body[open..]
         .iter()
-        .position(|line| *line == "-->")
+        .position(|line| line.trim() == "-->")
         .map(|offset| open + offset)
         .ok_or_else(|| "The footer is never closed.".to_owned())?;
 
@@ -254,12 +258,15 @@ fn parse_page(keys: &Frontmatter, body: &[&str], footer: Footer) -> Result<Vault
     // hand edit, and keeping it would push the boot clock into the future and
     // future-stamp every later local edit.
     let max_hlc = highest_hlc(&nodes).max(root.hlc.clone());
+    // Kept apart from the value above on purpose. See `PageDocument`.
+    let stated_max_hlc = optional_hlc(keys.get("max_hlc"));
 
     Ok(VaultFile::Page(PageDocument {
         id,
         parent,
         sort_key,
         max_hlc,
+        stated_max_hlc,
         root,
         nodes,
         unknown_frontmatter: keys.unknown.clone(),
@@ -484,11 +491,16 @@ fn read_node_line(
 }
 
 /// The renderer writes exactly one space before the node comment, so the
-/// boundary is the last ` <!--`. Two shapes deliberately keep the tail in the
-/// body instead: a comment this reader cannot close, which is still the user's
-/// bytes, and an image line whose only comment is its own `ya:` — a person
-/// added it by hand and the merge issues the id. Dropping either would delete
-/// text, and dropping a broken `yid:` would hand the node a new identity.
+/// boundary is the last ` <!--`. One shape deliberately keeps the tail in the body
+/// instead: a comment this reader cannot close, which is still the user's bytes.
+/// Dropping it would delete text, and dropping a broken `yid:` would hand the node
+/// a new identity.
+///
+/// There used to be a second exemption for an image line carrying its own `ya:`
+/// comment, from when that was where a picture stated its size. Nothing writes one
+/// now, and its only remaining effect was to keep such a tail in the body — so the
+/// line stopped parsing as a link and the reader refused it by saying it was not
+/// one, about a line that plainly was.
 fn split_trailing_comment(line: &str) -> (&str, &str) {
     let Some(separator) = line.rfind(" <!--") else {
         return (line, "");
@@ -503,9 +515,6 @@ fn split_trailing_comment(line: &str) -> (&str, &str) {
     else {
         return (line, "");
     };
-    if inner.trim_start().starts_with("ya:") {
-        return (line, "");
-    }
     (&line[..separator], candidate)
 }
 
@@ -676,7 +685,7 @@ fn read_image(body: &str, tokens: &Tokens) -> Result<ImageReference, Quarantine>
 
     let (pixel_width, pixel_height) = tokens
         .pixels
-        .ok_or_else(|| format!("An image line has no pixel size: `{path}`"))?;
+        .ok_or_else(|| format!("The footer states no pixel size for the picture at `{path}`."))?;
     // The bounds are facts about the format, so they are answered here, where a
     // refusal is a quarantine with a reason — not later, where the same file
     // would die on a database constraint with nothing to tell the user.
@@ -685,7 +694,7 @@ fn read_image(body: &str, tokens: &Tokens) -> Result<ImageReference, Quarantine>
     }
     let display_width = tokens
         .display_width
-        .ok_or_else(|| format!("An image line has no width: `{path}`"))?;
+        .ok_or_else(|| format!("The footer states no width for the picture at `{path}`."))?;
     if display_width < MIN_DISPLAY_WIDTH {
         return Err(format!(
             "A display width of {display_width} is under the {MIN_DISPLAY_WIDTH} minimum."
@@ -693,7 +702,7 @@ fn read_image(body: &str, tokens: &Tokens) -> Result<ImageReference, Quarantine>
     }
     let byte_size = tokens
         .byte_size
-        .ok_or_else(|| format!("An image line has no byte size: `{path}`"))?;
+        .ok_or_else(|| format!("The footer states no byte size for the picture at `{path}`."))?;
     if byte_size == 0 || byte_size > MAX_ASSET_BYTES {
         return Err(format!(
             "An asset of {byte_size} bytes is not one this app writes."

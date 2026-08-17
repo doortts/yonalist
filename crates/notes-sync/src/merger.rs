@@ -187,7 +187,7 @@ fn merge_page(
     apply(transaction, clock, &incoming, &mut outcome, false)?;
     repair_structure(transaction, clock, &mut outcome)?;
     outcome.needs_write_back |=
-        document_is_missing_nodes(transaction, &root_id, &page.max_hlc, &incoming)?;
+        document_is_missing_nodes(transaction, &root_id, &page.completeness_bound(), &incoming)?;
     if outcome.needs_write_back {
         // Queued for the exporter the same way a local edit is: the file needs
         // rewriting, and the dirty mark is how anything learns that.
@@ -1919,10 +1919,13 @@ fn log_conflict(
 /// node is not touched — the file is simply incomplete, and the next export
 /// finishes it.
 ///
-/// Two bounds matter. Only nodes older than the document's own high-water mark
-/// count: a node stamped after the file was written is simply newer than the
-/// file, not missing from it. And the walk stops at split boundaries, since a
-/// child that lives in its own document is supposed to be absent here.
+/// Two bounds matter. Only nodes no newer than the document's own high-water mark
+/// count: a node stamped after the file was written is simply newer than the file,
+/// not missing from it. The comparison includes the mark itself — the node that
+/// set it is exactly the one a truncation is most likely to have taken, and a node
+/// the file did mention is excluded by the id list either way. And the walk stops
+/// at split boundaries, since a child that lives in its own document is supposed
+/// to be absent here.
 fn document_is_missing_nodes(
     transaction: &Transaction<'_>,
     root_id: &str,
@@ -1953,7 +1956,7 @@ fn document_is_missing_nodes(
              SELECT EXISTS (
                  SELECT 1 FROM subtree
                  JOIN notes_nodes n ON n.id = subtree.id
-                 WHERE n.hlc <> '' AND n.hlc < ?2
+                 WHERE n.hlc <> '' AND n.hlc <= ?2
                    AND subtree.id NOT IN (SELECT value FROM json_each(?3))
              )",
         )

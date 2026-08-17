@@ -77,6 +77,8 @@ fn page() -> PageDocument {
         parent: None,
         sort_key: None,
         max_hlc: "0swkd7qz9-00-a3f2".to_owned(),
+        // Built in memory, so there is no file that could have been cut short.
+        stated_max_hlc: "0swkd7qz9-00-a3f2".to_owned(),
         root: DocumentRoot {
             title: "Projects".to_owned(),
             note: "이번 분기에 손대는 것만.".to_owned(),
@@ -130,6 +132,8 @@ fn a_split_document_renders_byte_identical_to_its_golden() {
         parent: Some("PrJects00001".to_owned()),
         sort_key: Some(4_294_967_296),
         max_hlc: "0swkd7qze-00-a3f2".to_owned(),
+        // Built in memory, so there is no file that could have been cut short.
+        stated_max_hlc: "0swkd7qze-00-a3f2".to_owned(),
         root: DocumentRoot {
             title: "2024 아카이브".to_owned(),
             hlc: "0swkd7qzd-00-a3f2".to_owned(),
@@ -161,6 +165,8 @@ fn the_home_document_renders_byte_identical_to_its_golden() {
         parent: None,
         sort_key: None,
         max_hlc: "0swkd7qz6-00-a3f2".to_owned(),
+        // Built in memory, so there is no file that could have been cut short.
+        stated_max_hlc: "0swkd7qz6-00-a3f2".to_owned(),
         root: DocumentRoot {
             title: "Home".to_owned(),
             hlc: "0swkd7qz4-00-a3f2".to_owned(),
