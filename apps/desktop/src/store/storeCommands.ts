@@ -19,6 +19,12 @@ export interface StoreCommandHost {
   readonly applyReceipt: (receipt: MutationReceipt) => void;
   readonly flushDrafts: () => Promise<void>;
   /**
+   * Writes the page the user opened but has not written into yet, when there
+   * is one. Called before anything else here, so its creation takes the queue
+   * slot ahead of the command that asked for the page to exist.
+   */
+  readonly materializePage: () => Promise<void>;
+  /**
    * The band and the caret as the app layer sees them right now. Injected the
    * same way `flushDrafts` is, so nothing in here has to reach into the DOM.
    */
@@ -68,6 +74,7 @@ export class StoreCommands {
     command: IpcNotesCommand,
     historyGroup: string | null = null
   ): Promise<MutationReceipt> {
+    const created = this.host.materializePage();
     // Read before the flush below: a flush is itself a command, and its own
     // write can re-render the row out from under the caret this entry means to
     // remember.
@@ -80,6 +87,7 @@ export class StoreCommands {
       : this.host.flushDrafts();
     const scopedHistoryGroup = this.historyEvents.scopedGroup(historyGroup);
     return this.enqueue(async () => {
+      await created;
       await flushed;
       const state = this.host.read();
       if (!state.sessionId) throw new Error("Notes session is not ready.");
@@ -109,6 +117,7 @@ export class StoreCommands {
     historyGroup: string | null = null,
     requestId: string = freshId()
   ): Promise<MutationReceipt> {
+    const created = this.host.materializePage();
     const pane = this.host.capturePaneSnapshot();
     // Same choke point as `execute`, for the same reason: an image dropped
     // inside the text debounce would otherwise land ahead of the keystrokes
@@ -117,6 +126,7 @@ export class StoreCommands {
     const flushed = this.host.flushDrafts();
     const scopedHistoryGroup = this.historyEvents.scopedGroup(historyGroup);
     return this.enqueue(async () => {
+      await created;
       await flushed;
       const state = this.host.read();
       if (!state.sessionId) throw new Error("Notes session is not ready.");

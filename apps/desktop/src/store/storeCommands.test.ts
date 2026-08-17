@@ -66,6 +66,7 @@ describe("StoreCommands", () => {
         state = { ...state, revision: next.revision };
       },
       flushDrafts: () => Promise.resolve(),
+      materializePage: () => Promise.resolve(),
       capturePaneSnapshot: () => null
     });
 
@@ -104,6 +105,7 @@ describe("StoreCommands", () => {
         };
       },
       flushDrafts: () => Promise.resolve(),
+      materializePage: () => Promise.resolve(),
       capturePaneSnapshot: () => null
     });
     const history = vi.fn();
@@ -137,6 +139,7 @@ describe("StoreCommands", () => {
         live = caret(9);
         return Promise.resolve();
       },
+      materializePage: () => Promise.resolve(),
       capturePaneSnapshot: () => live
     });
     const history = vi.fn();
@@ -171,6 +174,7 @@ describe("StoreCommands", () => {
         };
       },
       flushDrafts: () => Promise.resolve(),
+      materializePage: () => Promise.resolve(),
       capturePaneSnapshot: () => live
     });
     const history = vi.fn();

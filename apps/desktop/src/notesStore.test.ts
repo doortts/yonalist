@@ -617,49 +617,90 @@ describe("NotesStore viewport recovery", () => {
     )).toEqual(["updateText", "updateNote", "duplicateNodes"]);
   });
 
-  it("creates a page as a child of the root outline and opens it", async () => {
-    const queryViewport = vi.fn().mockResolvedValue({
-      pageId: "created",
+  /** A page the user asked for: open, empty, and not written anywhere yet. */
+  async function openedNewPage(): Promise<{
+    readonly store: NotesStore;
+    readonly notesApi: NotesApi;
+    readonly pageId: string;
+  }> {
+    const notesApi = api(vi.fn().mockResolvedValue({
+      pageId: "root",
       anchorId: null,
       beforeCursor: null,
       afterCursor: null,
       nodes: []
-    });
-    const notesApi = api(queryViewport);
+    }));
     notesApi.execute = vi.fn().mockImplementation(async (envelope) => ({
       revision: 2,
-      // The backend answers with the row it wrote: a bullet under the root,
+      // The backend answers with the row the command named. Every command
+      // these tests send is about a page or a row directly inside one, so a
+      // command that names no parent is about a page: the root's own child,
       // which is all a page is.
       changedNodes: [{
         ...bullet(envelope.command.id, 4_096),
-        parentId: "root",
-        text: envelope.command.text
+        parentId: envelope.command.parent_id ?? "root",
+        text: envelope.command.text ?? ""
       }],
       deletedIds: [],
       history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
     }));
     const store = new NotesStore(notesApi);
-
     await store.bootstrap();
     const pageId = await store.createPage();
+    return { store, notesApi, pageId };
+  }
 
-    expect(vi.mocked(notesApi.execute).mock.calls.map(
-      ([envelope]) => envelope.command
-    )).toEqual([{
+  it("opens a new page without writing anything", async () => {
+    const { store, notesApi, pageId } = await openedNewPage();
+
+    expect(notesApi.execute).not.toHaveBeenCalled();
+    expect(notesApi.queryViewport).not.toHaveBeenCalled();
+    expect(store.getSnapshot().activePageId).toBe(pageId);
+    expect(store.getNodeSnapshot(pageId).title).toBe("");
+    expect(store.getSnapshot().pages).toEqual(boot.pages);
+  });
+
+  it("leaves nothing behind when the new page is never written in", async () => {
+    const { store, notesApi } = await openedNewPage();
+
+    await store.openPage("root");
+
+    expect(notesApi.execute).not.toHaveBeenCalled();
+    expect(store.getSnapshot().pages).toEqual(boot.pages);
+  });
+
+  it("creates the page the moment its title is typed into", async () => {
+    const { store, notesApi, pageId } = await openedNewPage();
+
+    store.setDraft(pageId, "Groceries");
+    await store.flushDraft(pageId);
+
+    expect(vi.mocked(notesApi.execute).mock.calls[0][0].command).toEqual({
       kind: "createNode",
       id: pageId,
       parent_id: "root",
       before_id: null,
-      text: "Untitled page"
-    }]);
-    expect(queryViewport).toHaveBeenCalledWith(
-      expect.objectContaining({ pageId })
-    );
+      text: "Groceries"
+    });
     expect(store.getSnapshot().pages).toContainEqual({
       id: pageId,
-      title: "Untitled page",
+      title: "Groceries",
       sortKey: 4_096
     });
+  });
+
+  it("creates the page before the first row written into it", async () => {
+    const { store, notesApi, pageId } = await openedNewPage();
+
+    expect(notesApi.execute).not.toHaveBeenCalled();
+    await store.createNode(pageId);
+
+    expect(vi.mocked(notesApi.execute).mock.calls.map(
+      ([envelope]) => [
+        envelope.command.kind,
+        "parent_id" in envelope.command ? envelope.command.parent_id : null
+      ]
+    )).toEqual([["createNode", "root"], ["createNode", pageId]]);
   });
 
   it("opens Home after the active page moves to Trash", async () => {

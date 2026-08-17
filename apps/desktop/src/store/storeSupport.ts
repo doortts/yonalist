@@ -66,6 +66,11 @@ import type { NotesState } from "../notesState";
 /** The one page every outline hangs from: Home, and the parent of every page. */
 export const ROOT_ID = "root";
 
+/** A run of typing in one row's title, which undoes as a single step. */
+export function titleHistoryGroup(id: string): string {
+  return `text:${id}`;
+}
+
 export const DRAFT_DEBOUNCE_MS = 300;
 /**
  * How long a typing run stays open between keystrokes. CodeMirror and
