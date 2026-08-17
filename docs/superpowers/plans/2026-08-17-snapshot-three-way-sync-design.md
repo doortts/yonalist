@@ -105,6 +105,8 @@ public_id = base64url_no_pad(SHA-256("yonalist-yid-v2\0" || canonical_uuid)[0..9
 
 마이그레이션은 vault 전체 후보를 메모리에서 먼저 계산하고 중복이 없는지 확인한 뒤 한 트랜잭션으로 저장한다. 중복이면 쓰기를 시작하지 않고 사용자에게 두 UUID를 보여 준다. 자동 재시도 salt는 기기마다 다른 결과를 낼 수 있으므로 금지한다.
 
+내부 리터럴 `root` 행도 `public_id`가 필요하다. 로컬 `sync_meta.vault_uuid`는 기기마다 새로 생기므로 ID 재료로 쓰지 않는다. v1 bridge가 vault에 처음 만드는 `.yonalist/format.json`은 `{"format":1,"vault":"<동기화 UUID>","home_root":"<12자>"}`다. CSPRNG로 두 값을 한 번만 만들며 모든 기기가 그 값을 채택한다. 생성 전에는 `home_root`가 v1 UUID 변환 후보와 충돌하지 않는지 검사한다. 파일 생성은 `RENAME_EXCL`로 먼저 성공한 한 기기만 확정한다. `.yonalist/trash.md`는 `notes_nodes` 행이 아닌 문서 모음이라 root block과 `public_id`가 없다.
+
 ## 4. 포맷 v2
 
 ### 4.1 예시
@@ -123,11 +125,11 @@ public_id = base64url_no_pad(SHA-256("yonalist-yid-v2\0" || canonical_uuid)[0..9
 - ↑/↓ — 항목 사이 이동 <!-- yid: Tn7_bC3xP9La -->
 
 <!-- yonalist
-{"format":2,"document":"Df4qM9_wK2Ls","snapshot":"sha256:4e6f...64-hex...91a2","parents":["sha256:18c7...64-hex...72d0"],"state":{"Xm3_aP9kT2Ws":{"collapsed":true},"Hm4sK8_qW2Pd":{"completed":true}}}
+{"format":2,"kind":"page","document":"Df4qM9_wK2Ls","root":"Df4qM9_wK2Ls","commit":"sha256:4e6f...64-hex...91a2","state_hash":"sha256:9ac1...64-hex...07d4","merge_base":"sha256:18c7...64-hex...72d0","parents":["sha256:18c7...64-hex...72d0"],"history":[],"transfers":[],"state":{"Xm3_aP9kT2Ws":{"collapsed":true},"Qw6Jm2_zR8Ka":{"width":268,"asset_hash":"sha256:7af3...64-hex...104c"},"Hm4sK8_qW2Pd":{"completed":true}}}
 -->
 ```
 
-실제 `snapshot`과 `parents` 값은 생략 없는 소문자 SHA-256 hex 64자다. 예시만 폭을 줄여 표시했다.
+실제 hash 값은 생략 없는 소문자 SHA-256 hex 64자다. 예시만 폭을 줄여 표시했다.
 
 ### 4.2 본문 규칙
 
@@ -155,29 +157,46 @@ public_id = base64url_no_pad(SHA-256("yonalist-yid-v2\0" || canonical_uuid)[0..9
 
 ### 4.4 하단 manifest
 
-manifest는 파일의 마지막 비공백 요소이며 하나만 허용한다. JSON은 UTF-8 한 줄로 쓰고 키 순서를 `format`, `document`, `snapshot`, `parents`, `state`로 고정한다.
+manifest는 파일의 마지막 비공백 요소이며 하나만 허용한다. JSON은 UTF-8 한 줄로 쓰고 키 순서를 `format`, `kind`, `document`, `root`, `commit`, `state_hash`, `merge_base`, `parents`, `history`, `transfers`, `state`로 고정한다.
 
 | 필드 | 의미 |
 |---|---|
 | `format` | 정수 `2` |
-| `document` | 문서 루트의 12자 공개 ID |
-| `snapshot` | 이 파일을 마지막으로 앱이 썼을 때의 canonical snapshot hash |
-| `parents` | 그 snapshot의 부모 0~2개. 일반 변경은 1개, 병합 결과는 2개 |
+| `kind` | `home`, `page`, `split`, `trash` 중 하나 |
+| `document` | page/split은 문서 루트의 12자 공개 ID, home/trash는 예약값 `home`/`trash` |
+| `root` | 문서 루트 block의 12자 ID. page/split은 `document`와 같고 trash만 생략 |
+| `commit` | 앱이 마지막으로 완성해 쓴 commit ID |
+| `state_hash` | 그때 본문과 manifest 상태를 정규화해 계산한 의미 hash |
+| `merge_base` | 이 commit을 만든 로컬 변경 갈래가 시작된 합의 commit. 최초 commit은 빈 문자열 |
+| `parents` | commit의 부모 0~2개. 일반 변경은 1개, 병합 결과는 2개 |
+| `history` | 현재 commit에서 가까운 검증 가능한 조상 envelope 최대 8개 |
+| `transfers` | 아직 양쪽 도착을 확인하지 못한 문서 간 placement 이동 증거 |
 | `state` | Markdown 본문으로 보존할 수 없는 상태만 담는 `yid → object` map |
 
-`state`에 허용하는 v2 키는 `collapsed`, `completed`, `starred`, `marker`, `ordered_start`, `note`다. 기본값은 생략한다. 본문 문법으로 명백히 표현된 값과 manifest 값이 다르면 본문을 우선하고 다음 방출에서 manifest를 고친다.
+`state`에 허용하는 v2 키는 `collapsed`, `completed`, `starred`, `marker`, `ordered_start`, `note`, `width`, `asset_hash`, `child_document`, `restore_parent`, `restore_after`다. 기본값은 생략한다. `width`는 이미지의 표시 폭이고 `asset_hash`는 이미지 바이트의 전체 SHA-256이다. `child_document`는 일반 링크와 자식 page/split 문서를 구분한다. `restore_parent`와 `restore_after`는 trash root에서만 허용하며 원래 자리를 복구할 때 쓴다. 본문 문법으로 명백히 표현된 값과 manifest 값이 다르면 본문을 우선하고 다음 방출에서 manifest를 고친다.
 
-이미지의 pixel·byte 크기와 MIME은 파일 바이트에서 다시 계산한다. 화면 폭처럼 사용자 선택인 값만 추후 `state[yid].width`로 추가할 수 있다. 알 수 없는 상태 키는 해당 객체 안에서 그대로 round-trip한다.
+이미지의 pixel·byte 크기와 MIME은 파일 바이트에서 다시 계산한다. 사용자 선택인 표시 폭은 v2부터 `state[yid].width`에 반드시 보존한다. 알 수 없는 상태 키는 해당 객체 안에서 그대로 round-trip한다.
+
+home의 page 링크는 해당 줄의 `state[yid].child_document = "page"`를, 분할 링크는 `"split"`을 갖는다. 링크 대상이 자식 문서의 경로다. 자식 파일의 `document`는 부모 링크 줄의 `yid`와 같아야 한다. 빈 DB는 home부터 링크를 따라 문서 경계를 복원하며 부모에서 가리키지 않는 page/split 파일은 삭제하지 않고 고아 문서로 격리한다. 분할 루트의 본문과 상태는 자식 파일이 맡는다. 부모와 형제 순서는 부모 파일의 링크 줄이 맡는다. home/page/split 루트 자체의 상태는 `state[root]`에 둔다.
+
+`history`의 각 envelope는 `{commit, kind, root, state_hash, merge_base, parents, transfers_hash}`만 가지며 snapshot 본문은 넣지 않는다. 현재 parent를 먼저 넣고 parent들의 기존 `history`를 가까운 순서로 합쳐 commit ID가 겹치지 않게 최대 8개만 남긴다. parser는 현재 `document`와 envelope 필드로 commit ID를 다시 계산하고 잘못된 항목이 하나라도 있으면 manifest를 격리한다. 8개 안에서 공통 조상을 찾지 못하면 병합을 추측하지 않고 §8.4로 간다.
+
+`transfers`의 각 항목은 `{id, root_pid, from_document, to_document, subtree_state_hash, confirmed_at}`다. 앱에서 문서 경계를 넘겨 옮길 때 source와 destination manifest에 같은 항목을 쓴다. 목록의 canonical SHA-256인 `transfers_hash`를 commit ID에 포함한다. 두 문서에서 도착을 확인해도 전체 transfer 항목을 `confirmed_at`부터 최소 30일 동안 두 manifest에 계속 싣는다. 30일 뒤 다음 의미 변경 방출에서 제거한다. 그전에는 history의 hash만을 근거로 줄이지 않는다. 30일 넘게 오프라인이었던 기기가 공통 증거를 찾지 못하면 §8.4의 문서 간 충돌로 안전하게 물러난다.
 
 ### 4.5 stale manifest의 의미
 
-일반 편집기는 본문만 고치므로 `snapshot`은 이전 값으로 남는다. 이것은 오류가 아니라 3-way 병합의 base 표식이다.
+일반 편집기는 본문만 고치므로 `commit`과 `state_hash`는 이전 값으로 남는다. 이것은 오류가 아니라 3-way 병합의 부모 표식이다.
 
-- 계산한 현재 hash가 선언된 `snapshot`과 같음: 앱이 완성해 쓴 snapshot이다.
-- 다름: 현재 파일은 선언 snapshot에서 갈라진 외부 편집 자식이다.
-- 선언 snapshot이 SQLite에 있음: 그것을 base로 병합한다.
-- 선언 snapshot이 없고 로컬 변경도 없음: 현재 파일을 새 기준으로 채택한다.
-- 선언 snapshot이 없고 로컬 변경도 있음: 삭제·이동을 추측하지 않고 문서 단위 충돌로 보류한다.
+parser는 먼저 manifest의 `kind`, `document`, `root`, `state_hash`, `merge_base`, `parents`, `transfers_hash`로 선언 `commit`을 다시 계산한다. 맞지 않으면 관리 metadata가 일부만 바뀐 상태이므로 격리한다. 이 검증은 현재 본문 hash와 별개라서 정상적인 외부 본문 편집을 막지 않는다.
+
+- 계산한 현재 의미 hash가 `state_hash`와 같음: 선언 `commit`이 가리키는 완성된 상태다.
+- 다름: 현재 파일은 선언 `commit`에서 갈라진 외부 편집 자식이다. importer가 새 의미 hash와 부모 `commit`으로 후보 commit ID를 계산한다.
+- local과 remote의 `merge_base`가 같고 SQLite에 그 commit이 있음: 그것을 base로 병합한다.
+- 앱이 여러 번 연속 저장해도 그 갈래의 `merge_base`는 바꾸지 않는다. 파일을 import하거나 병합하면 SQLite의 base를 그 결과 commit으로 전진시키고, 그 뒤 처음 만드는 commit부터 새 값을 쓴다. base 표식만 갱신하려고 내용이 같은 파일을 다시 쓰지는 않는다.
+- base commit이 없고 로컬 변경도 없음: 현재 파일을 새 기준으로 채택한다.
+- base commit이 없고 로컬 변경도 있음: 삭제·이동을 추측하지 않고 문서 단위 충돌로 보류한다.
+
+base 선택 순서는 결정적이다. local commit과 remote 선언 commit/직접 parent가 같으면 먼저 fast-forward한다. 아니라면 remote의 `merge_base`, `parents`, `history`와 local의 SQLite parent graph가 함께 증명하는 공통 조상 중 거리가 가장 짧은 commit을 고른다. 거리까지 같으면 commit ID 바이트가 작은 쪽을 택한다. 연속 로컬 저장의 합의점은 `merge_base`가, 놓친 merge commit의 부모 관계는 `history`가 운반한다. 확인 가능한 후보가 없으면 §8.4로 간다.
 
 ## 5. canonical snapshot
 
@@ -188,13 +207,15 @@ snapshot은 원본 Markdown 바이트가 아니라 파싱된 의미를 저장한
 ```rust
 struct DocumentSnapshot {
     format: u8,                 // 2
-    document_yid: PublicId,
-    title: String,
-    root_note: String,
-    nodes: BTreeMap<PublicId, SnapshotNode>,
+    kind: DocumentKind,
+    document_id: DocumentId,
+    root_block: Option<BlockId>, // trash만 None
+    blocks: BTreeMap<BlockId, SnapshotBlock>,
+    placements: BTreeMap<PlacementId, SnapshotPlacement>,
+    children: BTreeMap<ParentPlacement, Vec<PlacementId>>,
 }
 
-struct SnapshotNode {
+struct SnapshotBlock {
     kind: NodeKind,
     text: String,
     note: String,
@@ -203,28 +224,51 @@ struct SnapshotNode {
     collapsed: bool,
     completed: bool,
     starred: bool,
-    parent: PublicId,
-    predecessor: Option<PublicId>,
     image: Option<SnapshotImage>,
+}
+
+enum SnapshotPlacement {
+    Local {
+        block_id: BlockId,
+        parent: ParentPlacement,
+    },
+    Boundary {
+        child_document: DocumentId,
+        child_kind: PageOrSplit,
+        parent: ParentPlacement,
+    },
 }
 ```
 
 위 구조는 설계 표기다. 이 타입을 새 public API로 만들 필요는 없고 `notes-sync` 내부 타입이면 충분하다.
 
-위치는 `sort_key`가 아니라 `(parent, predecessor)`로 저장한다. `sort_key`는 로컬 DB의 구현 세부이며 같은 트리도 기기마다 값이 다를 수 있다.
+v2에서 각 block은 primary placement 하나를 가지며 그 ID는 `primary:<block_id>`로 결정적으로 파생한다. `primary`와 `mirror`는 tag가 다른 namespace다. mirror가 생기면 별도 12자 placement ID를 추가한다. 형제 순서는 `children[parent]`의 stable-ID 배열이다. `sort_key`와 노드별 `predecessor`는 snapshot에 넣지 않는다. 둘 다 배열을 SQLite 행으로 펼칠 때만 계산하는 구현 세부다.
+
+parent 문서의 page/split 링크는 `Boundary` placement이며 local `blocks`에 같은 block을 복제하지 않는다. child 문서의 `root_block`과 `blocks[root]`가 제목·note·상태의 유일한 진실 소스다. parent 링크의 label은 child 제목을 보여 주는 투영이라 의미 hash에서 제외한다. 링크 target은 vault를 읽을 때 child 파일을 찾는 데만 쓴다. target 파일의 manifest가 `Boundary.child_document`와 다르면 격리한다.
 
 ### 5.2 정규화와 hash
 
 hash 입력은 다음 순서로 만든다.
 
 1. 문자열을 Unicode NFC와 LF로 정규화한다.
-2. node를 `yid` 바이트 오름차순으로 순회한다.
+2. block과 placement를 ID 바이트 오름차순으로 순회하고 각 `children` 배열은 표시 순서대로 기록한다.
 3. 각 필드를 고정된 tag와 길이-prefix 바이트로 기록한다.
 4. 알 수 없는 manifest state는 JSON key 오름차순으로 정규화해 포함한다.
-5. `snapshot`, `parents`, mtime, 파일 경로, 내부 UUID, HLC, `sort_key`는 제외한다.
-6. 전체 바이트의 SHA-256을 snapshot hash로 쓴다.
+5. `commit`, `merge_base`, `parents`, `history`, `transfers`, mtime, 파일 경로, 내부 UUID, HLC, `sort_key`는 제외한다.
+6. 전체 바이트의 SHA-256을 `state_hash`로 쓴다.
 
 JSON 문자열을 이어 붙여 hash하지 않는다. whitespace와 map 순서가 의미 없는 차이를 만들기 때문이다. 기존 `LineState::fingerprint()`의 SHA-256 도우미를 재사용하되 위 직렬화 계약을 한 함수에 둔다.
+
+commit ID는 상태와 이력을 분리한다.
+
+```text
+commit_id = SHA-256("yonalist-commit-v2\0" || document_kind || document_id
+                   || root_block_id || state_hash || transfers_hash
+                   || merge_base_commit || parent_count
+                   || sorted(parent_commit_ids))
+```
+
+따라서 내용을 예전 상태로 되돌려도 새 commit이 생기고, 결과 내용이 한 parent와 같아도 두 parent를 가진 merge commit을 표현할 수 있다. `merge_base`도 commit에 묶이므로 manifest 일부만 우연히 바뀌어 잘못된 base를 가리키는 일을 검출한다. 부모 순서는 hash 계산 전에 바이트 오름차순으로 정렬한다.
 
 ## 6. SQLite 변경
 
@@ -235,10 +279,12 @@ ALTER TABLE notes_nodes ADD COLUMN public_id TEXT;
 CREATE UNIQUE INDEX notes_nodes_public_id ON notes_nodes(public_id);
 
 CREATE TABLE sync_snapshots (
-    snapshot_hash TEXT PRIMARY KEY NOT NULL,
+    commit_id TEXT PRIMARY KEY NOT NULL,
+    state_hash TEXT NOT NULL,
     document_id TEXT NOT NULL,
-    parent1_hash TEXT,
-    parent2_hash TEXT,
+    merge_base_commit TEXT NOT NULL,
+    parent1_commit TEXT,
+    parent2_commit TEXT,
     snapshot_json BLOB NOT NULL,
     source TEXT NOT NULL CHECK (source IN ('local', 'file', 'merge', 'migration')),
     created_at INTEGER NOT NULL
@@ -252,16 +298,16 @@ CREATE INDEX sync_snapshots_document_time
 기존 `sync_documents`에는 다음 필드를 더한다.
 
 ```sql
-base_snapshot_hash TEXT NOT NULL DEFAULT '',
-local_snapshot_hash TEXT NOT NULL DEFAULT '',
-file_snapshot_hash TEXT NOT NULL DEFAULT '',
+base_commit_id TEXT NOT NULL DEFAULT '',
+local_commit_id TEXT NOT NULL DEFAULT '',
+file_commit_id TEXT NOT NULL DEFAULT '',
 merge_status TEXT NOT NULL DEFAULT 'clean'
   CHECK (merge_status IN ('clean', 'pending', 'quarantined'))
 ```
 
-- `base_snapshot_hash`: 로컬 DB와 파일이 마지막으로 합의한 head
-- `local_snapshot_hash`: 현재 DB 상태에서 계산한 head
-- `file_snapshot_hash`: 마지막으로 읽은 파일의 head
+- `base_commit_id`: 로컬 DB와 파일이 마지막 import/merge에서 합의한 head
+- `local_commit_id`: 현재 DB 상태의 head
+- `file_commit_id`: 마지막으로 읽은 파일의 head
 - `pending`: 해결되지 않은 충돌 때문에 이 문서의 자동 방출이 멈춘 상태
 
 `sync_conflict_log`는 즉시 버리지 않는다. v2에서는 `loser_json`에 한 후보만 넣는 대신 별도 `sync_merge_conflicts`를 추가한다.
@@ -270,14 +316,28 @@ merge_status TEXT NOT NULL DEFAULT 'clean'
 CREATE TABLE sync_merge_conflicts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     document_id TEXT NOT NULL,
-    base_hash TEXT NOT NULL,
-    local_hash TEXT NOT NULL,
-    remote_hash TEXT NOT NULL,
-    provisional_hash TEXT,
+    base_commit TEXT NOT NULL,
+    local_commit TEXT NOT NULL,
+    remote_commit TEXT NOT NULL,
+    provisional_commit TEXT,
+    expected_local_commit TEXT NOT NULL,
+    expected_file_byte_hash TEXT NOT NULL,
     conflicts_json BLOB NOT NULL,
     recorded_at INTEGER NOT NULL,
     resolved_at INTEGER,
-    resolution_hash TEXT
+    resolution_commit TEXT
+) STRICT;
+
+CREATE TABLE sync_transfers (
+    transfer_id TEXT PRIMARY KEY NOT NULL,
+    root_placement_id TEXT NOT NULL,
+    from_document TEXT NOT NULL,
+    to_document TEXT NOT NULL,
+    source_commit TEXT,
+    destination_commit TEXT,
+    subtree_state_hash TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('one-sided', 'confirmed', 'conflict')),
+    recorded_at INTEGER NOT NULL
 ) STRICT;
 ```
 
@@ -298,10 +358,10 @@ CREATE TABLE sync_merge_conflicts (
 
 ```text
 파일 변경 감지
-  → 안정된 바이트 읽기 + parse + canonical hash
+  → 안정된 바이트 읽기 + parse + state/commit 계산
   → echo면 종료
-  → DB의 local snapshot 계산
-  → base 찾기
+  → DB의 local commit 계산
+  → 양쪽 merge_base에 해당하는 snapshot 찾기
   → 3-way merge
       ├─ clean: 한 트랜잭션으로 DB 적용·snapshot/head 기록
       │         → 원자적 Markdown 방출 → echo hash 기록
@@ -312,22 +372,29 @@ CREATE TABLE sync_merge_conflicts (
 
 ### 7.1 echo 판정
 
-mtime만으로 echo를 판정하지 않는다. 파일 바이트 SHA-256이 `exported_hash`와 같으면 종료한다. 다르면 parse와 canonical hash를 수행한다. canonical hash가 현재 `file_snapshot_hash`와 같아도 whitespace만 바뀐 것이므로 DB 내용은 바꾸지 않되, 사용자가 만든 표현을 다음 의미 변경 전까지 덮어쓰지 않는다.
+mtime만으로 echo를 판정하지 않는다. 파일 바이트 SHA-256이 `exported_hash`와 같으면 종료한다. 다르면 parse와 state hash 계산을 수행한다. state hash가 현재 file commit의 값과 같아도 whitespace만 바뀐 것이므로 DB 내용은 바꾸지 않되 사용자가 만든 표현을 다음 의미 변경 전까지 덮어쓰지 않는다.
 
 ### 7.2 쓰기 순서
 
-1. 대상 디렉터리에 새 파일을 만들고 flush한다.
-2. 같은 디렉터리에서 atomic rename으로 `README.md`를 교체한다.
-3. 교체된 파일을 다시 읽어 byte hash를 기록한다.
-4. 그 뒤에만 오래된 임시 파일을 정리한다.
+단순한 hash 확인 뒤 `persist`하면 확인과 rename 사이에 들어온 외부 편집을 덮을 수 있다. v2 writer는 `write_atomic` 대신 `publish_if_unchanged(expected_byte_hash, bytes)`를 쓴다.
 
-DB commit 후 파일 교체 전에 죽으면 dirty/head 차이가 남아 다음 실행이 재방출한다. 파일 교체 후 hash 기록 전에 죽으면 watcher가 내용을 다시 읽지만 canonical snapshot이 같아 no-op이 된다. 어느 경우에도 이전 파일과 새 파일을 모두 잃지 않는다.
+1. 같은 디렉터리에 이름이 고정된 publish 임시 파일을 만들고 bytes와 디렉터리를 flush한다.
+2. 임시 경로, target, expected hash, 새 hash, phase=`prepared`를 Application Support의 publish journal에 원자적으로 기록한다.
+3. macOS `renameatx_np(RENAME_SWAP)`으로 target과 임시 파일을 한 번에 맞바꾼 뒤 phase=`swapped`를 기록한다. target에 있던 어떤 바이트도 임시 경로에 그대로 남는다.
+4. 밀려난 임시 파일의 hash가 expected와 같으면 target을 다시 읽는다. read-back hash도 journal의 새 hash와 정확히 같을 때만 publish 성공과 `exported_hash`를 기록한다. 다르면 외부 편집이 swap 뒤에 들어온 것이므로 `exported_hash`를 바꾸지 않고 밀려난 파일도 보존한 채 최신 target을 다시 병합한다.
+5. 밀려난 hash가 다르면 외부 쓰기가 먼저 이긴 것이다. 두 경로를 다시 atomic swap해 외부 파일을 target으로 돌려놓는다. swap 사이에 target이 또 바뀌었거나 되돌리기에 실패하면 두 파일을 모두 `.yonalist/unresolved-publishes/<journal-id>/`에 보존하고 문서를 `pending`으로 둔다.
+
+`RENAME_SWAP`은 덮어쓴 원본을 동시에 다른 이름으로 돌려주므로 hash 확인과 교체 사이의 TOCTOU 창에서도 후보를 잃지 않는다. 이 primitive가 없는 플랫폼에서는 기존 파일을 자동 교체하지 않고 `needs_merge`로 반환한다. 두 단계 rename으로 흉내 내지 않는다.
+
+target이 없는 신규 문서는 swap하지 않는다. expected 상태가 `absent`임을 journal에 적고 `RENAME_EXCL`로 임시 파일을 target에 옮긴다. 그사이 다른 파일이 생겨 `EEXIST`가 나면 어느 파일도 덮지 않고 새 target을 읽어 병합한다. 따라서 기존 문서와 신규 문서 모두 조건부 publish가 된다.
+
+DB commit 후 swap 전에 죽으면 dirty/head 차이가 남아 다음 실행이 재방출한다. swap 뒤 검증 전에 죽으면 시작할 때 journal을 읽어 성공을 확정하거나 되돌린다. journal이 가리키는 파일은 일반 임시 파일 정리에서 제외한다.
 
 ### 7.3 동기화 서비스가 만든 충돌 사본
 
 iCloud Drive 같은 동기화 서비스는 같은 `README.md`의 두 갈래를 합치지 않고 이름이 다른 충돌 사본으로 남길 수 있다. watcher는 문서 폴더에서 정본 `README.md`와 OS가 충돌 사본으로 표시한 일반 파일을 함께 찾는다. 이름 패턴만으로 임의의 Markdown 파일을 충돌 사본으로 판단하지 않고, 파일 provider가 준 표식이나 동일한 `document` ID가 든 v2 manifest를 근거로 삼는다.
 
-- 정본과 사본의 선언 snapshot에서 공통 base를 찾고 같은 3-way 병합기를 호출한다.
+- 정본과 사본의 `merge_base`에서 공통 base를 찾고 같은 3-way 병합기를 호출한다.
 - 자동 병합되면 정본만 새 snapshot으로 쓴다. 사본은 즉시 지우지 않고 `.yonalist/resolved-conflicts/`로 옮긴 뒤 30일 보존한다.
 - 충돌하면 두 원본 파일을 그대로 두고 `pending`으로 기록한다.
 - 이름이 다르더라도 `document` ID가 다르면 별도 문서이며 병합하지 않는다.
@@ -346,7 +413,7 @@ iCloud Drive 같은 동기화 서비스는 같은 `README.md`의 두 갈래를 �
 | `L == R` | 그 값 채택 |
 | 셋이 모두 다름 | 해당 필드 충돌 |
 
-한 노드의 텍스트와 위치를 독립 필드로 비교한다. 따라서 L이 본문을 고치고 R이 같은 노드를 이동한 경우 두 변경을 합친다.
+block의 내용과 placement의 위치를 독립적으로 비교한다. 따라서 L이 본문을 고치고 R이 같은 block을 이동한 경우 두 변경을 합친다.
 
 ### 8.2 노드 단위 규칙
 
@@ -369,23 +436,32 @@ iCloud Drive 같은 동기화 서비스는 같은 `README.md`의 두 갈래를 �
 
 ### 8.3 이동과 순서
 
-이동 값은 `(parent_yid, predecessor_yid)`다.
+노드별 `predecessor` 세 값을 직접 비교하지 않는다. 앞 형제 하나를 옮기면 손대지 않은 뒤 형제의 predecessor도 바뀌어 거짓 이동이 되기 때문이다. 각 부모의 stable placement ID 배열을 다음 순서로 비교한다.
+
+1. base와 각 side에 모두 있는 ID만 남겨 base 순번 배열을 만든다.
+2. side 순서에 놓인 base 순번의 최장 증가 부분수열(LIS)을 O(n log n)에 구한다.
+3. LIS 안의 ID는 그대로 있던 항목, 밖의 ID는 실제 이동 후보로 본다. tie는 placement ID 바이트 순으로 고정한다.
+4. 신규 ID는 insert, 사라진 ID는 delete로 따로 기록한다.
+5. 이동·삽입 위치는 해당 side에서 가장 가까운 unchanged 앞/뒤 anchor 한 쌍으로 표현한다.
+
+이 edit script를 parent별로 3-way 병합한다.
 
 - 한쪽만 이동: 그 이동을 채택한다.
-- 양쪽이 같은 곳으로 이동: 한 번 적용한다.
-- 양쪽이 서로 다른 곳으로 이동: 위치 충돌이다.
-- 한쪽은 이동, 다른 쪽은 본문 수정: 둘을 합친다.
-- 부모가 삭제되고 자식이 다른 쪽에서 수정됨: 서브트리 삭제/수정 충돌이다.
-- predecessor가 삭제됐지만 노드 자체는 이동하지 않음: 살아 있는 앞쪽 이웃 중 base에서 가장 가까운 노드 뒤에 붙인다. 없으면 첫 번째다.
+- 양쪽이 같은 placement를 같은 anchor gap으로 이동: 한 번 적용한다.
+- 양쪽이 같은 placement를 서로 다른 gap으로 이동: 위치 충돌이다.
+- 서로 다른 placement의 이동: anchor 제약을 함께 적용하고 cycle이 없으면 합친다. cycle이면 해당 순서 구간이 충돌이다.
+- 한쪽은 이동, 다른 쪽은 block 본문 수정: 둘을 합친다.
+- 부모 placement가 삭제되고 자식이 다른 쪽에서 수정됨: 서브트리 삭제/수정 충돌이다.
 
-같은 gap에 양쪽이 새 노드를 넣으면 모두 보존하고 `(side_rank, yid)`로 정렬한다. `side_rank`는 두 snapshot hash의 바이트 오름차순 순위다. 어느 기기에서 병합해도 같은 순서가 된다. 사용자가 순서를 다시 정할 수 있으므로 이 경우를 충돌로 만들지 않는다.
+같은 gap에 양쪽이 새 placement를 넣으면 모두 보존하고 `(origin_commit_id, placement_id)`로 정렬한다. 어느 기기에서 병합해도 같은 순서가 된다. 사용자가 순서를 다시 정할 수 있으므로 이 경우를 충돌로 만들지 않는다.
 
 병합 후 다음 불변식을 검사한다.
 
-- 모든 살아 있는 노드의 `yid`가 유일하다.
-- 모든 부모와 predecessor가 같은 문서의 살아 있는 노드다.
+- 모든 block의 `yid`와 모든 명시적 placement ID가 각 namespace에서 유일하다.
+- 모든 `Local` placement의 block과 부모가 같은 snapshot에 있다.
+- 모든 `Boundary` placement가 가리키는 child manifest의 `document`, `kind`, `root`가 일치한다. child가 아직 도착하지 않았으면 삭제하지 않고 pending import로 둔다.
 - 부모 관계에 cycle이 없다.
-- 한 부모 아래 predecessor 관계는 하나의 완전한 순서를 이룬다.
+- 각 placement가 정확히 한 부모의 `children` 배열에 한 번만 나온다.
 - 문서 루트는 다른 노드의 자식이 아니다.
 
 하나라도 실패하면 부분 결과를 적용하지 않고 문서 전체를 `quarantined`로 둔다.
@@ -399,6 +475,23 @@ iCloud Drive 같은 동기화 서비스는 같은 `README.md`의 두 갈래를 �
 - 둘 다 다르면 문서 전체 충돌로 보류한다.
 
 이는 자동 병합률보다 데이터 보존을 우선하는 의도적인 제한이다.
+
+### 8.5 문서 경계를 넘는 이동
+
+한 block의 primary placement는 vault 전체에서 한 문서만 소유한다. document별 merge 결과를 바로 적용하지 않고, 같은 watcher batch에서 읽은 모든 문서의 `placement_id → document_id` claim을 먼저 만든다.
+
+앱이 만든 이동은 §4.4의 같은 transfer를 source와 destination에 쓴다.
+
+- destination이 먼저 오면 `sync_transfers`를 `one-sided`로 기록하고 새 위치를 후보로 보여 주되, source의 낡은 파일을 다시 import해 되돌리지 않는다.
+- source가 먼저 오면 block과 subtree snapshot을 지우지 않고 unplaced 상태로 보류한다.
+- 양쪽 commit과 `subtree_state_hash`가 맞으면 한 DB 트랜잭션에서 placement 소유권을 destination으로 옮기고 `confirmed`로 바꾼다.
+- 반대 방향 transfer, 다른 destination, subtree hash 불일치는 문서 간 이동 충돌이다.
+
+`unplaced`는 `notes_nodes.parent_id = NULL`을 뜻하지 않는다. 기존 행과 마지막 부모는 그대로 두고 `sync_transfers.status`와 화면 표시에서만 보류 상태로 다뤄 현재 FK/CHECK를 깨지 않는다.
+
+외부 Markdown 편집기의 잘라내기/붙여넣기는 transfer를 만들지 못한다. 이 경우 watcher는 provider event가 안정될 때까지 최대 30초 동안 vault-wide claim을 모은다. 같은 `yid`가 source에서 사라지고 destination에 나타나면 이동으로 짝짓는다. destination이 먼저 와 두 문서에 동시에 보이면 중복 ID 후보로 보류한다. source 제거가 도착하면 이동으로 확정한다. source 제거만 도착하면 일반 삭제로 처리하되 snapshot과 삭제 행을 보존한다. 나중에 destination이 도착하면 같은 `yid`와 base 내용을 확인해 복원 이동으로 바꾼다. 내용도 다르면 사용자에게 삭제/복원 충돌을 보여 준다.
+
+따라서 A→B와 B→A 어느 파일이 먼저 도착해도 block 행을 hard delete하지 않는다. 문서별 snapshot은 내용 병합을 담당하고 `sync_transfers`가 vault-wide placement 소유권을 담당한다.
 
 ## 9. 충돌 보존과 해결 UI
 
@@ -431,11 +524,13 @@ iCloud Drive 같은 동기화 서비스는 같은 `README.md`의 두 갈래를 �
 
 모든 충돌을 해결하고 `[적용]`을 누르면:
 
-1. 선택 결과로 새 snapshot을 만든다.
-2. local과 remote를 부모로 둔 merge snapshot을 저장한다.
-3. 한 DB 트랜잭션으로 노드를 적용하고 conflict를 resolved 처리한다.
-4. Markdown을 원자적으로 방출한다.
-5. 방출 성공 후 문서를 `clean`으로 바꾼다.
+1. 현재 `local_commit_id`와 파일 byte hash를 충돌을 열었을 때 저장한 두 값과 비교한다.
+2. 하나라도 다르면 선택 결과를 적용하지 않고 최신 head로 3-way 병합을 다시 실행한다. 기존 후보와 사용자의 선택은 감사 기록으로 남긴다.
+3. 같으면 선택 결과로 새 snapshot을 만든다.
+4. local과 remote를 부모로 둔 merge commit을 저장한다.
+5. `WHERE local_commit_id = expected_local_commit` 조건이 붙은 한 DB 트랜잭션으로 노드를 적용하고 conflict를 resolved 처리한다. 영향 행이 0이면 stale로 보고 다시 병합한다.
+6. §7.2의 파일 hash 비교 조건을 통과한 뒤 Markdown을 원자적으로 방출한다.
+7. 방출 성공 후 문서를 `clean`으로 바꾼다.
 
 창을 닫거나 앱이 종료돼도 pending 상태와 선택 전 후보는 남는다. 해결 취소는 아무 후보도 지우지 않는다.
 
@@ -457,7 +552,7 @@ iCloud Drive 같은 동기화 서비스는 같은 `README.md`의 두 갈래를 �
 
 - 이미지 블릿도 일반 블릿과 같은 `yid` 하나만 inline으로 갖는다.
 - content hash, MIME, pixel, byte 길이는 asset 파일에서 계산하고 SQLite에 cache한다.
-- snapshot에는 논리적 asset identity인 전체 SHA-256, 사용자 파일명, 표시 폭만 포함한다.
+- snapshot과 manifest에는 논리적 asset identity인 전체 SHA-256, 사용자 파일명, 표시 폭을 포함한다.
 - asset의 상대 경로는 renderer가 현재 문서 위치에서 파생하므로 snapshot identity에 넣지 않는다.
 - 같은 논리 asset의 두 파일 바이트가 다르면 자동 덮어쓰지 않고 asset 충돌로 올린다.
 - 문서 snapshot 또는 unresolved conflict가 참조하는 asset은 GC 대상이 아니다.
@@ -468,7 +563,7 @@ iCloud Drive 같은 동기화 서비스는 같은 `README.md`의 두 갈래를 �
 
 ### 12.1 정체성과 배치
 
-`yid`는 블록 내용의 정체성이지 화면상의 한 자리 정체성이 아니다. mirror가 생기면 한 블록이 여러 부모 아래 나타난다. 현재 `notes_nodes.parent_id` 하나로는 이를 표현할 수 없으므로 미래 스키마는 다음처럼 분리한다.
+`yid`는 블록 내용의 정체성이지 화면상의 한 자리 정체성이 아니다. mirror가 생기면 한 블록이 여러 부모 아래 나타난다. §5 snapshot은 처음부터 block과 placement를 분리하지만 현재 SQLite `notes_nodes.parent_id`는 한 자리만 표현한다. mirror를 구현할 때만 다음 스키마로 옮긴다.
 
 ```text
 blocks(block_id, content, note, state, ...)
@@ -476,10 +571,10 @@ placements(placement_id, parent_placement_id, block_id, order, ...)
 block_refs(source_block_id, target_block_id, kind)
 ```
 
-이번 구현에서는 테이블을 미리 만들지 않는다. 대신 다음 규칙만 지금부터 지킨다.
+이번 구현에서는 테이블을 미리 만들지 않는다. v2의 primary placement ID는 block ID에서 파생하므로 별도 inline metadata도 필요 없다. 다음 규칙을 지금부터 지킨다.
 
 - `public_id/yid`를 parent나 위치 자체의 ID라는 이름으로 부르지 않는다.
-- snapshot의 내용 필드와 `(parent, predecessor)` 배치 필드를 분리한다.
+- snapshot의 `blocks`, `placements`, `children`을 분리한다.
 - parser·renderer API가 한 block에 한 placement가 영원히 고정된다고 공개하지 않는다.
 - block reference는 대상 `yid`를 저장하며 대상의 현재 문구를 복사하지 않는다.
 
@@ -489,11 +584,11 @@ block_refs(source_block_id, target_block_id, kind)
 
 ```markdown
 - 원본 블릿 <!-- yid: N7dP2k_q4WmA -->
-- {{mirror ((N7dP2k_q4WmA))}} <!-- yid: P3xR8m_aK6Td -->
+- {{mirror ((N7dP2k_q4WmA))}} <!-- pid: P3xR8m_aK6Td -->
 - 관련 내용은 ((N7dP2k_q4WmA)) 참고 <!-- yid: W9cL2q_zF5Hs -->
 ```
 
-mirror 줄의 `yid`는 occurrence/placement 식별자이고 괄호 안 ID는 공유 block ID다. 실제 구현 때 `placement_id`를 별도 12자 공간으로 둘 수 있다. 이 구분 덕분에 같은 내용을 여러 위치에 놓아도 이동 충돌과 내용 충돌을 따로 처리할 수 있다.
+`yid`와 참조 괄호 안 ID는 block ID다. mirror 줄의 `pid`는 별도 namespace의 placement ID다. primary placement에는 `pid`를 쓰지 않고 block ID로부터 파생한다. 이 구분 덕분에 같은 내용을 여러 위치에 놓아도 이동 충돌과 내용 충돌을 따로 처리할 수 있다. mirror가 없는 포맷 v2 본문은 계속 `yid` 하나만 갖는다.
 
 containment/mirror 배치 그래프에는 cycle을 허용하지 않는다. 일반 block reference 그래프는 cycle을 허용한다. reference의 hash에는 대상 ID만 넣고 대상 내용 hash를 재귀적으로 넣지 않는다.
 
@@ -506,9 +601,10 @@ Workflowy mirror는 한 bullet을 여러 위치에 동기화해 표시하는 개
 
 ### 13.1 지금 하는 것
 
-- 각 document snapshot에 SHA-256을 붙인다.
+- 각 document state와 commit에 서로 다른 SHA-256을 붙인다.
 - 병합 중 각 node와 subtree hash를 메모리에서 계산해 같은 subtree를 건너뛸 수 있다.
 - SQLite에 document snapshot만 영속한다.
+- Markdown 하단에는 snapshot 본문 없이 최근 commit envelope 8개만 운반한다.
 
 문서당 20,000 노드라 해도 O(n) parse와 hash는 이미 파일을 읽는 비용과 같은 차수다. 먼저 이 단순 경로를 측정한다.
 
@@ -534,21 +630,36 @@ Merkle hash는 동일성 확인과 변경 구간 축소에는 유용하지만 `y
 
 ## 14. v1 → v2 전환
 
-전환은 파일별 lazy migration이 아니라 vault 단위 한 번의 작업이다. 두 기기가 서로 다른 포맷을 동시에 쓰는 기간을 만들지 않는다.
+전환은 파일별 lazy migration이 아니라 vault 단위 한 번의 작업이다. 두 기기가 서로 다른 포맷을 동시에 쓰는 기간을 만들지 않는다. 먼저 v1 bridge 릴리스를 배포한다. bridge는 §3.3의 `home_root`가 든 format 1 marker를 만들고 설치별 UUID를 `.yonalist/devices/<device-uuid>.json`에 등록하며 migration 준비·read-only marker를 이해한다. 등록됐고 사용자가 retired로 표시하지 않은 기기는 모두 전환에 참여해야 한다.
 
-1. 동기화 watcher와 exporter를 멈춘다.
-2. SQLite와 vault의 현재 파일 목록·hash를 읽어 변경 중인 파일이 없는지 확인한다.
-3. vault와 DB의 복구용 snapshot을 만든다. 기존 파일은 덮어쓰기 전에 활성 vault 밖의 Application Support 백업 디렉터리에 보존한다.
-4. 모든 UUID의 공개 `yid` 후보를 계산하고 중복·중복 줄 ID를 검사한다.
-5. 기존 parser로 v1 파일을 읽어 canonical v2 snapshot을 만든다.
-6. SQLite migration과 모든 `public_id` backfill을 한 트랜잭션으로 적용한다.
-7. 모든 v2 Markdown을 임시 디렉터리에 렌더하고 다시 parse해 snapshot hash가 같은지 검증한다.
-8. 파일을 하나씩 원자 교체하고 `sync_snapshots`·`sync_documents` head를 기록한다.
-9. 전체 vault를 다시 읽어 DB와 hash가 모두 같은지 확인한 뒤 watcher를 재개한다.
+bridge 설치 전에 이 vault를 열었던 오프라인 기기는 registry만 보고 알아낼 수 없다. 전환 UI는 자동으로 “모든 기기 준비 완료”라고 판단하지 않는다. 사용자가 과거에 이 vault를 연 기기 목록을 확인하고 각 기기를 bridge로 업데이트하거나 retired 처리했다는 명시적 확인을 해야 1단계를 시작한다. 충분한 유예 기간은 안내에 도움이 되지만 이 확인을 대신하지 않는다.
 
-중간 실패 시 watcher를 재개하지 않고 backup과 migration 상태를 보여 준다. v2 파일 일부를 v1 exporter가 다시 쓰게 해서는 안 된다. 교체 전 실패는 DB transaction rollback과 임시 파일 삭제로 복구한다. 교체 중 실패는 manifest format으로 완료 파일을 식별해 재개하거나 backup으로 전체 복원한다.
+`format.json`의 모든 phase는 최초 format 1 marker의 `vault`와 `home_root`를 그대로 포함한다. phase 갱신은 이 두 값을 인자로 받는 전용 함수만 수행하며 누락된 marker는 격리한다.
 
-다른 기기가 v1 파일을 계속 쓰는 것을 막기 위해 vault 루트 `.yonalist/format.json`에 `{"format":2,"vault":"..."}`를 둔다. 포맷 전환 기능보다 먼저 배포하는 v1 호환 릴리스가 알 수 없는 vault format을 감지해 read-only로 열어야 한다. 이 보호 장치가 없는 구버전이 한 대라도 남아 있으면 자동 전환하지 않고, 사용자가 모든 기기를 업데이트했다고 확인한 뒤에만 진행한다.
+1. 시작 기기가 `.yonalist/format.json`을 `{"format":1,"target":2,"phase":"prepare","migration_id":"...","vault":"...","home_root":"..."}`로 쓴다.
+2. 각 bridge 기기는 새 사용자 편집을 막고 기존 command queue와 `sync_dirty_nodes`를 v1 파일로 모두 방출한다. watcher import와 v1 자동 병합은 계속 수행한다. 해결되지 않은 충돌·격리·복구 작업이 있으면 clean ack를 쓰지 않고 사용자가 해결하거나 보존 방식을 선택할 때까지 전환을 막는다.
+3. 기기는 vault content 파일의 `(relative_path, byte_hash)` 정렬 목록을 두 번 연속 같은 값으로 읽고 `.yonalist/migration-acks/<migration-id>/<device-uuid>.json`에 `clean=true`, tree hash, DB revision을 쓴다. control 파일과 mtime은 tree hash에서 뺀다.
+4. ack 뒤 새 vault 변경을 보면 기존 ack를 무효화하고 import·병합·재방출한 뒤 다시 ack한다. 사용자 편집은 계속 막는다.
+5. 시작 기기는 non-retired 등록 기기의 clean ack가 모두 있고 tree hash가 같을 때만 `phase="migrating"`으로 바꾼다. offline 기기는 자동으로 제외하지 않는다. 사용자가 retired 처리하거나 기기를 켜서 ack해야 한다.
+6. 각 bridge 기기는 `migrating`을 보면 import/export도 멈추고 같은 ack 파일에 `frozen=true`와 정지 뒤 다시 읽은 final tree hash를 기록한다. 시작 기기도 watcher와 exporter를 멈추고 frozen ack를 쓴다.
+7. 시작 기기는 모든 non-retired 기기의 frozen ack가 있고 final tree hash가 같을 때만 파일 교체를 시작한다. clean ack만 있거나 frozen hash가 다르면 기다린다.
+8. 시작 기기는 SQLite와 vault의 hash를 다시 읽어 frozen tree와 같은지 확인한다.
+9. vault와 DB의 복구용 snapshot을 만든다. 기존 파일은 활성 vault 밖의 Application Support 백업 디렉터리에 보존한다.
+10. Application Support에 migration ID, 원본 hash 목록, backup 경로, 현재 phase를 담은 resume journal을 원자적으로 쓴다.
+11. 모든 UUID와 marker의 home root 공개 `yid` 후보를 읽고 중복·중복 줄 ID를 검사한다.
+12. 기존 parser로 v1 파일을 읽어 canonical v2 snapshot을 만든다.
+13. SQLite migration과 모든 `public_id` backfill을 한 트랜잭션으로 적용하고 journal phase를 `db-ready`로 바꾼다.
+14. 모든 v2 Markdown을 임시 디렉터리에 렌더하고 다시 parse해 state hash가 같은지 검증한다.
+15. 파일을 하나씩 §7.2 방식으로 교체한다. 파일마다 원본·결과 byte hash를 journal에 기록해 재실행을 idempotent하게 만든다.
+16. 전체 vault를 다시 읽어 시작 기기 DB의 commit/state hash와 모두 같은지 확인한다.
+17. `format.json`을 `{"format":2,"target":2,"phase":"files-ready","migration_id":"...","vault":"...","home_root":"...","tree_hash":"..."}`로 바꾼다. 모든 기기는 계속 read-only다.
+18. 각 follower는 로컬 v1 DB를 Application Support에 backup한 뒤 v2 스키마의 새 DB를 옆에 만든다. v2 vault를 처음부터 import해 notes/sync table과 모든 document head를 만들고 marker의 `vault`·`home_root`를 채택한다. 검색 index는 다시 만든다. `notes_ui_state`와 함께 기존 `sync_conflict_log`, 아직 보존 기간인 복구 후보, 관련 `sync_assets` pin을 내부 UUID→`public_id` 대응표로 검증해 복사한다. 해결되지 않은 행은 2단계에서 막혔어야 하며 여기서 새로 발견되면 교체하지 않는다.
+19. follower는 새 DB로 빈 DB 복구와 복사한 복구 후보의 조회·asset 존재 검증을 통과한 뒤 원자적으로 교체한다. ack에는 `v2_db_ready=true`, schema version, tree hash, 복구 후보 개수를 기록한다. 실패하면 기존 DB와 read-only 상태를 유지한다. 시작 기기도 같은 값으로 ack한다.
+20. 시작 기기는 모든 non-retired 기기의 `v2_db_ready` ack와 tree hash가 같을 때만 `format.json`을 `{"format":2,"phase":"ready","vault":"...","home_root":"..."}`로 바꾸고 watcher를 재개한다.
+
+중간 실패 시 `migrating` marker를 유지하고 watcher를 재개하지 않는다. 앱은 journal과 각 파일 manifest를 대조해 남은 파일부터 재개하거나 backup으로 전체 복원한다. SQLite transaction과 여러 파일 rename을 하나의 원자 작업처럼 간주하지 않는다. marker가 혼합 상태를 다른 앱에서 숨기고 journal이 완료 지점을 기억한다.
+
+사용자가 rollback을 고르면 시작 기기는 먼저 `format.json`을 `{"format":2,"target":2,"phase":"rolling-back","migration_id":"...","vault":"...","home_root":"..."}`로 바꾼 뒤 backup의 원본 hash를 확인해 v1 vault를 전부 복원한다. 각 참여 기기는 자기 Application Support backup에서 v1 DB를 복원하고 복원된 vault tree hash와 일치하는지 검사한 뒤 ack에 `v1_db_restored=true`를 쓴다. 아직 v2 DB로 바꾸지 않은 기기도 현재 v1 DB를 검사하고 같은 ack를 쓴다. 시작 기기는 모든 non-retired 기기의 복원 ack와 tree hash가 같을 때만 `{"format":1,"phase":"ready","vault":"...","home_root":"..."}`로 되돌린다. 한 기기라도 실패하면 `rolling-back`과 전체 read-only 상태를 유지한다. 일부 파일이나 한 기기 DB만 v1로 되돌리는 downgrade는 허용하지 않는다.
 
 ## 15. 오류 처리
 
@@ -556,7 +667,7 @@ Merkle hash는 동일성 확인과 변경 구간 축소에는 유용하지만 `y
 |---|---|
 | 중복/잘못된 `yid` | 문서 격리, 자동 재발급 금지 |
 | manifest JSON 손상 | 본문은 읽기 전용 preview, 동기화 적용·방출 금지 |
-| 선언 base snapshot 없음 + 양쪽 변경 | 문서 단위 충돌 |
+| 선언 merge base 없음 + 양쪽 변경 | 문서 단위 충돌 |
 | parser limit 초과 | 기존 quarantine 경로 사용 |
 | 파일이 읽는 중 바뀜 | size/mtime 재확인 후 최대 3회 재읽기, 이후 다음 watcher event로 넘김 |
 | DB commit 실패 | 파일을 쓰지 않음 |
@@ -585,6 +696,9 @@ Merkle hash는 동일성 확인과 변경 구간 축소에는 유용하지만 `y
 - `v2_render_keeps_only_yid_inline`
 - `v2_escape_preserves_slash_plus_and_period`
 - `v2_parse_render_parse_preserves_semantics`
+- `home_root_public_id_and_state_survive_an_empty_db_rebuild`
+- `two_devices_adopt_the_same_bridge_home_root_id`
+- `split_boundary_does_not_duplicate_the_child_block`
 - `duplicate_public_id_quarantines_the_document`
 - `legacy_uuid_mapping_is_deterministic`
 
@@ -596,12 +710,15 @@ Merkle hash는 동일성 확인과 변경 구간 축소에는 유용하지만 `y
 
 - `schema.sql`: `sync_snapshots`, head column, merge conflict table
 - notes-sqlite repository: snapshot insert/get/pin/prune
-- 기존 `LineState::fingerprint()`을 canonical snapshot hash로 일반화
+- 기존 `LineState::fingerprint()`을 canonical state/commit hash로 일반화
 
 먼저 실패할 테스트:
 
 - `canonical_hash_ignores_markdown_whitespace_and_sort_key`
 - `snapshot_round_trip_is_byte_stable`
+- `reverting_content_creates_a_new_commit_id`
+- `merge_commit_can_have_the_same_state_hash_as_a_parent`
+- `history_envelope_finds_a_parent_of_a_missed_merge`
 - `prune_keeps_heads_ancestors_and_conflicts`
 
 완료: A3의 보존 기반.
@@ -614,6 +731,7 @@ DB나 파일 I/O 없는 함수로 먼저 만든다. 기존 `merger.rs`의 타입
 
 - `disjoint_text_edits_merge`
 - `move_and_text_edit_merge`
+- `moving_one_sibling_does_not_mark_following_siblings_as_moved`
 - `delete_and_edit_conflict`
 - `different_moves_conflict`
 - `concurrent_inserts_have_deterministic_order`
@@ -629,15 +747,23 @@ property test는 현재 저장소에 이미 설치된 도구가 있으면 재사
 수정 범위:
 
 - notes-sqlite worker의 merge transaction
+- watcher batch의 vault-wide placement claim과 `sync_transfers`
 - exporter의 snapshot/head 기록과 atomic write
 - watcher echo 판정
 - `sync_node_exports` read 제거
 
 먼저 실패할 테스트:
 
-- `external_edit_uses_declared_snapshot_as_base`
+- `external_edit_uses_declared_commit_as_parent`
 - `missing_base_with_local_change_never_guesses`
 - `crash_after_db_commit_reexports_safely`
+- `publish_swap_preserves_a_file_changed_after_the_cas_check`
+- `publish_readback_mismatch_is_never_recorded_as_an_echo`
+- `new_document_publish_uses_no_replace`
+- `publish_journal_recovers_a_crash_after_swap`
+- `cross_document_move_converges_destination_first`
+- `cross_document_move_converges_source_first`
+- `confirmed_transfer_remains_in_both_manifests_for_30_days`
 - `export_echo_is_a_noop`
 - `one_pending_document_does_not_block_others`
 
@@ -652,6 +778,7 @@ property test는 현재 저장소에 이미 설치된 도구가 있으면 재사
 - `conflict_view_shows_base_local_remote`
 - `resolution_survives_restart`
 - `accept_creates_two_parent_snapshot`
+- `stale_local_or_file_head_restarts_merge_instead_of_applying`
 - `unresolved_conflict_never_overwrites_markdown`
 
 완료: A3.
@@ -663,6 +790,15 @@ property test는 현재 저장소에 이미 설치된 도구가 있으면 재사
 - `v1_fixture_migrates_to_equivalent_v2_snapshot`
 - `migration_collision_writes_nothing`
 - `mixed_format_vault_resumes_or_rolls_back`
+- `migrating_marker_makes_bridge_release_read_only`
+- `every_migration_phase_preserves_vault_and_home_root`
+- `migration_waits_for_every_non_retired_clean_device_ack`
+- `migration_waits_for_every_frozen_ack_with_the_same_tree_hash`
+- `pre_bridge_devices_require_explicit_user_confirmation`
+- `a_pending_edit_is_exported_before_the_device_acks`
+- `ready_waits_for_every_follower_v2_db_rebuild_ack`
+- `follower_rebuild_preserves_local_recovery_rows_and_asset_pins`
+- `rollback_waits_for_every_follower_v1_db_restore_ack`
 - `empty_db_rebuild_preserves_all_public_ids`
 - `old_app_opens_format2_vault_read_only`
 
@@ -673,7 +809,8 @@ property test는 현재 저장소에 이미 설치된 도구가 있으면 재사
 mirror 기능을 구현하지 않는다. 현재 타입과 codec이 미래 분리를 막지 않는지만 작은 설계 테스트로 잠근다.
 
 - `public_id_does_not_change_when_node_moves`
-- `snapshot_hashes_reference_target_id_without_target_content`
+- `snapshot_separates_blocks_and_placements`
+- `state_hashes_reference_target_id_without_target_content`
 - `containment_cycle_is_rejected`
 
 완료: A5.
@@ -686,7 +823,7 @@ mirror 기능을 구현하지 않는다. 현재 타입과 codec이 미래 분리
 | G2 merge | §8 표 전체, side 순서 교환, 재병합 idempotence 통과 |
 | G3 failure | DB/파일 쓰기 각 단계 fault injection 후 원본 또는 후보 손실 0 |
 | G4 performance | 20,000 노드 문서 parse+hash+clean merge p95 ≤ 200ms(배포 대상 Mac) |
-| G5 manual | 두 기기 복사본에서 동시 편집·이동·삭제·충돌 해결 후 같은 snapshot hash |
+| G5 manual | 두 기기 복사본에서 동시 편집·이동·삭제·충돌 해결 후 같은 state hash와 commit ID |
 
 G1~G5 전에는 v1을 정본으로 유지한다. gate가 통과하면 한 릴리스에서 migration을 켜고 v2 writer로 전환한다. v1 writer로 되돌리는 자동 downgrade는 제공하지 않으며, 필요하면 migration backup으로 vault 전체를 복원한다.
 
