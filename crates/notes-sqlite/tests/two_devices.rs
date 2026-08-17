@@ -30,6 +30,10 @@ impl Device {
     fn new(name: &str) -> Self {
         let home = tempfile::tempdir().expect("home");
         let storage = SqliteStorage::open(&home.path().join("notes.sqlite")).expect("open");
+        // As a device that has been through first run with a folder of its own.
+        // The guide is written once that folder is settled rather than when the
+        // database is opened, so this says so where the app's setup would.
+        storage.seed_onboarding().expect("the guide");
         let vault = home.path().join("vault");
         let store = home.path().join("images");
         std::fs::create_dir_all(&vault).expect("vault");

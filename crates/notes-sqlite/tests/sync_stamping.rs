@@ -39,6 +39,15 @@ fn run(storage: &SqliteStorage, command: IpcNotesCommand, revision: u64) -> u64 
         .revision
 }
 
+/// A device that has been through first run with a folder of its own. The
+/// guide is written once that folder is settled rather than when the database
+/// is opened, so a test that wants it has to say so.
+fn open(database: &std::path::Path) -> SqliteStorage {
+    let storage = SqliteStorage::open(database).expect("open");
+    storage.seed_onboarding().expect("the guide");
+    storage
+}
+
 fn seeded_page(database: &std::path::Path) -> String {
     inspect(database)
         .query_row(
@@ -52,7 +61,7 @@ fn seeded_page(database: &std::path::Path) -> String {
 #[test]
 fn a_command_commit_stamps_hlc_and_marks_dirty() {
     let (_directory, database) = workspace();
-    let storage = SqliteStorage::open(&database).expect("open");
+    let storage = open(&database);
     let page = seeded_page(&database);
     let before: String = inspect(&database)
         .query_row(
@@ -109,7 +118,7 @@ fn a_command_commit_stamps_hlc_and_marks_dirty() {
 #[test]
 fn a_document_is_queued_by_what_happens_to_the_rows_it_holds() {
     let (_directory, database) = workspace();
-    let _storage = SqliteStorage::open(&database).expect("open");
+    let _storage = open(&database);
     let page = seeded_page(&database);
     let connection = writer(&database);
     let child = "8a201f33-0000-4c91-8d02-0000000000aa";
@@ -153,7 +162,7 @@ fn a_document_is_queued_by_what_happens_to_the_rows_it_holds() {
 #[test]
 fn moving_a_line_between_pages_queues_both_of_them() {
     let (_directory, database) = workspace();
-    let _storage = SqliteStorage::open(&database).expect("open");
+    let _storage = open(&database);
     let first = seeded_page(&database);
     let connection = writer(&database);
     let second = "4f1c8e20-a3b7-4c91-8d02-0000000000bb";
@@ -195,7 +204,7 @@ fn moving_a_line_between_pages_queues_both_of_them() {
 #[test]
 fn a_parent_that_is_not_there_is_not_queued() {
     let (_directory, database) = workspace();
-    let _storage = SqliteStorage::open(&database).expect("open");
+    let _storage = open(&database);
     let page = seeded_page(&database);
     let connection = writer(&database);
     connection
@@ -233,7 +242,7 @@ fn a_parent_that_is_not_there_is_not_queued() {
 #[test]
 fn a_move_that_changes_no_neighbour_still_says_when_it_moved() {
     let (_directory, database) = workspace();
-    let storage = SqliteStorage::open(&database).expect("open");
+    let storage = open(&database);
     let first = seeded_page(&database);
     let connection = writer(&database);
     let second = "4f1c8e20-a3b7-4c91-8d02-0000000000dd";
@@ -290,7 +299,7 @@ fn a_move_that_changes_no_neighbour_still_says_when_it_moved() {
 #[test]
 fn making_room_for_a_line_does_not_promote_its_neighbours_claims() {
     let (_directory, database) = workspace();
-    let storage = SqliteStorage::open(&database).expect("open");
+    let storage = open(&database);
     let page = seeded_page(&database);
     let connection = writer(&database);
     // Packed tight, which is what a run of inserts in one spot leaves.
@@ -348,7 +357,7 @@ fn making_room_for_a_line_does_not_promote_its_neighbours_claims() {
 #[test]
 fn a_place_claim_queues_the_document_without_restamping_the_row() {
     let (_directory, database) = workspace();
-    let _storage = SqliteStorage::open(&database).expect("open");
+    let _storage = open(&database);
     let page = seeded_page(&database);
     let connection = writer(&database);
     let before: String = connection
@@ -405,7 +414,7 @@ fn waiting(connection: &Connection, node_id: &str) -> bool {
 #[test]
 fn a_row_written_with_the_values_it_already_had_is_not_restamped() {
     let (_directory, database) = workspace();
-    let _storage = SqliteStorage::open(&database).expect("open");
+    let _storage = open(&database);
     let page = seeded_page(&database);
     let connection = writer(&database);
     let before: String = connection
@@ -450,7 +459,7 @@ fn a_row_written_with_the_values_it_already_had_is_not_restamped() {
 #[test]
 fn a_write_that_changes_nothing_does_not_move_the_reading() {
     let (_directory, database) = workspace();
-    let storage = SqliteStorage::open(&database).expect("open");
+    let storage = open(&database);
     let page = seeded_page(&database);
     let title: String = inspect(&database)
         .query_row(
@@ -509,7 +518,7 @@ fn a_write_that_changes_nothing_does_not_move_the_reading() {
 #[test]
 fn moving_a_parent_leaves_its_descendants_unstamped() {
     let (_directory, database) = workspace();
-    let storage = SqliteStorage::open(&database).expect("open");
+    let storage = open(&database);
     let page = seeded_page(&database);
     let mut revision: u64 = inspect(&database)
         .query_row("SELECT revision FROM notes_meta", [], |row| {
@@ -588,7 +597,7 @@ fn moving_a_parent_leaves_its_descendants_unstamped() {
 #[test]
 fn user_version_stays_one() {
     let (_directory, database) = workspace();
-    drop(SqliteStorage::open(&database).expect("open"));
+    drop(open(&database));
 
     let version: i64 = inspect(&database)
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -599,7 +608,7 @@ fn user_version_stays_one() {
 #[test]
 fn there_is_no_tombstone_table() {
     let (_directory, database) = workspace();
-    drop(SqliteStorage::open(&database).expect("open"));
+    drop(open(&database));
 
     let tables: i64 = inspect(&database)
         .query_row(
@@ -615,7 +624,7 @@ fn there_is_no_tombstone_table() {
 #[test]
 fn an_explicit_hlc_survives_a_merge_style_upsert() {
     let (_directory, database) = workspace();
-    drop(SqliteStorage::open(&database).expect("open"));
+    drop(open(&database));
     let page = seeded_page(&database);
     let connection = writer(&database);
 
@@ -643,7 +652,7 @@ fn an_explicit_hlc_survives_a_merge_style_upsert() {
 #[test]
 fn a_delete_queues_the_file_that_still_states_the_line() {
     let (_directory, database) = workspace();
-    drop(SqliteStorage::open(&database).expect("open"));
+    drop(open(&database));
     let connection = writer(&database);
     // A leaf, since a parent cannot leave before its children.
     let (leaf, holder): (String, String) = connection
@@ -677,7 +686,7 @@ fn a_delete_queues_the_file_that_still_states_the_line() {
 #[test]
 fn an_hlc_stamp_does_not_touch_the_fts_index() {
     let (_directory, database) = workspace();
-    drop(SqliteStorage::open(&database).expect("open"));
+    drop(open(&database));
     let connection = writer(&database);
     // A cost contract, so what it measures is work done: the search index is
     // rebuilt by delete-then-insert, which leaves the same rows behind and can
@@ -704,7 +713,7 @@ fn an_hlc_stamp_does_not_touch_the_fts_index() {
 #[test]
 fn sync_meta_is_seeded_once_with_a_stable_device_id() {
     let (_directory, database) = workspace();
-    drop(SqliteStorage::open(&database).expect("open"));
+    drop(open(&database));
     let first: (String, String) = inspect(&database)
         .query_row("SELECT device_id, vault_uuid FROM sync_meta", [], |row| {
             Ok((row.get(0)?, row.get(1)?))
@@ -728,7 +737,7 @@ fn sync_meta_is_seeded_once_with_a_stable_device_id() {
 #[test]
 fn the_clock_reseeds_from_stored_hlcs_on_boot() {
     let (_directory, database) = workspace();
-    drop(SqliteStorage::open(&database).expect("open"));
+    drop(open(&database));
     let page = seeded_page(&database);
     // A reading well ahead of anything this run would issue, but inside the
     // drift the guard allows.

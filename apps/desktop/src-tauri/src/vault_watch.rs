@@ -502,6 +502,9 @@ mod tests {
         let vault = home.path().join("vault");
         let store = home.path().join("images");
         std::fs::create_dir_all(&vault).expect("vault");
+        // The guide is written once a folder is settled rather than when the
+        // database opens, so a test that wants notes on disk says so.
+        storage.seed_onboarding().expect("the guide");
         storage.export_pending(&vault, &store).expect("export");
 
         // Somebody else's edit, landed while this app was not running.
@@ -549,6 +552,7 @@ mod tests {
         );
         let vault = home.path().join("vault");
         std::fs::create_dir_all(&vault).expect("vault");
+        storage.seed_onboarding().expect("the guide");
         storage
             .export_pending(&vault, &home.path().join("images"))
             .expect("export");
@@ -692,6 +696,7 @@ mod tests {
         );
         let vault = home.path().join("vault");
         std::fs::create_dir_all(&vault).expect("vault");
+        storage.seed_onboarding().expect("the guide");
         storage
             .export_pending(&vault, &home.path().join("images"))
             .expect("export");
