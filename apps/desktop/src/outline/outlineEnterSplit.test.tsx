@@ -312,10 +312,13 @@ describe("Enter at the head of a bullet's text", () => {
     // The row keeps its own children: nothing moved, nothing was demoted.
     expect(childIds(store, "one")).toEqual(["child-1"]);
     expect(childIds(store, "page-1")).toEqual([created.id, "one", "two"]);
+    // The text moved down a line and the caret went with it, the way Enter at
+    // the head of a line behaves in any editor.
     await waitFor(() => {
       const active = document.activeElement as HTMLTextAreaElement;
-      expect(active.dataset.nodeId).toBe(created.id);
-      expect(active.value).toBe("");
+      expect(active.dataset.nodeId).toBe("one");
+      expect(active.value).toBe("Parent");
+      expect([active.selectionStart, active.selectionEnd]).toEqual([0, 0]);
     });
     view.unmount();
   });
@@ -343,6 +346,13 @@ describe("Enter at the head of a bullet's text", () => {
     expect(titles(view.container)).toEqual(["", "", "", "Parent", "child1"]);
     expect(childIds(store, "page-1").at(-1)).toBe("one");
     expect(childIds(store, "one")).toEqual(["child-1"]);
+    // Every repeat opens another blank above, and the caret never leaves the
+    // text it started on.
+    await waitFor(() => {
+      const active = document.activeElement as HTMLTextAreaElement;
+      expect(active.dataset.nodeId).toBe("one");
+      expect([active.selectionStart, active.selectionEnd]).toEqual([0, 0]);
+    });
     view.unmount();
   });
 });
