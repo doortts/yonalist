@@ -140,23 +140,43 @@ function pageApi(): NotesApi {
 }
 
 describe("a mutation that moves the view", () => {
-  it("takes one undo press to create a page and give it back", async () => {
+  /** A new page, waited for by the caret it puts in its own empty title. */
+  async function newPageTitle(): Promise<HTMLElement> {
+    fireEvent.click(screen.getByRole("button", { name: "New page" }));
+    return await waitFor(() => {
+      const title = screen.getByRole("textbox", { name: "Page title" });
+      expect(title).toHaveFocus();
+      return title;
+    });
+  }
+
+  it("opens a new page on an empty title and writes nothing", async () => {
     const notesApi = pageApi();
     render(<App api={notesApi} />);
     await screen.findByDisplayValue("First thought");
 
-    fireEvent.click(screen.getByRole("button", { name: "New page" }));
-    await waitFor(() => expect(screen.getByDisplayValue("Untitled page"))
-      .toHaveAttribute("aria-label", "Page title"));
+    const title = await newPageTitle();
+
+    expect(title).toHaveValue("");
+    expect(notesApi.execute).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", {
+      name: "Page actions for Untitled page"
+    })).toBeNull();
+  });
+
+  it("takes one undo press to leave a page nobody wrote in", async () => {
+    const notesApi = pageApi();
+    render(<App api={notesApi} />);
+    await screen.findByDisplayValue("First thought");
+    await newPageTitle();
 
     fireEvent.keyDown(window, { key: "z", ctrlKey: true });
 
     await waitFor(() => expect(screen.getByDisplayValue("Today"))
       .toHaveAttribute("aria-label", "Page title"));
-    expect(notesApi.undo).toHaveBeenCalledOnce();
-    expect(screen.queryByRole("button", {
-      name: "Page actions for Untitled page"
-    })).toBeNull();
+    // Nothing was written, so there is nothing for the store to take back.
+    expect(notesApi.undo).not.toHaveBeenCalled();
+    expect(notesApi.execute).not.toHaveBeenCalled();
   });
 
   it("takes one undo press to trash a page and give it back", async () => {

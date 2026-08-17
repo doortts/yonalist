@@ -22,7 +22,8 @@ import {
 import {
   capturePane,
   emptyPaneLocation,
-  type AppNavigationLocation
+  type AppNavigationLocation,
+  type PaneFocusSnapshot
 } from "./appNavigation";
 import { NotesDetailPanes } from "./NotesDetailPanes";
 import { ROOT_ID } from "./store/storeSupport";
@@ -222,9 +223,14 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   // Home is the root page, and the root is no page's row, so the pane gets a
   // titleless stand-in rather than a lookup that can never hit.
   const atHome = state.activePageId === ROOT_ID;
+  // A page the list does not carry is a page nobody has written in yet: it is
+  // open, and its title is the store's to answer for, not the list's.
   const activePage = atHome
     ? { id: ROOT_ID, title: "" }
-    : state.pages.find((page) => page.id === state.activePageId);
+    : state.pages.find((page) => page.id === state.activePageId) ??
+      (state.activePageId
+        ? { id: state.activePageId, title: "" }
+        : undefined);
   const captureNavigation = useCallback((): AppNavigationLocation => {
     const primary = capturePane("primary");
     const secondary = capturePane("secondary");
@@ -324,22 +330,32 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   );
   // Home is the root page like any other page, house crumb included.
   const openHome = useCallback(() => void openPage(ROOT_ID), [openPage]);
-  // Creating a page and trashing one both move the view as part of the
-  // command, so each records a single entry that replays both.
+  // Opening a new page writes nothing, so this is a move and only a move: the
+  // caret goes to the empty title, and Undo brings the view back the way any
+  // other navigation does. Trashing a page, below, is the one that replays a
+  // command as well.
   const createPage = useCallback(() => {
     const before = captureNavigation();
     afterDraftFlush(() => {
       void store.createPage().then(async (pageId) => {
-        const after = emptyPaneLocation(pageId);
+        const after = {
+          ...emptyPaneLocation(pageId),
+          primaryFocus: {
+            nodeId: pageId,
+            field: "title",
+            selectionStart: 0,
+            selectionEnd: 0
+          } satisfies PaneFocusSnapshot
+        };
         await applyNavigation(after);
-        recordMutationNavigation(before, after);
+        recordNavigation(before, after);
       });
     });
   }, [
     afterDraftFlush,
     applyNavigation,
     captureNavigation,
-    recordMutationNavigation,
+    recordNavigation,
     store
   ]);
   const deletePage = useCallback((pageId: string) => {
