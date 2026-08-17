@@ -622,7 +622,7 @@ fn recovery_page(
     transaction
         .prepare_cached(
             "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
-             VALUES (?1, 'root', ?2, 'bullet', 'Recovered', ?3)
+             VALUES (?1, 'root', ?2, 'bullet', '복구됨', ?3)
              ON CONFLICT(id) DO NOTHING",
         )
         .and_then(|mut statement| statement.execute(rusqlite::params![id, i64::MAX / 2, stamp]))

@@ -1351,7 +1351,7 @@ fn parent_of(connection: &Connection, id: &str) -> String {
 fn recovery_page(connection: &Connection) -> Option<String> {
     connection
         .query_row(
-            "SELECT id FROM notes_nodes WHERE parent_id = 'root' AND text = 'Recovered'",
+            "SELECT id FROM notes_nodes WHERE parent_id = 'root' AND text = '복구됨'",
             [],
             |row| row.get(0),
         )
