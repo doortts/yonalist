@@ -834,7 +834,6 @@ mod tests {
                     pixel_width: 1,
                     pixel_height: 1,
                     byte_size: 69,
-                    unknown_tokens: Vec::new(),
                 }),
                 note: String::new(),
                 marker: Marker::Bullet,

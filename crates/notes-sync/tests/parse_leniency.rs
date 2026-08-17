@@ -14,6 +14,27 @@ fn page(body: &str) -> String {
     )
 }
 
+/// The same page with the block that carries its bookkeeping, in the shape and
+/// the place the renderer writes it. Each entry is one footer line without its
+/// newline: `"yid: … t: … star"`.
+///
+/// The blank line in front is the renderer's own condition, repeated here so a
+/// document a test states by hand is byte-identical to the one the renderer would
+/// have written for it — every round-trip assertion below rests on that.
+fn page_with_footer(body: &str, entries: &[&str]) -> String {
+    let mut source = page(body);
+    if !source.ends_with("\n\n") {
+        source.push('\n');
+    }
+    source.push_str("<!-- yonalist\n");
+    for entry in entries {
+        source.push_str(entry);
+        source.push('\n');
+    }
+    source.push_str("-->\n");
+    source
+}
+
 fn accepted(source: &str) -> VaultFile {
     parse(source.as_bytes()).unwrap_or_else(|reason| panic!("expected accepted, got {reason}"))
 }
@@ -38,8 +59,9 @@ fn a_bullet_without_yid_is_accepted_for_id_issue() {
 
 #[test]
 fn an_unparsable_hlc_becomes_empty_and_loses_lww() {
-    let parsed = nodes(&page(
-        "- Thought <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: too-new -->\n",
+    let parsed = nodes(&page_with_footer(
+        "- Thought <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: too-new"],
     ));
 
     assert_eq!(
@@ -102,14 +124,15 @@ fn a_checkbox_line_is_always_a_todo() {
 
 #[test]
 fn a_completed_plain_bullet_round_trips_through_the_done_token() {
-    let parsed = nodes(&page(
-        "- Done thing <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 done -->\n",
+    let parsed = nodes(&page_with_footer(
+        "- Done thing <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 done"],
     ));
 
     assert_eq!(parsed[0].marker, Marker::Bullet);
     assert!(
         parsed[0].completed,
-        "the comment carries it, not the prefix"
+        "the footer carries it, because a plain bullet has no checkbox to draw"
     );
 }
 
@@ -138,8 +161,9 @@ fn crlf_normalizes_to_lf() {
 
 #[test]
 fn a_colon_token_swallows_the_next_word() {
-    let parsed = nodes(&page(
-        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 foo: collapsed -->\n",
+    let parsed = nodes(&page_with_footer(
+        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 foo: collapsed"],
     ));
 
     assert!(
@@ -165,7 +189,10 @@ fn a_missing_max_hlc_is_recomputed_from_content() {
     let source = "---\nkind: yonalist-notes\nformat_version: 1\n\
                   id: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1\nroot_hlc: 0swkd7qz5-00-a3f2\n---\n\
                   # Projects\n\n\
-                  - Later <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 -->\n";
+                  - Later <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n\n\
+                  <!-- yonalist\n\
+                  yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2\n\
+                  -->\n";
     let VaultFile::Page(parsed) = accepted(source) else {
         panic!("a page");
     };
@@ -182,10 +209,13 @@ fn a_missing_max_hlc_is_recomputed_from_content() {
 /// read first.
 #[test]
 fn a_split_line_carries_no_state_and_grants_none() {
-    let parsed = nodes(&page(
+    let parsed = nodes(&page_with_footer(
         "- [x] [Archive](Archive-9d3f21b8c440/README.md) \
-         <!-- yid: 9d3f21b8-c440-4c91-8d02-2e77a05fb163 t: 0swkd7qzd-00-a3f2 \
-         star todo split collapsed -->\n",
+         <!-- yid: 9d3f21b8-c440-4c91-8d02-2e77a05fb163 -->\n",
+        &[
+            "yid: 9d3f21b8-c440-4c91-8d02-2e77a05fb163 t: 0swkd7qzd-00-a3f2 \
+             star todo split collapsed",
+        ],
     ));
 
     assert_eq!(
@@ -271,9 +301,10 @@ fn an_unexplainable_line_quarantines() {
 
 #[test]
 fn a_duplicate_node_id_quarantines() {
-    let source = page(
-        "- One <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 -->\n\
-         - Two <!-- yid: 8A201F33-0000-4C91-8D02-000000000001 t: 0swkd7qz7-00-a3f2 -->\n",
+    let source = page_with_footer(
+        "- One <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n\
+         - Two <!-- yid: 8A201F33-0000-4C91-8D02-000000000001 -->\n",
+        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2"],
     );
 
     assert!(
@@ -293,12 +324,125 @@ fn a_duplicate_frontmatter_key_quarantines() {
 }
 
 #[test]
-fn a_duplicate_comment_token_quarantines() {
-    let source = page(
-        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 star star -->\n",
+fn a_duplicate_token_quarantines() {
+    let footer = page_with_footer(
+        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 star star"],
     );
 
-    assert!(parse(source.as_bytes()).is_err());
+    assert!(
+        parse(footer.as_bytes()).is_err(),
+        "one state has one spelling, so a second one is a file nobody can read for sure"
+    );
+
+    let line = page(
+        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 \
+         yid: 8a201f33-0000-4c91-8d02-000000000002 -->\n",
+    );
+
+    assert!(
+        parse(line.as_bytes()).is_err(),
+        "and a body line names one block, not two"
+    );
+}
+
+/// §4's malformed rows. A footer half read is worse than none: some blocks would
+/// come back holding somebody else's state and nothing downstream could tell
+/// which, so the file is refused whole.
+#[test]
+fn a_footer_that_is_not_one_readable_block_quarantines() {
+    let id = "8a201f33-0000-4c91-8d02-000000000001";
+    let body = format!("- Text <!-- yid: {id} -->\n");
+    let entry = format!("yid: {id} t: 0swkd7qz6-00-a3f2");
+
+    for (what, source) in [
+        (
+            "a block that never closes leaves it unsaid where the body resumed",
+            format!("{}\n<!-- yonalist\n{entry}\n", page(&body)),
+        ),
+        (
+            "two blocks are two answers for one",
+            format!(
+                "{}\n<!-- yonalist\n{entry}\n-->\n",
+                page_with_footer(&body, &[&entry])
+            ),
+        ),
+        (
+            "a line naming no block would have its state guessed onto somebody else's",
+            page_with_footer(&body, &["t: 0swkd7qz6-00-a3f2 star"]),
+        ),
+        (
+            "one block stated twice",
+            page_with_footer(&body, &[&entry, &entry]),
+        ),
+    ] {
+        assert!(parse(source.as_bytes()).is_err(), "{what}");
+    }
+}
+
+/// A hand editor who deletes a bullet leaves its footer line behind, which is a
+/// perfectly normal state to find a file in. There is nowhere in a document to
+/// keep state for a block no line claims, and dropping it is what makes the trip
+/// stable: the parse loses it and the render never writes it, so the second trip
+/// is the same bytes as the first.
+#[test]
+fn a_footer_entry_for_a_line_that_is_gone_is_dropped() {
+    let source = page_with_footer(
+        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        &[
+            "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2",
+            "yid: 8a201f33-0000-4c91-8d02-000000000002 t: 0swkd7qz7-00-a3f2 star",
+        ],
+    );
+
+    let parsed = nodes(&source);
+    assert_eq!(
+        parsed.len(),
+        1,
+        "the body says which blocks a document holds"
+    );
+
+    let once = String::from_utf8(notes_sync::render::render(&accepted(&source)).expect("render"))
+        .expect("utf-8");
+    assert!(
+        !once.contains("000000000002"),
+        "an entry no line claims has nowhere to live: {once}"
+    );
+
+    let twice = String::from_utf8(notes_sync::render::render(&accepted(&once)).expect("render"))
+        .expect("utf-8");
+    assert_eq!(twice, once, "and the trip after that changes nothing");
+}
+
+/// The rule a line whose `t:` was deleted already gets, widened to a whole
+/// document. Refusing instead would quarantine a file over a block somebody
+/// trimmed off the end; reading it as unstamped loses it to the database, and the
+/// next export writes the canonical form back.
+#[test]
+fn a_document_without_a_footer_reads_as_unstamped() {
+    let body = "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n";
+
+    for (what, source) in [
+        ("no footer at all", page(body)),
+        ("a footer holding nothing", page_with_footer(body, &[])),
+    ] {
+        let parsed = nodes(&source);
+
+        assert_eq!(parsed.len(), 1, "{what}: the body is still the body");
+        assert_eq!(
+            parsed[0].id, "8a201f33-0000-4c91-8d02-000000000001",
+            "{what}: and the line still says which block it is"
+        );
+        assert_eq!(
+            parsed[0].hlc, "",
+            "{what}: with no stamp, so it loses every comparison rather than winning one"
+        );
+        assert_eq!(parsed[0].marker, Marker::Bullet, "{what}");
+        assert!(
+            !parsed[0].starred && !parsed[0].collapsed && !parsed[0].completed,
+            "{what}: every state falls back to its default"
+        );
+    }
 }
 
 #[test]
@@ -316,9 +460,13 @@ fn an_image_document_root_quarantines() {
 
 #[test]
 fn a_link_escaping_the_assets_folder_quarantines() {
-    let source = page(
-        "- ![shot.png](../../outside/shot.png) <!-- ya: w: 320 px: 10x10 bytes: 4 --> \
-         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 -->\n",
+    let source = page_with_footer(
+        "- ![shot.png](../../outside/shot.png) \
+         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        &[
+            "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 \
+             w: 320 px: 10x10 bytes: 4",
+        ],
     );
 
     assert!(parse(source.as_bytes()).is_err());
@@ -326,9 +474,12 @@ fn a_link_escaping_the_assets_folder_quarantines() {
 
 #[test]
 fn a_from_token_in_a_page_quarantines() {
-    let source = page(
-        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 \
-         from: root@4294967296 -->\n",
+    let source = page_with_footer(
+        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        &[
+            "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 \
+             from: root@4294967296",
+        ],
     );
 
     assert!(
@@ -392,8 +543,10 @@ fn every_golden_survives_a_parse_render_round_trip() {
 /// Markdown editor leaves behind after somebody fixes a typo.
 #[test]
 fn the_readable_time_is_derived_rather_than_believed() {
-    let canonical =
-        page("- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 -->\n");
+    let canonical = page_with_footer(
+        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2"],
+    );
     assert!(
         canonical.contains("updated: 2041-10-11T06:19:09Z"),
         "the stamp reads 2041, so the file has to say so where a person can check it:\n{canonical}"
@@ -429,8 +582,10 @@ fn the_readable_time_is_derived_rather_than_believed() {
 /// write it back.
 #[test]
 fn the_readable_time_does_not_depend_on_where_the_device_is() {
-    let canonical =
-        page("- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 -->\n");
+    let canonical = page_with_footer(
+        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2"],
+    );
 
     let line = canonical
         .lines()
@@ -449,8 +604,11 @@ fn unknown_fields_survive_a_parse_render_round_trip() {
                   id: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1\nmax_hlc: 0swkd7qz9-00-a3f2\n\
                   updated: 2041-10-11T06:19:09Z\n\
                   root_hlc: 0swkd7qz5-00-a3f2\nfuture_key: kept\n---\n# Projects\n\n\
-                  - Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 \
-                  t: 0swkd7qz9-00-a3f2 star future: value lone -->\n";
+                  - Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n\n\
+                  <!-- yonalist\n\
+                  yid: 8a201f33-0000-4c91-8d02-000000000001 \
+                  t: 0swkd7qz9-00-a3f2 star future: value lone\n\
+                  -->\n";
 
     let once = notes_sync::render::render(&accepted(source)).expect("render");
     let twice = notes_sync::render::render(&accepted(std::str::from_utf8(&once).expect("utf-8")))
@@ -473,8 +631,11 @@ fn a_link_climbing_to_the_root_assets_folder_is_accepted() {
     let source = "---\nkind: yonalist-trash\nformat_version: 1\n\
                   max_hlc: 0swkd7qzc-00-a3f2\n---\n\
                   - ![shot.png](../assets/shot-9f3a1c8e2044.png) \
-                  <!-- ya: w: 320 px: 10x10 bytes: 4 --> \
-                  <!-- yid: 8a201f33-0000-4c91-8d02-000000000005 t: 0swkd7qza-00-a3f2 -->\n";
+                  <!-- yid: 8a201f33-0000-4c91-8d02-000000000005 -->\n\n\
+                  <!-- yonalist\n\
+                  yid: 8a201f33-0000-4c91-8d02-000000000005 t: 0swkd7qza-00-a3f2 \
+                  w: 320 px: 10x10 bytes: 4\n\
+                  -->\n";
 
     let parsed = nodes(source);
 
@@ -484,10 +645,13 @@ fn a_link_climbing_to_the_root_assets_folder_is_accepted() {
 #[test]
 fn a_link_that_is_not_an_asset_quarantines() {
     for path in ["README.md", "assets/../README.md", "assets/deep/shot.png"] {
-        let source = page(&format!(
-            "- ![shot.png]({path}) <!-- ya: w: 320 px: 10x10 bytes: 4 --> \
-             <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 -->\n"
-        ));
+        let source = page_with_footer(
+            &format!("- ![shot.png]({path}) <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n"),
+            &[
+                "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 \
+                 w: 320 px: 10x10 bytes: 4",
+            ],
+        );
 
         assert!(
             parse(source.as_bytes()).is_err(),
@@ -501,8 +665,10 @@ fn a_link_that_is_not_an_asset_quarantines() {
 /// the file comes back rewritten with a line break the user never typed.
 #[test]
 fn a_literal_backslash_n_in_text_is_not_a_newline() {
-    let source =
-        page("- a\\\\nb <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 -->\n");
+    let source = page_with_footer(
+        "- a\\\\nb <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2"],
+    );
 
     let parsed = nodes(&source);
 
@@ -526,24 +692,49 @@ fn a_malformed_comment_stays_in_the_body() {
 
 #[test]
 fn a_trailing_space_does_not_cost_a_node_its_identity() {
-    let parsed = nodes(&page(
-        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 --> \n",
+    let parsed = nodes(&page_with_footer(
+        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 --> \n",
+        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2"],
     ));
 
     assert_eq!(parsed[0].id, "8a201f33-0000-4c91-8d02-000000000001");
+    assert_eq!(
+        parsed[0].hlc, "0swkd7qz6-00-a3f2",
+        "and it still finds its own footer line"
+    );
 }
 
-/// An image line a person added by hand has no node comment yet. The merge
-/// issues the id; refusing the line would lose the image instead.
+/// A picture's size used to ride on the line, so a line a person typed by hand
+/// could still be read and the merge would issue the id. The size lives in the
+/// footer now and the footer is joined by the line's own `yid:` — so a line with
+/// no id has no entry it could be joined to, and one whose entry is gone has
+/// nothing either. There is no default to fall back on: `notes_images` refuses
+/// zero pixels and zero bytes, and a row built from a guess would draw a
+/// placeholder over bytes this app has. The document is refused with a reason
+/// that names the file, which is the answer a line with no metadata has always
+/// had.
 #[test]
-fn an_image_line_without_a_node_comment_is_accepted() {
-    let parsed = nodes(&page(
-        "- ![shot.png](assets/shot-9f3a1c8e2044.png) <!-- ya: w: 320 px: 10x10 bytes: 4 -->\n",
-    ));
+fn an_image_line_without_a_footer_entry_quarantines() {
+    for (what, line) in [
+        (
+            "no id, so no entry can name it",
+            "- ![shot.png](assets/shot-9f3a1c8e2044.png)\n",
+        ),
+        (
+            "an id whose entry somebody deleted",
+            "- ![shot.png](assets/shot-9f3a1c8e2044.png) \
+             <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        ),
+    ] {
+        let refused = parse(page(line).as_bytes())
+            .err()
+            .unwrap_or_else(|| panic!("{what}: a picture with no size is not a row"));
 
-    assert_eq!(parsed.len(), 1);
-    assert!(matches!(parsed[0].body, NodeBody::Image(_)));
-    assert_eq!(parsed[0].id, "");
+        assert!(
+            refused.contains("shot-9f3a1c8e2044.png"),
+            "{what}: the reason has to name the file it is about: {refused}"
+        );
+    }
 }
 
 /// A stamp the content cannot account for is exactly what §4.2 calls
@@ -551,9 +742,11 @@ fn an_image_line_without_a_node_comment_is_accepted() {
 /// boot clock into the future and future-stamp every later local edit.
 #[test]
 fn a_stated_max_hlc_the_content_cannot_account_for_is_recomputed() {
-    let source =
-        page("- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 -->\n")
-            .replace("max_hlc: 0swkd7qz9-00-a3f2", "max_hlc: zzzzzzzzz-zz-ffff");
+    let source = page_with_footer(
+        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2"],
+    )
+    .replace("max_hlc: 0swkd7qz9-00-a3f2", "max_hlc: zzzzzzzzz-zz-ffff");
     let VaultFile::Page(parsed) = accepted(&source) else {
         panic!("a page");
     };
@@ -562,11 +755,14 @@ fn a_stated_max_hlc_the_content_cannot_account_for_is_recomputed() {
 }
 
 #[test]
-fn an_unknown_ya_token_does_not_shift_the_ones_after_it() {
-    let parsed = nodes(&page(
+fn an_unknown_footer_token_does_not_shift_the_ones_after_it() {
+    let parsed = nodes(&page_with_footer(
         "- ![shot.png](assets/shot-9f3a1c8e2044.png) \
-         <!-- ya: w: 320 future px: 10x10 bytes: 4 --> \
-         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 -->\n",
+         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        &[
+            "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 \
+             w: 320 future px: 10x10 bytes: 4",
+        ],
     ));
 
     let NodeBody::Image(image) = &parsed[0].body else {
@@ -605,22 +801,27 @@ fn a_document_holding_every_shape_survives_two_round_trips() {
         "two\nlines",
     ];
     let mut body = String::new();
+    let mut entries = Vec::new();
     for (index, text) in awkward.iter().enumerate() {
-        body.push_str(&format!(
-            "- {} <!-- yid: 8a201f33-0000-4c91-8d02-{:012} t: 0swkd7qz6-00-a3f2 \
-             star ordered: {} collapsed -->\n",
-            escaped(text),
-            index + 1,
+        let id = format!("8a201f33-0000-4c91-8d02-{:012}", index + 1);
+        body.push_str(&format!("- {} <!-- yid: {id} -->\n", escaped(text)));
+        body.push_str(&format!("  > note for {index}\n  >\n  > second line\n"));
+        entries.push(format!(
+            "yid: {id} t: 0swkd7qz6-00-a3f2 star ordered: {} collapsed",
             index as i64 - 3
         ));
-        body.push_str(&format!("  > note for {}\n  >\n  > second line\n", index));
     }
-    body.push_str(
-        "- ![shot .png](../assets/shot-9f3a1c8e2044.png) \
-         <!-- ya: w: 320 px: 10x10 bytes: 4 --> \
-         <!-- yid: 8a201f33-0000-4c91-8d02-000000000099 t: 0swkd7qz6-00-a3f2 -->\n",
-    );
-    let source = page(&body).replace("max_hlc: 0swkd7qz9-00-a3f2", "max_hlc: 0swkd7qz6-00-a3f2");
+    let picture = "8a201f33-0000-4c91-8d02-000000000099";
+    body.push_str(&format!(
+        "- ![shot .png](../assets/shot-9f3a1c8e2044.png) <!-- yid: {picture} -->\n"
+    ));
+    entries.push(format!(
+        "yid: {picture} t: 0swkd7qz6-00-a3f2 w: 320 px: 10x10 bytes: 4"
+    ));
+
+    let entries: Vec<&str> = entries.iter().map(String::as_str).collect();
+    let source = page_with_footer(&body, &entries)
+        .replace("max_hlc: 0swkd7qz9-00-a3f2", "max_hlc: 0swkd7qz6-00-a3f2");
 
     let once = notes_sync::render::render(&accepted(&source)).expect("render");
     let text = String::from_utf8(once.clone()).expect("utf-8");
@@ -655,15 +856,19 @@ fn escaped(value: &str) -> String {
         .collect()
 }
 
-/// §5.3's third row: a `ya:` token this version has no meaning for belongs to
+/// §5.3's third row: a footer token this version has no meaning for belongs to
 /// whoever wrote it. Without a place to keep it, reading a newer device's file
-/// and writing it back would silently strip the value.
+/// and writing it back would silently strip the value. A picture's own tokens sit
+/// on the same line now, so the unknown ones have to come back behind them.
 #[test]
-fn an_unknown_ya_token_survives_a_parse_render_round_trip() {
-    let source = page(
+fn an_unknown_footer_token_survives_a_parse_render_round_trip() {
+    let source = page_with_footer(
         "- ![shot.png](assets/shot-9f3a1c8e2044.png) \
-         <!-- ya: w: 320 px: 10x10 bytes: 4 focus: 0\\.5x0\\.3 lossless --> \
-         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 -->\n",
+         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        &[
+            "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 \
+             w: 320 px: 10x10 bytes: 4 focus: 0\\.5x0\\.3 lossless",
+        ],
     );
 
     let once = notes_sync::render::render(&accepted(&source)).expect("render");
@@ -685,10 +890,13 @@ fn an_image_line_outside_the_formats_bounds_quarantines() {
         "w: 320 px: 10x10 bytes: 0",
         "w: 320 px: 10x10 bytes: 20971521",
     ] {
-        let source = page(&format!(
-            "- ![shot.png](assets/shot-9f3a1c8e2044.png) <!-- ya: {metadata} --> \
-             <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 -->\n"
-        ));
+        let source = page_with_footer(
+            "- ![shot.png](assets/shot-9f3a1c8e2044.png) \
+             <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+            &[&format!(
+                "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 {metadata}"
+            )],
+        );
 
         assert!(
             parse(source.as_bytes()).is_err(),
@@ -699,9 +907,13 @@ fn an_image_line_outside_the_formats_bounds_quarantines() {
 
 #[test]
 fn an_image_with_an_unreadable_extension_quarantines() {
-    let source = page(
-        "- ![shot.bmp](assets/shot-9f3a1c8e2044.bmp) <!-- ya: w: 320 px: 10x10 bytes: 4 --> \
-         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 -->\n",
+    let source = page_with_footer(
+        "- ![shot.bmp](assets/shot-9f3a1c8e2044.bmp) \
+         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        &[
+            "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 \
+             w: 320 px: 10x10 bytes: 4",
+        ],
     );
 
     assert!(parse(source.as_bytes()).is_err());
@@ -713,8 +925,13 @@ fn an_image_with_an_unreadable_extension_quarantines() {
 /// over bytes it has. The file already says what the file is called.
 #[test]
 fn an_image_line_with_no_alt_takes_its_file_name() {
-    let parsed = nodes(&page(
-        "- ![](assets/shot-9f3a1c8e2044.png) <!-- ya: w: 320 px: 10x10 bytes: 4 -->\n",
+    let parsed = nodes(&page_with_footer(
+        "- ![](assets/shot-9f3a1c8e2044.png) \
+         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        &[
+            "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 \
+             w: 320 px: 10x10 bytes: 4",
+        ],
     ));
 
     let NodeBody::Image(image) = &parsed[0].body else {
@@ -812,8 +1029,9 @@ proptest::proptest! {
 /// this one character.
 #[test]
 fn a_title_that_begins_like_an_image_survives_instead_of_quarantining() {
-    let VaultFile::Page(mut document) = accepted(&page(
-        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 -->\n",
+    let VaultFile::Page(mut document) = accepted(&page_with_footer(
+        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2"],
     )) else {
         panic!("a page");
     };
@@ -848,8 +1066,9 @@ fn a_bullet_whose_text_begins_with_a_checkbox_keeps_it() {
         "[X] milk",
         "[ ] [ ] milk",
     ] {
-        let VaultFile::Page(mut document) = accepted(&page(
-            "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 -->\n",
+        let VaultFile::Page(mut document) = accepted(&page_with_footer(
+            "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+            &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2"],
         )) else {
             panic!("a page");
         };
@@ -887,8 +1106,9 @@ fn a_bullet_whose_text_begins_with_a_checkbox_keeps_it() {
 #[test]
 fn a_note_that_opens_with_a_blank_line_keeps_it() {
     for typed in ["\n뒤에 온 줄", "\n", "\n\n", "앞\n\n뒤"] {
-        let VaultFile::Page(mut document) = accepted(&page(
-            "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 -->\n",
+        let VaultFile::Page(mut document) = accepted(&page_with_footer(
+            "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+            &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2"],
         )) else {
             panic!("a page");
         };

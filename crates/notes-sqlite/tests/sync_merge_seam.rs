@@ -80,7 +80,6 @@ fn page_with_image(disk_name: &str) -> VaultFile {
         pixel_width: 800,
         pixel_height: 600,
         byte_size: 11,
-        unknown_tokens: Vec::new(),
     });
     VaultFile::Page(PageDocument {
         id: DocumentId::Node(PAGE_ID.to_owned()),

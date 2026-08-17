@@ -1541,12 +1541,14 @@ fn write_image(
 }
 
 /// Tokens this version has no meaning for, in the order they were read.
+///
+/// One list now, where a picture used to add a second one from its own comment.
+/// The joined string is the same either way and it has to be: `content_of_file`
+/// hashes it, so a different spelling of the same unknown tokens would read as
+/// an edit on every device that met it. The footer writes a picture's own facts
+/// before the tokens it cannot name, so file order and this order agree.
 fn extras_of(entry: &Incoming<'_>) -> String {
-    let mut tokens: Vec<String> = entry.node.unknown_tokens.clone();
-    if let NodeBody::Image(image) = &entry.node.body {
-        tokens.extend(image.unknown_tokens.iter().cloned());
-    }
-    tokens.join(" ")
+    entry.node.unknown_tokens.join(" ")
 }
 
 /// Which picture a line is about, named the one way both sides can say it. A

@@ -112,10 +112,6 @@ pub struct ImageReference {
     pub pixel_width: u32,
     pub pixel_height: u32,
     pub byte_size: u64,
-    /// `ya:` tokens this version has no meaning for, kept in the order they
-    /// were read and re-emitted after the known ones — same contract as a node
-    /// comment's, since the same reader rule cuts them.
-    pub unknown_tokens: Vec<String>,
 }
 
 /// Deletions are evidence, not absence: a node is gone because it is written

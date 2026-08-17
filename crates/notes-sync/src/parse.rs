@@ -10,7 +10,7 @@ use crate::document::{
     TrashDocument, VaultFile,
 };
 use crate::hlc::Hlc;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use uuid::Uuid;
 
 pub const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
@@ -61,12 +61,72 @@ pub fn parse(bytes: &[u8]) -> Result<VaultFile, Quarantine> {
     }
 
     let keys = read_frontmatter(&frontmatter)?;
+    let (body, footer) = split_footer(&body)?;
     match keys.get("kind").map(String::as_str) {
-        Some("yonalist-notes") => parse_page(&keys, &body),
-        Some("yonalist-trash") => parse_trash(&keys, &body),
+        Some("yonalist-notes") => parse_page(&keys, &body, footer),
+        Some("yonalist-trash") => parse_trash(&keys, &body, footer),
         Some(other) => Err(format!("`{other}` is not a kind this app writes.")),
         None => Err("The frontmatter has no kind.".to_owned()),
     }
+}
+
+/// What a block states, keyed by the block. The body says which line is which
+/// block and this says what that block holds.
+type Footer = BTreeMap<String, Tokens>;
+
+/// Cuts the footer out of the body, wherever it sits.
+///
+/// The renderer always writes it last. The reader deliberately does not insist on
+/// that: appending a line to the end of a file is the most ordinary hand edit
+/// there is, and a person doing it in a Markdown editor has no reason to know
+/// that a comment down there is load-bearing. So whatever is left once the block
+/// is cut out is the body, in the order it was written, and the next export puts
+/// the footer back at the end. Refusing instead would quarantine a whole document
+/// over one line somebody typed in the obvious place.
+///
+/// There is exactly one footer. A file with none is accepted — every node then
+/// reads as unstamped, which is the rule a single line with its `t:` deleted
+/// already gets, widened to a whole document: that file loses to the database and
+/// the next export writes the canonical form back. What is malformed is refused
+/// whole, because a footer half-read hands some blocks somebody else's state.
+fn split_footer<'a>(body: &[&'a str]) -> Result<(Vec<&'a str>, Footer), Quarantine> {
+    const OPEN: &str = "<!-- yonalist";
+    let opens: Vec<usize> = body
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| **line == OPEN)
+        .map(|(index, _)| index)
+        .collect();
+    if opens.len() > 1 {
+        return Err("The file holds more than one footer.".to_owned());
+    }
+    let Some(open) = opens.first().copied() else {
+        return Ok((body.to_vec(), Footer::new()));
+    };
+    let close = body[open..]
+        .iter()
+        .position(|line| *line == "-->")
+        .map(|offset| open + offset)
+        .ok_or_else(|| "The footer is never closed.".to_owned())?;
+
+    let mut footer = Footer::new();
+    for line in &body[open + 1..close] {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let tokens = read_token_words(line)?;
+        if tokens.id.is_empty() {
+            return Err(format!(
+                "A footer line does not say which block it is about: `{line}`"
+            ));
+        }
+        if footer.insert(tokens.id.clone(), tokens).is_some() {
+            return Err(format!("The footer states `{line}` twice."));
+        }
+    }
+    let mut rest = body[..open].to_vec();
+    rest.extend_from_slice(&body[close + 1..]);
+    Ok((rest, footer))
 }
 
 /// Everything this version understands, in the order §4.2 fixes. Anything else
@@ -128,7 +188,7 @@ fn read_frontmatter(lines: &[&str]) -> Result<Frontmatter, Quarantine> {
     Ok(Frontmatter { known, unknown })
 }
 
-fn parse_page(keys: &Frontmatter, body: &[&str]) -> Result<VaultFile, Quarantine> {
+fn parse_page(keys: &Frontmatter, body: &[&str], footer: Footer) -> Result<VaultFile, Quarantine> {
     require_format_version(keys)?;
     let id = match keys.get("id").map(String::as_str) {
         Some("root") => DocumentId::Home,
@@ -183,7 +243,7 @@ fn parse_page(keys: &Frontmatter, body: &[&str]) -> Result<VaultFile, Quarantine
         starred: flag(keys, "root_starred")?,
     };
 
-    let mut reader = NodeReader::new(false);
+    let mut reader = NodeReader::new(false, footer);
     let nodes = reader.read(body)?;
     if let DocumentId::Node(id) = &id
         && reader.ids.contains(&id.to_ascii_lowercase())
@@ -207,12 +267,12 @@ fn parse_page(keys: &Frontmatter, body: &[&str]) -> Result<VaultFile, Quarantine
     }))
 }
 
-fn parse_trash(keys: &Frontmatter, body: &[&str]) -> Result<VaultFile, Quarantine> {
+fn parse_trash(keys: &Frontmatter, body: &[&str], footer: Footer) -> Result<VaultFile, Quarantine> {
     require_format_version(keys)?;
     if keys.get("id").is_some() {
         return Err("The trash does not have an id.".to_owned());
     }
-    let mut reader = NodeReader::new(true);
+    let mut reader = NodeReader::new(true, footer);
     let nodes = reader.read(body.iter().peekable())?;
     let max_hlc = highest_hlc(&nodes);
     Ok(VaultFile::Trash(TrashDocument { max_hlc, nodes }))
@@ -251,14 +311,16 @@ fn flag(keys: &Frontmatter, key: &str) -> Result<bool, Quarantine> {
 
 struct NodeReader {
     trash: bool,
+    footer: Footer,
     ids: HashSet<String>,
     count: usize,
 }
 
 impl NodeReader {
-    fn new(trash: bool) -> Self {
+    fn new(trash: bool, footer: Footer) -> Self {
         Self {
             trash,
+            footer,
             ids: HashSet::new(),
             count: 0,
         }
@@ -303,7 +365,7 @@ impl NodeReader {
                 field_fits(&open.note, "note")?;
                 continue;
             }
-            let Some(node_line) = read_node_line(rest, self.trash)? else {
+            let Some(node_line) = read_node_line(rest, self.trash, &self.footer)? else {
                 return Err(format!("This line is not part of the grammar: `{line}`"));
             };
             // Deeper than the line above allows is a hand edit, not a hierarchy:
@@ -357,7 +419,11 @@ fn split_indentation(line: &str) -> (usize, &str) {
     (columns / 2, rest)
 }
 
-fn read_node_line(rest: &str, trash: bool) -> Result<Option<DocumentNode>, Quarantine> {
+fn read_node_line(
+    rest: &str,
+    trash: bool,
+    footer: &Footer,
+) -> Result<Option<DocumentNode>, Quarantine> {
     let (prefix_marker, prefix_completed, body) = if let Some(body) = rest.strip_prefix("- [ ] ") {
         (Some(Marker::Todo), false, body)
     } else if let Some(body) = rest.strip_prefix("- [x] ") {
@@ -369,20 +435,25 @@ fn read_node_line(rest: &str, trash: bool) -> Result<Option<DocumentNode>, Quara
     };
 
     let (body, comment) = split_trailing_comment(body);
-    let tokens = read_tokens(comment)?;
+    // The line names the block and the footer says what it holds. A line whose
+    // block the footer never mentions reads as unstamped with everything at its
+    // default, which is what a hand editor leaves behind and what the next
+    // export writes back into shape.
+    let line = read_tokens(comment)?;
+    let tokens = footer.get(&line.id).cloned().unwrap_or_default();
 
     let mut node = DocumentNode {
-        id: tokens.id,
-        hlc: tokens.hlc,
+        id: line.id,
+        hlc: tokens.hlc.clone(),
         body: NodeBody::Text(String::new()),
         note: String::new(),
         marker: prefix_marker.unwrap_or(tokens.marker),
         collapsed: tokens.collapsed,
         completed: prefix_completed || tokens.completed,
         starred: tokens.starred,
-        from: tokens.from,
-        place: tokens.place,
-        unknown_tokens: tokens.unknown,
+        from: tokens.from.clone(),
+        place: tokens.place.clone(),
+        unknown_tokens: tokens.unknown.clone(),
         children: Vec::new(),
     };
     if node.from.is_some() && !trash {
@@ -400,7 +471,7 @@ fn read_node_line(rest: &str, trash: bool) -> Result<Option<DocumentNode>, Quara
         node.collapsed = false;
         NodeBody::Split { title, path }
     } else if body.starts_with("![") {
-        NodeBody::Image(read_image(body)?)
+        NodeBody::Image(read_image(body, &tokens)?)
     } else {
         let text = unescape_inline(body);
         field_fits(&text, "text")?;
@@ -435,7 +506,7 @@ fn split_trailing_comment(line: &str) -> (&str, &str) {
     (&line[..separator], candidate)
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Tokens {
     id: String,
     hlc: String,
@@ -446,6 +517,11 @@ struct Tokens {
     split: bool,
     from: Option<(String, i64)>,
     place: Option<(String, String)>,
+    /// A picture's own facts. They used to sit in a second comment on the line;
+    /// now they are three more tokens on the block's footer line.
+    display_width: Option<u32>,
+    pixels: Option<(u32, u32)>,
+    byte_size: Option<u64>,
     unknown: Vec<String>,
 }
 
@@ -459,6 +535,13 @@ fn read_tokens(comment: &str) -> Result<Tokens, Quarantine> {
     else {
         return Ok(Tokens::default());
     };
+    read_token_words(inner)
+}
+
+/// The same grammar without the comment around it, because a footer line is the
+/// same tokens with nothing wrapping them. One reader, so the two can never
+/// disagree about what a token means.
+fn read_token_words(inner: &str) -> Result<Tokens, Quarantine> {
     let mut tokens = Tokens::default();
     let mut seen: Vec<&str> = Vec::new();
     let mut words = inner.split_whitespace().peekable();
@@ -525,6 +608,21 @@ fn read_tokens(comment: &str) -> Result<Tokens, Quarantine> {
                 once("collapsed")?;
                 tokens.collapsed = true;
             }
+            "w:" => {
+                once("w")?;
+                tokens.display_width = words.next().and_then(|value| value.parse().ok());
+            }
+            "px:" => {
+                once("px")?;
+                tokens.pixels = words.next().and_then(|value| {
+                    let (width, height) = value.split_once('x')?;
+                    Some((width.parse().ok()?, height.parse().ok()?))
+                });
+            }
+            "bytes:" => {
+                once("bytes")?;
+                tokens.byte_size = words.next().and_then(|value| value.parse().ok());
+            }
             "from:" => {
                 once("from")?;
                 let value = words.next().unwrap_or_default();
@@ -562,63 +660,37 @@ fn read_link(body: &str) -> Option<(String, String)> {
     Some((title, path.to_owned()))
 }
 
-fn read_image(body: &str) -> Result<ImageReference, Quarantine> {
-    let (body, comment) = body
-        .rsplit_once(" <!--")
-        .map(|(head, tail)| (head, format!("<!--{tail}")))
-        .ok_or_else(|| format!("An image line has no metadata: `{body}`"))?;
-    let comment = comment.trim_end();
+/// A picture's link, and its own facts taken from the block's footer line.
+///
+/// The line used to carry a second comment of its own. It does not any more, so
+/// a picture whose footer entry is missing has nothing a row could be built
+/// from — and this refuses rather than inventing a size. It is the same answer
+/// the reader has always given a picture line with no metadata on it.
+fn read_image(body: &str, tokens: &Tokens) -> Result<ImageReference, Quarantine> {
     let (name, path) = read_link(body.strip_prefix('!').unwrap_or(body))
         .ok_or_else(|| format!("An image line is not a link: `{body}`"))?;
     check_asset_path(&path)?;
 
-    let inner = comment
-        .strip_prefix("<!-- ya:")
-        .and_then(|rest| rest.strip_suffix("-->"))
-        .ok_or_else(|| format!("An image line has no metadata: `{comment}`"))?;
-    let mut width = None;
-    let mut pixels = None;
-    let mut bytes = None;
-    // Same rule as a node comment: only a token ending in `:` takes the next
-    // word. Pairing every two words would let one unknown flag shift every
-    // token after it out of place.
-    let mut unknown = Vec::new();
-    let mut words = inner.split_whitespace();
-    while let Some(word) = words.next() {
-        if !word.ends_with(':') {
-            unknown.push(word.to_owned());
-            continue;
-        }
-        let value = words.next().unwrap_or_default();
-        match word {
-            "w:" => width = value.parse::<u32>().ok(),
-            "px:" => {
-                pixels = value
-                    .split_once('x')
-                    .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
-            }
-            "bytes:" => bytes = value.parse::<u64>().ok(),
-            _ => {
-                unknown.push(word.to_owned());
-                unknown.push(value.to_owned());
-            }
-        }
-    }
-    let (pixel_width, pixel_height) =
-        pixels.ok_or_else(|| "An image line has no pixel size.".to_owned())?;
+    let (pixel_width, pixel_height) = tokens
+        .pixels
+        .ok_or_else(|| format!("An image line has no pixel size: `{path}`"))?;
     // The bounds are facts about the format, so they are answered here, where a
     // refusal is a quarantine with a reason — not later, where the same file
     // would die on a database constraint with nothing to tell the user.
     if pixel_width == 0 || pixel_height == 0 {
         return Err(format!("`{path}` states no pixels."));
     }
-    let display_width = width.ok_or_else(|| "An image line has no width.".to_owned())?;
+    let display_width = tokens
+        .display_width
+        .ok_or_else(|| format!("An image line has no width: `{path}`"))?;
     if display_width < MIN_DISPLAY_WIDTH {
         return Err(format!(
             "A display width of {display_width} is under the {MIN_DISPLAY_WIDTH} minimum."
         ));
     }
-    let byte_size = bytes.ok_or_else(|| "An image line has no byte size.".to_owned())?;
+    let byte_size = tokens
+        .byte_size
+        .ok_or_else(|| format!("An image line has no byte size: `{path}`"))?;
     if byte_size == 0 || byte_size > MAX_ASSET_BYTES {
         return Err(format!(
             "An asset of {byte_size} bytes is not one this app writes."
@@ -646,7 +718,6 @@ fn read_image(body: &str) -> Result<ImageReference, Quarantine> {
         pixel_width,
         pixel_height,
         byte_size,
-        unknown_tokens: unknown,
     })
 }
 

@@ -49,7 +49,6 @@ fn page() -> PageDocument {
         pixel_width: 1280,
         pixel_height: 720,
         byte_size: 421_904,
-        unknown_tokens: Vec::new(),
     });
     architecture.children = vec![boundaries, diagram];
 
@@ -221,17 +220,27 @@ fn a_completed_todo_says_so_with_its_checkbox_alone() {
     );
     plain.completed = true;
 
-    let rendered = rendered_lines(vec![errand, plain]);
+    let (body, footer) = rendered_parts(vec![errand, plain]);
 
     assert!(
-        rendered[0].starts_with("- [x] Errand <!--") && !rendered[0].contains(" done"),
+        body[0].starts_with("- [x] Errand <!--"),
         "a completed todo reads once, as a checked box: {}",
-        rendered[0]
+        body[0]
     );
     assert!(
-        rendered[1].starts_with("- Plain <!--") && rendered[1].contains(" done"),
-        "a completed bullet has no checkbox, so the token carries it: {}",
-        rendered[1]
+        !footer[0].contains(" done"),
+        "and the footer does not say the same bit a second time: {}",
+        footer[0]
+    );
+    assert!(
+        body[1].starts_with("- Plain <!--") && !body[1].contains(" done"),
+        "a completed bullet has no checkbox to draw: {}",
+        body[1]
+    );
+    assert!(
+        footer[1].contains(" done"),
+        "so its footer line is the one place that carries it: {}",
+        footer[1]
     );
 }
 
@@ -254,12 +263,17 @@ fn a_split_line_carries_no_state_of_its_own() {
     archive.completed = true;
     archive.marker = Marker::Todo;
 
-    let rendered = rendered_lines(vec![archive]);
+    let (body, footer) = rendered_parts(vec![archive]);
 
     assert_eq!(
-        rendered[0],
+        body[0],
         "- [2024 아카이브](2024-아카이브-9d3f21b8c440/README.md) \
-<!-- yid: 9d3f21b8-c440-4c91-8d02-2e77a05fb163 t: 0swkd7qzd-00-a3f2 split -->"
+<!-- yid: 9d3f21b8-c440-4c91-8d02-2e77a05fb163 -->"
+    );
+    assert_eq!(
+        footer[0], "yid: 9d3f21b8-c440-4c91-8d02-2e77a05fb163 t: 0swkd7qzd-00-a3f2 split",
+        "the stamp and `split` are the whole of it: the star, the checkbox and the \
+         fold the state above set are the child document's to answer"
     );
 }
 
@@ -293,15 +307,15 @@ fn ordinary_punctuation_reaches_the_file_unescaped() {
     );
     plain.note = "값이 3.5 이상, 또는 a*b 꼴이면 skip_this_one 처리".to_owned();
 
-    let rendered = rendered_lines(vec![plain]);
+    let (body, _) = rendered_parts(vec![plain]);
 
     assert_eq!(
-        rendered[0],
+        body[0],
         "- Shift+Enter — 설명 입력하기. 자세히는 docs/v2/sync-spec.md 참고 (2026). \
-<!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 -->"
+<!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->"
     );
     assert_eq!(
-        rendered[1], "  > 값이 3.5 이상, 또는 a*b 꼴이면 skip_this_one 처리",
+        body[1], "  > 값이 3.5 이상, 또는 a*b 꼴이면 skip_this_one 처리",
         "a note is prose, and prose is what a reader came for"
     );
 }
@@ -337,14 +351,14 @@ fn only_what_would_open_a_block_keeps_its_backslash() {
     ];
 
     for (typed, expected, why) in cases {
-        let rendered = rendered_lines(vec![node(
+        let (body, _) = rendered_parts(vec![node(
             "8a201f33-0000-4c91-8d02-000000000001",
             "0swkd7qz6-00-a3f2",
             typed,
         )]);
 
         assert_eq!(
-            rendered[0]
+            body[0]
                 .strip_prefix("- ")
                 .expect("a bullet")
                 .split(" <!--")
@@ -356,17 +370,83 @@ fn only_what_would_open_a_block_keeps_its_backslash() {
     }
 }
 
-fn rendered_lines(nodes: Vec<DocumentNode>) -> Vec<String> {
+/// The body lines and the footer entries, apart. A test about *where* a fact is
+/// written needs both halves, and the halves are what the format now separates.
+fn rendered_parts(nodes: Vec<DocumentNode>) -> (Vec<String>, Vec<String>) {
     let mut document = page();
     document.root.note = String::new();
     document.nodes = nodes;
     let rendered =
         String::from_utf8(render(&VaultFile::Page(document)).expect("render")).expect("utf-8");
-    rendered
+    let (body, footer) = rendered
         .split_once("\n\n")
         .expect("body")
         .1
-        .lines()
-        .map(str::to_owned)
-        .collect()
+        .split_once("<!-- yonalist\n")
+        .expect("footer");
+    (
+        body.lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        footer
+            .trim_end()
+            .strip_suffix("-->")
+            .expect("a closed footer")
+            .lines()
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+/// A2. The body carries one thing per line: which block the line is. Everything
+/// the sync needs in order to merge — the stamp, the place claim, the states
+/// Markdown has no notation for, a picture's dimensions — moves to one block at
+/// the end of the file, where a reader who came for the notes never has to look.
+#[test]
+fn a_body_line_carries_its_block_id_and_nothing_else() {
+    for (name, bytes) in [
+        ("page", include_str!("../fixtures/page.md")),
+        ("home", include_str!("../fixtures/home.md")),
+        ("split", include_str!("../fixtures/split.md")),
+        ("trash", include_str!("../fixtures/trash.md")),
+    ] {
+        let (body, footer) = bytes
+            .split_once("\n<!-- yonalist\n")
+            .unwrap_or_else(|| panic!("{name} has no footer"));
+
+        for line in body.lines() {
+            let Some((_, comment)) = line.split_once("<!--") else {
+                continue;
+            };
+            assert!(
+                comment.starts_with(" yid: ") && comment.ends_with(" -->"),
+                "{name}: a body line says more than which block it is: {line}"
+            );
+            assert_eq!(
+                comment.split_whitespace().count(),
+                3,
+                "{name}: the id is the whole comment: {line}"
+            );
+        }
+        for token in [
+            " t: ",
+            " prev: ",
+            " from: ",
+            " star",
+            " done",
+            " collapsed",
+            " ordered: ",
+            "<!-- ya:",
+        ] {
+            assert!(
+                !body.contains(token),
+                "{name}: `{token}` is still in the body"
+            );
+        }
+        assert!(
+            footer.trim_end().ends_with("-->"),
+            "{name}: the footer is not closed"
+        );
+    }
 }

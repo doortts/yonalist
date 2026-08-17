@@ -68,11 +68,13 @@ fn render_page(document: &PageDocument) -> Result<Vec<u8>, String> {
     render_note(&mut out, &document.root.note, 0);
     out.push('\n');
 
+    let mut footer = Vec::new();
     let mut previous = String::new();
     for node in &document.nodes {
-        render_node(&mut out, node, 0, &previous)?;
+        render_node(&mut out, &mut footer, node, 0, &previous)?;
         previous = node.id.clone();
     }
+    push_footer(&mut out, &footer);
     Ok(out.into_bytes())
 }
 
@@ -128,16 +130,19 @@ fn render_trash(document: &TrashDocument) -> Result<Vec<u8>, String> {
     let _ = writeln!(out, "max_hlc: {max_hlc}");
     let _ = writeln!(out, "updated: {}", readable(&max_hlc)?);
     out.push_str("---\n");
+    let mut footer = Vec::new();
     let mut previous = String::new();
     for node in &document.nodes {
-        render_node(&mut out, node, 0, &previous)?;
+        render_node(&mut out, &mut footer, node, 0, &previous)?;
         previous = node.id.clone();
     }
+    push_footer(&mut out, &footer);
     Ok(out.into_bytes())
 }
 
 fn render_node(
     out: &mut String,
+    footer: &mut Vec<String>,
     node: &DocumentNode,
     depth: usize,
     implied_previous: &str,
@@ -165,13 +170,14 @@ fn render_node(
             format!("[{}]({path})", escape_inline(title, At::LinkLabel))
         }
     };
-    let comment = render_comment(node, implied_previous)?;
+    let comment = render_comment(node)?;
+    footer.push(footer_entry(node, implied_previous)?);
     let _ = writeln!(out, "{indentation}{prefix}{body} {comment}");
 
     render_note(out, &node.note, depth + 1);
     let mut previous = String::new();
     for child in &node.children {
-        render_node(out, child, depth + 1, &previous)?;
+        render_node(out, footer, child, depth + 1, &previous)?;
         previous = child.id.clone();
     }
     Ok(())
@@ -197,39 +203,51 @@ fn render_note(out: &mut String, note: &str, depth: usize) {
     }
 }
 
-/// Token order is fixed, and each token appears only when it applies. A split
-/// line carries no state tokens at all: the child document's frontmatter owns
-/// that state, and two authorities would make the merge order matter.
-fn render_comment(node: &DocumentNode, implied_previous: &str) -> Result<String, String> {
-    let mut comment = format!(
-        "<!-- yid: {} t: {}",
+/// All a body line says is which block it is. One space, one comment, and a
+/// reader looking for their notes never has to read past it.
+fn render_comment(node: &DocumentNode) -> Result<String, String> {
+    Ok(format!("<!-- yid: {} -->", canonical_uuid(&node.id)?))
+}
+
+/// One footer line for one block: the stamp, then whatever state Markdown has no
+/// notation for.
+///
+/// Token order is fixed and each token appears only when it applies, because two
+/// spellings of one state are two things for a merge to disagree about. A split
+/// line carries no state at all — the child document's frontmatter owns it, and
+/// two authorities would make the order the files merged in decide the answer.
+///
+/// `todo` is deliberately absent. The body draws `- [ ] ` and `- [x] `, and the
+/// reader already prefers the prefix over the token, so saying it twice would
+/// give one bit two places to disagree.
+fn footer_entry(node: &DocumentNode, implied_previous: &str) -> Result<String, String> {
+    let mut entry = format!(
+        "yid: {} t: {}",
         canonical_uuid(&node.id)?,
         required_hlc(&node.hlc, "node t")?
     );
     let split = matches!(node.body, NodeBody::Split { .. });
     if !split {
         if node.starred {
-            comment.push_str(" star");
+            entry.push_str(" star");
         }
         match node.marker {
-            Marker::Bullet => {}
-            Marker::Todo => comment.push_str(" todo"),
+            Marker::Bullet | Marker::Todo => {}
             Marker::Ordered(start) => {
-                let _ = write!(comment, " ordered: {start}");
+                let _ = write!(entry, " ordered: {start}");
             }
         }
         // A checkbox is the todo marker's notation, so a completed todo already
         // reads as `- [x]`. Anything else completed says so here instead.
         if node.completed && node.marker != Marker::Todo {
-            comment.push_str(" done");
+            entry.push_str(" done");
         }
     }
     if split {
-        comment.push_str(" split");
+        entry.push_str(" split");
     }
     // Omitted when it says only what the line order already says: a document in
-    // creation order renders exactly as it did before this token existed, which
-    // is what lets the format version stay where it is.
+    // creation order writes exactly what it did before this token existed.
     if let Some((previous, claim)) = &node.place
         // An empty claim stamp means nothing has claimed this node's place yet,
         // which the line order already says.
@@ -241,7 +259,7 @@ fn render_comment(node: &DocumentNode, implied_previous: &str) -> Result<String,
         } else {
             canonical_uuid(previous)?
         };
-        let _ = write!(comment, " prev: {previous}@{claim}");
+        let _ = write!(entry, " prev: {previous}@{claim}");
     }
     if let Some((parent, sort_key)) = &node.from {
         let parent = if parent == "root" {
@@ -249,17 +267,40 @@ fn render_comment(node: &DocumentNode, implied_previous: &str) -> Result<String,
         } else {
             canonical_uuid(parent)?
         };
-        let _ = write!(comment, " from: {parent}@{sort_key}");
+        let _ = write!(entry, " from: {parent}@{sort_key}");
     }
     if !split && node.collapsed {
-        comment.push_str(" collapsed");
+        entry.push_str(" collapsed");
+    }
+    // A picture's own facts. They used to sit in a second comment on the line;
+    // here they are three more tokens on the block's one line.
+    if let NodeBody::Image(image) = &node.body {
+        let _ = write!(
+            entry,
+            " w: {} px: {}x{} bytes: {}",
+            image.display_width, image.pixel_width, image.pixel_height, image.byte_size
+        );
     }
     for token in &node.unknown_tokens {
-        comment.push(' ');
-        comment.push_str(token);
+        entry.push(' ');
+        entry.push_str(token);
     }
-    comment.push_str(" -->");
-    Ok(comment)
+    Ok(entry)
+}
+
+/// The block at the end of the file. Written even when the document holds no
+/// nodes: one shape means neither the renderer nor the reader needs a branch for
+/// the empty case.
+fn push_footer(out: &mut String, entries: &[String]) {
+    if !out.ends_with("\n\n") {
+        out.push('\n');
+    }
+    out.push_str("<!-- yonalist\n");
+    for entry in entries {
+        out.push_str(entry);
+        out.push('\n');
+    }
+    out.push_str("-->\n");
 }
 
 fn render_image(image: &ImageReference) -> Result<String, String> {
@@ -267,17 +308,8 @@ fn render_image(image: &ImageReference) -> Result<String, String> {
     if image.path.is_empty() {
         return Err("A rendered image needs a path.".to_owned());
     }
-    let mut comment = format!(
-        "<!-- ya: w: {} px: {}x{} bytes: {}",
-        image.display_width, image.pixel_width, image.pixel_height, image.byte_size
-    );
-    for token in &image.unknown_tokens {
-        comment.push(' ');
-        comment.push_str(token);
-    }
-    comment.push_str(" -->");
     Ok(format!(
-        "![{}]({}) {comment}",
+        "![{}]({})",
         escape_inline(&image.original_name, At::LinkLabel),
         image.path
     ))

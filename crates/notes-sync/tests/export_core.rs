@@ -430,8 +430,9 @@ fn the_home_index_lists_every_page_as_a_split_line() {
         "{file}"
     );
     assert!(
-        file.contains("split -->"),
-        "a page's own file owns its state: {file}"
+        file.lines()
+            .any(|line| line.starts_with(&format!("yid: {PAGE_ID} ")) && line.ends_with(" split")),
+        "a page's own file owns its state, so the index says only that the line is one: {file}"
     );
     assert!(
         !file.contains("Thought"),

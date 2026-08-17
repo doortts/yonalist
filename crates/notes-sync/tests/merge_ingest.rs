@@ -713,7 +713,6 @@ fn picture(id: &str, hlc: &str) -> DocumentNode {
         pixel_width: 1280,
         pixel_height: 720,
         byte_size: 421_904,
-        unknown_tokens: Vec::new(),
     });
     picture
 }
@@ -2568,7 +2567,6 @@ fn a_resolved_picture_replayed_is_not_an_edit() {
         pixel_width: 1280,
         pixel_height: 720,
         byte_size: 421_904,
-        unknown_tokens: Vec::new(),
     });
     let file = notes_sync::document::VaultFile::Page(page(vec![picture], &stamp(5, DEVICE)));
     merge_document(&transaction, &clock(), &file, &input()).expect("first");
@@ -2623,7 +2621,6 @@ fn a_picture_whose_bytes_are_known_lands_in_domain_form() {
         pixel_width: 1280,
         pixel_height: 720,
         byte_size: 421_904,
-        unknown_tokens: Vec::new(),
     });
     let file = notes_sync::document::VaultFile::Page(page(vec![picture], &stamp(5, DEVICE)));
 
@@ -2700,7 +2697,6 @@ fn page_with_picture(link: &str) -> notes_sync::document::VaultFile {
         pixel_width: 1280,
         pixel_height: 720,
         byte_size: 421_904,
-        unknown_tokens: Vec::new(),
     });
     notes_sync::document::VaultFile::Page(page(vec![picture], &stamp(5, DEVICE)))
 }

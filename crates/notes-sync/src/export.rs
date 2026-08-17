@@ -727,7 +727,6 @@ fn image_of(
         pixel_width: row.get::<_, i64>("pixel_width")? as u32,
         pixel_height: row.get::<_, i64>("pixel_height")? as u32,
         byte_size: row.get::<_, i64>("byte_length")? as u64,
-        unknown_tokens: Vec::new(),
     })
 }
 

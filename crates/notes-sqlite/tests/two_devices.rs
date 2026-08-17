@@ -1377,11 +1377,15 @@ fn an_edited_echo_keeps_the_row_in_domain_form() {
     settle(&one, &two);
 
     let file = page_file(&one, &page);
+    // The stamp and the width now sit together on the picture's own footer line,
+    // so this is the same edit stated where the format states it: push the stamp
+    // into the future — which is what a genuinely later change looks like — and
+    // narrow the width in the same breath.
     let echoed = std::fs::read_to_string(&file)
         .expect("read")
         .lines()
         .map(|line| {
-            if !line.contains("![") {
+            if !line.starts_with("yid: ") || !line.contains(&format!("yid: {shot} ")) {
                 return line.to_owned();
             }
             let start = line.find(" t: ").expect("a stamp") + 4;
