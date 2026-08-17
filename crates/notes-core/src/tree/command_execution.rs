@@ -9,7 +9,13 @@ use crate::{
 use super::NotesTree;
 
 impl NotesTree {
-    pub(super) fn execute(&mut self, command: NotesCommand) -> Result<(), DomainError> {
+    /// `carried_pictures` collects what a duplicated node could not bring with
+    /// it; every command but a duplication leaves it alone.
+    pub(super) fn execute(
+        &mut self,
+        command: NotesCommand,
+        carried_pictures: &mut Vec<(NodeId, NodeId)>,
+    ) -> Result<(), DomainError> {
         match command {
             NotesCommand::Batch { commands } => {
                 if commands.is_empty() {
@@ -23,7 +29,7 @@ impl NotesTree {
                             "nested editor batches are not allowed".into(),
                         ));
                     }
-                    self.execute(command)?;
+                    self.execute(command, carried_pictures)?;
                 }
                 Ok(())
             }
@@ -115,7 +121,7 @@ impl NotesTree {
                 new_id,
                 parent_id,
                 position,
-            } => self.duplicate_node(source_id, new_id, parent_id, position),
+            } => self.duplicate_node(source_id, new_id, parent_id, position, carried_pictures),
             NotesCommand::DuplicateNodes { duplicates } => {
                 for duplicate in duplicates {
                     self.duplicate_node(
@@ -123,6 +129,7 @@ impl NotesTree {
                         duplicate.new_id,
                         duplicate.parent_id,
                         duplicate.position,
+                        carried_pictures,
                     )?;
                 }
                 Ok(())

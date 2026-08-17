@@ -9,10 +9,6 @@ pub const SORT_KEY_STEP: i64 = 4_294_967_296;
 /// out of sync.
 pub const MAX_FIELD_BYTES: usize = 100_000;
 
-/// Same reason as `MAX_FIELD_BYTES`, for the shape of the outline itself.
-pub const MAX_TREE_DEPTH: usize = 128;
-pub const MAX_TREE_NODES: usize = 20_000;
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NoteNodeKind {

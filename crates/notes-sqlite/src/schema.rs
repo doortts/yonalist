@@ -10,7 +10,15 @@ pub(crate) const ROOT_ID: &str = "root";
 /// Empty while the format is still moving: a schema change edits `create_schema`
 /// in place and development databases get regenerated. The ladder stays because
 /// the first release needs it; nothing rides it until then.
+/// A step that touches `notes_nodes` will need the HLC function registered
+/// first: the ladder runs inside `initialize`, before the worker builds the
+/// clock, so today a stamping trigger would fire with no `yona_hlc()` to call.
 type Migration = fn(&Transaction<'_>) -> Result<(), StorageError>;
+/// The one copy of the DDL. notes-sync's merge tests read the same file
+/// through `include_str!` — they need the real schema, and the architecture
+/// check forbids them depending on this crate, so a second copy would drift.
+pub const SCHEMA_SQL: &str = include_str!("schema.sql");
+
 const MIGRATIONS: &[Migration] = &[];
 const _: () = assert!(MIGRATIONS.len() as i64 + 1 == SCHEMA_VERSION);
 
@@ -110,7 +118,8 @@ pub(crate) fn initialize(connection: &mut Connection) -> Result<(), StorageError
             "unsupported Notes schema version {version}; expected {SCHEMA_VERSION}"
         )));
     }
-    migrate(connection, version, MIGRATIONS)
+    migrate(connection, version, MIGRATIONS)?;
+    matches_shipped_schema(connection)
 }
 
 fn migrate(
@@ -134,139 +143,115 @@ fn migrate(
 }
 
 fn create_schema(connection: &Connection) -> Result<(), StorageError> {
-    connection
-        .execute_batch(
-            "
-            BEGIN IMMEDIATE;
-            CREATE TABLE notes_meta (
-                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                revision INTEGER NOT NULL CHECK (revision >= 0)
-            ) STRICT;
-            INSERT INTO notes_meta(singleton, revision) VALUES (1, 0);
+    connection.execute_batch(SCHEMA_SQL).map_err(internal)
+}
 
-            CREATE TABLE notes_nodes (
-                id TEXT PRIMARY KEY NOT NULL,
-                parent_id TEXT,
-                sort_key INTEGER NOT NULL,
-                kind TEXT NOT NULL CHECK (kind IN ('page', 'bullet', 'image')),
-                text TEXT NOT NULL,
-                note TEXT NOT NULL DEFAULT '',
-                marker TEXT NOT NULL DEFAULT 'bullet'
-                    CHECK (marker IN ('bullet', 'todo', 'ordered')),
-                -- Only an `ordered` row reads this; every other marker leaves
-                -- it at the default rather than carrying a number nobody draws.
-                ordered_start INTEGER NOT NULL DEFAULT 1,
-                collapsed INTEGER NOT NULL DEFAULT 0
-                    CHECK (collapsed IN (0, 1)),
-                completed INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1)),
-                starred INTEGER NOT NULL DEFAULT 0 CHECK (starred IN (0, 1)),
-                deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
-                path TEXT,
-                FOREIGN KEY(parent_id) REFERENCES notes_nodes(id)
-                    DEFERRABLE INITIALLY DEFERRED,
-                CHECK (
-                    (kind = 'page' AND parent_id IS NULL) OR
-                    (kind IN ('bullet', 'image') AND parent_id IS NOT NULL)
-                )
-            ) STRICT;
-            CREATE INDEX notes_nodes_parent_order
-                ON notes_nodes(parent_id, deleted, sort_key, id);
-            CREATE INDEX notes_nodes_path ON notes_nodes(path);
+/// Development has no migrations and keeps no old databases: the schema is
+/// edited in place and the database is made again. So a development build
+/// makes it again itself, rather than asking someone to press reset — the
+/// notes live in the vault, and what the database holds it holds again the
+/// moment the folder is read.
+///
+/// A release build does no such thing. There the database is what somebody
+/// has, and throwing it away on a shape this build does not recognise is not
+/// a decision to make on their behalf: `initialize` refuses instead, and the
+/// message tells them what to do.
+#[cfg(debug_assertions)]
+pub(crate) fn remake_if_an_older_build_made_it(path: &std::path::Path) {
+    let Ok(connection) = Connection::open(path) else {
+        return;
+    };
+    if matches_shipped_schema(&connection).is_ok() {
+        return;
+    }
+    drop(connection);
+    eprintln!(
+        "This database was made by an older build; making it again. \
+         Development does not migrate — the notes are in the vault."
+    );
+    for suffix in ["", "-wal", "-shm"] {
+        let mut beside = path.as_os_str().to_owned();
+        beside.push(suffix);
+        let _ = std::fs::remove_file(std::path::PathBuf::from(beside));
+    }
+}
 
-            CREATE TABLE notes_images (
-                node_id TEXT PRIMARY KEY NOT NULL,
-                content_hash TEXT NOT NULL CHECK (
-                    length(content_hash) = 64 AND
-                    content_hash NOT GLOB '*[^0-9a-f]*'
-                ),
-                relative_path TEXT NOT NULL,
-                original_name TEXT NOT NULL,
-                mime_type TEXT NOT NULL CHECK (
-                    mime_type IN (
-                        'image/png', 'image/jpeg', 'image/gif', 'image/webp'
-                    )
-                ),
-                byte_length INTEGER NOT NULL
-                    CHECK (byte_length BETWEEN 1 AND 20971520),
-                pixel_width INTEGER NOT NULL CHECK (pixel_width > 0),
-                pixel_height INTEGER NOT NULL CHECK (pixel_height > 0),
-                display_width INTEGER NOT NULL CHECK (display_width >= 120),
-                FOREIGN KEY(node_id) REFERENCES notes_nodes(id) ON DELETE CASCADE
-            ) STRICT;
+#[cfg(not(debug_assertions))]
+pub(crate) fn remake_if_an_older_build_made_it(_path: &std::path::Path) {}
 
-            CREATE VIEW notes_node_records AS
-            SELECT
-                node.id,
-                node.parent_id,
-                node.sort_key,
-                node.kind,
-                node.text,
-                node.note,
-                node.marker,
-                node.collapsed,
-                node.completed,
-                node.starred,
-                node.deleted,
-                image.content_hash,
-                image.relative_path,
-                image.original_name,
-                image.mime_type,
-                image.byte_length,
-                image.pixel_width,
-                image.pixel_height,
-                image.display_width,
-                -- Last, so the image columns above keep the positions the row
-                -- mapping reads them at.
-                node.ordered_start
-            FROM notes_nodes node
-            LEFT JOIN notes_images image ON image.node_id = node.id;
+/// Refuses a database whose shape is not the one this build was written
+/// against.
+///
+/// Development does not migrate: the schema is edited in place and the
+/// development database is made again. That rule works — until an older file
+/// is opened by a newer build. The version says 1 and always will, every
+/// `CREATE TABLE` is skipped because the table is there, and the app comes up
+/// looking perfectly well. The first edit then dies on a column the file has
+/// never had, and the message names the column rather than the cause.
+///
+/// So the shapes are compared at open, and the answer is given before anything
+/// is typed. What the user does about it — a reset from the settings screen —
+/// is a sentence they can act on, which "no such column: sync_prev" is not.
+fn matches_shipped_schema(connection: &Connection) -> Result<(), StorageError> {
+    let shipped = Connection::open_in_memory().map_err(internal)?;
+    shipped.execute_batch(SCHEMA_SQL).map_err(internal)?;
+    let expected = shape(&shipped)?;
+    let found = shape(connection)?;
+    if let Some(difference) = expected
+        .iter()
+        .zip(found.iter())
+        .find(|(expected, found)| expected != found)
+        .map(|(expected, _)| expected.0.clone())
+        .or_else(|| {
+            expected
+                .len()
+                .ne(&found.len())
+                .then(|| {
+                    expected
+                        .iter()
+                        .find(|(name, _)| !found.iter().any(|(found, _)| found == name))
+                        .map(|(name, _)| name.clone())
+                })
+                .flatten()
+        })
+    {
+        return Err(StorageError::Internal(format!(
+            "This Notes database was made by an older build and cannot be used by \
+             this one — `{difference}` is not what this build expects. There is no \
+             upgrade for it yet: reset the Notes data from the settings screen, \
+             which makes the database again."
+        )));
+    }
+    Ok(())
+}
 
-            CREATE TABLE notes_tags (
-                node_id TEXT NOT NULL,
-                token TEXT NOT NULL,
-                display_tag TEXT NOT NULL,
-                PRIMARY KEY(node_id, token),
-                FOREIGN KEY(node_id) REFERENCES notes_nodes(id) ON DELETE CASCADE
-            ) STRICT;
-            CREATE INDEX notes_tags_token ON notes_tags(token, node_id);
-
-            CREATE TABLE notes_dates (
-                node_id TEXT NOT NULL,
-                date_key TEXT NOT NULL,
-                PRIMARY KEY(node_id, date_key),
-                FOREIGN KEY(node_id) REFERENCES notes_nodes(id) ON DELETE CASCADE
-            ) STRICT;
-            CREATE INDEX notes_dates_key ON notes_dates(date_key, node_id);
-
-            CREATE VIRTUAL TABLE notes_fts USING fts5(
-                node_id UNINDEXED,
-                text,
-                note,
-                tokenize = 'unicode61'
-            );
-            CREATE TRIGGER notes_fts_insert AFTER INSERT ON notes_nodes BEGIN
-                INSERT INTO notes_fts(node_id, text, note)
-                VALUES (new.id, new.text, new.note);
-            END;
-            CREATE TRIGGER notes_fts_update AFTER UPDATE OF text, note ON notes_nodes BEGIN
-                DELETE FROM notes_fts WHERE node_id = old.id;
-                INSERT INTO notes_fts(node_id, text, note)
-                VALUES (new.id, new.text, new.note);
-            END;
-            CREATE TRIGGER notes_fts_delete AFTER DELETE ON notes_nodes BEGIN
-                DELETE FROM notes_fts WHERE node_id = old.id;
-            END;
-
-            CREATE TABLE notes_ui_state (
-                key TEXT PRIMARY KEY NOT NULL,
-                value TEXT NOT NULL
-            ) STRICT;
-
-            PRAGMA user_version = 1;
-            COMMIT;
-            ",
+/// Every table, index, trigger and view the database holds, by name and by the
+/// statement that made it. Two databases with the same list are the same shape.
+fn shape(connection: &Connection) -> Result<Vec<(String, String)>, StorageError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT name, sql FROM sqlite_master
+             WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+             ORDER BY name",
         )
-        .map_err(internal)
+        .map_err(internal)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                // Whitespace is the formatter's, not the schema's.
+                row.get::<_, String>(1)?
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ))
+        })
+        .map_err(internal)?;
+    let mut shape = Vec::new();
+    for row in rows {
+        shape.push(row.map_err(internal)?);
+    }
+    Ok(shape)
 }
 
 fn internal(error: rusqlite::Error) -> StorageError {
@@ -275,6 +260,28 @@ fn internal(error: rusqlite::Error) -> StorageError {
 
 #[cfg(test)]
 mod tests {
+    /// A release build does not throw a database away: it is what somebody
+    /// has, and a shape this build does not recognise is not a reason to
+    /// decide that for them. The message is what they act on.
+    #[test]
+    fn a_database_from_an_older_build_is_refused_with_something_to_do() {
+        let older = SCHEMA_SQL.replace("    sync_prev TEXT NOT NULL DEFAULT '',\n", "");
+        assert_ne!(older, SCHEMA_SQL, "the column is named here");
+        let connection = Connection::open_in_memory().expect("in-memory db");
+        connection.execute_batch(&older).expect("older schema");
+
+        let refused = matches_shipped_schema(&connection);
+
+        let message = match refused {
+            Ok(()) => panic!("it passed, and the first edit is where the user finds out"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            message.contains("older build") && message.contains("reset"),
+            "the message has to say what happened and what to do: {message}"
+        );
+    }
+
     use super::*;
     use rusqlite::params;
 
@@ -291,6 +298,10 @@ mod tests {
     fn open() -> Connection {
         let mut connection = Connection::open_in_memory().expect("in-memory db");
         initialize(&mut connection).expect("schema");
+        // The stamping triggers call `yona_hlc()`, which is registered per
+        // connection; a writer without one cannot insert a row.
+        let clock = std::sync::Arc::new(notes_sync::hlc::Clock::new("c0de").expect("clock"));
+        notes_sync::hlc::register(&connection, clock).expect("register");
         connection
     }
 
@@ -336,12 +347,11 @@ mod tests {
         let mut statement = connection
             .prepare("SELECT step FROM marks ORDER BY rowid")
             .expect("prepare");
-        let marks = statement
+        statement
             .query_map([], |row| row.get(0))
             .expect("query")
             .collect::<Result<Vec<String>, _>>()
-            .expect("marks");
-        marks
+            .expect("marks")
     }
 
     fn mark(transaction: &Transaction<'_>, step: &str) -> Result<(), StorageError> {
@@ -381,7 +391,7 @@ mod tests {
                  ORDER BY sort_key, id",
             )
             .expect("prepare");
-        let rows = statement
+        statement
             .query_map([], |row| {
                 Ok(Row {
                     id: row.get(0)?,
@@ -394,8 +404,7 @@ mod tests {
             })
             .expect("query")
             .collect::<Result<Vec<_>, _>>()
-            .expect("rows");
-        rows
+            .expect("rows")
     }
 
     #[test]

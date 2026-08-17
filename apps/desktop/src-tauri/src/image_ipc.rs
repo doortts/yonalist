@@ -101,9 +101,11 @@ pub(crate) async fn notes_import_image_bytes(
     run_blocking(move || {
         let runtime = gate.wait()?;
         runtime.clear_initial_boot()?;
-        runtime
-            .service
-            .import_images(context, sources, runtime.assets.as_ref())
+        runtime.changed(
+            runtime
+                .service
+                .import_images(context, sources, runtime.assets.as_ref()),
+        )
     })
     .await
 }
@@ -118,9 +120,11 @@ pub(crate) async fn notes_import_image_paths(
         let (context, sources) = path_import_sources(request)?;
         let runtime = gate.wait()?;
         runtime.clear_initial_boot()?;
-        runtime
-            .service
-            .import_images(context, sources, runtime.assets.as_ref())
+        runtime.changed(
+            runtime
+                .service
+                .import_images(context, sources, runtime.assets.as_ref()),
+        )
     })
     .await
 }

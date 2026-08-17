@@ -1520,4 +1520,80 @@ fn an_image_cannot_become_a_root_child() {
         .is_err(),
         "an image directly under root has no heading to live on, so the vault cannot carry it"
     );
+    assert!(
+        tree.plan(NotesCommand::ImportImages {
+            parent_id: id("root"),
+            position: Position::at_end(),
+            nodes: vec![ImportImageNode {
+                id: id("second-picture"),
+                image: pasted_image(),
+            }],
+        })
+        .is_err(),
+        "and it cannot be created there either"
+    );
+}
+
+#[test]
+fn a_field_at_the_cap_is_accepted_and_counted_in_bytes() {
+    let mut tree = root_tree();
+    create_page(&mut tree, &id("page"));
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::CreateNode {
+            id: id("row"),
+            parent_id: id("page"),
+            position: Position::at_end(),
+            text: "Row".into(),
+        },
+    );
+    // Three bytes each, so the cap lands mid-character if it counted chars.
+    let at_cap = "가".repeat(notes_core::MAX_FIELD_BYTES / 3);
+    assert_eq!(at_cap.len(), notes_core::MAX_FIELD_BYTES - 1);
+
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::UpdateText {
+            id: id("row"),
+            text: at_cap.clone(),
+        },
+    );
+
+    assert_eq!(tree.node(&id("row")).unwrap().text(), at_cap);
+    assert!(
+        tree.plan(NotesCommand::UpdateText {
+            id: id("row"),
+            text: format!("{at_cap}가"),
+        })
+        .is_err(),
+        "the cap counts bytes, and two more of them pass it"
+    );
+}
+
+#[test]
+fn a_row_deeper_than_the_cap_is_rejected() {
+    let mut tree = root_tree();
+    create_page(&mut tree, &id("page"));
+    let mut parent = id("page");
+    // The page already sits below the root, so the cap is reached inside this
+    // walk rather than after it.
+    for depth in 0..notes_core::MAX_TREE_DEPTH {
+        let child = id(&format!("row-{depth}"));
+        let command = NotesCommand::CreateNode {
+            id: child.clone(),
+            parent_id: parent.clone(),
+            position: Position::at_end(),
+            text: "Row".into(),
+        };
+        if tree.plan(command.clone()).is_err() {
+            assert!(depth > 100, "the cap fired far too early, at {depth}");
+            return;
+        }
+        plan_and_apply(&mut tree, command);
+        parent = child;
+    }
+    panic!(
+        "an outline deeper than {} was accepted",
+        notes_core::MAX_TREE_DEPTH
+    );
 }

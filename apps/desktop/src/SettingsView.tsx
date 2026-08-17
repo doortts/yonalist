@@ -1,7 +1,10 @@
 import { Radio, RadioGroup } from "@base-ui/react";
-import { Database, Trash2, X } from "lucide-react";
-import { useState } from "react";
+import { Database, FolderSync, History, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 
+import type { SyncAttachment } from "../../../packages/contracts/generated/SyncAttachment";
+import type { SyncConflict } from "../../../packages/contracts/generated/SyncConflict";
+import { AttachmentsSection } from "./AttachmentsSection";
 import type { UnusedAssetsReport } from "../../../packages/contracts/generated/UnusedAssetsReport";
 import {
   MAX_OUTLINE_MARKER_LEVELS,
@@ -9,6 +12,8 @@ import {
   type OutlineMarkerShape,
   type OutlineMarkerStyle
 } from "./outlineMarkers";
+import { messageFrom } from "./store/storeSupport";
+import { pickVaultFolder } from "./vaultPicker";
 import type {
   CaretColor,
   DarkTheme,
@@ -79,7 +84,14 @@ export function SettingsView({
   onMarkerStylesChange,
   onClose,
   unusedAssets,
-  deleteAllData
+  deleteAllData,
+  readVaultPath,
+  setVaultPath,
+  readConflicts,
+  restoreConflict,
+  readAttachments,
+  deleteAttachment,
+  openNode
 }: {
   readonly themeMode: ThemeMode;
   readonly lightTheme: LightTheme;
@@ -96,6 +108,13 @@ export function SettingsView({
   readonly onClose: () => void;
   readonly unusedAssets: (purge: boolean) => Promise<UnusedAssetsReport>;
   readonly deleteAllData: () => Promise<void>;
+  readonly readVaultPath: () => Promise<string | null>;
+  readonly setVaultPath: (path: string) => Promise<void>;
+  readonly readConflicts: () => Promise<readonly SyncConflict[]>;
+  readonly restoreConflict: (seq: number) => Promise<void>;
+  readonly readAttachments: (limit: number) => Promise<readonly SyncAttachment[]>;
+  readonly deleteAttachment: (contentHash: string) => Promise<boolean>;
+  readonly openNode: (pageId: string, nodeId: string) => void;
 }) {
   return (
     <section className="settings-page" aria-label="Settings page">
@@ -151,10 +170,188 @@ export function SettingsView({
           />
         </section>
 
+        <OverwrittenNotesSection
+          readConflicts={readConflicts}
+          restoreConflict={restoreConflict}
+        />
+
+        <AttachmentsSection
+          readAttachments={readAttachments}
+          deleteAttachment={deleteAttachment}
+          openNode={openNode}
+        />
+
+        <SyncFolderSection
+          readVaultPath={readVaultPath}
+          setVaultPath={setVaultPath}
+        />
+
         <NotesDataSection
           unusedAssets={unusedAssets}
           deleteAllData={deleteAllData}
         />
+      </div>
+    </section>
+  );
+}
+
+/**
+ * What another device's copy replaced. Nothing is lost — the note that lost is
+ * kept here — but it only shows up when there is something to show: a heading
+ * about overwritten notes on a vault where nothing was overwritten reads as a
+ * warning rather than as a record.
+ */
+function OverwrittenNotesSection({
+  readConflicts,
+  restoreConflict
+}: {
+  readonly readConflicts: () => Promise<readonly SyncConflict[]>;
+  readonly restoreConflict: (seq: number) => Promise<void>;
+}) {
+  const [conflicts, setConflicts] = useState<readonly SyncConflict[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [restored, setRestored] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    try {
+      setConflicts(await readConflicts());
+    } catch (cause) {
+      setError(messageFrom(cause));
+    }
+  }, [readConflicts]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const restore = async (seq: number) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await restoreConflict(seq);
+      // The row stays: the list is a record of what happened, not a queue that
+      // empties. So the write has to announce itself.
+      setRestored(seq);
+      await reload();
+    } catch (cause) {
+      setError(messageFrom(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (conflicts.length === 0 && error === null) {
+    return null;
+  }
+
+  return (
+    <section className="settings-section" aria-label="Overwritten notes">
+      <div className="settings-section-title">
+        <History size={18} aria-hidden="true" />
+        <h3>Overwritten notes</h3>
+      </div>
+      {error && <p className="notes-inline-error" role="alert">{error}</p>}
+      <p className="settings-copy">
+        When two devices changed the same note, one version had to win. The
+        text the other one had is kept here — putting it back writes that text
+        again as a new edit, and it travels to your other devices from there.
+      </p>
+      <ul className="settings-conflict-list">
+        {conflicts.map((conflict) => (
+          <li key={conflict.seq}>
+            <span className="settings-conflict-text">{conflict.text}</span>
+            {restored === conflict.seq && (
+              <span role="status" className="settings-copy">Put back</span>
+            )}
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void restore(conflict.seq)}
+            >
+              Put this text back
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * Where the markdown files live. The folder is the user's to keep, so this
+ * section only ever records the choice — nothing is written into it here.
+ */
+function SyncFolderSection({
+  readVaultPath,
+  setVaultPath
+}: {
+  readonly readVaultPath: () => Promise<string | null>;
+  readonly setVaultPath: (path: string) => Promise<void>;
+}) {
+  const [path, setPath] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void readVaultPath()
+      .then((stored) => {
+        if (!cancelled) setPath(stored);
+      })
+      .catch(() => {
+        if (!cancelled) setError("Notes could not read the sync folder.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [readVaultPath]);
+
+  const choose = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const chosen = await pickVaultFolder();
+      if (chosen === null) return;
+      await setVaultPath(chosen);
+      setPath(chosen);
+    } catch (cause) {
+      // Tauri rejects with the serialized NotesError, a plain object rather
+      // than an Error, so `instanceof` would throw away the one sentence that
+      // tells the user which folder to pick instead.
+      setError(messageFrom(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="settings-section" aria-label="Sync folder">
+      <div className="settings-section-title">
+        <FolderSync size={18} aria-hidden="true" />
+        <h3>Sync folder</h3>
+      </div>
+      {error && (
+        <p className="notes-inline-error" role="alert">{error}</p>
+      )}
+
+      <div className="settings-field-grid">
+        <div>
+          <strong>Markdown folder</strong>
+          <p className="settings-copy">
+            Yonalist keeps a markdown copy of your notes here so another device
+            can pick them up through iCloud, Dropbox, or any folder that syncs.
+            Leaving it unset keeps everything on this device.
+          </p>
+          {path ? (
+            <p className="settings-path">{path}</p>
+          ) : (
+            <p className="settings-copy">No folder chosen yet.</p>
+          )}
+          <button type="button" disabled={busy} onClick={() => void choose()}>
+            {path ? "Change folder" : "Choose folder"}
+          </button>
+        </div>
       </div>
     </section>
   );
@@ -182,9 +379,7 @@ function NotesDataSection({
       const next = await unusedAssets(purge);
       setReport(purge ? { ...next, count: 0, totalBytes: 0 } : next);
     } catch (cause) {
-      setError(cause instanceof Error
-        ? cause.message
-        : "Notes could not complete the request.");
+      setError(messageFrom(cause));
     } finally {
       setBusy(false);
     }
@@ -198,9 +393,7 @@ function NotesDataSection({
       await deleteAllData();
     } catch (cause) {
       setDeleting(false);
-      setError(cause instanceof Error
-        ? cause.message
-        : "Notes could not complete the request.");
+      setError(messageFrom(cause));
     }
   };
 
@@ -270,7 +463,8 @@ function NotesDataSection({
           <strong>Delete local Yonalist data</strong>
           <p className="settings-copy">
             Removes the local Yonalist database and attachments, then restarts
-            the app with a fresh workspace.
+            the app with a fresh workspace. The sync folder and the markdown
+            files in it stay where they are.
           </p>
           {confirmingDelete ? (
             <>

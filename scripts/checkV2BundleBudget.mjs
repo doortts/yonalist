@@ -32,16 +32,20 @@ for (const file of files) {
 // `test:v2` runs this check, so these two numbers are a commitment, not a
 // note: exceeding them stops the gate for everyone. Raise them only with a
 // fresh measurement recorded here, never to get a build through.
-// The entry pair measures 331,802 raw / 100,785 gzip, leaving 4,070 raw and
-// 1,615 gzip bytes of headroom. Raw binds first, so eagerly importing any of
-// the 7 largest lazy chunks (selection bar, export, row menu, drag engine,
-// window, image, settings) trips the gate; the other 17 are each under 3.3KB
-// raw and slip through. Catching those too needs headroom near 200 bytes,
-// which is well below ordinary drift — two weeks of refactoring moved this by
-// 573 gzip bytes — and would make the budget a tripwire that gets raised
+// Measured 2026-08-16 at the first-run vault card: the entry pair is 336,472
+// raw / 102,310 gzip, leaving 2,472 raw and 1,114 gzip bytes of headroom. The
+// previous 328KiB raw limit had already been passed by 2 bytes before that
+// work began, which is why this is a raise and not a repair.
+// Raw still binds first: 2,472 raw is roughly 750 gzip at the ratio these
+// chunks compress at, well inside the gzip headroom. Of the 26 lazy chunks,
+// the 8 largest (drag engine, selection bar, export, row menu, window, image,
+// settings, outline markers — 3.3KB to 39KB) each trip the gate if they are
+// ever imported eagerly; the 13 under 2.4KB slip through, same as before.
+// Catching those too needs headroom near 200 bytes, which is well below
+// ordinary drift and would make the budget a tripwire that gets raised
 // reflexively instead of read.
-const rawLimit = 328 * 1024;
-const gzipLimit = 100 * 1024;
+const rawLimit = 331 * 1024;
+const gzipLimit = 101 * 1024;
 if (raw > rawLimit || gzip > gzipLimit) {
   throw new Error(
     `v2 editable JS ${raw} raw / ${gzip} gzip exceeds ` +

@@ -60,9 +60,36 @@ pub(crate) fn commit(
             }
         }
     }
+    // After the loop, because the copy's own node row has to exist first. Read
+    // from the source as it stands right now rather than from anything the
+    // duplication remembered: if the bytes landed in between — an undo, the
+    // picture arriving, then a redo — the copy is handed a picture that is
+    // already settled instead of a wait that would never end.
+    for (source_id, copy_id) in &patch.carried_pictures {
+        transaction
+            .execute(
+                "INSERT INTO notes_images(
+                    node_id, content_hash, relative_path, original_name, mime_type,
+                    byte_length, pixel_width, pixel_height, display_width
+                 )
+                 SELECT ?2, content_hash, relative_path, original_name, mime_type,
+                    byte_length, pixel_width, pixel_height, display_width
+                 FROM notes_images WHERE node_id = ?1
+                 -- Running after the forward loop and yielding to what is
+                 -- already there is what lets a coalesced group keep a settled
+                 -- row its own mutations wrote for the copy.
+                 ON CONFLICT(node_id) DO NOTHING",
+                [source_id.as_str(), copy_id.as_str()],
+            )
+            .map_err(internal)?;
+    }
     // After the whole patch: a row's path reads its ancestors, which an earlier
     // mutation in this same loop may not have written yet.
     crate::node_paths::refresh(&transaction, patch)?;
+    // A move made here has to leave a claim behind. The merge rebuilds sibling
+    // order from those claims, so without one it would put the node back where
+    // the last merge had it — undoing the move on screen.
+    record_place_claims(&transaction, patch)?;
     let next_revision = actual_revision
         .checked_add(1)
         .ok_or_else(|| StorageError::Internal("revision overflowed".into()))?;
@@ -113,42 +140,112 @@ fn sync_image(
     node: &NoteNode,
 ) -> Result<(), StorageError> {
     let Some(image) = node.image() else {
+        // An image node without a picture is one whose bytes have not landed
+        // yet, and the row is where everything the file said about that
+        // picture is being kept until they do. Only a node that stopped being
+        // a picture has a row to clear.
+        if node.kind() != NoteNodeKind::Image {
+            transaction
+                .execute(
+                    "DELETE FROM notes_images WHERE node_id = ?1",
+                    [node.id().as_str()],
+                )
+                .map_err(internal)?;
+        }
+        return Ok(());
+    };
+    let byte_length = i64::try_from(image.byte_length())
+        .map_err(|_| StorageError::Internal("image byte length exceeded SQLite INTEGER".into()))?;
+    let values = params![
+        node.id().as_str(),
+        image.content_hash(),
+        image.relative_path(),
+        image.original_name(),
+        image.mime_type(),
+        byte_length,
+        image.pixel_width(),
+        image.pixel_height(),
+        image.display_width(),
+    ];
+    // Update first, and only where something actually differs, so the answer
+    // says whether this was an edit. An upsert cannot say: it reports a row
+    // written either way, and a picture resized to the width it already had
+    // would then be stamped as an edit it never was.
+    let edited = transaction
+        .execute(
+            "UPDATE notes_images SET
+                content_hash = ?2,
+                relative_path = ?3,
+                original_name = ?4,
+                mime_type = ?5,
+                byte_length = ?6,
+                pixel_width = ?7,
+                pixel_height = ?8,
+                display_width = ?9
+             WHERE node_id = ?1 AND (
+                    content_hash IS NOT ?2
+                 OR relative_path IS NOT ?3
+                 OR original_name IS NOT ?4
+                 OR mime_type IS NOT ?5
+                 OR byte_length IS NOT ?6
+                 OR pixel_width IS NOT ?7
+                 OR pixel_height IS NOT ?8
+                 OR display_width IS NOT ?9
+             )",
+            values,
+        )
+        .map_err(internal)?;
+    if edited == 0 {
+        // Either there was no row, or there was nothing to change. A row that
+        // arrives here for the first time belongs to a node that was just
+        // written too, and that write did the stamping.
         transaction
             .execute(
-                "DELETE FROM notes_images WHERE node_id = ?1",
-                [node.id().as_str()],
+                "INSERT INTO notes_images(
+                    node_id, content_hash, relative_path, original_name, mime_type,
+                    byte_length, pixel_width, pixel_height, display_width
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT(node_id) DO NOTHING",
+                values,
             )
             .map_err(internal)?;
         return Ok(());
-    };
+    }
+    stamp_for_its_picture(transaction, node.id().as_str())
+}
+
+/// What a picture's own columns say is part of the note, but none of it lives
+/// on the node's row, so the stamping trigger there never sees it. Without
+/// this a resize is invisible to the folder: nothing is owed a write, the
+/// file keeps stating the old size, and the next read of that file meets a
+/// node whose stamp has not moved — an equal-stamp comparison the stale line
+/// can win, undoing the resize on the device that made it.
+///
+/// Deliberately here and not in a trigger on `notes_images`: a merge writes
+/// that table too, carrying another device's reading, and a trigger could not
+/// tell the two apart. This runs only on the path a command takes.
+fn stamp_for_its_picture(
+    transaction: &rusqlite::Transaction<'_>,
+    node_id: &str,
+) -> Result<(), StorageError> {
     transaction
         .execute(
-            "INSERT INTO notes_images(
-                node_id, content_hash, relative_path, original_name, mime_type,
-                byte_length, pixel_width, pixel_height, display_width
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(node_id) DO UPDATE SET
-                content_hash = excluded.content_hash,
-                relative_path = excluded.relative_path,
-                original_name = excluded.original_name,
-                mime_type = excluded.mime_type,
-                byte_length = excluded.byte_length,
-                pixel_width = excluded.pixel_width,
-                pixel_height = excluded.pixel_height,
-                display_width = excluded.display_width",
-            params![
-                node.id().as_str(),
-                image.content_hash(),
-                image.relative_path(),
-                image.original_name(),
-                image.mime_type(),
-                i64::try_from(image.byte_length()).map_err(|_| {
-                    StorageError::Internal("image byte length exceeded SQLite INTEGER".into())
-                })?,
-                image.pixel_width(),
-                image.pixel_height(),
-                image.display_width(),
-            ],
+            "UPDATE notes_nodes SET hlc = yona_hlc() WHERE id = ?1",
+            [node_id],
+        )
+        .map_err(internal)?;
+    transaction
+        .execute(
+            // The node, and the file that states its line — the same two the
+            // stamping trigger marks when a node's own column changes.
+            "INSERT INTO sync_dirty_nodes(node_id, marked_at)
+             SELECT id, unixepoch() FROM (
+                 SELECT ?1 AS id
+                 UNION
+                 SELECT parent_id FROM notes_nodes WHERE id = ?1
+             ) WHERE id IS NOT NULL
+             ON CONFLICT(node_id) DO UPDATE SET marked_at = excluded.marked_at",
+            [node_id],
         )
         .map_err(internal)?;
     Ok(())
@@ -234,6 +331,128 @@ fn update_node(
         return Err(StorageError::Domain(DomainError::NodeNotFound(
             node.id().clone(),
         )));
+    }
+    Ok(())
+}
+
+/// Records where a node now sits, for the rows this patch actually moved and
+/// for the siblings its move re-linked.
+///
+/// Only those: a text edit leaves a node exactly where it was, and writing its
+/// claim anyway would stamp it with the fresh reading the trigger just issued.
+/// That promoted claim would then beat a move another device made a moment
+/// earlier — and win everywhere, which is the one thing a claim's own stamp
+/// exists to prevent.
+fn record_place_claims(
+    transaction: &rusqlite::Transaction<'_>,
+    patch: &DomainPatch,
+) -> Result<(), StorageError> {
+    let previous: std::collections::BTreeMap<_, _> = patch
+        .inverse
+        .iter()
+        .filter_map(|mutation| match mutation {
+            TreeMutation::Upsert(node) => Some((node.id().as_str().to_owned(), node.as_ref())),
+            TreeMutation::Delete { .. } => None,
+        })
+        .collect();
+    // Where a node used to sit, so the sibling it is leaving behind is re-linked
+    // too. Rule 9 of the merge design: a move touches three rows, not a family.
+    let mut parents: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut moved: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // The ones that changed *where they are*, as opposed to merely what number
+    // they hold. Making room for a new line renumbers its neighbours, and a
+    // neighbour that still follows whoever it followed has not moved — taking
+    // the new reading there would beat somebody else's real move.
+    let mut relocated: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for mutation in &patch.forward {
+        match mutation {
+            TreeMutation::Upsert(node) => {
+                let id = node.id().as_str().to_owned();
+                let before = previous.get(&id);
+                let changed_place = before.is_none_or(|before| {
+                    before.parent_id() != node.parent_id()
+                        || before.sort_key() != node.sort_key()
+                        || before.is_deleted() != node.is_deleted()
+                });
+                if !changed_place {
+                    continue;
+                }
+                if before.is_none_or(|before| {
+                    before.parent_id() != node.parent_id()
+                        || before.is_deleted() != node.is_deleted()
+                }) {
+                    relocated.insert(id.clone());
+                }
+                moved.insert(id);
+                if let Some(parent) = node.parent_id() {
+                    parents.insert(parent.as_str().to_owned());
+                }
+                if let Some(parent) = before.and_then(|before| before.parent_id()) {
+                    parents.insert(parent.as_str().to_owned());
+                }
+            }
+            TreeMutation::Delete { id } => {
+                moved.insert(id.as_str().to_owned());
+                relocated.insert(id.as_str().to_owned());
+                if let Some(parent) = previous
+                    .get(id.as_str())
+                    .and_then(|before| before.parent_id())
+                {
+                    parents.insert(parent.as_str().to_owned());
+                }
+            }
+        }
+    }
+    if moved.is_empty() {
+        return Ok(());
+    }
+    // The stamp a move states its claim at is the one the trigger just gave the
+    // row that moved. Its followers claim at the same reading: they were
+    // re-linked by that move, not by anything of their own.
+    let at: String = transaction
+        .query_row(
+            "SELECT max(hlc) FROM notes_nodes WHERE id IN (SELECT value FROM json_each(?1))",
+            [notes_sync::export::json_list(
+                &moved.iter().cloned().collect::<Vec<_>>(),
+            )],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .map_err(internal)?
+        .unwrap_or_default();
+    if at.is_empty() {
+        return Ok(());
+    }
+    let relocated_list =
+        notes_sync::export::json_list(&relocated.iter().cloned().collect::<Vec<_>>());
+    for parent in parents {
+        transaction
+            .execute(
+                // Only the rows whose claim actually changed — which for one
+                // move is the row itself and whoever now follows it, not every
+                // sibling it happens to have. Writing them all made an append
+                // cost the length of the page, twice over: once for the write
+                // and once for the lookup inside it.
+                "WITH ordered AS (
+                     SELECT id, coalesce(lag(id) OVER (ORDER BY sort_key, id), '') AS previous
+                     FROM notes_nodes
+                     WHERE parent_id = ?1 AND deleted = 0
+                 )
+                 UPDATE notes_nodes SET
+                     sync_prev = ordered.previous,
+                     sync_prev_hlc = ?2
+                 FROM ordered
+                 WHERE notes_nodes.id = ordered.id
+                   AND (notes_nodes.sync_prev IS NOT ordered.previous
+                        -- A node that moved to the front of another page
+                        -- follows nobody in both places, so what it claims
+                        -- does not change — but when it claims it has to, or
+                        -- an older reorder somewhere else beats this move.
+                        -- Only rows that changed parent, though: a renumbered
+                        -- neighbour has not moved.
+                        OR notes_nodes.id IN (SELECT value FROM json_each(?3)))",
+                rusqlite::params![parent, at, &relocated_list],
+            )
+            .map_err(internal)?;
     }
     Ok(())
 }

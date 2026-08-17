@@ -267,6 +267,54 @@
           "markdownDescription": "Enables the notes_search command without any pre-configured scope."
         },
         {
+          "description": "Enables the notes_sync_attachments command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-sync-attachments",
+          "markdownDescription": "Enables the notes_sync_attachments command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_sync_conflicts command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-sync-conflicts",
+          "markdownDescription": "Enables the notes_sync_conflicts command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_sync_delete_attachment command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-sync-delete-attachment",
+          "markdownDescription": "Enables the notes_sync_delete_attachment command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_sync_flush command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-sync-flush",
+          "markdownDescription": "Enables the notes_sync_flush command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_sync_restore_conflict command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-sync-restore-conflict",
+          "markdownDescription": "Enables the notes_sync_restore_conflict command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_sync_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-sync-status",
+          "markdownDescription": "Enables the notes_sync_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_sync_vault_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-sync-vault-get",
+          "markdownDescription": "Enables the notes_sync_vault_get command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_sync_vault_set command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-sync-vault-set",
+          "markdownDescription": "Enables the notes_sync_vault_set command without any pre-configured scope."
+        },
+        {
           "description": "Enables the notes_toggle_devtools command without any pre-configured scope.",
           "type": "string",
           "const": "allow-notes-toggle-devtools",
@@ -385,6 +433,54 @@
           "type": "string",
           "const": "deny-notes-search",
           "markdownDescription": "Denies the notes_search command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_sync_attachments command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-sync-attachments",
+          "markdownDescription": "Denies the notes_sync_attachments command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_sync_conflicts command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-sync-conflicts",
+          "markdownDescription": "Denies the notes_sync_conflicts command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_sync_delete_attachment command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-sync-delete-attachment",
+          "markdownDescription": "Denies the notes_sync_delete_attachment command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_sync_flush command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-sync-flush",
+          "markdownDescription": "Denies the notes_sync_flush command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_sync_restore_conflict command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-sync-restore-conflict",
+          "markdownDescription": "Denies the notes_sync_restore_conflict command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_sync_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-sync-status",
+          "markdownDescription": "Denies the notes_sync_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_sync_vault_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-sync-vault-get",
+          "markdownDescription": "Denies the notes_sync_vault_get command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_sync_vault_set command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-sync-vault-set",
+          "markdownDescription": "Denies the notes_sync_vault_set command without any pre-configured scope."
         },
         {
           "description": "Denies the notes_toggle_devtools command without any pre-configured scope.",

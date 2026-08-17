@@ -6,9 +6,12 @@ import type { NotesExportResult } from "../../../packages/contracts/generated/No
 import type { SearchPage } from "../../../packages/contracts/generated/SearchPage";
 import type { ForestSnapshot } from "../../../packages/contracts/generated/ForestSnapshot";
 import type { PaneSnapshot } from "./appNavigation";
+import type { VaultChange } from "./syncChanged";
 import type { NotesApi } from "./api";
 import { initialNotesState, type NotesState } from "./notesState";
-import { freshId, messageFrom, ROOT_ID } from "./store/storeSupport";
+import {
+  freshId, messageFrom, ROOT_ID, VIEWPORT_LIMIT
+} from "./store/storeSupport";
 import { flattenPastedOutline, type PastedOutlineNode } from "./outline/outlinePaste";
 import { receiptState, subtreeIds, viewportState } from "./store/storeState";
 import { runSlashEdit } from "./store/storeSlash";
@@ -162,6 +165,81 @@ export class NotesStore {
 
   async loadMore(): Promise<void> {
     await this.viewport.loadMore();
+  }
+
+  /**
+   * Another device's edit arrived. What it touched is named, so the named
+   * rows are fetched and applied the way this window applies its own edits —
+   * the caret and the scroll stay where the user left them, which a re-read
+   * cannot promise.
+   *
+   * Two things send it down the other path. A change too wide to be worth
+   * naming row by row, and an answer that came back incomplete: in both, the
+   * page and the page list are read again, which is always correct and merely
+   * more expensive.
+   */
+  async absorbVaultChange(change?: VaultChange): Promise<void> {
+    if (change && await this.patchFromVault(change)) return;
+    await Promise.all([this.viewport.reload(), this.refreshPages()]);
+  }
+
+  /** Answers whether the change was applied; `false` asks for the re-read. */
+  private async patchFromVault(change: VaultChange): Promise<boolean> {
+    const named = change.changedNodeIds.length + change.deletedNodeIds.length;
+    if (named === 0 || named > VIEWPORT_LIMIT) return false;
+    try {
+      const snapshot = change.changedNodeIds.length === 0
+        ? { revision: change.revision, nodes: [], complete: true }
+        : await this.api.queryForest({
+          rootIds: [...change.changedNodeIds],
+          limit: VIEWPORT_LIMIT
+        });
+      // An answer that had to stop short describes less than what happened.
+      if (!snapshot.complete) return false;
+      this.applyReceipt({
+        revision: snapshot.revision,
+        changedNodes: snapshot.nodes,
+        deletedIds: [...change.deletedNodeIds],
+        // This window's own history, unchanged: what another device did is
+        // not something it can undo, and the receipt shape carries the flags
+        // whether or not they moved.
+        history: {
+          canUndo: this.state.canUndo,
+          canRedo: this.state.canRedo,
+          undoDepth: this.state.undoDepth,
+          redoDepth: this.state.redoDepth
+        }
+      });
+      return true;
+    } catch {
+      // Whatever went wrong, reading the page again is the answer that always
+      // works.
+      return false;
+    }
+  }
+
+  private async refreshPages(): Promise<void> {
+    try {
+      const home = await this.api.queryViewport({
+        pageId: ROOT_ID,
+        anchorId: null,
+        beforeCursor: null,
+        afterCursor: null,
+        limit: VIEWPORT_LIMIT
+      });
+      this.update({
+        pages: home.nodes
+          .filter((node) => !node.deleted)
+          .map((node) => ({
+            id: node.id,
+            title: node.text,
+            sortKey: node.sortKey
+          }))
+      });
+    } catch {
+      // The list stays as it was. A window showing a page list one edit
+      // behind is better than one showing an error over it.
+    }
   }
 
   queryForest(rootIds: readonly string[]): Promise<ForestSnapshot> {

@@ -22,6 +22,9 @@ notes-application.workspace = true
 notes-core.workspace = true
 notes-export.workspace = true
 notes-sqlite = { path = "../../../crates/notes-sqlite" }
+notes-sync = { path = "../../../crates/notes-sync" }
+# Same major as v1 ran on: FSEvents on macOS, inotify on Linux.
+notify = "8"
 open = "5.4"
 serde_json = "1"
 tauri = { version = "=2.11.5", features = [] }
@@ -40,3 +43,6 @@ objc2-foundation = { version = "0.3", features = ["NSProcessInfo"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

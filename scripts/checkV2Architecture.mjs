@@ -7,7 +7,8 @@ const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const expectedDependencies = new Map([
   ["notes-core", []],
   ["notes-application", ["notes-core"]],
-  ["notes-sqlite", ["notes-application", "notes-core"]]
+  ["notes-sync", ["notes-application", "notes-core"]],
+  ["notes-sqlite", ["notes-application", "notes-core", "notes-sync"]]
 ]);
 
 const metadata = JSON.parse(
@@ -142,6 +143,14 @@ const expectedCommands = [
   "notes_undo",
   "notes_redo",
   "notes_search",
+  "notes_sync_attachments",
+  "notes_sync_status",
+  "notes_sync_delete_attachment",
+  "notes_sync_conflicts",
+  "notes_sync_flush",
+  "notes_sync_restore_conflict",
+  "notes_sync_vault_get",
+  "notes_sync_vault_set",
   "notes_close_session",
   "notes_unused_assets",
   "notes_delete_all_data",

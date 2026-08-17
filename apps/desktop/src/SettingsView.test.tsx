@@ -1,4 +1,6 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+import { pickVaultFolder } from "./vaultPicker";
 
 import {
   defaultOutlineMarkerStyles,
@@ -25,6 +27,13 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsView>[0]> =
       purged: false
     }),
     deleteAllData: vi.fn().mockResolvedValue(undefined),
+    readVaultPath: vi.fn().mockResolvedValue(null),
+    readConflicts: vi.fn().mockResolvedValue([]),
+    readAttachments: vi.fn().mockResolvedValue([]),
+    deleteAttachment: vi.fn().mockResolvedValue(true),
+    openNode: vi.fn(),
+    restoreConflict: vi.fn().mockResolvedValue(undefined),
+    setVaultPath: vi.fn().mockResolvedValue(undefined),
     ...overrides
   };
   render(
@@ -38,7 +47,145 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsView>[0]> =
   return handlers;
 }
 
+vi.mock("./vaultPicker", () => ({ pickVaultFolder: vi.fn() }));
+
+/** Lets the mounting reads resolve before an absence is asserted. */
+async function settle() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
 describe("SettingsView", () => {
+  beforeEach(() => {
+    const backing = new Map<string, string>();
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => backing.get(key) ?? null,
+        setItem: (key: string, value: string) => backing.set(key, value),
+        removeItem: (key: string) => backing.delete(key),
+        clear: () => backing.clear()
+      }
+    });
+  });
+
+  afterEach(() => {
+    delete (window as { localStorage?: unknown }).localStorage;
+  });
+
+  it("reports why a folder was refused, in the words the backend used", async () => {
+    vi.mocked(pickVaultFolder).mockResolvedValue("/Users/me/Library/App");
+    renderSettings({
+      setVaultPath: vi.fn().mockRejectedValue({
+        code: "invalidDestination",
+        message: "A vault cannot live inside the app's own storage, or hold it.",
+        retryable: false
+      })
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "A vault cannot live inside the app's own storage, or hold it."
+    );
+  });
+
+  it("reports why a reset failed, in the words the backend used", async () => {
+    renderSettings({
+      deleteAllData: vi.fn().mockRejectedValue({
+        code: "storageUnavailable",
+        message: "The reset marker could not be written.",
+        retryable: true
+      })
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Delete all Yonalist data..." })
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Delete everything and restart" })
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The reset marker could not be written."
+    );
+  });
+
+  it("keeps the settings entrance open after the first-run card was dismissed", async () => {
+    window.localStorage.setItem("yonalist.vaultPromptDismissed.v1", "1");
+    renderSettings({
+      readVaultPath: vi.fn().mockResolvedValue("/Users/me/Yonalist")
+    });
+
+    expect(await screen.findByRole("button", { name: "Change folder" }))
+      .toBeInTheDocument();
+  });
+
+  it("lists the notes another device overwrote, and puts one back", async () => {
+    const restoreConflict = vi.fn().mockResolvedValue(undefined);
+    // The row stays in the log after a restore — the list is a record, not an
+    // inbox — so the reader has to be told the write happened.
+    const readConflicts = vi.fn().mockResolvedValue([
+      {
+        seq: 7,
+        nodeId: "8a201f33-0000-4c91-8d02-000000000001",
+        text: "the note that lost",
+        reason: "lww",
+        recordedAt: 1_700_000_000
+      }
+    ]);
+    renderSettings({ readConflicts, restoreConflict });
+
+    expect(await screen.findByText("the note that lost")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Put this text back" }));
+
+    await waitFor(() => expect(restoreConflict).toHaveBeenCalledWith(7));
+    expect(await screen.findByRole("status")).toHaveTextContent("Put back");
+  });
+
+  it("says nothing at all when no note has been overwritten", async () => {
+    renderSettings();
+
+    await settle();
+
+    expect(screen.queryByRole("heading", { name: "Overwritten notes" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("shows the vault folder that is already chosen", async () => {
+    renderSettings({
+      readVaultPath: vi.fn().mockResolvedValue("/Users/me/Yonalist")
+    });
+
+    expect(await screen.findByText("/Users/me/Yonalist")).toBeInTheDocument();
+  });
+
+  it("saves and shows a newly chosen vault folder", async () => {
+    vi.mocked(pickVaultFolder).mockResolvedValue("/Users/me/Yonalist");
+    const handlers = renderSettings();
+
+    fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
+
+    await waitFor(() => {
+      expect(handlers.setVaultPath).toHaveBeenCalledWith("/Users/me/Yonalist");
+    });
+    expect(await screen.findByText("/Users/me/Yonalist")).toBeInTheDocument();
+  });
+
+  it("leaves the folder alone when the picker is dismissed", async () => {
+    vi.mocked(pickVaultFolder).mockResolvedValue(null);
+    const handlers = renderSettings({
+      readVaultPath: vi.fn().mockResolvedValue("/Users/me/Yonalist")
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Choose folder" }));
+
+    await waitFor(() => expect(pickVaultFolder).toHaveBeenCalled());
+    expect(handlers.setVaultPath).not.toHaveBeenCalled();
+    expect(screen.getByText("/Users/me/Yonalist")).toBeInTheDocument();
+  });
+
   it("offers system, light, and dark modes and reports a change", () => {
     const handlers = renderSettings();
 

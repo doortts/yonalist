@@ -12,6 +12,10 @@ pub struct NotesTree {
     nodes: BTreeMap<NodeId, NoteNode>,
 }
 
+/// Same reason as `MAX_FIELD_BYTES`, for the shape of the outline itself. The
+/// node count has no home here yet — see `validate`.
+pub const MAX_TREE_DEPTH: usize = 128;
+
 /// Namespace for ids the domain derives rather than receives. Fixed forever:
 /// changing it would give the same duplication a different id on a later
 /// release, and two devices on different releases would then disagree.
@@ -28,6 +32,19 @@ fn derived_child_id(new_id: &NodeId, ordinal: usize) -> Result<NodeId, DomainErr
     let name = format!("{}/{ordinal}", new_id.as_str().to_ascii_lowercase());
     let derived = uuid::Uuid::new_v5(&DERIVED_ID_NAMESPACE, name.as_bytes());
     NodeId::try_from(derived.to_string())
+}
+
+/// A picture the copy cannot carry itself, so the storage layer is told to hand
+/// it over. Only a picture still waiting for its bytes: one that has them
+/// travels on the node, the way everything else about it does.
+fn carry_picture(
+    carried_pictures: &mut Vec<(NodeId, NodeId)>,
+    source: &NoteNode,
+    copy_id: &NodeId,
+) {
+    if source.kind() == NoteNodeKind::Image && source.image().is_none() {
+        carried_pictures.push((source.id().clone(), copy_id.clone()));
+    }
 }
 
 /// Children go onto the stack reversed so popping hands them back in document
@@ -72,9 +89,16 @@ impl NotesTree {
 
     pub fn plan(&self, command: NotesCommand) -> Result<DomainPatch, DomainError> {
         let mut candidate = self.clone();
-        candidate.execute(command)?;
+        let mut carried_pictures = Vec::new();
+        candidate.execute(command, &mut carried_pictures)?;
         candidate.validate()?;
-        Ok(self.diff(&candidate))
+        // `diff` compares two trees, and a picture waiting for its bytes is in
+        // neither of them — only the duplication itself knows which copy was
+        // made from which node.
+        Ok(DomainPatch {
+            carried_pictures,
+            ..self.diff(&candidate)
+        })
     }
 
     pub fn apply(&mut self, mutations: &[TreeMutation]) -> Result<(), DomainError> {
@@ -126,6 +150,7 @@ impl NotesTree {
         new_id: NodeId,
         parent_id: NodeId,
         position: Position,
+        carried_pictures: &mut Vec<(NodeId, NodeId)>,
     ) -> Result<(), DomainError> {
         self.ensure_new_id(&new_id)?;
         self.ensure_parent(&parent_id)?;
@@ -138,6 +163,7 @@ impl NotesTree {
         }
         let source_ids = self.visible_subtree_ids(&source_id);
         let source = source.clone();
+        carry_picture(carried_pictures, &source, &new_id);
         let copy = NoteNode::from_persisted_with_image(
             new_id.clone(),
             Some(parent_id.clone()),
@@ -169,6 +195,7 @@ impl NotesTree {
                 .get(source_parent_id)
                 .cloned()
                 .ok_or_else(|| DomainError::ParentNotFound(source_parent_id.clone()))?;
+            carry_picture(carried_pictures, &source_child, &copied_id);
             self.nodes.insert(
                 copied_id.clone(),
                 NoteNode::from_persisted_with_image(
@@ -356,7 +383,11 @@ impl NotesTree {
                 _ => {}
             }
         }
-        DomainPatch { forward, inverse }
+        DomainPatch {
+            forward,
+            inverse,
+            carried_pictures: Vec::new(),
+        }
     }
 
     fn validate(&self) -> Result<(), DomainError> {
@@ -364,12 +395,11 @@ impl NotesTree {
         // so a shape the file could not carry is refused here. Otherwise the
         // edit commits, the export rejects it, and that page silently stops
         // syncing.
-        if self.nodes.len() > crate::MAX_TREE_NODES {
-            return Err(DomainError::Invariant(format!(
-                "an outline holds at most {} nodes",
-                crate::MAX_TREE_NODES
-            )));
-        }
+        //
+        // The node-count cap is not among these. A command plans against the
+        // rows its context hydrated, not the whole outline, so a count taken
+        // here never sees a growing page and would instead refuse the bulk
+        // delete that repairs one. It belongs where a whole document is known.
         for node in self.nodes.values() {
             for (field, value) in [("text", node.text()), ("note", node.note())] {
                 if value.len() > crate::MAX_FIELD_BYTES {
@@ -420,6 +450,11 @@ impl NotesTree {
                 }
                 current = self.nodes.get(parent_id).and_then(NoteNode::parent_id);
             }
+            // Ancestors up to the vault root, where the file counts indent
+            // from its own document root. That makes this the stricter of the
+            // two, which is the safe direction: nothing the file would
+            // quarantine survives, and a legal row is only ever refused within
+            // a document's own depth of the limit.
             if visited.len() > crate::MAX_TREE_DEPTH {
                 return Err(DomainError::Invariant(format!(
                     "node {} hangs deeper than {}",

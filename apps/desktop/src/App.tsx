@@ -6,6 +6,7 @@ import {
 import "./styles.css";
 import "./notes.css";
 import "./formControls.css";
+import type { SyncChanged } from "../../../packages/contracts/generated/SyncChanged";
 import { tauriNotesApi, type NotesApi } from "./api";
 import { useTheme } from "./useTheme";
 import { useOutlineMarkerStyles } from "./outlineMarkers";
@@ -33,6 +34,9 @@ const SearchPanel = lazy(() => import("./SearchPanel").then((module) =>
 // outline never needs. It stays out of the entry chunk like the row menus do.
 const SettingsView = lazy(() => import("./SettingsView").then((module) =>
   ({ default: module.SettingsView })));
+// Shown at most once per install, so it stays out of the startup bundle.
+const VaultSetupCard = lazy(() => import("./VaultSetupCard").then((module) =>
+  ({ default: module.VaultSetupCard })));
 
 export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   const theme = useTheme();
@@ -52,6 +56,23 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     setQuery("");
     setSearchOpen(false);
   }, []);
+  // The settings section re-reads the folder whenever this identity changes, so
+  // both stay pinned to the api rather than to a render.
+  const readVaultPath = useCallback(() => api.syncVaultGet(), [api]);
+  // The settings screen only needs the choice recorded; what the folder held
+  // is the first-run card's business.
+  const chooseVaultPath = useCallback(
+    (path: string) => api.syncVaultSet(path),
+    [api]
+  );
+  const readConflicts = useCallback(() => api.syncConflicts(200), [api]);
+  const restoreConflict = useCallback(
+    (seq: number) => api.syncRestoreConflict(seq),
+    [api]
+  );
+  const setVaultPath = useCallback(async (path: string) => {
+    await chooseVaultPath(path);
+  }, [chooseVaultPath]);
   const [libraryView, setLibraryView] = useState<LibraryView>("all");
   const [sidebarWidth, setSidebarWidth] = useState(336);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -98,6 +119,26 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     return () => {
       active = false;
       unlisten?.();
+    };
+  }, [store]);
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let stop: (() => void) | undefined;
+    let active = true;
+    void Promise.all([
+      import("@tauri-apps/api/event"),
+      import("./syncChanged")
+    ]).then(([{ listen }, { listenForVaultChanges }]) => {
+      if (!active) return;
+      stop = listenForVaultChanges(
+        (event, handler) =>
+          listen<SyncChanged>(event, ({ payload }) => handler(payload)),
+        (change) => store.absorbVaultChange(change)
+      );
+    });
+    return () => {
+      active = false;
+      stop?.();
     };
   }, [store]);
   useEffect(() => {
@@ -246,6 +287,27 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     await applyNavigation(after);
     recordNavigation(before, after);
   }, [applyNavigation, captureNavigation, recordNavigation, store]);
+  // A row in the attachment list names a bullet on a page. Following it leaves
+  // the settings screen — what the user asked to see is the note, not the file
+  // — and lands on the bullet itself, selected, rather than at the top of a
+  // page they then have to search.
+  const openAttachment = useCallback(
+    (pageId: string, nodeId: string) => {
+      setSettingsOpen(false);
+      const before = captureNavigation();
+      afterDraftFlush(() => {
+        void openPage(pageId).then(async () => {
+          const after = {
+            ...emptyPaneLocation(pageId),
+            primarySelectedIds: nodeId ? [nodeId] : []
+          };
+          await applyNavigation(after);
+          recordNavigation(before, after);
+        });
+      });
+    },
+    [afterDraftFlush, applyNavigation, captureNavigation, openPage, recordNavigation]
+  );
   // Home is the root page like any other page, house crumb included.
   const openHome = useCallback(() => void openPage(ROOT_ID), [openPage]);
   // Creating a page and trashing one both move the view as part of the
@@ -546,6 +608,14 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           document.body.classList.add("is-resizing-pane");
         }}
       />
+      {!settingsOpen && (
+        <Suspense fallback={null}>
+          <VaultSetupCard
+            readVaultPath={readVaultPath}
+            setVaultPath={chooseVaultPath}
+          />
+        </Suspense>
+      )}
       {settingsOpen ? (
         <Suspense fallback={<p className="notes-pane-state">Loading settings...</p>}>
           <SettingsView
@@ -564,6 +634,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             onClose={() => setSettingsOpen(false)}
             unusedAssets={(purge) => api.unusedAssets(purge)}
             deleteAllData={() => api.deleteAllData()}
+            readVaultPath={readVaultPath}
+            setVaultPath={setVaultPath}
+            readConflicts={readConflicts}
+            restoreConflict={restoreConflict}
+            readAttachments={(limit) => api.syncAttachments(limit)}
+            deleteAttachment={(contentHash) => api.syncDeleteAttachment(contentHash)}
+            openNode={openAttachment}
           />
         </Suspense>
       ) : (

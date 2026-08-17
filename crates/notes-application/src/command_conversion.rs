@@ -7,7 +7,9 @@ use crate::{IpcImportImage, IpcMarkerKind, IpcNotesCommand, NotesError, NotesErr
 const MAX_BATCH_NODE_IDS: usize = 10_000;
 const MAX_IMPORT_NODES: usize = 2_000;
 const MAX_IMPORT_DEPTH: usize = 64;
-const MAX_IMPORT_TEXT_BYTES: usize = 100_000;
+/// The domain refuses anything past this too, so the two cannot drift into a
+/// state where an import is admitted here and rejected there.
+const MAX_IMPORT_TEXT_BYTES: usize = notes_core::MAX_FIELD_BYTES;
 
 fn invalid_command(message: impl Into<String>) -> NotesError {
     NotesError {

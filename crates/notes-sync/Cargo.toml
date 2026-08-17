@@ -1,0 +1,19 @@
+[package]
+name = "notes-sync"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+libc = "0.2"
+notes-application.workspace = true
+notes-core.workspace = true
+rusqlite.workspace = true
+sha2 = "0.10"
+tempfile = "3.27.0"
+unicode-normalization = "0.1.25"
+uuid.workspace = true
+
+[dev-dependencies]
+proptest = "1.9.0"

@@ -44,6 +44,33 @@ export class StoreViewport {
     }
   }
 
+  /**
+   * Reads the page the user is on again, keeping them on it. What a merge
+   * changed is anywhere in the page — including rows the window is not
+   * showing — so the page is re-read rather than patched row by row.
+   */
+  async reload(): Promise<void> {
+    const { activePageId } = this.getState();
+    if (!activePageId) return;
+    const sequence = ++this.sequence;
+    try {
+      const viewport = await this.api.queryViewport({
+        pageId: activePageId,
+        anchorId: null,
+        beforeCursor: null,
+        afterCursor: null,
+        limit: VIEWPORT_LIMIT
+      });
+      // A page the user left while this was in flight is not the page this
+      // answer describes.
+      if (sequence === this.sequence) this.apply(viewport, false);
+    } catch (cause) {
+      if (sequence === this.sequence) {
+        this.update({ error: messageFrom(cause) });
+      }
+    }
+  }
+
   async loadMore(): Promise<void> {
     const { activePageId, afterCursor } = this.getState();
     if (!activePageId || !afterCursor) return;

@@ -524,3 +524,101 @@ pub enum CloseOutcome {
     Flushed,
     AlreadyClosed,
 }
+
+/// What sync cannot do right now, as the window shows it. Asked for rather
+/// than pushed: a watch that failed at startup does so before the window is
+/// listening, so the answer has to be available to whoever asks late.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SyncStatus {
+    /// Files in the folder this app looked at and could not read.
+    pub refused: Vec<RefusedFile>,
+    /// Why the last write into the folder failed. A write that succeeds
+    /// clears it.
+    pub write_error: Option<String>,
+    /// Why the folder is not being watched. A watch that succeeds clears it.
+    /// Kept apart from the write: a successful export saying nothing about
+    /// the watch would be a lie about the one that failed.
+    pub watch_error: Option<String>,
+}
+
+/// A file this app refused, and the sentence the parser gave for it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct RefusedFile {
+    pub path: String,
+    pub reason: String,
+}
+
+/// One attachment, as the list shows it: one row per bullet rather than one
+/// per file, because the user finds a picture by the note they put it in. A
+/// file two pages use is two rows, each saying so.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SyncAttachment {
+    /// Empty for bytes no note mentions any more — there is no bullet to go to.
+    pub node_id: String,
+    /// What the bullet called the file.
+    pub name: String,
+    #[ts(type = "number")]
+    pub byte_length: i64,
+    pub content_hash: String,
+    pub page_id: String,
+    pub page_title: String,
+    /// The bullet this one sits under, empty when it sits on the page itself.
+    pub parent_title: String,
+    pub references: u32,
+    pub trashed: bool,
+    /// When the last note stopped pointing at it. The screen counts the two
+    /// weeks from here; `None` means something still points at it.
+    #[ts(type = "number | null")]
+    pub unreferenced_at: Option<i64>,
+}
+
+/// What a merge changed, pushed to the window rather than answered to it.
+/// This is the app's first event: every other change the window learns about
+/// is the receipt for something it asked for, and a file arriving from another
+/// device is nobody's request.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SyncChanged {
+    #[ts(type = "number")]
+    pub revision: u64,
+    pub changed_node_ids: Vec<String>,
+    pub deleted_node_ids: Vec<String>,
+}
+
+/// One defeat, complete enough for the settings screen to show it and to put
+/// it back. By the time anyone looks, the file that lost is long gone — so
+/// everything the screen needs lives in the row rather than being fetched.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SyncConflict {
+    #[ts(type = "number")]
+    pub seq: i64,
+    pub node_id: String,
+    /// What the losing side said, for the reader to recognise it by.
+    pub text: String,
+    /// `lww`, `same_t`, `clock_drift` or `dirty_overwrite`.
+    pub reason: String,
+    #[ts(type = "number")]
+    pub recorded_at: i64,
+}
+
+/// What the app found in the folder the user picked. Every state is accepted —
+/// this only tells the screen which sentence to show, so a wrong reading costs
+/// a misleading hint and nothing more. Whether the files inside are actually
+/// well formed is the parser's question, not this one's.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub enum SyncVaultFolderState {
+    Empty,
+    ExistingVault,
+    NonEmpty,
+}
