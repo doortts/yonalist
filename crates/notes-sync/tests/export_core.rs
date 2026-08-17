@@ -539,6 +539,182 @@ fn a_dirty_page_root_resolves_to_its_own_document() {
     assert_eq!(pending, vec![PAGE_ID.to_owned()]);
 }
 
+/// A hard delete is undo taking back a create, or a cascade following one. The
+/// row leaves, so the trigger marks its parent instead — and the parent is
+/// alive. Nothing dirty then carries `deleted = 1`, but the trash file is still
+/// naming a node that no longer exists anywhere.
+#[test]
+fn a_hard_deleted_node_still_needs_the_trash_rewritten() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    let other = "8a201f33-0000-4c91-8d02-000000000003";
+    connection
+        .execute(
+            "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, deleted, hlc)
+             VALUES (?1, ?2, 8589934592, 'bullet', 'Also deleted', 1, ?3)",
+            rusqlite::params![other, PAGE_ID, stamp(5)],
+        )
+        .expect("second deletion");
+    connection
+        .execute(
+            "UPDATE notes_nodes SET deleted = 1 WHERE id = ?1",
+            [NODE_ID],
+        )
+        .expect("delete");
+    export_trash(&mut connection, root.path());
+    connection
+        .execute("DELETE FROM notes_nodes WHERE id = ?1", [NODE_ID])
+        .expect("hard delete");
+
+    let transaction = connection.transaction().expect("begin");
+    let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
+    drop(transaction);
+
+    assert!(
+        pending.contains(&"yonalist-trash".to_owned()),
+        "the trash is still naming a row that has left: {pending:?}"
+    );
+    export_trash(&mut connection, root.path());
+    let file = std::fs::read_to_string(trash_path(root.path())).expect("the trash");
+    assert!(!file.contains("Thought"), "the row has left: {file}");
+    assert!(
+        file.contains("Also deleted"),
+        "the other one has not: {file}"
+    );
+}
+
+/// Emptying the trash removes a file, and removing is the one thing that
+/// cannot be taken back. The bytes on disk may be a newer trash from another
+/// device that has not been read yet — this device's own rows say nothing
+/// about deletions it has not heard of.
+#[test]
+fn an_unread_trash_from_elsewhere_is_not_removed() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    connection
+        .execute(
+            "UPDATE notes_nodes SET deleted = 1 WHERE id = ?1",
+            [NODE_ID],
+        )
+        .expect("delete");
+    export_trash(&mut connection, root.path());
+    connection
+        .execute(
+            "UPDATE notes_nodes SET deleted = 0 WHERE id = ?1",
+            [NODE_ID],
+        )
+        .expect("restore");
+    let arrived = "---\nyona: trash\nmax_hlc: zzzz\n---\n\n- Deleted elsewhere\n";
+    std::fs::write(trash_path(root.path()), arrived).expect("arrival");
+
+    let outcome = export_trash(&mut connection, root.path());
+
+    assert!(outcome.needs_merge, "these bytes have not been read yet");
+    assert_eq!(
+        std::fs::read_to_string(trash_path(root.path())).expect("still there"),
+        arrived,
+        "removing a deletion this device has never seen would undo it everywhere"
+    );
+    let transaction = connection.transaction().expect("begin");
+    let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
+    assert!(
+        pending.contains(&"yonalist-trash".to_owned()),
+        "the file is still there to deal with once the merge has read it: {pending:?}"
+    );
+}
+
+/// The same rule for a file this app cannot read at all — too big, a symlink,
+/// bytes the cloud has not brought down yet. Unreadable is not gone: whatever
+/// it says, it still says it, and a claim dropped here is a file nothing ever
+/// looks at again.
+#[test]
+fn a_trash_that_cannot_be_read_is_not_removed_either() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    connection
+        .execute(
+            "UPDATE notes_nodes SET deleted = 1 WHERE id = ?1",
+            [NODE_ID],
+        )
+        .expect("delete");
+    export_trash(&mut connection, root.path());
+    connection
+        .execute(
+            "UPDATE notes_nodes SET deleted = 0 WHERE id = ?1",
+            [NODE_ID],
+        )
+        .expect("restore");
+    // Pointing nowhere, so `exists` says no while something is plainly there.
+    // That is the whole difference this branch turns on.
+    std::fs::remove_file(trash_path(root.path())).expect("clear");
+    std::os::unix::fs::symlink(root.path().join("gone.md"), trash_path(root.path()))
+        .expect("symlink");
+
+    let outcome = export_trash(&mut connection, root.path());
+
+    assert!(outcome.needs_merge, "nothing here has been read");
+    assert!(
+        trash_path(root.path()).symlink_metadata().is_ok(),
+        "a file this app cannot read is not a file it may remove"
+    );
+    let transaction = connection.transaction().expect("begin");
+    let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
+    assert!(
+        pending.contains(&"yonalist-trash".to_owned()),
+        "and it stays on the queue until something can: {pending:?}"
+    );
+}
+
+/// The other side of the claim: a trash that has gone back to empty stops
+/// asking to be looked at. Without that, the first deletion a vault ever makes
+/// would have every dirty pass rebuild an empty trash for the rest of its life.
+#[test]
+fn an_emptied_trash_stops_putting_itself_in_the_queue() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    connection
+        .execute(
+            "UPDATE notes_nodes SET deleted = 1 WHERE id = ?1",
+            [NODE_ID],
+        )
+        .expect("delete");
+    export_trash(&mut connection, root.path());
+    connection
+        .execute(
+            "UPDATE notes_nodes SET deleted = 0 WHERE id = ?1",
+            [NODE_ID],
+        )
+        .expect("restore");
+    export_trash(&mut connection, root.path());
+
+    let transaction = connection.transaction().expect("begin");
+    let pending = notes_sync::export::pending_documents(&transaction).expect("pending");
+
+    assert!(
+        !pending.contains(&"yonalist-trash".to_owned()),
+        "there is nothing left for the trash to state: {pending:?}"
+    );
+    let stat: (String, Option<i64>, Option<i64>) = transaction
+        .query_row(
+            "SELECT exported_hash, file_mtime_ms, file_size FROM sync_documents
+             WHERE root_id = 'yonalist-trash'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("the record");
+    assert_eq!(
+        stat,
+        (String::new(), None, None),
+        "the same file can come back from a device that has not caught up, \
+         carrying the mtime it was written with, and a scan matching this \
+         record would call that arrival our own and never read it"
+    );
+}
+
 /// The whole reason home is ever queued. A page nobody has opened yet is one
 /// row under `root` and nothing else — if that does not put home in the queue,
 /// the page never appears in the vault's own README and the user cannot reach
