@@ -75,6 +75,14 @@ interface EnterSplitGesture {
   readonly tailId: string;
   readonly parentId: string;
   readonly beforeId: string | null;
+  /**
+   * The row the caret stays on for the whole gesture, when the gesture is one
+   * that leaves it behind: a blank opened above the caret's own row carries the
+   * text down and the caret with it, so every repeat still ends on that row
+   * rather than on the blank it just made. Absent means the caret follows the
+   * new row, which is what a split does.
+   */
+  readonly caretId?: string;
 }
 
 const enterSplitGestures = new WeakMap<HTMLElement, EnterSplitGesture>();
@@ -404,9 +412,10 @@ function executeRowIntent(
         enterSplitGestures.set(scope, {
           tailId: pending.id,
           parentId: split.parentId,
-          beforeId: split.beforeId
+          beforeId: split.beforeId,
+          caretId: activeGesture?.caretId
         });
-        focusAfterCommit(scope, pending.id, "start");
+        focusAfterCommit(scope, activeGesture?.caretId ?? pending.id, "start");
         void pending.committed.catch(() => undefined);
       }
       return;
@@ -420,12 +429,18 @@ function executeRowIntent(
         const parentId = activeGesture?.parentId ?? intent.parentId;
         const beforeId = activeGesture?.beforeId ?? intent.beforeId;
         const pending = store.beginCreateNode(parentId, "", beforeId);
+        // A blank aimed at the caret's own row goes in above it, so the row --
+        // and its text -- is what moved down. The caret goes with the text, the
+        // way Enter at the head of a line does in any editor.
+        const caretId = activeGesture?.caretId ??
+          (beforeId === node.id ? node.id : undefined);
         enterSplitGestures.set(scope, {
           tailId: pending.id,
           parentId,
-          beforeId
+          beforeId,
+          caretId
         });
-        focusAfterCommit(scope, pending.id, "start");
+        focusAfterCommit(scope, caretId ?? pending.id, "start");
         void pending.committed.catch(() => undefined);
       }
       return;
