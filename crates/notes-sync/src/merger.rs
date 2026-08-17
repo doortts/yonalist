@@ -43,6 +43,11 @@ pub struct MergeOutcome {
     /// revision: a replay is not an edit.
     pub applied: usize,
     pub changed_ids: BTreeSet<String>,
+    /// Rows this merge wrote or recorded a place claim on that the database
+    /// holds as deleted — whether this merge is what deleted them or it only
+    /// landed a claim on one already in the trash. The wider reading is what
+    /// both readers want: the window must not be told to draw a row that is
+    /// gone, and a history entry touching one is out of reach either way.
     pub deleted_ids: BTreeSet<String>,
     /// Rows a picture's bytes turning up settled. The window redraws these the
     /// same way it redraws the ones above, but nobody edited them — the row was
@@ -360,7 +365,20 @@ fn apply(
             // rebuild and a revision to move: reporting nothing would leave the
             // ordering column stale and every open session none the wiser.
             outcome.applied += 1;
-            outcome.changed_ids.insert(entry.id.clone());
+            // Which list, though, is what the database holds the row as — not
+            // the file the claim arrived in. A row in the trash has no line to
+            // redraw, and naming it as changed is what has the window read it
+            // as a row that came back, keeping the caret's typing and sending
+            // it to a row that is gone; a deletion a newer local edit outlived
+            // leaves the row on the page, and its line is there to redraw.
+            //
+            // A row is always here, as above: `decide` sends every node
+            // without one to `Write`.
+            if row.is_some_and(|row| row.deleted) {
+                outcome.deleted_ids.insert(entry.id.clone());
+            } else {
+                outcome.changed_ids.insert(entry.id.clone());
+            }
         }
         match verdict {
             Verdict::Skip => {}

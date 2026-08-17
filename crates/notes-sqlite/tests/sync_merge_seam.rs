@@ -65,6 +65,8 @@ fn page(text: &str, hlc: &str) -> VaultFile {
 }
 
 const IMAGE_NODE_ID: &str = "8a201f33-0000-4c91-8d02-00000000000f";
+/// The second note showing the same picture.
+const TWIN_NODE_ID: &str = "8a201f33-0000-4c91-8d02-00000000000e";
 
 /// A page whose one line is a picture, linked the way a document in a page
 /// folder links its own attachments.
@@ -93,6 +95,20 @@ fn page_with_image(disk_name: &str) -> VaultFile {
         nodes: vec![image],
         unknown_frontmatter: Vec::new(),
     })
+}
+
+/// The same picture pasted onto a second line, which is one link and two rows
+/// waiting for it.
+fn page_with_twin_images(disk_name: &str) -> VaultFile {
+    let mut file = page_with_image(disk_name);
+    let VaultFile::Page(document) = &mut file else {
+        panic!("a page");
+    };
+    document.nodes.push(DocumentNode {
+        id: TWIN_NODE_ID.to_owned(),
+        ..document.nodes[0].clone()
+    });
+    file
 }
 
 fn input() -> MergeInput {
@@ -767,6 +783,87 @@ fn an_arriving_attachment_resolves_the_rows_waiting_for_it() {
     );
 }
 
+/// A note the trash holds is on no page to redraw, and named there it reads to
+/// the window as a note that came back — so the window keeps the caret's typing
+/// and sends it to a row this database holds as deleted. The picture row still
+/// learns which picture it is: restored later, it draws the picture rather than
+/// a placeholder.
+#[test]
+fn an_arriving_attachment_leaves_a_row_the_trash_holds_unnamed() {
+    const HASH: &str = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
+    let (directory, storage) = storage();
+    storage
+        .merge_document(&page_with_image("holiday-9f2c1b7a4e6d.png"), &input())
+        .expect("merge");
+    run(
+        &storage,
+        NotesCommand::DeleteSubtree {
+            id: notes_core::NodeId::try_from(IMAGE_NODE_ID.to_owned()).expect("id"),
+        },
+    );
+    let before = storage.revision().expect("revision");
+
+    let resolved = storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            HASH,
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
+        )
+        .expect("resolve");
+
+    assert!(
+        resolved.is_empty(),
+        "a row the trash holds has no line to redraw"
+    );
+    assert_eq!(
+        image_path(&directory, IMAGE_NODE_ID),
+        format!("{HASH}.png"),
+        "the row still learns which picture it is"
+    );
+    assert_eq!(
+        storage.revision().expect("revision"),
+        before,
+        "nothing a window can see changed"
+    );
+}
+
+/// The same picture on a note that is still there and a note that is not. The
+/// answer is per row: the live one is named and redrawn, and its revision moves
+/// — a filter that went quiet whenever any waiting row was in the trash would
+/// leave the note on the page drawing a placeholder until a restart.
+#[test]
+fn an_arriving_attachment_names_the_live_row_and_not_its_trashed_twin() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page_with_twin_images("holiday-9f2c1b7a4e6d.png"), &input())
+        .expect("merge");
+    run(
+        &storage,
+        NotesCommand::DeleteSubtree {
+            id: notes_core::NodeId::try_from(IMAGE_NODE_ID.to_owned()).expect("id"),
+        },
+    );
+    let before = storage.revision().expect("revision");
+
+    let resolved = storage
+        .resolve_asset(
+            "holiday-9f2c1b7a4e6d.png",
+            "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
+            "Projects-4f1c8e20a3b7/assets/holiday-9f2c1b7a4e6d.png",
+        )
+        .expect("resolve");
+
+    assert_eq!(
+        resolved,
+        std::collections::BTreeSet::from([TWIN_NODE_ID.to_owned()]),
+        "the note still on the page is named and the one in the trash is not"
+    );
+    assert!(
+        storage.revision().expect("revision") > before,
+        "a row a window can see changed, so the revision has to move"
+    );
+}
+
 /// A hand edit can turn a picture line back into plain text. If the picture row
 /// stays behind, the node reads back as a bullet owning image metadata and
 /// every command on it is refused — it cannot be edited, and cannot even be
@@ -826,19 +923,10 @@ fn a_picture_a_file_turned_back_into_text_is_not_stranded() {
 /// first draws a placeholder over the second until it is restarted.
 #[test]
 fn every_row_waiting_for_the_same_picture_is_named() {
-    const TWIN_NODE_ID: &str = "8a201f33-0000-4c91-8d02-00000000000e";
     let (_directory, storage) = storage();
-    let mut file = page_with_image("holiday-9f2c1b7a4e6d.png");
-    let VaultFile::Page(document) = &mut file else {
-        panic!("a page");
-    };
-    // The same line twice: one picture, one link, two notes showing it.
-    let twin = DocumentNode {
-        id: TWIN_NODE_ID.to_owned(),
-        ..document.nodes[0].clone()
-    };
-    document.nodes.push(twin);
-    storage.merge_document(&file, &input()).expect("merge");
+    storage
+        .merge_document(&page_with_twin_images("holiday-9f2c1b7a4e6d.png"), &input())
+        .expect("merge");
 
     let resolved = storage
         .resolve_asset(

@@ -514,3 +514,12 @@ Shipped this way deliberately: without item 2 a trash-then-restore discards
 typing the user still has on screen, and losing typing outranks one late write
 to a row the database already holds as deleted. Closing it properly is a Rust
 change with its own gates, tracked separately.
+
+**Closed.** Both producer sites now leave `deleted = 1` rows out of the redraw
+list — `resolve_asset` answers with the rows a window can draw (`6550b18f`),
+and a place adoption is announced as deleted when the row's own column says so
+(`75a83b9b`). The design and its evidence are in
+`docs/superpowers/plans/2026-08-17-trashed-rows-out-of-redraw-list.md`. So the
+prune at `syncChanged.ts:86` may go on reading `changedNodeIds` as an existence
+claim; risk 3 above is what remains, and it is about a deletion nothing names
+at all.

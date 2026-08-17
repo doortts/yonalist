@@ -235,12 +235,6 @@ pub(crate) fn export_pending(
     Ok(written)
 }
 
-/// Reads every document in the vault back in, ignoring what the records say
-/// about them — the last net under the startup scan's stat gate.
-///
-/// Refused while this device is still holding edits it has not written out.
-/// A reindex treats the vault as the truth, and the vault does not yet know
-/// about those edits, so running it then would throw them away.
 /// An attachment's bytes arrived. Every image row still waiting for them —
 /// its link names this file and it has no hash of its own yet — learns the
 /// hash, and the app's own store is now where those bytes live.
@@ -257,6 +251,18 @@ pub(crate) fn export_pending(
 /// because that is the shape `MergeOutcome` reports ids in — `settled_ids`
 /// rather than `changed_ids`: the window redraws these, and nobody edited
 /// them, so no history entry falls out of reach for them.
+///
+/// The answer holds the rows a window can draw, so a note the trash holds
+/// learns its hash and is left out of it. The learning is unconditional on
+/// purpose: the arrival records the bytes once and no later sweep offers them
+/// again, so a row that skipped it would draw a placeholder for ever over a
+/// picture the store is holding, and the attachment list would read those
+/// bytes as an orphan nobody points at.
+///
+/// Which means a write here no longer implies a revision that moved: a row in
+/// the trash learns its hash and the counter stays where it was. An empty
+/// answer is the whole signal there is, and it has to be — a revision moving
+/// with nothing said leaves the session's next command rejected.
 pub(crate) fn resolve_asset(
     connection: &mut Connection,
     disk_name: &str,
@@ -315,14 +321,32 @@ pub(crate) fn resolve_asset(
             statement.execute(rusqlite::params![content_hash, disk_name, location])
         })
         .map_err(internal)?;
+    // The rows a window can act on. A note the trash holds is on no page to
+    // redraw, and named there it reads as a note that came back — so the window
+    // keeps the caret's typing and sends it to a row this database holds as
+    // deleted. Its picture row still learnt which picture it is above:
+    // restored later, it draws the picture rather than a placeholder.
+    let mut live = BTreeSet::new();
+    {
+        let mut statement = transaction
+            .prepare_cached("SELECT 1 FROM notes_nodes WHERE id = ?1 AND deleted = 0")
+            .map_err(internal)?;
+        for node_id in resolved {
+            if statement.exists([&node_id]).map_err(internal)? {
+                live.insert(node_id);
+            }
+        }
+    }
     // Rows changed, so the revision moves — the same rule the merge follows.
     // Nothing in the outline moved, but a note that was drawing a placeholder
-    // is drawing a picture now, and the window learns that no other way.
-    if !resolved.is_empty() {
+    // is drawing a picture now, and the window learns that no other way. Only
+    // the rows above: a revision this session is never told about leaves its
+    // next command rejected for a change nobody could see.
+    if !live.is_empty() {
         bump_revision(&transaction)?;
     }
     transaction.commit().map_err(internal)?;
-    Ok(resolved)
+    Ok(live)
 }
 
 /// What a reindex did, and what it could not do. The second number is the
@@ -334,6 +358,12 @@ pub struct ReindexReport {
     pub skipped: usize,
 }
 
+/// Reads every document in the vault back in, ignoring what the records say
+/// about them — the last net under the startup scan's stat gate.
+///
+/// Refused while this device is still holding edits it has not written out.
+/// A reindex treats the vault as the truth, and the vault does not yet know
+/// about those edits, so running it then would throw them away.
 pub(crate) fn reindex_vault(
     connection: &mut Connection,
     clock: &Clock,
