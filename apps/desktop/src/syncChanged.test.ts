@@ -62,6 +62,45 @@ describe("듣기: vault 변경 알림", () => {
     vi.useRealTimers();
   });
 
+  it("지워졌다가 돌아온 줄은 지워진 것으로 넘기지 않는다", async () => {
+    vi.useFakeTimers();
+    const { handlers, listen } = tauri();
+    const absorb = vi.fn(async () => undefined);
+
+    listenForVaultChanges(listen, absorb, 500);
+    await vi.waitFor(() => expect(handlers).toHaveLength(1));
+    // The shapes the merger really sends: trashing names the row in both
+    // lists, restoring it names it as changed alone.
+    handlers[0](change({ revision: 4, changedNodeIds: ["one"], deletedNodeIds: ["one"] }));
+    handlers[0](change({ revision: 9, changedNodeIds: ["one"] }));
+    vi.advanceTimersByTime(500);
+
+    expect(absorb).toHaveBeenCalledWith({
+      revision: 9,
+      changedNodeIds: ["one"],
+      deletedNodeIds: []
+    });
+    vi.useRealTimers();
+  });
+
+  it("한 묶음 안에서 지워졌다고도 바뀌었다고도 하면 지워진 것으로 넘긴다", async () => {
+    vi.useFakeTimers();
+    const { handlers, listen } = tauri();
+    const absorb = vi.fn(async () => undefined);
+
+    listenForVaultChanges(listen, absorb, 500);
+    await vi.waitFor(() => expect(handlers).toHaveLength(1));
+    handlers[0](change({ changedNodeIds: ["one"], deletedNodeIds: ["one"] }));
+    vi.advanceTimersByTime(500);
+
+    expect(absorb).toHaveBeenCalledWith({
+      revision: 7,
+      changedNodeIds: [],
+      deletedNodeIds: ["one"]
+    });
+    vi.useRealTimers();
+  });
+
   it("한 번 넘긴 것은 다음 묶음에 다시 오지 않는다", async () => {
     vi.useFakeTimers();
     const { handlers, listen } = tauri();

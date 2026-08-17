@@ -78,10 +78,18 @@ export function listenForVaultChanges(
   let revision = 0;
 
   const subscription = listen(SYNC_CHANGED, (change) => {
-    for (const id of change.changedNodeIds) changed.add(id);
+    for (const id of change.changedNodeIds) {
+      changed.add(id);
+      // A row that came back is not gone, whatever an earlier event in this run
+      // said. Naming it as both would have the reader drop the caret's own
+      // typing on a row the re-read then brings back alive.
+      deleted.delete(id);
+    }
     for (const id of change.deletedNodeIds) {
       deleted.add(id);
-      // Whatever it said before it went is not news any more.
+      // Whatever it said before it went is not news any more. Trashing names
+      // the row in both lists at once, and this order is what makes gone win
+      // inside one event.
       changed.delete(id);
     }
     revision = Math.max(revision, change.revision);

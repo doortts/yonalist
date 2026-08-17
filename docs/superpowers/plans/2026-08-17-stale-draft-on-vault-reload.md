@@ -490,3 +490,27 @@ neither is a gate.
    leaves the draft live and invisible, and the next command's flush sends its
    `updateText`. Ruling 3 explains why the store cannot detect that case on its
    own; the reporter's measured harmlessness bounds it.
+
+## Accepted residual, and the follow-up that closes it
+
+Item 2 prunes `deleted` when a later event in the same run names the id as
+changed, so a row restored on another device keeps the caret's typing. It
+infers liveness from `changedNodeIds`, and the producer does not promise that:
+`announce` builds `changed_node_ids` as `changed_ids ∪ settled_ids`
+(`apps/desktop/src-tauri/src/lib.rs:897`), and two sites name a row the local
+database holds as `deleted = 1`. `resolve_asset` settles on
+`WHERE content_hash = ''` with no `deleted` check
+(`crates/notes-sqlite/src/sync_merge.rs:281`), and a place adoption inserts into
+`changed_ids` outside the trash branch (`crates/notes-sync/src/merger.rs:363`).
+
+So one sequence still leaks the write this change exists to stop: another
+device trashes a row whose image bytes arrive a moment later, the settle names
+it as changed alone, item 2 drops it from `deleted`, and the draft is never
+dropped. The two cases are indistinguishable in the payload, so no
+consumer-side rule separates them — only the producer can, by leaving
+`deleted = 1` rows out of the redraw list.
+
+Shipped this way deliberately: without item 2 a trash-then-restore discards
+typing the user still has on screen, and losing typing outranks one late write
+to a row the database already holds as deleted. Closing it properly is a Rust
+change with its own gates, tracked separately.
