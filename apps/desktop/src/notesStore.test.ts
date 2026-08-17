@@ -751,6 +751,41 @@ describe("NotesStore viewport recovery", () => {
     });
   });
 
+  it("writes a second new page once, with the first still in flight", async () => {
+    const { store, notesApi, pageId } = await openedNewPage();
+    // Every page creation waits to be let through by hand, so the second one
+    // is still in flight when the first one finishes.
+    const held = new Map<string, () => void>();
+    const answered = vi.mocked(notesApi.execute).getMockImplementation()!;
+    vi.mocked(notesApi.execute).mockImplementation(async (envelope) => {
+      const { command } = envelope;
+      const first = command.kind === "createNode" &&
+        command.parent_id === "root" && !held.has(command.id);
+      if (first) {
+        await new Promise<void>((resolve) => held.set(command.id, resolve));
+      }
+      return answered(envelope);
+    });
+    void store.setCompleted(pageId, true);
+    const secondId = await store.createPage();
+    void store.setCompleted(secondId, true);
+
+    await vi.waitFor(() => expect(held.has(pageId)).toBe(true));
+    held.get(pageId)!();
+    await vi.waitFor(() => expect(held.has(secondId)).toBe(true));
+    const lastWrite = store.setCompleted(secondId, false);
+    held.get(secondId)!();
+    await lastWrite;
+
+    // One creation per page. The first one finishing must not hand the second
+    // page's creation back to be sent again -- the backend refuses an id it
+    // already has, and the write that asked for it dies with the refusal.
+    expect(vi.mocked(notesApi.execute).mock.calls.filter(
+      ([envelope]) => envelope.command.kind === "createNode"
+    ).map(([envelope]) => "id" in envelope.command ? envelope.command.id : null))
+      .toEqual([pageId, secondId]);
+  });
+
   it("keeps the new page when the answer for the page it left lands late", async () => {
     let release!: (viewport: ViewportPage) => void;
     const notesApi = api(vi.fn().mockReturnValue(

@@ -37,8 +37,10 @@ import {
 
 /**
  * Whether a command is about this page: the row itself, or a row going inside
- * it. Nothing else can name a page nobody has written in -- it holds no rows
- * of its own yet, and it has no entry in the page list to be acted on.
+ * it. Everything else a command can name is a row, and a page nobody has
+ * written in holds none -- a row inside it only exists once the page does,
+ * which is what these two fields cover. The nested parents a move or a
+ * duplicate carries are rows for the same reason.
  */
 function commandTouches(command: IpcNotesCommand, pageId: string): boolean {
   return ("id" in command && command.id === pageId) ||
@@ -365,33 +367,44 @@ export class NotesStore {
     if (id === null || (command && !commandTouches(command, id))) {
       return Promise.resolve();
     }
-    // A command that arrives while the creation is in flight waits for it,
-    // and the creation itself -- which comes back through here -- waits for
-    // the attempt before it, if any. What is waited on is only ever the
-    // finishing: a failed attempt that stayed here as a rejection would be
-    // what the retry inherited, and no retry would ever be sent.
+    // A command that arrives while the creation is in flight waits for it, and
+    // fails with it: writing into a page that was never created only earns a
+    // second error. The creation itself comes back through here, and what it
+    // must not wait on is itself, so the field below is emptied for the length
+    // of the call that sends it.
     if (this.creatingPageId === id) return this.pageCreation;
     this.creatingPageId = id;
-    const created = this.commands.execute({
+    this.pageCreation = Promise.resolve();
+    this.pageCreation = this.commands.execute({
       kind: "createNode",
       id,
       parent_id: ROOT_ID,
       before_id: null,
       text: ""
     }, null, false).then(() => {
-      this.creatingPageId = null;
+      this.settleCreation(id);
       // The receipt has already put the row in the page list, so the pane
       // reads the page off the list from here on.
       if (this.state.provisionalPageId === id) {
         this.update({ provisionalPageId: null });
       }
     }, (cause) => {
-      this.creatingPageId = null;
+      // Nothing was written, so the marker stands and the next command tries
+      // again.
+      this.settleCreation(id);
       throw cause;
     });
-    this.pageCreation = created.catch(() => undefined);
-    return created;
+    return this.pageCreation;
   };
+
+  /**
+   * Only the creation that is still the one under way may declare it over: a
+   * second page opened while the first was in flight owns the field by then,
+   * and taking it would send that page's creation a second time.
+   */
+  private settleCreation(id: string): void {
+    if (this.creatingPageId === id) this.creatingPageId = null;
+  }
 
   async createNode(
     parentId: string,

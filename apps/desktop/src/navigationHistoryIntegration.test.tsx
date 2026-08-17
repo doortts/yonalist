@@ -197,7 +197,7 @@ describe("a mutation that moves the view", () => {
     expect(notesApi.execute).toHaveBeenCalled();
     expect(screen.getByRole("textbox", { name: "Page title" })).toBe(title);
     expect(title).toHaveFocus();
-    release();
+    await act(async () => release());
   });
 
   it("takes one undo press to leave a page nobody wrote in", async () => {

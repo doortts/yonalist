@@ -6,7 +6,6 @@ import {
   confirmedNote,
   confirmedText,
   DRAFT_DEBOUNCE_MS,
-  titleHistoryGroup,
   TYPING_IDLE_MS
 } from "./storeSupport";
 
@@ -84,8 +83,7 @@ export class StoreDrafts {
     // to go: the row renders the draft over the node, so one left behind here
     // outlives the next undo and the keystroke after it commits it back.
     if (submittedText !== confirmedText(state, id)) {
-      const historyGroup =
-        this.titleHistoryGroups.get(id) ?? titleHistoryGroup(id);
+      const historyGroup = this.titleHistoryGroups.get(id) ?? `text:${id}`;
       await this.host.execute(
         { kind: "updateText", id, text: submittedText },
         historyGroup
