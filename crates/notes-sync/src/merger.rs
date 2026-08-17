@@ -250,7 +250,11 @@ fn flatten<'a>(nodes: &'a [DocumentNode], parent_id: &str, out: &mut Vec<Incomin
     let mut predecessor = String::new();
     for node in nodes {
         let id = if node.id.is_empty() {
-            Uuid::new_v4().hyphenated().to_string()
+            // A `yid`, like every other block id: this one is about to be
+            // written into the file the line came from, and the format carries
+            // nothing else. A shape the renderer refuses would leave the
+            // document unwritable for good.
+            notes_core::new_yid()
         } else {
             node.id.clone()
         };
