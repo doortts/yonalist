@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-sync-forget-conflict"
+description = "Enables the notes_sync_forget_conflict command without any pre-configured scope."
+commands.allow = ["notes_sync_forget_conflict"]
+
+[[permission]]
+identifier = "deny-notes-sync-forget-conflict"
+description = "Denies the notes_sync_forget_conflict command without any pre-configured scope."
+commands.deny = ["notes_sync_forget_conflict"]

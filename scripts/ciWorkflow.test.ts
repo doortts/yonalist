@@ -20,7 +20,6 @@ function workflow(file: string): Workflow {
 }
 
 const v2 = workflow("ci.yml");
-const v1 = workflow("ci-v1.yml");
 
 function steps(job: Job): string[] {
   return job.steps.map((step) => step.uses ?? step.run ?? "");
@@ -48,13 +47,13 @@ describe("CI workflows", () => {
   });
 
   it("makes the v2 job run the composite gate and nothing narrower", () => {
-    expect(steps(v2.jobs.v2)).toContain("npm run test:v2");
+    expect(steps(v2.jobs.v2)).toContain("npm run test:all");
     expect(v2.jobs.v2.if).toBeUndefined();
   });
 
   it("keeps the release performance suite off pull requests", () => {
     const performance = v2.jobs["v2-performance"];
-    expect(steps(performance)).toContain("npm run test:v2:performance");
+    expect(steps(performance)).toContain("npm run test:performance");
     expect(performance.if).toBe(
       "github.event_name == 'push' || github.event_name == 'workflow_dispatch'"
     );
@@ -76,14 +75,13 @@ describe("CI workflows", () => {
     }
   });
 
-  it("caches the root cargo workspace for v2 and src-tauri for v1", () => {
+  it("caches the one cargo workspace there is", () => {
     const cache = (flow: Workflow, job: string) =>
       flow.jobs[job].steps.find((step) =>
         step.uses?.startsWith("Swatinem/rust-cache")
       ) as (Step & { with?: { workspaces?: string } }) | undefined;
 
     expect(cache(v2, "v2")?.with?.workspaces).toBeUndefined();
-    expect(cache(v1, "rust")?.with?.workspaces).toBe("src-tauri");
   });
 
   it("installs node dependencies once, at the repo root", () => {
@@ -91,32 +89,8 @@ describe("CI workflows", () => {
     expect(installs).toEqual(["npm ci"]);
   });
 
-  it("runs the frozen v1 jobs only when v1 or shared tooling changes", () => {
-    for (const trigger of [v1.on.push, v1.on.pull_request]) {
-      expect(trigger?.paths).toEqual([
-        ".github/workflows/ci-v1.yml",
-        "index.html",
-        "package-lock.json",
-        "package.json",
-        "rust-toolchain.toml",
-        "scripts/**",
-        "src-tauri/**",
-        "src/**",
-        "tsconfig.json",
-        "vite.config.ts"
-      ]);
-    }
-  });
-
-  it("never triggers the v1 jobs from v2 sources", () => {
-    const paths = v1.on.pull_request?.paths ?? [];
-    for (const v2Path of ["apps/**", "apps/desktop/**", "crates/**", "Cargo.toml"]) {
-      expect(paths).not.toContain(v2Path);
-    }
-  });
-
   it("pins every action to the version already in use", () => {
-    expect([...new Set([...pinnedActions(v2), ...pinnedActions(v1)])].sort()).toEqual([
+    expect([...new Set(pinnedActions(v2))].sort()).toEqual([
       "Swatinem/rust-cache@v2",
       "actions/checkout@v4",
       "actions/setup-node@v4",

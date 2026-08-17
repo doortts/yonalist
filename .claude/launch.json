@@ -2,51 +2,16 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "yonalist-web",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 1420
-    },
-    {
-      "name": "yonalist-web-alt",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--port", "1421"],
-      "port": 1421
-    },
-    {
-      "name": "yonalist-web-perf",
-      "runtimeExecutable": "env",
-      "runtimeArgs": ["VITE_YONALIST_PERF=1", "npm", "run", "dev", "--", "--port", "1422"],
-      "port": 1422
-    },
-    {
-      "name": "yonalist-v2-drop-check",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": [
-        "run", "dev",
-        "--prefix",
-        "/Users/doortts/repos/yonalist/.worktrees/monaco-drop-fix/apps/desktop",
-        "--", "--port", "1443"
-      ],
-      "port": 1443
-    },
-    {
-      "name": "yonalist-desktop-1426",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "apps/desktop", "--", "--port", "1426"],
-      "port": 1426
-    },
-    {
       "name": "yonalist-desktop",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "apps/desktop", "--", "--port", "1425"],
       "port": 1425
     },
     {
-      "name": "yonalist-dist",
-      "runtimeExecutable": "npx",
-      "runtimeArgs": ["vite", "preview", "--port", "1424"],
-      "port": 1424
+      "name": "yonalist-desktop-alt",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "apps/desktop", "--", "--port", "1426"],
+      "port": 1426
     }
   ]
 }

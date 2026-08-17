@@ -5,7 +5,7 @@ development machine on 2026-07-29.
 
 ## Renderer bundle
 
-`npm run test:v2:bundle`
+`npm run test:all:bundle`
 
 - Initial editable JavaScript: **293.9KB raw / 89.1KB gzip**.
 - Budget: 300KB raw / 90KB gzip.
@@ -24,7 +24,7 @@ development machine on 2026-07-29.
 
 ## Bounded SQLite bootstrap
 
-`npm run test:v2:performance`
+`npm run test:performance`
 
 | Fixture | Result |
 |---|---:|

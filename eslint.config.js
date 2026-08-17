@@ -6,10 +6,10 @@ import reactHooks from "eslint-plugin-react-hooks";
 // parser (so .ts/.tsx parses) and the two react-hooks correctness rules.
 export default [
   {
-    ignores: ["node_modules", "dist", "src-tauri", "docs", ".worktrees"],
+    ignores: ["node_modules", "dist", "docs", ".worktrees"],
   },
   {
-    files: ["src/**/*.{ts,tsx}", "apps/desktop/src/**/*.{ts,tsx}"],
+    files: ["apps/desktop/src/**/*.{ts,tsx}"],
     languageOptions: {
       parser: tseslint.parser,
       parserOptions: {

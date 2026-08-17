@@ -7,7 +7,6 @@ members = [
   "crates/notes-sqlite",
   "crates/notes-sync",
 ]
-exclude = ["src-tauri"]
 resolver = "2"
 
 [workspace.package]

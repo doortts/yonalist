@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Default Yonalist desktop capabilities","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-destroy","core:window:allow-start-dragging","dialog:allow-open","dialog:allow-save","notification:default","main-window-app-commands"]}}
