@@ -265,6 +265,62 @@ describe("v2 outline keyboard intent resolver", () => {
     });
   });
 
+  // Enter at the head of the text is not a split at all: the row keeps what it
+  // has and a blank sibling goes in above it. Splitting here would hand the text
+  // to the new row -- inside the source, on a row with children, which demotes
+  // the parent into its own first child.
+  it("opens a blank sibling above when the caret sits at the head", () => {
+    expect(resolveOutlineKey(input({
+      nodeId: "parent",
+      value: "Parent",
+      selectionStart: 0,
+      selectionEnd: 0
+    }))).toEqual({
+      kind: "createSibling",
+      parentId: "page",
+      beforeId: "parent"
+    });
+    // Childless rows take the same rule, so the row that owns the text keeps
+    // owning it -- along with its note and its tick.
+    expect(resolveOutlineKey(input({
+      nodeId: "child",
+      value: "Child",
+      selectionStart: 0,
+      selectionEnd: 0
+    }))).toEqual({
+      kind: "createSibling",
+      parentId: "parent",
+      beforeId: "child"
+    });
+    // A swept span starting at the head is a real split: the sweep goes away and
+    // the half after it moves.
+    expect(resolveOutlineKey(input({
+      nodeId: "next",
+      value: "alphaomega",
+      selectionStart: 0,
+      selectionEnd: 5
+    }))).toEqual({
+      kind: "split",
+      prefix: "",
+      suffix: "omega",
+      parentId: "page",
+      beforeId: null
+    });
+    // An empty row has no text to keep, so Enter stays the split it was.
+    expect(resolveOutlineKey(input({
+      nodeId: "parent",
+      value: "",
+      selectionStart: 0,
+      selectionEnd: 0
+    }))).toEqual({
+      kind: "split",
+      prefix: "",
+      suffix: "",
+      parentId: "parent",
+      beforeId: "child"
+    });
+  });
+
   // Terminal Enter on a row with children is the same rule with an empty half
   // after the caret, so it resolves to the same intent rather than its own kind.
   it("makes terminal Enter on a row with children an empty first child", () => {
