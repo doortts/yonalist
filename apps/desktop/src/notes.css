@@ -2231,6 +2231,12 @@ body.is-outline-dragging * {
   color: var(--text-3);
 }
 
+/* A ticked checkbox already says the row is done. Every other marker has no
+   such box, so the line strikes itself out the way markdown's `~~` reads. */
+.notes-node[data-completed="true"]:not([data-marker-kind="todo"]) .notes-node-title {
+  text-decoration: line-through;
+}
+
 .notes-node-menu-slot {
   display: inline-flex;
   grid-column: 1;
