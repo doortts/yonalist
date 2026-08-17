@@ -141,7 +141,7 @@ describe("SettingsView", () => {
     const readConflicts = vi.fn().mockResolvedValue([
       {
         seq: 7,
-        nodeId: "8a201f33-0000-4c91-8d02-000000000001",
+        nodeId: "vTnXZwnGL468",
         text: "the note that lost",
         reason: "lww",
         recordedAt: 1_700_000_000
@@ -451,7 +451,7 @@ describe("SettingsView", () => {
 describe("SettingsView: one section at a time", () => {
   const conflict = {
     seq: 7,
-    nodeId: "8a201f33-0000-4c91-8d02-000000000001",
+    nodeId: "vTnXZwnGL468",
     text: "the note that lost",
     reason: "lww",
     recordedAt: 1_700_000_000

@@ -1424,7 +1424,7 @@ proptest! {
 }
 
 #[test]
-fn duplicated_children_get_uuid_ids() {
+fn duplicated_children_get_yid_ids() {
     let mut tree = NotesTree::default();
     tree.apply(&[
         TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
@@ -1432,7 +1432,7 @@ fn duplicated_children_get_uuid_ids() {
         TreeMutation::upsert(NoteNode::child(id("child"), id("b"), 1_024, "Child")),
     ])
     .unwrap();
-    let copy_id = id("6f1d90a4-1c77-4f0e-9b3a-7d2e5c48a910");
+    let copy_id = id("7Cn-irynP6fn");
 
     let duplicate = |tree: &mut NotesTree| {
         let patch = tree
@@ -1452,8 +1452,8 @@ fn duplicated_children_get_uuid_ids() {
     assert_eq!(copied.len(), 1, "the copy keeps its one child");
     let child_id = copied[0].as_str();
     assert!(
-        uuid::Uuid::try_parse(child_id).is_ok(),
-        "a derived child id has to be a uuid the file format can carry, got {child_id}"
+        notes_core::is_yid(child_id),
+        "a derived child id has to be a yid the file format can carry, got {child_id}"
     );
     assert_eq!(
         duplicate(&mut tree.clone()),

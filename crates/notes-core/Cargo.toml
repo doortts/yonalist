@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+base64 = "0.22"
+getrandom = "0.3"
 serde.workspace = true
 thiserror.workspace = true
 uuid.workspace = true

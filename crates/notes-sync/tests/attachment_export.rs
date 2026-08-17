@@ -10,10 +10,10 @@ use notes_sync::hlc::{Clock, Hlc};
 use rusqlite::Connection;
 
 const DEVICE: &str = "cccc";
-const FIRST_PAGE: &str = "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1";
-const SECOND_PAGE: &str = "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e2";
-const IMAGE_NODE: &str = "8a201f33-0000-4c91-8d02-000000000001";
-const OTHER_IMAGE_NODE: &str = "8a201f33-0000-4c91-8d02-000000000002";
+const FIRST_PAGE: &str = "26VJSt4Rw5eO";
+const SECOND_PAGE: &str = "SAu1WnG-Neew";
+const IMAGE_NODE: &str = "vTnXZwnGL468";
+const OTHER_IMAGE_NODE: &str = "V3F6tu7wEImb";
 /// Not a real png, and nothing here decodes it — the store already checked.
 const BYTES: &[u8] = b"pretend png";
 const HASH: &str = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
@@ -26,7 +26,7 @@ fn database() -> Connection {
     connection
         .execute(
             "INSERT INTO sync_meta(singleton, device_id, vault_uuid) VALUES (1, ?1, ?2)",
-            (DEVICE, "3f2a1c8e-0000-4c91-8d02-000000000000"),
+            (DEVICE, "k3wd2WXKEA2Z"),
         )
         .expect("sync meta");
     notes_sync::hlc::register(&connection, std::sync::Arc::new(clock())).expect("register");
@@ -115,7 +115,7 @@ fn read(workspace: &Workspace, relative: &str) -> Option<String> {
     std::fs::read_to_string(workspace.vault.path().join(relative)).ok()
 }
 
-const FIRST_FOLDER: &str = "Notes-4f1c8e20a3b7";
+const FIRST_FOLDER: &str = "Notes-26VJSt4Rw5eO";
 const DISK_NAME: &str = "holiday-9f2c1b7a4e6d.png";
 
 #[test]
@@ -197,7 +197,7 @@ fn an_attachment_inside_a_split_document_belongs_to_the_page() {
     let mut connection = database();
     let workspace = workspace();
     page(&connection, FIRST_PAGE, "Notes", 4294967296);
-    let split = "8a201f33-0000-4c91-8d02-0000000000dd";
+    let split = "b0VWgPpWMMra";
     connection
         .execute(
             "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
@@ -210,7 +210,7 @@ fn an_attachment_inside_a_split_document_belongs_to_the_page() {
             "INSERT INTO sync_documents(root_id, folder_path) VALUES (?1, ?2)",
             rusqlite::params![
                 split,
-                format!("{FIRST_FOLDER}/Deeper-8a201f330000/README.md")
+                format!("{FIRST_FOLDER}/Deeper-vTnXZwnGL468/README.md")
             ],
         )
         .expect("split document");
@@ -283,7 +283,7 @@ fn an_attachment_whose_bytes_have_not_arrived_stops_nothing_else() {
     // in the vault yet, and this app's store has never seen it either.
     connection
         .execute(
-            "UPDATE notes_images SET relative_path = '../assets/elsewhere-000000000000.png'",
+            "UPDATE notes_images SET relative_path = '../assets/elsewhere-AcnSSU4wyaI3.png'",
             (),
         )
         .expect("link");
@@ -496,8 +496,13 @@ fn a_trashed_picture_with_bytes_but_no_placement_states_the_name_it_will_get() {
         file.contains(&format!("](../assets/{DISK_NAME})")),
         "the name every device can match to these bytes: {file}"
     );
+    // The footer states the hash on purpose — it is what says which picture
+    // this is when the bytes have not arrived. What must not carry it is the
+    // link: that is a path, and the app store's own name means nothing in a
+    // vault another device reads.
+    let body = file.split("<!-- yonalist").next().expect("a body");
     assert!(
-        !file.contains(HASH),
+        !body.contains(HASH),
         "the app store's own name means nothing in a vault: {file}"
     );
 }

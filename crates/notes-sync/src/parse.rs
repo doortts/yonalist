@@ -6,12 +6,10 @@
 //! because nothing downstream can tell which half it received.
 
 use crate::document::{
-    DocumentId, DocumentNode, DocumentRoot, ImageReference, Marker, NodeBody, PageDocument,
-    TrashDocument, VaultFile,
+    BlockState, ChildKind, DocumentId, DocumentNode, DocumentRoot, Footer, ImageReference, Marker,
+    NodeBody, PageDocument, TrashDocument, VaultFile,
 };
-use crate::hlc::Hlc;
 use std::collections::HashSet;
-use uuid::Uuid;
 
 pub const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_DEPTH: usize = 128;
@@ -59,24 +57,80 @@ pub fn parse(bytes: &[u8]) -> Result<VaultFile, Quarantine> {
             return Err("The file still holds a git conflict marker.".to_owned());
         }
     }
+    let (body, footer) = split_footer(&body)?;
 
     let keys = read_frontmatter(&frontmatter)?;
     match keys.get("kind").map(String::as_str) {
-        Some("yonalist-notes") => parse_page(&keys, &body),
-        Some("yonalist-trash") => parse_trash(&keys, &body),
+        Some("yonalist-notes") => parse_page(&keys, body, footer),
+        Some("yonalist-trash") => parse_trash(&keys, body, footer),
         Some(other) => Err(format!("`{other}` is not a kind this app writes.")),
         None => Err("The frontmatter has no kind.".to_owned()),
     }
 }
 
+/// The footer is the file's last non-blank element and there is exactly one of
+/// it. A file with no footer is a plain markdown file somebody wrote by hand,
+/// which is a state this format expects; a file with two is one nobody can say
+/// the meaning of, so it is refused rather than half-read.
+fn split_footer<'a>(body: &'a [&'a str]) -> Result<(&'a [&'a str], Footer), Quarantine> {
+    let opens: Vec<usize> = body
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.trim_end() == "<!-- yonalist")
+        .map(|(at, _)| at)
+        .collect();
+    let Some(&open) = opens.first() else {
+        return Ok((body, Footer::default()));
+    };
+    if opens.len() > 1 {
+        return Err("The file holds more than one yonalist footer.".to_owned());
+    }
+    let close = open + 2;
+    if body.get(close).map(|line| line.trim_end()) != Some("-->") {
+        return Err("The yonalist footer is not one line of JSON between its markers.".to_owned());
+    }
+    if body[close + 1..].iter().any(|line| !line.trim().is_empty()) {
+        return Err("The yonalist footer is not the last thing in the file.".to_owned());
+    }
+    let footer: Footer = serde_json::from_str(body[open + 1])
+        .map_err(|error| format!("The yonalist footer is not readable: {error}"))?;
+    // Empty is a legitimate answer for either: a document that has never
+    // reconciled with anything has no base, and a file written before its
+    // snapshot was taken has no state hash yet. Both mean "no ancestor to
+    // prove", which §5.3 already routes to asking rather than guessing. A
+    // malformed hash is different — it would look like a base that exists.
+    if !footer.state_hash.is_empty() {
+        check_hash(&footer.state_hash, "state_hash")?;
+    }
+    if !footer.base.is_empty() {
+        check_hash(&footer.base, "base")?;
+    }
+    Ok((&body[..open], footer))
+}
+
+/// Lowercase hex behind a named algorithm, or nothing. A hash this reader
+/// cannot compare is worse than no hash: it would look like a base that exists.
+fn check_hash(value: &str, field: &str) -> Result<(), Quarantine> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return Err(format!("`{field}` is not a sha256 hash."));
+    };
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("`{field}` is not a sha256 hash."));
+    }
+    if hex.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return Err(format!("`{field}` is not lowercase hex."));
+    }
+    Ok(())
+}
+
 /// Everything this version understands, in the order §4.2 fixes. Anything else
 /// is carried through untouched so a newer device's file survives the trip.
-const KNOWN_KEYS: &[&str] = &[
-    "kind",
-    "format_version",
-    "id",
-    "parent",
-    "sort_key",
+const KNOWN_KEYS: &[&str] = &["kind", "format_version", "id", "parent", "sort_key"];
+
+/// Keys an earlier development format wrote. The format version did not move,
+/// so a file carrying one of these is not a newer device's file to round-trip —
+/// it is an older one, and reading it would mint fresh ids for every line.
+const RESERVED_KEYS: &[&str] = &[
     "max_hlc",
     "root_hlc",
     "root_marker_kind",
@@ -110,6 +164,11 @@ fn read_frontmatter(lines: &[&str]) -> Result<Frontmatter, Quarantine> {
         else {
             return Err(format!("`{line}` is not a frontmatter key."));
         };
+        if RESERVED_KEYS.contains(&key) {
+            return Err(format!(
+                "`{key}` belongs to an older development format. Rebuild this vault."
+            ));
+        }
         if KNOWN_KEYS.contains(&key) {
             if known.iter().any(|(name, _)| name == key) {
                 return Err(format!("The frontmatter sets `{key}` twice."));
@@ -122,15 +181,15 @@ fn read_frontmatter(lines: &[&str]) -> Result<Frontmatter, Quarantine> {
     Ok(Frontmatter { known, unknown })
 }
 
-fn parse_page(keys: &Frontmatter, body: &[&str]) -> Result<VaultFile, Quarantine> {
+fn parse_page(keys: &Frontmatter, body: &[&str], footer: Footer) -> Result<VaultFile, Quarantine> {
     require_format_version(keys)?;
     let id = match keys.get("id").map(String::as_str) {
         Some("root") => DocumentId::Home,
-        Some(value) => DocumentId::Node(canonical_uuid(value)?),
+        Some(value) => DocumentId::Node(block_id(value)?),
         None => return Err("The document has no id.".to_owned()),
     };
     let parent = match keys.get("parent") {
-        Some(value) => Some(canonical_uuid(value)?),
+        Some(value) => Some(block_id(value)?),
         None => None,
     };
     let sort_key = match keys.get("sort_key") {
@@ -167,49 +226,151 @@ fn parse_page(keys: &Frontmatter, body: &[&str]) -> Result<VaultFile, Quarantine
     let note = note.join("\n");
     field_fits(&note, "root note")?;
 
-    let root = DocumentRoot {
+    let mut root = DocumentRoot {
         title,
         note,
-        hlc: optional_hlc(keys.get("root_hlc")),
-        marker: root_marker(keys)?,
-        collapsed: flag(keys, "root_collapsed")?,
-        completed: flag(keys, "root_completed")?,
-        starred: flag(keys, "root_starred")?,
+        ..DocumentRoot::default()
     };
+    apply_root_state(&mut root, footer.state.get(id.as_str()));
 
     let mut reader = NodeReader::new(false);
-    let nodes = reader.read(body)?;
+    let mut nodes = reader.read(body)?;
     if let DocumentId::Node(id) = &id
-        && reader.ids.contains(&id.to_ascii_lowercase())
+        && reader.ids.contains(id)
     {
         return Err("A node claims the document's own id.".to_owned());
     }
-
-    // The content is the only evidence. A stated key that runs ahead of it is a
-    // hand edit, and keeping it would push the boot clock into the future and
-    // future-stamp every later local edit.
-    let max_hlc = highest_hlc(&nodes).max(root.hlc.clone());
+    for node in &mut nodes {
+        apply_node_state(node, &footer)?;
+    }
 
     Ok(VaultFile::Page(PageDocument {
         id,
         parent,
         sort_key,
-        max_hlc,
+        max_hlc: String::new(),
+        state_hash: footer.state_hash,
+        base: footer.base,
         root,
         nodes,
         unknown_frontmatter: keys.unknown.clone(),
     }))
 }
 
-fn parse_trash(keys: &Frontmatter, body: &[&str]) -> Result<VaultFile, Quarantine> {
+fn parse_trash(keys: &Frontmatter, body: &[&str], footer: Footer) -> Result<VaultFile, Quarantine> {
     require_format_version(keys)?;
     if keys.get("id").is_some() {
         return Err("The trash does not have an id.".to_owned());
     }
     let mut reader = NodeReader::new(true);
-    let nodes = reader.read(body.iter().peekable())?;
-    let max_hlc = highest_hlc(&nodes);
-    Ok(VaultFile::Trash(TrashDocument { max_hlc, nodes }))
+    let mut nodes = reader.read(body.iter().peekable())?;
+    for node in &mut nodes {
+        apply_node_state(node, &footer)?;
+    }
+    Ok(VaultFile::Trash(TrashDocument {
+        max_hlc: String::new(),
+        state_hash: footer.state_hash,
+        base: footer.base,
+        nodes,
+    }))
+}
+
+/// The heading has no comment of its own, so everything a bullet would say on
+/// its line the root says in the footer instead.
+fn apply_root_state(root: &mut DocumentRoot, state: Option<&BlockState>) {
+    let Some(state) = state else {
+        return;
+    };
+    root.collapsed = state.collapsed;
+    root.starred = state.starred;
+    root.completed = state.completed;
+    root.marker = marker_of(state);
+    root.unknown_state = state.unknown.clone();
+}
+
+/// The body is the authority on what it can express — the checkbox, the title,
+/// the note. This fills in only what the body has nowhere to say, and a state
+/// entry naming a block the body does not hold is stale metadata, not an error.
+fn apply_node_state(node: &mut DocumentNode, footer: &Footer) -> Result<(), Quarantine> {
+    if let Some(state) = footer.state.get(&node.id) {
+        node.collapsed = state.collapsed;
+        node.starred = state.starred;
+        node.unknown_state = state.unknown.clone();
+        // The line drew what it is. Only a row that drew nothing — a plain
+        // bullet — has a marker left for the footer to state, and that is the
+        // document root's case rather than a bullet's.
+        if node.marker == Marker::Bullet {
+            node.marker = marker_of(state);
+        }
+        // A todo already said so with its checkbox; anything else takes the
+        // footer's word for it.
+        if node.marker != Marker::Todo {
+            node.completed = state.completed;
+        }
+        if let Some(child_kind) = state.child_kind.as_deref() {
+            let child_kind = match child_kind {
+                "page" => ChildKind::Page,
+                "split" => ChildKind::Split,
+                other => return Err(format!("`{other}` is not a child kind.")),
+            };
+            let NodeBody::Text(body) = &node.body else {
+                return Err("A picture cannot also be a child document.".to_owned());
+            };
+            let (title, path) = read_link(body)
+                .ok_or_else(|| format!("A child document line is not a link: `{body}`"))?;
+            // The child document's frontmatter owns this node's state, so
+            // whatever the parent's line said about it is not evidence.
+            node.marker = Marker::Bullet;
+            node.starred = false;
+            node.completed = false;
+            node.collapsed = false;
+            node.body = NodeBody::Split {
+                title,
+                path,
+                child_kind,
+            };
+        }
+        if let NodeBody::Image(image) = &mut node.body {
+            // A width below the minimum is drawn at the minimum: it is a
+            // display choice, and clamping keeps the picture visible. A size
+            // outside the format's bounds is different — it would break a DB
+            // constraint further in, where the answer is no longer a
+            // quarantine with a reason.
+            image.display_width = state
+                .width
+                .unwrap_or(MIN_DISPLAY_WIDTH)
+                .max(MIN_DISPLAY_WIDTH);
+            image.pixel_width = state.pixel_width.unwrap_or(0);
+            image.pixel_height = state.pixel_height.unwrap_or(0);
+            image.byte_size = state.byte_size.unwrap_or(0);
+            image.asset_hash = state.asset_hash.clone().unwrap_or_default();
+            if image.byte_size > MAX_ASSET_BYTES {
+                return Err(format!(
+                    "A picture of {} bytes is over the {MAX_ASSET_BYTES} byte cap.",
+                    image.byte_size
+                ));
+            }
+            if (image.pixel_width == 0) != (image.pixel_height == 0) {
+                return Err("A picture states one pixel dimension without the other.".to_owned());
+            }
+        }
+        node.from = match (&state.restore_parent, state.restore_after) {
+            (Some(parent), Some(after)) => Some((parent.clone(), after)),
+            _ => None,
+        };
+    }
+    for child in &mut node.children {
+        apply_node_state(child, footer)?;
+    }
+    Ok(())
+}
+
+fn marker_of(state: &BlockState) -> Marker {
+    match state.marker.as_deref() {
+        Some("todo") => Marker::Todo,
+        Some("ordered") => Marker::Ordered(state.ordered_start.unwrap_or(1)),
+        _ => Marker::Bullet,
+    }
 }
 
 fn require_format_version(keys: &Frontmatter) -> Result<(), Quarantine> {
@@ -217,29 +378,6 @@ fn require_format_version(keys: &Frontmatter) -> Result<(), Quarantine> {
         Some("1") => Ok(()),
         Some(other) => Err(format!("Format version {other} is not one this app reads.")),
         None => Err("The document does not state its format version.".to_owned()),
-    }
-}
-
-fn root_marker(keys: &Frontmatter) -> Result<Marker, Quarantine> {
-    let start = match keys.get("root_ordered_start") {
-        Some(value) => value
-            .parse::<i64>()
-            .map_err(|_| format!("`{value}` is not an ordered start."))?,
-        None => 1,
-    };
-    match keys.get("root_marker_kind").map(String::as_str) {
-        None | Some("bullet") => Ok(Marker::Bullet),
-        Some("todo") => Ok(Marker::Todo),
-        Some("ordered") => Ok(Marker::Ordered(start)),
-        Some(other) => Err(format!("`{other}` is not a marker kind.")),
-    }
-}
-
-fn flag(keys: &Frontmatter, key: &str) -> Result<bool, Quarantine> {
-    match keys.get(key).map(String::as_str) {
-        None | Some("false") => Ok(false),
-        Some("true") => Ok(true),
-        Some(other) => Err(format!("`{key}` is `{other}` rather than true or false.")),
     }
 }
 
@@ -304,7 +442,7 @@ impl NodeReader {
             if self.count > MAX_NODES {
                 return Err(format!("The document holds more than {MAX_NODES} nodes."));
             }
-            if !node_line.id.is_empty() && !self.ids.insert(node_line.id.to_ascii_lowercase()) {
+            if !node_line.id.is_empty() && !self.ids.insert(node_line.id.clone()) {
                 return Err(format!("The id {} appears twice.", node_line.id));
             }
             while stack.len() > depth {
@@ -347,47 +485,41 @@ fn split_indentation(line: &str) -> (usize, &str) {
 
 fn read_node_line(rest: &str, trash: bool) -> Result<Option<DocumentNode>, Quarantine> {
     let (prefix_marker, prefix_completed, body) = if let Some(body) = rest.strip_prefix("- [ ] ") {
-        (Some(Marker::Todo), false, body)
+        (Marker::Todo, false, body)
     } else if let Some(body) = rest.strip_prefix("- [x] ") {
-        (Some(Marker::Todo), true, body)
+        (Marker::Todo, true, body)
     } else if let Some(body) = rest.strip_prefix("- ") {
-        (None, false, body)
+        (Marker::Bullet, false, body)
+    } else if let Some((number, body)) = read_number(rest) {
+        // Only the first row of a run keeps its number as the start; the rest
+        // are counting, and reading each one as its own start says the same
+        // thing. What the row was drawn as is what it goes back as.
+        (Marker::Ordered(number), false, body)
     } else {
         return Ok(None);
     };
 
     let (body, comment) = split_trailing_comment(body);
-    let tokens = read_tokens(comment)?;
+    let id = read_id(comment)?;
 
     let mut node = DocumentNode {
-        id: tokens.id,
-        hlc: tokens.hlc,
+        id,
+        hlc: String::new(),
         body: NodeBody::Text(String::new()),
         note: String::new(),
-        marker: prefix_marker.unwrap_or(tokens.marker),
-        collapsed: tokens.collapsed,
-        completed: prefix_completed || tokens.completed,
-        starred: tokens.starred,
-        from: tokens.from,
-        place: tokens.place,
-        unknown_tokens: tokens.unknown,
+        marker: prefix_marker,
+        collapsed: false,
+        completed: prefix_completed,
+        starred: false,
+        from: None,
+        place: None,
+        unknown_tokens: Vec::new(),
+        unknown_state: std::collections::BTreeMap::new(),
         children: Vec::new(),
     };
-    if node.from.is_some() && !trash {
-        return Err("A page has no place a node was deleted from.".to_owned());
-    }
+    let _ = trash;
 
-    node.body = if tokens.split {
-        let (title, path) =
-            read_link(body).ok_or_else(|| format!("A split line is not a link: `{body}`"))?;
-        // The child document's frontmatter owns this node's state, so whatever
-        // the parent's line said about it is not evidence.
-        node.marker = Marker::Bullet;
-        node.starred = false;
-        node.completed = false;
-        node.collapsed = false;
-        NodeBody::Split { title, path }
-    } else if body.starts_with("![") {
+    node.body = if body.starts_with("![") {
         NodeBody::Image(read_image(body)?)
     } else {
         let text = unescape_inline(body);
@@ -411,135 +543,68 @@ fn split_trailing_comment(line: &str) -> (&str, &str) {
     // not cost the node the identity the comment carries. Whitespace *before*
     // the comment belongs to the text and stays where it is.
     let candidate = line[separator + 1..].trim_end();
-    let Some(inner) = candidate
-        .strip_prefix("<!--")
-        .and_then(|rest| rest.strip_suffix("-->"))
-    else {
-        return (line, "");
-    };
-    if inner.trim_start().starts_with("ya:") {
+    if !candidate.starts_with("<!--") || !candidate.ends_with("-->") {
         return (line, "");
     }
     (&line[..separator], candidate)
 }
 
-#[derive(Default)]
-struct Tokens {
-    id: String,
-    hlc: String,
-    marker: Marker,
-    starred: bool,
-    completed: bool,
-    collapsed: bool,
-    split: bool,
-    from: Option<(String, i64)>,
-    place: Option<(String, String)>,
-    unknown: Vec<String>,
-}
+/// Reserved words an earlier development format wrote on the line. The format
+/// version did not move, so meeting one means an older file, not a newer one:
+/// ignoring it would read the line as a brand new node and issue it a new id.
+const RESERVED_TOKENS: &[&str] = &[
+    "t:",
+    "prev:",
+    "from:",
+    "star",
+    "todo",
+    "ordered:",
+    "done",
+    "split",
+    "collapsed",
+];
 
-/// A token ending in `:` takes the next word as its value whether or not this
-/// version knows the token. Without that rule an unknown `foo: collapsed` would
-/// read its own value as a state.
-fn read_tokens(comment: &str) -> Result<Tokens, Quarantine> {
+/// One token, one value. A bullet says which block it is and nothing else —
+/// everything that used to ride along here lives in the footer now.
+fn read_id(comment: &str) -> Result<String, Quarantine> {
     let Some(inner) = comment
         .strip_prefix("<!--")
         .and_then(|rest| rest.strip_suffix("-->"))
     else {
-        return Ok(Tokens::default());
+        return Ok(String::new());
     };
-    let mut tokens = Tokens::default();
-    let mut seen: Vec<&str> = Vec::new();
-    let mut words = inner.split_whitespace().peekable();
-    while let Some(word) = words.next() {
-        let mut once = |name: &'static str| -> Result<(), Quarantine> {
-            if seen.contains(&name) {
-                return Err(format!("The comment sets `{name}` twice."));
-            }
-            seen.push(name);
-            Ok(())
-        };
-        match word {
-            "yid:" => {
-                once("yid")?;
-                let value = words.next().unwrap_or_default();
-                tokens.id = canonical_uuid(value)?;
-            }
-            "t:" => {
-                once("t")?;
-                tokens.hlc = optional_hlc(words.next().map(str::to_owned).as_ref());
-            }
-            "star" => {
-                once("star")?;
-                tokens.starred = true;
-            }
-            "todo" => {
-                once("marker")?;
-                tokens.marker = Marker::Todo;
-            }
-            "ordered:" => {
-                once("marker")?;
-                let value = words.next().unwrap_or_default();
-                tokens.marker = Marker::Ordered(
-                    value
-                        .parse()
-                        .map_err(|_| format!("`{value}` is not an ordered start."))?,
-                );
-            }
-            "done" => {
-                once("done")?;
-                tokens.completed = true;
-            }
-            "split" => {
-                once("split")?;
-                tokens.split = true;
-            }
-            "prev:" => {
-                once("prev")?;
-                let value = words.next().unwrap_or_default();
-                // Split at the last `@`, the same shape `from:` uses. An empty
-                // value means "first among siblings", which is why the split
-                // has to tolerate an empty left half.
-                let (previous, stamp) = value
-                    .rsplit_once('@')
-                    .ok_or_else(|| format!("`{value}` is not a place claim."))?;
-                let previous = if previous.is_empty() {
-                    String::new()
-                } else {
-                    canonical_uuid(previous)?
-                };
-                tokens.place = Some((previous, optional_hlc(Some(&stamp.to_owned()))));
-            }
-            "collapsed" => {
-                once("collapsed")?;
-                tokens.collapsed = true;
-            }
-            "from:" => {
-                once("from")?;
-                let value = words.next().unwrap_or_default();
-                let (parent, sort_key) = value
-                    .rsplit_once('@')
-                    .ok_or_else(|| format!("`{value}` is not a deletion origin."))?;
-                let parent = if parent == "root" {
-                    "root".to_owned()
-                } else {
-                    canonical_uuid(parent)?
-                };
-                let sort_key = sort_key
-                    .parse()
-                    .map_err(|_| format!("`{sort_key}` is not a sort key."))?;
-                tokens.from = Some((parent, sort_key));
-            }
-            other => {
-                tokens.unknown.push(other.to_owned());
-                if other.ends_with(':')
-                    && let Some(value) = words.next()
-                {
-                    tokens.unknown.push(value.to_owned());
-                }
-            }
-        }
+    let mut words = inner.split_whitespace();
+    let Some(first) = words.next() else {
+        return Ok(String::new());
+    };
+    if first != "yid:" {
+        return Err(format!("`{first}` is not a token this format writes."));
     }
-    Ok(tokens)
+    let value = words.next().unwrap_or_default();
+    let id = block_id(value)?;
+    if let Some(extra) = words.next() {
+        if RESERVED_TOKENS.contains(&extra) {
+            return Err(format!(
+                "`{extra}` belongs to an older development format. Rebuild this vault."
+            ));
+        }
+        return Err(format!(
+            "A node comment carries more than its id: `{extra}`"
+        ));
+    }
+    Ok(id)
+}
+
+/// A numbered row, as markdown draws one. The number is the row's own: a run
+/// counts up, so reading each row at the number it shows puts the run back
+/// exactly as it was drawn.
+fn read_number(rest: &str) -> Option<(i64, &str)> {
+    let end = rest.find(|character: char| !character.is_ascii_digit())?;
+    if end == 0 || end > 9 {
+        return None;
+    }
+    let body = rest[end..].strip_prefix(". ")?;
+    Some((rest[..end].parse().ok()?, body))
 }
 
 fn read_link(body: &str) -> Option<(String, String)> {
@@ -550,78 +615,17 @@ fn read_link(body: &str) -> Option<(String, String)> {
     Some((title, path.to_owned()))
 }
 
+/// A picture is an ordinary markdown image. How wide it is drawn, how big it
+/// is and which bytes it is are all in the footer: none of them are things a
+/// person editing the line would want to see, or could keep correct by hand.
 fn read_image(body: &str) -> Result<ImageReference, Quarantine> {
-    let (body, comment) = body
-        .rsplit_once(" <!--")
-        .map(|(head, tail)| (head, format!("<!--{tail}")))
-        .ok_or_else(|| format!("An image line has no metadata: `{body}`"))?;
-    let comment = comment.trim_end();
     let (name, path) = read_link(body.strip_prefix('!').unwrap_or(body))
         .ok_or_else(|| format!("An image line is not a link: `{body}`"))?;
     check_asset_path(&path)?;
-
-    let inner = comment
-        .strip_prefix("<!-- ya:")
-        .and_then(|rest| rest.strip_suffix("-->"))
-        .ok_or_else(|| format!("An image line has no metadata: `{comment}`"))?;
-    let mut width = None;
-    let mut pixels = None;
-    let mut bytes = None;
-    // Same rule as a node comment: only a token ending in `:` takes the next
-    // word. Pairing every two words would let one unknown flag shift every
-    // token after it out of place.
-    let mut unknown = Vec::new();
-    let mut words = inner.split_whitespace();
-    while let Some(word) = words.next() {
-        if !word.ends_with(':') {
-            unknown.push(word.to_owned());
-            continue;
-        }
-        let value = words.next().unwrap_or_default();
-        match word {
-            "w:" => width = value.parse::<u32>().ok(),
-            "px:" => {
-                pixels = value
-                    .split_once('x')
-                    .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
-            }
-            "bytes:" => bytes = value.parse::<u64>().ok(),
-            _ => {
-                unknown.push(word.to_owned());
-                unknown.push(value.to_owned());
-            }
-        }
-    }
-    let (pixel_width, pixel_height) =
-        pixels.ok_or_else(|| "An image line has no pixel size.".to_owned())?;
-    // The bounds are facts about the format, so they are answered here, where a
-    // refusal is a quarantine with a reason — not later, where the same file
-    // would die on a database constraint with nothing to tell the user.
-    if pixel_width == 0 || pixel_height == 0 {
-        return Err(format!("`{path}` states no pixels."));
-    }
-    let display_width = width.ok_or_else(|| "An image line has no width.".to_owned())?;
-    if display_width < MIN_DISPLAY_WIDTH {
-        return Err(format!(
-            "A display width of {display_width} is under the {MIN_DISPLAY_WIDTH} minimum."
-        ));
-    }
-    let byte_size = bytes.ok_or_else(|| "An image line has no byte size.".to_owned())?;
-    if byte_size == 0 || byte_size > MAX_ASSET_BYTES {
-        return Err(format!(
-            "An asset of {byte_size} bytes is not one this app writes."
-        ));
-    }
-    if !matches!(
-        extension_of(&path).as_str(),
-        "png" | "jpg" | "jpeg" | "gif" | "webp"
-    ) {
-        return Err(format!("`{path}` is not an image type this format writes."));
-    }
+    check_asset_extension(&path)?;
     // Every markdown editor writes `![](…)`, and a picture with no name has no
-    // metadata a row can be built from — the note would draw a placeholder
-    // over bytes it has. What the file is called is the answer the file
-    // already gave, and this is the boundary that answers for the format.
+    // metadata a row can be built from. What the file is called is the answer
+    // the file already gave.
     let name = if name.is_empty() {
         path.rsplit('/').next().unwrap_or_default().to_owned()
     } else {
@@ -630,26 +634,24 @@ fn read_image(body: &str) -> Result<ImageReference, Quarantine> {
     Ok(ImageReference {
         original_name: name,
         path,
-        display_width,
-        pixel_width,
-        pixel_height,
-        byte_size,
-        unknown_tokens: unknown,
+        asset_hash: String::new(),
+        display_width: MIN_DISPLAY_WIDTH,
+        pixel_width: 0,
+        pixel_height: 0,
+        byte_size: 0,
+        unknown_tokens: Vec::new(),
     })
 }
 
-/// Shared attachments live in the vault's own root `assets/`, so a legal link
-/// climbs: `../assets/…` from a page, `../../assets/…` from a split document.
-/// The parser never learns how deep its file sits, so it checks the shape it
-/// can own — any number of `../`, then `assets/`, then one file name — and the
-/// loader resolves what that shape actually reaches.
-fn extension_of(path: &str) -> String {
-    path.rsplit('/')
-        .next()
-        .unwrap_or(path)
-        .rsplit_once('.')
-        .map(|(_, extension)| extension.to_ascii_lowercase())
-        .unwrap_or_default()
+/// The link is the only thing that says what kind of picture this is until the
+/// bytes turn up. An extension this app never writes is one it could not have
+/// written, so the line is not one of ours.
+fn check_asset_extension(path: &str) -> Result<(), Quarantine> {
+    let extension = path.rsplit_once('.').map(|(_, tail)| tail).unwrap_or("");
+    if !matches!(extension, "png" | "jpg" | "jpeg" | "gif" | "webp") {
+        return Err(format!("`{path}` is not a picture this app writes."));
+    }
+    Ok(())
 }
 
 fn check_asset_path(path: &str) -> Result<(), Quarantine> {
@@ -669,27 +671,13 @@ fn check_asset_path(path: &str) -> Result<(), Quarantine> {
     Ok(())
 }
 
-fn highest_hlc(nodes: &[DocumentNode]) -> String {
-    nodes.iter().fold(String::new(), |highest, node| {
-        highest
-            .max(node.hlc.clone())
-            .max(highest_hlc(&node.children))
-    })
-}
-
-fn canonical_uuid(value: &str) -> Result<String, Quarantine> {
-    Uuid::parse_str(value)
-        .map(|id| id.hyphenated().to_string())
-        .map_err(|_| format!("`{value}` is not a UUID."))
-}
-
-/// An unreadable stamp becomes no stamp. It then loses every comparison, which
-/// is the safe direction: a garbled timestamp must never beat a real edit.
-fn optional_hlc(value: Option<&String>) -> String {
-    value
-        .and_then(|value| Hlc::decode(value).ok())
-        .map(|hlc| hlc.encode())
-        .unwrap_or_default()
+/// File input is a trust boundary. Whether the vault already holds this id is
+/// a separate question, asked where the whole vault is in view.
+fn block_id(value: &str) -> Result<String, Quarantine> {
+    if notes_core::is_block_id(value) {
+        return Ok(value.to_owned());
+    }
+    Err(format!("`{value}` is not a block id."))
 }
 
 fn field_fits(value: &str, field: &str) -> Result<(), Quarantine> {

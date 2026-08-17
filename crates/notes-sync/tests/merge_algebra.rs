@@ -42,7 +42,7 @@ type Row = (
 /// this device issued means a hand edit, which is deliberately order-dependent
 /// (it is an edit, after all) and belongs in a unit test rather than here.
 const HOME: &str = "cccc";
-const PAGE_ID: &str = "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1";
+const PAGE_ID: &str = "26VJSt4Rw5eO";
 
 fn database() -> Connection {
     let connection = Connection::open_in_memory().expect("open");
@@ -52,7 +52,7 @@ fn database() -> Connection {
     connection
         .execute(
             "INSERT INTO sync_meta(singleton, device_id, vault_uuid) VALUES (1, ?1, ?2)",
-            (HOME, "3f2a1c8e-0000-4c91-8d02-000000000000"),
+            (HOME, "k3wd2WXKEA2Z"),
         )
         .expect("sync meta");
     notes_sync::hlc::register(&connection, std::sync::Arc::new(clock())).expect("register");
@@ -76,7 +76,7 @@ fn stamp(millis: u64, device: &str) -> String {
 
 fn input() -> MergeInput {
     MergeInput {
-        file_path: "Projects-4f1c8e20a3b7/README.md".to_owned(),
+        file_path: "Projects-26VJSt4Rw5eO/README.md".to_owned(),
         file_hash: "a".repeat(64),
         file_mtime_ms: Some(1_700_000_000_000),
         file_size: Some(256),
@@ -182,6 +182,7 @@ fn canonical_document() -> impl Strategy<Value = PageDocument> {
                     from: None,
                     place: None,
                     unknown_tokens: Vec::new(),
+                    unknown_state: Default::default(),
                     children: Vec::new(),
                 })
                 .collect();
@@ -196,6 +197,8 @@ fn canonical_document() -> impl Strategy<Value = PageDocument> {
                 parent: None,
                 sort_key: None,
                 max_hlc: max,
+                state_hash: String::new(),
+                base: String::new(),
                 root: DocumentRoot {
                     title: "Projects".to_owned(),
                     hlc: stamp(root_millis, "a3f2"),

@@ -1,8 +1,11 @@
 ---
 kind: yonalist-trash
 format_version: 1
-max_hlc: 0swkd7qzc-00-a3f2
 ---
-- Old page <!-- yid: 8a201f33-0000-4c91-8d02-000000000005 t: 0swkd7qza-00-a3f2 from: root@4294967296 -->
-- Deleted <!-- yid: 8a201f33-0000-4c91-8d02-000000000006 t: 0swkd7qzb-00-a3f2 from: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1@8589934592 -->
-  - Child <!-- yid: 8a201f33-0000-4c91-8d02-000000000007 t: 0swkd7qzc-00-a3f2 done -->
+- Old page <!-- yid: Nd0000000005 -->
+- Deleted <!-- yid: Nd0000000006 -->
+  - Child <!-- yid: Nd0000000007 -->
+
+<!-- yonalist
+{"state_hash":"","base":"","state":{"Nd0000000005":{"restore_parent":"root","restore_after":4294967296},"Nd0000000006":{"restore_parent":"PrJects00001","restore_after":8589934592},"Nd0000000007":{"completed":true}}}
+-->

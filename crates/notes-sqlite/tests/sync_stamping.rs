@@ -121,7 +121,7 @@ fn a_document_is_queued_by_what_happens_to_the_rows_it_holds() {
     let _storage = open(&database);
     let page = seeded_page(&database);
     let connection = writer(&database);
-    let child = "8a201f33-0000-4c91-8d02-0000000000aa";
+    let child = "uFoTxkDi1ajD";
     connection
         .execute("DELETE FROM sync_dirty_nodes", [])
         .expect("clear");
@@ -165,8 +165,8 @@ fn moving_a_line_between_pages_queues_both_of_them() {
     let _storage = open(&database);
     let first = seeded_page(&database);
     let connection = writer(&database);
-    let second = "4f1c8e20-a3b7-4c91-8d02-0000000000bb";
-    let child = "8a201f33-0000-4c91-8d02-0000000000cc";
+    let second = "Cv6VDI74zJm_";
+    let child = "6hmFada0b0H5";
     connection
         .execute(
             "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
@@ -245,8 +245,8 @@ fn a_move_that_changes_no_neighbour_still_says_when_it_moved() {
     let storage = open(&database);
     let first = seeded_page(&database);
     let connection = writer(&database);
-    let second = "4f1c8e20-a3b7-4c91-8d02-0000000000dd";
-    let moving = "8a201f33-0000-4c91-8d02-0000000000ee";
+    let second = "JvWow-bKyrHM";
+    let moving = "tDjn7SviU915";
     connection
         .execute(
             "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
@@ -324,8 +324,7 @@ fn making_room_for_a_line_does_not_promote_its_neighbours_claims() {
         .expect("an older claim");
 
     let command = notes_core::NotesCommand::CreateNode {
-        id: notes_core::NodeId::try_from("8a201f33-0000-4c91-8d02-00000000eeff".to_owned())
-            .expect("id"),
+        id: notes_core::NodeId::try_from("GH7fNyCg6Xsg".to_owned()).expect("id"),
         parent_id: notes_core::NodeId::try_from(page.clone()).expect("id"),
         position: notes_core::Position::Before {
             sibling_id: notes_core::NodeId::try_from(ids[1].clone()).expect("id"),

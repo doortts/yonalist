@@ -401,7 +401,7 @@ fn take_asset(
 
 /// The import wants a node id and this import belongs to no single node — the
 /// rows that were waiting are found by name once the bytes are in.
-const PLACEHOLDER_NODE: &str = "00000000-0000-4000-8000-000000000000";
+const PLACEHOLDER_NODE: &str = "00000000-0000-4000-8000-AcnSSU4wyaI3";
 
 /// The path this app knows a file by: relative to the vault, and only if it is
 /// a file this app has something to do with.
@@ -467,12 +467,12 @@ mod tests {
     #[test]
     fn documents_and_the_attachments_beside_them_are_watched() {
         assert_eq!(
-            seen("Projects-4f1c8e20a3b7/README.md").as_deref(),
-            Some("Projects-4f1c8e20a3b7/README.md")
+            seen("Projects-26VJSt4Rw5eO/README.md").as_deref(),
+            Some("Projects-26VJSt4Rw5eO/README.md")
         );
         assert_eq!(
-            seen("Projects-4f1c8e20a3b7/assets/shot-9f3a1c8e2044.png").as_deref(),
-            Some("Projects-4f1c8e20a3b7/assets/shot-9f3a1c8e2044.png")
+            seen("Projects-26VJSt4Rw5eO/assets/shot-9f3a1c8e2044.png").as_deref(),
+            Some("Projects-26VJSt4Rw5eO/assets/shot-9f3a1c8e2044.png")
         );
         assert!(seen("assets/shot-9f3a1c8e2044.png").is_some());
     }
@@ -484,7 +484,7 @@ mod tests {
     fn images_outside_an_assets_folder_are_left_alone() {
         assert_eq!(seen("MyPassets/photo.png"), None);
         assert_eq!(seen("Holiday/photo.png"), None);
-        assert_eq!(seen("Projects-4f1c8e20a3b7/notes.txt"), None);
+        assert_eq!(seen("Projects-26VJSt4Rw5eO/notes.txt"), None);
     }
 
     /// A change made while the app was closed reaches nobody by event — it
@@ -679,7 +679,7 @@ mod tests {
     const SHOT_NAME: &str = "shot-2e9b06dc65a4.png";
     /// The note holding that picture: the row that waits for the bytes, and
     /// the one the window has to be told about by name when they arrive.
-    const WAITING_NODE: &str = "8a201f33-0000-4c91-8d02-00000000000f";
+    const WAITING_NODE: &str = "TueFvJq1xQdA";
 
     /// iCloud usually brings a page's text down before its pictures, so the
     /// note is drawn with a placeholder and the bytes land a moment later.
@@ -815,10 +815,12 @@ mod tests {
             .expect("hlc")
             .encode();
         VaultFile::Page(PageDocument {
-            id: DocumentId::Node("4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1".to_owned()),
+            id: DocumentId::Node("26VJSt4Rw5eO".to_owned()),
             parent: None,
             sort_key: None,
             max_hlc: hlc.clone(),
+            state_hash: String::new(),
+            base: String::new(),
             root: DocumentRoot {
                 title: "Projects".to_owned(),
                 hlc: hlc.clone(),
@@ -830,6 +832,7 @@ mod tests {
                 body: NodeBody::Image(ImageReference {
                     original_name: "shot.png".to_owned(),
                     path: format!("assets/{SHOT_NAME}"),
+                    asset_hash: String::new(),
                     display_width: 480,
                     pixel_width: 1,
                     pixel_height: 1,
@@ -844,6 +847,7 @@ mod tests {
                 from: None,
                 place: None,
                 unknown_tokens: Vec::new(),
+                unknown_state: Default::default(),
                 children: Vec::new(),
             }],
             unknown_frontmatter: Vec::new(),
@@ -852,7 +856,7 @@ mod tests {
 
     fn picture_input() -> notes_sync::merger::MergeInput {
         notes_sync::merger::MergeInput {
-            file_path: "Projects-4f1c8e20a3b7/README.md".to_owned(),
+            file_path: "Projects-26VJSt4Rw5eO/README.md".to_owned(),
             file_hash: "a".repeat(64),
             file_mtime_ms: Some(1_700_000_000_000),
             file_size: Some(256),

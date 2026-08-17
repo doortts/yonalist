@@ -10,7 +10,6 @@
 //! runs is what tidies it later.
 
 use unicode_normalization::UnicodeNormalization;
-use uuid::Uuid;
 
 /// The most a cleaned title may be, before the id is appended.
 const MAX_TITLE_CHARS: usize = 40;
@@ -27,14 +26,13 @@ pub fn page_folder_name(title: &str, id: &str) -> Result<String, String> {
     Ok(format!("{}-{suffix}", clean_title(title)))
 }
 
-/// The first twelve hex digits of the id with its hyphens taken out. Twelve is
-/// enough that two pages never share one, and short enough to read.
+/// The whole id. It is twelve characters already — the length the old uuid
+/// suffix was cut to — so there is nothing to shorten and nothing to collide.
 fn folder_suffix(id: &str) -> Result<String, String> {
-    let canonical = Uuid::parse_str(id)
-        .map_err(|_| format!("`{id}` is not a page id."))?
-        .simple()
-        .to_string();
-    Ok(canonical[..12].to_owned())
+    if notes_core::is_block_id(id) {
+        return Ok(id.to_owned());
+    }
+    Err(format!("`{id}` is not a page id."))
 }
 
 /// What an attachment is called in the vault: what the user called the file,
