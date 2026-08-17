@@ -292,6 +292,61 @@ describe("Enter inside a bullet that has children", () => {
   });
 });
 
+describe("Enter at the head of a bullet's text", () => {
+  it("opens a blank sibling above and leaves the subtree alone", async () => {
+    const { store, view, commands } = await outline([
+      bullet("one", "page-1", SORT_KEY_STEP, "Parent"),
+      bullet("child-1", "one", SORT_KEY_STEP, "child1"),
+      bullet("two", "page-1", SORT_KEY_STEP * 2, "Next")
+    ]);
+
+    await pressEnterAt(view.container, "one", 0);
+
+    expect(titles(view.container)).toEqual(["", "Parent", "child1", "Next"]);
+    expect(commands.map((command) => command.kind)).toEqual(["createNode"]);
+    const created = commands[0] as Extract<
+      IpcNotesCommand, { kind: "createNode" }
+    >;
+    expect(created.parent_id).toBe("page-1");
+    expect(created.before_id).toBe("one");
+    // The row keeps its own children: nothing moved, nothing was demoted.
+    expect(childIds(store, "one")).toEqual(["child-1"]);
+    expect(childIds(store, "page-1")).toEqual([created.id, "one", "two"]);
+    await waitFor(() => {
+      const active = document.activeElement as HTMLTextAreaElement;
+      expect(active.dataset.nodeId).toBe(created.id);
+      expect(active.value).toBe("");
+    });
+    view.unmount();
+  });
+
+  it("stacks one blank per repeat above the row that keeps the text", async () => {
+    const { store, view } = await outline([
+      bullet("one", "page-1", SORT_KEY_STEP, "Parent"),
+      bullet("child-1", "one", SORT_KEY_STEP, "child1")
+    ]);
+    const field = view.container.querySelector<HTMLTextAreaElement>(
+      "textarea[data-node-id='one']"
+    )!;
+    act(() => {
+      field.focus();
+      field.setSelectionRange(0, 0);
+    });
+
+    for (let index = 0; index < 3; index += 1) {
+      await act(async () => {
+        fireEvent.keyDown(
+          document.activeElement!, { key: "Enter", repeat: index > 0 });
+      });
+    }
+
+    expect(titles(view.container)).toEqual(["", "", "", "Parent", "child1"]);
+    expect(childIds(store, "page-1").at(-1)).toBe("one");
+    expect(childIds(store, "one")).toEqual(["child-1"]);
+    view.unmount();
+  });
+});
+
 describe("Enter inside a childless bullet", () => {
   // One visible structural action has to cost exactly one undo, so the split
   // command must be the only thing the keystroke sends. The optimistic draft it
