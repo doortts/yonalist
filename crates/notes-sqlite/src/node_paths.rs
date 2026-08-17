@@ -147,7 +147,10 @@ pub(crate) fn rebuild_all(transaction: &Transaction<'_>) -> Result<(), StorageEr
     Ok(())
 }
 
-fn rebuild(transaction: &Transaction<'_>, seed_id: &str) -> Result<(), StorageError> {
+/// One subtree from its seed down. Also called with a bare id by the delete
+/// path, which trashes a row without upserting it: the window has no `deleted`
+/// predicate, so a trashed row leaves the page by having no path at all.
+pub(crate) fn rebuild(transaction: &Transaction<'_>, seed_id: &str) -> Result<(), StorageError> {
     transaction
         .prepare_cached(REBUILD)
         .and_then(|mut statement| statement.execute([seed_id]))

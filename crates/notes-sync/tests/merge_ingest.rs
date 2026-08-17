@@ -7,7 +7,7 @@ use notes_sync::document::{
 };
 use notes_sync::hlc::{Clock, Hlc};
 use notes_sync::merger::{MergeInput, merge_document};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 const DEVICE: &str = "cccc";
 const PAGE_ID: &str = "PrJects00001";
@@ -1351,7 +1351,7 @@ fn parent_of(connection: &Connection, id: &str) -> String {
 fn recovery_page(connection: &Connection) -> Option<String> {
     connection
         .query_row(
-            "SELECT id FROM notes_nodes WHERE parent_id = 'root' AND text = 'Recovered'",
+            "SELECT id FROM notes_nodes WHERE parent_id = 'root' AND text = '복구됨'",
             [],
             |row| row.get(0),
         )
@@ -1610,6 +1610,9 @@ fn a_conflicted_copy_does_not_become_the_documents_own_file() {
 /// version wins. Keeping the old record would have the export put that
 /// reading back — onto a row every other device now holds at a different one,
 /// which is two devices rewriting the same file at each other for ever.
+///
+/// The row itself stays, emptied. It answers a second question — whether the
+/// vault has ever stated this node — and a node that arrived in a file has.
 #[test]
 fn adopting_another_devices_version_forgets_what_this_one_last_wrote() {
     let node_id = "Nd0000000001";
@@ -1628,8 +1631,13 @@ fn adopting_another_devices_version_forgets_what_this_one_last_wrote() {
     .expect("seed");
     transaction
         .execute(
+            // Over whatever the seeding merge left, the way an export of the
+            // seeded row would have.
             "INSERT INTO sync_node_exports(node_id, content_hash, exported_hlc)
-             VALUES (?1, 'whatever this device last wrote', ?2)",
+             VALUES (?1, 'whatever this device last wrote', ?2)
+             ON CONFLICT(node_id) DO UPDATE SET
+                 content_hash = excluded.content_hash,
+                 exported_hlc = excluded.exported_hlc",
             rusqlite::params![node_id, &seeded],
         )
         .expect("record");
@@ -1645,16 +1653,19 @@ fn adopting_another_devices_version_forgets_what_this_one_last_wrote() {
     )
     .expect("their version");
 
-    let kept: i64 = transaction
+    let kept: Option<(String, String)> = transaction
         .query_row(
-            "SELECT COUNT(*) FROM sync_node_exports WHERE node_id = ?1",
+            "SELECT content_hash, exported_hlc FROM sync_node_exports WHERE node_id = ?1",
             [node_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
+        .optional()
         .expect("records");
     assert_eq!(
-        kept, 0,
-        "this row says what their file said now, not what this device wrote"
+        kept,
+        Some((String::new(), String::new())),
+        "this row holds no reading this device could put back, and stays as the \
+         mark that the vault has stated the node"
     );
 }
 
@@ -2735,10 +2746,13 @@ fn resolve_picture(transaction: &rusqlite::Transaction<'_>, hash: &str) {
 fn a_file_whose_footer_was_lost_still_asks_to_be_rewritten() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let whole = notes_sync::render::render(&notes_sync::document::VaultFile::Page(page(
-        vec![node(NODE_ID, &stamp(5, "a3f2"), "Thought")],
-        &stamp(5, "a3f2"),
-    )))
+    let whole = notes_sync::render::render(
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(5, "a3f2"), "Thought")],
+            &stamp(5, "a3f2"),
+        )),
+        notes_sync::render::device_offset(),
+    )
     .expect("render");
     notes_sync::merger::merge_document(
         &transaction,

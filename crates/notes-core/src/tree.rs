@@ -289,6 +289,7 @@ impl NotesTree {
             self.node_mut(&id)?.set_deleted(deleted);
         }
         if !deleted {
+            let mut revived = vec![root_id.clone()];
             let mut ancestor_id = self
                 .nodes
                 .get(root_id)
@@ -297,9 +298,48 @@ impl NotesTree {
             while let Some(id) = ancestor_id {
                 ancestor_id = self.nodes.get(&id).and_then(NoteNode::parent_id).cloned();
                 self.node_mut(&id)?.set_deleted(false);
+                revived.push(id);
+            }
+            // Only the rows that just came back can collide: a row still in the
+            // trash is nothing to a live sibling, and the rows inside a trashed
+            // subtree kept their keys among themselves the whole time.
+            for id in revived {
+                self.reseat(&id)?;
             }
         }
         Ok(())
+    }
+
+    /// Gives a row coming back from the trash a key of its own when the slot it
+    /// held while it was away has since been taken. A trashed row keeps the key
+    /// it was deleted from and the trash document writes that key back on every
+    /// merge, so nothing stops a live sibling from taking it meanwhile. The row
+    /// keeps the place in the order that key gives it and is spaced back into it.
+    fn reseat(&mut self, id: &NodeId) -> Result<(), DomainError> {
+        let Some(node) = self.nodes.get(id) else {
+            return Ok(());
+        };
+        let Some(parent_id) = node.parent_id().cloned() else {
+            return Ok(());
+        };
+        let sort_key = node.sort_key();
+        let taken = self.nodes.values().any(|other| {
+            other.id() != id
+                && !other.is_deleted()
+                && other.parent_id() == Some(&parent_id)
+                && other.sort_key() == sort_key
+        });
+        if !taken {
+            return Ok(());
+        }
+        let ordered = self.ordered_children(&parent_id, true);
+        let next = ordered
+            .iter()
+            .position(|candidate| candidate == id)
+            .and_then(|at| ordered.get(at + 1))
+            .cloned();
+        let position = next.map_or_else(Position::at_end, Position::before);
+        self.place_child(id, &parent_id, position)
     }
 
     /// Siblings under each parent, in the order `ordered_children` would return
@@ -476,10 +516,16 @@ impl NotesTree {
         }
         // Every remaining parent id exists as a node: the loop above rejects any
         // node whose parent is absent, so grouping by `parent_id` reaches the
-        // same parents as scanning the node ids. Deleted children are included
-        // because a deleted row still holds its ordering slot until it is
-        // purged, and two rows may not share one.
-        for (parent_id, children) in self.children_index(true) {
+        // same parents as scanning the node ids.
+        //
+        // Live children only. A trashed row's key is where it was deleted from,
+        // and the vault's trash document is what states that: every merge writes
+        // it back, while the page document respaces the rows that are still live.
+        // So a live row landing on a trashed row's key is ordinary, not corrupt,
+        // and no local repair would survive the next merge. Restoring is where
+        // the slot has to be real again, and `set_subtree_deleted` spaces the row
+        // back into the order it comes home to.
+        for (parent_id, children) in self.children_index(false) {
             for pair in children.windows(2) {
                 if pair[0].sort_key() >= pair[1].sort_key() {
                     return Err(DomainError::Invariant(format!(
