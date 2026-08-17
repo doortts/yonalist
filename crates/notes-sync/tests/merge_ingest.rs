@@ -1268,6 +1268,66 @@ fn a_place_claim_on_a_row_the_trash_holds_is_not_named_as_changed() {
         recorded, live,
         "the claim is recorded either way — the ordering column is not the announcement"
     );
+    assert_eq!(
+        outcome.applied, 2,
+        "both claims were recorded, so the caller has keys to rebuild and a revision to move"
+    );
+}
+
+/// The other direction, and the reason the row's own column is what decides: a
+/// trash file states a deletion a newer local edit outlived, so the rows are
+/// still on the page. Their lines are there to redraw, and told they were gone
+/// the window would throw away whatever the caret is holding on them.
+#[test]
+fn a_claim_from_the_trash_on_a_row_that_outlived_it_is_named_as_changed() {
+    let first = "8a201f33-0000-4c91-8d02-000000000003";
+    let second = "8a201f33-0000-4c91-8d02-000000000004";
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let mut parent = node(NODE_ID, &stamp(20, "a3f2"), "Kept");
+    parent.children = vec![
+        node(first, &stamp(20, "a3f2"), "One"),
+        node(second, &stamp(20, "a3f2"), "Two"),
+    ];
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(vec![parent], &stamp(20, "a3f2"))),
+        &input(),
+    )
+    .expect("seed");
+
+    // The deletion is older than every row it names, so it loses all three —
+    // but its claim on the two children is newer than the one they hold, and
+    // that is adopted on rows still very much on the page.
+    let claimed = stamp(30, "a3f2");
+    let claim = |id: &str, prev: &str, text: &str| {
+        let mut carrier = node(id, &stamp(5, "a3f2"), text);
+        carrier.place = Some((prev.to_owned(), claimed.clone()));
+        carrier
+    };
+    let mut gone = node(NODE_ID, &stamp(5, "a3f2"), "Kept");
+    gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
+    gone.children = vec![claim(second, "", "Two"), claim(first, second, "One")];
+
+    let outcome = merge_document(
+        &transaction,
+        &clock(),
+        &trash(vec![gone], &stamp(30, "a3f2")),
+        &trash_input(),
+    )
+    .expect("trash");
+
+    assert_eq!(
+        outcome.changed_ids,
+        std::collections::BTreeSet::from([first.to_owned(), second.to_owned()]),
+        "the rows are on the page, whatever file the claim arrived in"
+    );
+    assert!(
+        outcome.deleted_ids.is_empty(),
+        "nothing was deleted: the local edit is newer than the deletion"
+    );
+    assert_eq!(deleted_flag(&transaction, first), 0, "still on the page");
 }
 
 fn parent_of(connection: &Connection, id: &str) -> String {
