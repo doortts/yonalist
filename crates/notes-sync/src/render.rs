@@ -59,7 +59,10 @@ fn render_page(document: &PageDocument) -> Result<Vec<u8>, String> {
     }
     out.push_str("---\n");
 
-    let title = escape_inline(&document.root.title);
+    // The heading is not a line start in the ordinary sense — `# ` is already in
+    // front of it — but the reader refuses a title that begins `![`, so the one
+    // character that has to keep its backslash is the same one.
+    let title = escape_inline(&document.root.title, At::LineStart);
     if title.is_empty() {
         out.push_str("#\n");
     } else {
@@ -157,12 +160,12 @@ fn render_node(
     let body = match &node.body {
         NodeBody::Text(text) => {
             field_fits(text, "text")?;
-            escape_inline(text)
+            escape_inline(text, At::LineStart)
         }
         NodeBody::Image(image) => render_image(image)?,
         NodeBody::Split { title, path } => {
             field_fits(title, "split title")?;
-            format!("[{}]({path})", escape_inline(title))
+            format!("[{}]({path})", escape_inline(title, At::LinkLabel))
         }
     };
     let comment = render_comment(node, implied_previous)?;
@@ -188,7 +191,11 @@ fn render_note(out: &mut String, note: &str, depth: usize) {
         if line.is_empty() {
             let _ = writeln!(out, "{indentation}>");
         } else {
-            let _ = writeln!(out, "{indentation}> {}", escape_markdown(line));
+            let _ = writeln!(
+                out,
+                "{indentation}> {}",
+                escape_markdown(line, At::LineStart)
+            );
         }
     }
 }
@@ -274,7 +281,7 @@ fn render_image(image: &ImageReference) -> Result<String, String> {
     comment.push_str(" -->");
     Ok(format!(
         "![{}]({}) {comment}",
-        escape_inline(&image.original_name),
+        escape_inline(&image.original_name, At::LinkLabel),
         image.path
     ))
 }
@@ -319,14 +326,49 @@ fn normalize_newlines(value: &str) -> String {
 
 /// Ported from the exporter unchanged. `<` becoming an entity is what keeps a
 /// user's own `<!--` from ever turning into a node comment.
-fn escape_markdown(value: &str) -> String {
+/// Where a value sits, which is the whole of what decides its escaping. A full
+/// stop is a full stop in the middle of a sentence and a list marker at the
+/// front of a line; the character alone cannot tell you which.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum At {
+    /// The value's first character is the first thing on its line — a bullet's
+    /// own text, a note line, the document's title.
+    LineStart,
+    /// Somewhere after the start of a line, where nothing can open a block.
+    Inline,
+    /// Inside a link's square brackets, where a `]` would close them early.
+    LinkLabel,
+}
+
+/// Three characters are escaped wherever they appear and the rest earn it by
+/// position.
+///
+/// `\` always doubles, or nothing else here could be undone. `&` and `<` always
+/// become entities: `<` because a `<!--` a person typed would otherwise open the
+/// management comment the parser reads state out of, and `&` because without it a
+/// person who typed `&lt;` would find it had become `<` on the way back.
+///
+/// Everything else — the full stops, slashes, plus signs, brackets and dashes
+/// that made these files a chore to read — is text.
+fn escape_markdown(value: &str, at: At) -> String {
     let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
+    let marker = if at == At::LineStart {
+        block_marker_at(value)
+    } else {
+        None
+    };
+    for (index, character) in value.char_indices() {
+        // Before the character that closes the marker, which is not always the
+        // first one: a backslash in front of the `1` of `1. ` escapes a digit and
+        // leaves the list marker standing.
+        if marker == Some(index) {
+            escaped.push('\\');
+        }
         match character {
+            '\\' => escaped.push_str(r"\\"),
             '&' => escaped.push_str("&amp;"),
             '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            character if character.is_ascii_punctuation() => {
+            '[' | ']' if at == At::LinkLabel => {
                 escaped.push('\\');
                 escaped.push(character);
             }
@@ -336,10 +378,50 @@ fn escape_markdown(value: &str) -> String {
     escaped
 }
 
-fn escape_inline(value: &str) -> String {
+/// Where this line needs a backslash to stay text, if anywhere. Asked once per
+/// line, because a block can only be opened at its start.
+///
+/// The shapes are the ones this format's own reader looks for — a bullet, an
+/// image, a heading — plus an ordered marker, which this reader does not use and
+/// an editor the person opens the file in does.
+fn block_marker_at(line: &str) -> Option<usize> {
+    let after_marker = |rest: &str| rest.is_empty() || rest.starts_with([' ', '\t']);
+    if let Some(rest) = line.strip_prefix(['-', '*', '+', '#']) {
+        return after_marker(rest).then_some(0);
+    }
+    if let Some(rest) = line.strip_prefix('!') {
+        return rest.starts_with('[').then_some(0);
+    }
+    // A leading `>` is deliberately not here. A note writes its own `> ` in
+    // front of the line, and the reader takes one `>` and one space back off
+    // again — so a second one survives the trip as the text it was. Nowhere else
+    // does this format read a `>` as anything but a character.
+    //
+    // A run of digits closed by `.` or `)` and then a space. `1.5` closes into
+    // nothing and stays a number.
+    // Every digit is one byte, so the count is the index the marker sits at.
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    if digits == 0 {
+        return None;
+    }
+    line[digits..]
+        .strip_prefix(['.', ')'])
+        .is_some_and(after_marker)
+        .then_some(digits)
+}
+
+fn escape_inline(value: &str, at: At) -> String {
+    // Only the first segment begins a line. The rest are joined onto it with a
+    // literal `\n`, so nothing after the join can open a block — but a bracket
+    // still closes a link wherever it sits.
+    let later = match at {
+        At::LinkLabel => At::LinkLabel,
+        At::LineStart | At::Inline => At::Inline,
+    };
     normalize_newlines(value)
         .split('\n')
-        .map(escape_markdown)
+        .enumerate()
+        .map(|(index, segment)| escape_markdown(segment, if index == 0 { at } else { later }))
         .collect::<Vec<_>>()
         .join(r"\n")
 }

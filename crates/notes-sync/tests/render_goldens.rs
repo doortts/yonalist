@@ -277,6 +277,85 @@ fn an_unstamped_document_is_reported_rather_than_written() {
     );
 }
 
+/// A1. Punctuation reaches the file as the person typed it. A backslash in front
+/// of every full stop and slash is what made these files unpleasant to read and
+/// worse to edit — a reader has to mentally strip them, and anyone who fixes a
+/// typo by hand has to know to put them back.
+///
+/// What still earns a backslash is a character that would open a block where it
+/// sits, and that is a question about position rather than about the character.
+#[test]
+fn ordinary_punctuation_reaches_the_file_unescaped() {
+    let mut plain = node(
+        "8a201f33-0000-4c91-8d02-000000000001",
+        "0swkd7qz6-00-a3f2",
+        "Shift+Enter — 설명 입력하기. 자세히는 docs/v2/sync-spec.md 참고 (2026).",
+    );
+    plain.note = "값이 3.5 이상, 또는 a*b 꼴이면 skip_this_one 처리".to_owned();
+
+    let rendered = rendered_lines(vec![plain]);
+
+    assert_eq!(
+        rendered[0],
+        "- Shift+Enter — 설명 입력하기. 자세히는 docs/v2/sync-spec.md 참고 (2026). \
+<!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 -->"
+    );
+    assert_eq!(
+        rendered[1], "  > 값이 3.5 이상, 또는 a*b 꼴이면 skip_this_one 처리",
+        "a note is prose, and prose is what a reader came for"
+    );
+}
+
+/// The characters that keep their backslash, and why each one keeps it. Every
+/// one of these is a shape this format's own parser would read as something
+/// other than text if it were left alone.
+#[test]
+fn only_what_would_open_a_block_keeps_its_backslash() {
+    let cases = [
+        (
+            "- 나열",
+            r"\- 나열",
+            "a line starting with a bullet marker is a bullet",
+        ),
+        (
+            "![링크",
+            r"\![링크",
+            "and one starting with an image is an image",
+        ),
+        ("# 제목", r"\# 제목", "a heading marker opens a heading"),
+        (
+            "1. 첫째",
+            r"1\. 첫째",
+            "so does a number that closes into a list marker",
+        ),
+        (
+            "1.5배",
+            "1.5배",
+            "but a number that closes into nothing is a number",
+        ),
+        ("-5도", "-5도", "and a minus that opens nothing is a minus"),
+    ];
+
+    for (typed, expected, why) in cases {
+        let rendered = rendered_lines(vec![node(
+            "8a201f33-0000-4c91-8d02-000000000001",
+            "0swkd7qz6-00-a3f2",
+            typed,
+        )]);
+
+        assert_eq!(
+            rendered[0]
+                .strip_prefix("- ")
+                .expect("a bullet")
+                .split(" <!--")
+                .next()
+                .expect("text"),
+            expected,
+            "{why}"
+        );
+    }
+}
+
 fn rendered_lines(nodes: Vec<DocumentNode>) -> Vec<String> {
     let mut document = page();
     document.root.note = String::new();

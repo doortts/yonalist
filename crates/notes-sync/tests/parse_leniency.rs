@@ -616,7 +616,7 @@ fn a_document_holding_every_shape_survives_two_round_trips() {
         body.push_str(&format!("  > note for {}\n  >\n  > second line\n", index));
     }
     body.push_str(
-        "- ![shot \\.png](../assets/shot-9f3a1c8e2044.png) \
+        "- ![shot .png](../assets/shot-9f3a1c8e2044.png) \
          <!-- ya: w: 320 px: 10x10 bytes: 4 --> \
          <!-- yid: 8a201f33-0000-4c91-8d02-000000000099 t: 0swkd7qz6-00-a3f2 -->\n",
     );
@@ -635,15 +635,21 @@ fn a_document_holding_every_shape_survives_two_round_trips() {
 
 /// Matches the renderer's escaping so the fixture above states a document the
 /// renderer would actually write.
+/// What the renderer writes for a value that begins nothing. Three characters
+/// earn an entity wherever they sit; the rest of the punctuation is text now, so
+/// this helper says so too rather than describing the old rule.
+///
+/// A leading marker is out of scope here on purpose: every value this is asked
+/// about is ordinary prose, and a test about a marker should say the marker out
+/// loud instead of deriving it.
 fn escaped(value: &str) -> String {
     value
         .chars()
         .map(|character| match character {
             '&' => "&amp;".to_owned(),
             '<' => "&lt;".to_owned(),
-            '>' => "&gt;".to_owned(),
+            '\\' => "\\\\".to_owned(),
             '\n' => "\\n".to_owned(),
-            other if other.is_ascii_punctuation() => format!("\\{other}"),
             other => other.to_string(),
         })
         .collect()
@@ -655,7 +661,7 @@ fn escaped(value: &str) -> String {
 #[test]
 fn an_unknown_ya_token_survives_a_parse_render_round_trip() {
     let source = page(
-        "- ![shot\\.png](assets/shot-9f3a1c8e2044.png) \
+        "- ![shot.png](assets/shot-9f3a1c8e2044.png) \
          <!-- ya: w: 320 px: 10x10 bytes: 4 focus: 0\\.5x0\\.3 lossless --> \
          <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 -->\n",
     );
@@ -715,4 +721,108 @@ fn an_image_line_with_no_alt_takes_its_file_name() {
         panic!("an image");
     };
     assert_eq!(image.original_name, "shot-9f3a1c8e2044.png");
+}
+
+// Whatever the escape rules are, this is what they are *for*: what a person
+// typed comes back exactly as they typed it. Arguing the rules character by
+// character is how a hole gets left in them, so the rules are checked against
+// the only contract that matters instead.
+//
+// The generator reaches for the characters that decide it — markers, brackets,
+// entities, backslashes, comment openers — at the front of a value as well as
+// inside it, because position is the whole of what the rules turn on.
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(512))]
+
+    #[test]
+    fn whatever_a_person_typed_comes_back_as_they_typed_it(
+        text in proptest::collection::vec(
+            proptest::sample::select(vec![
+                "- ", "* ", "+ ", "# ", "1. ", "2) ", "![", "[", "]", "(", ")",
+                ">", "<", "<!--", "-->", "&", "&lt;", "&amp;", "\\", "\\.", ".",
+                "/", "+", "_", "*", "`", "a", "가", " ", "1", "-",
+            ]),
+            0..12,
+        ),
+        note in proptest::collection::vec(
+            proptest::sample::select(vec![
+                "- ", "> ", ">", "#", "&", "<", "\\", ".", "a", "가", " ", "1. ",
+            ]),
+            0..8,
+        ),
+    ) {
+        let text = text.concat();
+        let note = note.concat();
+        // A value the renderer refuses for a stated reason is not this
+        // property's business; a value it accepts has to survive.
+        let mut node = notes_sync::document::DocumentNode {
+            id: "8a201f33-0000-4c91-8d02-000000000001".to_owned(),
+            hlc: "0swkd7qz9-00-a3f2".to_owned(),
+            body: NodeBody::Text(text.clone()),
+            note: note.clone(),
+            marker: Marker::Bullet,
+            collapsed: false,
+            completed: false,
+            starred: false,
+            from: None,
+            place: None,
+            unknown_tokens: Vec::new(),
+            children: Vec::new(),
+        };
+        node.note = note.clone();
+
+        let VaultFile::Page(mut document) = accepted(&page("")) else {
+            panic!("a page");
+        };
+        document.root.note = String::new();
+        document.nodes = vec![node];
+        let bytes = notes_sync::render::render(&VaultFile::Page(document)).expect("render");
+
+        let VaultFile::Page(read_back) = parse(&bytes).unwrap_or_else(|reason| {
+            panic!("a document this build wrote it cannot read: {reason}\n{}",
+                String::from_utf8_lossy(&bytes))
+        }) else {
+            panic!("a page");
+        };
+
+        proptest::prop_assert_eq!(
+            read_back.nodes.len(), 1,
+            "one bullet went in:\n{}", String::from_utf8_lossy(&bytes)
+        );
+        proptest::prop_assert_eq!(
+            &read_back.nodes[0].body, &NodeBody::Text(text),
+            "\n{}", String::from_utf8_lossy(&bytes)
+        );
+        proptest::prop_assert_eq!(
+            &read_back.nodes[0].note, &note,
+            "\n{}", String::from_utf8_lossy(&bytes)
+        );
+    }
+}
+
+/// A title is not allowed to be an image — a document root that drew a picture
+/// would have nowhere to put its own name — so the reader refuses one that begins
+/// `![`. That refusal is why the heading keeps a backslash there even though `# `
+/// already sits in front of it, and why loosening the escape rules had to stop at
+/// this one character.
+#[test]
+fn a_title_that_begins_like_an_image_survives_instead_of_quarantining() {
+    let VaultFile::Page(mut document) = accepted(&page(
+        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 -->\n",
+    )) else {
+        panic!("a page");
+    };
+    document.root.title = "![not a picture] 회고".to_owned();
+
+    let bytes = notes_sync::render::render(&VaultFile::Page(document)).expect("render");
+
+    let VaultFile::Page(read_back) = parse(&bytes).unwrap_or_else(|reason| {
+        panic!(
+            "the reader refused a title this build wrote: {reason}\n{}",
+            String::from_utf8_lossy(&bytes)
+        )
+    }) else {
+        panic!("a page");
+    };
+    assert_eq!(read_back.root.title, "![not a picture] 회고");
 }

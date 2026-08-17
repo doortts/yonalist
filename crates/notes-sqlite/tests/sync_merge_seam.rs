@@ -529,7 +529,7 @@ fn an_export_through_the_worker_writes_the_vault_without_moving_the_revision() {
             .expect("the page");
     // The comma is escaped: every ASCII punctuation mark is, so a user's text
     // can never turn into markup or into a node comment.
-    assert!(file.contains(r"- Thought\, typed here <!-- yid:"), "{file}");
+    assert!(file.contains("- Thought, typed here <!-- yid:"), "{file}");
 }
 
 #[test]
