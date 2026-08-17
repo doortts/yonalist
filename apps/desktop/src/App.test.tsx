@@ -52,27 +52,20 @@ describe("Yonalist v2 desktop shell", () => {
     expect(notesApi.queryViewport).not.toHaveBeenCalled();
   });
 
-  it("shows the outliner and the vault card together when no vault is set", async () => {
-    const backing = new Map<string, string>();
-    Object.defineProperty(window, "localStorage", {
-      configurable: true,
-      value: {
-        getItem: (key: string) => backing.get(key) ?? null,
-        setItem: (key: string, value: string) => backing.set(key, value),
-        removeItem: (key: string) => backing.delete(key),
-        clear: () => backing.clear()
-      }
-    });
-    try {
-      render(<App api={api()} />);
+  /// Renamed with its premise: the card used to appear because no folder was
+  /// recorded, and it now appears because the database has no answer to the one
+  /// question the card asks. Neither the recorded folder nor `localStorage` is
+  /// read any more, so the stub for that key went with them.
+  it("shows the outliner and the vault card together on a first run", async () => {
+    const notesApi = api();
+    notesApi.onboardingFirstRun = vi.fn().mockResolvedValue(true);
 
-      expect(await screen.findByRole("complementary", { name: "Choose a sync folder" }))
-        .toBeVisible();
-      expect(screen.getAllByRole("group", { name: "Note text" })[0])
-        .toHaveTextContent("First thought");
-    } finally {
-      delete (window as { localStorage?: unknown }).localStorage;
-    }
+    render(<App api={notesApi} />);
+
+    expect(await screen.findByRole("complementary", { name: "Choose a sync folder" }))
+      .toBeVisible();
+    expect(screen.getAllByRole("group", { name: "Note text" })[0])
+      .toHaveTextContent("First thought");
   });
 
   it("lists Pages above Library and keeps search behind the header icon", async () => {

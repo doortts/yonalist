@@ -7,7 +7,7 @@ vi.mock("./vaultPicker", () => ({ pickVaultFolder: vi.fn() }));
 
 function renderCard(overrides: Partial<Parameters<typeof VaultSetupCard>[0]> = {}) {
   const props = {
-    readVaultPath: vi.fn().mockResolvedValue(null),
+    isFirstRun: vi.fn().mockResolvedValue(true),
     setVaultPath: vi.fn().mockResolvedValue("empty" as const),
     writeGuide: vi.fn().mockResolvedValue(undefined),
     ...overrides
@@ -24,23 +24,6 @@ async function settle() {
 }
 
 describe("VaultSetupCard", () => {
-  beforeEach(() => {
-    const backing = new Map<string, string>();
-    Object.defineProperty(window, "localStorage", {
-      configurable: true,
-      value: {
-        getItem: (key: string) => backing.get(key) ?? null,
-        setItem: (key: string, value: string) => backing.set(key, value),
-        removeItem: (key: string) => backing.delete(key),
-        clear: () => backing.clear()
-      }
-    });
-  });
-
-  afterEach(() => {
-    delete (window as { localStorage?: unknown }).localStorage;
-  });
-
   it("vault가 없으면 카드가 뜨고 폴더를 고르면 사라진다", async () => {
     vi.mocked(pickVaultFolder).mockResolvedValue("/Users/me/Yonalist");
     const props = renderCard();
@@ -56,27 +39,37 @@ describe("VaultSetupCard", () => {
     });
   });
 
-  it("vault가 이미 있으면 카드가 아예 뜨지 않는다", async () => {
-    const props = renderCard({
-      readVaultPath: vi.fn().mockResolvedValue("/Users/me/Yonalist")
-    });
+  /// The one question the card asks is whether this is a first run, and the
+  /// database is the only thing it asks. It used to read the recorded folder
+  /// instead, which said nothing about a user who answered "Later", and a
+  /// `localStorage` flag, which outlived every reset the app can do — a user who
+  /// once said "Later" could never be asked again, on any database.
+  it("두 번째 실행에서는 카드가 뜨지 않는다", async () => {
+    const props = renderCard({ isFirstRun: vi.fn().mockResolvedValue(false) });
 
     await settle();
 
-    expect(props.readVaultPath).toHaveBeenCalled();
+    expect(props.isFirstRun).toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Choose folder" }))
       .not.toBeInTheDocument();
   });
 
-  it("Later가 dismissal을 저장해 다시 마운트해도 숨는다", async () => {
-    renderCard();
+  /// "Later" is an answer, and the guide it writes is what records it. So the
+  /// card asks again on the next mount and is told the question is settled —
+  /// rather than hiding on a flag of its own that no reset could clear.
+  it("Later라고 답해도 그 답이 기록되므로 다시 마운트하면 카드가 없다", async () => {
+    const isFirstRun = vi
+      .fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValue(false);
+    renderCard({ isFirstRun });
     fireEvent.click(await screen.findByRole("button", { name: "Later" }));
     expect(screen.queryByRole("button", { name: "Later" })).not.toBeInTheDocument();
 
-    const remounted = renderCard();
+    renderCard({ isFirstRun });
     await settle();
 
-    expect(remounted.readVaultPath).not.toHaveBeenCalled();
+    expect(isFirstRun).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole("button", { name: "Later" })).not.toBeInTheDocument();
   });
 
@@ -101,23 +94,6 @@ describe("VaultSetupCard", () => {
 });
 
 describe("VaultSetupCard: who gets the guide notes", () => {
-  beforeEach(() => {
-    const backing = new Map<string, string>();
-    Object.defineProperty(window, "localStorage", {
-      configurable: true,
-      value: {
-        getItem: (key: string) => backing.get(key) ?? null,
-        setItem: (key: string, value: string) => backing.set(key, value),
-        removeItem: (key: string) => backing.delete(key),
-        clear: () => backing.clear()
-      }
-    });
-  });
-
-  afterEach(() => {
-    delete (window as { localStorage?: unknown }).localStorage;
-  });
-
   it("빈 폴더를 고르면 안내 노트를 쓴다", async () => {
     vi.mocked(pickVaultFolder).mockResolvedValue("/Users/me/Fresh");
     const props = renderCard({

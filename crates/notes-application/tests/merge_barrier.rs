@@ -75,6 +75,23 @@ impl FakeStorage {
         state.revision += 1;
         state.revision
     }
+
+    /// What a rebuild looks like from here: every cached row is thrown away and
+    /// read back out of the folder, so the revision has moved several times over
+    /// and nothing this session recorded an inverse against is still there. Home
+    /// stays, because the folder never states it and so could not put it back.
+    fn rebuilt_from_vault(&self) -> u64 {
+        let mut state = self.state.lock().unwrap();
+        let mut tree = NotesTree::default();
+        tree.apply(&[TreeMutation::upsert(notes_core::NoteNode::page(
+            NodeId::try_from("root").unwrap(),
+            "Home",
+        ))])
+        .unwrap();
+        state.tree = tree;
+        state.revision += 4;
+        state.revision
+    }
 }
 
 impl StoragePort for FakeStorage {
@@ -397,6 +414,55 @@ fn the_barrier_counts_the_picture_a_duplicate_had_to_borrow() {
         Err(NotesErrorCode::HistoryEmpty),
         "redoing the copy would take whichever picture the merge left on the source"
     );
+}
+
+/// A rebuild is not a merge and cannot be told as one. A merge says "these ids
+/// moved" and the barrier keeps whatever it did not name; a rebuild replaced
+/// every row from the folder, so there is no entry left that names a state still
+/// on disk. Replaying one would put back text the folder does not state.
+///
+/// Two things have to hold afterwards. The stack is gone in both directions, and
+/// the session is at the new number — a session still holding the old one would
+/// refuse the user's very next keystroke with a revision conflict, and the app
+/// would need a restart to type again.
+#[test]
+fn a_rebuilt_database_leaves_no_history_to_replay() {
+    let storage = FakeStorage::default();
+    let service = service(&storage);
+    let revision = create(&service, FIRST, 0);
+    let revision = edit(&service, FIRST, revision, "mine");
+    // One step back, so there is something waiting in each direction.
+    undo(&service, revision).expect("undo");
+    assert!(
+        service.history_depth() > 0,
+        "the stack has to hold something for its clearing to mean anything"
+    );
+
+    let revision = storage.rebuilt_from_vault();
+    service.reset_session(revision);
+
+    assert_eq!(
+        service.history_depth(),
+        0,
+        "an inverse recorded against a row the rebuild dropped has nothing left to undo"
+    );
+    assert_eq!(
+        undo(&service, revision),
+        Err(NotesErrorCode::HistoryEmpty),
+        "and the step stops existing rather than failing when taken"
+    );
+    assert_eq!(
+        service
+            .redo(HistoryRequest {
+                session_id: session_id(&service),
+                base_revision: revision,
+            })
+            .map_err(|error| error.code),
+        Err(NotesErrorCode::HistoryEmpty),
+        "redo replays a forward onto rows that are equally gone"
+    );
+    // And the session goes on working at the number the rebuild left behind.
+    create(&service, THIRD, revision);
 }
 
 fn duplicate(

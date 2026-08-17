@@ -141,6 +141,8 @@ const expectedCommands = [
   "notes_delete_all_data",
   "notes_toggle_devtools",
   "notes_onboarding_write_guide",
+  "notes_onboarding_first_run",
+  "notes_rebuild_from_vault",
   "notes_sync_forget_conflict"
 ].sort();
 const tauriSource = readFileSync(

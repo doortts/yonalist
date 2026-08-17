@@ -18,7 +18,7 @@ use notes_application::{
     BootSnapshot, CloseOutcome, CommandEnvelope, ForestRequest, ForestSnapshot, HistoryRequest,
     ImageAssetPort, MutationReceipt, NotesError, NotesErrorCode, NotesService, SearchPage,
     SearchQuery, SyncAttachment, SyncChanged, SyncConflict, SyncStatus, SyncVaultFolderState,
-    UnusedAssetsReport, ViewportPage, ViewportRequest,
+    UnusedAssetsReport, VaultRebuildReport, ViewportPage, ViewportRequest,
 };
 use notes_export::{NativeExportPublisher, NativeExportRenderer};
 use notes_sqlite::{LocalImageAssets, SqliteStorage};
@@ -409,6 +409,67 @@ async fn notes_sync_flush(
     .await
 }
 
+/// Throws this device's cached notes away and builds them again from the
+/// folder's files. The folder is the truth and the database is a cache of it,
+/// which is the whole of why this is safe to offer.
+///
+/// The order matters at every step. What is waiting goes out first, so an edit
+/// the folder has never been told about is in the folder before the folder is
+/// read as the truth; the storage refuses the whole thing if anything is still
+/// waiting after that, before it clears a single row. Then the session is told
+/// the new revision — a window redrawn against rows this session cannot name
+/// would have its next keystroke refused — and the exporter is woken, because a
+/// merge can decide a file needs rewriting and nothing else asks it to.
+#[tauri::command]
+async fn notes_rebuild_from_vault(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<VaultRebuildReport, NotesError> {
+    // Without a folder there is nothing to rebuild from, so clearing the
+    // database would simply be losing everything. The button is disabled for
+    // the same reason; this is the answer for anyone who gets past it.
+    let Some(vault) = sync_settings::read_vault_path(&state.data_directory) else {
+        return Err(NotesError {
+            code: NotesErrorCode::InvalidDestination,
+            message: "Choose a sync folder first: a rebuild reads your notes back \
+                      out of that folder, and there is nothing to read without one."
+                .to_owned(),
+            retryable: false,
+        });
+    };
+    let gate = Arc::clone(&state.runtime);
+    run_blocking(move || {
+        let runtime = gate.wait()?;
+        // Before anything is read, and before anything is cleared: an edit that
+        // has not reached the folder is not in the folder, and the folder is
+        // about to become the only truth.
+        if let Err(reason) = runtime.sync.flush() {
+            if runtime.status.set_write(Some(reason.clone())) {
+                say_status_changed(&app);
+            }
+            return Err(internal_error(reason));
+        }
+        let report = runtime
+            .storage
+            .rebuild_from_vault(&vault)
+            .map_err(NotesError::from)?;
+        let revision = runtime.storage.revision().map_err(NotesError::from)?;
+        runtime.service.reset_session(revision);
+        runtime.changed(Ok(rebuild_report(report)))
+    })
+    .await
+}
+
+/// The two numbers the window shows. `merged` is deliberately not one of them:
+/// it counts documents that changed a row, so a folder the database already
+/// agrees with would report nothing where every file was read.
+fn rebuild_report(report: notes_sqlite::ReindexReport) -> VaultRebuildReport {
+    VaultRebuildReport {
+        documents: report.read as u32,
+        unreadable: report.skipped as u32,
+    }
+}
+
 #[tauri::command]
 async fn notes_sync_vault_get(
     state: State<'_, DesktopState>,
@@ -429,11 +490,35 @@ async fn notes_sync_vault_set(
     // becomes known — on first run there was nothing to watch at startup.
     let gate = Arc::clone(&state.runtime);
     run_blocking(move || {
-        gate.wait()?.watch_vault(&app);
-        Ok(())
+        let runtime = gate.wait()?;
+        runtime.watch_vault(&app);
+        // Where these notes live is the one question the first-run card asks,
+        // and this is the answer. Recorded here rather than by the guide: a
+        // device joining a folder that already holds notes is given no guide,
+        // so leaving the mark to the guide left that device asked again on
+        // every launch.
+        runtime
+            .storage
+            .mark_onboarding_answered()
+            .map_err(NotesError::from)
     })
     .await?;
     Ok(folder)
+}
+
+/// Whether the user has yet to say where these notes live. One value in the
+/// database and nothing else — not the recorded folder, and not the window's own
+/// storage, which survives every reset this app can do.
+#[tauri::command]
+async fn notes_onboarding_first_run(state: State<'_, DesktopState>) -> Result<bool, NotesError> {
+    let gate = Arc::clone(&state.runtime);
+    run_blocking(move || {
+        gate.wait()?
+            .storage
+            .onboarding_first_run()
+            .map_err(NotesError::from)
+    })
+    .await
 }
 
 /// The guide notes, written once the user has settled where these notes live.
@@ -886,7 +971,9 @@ pub fn run() {
             notes_sync_flush,
             notes_sync_vault_get,
             notes_sync_vault_set,
+            notes_rebuild_from_vault,
             notes_onboarding_write_guide,
+            notes_onboarding_first_run,
             export_ipc::notes_export,
             image_ipc::notes_import_image_bytes,
             image_ipc::notes_import_image_paths,
@@ -1119,6 +1206,37 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<SyncStatus>(wire).expect("and read back"),
             status
+        );
+    }
+
+    /// The wire shape the settings screen reads, pinned against
+    /// `packages/contracts/generated/VaultRebuildReport.ts`, and the two numbers
+    /// it is made of.
+    ///
+    /// `merged` is the trap. It counts documents that changed a row, so a folder
+    /// the database already agrees with merges nothing — reporting that would
+    /// tell the user nothing was found where the truth is that every file was
+    /// read and every one already matched. `read` is the count a person can hold
+    /// against their own folder, and `skipped` is the one that says a note is
+    /// missing because this build could not read its file.
+    #[test]
+    fn the_rebuild_report_serializes_the_generated_typescript_wire_shape() {
+        let report = rebuild_report(notes_sqlite::ReindexReport {
+            read: 12,
+            merged: 0,
+            skipped: 1,
+        });
+
+        let wire = serde_json::to_value(report).expect("report must serialize");
+
+        assert_eq!(
+            wire["documents"], 12,
+            "the folder held twelve documents this build could read"
+        );
+        assert_eq!(wire["unreadable"], 1, "and one it could not");
+        assert_eq!(
+            serde_json::from_value::<VaultRebuildReport>(wire).expect("and read back"),
+            report
         );
     }
 

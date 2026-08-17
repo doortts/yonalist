@@ -578,7 +578,15 @@ export const previewNotesApi: NotesApi = {
     // Same reason — the preview has nowhere to record a choice.
     return "empty" as const;
   },
+  async rebuildFromVault() {
+    // Nothing to read back: the preview's notes live in memory, not in files.
+    return { documents: 0, unreadable: 0 };
+  },
   async onboardingWriteGuide() {
     // The preview's outline is a fixture; there is no first run to guide.
+  },
+  async onboardingFirstRun() {
+    // Same reason: the fixture is never a first run, so the card stays away.
+    return false;
   }
 };

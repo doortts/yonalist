@@ -4,7 +4,15 @@ use rusqlite::{Connection, TransactionBehavior, params};
 
 use crate::repository::internal;
 
-const ONBOARDING_MARKER_KEY: &str = "onboarding_seeded";
+/// Whether the user has said where these notes live. Renamed from
+/// `onboarding_seeded` because the meaning moved: it used to record that a guide
+/// had been offered to this database, and it now records that the question the
+/// first-run card asks has an answer. A rebuild deliberately keeps this one row
+/// and clears the rest of `notes_ui_state` — the answer is still on disk, so
+/// forgetting it would have the card ask a question it already holds the answer
+/// to. That statement spells the key out (`sync_merge.rs`); a rename here has to
+/// go there too, and `onboarding_seed.rs` fails if it does not.
+const ONBOARDING_ANSWERED_KEY: &str = "onboarding_answered";
 /// Written down rather than generated. Fixed is what makes a second seed a no-op
 /// and what lets the guide fixture and a freshly seeded vault hold the same block
 /// identities — generate them and the two would never agree again. Readable, too:
@@ -28,10 +36,10 @@ pub(crate) fn seed_onboarding(connection: &mut Connection) -> Result<(), Storage
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(internal)?;
-    let seeded: bool = transaction
+    let answered: bool = transaction
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM notes_ui_state WHERE key = ?1)",
-            [ONBOARDING_MARKER_KEY],
+            [ONBOARDING_ANSWERED_KEY],
             |row| row.get(0),
         )
         .map_err(internal)?;
@@ -46,7 +54,7 @@ pub(crate) fn seed_onboarding(connection: &mut Connection) -> Result<(), Storage
             |row| row.get(0),
         )
         .map_err(internal)?;
-    if !seeded && !has_notes {
+    if !answered && !has_notes {
         transaction
             .execute(
                 "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, note)
@@ -71,13 +79,44 @@ pub(crate) fn seed_onboarding(connection: &mut Connection) -> Result<(), Storage
                 .map_err(internal)?;
         }
     }
+    // Answering "Later" is an answer too — these notes start here — so the
+    // question is settled either way.
     transaction
         .execute(
             "INSERT OR IGNORE INTO notes_ui_state(key, value) VALUES (?1, '1')",
-            [ONBOARDING_MARKER_KEY],
+            [ONBOARDING_ANSWERED_KEY],
         )
         .map_err(internal)?;
     transaction.commit().map_err(internal)
+}
+
+/// Records that the user has said where these notes live, without writing a
+/// guide. Called when a folder is chosen: that is the answer the first-run card
+/// exists to get, and a device joining a folder that already holds notes is
+/// given no guide — so leaving the mark to the guide left that device asked
+/// again on every launch.
+pub(crate) fn mark_onboarding_answered(connection: &Connection) -> Result<(), StorageError> {
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO notes_ui_state(key, value) VALUES (?1, '1')",
+            [ONBOARDING_ANSWERED_KEY],
+        )
+        .map(|_| ())
+        .map_err(internal)
+}
+
+/// Whether this is a first run: the user has not said yet where these notes
+/// live. One value in this database, and nothing else — not the recorded folder,
+/// which a data reset clears and a rebuild keeps, and not the window's own
+/// storage, which survives every reset the app can do.
+pub(crate) fn onboarding_first_run(connection: &Connection) -> Result<bool, StorageError> {
+    connection
+        .query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM notes_ui_state WHERE key = ?1)",
+            [ONBOARDING_ANSWERED_KEY],
+            |row| row.get(0),
+        )
+        .map_err(internal)
 }
 
 #[cfg(test)]

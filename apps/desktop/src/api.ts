@@ -17,6 +17,7 @@ import type { SyncStatus } from "../../../packages/contracts/generated/SyncStatu
 import type { SyncConflict } from "../../../packages/contracts/generated/SyncConflict";
 import type { SyncVaultFolderState } from "../../../packages/contracts/generated/SyncVaultFolderState";
 import type { UnusedAssetsReport } from "../../../packages/contracts/generated/UnusedAssetsReport";
+import type { VaultRebuildReport } from "../../../packages/contracts/generated/VaultRebuildReport";
 import type { SearchQuery } from "../../../packages/contracts/generated/SearchQuery";
 import type { ViewportPage } from "../../../packages/contracts/generated/ViewportPage";
 import type { ViewportRequest } from "../../../packages/contracts/generated/ViewportRequest";
@@ -47,7 +48,9 @@ export interface NotesApi {
   deleteAllData(): Promise<void>;
   syncVaultGet(): Promise<string | null>;
   syncVaultSet(path: string): Promise<SyncVaultFolderState>;
+  rebuildFromVault(): Promise<VaultRebuildReport>;
   onboardingWriteGuide(): Promise<void>;
+  onboardingFirstRun(): Promise<boolean>;
   syncFlush(): Promise<void>;
   syncStatus(): Promise<SyncStatus>;
   syncAttachments(limit: number): Promise<SyncAttachment[]>;
@@ -100,7 +103,9 @@ export const tauriNotesApi: NotesApi = {
   deleteAllData: () => invoke("notes_delete_all_data"),
   syncVaultGet: () => invoke("notes_sync_vault_get"),
   syncVaultSet: (path) => invoke("notes_sync_vault_set", { path }),
+  rebuildFromVault: () => invoke("notes_rebuild_from_vault"),
   onboardingWriteGuide: () => invoke("notes_onboarding_write_guide"),
+  onboardingFirstRun: () => invoke("notes_onboarding_first_run"),
   syncFlush: () => invoke("notes_sync_flush"),
   syncStatus: () => invoke("notes_sync_status"),
   syncAttachments: (limit) => invoke("notes_sync_attachments", { limit }),

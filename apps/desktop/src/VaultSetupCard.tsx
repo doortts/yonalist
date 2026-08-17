@@ -5,8 +5,6 @@ import type { SyncVaultFolderState } from "../../../packages/contracts/generated
 import { messageFrom } from "./store/storeSupport";
 import { pickVaultFolder } from "./vaultPicker";
 
-const dismissedStorageKey = "yonalist.vaultPromptDismissed.v1";
-
 /**
  * What a chosen folder gets told about itself. An empty folder needs no
  * sentence, so choosing one closes the card outright.
@@ -21,38 +19,29 @@ const folderNotice: Record<SyncVaultFolderState, string | null> = {
     + "of its own, so its own files stay easy to tell apart."
 };
 
-function wasDismissed(): boolean {
-  try {
-    return window.localStorage.getItem(dismissedStorageKey) !== null;
-  } catch {
-    return false;
-  }
-}
-
-function rememberDismissal() {
-  try {
-    window.localStorage.setItem(dismissedStorageKey, "1");
-  } catch {
-    // The card stays gone for this session even without persistence.
-  }
-}
-
 /**
- * Offered once, on the first launch that has no vault yet, and asked before
- * anything is written: the guide notes are this device's own claim on every
- * line they occupy, and a device joining a folder that already holds notes
- * must not make that claim. So the folder is settled first, and only a device
- * that is starting its notes here is given a guide.
+ * Offered once, on a first run, and asked before anything is written: the guide
+ * notes are this device's own claim on every line they occupy, and a device
+ * joining a folder that already holds notes must not make that claim. So the
+ * folder is settled first, and only a device that is starting its notes here is
+ * given a guide.
+ *
+ * A first run is a database nobody has answered for, and `isFirstRun` is the
+ * only thing this card asks. It used to read the recorded folder — which says
+ * nothing about a user who answered "Later" — and a `localStorage` flag of its
+ * own, which outlived every reset the app can do: one "Later" and the card could
+ * never come back, on any database. Both are gone.
  *
  * It still never blocks the outliner. Answering "Later" is a decision too —
- * these notes start here — so it takes the guide.
+ * these notes start here — so it takes the guide, and the guide records the
+ * answer.
  */
 export function VaultSetupCard({
-  readVaultPath,
+  isFirstRun,
   setVaultPath,
   writeGuide
 }: {
-  readonly readVaultPath: () => Promise<string | null>;
+  readonly isFirstRun: () => Promise<boolean>;
   readonly setVaultPath: (path: string) => Promise<SyncVaultFolderState>;
   readonly writeGuide: () => Promise<void>;
 }) {
@@ -62,23 +51,21 @@ export function VaultSetupCard({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (wasDismissed()) return;
     let cancelled = false;
-    void readVaultPath()
-      .then((stored) => {
-        if (!cancelled && stored === null) setOpen(true);
+    void isFirstRun()
+      .then((first) => {
+        if (!cancelled && first) setOpen(true);
       })
       .catch(() => {
-        // A folder cannot be recorded while the path cannot even be read, so
-        // asking for one here would only offer a button that fails.
+        // The database cannot answer, so a folder could not be recorded in it
+        // either — asking for one here would only offer a button that fails.
       });
     return () => {
       cancelled = true;
     };
-  }, [readVaultPath]);
+  }, [isFirstRun]);
 
   const dismiss = () => {
-    rememberDismissal();
     setOpen(false);
     void writeGuide().catch(() => {
       // Nothing to say to the user: they asked to be left alone, and an

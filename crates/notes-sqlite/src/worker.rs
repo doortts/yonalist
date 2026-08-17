@@ -126,6 +126,15 @@ enum Request {
     SeedOnboarding {
         reply: SyncSender<Result<(), StorageError>>,
     },
+    /// That the user has said where these notes live. Written when a folder is
+    /// chosen, which is an answer the guide never sees: a device joining a folder
+    /// that already holds notes is given no guide at all.
+    MarkOnboardingAnswered {
+        reply: SyncSender<Result<(), StorageError>>,
+    },
+    OnboardingFirstRun {
+        reply: SyncSender<Result<bool, StorageError>>,
+    },
     Node {
         id: String,
         reply: SyncSender<Result<Option<NoteNode>, StorageError>>,
@@ -441,6 +450,17 @@ impl SqliteStorage {
     /// been settled — see `Request::SeedOnboarding`.
     pub fn seed_onboarding(&self) -> Result<(), StorageError> {
         self.request(|reply| Request::SeedOnboarding { reply })
+    }
+
+    /// Records that the user has said where these notes live. No guide is
+    /// written — see `seed::mark_onboarding_answered`.
+    pub fn mark_onboarding_answered(&self) -> Result<(), StorageError> {
+        self.request(|reply| Request::MarkOnboardingAnswered { reply })
+    }
+
+    /// Whether the user has yet to say where these notes live.
+    pub fn onboarding_first_run(&self) -> Result<bool, StorageError> {
+        self.request(|reply| Request::OnboardingFirstRun { reply })
     }
 
     pub fn node(&self, id: &str) -> Result<Option<NoteNode>, StorageError> {
@@ -808,6 +828,12 @@ impl SqliteStorage {
                                 crate::seed::seed_onboarding(&mut connection)
                                     .and_then(|()| schema::ensure_root(&mut connection)),
                             );
+                        }
+                        Request::MarkOnboardingAnswered { reply } => {
+                            let _ = reply.send(crate::seed::mark_onboarding_answered(&connection));
+                        }
+                        Request::OnboardingFirstRun { reply } => {
+                            let _ = reply.send(crate::seed::onboarding_first_run(&connection));
                         }
                         Request::NodePath { id, reply } => {
                             let _ = reply.send(

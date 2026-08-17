@@ -29,6 +29,10 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsView>[0]> =
       purged: false
     }),
     deleteAllData: vi.fn().mockResolvedValue(undefined),
+    rebuildFromVault: vi.fn().mockResolvedValue({
+      documents: 0,
+      unreadable: 0
+    }),
     readVaultPath: vi.fn().mockResolvedValue(null),
     readConflicts: vi.fn().mockResolvedValue([]),
     readAttachments: vi.fn().mockResolvedValue([]),
@@ -124,7 +128,6 @@ describe("SettingsView", () => {
   });
 
   it("keeps the settings entrance open after the first-run card was dismissed", async () => {
-    window.localStorage.setItem("yonalist.vaultPromptDismissed.v1", "1");
     renderSettings({
       readVaultPath: vi.fn().mockResolvedValue("/Users/me/Yonalist")
     });
@@ -322,6 +325,53 @@ describe("SettingsView", () => {
       screen.getByRole("button", { name: "Delete everything and restart" })
     );
     expect(handlers.deleteAllData).toHaveBeenCalledOnce();
+  });
+
+  /// The counts are the point. A rebuild that answers "done" tells the reader
+  /// nothing they can check, and the two numbers are what they can hold against
+  /// their own folder: how many documents came back, and how many files this
+  /// build could not read — the only signal that a note is missing.
+  it("rebuilds from the sync folder only after a confirmation step, then reports both counts", async () => {
+    const handlers = renderSettings({
+      readVaultPath: vi.fn().mockResolvedValue("/Users/me/Yonalist"),
+      rebuildFromVault: vi.fn().mockResolvedValue({
+        documents: 12,
+        unreadable: 1
+      })
+    });
+
+    await openSection("Yonalist data");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Rebuild from the sync folder..." })
+    );
+    expect(handlers.rebuildFromVault).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(handlers.rebuildFromVault).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Rebuild from the sync folder..." })
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Throw away the database and rebuild" })
+    );
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "12 documents read, 1 could not be read"
+    );
+    expect(handlers.rebuildFromVault).toHaveBeenCalledOnce();
+  });
+
+  /// Rebuilding without a folder to rebuild from is not a rebuild, it is losing
+  /// everything, so the button is never live before a folder is chosen.
+  it("offers no rebuild while there is no sync folder to read", async () => {
+    renderSettings();
+
+    await openSection("Yonalist data");
+
+    expect(
+      await screen.findByRole("button", { name: "Rebuild from the sync folder..." })
+    ).toBeDisabled();
   });
 
   it("shows one level and an invitation to add the next", () => {

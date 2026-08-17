@@ -468,6 +468,22 @@ impl<S: StoragePort> NotesService<S> {
         Ok(revision)
     }
 
+    /// Takes in a rebuild, which is not a merge and cannot be told as one.
+    /// `absorb_external` names the ids another device touched and keeps whatever
+    /// it did not name; a rebuild replaced every row from the folder, so naming
+    /// them all would be more code saying less. The stack goes instead of the
+    /// floor rising: an inverse recorded before the rebuild was written against
+    /// rows that are gone, and replaying it would put back text the folder does
+    /// not state. The new revision has to land here too — a session left holding
+    /// the old number refuses the user's next keystroke until the app restarts.
+    pub fn reset_session(&self, revision: u64) {
+        let mut session = self.session.lock().unwrap_or_else(PoisonError::into_inner);
+        session.revision = revision;
+        session.undo.clear();
+        session.redo.clear();
+        session.undo_floor = 0;
+    }
+
     /// How many entries this session can still undo.
     pub fn history_depth(&self) -> usize {
         let session = self.session.lock().unwrap_or_else(PoisonError::into_inner);

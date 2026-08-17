@@ -69,11 +69,23 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     (path: string) => api.syncVaultSet(path),
     [api]
   );
+  // Asked every time the card mounts, which is also every time settings closes:
+  // a rebuild in there can leave the answer changed, and the card is the one
+  // thing that has to notice.
+  const isFirstRun = useCallback(() => api.onboardingFirstRun(), [api]);
   // Written and then read back: the guide arrives behind the store's back, so
   // nothing would show it until the next launch otherwise.
   const writeGuide = useCallback(async () => {
     await api.onboardingWriteGuide();
     await store.bootstrap();
+  }, [api, store]);
+  // Rebuilt and then read back, for the same reason the guide is: every row the
+  // window is showing came from the database the rebuild just replaced, so
+  // nothing on screen is about the notes that are there now.
+  const rebuildFromVault = useCallback(async () => {
+    const report = await api.rebuildFromVault();
+    await store.bootstrap();
+    return report;
   }, [api, store]);
   const readConflicts = useCallback(() => api.syncConflicts(200), [api]);
   const restoreConflict = useCallback(
@@ -628,7 +640,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       {!settingsOpen && (
         <Suspense fallback={null}>
           <VaultSetupCard
-            readVaultPath={readVaultPath}
+            isFirstRun={isFirstRun}
             setVaultPath={chooseVaultPath}
             writeGuide={writeGuide}
           />
@@ -652,6 +664,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             onClose={() => setSettingsOpen(false)}
             unusedAssets={(purge) => api.unusedAssets(purge)}
             deleteAllData={() => api.deleteAllData()}
+            rebuildFromVault={rebuildFromVault}
             readVaultPath={readVaultPath}
             setVaultPath={setVaultPath}
             readConflicts={readConflicts}

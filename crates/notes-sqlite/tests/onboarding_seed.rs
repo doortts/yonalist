@@ -7,6 +7,8 @@
 //! device said — including a deletion it made in between. So the guide waits
 //! until somebody has decided what folder these notes live in.
 
+use notes_application::StoragePort;
+use notes_core::{NodeId, NotesCommand, Position};
 use notes_sqlite::SqliteStorage;
 
 fn database(directory: &tempfile::TempDir) -> std::path::PathBuf {
@@ -70,6 +72,103 @@ fn a_device_that_already_has_notes_is_left_alone() {
     storage.seed_onboarding().expect("asked again");
 
     assert_eq!(titles(&storage), vec!["Yonalist 시작하기".to_owned()]);
+}
+
+/// Choosing a folder answers the only question the first-run card asks — where
+/// these notes live — so recording that choice settles the question on its own.
+/// It used to be the guide that left the mark, which is why a device joining a
+/// folder that already held notes was asked again on its next launch: that
+/// device is given no guide, so nothing recorded its answer. The guide stays a
+/// separate decision, and recording the folder writes none.
+#[test]
+fn recording_the_folder_settles_the_first_run_question_without_a_guide() {
+    let directory = tempfile::tempdir().expect("home");
+    let storage = SqliteStorage::open(&database(&directory)).expect("open");
+    assert!(
+        storage.onboarding_first_run().expect("asked"),
+        "a database nobody has answered for is a first run"
+    );
+
+    storage
+        .mark_onboarding_answered()
+        .expect("the folder is recorded");
+
+    assert!(
+        !storage.onboarding_first_run().expect("asked again"),
+        "the card would come back to ask a question it has the answer to"
+    );
+    assert!(
+        titles(&storage).is_empty(),
+        "recording the folder is not a request for a guide"
+    );
+}
+
+/// A page of the user's own, written out into the folder the way the app writes
+/// it. What the rebuild then reads back.
+fn write_a_page(storage: &SqliteStorage, vault: &std::path::Path) {
+    let command = NotesCommand::CreateNode {
+        id: NodeId::try_from("MyNotes00001".to_owned()).expect("id"),
+        parent_id: NodeId::try_from("root".to_owned()).expect("home"),
+        position: Position::at_end(),
+        text: "Mine".to_owned(),
+    };
+    let tree = storage.load_command_tree(&command).expect("load");
+    let patch = tree.plan(command).expect("plan");
+    storage
+        .commit(storage.revision().expect("revision"), &patch)
+        .expect("the page");
+    // The folder has to hold it before the folder can be read as the truth —
+    // and this is also what empties the queue the rebuild would refuse over.
+    storage
+        .export_pending(vault, &std::env::temp_dir().join("yonalist-empty-store"))
+        .expect("written out");
+}
+
+/// The two halves meet here, and the answer survives the meeting.
+///
+/// A rebuild empties `notes_ui_state`, which is where the answer to "where do
+/// these notes live" is kept — and it deliberately leaves the recorded folder on
+/// disk. Clearing the answer while keeping the folder would have the card ask a
+/// question it is holding the answer to. So the wipe keeps that one key and
+/// throws the rest of that table (the cached `active_page_id` and its like) away.
+///
+/// The other half is that no guide is written over the user's notes. The rebuild
+/// leaves the database full rather than empty — the folder's own documents are
+/// back in it — so `seed_onboarding` finds notes and writes nothing, whichever
+/// way the card is answered afterwards.
+#[test]
+fn a_rebuilt_database_keeps_the_answer_and_writes_no_guide_over_notes() {
+    let directory = tempfile::tempdir().expect("home");
+    let vault = tempfile::tempdir().expect("the folder these notes live in");
+    let storage = SqliteStorage::open(&database(&directory)).expect("open");
+    // The user said where their notes live, and then wrote one.
+    storage
+        .mark_onboarding_answered()
+        .expect("the folder is recorded");
+    write_a_page(&storage, vault.path());
+
+    let report = storage
+        .rebuild_from_vault(vault.path())
+        .expect("thrown away and read back");
+
+    assert!(
+        report.read >= 2,
+        "home and the page came back out of the folder, so the count is {}",
+        report.read
+    );
+    assert!(
+        !storage.onboarding_first_run().expect("asked"),
+        "the folder is still recorded on disk, so the card would be asking a \
+         question it already holds the answer to"
+    );
+    // Answered either way, the guide stays out: the notes it would be written
+    // over are the ones the rebuild just put back.
+    storage.seed_onboarding().expect("asked for a guide");
+    assert_eq!(
+        titles(&storage),
+        vec!["Mine".to_owned()],
+        "a guide was written on top of the user's own notes"
+    );
 }
 
 /// Every id the guide plants is a block id the vault can carry, and they are

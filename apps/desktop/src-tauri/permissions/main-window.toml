@@ -19,6 +19,8 @@ commands.allow = [
   "notes_sync_vault_get",
   "notes_sync_vault_set",
   "notes_onboarding_write_guide",
+  "notes_onboarding_first_run",
+  "notes_rebuild_from_vault",
   "notes_close_session",
   "notes_export",
   "notes_import_image_bytes",

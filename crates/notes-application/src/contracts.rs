@@ -12,6 +12,18 @@ pub struct UnusedAssetsReport {
     pub purged: bool,
 }
 
+/// What a rebuild from the folder did, in the two numbers a person can hold
+/// against their own folder: how many documents it read, and how many it could
+/// not. The second one is not folded into the first — a note missing because
+/// this build could not read its file has no other signal.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct VaultRebuildReport {
+    pub documents: u32,
+    pub unreadable: u32,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]

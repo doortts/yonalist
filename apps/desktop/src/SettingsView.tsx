@@ -6,6 +6,7 @@ import type { SyncAttachment } from "../../../packages/contracts/generated/SyncA
 import type { SyncConflict } from "../../../packages/contracts/generated/SyncConflict";
 import { AttachmentsSection } from "./AttachmentsSection";
 import type { UnusedAssetsReport } from "../../../packages/contracts/generated/UnusedAssetsReport";
+import type { VaultRebuildReport } from "../../../packages/contracts/generated/VaultRebuildReport";
 import {
   MAX_OUTLINE_MARKER_LEVELS,
   normalizeMarkerChar,
@@ -85,6 +86,7 @@ export function SettingsView({
   onClose,
   unusedAssets,
   deleteAllData,
+  rebuildFromVault,
   readVaultPath,
   setVaultPath,
   readConflicts,
@@ -109,6 +111,7 @@ export function SettingsView({
   readonly onClose: () => void;
   readonly unusedAssets: (purge: boolean) => Promise<UnusedAssetsReport>;
   readonly deleteAllData: () => Promise<void>;
+  readonly rebuildFromVault: () => Promise<VaultRebuildReport>;
   readonly readVaultPath: () => Promise<string | null>;
   readonly setVaultPath: (path: string) => Promise<void>;
   readonly readConflicts: () => Promise<readonly SyncConflict[]>;
@@ -248,6 +251,8 @@ export function SettingsView({
             <NotesDataSection
               unusedAssets={unusedAssets}
               deleteAllData={deleteAllData}
+              rebuildFromVault={rebuildFromVault}
+              readVaultPath={readVaultPath}
             />
           )}
         </div>
@@ -434,10 +439,14 @@ function SyncFolderSection({
 
 function NotesDataSection({
   unusedAssets,
-  deleteAllData
+  deleteAllData,
+  rebuildFromVault,
+  readVaultPath
 }: {
   readonly unusedAssets: (purge: boolean) => Promise<UnusedAssetsReport>;
   readonly deleteAllData: () => Promise<void>;
+  readonly rebuildFromVault: () => Promise<VaultRebuildReport>;
+  readonly readVaultPath: () => Promise<string | null>;
 }) {
   const [report, setReport] = useState<UnusedAssetsReport | null>(null);
   const [busy, setBusy] = useState(false);
@@ -445,6 +454,28 @@ function NotesDataSection({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [rebuilt, setRebuilt] = useState<VaultRebuildReport | null>(null);
+  const [confirmingRebuild, setConfirmingRebuild] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);
+  // Read here as well as in the sync section: whether a rebuild is possible at
+  // all is a question about the folder, and this section is where it is asked.
+  const [vaultPath, setVaultPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void readVaultPath()
+      .then((stored) => {
+        if (!cancelled) setVaultPath(stored);
+      })
+      .catch(() => {
+        // The folder cannot be read, so a rebuild that reads it would fail
+        // too — the button stays out of reach and the sync section is where
+        // that trouble is reported.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [readVaultPath]);
 
   const runAssets = async (purge: boolean) => {
     setBusy(true);
@@ -469,6 +500,21 @@ function NotesDataSection({
     } catch (cause) {
       setDeleting(false);
       setError(messageFrom(cause));
+    }
+  };
+
+  /// Unlike the delete, this one comes back: the app stays up and the outline
+  /// is already rebuilt by the time the counts appear.
+  const runRebuild = async () => {
+    setConfirmingRebuild(false);
+    setRebuilding(true);
+    setError(null);
+    try {
+      setRebuilt(await rebuildFromVault());
+    } catch (cause) {
+      setError(messageFrom(cause));
+    } finally {
+      setRebuilding(false);
     }
   };
 
@@ -569,6 +615,56 @@ function NotesDataSection({
             >
               <Trash2 size={16} aria-hidden="true" />
               {deleting ? "Deleting..." : "Delete all Yonalist data..."}
+            </button>
+          )}
+        </div>
+
+        <div>
+          <strong>Rebuild from the sync folder</strong>
+          <p className="settings-copy">
+            Throws away this device&apos;s Yonalist database and reads your
+            notes back out of the markdown files in the sync folder. Anything
+            this device has not written into the folder yet goes out first, and
+            the files themselves are never changed. The app stays open.
+          </p>
+          {vaultPath === null && (
+            <p className="settings-copy">
+              Choose a sync folder first: a rebuild reads your notes back out of
+              that folder, and there is nothing to read without one.
+            </p>
+          )}
+          {rebuilt && !confirmingRebuild && (
+            <p role="status">
+              {rebuilt.documents.toLocaleString()}
+              {" "}{rebuilt.documents === 1 ? "document" : "documents"} read,
+              {" "}{rebuilt.unreadable.toLocaleString()} could not be read
+            </p>
+          )}
+          {confirmingRebuild ? (
+            <>
+              <button
+                className="danger-button"
+                type="button"
+                disabled={rebuilding}
+                onClick={() => void runRebuild()}
+              >
+                Throw away the database and rebuild
+              </button>
+              <button
+                type="button"
+                disabled={rebuilding}
+                onClick={() => setConfirmingRebuild(false)}
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              disabled={rebuilding || vaultPath === null}
+              onClick={() => setConfirmingRebuild(true)}
+            >
+              {rebuilding ? "Rebuilding..." : "Rebuild from the sync folder..."}
             </button>
           )}
         </div>
