@@ -1190,6 +1190,86 @@ fn merging_the_same_trash_twice_changes_nothing() {
     assert_eq!(conflicts(&transaction), 0);
 }
 
+/// A stale page file can state a new order for a row another device has since
+/// thrown away. The claim is recorded either way — restoring is clearing the
+/// flag, and the place it comes back to is this one — but the window is told
+/// what the database holds the row as: a note in the trash has no line to
+/// redraw, and named as changed it reads as a note that came back. The sibling
+/// still on the page is named, which is what makes this about the row's state
+/// and not about place adoptions in general.
+#[test]
+fn a_place_claim_on_a_row_the_trash_holds_is_not_named_as_changed() {
+    let live = "8a201f33-0000-4c91-8d02-000000000002";
+    let base = stamp(5, "a3f2");
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &base, "Thought"), node(live, &base, "Other")],
+            &base,
+        )),
+        &input(),
+    )
+    .expect("seed");
+    let mut gone = node(NODE_ID, &stamp(20, "a3f2"), "Thought");
+    gone.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
+    merge_document(
+        &transaction,
+        &clock(),
+        &trash(vec![gone], &stamp(20, "a3f2")),
+        &trash_input(),
+    )
+    .expect("trash");
+
+    // The page file swaps the two lines and stamps the claim, while both node
+    // stamps stay where they were: the deletion still wins the content, and
+    // both rows adopt a place without anything being written.
+    let claimed = stamp(9, "a3f2");
+    let claim = |id: &str, prev: &str, text: &str| {
+        let mut carrier = node(id, &base, text);
+        carrier.place = Some((prev.to_owned(), claimed.clone()));
+        carrier
+    };
+    let mut reordered = page(
+        vec![claim(live, "", "Other"), claim(NODE_ID, live, "Thought")],
+        &claimed,
+    );
+    reordered.root.hlc = base.clone();
+
+    let outcome = merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(reordered),
+        &input(),
+    )
+    .expect("reorder");
+
+    assert_eq!(
+        outcome.changed_ids,
+        std::collections::BTreeSet::from([live.to_owned()]),
+        "the row still on the page is redrawn; the one in the trash is not there to redraw"
+    );
+    assert_eq!(
+        outcome.deleted_ids,
+        std::collections::BTreeSet::from([NODE_ID.to_owned()]),
+        "and what the database holds it as is what the window is told"
+    );
+    assert_eq!(deleted_flag(&transaction, NODE_ID), 1, "still in the trash");
+    let recorded: String = transaction
+        .query_row(
+            "SELECT sync_prev FROM notes_nodes WHERE id = ?1",
+            [NODE_ID],
+            |row| row.get(0),
+        )
+        .expect("claim");
+    assert_eq!(
+        recorded, live,
+        "the claim is recorded either way — the ordering column is not the announcement"
+    );
+}
+
 fn parent_of(connection: &Connection, id: &str) -> String {
     connection
         .query_row(
