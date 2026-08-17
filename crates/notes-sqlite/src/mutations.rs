@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use notes_application::{StorageCommit, StorageError};
 use notes_core::{DomainError, DomainPatch, NodeId, NoteNode, NoteNodeKind, TreeMutation};
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use unicode_normalization::{UnicodeNormalization, char::canonical_combining_class};
 
 use crate::repository::{internal, kind_name, parse_revision};
@@ -54,9 +54,7 @@ pub(crate) fn commit(
                 refresh_derived_data(&transaction, node)?;
             }
             TreeMutation::Delete { id } => {
-                transaction
-                    .execute("DELETE FROM notes_nodes WHERE id = ?1", [id.as_str()])
-                    .map_err(internal)?;
+                remove_node(&transaction, id.as_str())?;
             }
         }
     }
@@ -251,21 +249,68 @@ fn stamp_for_its_picture(
     Ok(())
 }
 
+/// Taking a row off the page, which is two different writes depending on
+/// whether anything outside this device has ever heard of it.
+///
+/// A row the vault has stated cannot simply vanish. A file says which lines a
+/// document holds and nothing about the ones it does not mention, so a device
+/// still holding its own copy reads the shorter file as a truncation and writes
+/// the line straight back — the row returns minutes later under a caret that has
+/// moved on. The trash is where this format states a deletion, so a row that has
+/// been out there is trashed: the stamping trigger gives it a reading of its own,
+/// which beats the copy every other device holds.
+///
+/// A row that has never left this device has nothing to state. Trashing it would
+/// fill the trash — and `trash.md`, which every device reads — with the blank
+/// lines a person opens and closes while typing.
+fn remove_node(transaction: &rusqlite::Transaction<'_>, id: &str) -> Result<(), StorageError> {
+    let stated = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_node_exports WHERE node_id = ?1)",
+            [id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(internal)?;
+    if stated {
+        transaction
+            .execute("UPDATE notes_nodes SET deleted = 1 WHERE id = ?1", [id])
+            .map_err(internal)?;
+        // The window that draws a page has no `deleted` predicate — a trashed
+        // branch leaves it by carrying no path — so a row that kept its path
+        // would still be on the page, which is the one thing the gesture was
+        // asked to change.
+        crate::node_paths::rebuild(transaction, id)?;
+        return Ok(());
+    }
+    transaction
+        .execute("DELETE FROM notes_nodes WHERE id = ?1", [id])
+        .map_err(internal)?;
+    Ok(())
+}
+
 fn insert_node(
     transaction: &rusqlite::Transaction<'_>,
     node: &NoteNode,
 ) -> Result<(), StorageError> {
-    let exists = transaction
+    let standing: Option<bool> = transaction
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM notes_nodes WHERE id = ?1)",
+            "SELECT deleted FROM notes_nodes WHERE id = ?1",
             [node.id().as_str()],
-            |row| row.get::<_, bool>(0),
+            |row| row.get::<_, i64>(0).map(|deleted| deleted == 1),
         )
+        .optional()
         .map_err(internal)?;
-    if exists {
-        return Err(StorageError::Domain(DomainError::DuplicateNode(
-            node.id().clone(),
-        )));
+    match standing {
+        // Undoing a removal that `remove_node` stated in the trash. The row it
+        // left is this row, waiting to be told it is back — inserting over it
+        // would refuse an undo the person is entitled to.
+        Some(true) => return update_node(transaction, node),
+        Some(false) => {
+            return Err(StorageError::Domain(DomainError::DuplicateNode(
+                node.id().clone(),
+            )));
+        }
+        None => {}
     }
     transaction
         .execute(

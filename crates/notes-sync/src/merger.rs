@@ -1305,8 +1305,20 @@ fn write_row(
     // What was last written for this node is no longer what this device holds
     // — it holds what the file said. Leaving the old record would have the
     // export put a reading back that no file anywhere carries.
+    //
+    // Emptied rather than removed, because the row answers a second question:
+    // whether the vault has ever stated this node. A node that arrived in a
+    // file has been stated by definition, and the delete path reads this to
+    // know that taking the row away has to be said out loud — a bare removal
+    // would be undone by the copy the device that sent this file still holds.
+    // An empty reading matches no fingerprint, so nothing is put back and the
+    // next export records the real one.
     transaction
-        .prepare_cached("DELETE FROM sync_node_exports WHERE node_id = ?1")
+        .prepare_cached(
+            "INSERT INTO sync_node_exports(node_id, content_hash, exported_hlc)
+             VALUES (?1, '', '')
+             ON CONFLICT(node_id) DO UPDATE SET content_hash = '', exported_hlc = ''",
+        )
         .and_then(|mut statement| statement.execute([&entry.id]))
         .map_err(|error| error.to_string())?;
     Ok(())
