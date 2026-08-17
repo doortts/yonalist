@@ -108,6 +108,10 @@ enum Request {
         seq: i64,
         reply: SyncSender<Result<Option<(String, String)>, StorageError>>,
     },
+    ForgetConflict {
+        seq: i64,
+        reply: SyncSender<Result<bool, StorageError>>,
+    },
     Revision {
         reply: SyncSender<Result<u64, StorageError>>,
     },
@@ -402,6 +406,11 @@ impl SqliteStorage {
     }
 
     /// What one of them said, for whoever is putting it back.
+    /// Drops one recorded defeat. Answers whether there was one to drop.
+    pub fn forget_conflict(&self, seq: i64) -> Result<bool, StorageError> {
+        self.request(|reply| Request::ForgetConflict { seq, reply })
+    }
+
     pub fn conflict_loser(&self, seq: i64) -> Result<Option<(String, String)>, StorageError> {
         self.request(|reply| Request::ConflictLoser { seq, reply })
     }
@@ -758,6 +767,10 @@ impl SqliteStorage {
                         }
                         Request::ConflictLoser { seq, reply } => {
                             let _ = reply.send(crate::sync_merge::conflict_loser(&connection, seq));
+                        }
+                        Request::ForgetConflict { seq, reply } => {
+                            let _ =
+                                reply.send(crate::sync_merge::forget_conflict(&connection, seq));
                         }
                         Request::Revision { reply } => {
                             let _ = reply.send(repository::revision(&connection));

@@ -1,4 +1,6 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act, fireEvent, render, screen, waitFor, within
+} from "@testing-library/react";
 
 import { pickVaultFolder } from "./vaultPicker";
 
@@ -33,6 +35,7 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsView>[0]> =
     deleteAttachment: vi.fn().mockResolvedValue(true),
     openNode: vi.fn(),
     restoreConflict: vi.fn().mockResolvedValue(undefined),
+    forgetConflict: vi.fn().mockResolvedValue(true),
     setVaultPath: vi.fn().mockResolvedValue(undefined),
     ...overrides
   };
@@ -48,6 +51,12 @@ function renderSettings(overrides: Partial<Parameters<typeof SettingsView>[0]> =
 }
 
 vi.mock("./vaultPicker", () => ({ pickVaultFolder: vi.fn() }));
+
+/// One section is shown at a time, so a test about a section opens it first.
+async function openSection(name: string) {
+  const sections = screen.getByRole("navigation", { name: "Settings sections" });
+  fireEvent.click(await within(sections).findByRole("button", { name }));
+}
 
 /** Lets the mounting reads resolve before an absence is asserted. */
 async function settle() {
@@ -84,6 +93,7 @@ describe("SettingsView", () => {
       })
     });
 
+    await openSection("Sync folder");
     fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -100,6 +110,7 @@ describe("SettingsView", () => {
       })
     });
 
+    await openSection("Yonalist data");
     fireEvent.click(
       screen.getByRole("button", { name: "Delete all Yonalist data..." })
     );
@@ -118,6 +129,7 @@ describe("SettingsView", () => {
       readVaultPath: vi.fn().mockResolvedValue("/Users/me/Yonalist")
     });
 
+    await openSection("Sync folder");
     expect(await screen.findByRole("button", { name: "Change folder" }))
       .toBeInTheDocument();
   });
@@ -137,6 +149,7 @@ describe("SettingsView", () => {
     ]);
     renderSettings({ readConflicts, restoreConflict });
 
+    await openSection("Overwritten notes");
     expect(await screen.findByText("the note that lost")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Put this text back" }));
 
@@ -158,6 +171,7 @@ describe("SettingsView", () => {
       readVaultPath: vi.fn().mockResolvedValue("/Users/me/Yonalist")
     });
 
+    await openSection("Sync folder");
     expect(await screen.findByText("/Users/me/Yonalist")).toBeInTheDocument();
   });
 
@@ -165,6 +179,7 @@ describe("SettingsView", () => {
     vi.mocked(pickVaultFolder).mockResolvedValue("/Users/me/Yonalist");
     const handlers = renderSettings();
 
+    await openSection("Sync folder");
     fireEvent.click(screen.getByRole("button", { name: "Choose folder" }));
 
     await waitFor(() => {
@@ -179,6 +194,7 @@ describe("SettingsView", () => {
       readVaultPath: vi.fn().mockResolvedValue("/Users/me/Yonalist")
     });
 
+    await openSection("Sync folder");
     fireEvent.click(await screen.findByRole("button", { name: "Choose folder" }));
 
     await waitFor(() => expect(pickVaultFolder).toHaveBeenCalled());
@@ -270,6 +286,7 @@ describe("SettingsView", () => {
       })
     });
 
+    await openSection("Yonalist data");
     fireEvent.click(screen.getByRole("button", { name: "Check unused assets" }));
     expect(await screen.findByRole("status")).toHaveTextContent(
       "3 unused assets (4,096 bytes)"
@@ -289,6 +306,7 @@ describe("SettingsView", () => {
   it("deletes all data only after an explicit confirmation step", async () => {
     const handlers = renderSettings();
 
+    await openSection("Yonalist data");
     fireEvent.click(
       screen.getByRole("button", { name: "Delete all Yonalist data..." })
     );
@@ -427,5 +445,81 @@ describe("SettingsView", () => {
     expect(handlers.onMarkerStylesChange).toHaveBeenCalledWith([
       { shape: "dot", char: "", color: null }
     ]);
+  });
+});
+
+describe("SettingsView: one section at a time", () => {
+  const conflict = {
+    seq: 7,
+    nodeId: "8a201f33-0000-4c91-8d02-000000000001",
+    text: "the note that lost",
+    reason: "lww",
+    recordedAt: 1_700_000_000
+  };
+
+  it("opens on Appearance and lists the other sections", async () => {
+    renderSettings();
+    await settle();
+
+    expect(screen.getByRole("heading", { level: 2, name: "Appearance" }))
+      .toBeInTheDocument();
+    const sections = screen.getByRole("navigation", { name: "Settings sections" });
+    for (const name of ["Appearance", "Attachments", "Sync folder", "Yonalist data"]) {
+      expect(within(sections).getByRole("button", { name })).toBeInTheDocument();
+    }
+  });
+
+  it("shows one section's controls at a time", async () => {
+    renderSettings({
+      readVaultPath: vi.fn().mockResolvedValue("/Users/me/Yonalist")
+    });
+    await settle();
+    const sections = screen.getByRole("navigation", { name: "Settings sections" });
+
+    expect(screen.queryByRole("button", { name: "Change folder" }))
+      .not.toBeInTheDocument();
+    fireEvent.click(within(sections).getByRole("button", { name: "Sync folder" }));
+
+    expect(await screen.findByRole("button", { name: "Change folder" }))
+      .toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Theme mode" })).not.toBeInTheDocument();
+  });
+
+  it("does not list a section with nothing in it", async () => {
+    renderSettings();
+    await settle();
+
+    const sections = screen.getByRole("navigation", { name: "Settings sections" });
+    expect(within(sections).queryByRole("button", { name: "Overwritten notes" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("lists overwritten notes once there are some", async () => {
+    renderSettings({ readConflicts: vi.fn().mockResolvedValue([conflict]) });
+
+    const sections = screen.getByRole("navigation", { name: "Settings sections" });
+    fireEvent.click(
+      await within(sections).findByRole("button", { name: "Overwritten notes" })
+    );
+
+    expect(await screen.findByText("the note that lost")).toBeInTheDocument();
+  });
+
+  it("drops a record the reader is done with", async () => {
+    const forgetConflict = vi.fn().mockResolvedValue(true);
+    const readConflicts = vi.fn()
+      .mockResolvedValueOnce([conflict])
+      .mockResolvedValue([]);
+    renderSettings({ readConflicts, forgetConflict });
+    const sections = screen.getByRole("navigation", { name: "Settings sections" });
+    fireEvent.click(
+      await within(sections).findByRole("button", { name: "Overwritten notes" })
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Drop this record" }));
+
+    await waitFor(() => expect(forgetConflict).toHaveBeenCalledWith(7));
+    await waitFor(() =>
+      expect(screen.queryByText("the note that lost")).not.toBeInTheDocument());
   });
 });

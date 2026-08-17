@@ -1521,3 +1521,50 @@ fn a_restore_from_another_device_takes_the_trash_file_too() {
         "the node is alive again everywhere, and the file says otherwise"
     );
 }
+
+/// The list is a record, and a record the user has read is one they can be
+/// done with. Dropping one entry says "I have seen this and I do not want the
+/// old text back", and nothing else about it is kept.
+#[test]
+fn a_recorded_defeat_can_be_dropped() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page("Winner", &stamp(9)), &input())
+        .expect("seed");
+    storage
+        .merge_document(&page("Loser", &stamp(5)), &input())
+        .expect("stale");
+    let entry = storage.sync_conflicts(10).expect("conflicts")[0].clone();
+
+    assert!(storage.forget_conflict(entry.seq).expect("drop"));
+
+    assert!(
+        !storage
+            .sync_conflicts(10)
+            .expect("conflicts")
+            .iter()
+            .any(|kept| kept.seq == entry.seq),
+        "the entry the user let go of is gone"
+    );
+    assert!(
+        storage.conflict_loser(entry.seq).expect("loser").is_none(),
+        "and its text with it"
+    );
+}
+
+/// Two windows, one entry: the second answer says there was nothing to drop
+/// rather than pretending it did something.
+#[test]
+fn dropping_a_defeat_that_is_already_gone_says_so() {
+    let (_directory, storage) = storage();
+    storage
+        .merge_document(&page("Winner", &stamp(9)), &input())
+        .expect("seed");
+    storage
+        .merge_document(&page("Loser", &stamp(5)), &input())
+        .expect("stale");
+    let entry = storage.sync_conflicts(10).expect("conflicts")[0].clone();
+    assert!(storage.forget_conflict(entry.seq).expect("drop"));
+
+    assert!(!storage.forget_conflict(entry.seq).expect("drop again"));
+}

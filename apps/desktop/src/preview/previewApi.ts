@@ -567,6 +567,10 @@ export const previewNotesApi: NotesApi = {
     // The preview has no other device to disagree with.
     return [];
   },
+  async syncForgetConflict() {
+    // Nothing was ever overwritten in a fixture, so there is nothing to drop.
+    return false;
+  },
   async syncRestoreConflict() {
     // Same reason — nothing was ever overwritten.
   },

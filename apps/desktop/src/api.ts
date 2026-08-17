@@ -54,6 +54,7 @@ export interface NotesApi {
   syncDeleteAttachment(contentHash: string): Promise<boolean>;
   syncConflicts(limit: number): Promise<SyncConflict[]>;
   syncRestoreConflict(seq: number): Promise<void>;
+  syncForgetConflict(seq: number): Promise<boolean>;
 }
 
 export const tauriNotesApi: NotesApi = {
@@ -106,5 +107,6 @@ export const tauriNotesApi: NotesApi = {
   syncDeleteAttachment: (contentHash) =>
     invoke("notes_sync_delete_attachment", { contentHash }),
   syncConflicts: (limit) => invoke("notes_sync_conflicts", { limit }),
-  syncRestoreConflict: (seq) => invoke("notes_sync_restore_conflict", { seq })
+  syncRestoreConflict: (seq) => invoke("notes_sync_restore_conflict", { seq }),
+  syncForgetConflict: (seq) => invoke("notes_sync_forget_conflict", { seq })
 };

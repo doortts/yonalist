@@ -112,6 +112,7 @@ export function appApi(): NotesApi {
     }),
     syncAttachments: vi.fn(),
     syncDeleteAttachment: vi.fn(),
-    syncRestoreConflict: vi.fn()
+    syncRestoreConflict: vi.fn(),
+    syncForgetConflict: vi.fn()
   };
 }
