@@ -36,10 +36,11 @@ fn plan_and_apply(tree: &mut NotesTree, command: NotesCommand) {
     tree.apply(&patch.forward).unwrap();
 }
 
-/// The uuid the duplication is keyed on. Fixed so the derived ids below stay
-/// reproducible, and spelled in upper case so the derivation's lowercasing is
-/// load-bearing: drop it and every golden below moves.
-const COPY_ID: &str = "0F3C5A71-2B64-4D18-8E05-9A6C3D21B7F4";
+/// The block id the duplication is keyed on. Fixed so the derived ids below stay
+/// reproducible, and spelled exactly as it is hashed: the derivation no longer
+/// folds case, so a `yid` in either spelling is its own key and every golden
+/// below is tied to this one.
+const COPY_ID: &str = "Copy00000001";
 
 #[test]
 fn duplicating_a_deep_subtree_copies_it_in_document_order_without_deleted_rows() {
@@ -71,14 +72,15 @@ fn duplicating_a_deep_subtree_copies_it_in_document_order_without_deleted_rows()
         },
     );
 
-    // Copied ids are a uuid v5 derivation over the ordinal the walk hands out,
-    // so these golden values pin the namespace, the name format, the key's
-    // lowercasing and the walk order together. Change any one and they move.
-    let zeta = id("35a2fca0-9399-5157-8bdf-2442731c491a");
-    let yak = id("74884284-e696-5c05-9c70-04d14a156fcc");
-    let beta = id("5603c89b-011e-54d5-9e4d-6c95054f50a7");
-    let alpha = id("00be4057-0812-5770-b6be-83f6fe8e5720");
-    let omega = id("772c206f-32e5-525f-8ab8-cb9202d599d6");
+    // Copied ids are the first nine bytes of a uuid v5 derivation over the
+    // ordinal the walk hands out, encoded as a `yid`. These golden values pin the
+    // namespace, the name format, the nine-byte cut and the walk order together.
+    // Change any one and they move.
+    let zeta = id("x0Y-VyipXhG1");
+    let yak = id("FyE-qgbMX-yF");
+    let beta = id("ij5ZijibWdOl");
+    let alpha = id("HJf3OwVZVA65");
+    let omega = id("mQYP6veZXMWD");
     assert_eq!(
         tree.children_of(&id(COPY_ID)),
         vec![zeta.clone(), alpha.clone()]

@@ -1,19 +1,29 @@
 import { freshId } from "./storeSupport";
 
-const UUID_V4 =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const YID = /^[A-Za-z0-9_-]{12}$/;
 
 /**
  * The id is written into the markdown vault as `<!-- yid: ... -->` and is the
- * node's identity across devices, so a non-UUID id is unexportable. Minting a
- * fallback id would put such a node in the outline; throwing keeps it out.
+ * node's identity across devices, so an id of the wrong shape is unexportable.
+ * Minting a fallback would put such a node in the outline; throwing keeps it out.
+ *
+ * Twelve base64url characters, which is exactly nine bytes: three groups of
+ * three, so there is no padding to strip and no partial group to bias. The same
+ * alphabet a Markdown comment, a folder name and a SQLite key all carry without
+ * quoting.
  */
 describe("freshId", () => {
-  it("mints a UUID", () => {
-    expect(freshId()).toMatch(UUID_V4);
+  it("mints twelve url-safe characters", () => {
+    expect(freshId()).toMatch(YID);
   });
 
-  it("throws rather than minting a non-UUID id", () => {
+  it("does not repeat itself", () => {
+    const seen = new Set(Array.from({ length: 256 }, () => freshId()));
+
+    expect(seen.size).toBe(256);
+  });
+
+  it("throws rather than minting an id of the wrong shape", () => {
     const real = globalThis.crypto;
     Object.defineProperty(globalThis, "crypto", {
       value: {},

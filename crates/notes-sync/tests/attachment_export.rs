@@ -10,10 +10,10 @@ use notes_sync::hlc::{Clock, Hlc};
 use rusqlite::Connection;
 
 const DEVICE: &str = "cccc";
-const FIRST_PAGE: &str = "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1";
-const SECOND_PAGE: &str = "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e2";
-const IMAGE_NODE: &str = "8a201f33-0000-4c91-8d02-000000000001";
-const OTHER_IMAGE_NODE: &str = "8a201f33-0000-4c91-8d02-000000000002";
+const FIRST_PAGE: &str = "Notes0000001";
+const SECOND_PAGE: &str = "Notes0000002";
+const IMAGE_NODE: &str = "Nd0000000001";
+const OTHER_IMAGE_NODE: &str = "Nd0000000002";
 /// Not a real png, and nothing here decodes it — the store already checked.
 const BYTES: &[u8] = b"pretend png";
 const HASH: &str = "9f2c1b7a4e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081";
@@ -115,7 +115,7 @@ fn read(workspace: &Workspace, relative: &str) -> Option<String> {
     std::fs::read_to_string(workspace.vault.path().join(relative)).ok()
 }
 
-const FIRST_FOLDER: &str = "Notes-4f1c8e20a3b7";
+const FIRST_FOLDER: &str = "Notes-Notes0000001";
 const DISK_NAME: &str = "holiday-9f2c1b7a4e6d.png";
 
 #[test]
@@ -197,7 +197,7 @@ fn an_attachment_inside_a_split_document_belongs_to_the_page() {
     let mut connection = database();
     let workspace = workspace();
     page(&connection, FIRST_PAGE, "Notes", 4294967296);
-    let split = "8a201f33-0000-4c91-8d02-0000000000dd";
+    let split = "Nd00000000dd";
     connection
         .execute(
             "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
@@ -210,7 +210,7 @@ fn an_attachment_inside_a_split_document_belongs_to_the_page() {
             "INSERT INTO sync_documents(root_id, folder_path) VALUES (?1, ?2)",
             rusqlite::params![
                 split,
-                format!("{FIRST_FOLDER}/Deeper-8a201f330000/README.md")
+                format!("{FIRST_FOLDER}/Deeper-Nd00000000dd/README.md")
             ],
         )
         .expect("split document");

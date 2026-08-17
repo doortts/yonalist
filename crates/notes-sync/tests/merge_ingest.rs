@@ -10,8 +10,8 @@ use notes_sync::merger::{MergeInput, merge_document};
 use rusqlite::Connection;
 
 const DEVICE: &str = "cccc";
-const PAGE_ID: &str = "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1";
-const NODE_ID: &str = "8a201f33-0000-4c91-8d02-000000000001";
+const PAGE_ID: &str = "PrJects00001";
+const NODE_ID: &str = "Nd0000000001";
 /// Inside the encoding, far outside the day the drift guard allows: about the
 /// year 4821 by the wall clock.
 const FAR_FUTURE_MILLIS: u64 = 90_000_000_000_000;
@@ -86,7 +86,7 @@ fn page(nodes: Vec<DocumentNode>, max_hlc: &str) -> PageDocument {
 
 fn input() -> MergeInput {
     MergeInput {
-        file_path: "Projects-4f1c8e20a3b7/README.md".to_owned(),
+        file_path: "Projects-PrJects00001/README.md".to_owned(),
         file_hash: "a".repeat(64),
         file_mtime_ms: Some(1_700_000_000_000),
         file_size: Some(256),
@@ -276,8 +276,12 @@ fn a_loser_is_recorded_once_in_the_conflict_log() {
     assert_eq!(conflicts_for(&transaction, NODE_ID), 1);
 }
 
+/// The id the merge issues has to be one the vault can carry back out. It used
+/// to be a UUID, so the shape was stated as its 36 characters; a `yid` is checked
+/// against its own alphabet instead, which is the check the renderer and the
+/// folder name both make before they will write it.
 #[test]
-fn an_unstamped_bullet_gets_a_fresh_uuid_and_stamp() {
+fn an_unstamped_bullet_gets_a_fresh_yid_and_stamp() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
 
@@ -299,7 +303,10 @@ fn an_unstamped_bullet_gets_a_fresh_uuid_and_stamp() {
             |row| row.get(0),
         )
         .expect("issued");
-    assert_eq!(issued.len(), 36, "a hand-written line still gets a real id");
+    assert!(
+        notes_core::is_yid(&issued),
+        "a hand-written line still gets a real id, got {issued}"
+    );
     assert!(!hlc_of(&transaction, &issued).is_empty());
     assert!(
         outcome.needs_write_back,
@@ -590,12 +597,12 @@ fn a_remote_same_hlc_conflict_breaks_ties_by_content_hash() {
 fn a_reorder_touches_only_the_moved_sibling() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let second_id = "8a201f33-0000-4c91-8d02-000000000002";
-    let third_id = "8a201f33-0000-4c91-8d02-000000000003";
+    let second_id = "Nd0000000002";
+    let third_id = "Nd0000000003";
     let ordered = |ids: [&str; 3], hlc: &str| {
         notes_sync::document::VaultFile::Page(page(
             ids.iter()
-                .map(|id| node(id, hlc, &format!("Node {}", &id[34..])))
+                .map(|id| node(id, hlc, &format!("Node {}", &id[10..])))
                 .collect(),
             hlc,
         ))
@@ -650,7 +657,7 @@ fn a_reorder_touches_only_the_moved_sibling() {
 
 fn second_page() -> PageDocument {
     let mut document = page(Vec::new(), &stamp(5, "a3f2"));
-    document.id = DocumentId::Node("11c8da70-b5e1-4c91-8d02-a3f204ee81cc".to_owned());
+    document.id = DocumentId::Node("Mnutes000001".to_owned());
     document.root.title = "Second".to_owned();
     document
 }
@@ -680,7 +687,7 @@ fn a_page_document_does_not_claim_a_position() {
     let second = notes_sync::document::VaultFile::Page(second_page());
     merge_document(&transaction, &clock(), &first, &input()).expect("first");
     let mut elsewhere = input();
-    elsewhere.file_path = "Second-11c8da70b5e1/README.md".to_owned();
+    elsewhere.file_path = "Second-Mnutes000001/README.md".to_owned();
     merge_document(&transaction, &clock(), &second, &elsewhere).expect("second");
     let ordered = order_of_pages(&transaction);
     let stamps: Vec<String> = ordered.iter().map(|_| String::new()).collect::<Vec<_>>();
@@ -836,8 +843,8 @@ fn a_drifted_file_logs_the_row_it_overwrote() {
 fn a_reorder_logs_nothing_against_the_siblings_that_stayed() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let second_id = "8a201f33-0000-4c91-8d02-000000000002";
-    let third_id = "8a201f33-0000-4c91-8d02-000000000003";
+    let second_id = "Nd0000000002";
+    let third_id = "Nd0000000003";
     let seeded = stamp(5, "a3f2");
     merge_document(
         &transaction,
@@ -845,7 +852,7 @@ fn a_reorder_logs_nothing_against_the_siblings_that_stayed() {
         &notes_sync::document::VaultFile::Page(page(
             [NODE_ID, second_id, third_id]
                 .iter()
-                .map(|id| node(id, &seeded, &format!("Node {}", &id[34..])))
+                .map(|id| node(id, &seeded, &format!("Node {}", &id[10..])))
                 .collect(),
             &seeded,
         )),
@@ -889,10 +896,10 @@ fn a_reorder_logs_nothing_against_the_siblings_that_stayed() {
 fn siblings_taking_turns_in_one_slot_never_run_out_of_room() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let first = "8a201f33-0000-4c91-8d02-000000000001";
-    let a = "8a201f33-0000-4c91-8d02-000000000002";
-    let b = "8a201f33-0000-4c91-8d02-000000000003";
-    let last = "8a201f33-0000-4c91-8d02-000000000004";
+    let first = "Nd0000000001";
+    let a = "Nd0000000002";
+    let b = "Nd0000000003";
+    let last = "Nd0000000004";
     let seeded = stamp(5, "a3f2");
     // Only the node that actually moved carries a new stamp — the others are
     // unchanged, which is what leaves the gap to be eaten.
@@ -905,7 +912,7 @@ fn siblings_taking_turns_in_one_slot_never_run_out_of_room() {
                     } else {
                         seeded.clone()
                     };
-                    node(id, &mark, &format!("Node {}", &id[34..]))
+                    node(id, &mark, &format!("Node {}", &id[10..]))
                 })
                 .collect(),
             &stamp(millis, "a3f2"),
@@ -1122,7 +1129,7 @@ fn restoring_from_trash_puts_the_node_back_where_it_was() {
 fn a_trash_child_takes_its_place_from_its_line() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let child_id = "8a201f33-0000-4c91-8d02-000000000007";
+    let child_id = "Nd0000000007";
     let mut parent = node(NODE_ID, &stamp(5, "a3f2"), "Deleted");
     parent.from = Some((PAGE_ID.to_owned(), 4_294_967_296));
     parent.children = vec![node(child_id, &stamp(5, "a3f2"), "Child")];
@@ -1153,7 +1160,7 @@ fn a_trash_child_takes_its_place_from_its_line() {
 fn a_trash_root_whose_parent_is_unknown_gets_a_placeholder() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let unknown_parent = "9d3f21b8-c440-4c91-8d02-2e77a05fb163";
+    let unknown_parent = "Archive00001";
     let mut gone = node(NODE_ID, &stamp(5, "a3f2"), "Thought");
     gone.from = Some((unknown_parent.to_owned(), 4_294_967_296));
 
@@ -1198,7 +1205,7 @@ fn merging_the_same_trash_twice_changes_nothing() {
 /// and not about place adoptions in general.
 #[test]
 fn a_place_claim_on_a_row_the_trash_holds_is_not_named_as_changed() {
-    let live = "8a201f33-0000-4c91-8d02-000000000002";
+    let live = "Nd0000000002";
     let base = stamp(5, "a3f2");
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
@@ -1279,8 +1286,8 @@ fn a_place_claim_on_a_row_the_trash_holds_is_not_named_as_changed() {
 /// the window would throw away whatever the caret is holding on them.
 #[test]
 fn a_claim_from_the_trash_on_a_row_that_outlived_it_is_named_as_changed() {
-    let first = "8a201f33-0000-4c91-8d02-000000000003";
-    let second = "8a201f33-0000-4c91-8d02-000000000004";
+    let first = "Nd0000000003";
+    let second = "Nd0000000004";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let mut parent = node(NODE_ID, &stamp(20, "a3f2"), "Kept");
@@ -1355,8 +1362,8 @@ fn recovery_page(connection: &Connection) -> Option<String> {
 /// every device has to pick the same one, or the vaults never converge.
 #[test]
 fn a_cycle_parks_the_same_node_for_the_same_input() {
-    let first = "8a201f33-0000-4c91-8d02-000000000001";
-    let second = "8a201f33-0000-4c91-8d02-000000000002";
+    let first = "Nd0000000001";
+    let second = "Nd0000000002";
     let mut parked = Vec::new();
 
     // The same ring, built from either end.
@@ -1436,7 +1443,7 @@ fn a_cycle_parks_the_same_node_for_the_same_input() {
 /// work nothing will ever write, which is what blocks a reindex for good.
 #[test]
 fn adopting_another_devices_decision_leaves_the_queue_as_it_found_it() {
-    let node_id = "8a201f33-0000-4c91-8d02-000000000001";
+    let node_id = "Nd0000000001";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let seeded = stamp(5, "a3f2");
@@ -1481,7 +1488,7 @@ fn adopting_another_devices_decision_leaves_the_queue_as_it_found_it() {
 /// — which loses it every later comparison — and drops whatever it was owed.
 #[test]
 fn the_trash_does_not_stand_in_for_a_parent_that_is_already_here() {
-    let parent = "8a201f33-0000-4c91-8d02-000000000001";
+    let parent = "Nd0000000001";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let seeded = stamp(5, "a3f2");
@@ -1511,7 +1518,7 @@ fn the_trash_does_not_stand_in_for_a_parent_that_is_already_here() {
         )
         .expect("owed");
 
-    let mut deleted = node("8a201f33-0000-4c91-8d02-00000000000e", &seeded, "Taken out");
+    let mut deleted = node("Nd000000000e", &seeded, "Taken out");
     deleted.from = Some((parent.to_owned(), 4_294_967_296));
     merge_document(
         &transaction,
@@ -1562,11 +1569,7 @@ fn a_conflicted_copy_does_not_become_the_documents_own_file() {
     let transaction = connection.transaction().expect("begin");
     let seeded = stamp(5, "a3f2");
     let file = notes_sync::document::VaultFile::Page(page(
-        vec![node(
-            "8a201f33-0000-4c91-8d02-000000000001",
-            &seeded,
-            "First",
-        )],
+        vec![node("Nd0000000001", &seeded, "First")],
         &seeded,
     ));
     merge_document(&transaction, &clock(), &file, &input()).expect("the page");
@@ -1576,7 +1579,7 @@ fn a_conflicted_copy_does_not_become_the_documents_own_file() {
         &clock(),
         &file,
         &notes_sync::merger::MergeInput {
-            file_path: "Projects-4f1c8e20a3b7/README (conflicted copy 2026-08-16).md".to_owned(),
+            file_path: "Projects-PrJects00001/README (conflicted copy 2026-08-16).md".to_owned(),
             file_hash: "b".repeat(64),
             ..input()
         },
@@ -1586,12 +1589,12 @@ fn a_conflicted_copy_does_not_become_the_documents_own_file() {
     let recorded: String = transaction
         .query_row(
             "SELECT folder_path FROM sync_documents WHERE root_id = ?1",
-            ["4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1"],
+            ["PrJects00001"],
             |row| row.get(0),
         )
         .expect("the document");
     assert_eq!(
-        recorded, "Projects-4f1c8e20a3b7/README.md",
+        recorded, "Projects-PrJects00001/README.md",
         "the page keeps its own name"
     );
     assert!(
@@ -1607,7 +1610,7 @@ fn a_conflicted_copy_does_not_become_the_documents_own_file() {
 /// which is two devices rewriting the same file at each other for ever.
 #[test]
 fn adopting_another_devices_version_forgets_what_this_one_last_wrote() {
-    let node_id = "8a201f33-0000-4c91-8d02-000000000001";
+    let node_id = "Nd0000000001";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let seeded = stamp(5, "a3f2");
@@ -1660,7 +1663,7 @@ fn adopting_another_devices_version_forgets_what_this_one_last_wrote() {
 /// hands them back.
 #[test]
 fn a_trash_copy_leaves_the_real_trash_owing_a_write() {
-    let node_id = "8a201f33-0000-4c91-8d02-000000000001";
+    let node_id = "Nd0000000001";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let seeded = stamp(5, "a3f2");
@@ -1679,10 +1682,7 @@ fn a_trash_copy_leaves_the_real_trash_owing_a_write() {
         .expect("clear");
 
     let mut deleted = node(node_id, &stamp(9, "bbb2"), "Taken out");
-    deleted.from = Some((
-        "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1".to_owned(),
-        4_294_967_296,
-    ));
+    deleted.from = Some(("PrJects00001".to_owned(), 4_294_967_296));
     let outcome = merge_document(
         &transaction,
         &clock(),
@@ -1711,7 +1711,7 @@ fn a_trash_copy_leaves_the_real_trash_owing_a_write() {
 /// been, and treating it as a demotion flattens it into its page.
 #[test]
 fn a_document_that_states_its_parent_is_recorded_as_a_split_document() {
-    let node_id = "8a201f33-0000-4c91-8d02-000000000001";
+    let node_id = "Nd0000000001";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let seeded = stamp(5, "a3f2");
@@ -1724,7 +1724,7 @@ fn a_document_that_states_its_parent_is_recorded_as_a_split_document() {
         &clock(),
         &notes_sync::document::VaultFile::Page(split),
         &notes_sync::merger::MergeInput {
-            file_path: "Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md".to_owned(),
+            file_path: "Projects-PrJects00001/Deeper-Nd0000000001/README.md".to_owned(),
             ..input()
         },
     )
@@ -1745,8 +1745,8 @@ fn a_document_that_states_its_parent_is_recorded_as_a_split_document() {
 /// again. The recovery page, the node put under it, and home all owe a write.
 #[test]
 fn a_rescued_node_and_the_page_holding_it_owe_a_file() {
-    let first = "8a201f33-0000-4c91-8d02-000000000001";
-    let second = "8a201f33-0000-4c91-8d02-000000000002";
+    let first = "Nd0000000001";
+    let second = "Nd0000000002";
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let seeded = stamp(5, "a3f2");
@@ -1809,8 +1809,8 @@ fn a_rescued_node_and_the_page_holding_it_owe_a_file() {
 fn an_orphaned_live_child_parks_on_the_recovery_page() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let parent_id = "8a201f33-0000-4c91-8d02-000000000001";
-    let child_id = "8a201f33-0000-4c91-8d02-000000000002";
+    let parent_id = "Nd0000000001";
+    let child_id = "Nd0000000002";
     let mut parent = node(parent_id, &stamp(5, "a3f2"), "Parent");
     parent.children = vec![node(child_id, &stamp(5, "a3f2"), "Child")];
     merge_document(
@@ -1847,8 +1847,8 @@ fn an_orphaned_live_child_parks_on_the_recovery_page() {
 /// would stack the rescues on top of each other and leave the order to chance.
 #[test]
 fn rescued_nodes_land_in_the_same_order_whichever_was_rescued_first() {
-    let one = "8a201f33-0000-4c91-8d02-0000000000aa";
-    let two = "1b201f33-0000-4c91-8d02-0000000000bb";
+    let one = "Nd00000000aa";
+    let two = "Nd00000000bb";
     let mut orders = Vec::new();
 
     for reversed in [false, true] {
@@ -1935,9 +1935,9 @@ fn rescued_nodes_land_in_the_same_order_whichever_was_rescued_first() {
 fn a_typed_line_does_not_unseat_the_sibling_after_it() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let a = "8a201f33-0000-4c91-8d02-000000000001";
-    let b = "8a201f33-0000-4c91-8d02-000000000002";
-    let c = "8a201f33-0000-4c91-8d02-000000000003";
+    let a = "Nd0000000001";
+    let b = "Nd0000000002";
+    let c = "Nd0000000003";
     let mine = stamp(5, DEVICE);
     let seed = |ids: Vec<DocumentNode>| notes_sync::document::VaultFile::Page(page(ids, &mine));
     merge_document(
@@ -2025,7 +2025,7 @@ fn a_new_page_lands_after_the_pages_already_there() {
     )
     .expect("first");
     let mut elsewhere = input();
-    elsewhere.file_path = "Second-11c8da70b5e1/README.md".to_owned();
+    elsewhere.file_path = "Second-Mnutes000001/README.md".to_owned();
 
     merge_document(
         &transaction,
@@ -2183,15 +2183,11 @@ fn replaying_a_trash_with_several_roots_changes_nothing() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
     let mine = stamp(5, DEVICE);
-    let roots: Vec<DocumentNode> = ["000000000005", "000000000006", "000000000007"]
+    let roots: Vec<DocumentNode> = ["Nd0000000005", "Nd0000000006", "Nd0000000007"]
         .iter()
         .enumerate()
         .map(|(index, tail)| {
-            let mut gone = node(
-                &format!("8a201f33-0000-4c91-8d02-{tail}"),
-                &mine,
-                &format!("Gone {index}"),
-            );
+            let mut gone = node(tail, &mine, &format!("Gone {index}"));
             gone.from = Some((PAGE_ID.to_owned(), (index as i64 + 1) * 4_294_967_296));
             gone
         })
@@ -2214,7 +2210,7 @@ fn split_line(id: &str, hlc: &str, title: &str, path: &str) -> DocumentNode {
     line
 }
 
-const CHILD_ID: &str = "9d3f21b8-c440-4c91-8d02-2e77a05fb163";
+const CHILD_ID: &str = "Archive00001";
 
 fn child_document(hlc: &str, title: &str, starred: bool) -> PageDocument {
     PageDocument {
@@ -2235,7 +2231,7 @@ fn child_document(hlc: &str, title: &str, starred: bool) -> PageDocument {
 
 fn child_input() -> MergeInput {
     let mut input = input();
-    input.file_path = "Projects-4f1c8e20a3b7/Archive-9d3f21b8c440/README.md".to_owned();
+    input.file_path = "Projects-PrJects00001/Archive-Archive00001/README.md".to_owned();
     input
 }
 
@@ -2266,7 +2262,7 @@ fn a_split_line_grants_existence_and_position_only() {
                 CHILD_ID,
                 &mark,
                 "Stale display title",
-                "Archive-9d3f21b8c440/README.md",
+                "Archive-Archive00001/README.md",
             )],
             &mark,
         )),
@@ -2309,7 +2305,7 @@ fn a_child_document_converges_in_either_arrival_order() {
                 CHILD_ID,
                 &mark,
                 "Stale display title",
-                "Archive-9d3f21b8c440/README.md",
+                "Archive-Archive00001/README.md",
             )],
             &mark,
         ));
@@ -2356,7 +2352,7 @@ fn replaying_a_split_pair_changes_nothing() {
             CHILD_ID,
             &mark,
             "2024 Archive",
-            "Archive-9d3f21b8c440/README.md",
+            "Archive-Archive00001/README.md",
         )],
         &mark,
     ));
@@ -2380,9 +2376,9 @@ fn replaying_a_split_pair_changes_nothing() {
 /// different orders.
 #[test]
 fn equal_claim_stamps_break_place_ties_by_digest() {
-    let first = "8a201f33-0000-4c91-8d02-000000000001";
-    let second = "8a201f33-0000-4c91-8d02-000000000002";
-    let third = "8a201f33-0000-4c91-8d02-000000000003";
+    let first = "Nd0000000001";
+    let second = "Nd0000000002";
+    let third = "Nd0000000003";
     let base = stamp(5, "a3f2");
     let mut orders = Vec::new();
 
@@ -2426,9 +2422,9 @@ fn equal_claim_stamps_break_place_ties_by_digest() {
 /// where it sits, so there is nothing for the two files to disagree about.
 #[test]
 fn two_documents_sharing_a_base_agree_on_an_unmoved_nodes_place() {
-    let one = "8a201f33-0000-4c91-8d02-000000000001";
-    let two = "8a201f33-0000-4c91-8d02-000000000002";
-    let three = "8a201f33-0000-4c91-8d02-000000000003";
+    let one = "Nd0000000001";
+    let two = "Nd0000000002";
+    let three = "Nd0000000003";
     let base = stamp(5, "a3f2");
     let mut orders = Vec::new();
 
@@ -2493,7 +2489,7 @@ fn two_documents_sharing_a_base_agree_on_an_unmoved_nodes_place() {
 fn a_page_that_arrives_before_home_yields_to_homes_line() {
     let mut connection = database();
     let transaction = connection.transaction().expect("begin");
-    let other = "11c8da70-b5e1-4c91-8d02-a3f204ee81cc";
+    let other = "Mnutes000001";
     merge_document(
         &transaction,
         &clock(),
@@ -2502,7 +2498,7 @@ fn a_page_that_arrives_before_home_yields_to_homes_line() {
     )
     .expect("first page");
     let mut elsewhere = input();
-    elsewhere.file_path = "Second-11c8da70b5e1/README.md".to_owned();
+    elsewhere.file_path = "Second-Mnutes000001/README.md".to_owned();
     merge_document(
         &transaction,
         &clock(),
@@ -2518,13 +2514,13 @@ fn a_page_that_arrives_before_home_yields_to_homes_line() {
                 other,
                 &stamp(1, "a3f2"),
                 "Second",
-                "Second-11c8da70b5e1/README.md",
+                "Second-Mnutes000001/README.md",
             ),
             split_line(
                 PAGE_ID,
                 &stamp(1, "a3f2"),
                 "Projects",
-                "Projects-4f1c8e20a3b7/README.md",
+                "Projects-PrJects00001/README.md",
             ),
         ],
         &stamp(1, "a3f2"),

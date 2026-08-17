@@ -11,7 +11,6 @@ use crate::document::{
 };
 use crate::hlc::Hlc;
 use std::collections::{BTreeMap, HashSet};
-use uuid::Uuid;
 
 pub const MAX_FILE_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_DEPTH: usize = 128;
@@ -192,11 +191,11 @@ fn parse_page(keys: &Frontmatter, body: &[&str], footer: Footer) -> Result<Vault
     require_format_version(keys)?;
     let id = match keys.get("id").map(String::as_str) {
         Some("root") => DocumentId::Home,
-        Some(value) => DocumentId::Node(canonical_uuid(value)?),
+        Some(value) => DocumentId::Node(block_id(value)?),
         None => return Err("The document has no id.".to_owned()),
     };
     let parent = match keys.get("parent") {
-        Some(value) => Some(canonical_uuid(value)?),
+        Some(value) => Some(block_id(value)?),
         None => None,
     };
     let sort_key = match keys.get("sort_key") {
@@ -246,7 +245,7 @@ fn parse_page(keys: &Frontmatter, body: &[&str], footer: Footer) -> Result<Vault
     let mut reader = NodeReader::new(false, footer);
     let nodes = reader.read(body)?;
     if let DocumentId::Node(id) = &id
-        && reader.ids.contains(&id.to_ascii_lowercase())
+        && reader.ids.contains(id.as_str())
     {
         return Err("A node claims the document's own id.".to_owned());
     }
@@ -378,7 +377,11 @@ impl NodeReader {
             if self.count > MAX_NODES {
                 return Err(format!("The document holds more than {MAX_NODES} nodes."));
             }
-            if !node_line.id.is_empty() && !self.ids.insert(node_line.id.to_ascii_lowercase()) {
+            // As written, never folded. Two ids differing only in case are two
+            // blocks: `derived_child_id` hashes the id as it stands and
+            // `folder_suffix` gives two such ids two folders, so folding here
+            // would refuse a legal document — and refuse it as a duplicate.
+            if !node_line.id.is_empty() && !self.ids.insert(node_line.id.clone()) {
                 return Err(format!("The id {} appears twice.", node_line.id));
             }
             while stack.len() > depth {
@@ -557,7 +560,7 @@ fn read_token_words(inner: &str) -> Result<Tokens, Quarantine> {
             "yid:" => {
                 once("yid")?;
                 let value = words.next().unwrap_or_default();
-                tokens.id = canonical_uuid(value)?;
+                tokens.id = block_id(value)?;
             }
             "t:" => {
                 once("t")?;
@@ -600,7 +603,7 @@ fn read_token_words(inner: &str) -> Result<Tokens, Quarantine> {
                 let previous = if previous.is_empty() {
                     String::new()
                 } else {
-                    canonical_uuid(previous)?
+                    block_id(previous)?
                 };
                 tokens.place = Some((previous, optional_hlc(Some(&stamp.to_owned()))));
             }
@@ -632,7 +635,7 @@ fn read_token_words(inner: &str) -> Result<Tokens, Quarantine> {
                 let parent = if parent == "root" {
                     "root".to_owned()
                 } else {
-                    canonical_uuid(parent)?
+                    block_id(parent)?
                 };
                 let sort_key = sort_key
                     .parse()
@@ -760,10 +763,15 @@ fn highest_hlc(nodes: &[DocumentNode]) -> String {
     })
 }
 
-fn canonical_uuid(value: &str) -> Result<String, Quarantine> {
-    Uuid::parse_str(value)
-        .map(|id| id.hyphenated().to_string())
-        .map_err(|_| format!("`{value}` is not a UUID."))
+/// A shape check at the trust boundary. Nothing is canonicalised any more: a
+/// `yid` has one spelling, where a UUID had several and had to be folded onto
+/// one — and folding is precisely what a `yid` must not have done to it, since
+/// two ids differing only in case are two blocks.
+fn block_id(value: &str) -> Result<String, Quarantine> {
+    if !notes_core::is_block_id(value) {
+        return Err(format!("`{value}` is not a block id."));
+    }
+    Ok(value.to_owned())
 }
 
 /// An unreadable stamp becomes no stamp. It then loses every comparison, which

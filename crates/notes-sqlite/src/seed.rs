@@ -5,40 +5,21 @@ use rusqlite::{Connection, TransactionBehavior, params};
 use crate::repository::internal;
 
 const ONBOARDING_MARKER_KEY: &str = "onboarding_seeded";
-/// Fixed uuids rather than readable strings: every id the vault carries is a
-/// uuid, and the seed writes rows like any other producer. They are constants
-/// so a reseeded database lands on the same ids it had before. Their values are
-/// uuid v5 over the sync namespace `7f9c2b14-5d63-4a08-9e21-3c6f0d8b4a52` with
-/// the names `onboarding/page` and `onboarding/guide/N`, so the family extends
-/// without guessing at collisions.
-const ONBOARDING_PAGE_ID: &str = "f4556d3d-868c-5fab-914a-614c84331c53";
+/// Written down rather than generated. Fixed is what makes a second seed a no-op
+/// and what lets the guide fixture and a freshly seeded vault hold the same block
+/// identities — generate them and the two would never agree again. Readable, too:
+/// these are the one set of ids a person reads in a file they did not create, so
+/// they say which guide line they are.
+const ONBOARDING_PAGE_ID: &str = "GuideP000001";
 const ONBOARDING_TITLE: &str = "Yonalist 시작하기";
 const ONBOARDING_NOTE: &str = "이 노트는 자유롭게 수정하거나 삭제할 수 있어요.";
 const ONBOARDING_CHILDREN: [(&str, &str); 6] = [
-    (
-        "5c64635d-db37-5efc-b331-fd3687acbd5d",
-        "Enter — 새 항목 만들기",
-    ),
-    (
-        "a18820a4-633c-5bd2-abcf-91a98b9f775c",
-        "Tab / Shift+Tab — 들여쓰기 / 내어쓰기",
-    ),
-    (
-        "89c02706-d65d-5691-a17c-397339acdeff",
-        "Shift+Enter — 설명 입력하기",
-    ),
-    (
-        "5915228f-fbc6-5d8d-8206-e0eab04009f1",
-        "⌘/Ctrl+Enter — 완료 표시",
-    ),
-    (
-        "36c840c3-4964-5ea8-8a1e-2e94880821eb",
-        "↑/↓ — 항목 사이 이동",
-    ),
-    (
-        "8b425319-cfc2-5dac-b7a1-553473556311",
-        "불릿을 드래그해 순서와 계층 바꾸기",
-    ),
+    ("GuideL000001", "Enter — 새 항목 만들기"),
+    ("GuideL000002", "Tab / Shift+Tab — 들여쓰기 / 내어쓰기"),
+    ("GuideL000003", "Shift+Enter — 설명 입력하기"),
+    ("GuideL000004", "⌘/Ctrl+Enter — 완료 표시"),
+    ("GuideL000005", "↑/↓ — 항목 사이 이동"),
+    ("GuideL000006", "불릿을 드래그해 순서와 계층 바꾸기"),
 ];
 
 /// Seeds the first-run onboarding page exactly once per database. Existing
@@ -130,8 +111,12 @@ mod tests {
             .expect("count")
     }
 
+    /// Two claims, and the second one is what changed. Reseeding still has to land
+    /// on the ids it had before, and each id still has to be a shape the vault can
+    /// carry — but that shape used to be a lowercase hyphenated UUID and is a
+    /// `yid` now, so the check is `is_yid` rather than a spelling comparison.
     #[test]
-    fn the_onboarding_seed_ids_are_fixed_and_canonical() {
+    fn the_onboarding_seed_ids_are_fixed_and_the_vault_can_carry_them() {
         let ids = |connection: &mut Connection| {
             seed_onboarding(connection).expect("seed");
             seeded_ids(connection)
@@ -144,17 +129,15 @@ mod tests {
             "a reseeded database has to land on the ids it had before"
         );
         for id in &first {
-            let parsed = uuid::Uuid::try_parse(id).expect("uuid");
-            assert_eq!(
-                parsed.hyphenated().to_string(),
-                *id,
-                "the renderer only writes lowercase hyphenated uuids"
+            assert!(
+                notes_core::is_yid(id),
+                "the renderer only writes ids of this shape, got {id}"
             );
         }
     }
 
     #[test]
-    fn the_onboarding_seed_uses_uuids() {
+    fn the_onboarding_seed_uses_block_ids() {
         let mut connection = open();
         seed_onboarding(&mut connection).expect("seed");
 
@@ -162,8 +145,8 @@ mod tests {
         assert_eq!(ids.len(), 7);
         for id in &ids {
             assert!(
-                uuid::Uuid::try_parse(id).is_ok(),
-                "the vault can only carry uuid ids, got {id}"
+                notes_core::is_block_id(id),
+                "the vault can only carry block ids, got {id}"
             );
         }
     }

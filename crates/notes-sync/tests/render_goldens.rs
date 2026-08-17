@@ -54,22 +54,10 @@ fn node(id: &str, hlc: &str, text: &str) -> DocumentNode {
 }
 
 fn page() -> PageDocument {
-    let mut architecture = node(
-        "8a201f33-0000-4c91-8d02-000000000001",
-        "0swkd7qz6-00-a3f2",
-        "아키텍처 다시 그리기",
-    );
-    let mut boundaries = node(
-        "8a201f33-0000-4c91-8d02-000000000002",
-        "0swkd7qz7-00-a3f2",
-        "크레이트 경계 정리",
-    );
+    let mut architecture = node("Nd0000000001", "0swkd7qz6-00-a3f2", "아키텍처 다시 그리기");
+    let mut boundaries = node("Nd0000000002", "0swkd7qz7-00-a3f2", "크레이트 경계 정리");
     boundaries.marker = Marker::Todo;
-    let mut diagram = node(
-        "8a201f33-0000-4c91-8d02-000000000003",
-        "0swkd7qz8-00-a3f2",
-        "",
-    );
+    let mut diagram = node("Nd0000000003", "0swkd7qz8-00-a3f2", "");
     diagram.body = NodeBody::Image(ImageReference {
         original_name: "아키텍처.png".to_owned(),
         path: "assets/아키텍처-9f3a1c8e2044.png".to_owned(),
@@ -80,16 +68,12 @@ fn page() -> PageDocument {
     });
     architecture.children = vec![boundaries, diagram];
 
-    let mut tidied = node(
-        "8a201f33-0000-4c91-8d02-000000000004",
-        "0swkd7qz9-00-a3f2",
-        "정리한 것",
-    );
+    let mut tidied = node("Nd0000000004", "0swkd7qz9-00-a3f2", "정리한 것");
     tidied.completed = true;
     tidied.collapsed = true;
 
     PageDocument {
-        id: DocumentId::Node("4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1".to_owned()),
+        id: DocumentId::Node("PrJects00001".to_owned()),
         parent: None,
         sort_key: None,
         max_hlc: "0swkd7qz9-00-a3f2".to_owned(),
@@ -122,26 +106,11 @@ fn rendering_the_same_state_twice_is_byte_identical() {
 
 #[test]
 fn the_trash_renders_byte_identical_to_its_golden() {
-    let mut old_page = node(
-        "8a201f33-0000-4c91-8d02-000000000005",
-        "0swkd7qza-00-a3f2",
-        "Old page",
-    );
+    let mut old_page = node("Nd0000000005", "0swkd7qza-00-a3f2", "Old page");
     old_page.from = Some(("root".to_owned(), 4_294_967_296));
-    let mut deleted = node(
-        "8a201f33-0000-4c91-8d02-000000000006",
-        "0swkd7qzb-00-a3f2",
-        "Deleted",
-    );
-    deleted.from = Some((
-        "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1".to_owned(),
-        8_589_934_592,
-    ));
-    let mut child = node(
-        "8a201f33-0000-4c91-8d02-000000000007",
-        "0swkd7qzc-00-a3f2",
-        "Child",
-    );
+    let mut deleted = node("Nd0000000006", "0swkd7qzb-00-a3f2", "Deleted");
+    deleted.from = Some(("PrJects00001".to_owned(), 8_589_934_592));
+    let mut child = node("Nd0000000007", "0swkd7qzc-00-a3f2", "Child");
     child.completed = true;
     deleted.children = vec![child];
 
@@ -157,8 +126,8 @@ fn the_trash_renders_byte_identical_to_its_golden() {
 #[test]
 fn a_split_document_renders_byte_identical_to_its_golden() {
     let rendered = render(&VaultFile::Page(PageDocument {
-        id: DocumentId::Node("9d3f21b8-c440-4c91-8d02-2e77a05fb163".to_owned()),
-        parent: Some("4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1".to_owned()),
+        id: DocumentId::Node("Archive00001".to_owned()),
+        parent: Some("PrJects00001".to_owned()),
         sort_key: Some(4_294_967_296),
         max_hlc: "0swkd7qze-00-a3f2".to_owned(),
         root: DocumentRoot {
@@ -166,11 +135,7 @@ fn a_split_document_renders_byte_identical_to_its_golden() {
             hlc: "0swkd7qzd-00-a3f2".to_owned(),
             ..DocumentRoot::default()
         },
-        nodes: vec![node(
-            "8a201f33-0000-4c91-8d02-000000000008",
-            "0swkd7qze-00-a3f2",
-            "3월 회고",
-        )],
+        nodes: vec![node("Nd0000000008", "0swkd7qze-00-a3f2", "3월 회고")],
         unknown_frontmatter: Vec::new(),
     }))
     .expect("render");
@@ -180,23 +145,15 @@ fn a_split_document_renders_byte_identical_to_its_golden() {
 
 #[test]
 fn the_home_document_renders_byte_identical_to_its_golden() {
-    let mut projects = node(
-        "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1",
-        "0swkd7qz5-00-a3f2",
-        "",
-    );
+    let mut projects = node("PrJects00001", "0swkd7qz5-00-a3f2", "");
     projects.body = NodeBody::Split {
         title: "Projects".to_owned(),
-        path: "Projects-4f1c8e20a3b7/README.md".to_owned(),
+        path: "Projects-PrJects00001/README.md".to_owned(),
     };
-    let mut minutes = node(
-        "11c8da70-b5e1-4c91-8d02-a3f204ee81cc",
-        "0swkd7qz6-00-a3f2",
-        "",
-    );
+    let mut minutes = node("Mnutes000001", "0swkd7qz6-00-a3f2", "");
     minutes.body = NodeBody::Split {
         title: "회의록".to_owned(),
-        path: "회의록-11c8da70b5e1/README.md".to_owned(),
+        path: "회의록-Mnutes000001/README.md".to_owned(),
     };
 
     let rendered = render(&VaultFile::Page(PageDocument {
@@ -222,18 +179,10 @@ fn the_home_document_renders_byte_identical_to_its_golden() {
 /// and a merge would have two places to disagree about one bit.
 #[test]
 fn a_completed_todo_says_so_with_its_checkbox_alone() {
-    let mut errand = node(
-        "8a201f33-0000-4c91-8d02-000000000009",
-        "0swkd7qzf-00-a3f2",
-        "Errand",
-    );
+    let mut errand = node("Nd0000000009", "0swkd7qzf-00-a3f2", "Errand");
     errand.marker = Marker::Todo;
     errand.completed = true;
-    let mut plain = node(
-        "8a201f33-0000-4c91-8d02-00000000000a",
-        "0swkd7qzg-00-a3f2",
-        "Plain",
-    );
+    let mut plain = node("Nd000000000a", "0swkd7qzg-00-a3f2", "Plain");
     plain.completed = true;
 
     let (body, footer) = rendered_parts(vec![errand, plain]);
@@ -265,14 +214,10 @@ fn a_completed_todo_says_so_with_its_checkbox_alone() {
 /// the two files merged in would decide the answer.
 #[test]
 fn a_split_line_carries_no_state_of_its_own() {
-    let mut archive = node(
-        "9d3f21b8-c440-4c91-8d02-2e77a05fb163",
-        "0swkd7qzd-00-a3f2",
-        "",
-    );
+    let mut archive = node("Archive00001", "0swkd7qzd-00-a3f2", "");
     archive.body = NodeBody::Split {
         title: "2024 아카이브".to_owned(),
-        path: "2024-아카이브-9d3f21b8c440/README.md".to_owned(),
+        path: "2024-아카이브-Archive00001/README.md".to_owned(),
     };
     archive.starred = true;
     archive.collapsed = true;
@@ -283,11 +228,10 @@ fn a_split_line_carries_no_state_of_its_own() {
 
     assert_eq!(
         body[0],
-        "- [2024 아카이브](2024-아카이브-9d3f21b8c440/README.md) \
-<!-- yid: 9d3f21b8-c440-4c91-8d02-2e77a05fb163 -->"
+        "- [2024 아카이브](2024-아카이브-Archive00001/README.md) <!-- yid: Archive00001 -->"
     );
     assert_eq!(
-        footer[0], "yid: 9d3f21b8-c440-4c91-8d02-2e77a05fb163 t: 0swkd7qzd-00-a3f2 split",
+        footer[0], "yid: Archive00001 t: 0swkd7qzd-00-a3f2 split",
         "the stamp and `split` are the whole of it: the star, the checkbox and the \
          fold the state above set are the child document's to answer"
     );
@@ -317,7 +261,7 @@ fn an_unstamped_document_is_reported_rather_than_written() {
 #[test]
 fn ordinary_punctuation_reaches_the_file_unescaped() {
     let mut plain = node(
-        "8a201f33-0000-4c91-8d02-000000000001",
+        "Nd0000000001",
         "0swkd7qz6-00-a3f2",
         "Shift+Enter — 설명 입력하기. 자세히는 docs/v2/sync-spec.md 참고 (2026).",
     );
@@ -328,7 +272,7 @@ fn ordinary_punctuation_reaches_the_file_unescaped() {
     assert_eq!(
         body[0],
         "- Shift+Enter — 설명 입력하기. 자세히는 docs/v2/sync-spec.md 참고 (2026). \
-<!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->"
+         <!-- yid: Nd0000000001 -->"
     );
     assert_eq!(
         body[1], "  > 값이 3.5 이상, 또는 a*b 꼴이면 skip_this_one 처리",
@@ -367,11 +311,7 @@ fn only_what_would_open_a_block_keeps_its_backslash() {
     ];
 
     for (typed, expected, why) in cases {
-        let (body, _) = rendered_parts(vec![node(
-            "8a201f33-0000-4c91-8d02-000000000001",
-            "0swkd7qz6-00-a3f2",
-            typed,
-        )]);
+        let (body, _) = rendered_parts(vec![node("Nd0000000001", "0swkd7qz6-00-a3f2", typed)]);
 
         assert_eq!(
             body[0]

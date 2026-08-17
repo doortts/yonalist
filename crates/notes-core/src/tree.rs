@@ -22,16 +22,27 @@ pub const MAX_TREE_DEPTH: usize = 128;
 const DERIVED_ID_NAMESPACE: uuid::Uuid =
     uuid::Uuid::from_u128(0x7f9c_2b14_5d63_4a08_9e21_3c6f_0d8b_4a52);
 
-/// The copy of a subtree needs an id per node, and only the top one arrives
-/// with the command. The rest are derived from it so every device that
-/// duplicates the same subtree lands on the same ids, and they are uuids
-/// because that is the only shape the file format carries. The key is
-/// lowercased first: a uuid's identity is case-insensitive, so two spellings
-/// of one id have to derive one set of children.
+/// The copy of a subtree needs an id per node, and only the top one arrives with
+/// the command. The rest are derived from it, so every device that duplicates the
+/// same subtree lands on the same ids and their files merge instead of doubling.
+///
+/// The namespace and the name format are unchanged, so determinism here is
+/// something being reused rather than re-established: two devices duplicating the
+/// same subtree still land on the same ids and their files merge instead of
+/// doubling. Only the last step is new — the digest's first nine bytes become a
+/// `yid`, because that is what the file can carry.
+///
+/// The parent's id is no longer lowercased. A UUID means the same thing in either
+/// case and a `yid` does not: `Nd0000000001` and `nd0000000001` are two blocks,
+/// and folding them had both derive the same children, so one subtree's copies
+/// collided with the other's.
 fn derived_child_id(new_id: &NodeId, ordinal: usize) -> Result<NodeId, DomainError> {
-    let name = format!("{}/{ordinal}", new_id.as_str().to_ascii_lowercase());
+    let name = format!("{}/{ordinal}", new_id.as_str());
     let derived = uuid::Uuid::new_v5(&DERIVED_ID_NAMESPACE, name.as_bytes());
-    NodeId::try_from(derived.to_string())
+    let bytes = derived.as_bytes();
+    NodeId::try_from(crate::encode_yid(
+        bytes[..9].try_into().expect("a uuid is sixteen bytes"),
+    ))
 }
 
 /// A picture the copy cannot carry itself, so the storage layer is told to hand
@@ -478,5 +489,49 @@ impl NotesTree {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod derived_id_tests {
+    use super::derived_child_id;
+    use crate::NodeId;
+
+    /// A duplicated subtree names its copies by deriving them, so that two devices
+    /// duplicating the same subtree land on the same ids and their files merge
+    /// instead of doubling. The derivation stays UUID v5 — the namespace and the
+    /// name format are unchanged, so determinism is a thing being reused rather
+    /// than re-established — and only the last step is new: the first nine bytes
+    /// of the digest become the id.
+    #[test]
+    fn a_derived_child_id_is_a_yid_and_always_the_same_one() {
+        let parent = NodeId::try_from("Nd0000000001").expect("a parent");
+
+        let first = derived_child_id(&parent, 1).expect("derived");
+        let again = derived_child_id(&parent, 1).expect("derived");
+
+        assert_eq!(first, again, "the same input has to land on the same id");
+        assert!(
+            crate::is_yid(first.as_str()),
+            "a derived id goes in the file like any other: {first}"
+        );
+        let second = derived_child_id(&parent, 2).expect("derived");
+        assert_ne!(first, second, "two children of one parent are two blocks");
+    }
+
+    /// The parent's id used to be lowercased before it was hashed, because a UUID
+    /// means the same thing in either case. A `yid` does not: `Nd0000000001` and
+    /// `nd0000000001` are two different blocks, and folding them would have both
+    /// derive the same children — so one subtree's copies would collide with the
+    /// other's.
+    #[test]
+    fn two_parents_differing_only_in_case_derive_different_children() {
+        let upper = NodeId::try_from("Nd0000000001").expect("a parent");
+        let lower = NodeId::try_from("nd0000000001").expect("a parent");
+
+        assert_ne!(
+            derived_child_id(&upper, 1).expect("derived"),
+            derived_child_id(&lower, 1).expect("derived")
+        );
     }
 }

@@ -249,7 +249,13 @@ fn flatten<'a>(nodes: &'a [DocumentNode], parent_id: &str, out: &mut Vec<Incomin
     let mut predecessor = String::new();
     for node in nodes {
         let id = if node.id.is_empty() {
-            Uuid::new_v4().hyphenated().to_string()
+            // A `yid`, like every other block id: this one is about to be written
+            // into the file the line came from, and the format carries nothing
+            // else. Leaving a UUID here is what `c2334c12` had to fix — the
+            // renderer refused the page, `export_pending` swallows a per-document
+            // failure, and so the one document that owed a write was the one
+            // document that could not be written.
+            notes_core::new_yid()
         } else {
             node.id.clone()
         };
@@ -568,14 +574,20 @@ fn park(
 
 /// A stable key inside the range JavaScript can hold exactly, derived from the
 /// node's own id (ported from v1's `safe_recovery_sort_key`).
+/// Where a parked node lands under the recovery page.
+///
+/// It used to read thirteen hex characters off the front of a UUID. A `yid` is
+/// base64url, so there is nothing to read off it — the id is hashed instead. The
+/// contract was only ever "the same id answers the same key on every device", and
+/// a digest keeps it. Six bytes is forty-eight bits, inside what JavaScript holds
+/// exactly, which the outline depends on.
 fn recovery_sort_key(id: &str) -> Result<i64, MergeError> {
-    let canonical = Uuid::parse_str(id)
-        .map_err(|_| format!("`{id}` is not a UUID."))?
-        .simple()
-        .to_string();
-    let prefix = u64::from_str_radix(&canonical[..13], 16)
-        .map_err(|_| format!("`{id}` has no readable prefix."))?;
-    i64::try_from(prefix).map_err(|_| "A recovery key is too large.".to_owned())
+    let digest = digest(id);
+    let mut prefix = [0u8; 8];
+    prefix[2..].copy_from_slice(&digest[..6]);
+    // Positive by construction, since the top two bytes are zero — a key has to
+    // sort, and a negative one would put the node above every sibling.
+    Ok(i64::from_be_bytes(prefix))
 }
 
 /// Made only when something actually has to be rescued. Its id comes from this
@@ -593,12 +605,19 @@ fn recovery_page(
         .prepare_cached("SELECT vault_uuid FROM sync_meta WHERE singleton = 1")
         .and_then(|mut statement| statement.query_row([], |row| row.get(0)))
         .map_err(|error| error.to_string())?;
-    let id = Uuid::new_v5(
+    // The vault's own uuid stays a UUID — it is not a block id and nothing writes
+    // it into a file. What is derived from it is: two devices each making a
+    // recovery page have to land on the same id, so the v5 derivation stays and
+    // only its last step changes, the same way a duplicated subtree's children do.
+    let derived = Uuid::new_v5(
         &Uuid::parse_str(&vault_uuid).map_err(|_| "The vault uuid is not a UUID.".to_owned())?,
         b"yonalist-recovery-page",
-    )
-    .hyphenated()
-    .to_string();
+    );
+    let id = notes_core::encode_yid(
+        derived.as_bytes()[..9]
+            .try_into()
+            .expect("a uuid is sixteen bytes"),
+    );
     let stamp = clock.now()?.encode();
     transaction
         .prepare_cached(
@@ -1056,7 +1075,7 @@ fn load_rows(
     // merge's cost on the node count, which is what the query budget forbids.
     let mut statement = transaction
         .prepare(
-            // Ids are canonical lowercase by the time the parser is done, so
+            // Ids arrive exactly as the file spelled them — nothing folds case, so
             // this matches the primary key directly rather than scanning.
             "SELECT n.id, n.hlc, n.kind, n.text, n.note, n.marker, n.ordered_start, n.collapsed,
                     n.completed, n.starred, n.deleted, n.parent_id, n.sort_key, n.sync_extras,
@@ -2029,4 +2048,40 @@ fn device_id(transaction: &Transaction<'_>) -> Result<String, MergeError> {
         .optional()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "The vault has no device id.".to_owned())
+}
+
+#[cfg(test)]
+mod recovery_id_tests {
+    use super::recovery_sort_key;
+
+    /// Where a parked node lands under the recovery page. Two devices that each
+    /// park the same node have to choose the same key, or the page's children come
+    /// out in a different order on each and every later merge sees a move.
+    ///
+    /// It used to read thirteen hex characters off a UUID. A `yid` is base64url,
+    /// so there is nothing to read: the id is hashed instead. `sha2` is already a
+    /// dependency here, the answer is the same on every device for the same id,
+    /// and six bytes is forty-eight bits — inside what JavaScript holds exactly,
+    /// which the outline relies on.
+    #[test]
+    fn a_recovery_key_is_the_same_answer_on_every_device() {
+        let one = recovery_sort_key("Nd0000000001").expect("a key");
+        let again = recovery_sort_key("Nd0000000001").expect("a key");
+        let other = recovery_sort_key("Nd0000000002").expect("a key");
+
+        assert_eq!(one, again, "the same id has to answer the same key");
+        assert_ne!(one, other);
+        assert!(one > 0, "a key has to be positive to sort: {one}");
+        assert!(
+            one <= 2i64.pow(48),
+            "and inside the range JavaScript holds exactly: {one}"
+        );
+        // Case is not folded, for the same reason the derived child id stopped
+        // folding it: these are two blocks.
+        assert_ne!(
+            recovery_sort_key("nd0000000001").expect("a key"),
+            one,
+            "two ids differing only in case are two blocks"
+        );
+    }
 }

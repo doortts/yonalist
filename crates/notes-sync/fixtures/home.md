@@ -8,10 +8,10 @@ root_hlc: 0swkd7qz4-00-a3f2
 ---
 # Home
 
-- [Projects](Projects-4f1c8e20a3b7/README.md) <!-- yid: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1 -->
-- [회의록](회의록-11c8da70b5e1/README.md) <!-- yid: 11c8da70-b5e1-4c91-8d02-a3f204ee81cc -->
+- [Projects](Projects-PrJects00001/README.md) <!-- yid: PrJects00001 -->
+- [회의록](회의록-Mnutes000001/README.md) <!-- yid: Mnutes000001 -->
 
 <!-- yonalist
-yid: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1 t: 0swkd7qz5-00-a3f2 split
-yid: 11c8da70-b5e1-4c91-8d02-a3f204ee81cc t: 0swkd7qz6-00-a3f2 split
+yid: PrJects00001 t: 0swkd7qz5-00-a3f2 split
+yid: Mnutes000001 t: 0swkd7qz6-00-a3f2 split
 -->

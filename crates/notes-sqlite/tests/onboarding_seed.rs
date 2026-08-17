@@ -71,3 +71,34 @@ fn a_device_that_already_has_notes_is_left_alone() {
 
     assert_eq!(titles(&storage), vec!["Yonalist 시작하기".to_owned()]);
 }
+
+/// Every id the guide plants is a block id the vault can carry, and they are
+/// written down rather than generated. Fixed is what makes a second seed a no-op
+/// and what lets the guide fixture and a freshly seeded vault hold the same block
+/// identities — generate them and the two would never agree again.
+#[test]
+fn the_guide_plants_ids_the_vault_can_carry() {
+    let directory = tempfile::tempdir().expect("home");
+    let storage = SqliteStorage::open(&database(&directory)).expect("open");
+    storage.seed_onboarding().expect("the guide");
+    drop(storage);
+
+    let ids: Vec<String> = rusqlite::Connection::open(database(&directory))
+        .expect("open")
+        .prepare("SELECT id FROM notes_nodes WHERE id <> 'root' ORDER BY id")
+        .expect("prepare")
+        .query_map([], |row| row.get(0))
+        .expect("query")
+        .map(|row| row.expect("row"))
+        .collect();
+
+    assert!(!ids.is_empty(), "the guide planted nothing");
+    for id in &ids {
+        assert!(
+            notes_core::is_block_id(id),
+            "`{id}` is not an id this format can write into a file"
+        );
+    }
+    let distinct: std::collections::BTreeSet<&String> = ids.iter().collect();
+    assert_eq!(distinct.len(), ids.len(), "two guide lines share an id");
+}

@@ -42,7 +42,7 @@ type Row = (
 /// this device issued means a hand edit, which is deliberately order-dependent
 /// (it is an edit, after all) and belongs in a unit test rather than here.
 const HOME: &str = "cccc";
-const PAGE_ID: &str = "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1";
+const PAGE_ID: &str = "PrJects00001";
 
 fn database() -> Connection {
     let connection = Connection::open_in_memory().expect("open");
@@ -76,7 +76,7 @@ fn stamp(millis: u64, device: &str) -> String {
 
 fn input() -> MergeInput {
     MergeInput {
-        file_path: "Projects-4f1c8e20a3b7/README.md".to_owned(),
+        file_path: "Projects-PrJects00001/README.md".to_owned(),
         file_hash: "a".repeat(64),
         file_mtime_ms: Some(1_700_000_000_000),
         file_size: Some(256),
@@ -160,7 +160,7 @@ fn dump(connection: &Connection, known_stamps: &[String]) -> Vec<String> {
 }
 
 fn node_id(index: usize) -> String {
-    format!("8a201f33-0000-4c91-8d02-{index:012}")
+    format!("Nd{index:010}")
 }
 
 /// A document every node of which carries an id and a stamp. Idempotence is

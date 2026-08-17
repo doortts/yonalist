@@ -8,13 +8,38 @@ use notes_sync::watcher::{Verdict, consider, is_conflicted_copy};
 const DOCUMENT: &[u8] = b"---\n\
     kind: yonalist-notes\n\
     format_version: 1\n\
-    id: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1\n\
+    id: PrJects00001\n\
     max_hlc: 0swkd7qz9-00-a3f2\n\
     root_hlc: 0swkd7qz5-00-a3f2\n\
     ---\n\
     # Projects\n\
     \n\
-    - Thought <!-- ya: yid=8a201f33-0000-4c91-8d02-000000000001 t=0swkd7qz9-00-a3f2 -->\n";
+    - Thought <!-- yid: Nd0000000001 -->\n\
+    \n\
+    <!-- yonalist\n\
+    yid: Nd0000000001 t: 0swkd7qz9-00-a3f2\n\
+    -->\n";
+
+/// The same document with one more bullet, which is what a hand edit leaves
+/// behind. Both halves move: the line says which block it is and the footer
+/// carries its stamp, so an edit that touched only one of them would not be a
+/// document either device could read.
+const EDITED: &[u8] = b"---\n\
+    kind: yonalist-notes\n\
+    format_version: 1\n\
+    id: PrJects00001\n\
+    max_hlc: 0swkd7qz9-00-a3f2\n\
+    root_hlc: 0swkd7qz5-00-a3f2\n\
+    ---\n\
+    # Projects\n\
+    \n\
+    - Thought <!-- yid: Nd0000000001 -->\n\
+    - Another <!-- yid: Nd0000000002 -->\n\
+    \n\
+    <!-- yonalist\n\
+    yid: Nd0000000001 t: 0swkd7qz9-00-a3f2\n\
+    yid: Nd0000000002 t: 0swkd7qz9-01-a3f2\n\
+    -->\n";
 
 fn vault() -> tempfile::TempDir {
     tempfile::tempdir().expect("vault")
@@ -35,9 +60,9 @@ fn hash(bytes: &[u8]) -> String {
 #[test]
 fn a_file_this_app_did_not_write_is_merged() {
     let vault = vault();
-    write(&vault, "Projects-4f1c8e20a3b7/README.md", DOCUMENT);
+    write(&vault, "Projects-PrJects00001/README.md", DOCUMENT);
 
-    let verdict = consider(vault.path(), "Projects-4f1c8e20a3b7/README.md", None).expect("look");
+    let verdict = consider(vault.path(), "Projects-PrJects00001/README.md", None).expect("look");
 
     let Verdict::Merge(_, input) = verdict else {
         panic!("a document nobody here has seen is news");
@@ -50,11 +75,11 @@ fn a_file_this_app_did_not_write_is_merged() {
 #[test]
 fn an_echo_of_our_own_write_is_skipped() {
     let vault = vault();
-    write(&vault, "Projects-4f1c8e20a3b7/README.md", DOCUMENT);
+    write(&vault, "Projects-PrJects00001/README.md", DOCUMENT);
 
     let verdict = consider(
         vault.path(),
-        "Projects-4f1c8e20a3b7/README.md",
+        "Projects-PrJects00001/README.md",
         Some(&hash(DOCUMENT)),
     )
     .expect("look");
@@ -72,17 +97,11 @@ fn an_echo_of_our_own_write_is_skipped() {
 #[test]
 fn a_watch_event_hashes_even_when_the_stat_has_not_moved() {
     let vault = vault();
-    write(&vault, "Projects-4f1c8e20a3b7/README.md", DOCUMENT);
+    write(&vault, "Projects-PrJects00001/README.md", DOCUMENT);
     let recorded = hash(DOCUMENT);
-    let edited = DOCUMENT
-        .to_vec()
-        .iter()
-        .copied()
-        .chain(b"- Another <!-- ya: yid=8a201f33-0000-4c91-8d02-000000000002 t=0swkd7qz9-01-a3f2 -->\n".iter().copied())
-        .collect::<Vec<u8>>();
-    let path = vault.path().join("Projects-4f1c8e20a3b7/README.md");
+    let path = vault.path().join("Projects-PrJects00001/README.md");
     let was = std::fs::metadata(&path).expect("stat");
-    std::fs::write(&path, &edited).expect("edit");
+    std::fs::write(&path, EDITED).expect("edit");
     // Exactly what a transport that preserves mtime hands over.
     std::fs::File::options()
         .write(true)
@@ -105,7 +124,7 @@ fn a_watch_event_hashes_even_when_the_stat_has_not_moved() {
 
     let verdict = consider(
         vault.path(),
-        "Projects-4f1c8e20a3b7/README.md",
+        "Projects-PrJects00001/README.md",
         Some(&recorded),
     )
     .expect("look");
@@ -121,9 +140,9 @@ fn a_watch_event_hashes_even_when_the_stat_has_not_moved() {
 #[test]
 fn a_placeholder_file_waits_rather_than_emptying_the_document() {
     let vault = vault();
-    write(&vault, "Projects-4f1c8e20a3b7/README.md", b"");
+    write(&vault, "Projects-PrJects00001/README.md", b"");
 
-    let verdict = consider(vault.path(), "Projects-4f1c8e20a3b7/README.md", None).expect("look");
+    let verdict = consider(vault.path(), "Projects-PrJects00001/README.md", None).expect("look");
 
     assert!(
         matches!(verdict, Verdict::NotYetArrived),
@@ -170,10 +189,10 @@ fn a_link_is_not_a_file_this_vault_holds() {
 #[test]
 fn a_conflicted_copy_is_recognised_whatever_wrote_it() {
     assert!(is_conflicted_copy(
-        "Projects-4f1c8e20a3b7/README (conflicted copy 2026-08-16).md"
+        "Projects-PrJects00001/README (conflicted copy 2026-08-16).md"
     ));
     assert!(is_conflicted_copy(
-        "Projects-4f1c8e20a3b7/README.sync-conflict-20260816-desktop.md"
+        "Projects-PrJects00001/README.sync-conflict-20260816-desktop.md"
     ));
-    assert!(!is_conflicted_copy("Projects-4f1c8e20a3b7/README.md"));
+    assert!(!is_conflicted_copy("Projects-PrJects00001/README.md"));
 }

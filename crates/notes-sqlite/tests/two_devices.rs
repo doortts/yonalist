@@ -245,7 +245,7 @@ fn seeded_pair() -> (Device, Device) {
 }
 
 fn add_bullet(device: &Device, parent: &str, text: &str) -> String {
-    let id = uuid::Uuid::new_v4().hyphenated().to_string();
+    let id = notes_core::new_yid();
     device.run(IpcNotesCommand::CreateNode {
         id: id.clone(),
         parent_id: parent.to_owned(),
@@ -836,15 +836,14 @@ fn attachments(vault: &std::path::Path) -> Vec<(String, String)> {
 }
 
 /// The document of one named page. Which page has to be said: more than one
-/// page folder is often there, and a folder is found by the tail of the id its
-/// name carries rather than by whichever one `read_dir` happens to hand back
-/// first.
+/// page folder is often there, and a folder is found by the id its name carries
+/// rather than by whichever one `read_dir` happens to hand back first.
+///
+/// The whole id is the suffix now. It used to be the first twelve hex characters
+/// of the page's UUID, so this had to reduce the id to its canonical spelling
+/// before it could cut a tail off it.
 fn page_file(device: &Device, page_id: &str) -> std::path::PathBuf {
-    let canonical = uuid::Uuid::parse_str(page_id)
-        .expect("a page id")
-        .simple()
-        .to_string();
-    let tail = format!("-{}", &canonical[..12]);
+    let tail = format!("-{page_id}");
     std::fs::read_dir(&device.vault)
         .expect("read")
         .flatten()
@@ -1131,7 +1130,7 @@ fn duplicating_a_waiting_picture_lets_the_copy_meet_its_bytes() {
     let held = hold_pictures_back(&two);
     two.absorb();
 
-    let copy = uuid::Uuid::new_v4().hyphenated().to_string();
+    let copy = notes_core::new_yid();
     two.run(IpcNotesCommand::Duplicate {
         id: shot.clone(),
         new_id: copy.clone(),
@@ -1173,7 +1172,7 @@ fn a_waiting_picture_under_a_duplicated_bullet_meets_its_bytes_too() {
 
     two.run(IpcNotesCommand::Duplicate {
         id: section.clone(),
-        new_id: uuid::Uuid::new_v4().hyphenated().to_string(),
+        new_id: notes_core::new_yid(),
         parent_id: page.clone(),
         before_id: None,
     });
@@ -1207,7 +1206,7 @@ fn a_duplicated_waiting_picture_survives_the_trip_through_the_folder() {
     hold_pictures_back(&two);
     two.absorb();
 
-    let copy = uuid::Uuid::new_v4().hyphenated().to_string();
+    let copy = notes_core::new_yid();
     two.run(IpcNotesCommand::DuplicateNodes {
         duplicates: vec![IpcNodeDuplicate {
             id: shot.clone(),
@@ -1252,7 +1251,7 @@ fn redoing_a_duplicated_waiting_picture_lets_it_meet_its_bytes() {
 
     // One service across all three steps: the undo stack lives in the session,
     // and `Device::run` opens a new one every time.
-    let copy = uuid::Uuid::new_v4().hyphenated().to_string();
+    let copy = notes_core::new_yid();
     let service = two.service();
     let duplicated = service
         .execute(CommandEnvelope {
@@ -1312,7 +1311,7 @@ fn bytes_that_land_before_the_redo_still_reach_the_copy() {
     let held = hold_pictures_back(&two);
     two.absorb();
 
-    let copy = uuid::Uuid::new_v4().hyphenated().to_string();
+    let copy = notes_core::new_yid();
     let service = two.service();
     let duplicated = service
         .execute(CommandEnvelope {

@@ -10,7 +10,6 @@
 //! runs is what tidies it later.
 
 use unicode_normalization::UnicodeNormalization;
-use uuid::Uuid;
 
 /// The most a cleaned title may be, before the id is appended.
 const MAX_TITLE_CHARS: usize = 40;
@@ -29,12 +28,18 @@ pub fn page_folder_name(title: &str, id: &str) -> Result<String, String> {
 
 /// The first twelve hex digits of the id with its hyphens taken out. Twelve is
 /// enough that two pages never share one, and short enough to read.
+/// The block id, whole. It used to be the first twelve hex characters of a UUID,
+/// which meant a folder name could not be traced back to the document that owns
+/// it without going through the database — and two ids differing only in case
+/// folded onto one folder. A `yid` is already twelve characters.
+///
+/// Home is refused: it is the one id that is not a `yid`, and it has no folder of
+/// its own — its file is the vault's root `README.md`.
 fn folder_suffix(id: &str) -> Result<String, String> {
-    let canonical = Uuid::parse_str(id)
-        .map_err(|_| format!("`{id}` is not a page id."))?
-        .simple()
-        .to_string();
-    Ok(canonical[..12].to_owned())
+    if id == notes_core::HOME_ID || !notes_core::is_block_id(id) {
+        return Err(format!("`{id}` is not a page id."));
+    }
+    Ok(id.to_owned())
 }
 
 /// What an attachment is called in the vault: what the user called the file,

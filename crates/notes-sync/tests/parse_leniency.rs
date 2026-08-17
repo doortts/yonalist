@@ -9,7 +9,7 @@ use notes_sync::parse::parse;
 fn page(body: &str) -> String {
     format!(
         "---\nkind: yonalist-notes\nformat_version: 1\n\
-         id: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1\n\
+         id: PrJects00001\n\
          max_hlc: 0swkd7qz9-00-a3f2\nupdated: 2041-10-11T06:19:09Z\nroot_hlc: 0swkd7qz5-00-a3f2\n---\n# Projects\n\n{body}"
     )
 }
@@ -60,8 +60,8 @@ fn a_bullet_without_yid_is_accepted_for_id_issue() {
 #[test]
 fn an_unparsable_hlc_becomes_empty_and_loses_lww() {
     let parsed = nodes(&page_with_footer(
-        "- Thought <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: too-new"],
+        "- Thought <!-- yid: Nd0000000001 -->\n",
+        &["yid: Nd0000000001 t: too-new"],
     ));
 
     assert_eq!(
@@ -125,8 +125,8 @@ fn a_checkbox_line_is_always_a_todo() {
 #[test]
 fn a_completed_plain_bullet_round_trips_through_the_done_token() {
     let parsed = nodes(&page_with_footer(
-        "- Done thing <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 done"],
+        "- Done thing <!-- yid: Nd0000000001 -->\n",
+        &["yid: Nd0000000001 t: 0swkd7qz6-00-a3f2 done"],
     ));
 
     assert_eq!(parsed[0].marker, Marker::Bullet);
@@ -162,8 +162,8 @@ fn crlf_normalizes_to_lf() {
 #[test]
 fn a_colon_token_swallows_the_next_word() {
     let parsed = nodes(&page_with_footer(
-        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 foo: collapsed"],
+        "- Text <!-- yid: Nd0000000001 -->\n",
+        &["yid: Nd0000000001 t: 0swkd7qz6-00-a3f2 foo: collapsed"],
     ));
 
     assert!(
@@ -187,11 +187,11 @@ fn the_home_document_accepts_the_literal_root_id() {
 #[test]
 fn a_missing_max_hlc_is_recomputed_from_content() {
     let source = "---\nkind: yonalist-notes\nformat_version: 1\n\
-                  id: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1\nroot_hlc: 0swkd7qz5-00-a3f2\n---\n\
+                  id: PrJects00001\nroot_hlc: 0swkd7qz5-00-a3f2\n---\n\
                   # Projects\n\n\
-                  - Later <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n\n\
+                  - Later <!-- yid: Nd0000000001 -->\n\n\
                   <!-- yonalist\n\
-                  yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2\n\
+                  yid: Nd0000000001 t: 0swkd7qz9-00-a3f2\n\
                   -->\n";
     let VaultFile::Page(parsed) = accepted(source) else {
         panic!("a page");
@@ -210,19 +210,17 @@ fn a_missing_max_hlc_is_recomputed_from_content() {
 #[test]
 fn a_split_line_carries_no_state_and_grants_none() {
     let parsed = nodes(&page_with_footer(
-        "- [x] [Archive](Archive-9d3f21b8c440/README.md) \
-         <!-- yid: 9d3f21b8-c440-4c91-8d02-2e77a05fb163 -->\n",
-        &[
-            "yid: 9d3f21b8-c440-4c91-8d02-2e77a05fb163 t: 0swkd7qzd-00-a3f2 \
-             star todo split collapsed",
-        ],
+        "- [x] [Archive](Archive-Archive00001/README.md) \
+         <!-- yid: Archive00001 -->\n",
+        &["yid: Archive00001 t: 0swkd7qzd-00-a3f2 \
+             star todo split collapsed"],
     ));
 
     assert_eq!(
         parsed[0].body,
         NodeBody::Split {
             title: "Archive".to_owned(),
-            path: "Archive-9d3f21b8c440/README.md".to_owned()
+            path: "Archive-Archive00001/README.md".to_owned()
         }
     );
     assert_eq!(parsed[0].marker, Marker::Bullet);
@@ -249,19 +247,32 @@ fn a_foreign_format_version_quarantines() {
 
 #[test]
 fn a_missing_topic_id_quarantines() {
-    let source = page("- Text\n").replace("id: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1\n", "");
+    let source = page("- Text\n").replace("id: PrJects00001\n", "");
 
     assert!(parse(source.as_bytes()).is_err());
 }
 
 #[test]
-fn a_non_uuid_id_quarantines() {
-    let source = page("- Text\n").replace("4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1", "page-one");
+fn a_non_block_id_quarantines() {
+    for wrong in [
+        // Not twelve characters.
+        "page-one",
+        // Twelve characters, but not from the alphabet a folder name and a
+        // Markdown comment can both carry.
+        "page/one0001",
+        // The shape this format used to use. It is refused now, which is what
+        // stops a file an older build wrote from being read as though its ids
+        // meant anything here.
+        "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1",
+    ] {
+        let source = page("- Text\n").replace("PrJects00001", wrong);
 
-    assert!(
-        parse(source.as_bytes()).is_err(),
-        "every id is a UUID; the literal root is the format's one exception"
-    );
+        assert!(
+            parse(source.as_bytes()).is_err(),
+            "`{wrong}` is not a block id, and the literal root is the format's one \
+             exception to that"
+        );
+    }
 }
 
 /// Whether a document sitting somewhere other than the vault root may call
@@ -270,7 +281,7 @@ fn a_non_uuid_id_quarantines() {
 /// found in the wrong place.
 #[test]
 fn the_literal_root_id_reads_as_home_wherever_it_is_found() {
-    let source = page("- Text\n").replace("4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1", "root");
+    let source = page("- Text\n").replace("PrJects00001", "root");
     let VaultFile::Page(parsed) = accepted(&source) else {
         panic!("a page");
     };
@@ -299,17 +310,25 @@ fn an_unexplainable_line_quarantines() {
     assert!(parse(source.as_bytes()).is_err());
 }
 
+/// Two lines claiming one block leave every reader downstream guessing which of
+/// them the state belongs to, so the file is refused whole.
+///
+/// This used to state the rule about casing instead — a UUID meant the same thing
+/// in either case, so two spellings were one id. A `yid` is not case-insensitive:
+/// `Nd0000000001` and `nd0000000001` name two blocks, which is why `tree.rs`
+/// stopped folding case before deriving children. So the claim this locks is the
+/// one that survived the change: an id repeated exactly is a duplicate.
 #[test]
 fn a_duplicate_node_id_quarantines() {
     let source = page_with_footer(
-        "- One <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n\
-         - Two <!-- yid: 8A201F33-0000-4C91-8D02-000000000001 -->\n",
-        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2"],
+        "- One <!-- yid: Nd0000000001 -->\n\
+         - Two <!-- yid: Nd0000000001 -->\n",
+        &["yid: Nd0000000001 t: 0swkd7qz6-00-a3f2"],
     );
 
     assert!(
         parse(source.as_bytes()).is_err(),
-        "the same id twice under different casing is still the same id"
+        "one block cannot be two lines"
     );
 }
 
@@ -326,8 +345,8 @@ fn a_duplicate_frontmatter_key_quarantines() {
 #[test]
 fn a_duplicate_token_quarantines() {
     let footer = page_with_footer(
-        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 star star"],
+        "- Text <!-- yid: Nd0000000001 -->\n",
+        &["yid: Nd0000000001 t: 0swkd7qz6-00-a3f2 star star"],
     );
 
     assert!(
@@ -336,8 +355,8 @@ fn a_duplicate_token_quarantines() {
     );
 
     let line = page(
-        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 \
-         yid: 8a201f33-0000-4c91-8d02-000000000002 -->\n",
+        "- Text <!-- yid: Nd0000000001 \
+         yid: Nd0000000002 -->\n",
     );
 
     assert!(
@@ -351,7 +370,7 @@ fn a_duplicate_token_quarantines() {
 /// which, so the file is refused whole.
 #[test]
 fn a_footer_that_is_not_one_readable_block_quarantines() {
-    let id = "8a201f33-0000-4c91-8d02-000000000001";
+    let id = "Nd0000000001";
     let body = format!("- Text <!-- yid: {id} -->\n");
     let entry = format!("yid: {id} t: 0swkd7qz6-00-a3f2");
 
@@ -388,10 +407,10 @@ fn a_footer_that_is_not_one_readable_block_quarantines() {
 #[test]
 fn a_footer_entry_for_a_line_that_is_gone_is_dropped() {
     let source = page_with_footer(
-        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+        "- Text <!-- yid: Nd0000000001 -->\n",
         &[
-            "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2",
-            "yid: 8a201f33-0000-4c91-8d02-000000000002 t: 0swkd7qz7-00-a3f2 star",
+            "yid: Nd0000000001 t: 0swkd7qz6-00-a3f2",
+            "yid: Nd0000000002 t: 0swkd7qz7-00-a3f2 star",
         ],
     );
 
@@ -405,7 +424,7 @@ fn a_footer_entry_for_a_line_that_is_gone_is_dropped() {
     let once = String::from_utf8(notes_sync::render::render(&accepted(&source)).expect("render"))
         .expect("utf-8");
     assert!(
-        !once.contains("000000000002"),
+        !once.contains("Nd0000000002"),
         "an entry no line claims has nowhere to live: {once}"
     );
 
@@ -420,7 +439,7 @@ fn a_footer_entry_for_a_line_that_is_gone_is_dropped() {
 /// next export writes the canonical form back.
 #[test]
 fn a_document_without_a_footer_reads_as_unstamped() {
-    let body = "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n";
+    let body = "- Text <!-- yid: Nd0000000001 -->\n";
 
     for (what, source) in [
         ("no footer at all", page(body)),
@@ -430,7 +449,7 @@ fn a_document_without_a_footer_reads_as_unstamped() {
 
         assert_eq!(parsed.len(), 1, "{what}: the body is still the body");
         assert_eq!(
-            parsed[0].id, "8a201f33-0000-4c91-8d02-000000000001",
+            parsed[0].id, "Nd0000000001",
             "{what}: and the line still says which block it is"
         );
         assert_eq!(
@@ -448,7 +467,7 @@ fn a_document_without_a_footer_reads_as_unstamped() {
 #[test]
 fn an_image_document_root_quarantines() {
     let source = "---\nkind: yonalist-notes\nformat_version: 1\n\
-                  id: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1\nmax_hlc: 0swkd7qz9-00-a3f2\n\
+                  id: PrJects00001\nmax_hlc: 0swkd7qz9-00-a3f2\n\
                   root_hlc: 0swkd7qz5-00-a3f2\n---\n\
                   # ![shot.png](assets/shot-9f3a1c8e2044.png)\n\n";
 
@@ -462,11 +481,9 @@ fn an_image_document_root_quarantines() {
 fn a_link_escaping_the_assets_folder_quarantines() {
     let source = page_with_footer(
         "- ![shot.png](../../outside/shot.png) \
-         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-        &[
-            "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 \
-             w: 320 px: 10x10 bytes: 4",
-        ],
+         <!-- yid: Nd0000000001 -->\n",
+        &["yid: Nd0000000001 t: 0swkd7qz6-00-a3f2 \
+             w: 320 px: 10x10 bytes: 4"],
     );
 
     assert!(parse(source.as_bytes()).is_err());
@@ -475,11 +492,9 @@ fn a_link_escaping_the_assets_folder_quarantines() {
 #[test]
 fn a_from_token_in_a_page_quarantines() {
     let source = page_with_footer(
-        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-        &[
-            "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 \
-             from: root@4294967296",
-        ],
+        "- Text <!-- yid: Nd0000000001 -->\n",
+        &["yid: Nd0000000001 t: 0swkd7qz6-00-a3f2 \
+             from: root@4294967296"],
     );
 
     assert!(
@@ -491,7 +506,7 @@ fn a_from_token_in_a_page_quarantines() {
 #[test]
 fn an_id_key_in_the_trash_quarantines() {
     let source = "---\nkind: yonalist-trash\nformat_version: 1\n\
-                  id: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1\nmax_hlc: 0swkd7qz9-00-a3f2\n---\n";
+                  id: PrJects00001\nmax_hlc: 0swkd7qz9-00-a3f2\n---\n";
 
     assert!(parse(source.as_bytes()).is_err());
 }
@@ -544,8 +559,8 @@ fn every_golden_survives_a_parse_render_round_trip() {
 #[test]
 fn the_readable_time_is_derived_rather_than_believed() {
     let canonical = page_with_footer(
-        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2"],
+        "- Text <!-- yid: Nd0000000001 -->\n",
+        &["yid: Nd0000000001 t: 0swkd7qz9-00-a3f2"],
     );
     assert!(
         canonical.contains("updated: 2041-10-11T06:19:09Z"),
@@ -583,8 +598,8 @@ fn the_readable_time_is_derived_rather_than_believed() {
 #[test]
 fn the_readable_time_does_not_depend_on_where_the_device_is() {
     let canonical = page_with_footer(
-        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2"],
+        "- Text <!-- yid: Nd0000000001 -->\n",
+        &["yid: Nd0000000001 t: 0swkd7qz9-00-a3f2"],
     );
 
     let line = canonical
@@ -601,12 +616,12 @@ fn the_readable_time_does_not_depend_on_where_the_device_is() {
 #[test]
 fn unknown_fields_survive_a_parse_render_round_trip() {
     let source = "---\nkind: yonalist-notes\nformat_version: 1\n\
-                  id: 4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1\nmax_hlc: 0swkd7qz9-00-a3f2\n\
+                  id: PrJects00001\nmax_hlc: 0swkd7qz9-00-a3f2\n\
                   updated: 2041-10-11T06:19:09Z\n\
                   root_hlc: 0swkd7qz5-00-a3f2\nfuture_key: kept\n---\n# Projects\n\n\
-                  - Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n\n\
+                  - Text <!-- yid: Nd0000000001 -->\n\n\
                   <!-- yonalist\n\
-                  yid: 8a201f33-0000-4c91-8d02-000000000001 \
+                  yid: Nd0000000001 \
                   t: 0swkd7qz9-00-a3f2 star future: value lone\n\
                   -->\n";
 
@@ -631,9 +646,9 @@ fn a_link_climbing_to_the_root_assets_folder_is_accepted() {
     let source = "---\nkind: yonalist-trash\nformat_version: 1\n\
                   max_hlc: 0swkd7qzc-00-a3f2\n---\n\
                   - ![shot.png](../assets/shot-9f3a1c8e2044.png) \
-                  <!-- yid: 8a201f33-0000-4c91-8d02-000000000005 -->\n\n\
+                  <!-- yid: Nd0000000005 -->\n\n\
                   <!-- yonalist\n\
-                  yid: 8a201f33-0000-4c91-8d02-000000000005 t: 0swkd7qza-00-a3f2 \
+                  yid: Nd0000000005 t: 0swkd7qza-00-a3f2 \
                   w: 320 px: 10x10 bytes: 4\n\
                   -->\n";
 
@@ -646,11 +661,9 @@ fn a_link_climbing_to_the_root_assets_folder_is_accepted() {
 fn a_link_that_is_not_an_asset_quarantines() {
     for path in ["README.md", "assets/../README.md", "assets/deep/shot.png"] {
         let source = page_with_footer(
-            &format!("- ![shot.png]({path}) <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n"),
-            &[
-                "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 \
-                 w: 320 px: 10x10 bytes: 4",
-            ],
+            &format!("- ![shot.png]({path}) <!-- yid: Nd0000000001 -->\n"),
+            &["yid: Nd0000000001 t: 0swkd7qz6-00-a3f2 \
+                 w: 320 px: 10x10 bytes: 4"],
         );
 
         assert!(
@@ -666,8 +679,8 @@ fn a_link_that_is_not_an_asset_quarantines() {
 #[test]
 fn a_literal_backslash_n_in_text_is_not_a_newline() {
     let source = page_with_footer(
-        "- a\\\\nb <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2"],
+        "- a\\\\nb <!-- yid: Nd0000000001 -->\n",
+        &["yid: Nd0000000001 t: 0swkd7qz9-00-a3f2"],
     );
 
     let parsed = nodes(&source);
@@ -693,11 +706,11 @@ fn a_malformed_comment_stays_in_the_body() {
 #[test]
 fn a_trailing_space_does_not_cost_a_node_its_identity() {
     let parsed = nodes(&page_with_footer(
-        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 --> \n",
-        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2"],
+        "- Text <!-- yid: Nd0000000001 --> \n",
+        &["yid: Nd0000000001 t: 0swkd7qz6-00-a3f2"],
     ));
 
-    assert_eq!(parsed[0].id, "8a201f33-0000-4c91-8d02-000000000001");
+    assert_eq!(parsed[0].id, "Nd0000000001");
     assert_eq!(
         parsed[0].hlc, "0swkd7qz6-00-a3f2",
         "and it still finds its own footer line"
@@ -723,7 +736,7 @@ fn an_image_line_without_a_footer_entry_quarantines() {
         (
             "an id whose entry somebody deleted",
             "- ![shot.png](assets/shot-9f3a1c8e2044.png) \
-             <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+             <!-- yid: Nd0000000001 -->\n",
         ),
     ] {
         let refused = parse(page(line).as_bytes())
@@ -743,8 +756,8 @@ fn an_image_line_without_a_footer_entry_quarantines() {
 #[test]
 fn a_stated_max_hlc_the_content_cannot_account_for_is_recomputed() {
     let source = page_with_footer(
-        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2"],
+        "- Text <!-- yid: Nd0000000001 -->\n",
+        &["yid: Nd0000000001 t: 0swkd7qz6-00-a3f2"],
     )
     .replace("max_hlc: 0swkd7qz9-00-a3f2", "max_hlc: zzzzzzzzz-zz-ffff");
     let VaultFile::Page(parsed) = accepted(&source) else {
@@ -758,11 +771,9 @@ fn a_stated_max_hlc_the_content_cannot_account_for_is_recomputed() {
 fn an_unknown_footer_token_does_not_shift_the_ones_after_it() {
     let parsed = nodes(&page_with_footer(
         "- ![shot.png](assets/shot-9f3a1c8e2044.png) \
-         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-        &[
-            "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 \
-             w: 320 future px: 10x10 bytes: 4",
-        ],
+         <!-- yid: Nd0000000001 -->\n",
+        &["yid: Nd0000000001 t: 0swkd7qz6-00-a3f2 \
+             w: 320 future px: 10x10 bytes: 4"],
     ));
 
     let NodeBody::Image(image) = &parsed[0].body else {
@@ -803,7 +814,7 @@ fn a_document_holding_every_shape_survives_two_round_trips() {
     let mut body = String::new();
     let mut entries = Vec::new();
     for (index, text) in awkward.iter().enumerate() {
-        let id = format!("8a201f33-0000-4c91-8d02-{:012}", index + 1);
+        let id = format!("Nd{:010}", index + 1);
         body.push_str(&format!("- {} <!-- yid: {id} -->\n", escaped(text)));
         body.push_str(&format!("  > note for {index}\n  >\n  > second line\n"));
         entries.push(format!(
@@ -811,7 +822,7 @@ fn a_document_holding_every_shape_survives_two_round_trips() {
             index as i64 - 3
         ));
     }
-    let picture = "8a201f33-0000-4c91-8d02-000000000099";
+    let picture = "Nd0000000099";
     body.push_str(&format!(
         "- ![shot .png](../assets/shot-9f3a1c8e2044.png) <!-- yid: {picture} -->\n"
     ));
@@ -864,11 +875,9 @@ fn escaped(value: &str) -> String {
 fn an_unknown_footer_token_survives_a_parse_render_round_trip() {
     let source = page_with_footer(
         "- ![shot.png](assets/shot-9f3a1c8e2044.png) \
-         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-        &[
-            "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 \
-             w: 320 px: 10x10 bytes: 4 focus: 0\\.5x0\\.3 lossless",
-        ],
+         <!-- yid: Nd0000000001 -->\n",
+        &["yid: Nd0000000001 t: 0swkd7qz9-00-a3f2 \
+             w: 320 px: 10x10 bytes: 4 focus: 0\\.5x0\\.3 lossless"],
     );
 
     let once = notes_sync::render::render(&accepted(&source)).expect("render");
@@ -892,9 +901,9 @@ fn an_image_line_outside_the_formats_bounds_quarantines() {
     ] {
         let source = page_with_footer(
             "- ![shot.png](assets/shot-9f3a1c8e2044.png) \
-             <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
+             <!-- yid: Nd0000000001 -->\n",
             &[&format!(
-                "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 {metadata}"
+                "yid: Nd0000000001 t: 0swkd7qz6-00-a3f2 {metadata}"
             )],
         );
 
@@ -909,11 +918,9 @@ fn an_image_line_outside_the_formats_bounds_quarantines() {
 fn an_image_with_an_unreadable_extension_quarantines() {
     let source = page_with_footer(
         "- ![shot.bmp](assets/shot-9f3a1c8e2044.bmp) \
-         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-        &[
-            "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 \
-             w: 320 px: 10x10 bytes: 4",
-        ],
+         <!-- yid: Nd0000000001 -->\n",
+        &["yid: Nd0000000001 t: 0swkd7qz6-00-a3f2 \
+             w: 320 px: 10x10 bytes: 4"],
     );
 
     assert!(parse(source.as_bytes()).is_err());
@@ -927,11 +934,9 @@ fn an_image_with_an_unreadable_extension_quarantines() {
 fn an_image_line_with_no_alt_takes_its_file_name() {
     let parsed = nodes(&page_with_footer(
         "- ![](assets/shot-9f3a1c8e2044.png) \
-         <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-        &[
-            "yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz6-00-a3f2 \
-             w: 320 px: 10x10 bytes: 4",
-        ],
+         <!-- yid: Nd0000000001 -->\n",
+        &["yid: Nd0000000001 t: 0swkd7qz6-00-a3f2 \
+             w: 320 px: 10x10 bytes: 4"],
     ));
 
     let NodeBody::Image(image) = &parsed[0].body else {
@@ -978,7 +983,7 @@ proptest::proptest! {
         // A value the renderer refuses for a stated reason is not this
         // property's business; a value it accepts has to survive.
         let mut node = notes_sync::document::DocumentNode {
-            id: "8a201f33-0000-4c91-8d02-000000000001".to_owned(),
+            id: "Nd0000000001".to_owned(),
             hlc: "0swkd7qz9-00-a3f2".to_owned(),
             body: NodeBody::Text(text.clone()),
             note: note.clone(),
@@ -1030,8 +1035,8 @@ proptest::proptest! {
 #[test]
 fn a_title_that_begins_like_an_image_survives_instead_of_quarantining() {
     let VaultFile::Page(mut document) = accepted(&page_with_footer(
-        "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-        &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2"],
+        "- Text <!-- yid: Nd0000000001 -->\n",
+        &["yid: Nd0000000001 t: 0swkd7qz9-00-a3f2"],
     )) else {
         panic!("a page");
     };
@@ -1067,8 +1072,8 @@ fn a_bullet_whose_text_begins_with_a_checkbox_keeps_it() {
         "[ ] [ ] milk",
     ] {
         let VaultFile::Page(mut document) = accepted(&page_with_footer(
-            "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-            &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2"],
+            "- Text <!-- yid: Nd0000000001 -->\n",
+            &["yid: Nd0000000001 t: 0swkd7qz9-00-a3f2"],
         )) else {
             panic!("a page");
         };
@@ -1092,7 +1097,7 @@ fn a_bullet_whose_text_begins_with_a_checkbox_keeps_it() {
         );
         assert!(!read_back.nodes[0].completed, "{typed:?} was read as done");
         assert_eq!(
-            read_back.nodes[0].id, "8a201f33-0000-4c91-8d02-000000000001",
+            read_back.nodes[0].id, "Nd0000000001",
             "{typed:?} lost its id"
         );
     }
@@ -1107,8 +1112,8 @@ fn a_bullet_whose_text_begins_with_a_checkbox_keeps_it() {
 fn a_note_that_opens_with_a_blank_line_keeps_it() {
     for typed in ["\n뒤에 온 줄", "\n", "\n\n", "앞\n\n뒤"] {
         let VaultFile::Page(mut document) = accepted(&page_with_footer(
-            "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 -->\n",
-            &["yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2"],
+            "- Text <!-- yid: Nd0000000001 -->\n",
+            &["yid: Nd0000000001 t: 0swkd7qz9-00-a3f2"],
         )) else {
             panic!("a page");
         };
@@ -1126,4 +1131,34 @@ fn a_note_that_opens_with_a_blank_line_keeps_it() {
             String::from_utf8_lossy(&bytes)
         );
     }
+}
+
+/// Two ids differing only in case are two blocks, here as everywhere else.
+///
+/// A UUID means the same thing in either case, so folding was free. A `yid` is
+/// base64url, where `a` and `A` are different characters — and the rest of the
+/// format has already stopped folding: `derived_child_id` hashes the id as
+/// written, and `folder_suffix` gives two such ids two folders. A parser still
+/// folding would refuse a document that is perfectly legal, and refuse it as a
+/// duplicate.
+#[test]
+fn two_ids_differing_only_in_case_are_two_blocks() {
+    let source = page_with_footer(
+        "- One <!-- yid: Nd0000000abc -->\n- Two <!-- yid: Nd0000000ABC -->\n",
+        &[
+            "yid: Nd0000000abc t: 0swkd7qz6-00-a3f2",
+            "yid: Nd0000000ABC t: 0swkd7qz7-00-a3f2",
+        ],
+    );
+
+    let parsed = nodes(&source);
+
+    assert_eq!(parsed.len(), 2, "{source}");
+    assert_eq!(parsed[0].id, "Nd0000000abc");
+    assert_eq!(parsed[1].id, "Nd0000000ABC");
+    assert_eq!(
+        parsed[0].hlc, "0swkd7qz6-00-a3f2",
+        "and each joined its own footer entry"
+    );
+    assert_eq!(parsed[1].hlc, "0swkd7qz7-00-a3f2");
 }

@@ -22,8 +22,27 @@ export function hasErrorCode(cause: unknown, code: string): boolean {
  * the Tauri webview and jsdom under vitest — have `randomUUID`; a runtime
  * that does not should stop here rather than mint an unexportable node.
  */
+/**
+ * Twelve base64url characters from nine random bytes.
+ *
+ * Nine is three groups of three, so base64 has no padding to strip and no
+ * partial group to bias — every byte pattern reaches a distinct twelve
+ * characters. `+` and `/` are swapped for `-` and `_` because one of them is a
+ * path separator and this id names a folder.
+ *
+ * `getRandomValues` rather than `randomUUID`: a v4 uuid fixes six of its bits to
+ * a version and a variant, so nine bytes taken from one would carry 66 bits of
+ * entropy instead of 72. Reaching for `crypto` at all is deliberate — where it is
+ * missing this throws, and a node with an id the vault cannot write must not
+ * reach the outline.
+ */
 export function freshId(): string {
-  return globalThis.crypto.randomUUID();
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(9));
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_");
 }
 
 export function confirmedText(

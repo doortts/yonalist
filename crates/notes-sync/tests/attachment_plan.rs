@@ -18,16 +18,16 @@ fn reference(page: &str, disk_name: &str) -> Reference {
 #[test]
 fn a_single_reference_keeps_the_bytes_in_the_page_folder() {
     let plan = plan_placement(
-        "Projects-4f1c8e20a3b7/assets/shot-9f3a1c8e2044.png",
-        &[reference("Projects-4f1c8e20a3b7", "shot-9f3a1c8e2044.png")],
+        "Projects-PrJects00001/assets/shot-9f3a1c8e2044.png",
+        &[reference("Projects-PrJects00001", "shot-9f3a1c8e2044.png")],
     );
 
     assert_eq!(
         plan.location,
-        "Projects-4f1c8e20a3b7/assets/shot-9f3a1c8e2044.png"
+        "Projects-PrJects00001/assets/shot-9f3a1c8e2044.png"
     );
     assert_eq!(
-        plan.link_from("Projects-4f1c8e20a3b7"),
+        plan.link_from("Projects-PrJects00001"),
         "assets/shot-9f3a1c8e2044.png"
     );
     assert_eq!(plan.moves, Vec::<Move>::new());
@@ -38,22 +38,22 @@ fn a_single_reference_keeps_the_bytes_in_the_page_folder() {
 #[test]
 fn a_second_reference_promotes_the_file_to_the_root_store() {
     let plan = plan_placement(
-        "Projects-4f1c8e20a3b7/assets/shot-9f3a1c8e2044.png",
+        "Projects-PrJects00001/assets/shot-9f3a1c8e2044.png",
         &[
-            reference("Projects-4f1c8e20a3b7", "shot-9f3a1c8e2044.png"),
-            reference("Second-11c8da70b5e1", "shot-9f3a1c8e2044.png"),
+            reference("Projects-PrJects00001", "shot-9f3a1c8e2044.png"),
+            reference("Second-Mnutes000001", "shot-9f3a1c8e2044.png"),
         ],
     );
 
     assert_eq!(plan.location, "assets/shot-9f3a1c8e2044.png");
     assert_eq!(
-        plan.link_from("Projects-4f1c8e20a3b7"),
+        plan.link_from("Projects-PrJects00001"),
         "../assets/shot-9f3a1c8e2044.png"
     );
     assert_eq!(
         plan.moves,
         vec![Move {
-            from: "Projects-4f1c8e20a3b7/assets/shot-9f3a1c8e2044.png".to_owned(),
+            from: "Projects-PrJects00001/assets/shot-9f3a1c8e2044.png".to_owned(),
             to: "assets/shot-9f3a1c8e2044.png".to_owned(),
         }],
         "written to the new place, then removed from the old one"
@@ -64,8 +64,8 @@ fn a_second_reference_promotes_the_file_to_the_root_store() {
 /// on one name in the root store, whichever device works it out.
 #[test]
 fn a_promotion_merges_names_deterministically() {
-    let one = reference("Projects-4f1c8e20a3b7", "zebra-9f3a1c8e2044.png");
-    let two = reference("Second-11c8da70b5e1", "apple-9f3a1c8e2044.png");
+    let one = reference("Projects-PrJects00001", "zebra-9f3a1c8e2044.png");
+    let two = reference("Second-Mnutes000001", "apple-9f3a1c8e2044.png");
 
     let forwards = plan_placement("", &[one.clone(), two.clone()]);
     let backwards = plan_placement("", &[two, one]);
@@ -83,8 +83,8 @@ fn a_promotion_merges_names_deterministically() {
 /// hand the longer name the win.
 #[test]
 fn the_tie_break_reads_the_cleaned_name_not_the_hash_after_it() {
-    let plain = reference("Projects-4f1c8e20a3b7", "shot-c93a1c8e2044.png");
-    let hyphenated = reference("Second-11c8da70b5e1", "shot-2-c93a1c8e2044.png");
+    let plain = reference("Projects-PrJects00001", "shot-c93a1c8e2044.png");
+    let hyphenated = reference("Second-Mnutes000001", "shot-2-c93a1c8e2044.png");
 
     let plan = plan_placement("", &[hyphenated, plain]);
 
@@ -104,15 +104,15 @@ fn the_tie_break_reads_the_cleaned_name_not_the_hash_after_it() {
 fn a_split_document_reaches_its_page_folder() {
     let plan = plan_placement(
         "",
-        &[reference("Projects-4f1c8e20a3b7", "shot-9f3a1c8e2044.png")],
+        &[reference("Projects-PrJects00001", "shot-9f3a1c8e2044.png")],
     );
 
     assert_eq!(
         plan.location,
-        "Projects-4f1c8e20a3b7/assets/shot-9f3a1c8e2044.png"
+        "Projects-PrJects00001/assets/shot-9f3a1c8e2044.png"
     );
     assert_eq!(
-        plan.link_from("Projects-4f1c8e20a3b7/Deeper-8a201f330000"),
+        plan.link_from("Projects-PrJects00001/Deeper-Nd0000000001"),
         "../assets/shot-9f3a1c8e2044.png",
         "one `../` out of the split folder, and the page's assets are right there"
     );
@@ -123,13 +123,13 @@ fn a_split_document_climbs_all_the_way_to_the_root_store() {
     let plan = plan_placement(
         "",
         &[
-            reference("Projects-4f1c8e20a3b7", "shot-9f3a1c8e2044.png"),
-            reference("Second-11c8da70b5e1", "shot-9f3a1c8e2044.png"),
+            reference("Projects-PrJects00001", "shot-9f3a1c8e2044.png"),
+            reference("Second-Mnutes000001", "shot-9f3a1c8e2044.png"),
         ],
     );
 
     assert_eq!(
-        plan.link_from("Projects-4f1c8e20a3b7/Deeper-8a201f330000"),
+        plan.link_from("Projects-PrJects00001/Deeper-Nd0000000001"),
         "../../assets/shot-9f3a1c8e2044.png",
         "one `../` for each folder between the document and the vault root"
     );
@@ -139,18 +139,18 @@ fn a_split_document_climbs_all_the_way_to_the_root_store() {
 fn dropping_back_to_one_reference_brings_it_home() {
     let plan = plan_placement(
         "assets/shot-9f3a1c8e2044.png",
-        &[reference("Second-11c8da70b5e1", "shot-9f3a1c8e2044.png")],
+        &[reference("Second-Mnutes000001", "shot-9f3a1c8e2044.png")],
     );
 
     assert_eq!(
         plan.location,
-        "Second-11c8da70b5e1/assets/shot-9f3a1c8e2044.png"
+        "Second-Mnutes000001/assets/shot-9f3a1c8e2044.png"
     );
     assert_eq!(
         plan.moves,
         vec![Move {
             from: "assets/shot-9f3a1c8e2044.png".to_owned(),
-            to: "Second-11c8da70b5e1/assets/shot-9f3a1c8e2044.png".to_owned(),
+            to: "Second-Mnutes000001/assets/shot-9f3a1c8e2044.png".to_owned(),
         }]
     );
 }
@@ -162,7 +162,7 @@ fn a_trashed_reference_keeps_the_bytes_in_the_root_store() {
     let plan = plan_placement(
         "assets/shot-9f3a1c8e2044.png",
         &[Reference {
-            page_folder: "Projects-4f1c8e20a3b7".to_owned(),
+            page_folder: "Projects-PrJects00001".to_owned(),
             disk_name: "shot-9f3a1c8e2044.png".to_owned(),
             trashed: true,
         }],
@@ -182,10 +182,10 @@ fn a_trashed_reference_keeps_the_bytes_in_the_root_store() {
 /// the attachments list — so nothing moves and nothing is written.
 #[test]
 fn an_unreferenced_attachment_is_left_where_it_is() {
-    let plan = plan_placement("Projects-4f1c8e20a3b7/assets/shot-9f3a1c8e2044.png", &[]);
+    let plan = plan_placement("Projects-PrJects00001/assets/shot-9f3a1c8e2044.png", &[]);
 
     assert_eq!(
-        plan.location, "Projects-4f1c8e20a3b7/assets/shot-9f3a1c8e2044.png",
+        plan.location, "Projects-PrJects00001/assets/shot-9f3a1c8e2044.png",
         "nothing points at it, and nothing moves it either"
     );
     assert_eq!(plan.moves, Vec::<Move>::new());
@@ -197,16 +197,16 @@ fn a_deeper_document_climbs_further() {
     let plan = plan_placement(
         "",
         &[
-            reference("Projects-4f1c8e20a3b7", "shot-9f3a1c8e2044.png"),
+            reference("Projects-PrJects00001", "shot-9f3a1c8e2044.png"),
             reference(
-                "Projects-4f1c8e20a3b7/Archive-9d3f21b8c440",
+                "Projects-PrJects00001/Archive-Archive00001",
                 "shot-9f3a1c8e2044.png",
             ),
         ],
     );
 
     assert_eq!(
-        plan.link_from("Projects-4f1c8e20a3b7/Archive-9d3f21b8c440"),
+        plan.link_from("Projects-PrJects00001/Archive-Archive00001"),
         "../../assets/shot-9f3a1c8e2044.png"
     );
 }

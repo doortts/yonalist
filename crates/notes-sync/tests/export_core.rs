@@ -12,8 +12,8 @@ use notes_sync::hlc::{Clock, Hlc};
 use rusqlite::Connection;
 
 const DEVICE: &str = "cccc";
-const PAGE_ID: &str = "4f1c8e20-a3b7-4c91-8d02-11c8da70b5e1";
-const NODE_ID: &str = "8a201f33-0000-4c91-8d02-000000000001";
+const PAGE_ID: &str = "PrJects00001";
+const NODE_ID: &str = "Nd0000000001";
 
 fn database() -> Connection {
     let connection = Connection::open_in_memory().expect("open");
@@ -100,7 +100,7 @@ fn a_dirty_page_lands_in_the_vault_as_a_readme() {
 fn an_export_clears_only_the_exported_dirty_rows() {
     let mut connection = database();
     seed(&connection);
-    let elsewhere = "9d3f21b8-c440-4c91-8d02-2e77a05fb163";
+    let elsewhere = "Archive00001";
     connection
         .execute(
             "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
@@ -409,7 +409,7 @@ fn export_home(connection: &mut Connection, root: &std::path::Path) -> ExportOut
 fn the_home_index_lists_every_page_as_a_split_line() {
     let mut connection = database();
     seed(&connection);
-    let other = "11c8da70-b5e1-4c91-8d02-a3f204ee81cc";
+    let other = "Mnutes000001";
     connection
         .execute(
             "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
@@ -426,7 +426,7 @@ fn the_home_index_lists_every_page_as_a_split_line() {
     let file = std::fs::read_to_string(root.path().join("README.md")).expect("home");
     assert!(file.contains("id: root"), "{file}");
     assert!(
-        file.contains("- [Projects](Projects-4f1c8e20a3b7/README.md)"),
+        file.contains("- [Projects](Projects-PrJects00001/README.md)"),
         "{file}"
     );
     assert!(
@@ -453,7 +453,7 @@ fn a_page_that_stops_being_a_page_loses_its_folder() {
     seed(&connection);
     let root = vault();
     export(&mut connection, root.path());
-    let folder = root.path().join("Projects-4f1c8e20a3b7");
+    let folder = root.path().join("Projects-PrJects00001");
     assert!(folder.is_dir());
 
     connection
@@ -491,7 +491,7 @@ fn a_live_page_keeps_its_folder() {
     notes_sync::export::retire_missing_documents(&transaction, root.path()).expect("retire");
     transaction.commit().expect("commit");
 
-    assert!(root.path().join("Projects-4f1c8e20a3b7").is_dir());
+    assert!(root.path().join("Projects-PrJects00001").is_dir());
 }
 
 /// Which documents a set of dirty rows belongs to, in one question rather than
@@ -501,7 +501,7 @@ fn a_live_page_keeps_its_folder() {
 fn dirty_rows_resolve_to_the_documents_that_hold_them() {
     let mut connection = database();
     seed(&connection);
-    let deep = "8a201f33-0000-4c91-8d02-000000000002";
+    let deep = "Nd0000000002";
     connection
         .execute(
             "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, hlc)
@@ -549,7 +549,7 @@ fn a_hard_deleted_node_still_needs_the_trash_rewritten() {
     let mut connection = database();
     seed(&connection);
     let root = vault();
-    let other = "8a201f33-0000-4c91-8d02-000000000003";
+    let other = "Nd0000000003";
     connection
         .execute(
             "INSERT INTO notes_nodes(id, parent_id, sort_key, kind, text, deleted, hlc)
@@ -725,7 +725,7 @@ fn an_emptied_trash_stops_putting_itself_in_the_queue() {
 fn a_new_page_puts_home_in_the_queue() {
     let mut connection = database();
     seed(&connection);
-    let fresh = "8a201f33-0000-4c91-8d02-000000000009";
+    let fresh = "Nd0000000009";
     connection
         .execute("DELETE FROM sync_dirty_nodes", ())
         .expect("clear");
@@ -759,7 +759,7 @@ fn a_split_document_states_the_node_it_hangs_from() {
             "INSERT INTO sync_documents(root_id, folder_path) VALUES (?1, ?2)",
             rusqlite::params![
                 NODE_ID,
-                format!("Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md")
+                format!("Projects-PrJects00001/Deeper-Nd0000000002/README.md")
             ],
         )
         .expect("split document");
@@ -772,7 +772,7 @@ fn a_split_document_states_the_node_it_hangs_from() {
 
     let file = std::fs::read_to_string(
         root.path()
-            .join("Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md"),
+            .join("Projects-PrJects00001/Deeper-Nd0000000002/README.md"),
     )
     .expect("the split document");
     assert!(
@@ -847,7 +847,7 @@ fn a_split_document_is_not_retired_for_living_inside_its_page() {
              VALUES (?1, ?2, 0)",
             rusqlite::params![
                 NODE_ID,
-                "Projects-4f1c8e20a3b7/Deeper-8a201f330000/README.md"
+                "Projects-PrJects00001/Deeper-Nd0000000002/README.md"
             ],
         )
         .expect("split document");

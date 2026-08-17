@@ -9,7 +9,6 @@ use crate::document::{
 };
 use crate::hlc::Hlc;
 use std::fmt::Write;
-use uuid::Uuid;
 
 pub const FORMAT_VERSION: u32 = 1;
 /// The field cap exists so nothing reaches the vault that the parser would then
@@ -35,7 +34,7 @@ fn render_page(document: &PageDocument) -> Result<Vec<u8>, String> {
     let _ = writeln!(out, "format_version: {FORMAT_VERSION}");
     let _ = writeln!(out, "id: {}", document_id(&document.id)?);
     if let Some(parent) = &document.parent {
-        let _ = writeln!(out, "parent: {}", canonical_uuid(parent)?);
+        let _ = writeln!(out, "parent: {}", block_id(parent)?);
     }
     // Zero is the default, and §4.2 omits a key at its default: written out it
     // would be one more line for every merge to compare over nothing.
@@ -206,7 +205,7 @@ fn render_note(out: &mut String, note: &str, depth: usize) {
 /// All a body line says is which block it is. One space, one comment, and a
 /// reader looking for their notes never has to read past it.
 fn render_comment(node: &DocumentNode) -> Result<String, String> {
-    Ok(format!("<!-- yid: {} -->", canonical_uuid(&node.id)?))
+    Ok(format!("<!-- yid: {} -->", block_id(&node.id)?))
 }
 
 /// One footer line for one block: the stamp, then whatever state Markdown has no
@@ -223,7 +222,7 @@ fn render_comment(node: &DocumentNode) -> Result<String, String> {
 fn footer_entry(node: &DocumentNode, implied_previous: &str) -> Result<String, String> {
     let mut entry = format!(
         "yid: {} t: {}",
-        canonical_uuid(&node.id)?,
+        block_id(&node.id)?,
         required_hlc(&node.hlc, "node t")?
     );
     let split = matches!(node.body, NodeBody::Split { .. });
@@ -257,7 +256,7 @@ fn footer_entry(node: &DocumentNode, implied_previous: &str) -> Result<String, S
         let previous = if previous.is_empty() {
             String::new()
         } else {
-            canonical_uuid(previous)?
+            block_id(previous)?
         };
         let _ = write!(entry, " prev: {previous}@{claim}");
     }
@@ -265,7 +264,7 @@ fn footer_entry(node: &DocumentNode, implied_previous: &str) -> Result<String, S
         let parent = if parent == "root" {
             "root".to_owned()
         } else {
-            canonical_uuid(parent)?
+            block_id(parent)?
         };
         let _ = write!(entry, " from: {parent}@{sort_key}");
     }
@@ -318,14 +317,18 @@ fn render_image(image: &ImageReference) -> Result<String, String> {
 fn document_id(id: &DocumentId) -> Result<String, String> {
     match id {
         DocumentId::Home => Ok("root".to_owned()),
-        DocumentId::Node(id) => canonical_uuid(id),
+        DocumentId::Node(id) => block_id(id),
     }
 }
 
-fn canonical_uuid(value: &str) -> Result<String, String> {
-    Uuid::parse_str(value)
-        .map(|id| id.hyphenated().to_string())
-        .map_err(|_| format!("A document id has to be a UUID: {value}"))
+/// The last gate before bytes reach the vault. A row holding an id this format
+/// cannot write is refused here rather than written out as something no reader
+/// would join back to its document.
+fn block_id(value: &str) -> Result<String, String> {
+    if !notes_core::is_block_id(value) {
+        return Err(format!("A block id has to be twelve characters: {value}"));
+    }
+    Ok(value.to_owned())
 }
 
 /// A node that has never been stamped must not reach the vault: without an HLC
