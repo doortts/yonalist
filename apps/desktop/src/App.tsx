@@ -35,6 +35,10 @@ const SearchPanel = lazy(() => import("./SearchPanel").then((module) =>
 const SettingsView = lazy(() => import("./SettingsView").then((module) =>
   ({ default: module.SettingsView })));
 // Shown at most once per install, so it stays out of the startup bundle.
+// Most people never see this one: it draws nothing while sync is well, so
+// its bytes have no business in the first load.
+const SyncStatusBadge = lazy(() => import("./SyncStatusBadge").then((module) =>
+  ({ default: module.SyncStatusBadge })));
 const VaultSetupCard = lazy(() => import("./VaultSetupCard").then((module) =>
   ({ default: module.VaultSetupCard })));
 
@@ -582,6 +586,9 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             </section>
           </section>
         </div>
+        <Suspense fallback={null}>
+          <SyncStatusBadge readStatus={() => api.syncStatus()} />
+        </Suspense>
         <footer className="yonalist-navigation-footer">
           <button
             className="nav-item"

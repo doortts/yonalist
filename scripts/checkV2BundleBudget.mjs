@@ -44,7 +44,16 @@ for (const file of files) {
 // Catching those too needs headroom near 200 bytes, which is well below
 // ordinary drift and would make the budget a tripwire that gets raised
 // reflexively instead of read.
-const rawLimit = 331 * 1024;
+// Measured 2026-08-17 at the sync status badge: the entry pair is 339,071 raw
+// / 102,919 gzip. The badge itself is lazy — it draws nothing while sync is
+// well, so its bytes have no business in the first load — and what grew the
+// entry is the wiring that has to be there to reach it: one `NotesApi` method
+// and the `Suspense` that holds its place. 127 raw bytes over the old limit,
+// with gzip still 505 bytes under it, which is why this is a raise of raw
+// alone.
+// The reasoning above still holds: raw binds first, and the headroom below is
+// deliberately too small to hide a lazy chunk being imported eagerly.
+const rawLimit = 333 * 1024;
 const gzipLimit = 101 * 1024;
 if (raw > rawLimit || gzip > gzipLimit) {
   throw new Error(

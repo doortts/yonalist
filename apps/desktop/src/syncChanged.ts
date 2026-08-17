@@ -26,6 +26,36 @@ export interface VaultChange {
 }
 
 export const SYNC_CHANGED = "notes://sync-changed";
+/** Says only that the state moved; whoever hears it asks what it is now. */
+export const SYNC_STATUS = "notes://sync-status";
+
+/**
+ * Hears one event and answers the way to stop hearing it. Registering is
+ * idempotent for the same reason as below: React mounts an effect twice in
+ * development, and two subscriptions ask everything twice.
+ */
+export function listenForEvent(
+  listen: (event: string, handler: () => void) => Promise<Unlisten>,
+  event: string,
+  heard: () => void
+): Unlisten {
+  let stopped = false;
+  let unlisten: Unlisten | null = null;
+  const subscription = listen(event, heard).then((stop) => {
+    unlisten = stop;
+    if (stopped) stop();
+    return stop;
+  });
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    if (unlisten) {
+      unlisten();
+      return;
+    }
+    void subscription.catch(() => undefined);
+  };
+}
 
 /**
  * Long enough that a folder's worth of documents is one read, short enough

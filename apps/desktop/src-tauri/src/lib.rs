@@ -170,14 +170,24 @@ async fn notes_search(
 }
 
 #[tauri::command]
-async fn notes_close_session(state: State<'_, DesktopState>) -> Result<CloseOutcome, NotesError> {
+async fn notes_close_session(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<CloseOutcome, NotesError> {
     let gate = Arc::clone(&state.runtime);
     run_close_attempt(&state.closed, async move {
         run_blocking(move || {
             let runtime = gate.wait()?;
             // Before anything else this does: quitting with edits still only in
             // the database is how notes go missing.
-            runtime.sync.flush().map_err(internal_error)?;
+            if let Err(reason) = runtime.sync.flush() {
+                // The one write the user waits for. If it could not happen,
+                // the badge says so rather than the app closing quietly.
+                if runtime.status.set_write(Some(reason.clone())) {
+                    say_status_changed(&app);
+                }
+                return Err(internal_error(reason));
+            }
             runtime.storage.optimize().map_err(NotesError::from)?;
             let live_hashes = runtime
                 .storage
@@ -359,9 +369,26 @@ async fn notes_sync_delete_attachment(
 /// Write what is waiting now instead of when the window closes. What the user
 /// reaches for when they want to see their notes in the folder this second.
 #[tauri::command]
-async fn notes_sync_flush(state: State<'_, DesktopState>) -> Result<(), NotesError> {
+async fn notes_sync_flush(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<(), NotesError> {
     let gate = Arc::clone(&state.runtime);
-    run_blocking(move || gate.wait()?.sync.flush().map_err(internal_error)).await
+    run_blocking(move || {
+        let runtime = gate.wait()?;
+        match runtime.sync.flush() {
+            Ok(()) => Ok(()),
+            Err(reason) => {
+                // The one write the user waits for. If it could not happen,
+                // the badge says so as well as this answer.
+                if runtime.status.set_write(Some(reason.clone())) {
+                    say_status_changed(&app);
+                }
+                Err(internal_error(reason))
+            }
+        }
+    })
+    .await
 }
 
 #[tauri::command]
@@ -545,7 +572,11 @@ async fn notes_toggle_devtools(webview: tauri::WebviewWindow) -> bool {
 }
 
 impl DesktopRuntime {
-    fn initialize(data_directory: PathBuf, font_path: PathBuf) -> Result<Self, NotesError> {
+    fn initialize(
+        data_directory: PathBuf,
+        font_path: PathBuf,
+        window: tauri::AppHandle,
+    ) -> Result<Self, NotesError> {
         std::fs::create_dir_all(&data_directory).map_err(|error| NotesError {
             code: NotesErrorCode::StorageUnavailable,
             message: error.to_string(),
@@ -579,20 +610,30 @@ impl DesktopRuntime {
             data_directory.join("images"),
             original_directory.clone(),
         ]));
+        let status = Arc::new(sync_status::SyncErrors::default());
         let exporter = {
             let storage = Arc::clone(&storage);
             let data_directory = data_directory.clone();
             let store_root = data_directory.join("images");
+            let status = Arc::clone(&status);
+            let window = window.clone();
             move || {
                 // Read every time: the vault can be picked, or changed, long
                 // after this thread started.
                 let Some(vault) = sync_settings::read_vault_path(&data_directory) else {
                     return;
                 };
-                if let Err(error) = storage.export_pending(&vault, &store_root) {
-                    // Nothing here can fix it, and the marks stay put — the next
-                    // pass tries the same documents again.
-                    eprintln!("The vault could not be written: {error}");
+                // Told once, not on every pass: this runs again in thirty
+                // seconds, and a window asked the same question that often
+                // learns nothing it did not already know.
+                let news = match storage.export_pending(&vault, &store_root) {
+                    // Nothing here can fix it, and the marks stay put — the
+                    // next pass tries the same documents again.
+                    Err(error) => status.set_write(Some(error.to_string())),
+                    Ok(_) => status.set_write(None),
+                };
+                if news {
+                    say_status_changed(&window);
                 }
             }
         };
@@ -606,7 +647,7 @@ impl DesktopRuntime {
             export_renderer,
             export_publisher,
             initial_boot: Mutex::new(Some(initial_boot)),
-            status: Arc::new(sync_status::SyncErrors::default()),
+            status,
             watch: Mutex::new(None),
             sync: sync_runtime::SyncRuntime::start(exporter),
         };
@@ -634,6 +675,8 @@ impl DesktopRuntime {
         let Some(vault) = sync_settings::read_vault_path(&self.data_directory) else {
             return;
         };
+        let telling = app.clone();
+        let status = Arc::clone(&self.status);
         let storage = Arc::clone(&self.storage);
         let service = Arc::clone(&self.service);
         let exporting = self.sync.handle();
@@ -642,6 +685,7 @@ impl DesktopRuntime {
             Arc::clone(&self.storage),
             Arc::clone(&self.assets),
             vault,
+            move || say_status_changed(&telling),
             move |outcome: notes_sync::merger::MergeOutcome| {
                 // Whatever the merge decided, the folder may now owe a
                 // write — this is the only thing that wakes the exporter for
@@ -662,13 +706,19 @@ impl DesktopRuntime {
                 let _ = window.emit("notes://sync-changed", changed);
             },
         );
-        match started {
+        let news = match started {
             Ok(watch) => {
                 if let Ok(mut held) = self.watch.lock() {
                     *held = Some(watch);
                 }
+                status.set_watch(None)
             }
-            Err(reason) => eprintln!("The vault is not being watched: {reason}"),
+            // The folder the user picked is not being read. Nothing else in
+            // the app can tell them that.
+            Err(reason) => status.set_watch(Some(reason)),
+        };
+        if news {
+            say_status_changed(app);
         }
     }
 
@@ -679,6 +729,13 @@ impl DesktopRuntime {
             .take();
         Ok(())
     }
+}
+
+/// The window asks what the state is; this only says that it moved. A watch
+/// that fails at startup does so before anything is listening, so the answer
+/// has to be available to whoever asks late rather than carried by the event.
+fn say_status_changed(window: &tauri::AppHandle) {
+    let _ = window.emit("notes://sync-status", ());
 }
 
 fn internal_error(message: impl Into<String>) -> NotesError {
@@ -762,7 +819,11 @@ pub fn run() {
             std::thread::Builder::new()
                 .name("notes-v2-startup".into())
                 .spawn(move || {
-                    runtime.complete(DesktopRuntime::initialize(data_directory, font_path));
+                    runtime.complete(DesktopRuntime::initialize(
+                        data_directory,
+                        font_path,
+                        watching.clone(),
+                    ));
                     // After the gate opens, so a command arriving mid-startup
                     // waits for the same runtime this is about to hand a
                     // watcher rather than a second one.
