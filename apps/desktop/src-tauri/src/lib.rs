@@ -655,23 +655,11 @@ impl DesktopRuntime {
                     // the window to redraw.
                     return;
                 }
-                let affected: Vec<String> = outcome
-                    .changed_ids
-                    .iter()
-                    .chain(outcome.deleted_ids.iter())
-                    .cloned()
-                    .collect();
+                let (out_of_reach, changed) = announce(&outcome, revision);
                 // The session first: a window told about a revision the service
                 // does not know about would have every later edit rejected.
-                let _ = service.absorb_external(revision, &affected);
-                let _ = window.emit(
-                    "notes://sync-changed",
-                    SyncChanged {
-                        revision,
-                        changed_node_ids: outcome.changed_ids.iter().cloned().collect(),
-                        deleted_node_ids: outcome.deleted_ids.iter().cloned().collect(),
-                    },
-                );
+                let _ = service.absorb_external(revision, &out_of_reach);
+                let _ = window.emit("notes://sync-changed", changed);
             },
         );
         match started {
@@ -818,9 +806,84 @@ pub fn run() {
         .expect("Yonalist v2 desktop runtime failed");
 }
 
+/// What this outcome has to say, in the two directions it has to say it.
+///
+/// First, the rows it put beyond this session's reach: another device's edit
+/// landed on them, so replaying a history entry that touches one would throw
+/// that edit away with nothing said. Second, what the window is told — a
+/// notice that cannot say which note changed sends it back to re-reading the
+/// whole page, and that path does not promise the caret stays where it was.
+///
+/// The two are not the same list, which is the whole point of this function.
+/// A picture's bytes turning up settles rows the window has to redraw while
+/// discarding nothing at all, so those rows are in the second and never in the
+/// first. Answered together, and in different shapes, so the two cannot be
+/// handed to each other's caller.
+fn announce(
+    outcome: &notes_sync::merger::MergeOutcome,
+    revision: u64,
+) -> (Vec<String>, SyncChanged) {
+    (
+        outcome
+            .changed_ids
+            .iter()
+            .chain(outcome.deleted_ids.iter())
+            .cloned()
+            .collect(),
+        SyncChanged {
+            revision,
+            changed_node_ids: outcome
+                .changed_ids
+                .iter()
+                .chain(outcome.settled_ids.iter())
+                .cloned()
+                .collect(),
+            deleted_node_ids: outcome.deleted_ids.iter().cloned().collect(),
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A picture's bytes turning up settles rows without anyone editing them,
+    /// so nothing about it can put a history entry out of reach. Naming those
+    /// rows is for the window's redraw and for nothing else — read the two
+    /// lists as one and the user loses an undo because a download finished.
+    #[test]
+    fn an_arriving_picture_puts_no_history_out_of_reach() {
+        // All three at once, which the sweep never actually reports in one
+        // outcome — it calls back per queue entry, so a document and a picture
+        // arrive as two. Deliberately stronger than production: one outcome
+        // carrying every kind is what makes both halves answerable in one
+        // assertion.
+        let outcome = notes_sync::merger::MergeOutcome {
+            applied: 3,
+            changed_ids: std::collections::BTreeSet::from(["edited".to_owned()]),
+            deleted_ids: std::collections::BTreeSet::from(["removed".to_owned()]),
+            settled_ids: std::collections::BTreeSet::from(["shot".to_owned()]),
+            ..notes_sync::merger::MergeOutcome::default()
+        };
+
+        let (out_of_reach, changed) = announce(&outcome, 7);
+
+        assert_eq!(
+            out_of_reach,
+            vec!["edited".to_owned(), "removed".to_owned()],
+            "what another device edited or removed, and the settled picture in \
+             neither -- nobody edited that note, its bytes simply turned up"
+        );
+        assert_eq!(
+            changed,
+            SyncChanged {
+                revision: 7,
+                changed_node_ids: vec!["edited".to_owned(), "shot".to_owned()],
+                deleted_node_ids: vec!["removed".to_owned()],
+            },
+            "the window redraws the settled row like any other"
+        );
+    }
 
     #[test]
     fn a_data_reset_clears_the_stored_vault_path() {

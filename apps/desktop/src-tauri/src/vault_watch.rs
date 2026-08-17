@@ -204,7 +204,7 @@ fn run(
                 if !resolved.is_empty() {
                     changed(MergeOutcome {
                         applied: resolved.len(),
-                        changed_ids: resolved,
+                        settled_ids: resolved,
                         ..MergeOutcome::default()
                     });
                 }
@@ -632,9 +632,16 @@ mod tests {
         // changed sends it back to re-reading the whole page, and that path
         // does not promise the caret and the scroll stay where they were.
         assert_eq!(
-            outcome.changed_ids,
+            outcome.settled_ids,
             std::collections::BTreeSet::from([WAITING_NODE.to_owned()]),
             "the window is told something changed but not what"
+        );
+        // Settled, not changed. Nobody edited this note — its picture simply
+        // turned up — so naming it the way a merge names its rows would take
+        // the user's undo away for a download finishing.
+        assert!(
+            outcome.changed_ids.is_empty(),
+            "an arrival has nothing for the merge barrier"
         );
         assert_eq!(outcome.applied, 1, "one row stopped waiting");
     }

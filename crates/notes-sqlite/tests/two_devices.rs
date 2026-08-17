@@ -1319,12 +1319,10 @@ fn bytes_that_land_before_the_redo_still_reach_the_copy() {
         })
         .expect("undo");
 
-    // The bytes arrive while the copy is not there. Named nobody on purpose:
-    // the real watcher names the rows it settled, and the barrier one layer up
-    // then refuses this redo outright — the over-block written down under
-    // "Known limits" in the design. What is being held down here is the layer
-    // underneath that, which has to be right whichever way the announcement
-    // is made.
+    // The bytes arrive while the copy is not there. Nobody is named, which is
+    // what the real watcher does for an arrival: it settles rows rather than
+    // changing them, so the window redraws those lines and no history entry
+    // goes out of reach.
     let_pictures_land(&two, held);
     two.absorb();
     let revision = service
