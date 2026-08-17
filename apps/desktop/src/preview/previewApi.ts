@@ -573,5 +573,8 @@ export const previewNotesApi: NotesApi = {
   async syncVaultSet() {
     // Same reason — the preview has nowhere to record a choice.
     return "empty" as const;
+  },
+  async onboardingWriteGuide() {
+    // The preview's outline is a fixture; there is no first run to guide.
   }
 };

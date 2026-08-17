@@ -418,6 +418,21 @@ async fn notes_sync_vault_set(
     Ok(folder)
 }
 
+/// The guide notes, written once the user has settled where these notes live.
+/// Not part of opening the database: a device joining a folder that already
+/// holds notes must not restate every line of the guide as its own, newer than
+/// anything the other device has said. Answering twice is harmless — the guide
+/// is written once per database and never over notes that are already there.
+#[tauri::command]
+async fn notes_onboarding_write_guide(state: State<'_, DesktopState>) -> Result<(), NotesError> {
+    let gate = Arc::clone(&state.runtime);
+    run_blocking(move || {
+        gate.wait()?.storage.seed_onboarding()?;
+        Ok(())
+    })
+    .await
+}
+
 #[tauri::command]
 async fn notes_delete_all_data(
     app: tauri::AppHandle,
@@ -852,6 +867,7 @@ pub fn run() {
             notes_sync_flush,
             notes_sync_vault_get,
             notes_sync_vault_set,
+            notes_onboarding_write_guide,
             export_ipc::notes_export,
             image_ipc::notes_import_image_bytes,
             image_ipc::notes_import_image_paths,

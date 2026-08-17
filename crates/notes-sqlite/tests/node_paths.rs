@@ -177,6 +177,10 @@ fn every_command_leaves_the_stored_path_equal_to_the_cte() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database = directory.path().join("notes-v2.sqlite");
     let storage = SqliteStorage::open(&database).expect("open storage");
+    // As a device that has been through first run with a folder of its own.
+    // The guide is written once that folder is settled rather than when the
+    // database is opened, so a test that wants it has to say so.
+    storage.seed_onboarding().expect("the guide");
     // The seeded onboarding page is the one row that arrived without a command,
     // so it is read back rather than named: its id belongs to the seed, not to
     // this test.
