@@ -104,6 +104,7 @@ export function appApi(): NotesApi {
     deleteAllData: vi.fn(),
     syncVaultGet: vi.fn().mockResolvedValue(null),
     syncVaultSet: vi.fn(),
+    onboardingWriteGuide: vi.fn(),
     syncConflicts: vi.fn().mockResolvedValue([]),
     syncFlush: vi.fn(),
     syncStatus: vi.fn().mockResolvedValue({
