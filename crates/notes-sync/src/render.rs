@@ -59,10 +59,7 @@ fn render_page(document: &PageDocument) -> Result<Vec<u8>, String> {
     }
     out.push_str("---\n");
 
-    // The heading is not a line start in the ordinary sense — `# ` is already in
-    // front of it — but the reader refuses a title that begins `![`, so the one
-    // character that has to keep its backslash is the same one.
-    let title = escape_inline(&document.root.title, At::LineStart);
+    let title = escape_inline(&document.root.title, At::Heading);
     if title.is_empty() {
         out.push_str("#\n");
     } else {
@@ -324,8 +321,6 @@ fn normalize_newlines(value: &str) -> String {
     value.replace("\r\n", "\n").replace('\r', "\n")
 }
 
-/// Ported from the exporter unchanged. `<` becoming an entity is what keeps a
-/// user's own `<!--` from ever turning into a node comment.
 /// Where a value sits, which is the whole of what decides its escaping. A full
 /// stop is a full stop in the middle of a sentence and a list marker at the
 /// front of a line; the character alone cannot tell you which.
@@ -336,6 +331,11 @@ enum At {
     LineStart,
     /// Somewhere after the start of a line, where nothing can open a block.
     Inline,
+    /// The document's own title, written behind `# `. Nothing there opens a
+    /// block, but the reader refuses a title beginning `![` — a document root
+    /// that drew a picture would have nowhere to put its own name — so that one
+    /// shape still has to be held off.
+    Heading,
     /// Inside a link's square brackets, where a `]` would close them early.
     LinkLabel,
 }
@@ -352,10 +352,10 @@ enum At {
 /// that made these files a chore to read — is text.
 fn escape_markdown(value: &str, at: At) -> String {
     let mut escaped = String::with_capacity(value.len());
-    let marker = if at == At::LineStart {
-        block_marker_at(value)
-    } else {
-        None
+    let marker = match at {
+        At::LineStart => block_marker_at(value),
+        At::Heading => value.starts_with("![").then_some(0),
+        At::Inline | At::LinkLabel => None,
     };
     for (index, character) in value.char_indices() {
         // Before the character that closes the marker, which is not always the
@@ -381,27 +381,65 @@ fn escape_markdown(value: &str, at: At) -> String {
 /// Where this line needs a backslash to stay text, if anywhere. Asked once per
 /// line, because a block can only be opened at its start.
 ///
-/// The shapes are the ones this format's own reader looks for — a bullet, an
-/// image, a heading — plus an ordered marker, which this reader does not use and
-/// an editor the person opens the file in does.
+/// The shapes are the ones this format's own reader looks for — a bullet, a
+/// checkbox, an image, a heading — plus the ones only an editor the person opens
+/// the file in looks for: an ordered marker, a fence, a thematic break. The first
+/// group is the round trip and the second is A1.
+///
+/// The answer is an index rather than a yes, because the character that has to be
+/// held off is not always the first one. `1. ` needs the backslash on the full
+/// stop, and up to three spaces may sit in front of any marker — a backslash on
+/// the space escapes a space, which nothing undoes.
 fn block_marker_at(line: &str) -> Option<usize> {
+    // Three is Markdown's own allowance; a fourth space makes it an indented
+    // code block, which opens nothing this has to hold off.
+    let indent = line.len() - line.trim_start_matches(' ').len();
+    if indent > 3 {
+        return None;
+    }
+    let rest = &line[indent..];
+    marker_in(rest).map(|offset| indent + offset)
+}
+
+fn marker_in(line: &str) -> Option<usize> {
     let after_marker = |rest: &str| rest.is_empty() || rest.starts_with([' ', '\t']);
+    // A checkbox, and this one is not about how the line looks — the reader takes
+    // `- [ ] ` and `- [x] ` off the front, so a bullet whose own text begins that
+    // way comes back as a todo with those three characters eaten, and a text of
+    // exactly `[ ]` comes back having swallowed its own id comment. `[X]` is
+    // absent on purpose: the reader does not strip it, and this list exists to
+    // match the reader's rather than to guess at it. The two move together.
+    if let Some(rest) = line
+        .strip_prefix("[ ]")
+        .or_else(|| line.strip_prefix("[x]"))
+    {
+        return after_marker(rest).then_some(0);
+    }
     if let Some(rest) = line.strip_prefix(['-', '*', '+', '#']) {
         return after_marker(rest).then_some(0);
     }
     if let Some(rest) = line.strip_prefix('!') {
         return rest.starts_with('[').then_some(0);
     }
-    // A leading `>` is deliberately not here. A note writes its own `> ` in
-    // front of the line, and the reader takes one `>` and one space back off
-    // again — so a second one survives the trip as the text it was. Nowhere else
-    // does this format read a `>` as anything but a character.
+    // A fence needs no space after its marker and is the expensive one: left
+    // alone it swallows the rest of the file in the editor the person opened it
+    // in. This reader would hand the text back unharmed, so it is here for A1.
+    if line.starts_with("```") || line.starts_with("~~~") {
+        return Some(0);
+    }
+    if is_thematic_break(line) {
+        return Some(0);
+    }
+    // A leading `>` is deliberately absent. A note writes its own `> ` in front
+    // of the line and the reader takes one `>` and one space back off again, so a
+    // second one survives the trip as the text it was. Nowhere else does this
+    // format read a `>` as anything but a character.
     //
     // A run of digits closed by `.` or `)` and then a space. `1.5` closes into
-    // nothing and stays a number.
-    // Every digit is one byte, so the count is the index the marker sits at.
+    // nothing and stays a number, and past nine digits it is a list marker to
+    // nobody.
     let digits = line.chars().take_while(char::is_ascii_digit).count();
-    if digits == 0 {
+    if digits == 0 || digits > 9 {
         return None;
     }
     line[digits..]
@@ -410,13 +448,30 @@ fn block_marker_at(line: &str) -> Option<usize> {
         .then_some(digits)
 }
 
+/// Three or more of one mark, with nothing but spaces between them. Markdown
+/// draws a rule; this format has no rule to draw, so the line is text.
+fn is_thematic_break(line: &str) -> bool {
+    let mut marks = line.chars().filter(|character| *character != ' ');
+    let Some(first) = marks.next().filter(|first| "-*_".contains(*first)) else {
+        return false;
+    };
+    let mut count = 1;
+    for mark in marks {
+        if mark != first {
+            return false;
+        }
+        count += 1;
+    }
+    count >= 3
+}
+
 fn escape_inline(value: &str, at: At) -> String {
     // Only the first segment begins a line. The rest are joined onto it with a
     // literal `\n`, so nothing after the join can open a block — but a bracket
     // still closes a link wherever it sits.
     let later = match at {
         At::LinkLabel => At::LinkLabel,
-        At::LineStart | At::Inline => At::Inline,
+        At::LineStart | At::Inline | At::Heading => At::Inline,
     };
     normalize_newlines(value)
         .split('\n')

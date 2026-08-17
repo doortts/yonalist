@@ -739,14 +739,19 @@ proptest::proptest! {
         text in proptest::collection::vec(
             proptest::sample::select(vec![
                 "- ", "* ", "+ ", "# ", "1. ", "2) ", "![", "[", "]", "(", ")",
+                // Whole shapes as well as single marks. Reaching `[x] ` by
+                // drawing three characters in a row is a 1-in-30000 event, and a
+                // property that can only find a defect by luck has not checked it.
+                "[ ] ", "[x] ", "[X] ", "```", "~~~", "---", "***", "___",
                 ">", "<", "<!--", "-->", "&", "&lt;", "&amp;", "\\", "\\.", ".",
-                "/", "+", "_", "*", "`", "a", "가", " ", "1", "-",
+                "/", "+", "_", "*", "`", "a", "x", "가", " ", "1", "-", "\n",
             ]),
             0..12,
         ),
         note in proptest::collection::vec(
             proptest::sample::select(vec![
                 "- ", "> ", ">", "#", "&", "<", "\\", ".", "a", "가", " ", "1. ",
+                "[ ] ", "[x] ", "```", "---", "\n",
             ]),
             0..8,
         ),
@@ -825,4 +830,80 @@ fn a_title_that_begins_like_an_image_survives_instead_of_quarantining() {
         panic!("a page");
     };
     assert_eq!(read_back.root.title, "![not a picture] 회고");
+}
+
+/// The shape the property could not reach by luck, said out loud. The reader
+/// takes `- [ ] ` and `- [x] ` off the front of a line, so a bullet whose own
+/// text begins that way is the one case where loosening the escape rules changed
+/// a *value* rather than a spelling — and `[ ]` on its own was worse than that:
+/// with nothing after it the line became `- [ ] <!-- yid: … -->`, the boundary
+/// scan found no comment to split off, and the node lost its id into its text.
+#[test]
+fn a_bullet_whose_text_begins_with_a_checkbox_keeps_it() {
+    for typed in [
+        "[ ] milk",
+        "[x] milk",
+        "[ ]",
+        "[x]",
+        "[X] milk",
+        "[ ] [ ] milk",
+    ] {
+        let VaultFile::Page(mut document) = accepted(&page(
+            "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 -->\n",
+        )) else {
+            panic!("a page");
+        };
+        document.nodes[0].body = NodeBody::Text(typed.to_owned());
+        let bytes = notes_sync::render::render(&VaultFile::Page(document)).expect("render");
+
+        let VaultFile::Page(read_back) = parse(&bytes).expect("parse") else {
+            panic!("a page");
+        };
+
+        assert_eq!(
+            read_back.nodes[0].body,
+            NodeBody::Text(typed.to_owned()),
+            "{typed:?} came back as something else:\n{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        assert_eq!(
+            read_back.nodes[0].marker,
+            Marker::Bullet,
+            "{typed:?} was read as a todo"
+        );
+        assert!(!read_back.nodes[0].completed, "{typed:?} was read as done");
+        assert_eq!(
+            read_back.nodes[0].id, "8a201f33-0000-4c91-8d02-000000000001",
+            "{typed:?} lost its id"
+        );
+    }
+}
+
+/// A note whose own first line is blank. The renderer writes a bare `>` for it,
+/// and the reader used an empty note as its "nothing yet" signal — so the next
+/// line replaced the blank one instead of following it, and a note of nothing but
+/// blank lines came back as no note at all. The app writes these itself, so this
+/// was reachable without anybody hand-editing a file.
+#[test]
+fn a_note_that_opens_with_a_blank_line_keeps_it() {
+    for typed in ["\n뒤에 온 줄", "\n", "\n\n", "앞\n\n뒤"] {
+        let VaultFile::Page(mut document) = accepted(&page(
+            "- Text <!-- yid: 8a201f33-0000-4c91-8d02-000000000001 t: 0swkd7qz9-00-a3f2 -->\n",
+        )) else {
+            panic!("a page");
+        };
+        document.nodes[0].note = typed.to_owned();
+        let bytes = notes_sync::render::render(&VaultFile::Page(document)).expect("render");
+
+        let VaultFile::Page(read_back) = parse(&bytes).expect("parse") else {
+            panic!("a page");
+        };
+
+        assert_eq!(
+            read_back.nodes[0].note,
+            typed,
+            "a note came back with a line missing:\n{}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
 }

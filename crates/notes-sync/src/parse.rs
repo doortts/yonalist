@@ -271,7 +271,12 @@ impl NodeReader {
         lines: std::iter::Peekable<std::slice::Iter<'_, &str>>,
     ) -> Result<Vec<DocumentNode>, Quarantine> {
         let mut roots: Vec<DocumentNode> = Vec::new();
-        let mut stack: Vec<(usize, DocumentNode)> = Vec::new();
+        // The bool is "this node has had a note line". An empty note cannot stand
+        // in for that: a note whose own first line is blank is written as a bare
+        // `>`, and reading emptiness as "nothing yet" made the next line replace
+        // it instead of following it — so the blank line the person typed was
+        // gone, and a note of nothing but blank lines came back as no note.
+        let mut stack: Vec<(usize, DocumentNode, bool)> = Vec::new();
 
         for line in lines {
             if line.trim().is_empty() {
@@ -284,15 +289,16 @@ impl NodeReader {
             // edit — and reading it as the ancestor's would move text the
             // person meant to leave where they typed it.
             if let Some(text) = rest.strip_prefix('>') {
-                let Some((_, open)) = stack.last_mut() else {
+                let Some((_, open, has_note)) = stack.last_mut() else {
                     return Err(format!("A note has no line to belong to: `{line}`"));
                 };
                 let text = unescape(text.strip_prefix(' ').unwrap_or(text));
-                if open.note.is_empty() {
-                    open.note = text;
-                } else {
+                if *has_note {
                     open.note.push('\n');
                     open.note.push_str(&text);
+                } else {
+                    open.note = text;
+                    *has_note = true;
                 }
                 field_fits(&open.note, "note")?;
                 continue;
@@ -314,17 +320,17 @@ impl NodeReader {
                 return Err(format!("The id {} appears twice.", node_line.id));
             }
             while stack.len() > depth {
-                let (_, finished) = stack.pop().expect("the stack is not empty");
+                let (_, finished, _) = stack.pop().expect("the stack is not empty");
                 match stack.last_mut() {
-                    Some((_, parent)) => parent.children.push(finished),
+                    Some((_, parent, _)) => parent.children.push(finished),
                     None => roots.push(finished),
                 }
             }
-            stack.push((depth, node_line));
+            stack.push((depth, node_line, false));
         }
-        while let Some((_, finished)) = stack.pop() {
+        while let Some((_, finished, _)) = stack.pop() {
             match stack.last_mut() {
-                Some((_, parent)) => parent.children.push(finished),
+                Some((_, parent, _)) => parent.children.push(finished),
                 None => roots.push(finished),
             }
         }
