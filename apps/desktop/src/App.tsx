@@ -8,7 +8,6 @@ import "./notes.css";
 import "./formControls.css";
 import type { SyncChanged } from "../../../packages/contracts/generated/SyncChanged";
 import { tauriNotesApi, type NotesApi } from "./api";
-import { SyncStatusBadge } from "./SyncStatusBadge";
 import { useTheme } from "./useTheme";
 import { useOutlineMarkerStyles } from "./outlineMarkers";
 import { NotesStore } from "./notesStore";
@@ -36,6 +35,10 @@ const SearchPanel = lazy(() => import("./SearchPanel").then((module) =>
 const SettingsView = lazy(() => import("./SettingsView").then((module) =>
   ({ default: module.SettingsView })));
 // Shown at most once per install, so it stays out of the startup bundle.
+// Most people never see this one: it draws nothing while sync is well, so
+// its bytes have no business in the first load.
+const SyncStatusBadge = lazy(() => import("./SyncStatusBadge").then((module) =>
+  ({ default: module.SyncStatusBadge })));
 const VaultSetupCard = lazy(() => import("./VaultSetupCard").then((module) =>
   ({ default: module.VaultSetupCard })));
 
@@ -122,27 +125,6 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       unlisten?.();
     };
   }, [store]);
-  // The badge asks for the state; this only tells it that the state moved.
-  const subscribeToSyncStatus = useCallback((moved: () => void) => {
-    if (!("__TAURI_INTERNALS__" in window)) return () => {};
-    let stop: (() => void) | undefined;
-    let active = true;
-    void Promise.all([
-      import("@tauri-apps/api/event"),
-      import("./syncChanged")
-    ]).then(([{ listen }, { listenForEvent, SYNC_STATUS }]) => {
-      if (!active) return;
-      stop = listenForEvent(
-        (event, handler) => listen(event, () => handler()),
-        SYNC_STATUS,
-        moved
-      );
-    });
-    return () => {
-      active = false;
-      stop?.();
-    };
-  }, []);
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
     let stop: (() => void) | undefined;
@@ -604,10 +586,9 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             </section>
           </section>
         </div>
-        <SyncStatusBadge
-          readStatus={() => api.syncStatus()}
-          subscribe={subscribeToSyncStatus}
-        />
+        <Suspense fallback={null}>
+          <SyncStatusBadge readStatus={() => api.syncStatus()} />
+        </Suspense>
         <footer className="yonalist-navigation-footer">
           <button
             className="nav-item"

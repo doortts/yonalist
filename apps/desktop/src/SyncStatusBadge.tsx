@@ -11,13 +11,39 @@ import type { SyncStatus } from "../../../packages/contracts/generated/SyncStatu
  * watched fails before this window is listening, so the answer has to be
  * there for whoever asks late.
  */
+/**
+ * Hears the app say the state moved. Lives here rather than in the window's
+ * own wiring: this file is loaded only when there is a badge to draw, and the
+ * subscription is nobody else's business.
+ */
+function hearTheApp(moved: () => void): () => void {
+  if (!("__TAURI_INTERNALS__" in window)) return () => {};
+  let stop: (() => void) | undefined;
+  let active = true;
+  void Promise.all([
+    import("@tauri-apps/api/event"),
+    import("./syncChanged")
+  ]).then(([{ listen }, { listenForEvent, SYNC_STATUS }]) => {
+    if (!active) return;
+    stop = listenForEvent(
+      (event, handler) => listen(event, () => handler()),
+      SYNC_STATUS,
+      moved
+    );
+  });
+  return () => {
+    active = false;
+    stop?.();
+  };
+}
+
 export function SyncStatusBadge({
   readStatus,
-  subscribe
+  subscribe = hearTheApp
 }: {
   readonly readStatus: () => Promise<SyncStatus>;
   /** Calls back whenever the state moved. Answers the way to stop. */
-  readonly subscribe: (moved: () => void) => () => void;
+  readonly subscribe?: (moved: () => void) => () => void;
 }) {
   const [status, setStatus] = useState<SyncStatus | null>(null);
 
