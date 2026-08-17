@@ -225,12 +225,6 @@ pub(crate) fn export_pending(
     Ok(written)
 }
 
-/// Reads every document in the vault back in, ignoring what the records say
-/// about them — the last net under the startup scan's stat gate.
-///
-/// Refused while this device is still holding edits it has not written out.
-/// A reindex treats the vault as the truth, and the vault does not yet know
-/// about those edits, so running it then would throw them away.
 /// An attachment's bytes arrived. Every image row still waiting for them —
 /// its link names this file and it has no hash of its own yet — learns the
 /// hash, and the app's own store is now where those bytes live.
@@ -248,12 +242,17 @@ pub(crate) fn export_pending(
 /// rather than `changed_ids`: the window redraws these, and nobody edited
 /// them, so no history entry falls out of reach for them.
 ///
-/// Named are the rows a window can draw, so a note the trash holds learns its
-/// hash and is left out of the answer. The learning is unconditional on
+/// The answer holds the rows a window can draw, so a note the trash holds
+/// learns its hash and is left out of it. The learning is unconditional on
 /// purpose: the arrival records the bytes once and no later sweep offers them
 /// again, so a row that skipped it would draw a placeholder for ever over a
 /// picture the store is holding, and the attachment list would read those
 /// bytes as an orphan nobody points at.
+///
+/// Which means a write here no longer implies a revision that moved: a row in
+/// the trash learns its hash and the counter stays where it was. An empty
+/// answer is the whole signal there is, and it has to be — a revision moving
+/// with nothing said leaves the session's next command rejected.
 pub(crate) fn resolve_asset(
     connection: &mut Connection,
     disk_name: &str,
@@ -349,6 +348,12 @@ pub struct ReindexReport {
     pub skipped: usize,
 }
 
+/// Reads every document in the vault back in, ignoring what the records say
+/// about them — the last net under the startup scan's stat gate.
+///
+/// Refused while this device is still holding edits it has not written out.
+/// A reindex treats the vault as the truth, and the vault does not yet know
+/// about those edits, so running it then would throw them away.
 pub(crate) fn reindex_vault(
     connection: &mut Connection,
     clock: &Clock,

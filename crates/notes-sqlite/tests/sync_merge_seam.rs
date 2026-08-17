@@ -65,6 +65,8 @@ fn page(text: &str, hlc: &str) -> VaultFile {
 }
 
 const IMAGE_NODE_ID: &str = "8a201f33-0000-4c91-8d02-00000000000f";
+/// The second note showing the same picture.
+const TWIN_NODE_ID: &str = "8a201f33-0000-4c91-8d02-00000000000e";
 
 /// A page whose one line is a picture, linked the way a document in a page
 /// folder links its own attachments.
@@ -93,6 +95,20 @@ fn page_with_image(disk_name: &str) -> VaultFile {
         nodes: vec![image],
         unknown_frontmatter: Vec::new(),
     })
+}
+
+/// The same picture pasted onto a second line, which is one link and two rows
+/// waiting for it.
+fn page_with_twin_images(disk_name: &str) -> VaultFile {
+    let mut file = page_with_image(disk_name);
+    let VaultFile::Page(document) = &mut file else {
+        panic!("a page");
+    };
+    document.nodes.push(DocumentNode {
+        id: TWIN_NODE_ID.to_owned(),
+        ..document.nodes[0].clone()
+    });
+    file
 }
 
 fn input() -> MergeInput {
@@ -817,18 +833,10 @@ fn an_arriving_attachment_leaves_a_row_the_trash_holds_unnamed() {
 /// leave the note on the page drawing a placeholder until a restart.
 #[test]
 fn an_arriving_attachment_names_the_live_row_and_not_its_trashed_twin() {
-    const TWIN_NODE_ID: &str = "8a201f33-0000-4c91-8d02-00000000000e";
     let (_directory, storage) = storage();
-    let mut file = page_with_image("holiday-9f2c1b7a4e6d.png");
-    let VaultFile::Page(document) = &mut file else {
-        panic!("a page");
-    };
-    let twin = DocumentNode {
-        id: TWIN_NODE_ID.to_owned(),
-        ..document.nodes[0].clone()
-    };
-    document.nodes.push(twin);
-    storage.merge_document(&file, &input()).expect("merge");
+    storage
+        .merge_document(&page_with_twin_images("holiday-9f2c1b7a4e6d.png"), &input())
+        .expect("merge");
     run(
         &storage,
         NotesCommand::DeleteSubtree {
@@ -915,19 +923,10 @@ fn a_picture_a_file_turned_back_into_text_is_not_stranded() {
 /// first draws a placeholder over the second until it is restarted.
 #[test]
 fn every_row_waiting_for_the_same_picture_is_named() {
-    const TWIN_NODE_ID: &str = "8a201f33-0000-4c91-8d02-00000000000e";
     let (_directory, storage) = storage();
-    let mut file = page_with_image("holiday-9f2c1b7a4e6d.png");
-    let VaultFile::Page(document) = &mut file else {
-        panic!("a page");
-    };
-    // The same line twice: one picture, one link, two notes showing it.
-    let twin = DocumentNode {
-        id: TWIN_NODE_ID.to_owned(),
-        ..document.nodes[0].clone()
-    };
-    document.nodes.push(twin);
-    storage.merge_document(&file, &input()).expect("merge");
+    storage
+        .merge_document(&page_with_twin_images("holiday-9f2c1b7a4e6d.png"), &input())
+        .expect("merge");
 
     let resolved = storage
         .resolve_asset(
