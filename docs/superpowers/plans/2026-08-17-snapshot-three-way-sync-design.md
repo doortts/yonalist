@@ -32,6 +32,7 @@ Markdown은 다시 사람이 읽고 고칠 수 있는 본문이 된다. 문서 �
 | `crates/notes-sync/src/merger.rs` | HLC LWW, 위치 주장, 충돌 기록과 복구가 구현돼 있음 | 입출력 경계는 유지하고 핵심 판정만 B/L/R snapshot merge로 교체 |
 | `crates/notes-sqlite/src/sync_merge.rs` | import transaction, 경로 재구축, revision bump, 충돌 보존을 한곳에서 담당함 | 새 transaction coordinator를 만들지 않고 이 경로를 확장 |
 | onboarding seed와 vault setup | 사용자가 vault를 먼저 고른 뒤 guide 여부를 정하지만 현재 분류는 root `README.md`와 `.yonalist`만 확인함 | 하위 page가 먼저 도착한 기존 vault도 찾도록 분류를 보강하고 seed ID를 고정 yid로 교체 |
+| `syncChanged.ts`, `notesStore.ts` | 삭제→복원을 changed로 합치고 원격 삭제된 줄의 draft를 reload 전에 취소하지만, 미저장 입력 자체는 버림 | event coalescing은 유지하고 draft를 충돌 복구 저장소에 영속한 뒤에만 취소 |
 | `notes_images`, attachment 처리 | 자산은 전체 content hash로 식별하고, bytes가 늦게 와도 이미지 row를 먼저 적용함 | `asset_hash`, 표시 폭, pixel·byte 크기를 하단에 보존해 placeholder도 복구 |
 | trash export | 복원된 노드가 있으면 trash도 재방출하고, 앱이 쓴 hash와 같을 때만 빈 trash 파일을 지움 | 이 삭제 안전 규칙을 그대로 유지 |
 | Settings 복구 화면 | 덮인 노트 후보를 보고 복원할 수 있음 | 별도 충돌 앱을 만들지 않고 같은 화면과 repository를 확장 |
@@ -49,7 +50,7 @@ Markdown은 다시 사람이 읽고 고칠 수 있는 본문이 된다. 문서 �
 |---|---|---|
 | A1 | 일반 Markdown 편집기에서 본문을 자연스럽게 읽고 수정할 수 있다. | 각 블릿에는 `yid` 주석 하나만 있고 불필요한 `\\/`, `\\+`, `\\.`가 없다. |
 | A2 | 서로 다른 기기에서 독립적으로 고친 내용이 가능한 한 자동으로 합쳐진다. | 공통 base가 있는 B/L/R 비충돌 사례가 같은 결과로 수렴한다. |
-| A3 | 자동 병합이 확신할 수 없는 변경은 사라지지 않는다. | 충돌 시 base/local/remote를 보존하고 명시적 해결 전에는 해당 문서를 덮어쓰지 않는다. |
+| A3 | 자동 병합이 확신할 수 없는 변경과 입력 중인 내용은 사라지지 않는다. | 충돌 시 base/local/remote와 원격 삭제된 줄의 미저장 draft를 보존하고 명시적 해결 전에는 버리지 않는다. |
 | A4 | 개발 DB를 지워도 현재 Markdown과 앱 상태를 복구할 수 있다. | 빈 DB에서 포맷 1 vault를 읽으면 본문·계층·순서·상태·`yid`·이미지 표시 폭이 동일하게 복원된다. |
 | A5 | 이후 mirror와 블록 참조를 붙일 때 블록 ID를 다시 바꾸지 않는다. | 편집·이동·파일명 변경·DB 재생성 후에도 `yid`가 유지되고 블록과 배치를 구분할 수 있다. |
 
@@ -511,6 +512,12 @@ DB commit 뒤 publish 전에 죽으면 dirty/head 차이로 재방출한다. swa
 
 해결 적용 직전에 저장된 `expected_local_commit`과 `expected_file_byte_hash`를 다시 확인한다. 둘 중 하나라도 달라졌으면 오래된 해결 결과를 쓰지 않고 최신 세 후보로 재병합한다. 같을 때만 새 merge commit을 만들고 조건부 publish한다.
 
+원격 삭제 알림을 받으면 해당 ID의 deletion epoch를 증가시키고 `deletion-pending`으로 잠근 뒤 debounce timer를 동기적으로 취소하되 draft 값은 메모리에 유지한다. pending ID의 `setDraft`/`setNoteDraft`는 세대값과 메모리 값만 갱신하고 새 timer나 command를 만들지 않는다. 그다음 reload 전에 기존 충돌 repository의 UI-draft 후보로 마지막 node snapshot, draft text/note, 삭제 commit, deletion epoch와 draft 세대를 idempotent upsert한다. backend는 같은 후보의 필드별 세대가 더 클 때만 값을 교체해 늦은 구세대 요청이 최신 값을 덮지 못하게 한다. 응답 뒤 epoch가 여전히 같고 현재 세대가 더 새로우면 최신 값을 다시 upsert한다. epoch와 세대가 모두 같을 때만 frontend draft를 제거한다.
+
+영속화 중 같은 ID의 changed/복원 알림이 오면 deletion epoch를 즉시 무효화한다. patch/reload로 node가 실제로 돌아온 것을 확인한 뒤에도 pending lock을 바로 풀지 않는다. 현재 메모리의 text/note와 필드별 세대를 후보에 upsert하고, 대기 중 세대가 다시 바뀌면 후보가 최신 세대를 따라잡을 때까지 반복한다. 그 뒤에만 pending lock을 풀고 기존 draft를 그대로 둔 채 debounce를 다시 연결한다. 이전 epoch나 낮은 세대의 upsert 응답은 draft, 후보의 최신 값, lock을 건드리지 못한다.
+
+UI-draft 후보는 command receipt로 자동 resolve하지 않는다. 복원 뒤 새 입력과 정상 저장이 이어져도 삭제 시점까지 보존한 후보는 복구 기록으로 남는다. 사용자가 복구 화면에서 삭제 유지, draft로 복원, 직접 수정 또는 닫기를 명시적으로 선택할 때만 resolved로 바꾼다. 따라서 receipt와 새 draft의 도착 순서를 맞추는 별도 상태 기계가 필요 없다. 저장이 실패하면 pending과 draft를 그대로 보존하고 sync error를 표시한다. draft를 버리거나 존재하지 않는 node에 재전송하지 않는다.
+
 정상 실행 중에는 unresolved 복구 행과 그 행이 참조하는 asset pin을 함께 보존한다. 개발 빌드의 schema 변경으로 일어나는 DB 재생성은 의도적인 개발 데이터 초기화이며, 이전 schema의 pending 후보를 변환하지 않는다.
 
 ## 10. 휴지통과 asset
@@ -590,6 +597,7 @@ asset의 정체성은 상대 경로가 아니라 전체 SHA-256이다. 하단에
 - `VaultSetupCard.tsx`, `SettingsView.tsx`: 같은 `empty`/`existingYonalist`/`nonEmptyUnknown` 확인 흐름 사용
 - 하위 page가 root보다 먼저 도착한 vault와 비어 있지 않은 미확정 폴더에 자동 seed하지 않는 회귀 test
 - 기존 로컬 노트가 있는 Settings 폴더 변경도 확인 전 경로 저장·watcher 시작·export를 하지 않는 회귀 test
+- `syncChanged.ts`, `notesStore.ts`: 삭제→복원 coalescing 유지, 삭제 ID pending lock과 timer 즉시 취소, 세대별 draft를 backend 복구 항목에 저장한 뒤 제거
 - `sync_merge.rs` transaction에서 snapshot/head/DB tree 동시 적용
 - `export.rs`의 `write_checked` 뒤 조건부 publish
 - current trash/asset dirty와 삭제 안전 규칙 회귀 test: `restored_node_queues_trash`, `empty_trash_removes_only_owned_bytes`, `empty_trash_clears_echo_record`
@@ -629,6 +637,11 @@ asset의 정체성은 상대 경로가 아니라 전체 SHA-256이다. 하단에
 - 같은 블릿의 양쪽 수정, 삭제/수정, 상반된 이동은 pending이며 세 후보가 남는다.
 - 충돌 해결 직전 파일 또는 DB가 바뀌면 오래된 결과를 쓰지 않는다.
 - write hash 검사와 교체 사이에 외부 편집이 들어와도 두 후보 중 어느 것도 사라지지 않는다.
+- 같은 알림 묶음에서 삭제 뒤 복원된 줄은 changed로 전달된다.
+- 최종 삭제된 줄의 text/note timer는 영속화 대기 전에 멈추고, draft 값은 충돌 복구 항목 저장 전에는 버려지지 않는다.
+- draft 영속화가 진행 중일 때 들어온 마지막 입력도 새 command를 만들지 않으며 최신 세대가 복구 항목에 저장된다.
+- delete 영속화 중 같은 ID가 changed로 복원되면 오래된 epoch 응답이 draft를 제거하지 않고, node 확인 뒤 lock과 debounce가 정상 복구된다.
+- 복원 뒤 command가 성공하거나 새 입력이 이어져도 UI-draft 후보는 자동 resolve되지 않고 사용자가 명시적으로 닫을 때까지 남는다.
 - trash와 asset 회귀 test가 통과한다.
 
 ### 병합
