@@ -27,13 +27,25 @@ struct Device {
 }
 
 impl Device {
+    /// A laptop set up for the first time against a folder that already holds
+    /// notes: it takes no guide, because every line of the guide would be a
+    /// claim of its own on ids the folder already speaks for.
+    fn joining(name: &str) -> Self {
+        Self::bare(name)
+    }
+
     fn new(name: &str) -> Self {
-        let home = tempfile::tempdir().expect("home");
-        let storage = SqliteStorage::open(&home.path().join("notes.sqlite")).expect("open");
+        let device = Self::bare(name);
         // As a device that has been through first run with a folder of its own.
         // The guide is written once that folder is settled rather than when the
         // database is opened, so this says so where the app's setup would.
-        storage.seed_onboarding().expect("the guide");
+        device.storage.seed_onboarding().expect("the guide");
+        device
+    }
+
+    fn bare(name: &str) -> Self {
+        let home = tempfile::tempdir().expect("home");
+        let storage = SqliteStorage::open(&home.path().join("notes.sqlite")).expect("open");
         let vault = home.path().join("vault");
         let store = home.path().join("images");
         std::fs::create_dir_all(&vault).expect("vault");
@@ -1484,4 +1496,38 @@ fn dirty_count(device: &Device) -> i64 {
             row.get(0)
         })
         .expect("count")
+}
+
+/// The whole point of holding the guide back. A laptop set up against a folder
+/// that already holds notes must not restate the lines it finds there: a line
+/// restated is a line this device has spoken for, later than anybody else, and
+/// from then on it beats what the other laptop says about it — a deletion
+/// included. Two laptops each doing that undo each other's deletions for ever.
+#[test]
+fn a_laptop_joining_a_folder_speaks_for_none_of_its_lines() {
+    let one = Device::new("one");
+    let bullet = add_bullet(&one, &one.first_page(), "Already here");
+    one.export();
+
+    let two = Device::joining("two");
+    carry(&one, &two);
+    two.absorb();
+
+    assert_eq!(
+        stamp_of(&two, &bullet),
+        stamp_of(&one, &bullet),
+        "the joining laptop kept the reading the folder stated"
+    );
+    let guide_page = one.first_page();
+    assert_eq!(
+        stamp_of(&two, &guide_page),
+        stamp_of(&one, &guide_page),
+        "and did not restate the guide's own lines as its own"
+    );
+
+    // So a deletion made afterwards on either side stays made.
+    one.run(IpcNotesCommand::DeleteSubtree { id: bullet.clone() });
+    settle(&one, &two);
+    assert!(!two.outline().iter().any(|(id, _)| id == &bullet));
+    assert!(!one.outline().iter().any(|(id, _)| id == &bullet));
 }
