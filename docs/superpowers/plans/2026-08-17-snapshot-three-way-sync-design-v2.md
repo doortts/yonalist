@@ -141,7 +141,13 @@ id: Df4qM9_wK2Ls
 - 같은 `yid`가 두 파일에 보이면 먼저 boundary 관계와 §7.4의 이동 후보를 대조한다. 부모 boundary 줄과 자식 문서 root 한 쌍은 같은 block의 두 표현으로 허용한다. 어느 관계로도 설명되지 않는 중복만 격리한다.
 - fenced code, 제목, 인용문 안의 목록은 문법이 지정한 자리가 아니면 블릿으로 읽지 않는다.
 
-본문이 직접 표현하는 값이 footer의 오래된 상태와 다르면 본문이 이긴다. 체크박스 완료 여부, 제목, note가 그렇다.
+본문이 직접 표현하는 값이 footer의 오래된 상태와 다르면 본문이 이긴다. 체크박스 완료 여부, 번호 목록의 번호, 제목, note가 그렇다.
+
+순서 목록은 `1. `, `2. `로 그린다. 사용자가 앱에서 보는 것과 일반 편집기에서 보는 것이 같아야 하기 때문이다. 번호는 한 행의 속성이 아니라 **run**의 속성이다. run은 한 부모 아래 나란히 선 번호 행들이고 첫 행이 입력된 번호부터 세어 올라가며 그 사이에 다른 marker가 끼면 끊긴다. `outlineOrdered.ts`의 `orderedNumbers`와 `notes-export`가 이미 같게 세므로 파일도 같은 답을 쓴다.
+
+parser는 각 행을 그려진 번호 그대로 읽는다. run의 두 번째 행 이후는 저장된 시작값 대신 세어 올라간 값을 갖게 되는데, 화면에 한 번도 보인 적 없는 값이 정규화되는 것이라 잃는 것이 없다. 오히려 run의 첫 행을 지웠을 때 다음 행이 이어지는 번호를 유지한다.
+
+따라서 `marker`와 `ordered_start`는 문서 root에만 쓴다. 제목 줄은 체크박스도 번호도 그릴 수 없기 때문이다. 블릿의 marker는 전부 본문이 그린다.
 
 ### 3.4 문맥별 escape
 
@@ -176,7 +182,7 @@ struct Footer {
 | `base` | 이 기기가 마지막으로 파일과 합의한 상태의 `state_hash`. 최초 문서는 빈 문자열 |
 | `state` | Markdown이 직접 보존하지 못하는 `yid → 상태` map |
 
-`BlockState`는 전부 `Option`인 평범한 derive 구조체이고 필드는 `collapsed`, `starred`, `completed`, `marker`, `ordered_start`, `width`, `pixel_width`, `pixel_height`, `byte_size`, `asset_hash`, `child_kind`, `restore_parent`, `restore_after`다. 기본값은 `skip_serializing_if`로 생략하고 마지막 `#[serde(flatten)] BTreeMap<String, serde_json::Value>`가 알 수 없는 key를 객체 안에서 round-trip한다. 체크박스가 todo를 싣고 있으므로 `marker`는 사실상 `ordered`에만, `completed`는 todo가 아닌 노드에만 나온다. 이미지의 `pixel_width`·`pixel_height`·`byte_size`는 asset이 아직 도착하지 않은 기기에서도 placeholder와 DB 행을 같게 복원하는 데 필요하므로 보존한다. asset이 없을 때 MIME은 지금 merger처럼 검증된 링크 확장자로 임시 복원하고 bytes가 도착하면 decode 결과로 다시 검증한다.
+`BlockState`는 전부 `Option`인 평범한 derive 구조체이고 필드는 `collapsed`, `starred`, `completed`, `marker`, `ordered_start`, `width`, `pixel_width`, `pixel_height`, `byte_size`, `asset_hash`, `child_kind`, `restore_parent`, `restore_after`다. 기본값은 `skip_serializing_if`로 생략하고 마지막 `#[serde(flatten)] BTreeMap<String, serde_json::Value>`가 알 수 없는 key를 객체 안에서 round-trip한다. 본문이 marker를 전부 그리므로(§3.3) `marker`와 `ordered_start`는 문서 root에만 나오고, `completed`는 todo가 아닌 노드에만 나온다. 이미지의 `pixel_width`·`pixel_height`·`byte_size`는 asset이 아직 도착하지 않은 기기에서도 placeholder와 DB 행을 같게 복원하는 데 필요하므로 보존한다. asset이 없을 때 MIME은 지금 merger처럼 검증된 링크 확장자로 임시 복원하고 bytes가 도착하면 decode 결과로 다시 검증한다.
 
 외부 편집으로 블릿이 지워져 `state[yid]`가 남는 것은 정상이다. 정규 snapshot을 만들 때 현재 본문에 없는 `yid`의 상태는 버린다. 앱이 쓴 파일에는 애초에 그런 항목이 없으므로 재계산과 선언값이 언제나 같다.
 
