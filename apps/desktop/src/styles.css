@@ -1963,7 +1963,9 @@ body.is-resizing-pane {
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--surface-1);
+  /* Opaque, and it has to be: this card sits over the outline, so anything the
+     notes show through it competes with its own text for the same pixels. */
+  background: var(--bg-card);
   box-shadow: 0 12px 32px rgb(0 0 0 / 18%);
 }
 
