@@ -6,6 +6,7 @@ import type { ViewportPage } from "../../../packages/contracts/generated/Viewpor
 import { NotesStore } from "./notesStore";
 import { parseSingleTag, planTagEdits } from "./outline/outlineTagEdits";
 import { DRAFT_DEBOUNCE_MS } from "./store/storeSupport";
+import { appApi } from "./test/appApiFixture";
 
 function bullet(id: string, sortKey: number): NoteView {
   return {
@@ -40,6 +41,7 @@ const boot: BootSnapshot = {
 
 function api(queryViewport: NotesApi["queryViewport"]): NotesApi {
   return {
+    ...appApi(),
     bootstrap: vi.fn().mockResolvedValue(boot),
     queryViewport,
     queryForest: vi.fn().mockResolvedValue({
@@ -48,27 +50,7 @@ function api(queryViewport: NotesApi["queryViewport"]): NotesApi {
       complete: true
     }),
     execute: vi.fn(),
-    importImageBytes: vi.fn(),
-    importImagePaths: vi.fn(),
-    replaceImageBytes: vi.fn(),
-    replaceImagePath: vi.fn(),
-    readImage: vi.fn(),
-    viewImageOriginal: vi.fn(),
-    downloadImage: vi.fn(),
-    undo: vi.fn(),
-    redo: vi.fn(),
-    search: vi.fn(),
-    exportNotes: vi.fn(),
-    closeSession: vi.fn(),
-    unusedAssets: vi.fn(),
-    deleteAllData: vi.fn(),
-    syncVaultGet: vi.fn().mockResolvedValue(null),
-    syncVaultSet: vi.fn(),
-    syncConflicts: vi.fn().mockResolvedValue([]),
-    syncFlush: vi.fn(),
-    syncAttachments: vi.fn(),
-    syncDeleteAttachment: vi.fn(),
-    syncRestoreConflict: vi.fn()
+    search: vi.fn()
   };
 }
 

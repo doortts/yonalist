@@ -44,6 +44,12 @@ pub struct MergeOutcome {
     pub applied: usize,
     pub changed_ids: BTreeSet<String>,
     pub deleted_ids: BTreeSet<String>,
+    /// Rows a picture's bytes turning up settled. The window redraws these the
+    /// same way it redraws the ones above, but nobody edited them — the row was
+    /// already waiting for exactly those bytes — so there is nothing here to
+    /// put a history entry out of reach. Kept apart from `changed_ids` for
+    /// that one difference, which is the whole of it.
+    pub settled_ids: BTreeSet<String>,
     /// The file disagrees with what won, so the exporter has to rewrite it.
     pub needs_write_back: bool,
     pub conflicts_recorded: usize,
@@ -1234,6 +1240,16 @@ fn write_row(
 
     if let NodeBody::Image(image) = &entry.node.body {
         write_image(transaction, &entry.id, image)?;
+    } else {
+        // The kind written above is the file's word about this line, and the
+        // picture row is part of that word. Outliving it, the row makes a
+        // bullet that owns image metadata: the domain refuses the node on the
+        // way in, so it can no longer be edited or even thrown away, and its
+        // bytes stay reachable in the vault for ever.
+        transaction
+            .prepare_cached("DELETE FROM notes_images WHERE node_id = ?1")
+            .and_then(|mut statement| statement.execute([&entry.id]))
+            .map_err(|error| error.to_string())?;
     }
 
     // Keeping a stamp while changing the content is the one write the stamping

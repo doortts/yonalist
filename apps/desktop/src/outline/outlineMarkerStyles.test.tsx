@@ -6,6 +6,7 @@ import type { NotesApi } from "../api";
 import { NotesOutline } from "../NotesOutline";
 import { NotesStore } from "../notesStore";
 import { rule } from "../test/cssRules";
+import { appApi } from "../test/appApiFixture";
 
 const notesStyles = readFileSync("src/notes.css", "utf8");
 
@@ -58,26 +59,15 @@ function bootSnapshot(): BootSnapshot {
 }
 
 async function outline() {
-  const api = {
+  const api: NotesApi = {
+    ...appApi(),
     bootstrap: vi.fn().mockResolvedValue(bootSnapshot()),
-    queryViewport: vi.fn(),
     queryForest: vi.fn().mockResolvedValue({
       revision: 1, nodes: [...nodes], complete: true
     }),
     execute: vi.fn(),
-    importImageBytes: vi.fn(),
-    importImagePaths: vi.fn(),
-    replaceImageBytes: vi.fn(),
-    replaceImagePath: vi.fn(),
-    readImage: vi.fn(),
-    viewImageOriginal: vi.fn(),
-    downloadImage: vi.fn(),
-    undo: vi.fn(),
-    redo: vi.fn(),
-    search: vi.fn(),
-    exportNotes: vi.fn(),
-    closeSession: vi.fn()
-  } as unknown as NotesApi;
+    search: vi.fn()
+  };
   const store = new NotesStore(api);
   await store.bootstrap();
   const view = render(

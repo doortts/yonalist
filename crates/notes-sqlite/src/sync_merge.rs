@@ -244,7 +244,9 @@ pub(crate) fn export_pending(
 /// the window needs to redraw those notes instead of re-reading the page.
 /// There can be more than one: the same picture pasted onto two notes leaves
 /// two rows waiting for the same file, and both stop waiting together. A set
-/// because that is the shape `MergeOutcome::changed_ids` is already in.
+/// because that is the shape `MergeOutcome` reports ids in — `settled_ids`
+/// rather than `changed_ids`: the window redraws these, and nobody edited
+/// them, so no history entry falls out of reach for them.
 pub(crate) fn resolve_asset(
     connection: &mut Connection,
     disk_name: &str,

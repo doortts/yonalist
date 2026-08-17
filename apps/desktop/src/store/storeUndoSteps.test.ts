@@ -9,6 +9,7 @@ import { initialNotesState } from "../notesState";
 import { NotesStore } from "../notesStore";
 import { runSlashEdit } from "./storeSlash";
 import { DRAFT_DEBOUNCE_MS, TYPING_IDLE_MS } from "./storeSupport";
+import { appApi } from "../test/appApiFixture";
 
 interface HistoryEntry {
   readonly group: string | null;
@@ -83,8 +84,8 @@ async function harness(): Promise<{
   };
 
   const api: NotesApi = {
+    ...appApi(),
     bootstrap: vi.fn().mockResolvedValue(boot),
-    queryViewport: vi.fn(),
     queryForest: vi.fn(),
     execute: vi.fn(async (envelope: CommandEnvelope) => {
       const { command } = envelope;
@@ -105,13 +106,6 @@ async function harness(): Promise<{
       revision += 1;
       return receiptFor(command.id);
     }),
-    importImageBytes: vi.fn(),
-    importImagePaths: vi.fn(),
-    replaceImageBytes: vi.fn(),
-    replaceImagePath: vi.fn(),
-    readImage: vi.fn(),
-    viewImageOriginal: vi.fn(),
-    downloadImage: vi.fn(),
     undo: vi.fn(async () => {
       const entry = undoStack.pop();
       if (!entry) throw new Error("nothing to undo");
@@ -120,19 +114,7 @@ async function harness(): Promise<{
       revision += 1;
       return receiptFor(entry.id);
     }),
-    redo: vi.fn(),
-    search: vi.fn(),
-    exportNotes: vi.fn(),
-    closeSession: vi.fn(),
-    unusedAssets: vi.fn(),
-    deleteAllData: vi.fn(),
-    syncVaultGet: vi.fn().mockResolvedValue(null),
-    syncVaultSet: vi.fn(),
-    syncConflicts: vi.fn().mockResolvedValue([]),
-    syncFlush: vi.fn(),
-    syncAttachments: vi.fn(),
-    syncDeleteAttachment: vi.fn(),
-    syncRestoreConflict: vi.fn()
+    search: vi.fn()
   };
 
   const store = new NotesStore(api);

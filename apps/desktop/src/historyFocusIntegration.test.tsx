@@ -5,6 +5,7 @@ import type { MutationReceipt } from "../../../packages/contracts/generated/Muta
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "./api";
 import { App } from "./App";
+import { appApi } from "./test/appApiFixture";
 
 function bullet(id: string, sortKey: number, text: string): NoteView {
   return {
@@ -58,9 +59,9 @@ function api(firstText = "First thought", extra: readonly NoteView[] = []): {
   let created = "";
   let prefix = firstText;
   let suffix = "";
-  const notesApi = {
+  const notesApi: NotesApi = {
+    ...appApi(),
     bootstrap: vi.fn().mockResolvedValue(bootSnapshot(firstText, extra)),
-    queryViewport: vi.fn(),
     queryForest: vi.fn().mockResolvedValue({
       revision: 1, nodes: [], complete: true
     }),
@@ -86,13 +87,6 @@ function api(firstText = "First thought", extra: readonly NoteView[] = []): {
         }
       } satisfies MutationReceipt);
     }),
-    importImageBytes: vi.fn(),
-    importImagePaths: vi.fn(),
-    replaceImageBytes: vi.fn(),
-    replaceImagePath: vi.fn(),
-    readImage: vi.fn(),
-    viewImageOriginal: vi.fn(),
-    downloadImage: vi.fn(),
     undo: vi.fn().mockImplementation(() => Promise.resolve({
       revision: 3,
       changedNodes: [bullet("bullet-1", 1_024, firstText)],
@@ -107,20 +101,8 @@ function api(firstText = "First thought", extra: readonly NoteView[] = []): {
       ],
       deletedIds: [],
       history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
-    } satisfies MutationReceipt)),
-    search: vi.fn().mockResolvedValue({ hits: [], nextCursor: null }),
-    exportNotes: vi.fn(),
-    closeSession: vi.fn(),
-    unusedAssets: vi.fn(),
-    deleteAllData: vi.fn(),
-    syncVaultGet: vi.fn().mockResolvedValue(null),
-    syncVaultSet: vi.fn(),
-    syncConflicts: vi.fn().mockResolvedValue([]),
-    syncFlush: vi.fn(),
-    syncAttachments: vi.fn(),
-    syncDeleteAttachment: vi.fn(),
-    syncRestoreConflict: vi.fn()
-  } as unknown as NotesApi;
+    } satisfies MutationReceipt))
+  };
   return { notesApi, createdId: () => created };
 }
 

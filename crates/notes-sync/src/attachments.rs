@@ -101,6 +101,20 @@ fn given_name(disk_name: &str) -> &str {
         .map_or(disk_name, |(given, _)| given)
 }
 
+/// The one name these bytes get, whichever device works it out.
+///
+/// Two notes that each added the same picture under their own name have to
+/// agree on one, so the smallest name wins — on the name the user gave the
+/// file, since what follows it is the same hash and the same extension for
+/// both, and comparing across that boundary would let a hyphen inside one name
+/// decide the answer.
+pub(crate) fn chosen_disk_name<'a>(disk_names: impl Iterator<Item = &'a str>) -> String {
+    disk_names
+        .min_by_key(|disk_name| given_name(disk_name).to_owned())
+        .unwrap_or_default()
+        .to_owned()
+}
+
 /// `current` is where the bytes are now, as the asset record remembers it.
 /// Without it this could only guess, and a guess would either move a file that
 /// was never there or leave one behind.
@@ -114,17 +128,11 @@ pub fn plan_placement(current: &str, references: &[Reference]) -> Placement {
             moves: Vec::new(),
         };
     }
-    // Two pages that each added the same bytes under their own name have to
-    // agree on one, whichever device works it out — so the smallest name wins.
-    // On the name the user gave the file: what follows it is the same hash and
-    // the same extension for both, and comparing across that boundary lets a
-    // hyphen inside one name decide the answer.
-    let name = references
-        .iter()
-        .map(|reference| reference.disk_name.as_str())
-        .min_by_key(|disk_name| given_name(disk_name).to_owned())
-        .unwrap_or_default()
-        .to_owned();
+    let name = chosen_disk_name(
+        references
+            .iter()
+            .map(|reference| reference.disk_name.as_str()),
+    );
 
     // A deleted note counts too, and its line lives in the trash at the vault
     // root — so the bytes have to be reachable from there.

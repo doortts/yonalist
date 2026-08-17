@@ -7,7 +7,7 @@ import type {
   ImagePathImportRequest
 } from "../image/imageApi";
 import { NotesStore } from "../notesStore";
-import { snapshot } from "../test/appApiFixture";
+import { appApi, snapshot } from "../test/appApiFixture";
 
 function candidates(): readonly ImageCandidate[] {
   return [
@@ -59,31 +59,13 @@ function api(
   importImagePaths: NotesApi["importImagePaths"] = vi.fn()
 ): NotesApi {
   return {
+    ...appApi(),
     bootstrap: vi.fn().mockResolvedValue(snapshot),
-    queryViewport: vi.fn(),
     queryForest: vi.fn(),
     execute: vi.fn(),
     importImageBytes,
     importImagePaths,
-    replaceImageBytes: vi.fn(),
-    replaceImagePath: vi.fn(),
-    readImage: vi.fn(),
-    viewImageOriginal: vi.fn(),
-    downloadImage: vi.fn(),
-    undo: vi.fn(),
-    redo: vi.fn(),
-    search: vi.fn(),
-    exportNotes: vi.fn(),
-    closeSession: vi.fn(),
-    unusedAssets: vi.fn(),
-    deleteAllData: vi.fn(),
-    syncVaultGet: vi.fn().mockResolvedValue(null),
-    syncVaultSet: vi.fn(),
-    syncConflicts: vi.fn().mockResolvedValue([]),
-    syncFlush: vi.fn(),
-    syncAttachments: vi.fn(),
-    syncDeleteAttachment: vi.fn(),
-    syncRestoreConflict: vi.fn()
+    search: vi.fn()
   };
 }
 

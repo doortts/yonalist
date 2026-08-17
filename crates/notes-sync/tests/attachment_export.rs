@@ -433,6 +433,140 @@ fn a_deleted_note_still_counts_as_a_reference() {
     );
 }
 
+fn export_trash(connection: &mut Connection, workspace: &Workspace) {
+    let transaction = connection.transaction().expect("begin");
+    notes_sync::export::export_trash(&transaction, workspace.vault.path()).expect("export");
+    transaction.commit().expect("commit");
+}
+
+/// The trash is a document like any other, and a line in it says what the node
+/// is. Stating a picture as its file name in plain text is the file telling
+/// every other device the picture was removed — which the user never said.
+#[test]
+fn a_trashed_picture_is_stated_as_a_picture() {
+    let mut connection = database();
+    let workspace = workspace();
+    page(&connection, FIRST_PAGE, "Notes", 4294967296);
+    image_node(&connection, IMAGE_NODE, FIRST_PAGE, "holiday.png", true);
+    place(&mut connection, &workspace);
+
+    export_trash(&mut connection, &workspace);
+
+    let file = read(&workspace, ".yonalist/trash.md").expect("the trash");
+    assert!(
+        file.contains(&format!("](../assets/{DISK_NAME})")),
+        "the trash sits one folder down: {file}"
+    );
+    // `![holiday`, not the whole escaped alt text: what it proves is that the
+    // name came from the picture's own record. An image node's `text` is empty,
+    // so reading the alt text from there would leave `![](…)`.
+    assert!(
+        file.contains("![holiday"),
+        "and the line is the picture, under the name the user gave it: {file}"
+    );
+}
+
+/// Bytes this device holds but has not managed to carry into the vault. The
+/// row's own `relative_path` names them the way the app's store does — by their
+/// hash — and no other device could ever match that name to these bytes. The
+/// line has to state the name the placement would have given them.
+#[test]
+fn a_trashed_picture_with_bytes_but_no_placement_states_the_name_it_will_get() {
+    let mut connection = database();
+    let workspace = workspace();
+    page(&connection, FIRST_PAGE, "Notes", 4294967296);
+    image_node(&connection, IMAGE_NODE, FIRST_PAGE, "holiday.png", true);
+    // The hash is known, so the row holds the app store's own name for the
+    // file — but nothing has placed it, so there is no asset record to read.
+    assert_eq!(
+        connection
+            .query_row("SELECT relative_path FROM notes_images", [], |row| row
+                .get::<_, String>(
+                0
+            ))
+            .expect("the row"),
+        format!("{HASH}.png"),
+        "the fixture is the row an unplaced picture leaves"
+    );
+
+    export_trash(&mut connection, &workspace);
+
+    let file = read(&workspace, ".yonalist/trash.md").expect("the trash");
+    assert!(
+        file.contains(&format!("](../assets/{DISK_NAME})")),
+        "the name every device can match to these bytes: {file}"
+    );
+    assert!(
+        !file.contains(HASH),
+        "the app store's own name means nothing in a vault: {file}"
+    );
+}
+
+/// Which name those bytes get is the whole group's to decide, not one row's:
+/// the placement takes the smallest of the names the users gave. A line naming
+/// the file by its own note's spelling would name a file nobody ever writes,
+/// and the note that arrives at the other device would wait for it for ever.
+#[test]
+fn an_unplaced_picture_two_notes_share_states_the_name_they_will_agree_on() {
+    let mut connection = database();
+    let workspace = workspace();
+    page(&connection, FIRST_PAGE, "Notes", 4294967296);
+    page(&connection, SECOND_PAGE, "Other", 8589934592);
+    image_node(&connection, IMAGE_NODE, FIRST_PAGE, "zebra.png", true);
+    image_node(
+        &connection,
+        OTHER_IMAGE_NODE,
+        SECOND_PAGE,
+        "apple.png",
+        true,
+    );
+
+    export_trash(&mut connection, &workspace);
+
+    let file = read(&workspace, ".yonalist/trash.md").expect("the trash");
+    assert!(
+        file.contains("](../assets/apple-9f2c1b7a4e6d.png)"),
+        "the smallest name wins, for both lines: {file}"
+    );
+    assert!(
+        !file.contains("zebra-9f2c1b7a4e6d.png"),
+        "one note's own spelling is not the answer: {file}"
+    );
+}
+
+/// A device that only ever saw the trash file holds the link that file wrote,
+/// which is a place in the document it came from, not in this vault. Read as a
+/// vault path it climbs one folder further out every round.
+#[test]
+fn a_trashed_picture_waiting_for_its_bytes_links_inside_the_vault() {
+    let mut connection = database();
+    let workspace = workspace();
+    page(&connection, FIRST_PAGE, "Notes", 4294967296);
+    image_node(&connection, IMAGE_NODE, FIRST_PAGE, "holiday.png", true);
+    connection
+        .execute(
+            "UPDATE notes_images SET content_hash = '', relative_path = ?1",
+            [format!("../assets/{DISK_NAME}")],
+        )
+        .expect("the bytes have not arrived");
+
+    export_trash(&mut connection, &workspace);
+
+    let file = read(&workspace, ".yonalist/trash.md").expect("the trash");
+    assert!(
+        file.contains(&format!("](../assets/{DISK_NAME})")),
+        "a waiting row still states where its picture will be: {file}"
+    );
+    assert!(
+        file.contains("![holiday"),
+        "and states it as a picture, under its own name: {file}"
+    );
+    assert!(
+        !file.contains("../../"),
+        "a link out of the vault is not a place: {file}"
+    );
+}
+
 #[test]
 fn bytes_that_have_not_arrived_yet_are_not_invented() {
     let mut connection = database();

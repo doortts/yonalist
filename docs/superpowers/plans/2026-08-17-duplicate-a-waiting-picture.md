@@ -82,8 +82,13 @@ what makes the redo case fall out correctly rather than needing its own rule:
 | duplicate, then bytes arrive | Copy holds a waiting row with the same link, so `resolve_asset`'s `UPDATE … WHERE content_hash = '' AND relative_path …` settles both rows at once. |
 | duplicate, undo | The copy's node is deleted; `notes_images` has `ON DELETE CASCADE`, so its row goes with it. |
 | duplicate, undo, redo, bytes arrive | Redo re-inserts the copy and re-copies the row, still waiting. Same as the first case. |
-| duplicate, undo, bytes arrive, redo | Storage does the right thing — the source's row is resolved by then, so the copy is given a resolved row. The redo never gets that far today: the watcher announces an arriving picture the same way it announces a merge, so the barrier refuses it. See "Known limits". |
+| duplicate, undo, bytes arrive, redo | The source's row is resolved by then, so the copy is given a resolved row. Stored, not yet drawn — see "Known limits". |
 | duplicate, undo, another device edits the source, redo | Refused, and so is undoing back past that entry. Reading the source's current row makes the source a thing the entry depends on, and the merge barrier has to count it — see below. |
+
+Byte arrival is not the same event as a merge. An arriving attachment names the
+rows it settled in `MergeOutcome::settled_ids`, which the window redraws and the
+barrier does not count — see `2026-08-17-an-arrival-is-not-a-merge.md`. So a
+picture simply landing cannot raise the barrier, and the row above it stands.
 
 #### The source is a dependency the mutations do not name
 
@@ -193,24 +198,6 @@ nothing schedules one. The stored state is never wrong, and the copy is no
 longer dead either way. Fixing it means re-reading the carried copies inside
 `commit` and substituting them into `changed_nodes` — worth doing if anyone
 meets it, not before.
-
-**A picture landing is announced as if another device had edited it.**
-`take_asset` names the rows it settled (`apps/desktop/src-tauri/src/vault_watch.rs`),
-those ids become `MergeOutcome::changed_ids`, and `lib.rs` hands them to
-`absorb_external` — which treats every named id as another device's change. It
-is not one: `resolve_asset` only ever fills in the hash a row was already
-waiting for, guarded by the disk name's own hash prefix, so there is nothing to
-discard and nothing to put out of reach. The barrier goes up anyway, and the
-user loses the undo or redo because a download finished.
-
-This is not new here and not confined to duplicates: an ordinary edit to a
-waiting picture — starring it, say — puts that node in the entry's own
-mutations, so the same arrival blocks undoing the star. Counting the carried
-source extends the same over-block to a duplicate's redo, which is what closes
-row 4 above. The fix belongs where the announcement is made: byte arrival needs
-to reach the session as "the revision moved, redraw these" without going
-through the door a merge goes through. That is a change to the watcher's
-seam rather than to anything here, so it is written down rather than made.
 
 **If the source's row is gone by the time a redo replays**, the copy is given
 nothing and degrades exactly as it did before this change. Today that needs a

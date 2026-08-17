@@ -37,11 +37,7 @@ import {
   type NormalizedNotesWorkspace,
   type NotesWorkspaceReducerAction,
 } from "./notesWorkspaceReducer";
-import {
-  canonicalizeTagFilters,
-  sameScope,
-  tagFilterKey,
-} from "./notesWorkspaceScope";
+import { sameScope } from "./notesWorkspaceScope";
 import { nativeNotesAttachmentUi } from "./notesAttachmentController";
 import {
   NotesDraftEngine,

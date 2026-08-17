@@ -917,6 +917,62 @@ fn a_page_arriving_before_its_picture_still_reads() {
     );
 }
 
+/// Throwing a picture away and taking it back is one round trip through the
+/// trash file, and the picture has to survive it on the device that only ever
+/// saw that file. The restore has to happen on `two`: `one` never lost its row,
+/// and its page states the picture again at a newer stamp, so restoring there
+/// would heal `two` whatever the trash said.
+#[test]
+fn a_trashed_picture_comes_back_as_a_picture() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    settle(&one, &two);
+
+    one.run(IpcNotesCommand::DeleteSubtree { id: shot.clone() });
+    settle(&one, &two);
+    // Reading the trash again, as a device that had never seen the file would.
+    // A picture line the rows already agree with is not an edit; if it were,
+    // every device would restamp that node on every round.
+    let replay = match notes_sync::watcher::consider(&two.vault, ".yonalist/trash.md", None) {
+        Ok(notes_sync::watcher::Verdict::Merge(file, input)) => {
+            two.storage.merge_document(&file, &input).expect("replay")
+        }
+        _ => panic!("the trash is a document, and this one holds a deleted picture"),
+    };
+    assert_eq!(replay.applied, 0, "the file says what the rows already say");
+
+    two.run(IpcNotesCommand::RestoreSubtree { id: shot.clone() });
+    settle(&two, &one);
+
+    for device in [&one, &two] {
+        let read = page_of(device, &page).expect("the page opens");
+        let node = read
+            .nodes
+            .iter()
+            .find(|node| node.id == shot)
+            .expect("the restored node");
+        let image = node.image.as_ref().expect("it came back as a picture");
+        assert_eq!(image.original_name, "holiday.png");
+        // The row alone would say this much: the path is derived from the hash.
+        // What the restore owes is the bytes, back beside the page that uses
+        // them — the trash promoted them to the vault's own store on the way in.
+        let folder = page_file(device, &page)
+            .parent()
+            .expect("the page's folder")
+            .to_owned();
+        assert!(
+            folder
+                .join("assets")
+                .join("holiday-9f2c1b7a4e6d.png")
+                .exists(),
+            "the bytes came back with it: {:?}",
+            attachments(&device.vault)
+        );
+    }
+}
+
 /// Rows an older build wrote hold the vault's own link where the domain form
 /// belongs. Reading is not where that gets adjudicated: the path is derived
 /// from the hash, so those rows read as they always should have.
@@ -1263,12 +1319,10 @@ fn bytes_that_land_before_the_redo_still_reach_the_copy() {
         })
         .expect("undo");
 
-    // The bytes arrive while the copy is not there. Named nobody on purpose:
-    // the real watcher names the rows it settled, and the barrier one layer up
-    // then refuses this redo outright — the over-block written down under
-    // "Known limits" in the design. What is being held down here is the layer
-    // underneath that, which has to be right whichever way the announcement
-    // is made.
+    // The bytes arrive while the copy is not there. Nobody is named, which is
+    // what the real watcher does for an arrival: it settles rows rather than
+    // changing them, so the window redraws those lines and no history entry
+    // goes out of reach.
     let_pictures_land(&two, held);
     two.absorb();
     let revision = service
@@ -1347,4 +1401,83 @@ fn stored_image(device: &Device, node_id: &str) -> (String, String, i64) {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .expect("image row")
+}
+
+/// A picture's size on screen is part of the note, and the only place it is
+/// written down is the image row. Nothing about the node itself changes when
+/// it is resized, so unless the resize says so, the file is never rewritten,
+/// the other device never hears, and the stale line eventually wins the
+/// stamp-for-stamp comparison and undoes the resize where it was made.
+#[test]
+fn a_resize_travels_and_stays() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    settle(&one, &two);
+
+    one.run(IpcNotesCommand::ResizeImage {
+        id: shot.clone(),
+        display_width: 300,
+    });
+    settle(&one, &two);
+
+    assert_eq!(width_of(&two, &shot), 300, "the other device never heard");
+    assert_eq!(
+        width_of(&one, &shot),
+        300,
+        "the device that resized it had the resize undone"
+    );
+}
+
+/// The same rule the node's own columns follow: a write that leaves the row
+/// as it was is not an edit, and stamping it anyway would hand this device a
+/// reading it did not earn.
+#[test]
+fn resizing_to_the_width_it_already_has_is_not_an_edit() {
+    let (one, two) = seeded_pair();
+    let page = one.first_page();
+    let shot = add_bullet(&one, &page, "holiday.png");
+    picture(&one, &shot);
+    settle(&one, &two);
+    let before = stamp_of(&one, &shot);
+
+    one.run(IpcNotesCommand::ResizeImage {
+        id: shot.clone(),
+        display_width: width_of(&one, &shot) as u32,
+    });
+
+    assert_eq!(stamp_of(&one, &shot), before);
+    assert_eq!(dirty_count(&one), 0, "nothing changed, so nothing is owed");
+}
+
+fn width_of(device: &Device, node_id: &str) -> i64 {
+    rusqlite::Connection::open(device._home.path().join("notes.sqlite"))
+        .expect("open")
+        .query_row(
+            "SELECT display_width FROM notes_images WHERE node_id = ?1",
+            [node_id],
+            |row| row.get(0),
+        )
+        .expect("image row")
+}
+
+fn stamp_of(device: &Device, node_id: &str) -> String {
+    rusqlite::Connection::open(device._home.path().join("notes.sqlite"))
+        .expect("open")
+        .query_row(
+            "SELECT hlc FROM notes_nodes WHERE id = ?1",
+            [node_id],
+            |row| row.get(0),
+        )
+        .expect("node")
+}
+
+fn dirty_count(device: &Device) -> i64 {
+    rusqlite::Connection::open(device._home.path().join("notes.sqlite"))
+        .expect("open")
+        .query_row("SELECT count(*) FROM sync_dirty_nodes", [], |row| {
+            row.get(0)
+        })
+        .expect("count")
 }

@@ -3,6 +3,7 @@ import type { BootSnapshot } from "../../../../packages/contracts/generated/Boot
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "../api";
 import { App } from "../App";
+import { appApi } from "../test/appApiFixture";
 
 function bullet(id: string, sortKey: number, text: string): NoteView {
   return {
@@ -38,6 +39,7 @@ const firstPage: BootSnapshot = {
 
 function autoLoadApi(): NotesApi {
   return {
+    ...appApi(),
     bootstrap: vi.fn().mockResolvedValue(firstPage),
     queryViewport: vi.fn().mockResolvedValue({
       pageId: "page-1",
@@ -51,28 +53,7 @@ function autoLoadApi(): NotesApi {
       nodes: [],
       complete: true
     }),
-    execute: vi.fn(),
-    importImageBytes: vi.fn(),
-    importImagePaths: vi.fn(),
-    replaceImageBytes: vi.fn(),
-    replaceImagePath: vi.fn(),
-    readImage: vi.fn(),
-    viewImageOriginal: vi.fn(),
-    downloadImage: vi.fn(),
-    undo: vi.fn(),
-    redo: vi.fn(),
-    search: vi.fn().mockResolvedValue({ hits: [], nextCursor: null }),
-    exportNotes: vi.fn(),
-    closeSession: vi.fn(),
-    unusedAssets: vi.fn(),
-    deleteAllData: vi.fn(),
-    syncVaultGet: vi.fn().mockResolvedValue(null),
-    syncVaultSet: vi.fn(),
-    syncConflicts: vi.fn().mockResolvedValue([]),
-    syncFlush: vi.fn(),
-    syncAttachments: vi.fn(),
-    syncDeleteAttachment: vi.fn(),
-    syncRestoreConflict: vi.fn()
+    execute: vi.fn()
   };
 }
 

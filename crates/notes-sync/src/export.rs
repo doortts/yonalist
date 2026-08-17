@@ -442,7 +442,7 @@ pub fn export_trash(
 ) -> Result<ExportOutcome, ExportError> {
     let relative = ".yonalist/trash.md".to_owned();
     let path = vault_root.join(&relative);
-    let nodes = load_trash(transaction)?;
+    let nodes = load_trash(transaction, folder_of(&relative))?;
     if nodes.is_empty() {
         // Not `exists`: a symlink pointing nowhere is still something standing
         // in that path, and this branch is about to remove whatever is.
@@ -549,14 +549,22 @@ pub fn json_list(ids: &[String]) -> String {
 
 /// What the trash holds: every deleted node whose parent is still alive, with
 /// the children that went down with it.
-fn load_trash(transaction: &Transaction<'_>) -> Result<Vec<DocumentNode>, ExportError> {
+fn load_trash(
+    transaction: &Transaction<'_>,
+    document_folder: &str,
+) -> Result<Vec<DocumentNode>, ExportError> {
+    let unplaced = unplaced_names(transaction)?;
     let mut statement = transaction
         .prepare_cached(
             "SELECT n.id, n.parent_id, n.sort_key, n.text, n.note, n.marker, n.ordered_start,
                     n.collapsed, n.completed, n.starred, n.hlc, n.sync_extras,
-                    p.deleted IS NOT 1
+                    p.deleted IS NOT 1, n.kind, NULLIF(a.location, '') AS location,
+                    i.content_hash, i.mime_type, i.relative_path, i.original_name,
+                    i.display_width, i.pixel_width, i.pixel_height, i.byte_length
              FROM notes_nodes n
              LEFT JOIN notes_nodes p ON p.id = n.parent_id
+             LEFT JOIN notes_images i ON i.node_id = n.id
+             LEFT JOIN sync_assets a ON a.content_hash = i.content_hash
              -- A row waiting for the document that will describe it carries no
              -- stamp, and nothing can render that. It has nothing to say yet.
              WHERE n.deleted = 1 AND n.hlc <> ''
@@ -572,7 +580,15 @@ fn load_trash(transaction: &Transaction<'_>) -> Result<Vec<DocumentNode>, Export
                 DocumentNode {
                     id: row.get(0)?,
                     hlc: row.get(10)?,
-                    body: NodeBody::Text(row.get(3)?),
+                    body: match row.get::<_, String>("kind")?.as_str() {
+                        "image" => match trash_asset(row, &unplaced)? {
+                            Some(location) => {
+                                NodeBody::Image(image_of(row, location, document_folder)?)
+                            }
+                            None => NodeBody::Text(row.get(3)?),
+                        },
+                        _ => NodeBody::Text(row.get(3)?),
+                    },
                     note: row.get(4)?,
                     marker: marker_of(&row.get::<_, String>(5)?, row.get(6)?),
                     collapsed: row.get::<_, i64>(7)? == 1,
@@ -611,6 +627,108 @@ fn load_trash(transaction: &Transaction<'_>) -> Result<Vec<DocumentNode>, Export
         attach(&mut children, root);
     }
     Ok(roots)
+}
+
+/// Where a trashed picture's bytes are to be linked from, or `None` when the
+/// row is not a picture at all.
+///
+/// A trashed picture's bytes belong in the vault's own store whatever page the
+/// note came from — `plan_placement` sends them there for any holder that is
+/// deleted — so every answer here names that store. Which name is the question,
+/// and there are three rows to tell apart:
+///
+/// - placed: the placement pass has said where the file is, and that is the
+///   answer;
+/// - bytes but no placement, because carrying them failed: the name the
+///   placement is going to choose, which is the whole group's to decide and not
+///   this row's — and never the app store's own hash name, which no other
+///   device could ever match to these bytes;
+/// - still waiting: the row holds the link some *other* document wrote, which
+///   is not a place in this vault — read as one it would climb out of it, a
+///   folder further each round. Only its file name means anything, and that is
+///   the part every device agrees on.
+fn trash_asset(
+    row: &rusqlite::Row<'_>,
+    unplaced: &BTreeMap<String, String>,
+) -> rusqlite::Result<Option<String>> {
+    if let Some(location) = row.get::<_, Option<String>>("location")? {
+        return Ok(Some(location));
+    }
+    let Some(content_hash) = row.get::<_, Option<String>>("content_hash")? else {
+        return Ok(None);
+    };
+    let name = match unplaced.get(&content_hash) {
+        Some(name) => name.clone(),
+        None => {
+            let waiting: String = row.get("relative_path")?;
+            waiting.rsplit('/').next().unwrap_or_default().to_owned()
+        }
+    };
+    Ok(Some(format!("assets/{name}")))
+}
+
+/// The name each set of unplaced bytes is going to get, by the rule the
+/// placement pass will apply to it. Every note holding those bytes has a say in
+/// it — the smallest name wins — so it cannot be read off the one row being
+/// rendered, and a row still waiting for its bytes has no say at all.
+fn unplaced_names(transaction: &Transaction<'_>) -> Result<BTreeMap<String, String>, ExportError> {
+    let mut statement = transaction
+        .prepare_cached(
+            "SELECT content_hash, original_name, mime_type FROM notes_images
+             WHERE content_hash <> ''
+               AND content_hash NOT IN
+                   (SELECT content_hash FROM sync_assets WHERE location <> '')",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                crate::layout::asset_disk_name(
+                    &row.get::<_, String>(1)?,
+                    &row.get::<_, String>(0)?,
+                    &row.get::<_, String>(2)?,
+                ),
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut holders: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for row in rows {
+        let (content_hash, disk_name) = row.map_err(|error| error.to_string())?;
+        holders.entry(content_hash).or_default().push(disk_name);
+    }
+    Ok(holders
+        .into_iter()
+        .map(|(content_hash, disk_names)| {
+            (
+                content_hash,
+                crate::attachments::chosen_disk_name(disk_names.iter().map(String::as_str)),
+            )
+        })
+        .collect())
+}
+
+/// The picture a line states, linked from the folder its document sits in. The
+/// columns are read by name so that the two callers' different SELECTs — which
+/// share these columns and nothing else — cannot drift out from under it.
+fn image_of(
+    row: &rusqlite::Row<'_>,
+    location: String,
+    document_folder: &str,
+) -> rusqlite::Result<ImageReference> {
+    Ok(ImageReference {
+        path: crate::attachments::Placement {
+            location,
+            moves: Vec::new(),
+        }
+        .link_from(document_folder),
+        original_name: row.get("original_name")?,
+        display_width: row.get::<_, i64>("display_width")? as u32,
+        pixel_width: row.get::<_, i64>("pixel_width")? as u32,
+        pixel_height: row.get::<_, i64>("pixel_height")? as u32,
+        byte_size: row.get::<_, i64>("byte_length")? as u64,
+        unknown_tokens: Vec::new(),
+    })
 }
 
 fn attach(children: &mut BTreeMap<String, Vec<DocumentNode>>, node: &mut DocumentNode) {
@@ -835,7 +953,7 @@ fn load_document(
                     -- where the bytes are yet: the row is written when they
                     -- resolve, and the placement pass fills the location in.
                     -- Empty is not an answer, and rendering one is refused.
-                    COALESCE(NULLIF(a.location, ''), i.relative_path),
+                    COALESCE(NULLIF(a.location, ''), i.relative_path) AS location,
                     i.original_name, i.display_width,
                     i.pixel_width, i.pixel_height, i.byte_length
              FROM notes_nodes n
@@ -865,20 +983,9 @@ fn load_document(
                 prev_hlc: row.get(14)?,
                 sort_key: row.get(2)?,
                 image: row
-                    .get::<_, Option<String>>(15)?
-                    .map(|location| ImageReference {
-                        path: crate::attachments::Placement {
-                            location,
-                            moves: Vec::new(),
-                        }
-                        .link_from(document_folder),
-                        original_name: row.get(16).unwrap_or_default(),
-                        display_width: row.get::<_, i64>(17).unwrap_or_default() as u32,
-                        pixel_width: row.get::<_, i64>(18).unwrap_or_default() as u32,
-                        pixel_height: row.get::<_, i64>(19).unwrap_or_default() as u32,
-                        byte_size: row.get::<_, i64>(20).unwrap_or_default() as u64,
-                        unknown_tokens: Vec::new(),
-                    }),
+                    .get::<_, Option<String>>("location")?
+                    .map(|location| image_of(row, location, document_folder))
+                    .transpose()?,
             })
         })
         .map_err(|error| error.to_string())?;
