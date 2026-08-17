@@ -274,12 +274,12 @@ enum SnapshotPlacement {
 
 기호를 셋만 쓴다. `L`은 현재 DB 트리의 `state_hash`, `agreed`는 `sync_documents.base_state_hash`, `R`은 파일에서 재계산한 `state_hash`다. `Rd`는 footer의 선언 `state_hash`, `Rb`는 footer의 `base`이고 파일의 조상은 §3.6이 정한다: `Ra = if R == Rd { Rb } else { Rd }`.
 
-**`agreed`는 로컬 발행으로 전진하지 않는다.** 병합·fast-forward·최초 채택에서만, 그때 상대편이 들고 있던 `R`로 옮겨 간다. 로컬 편집과 그 편집의 발행은 `agreed`를 건드리지 않는다. 이 규칙이 §1.1을 성립하게 하는 전부다. 오프라인에서 X→1→2→3을 발행하는 기기가 세 파일 모두에 `base: X`를 찍는 것이 이 규칙의 결과다.
+**`agreed`는 병합·fast-forward·최초 채택에서만 전진한다.** 곧 아래 표의 3·6번과 5번의 병합 성공뿐이고 그때 상대편이 들고 있던 `R`로 옮겨 간다. **2·4·7번은 `agreed`를 건드리지 않는다.** 로컬 편집도 그 편집의 발행도 마찬가지다. 이 규칙이 §1.1을 성립하게 하는 전부다. 오프라인에서 X→1→2→3을 발행하는 기기가 세 파일 모두에 `base: X`를 찍는 것이 이 규칙의 결과다.
 
 | # | 조건 | 결정 |
 |---|---|---|
 | 1 | 파일 byte hash == `exported_hash` | echo. parse 전에 끝난다 |
-| 2 | `R == L` | 의미가 같다. DB는 그대로 두고 `agreed := R`. 파일도 덮지 않는다 |
+| 2 | `R == L` | 의미가 같다. DB도 `agreed`도 그대로 두고 파일도 덮지 않는다 |
 | 3 | `L == Ra` | fast-forward. 파일을 그대로 적용하고 `agreed := R` |
 | 4 | `R == agreed` | 파일이 뒤처졌다. 병합하지 않고 다음 export가 `L`을 쓴다 |
 | 5 | `sync_snapshots`에 `Ra`의 본문이 있다 | base = `Ra`로 3-way 병합 |
@@ -287,6 +287,10 @@ enum SnapshotPlacement {
 | 7 | base 없음이고 양쪽 변경 | 문서 전체 충돌. pending, 원본 파일 유지 |
 
 "로컬 변경 없음"은 `L == agreed`이거나 이 문서 아래에 `sync_dirty_nodes` 행이 없는 것이다. 빈 DB에서 `agreed`가 빈 문자열인 경우를 두 번째 조건이 받는다.
+
+2번이 `agreed`를 건드리면 안 되는 이유가 있다. 이 행은 상대가 보낸 파일에만 걸리지 않는다. 외부 도구가 우리가 방금 쓴 파일의 공백만 손보면 byte echo가 빗나가는데 의미는 그대로여서 `R == L`이 성립한다. 거기서 `agreed`를 옮기면 그것이 바로 위 규칙이 금지하는 로컬 발행 전진이다(§12 반박 5).
+
+그래서 잃는 것도 없다. 파일이 진짜로 상대편에서 수렴해 온 경우라면 그 수렴을 만든 3·5·6번이 이미 `agreed`를 옮겨 놓았다. 두 기기가 우연히 같은 상태에 닿은 경우에도 상대의 다음 발행이 그 수렴 상태를 `Ra`로 선언하고 `L`이 이미 그 값이므로 3번이 받는다.
 
 `Ra`의 본문이 없으면 `agreed`로 대신하지 않는다. 조상이 아닌 상태를 base로 쓰면 상대의 진짜 편집이 조용히 버려질 수 있고 6·7번이 이미 그 경우를 사용자에게 묻는 쪽으로 돌린다. 병합이 충돌로 끝나면 `agreed`는 움직이지 않는다. 합의가 이루어지지 않았다.
 
@@ -352,7 +356,19 @@ CREATE TABLE sync_conflict_log (
 
 ### 6.3 보존
 
-지우지 않는 snapshot은 둘뿐이다. 모든 문서의 `base_state_hash`가 가리키는 본문, 그리고 해결되지 않은 충돌이 참조하는 base·local·remote·provisional. `agreed`가 상대편의 최신 상태로만 전진하므로 문서마다 사실상 하나면 된다. 시간·개수 window는 두지 않는다. 이 snapshot들이 참조하는 asset도 함께 pin한다. 정리는 성공한 export 뒤 짧은 별도 transaction에서 하고 정리 실패는 저장 공간만 늘릴 뿐 동기화를 실패시키지 않는다.
+정리는 도달 가능성 하나로 정한다. 남기는 것은 셋이다.
+
+1. `sync_documents`의 세 head 열 `base_state_hash`·`local_state_hash`·`file_state_hash`가 이름을 대는 본문.
+2. 해결되지 않은 `sync_conflict_log` 행이 참조하는 base·local·remote·provisional.
+3. **마지막 reconciliation 이후 이 기기가 vault에 발행한 상태.** `source`가 `local` 또는 `merge`이고 `created_at`이 현재 `base_state_hash` 행의 `created_at`보다 뒤인 행이며 문서당 최근 16개까지 센다.
+
+3번이 이 규칙의 무게를 다 진다. 상대가 선언하는 `Ra`는 이 기기가 발행한 상태 중 아무것이나 될 수 있는데 그중 지금 head인 것은 하나뿐이다. 3번이 없으면 두 기기의 평범한 교대 편집이 매번 문서 전체 충돌이 된다(§12 반박 6). 1번의 나머지 두 열은 그 자체로 병합을 구해 주지 않는다. `Ra`가 현재 로컬 head면 §5.3의 3번이 본문을 찾기 전에 fast-forward로 끝나고 현재 file head면 `agreed`가 이미 같은 값이다. 그래도 셋을 함께 적는 이유는 GC 술어를 "어느 head 열도 이름을 대지 않으면 지운다" 한 줄로 두기 위해서다.
+
+`agreed`가 전진하는 순간 그 이전 발행분은 한꺼번에 수거된다. 그래서 3번의 집합은 스스로 비워지고 v1의 30일·50개 window처럼 쌓이지 않는다. 상한 16을 넘도록 reconciliation 없이 발행만 이어지면 가장 오래된 것부터 버리고 §13의 한계를 받는다.
+
+`source`는 3번의 판정에만 쓴다. DB 트리에서 만든 snapshot이 `local`, 파일에서 파싱한 것이 `file`, 3-way 병합 결과가 `merge`다.
+
+이 snapshot들이 참조하는 asset도 함께 pin한다. 정리는 성공한 export 뒤 짧은 별도 transaction에서 하고 정리 실패는 저장 공간만 늘릴 뿐 동기화를 실패시키지 않는다.
 
 ## 7. 3-way 병합
 
@@ -560,7 +576,7 @@ git diff --check
 
 ## 12. 리뷰 반박
 
-잘라낸 것 중 완료 조건을 실제로 깨는 것은 찾지 못했다. 대신 넷을 명시한다.
+잘라낸 것 중 완료 조건을 실제로 깨는 것은 찾지 못했다. 다만 잘라낸 결과를 규칙으로 옮기는 과정에서 A2를 깨는 구멍 둘이 남았고(반박 5·6) 그 둘은 본문에서 고쳤다. 여섯을 명시한다.
 
 **반박 1 — cut 2는 규칙 하나가 모자란다.** "짝을 못 찾은 절반을 보류한다"만으로는 A3의 "복제도 삭제도 하지 않는다"가 깨진다. A→B 이동에서 B의 파일이 먼저 도착해 추가만 보인다고 하자. 추가를 보류한 채 B 문서의 다른 변경을 병합하고 B를 다시 방출하면 방출된 파일에는 그 줄이 없다. 상대 기기가 남긴 이동 증거를 우리가 지운 것이다. 짝을 못 찾은 추가를 든 문서는 `merge_status = 'pending'`으로 두어 자동 방출을 막아야 한다. §7.4의 두 번째 행과 §11 병합 gate의 네 번째 문장이 이 규칙이다.
 
@@ -570,6 +586,14 @@ git diff --check
 
 **반박 4 — v1 §13 M4가 지목한 trash 회귀 test 셋은 저장소에 없다.** `restored_node_queues_trash`, `empty_trash_removes_only_owned_bytes`, `empty_trash_clears_echo_record` 어느 것도 존재하지 않는다. 실제로 이 계약을 지키는 test는 `export_core.rs::{a_trash_that_empties_takes_its_file_with_it, an_unread_trash_from_elsewhere_is_not_removed, an_emptied_trash_stops_putting_itself_in_the_queue}`와 `sync_merge_seam.rs::a_restored_node_takes_the_trash_file_with_it`이다. §10 M4에서 바꿔 적었다.
 
+**반박 5 — §5.3 2번은 우리 자신의 파일에서도 걸린다.** 처음 쓴 2번은 `R == L`일 때 `agreed := R`이었다. 이 행은 상대가 보낸 파일에만 걸리지 않는다. A와 B가 X에서 합의한다. A가 Y로 고쳐 `{Y, base: X}`를 발행하면 `agreed_A`는 X로 남는다. 여기까지는 맞다. 그런데 formatter나 클라우드 클라이언트가 그 파일의 공백을 다시 흘리면 byte echo가 빗나가고 다시 읽은 파일은 `R == L == Y`라서 2번이 걸려 `agreed_A := Y`가 된다. §6.3은 이제 Y만 pin하므로 X는 수거된다. X 이후로 오프라인이던 B가 `{Z, base: X}`를 발행하면 A는 `Ra = X`의 본문이 없어 7번, 곧 문서 전체 충돌로 떨어진다. 반박 2가 있어서는 안 된다고 적은 바로 그 실패다. 2번이 `agreed`를 건드리지 않도록 고쳤고 잃는 것이 없다는 확인은 §5.3에 적었다.
+
+**반박 6 — §6.3이 `base` 하나만 pin해 평범한 교대 편집을 깬다. 다만 고침은 head 셋 pin이 아니다.** 처음 쓴 §6.3은 `base_state_hash`의 본문만 남겼다. 공백 장난도 GC 결함도 없이 규칙만으로 깨진다. A와 B가 X에서 합의한다. A가 Y로 고쳐 `{Y, base: X}`를 발행하고 `agreed_A`는 X로 남는다. B는 §5.3의 3번으로 fast-forward해 `agreed_B := Y`가 되는데 이 fast-forward는 파일을 새로 쓰지 않으므로 A는 아무것도 알지 못한다. 이제 둘이 동시에 고쳐 A는 Y→W를 `{W, base: X}`로, B는 Y→Z를 `{Z, base: Y}`로 발행한다. A가 B의 파일을 읽으면 `Ra = Y`, `L_A = W`, `agreed_A = X`다. 5번이 Y의 본문을 찾는데 A는 이미 W로 넘어가 Y를 버렸다. 7번, 문서 전체 충돌이다. A가 맞는 base를 손에 쥐고 있다가 버린 것이다.
+
+리뷰가 처방한 "head 셋을 모두 pin한다"는 이 시나리오를 닫지 못한다. 4번 단계에서 A의 세 head는 base=X, local=W, file=W이고 Y는 어느 열도 이름을 대지 않는다. Y는 A의 **직전** 로컬 head이지 현재 head가 아니다. 두 열을 더 pin해도 구해 주는 경우가 따로 있지도 않다. `Ra`가 현재 로컬 head면 5번이 본문을 요구하기 전에 3번이 fast-forward로 끝내고 현재 file head면 그 값은 우리가 방금 발행한 것(곧 local head와 같음)이거나 우리가 병합해 들인 상대의 상태(곧 `agreed`와 같음)다.
+
+실제로 필요한 것은 하나다. 상대가 `base`로 이름을 댈 수 있는 것은 이 기기가 **발행한** 상태뿐이므로, 마지막 reconciliation 이후 발행한 것을 다 들고 있으면 된다. §6.3의 3번이 그것이고 문서당 16개로 끊는다. `agreed`가 전진하면 통째로 비므로 v1의 30일·50개 window와 달리 쌓이지 않는다. head 셋 pin은 GC 술어를 한 줄로 두려고 함께 넣었을 뿐 이 구멍을 막는 값이 아니다. 리뷰가 준 "보존을 넓히지 말라"를 여기서만 넘었고 넘지 않으면 A2가 통과하지 않는다.
+
 ## 13. 알려진 한계
 
 | 한계 | 실패 모습 | 왜 받아들이는가 |
@@ -578,4 +602,5 @@ git diff --check
 | 충돌 사본의 `Ra` 본문이 이미 정리됐을 때 | 사본이 문서 전체 충돌로 떨어진다 | 사본은 보통 정본과 같은 조상을 선언하므로 흔하지 않다. 떨어져도 두 원본이 남는다 |
 | 삭제와 복원이 서로 다른 알림 묶음에 걸쳐 올 때 | 화면의 draft는 사라지고 복구 기록에만 남는다 | 한 묶음 안의 왕복은 `syncChanged.ts`가 이미 흡수한다. 걸쳐 오는 경우 값은 보존되고 화면 상태만 잃는다 |
 | 옛 빌드가 새 vault를 읽는 경우 | `format_version`이 같아 격리하지 않고 파싱한 뒤 새 HLC를 찍어 되쓴다. 파일이 망가진다 | 개발 데이터에 포맷 버전을 더하지 않는다는 결정의 대가다. 대책은 개발자 규율과 vault 백업이다 |
+| 보존이 `base` 하나에서 head 셋 + 마지막 reconciliation 이후 발행분 16개로 | 개발 DB가 문서마다 본문을 최대 열아홉과 미해결 충돌분까지 든다. 16개를 넘도록 reconciliation 없이 발행만 이어지면 가장 오래된 것부터 버리고 그 base를 대는 파일은 7번으로 떨어진다 | 반박 6을 막는 최소값이다. 본문 하나는 문서 하나 분량이고 `agreed`가 전진하면 통째로 비므로 v1의 30일·50개 window처럼 쌓이지 않는다. 16번 발행하는 동안 상대 파일을 한 번도 못 읽는 것은 장기 오프라인이고 그 경우의 실패는 사용자에게 묻는 것이다 |
 | M2의 폭 | 스키마·snapshot 타입·Clock 제거가 한 커밋에 든다 | 셋이 같은 이음매라 나누면 중간 상태가 컴파일되지 않는다 |
