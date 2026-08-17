@@ -2,11 +2,18 @@
 //! the file a stated document state has to produce; if the renderer and the
 //! spec ever disagree, one of them is wrong and this says so.
 
+use chrono::FixedOffset;
 use notes_sync::document::{
     DocumentId, DocumentNode, DocumentRoot, ImageReference, Marker, NodeBody, PageDocument,
     TrashDocument, VaultFile,
 };
-use notes_sync::render::render;
+
+/// The goldens are what a device in Seoul writes. The readable time carries the
+/// writer's own offset, so a fixture has to name the device it came from or it
+/// would say something different on every machine that runs this.
+fn render(file: &VaultFile) -> Result<Vec<u8>, String> {
+    notes_sync::render::render(file, FixedOffset::east_opt(9 * 3600).expect("+09:00"))
+}
 
 /// A golden, compared — or rewritten, when a change to the format is the point.
 ///

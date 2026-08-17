@@ -86,14 +86,18 @@ fn write_checked(
     // outside its own vault.
     let vault_root = &std::fs::canonicalize(vault_root)
         .map_err(|error| format!("Could not resolve the vault: {error}"))?;
-    let bytes = render(file)?;
+    // Read once and used for both renders: the read back is about the document
+    // surviving the trip, and asking twice would let a zone change in between
+    // fail it over a line neither render got wrong.
+    let offset = crate::render::device_offset();
+    let bytes = render(file, offset)?;
 
     // Invariant 4, before anything touches the disk: a document that cannot be
     // read back is one every device would quarantine.
     let read_back = parse(&bytes).map_err(|reason| {
         format!("The document this app just rendered could not be read back: {reason}")
     })?;
-    let again = render(&read_back)?;
+    let again = render(&read_back, offset)?;
     if again != bytes {
         return Err("The document this app just rendered did not survive a read back.".to_owned());
     }

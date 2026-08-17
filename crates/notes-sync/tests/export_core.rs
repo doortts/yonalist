@@ -96,6 +96,29 @@ fn a_dirty_page_lands_in_the_vault_as_a_readme() {
     assert!(file.contains("- Thought <!-- yid:"), "{file}");
 }
 
+/// The file says the wall clock of the device that wrote it, which is this one.
+/// The renderer takes the offset as an argument, so this is the only place that
+/// proves the export hands it the device's own rather than some fixed zone.
+#[test]
+fn the_written_file_states_the_time_this_device_reads() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+
+    export(&mut connection, root.path());
+
+    let file = written(root.path()).expect("the document");
+    let line = file
+        .lines()
+        .find(|line| line.starts_with("updated: "))
+        .expect("the readable time");
+    let offset = chrono::Local::now().offset().to_string();
+    assert!(
+        line.ends_with(&offset),
+        "`{line}` was written by a device at {offset}"
+    );
+}
+
 #[test]
 fn an_export_clears_only_the_exported_dirty_rows() {
     let mut connection = database();

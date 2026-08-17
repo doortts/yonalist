@@ -6,7 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["alloc"] }
+# `clock` is what reads the device's own zone, which the readable time is
+# written at.
+chrono = { version = "0.4", default-features = false, features = [
+    "alloc",
+    "clock",
+] }
 libc = "0.2"
 notes-application.workspace = true
 notes-core.workspace = true
