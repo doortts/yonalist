@@ -1848,6 +1848,46 @@ body.is-resizing-pane {
 
 /* ---------- Settings ---------- */
 
+/* The list beside the one section it opens. One page of everything grew past
+   what a reader can scan, and a section is what they came for. */
+.settings-layout {
+  display: grid;
+  grid-template-columns: minmax(160px, 200px) minmax(0, 1fr);
+  min-height: 0;
+}
+
+.settings-section-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 12px;
+  border-right: 1px solid var(--border);
+}
+
+.settings-section-list button {
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-2);
+  cursor: pointer;
+  font: inherit;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.settings-section-list button:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.settings-section-list button[aria-current="page"] {
+  background: var(--bg-hover);
+  color: var(--text-1);
+  font-weight: 600;
+}
+
 .settings-body {
   min-height: 0;
   overflow: auto;
@@ -1858,7 +1898,6 @@ body.is-resizing-pane {
   display: grid;
   gap: 16px;
   padding: 22px 0;
-  border-bottom: 1px solid var(--border);
 }
 
 .notes-images-settings-section {

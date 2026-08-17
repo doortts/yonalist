@@ -161,6 +161,16 @@ pub(crate) fn conflict_loser(
     )))
 }
 
+/// One entry, let go of. Answers whether there was one — two windows can both
+/// offer the same row, and the second answer should say what happened rather
+/// than report a drop it did not make.
+pub(crate) fn forget_conflict(connection: &Connection, seq: i64) -> Result<bool, StorageError> {
+    connection
+        .execute("DELETE FROM sync_conflict_log WHERE seq = ?1", [seq])
+        .map(|dropped| dropped > 0)
+        .map_err(internal)
+}
+
 /// Trimmed after every merge that recorded something, so the bound is kept by
 /// the same write that could breach it.
 fn prune_conflicts(transaction: &rusqlite::Transaction<'_>) -> Result<(), StorageError> {

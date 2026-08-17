@@ -89,6 +89,7 @@ export function SettingsView({
   setVaultPath,
   readConflicts,
   restoreConflict,
+  forgetConflict,
   readAttachments,
   deleteAttachment,
   openNode
@@ -112,16 +113,48 @@ export function SettingsView({
   readonly setVaultPath: (path: string) => Promise<void>;
   readonly readConflicts: () => Promise<readonly SyncConflict[]>;
   readonly restoreConflict: (seq: number) => Promise<void>;
+  readonly forgetConflict: (seq: number) => Promise<boolean>;
   readonly readAttachments: (limit: number) => Promise<readonly SyncAttachment[]>;
   readonly deleteAttachment: (contentHash: string) => Promise<boolean>;
   readonly openNode: (pageId: string, nodeId: string) => void;
 }) {
+  const [conflicts, setConflicts] = useState<readonly SyncConflict[]>([]);
+  const [conflictError, setConflictError] = useState<string | null>(null);
+  // Read here rather than inside the section that shows them: whether that
+  // section is worth listing at all is a question about the count, and the list
+  // is drawn before any section is.
+  const reloadConflicts = useCallback(async () => {
+    try {
+      setConflicts(await readConflicts());
+    } catch (cause) {
+      setConflictError(messageFrom(cause));
+    }
+  }, [readConflicts]);
+  useEffect(() => {
+    void reloadConflicts();
+  }, [reloadConflicts]);
+
+  const sections: readonly SettingsSectionName[] = [
+    "Appearance",
+    ...(conflicts.length > 0 || conflictError !== null
+      ? (["Overwritten notes"] as const)
+      : []),
+    "Attachments",
+    "Sync folder",
+    "Yonalist data"
+  ];
+  const [chosen, setChosen] = useState<SettingsSectionName>("Appearance");
+  // A section can stop being worth listing while it is the one being read — the
+  // last record dropped, say. Falling back rather than correcting the choice
+  // keeps the list the only answer to what there is.
+  const shown = sections.includes(chosen) ? chosen : "Appearance";
+
   return (
     <section className="settings-page" aria-label="Settings page">
       <header className="settings-header">
         <div>
           <p className="eyebrow">Settings</p>
-          <h2>Appearance</h2>
+          <h2>{shown}</h2>
         </div>
         <button
           type="button"
@@ -133,67 +166,103 @@ export function SettingsView({
         </button>
       </header>
 
-      <div className="settings-body">
-        <section className="settings-section">
-          <ThemeRadioGroup
-            title="Theme mode"
-            options={themeModeOptions}
-            value={themeMode}
-            optionSuffix="mode"
-            onChange={onThemeModeChange}
-          />
-          <ThemeRadioGroup
-            title="Light theme"
-            options={lightThemeOptions}
-            value={lightTheme}
-            optionSuffix="light theme"
-            onChange={onLightThemeChange}
-          />
-          <ThemeRadioGroup
-            title="Dark theme"
-            options={darkThemeOptions}
-            value={darkTheme}
-            optionSuffix="dark theme"
-            onChange={onDarkThemeChange}
-          />
-          <ThemeRadioGroup
-            title="Outline text"
-            options={textFontOptions}
-            value={textFont}
-            optionSuffix="outline text"
-            onChange={onTextFontChange}
-          />
-          <CaretColorGroup value={caretColor} onChange={onCaretColorChange} />
-          <OutlineMarkerGroup
-            styles={markerStyles}
-            onChange={onMarkerStylesChange}
-          />
-        </section>
+      <div className="settings-layout">
+        <nav className="settings-section-list" aria-label="Settings sections">
+          {sections.map((name) => (
+            <button
+              key={name}
+              type="button"
+              aria-current={name === shown ? "page" : undefined}
+              onClick={() => setChosen(name)}
+            >
+              {name}
+            </button>
+          ))}
+        </nav>
 
-        <OverwrittenNotesSection
-          readConflicts={readConflicts}
-          restoreConflict={restoreConflict}
-        />
+        <div className="settings-body">
+          {shown === "Appearance" && (
+            <section className="settings-section">
+              <ThemeRadioGroup
+                title="Theme mode"
+                options={themeModeOptions}
+                value={themeMode}
+                optionSuffix="mode"
+                onChange={onThemeModeChange}
+              />
+              <ThemeRadioGroup
+                title="Light theme"
+                options={lightThemeOptions}
+                value={lightTheme}
+                optionSuffix="light theme"
+                onChange={onLightThemeChange}
+              />
+              <ThemeRadioGroup
+                title="Dark theme"
+                options={darkThemeOptions}
+                value={darkTheme}
+                optionSuffix="dark theme"
+                onChange={onDarkThemeChange}
+              />
+              <ThemeRadioGroup
+                title="Outline text"
+                options={textFontOptions}
+                value={textFont}
+                optionSuffix="outline text"
+                onChange={onTextFontChange}
+              />
+              <CaretColorGroup value={caretColor} onChange={onCaretColorChange} />
+              <OutlineMarkerGroup
+                styles={markerStyles}
+                onChange={onMarkerStylesChange}
+              />
+            </section>
+          )}
 
-        <AttachmentsSection
-          readAttachments={readAttachments}
-          deleteAttachment={deleteAttachment}
-          openNode={openNode}
-        />
+          {shown === "Overwritten notes" && (
+            <OverwrittenNotesSection
+              conflicts={conflicts}
+              error={conflictError}
+              reload={reloadConflicts}
+              restoreConflict={restoreConflict}
+              forgetConflict={forgetConflict}
+            />
+          )}
 
-        <SyncFolderSection
-          readVaultPath={readVaultPath}
-          setVaultPath={setVaultPath}
-        />
+          {shown === "Attachments" && (
+            <AttachmentsSection
+              readAttachments={readAttachments}
+              deleteAttachment={deleteAttachment}
+              openNode={openNode}
+            />
+          )}
 
-        <NotesDataSection
-          unusedAssets={unusedAssets}
-          deleteAllData={deleteAllData}
-        />
+          {shown === "Sync folder" && (
+            <SyncFolderSection
+              readVaultPath={readVaultPath}
+              setVaultPath={setVaultPath}
+            />
+          )}
+
+          {shown === "Yonalist data" && (
+            <NotesDataSection
+              unusedAssets={unusedAssets}
+              deleteAllData={deleteAllData}
+            />
+          )}
+        </div>
       </div>
     </section>
   );
 }
+
+/** The sections, in the order the list offers them. */
+type SettingsSectionName =
+  | "Appearance"
+  | "Overwritten notes"
+  | "Attachments"
+  | "Sync folder"
+  | "Yonalist data";
 
 /**
  * What another device's copy replaced. Nothing is lost — the note that lost is
@@ -202,48 +271,37 @@ export function SettingsView({
  * warning rather than as a record.
  */
 function OverwrittenNotesSection({
-  readConflicts,
-  restoreConflict
+  conflicts,
+  error,
+  reload,
+  restoreConflict,
+  forgetConflict
 }: {
-  readonly readConflicts: () => Promise<readonly SyncConflict[]>;
+  readonly conflicts: readonly SyncConflict[];
+  readonly error: string | null;
+  readonly reload: () => Promise<void>;
   readonly restoreConflict: (seq: number) => Promise<void>;
+  readonly forgetConflict: (seq: number) => Promise<boolean>;
 }) {
-  const [conflicts, setConflicts] = useState<readonly SyncConflict[]>([]);
   const [busy, setBusy] = useState(false);
   const [restored, setRestored] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    try {
-      setConflicts(await readConflicts());
-    } catch (cause) {
-      setError(messageFrom(cause));
-    }
-  }, [readConflicts]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  const restore = async (seq: number) => {
+  /// Both buttons do the same three things around a different write, and the
+  /// difference between them — one leaves the row, one takes it away — is what
+  /// each one's own handler says.
+  const act = async (write: () => Promise<void>) => {
     setBusy(true);
-    setError(null);
+    setFailure(null);
     try {
-      await restoreConflict(seq);
-      // The row stays: the list is a record of what happened, not a queue that
-      // empties. So the write has to announce itself.
-      setRestored(seq);
+      await write();
       await reload();
     } catch (cause) {
-      setError(messageFrom(cause));
+      setFailure(messageFrom(cause));
     } finally {
       setBusy(false);
     }
   };
-
-  if (conflicts.length === 0 && error === null) {
-    return null;
-  }
 
   return (
     <section className="settings-section" aria-label="Overwritten notes">
@@ -251,11 +309,14 @@ function OverwrittenNotesSection({
         <History size={18} aria-hidden="true" />
         <h3>Overwritten notes</h3>
       </div>
-      {error && <p className="notes-inline-error" role="alert">{error}</p>}
+      {(failure ?? error) && (
+        <p className="notes-inline-error" role="alert">{failure ?? error}</p>
+      )}
       <p className="settings-copy">
         When two devices changed the same note, one version had to win. The
         text the other one had is kept here — putting it back writes that text
         again as a new edit, and it travels to your other devices from there.
+        Dropping a record says you are done with it, and the old text goes.
       </p>
       <ul className="settings-conflict-list">
         {conflicts.map((conflict) => (
@@ -267,9 +328,23 @@ function OverwrittenNotesSection({
             <button
               type="button"
               disabled={busy}
-              onClick={() => void restore(conflict.seq)}
+              onClick={() => void act(async () => {
+                await restoreConflict(conflict.seq);
+                // The row stays: putting the text back is an edit, not a
+                // reading of the record. So the write has to announce itself.
+                setRestored(conflict.seq);
+              })}
             >
               Put this text back
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void act(async () => {
+                await forgetConflict(conflict.seq);
+              })}
+            >
+              Drop this record
             </button>
           </li>
         ))}

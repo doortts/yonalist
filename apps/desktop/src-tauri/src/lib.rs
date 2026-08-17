@@ -315,6 +315,24 @@ async fn notes_sync_restore_conflict(
     .await
 }
 
+/// One recorded defeat, let go of. The list is a record rather than a queue,
+/// so being done with an entry is a thing the user has to be able to say —
+/// otherwise the only way to clear a row is to put its text back.
+#[tauri::command]
+async fn notes_sync_forget_conflict(
+    state: State<'_, DesktopState>,
+    seq: i64,
+) -> Result<bool, NotesError> {
+    let gate = Arc::clone(&state.runtime);
+    run_blocking(move || {
+        gate.wait()?
+            .storage
+            .forget_conflict(seq)
+            .map_err(NotesError::from)
+    })
+    .await
+}
+
 /// What sync cannot do right now: the files it could not read, and whether
 /// writing or watching the folder is failing.
 #[tauri::command]
@@ -861,6 +879,7 @@ pub fn run() {
             notes_delete_all_data,
             notes_sync_conflicts,
             notes_sync_restore_conflict,
+            notes_sync_forget_conflict,
             notes_sync_attachments,
             notes_sync_status,
             notes_sync_delete_attachment,
