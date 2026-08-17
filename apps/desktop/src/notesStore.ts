@@ -13,7 +13,9 @@ import {
   freshId, messageFrom, ROOT_ID, VIEWPORT_LIMIT
 } from "./store/storeSupport";
 import { flattenPastedOutline, type PastedOutlineNode } from "./outline/outlinePaste";
-import { receiptState, subtreeIds, viewportState } from "./store/storeState";
+import {
+  omitKeys, receiptState, subtreeIds, viewportState
+} from "./store/storeState";
 import { runSlashEdit } from "./store/storeSlash";
 import type { NotesMutationHistoryEvent } from "./store/storeHistory";
 import { StoreViewport } from "./store/storeViewport";
@@ -179,6 +181,20 @@ export class NotesStore {
    * more expensive.
    */
   async absorbVaultChange(change?: VaultChange): Promise<void> {
+    // What the user was typing on a row another device deleted has nowhere
+    // left to land, and only the receipt below knows that -- the re-read
+    // replaces the rows without reading the drafts, so a draft left there goes
+    // out as an `updateText` for a row that is gone, on its own debounce or at
+    // the flush the next command runs. Ahead of the branch rather than inside
+    // the re-read arm, because that also spans `patchFromVault`'s round trip,
+    // which is long enough for the debounce to fire mid-flight.
+    if (change && change.deletedNodeIds.length > 0) {
+      this.drafts.cancel(change.deletedNodeIds);
+      this.update({
+        drafts: omitKeys(this.state.drafts, change.deletedNodeIds),
+        noteDrafts: omitKeys(this.state.noteDrafts, change.deletedNodeIds)
+      });
+    }
     if (change && await this.patchFromVault(change)) return;
     await Promise.all([this.viewport.reload(), this.refreshPages()]);
   }

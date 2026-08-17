@@ -1470,6 +1470,84 @@ describe("다른 기기의 변경 흡수 — 이름이 온 경우", () => {
     expect(queryViewport).toHaveBeenCalled();
   });
 
+  /**
+   * The row the caret sits in is gone when the page comes back, which is the
+   * state the two tests below are about: `confirmedText` finds nothing for
+   * `"one"`, so a draft left behind reads as text still to be written.
+   */
+  function afterDeletingOne(): NotesApi {
+    const notes = api(async (request) =>
+      request.pageId === "root"
+        ? {
+            pageId: "root",
+            anchorId: null,
+            beforeCursor: null,
+            afterCursor: null,
+            nodes: [page("page-1", "Today")]
+          }
+        : {
+            pageId: "page-1",
+            anchorId: null,
+            beforeCursor: null,
+            afterCursor: null,
+            nodes: [bullet("two", 2048)]
+          }
+    );
+    notes.execute = vi.fn().mockResolvedValue({
+      revision: 10,
+      changedNodes: [],
+      deletedIds: [],
+      history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+    });
+    return notes;
+  }
+
+  /** Wide enough to decline the row-by-row patch, so the page is re-read. */
+  const wideChangeDeletingOne = {
+    revision: 9,
+    changedNodeIds: Array.from({ length: 200 }, (_, index) => `node-${index}`),
+    deletedNodeIds: ["one"]
+  };
+
+  it("페이지를 다시 읽을 때도 지워진 줄에 치던 글은 보내지 않는다", async () => {
+    const notes = afterDeletingOne();
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+
+    // Fake timers before the drafts: the debounce these arm is the thing under
+    // test, so it has to be one this test can advance.
+    vi.useFakeTimers();
+    store.setDraft("one", "치던 글");
+    store.setNoteDraft("one", "치던 메모");
+    await store.absorbVaultChange(wideChangeDeletingOne);
+    await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+    vi.useRealTimers();
+
+    expect(notes.queryForest).not.toHaveBeenCalled();
+    expect(store.getSnapshot().nodes.map((row) => row.id)).toEqual(["two"]);
+    expect(vi.mocked(notes.execute).mock.calls).toEqual([]);
+  });
+
+  it("다시 읽은 다음 다른 명령이 와도 지워진 줄에 치던 글은 나가지 않는다", async () => {
+    const notes = afterDeletingOne();
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+
+    // Fake timers with nothing to advance: this one is about the flush every
+    // command runs, not the debounce, so the debounce must not get to fire.
+    vi.useFakeTimers();
+    store.setDraft("one", "치던 글");
+    await store.absorbVaultChange(wideChangeDeletingOne);
+    await store.setStarred("two", true);
+    vi.useRealTimers();
+
+    expect(notes.queryForest).not.toHaveBeenCalled();
+    expect(store.getSnapshot().nodes.map((row) => row.id)).toEqual(["two"]);
+    expect(vi.mocked(notes.execute).mock.calls.map(
+      ([envelope]) => envelope.command.kind
+    )).toEqual(["setStarred"]);
+  });
+
   it("돌아온 답이 잘렸으면 페이지를 다시 읽는다", async () => {
     const queryViewport = vi.fn(async () => boot.viewport as ViewportPage);
     const notes = api(queryViewport);
