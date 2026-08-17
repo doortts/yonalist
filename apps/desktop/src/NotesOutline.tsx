@@ -480,7 +480,6 @@ export function NotesOutline({
               onPickImage={() => void imageIngest.openPicker(header.id)}
             />
           )}
-          {allBodyNodes.length === 0 && <p className="notes-pane-state">No outline yet.</p>}
           {!showCompleted && bodyNodes.length < allBodyNodes.length && (
             <p className="notes-pane-state">Completed items are hidden.</p>
           )}

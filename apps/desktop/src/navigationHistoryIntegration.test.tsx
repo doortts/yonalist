@@ -158,6 +158,9 @@ describe("a mutation that moves the view", () => {
     const title = await newPageTitle();
 
     expect(title).toHaveValue("");
+    // An empty page says nothing about being empty: the title is the only
+    // thing to look at, and the caret is already in it.
+    expect(screen.queryByText("No outline yet.")).toBeNull();
     expect(notesApi.execute).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", {
       name: "Page actions for Untitled page"
