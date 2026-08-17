@@ -61,6 +61,9 @@ export async function readyRealStore(): Promise<NotesStore> {
     syncVaultSet: vi.fn(),
     syncConflicts: vi.fn().mockResolvedValue([]),
     syncFlush: vi.fn(),
+    syncStatus: vi.fn().mockResolvedValue({
+      refused: [], writeError: null, watchError: null
+    }),
     syncAttachments: vi.fn(),
     syncDeleteAttachment: vi.fn(),
     syncRestoreConflict: vi.fn()

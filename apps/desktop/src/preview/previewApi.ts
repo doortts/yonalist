@@ -556,6 +556,10 @@ export const previewNotesApi: NotesApi = {
   async syncDeleteAttachment() {
     return false;
   },
+  async syncStatus() {
+    // The preview has no folder to have trouble with.
+    return { refused: [], writeError: null, watchError: null };
+  },
   async syncFlush() {
     // The preview holds nothing on its way to a folder.
   },

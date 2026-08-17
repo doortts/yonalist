@@ -8,6 +8,7 @@ import "./notes.css";
 import "./formControls.css";
 import type { SyncChanged } from "../../../packages/contracts/generated/SyncChanged";
 import { tauriNotesApi, type NotesApi } from "./api";
+import { SyncStatusBadge } from "./SyncStatusBadge";
 import { useTheme } from "./useTheme";
 import { useOutlineMarkerStyles } from "./outlineMarkers";
 import { NotesStore } from "./notesStore";
@@ -121,6 +122,27 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       unlisten?.();
     };
   }, [store]);
+  // The badge asks for the state; this only tells it that the state moved.
+  const subscribeToSyncStatus = useCallback((moved: () => void) => {
+    if (!("__TAURI_INTERNALS__" in window)) return () => {};
+    let stop: (() => void) | undefined;
+    let active = true;
+    void Promise.all([
+      import("@tauri-apps/api/event"),
+      import("./syncChanged")
+    ]).then(([{ listen }, { listenForEvent, SYNC_STATUS }]) => {
+      if (!active) return;
+      stop = listenForEvent(
+        (event, handler) => listen(event, () => handler()),
+        SYNC_STATUS,
+        moved
+      );
+    });
+    return () => {
+      active = false;
+      stop?.();
+    };
+  }, []);
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
     let stop: (() => void) | undefined;
@@ -582,6 +604,10 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             </section>
           </section>
         </div>
+        <SyncStatusBadge
+          readStatus={() => api.syncStatus()}
+          subscribe={subscribeToSyncStatus}
+        />
         <footer className="yonalist-navigation-footer">
           <button
             className="nav-item"
