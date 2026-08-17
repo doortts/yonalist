@@ -37,10 +37,9 @@ import {
 
 /**
  * Whether a command is about this page: the row itself, or a row going inside
- * it. Everything else a command can name is a row, and a page nobody has
- * written in holds none -- a row inside it only exists once the page does,
- * which is what these two fields cover. The nested parents a move or a
- * duplicate carries are rows for the same reason.
+ * it. Everything else a command can name is a row inside some page, and a page
+ * nobody has written in holds none: a move or a duplicate can only carry rows
+ * that already exist, which means the page they came from already does too.
  */
 function commandTouches(command: IpcNotesCommand, pageId: string): boolean {
   return ("id" in command && command.id === pageId) ||
