@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use notes_core::{
-    DomainError, NodeId, NoteMarkerKind, NoteNode, NoteNodeKind, NotesCommand, NotesTree,
+    DomainError, NodeId, NoteMarkerKind, NoteNode, NoteNodeKind, NotesCommand, NotesTree, Position,
     SORT_KEY_STEP, TreeMutation,
 };
 
@@ -50,8 +50,12 @@ fn siblings_sharing_a_sort_key_are_rejected() {
     assert!(tree.is_empty());
 }
 
+// A trashed row's key says where it was deleted from, and the vault's trash
+// document keeps writing it back while the page document respaces the rows that
+// are still live. A live row on that key is what that arrangement produces, so
+// refusing it here would refuse every command over the page instead.
 #[test]
-fn a_deleted_sibling_breaking_the_order_is_rejected() {
+fn a_deleted_sibling_on_a_live_row_s_key_is_accepted() {
     let mut tree = NotesTree::default();
 
     let result = tree.apply(&[
@@ -60,11 +64,64 @@ fn a_deleted_sibling_breaking_the_order_is_rejected() {
         sibling("gone", "page", SORT_KEY_STEP, true),
     ]);
 
+    assert_eq!(result, Ok(()));
+    assert_eq!(tree.children_of(&id("page")), vec![id("live")]);
+}
+
+// What the bug looked like from the app: home held a trashed page on the same
+// key as a live one, so every command planned over home was refused -- Enter at
+// the head of the first row among them.
+#[test]
+fn a_row_opens_above_a_live_sibling_a_trashed_row_shares_a_key_with() {
+    let mut tree = NotesTree::default();
+    tree.apply(&[
+        page(),
+        sibling("live", "page", SORT_KEY_STEP, false),
+        sibling("gone", "page", SORT_KEY_STEP, true),
+    ])
+    .unwrap();
+
+    let patch = tree
+        .plan(NotesCommand::CreateNode {
+            id: id("blank"),
+            parent_id: id("page"),
+            position: Position::before(id("live")),
+            text: String::new(),
+        })
+        .unwrap();
+    tree.apply(&patch.forward).unwrap();
+
+    assert_eq!(tree.children_of(&id("page")), vec![id("blank"), id("live")]);
+}
+
+// The slot has to be real again on the way back: the row lands beside the
+// sibling that took it rather than on top of it.
+#[test]
+fn restoring_a_row_onto_a_taken_slot_spaces_it_back_in() {
+    let mut tree = NotesTree::default();
+    tree.apply(&[
+        page(),
+        sibling("live", "page", SORT_KEY_STEP, false),
+        sibling("gone", "page", SORT_KEY_STEP, true),
+        sibling("after", "page", SORT_KEY_STEP * 2, false),
+    ])
+    .unwrap();
+
+    let patch = tree
+        .plan(NotesCommand::RestoreSubtree { id: id("gone") })
+        .unwrap();
+    tree.apply(&patch.forward).unwrap();
+
+    let keys = ["gone", "live", "after"].map(|node| {
+        tree.node(&id(node))
+            .expect("the row is in the tree")
+            .sort_key()
+    });
+    assert!(keys[0] < keys[1], "gone keeps the place its key gave it");
+    assert!(keys[1] < keys[2]);
     assert_eq!(
-        result,
-        Err(DomainError::Invariant(
-            "siblings below page are not strictly ordered".into()
-        ))
+        tree.children_of(&id("page")),
+        vec![id("gone"), id("live"), id("after")]
     );
 }
 
