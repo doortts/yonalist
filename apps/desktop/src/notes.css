@@ -1202,8 +1202,17 @@
   background: transparent;
 }
 
+/*
+ * The column carries the row gutter and one indent per depth inside it, so
+ * what a deep row has left to write on is this width less both. At 700px a
+ * third-level row was down to 32 Korean characters a line, and the space the
+ * cap left over went to the margins that centre it -- 140px a side on a
+ * 1036px pane. 880px hands that back: 43 characters at the same depth, and
+ * the page starts 90px further in. The cap stays because without one a wide
+ * display would run a line past 100 characters.
+ */
 .notes-outline-content {
-  width: min(100%, 700px);
+  width: min(100%, 880px);
   min-width: 0;
   margin-inline: auto;
   padding-block-start: 32px;
