@@ -275,16 +275,17 @@ export function NotesOutline({
     const beyond = step
       ? bodyNodes[collapse === "start" ? at - 1 : at + 1]
       : undefined;
-    if (beyond) focusOutlineEditor(scope, beyond.id, "start");
+    if (beyond) return void focusOutlineEditor(scope, beyond.id, "start");
     // Above the first row there is only the page title, which is where a bare
-    // arrow off that row goes as well.
-    else if (step && collapse === "start" && at === 0) {
-      focusOutlineEditor(scope, outlineRootId, "start");
-    } else {
-      focusOutlineEditor(
-        scope, edge.id, collapse === "start" ? "start" : "end"
-      );
+    // arrow off that row goes as well. Home draws none, and there the band's
+    // own first row is the top.
+    if (
+      step && collapse === "start" && at === 0 &&
+      focusOutlineEditor(scope, outlineRootId, "start")
+    ) {
+      return;
     }
+    focusOutlineEditor(scope, edge.id, collapse === "start" ? "start" : "end");
   };
   const handOffCaret = caretHandoff({
     nodes: state.nodes,

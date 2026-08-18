@@ -65,7 +65,10 @@ function forestOf(
   });
 }
 
-async function outline(nodes: readonly NoteView[]) {
+async function outline(
+  nodes: readonly NoteView[],
+  page: { id: string; title: string } = { id: "page-1", title: "Today" }
+) {
   const queryForest = vi.fn().mockImplementation(
     (request: { readonly rootIds: readonly string[] }) => Promise.resolve({
       revision: 1,
@@ -92,7 +95,7 @@ async function outline(nodes: readonly NoteView[]) {
       status="ready"
       error={null}
       pendingWrites={0}
-      page={{ id: "page-1", title: "Today" }}
+      page={page}
       zoomRootId={null}
       onZoomRootChange={() => undefined}
       onHome={() => undefined}
@@ -582,5 +585,24 @@ describe("The modifier with A", () => {
     await press(editor, "a", { ctrlKey: true });
 
     expect(bandIds(view.container)).toEqual(["one", "blank"]);
+  });
+});
+
+// Home is the root itself and the root is nobody's title, so the page has no
+// heading there and the chord has to land on the first row instead.
+describe("The modified Up where the page carries no title", () => {
+  it("takes the first row", async () => {
+    const homeRows = [
+      bullet("one", "root", SORT_KEY_STEP, "First row"),
+      bullet("two", "root", SORT_KEY_STEP * 2, "AAA BBB")
+    ];
+    const { view } = await outline(homeRows, { id: "root", title: "" });
+    const editor = await placeCaret(view.container, "two", 3);
+
+    await press(editor, "ArrowUp", { ctrlKey: true });
+
+    expect(caretOf(view.container)).toEqual({
+      nodeId: "one", start: 0, end: 0, direction: expect.anything()
+    });
   });
 });

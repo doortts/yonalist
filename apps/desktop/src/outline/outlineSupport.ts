@@ -467,7 +467,12 @@ function executeRowIntent(
         .then(() => focusAfterCommit(scope, node.id, "preserve"));
       return;
     case "focus":
-      focusOutlineEditor(scope, intent.nodeId, intent.edge);
+      if (
+        !focusOutlineEditor(scope, intent.nodeId, intent.edge) &&
+        intent.fallbackNodeId
+      ) {
+        focusOutlineEditor(scope, intent.fallbackNodeId, intent.edge);
+      }
       void store.flushDraft(node.id);
       return;
     case "clearMarker":

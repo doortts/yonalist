@@ -856,7 +856,13 @@ describe("v2 outline keyboard intent resolver", () => {
         ctrlKey: true,
         target
       })), `up ${target}`)
-        .toEqual({ kind: "focus", nodeId: "page", edge: "start" });
+        .toEqual({
+          kind: "focus",
+          nodeId: "page",
+          edge: "start",
+          // Home draws no title, so the first row is the top there.
+          fallbackNodeId: "parent"
+        });
       expect(resolveOutlineKey(input({
         key: "ArrowDown",
         ctrlKey: true,
@@ -870,7 +876,12 @@ describe("v2 outline keyboard intent resolver", () => {
       key: "ArrowUp",
       metaKey: true,
       platform: "mac"
-    }))).toEqual({ kind: "focus", nodeId: "page", edge: "start" });
+    }))).toEqual({
+      kind: "focus",
+      nodeId: "page",
+      edge: "start",
+      fallbackNodeId: "parent"
+    });
     // An empty outline has only its title to run to.
     expect(resolveOutlineKey(input({
       key: "ArrowDown",

@@ -65,6 +65,12 @@ export type OutlineKeyIntent =
       readonly kind: "focus";
       readonly nodeId: string;
       readonly edge: "start" | "end" | "preserve";
+      /**
+       * Where the caret goes when `nodeId` has no editor to take it. Home is
+       * the root itself and the root is nobody's title, so the pane draws no
+       * heading there and the row below it is the top of the outline.
+       */
+      readonly fallbackNodeId?: string;
     }
   | { readonly kind: "removeEmpty"; readonly focusId: string | null }
   | {
@@ -297,7 +303,8 @@ export function resolveOutlineKey(
       : {
           kind: "focus",
           nodeId: input.pageId,
-          edge: input.key === "ArrowUp" ? "start" : "end"
+          edge: input.key === "ArrowUp" ? "start" : "end",
+          fallbackNodeId: input.visibleNodes[0]?.id
         };
   }
 
