@@ -87,8 +87,15 @@ export type OutlineKeyIntent =
   /**
    * Puts the band's far end on `headId`. Naming the key's own row takes just
    * that row: with no band up yet, the sweep anchors where it starts.
+   *
+   * `edge` is the side of the head row the caret rides to -- the side the key
+   * pointed at, the way a swept span leaves its caret on the end it moved.
    */
-  | { readonly kind: "extendSelection"; readonly headId: string }
+  | {
+      readonly kind: "extendSelection";
+      readonly headId: string;
+      readonly edge: "start" | "end";
+    }
   | {
       readonly kind: "selectTextEdge";
       readonly start: number;
@@ -332,7 +339,11 @@ export function resolveOutlineKey(
           ? input.visibleNodes[bandHeadStep(input, index, up ? -1 : 1)]
           : undefined;
         return target
-          ? { kind: "extendSelection", headId: target.id }
+          ? {
+              kind: "extendSelection",
+              headId: target.id,
+              edge: up ? "start" : "end"
+            }
           : { kind: "consume" };
       }
       if (!validSelection(input)) return null;
@@ -354,7 +365,7 @@ export function resolveOutlineKey(
       const caret = backward ? input.selectionStart! : input.selectionEnd!;
       if (up) {
         return caret === 0
-          ? { kind: "extendSelection", headId: input.nodeId }
+          ? { kind: "extendSelection", headId: input.nodeId, edge: "start" }
           : {
               kind: "selectTextEdge",
               start: 0,
@@ -363,7 +374,7 @@ export function resolveOutlineKey(
             };
       }
       return caret === input.value.length
-        ? { kind: "extendSelection", headId: input.nodeId }
+        ? { kind: "extendSelection", headId: input.nodeId, edge: "end" }
         : {
             kind: "selectTextEdge",
             start: anchor,
@@ -696,7 +707,11 @@ export function handleImageNodeKeyDown(
   ) {
     const toward = input.key === "ArrowRight" ? "before" : "after";
     return input.imageEdge === undefined || input.imageEdge === toward
-      ? { kind: "extendSelection", headId: input.nodeId }
+      ? {
+          kind: "extendSelection",
+          headId: input.nodeId,
+          edge: input.key === "ArrowRight" ? "end" : "start"
+        }
       : null;
   }
   // Caret, image, caret: the image is a stop between its two stations, so a

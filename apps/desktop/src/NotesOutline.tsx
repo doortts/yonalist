@@ -22,7 +22,9 @@ import type { PaneFocusSnapshot } from "./appNavigation";
 import { useImageIngest } from "./image/useImageIngest";
 import { OUTLINE_WINDOW_INCOMPLETE } from "./outline/outlineClipboard";
 import { outlineClipboardActions } from "./outline/outlineClipboardActions";
-import { focusOutlineEditor, focusOutlineSnapshot } from "./outline/outlineFocus";
+import {
+  focusAfterCommit, focusOutlineEditor, focusOutlineSnapshot
+} from "./outline/outlineFocus";
 import { caretHandoff } from "./outline/outlineCaretHandoff";
 import { NotesExportBoundary } from "./NotesExportBoundary";
 import { useOutlineWindow } from "./outline/useOutlineWindow";
@@ -331,7 +333,14 @@ export function NotesOutline({
       else onZoomRootChange(nodeId);
     },
     onZoomOut: () => onZoomRootChange(null),
-    onExtendSelection: selection.extend,
+    onExtendSelection: (originId, headId, edge) => {
+      selection.extend(originId, headId);
+      // The head is the end the key is moving, so the caret goes with it: left
+      // behind, it would sit on a row the pane never scrolls back to, and the
+      // head would run off the screen unseen.
+      const scope = scopeRef.current;
+      if (scope) focusAfterCommit(scope, headId, edge);
+    },
     onClearSelection: clearSelection,
     onTagClick,
     onPickImage: (nodeId) => void imageIngest.openPicker(nodeId),

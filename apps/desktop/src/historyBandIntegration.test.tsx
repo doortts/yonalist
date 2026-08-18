@@ -159,10 +159,11 @@ describe("history band", () => {
       expect(row("CUT ME")).toHaveAttribute("data-selected", "true");
       expect(row("CUT ME TOO")).toHaveAttribute("data-selected", "true");
     });
-    // The band the cut started from, and the caret with it -- the row the chord
-    // was swept from, not wherever the delete handed the caret off to.
+    // The band the cut started from, and the caret with it -- the band's head,
+    // which is where the sweep left the caret, not wherever the delete handed
+    // it off to.
     expect(document.activeElement)
-      .toHaveAttribute("data-node-id", "bullet-2");
+      .toHaveAttribute("data-node-id", "bullet-1");
     expect(screen.getByRole("toolbar", { name: "Actions for 2 selected notes" }))
       .toBeInTheDocument();
 

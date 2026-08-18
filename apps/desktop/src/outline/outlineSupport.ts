@@ -51,7 +51,11 @@ interface OutlineRowKeyContext {
   readonly onZoomIn: () => void;
   readonly onZoomOut: () => void;
   readonly band: OutlineBandState;
-  readonly onExtendSelection: (originId: string, headId: string) => void;
+  readonly onExtendSelection: (
+    originId: string,
+    headId: string,
+    edge: "start" | "end"
+  ) => void;
   readonly onClearSelection: (collapse?: "start" | "end") => void;
   readonly onFocusNote: () => void;
   readonly onMoveTo: () => void;
@@ -551,7 +555,7 @@ function executeRowIntent(
       context.onFocusNote();
       return;
     case "extendSelection":
-      context.onExtendSelection(node.id, intent.headId);
+      context.onExtendSelection(node.id, intent.headId, intent.edge);
       return;
     case "clearSelection":
       context.onClearSelection(intent.collapse);

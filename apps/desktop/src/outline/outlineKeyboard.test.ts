@@ -130,13 +130,21 @@ describe("v2 outline keyboard intent resolver", () => {
       key: "ArrowRight",
       shiftKey: true,
       imageEdge: "before"
-    }))).toEqual({ kind: "extendSelection", headId: "next" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "next",
+      edge: "end"
+    });
     expect(handleImageNodeKeyDown(input({
       nodeId: "next",
       key: "ArrowLeft",
       shiftKey: true,
       imageEdge: "after"
-    }))).toEqual({ kind: "extendSelection", headId: "next" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "next",
+      edge: "start"
+    });
     // Away from the image there is nothing beside the caret to take.
     expect(handleImageNodeKeyDown(input({
       nodeId: "next",
@@ -158,7 +166,11 @@ describe("v2 outline keyboard intent resolver", () => {
         nodeId: "next",
         key,
         shiftKey: true
-      }))).toEqual({ kind: "extendSelection", headId: "next" });
+      }))).toEqual({
+      kind: "extendSelection",
+      headId: "next",
+      edge: key === "ArrowUp" || key === "ArrowLeft" ? "start" : "end"
+    });
       expect(handleImageNodeKeyDown(input({
         nodeId: "next",
         key,
@@ -475,14 +487,22 @@ describe("v2 outline keyboard intent resolver", () => {
       nodeId: "parent",
       selectionHeadId: "parent",
       hasSelection: true
-    }))).toEqual({ kind: "extendSelection", headId: "child" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "child",
+      edge: "end"
+    });
     expect(resolveOutlineKey(input({
       key: "ArrowDown",
       shiftKey: true,
       nodeId: "parent",
       selectionHeadId: "child",
       hasSelection: true
-    }))).toEqual({ kind: "extendSelection", headId: "next" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "next",
+      edge: "end"
+    });
     expect(resolveOutlineKey(input({
       key: "ArrowDown",
       shiftKey: true,
@@ -505,7 +525,11 @@ describe("v2 outline keyboard intent resolver", () => {
     expect(resolveOutlineKey(bandInput({
       selectionHeadId: "parent",
       selectionAnchorId: "parent"
-    }))).toEqual({ kind: "extendSelection", headId: "after" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "after",
+      edge: "end"
+    });
     // A grandchild is inside the subtree too, wherever it sits in the order.
     const deep = [
       node("parent", "page", "Parent", 1_024),
@@ -518,7 +542,11 @@ describe("v2 outline keyboard intent resolver", () => {
       visibleIndex: new OutlineIndex(deep),
       selectionHeadId: "parent",
       selectionAnchorId: "parent"
-    }))).toEqual({ kind: "extendSelection", headId: "after" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "after",
+      edge: "end"
+    });
     // A collapsed parent shows no children, so there is nothing to step past.
     const collapsed = [
       { ...node("parent", "page", "Parent", 1_024), collapsed: true },
@@ -529,7 +557,11 @@ describe("v2 outline keyboard intent resolver", () => {
       visibleIndex: new OutlineIndex(collapsed),
       selectionHeadId: "parent",
       selectionAnchorId: "parent"
-    }))).toEqual({ kind: "extendSelection", headId: "after" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "after",
+      edge: "end"
+    });
     // Nothing below the subtree: the band is already everything there is.
     expect(resolveOutlineKey(bandInput({
       selectionHeadId: "after",
@@ -543,7 +575,11 @@ describe("v2 outline keyboard intent resolver", () => {
     expect(resolveOutlineKey(bandInput({
       selectionHeadId: "parent",
       selectionAnchorId: "after"
-    }))).toEqual({ kind: "extendSelection", headId: "kid-one" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "kid-one",
+      edge: "end"
+    });
     // Anchored on the parent with the head below its subtree: the sibling comes
     // out of the band on the first press. Every row between it and the anchor is
     // inside the anchor's subtree, so the next press has nowhere to put the head
@@ -552,12 +588,20 @@ describe("v2 outline keyboard intent resolver", () => {
       key: "ArrowUp",
       selectionHeadId: "after",
       selectionAnchorId: "parent"
-    }))).toEqual({ kind: "extendSelection", headId: "kid-three" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "kid-three",
+      edge: "start"
+    });
     expect(resolveOutlineKey(bandInput({
       key: "ArrowUp",
       selectionHeadId: "kid-three",
       selectionAnchorId: "parent"
-    }))).toEqual({ kind: "extendSelection", headId: "parent" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "parent",
+      edge: "start"
+    });
     expect(resolveOutlineKey(bandInput({
       key: "ArrowUp",
       selectionHeadId: "parent",
@@ -567,24 +611,40 @@ describe("v2 outline keyboard intent resolver", () => {
     expect(resolveOutlineKey(bandInput({
       selectionHeadId: "kid-two",
       selectionAnchorId: "parent"
-    }))).toEqual({ kind: "extendSelection", headId: "after" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "after",
+      edge: "end"
+    });
   });
 
   it("steps one row when the band has no anchor to measure against", () => {
     expect(resolveOutlineKey(bandInput({
       selectionHeadId: "parent"
-    }))).toEqual({ kind: "extendSelection", headId: "kid-one" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "kid-one",
+      edge: "end"
+    });
     expect(resolveOutlineKey(bandInput({
       selectionHeadId: "parent",
       selectionAnchorId: "gone"
-    }))).toEqual({ kind: "extendSelection", headId: "kid-one" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "kid-one",
+      edge: "end"
+    });
     // A head at the anchor going the other way starts a band upward, and the
     // row above is outside the subtree it is about to take.
     expect(resolveOutlineKey(bandInput({
       key: "ArrowUp",
       selectionHeadId: "after",
       selectionAnchorId: "after"
-    }))).toEqual({ kind: "extendSelection", headId: "kid-three" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "kid-three",
+      edge: "start"
+    });
   });
 
   // Text first, then the row, then its neighbours: each stage starts where the
@@ -614,13 +674,21 @@ describe("v2 outline keyboard intent resolver", () => {
       shiftKey: true,
       selectionStart: 0,
       selectionEnd: 0
-    }))).toEqual({ kind: "extendSelection", headId: "next" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "next",
+      edge: "start"
+    });
     expect(resolveOutlineKey(input({
       key: "ArrowDown",
       shiftKey: true,
       selectionStart: 13,
       selectionEnd: 13
-    }))).toEqual({ kind: "extendSelection", headId: "next" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "next",
+      edge: "end"
+    });
     // From the row's near edge the sweep runs the whole way across it.
     expect(resolveOutlineKey(input({
       key: "ArrowDown",
@@ -669,7 +737,11 @@ describe("v2 outline keyboard intent resolver", () => {
       selectionStart: 0,
       selectionEnd: 8,
       selectionDirection: "backward"
-    }))).toEqual({ kind: "extendSelection", headId: "next" });
+    }))).toEqual({
+      kind: "extendSelection",
+      headId: "next",
+      edge: "start"
+    });
     // A forward span whose anchor already sits on the start has nowhere left to
     // carry the caret, so the press collapses it. Native does the same; the row
     // comes on the press after.
@@ -725,7 +797,11 @@ describe("v2 outline keyboard intent resolver", () => {
           selectionEnd: 13,
           selectionDirection
         })), `${selectionDirection} ${key}`)
-          .toEqual({ kind: "extendSelection", headId: "next" });
+          .toEqual({
+      kind: "extendSelection",
+      headId: "next",
+      edge: key === "ArrowUp" || key === "ArrowLeft" ? "start" : "end"
+    });
       }
     }
   });
@@ -739,12 +815,20 @@ describe("v2 outline keyboard intent resolver", () => {
         value: "",
         selectionStart: 0,
         selectionEnd: 0
-      })), key).toEqual({ kind: "extendSelection", headId: "next" });
+      })), key).toEqual({
+      kind: "extendSelection",
+      headId: "next",
+      edge: key === "ArrowUp" || key === "ArrowLeft" ? "start" : "end"
+    });
       expect(handleImageNodeKeyDown(input({
         key,
         shiftKey: true,
         nodeId: "next"
-      })), key).toEqual({ kind: "extendSelection", headId: "next" });
+      })), key).toEqual({
+      kind: "extendSelection",
+      headId: "next",
+      edge: key === "ArrowUp" || key === "ArrowLeft" ? "start" : "end"
+    });
     }
   });
 

@@ -240,6 +240,53 @@ describe("Shift and an arrow inside a bullet", () => {
     });
   });
 
+  // The head is the end the arrow is moving, so the caret rides it. A head the
+  // pane has to scroll to would otherwise leave the caret on a row nobody is
+  // looking at, and the pane would never scroll to the head at all.
+  it("carries the caret onto the row the band grows onto", async () => {
+    const { view } = await outline(rows);
+    const editor = await placeCaret(view.container, "two", 0);
+
+    await press(editor, "ArrowDown", { shiftKey: true });
+    await press(editor, "ArrowDown", { shiftKey: true });
+    await press(editor, "ArrowDown", { shiftKey: true });
+
+    expect(bandIds(view.container)).toEqual(["two", "three"]);
+    expect(caretOf(view.container)).toEqual({
+      nodeId: "three", start: 9, end: 9, direction: "none"
+    });
+  });
+
+  it("carries the caret onto the row above when the band grows upward", async () => {
+    const { view } = await outline(rows);
+    const editor = await placeCaret(view.container, "two", 4);
+
+    await press(editor, "ArrowUp", { shiftKey: true });
+    await press(editor, "ArrowUp", { shiftKey: true });
+    await press(editor, "ArrowUp", { shiftKey: true });
+
+    expect(bandIds(view.container)).toEqual(["one", "two"]);
+    expect(caretOf(view.container)).toEqual({
+      nodeId: "one", start: 0, end: 0, direction: "none"
+    });
+  });
+
+  // Giving a row back moves the head too, so the caret follows it the same way.
+  it("carries the caret back when the band gives a row up", async () => {
+    const { view } = await outline(rows);
+    const editor = await placeCaret(view.container, "two", 0);
+
+    await press(editor, "ArrowDown", { shiftKey: true });
+    await press(editor, "ArrowDown", { shiftKey: true });
+    await press(editor, "ArrowDown", { shiftKey: true });
+    await press(editor, "ArrowUp", { shiftKey: true });
+
+    expect(bandIds(view.container)).toEqual(["two"]);
+    expect(caretOf(view.container)).toEqual({
+      nodeId: "two", start: 0, end: 0, direction: "none"
+    });
+  });
+
   it("sweeps to the row's end from mid-row", async () => {
     const { view } = await outline(rows);
     const editor = await placeCaret(view.container, "two", 4);
