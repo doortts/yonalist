@@ -32,11 +32,16 @@ describe("v2 slash commands", () => {
       end: 1,
       query: ""
     });
-    // The caret inside a word that merely starts with a slash is editing it.
-    expect(resolveSlashCommandQuery("Ship /todken refresh", 9, 9)).toBeNull();
     expect(resolveSlashCommandQuery("Ship /tod refresh", 9, 9)).toEqual({
       start: 5,
       end: 9,
+      query: "tod"
+    });
+    // Typed at the head of a row that already says something: the oldest way
+    // to turn an existing bullet into a To-do, and it has to keep working.
+    expect(resolveSlashCommandQuery("/todbuy milk", 4, 4)).toEqual({
+      start: 0,
+      end: 4,
       query: "tod"
     });
     expect(resolveSlashCommandQuery("/to d", 5, 5)).toBeNull();

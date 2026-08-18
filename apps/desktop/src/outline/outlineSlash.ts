@@ -210,10 +210,6 @@ export function resolveSlashCommandQuery(
   // -- everywhere else, Enter on a bare slash would convert the row instead of
   // starting the next one.
   if (query.length === 0 && start > 0) return null;
-  // And a caret standing inside a longer word is editing that word, not naming
-  // a command: `/todken` is not `/tod`.
-  const after = value[selectionEnd];
-  if (after !== undefined && /[\p{L}\p{N}]/u.test(after)) return null;
   return { start, end: selectionEnd, query };
 }
 

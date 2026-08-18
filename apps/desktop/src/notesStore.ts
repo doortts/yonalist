@@ -596,8 +596,14 @@ export class NotesStore {
    * One row travels; the server settles the Todo chain around it, which is the
    * only place the whole chain is known -- the client holds a window of it.
    */
-  async setCompleted(id: string, completed: boolean): Promise<void> {
-    await this.executeCommand({ kind: "setCompleted", id, completed });
+  async setCompleted(
+    id: string,
+    completed: boolean,
+    historyGroup: string | null = null
+  ): Promise<void> {
+    await this.executeCommand(
+      { kind: "setCompleted", id, completed }, historyGroup
+    );
   }
   async setCompletedMany(ids: readonly string[], completed: boolean): Promise<void> {
     if (ids.length === 0) return;
@@ -611,8 +617,13 @@ export class NotesStore {
     await this.executeCommand({ kind: "setStarred", id, starred }); }
   async setCollapsed(id: string, collapsed: boolean): Promise<void> {
     await this.executeCommand({ kind: "setCollapsed", id, collapsed }); }
-  async setMarker(id: string, marker: IpcMarkerKind): Promise<void> {
-    await this.executeCommand({ kind: "setMarker", id, marker }); }
+  async setMarker(
+    id: string,
+    marker: IpcMarkerKind,
+    historyGroup: string | null = null
+  ): Promise<void> {
+    await this.executeCommand({ kind: "setMarker", id, marker }, historyGroup);
+  }
   async applySlashEdit(
     id: string,
     text: string,

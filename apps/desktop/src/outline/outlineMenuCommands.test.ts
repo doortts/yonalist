@@ -405,6 +405,47 @@ describe("outline menu eligibility", () => {
 });
 
 describe("outline menu execution", () => {
+  it("takes the tick off with the box, in one step", () => {
+    const store = {
+      setMarker: vi.fn(),
+      setCompleted: vi.fn()
+    } as unknown as NotesStore;
+    const done = {
+      ...TREE[0], marker: "todo" as const, completed: true
+    };
+
+    command("marker").execute({
+      ...context({ mode: "row", node: done }),
+      store
+    });
+
+    const [markerCall] = vi.mocked(store.setMarker).mock.calls;
+    const [completedCall] = vi.mocked(store.setCompleted).mock.calls;
+    expect(markerCall?.slice(0, 2)).toEqual([done.id, "bullet"]);
+    expect(completedCall?.slice(0, 2)).toEqual([done.id, false]);
+    // One undo, not two: the step between them is a finished bullet with no
+    // box, struck through and with nothing left to untick it.
+    expect(markerCall?.[2]).toBe(completedCall?.[2]);
+    expect(markerCall?.[2]).toEqual(expect.stringMatching(/^marker:/));
+  });
+
+  it("leaves the tick alone on a row that is only gaining a box", () => {
+    const store = {
+      setMarker: vi.fn(),
+      setCompleted: vi.fn()
+    } as unknown as NotesStore;
+    const done = { ...TREE[0], completed: true };
+
+    command("marker").execute({
+      ...context({ mode: "row", node: done }),
+      store
+    });
+
+    expect(store.setMarker).toHaveBeenCalledOnce();
+    expect(store.setCompleted).not.toHaveBeenCalled();
+  });
+
+
   it("runs the selection thunks in selection mode", () => {
     const ctx = context({ rootIds: ["b"] });
 

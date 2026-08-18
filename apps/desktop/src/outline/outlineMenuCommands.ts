@@ -10,6 +10,7 @@ import {
   CUT_OVER_CLIPBOARD_BOUNDS, OUTLINE_WINDOW_INCOMPLETE, writeOutlineClipboard,
   type OutlineClipboardFormats
 } from "./outlineClipboard";
+import { freshId } from "../store/storeSupport";
 import { OUTLINE_TAG_MAX_ROWS } from "./outlineTagEdits";
 import type { SelectionKeyboardActions } from "./outlineSupport";
 import type { SelectionMovePlan, SelectionMovePlans } from "../selectionMoves";
@@ -164,13 +165,15 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
     eligibility: ALWAYS,
     execute: (context) => {
       const returning = context.node.marker === "todo";
+      // One group, because the tick and the box are one gesture: the step
+      // between them is a finished row with no box, struck through and with
+      // nothing left to untick it.
+      const historyGroup = `marker:${freshId()}`;
       void context.store.setMarker(
-        context.node.id, returning ? "bullet" : "todo"
+        context.node.id, returning ? "bullet" : "todo", historyGroup
       );
-      // The tick goes back with the box it was in: a finished row with no box
-      // draws a line through itself, and there is nothing left to untick it.
       if (returning && context.node.completed) {
-        void context.store.setCompleted(context.node.id, false);
+        void context.store.setCompleted(context.node.id, false, historyGroup);
       }
     }
   },
