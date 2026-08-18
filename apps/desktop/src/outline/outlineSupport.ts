@@ -56,7 +56,10 @@ interface OutlineRowKeyContext {
     headId: string,
     edge: "start" | "end"
   ) => void;
-  readonly onClearSelection: (collapse?: "start" | "end") => void;
+  readonly onClearSelection: (
+    collapse?: "start" | "end",
+    step?: boolean
+  ) => void;
   readonly onFocusNote: () => void;
   readonly onMoveTo: () => void;
   readonly selectionActions: SelectionKeyboardActions;
@@ -558,6 +561,6 @@ function executeRowIntent(
       context.onExtendSelection(node.id, intent.headId, intent.edge);
       return;
     case "clearSelection":
-      context.onClearSelection(intent.collapse);
+      context.onClearSelection(intent.collapse, intent.step);
   }
 }

@@ -252,18 +252,35 @@ export function NotesOutline({
    * The ends are the band's visible first and last row, not its anchor and head:
    * a band built upward has them the other way round, and reading the pair would
    * send the caret to the opposite end of the same band.
+   *
+   * `step` is the vertical arrows: they move a line as they drop a swept span of
+   * letters, so they move a row as they drop a band, and the row they land on
+   * takes the caret the way a bare arrow off that end would have left it.
    */
-  const clearSelection = (collapse?: "start" | "end") => {
+  const clearSelection = (collapse?: "start" | "end", step?: boolean) => {
     const selected = new Set(selection.selectedIds);
     const band = collapse
       ? bodyNodes.filter((node) => selected.has(node.id))
       : [];
     selection.clear();
     setSelectionFeedback("");
-    const target = collapse === "start" ? band[0] : band.at(-1);
+    const edge = collapse === "start" ? band[0] : band.at(-1);
     const scope = scopeRef.current;
-    if (!target || !scope) return;
-    focusOutlineEditor(scope, target.id, collapse === "start" ? "start" : "end");
+    if (!edge || !scope) return;
+    const at = bodyNodes.indexOf(edge);
+    const beyond = step
+      ? bodyNodes[collapse === "start" ? at - 1 : at + 1]
+      : undefined;
+    if (beyond) focusOutlineEditor(scope, beyond.id, "start");
+    // Above the first row there is only the page title, which is where a bare
+    // arrow off that row goes as well.
+    else if (step && collapse === "start" && at === 0) {
+      focusOutlineEditor(scope, outlineRootId, "start");
+    } else {
+      focusOutlineEditor(
+        scope, edge.id, collapse === "start" ? "start" : "end"
+      );
+    }
   };
   const handOffCaret = caretHandoff({
     nodes: state.nodes,

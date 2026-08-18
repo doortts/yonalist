@@ -853,14 +853,22 @@ describe("v2 outline keyboard intent resolver", () => {
         key,
         hasSelection: true,
         selectionHeadId: "parent"
-      })), key).toEqual({ kind: "clearSelection", collapse: "start" });
+      })), key).toEqual({
+        kind: "clearSelection",
+        collapse: "start",
+        step: key === "ArrowUp"
+      });
     }
     for (const key of ["ArrowDown", "ArrowRight"]) {
       expect(resolveOutlineKey(input({
         key,
         hasSelection: true,
         selectionHeadId: "parent"
-      })), key).toEqual({ kind: "clearSelection", collapse: "end" });
+      })), key).toEqual({
+        kind: "clearSelection",
+        collapse: "end",
+        step: key === "ArrowDown"
+      });
     }
     // Escape drops the band and leaves the caret where it already stands.
     expect(resolveOutlineKey(input({
@@ -893,7 +901,7 @@ describe("v2 outline keyboard intent resolver", () => {
         selectionHeadId: "next",
         imageEdge
       })), `left ${imageEdge}`)
-        .toEqual({ kind: "clearSelection", collapse: "start" });
+        .toEqual({ kind: "clearSelection", collapse: "start", step: false });
       expect(handleImageNodeKeyDown(input({
         key: "ArrowRight",
         nodeId: "next",
@@ -901,7 +909,7 @@ describe("v2 outline keyboard intent resolver", () => {
         selectionHeadId: "next",
         imageEdge
       })), `right ${imageEdge}`)
-        .toEqual({ kind: "clearSelection", collapse: "end" });
+        .toEqual({ kind: "clearSelection", collapse: "end", step: false });
     }
     // With no band the stations keep hopping as they always have.
     expect(handleImageNodeKeyDown(input({

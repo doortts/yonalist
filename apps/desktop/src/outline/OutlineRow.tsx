@@ -71,8 +71,14 @@ export interface OutlineRowRuntimeState {
     headId: string,
     edge: "start" | "end"
   ) => void;
-  /** `collapse` names the end of the cleared band the caret lands on. */
-  readonly onClearSelection: (collapse?: "start" | "end") => void;
+  /**
+   * `collapse` names the end of the cleared band the caret lands on, and `step`
+   * carries it a row past that end.
+   */
+  readonly onClearSelection: (
+    collapse?: "start" | "end",
+    step?: boolean
+  ) => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
   readonly onPickImage: (nodeId: string) => void;
   /** Clipboard for an image row with nothing selected around it. */

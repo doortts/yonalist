@@ -106,6 +106,11 @@ export type OutlineKeyIntent =
       readonly kind: "clearSelection";
       /** Which end of the cleared band the caret lands on, when it moves. */
       readonly collapse?: "start" | "end";
+      /**
+       * Set by the vertical arrows, which carry the caret a row past that end:
+       * the same row the key would have reached with no band in the way.
+       */
+      readonly step?: boolean;
     }
   | { readonly kind: "consume" };
 
@@ -398,7 +403,8 @@ export function resolveOutlineKey(
         kind: "clearSelection",
         collapse: input.key === "ArrowUp" || input.key === "ArrowLeft"
           ? "start"
-          : "end"
+          : "end",
+        step: input.key === "ArrowUp" || input.key === "ArrowDown"
       };
     }
     if (

@@ -364,15 +364,17 @@ describe("Shift and Down across a parent that carries children", () => {
     expect(bandIds(view.container)).toEqual([...subtree, "after"]);
   });
 
-  it("lands the caret at the visual end of the band a bare Down drops", async () => {
+  it("steps past the visual end of the band a bare Down drops", async () => {
     const { view } = await outline(family);
     const editor = await bandOverSubtree(view.container);
 
     await press(editor, "ArrowDown");
 
     expect(bandIds(view.container)).toEqual([]);
+    // Past the band's last visible row, which is the deepest child -- stepping
+    // from the anchor instead would land back inside the subtree.
     expect(caretOf(view.container)).toEqual({
-      nodeId: "kid-three", start: 9, end: 9, direction: expect.anything()
+      nodeId: "after", start: 0, end: 0, direction: expect.anything()
     });
   });
 
@@ -383,8 +385,10 @@ describe("Shift and Down across a parent that carries children", () => {
     await press(editor, "ArrowUp");
 
     expect(bandIds(view.container)).toEqual([]);
+    // The band opened on the first row, so the step above it lands where a bare
+    // arrow off that row lands: the page title.
     expect(caretOf(view.container)).toEqual({
-      nodeId: "parent", start: 0, end: 0, direction: expect.anything()
+      nodeId: "page-1", start: 0, end: 0, direction: expect.anything()
     });
   });
 
@@ -428,7 +432,9 @@ describe("A bare arrow against a live row band", () => {
     return editor;
   }
 
-  it("drops the band and lands the caret at the band's end", async () => {
+  // A vertical arrow moves a line as it drops a swept span of letters, so it
+  // moves a row as it drops a band: the row past the end it points at.
+  it("drops the band and steps onto the row past its end", async () => {
     const { view } = await outline(rows);
     const editor = await bandAcross(view.container);
 
@@ -436,7 +442,40 @@ describe("A bare arrow against a live row band", () => {
 
     expect(bandIds(view.container)).toEqual([]);
     expect(caretOf(view.container)).toEqual({
-      nodeId: "two", start: 7, end: 7, direction: expect.anything()
+      nodeId: "three", start: 0, end: 0, direction: expect.anything()
+    });
+  });
+
+  it("drops the band and steps onto the row above its start", async () => {
+    const { view } = await outline(rows);
+    const editor = await placeCaret(view.container, "two", 0);
+    await press(editor, "ArrowDown", { shiftKey: true });
+    await press(editor, "ArrowDown", { shiftKey: true });
+    await press(editor, "ArrowDown", { shiftKey: true });
+    expect(bandIds(view.container)).toEqual(["two", "three"]);
+
+    await press(editor, "ArrowUp");
+
+    expect(bandIds(view.container)).toEqual([]);
+    expect(caretOf(view.container)).toEqual({
+      nodeId: "one", start: 0, end: 0, direction: expect.anything()
+    });
+  });
+
+  // Nothing past the band means nowhere to step, so the caret keeps the end it
+  // would have landed on anyway.
+  it("stays at the band's end when the outline runs out", async () => {
+    const { view } = await outline(rows);
+    const editor = await placeCaret(view.container, "two", 0);
+    await press(editor, "ArrowDown", { shiftKey: true });
+    await press(editor, "ArrowDown", { shiftKey: true });
+    await press(editor, "ArrowDown", { shiftKey: true });
+
+    await press(editor, "ArrowDown");
+
+    expect(bandIds(view.container)).toEqual([]);
+    expect(caretOf(view.container)).toEqual({
+      nodeId: "three", start: 9, end: 9, direction: expect.anything()
     });
   });
 

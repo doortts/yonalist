@@ -192,7 +192,7 @@ describe("v2 outline row keys reach the collaborator they name", () => {
     const given = options(storeStub(), true);
     fireEvent.keyDown(mountRow(given), { key: "ArrowLeft" });
 
-    expect(given.onClearSelection).toHaveBeenCalledWith("start");
+    expect(given.onClearSelection).toHaveBeenCalledWith("start", false);
     expect(given.onExtendSelection).not.toHaveBeenCalled();
   });
 
@@ -265,7 +265,7 @@ describe("v2 image row keys reach the collaborator they name", () => {
     const given = options(storeStub(), true);
     fireEvent.keyDown(mountImage(given), { key: "ArrowLeft" });
 
-    expect(given.onClearSelection).toHaveBeenCalledWith("start");
+    expect(given.onClearSelection).toHaveBeenCalledWith("start", false);
     expect(given.onExtendSelection).not.toHaveBeenCalled();
   });
 
