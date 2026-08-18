@@ -98,7 +98,7 @@ describe("outline marker styles", () => {
     ]);
 
     for (let slot = 1; slot < MAX_OUTLINE_MARKER_LEVELS; slot += 1) {
-      expect(variables[`--notes-marker-${slot}-w`]).toBe("11px");
+      expect(variables[`--notes-marker-${slot}-w`]).toBe("8px");
       expect(variables[`--notes-marker-${slot}-color`]).toBe("#e8734a");
     }
     expect(variables["--notes-marker-0-w"]).toBe("7px");
@@ -112,7 +112,7 @@ describe("outline marker styles", () => {
       style({ shape: "hyphen" }),
       style({ shape: "custom", char: "▸", color: "#e8734a" })
     ]);
-    expect(variables["--notes-marker-0-w"]).toBe("11px");
+    expect(variables["--notes-marker-0-w"]).toBe("8px");
     expect(variables["--notes-marker-0-h"]).toBe("2.5px");
     expect(variables["--notes-marker-0-bg"]).toBe("currentColor");
     expect(variables["--notes-marker-0-char"]).toBe('""');
