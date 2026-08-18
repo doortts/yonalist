@@ -197,6 +197,35 @@ export function resolveSlashCommandQuery(
     : null;
 }
 
+const recentKey = "yonalist.slashCommandOrder.v1";
+
+/**
+ * The commands this reader reached for, most recent first. A menu of two is
+ * short enough to read either way; what this saves is the reader who always
+ * wants the same one having to look for where it landed.
+ */
+function recentSlashCommands(): readonly string[] {
+  try {
+    const raw = window.localStorage.getItem(recentKey);
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === "string")
+      : [];
+  } catch {
+    // No storage, or nothing readable in it: the declared order stands.
+    return [];
+  }
+}
+
+export function rememberSlashCommand(id: SlashCommandId): void {
+  const order = [id, ...recentSlashCommands().filter((seen) => seen !== id)];
+  try {
+    window.localStorage.setItem(recentKey, JSON.stringify(order));
+  } catch {
+    // The menu still runs the command; only the order is forgotten.
+  }
+}
+
 export function filterSlashCommands(
   query: string,
   marker?: string
@@ -206,9 +235,17 @@ export function filterSlashCommands(
     .toLocaleLowerCase("en-US")
     .replaceAll("-", "")
     .startsWith(normalized);
-  return slashCommandsFor(marker).filter((command) =>
-    named(command.label) || (command.aliases ?? []).some(named)
-  );
+  const recent = recentSlashCommands();
+  // A command nobody has reached for yet sorts after every one that has, and
+  // keeps the order it was declared in among its own kind.
+  const reachedFor = (command: SlashCommandDefinition) => {
+    const place = recent.indexOf(command.id);
+    return place < 0 ? recent.length : place;
+  };
+  return slashCommandsFor(marker)
+    .filter((command) =>
+      named(command.label) || (command.aliases ?? []).some(named))
+    .sort((left, right) => reachedFor(left) - reachedFor(right));
 }
 
 export function applySlashCommand(

@@ -19,8 +19,8 @@ import {
   TodoCheckbox, TodoProgressIndicator, type TodoProgress
 } from "./outlineTodo";
 import {
-  applySlashCommand, filterSlashCommands, localDateIso, resolveTitleInput,
-  type SlashCommandId, type SlashCommandQuery
+  applySlashCommand, filterSlashCommands, localDateIso, rememberSlashCommand,
+  resolveTitleInput, type SlashCommandId, type SlashCommandQuery
 } from "./outlineSlash";
 import {
   OutlineTextField, type OutlineTagToken
@@ -172,6 +172,7 @@ export const OutlineRow = memo(function OutlineRow({
       node.marker === "todo" ? "todo" : undefined
     );
     setSlashMenu(null);
+    rememberSlashCommand(commandId);
     commitRowEdit(edit, edit.marker);
   };
   useEffect(() => {

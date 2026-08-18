@@ -4,6 +4,7 @@ import {
   resolveOrderedInput,
   resolveSlashCommandQuery,
   resolveTitleInput,
+  rememberSlashCommand,
   resolveTodoBoxInput
 } from "./outlineSlash";
 
@@ -221,5 +222,49 @@ describe("the one question a title's own field asks of a change", () => {
       selectionStart: 8,
       selectionEnd: 8
     })).toBeNull();
+  });
+});
+
+describe("the order the menu offers its commands in", () => {
+  beforeEach(() => {
+    const backing = new Map<string, string>();
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => backing.get(key) ?? null,
+        setItem: (key: string, value: string) => backing.set(key, value),
+        removeItem: (key: string) => backing.delete(key),
+        clear: () => backing.clear()
+      }
+    });
+  });
+
+  afterEach(() => {
+    delete (window as { localStorage?: unknown }).localStorage;
+  });
+
+  it("leads with the one used last", () => {
+    expect(filterSlashCommands("").map(({ id }) => id))
+      .toEqual(["today", "todo"]);
+
+    rememberSlashCommand("todo");
+
+    expect(filterSlashCommands("").map(({ id }) => id))
+      .toEqual(["todo", "today"]);
+  });
+
+  it("keeps the order it was given for the ones never used", () => {
+    rememberSlashCommand("today");
+    rememberSlashCommand("todo");
+    rememberSlashCommand("today");
+
+    expect(filterSlashCommands("").map(({ id }) => id))
+      .toEqual(["today", "todo"]);
+  });
+
+  it("orders what the query left, and nothing else", () => {
+    rememberSlashCommand("todo");
+
+    expect(filterSlashCommands("toda").map(({ id }) => id)).toEqual(["today"]);
   });
 });
