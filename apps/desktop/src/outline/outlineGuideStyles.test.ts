@@ -27,13 +27,22 @@ describe("outline indentation guides", () => {
     expect(row).toContain("background-size: var(--notes-indent) 100%;");
   });
 
-  // The click target is invisible without this. The lit bar has to land on the
+  // The click target is invisible without this. The lit line has to land on the
   // stripe the pointer found, so it is placed off the same two properties the
   // painted stripe uses, stepped by the index the pane writes onto the row.
   it("lights the hovered stripe off the geometry that paints it", () => {
     const lit = rule(notesStyles, '.notes-node[data-guide-hot]::before');
     expect(lit).toContain("var(--notes-bullet-center-offset) + var(--notes-guide-hot) *");
-    expect(lit).toContain("var(--notes-outline-indent) - 1px");
+    expect(lit).toContain("var(--notes-outline-indent)");
     expect(lit).toContain("pointer-events: none;");
+  });
+
+  // Each row lights its own segment, so a rounded end would notch every row
+  // boundary and the guide would read as a dashed line. The hairline width is
+  // the painted stripe's, so hovering recolours rather than thickens.
+  it("keeps the lit guide a square-ended hairline", () => {
+    const lit = rule(notesStyles, '.notes-node[data-guide-hot]::before');
+    expect(lit).toContain("width: 1px;");
+    expect(lit).not.toContain("border-radius");
   });
 });
