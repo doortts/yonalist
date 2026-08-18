@@ -1209,11 +1209,23 @@
  * reader reads elsewhere by eight characters. 750px is that line: 42
  * characters at the top level, 34 three levels down. The cap stays because
  * without one a wide display would run a line past 100 characters.
+ *
+ * Centring the column spends everything the cap leaves over on the two
+ * margins, which on a wide pane pushes the page further in than the line
+ * length asks for. The start margin centres the column only until it reaches
+ * 60px and then holds, so the width decides the line and the margin no longer
+ * follows the window. Below the cap the clamp reads 0 and the column fills the
+ * pane as it always did.
  */
 .notes-outline-content {
-  width: min(100%, 750px);
+  --notes-column-width: 750px;
+  width: min(100%, var(--notes-column-width));
   min-width: 0;
-  margin-inline: auto;
+  margin-inline: clamp(
+    0px,
+    (100% - var(--notes-column-width)) / 2,
+    60px
+  ) auto;
   padding-block-start: 32px;
 }
 
