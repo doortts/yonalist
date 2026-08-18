@@ -9,7 +9,8 @@ export interface SlashCommandDefinition {
 }
 
 export interface SlashCommandQuery {
-  readonly start: 0;
+  /** Where the slash stands. */
+  readonly start: number;
   readonly end: number;
   readonly query: string;
 }
@@ -142,6 +143,12 @@ export function resolveTitleInput(
   return query ? { kind: "slash", query } : null;
 }
 
+/**
+ * The query the caret stands in, wherever in the row that is. A command opens
+ * at a slash that begins a word -- the row's first character, or one after a
+ * space -- so the slashes people write inside words stay punctuation:
+ * `and/or`, `https://`, a date written `7/28`.
+ */
 export function resolveSlashCommandQuery(
   value: string,
   selectionStart: number | null,
@@ -152,14 +159,18 @@ export function resolveSlashCommandQuery(
     selectionEnd === null ||
     selectionStart !== selectionEnd ||
     selectionEnd < 1 ||
-    selectionEnd > value.length ||
-    value[0] !== "/"
+    selectionEnd > value.length
   ) {
     return null;
   }
-  const query = value.slice(1, selectionEnd);
+  const typed = value.slice(0, selectionEnd);
+  const start = typed.lastIndexOf("/");
+  if (start < 0) return null;
+  const before = start === 0 ? "" : typed[start - 1];
+  if (before !== "" && !/\s/u.test(before)) return null;
+  const query = typed.slice(start + 1);
   return /^[a-z]*$/iu.test(query)
-    ? { start: 0, end: selectionEnd, query }
+    ? { start, end: selectionEnd, query }
     : null;
 }
 
@@ -187,16 +198,18 @@ export function applySlashCommand(
   ) {
     throw new Error("Slash command query no longer matches the source value.");
   }
+  const before = source.slice(0, query.start);
+  const after = source.slice(query.end);
   if (command === "todo") {
     return {
-      value: source.slice(query.end),
-      caret: 0,
+      value: before + after,
+      caret: query.start,
       marker: "todo"
     };
   }
   return {
-    value: today + source.slice(query.end),
-    caret: today.length,
+    value: before + today + after,
+    caret: query.start + today.length,
     marker: null
   };
 }

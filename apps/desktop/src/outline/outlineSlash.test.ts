@@ -8,13 +8,25 @@ import {
 } from "./outlineSlash";
 
 describe("v2 slash commands", () => {
-  it("owns only a leading collapsed lowercase slash query", () => {
+  it("owns a collapsed lowercase slash query anywhere a word can start", () => {
     expect(resolveSlashCommandQuery("/tod later", 4, 4)).toEqual({
       start: 0,
       end: 4,
       query: "tod"
     });
-    expect(resolveSlashCommandQuery("Plan /tod", 9, 9)).toBeNull();
+    expect(resolveSlashCommandQuery("Plan /tod", 9, 9)).toEqual({
+      start: 5,
+      end: 9,
+      query: "tod"
+    });
+    expect(resolveSlashCommandQuery("Plan /", 6, 6)).toEqual({
+      start: 5,
+      end: 6,
+      query: ""
+    });
+    // Mid-word slashes are somebody else's punctuation, not a command.
+    expect(resolveSlashCommandQuery("and/or", 6, 6)).toBeNull();
+    expect(resolveSlashCommandQuery("https://x", 9, 9)).toBeNull();
     expect(resolveSlashCommandQuery("/to d", 5, 5)).toBeNull();
     expect(resolveSlashCommandQuery("/tod", 1, 3)).toBeNull();
   });
@@ -23,6 +35,14 @@ describe("v2 slash commands", () => {
     expect(filterSlashCommands("").map(({ id }) => id)).toEqual(["today", "todo"]);
     expect(filterSlashCommands("TOD").map(({ id }) => id)).toEqual(["today", "todo"]);
     expect(filterSlashCommands("TODO").map(({ id }) => id)).toEqual(["todo"]);
+  });
+
+  it("edits only the query, wherever in the row it stands", () => {
+    const query = resolveSlashCommandQuery("Plan /tod later", 9, 9)!;
+    expect(applySlashCommand("Plan /tod later", query, "today", "2026-07-28"))
+      .toEqual({ value: "Plan 2026-07-28 later", caret: 15, marker: null });
+    expect(applySlashCommand("Plan /tod later", query, "todo", "2026-07-28"))
+      .toEqual({ value: "Plan  later", caret: 5, marker: "todo" });
   });
 
   it("inserts a local ISO date or atomically converts the marker", () => {
