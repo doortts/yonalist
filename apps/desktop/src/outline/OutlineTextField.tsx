@@ -18,6 +18,11 @@ import {
   type OutlinePresentationToken
 } from "./outlinePresentation";
 
+// How far the caret layer leads the glyph layer it lies over.
+const CARET_GUTTER = 1;
+// Room kept left of the caret inside the layer, so nothing clips that pixel.
+const CARET_LAYER_PADDING = 2;
+
 export interface OutlineTagToken {
   readonly prefix: "#" | "@";
   readonly normalized: string;
@@ -316,7 +321,19 @@ export const OutlineTextField = forwardRef<
   const textareaStyle: CSSProperties = {
     ...style,
     position: "absolute",
-    inset: 0,
+    insetBlock: 0,
+    // The caret is drawn at this layer's content origin -- the very pixel the
+    // presentation's first glyph starts on, which is what stands a caret on
+    // that glyph's left stem. Both inline edges move one pixel left, so the
+    // caret leads the glyphs by a pixel while the content box keeps its width
+    // and the two layers still wrap at the same places.
+    insetInlineStart: -(CARET_GUTTER + CARET_LAYER_PADDING),
+    insetInlineEnd: CARET_GUTTER,
+    paddingInlineStart: CARET_LAYER_PADDING,
+    // The row stylesheet gives this layer `width: 100%`, which over-constrains
+    // the pair of inline edges and drops the far one -- taking the width back
+    // off the content box the glyphs wrap against. The edges own the width.
+    width: "auto",
     whiteSpace: "pre-wrap",
     overflowWrap: "anywhere",
     opacity: editing ? (style?.opacity ?? 1) : 0,

@@ -172,23 +172,94 @@ describe("pane-scoped outline focus", () => {
     scope.append(rows);
     document.body.append(outer);
     const target = editor(rows, "target", "");
+    target.style.lineHeight = "25px";
     outer.scrollTop = 75;
     rows.scrollTop = 40;
     vi.spyOn(rows, "getBoundingClientRect").mockReturnValue({
-      top: 10,
-      bottom: 110
+      top: 0,
+      bottom: 300
     } as DOMRect);
     vi.spyOn(target, "getBoundingClientRect").mockReturnValue({
-      top: 110,
-      bottom: 138
+      top: 290,
+      bottom: 315
     } as DOMRect);
     const focus = vi.spyOn(target, "focus");
 
     expect(focusOutlineEditor(scope, "target", "start")).toBe(true);
 
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
-    expect(rows.scrollTop).toBe(68);
+    // 15px would put the row's bottom on the edge; three more lines follow it.
+    expect(rows.scrollTop).toBe(40 + 15 + 75);
     expect(outer.scrollTop).toBe(75);
+  });
+
+  it("leads a row reached from above by the same three lines", () => {
+    const scope = document.createElement("section");
+    const rows = document.createElement("div");
+    rows.className = "notes-outline-rows";
+    scope.append(rows);
+    document.body.append(scope);
+    const target = editor(rows, "target", "");
+    target.style.lineHeight = "25px";
+    rows.scrollTop = 200;
+    vi.spyOn(rows, "getBoundingClientRect").mockReturnValue({
+      top: 0,
+      bottom: 300
+    } as DOMRect);
+    vi.spyOn(target, "getBoundingClientRect").mockReturnValue({
+      top: 10,
+      bottom: 35
+    } as DOMRect);
+
+    expect(focusOutlineEditor(scope, "target", "start")).toBe(true);
+    // The row sits 10px below the edge already; three lines want 75.
+    expect(rows.scrollTop).toBe(200 - (75 - 10));
+  });
+
+  it("measures the three lines against the row's own line height", () => {
+    const scope = document.createElement("section");
+    const rows = document.createElement("div");
+    rows.className = "notes-outline-rows";
+    scope.append(rows);
+    document.body.append(scope);
+    const heading = editor(rows, "target", "");
+    heading.style.lineHeight = "32px";
+    rows.scrollTop = 0;
+    vi.spyOn(rows, "getBoundingClientRect").mockReturnValue({
+      top: 0,
+      bottom: 300
+    } as DOMRect);
+    vi.spyOn(heading, "getBoundingClientRect").mockReturnValue({
+      top: 290,
+      bottom: 322
+    } as DOMRect);
+
+    expect(focusOutlineEditor(scope, "target", "start")).toBe(true);
+    expect(rows.scrollTop).toBe(22 + 96);
+  });
+
+  it("never lets the lead push the row off the edge it came from", () => {
+    const scope = document.createElement("section");
+    const rows = document.createElement("div");
+    rows.className = "notes-outline-rows";
+    scope.append(rows);
+    document.body.append(scope);
+    const target = editor(rows, "target", "");
+    target.style.lineHeight = "25px";
+    rows.scrollTop = 0;
+    vi.spyOn(rows, "getBoundingClientRect").mockReturnValue({
+      top: 0,
+      bottom: 300
+    } as DOMRect);
+    // A row taller than the viewport: leading it by three lines would carry
+    // its own top out of sight, so it stops on the edge instead.
+    vi.spyOn(target, "getBoundingClientRect").mockReturnValue({
+      top: 290,
+      bottom: 700
+    } as DOMRect);
+
+    expect(focusOutlineEditor(scope, "target", "start")).toBe(true);
+    expect(rows.scrollTop).toBe(290);
   });
 
   it("re-reveals the caret after a deletion shifts the layout", () => {
@@ -205,17 +276,18 @@ describe("pane-scoped outline focus", () => {
     scope.append(rows);
     document.body.append(scope);
     const target = editor(rows, "target", "");
+    target.style.lineHeight = "25px";
     rows.scrollTop = 120;
     const rowsRect = vi.spyOn(rows, "getBoundingClientRect");
     const targetRect = vi.spyOn(target, "getBoundingClientRect");
-    rowsRect.mockReturnValue({ top: 10, bottom: 110 } as DOMRect);
-    targetRect.mockReturnValue({ top: 40, bottom: 68 } as DOMRect);
+    rowsRect.mockReturnValue({ top: 0, bottom: 300 } as DOMRect);
+    targetRect.mockReturnValue({ top: 100, bottom: 125 } as DOMRect);
 
     expect(focusOutlineEditor(scope, "target", "start")).toBe(true);
     expect(rows.scrollTop).toBe(120);
 
-    targetRect.mockReturnValue({ top: -18, bottom: 10 } as DOMRect);
+    targetRect.mockReturnValue({ top: -18, bottom: 7 } as DOMRect);
     frames.forEach((callback) => callback(0));
-    expect(rows.scrollTop).toBe(92);
+    expect(rows.scrollTop).toBe(120 - 18 - 75);
   });
 });
