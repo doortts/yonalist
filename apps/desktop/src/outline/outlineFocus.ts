@@ -19,16 +19,40 @@ function revealInLocalOutline(target: HTMLElement): void {
   globalThis.requestAnimationFrame?.(() => adjustLocalOutlineScroll(target));
 }
 
+// A row arriving at an edge brings this many lines of what surrounds it, so
+// the caret reads with context ahead of it instead of against the boundary.
+const LEAD_LINES = 3;
+// What a line is worth where the editor reports no line height of its own --
+// an unstyled field, or a test environment that lays nothing out. The row
+// line height in `notes.css`.
+const FALLBACK_LINE_HEIGHT = 25;
+
+function leadHeight(target: HTMLElement): number {
+  const view = target.ownerDocument.defaultView;
+  const line = Number.parseFloat(view?.getComputedStyle(target).lineHeight ?? "");
+  return LEAD_LINES * (Number.isFinite(line) ? line : FALLBACK_LINE_HEIGHT);
+}
+
 function adjustLocalOutlineScroll(target: HTMLElement): void {
   if (!target.isConnected) return;
   const rows = target.closest<HTMLElement>(".notes-outline-rows");
   if (!rows) return;
   const rowsRect = rows.getBoundingClientRect();
   const targetRect = target.getBoundingClientRect();
-  if (targetRect.top < rowsRect.top) {
-    rows.scrollTop += targetRect.top - rowsRect.top;
-  } else if (targetRect.bottom > rowsRect.bottom) {
-    rows.scrollTop += targetRect.bottom - rowsRect.bottom;
+  const lead = leadHeight(target);
+  // The lead is what the scroll aims for; the other edge of the row is what it
+  // may never cross. A row taller than the room left over stops on the edge it
+  // came from rather than being carried out the far side of the viewport.
+  if (targetRect.top - lead < rowsRect.top) {
+    rows.scrollTop += Math.max(
+      targetRect.top - lead - rowsRect.top,
+      Math.min(0, targetRect.bottom - rowsRect.bottom)
+    );
+  } else if (targetRect.bottom + lead > rowsRect.bottom) {
+    rows.scrollTop += Math.min(
+      targetRect.bottom + lead - rowsRect.bottom,
+      Math.max(0, targetRect.top - rowsRect.top)
+    );
   }
 }
 
