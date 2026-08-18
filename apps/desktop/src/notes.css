@@ -1980,34 +1980,32 @@ button.notes-date-token:hover {
     box-shadow 120ms ease;
 }
 
+/* A collapsed parent carries a filled plate and nothing else -- the ring it
+   used to wear read as a control, and at 26px it crowded the row. */
 .notes-node-bullet[data-collapsed="true"]::before {
-  width: 26px;
-  height: 26px;
-  background: var(--bg-hover);
-  box-shadow: inset 0 0 0 1px var(--border);
+  width: 20px;
+  height: 20px;
+  background: var(--bg-active);
 }
 
+/* Hover has to read at a glance, so it takes the stronger plate and pulls the
+   marker up to full text strength. The plate stays 18px, a step under the
+   collapsed one, so a hovered row never passes for a collapsed one. */
 .notes-node-bullet:hover::before {
-  background: var(--bg-hover);
-}
-
-.notes-node-bullet[data-collapsed="true"]:hover::before {
   background: var(--bg-active);
-  box-shadow: inset 0 0 0 1px var(--border-strong);
 }
 
-.notes-node-bullet[data-collapsed="true"]:focus-visible::before,
-.notes-node[data-completed="true"]
-  .notes-node-bullet[data-collapsed="true"]:focus-visible::before {
+.notes-node-bullet:hover {
+  color: var(--text-1);
+}
+
+.notes-node-bullet:hover .notes-node-bullet-number {
+  color: var(--text-1);
+}
+
+.notes-node-bullet[data-collapsed="true"]:focus-visible::before {
   background: var(--bg-active);
-  box-shadow:
-    0 0 0 2px var(--accent),
-    inset 0 0 0 1px var(--border-strong);
-}
-
-.notes-node[data-completed="true"]
-  .notes-node-bullet[data-collapsed="true"]::before {
-  box-shadow: inset 0 0 0 1px var(--border-strong);
+  box-shadow: 0 0 0 2px var(--accent);
 }
 
 .notes-node-bullet[data-sortable-activator="true"] {
