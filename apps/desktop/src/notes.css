@@ -351,6 +351,16 @@
   border-top: 1px solid var(--border);
 }
 
+/* The list is a stack of rows with nothing between them, so a hint hung below
+   one would sit on the next row's face -- and while the modifier is held every
+   row has one. Theirs rides the row's own trailing edge instead. */
+.notes-library-page > .shortcut-hint {
+  top: 50%;
+  left: auto;
+  right: 8px;
+  transform: translateY(-50%);
+}
+
 .notes-library-page-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 30px;
@@ -372,6 +382,7 @@
 }
 
 .notes-library-page {
+  position: relative;
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr);
   align-items: center;
