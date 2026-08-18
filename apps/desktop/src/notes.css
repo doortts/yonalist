@@ -2000,6 +2000,7 @@ body.is-outline-dragging * {
   width: var(--notes-marker-0-w, 7px);
   height: var(--notes-marker-0-h, 7px);
   border-radius: var(--notes-marker-0-r, 50%);
+  top: var(--notes-marker-0-dy, 0);
   background: var(--notes-marker-0-bg, currentColor);
   color: var(--notes-marker-0-color, inherit);
 }
@@ -2013,6 +2014,7 @@ body.is-outline-dragging * {
   width: var(--notes-marker-1-w, 7px);
   height: var(--notes-marker-1-h, 7px);
   border-radius: var(--notes-marker-1-r, 50%);
+  top: var(--notes-marker-1-dy, 0);
   background: var(--notes-marker-1-bg, currentColor);
   color: var(--notes-marker-1-color, inherit);
 }
@@ -2026,6 +2028,7 @@ body.is-outline-dragging * {
   width: var(--notes-marker-2-w, 7px);
   height: var(--notes-marker-2-h, 7px);
   border-radius: var(--notes-marker-2-r, 50%);
+  top: var(--notes-marker-2-dy, 0);
   background: var(--notes-marker-2-bg, currentColor);
   color: var(--notes-marker-2-color, inherit);
 }
@@ -2039,6 +2042,7 @@ body.is-outline-dragging * {
   width: var(--notes-marker-3-w, 7px);
   height: var(--notes-marker-3-h, 7px);
   border-radius: var(--notes-marker-3-r, 50%);
+  top: var(--notes-marker-3-dy, 0);
   background: var(--notes-marker-3-bg, currentColor);
   color: var(--notes-marker-3-color, inherit);
 }
@@ -2052,6 +2056,7 @@ body.is-outline-dragging * {
   width: var(--notes-marker-4-w, 7px);
   height: var(--notes-marker-4-h, 7px);
   border-radius: var(--notes-marker-4-r, 50%);
+  top: var(--notes-marker-4-dy, 0);
   background: var(--notes-marker-4-bg, currentColor);
   color: var(--notes-marker-4-color, inherit);
 }
@@ -2065,6 +2070,7 @@ body.is-outline-dragging * {
   width: var(--notes-marker-5-w, 7px);
   height: var(--notes-marker-5-h, 7px);
   border-radius: var(--notes-marker-5-r, 50%);
+  top: var(--notes-marker-5-dy, 0);
   background: var(--notes-marker-5-bg, currentColor);
   color: var(--notes-marker-5-color, inherit);
 }

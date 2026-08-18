@@ -114,6 +114,10 @@ describe("outline marker styles", () => {
     ]);
     expect(variables["--notes-marker-0-w"]).toBe("8px");
     expect(variables["--notes-marker-0-h"]).toBe("2.5px");
+    // The dash reads as a hyphen, so it sits where a hyphen's bar does: a pixel
+    // under the line box's middle, which every other shape centres on.
+    expect(variables["--notes-marker-0-dy"]).toBe("1px");
+    expect(variables["--notes-marker-1-dy"]).toBe("0");
     expect(variables["--notes-marker-0-bg"]).toBe("currentColor");
     expect(variables["--notes-marker-0-char"]).toBe('""');
     expect(variables["--notes-marker-1-bg"]).toBe("transparent");

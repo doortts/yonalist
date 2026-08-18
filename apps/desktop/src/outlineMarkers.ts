@@ -122,6 +122,12 @@ interface ShapeBox {
   readonly w: string;
   readonly h: string;
   readonly r: string;
+  /**
+   * How far below the line box's middle the shape sits. A box the height of the
+   * text centres on the line and needs none; a bar as thin as the dash reads as
+   * a hyphen, and a hyphen's own bar sits a pixel under that middle.
+   */
+  readonly dy?: string;
 }
 
 /**
@@ -138,7 +144,7 @@ export const monospaceStack =
 const boxes: Record<OutlineMarkerShape, ShapeBox> = {
   dot: { w: "7px", h: "7px", r: "50%" },
   square: { w: "6px", h: "6px", r: "1.5px" },
-  dash: { w: "8px", h: "2.5px", r: "0" },
+  dash: { w: "8px", h: "2.5px", r: "0", dy: "1px" },
   hyphen: { w: "auto", h: "auto", r: "0" },
   custom: { w: "auto", h: "auto", r: "0" }
 };
@@ -163,6 +169,7 @@ export function outlineMarkerVariables(
     variables[`--notes-marker-${index}-w`] = box.w;
     variables[`--notes-marker-${index}-h`] = box.h;
     variables[`--notes-marker-${index}-r`] = box.r;
+    variables[`--notes-marker-${index}-dy`] = box.dy ?? "0";
     variables[`--notes-marker-${index}-bg`] = drawsGlyph
       ? "transparent"
       : "currentColor";
