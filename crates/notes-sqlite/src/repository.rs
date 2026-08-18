@@ -154,6 +154,11 @@ fn collect_command_context(
         NotesCommand::RemoveEmptyNode { id } => {
             collect_remove_context(connection, id, nodes)?;
         }
+        // The same slice the blank-row removal needs -- the row, its ancestors
+        // (the parent among them), its children, and the sibling after it.
+        NotesCommand::MergeNodeIntoParent { id, .. } => {
+            collect_remove_context(connection, id, nodes)?;
+        }
         NotesCommand::MoveNode {
             id,
             parent_id,

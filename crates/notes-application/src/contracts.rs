@@ -249,6 +249,12 @@ pub enum IpcNotesCommand {
         previous_text: String,
         current_text: String,
     },
+    MergeNodeIntoParent {
+        id: String,
+        parent_id: String,
+        parent_text: String,
+        current_text: String,
+    },
     RemoveEmptyNode {
         id: String,
     },

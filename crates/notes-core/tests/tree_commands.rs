@@ -1089,6 +1089,102 @@ fn remove_empty_node_lifts_children_into_its_exact_slot_and_round_trips() {
 }
 
 #[test]
+fn merge_node_into_parent_folds_the_text_up_and_round_trips() {
+    let mut tree = NotesTree::default();
+    tree.apply(&[
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("parent"), id("page"), 1_024, "Above")),
+        TreeMutation::upsert(NoteNode::child(id("row"), id("parent"), 1_024, "Joined")),
+        TreeMutation::upsert(NoteNode::child(id("sibling"), id("parent"), 2_048, "Next")),
+        TreeMutation::upsert(NoteNode::child(id("child"), id("row"), 1_024, "")),
+        TreeMutation::upsert(NoteNode::child(id("grandchild"), id("child"), 1_024, "")),
+    ])
+    .unwrap();
+    let original = tree.clone();
+
+    let patch = tree
+        .plan(NotesCommand::MergeNodeIntoParent {
+            id: id("row"),
+            parent_id: id("parent"),
+            parent_text: "Above".into(),
+            current_text: "Joined".into(),
+        })
+        .unwrap();
+    tree.apply(&patch.forward).unwrap();
+
+    assert_eq!(tree.node(&id("parent")).unwrap().text(), "AboveJoined");
+    assert!(tree.node(&id("row")).is_none());
+    // The row's own branch takes the slot it stood in, ahead of the sibling.
+    assert_eq!(
+        tree.children_of(&id("parent")),
+        vec![id("child"), id("sibling")]
+    );
+    assert_eq!(tree.children_of(&id("child")), vec![id("grandchild")]);
+
+    // One command, so one patch: the whole gesture reverses in a single step.
+    tree.apply(&patch.inverse).unwrap();
+    assert_eq!(tree, original);
+}
+
+#[test]
+fn merge_node_into_parent_refuses_what_it_would_lose_or_reorder() {
+    let mut tree = NotesTree::default();
+    tree.apply(&[
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("parent"), id("page"), 1_024, "Above")),
+        TreeMutation::upsert(NoteNode::child(id("first"), id("parent"), 1_024, "First")),
+        TreeMutation::upsert(NoteNode::child(id("second"), id("parent"), 2_048, "Second")),
+        TreeMutation::upsert(NoteNode::child(id("elsewhere"), id("page"), 2_048, "Away")),
+    ])
+    .unwrap();
+
+    // A later child would jump its own siblings on the way up.
+    assert_eq!(
+        tree.plan(NotesCommand::MergeNodeIntoParent {
+            id: id("second"),
+            parent_id: id("parent"),
+            parent_text: "Above".into(),
+            current_text: "Second".into(),
+        }),
+        Err(DomainError::Invariant(
+            "only the first child merges into its parent".into()
+        ))
+    );
+    // A parent the row does not sit under.
+    assert_eq!(
+        tree.plan(NotesCommand::MergeNodeIntoParent {
+            id: id("elsewhere"),
+            parent_id: id("parent"),
+            parent_text: "Above".into(),
+            current_text: "Away".into(),
+        }),
+        Err(DomainError::Invariant(
+            "a merged bullet must name the parent it sits under".into()
+        ))
+    );
+
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::UpdateNote {
+            id: id("first"),
+            note: "Keep this context".into(),
+        },
+    );
+    // The row goes away, and a note on it would go unsaid.
+    assert_eq!(
+        tree.plan(NotesCommand::MergeNodeIntoParent {
+            id: id("first"),
+            parent_id: id("parent"),
+            parent_text: "Above".into(),
+            current_text: "First".into(),
+        }),
+        Err(DomainError::Invariant(
+            "a bullet carrying a note cannot be merged into its parent".into()
+        ))
+    );
+}
+
+#[test]
 fn remove_empty_node_rejects_nonempty_bullets_and_pages() {
     let mut tree = NotesTree::default();
     tree.apply(&[

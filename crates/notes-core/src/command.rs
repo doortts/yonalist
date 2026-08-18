@@ -107,6 +107,17 @@ pub enum NotesCommand {
         previous_text: String,
         current_text: String,
     },
+    /// Backspace at the head of a first child: the parent takes the joined
+    /// text, the row goes, and the row's own children rise into its place. One
+    /// command because it is one keystroke -- spelled as three, a write landing
+    /// between them tears the gesture out of its history entry and one undo
+    /// answers for part of it.
+    MergeNodeIntoParent {
+        id: NodeId,
+        parent_id: NodeId,
+        parent_text: String,
+        current_text: String,
+    },
     RemoveEmptyNode {
         id: NodeId,
     },

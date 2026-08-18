@@ -162,6 +162,17 @@ impl TryFrom<IpcNotesCommand> for NotesCommand {
                 previous_text,
                 current_text,
             }),
+            IpcNotesCommand::MergeNodeIntoParent {
+                id: value,
+                parent_id,
+                parent_text,
+                current_text,
+            } => Ok(Self::MergeNodeIntoParent {
+                id: id(value)?,
+                parent_id: id(parent_id)?,
+                parent_text,
+                current_text,
+            }),
             IpcNotesCommand::RemoveEmptyNode { id: value } => {
                 Ok(Self::RemoveEmptyNode { id: id(value)? })
             }

@@ -47,6 +47,7 @@ const TEXT_OWNING_COMMANDS: ReadonlySet<IpcNotesCommand["kind"]> = new Set([
   "updateNote",
   "splitNode",
   "mergeNodeBackward",
+  "mergeNodeIntoParent",
   "removeEmptyNode"
 ]);
 

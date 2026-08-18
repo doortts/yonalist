@@ -585,3 +585,123 @@ fn atomic_editor_gesture_empty_removal_lifts_children_and_undoes_once() {
     assert_eq!(storage.parent("child").as_deref(), Some("empty"));
     assert_eq!(storage.children("page"), ["before", "empty", "after"]);
 }
+
+/// The gesture used to go out as three commands under one history group, and
+/// the group only folds into the entry directly beneath it -- so one unrelated
+/// write landing between them (another row's debounce is enough) tore the
+/// gesture in two and one undo answered for the tail alone. One command cannot
+/// be torn: nothing can land inside it.
+#[test]
+fn merging_into_a_parent_survives_a_write_landing_mid_gesture() {
+    let storage = FakeStorage::default();
+    let service = NotesService::new(&storage, "session", 0);
+    let mut revision = 0;
+    for (request, notes_command) in [
+        (
+            "page",
+            IpcNotesCommand::CreateNode {
+                id: "page".into(),
+                parent_id: "root".into(),
+                before_id: None,
+                text: "Page".into(),
+            },
+        ),
+        (
+            "other",
+            IpcNotesCommand::CreateNode {
+                id: "other".into(),
+                parent_id: "page".into(),
+                before_id: None,
+                text: "elsewhere".into(),
+            },
+        ),
+        (
+            "parent",
+            IpcNotesCommand::CreateNode {
+                id: "parent".into(),
+                parent_id: "page".into(),
+                before_id: None,
+                text: "above".into(),
+            },
+        ),
+        (
+            "row",
+            IpcNotesCommand::CreateNode {
+                id: "row".into(),
+                parent_id: "parent".into(),
+                before_id: None,
+                text: "joined".into(),
+            },
+        ),
+        (
+            "child",
+            IpcNotesCommand::CreateNode {
+                id: "child".into(),
+                parent_id: "row".into(),
+                before_id: None,
+                text: String::new(),
+            },
+        ),
+    ] {
+        revision = service
+            .execute(command(request, revision, notes_command))
+            .unwrap()
+            .revision;
+    }
+    let commits_before = storage.commit_count();
+
+    revision = service
+        .execute(grouped_command(
+            "merge",
+            revision,
+            "backspace:1",
+            IpcNotesCommand::MergeNodeIntoParent {
+                id: "row".into(),
+                parent_id: "parent".into(),
+                parent_text: "above".into(),
+                current_text: "joined".into(),
+            },
+        ))
+        .unwrap()
+        .revision;
+    // One keystroke, one commit -- it used to take three.
+    assert_eq!(storage.commit_count(), commits_before + 1);
+    assert_eq!(storage.text("parent").as_deref(), Some("abovejoined"));
+    assert_eq!(storage.children("parent"), vec!["child".to_owned()]);
+
+    // The intruder that used to tear the gesture apart now lands after it, and
+    // has an entry of its own to be undone from.
+    revision = service
+        .execute(grouped_command(
+            "other-flush",
+            revision,
+            "text:other",
+            IpcNotesCommand::UpdateText {
+                id: "other".into(),
+                text: "elsewhere edited".into(),
+            },
+        ))
+        .unwrap()
+        .revision;
+
+    revision = service
+        .undo(HistoryRequest {
+            session_id: "session".into(),
+            base_revision: revision,
+        })
+        .unwrap()
+        .revision;
+    assert_eq!(storage.text("other").as_deref(), Some("elsewhere"));
+
+    service
+        .undo(HistoryRequest {
+            session_id: "session".into(),
+            base_revision: revision,
+        })
+        .unwrap();
+
+    assert_eq!(storage.text("parent").as_deref(), Some("above"));
+    assert_eq!(storage.text("row").as_deref(), Some("joined"));
+    assert_eq!(storage.children("parent"), vec!["row".to_owned()]);
+    assert_eq!(storage.children("row"), vec!["child".to_owned()]);
+}

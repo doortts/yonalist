@@ -148,6 +148,21 @@ export function validatePreviewBatch(
       if (!eligible) throw new Error("Preview backward merge is invalid.");
       break;
     }
+    case "mergeNodeIntoParent": {
+      requireIds([command.id, command.parent_id]);
+      const current = nodes.find((node) => node.id === command.id)!;
+      const parent = nodes.find((node) => node.id === command.parent_id)!;
+      const siblings = nodes
+        .filter((node) => node.parentId === parent.id && !node.deleted)
+        .sort(bySiblingOrder);
+      const eligible = current.parentId === parent.id &&
+        current.kind === "bullet" &&
+        parent.kind === "bullet" &&
+        current.note.trim().length === 0 &&
+        siblings[0]?.id === current.id;
+      if (!eligible) throw new Error("Preview parent merge is invalid.");
+      break;
+    }
     case "duplicateNodes":
       requireIds(command.duplicates.flatMap((duplicate) => [
         duplicate.id,

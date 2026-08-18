@@ -98,6 +98,12 @@ impl NotesTree {
                 previous_text,
                 current_text,
             } => self.merge_node_backward(id, previous_id, previous_text, current_text),
+            NotesCommand::MergeNodeIntoParent {
+                id,
+                parent_id,
+                parent_text,
+                current_text,
+            } => self.merge_node_into_parent(id, parent_id, parent_text, current_text),
             NotesCommand::RemoveEmptyNode { id } => self.remove_empty_node(&id),
             NotesCommand::MoveNode {
                 id,
@@ -382,6 +388,60 @@ impl NotesTree {
         Ok(())
     }
 
+    /// The row above a first child is its own parent, so Backspace at the head
+    /// folds the text up rather than no-opping. The row goes away and its
+    /// children take its place under the parent, which is what `remove_empty_node`
+    /// already does for a blank row -- the lifting is shared.
+    fn merge_node_into_parent(
+        &mut self,
+        id: NodeId,
+        parent_id: NodeId,
+        parent_text: String,
+        current_text: String,
+    ) -> Result<(), DomainError> {
+        let current = self
+            .nodes
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| DomainError::NodeNotFound(id.clone()))?;
+        if current.kind() != NoteNodeKind::Bullet {
+            return Err(DomainError::Invariant(
+                "only bullet titles can be merged".into(),
+            ));
+        }
+        if current.parent_id() != Some(&parent_id) {
+            return Err(DomainError::Invariant(
+                "a merged bullet must name the parent it sits under".into(),
+            ));
+        }
+        let parent = self
+            .nodes
+            .get(&parent_id)
+            .cloned()
+            .ok_or_else(|| DomainError::NodeNotFound(parent_id.clone()))?;
+        if parent.kind() != NoteNodeKind::Bullet {
+            return Err(DomainError::Invariant(
+                "only bullet titles can be merged".into(),
+            ));
+        }
+        // The row above has to be the parent itself, and it only is for the
+        // first child: anything later would jump its own siblings on the way up.
+        if self.ordered_children(&parent_id, false).first() != Some(&id) {
+            return Err(DomainError::Invariant(
+                "only the first child merges into its parent".into(),
+            ));
+        }
+        // The row is going, and a note on it would go with it unsaid.
+        if !current.note().trim().is_empty() {
+            return Err(DomainError::Invariant(
+                "a bullet carrying a note cannot be merged into its parent".into(),
+            ));
+        }
+        self.node_mut(&parent_id)?
+            .set_text(parent_text + &current_text);
+        self.lift_children_then_remove(&id, &parent_id)
+    }
+
     fn remove_empty_node(&mut self, id: &NodeId) -> Result<(), DomainError> {
         let node = self
             .nodes
@@ -403,7 +463,23 @@ impl NotesTree {
             .parent_id()
             .cloned()
             .ok_or_else(|| DomainError::ParentNotFound(id.clone()))?;
-        let siblings = self.ordered_children(&parent_id, true);
+        self.lift_children_then_remove(id, &parent_id)
+    }
+
+    /// Drops a row and puts its children where it stood, under `parent_id`.
+    /// Shared by the blank-row removal and the merge into a parent: both take
+    /// one row out of the middle of a list and leave its branch behind.
+    fn lift_children_then_remove(
+        &mut self,
+        id: &NodeId,
+        parent_id: &NodeId,
+    ) -> Result<(), DomainError> {
+        let node = self
+            .nodes
+            .get(id)
+            .cloned()
+            .ok_or_else(|| DomainError::NodeNotFound(id.clone()))?;
+        let siblings = self.ordered_children(parent_id, true);
         let index = siblings
             .iter()
             .position(|candidate| candidate == id)

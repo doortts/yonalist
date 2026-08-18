@@ -78,6 +78,87 @@ describe("browser-only preview adapter", () => {
     })).rejects.toThrow(`node is not empty: ${target.id}`);
   });
 
+  it("folds a first child into its parent and undoes it in one step", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    let revision = boot.revision;
+    for (const [id, parentId, text] of [
+      ["preview-fold-parent", pageId, "위"],
+      ["preview-fold-row", "preview-fold-parent", "아래"],
+      ["preview-fold-child", "preview-fold-row", ""]
+    ] as const) {
+      revision = (await previewNotesApi.execute({
+        sessionId: boot.sessionId,
+        requestId: `preview-fold-create-${id}`,
+        baseRevision: revision,
+        historyGroup: null,
+        command: {
+          kind: "createNode", id, parent_id: parentId, before_id: null, text
+        }
+      })).revision;
+    }
+
+    const merged = await previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-fold-request",
+      baseRevision: revision,
+      historyGroup: "backspace:1",
+      command: {
+        kind: "mergeNodeIntoParent",
+        id: "preview-fold-row",
+        parent_id: "preview-fold-parent",
+        parent_text: "위",
+        current_text: "아래"
+      }
+    });
+
+    expect(merged.deletedIds).toContain("preview-fold-row");
+    expect(merged.changedNodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "preview-fold-parent", text: "위아래" }),
+      expect.objectContaining({
+        id: "preview-fold-child",
+        parentId: "preview-fold-parent"
+      })
+    ]));
+
+    // One command, so one history entry: the whole gesture comes back at once,
+    // which is what the three-command version could not promise.
+    await previewNotesApi.undo({
+      sessionId: boot.sessionId,
+      baseRevision: merged.revision
+    });
+    const after = (await previewNotesApi.bootstrap()).viewport!.nodes;
+    expect(after).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "preview-fold-parent", text: "위" }),
+      expect.objectContaining({ id: "preview-fold-row", text: "아래" }),
+      expect.objectContaining({
+        id: "preview-fold-child",
+        parentId: "preview-fold-row"
+      })
+    ]));
+  });
+
+  it("rejects a parent merge the domain would refuse", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const nodes = boot.viewport!.nodes;
+    const target = nodes.find((node) => node.text.trim())!;
+    const stranger = nodes.find((node) => node.id !== target.id)!;
+
+    await expect(previewNotesApi.execute({
+      sessionId: boot.sessionId,
+      requestId: "preview-fold-stranger",
+      baseRevision: boot.revision,
+      historyGroup: null,
+      command: {
+        kind: "mergeNodeIntoParent",
+        id: target.id,
+        parent_id: stranger.id,
+        parent_text: "",
+        current_text: target.text
+      }
+    })).rejects.toThrow("Preview parent merge is invalid.");
+  });
+
   // Preview is the only backend the browser dev surface ever sees, so anything
   // it waves through that notes-core rejects shows a broken feature working.
   it("rejects a split aimed at a parent the source has nothing to do with", async () => {

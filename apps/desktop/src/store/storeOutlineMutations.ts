@@ -232,9 +232,12 @@ export class StoreOutlineMutations {
   }
 
   // Backspace at the head of a first child folds it into the parent above it.
-  // There is no single backend command for that, so three run under one
-  // history group: the parent takes the merged text, the row is blanked, and
-  // removeEmptyNode drops it while lifting its children into its place.
+  // One backend command, because it is one keystroke: spelled as three, any
+  // write landing between them -- another row's debounce is enough -- tore the
+  // gesture out of its history entry, and one undo answered for part of it.
+  // The note is the one thing that still goes ahead of it: a reader who erased
+  // it made a separate edit, and the domain refuses to drop a row still
+  // carrying one.
   beginMergeNodeIntoParent(
     input: MergeIntoParentInput
   ): PendingOutlineMutation {
@@ -254,14 +257,6 @@ export class StoreOutlineMutations {
     });
     const committed = (async () => {
       try {
-        await this.host.execute(
-          { kind: "updateText", id: input.parentId, text: mergedText },
-          input.historyGroup
-        );
-        await this.host.execute(
-          { kind: "updateText", id: input.id, text: "" },
-          input.historyGroup
-        );
         if (blankedNote !== null) {
           await this.host.execute(
             { kind: "updateNote", id: input.id, note: blankedNote },
@@ -269,7 +264,13 @@ export class StoreOutlineMutations {
           );
         }
         await this.host.execute(
-          { kind: "removeEmptyNode", id: input.id },
+          {
+            kind: "mergeNodeIntoParent",
+            id: input.id,
+            parent_id: input.parentId,
+            parent_text: input.parentText,
+            current_text: input.currentText
+          },
           input.historyGroup
         );
       } catch (cause) {

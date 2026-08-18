@@ -90,6 +90,27 @@ function sortKeyBefore(
   return allocation.sortKey;
 }
 
+/**
+ * Puts a row's children where the row stood, under `parentId`, and answers with
+ * the children it moved. The blank-row removal and the merge into a parent both
+ * take one row out of the middle of a list and leave its branch behind --
+ * notes-core shares one helper for that, so this mirror does too.
+ */
+function liftChildrenInto(source: NoteView, parentId: string): NoteView[] {
+  const children = previewSiblings(nodes, source.id);
+  const siblings = previewSiblings(nodes, parentId);
+  const sourceIndex = siblings.findIndex((node) => node.id === source.id);
+  const nextKey = siblings[sourceIndex + 1]?.sortKey;
+  children.forEach((child, index) => {
+    child.parentId = parentId;
+    child.sortKey = nextKey === undefined
+      ? source.sortKey + (index + 1) * SORT_KEY_STEP
+      : source.sortKey +
+        Math.trunc((nextKey - source.sortKey) * (index + 1) / (children.length + 1));
+  });
+  return children;
+}
+
 function duplicateSubtree(
   sourceId: string,
   newId: string,
@@ -249,20 +270,21 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
         throw new Error(`node is not empty: ${command.id}`);
       }
       if (source?.parentId) {
-        const children = previewSiblings(nodes, source.id);
-        const parentId = source.parentId;
-        const siblings = previewSiblings(nodes, parentId);
-        const sourceIndex = siblings.findIndex((node) => node.id === source.id);
-        const nextKey = siblings[sourceIndex + 1]?.sortKey;
-        children.forEach((child, index) => {
-          child.parentId = parentId;
-          child.sortKey = nextKey === undefined
-            ? source.sortKey + (index + 1) * SORT_KEY_STEP
-            : source.sortKey +
-              Math.trunc((nextKey - source.sortKey) * (index + 1) / (children.length + 1));
-        });
+        changed = liftChildrenInto(source, source.parentId);
         nodes = nodes.filter((node) => node.id !== source.id);
-        changed = children;
+        deletedIds = [source.id];
+      }
+      break;
+    }
+    case "mergeNodeIntoParent": {
+      const source = nodes.find((candidate) => candidate.id === command.id);
+      const parent = nodes.find(
+        (candidate) => candidate.id === command.parent_id
+      );
+      if (source && parent) {
+        parent.text = command.parent_text + command.current_text;
+        changed = [parent, ...liftChildrenInto(source, parent.id)];
+        nodes = nodes.filter((node) => node.id !== source.id);
         deletedIds = [source.id];
       }
       break;

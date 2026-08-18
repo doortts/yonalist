@@ -1210,6 +1210,29 @@ function backend(options: {
         });
       nodes.delete(command.id);
       deletedIds.push(command.id);
+    } else if (command.kind === "mergeNodeIntoParent") {
+      // mirrors notes-core merge_node_into_parent
+      const parent = nodes.get(command.parent_id);
+      if (!parent) throw new Error(`node not found: ${command.parent_id}`);
+      const merged = {
+        ...parent,
+        text: command.parent_text + command.current_text
+      };
+      nodes.set(merged.id, merged);
+      changedNodes.push(merged);
+      [...nodes.values()]
+        .filter((node) => node.parentId === command.id)
+        .forEach((child, index) => {
+          const promoted = {
+            ...child,
+            parentId: target.parentId,
+            sortKey: target.sortKey + index + 1
+          };
+          nodes.set(child.id, promoted);
+          changedNodes.push(promoted);
+        });
+      nodes.delete(command.id);
+      deletedIds.push(command.id);
     } else {
       throw new Error(`unexpected command: ${command.kind}`);
     }
@@ -1319,16 +1342,18 @@ describe("NotesStore empty-row removal", () => {
     ]);
     await merge.committed;
 
+    // One keystroke, one command: spelled as three, a write landing between
+    // them tore the gesture out of its history entry.
     expect(backspace.commands()).toEqual([
-      { kind: "updateText", id: "parent", text: "뭔가하지만" },
-      { kind: "updateText", id: "current", text: "" },
-      { kind: "removeEmptyNode", id: "current" }
+      {
+        kind: "mergeNodeIntoParent",
+        id: "current",
+        parent_id: "parent",
+        parent_text: "뭔가",
+        current_text: "하지만"
+      }
     ]);
-    expect(backspace.groups()).toEqual([
-      "backspace:1",
-      "backspace:1",
-      "backspace:1"
-    ]);
+    expect(backspace.groups()).toEqual(["backspace:1"]);
     expect(store.getSnapshot().undoDepth).toBe(1);
     expect(store.getSnapshot().drafts.parent).toBeUndefined();
     expect(outline()).toEqual([
