@@ -309,3 +309,51 @@ describe("caret destination after Backspace", () => {
     });
   });
 });
+
+describe("caret destination for the outline's ends", () => {
+  const page = [
+    bullet("first", 1_024, "alpha"),
+    bullet("kid", 1_024, "beta", "first"),
+    bullet("last", 2_048, "gamma")
+  ];
+
+  async function caretIn(text: string): Promise<HTMLTextAreaElement> {
+    const editor = await screen.findByDisplayValue<HTMLTextAreaElement>(text);
+    act(() => {
+      editor.focus();
+      editor.setSelectionRange(0, 0);
+    });
+    return editor;
+  }
+
+  it("takes the page title on the modified Up", async () => {
+    const { notesApi } = harness(page);
+    mount(notesApi);
+    const editor = await caretIn("beta");
+
+    await act(async () => {
+      fireEvent.keyDown(editor, { key: "ArrowUp", ctrlKey: true });
+    });
+
+    await waitFor(() => {
+      expect(caretHolder()).toHaveAttribute("data-node-id", "page-1");
+      expect(caretHolder().selectionStart).toBe(0);
+    });
+  });
+
+  it("takes the end of the last row on the modified Down", async () => {
+    const { notesApi } = harness(page);
+    mount(notesApi);
+    const editor = await caretIn("alpha");
+
+    await act(async () => {
+      fireEvent.keyDown(editor, { key: "ArrowDown", ctrlKey: true });
+    });
+
+    await waitFor(() => {
+      const caret = caretHolder();
+      expect(caret).toHaveAttribute("data-node-id", "last");
+      expect(caret.selectionStart).toBe("gamma".length);
+    });
+  });
+});

@@ -847,6 +847,53 @@ describe("v2 outline keyboard intent resolver", () => {
     });
   });
 
+  // The chord runs to the ends of the outline, not to the ends of the row's own
+  // text, and it answers from the page title as readily as from a row.
+  it("runs the caret to the outline's ends on the modified vertical arrows", () => {
+    for (const target of ["row", "page"] as const) {
+      expect(resolveOutlineKey(input({
+        key: "ArrowUp",
+        ctrlKey: true,
+        target
+      })), `up ${target}`)
+        .toEqual({ kind: "focus", nodeId: "page", edge: "start" });
+      expect(resolveOutlineKey(input({
+        key: "ArrowDown",
+        ctrlKey: true,
+        target
+      })), `down ${target}`)
+        .toEqual({ kind: "focus", nodeId: "next", edge: "end" });
+    }
+    // On a mac the same pair rides Cmd, and a chord for the other platform is
+    // nobody's binding there.
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      metaKey: true,
+      platform: "mac"
+    }))).toEqual({ kind: "focus", nodeId: "page", edge: "start" });
+    // An empty outline has only its title to run to.
+    expect(resolveOutlineKey(input({
+      key: "ArrowDown",
+      ctrlKey: true,
+      visibleNodes: []
+    }))).toEqual({ kind: "focus", nodeId: "page", edge: "end" });
+    // A held chord stops at the end it already reached.
+    expect(resolveOutlineKey(input({
+      key: "ArrowDown",
+      ctrlKey: true,
+      repeat: true
+    }))).toEqual({ kind: "consume" });
+    // Shift with the modifier is the row-moving binding, not this one.
+    expect(resolveOutlineKey(input({
+      key: "ArrowUp",
+      ctrlKey: true,
+      shiftKey: true,
+      nodeId: "next",
+      platform: "mac",
+      metaKey: false
+    }))).toEqual({ kind: "move", direction: "up" });
+  });
+
   it("collapses a row band to the edge a bare arrow points at", () => {
     for (const key of ["ArrowUp", "ArrowLeft"]) {
       expect(resolveOutlineKey(input({

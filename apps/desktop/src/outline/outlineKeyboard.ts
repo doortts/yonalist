@@ -277,6 +277,28 @@ export function resolveOutlineKey(
     return input.repeat ? { kind: "consume" } : { kind: "focusNote" };
   }
 
+  // The ends of the outline, not the ends of the row's own text: the chord runs
+  // to the top of the page or to its last row, and answers from the title as
+  // readily as from a row. Shift with the same modifier moves rows instead.
+  if (
+    (input.key === "ArrowUp" || input.key === "ArrowDown") &&
+    !input.shiftKey &&
+    !input.altKey &&
+    primaryModifier(input)
+  ) {
+    if (input.repeat) return { kind: "consume" };
+    const last = input.key === "ArrowDown"
+      ? input.visibleNodes.at(-1)
+      : undefined;
+    return last
+      ? { kind: "focus", nodeId: last.id, edge: "end" }
+      : {
+          kind: "focus",
+          nodeId: input.pageId,
+          edge: input.key === "ArrowUp" ? "start" : "end"
+        };
+  }
+
   if (input.target === "row") {
     if (
       input.key === "Enter" &&

@@ -166,8 +166,12 @@ export function handleOutlineKeyDown(options: OutlineRowKeyOptions) {
     if (intent.kind === "duplicate") return selectionActions.duplicate();
     if (intent.kind === "trash") return selectionActions.delete();
     // The note field answers to none of the band's keys, so the band goes
-    // before the caret leaves the row for it.
-    if (intent.kind === "focusNote") onClearSelection();
+    // before the caret leaves the row for it. A caret sent to the outline's far
+    // end leaves it behind for the same reason: two lit things at once read as
+    // two selections.
+    if (intent.kind === "focusNote" || intent.kind === "focus") {
+      onClearSelection();
+    }
   }
   executeRowIntent(intent, scope, options, backspaceGroup, event.repeat);
 }
@@ -223,9 +227,11 @@ export function handleImagePrimaryKeyDown(options: ImageRowKeyOptions) {
     if (intent.kind === "toggleComplete") return selectionActions.toggleComplete();
     if (intent.kind === "duplicate") return selectionActions.duplicate();
     if (intent.kind === "trash") return selectionActions.delete();
-    // Same as a bullet: the note field answers to none of the band's keys, so
-    // the band goes before the caret leaves the row for it.
-    if (intent.kind === "focusNote") onClearSelection();
+    // Same as a bullet: the band goes before the caret leaves the row, whether
+    // for the note field or for the far end of the outline.
+    if (intent.kind === "focusNote" || intent.kind === "focus") {
+      onClearSelection();
+    }
   }
   // A selection already carries this image's bytes, so the chord goes to the
   // selection commands and only a bare station falls through to the node.

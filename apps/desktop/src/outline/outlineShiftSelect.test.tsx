@@ -530,3 +530,22 @@ describe("A bare arrow against a live row band", () => {
   });
 
 });
+
+describe("The modified vertical arrows against a live row band", () => {
+  // Two lit things at once read as two selections, so the band goes when the
+  // caret leaves it for the far end of the outline.
+  it("drops the band on the way to the last row", async () => {
+    const { view } = await outline(rows);
+    const editor = await placeCaret(view.container, "two", 0);
+    await press(editor, "ArrowDown", { shiftKey: true });
+    await press(editor, "ArrowDown", { shiftKey: true });
+    expect(bandIds(view.container)).toEqual(["two"]);
+
+    await press(editor, "ArrowDown", { ctrlKey: true });
+
+    expect(bandIds(view.container)).toEqual([]);
+    expect(caretOf(view.container)).toEqual({
+      nodeId: "three", start: 9, end: 9, direction: expect.anything()
+    });
+  });
+});
