@@ -102,8 +102,8 @@ export type OutlineKeyIntent =
       readonly headId: string;
       readonly edge: "start" | "end";
     }
-  /** Every row the outline is showing, banded in one go. */
-  | { readonly kind: "selectAllRows" }
+  /** One rung wider than whatever the band holds now. */
+  | { readonly kind: "widenSelection" }
   | {
       readonly kind: "selectTextEdge";
       readonly start: number;
@@ -337,10 +337,10 @@ export function resolveOutlineKey(
     ) {
       return input.repeat ? { kind: "consume" } : { kind: "moveTo" };
     }
-    // The same ladder the shifted arrows climb: the row's own text first, then
-    // every row the outline is showing. A row with no text to take -- an empty
-    // bullet, an image -- has only the rows to give, and a band already up has
-    // left the text stage behind.
+    // A ladder: the row's own text first, then its siblings, then their parent,
+    // then the parent's siblings, up to every row the outline is showing. A row
+    // with no text to take -- an empty bullet, an image -- has only the rows to
+    // give, and a band already up has left the text rung behind.
     if (
       input.key.toLowerCase() === "a" &&
       !input.shiftKey &&
@@ -352,7 +352,7 @@ export function resolveOutlineKey(
         input.selectionStart === 0 &&
         input.selectionEnd === input.value.length;
       return swept || input.hasSelection
-        ? { kind: "selectAllRows" }
+        ? { kind: "widenSelection" }
         : {
             kind: "selectTextEdge",
             start: 0,

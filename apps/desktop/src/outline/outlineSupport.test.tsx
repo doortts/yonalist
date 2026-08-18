@@ -66,7 +66,7 @@ function options(store: ReturnType<typeof storeStub>, hasSelection = false) {
       hasSelection
     },
     onExtendSelection: vi.fn(),
-    onSelectAllRows: vi.fn(),
+    onWidenSelection: vi.fn(),
     onClearSelection: vi.fn(),
     onFocusNote: vi.fn(),
     onMoveTo: vi.fn(),

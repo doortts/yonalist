@@ -905,9 +905,8 @@ describe("v2 outline keyboard intent resolver", () => {
     }))).toEqual({ kind: "move", direction: "up" });
   });
 
-  // The same ladder the shifted arrows climb: the row's own text first, then
-  // every row the outline is showing.
-  it("takes the row's text before it takes every visible row", () => {
+  // The row's own text first; every rung after it is the band's to widen.
+  it("takes the row's text before it widens the band", () => {
     expect(resolveOutlineKey(input({
       key: "a",
       ctrlKey: true
@@ -917,28 +916,28 @@ describe("v2 outline keyboard intent resolver", () => {
       end: "alphaXYZomega".length,
       direction: "forward"
     });
-    // The whole row already swept: the next press takes the rows.
+    // The whole row already swept: the next press widens the band.
     expect(resolveOutlineKey(input({
       key: "a",
       ctrlKey: true,
       selectionStart: 0,
       selectionEnd: "alphaXYZomega".length
-    }))).toEqual({ kind: "selectAllRows" });
+    }))).toEqual({ kind: "widenSelection" });
     // A row with no text to take -- an empty bullet, an image -- has only the
-    // rows to give.
+    // band to widen.
     expect(resolveOutlineKey(input({
       key: "a",
       ctrlKey: true,
       value: "",
       selectionStart: 0,
       selectionEnd: 0
-    }))).toEqual({ kind: "selectAllRows" });
-    // With a band already up the text stage has nothing to say.
+    }))).toEqual({ kind: "widenSelection" });
+    // With a band already up the text rung has nothing to say.
     expect(resolveOutlineKey(input({
       key: "a",
       ctrlKey: true,
       hasSelection: true
-    }))).toEqual({ kind: "selectAllRows" });
+    }))).toEqual({ kind: "widenSelection" });
     // On a mac it rides Cmd, and a held chord stops where it got to.
     expect(resolveOutlineKey(input({
       key: "A",
@@ -946,7 +945,7 @@ describe("v2 outline keyboard intent resolver", () => {
       platform: "mac",
       selectionStart: 0,
       selectionEnd: "alphaXYZomega".length
-    }))).toEqual({ kind: "selectAllRows" });
+    }))).toEqual({ kind: "widenSelection" });
     expect(resolveOutlineKey(input({
       key: "a",
       ctrlKey: true,

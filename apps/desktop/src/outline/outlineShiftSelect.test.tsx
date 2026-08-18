@@ -554,7 +554,7 @@ describe("The modified vertical arrows against a live row band", () => {
 });
 
 describe("The modifier with A", () => {
-  it("takes the row's text, then every visible row", async () => {
+  it("takes the row's text, then the row's siblings", async () => {
     const { view } = await outline(rows);
     const editor = await placeCaret(view.container, "two", 3);
 
@@ -575,7 +575,7 @@ describe("The modifier with A", () => {
     });
   });
 
-  it("takes every visible row from a row with no text of its own", async () => {
+  it("takes the siblings of a row with no text of its own", async () => {
     const { view } = await outline([
       bullet("one", "page-1", SORT_KEY_STEP, "First row"),
       bullet("blank", "page-1", SORT_KEY_STEP * 2, "")
@@ -604,5 +604,37 @@ describe("The modified Up where the page carries no title", () => {
     expect(caretOf(view.container)).toEqual({
       nodeId: "one", start: 0, end: 0, direction: expect.anything()
     });
+  });
+});
+
+describe("The modifier with A up a nested outline", () => {
+  const family = [
+    bullet("a", "page-1", SORT_KEY_STEP, "Alpha"),
+    bullet("a1", "a", SORT_KEY_STEP, "One"),
+    bullet("a2", "a", SORT_KEY_STEP * 2, "Two"),
+    bullet("b", "page-1", SORT_KEY_STEP * 2, "Bravo")
+  ] as const;
+
+  it("climbs siblings, parent, the parent's siblings, then holds", async () => {
+    const { view } = await outline(family);
+    const editor = await placeCaret(view.container, "a1", 0);
+
+    await press(editor, "a", { ctrlKey: true });
+    expect(bandIds(view.container)).toEqual([]);
+
+    await press(editor, "a", { ctrlKey: true });
+    expect(bandIds(view.container)).toEqual(["a1", "a2"]);
+
+    // The band holds every child the parent has, so the parent is next -- and
+    // it brings the children it already held with it.
+    await press(editor, "a", { ctrlKey: true });
+    expect(bandIds(view.container)).toEqual(["a", "a1", "a2"]);
+
+    await press(editor, "a", { ctrlKey: true });
+    expect(bandIds(view.container)).toEqual(["a", "a1", "a2", "b"]);
+
+    // The top rung: nothing above it to take.
+    await press(editor, "a", { ctrlKey: true });
+    expect(bandIds(view.container)).toEqual(["a", "a1", "a2", "b"]);
   });
 });

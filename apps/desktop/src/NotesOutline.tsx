@@ -8,6 +8,7 @@ import {
   hideCollapsedSubtrees, hideCompletedSubtrees
 } from "./outline/outlineVisibility";
 import { useOutlineSelection } from "./outline/useOutlineSelection";
+import { widenOutlineSelection } from "./outline/outlineWidenSelection";
 import { useOutlinePointerSelection } from "./outline/useOutlinePointerSelection";
 import { useOutlineDrag } from "./outline/useOutlineDrag";
 import { OutlineHeader, OutlinePageHeading } from "./outline/OutlineHeader";
@@ -364,7 +365,12 @@ export function NotesOutline({
       if (scope) focusAfterCommit(scope, headId, edge);
     },
     onClearSelection: clearSelection,
-    onSelectAllRows: () => selection.replace(bodyNodes.map((node) => node.id)),
+    onWidenSelection: (fromNodeId) => {
+      const wider = widenOutlineSelection(
+        bodyNodes, selection.selectedRootIds, fromNodeId, outlineRootId
+      );
+      if (wider) selection.replace(wider);
+    },
     onTagClick,
     onPickImage: (nodeId) => void imageIngest.openPicker(nodeId),
     onCopyImage: (nodeId) => putImageOnClipboard(
