@@ -330,6 +330,10 @@ export const OutlineTextField = forwardRef<
     insetInlineStart: -(CARET_GUTTER + CARET_LAYER_PADDING),
     insetInlineEnd: CARET_GUTTER,
     paddingInlineStart: CARET_LAYER_PADDING,
+    // The row stylesheet gives this layer `width: 100%`, which over-constrains
+    // the pair of inline edges and drops the far one -- taking the width back
+    // off the content box the glyphs wrap against. The edges own the width.
+    width: "auto",
     whiteSpace: "pre-wrap",
     overflowWrap: "anywhere",
     opacity: editing ? (style?.opacity ?? 1) : 0,

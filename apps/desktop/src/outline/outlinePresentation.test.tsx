@@ -209,8 +209,10 @@ describe("caret layer geometry", () => {
     // glyph instead of on its left stem.
     expect(start + padding).toBe(-1);
     // Both edges move by the same pixel, so the content box keeps its width
-    // and the two layers still wrap at the same places.
+    // and the two layers still wrap at the same places -- which only holds
+    // while the edges, not a `width: 100%` from the row stylesheet, decide it.
     expect(px(textarea.style.insetInlineEnd)).toBe(1);
+    expect(textarea.style.width).toBe("auto");
     // The caret's pixel stays inside the layer's own padding, where the row's
     // `overflow: hidden` cannot clip it.
     expect(padding).toBeGreaterThanOrEqual(1);
