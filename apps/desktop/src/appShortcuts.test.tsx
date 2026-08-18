@@ -176,6 +176,20 @@ describe("leaving the settings screen", () => {
 });
 
 describe("the page shortcuts", () => {
+  it("wears its key under the row it opens", async () => {
+    render(<App api={shellApi("page-1")} />);
+    await screen.findByDisplayValue("Today");
+    const sidebar = within(screen.getByRole("navigation", { name: "Navigation" }));
+
+    // The hints are painted by CSS off a held modifier, so what a test can ask
+    // is whether the row carries its own key at all.
+    expect(within(sidebar.getByRole("button", { name: "All" }))
+      .getByText("Ctrl+`")).toBeInTheDocument();
+    expect(within(sidebar.getByRole("button", { name: "Ideas" }))
+      .getByText("Ctrl+2")).toBeInTheDocument();
+    expect(sidebar.queryByText("Ctrl+10")).toBeNull();
+  });
+
   it("answers the Command key on a Mac", async () => {
     const platform = navigator.platform;
     Object.defineProperty(navigator, "platform", {

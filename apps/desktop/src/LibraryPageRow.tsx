@@ -2,20 +2,21 @@ import { FileText, MoreHorizontal, Trash2 } from "lucide-react";
 import { useState, type CSSProperties } from "react";
 import type { PageSummary } from "../../../packages/contracts/generated/PageSummary";
 import type { NotesStore } from "./notesStore";
+import { ShortcutHint } from "./shortcutHints";
 import { useNotesNode } from "./useNotesNode";
 
 export function LibraryPageRow({
   page,
   active,
-  shortcut,
+  place,
   store,
   onOpen,
   onDelete
 }: {
   readonly page: PageSummary;
   readonly active: boolean;
-  /** The keys that open this row, for the readers who are told rather than shown. */
-  readonly shortcut?: string;
+  /** This row's number in the list, when it has one to be opened by. */
+  readonly place?: number;
   readonly store: NotesStore;
   readonly onOpen: () => void;
   readonly onDelete: () => void;
@@ -32,11 +33,16 @@ export function LibraryPageRow({
         className="notes-library-page"
         type="button"
         aria-current={active ? "page" : undefined}
-        aria-keyshortcuts={shortcut}
+        aria-keyshortcuts={place === undefined
+          ? undefined
+          : `Meta+${place} Control+${place}`}
         onClick={onOpen}
       >
         <FileText size={16} aria-hidden="true" />
         <span>{title || "Untitled page"}</span>
+        {place !== undefined && (
+          <ShortcutHint mac={`⌘${place}`} other={`Ctrl+${place}`} />
+        )}
       </button>
       <button
         className="notes-library-page-menu-trigger"

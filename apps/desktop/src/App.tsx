@@ -690,6 +690,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                   >
                     <House size={16} aria-hidden="true" />
                     <span>All</span>
+                    <ShortcutHint mac="⌘`" other="Ctrl+`" />
                   </button>
                 </div>
                 {libraryView === "all" &&
@@ -698,9 +699,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                     <LibraryPageRow
                       key={page.id}
                       page={page}
-                      shortcut={place < 9
-                        ? `Meta+${place + 1} Control+${place + 1}`
-                        : undefined}
+                      place={place < 9 ? place + 1 : undefined}
                       active={page.id === state.activePageId}
                       store={store}
                       onOpen={() => void openPage(page.id)}
