@@ -1,5 +1,5 @@
 import {
-  act, fireEvent, render, screen, waitFor
+  act, fireEvent, render, screen, waitFor, within
 } from "@testing-library/react";
 import type { BootSnapshot } from "../../../packages/contracts/generated/BootSnapshot";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
@@ -70,10 +70,49 @@ async function openSettings(): Promise<void> {
 }
 
 function pressShortcut(key: string): void {
-  fireEvent.keyDown(window, { key, metaKey: true, ctrlKey: true });
+  fireEvent.keyDown(window, { key, ctrlKey: true });
 }
 
 describe("leaving the settings screen", () => {
+  it("puts the caret back in the row it was taken from", async () => {
+    render(<App api={shellApi("page-2")} />);
+    const title = await screen.findByDisplayValue("Ideas") as HTMLTextAreaElement;
+    title.focus();
+    title.setSelectionRange(2, 2);
+    const settings = screen.getByRole("button", { name: "Settings" });
+    // What a browser does between the two, and jsdom does not: the press
+    // moves focus off the outline before the click is dispatched.
+    fireEvent.pointerDown(settings);
+    act(() => settings.focus());
+    // `detail` is what tells a pointer's click from a keyboard's.
+    fireEvent.click(settings, { detail: 1 });
+    await screen.findByRole("navigation", { name: "Settings sections" });
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    const back = await screen.findByDisplayValue("Ideas") as HTMLTextAreaElement;
+    await waitFor(() => expect(back).toHaveFocus());
+    expect(back.selectionStart).toBe(2);
+  });
+
+  it("keeps a page nobody has written in yet", async () => {
+    render(<App api={shellApi("page-1")} />);
+    await screen.findByDisplayValue("Today");
+    fireEvent.click(screen.getByRole("button", { name: "New page" }));
+    const fresh = await screen.findByRole("textbox", { name: "Page title" });
+    await waitFor(() => expect(fresh).toHaveValue(""));
+    await openSettings();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    // The page has no row in the list until something is written into it.
+    // That is not the same as having nowhere to go back to.
+    expect(await screen.findByRole("textbox", { name: "Page title" }))
+      .toHaveValue("");
+    expect(screen.getByRole("button", { name: "All" }))
+      .not.toHaveAttribute("aria-current");
+  });
+
   it("goes back to the page it was opened from", async () => {
     render(<App api={shellApi("page-2")} />);
     await screen.findByDisplayValue("Ideas");
@@ -109,6 +148,43 @@ describe("leaving the settings screen", () => {
 });
 
 describe("the page shortcuts", () => {
+  it("answers the Command key on a Mac", async () => {
+    const platform = navigator.platform;
+    Object.defineProperty(navigator, "platform", {
+      value: "MacIntel", configurable: true
+    });
+    try {
+      render(<App api={shellApi("page-1")} />);
+      await screen.findByDisplayValue("Today");
+
+      fireEvent.keyDown(window, { key: "2", metaKey: true });
+
+      expect(await screen.findByDisplayValue("Ideas"))
+        .toHaveAttribute("aria-label", "Page title");
+    } finally {
+      Object.defineProperty(navigator, "platform", {
+        value: platform, configurable: true
+      });
+    }
+  });
+
+  it("brings the page list back with the page it opens", async () => {
+    render(<App api={shellApi("page-1")} />);
+    await screen.findByDisplayValue("Today");
+    const sidebar = within(screen.getByRole("navigation", { name: "Navigation" }));
+    fireEvent.click(screen.getByRole("button", { name: "Trash" }));
+    await waitFor(() => expect(
+      sidebar.queryByRole("button", { name: "Ideas" })).toBeNull());
+
+    pressShortcut("2");
+
+    // The number names a place in a list, so the list has to be the one on
+    // screen when the reader lands.
+    await waitFor(() => expect(
+      sidebar.getByRole("button", { name: "Ideas" }))
+      .toHaveAttribute("aria-current", "page"));
+  });
+
   it("opens the page at the pressed place in the list", async () => {
     render(<App api={shellApi("page-1")} />);
     await screen.findByDisplayValue("Today");

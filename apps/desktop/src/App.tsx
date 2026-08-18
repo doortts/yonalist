@@ -318,6 +318,10 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     const page = state.pages[place];
     if (!page) return;
     setSettingsOpen(false);
+    // The number names a place in the list, so the list has to be the one the
+    // reader lands looking at: a filtered view or a search hides those rows.
+    setLibraryView("all");
+    setQuery("");
     void openPage(page.id);
   }, [openPage, state.pages]);
   /**
@@ -331,7 +335,10 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     const back = settingsReturn.current;
     settingsReturn.current = null;
     const openPageId = store.getSnapshot().activePageId;
+    // A page nobody has written in yet has no row in the list, which is not
+    // the same as having nowhere to go back to.
     const live = openPageId !== null && (openPageId === ROOT_ID ||
+      openPageId === state.provisionalPageId ||
       state.pages.some((page) => page.id === openPageId));
     if (!live) {
       openAllPages();
@@ -339,7 +346,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     }
     setSettingsOpen(false);
     if (back?.pageId === openPageId) void applyNavigation(back);
-  }, [applyNavigation, openAllPages, state.pages, store]);
+  }, [applyNavigation, openAllPages, state.pages, state.provisionalPageId, store]);
   /**
    * Pointer-down rather than the click: the click lands after focus has left
    * the outline, and the caret is half of what there is to come back to.
@@ -347,6 +354,14 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   const rememberSettingsReturn = useCallback(() => {
     settingsReturn.current = captureNavigation();
   }, [captureNavigation]);
+  // The listener below is registered once. What it needs from a render it
+  // reads through here, so a page opened -- or a page renamed, which rebuilds
+  // the page list -- does not tear the window's shortcuts down and put them
+  // back.
+  const shortcuts = useRef({
+    settingsOpen, closeSettings, openAllPages, openPageAt
+  });
+  shortcuts.current = { settingsOpen, closeSettings, openAllPages, openPageAt };
   useEffect(() => {
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       // Shares this listener with undo rather than registering a second one:
@@ -365,29 +380,40 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
         document.documentElement.toggleAttribute("data-drag-debug");
         return;
       }
-      // A component that has already answered this Escape -- a select with its
-      // list open, a menu -- says so by preventing it, and the screen behind
-      // it stays where it is.
-      if (event.key === "Escape" && settingsOpen && !event.defaultPrevented) {
+      // Nothing inside the settings screen answers Escape today, so this is
+      // the only reader of it there. A component that grows one says so by
+      // preventing the event, and the screen behind it stays where it is.
+      if (
+        event.key === "Escape" && shortcuts.current.settingsOpen &&
+        !event.defaultPrevented
+      ) {
         event.preventDefault();
-        closeSettings();
+        shortcuts.current.closeSettings();
         return;
       }
-      const modifier = navigator.platform.includes("Mac") ? event.metaKey : event.ctrlKey;
+      const onMac = navigator.platform.includes("Mac");
+      const modifier = onMac ? event.metaKey : event.ctrlKey;
+      // The other primary modifier is somebody else's chord, the way the
+      // inspector's shortcut reads it.
+      const otherModifier = onMac ? event.ctrlKey : event.metaKey;
       // The sidebar's list, by number: the backtick heads it the way All does,
       // and the nine keys after it are the nine pages under All. They reach
       // from inside a row textarea like the find below, since a digit with the
       // modifier held is nothing a line of text is asking for.
-      if (modifier && !event.shiftKey && !event.altKey) {
+      if (
+        modifier && !otherModifier && !event.shiftKey && !event.altKey &&
+        // A key still being composed is the input method's, not a shortcut.
+        !event.isComposing && event.key.length === 1
+      ) {
         if (event.key === "`") {
           event.preventDefault();
-          openAllPages();
+          shortcuts.current.openAllPages();
           return;
         }
         const place = "123456789".indexOf(event.key);
         if (place >= 0) {
           event.preventDefault();
-          openPageAt(place);
+          shortcuts.current.openPageAt(place);
           return;
         }
       }
@@ -418,7 +444,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [closeSettings, interactionHistory, openAllPages, openPageAt, settingsOpen]);
+  }, [interactionHistory]);
   // Opening a new page writes nothing, so this is a move and only a move: the
   // caret goes to the empty title, and Undo brings the view back the way any
   // other navigation does. Trashing a page, below, is the one that replays a
@@ -659,6 +685,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                     aria-current={
                       atHome && libraryView === "all" ? "page" : undefined
                     }
+                    aria-keyshortcuts="Meta+` Control+`"
                     onClick={openAllPages}
                   >
                     <House size={16} aria-hidden="true" />
@@ -667,10 +694,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                 </div>
                 {libraryView === "all" &&
                   query.trim().length === 0 &&
-                  state.pages.map((page) => (
+                  state.pages.map((page, place) => (
                     <LibraryPageRow
                       key={page.id}
                       page={page}
+                      shortcut={place < 9
+                        ? `Meta+${place + 1} Control+${place + 1}`
+                        : undefined}
                       active={page.id === state.activePageId}
                       store={store}
                       onOpen={() => void openPage(page.id)}
@@ -708,12 +738,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             onPointerDown={() => {
               if (!settingsOpen) rememberSettingsReturn();
             }}
-            onClick={() => {
+            onClick={(event) => {
               if (settingsOpen) closeSettings();
               else {
-                // Reached by the keyboard: focus was already on this button,
-                // so there was no pointer to remember anything at.
-                if (!settingsReturn.current) rememberSettingsReturn();
+                // `detail` counts the clicks a pointer made, so zero is the
+                // keyboard: focus was already on this button and no pointer
+                // down ran ahead of it to remember anything.
+                if (event.detail === 0) rememberSettingsReturn();
                 setSettingsOpen(true);
               }
             }}
