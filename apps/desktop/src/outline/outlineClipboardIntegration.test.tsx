@@ -457,6 +457,29 @@ describe("outline clipboard integration", () => {
       expect(rows).not.toHaveAttribute("data-row-selecting");
     });
 
+  // The engine paints whatever range it is holding the moment the attribute
+  // comes off, and on WKWebView it holds one it kept extending under the
+  // suppression. The drag has to hand back an empty selection, not just stop
+  // adding to it.
+  it("leaves no painted text selection behind when the drag ends", async () => {
+    render(<App api={api()} />);
+    const first = await screen.findByDisplayValue<HTMLTextAreaElement>(
+      "First thought"
+    );
+    const third = screen.getByDisplayValue("Third thought");
+
+    fireEvent.pointerDown(first, { button: 0, pointerId: 9 });
+    fireEvent.pointerMove(third, { buttons: 1, pointerId: 9 });
+    // What the engine keeps rebuilding while the band owns the drag.
+    const range = document.createRange();
+    range.selectNodeContents(first.closest(".notes-node")!);
+    window.getSelection()!.addRange(range);
+
+    fireEvent.pointerUp(third, { button: 0, pointerId: 9 });
+
+    expect(window.getSelection()?.rangeCount).toBe(0);
+  });
+
   it("copies a shift-selected row range as structural plain text and Markdown", async () => {
     render(<App api={api()} />);
     const first = await screen.findByDisplayValue("First thought");

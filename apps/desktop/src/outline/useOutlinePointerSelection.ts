@@ -60,7 +60,12 @@ export function useOutlinePointerSelection(
       if (!gesture || gesture.pointerId !== event.pointerId) return;
       gestureRef.current = null;
       delete gesture.scope.dataset.rowSelecting;
-      if (!gesture.promoted || event.type !== "pointerup") return;
+      if (!gesture.promoted) return;
+      // The suppression only stopped the engine adding to its range; whatever
+      // it was holding gets painted the moment the attribute comes off. The
+      // band owns these rows now, so the range goes with the gesture.
+      window.getSelection()?.removeAllRanges();
+      if (event.type !== "pointerup") return;
       window.setTimeout(() => {
         const headId = headIdRef.current;
         if (headId) focusOutlineEditor(gesture.scope, headId, "preserve");
