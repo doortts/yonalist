@@ -617,6 +617,25 @@ export class NotesStore {
     await this.executeCommand({ kind: "setStarred", id, starred }); }
   async setCollapsed(id: string, collapsed: boolean): Promise<void> {
     await this.executeCommand({ kind: "setCollapsed", id, collapsed }); }
+  /**
+   * A guide click closes or reopens a whole range, and each row carries its own
+   * value so a restore can hand back a mixed shape. There is no batch command
+   * for collapse, so the rows run one at a time under a single history group
+   * and the Rust coalescer folds them into the one undo entry the gesture reads
+   * as.
+   */
+  async setCollapsedMany(
+    changes: readonly { readonly id: string; readonly collapsed: boolean }[]
+  ): Promise<void> {
+    if (changes.length === 0) return;
+    const historyGroup = `collapse:${freshId()}`;
+    for (const change of changes) {
+      await this.executeCommand(
+        { kind: "setCollapsed", id: change.id, collapsed: change.collapsed },
+        historyGroup
+      );
+    }
+  }
   async setMarker(
     id: string,
     marker: IpcMarkerKind,
