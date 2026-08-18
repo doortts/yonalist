@@ -143,7 +143,7 @@ export const monospaceStack =
 
 const boxes: Record<OutlineMarkerShape, ShapeBox> = {
   dot: { w: "7px", h: "7px", r: "50%" },
-  square: { w: "6px", h: "6px", r: "1.5px" },
+  square: { w: "5px", h: "5px", r: "1px" },
   dash: { w: "10px", h: "2px", r: "0", dy: "1px" },
   hyphen: { w: "auto", h: "auto", r: "0" },
   custom: { w: "auto", h: "auto", r: "0" }

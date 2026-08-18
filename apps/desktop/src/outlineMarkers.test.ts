@@ -158,6 +158,8 @@ describe("outline marker styles", () => {
       style({}),
       style({})
     ]);
-    expect(element.style.getPropertyValue("--notes-marker-0-w")).toBe("6px");
+    expect(element.style.getPropertyValue("--notes-marker-0-w")).toBe("5px");
+    expect(element.style.getPropertyValue("--notes-marker-0-h")).toBe("5px");
+    expect(element.style.getPropertyValue("--notes-marker-0-r")).toBe("1px");
   });
 });

@@ -2586,9 +2586,9 @@ button.settings-attachment-name {
 }
 
 .marker-preview-square {
-  width: 6px;
-  height: 6px;
-  border-radius: 1.5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 1px;
 }
 
 .marker-preview-dash {
