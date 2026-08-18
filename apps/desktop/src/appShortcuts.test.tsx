@@ -95,6 +95,34 @@ describe("leaving the settings screen", () => {
     expect(back.selectionStart).toBe(2);
   });
 
+  it("forgets a caret the reader has since walked away from", async () => {
+    render(<App api={shellApi("page-2")} />);
+    const title = await screen.findByDisplayValue("Ideas") as HTMLTextAreaElement;
+    title.focus();
+    title.setSelectionRange(2, 2);
+    const settings = screen.getByRole("button", { name: "Settings" });
+    fireEvent.pointerDown(settings);
+    act(() => settings.focus());
+    fireEvent.click(settings, { detail: 1 });
+    await screen.findByRole("navigation", { name: "Settings sections" });
+    // Out of settings by another door, around, and back in from the keyboard.
+    const sidebar = within(screen.getByRole("navigation", { name: "Navigation" }));
+    fireEvent.click(sidebar.getByRole("button", { name: "All" }));
+    fireEvent.click(await sidebar.findByRole("button", { name: "Ideas" }));
+    await screen.findByDisplayValue("Ideas");
+    fireEvent.click(settings);
+    await screen.findByRole("navigation", { name: "Settings sections" });
+
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    // The caret it would put back is two navigations old. This open had no
+    // caret to remember, so it has none to give.
+    const back = await screen.findByDisplayValue("Ideas");
+    await waitFor(() => expect(screen.queryByRole(
+      "navigation", { name: "Settings sections" })).toBeNull());
+    expect(back).not.toHaveFocus();
+  });
+
   it("keeps a page nobody has written in yet", async () => {
     render(<App api={shellApi("page-1")} />);
     await screen.findByDisplayValue("Today");
