@@ -1738,19 +1738,21 @@ button.notes-date-token:hover {
   background-size: var(--notes-indent) 100%;
 }
 
-/* The lit guide: the same two properties that place the painted stripe, so the
-   highlight sits on the line rather than beside it. `--notes-guide-hot` is the
-   stripe index the pointer is on, written onto every row the guide spans. */
+/* The lit guide: the same two properties that place the painted stripe and the
+   same hairline width, so hovering recolours the line the row already draws
+   rather than laying a thicker one over it. `--notes-guide-hot` is the stripe
+   index the pointer is on, written onto every row the guide spans. One segment
+   per row, so nothing may round its ends -- a radius would pinch every row
+   boundary and read as a broken line. */
 .notes-node[data-guide-hot]::before {
   position: absolute;
   z-index: 1;
   inset-block: 0;
   inset-inline-start: calc(
     var(--notes-bullet-center-offset) + var(--notes-guide-hot) *
-      var(--notes-outline-indent) - 1px
+      var(--notes-outline-indent)
   );
-  width: 3px;
-  border-radius: 2px;
+  width: 1px;
   background: var(--accent);
   pointer-events: none;
   content: "";
