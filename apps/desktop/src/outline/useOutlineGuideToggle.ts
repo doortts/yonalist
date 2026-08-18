@@ -32,6 +32,10 @@ export function useOutlineGuideToggle(
   // one its way back.
   const pendingRef = useRef(new Map<string, GuidePending>());
   const hotRef = useRef<GuideHit | null>(null);
+  // A click fires wherever the mouse came up, so a row-selection drag that
+  // happens to end on a stripe would fold a range nobody asked about. The
+  // gesture only counts when it started on the same guide it ended on.
+  const armedRef = useRef<GuideHit | null>(null);
 
   const hitAt = (event: ReactMouseEvent<HTMLElement>): GuideHit | null => {
     const target = event.target;
@@ -92,9 +96,16 @@ export function useOutlineGuideToggle(
     onMouseLeave: (event: ReactMouseEvent<HTMLOListElement>) => {
       light(event.currentTarget, null);
     },
+    onMouseDown: (event: ReactMouseEvent<HTMLOListElement>) => {
+      armedRef.current = hitAt(event);
+    },
     onClick: (event: ReactMouseEvent<HTMLOListElement>) => {
+      const armed = armedRef.current;
+      armedRef.current = null;
       const hit = hitAt(event);
-      if (!hit) return;
+      if (!hit || armed?.ownerId !== hit.ownerId || armed.band !== hit.band) {
+        return;
+      }
       const pending = pendingRef.current;
       const plan = planGuideToggle(
         guideTargets(indexRef.current, hit.ownerId),
