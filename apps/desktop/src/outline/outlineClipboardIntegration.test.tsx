@@ -1,5 +1,5 @@
 import {
-  fireEvent, render, screen, waitFor, within
+  act, fireEvent, render, screen, waitFor, within
 } from "@testing-library/react";
 import type { BootSnapshot } from "../../../../packages/contracts/generated/BootSnapshot";
 import type { NotesApi } from "../api";
@@ -478,6 +478,52 @@ describe("outline clipboard integration", () => {
     fireEvent.pointerUp(third, { button: 0, pointerId: 9 });
 
     expect(window.getSelection()?.rangeCount).toBe(0);
+  });
+
+  // The engine finishes its own gesture after the capture handler has run, and
+  // WebKit puts the range it was holding straight back. The band hides it for
+  // as long as it is up, so the range has to go with the band -- otherwise it
+  // is painted again the moment the band drops.
+  it("clears the range the engine put back when the band drops", async () => {
+    render(<App api={api()} />);
+    const first = await screen.findByDisplayValue<HTMLTextAreaElement>(
+      "First thought"
+    );
+    const third = screen.getByDisplayValue("Third thought");
+
+    fireEvent.pointerDown(first, { button: 0, pointerId: 10 });
+    fireEvent.pointerMove(third, { buttons: 1, pointerId: 10 });
+    fireEvent.pointerUp(third, { button: 0, pointerId: 10 });
+    const range = document.createRange();
+    range.selectNodeContents(first.closest(".notes-node")!);
+    window.getSelection()!.addRange(range);
+
+    await act(async () => {
+      fireEvent.keyDown(third, { key: "Escape" });
+    });
+
+    expect(third.closest(".notes-node")).not.toHaveAttribute("data-selected");
+    // The caret the row holds is a collapsed selection of its own, so what has
+    // to be gone is the swept text, not every range.
+    expect(window.getSelection()?.toString()).toBe("");
+  });
+
+  // Nothing the engine holds is painted while the band is up, whichever path
+  // put it there: the rows paint the band themselves.
+  it("marks the outline while a band holds rows", async () => {
+    render(<App api={api()} />);
+    const first = await screen.findByDisplayValue<HTMLTextAreaElement>(
+      "First thought"
+    );
+    const third = screen.getByDisplayValue("Third thought");
+    const outline = first.closest<HTMLElement>(".notes-outline");
+    expect(outline).not.toHaveAttribute("data-band");
+
+    fireEvent.pointerDown(first, { button: 0, pointerId: 11 });
+    fireEvent.pointerMove(third, { buttons: 1, pointerId: 11 });
+    fireEvent.pointerUp(third, { button: 0, pointerId: 11 });
+
+    expect(outline).toHaveAttribute("data-band", "true");
   });
 
   it("copies a shift-selected row range as structural plain text and Markdown", async () => {

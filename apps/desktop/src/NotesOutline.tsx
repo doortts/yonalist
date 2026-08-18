@@ -258,6 +258,10 @@ export function NotesOutline({
    * takes the caret the way a bare arrow off that end would have left it.
    */
   const clearSelection = (collapse?: "start" | "end", step?: boolean) => {
+    // WKWebView holds on to the range a band drag left it with, and the rule
+    // that keeps that range from being painted goes when the band does. So the
+    // range goes with the band.
+    scopeRef.current?.ownerDocument.getSelection()?.removeAllRanges();
     const selected = new Set(selection.selectedIds);
     const band = collapse
       ? bodyNodes.filter((node) => selected.has(node.id))
@@ -407,6 +411,7 @@ export function NotesOutline({
       aria-label="Notes outline"
       data-outline-root-id={outlineRootId}
       data-outline-pane-id={paneId}
+      data-band={selection.selectedIds.length > 0 ? "true" : undefined}
       onCopy={(event) => {
         // Bytes cannot ride the event's synchronous text payload, so the image
         // branch takes the clipboard over and writes it itself.

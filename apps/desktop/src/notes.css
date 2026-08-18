@@ -1190,9 +1190,15 @@
 
 /* WKWebView keeps extending the range it already started, suppression or not,
    and paints it over the band the rows draw for themselves. Nothing the engine
-   holds gets painted while the band owns the drag. */
+   holds gets painted while the band owns the drag -- nor for as long as the
+   band it raised is up, whichever path left the range behind. A row the caret
+   lands in shows it plainest: its editor lifts the source over a presentation
+   whose glyphs are transparent, so all that is left to see there is the stray
+   selection painted behind them. */
 [data-row-selecting="true"]::selection,
-[data-row-selecting="true"] ::selection {
+[data-row-selecting="true"] ::selection,
+[data-band="true"]::selection,
+[data-band="true"] ::selection {
   background: transparent;
 }
 
