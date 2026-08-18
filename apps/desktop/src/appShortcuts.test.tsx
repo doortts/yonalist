@@ -175,6 +175,71 @@ describe("leaving the settings screen", () => {
   });
 });
 
+describe("the new page and settings shortcuts", () => {
+  it("opens a fresh page on the new page key", async () => {
+    render(<App api={shellApi("page-1")} />);
+    await screen.findByDisplayValue("Today");
+
+    pressShortcut("n");
+
+    const fresh = await screen.findByRole("textbox", { name: "Page title" });
+    await waitFor(() => expect(fresh).toHaveValue(""));
+  });
+
+  it("shows the settings screen on the comma key", async () => {
+    render(<App api={shellApi("page-1")} />);
+    await screen.findByDisplayValue("Today");
+
+    pressShortcut(",");
+
+    expect(await screen.findByRole("navigation", { name: "Settings sections" }))
+      .toBeInTheDocument();
+  });
+
+  it("comes back to the page it was opened from", async () => {
+    render(<App api={shellApi("page-2")} />);
+    await screen.findByDisplayValue("Ideas");
+
+    pressShortcut(",");
+    await screen.findByRole("navigation", { name: "Settings sections" });
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(await screen.findByDisplayValue("Ideas"))
+      .toHaveAttribute("aria-label", "Page title");
+  });
+
+  it("leaves the settings screen up when the comma comes again", async () => {
+    render(<App api={shellApi("page-1")} />);
+    await screen.findByDisplayValue("Today");
+    await openSettings();
+
+    pressShortcut(",");
+
+    expect(screen.getByRole("navigation", { name: "Settings sections" }))
+      .toBeInTheDocument();
+  });
+
+  it("answers the Command key on a Mac", async () => {
+    const platform = navigator.platform;
+    Object.defineProperty(navigator, "platform", {
+      value: "MacIntel", configurable: true
+    });
+    try {
+      render(<App api={shellApi("page-1")} />);
+      await screen.findByDisplayValue("Today");
+
+      fireEvent.keyDown(window, { key: ",", metaKey: true });
+
+      expect(await screen.findByRole("navigation", { name: "Settings sections" }))
+        .toBeInTheDocument();
+    } finally {
+      Object.defineProperty(navigator, "platform", {
+        value: platform, configurable: true
+      });
+    }
+  });
+});
+
 describe("the page shortcuts", () => {
   it("wears its key under the row it opens", async () => {
     render(<App api={shellApi("page-1")} />);

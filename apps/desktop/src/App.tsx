@@ -354,14 +354,54 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   const rememberSettingsReturn = useCallback(() => {
     settingsReturn.current = captureNavigation();
   }, [captureNavigation]);
+  // Opening a new page writes nothing, so this is a move and only a move: the
+  // caret goes to the empty title, and Undo brings the view back the way any
+  // other navigation does. Trashing a page, below, is the one that replays a
+  // command as well.
+  const createPage = useCallback(() => {
+    const before = captureNavigation();
+    afterDraftFlush(() => {
+      void store.createPage().then(async (pageId) => {
+        const after = {
+          ...emptyPaneLocation(pageId),
+          primaryFocus: {
+            nodeId: pageId,
+            field: "title",
+            selectionStart: 0,
+            selectionEnd: 0
+          } satisfies PaneFocusSnapshot
+        };
+        await applyNavigation(after);
+        recordNavigation(before, after);
+      });
+    });
+  }, [
+    afterDraftFlush,
+    applyNavigation,
+    captureNavigation,
+    recordNavigation,
+    store
+  ]);
+  /**
+   * The keyboard's way in, matching what the button does with focus already on
+   * it: remember where to come back to, then show the screen. Pressing it
+   * again while it is up is nothing -- Escape is the way out.
+   */
+  const openSettings = useCallback(() => {
+    if (settingsOpen) return;
+    rememberSettingsReturn();
+    setSettingsOpen(true);
+  }, [rememberSettingsReturn, settingsOpen]);
   // The listener below is registered once. What it needs from a render it
   // reads through here, so a page opened -- or a page renamed, which rebuilds
   // the page list -- does not tear the window's shortcuts down and put them
   // back.
   const shortcuts = useRef({
-    settingsOpen, closeSettings, openAllPages, openPageAt
+    settingsOpen, closeSettings, openAllPages, openPageAt, createPage, openSettings
   });
-  shortcuts.current = { settingsOpen, closeSettings, openAllPages, openPageAt };
+  shortcuts.current = {
+    settingsOpen, closeSettings, openAllPages, openPageAt, createPage, openSettings
+  };
   useEffect(() => {
     const handleKeyDown = (event: globalThis.KeyboardEvent) => {
       // Shares this listener with undo rather than registering a second one:
@@ -417,6 +457,18 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           return;
         }
       }
+      // A new page and the settings screen answer from anywhere too: neither
+      // chord is something a line of text is asking for.
+      if (modifier && !otherModifier && event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        shortcuts.current.createPage();
+        return;
+      }
+      if (modifier && !otherModifier && event.key === ",") {
+        event.preventDefault();
+        shortcuts.current.openSettings();
+        return;
+      }
       // The library search is the window's only find, so Cmd+F reaches it from
       // anywhere, including from inside a row textarea.
       if (modifier && event.key.toLowerCase() === "f") {
@@ -445,34 +497,6 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [interactionHistory]);
-  // Opening a new page writes nothing, so this is a move and only a move: the
-  // caret goes to the empty title, and Undo brings the view back the way any
-  // other navigation does. Trashing a page, below, is the one that replays a
-  // command as well.
-  const createPage = useCallback(() => {
-    const before = captureNavigation();
-    afterDraftFlush(() => {
-      void store.createPage().then(async (pageId) => {
-        const after = {
-          ...emptyPaneLocation(pageId),
-          primaryFocus: {
-            nodeId: pageId,
-            field: "title",
-            selectionStart: 0,
-            selectionEnd: 0
-          } satisfies PaneFocusSnapshot
-        };
-        await applyNavigation(after);
-        recordNavigation(before, after);
-      });
-    });
-  }, [
-    afterDraftFlush,
-    applyNavigation,
-    captureNavigation,
-    recordNavigation,
-    store
-  ]);
   const deletePage = useCallback((pageId: string) => {
     const before = captureNavigation();
     afterDraftFlush(() => {
@@ -659,10 +683,12 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                 className="primary-button notes-new-page"
                 type="button"
                   disabled={state.status === "loading"}
+                  aria-keyshortcuts="Meta+N Control+N"
                   onClick={createPage}
               >
                 <Plus size={16} aria-hidden="true" />
                 <span>New page</span>
+                <ShortcutHint mac="⌘N" other="Ctrl+N" />
               </button>
             </div>
             <section
@@ -734,6 +760,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             className="nav-item"
             type="button"
             aria-pressed={settingsOpen}
+            aria-keyshortcuts="Meta+Comma Control+Comma"
             onPointerDown={() => {
               if (!settingsOpen) rememberSettingsReturn();
             }}
@@ -750,6 +777,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           >
             <Settings size={16} aria-hidden="true" />
             <span>Settings</span>
+            <ShortcutHint mac="⌘," other="Ctrl+," />
           </button>
         </footer>
       </nav>

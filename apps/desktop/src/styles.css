@@ -740,6 +740,19 @@ body.is-resizing-pane {
   display: block;
 }
 
+/* The hint hangs off the control it belongs to, so the control has to be the
+   thing it hangs from. The footer sits at the bottom edge of the window, so
+   its hint goes above rather than off the screen. */
+.notes-new-page,
+.yonalist-navigation-footer .nav-item {
+  position: relative;
+}
+
+.yonalist-navigation-footer .shortcut-hint {
+  top: auto;
+  bottom: calc(100% + 1px);
+}
+
 .yonalist-navigation-scroll {
   flex: 1;
   min-height: 0;
