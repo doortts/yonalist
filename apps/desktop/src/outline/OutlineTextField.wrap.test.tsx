@@ -26,7 +26,12 @@ describe("v2 outline text wrapping", () => {
     expect(presentation.style.whiteSpace).toBe("pre-wrap");
     expect(presentation.style.overflowWrap).toBe("anywhere");
     expect(textarea.style.position).toBe("absolute");
-    expect(textarea.style.inset).toBe("0px");
+    expect(textarea.style.insetBlock).toBe("0px");
+    // Both inline edges lead the presentation by the caret's own pixel, which
+    // leaves the content box the width the glyphs wrap at.
+    expect(textarea.style.insetInlineStart).toBe("-3px");
+    expect(textarea.style.insetInlineEnd).toBe("1px");
+    expect(textarea.style.paddingInlineStart).toBe("2px");
     expect(textarea.style.whiteSpace).toBe("pre-wrap");
     expect(textarea.style.overflowWrap).toBe("anywhere");
   });
