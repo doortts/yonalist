@@ -554,7 +554,7 @@ describe("The modified vertical arrows against a live row band", () => {
 });
 
 describe("The modifier with A", () => {
-  it("takes the row's text, then the row's siblings", async () => {
+  it("takes the row's text, then the row itself", async () => {
     const { view } = await outline(rows);
     const editor = await placeCaret(view.container, "two", 3);
 
@@ -567,15 +567,15 @@ describe("The modifier with A", () => {
 
     await press(editor, "a", { ctrlKey: true });
 
-    expect(bandIds(view.container)).toEqual(["one", "two", "three"]);
+    expect(bandIds(view.container)).toEqual(["two"]);
     // Two lit ranges at once read as two selections, so the swept text goes
-    // when the band takes the rows.
+    // when the band takes the row.
     expect(caretOf(view.container)).toEqual({
       nodeId: "two", start: 7, end: 7, direction: "none"
     });
   });
 
-  it("takes the siblings of a row with no text of its own", async () => {
+  it("takes a row with no text of its own straight away", async () => {
     const { view } = await outline([
       bullet("one", "page-1", SORT_KEY_STEP, "First row"),
       bullet("blank", "page-1", SORT_KEY_STEP * 2, "")
@@ -584,7 +584,7 @@ describe("The modifier with A", () => {
 
     await press(editor, "a", { ctrlKey: true });
 
-    expect(bandIds(view.container)).toEqual(["one", "blank"]);
+    expect(bandIds(view.container)).toEqual(["blank"]);
   });
 });
 
@@ -615,12 +615,15 @@ describe("The modifier with A up a nested outline", () => {
     bullet("b", "page-1", SORT_KEY_STEP * 2, "Bravo")
   ] as const;
 
-  it("climbs siblings, parent, the parent's siblings, then holds", async () => {
+  it("climbs the row, siblings, parent, its siblings, then holds", async () => {
     const { view } = await outline(family);
     const editor = await placeCaret(view.container, "a1", 0);
 
     await press(editor, "a", { ctrlKey: true });
     expect(bandIds(view.container)).toEqual([]);
+
+    await press(editor, "a", { ctrlKey: true });
+    expect(bandIds(view.container)).toEqual(["a1"]);
 
     await press(editor, "a", { ctrlKey: true });
     expect(bandIds(view.container)).toEqual(["a1", "a2"]);

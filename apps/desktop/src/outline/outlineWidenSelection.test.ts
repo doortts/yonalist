@@ -42,8 +42,9 @@ const widen = (roots: readonly string[], from = "A1a") =>
   widenOutlineSelection(visible, roots, from, "page");
 
 describe("widening a band one rung at a time", () => {
-  it("takes the row's own siblings first", () => {
-    expect(widen([])).toEqual(["A1a", "A1b"]);
+  it("takes the row itself, children and all, before its siblings", () => {
+    expect(widen([])).toEqual(["A1a"]);
+    expect(widen(["A1a"])).toEqual(["A1a", "A1b"]);
   });
 
   it("takes the parent once the band holds every one of its children", () => {
@@ -60,8 +61,8 @@ describe("widening a band one rung at a time", () => {
     expect(widen(["A", "B", "C"])).toBeNull();
   });
 
-  // An only child is already every child its parent has, so the rung it stands
-  // on is the parent's -- no press is spent selecting it a second time.
+  // An only child is already every child its parent has, so the rung above it is
+  // the parent's -- no press is spent on siblings it does not have.
   it("goes straight to the parent from an only child", () => {
     const line = [bullet("A", "page"), bullet("A1", "A"), bullet("B", "page")];
     expect(widenOutlineSelection(line, [], "A1", "page")).toEqual(["A1"]);

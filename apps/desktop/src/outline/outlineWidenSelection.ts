@@ -6,13 +6,14 @@ import type { NoteView } from "../../../../packages/contracts/generated/NoteView
  *
  * The ladder is read off the band itself rather than counted: a band holding
  * every child of one parent has that parent as its next rung, and any other
- * band has the siblings of the rung it stands on. So the rungs alternate --
- * siblings, their parent, its siblings, its parent -- all the way to the top,
- * and a band the mouse drew joins the ladder wherever it happens to stand.
+ * band has the siblings of the rung it stands on. So the rungs run the row
+ * itself, its siblings, their parent, its siblings, and on to the top -- and a
+ * band the mouse drew joins the ladder wherever it happens to stand.
  *
- * `fallbackNodeId` is the row the key came from, which names the rung when
- * there is no band yet. Roots at mixed depths take the shallowest one: widening
- * from a deeper root would hand rows back that the band already holds.
+ * `fallbackNodeId` is the row the key came from, and with no band up it is the
+ * first rung on its own: the row and the children that come with it. Roots at
+ * mixed depths take the shallowest one, since widening from a deeper root would
+ * hand rows back that the band already holds.
  */
 export function widenOutlineSelection(
   visibleNodes: readonly NoteView[],
@@ -33,18 +34,19 @@ export function widenOutlineSelection(
     }
     return depth;
   };
-  const standing = rootIds.length === 0
-    ? byId.get(fallbackNodeId)
-    : rootIds
-      .map((id) => byId.get(id))
-      .filter((node): node is NoteView => node !== undefined)
-      .reduce<NoteView | undefined>(
-        (shallowest, node) => !shallowest ||
-          depthOf(node.id) < depthOf(shallowest.id)
-          ? node
-          : shallowest,
-        undefined
-      );
+  if (rootIds.length === 0) {
+    return byId.has(fallbackNodeId) ? [fallbackNodeId] : null;
+  }
+  const standing = rootIds
+    .map((id) => byId.get(id))
+    .filter((node): node is NoteView => node !== undefined)
+    .reduce<NoteView | undefined>(
+      (shallowest, node) => !shallowest ||
+        depthOf(node.id) < depthOf(shallowest.id)
+        ? node
+        : shallowest,
+      undefined
+    );
   if (!standing) return null;
   const parentId = standing.parentId ?? outlineRootId;
   const siblings = visibleNodes
