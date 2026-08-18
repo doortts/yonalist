@@ -96,6 +96,8 @@ export type OutlineKeyIntent =
       readonly headId: string;
       readonly edge: "start" | "end";
     }
+  /** Every row the outline is showing, banded in one go. */
+  | { readonly kind: "selectAllRows" }
   | {
       readonly kind: "selectTextEdge";
       readonly start: number;
@@ -327,6 +329,29 @@ export function resolveOutlineKey(
       moveToModifier
     ) {
       return input.repeat ? { kind: "consume" } : { kind: "moveTo" };
+    }
+    // The same ladder the shifted arrows climb: the row's own text first, then
+    // every row the outline is showing. A row with no text to take -- an empty
+    // bullet, an image -- has only the rows to give, and a band already up has
+    // left the text stage behind.
+    if (
+      input.key.toLowerCase() === "a" &&
+      !input.shiftKey &&
+      !input.altKey &&
+      primaryModifier(input)
+    ) {
+      if (input.repeat) return { kind: "consume" };
+      const swept = validSelection(input) &&
+        input.selectionStart === 0 &&
+        input.selectionEnd === input.value.length;
+      return swept || input.hasSelection
+        ? { kind: "selectAllRows" }
+        : {
+            kind: "selectTextEdge",
+            start: 0,
+            end: input.value.length,
+            direction: "forward"
+          };
     }
     const duplicateModifier = input.platform === "mac"
       ? input.metaKey && !input.altKey && !input.ctrlKey

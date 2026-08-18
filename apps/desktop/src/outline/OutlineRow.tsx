@@ -79,6 +79,7 @@ export interface OutlineRowRuntimeState {
     collapse?: "start" | "end",
     step?: boolean
   ) => void;
+  readonly onSelectAllRows: () => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
   readonly onPickImage: (nodeId: string) => void;
   /** Clipboard for an image row with nothing selected around it. */
@@ -363,6 +364,7 @@ export const OutlineRow = memo(function OutlineRow({
                     onZoomOut: current.onZoomOut,
                     band: current.band,
                     onExtendSelection: current.onExtendSelection,
+                    onSelectAllRows: current.onSelectAllRows,
                     onClearSelection: current.onClearSelection,
                     onFocusNote: openNoteAndFocus,
                     onMoveTo: openMoveChooser,
@@ -464,6 +466,7 @@ export const OutlineRow = memo(function OutlineRow({
                 onZoomOut: current.onZoomOut,
                 band: current.band,
                 onExtendSelection: current.onExtendSelection,
+                onSelectAllRows: current.onSelectAllRows,
                 onClearSelection: current.onClearSelection,
                 onFocusNote: openNoteAndFocus,
                 onMoveTo: openMoveChooser,

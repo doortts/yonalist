@@ -60,6 +60,7 @@ interface OutlineRowKeyContext {
     collapse?: "start" | "end",
     step?: boolean
   ) => void;
+  readonly onSelectAllRows: () => void;
   readonly onFocusNote: () => void;
   readonly onMoveTo: () => void;
   readonly selectionActions: SelectionKeyboardActions;
@@ -149,7 +150,7 @@ export function handleOutlineKeyDown(options: OutlineRowKeyOptions) {
   // The band takes the whole row, so the sweep it grew out of has nothing left
   // to say: two lit ranges at once read as two selections. The caret keeps the
   // end it moved to, which is the end a bare arrow carries on from.
-  if (intent.kind === "extendSelection") {
+  if (intent.kind === "extendSelection" || intent.kind === "selectAllRows") {
     const field = event.currentTarget;
     const caret = field.selectionDirection === "backward"
       ? field.selectionStart
@@ -565,6 +566,9 @@ function executeRowIntent(
       return;
     case "extendSelection":
       context.onExtendSelection(node.id, intent.headId, intent.edge);
+      return;
+    case "selectAllRows":
+      context.onSelectAllRows();
       return;
     case "clearSelection":
       context.onClearSelection(intent.collapse, intent.step);

@@ -363,6 +363,7 @@ export function NotesOutline({
       if (scope) focusAfterCommit(scope, headId, edge);
     },
     onClearSelection: clearSelection,
+    onSelectAllRows: () => selection.replace(bodyNodes.map((node) => node.id)),
     onTagClick,
     onPickImage: (nodeId) => void imageIngest.openPicker(nodeId),
     onCopyImage: (nodeId) => putImageOnClipboard(

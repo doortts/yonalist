@@ -894,6 +894,61 @@ describe("v2 outline keyboard intent resolver", () => {
     }))).toEqual({ kind: "move", direction: "up" });
   });
 
+  // The same ladder the shifted arrows climb: the row's own text first, then
+  // every row the outline is showing.
+  it("takes the row's text before it takes every visible row", () => {
+    expect(resolveOutlineKey(input({
+      key: "a",
+      ctrlKey: true
+    }))).toEqual({
+      kind: "selectTextEdge",
+      start: 0,
+      end: "alphaXYZomega".length,
+      direction: "forward"
+    });
+    // The whole row already swept: the next press takes the rows.
+    expect(resolveOutlineKey(input({
+      key: "a",
+      ctrlKey: true,
+      selectionStart: 0,
+      selectionEnd: "alphaXYZomega".length
+    }))).toEqual({ kind: "selectAllRows" });
+    // A row with no text to take -- an empty bullet, an image -- has only the
+    // rows to give.
+    expect(resolveOutlineKey(input({
+      key: "a",
+      ctrlKey: true,
+      value: "",
+      selectionStart: 0,
+      selectionEnd: 0
+    }))).toEqual({ kind: "selectAllRows" });
+    // With a band already up the text stage has nothing to say.
+    expect(resolveOutlineKey(input({
+      key: "a",
+      ctrlKey: true,
+      hasSelection: true
+    }))).toEqual({ kind: "selectAllRows" });
+    // On a mac it rides Cmd, and a held chord stops where it got to.
+    expect(resolveOutlineKey(input({
+      key: "A",
+      metaKey: true,
+      platform: "mac",
+      selectionStart: 0,
+      selectionEnd: "alphaXYZomega".length
+    }))).toEqual({ kind: "selectAllRows" });
+    expect(resolveOutlineKey(input({
+      key: "a",
+      ctrlKey: true,
+      repeat: true
+    }))).toEqual({ kind: "consume" });
+    // Shift or Alt with it is nobody's binding here.
+    expect(resolveOutlineKey(input({
+      key: "a",
+      ctrlKey: true,
+      shiftKey: true
+    }))).toBeNull();
+  });
+
   it("collapses a row band to the edge a bare arrow points at", () => {
     for (const key of ["ArrowUp", "ArrowLeft"]) {
       expect(resolveOutlineKey(input({

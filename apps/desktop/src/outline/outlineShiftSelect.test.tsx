@@ -549,3 +549,38 @@ describe("The modified vertical arrows against a live row band", () => {
     });
   });
 });
+
+describe("The modifier with A", () => {
+  it("takes the row's text, then every visible row", async () => {
+    const { view } = await outline(rows);
+    const editor = await placeCaret(view.container, "two", 3);
+
+    await press(editor, "a", { ctrlKey: true });
+
+    expect(bandIds(view.container)).toEqual([]);
+    expect(caretOf(view.container)).toEqual({
+      nodeId: "two", start: 0, end: 7, direction: "forward"
+    });
+
+    await press(editor, "a", { ctrlKey: true });
+
+    expect(bandIds(view.container)).toEqual(["one", "two", "three"]);
+    // Two lit ranges at once read as two selections, so the swept text goes
+    // when the band takes the rows.
+    expect(caretOf(view.container)).toEqual({
+      nodeId: "two", start: 7, end: 7, direction: "none"
+    });
+  });
+
+  it("takes every visible row from a row with no text of its own", async () => {
+    const { view } = await outline([
+      bullet("one", "page-1", SORT_KEY_STEP, "First row"),
+      bullet("blank", "page-1", SORT_KEY_STEP * 2, "")
+    ]);
+    const editor = await placeCaret(view.container, "blank", 0);
+
+    await press(editor, "a", { ctrlKey: true });
+
+    expect(bandIds(view.container)).toEqual(["one", "blank"]);
+  });
+});
