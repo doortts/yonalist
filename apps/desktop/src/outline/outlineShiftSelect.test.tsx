@@ -102,7 +102,7 @@ async function outline(nodes: readonly NoteView[]) {
     />
   );
   await act(async () => undefined);
-  return { view };
+  return { view, api };
 }
 
 function field(container: HTMLElement, nodeId: string): HTMLTextAreaElement {
@@ -415,6 +415,19 @@ describe("A bare arrow against a live row band", () => {
     expect(bandIds(view.container)).toEqual([]);
     expect(caretOf(view.container)).toEqual(before);
   });
+  // Backspace on a band is the band's key, not the caret's: the rows the
+  // reader is looking at go, rather than a letter they cannot see.
+  it.each(["Backspace", "Delete"])("trashes the band on %s", async (key) => {
+    const { view, api } = await outline(rows);
+    const editor = await bandAcross(view.container);
+
+    await press(editor, key);
+
+    expect(vi.mocked(api.execute).mock.calls.map(
+      ([envelope]) => envelope.command
+    )).toEqual([{ kind: "deleteSubtrees", ids: ["one", "two"] }]);
+  });
+
   // The note field answers to none of the band's keys, so leaving the row for
   // it has to take the band with it.
   it("drops the band when the caret leaves the row for its note", async () => {

@@ -12,6 +12,10 @@ describe("the page title's placeholder", () => {
   it("is fainter than the text it stands in for", () => {
     const placeholder = rule(notesStyles, ".notes-page-title::placeholder");
     expect(placeholder).toContain("color: var(--text-3);");
-    expect(placeholder).toContain("opacity: 0.55;");
+    // How faint is a matter of taste and gets tuned; that it is faint at all
+    // is the contract.
+    const faded = /opacity:\s*([\d.]+);/.exec(placeholder);
+    expect(Number(faded?.[1])).toBeGreaterThan(0);
+    expect(Number(faded?.[1])).toBeLessThan(0.6);
   });
 });

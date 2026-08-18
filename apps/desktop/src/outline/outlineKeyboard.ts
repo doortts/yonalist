@@ -400,6 +400,20 @@ export function resolveOutlineKey(
     ) {
       return { kind: "clearSelection" };
     }
+    // A band answers the delete keys with itself. The caret is parked in one of
+    // the banded rows, and letting the key through would take a letter nobody
+    // is looking at instead of the rows they are. A held key consumes the
+    // repeats the way every other command binding here does.
+    if (
+      input.hasSelection &&
+      (input.key === "Backspace" || input.key === "Delete") &&
+      !input.altKey &&
+      !input.ctrlKey &&
+      !input.metaKey &&
+      !input.shiftKey
+    ) {
+      return input.repeat ? { kind: "consume" } : { kind: "trash" };
+    }
   }
 
   if (input.altKey || input.ctrlKey || input.metaKey) return null;
