@@ -115,6 +115,9 @@ export function NotesOutline({
   const visibleIndex = useMemo(() => new OutlineIndex(bodyNodes), [bodyNodes]);
   const outlineWindow = useOutlineWindow(bodyNodes);
   const reveal = outlineWindow.reveal;
+  // Read by the restore below, which must not re-run when this is rebuilt.
+  const revealRef = useRef(reveal);
+  revealRef.current = reveal;
   useEffect(() => {
     if (scopeRef.current) {
       registerOutlinePane(scopeRef.current, {
@@ -147,12 +150,17 @@ export function NotesOutline({
     restoreSelectionRef.current(liveHistorySelection(
       restoreRequest.selectedIds, store.getSnapshot().nodes));
     if (!restoreRequest.focus || !scopeRef.current) return;
-    reveal(restoreRequest.focus.nodeId);
+    revealRef.current(restoreRequest.focus.nodeId);
     // The revealed row mounts a tick or two from here, which is what
     // focusOutlineSnapshot waits out -- and it waits on timers, so the caret
     // still arrives in a window the browser is painting no frames for.
     focusOutlineSnapshot(scopeRef.current, restoreRequest.focus);
-  }, [restoreRequest, reveal, store]);
+    // One request, answered once. `reveal` is rebuilt whenever the rows
+    // change, and rows change under a reader who is typing -- a row of their
+    // own, a page being written for the first time. Waiting on it here would
+    // answer the same request again and drop the caret back where the request
+    // was made, which is offset zero for a page just opened.
+  }, [restoreRequest, store]);
   useEffect(() => {
     if (!rootKey) return;
     let active = true;
