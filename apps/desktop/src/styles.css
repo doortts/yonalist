@@ -2594,8 +2594,8 @@ button.settings-attachment-name {
 .marker-preview-dash {
   position: relative;
   top: 1px;
-  width: 8px;
-  height: 2.5px;
+  width: 10px;
+  height: 2px;
   border-radius: 0;
 }
 

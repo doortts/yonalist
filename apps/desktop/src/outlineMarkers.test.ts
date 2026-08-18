@@ -98,7 +98,7 @@ describe("outline marker styles", () => {
     ]);
 
     for (let slot = 1; slot < MAX_OUTLINE_MARKER_LEVELS; slot += 1) {
-      expect(variables[`--notes-marker-${slot}-w`]).toBe("8px");
+      expect(variables[`--notes-marker-${slot}-w`]).toBe("10px");
       expect(variables[`--notes-marker-${slot}-color`]).toBe("#e8734a");
     }
     expect(variables["--notes-marker-0-w"]).toBe("7px");
@@ -112,8 +112,8 @@ describe("outline marker styles", () => {
       style({ shape: "hyphen" }),
       style({ shape: "custom", char: "▸", color: "#e8734a" })
     ]);
-    expect(variables["--notes-marker-0-w"]).toBe("8px");
-    expect(variables["--notes-marker-0-h"]).toBe("2.5px");
+    expect(variables["--notes-marker-0-w"]).toBe("10px");
+    expect(variables["--notes-marker-0-h"]).toBe("2px");
     // The dash reads as a hyphen, so it sits where a hyphen's bar does: a pixel
     // under the line box's middle, which every other shape centres on.
     expect(variables["--notes-marker-0-dy"]).toBe("1px");
