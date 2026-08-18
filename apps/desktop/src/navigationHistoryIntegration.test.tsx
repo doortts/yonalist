@@ -112,10 +112,18 @@ function pageApi(): NotesApi {
       redoDepth: 0
     }
   });
+  const pageText = new Map<string, string>();
   notesApi.execute = vi.fn().mockImplementation(async (envelope) => {
     const { command } = envelope;
     if (command.kind === "createNode") {
+      pageText.set(command.id, command.text);
       undone.push(() => receiptFor(pageNode(command.id, command.text, true)));
+      return receiptFor(pageNode(command.id, command.text, false));
+    }
+    // A page keeps what is written into it, the way the backend does: the row
+    // that comes back is the row that was edited.
+    if (command.kind === "updateText" && pageText.has(command.id)) {
+      pageText.set(command.id, command.text);
       return receiptFor(pageNode(command.id, command.text, false));
     }
     if (command.kind === "deleteSubtree") {
@@ -198,6 +206,25 @@ describe("a mutation that moves the view", () => {
     expect(screen.getByRole("textbox", { name: "Page title" })).toBe(title);
     expect(title).toHaveFocus();
     await act(async () => release());
+  });
+
+  it("leaves the caret in the title while the page is created under it", async () => {
+    const notesApi = pageApi();
+    render(<App api={notesApi} />);
+    await screen.findByDisplayValue("First thought");
+    const title = await newPageTitle() as HTMLTextAreaElement;
+
+    vi.useFakeTimers();
+    fireEvent.change(title, { target: { value: "Gro" } });
+    title.setSelectionRange(3, 3);
+    await act(() => vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS));
+    vi.useRealTimers();
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalled());
+
+    // The rows the creation brings back are no reason to put the caret where
+    // the page was opened: that was one request, answered once.
+    expect(title.selectionStart).toBe(3);
+    expect(title).toHaveFocus();
   });
 
   it("takes one undo press to leave a page nobody wrote in", async () => {
