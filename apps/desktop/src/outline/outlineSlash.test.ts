@@ -4,6 +4,7 @@ import {
   resolveOrderedInput,
   resolveSlashCommandQuery,
   resolveTitleInput,
+  orderSlashCommands,
   rememberSlashCommand,
   resolveTodoBoxInput
 } from "./outlineSlash";
@@ -20,14 +21,24 @@ describe("v2 slash commands", () => {
       end: 9,
       query: "tod"
     });
-    expect(resolveSlashCommandQuery("Plan /", 6, 6)).toEqual({
-      start: 5,
-      end: 6,
-      query: ""
-    });
     // Mid-word slashes are somebody else's punctuation, not a command.
     expect(resolveSlashCommandQuery("and/or", 6, 6)).toBeNull();
     expect(resolveSlashCommandQuery("https://x", 9, 9)).toBeNull();
+    // A bare slash mid-line is a slash. Only the row that opens with one is
+    // unambiguously reaching for a command.
+    expect(resolveSlashCommandQuery("Buy milk /", 10, 10)).toBeNull();
+    expect(resolveSlashCommandQuery("/", 1, 1)).toEqual({
+      start: 0,
+      end: 1,
+      query: ""
+    });
+    // The caret inside a word that merely starts with a slash is editing it.
+    expect(resolveSlashCommandQuery("Ship /todken refresh", 9, 9)).toBeNull();
+    expect(resolveSlashCommandQuery("Ship /tod refresh", 9, 9)).toEqual({
+      start: 5,
+      end: 9,
+      query: "tod"
+    });
     expect(resolveSlashCommandQuery("/to d", 5, 5)).toBeNull();
     expect(resolveSlashCommandQuery("/tod", 1, 3)).toBeNull();
   });
@@ -40,10 +51,10 @@ describe("v2 slash commands", () => {
 
   it("offers a checked row the way back rather than the way it came", () => {
     expect(filterSlashCommands("", "todo").map(({ label }) => label))
-      .toEqual(["Today", "Return to bullet"]);
+      .toEqual(["Today", "Change back to bullet"]);
     // The way back answers to what it is and to what it was: the reader who
     // types the command's name should not have to know it was renamed.
-    expect(filterSlashCommands("ret", "todo").map(({ id }) => id))
+    expect(filterSlashCommands("chan", "todo").map(({ id }) => id))
       .toEqual(["todo"]);
     expect(filterSlashCommands("todo", "todo").map(({ id }) => id))
       .toEqual(["todo"]);
@@ -54,7 +65,7 @@ describe("v2 slash commands", () => {
   it("takes the box off a row that already wears one", () => {
     const query = resolveSlashCommandQuery("/tod", 4, 4)!;
     expect(applySlashCommand("/tod", query, "todo", "2026-07-28", "todo"))
-      .toEqual({ value: "", caret: 0, marker: "bullet" });
+      .toEqual({ value: "", caret: 0, marker: "bullet", completed: false });
     expect(applySlashCommand("/tod", query, "todo", "2026-07-28"))
       .toEqual({ value: "", caret: 0, marker: "todo" });
   });
@@ -210,13 +221,14 @@ describe("the one question a title's own field asks of a change", () => {
       selectionStart: 4,
       selectionEnd: 4
     })).toEqual({ kind: "slash", query: { start: 0, end: 4, query: "tod" } });
-    // A whole slash line at once reports its caret at the start, and the query
-    // runs to the end of what came in.
+    // The caret is where the query ends, always. A change that reports it at
+    // the start is reporting a caret at the start, and there is no query
+    // standing there.
     expect(resolveTitleInput("", {
       value: "/tod",
       selectionStart: 0,
       selectionEnd: 0
-    })).toEqual({ kind: "slash", query: { start: 0, end: 4, query: "tod" } });
+    })).toBeNull();
     expect(resolveTitleInput("buy mil", {
       value: "buy milk",
       selectionStart: 8,
@@ -244,27 +256,38 @@ describe("the order the menu offers its commands in", () => {
   });
 
   it("leads with the one used last", () => {
-    expect(filterSlashCommands("").map(({ id }) => id))
+    const commands = filterSlashCommands("");
+    expect(orderSlashCommands(commands, []).map(({ id }) => id))
       .toEqual(["today", "todo"]);
 
     rememberSlashCommand("todo");
 
-    expect(filterSlashCommands("").map(({ id }) => id))
+    expect(orderSlashCommands(commands).map(({ id }) => id))
       .toEqual(["todo", "today"]);
   });
 
-  it("keeps the order it was given for the ones never used", () => {
-    rememberSlashCommand("today");
-    rememberSlashCommand("todo");
-    rememberSlashCommand("today");
+  it("keeps the declared order for the ones nobody has reached for", () => {
+    const commands = filterSlashCommands("");
 
-    expect(filterSlashCommands("").map(({ id }) => id))
+    // A remembered command that no longer exists names nobody, so both of
+    // these are un-reached and stand as they were declared.
+    expect(orderSlashCommands(commands, ["gone"]).map(({ id }) => id))
       .toEqual(["today", "todo"]);
+    // One reached for goes above the one that was not, wherever it was
+    // declared.
+    expect(orderSlashCommands(commands, ["todo"]).map(({ id }) => id))
+      .toEqual(["todo", "today"]);
   });
 
-  it("orders what the query left, and nothing else", () => {
+  it("remembers the last reach first, and each command once", () => {
+    rememberSlashCommand("today");
     rememberSlashCommand("todo");
+    rememberSlashCommand("today");
 
-    expect(filterSlashCommands("toda").map(({ id }) => id)).toEqual(["today"]);
+    expect(orderSlashCommands(filterSlashCommands("")).map(({ id }) => id))
+      .toEqual(["today", "todo"]);
+    expect(JSON.parse(
+      window.localStorage.getItem("yonalist.slashCommandOrder.v1")!
+    )).toEqual(["today", "todo"]);
   });
 });

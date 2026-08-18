@@ -6,6 +6,8 @@ export interface SlashCommandDefinition {
   readonly id: SlashCommandId;
   readonly label: string;
   readonly description: string;
+  /** What the menu draws beside it, which is not always what the id says. */
+  readonly icon: "today" | "todo" | "bullet";
   /** Other names the query may reach this command by. */
   readonly aliases?: readonly string[];
 }
@@ -21,11 +23,23 @@ export interface SlashCommandEdit {
   readonly value: string;
   readonly caret: number;
   readonly marker: "todo" | "bullet" | null;
+  /** Set only where the marker's own change decides it. */
+  readonly completed?: boolean;
 }
 
 export const slashCommands = [
-  { id: "today", label: "Today", description: "Insert today's date" },
-  { id: "todo", label: "To-do", description: "Change this bullet to a To-do" }
+  {
+    id: "today",
+    label: "Today",
+    description: "Insert today's date",
+    icon: "today"
+  },
+  {
+    id: "todo",
+    label: "To-do",
+    description: "Change this bullet to a To-do",
+    icon: "todo"
+  }
 ] as const satisfies readonly SlashCommandDefinition[];
 
 /**
@@ -33,15 +47,16 @@ export const slashCommands = [
  * To-do has nothing to gain from being offered one, so that entry becomes the
  * way back: same command, opposite direction, named for where it goes.
  */
-export function slashCommandsFor(
+function slashCommandsFor(
   marker: string | undefined
 ): readonly SlashCommandDefinition[] {
   if (marker !== "todo") return slashCommands;
   return slashCommands.map((command) => command.id === "todo"
     ? {
         id: command.id,
-        label: "Return to bullet",
+        label: "Change back to bullet",
         description: "Take this To-do back to a plain bullet",
+        icon: "bullet",
         // The reader who types the command's name should not have to know it
         // is named for where it goes on a row that already went.
         aliases: [command.label]
@@ -157,12 +172,9 @@ export function resolveTitleInput(
     change.value, change.selectionStart, change.selectionEnd, previous
   );
   if (ordered) return { kind: "ordered", edit: ordered };
-  // A caret reported at the start of a value that already begins with `/` says
-  // nothing about where the query ends, so the whole value is the query.
-  const caret = change.selectionStart === 0 && change.value.startsWith("/")
-    ? change.value.length
-    : change.selectionStart;
-  const query = resolveSlashCommandQuery(change.value, caret, caret);
+  const query = resolveSlashCommandQuery(
+    change.value, change.selectionStart, change.selectionEnd
+  );
   return query ? { kind: "slash", query } : null;
 }
 
@@ -192,9 +204,17 @@ export function resolveSlashCommandQuery(
   const before = start === 0 ? "" : typed[start - 1];
   if (before !== "" && !/\s/u.test(before)) return null;
   const query = typed.slice(start + 1);
-  return /^[a-z]*$/iu.test(query)
-    ? { start, end: selectionEnd, query }
-    : null;
+  if (!/^[a-z]*$/iu.test(query)) return null;
+  // A slash with nothing typed after it is a slash. Only the row that opens
+  // with one is unambiguously reaching for a command rather than writing one
+  // -- everywhere else, Enter on a bare slash would convert the row instead of
+  // starting the next one.
+  if (query.length === 0 && start > 0) return null;
+  // And a caret standing inside a longer word is editing that word, not naming
+  // a command: `/todken` is not `/tod`.
+  const after = value[selectionEnd];
+  if (after !== undefined && /[\p{L}\p{N}]/u.test(after)) return null;
+  return { start, end: selectionEnd, query };
 }
 
 const recentKey = "yonalist.slashCommandOrder.v1";
@@ -217,6 +237,26 @@ function recentSlashCommands(): readonly string[] {
   }
 }
 
+/**
+ * The commands the reader has reached for, first. Their own step rather than
+ * the filter's business: what the query leaves is a question about the query,
+ * and what order it comes in is a question about this reader.
+ */
+export function orderSlashCommands(
+  commands: readonly SlashCommandDefinition[],
+  recent: readonly string[] = recentSlashCommands()
+): readonly SlashCommandDefinition[] {
+  // A command nobody has reached for sorts after every one that has, and keeps
+  // the order it was declared in among its own kind.
+  const reachedFor = (command: SlashCommandDefinition) => {
+    const place = recent.indexOf(command.id);
+    return place < 0 ? recent.length : place;
+  };
+  return [...commands].sort(
+    (left, right) => reachedFor(left) - reachedFor(right)
+  );
+}
+
 export function rememberSlashCommand(id: SlashCommandId): void {
   const order = [id, ...recentSlashCommands().filter((seen) => seen !== id)];
   try {
@@ -235,17 +275,9 @@ export function filterSlashCommands(
     .toLocaleLowerCase("en-US")
     .replaceAll("-", "")
     .startsWith(normalized);
-  const recent = recentSlashCommands();
-  // A command nobody has reached for yet sorts after every one that has, and
-  // keeps the order it was declared in among its own kind.
-  const reachedFor = (command: SlashCommandDefinition) => {
-    const place = recent.indexOf(command.id);
-    return place < 0 ? recent.length : place;
-  };
-  return slashCommandsFor(marker)
-    .filter((command) =>
-      named(command.label) || (command.aliases ?? []).some(named))
-    .sort((left, right) => reachedFor(left) - reachedFor(right));
+  return slashCommandsFor(marker).filter((command) =>
+    named(command.label) || (command.aliases ?? []).some(named)
+  );
 }
 
 export function applySlashCommand(
@@ -265,11 +297,12 @@ export function applySlashCommand(
   const before = source.slice(0, query.start);
   const after = source.slice(query.end);
   if (command === "todo") {
-    return {
-      value: before + after,
-      caret: query.start,
-      marker: marker === "todo" ? "bullet" : "todo"
-    };
+    // A row that goes back to a bullet leaves the tick behind with the box:
+    // a finished row with no box to untick draws a line through itself and
+    // gives the reader nothing to undo it with.
+    return marker === "todo"
+      ? { value: before + after, caret: query.start, marker: "bullet", completed: false }
+      : { value: before + after, caret: query.start, marker: "todo" };
   }
   return {
     value: before + today + after,

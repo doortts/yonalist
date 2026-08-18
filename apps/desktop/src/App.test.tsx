@@ -1142,7 +1142,11 @@ describe("Yonalist v2 desktop shell", () => {
 
   it("offers a checked row the way back, and takes it", async () => {
     const notesApi = api();
-    let current = { ...snapshot.viewport!.nodes[0], marker: "todo" as const };
+    let current = {
+      ...snapshot.viewport!.nodes[0],
+      marker: "todo" as const,
+      completed: true
+    };
     let revision = snapshot.revision;
     notesApi.bootstrap = vi.fn().mockResolvedValue({
       ...snapshot,
@@ -1158,6 +1162,9 @@ describe("Yonalist v2 desktop shell", () => {
       }
       if (envelope.command.kind === "setMarker") {
         current = { ...current, marker: envelope.command.marker };
+      }
+      if (envelope.command.kind === "setCompleted") {
+        current = { ...current, completed: envelope.command.completed };
       }
       return {
         revision,
@@ -1176,9 +1183,8 @@ describe("Yonalist v2 desktop shell", () => {
         selectionEnd: 19
       }
     });
-    expect(await screen.findByRole("option", { name: /Return to bullet/ }))
+    expect(await screen.findByRole("option", { name: /Change back to bullet/ }))
       .toBeVisible();
-    fireEvent.keyDown(title, { key: "ArrowDown" });
     fireEvent.keyDown(title, { key: "Enter" });
 
     await waitFor(() => expect(vi.mocked(notesApi.execute).mock.calls.map(
@@ -1188,6 +1194,19 @@ describe("Yonalist v2 desktop shell", () => {
       id: "bullet-1",
       marker: "bullet"
     }));
+    const calls = vi.mocked(notesApi.execute).mock.calls.map(
+      ([envelope]) => envelope
+    );
+    // Text, marker and the tick undo as one step.
+    expect(calls.at(-1)?.historyGroup).toMatch(/^slash:/);
+    expect(calls.at(-2)?.historyGroup).toBe(calls.at(-1)?.historyGroup);
+    // The tick goes back with the box: a finished row with no box to untick
+    // would draw a line through itself with nothing to undo it.
+    expect(calls.map(({ command }) => command)).toContainEqual({
+      kind: "setCompleted",
+      id: "bullet-1",
+      completed: false
+    });
     // What the row keeps is everything the query was not.
     await waitFor(() => expect(title).toHaveValue("First thought "));
   });

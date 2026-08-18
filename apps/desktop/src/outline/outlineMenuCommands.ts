@@ -160,12 +160,19 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
     icon: (context) =>
       context.node.marker === "todo" ? Circle : SquareCheckBig,
     label: (context) =>
-      context.node.marker === "todo" ? "Return to bullet" : "To-do",
+      context.node.marker === "todo" ? "Change back to bullet" : "To-do",
     eligibility: ALWAYS,
-    execute: (context) => void context.store.setMarker(
-      context.node.id,
-      context.node.marker === "todo" ? "bullet" : "todo"
-    )
+    execute: (context) => {
+      const returning = context.node.marker === "todo";
+      void context.store.setMarker(
+        context.node.id, returning ? "bullet" : "todo"
+      );
+      // The tick goes back with the box it was in: a finished row with no box
+      // draws a line through itself, and there is nothing left to untick it.
+      if (returning && context.node.completed) {
+        void context.store.setCompleted(context.node.id, false);
+      }
+    }
   },
   {
     id: "duplicate",
