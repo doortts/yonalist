@@ -1210,6 +1210,10 @@ function backend(options: {
         });
       nodes.delete(command.id);
       deletedIds.push(command.id);
+    } else if (command.kind === "setCollapsed") {
+      const node = { ...target, collapsed: command.collapsed };
+      nodes.set(node.id, node);
+      changedNodes.push(node);
     } else {
       throw new Error(`unexpected command: ${command.kind}`);
     }
@@ -1743,3 +1747,37 @@ describe("다른 기기의 변경 흡수 — 이름이 온 경우", () => {
 function page(id: string, title: string): NoteView {
   return { ...bullet(id, 1_024), parentId: "root", text: title };
 }
+
+describe("NotesStore collapse batches", () => {
+  it("folds a range collapse into one undo entry", async () => {
+    const collapsing = backend();
+    const store = new NotesStore(collapsing.notesApi);
+    await store.bootstrap();
+    const history = vi.fn();
+    store.subscribeHistory(history);
+
+    await store.setCollapsedMany([
+      { id: "one", collapsed: true },
+      { id: "two", collapsed: true }
+    ]);
+
+    expect(collapsing.commands()).toEqual([
+      { kind: "setCollapsed", id: "one", collapsed: true },
+      { kind: "setCollapsed", id: "two", collapsed: true }
+    ]);
+    expect(new Set(collapsing.groups()).size).toBe(1);
+    // A guide click closes a whole range, and one undo owes the user all of it
+    // back rather than one row per press.
+    expect(history).toHaveBeenCalledOnce();
+  });
+
+  it("stays off the wire when the range needs no change", async () => {
+    const quiet = backend();
+    const store = new NotesStore(quiet.notesApi);
+    await store.bootstrap();
+
+    await store.setCollapsedMany([]);
+
+    expect(quiet.commands()).toEqual([]);
+  });
+});
