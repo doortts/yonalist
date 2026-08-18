@@ -184,7 +184,7 @@ describe("the page shortcuts", () => {
     // The hints are painted by CSS off a held modifier, so what a test can ask
     // is whether the row carries its own key at all.
     expect(within(sidebar.getByRole("button", { name: "All" }))
-      .getByText("Ctrl+`")).toBeInTheDocument();
+      .getByText("Ctrl+0")).toBeInTheDocument();
     expect(within(sidebar.getByRole("button", { name: "Ideas" }))
       .getByText("Ctrl+2")).toBeInTheDocument();
     expect(sidebar.queryByText("Ctrl+10")).toBeNull();
@@ -251,11 +251,11 @@ describe("the page shortcuts", () => {
       .toHaveAttribute("aria-label", "Page title");
   });
 
-  it("shows All on the backtick", async () => {
+  it("shows All on the zero", async () => {
     render(<App api={shellApi("page-2")} />);
     await screen.findByDisplayValue("Ideas");
 
-    pressShortcut("`");
+    pressShortcut("0");
 
     await waitFor(() => expect(screen.getByRole("button", { name: "All" }))
       .toHaveAttribute("aria-current", "page"));

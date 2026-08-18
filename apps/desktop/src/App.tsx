@@ -396,16 +396,16 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       // The other primary modifier is somebody else's chord, the way the
       // inspector's shortcut reads it.
       const otherModifier = onMac ? event.ctrlKey : event.metaKey;
-      // The sidebar's list, by number: the backtick heads it the way All does,
-      // and the nine keys after it are the nine pages under All. They reach
-      // from inside a row textarea like the find below, since a digit with the
-      // modifier held is nothing a line of text is asking for.
+      // The sidebar's list, by number: zero heads it the way All does, and the
+      // nine keys after it are the nine pages under All. They reach from inside
+      // a row textarea like the find below, since a digit with the modifier
+      // held is nothing a line of text is asking for.
       if (
         modifier && !otherModifier && !event.shiftKey && !event.altKey &&
         // A key still being composed is the input method's, not a shortcut.
         !event.isComposing && event.key.length === 1
       ) {
-        if (event.key === "`") {
+        if (event.key === "0") {
           event.preventDefault();
           shortcuts.current.openAllPages();
           return;
@@ -685,12 +685,12 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                     aria-current={
                       atHome && libraryView === "all" ? "page" : undefined
                     }
-                    aria-keyshortcuts="Meta+` Control+`"
+                    aria-keyshortcuts="Meta+0 Control+0"
                     onClick={openAllPages}
                   >
                     <House size={16} aria-hidden="true" />
                     <span>All</span>
-                    <ShortcutHint mac="⌘`" other="Ctrl+`" />
+                    <ShortcutHint mac="⌘0" other="Ctrl+0" />
                   </button>
                 </div>
                 {libraryView === "all" &&
