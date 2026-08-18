@@ -7,12 +7,15 @@ import { useNotesNode } from "./useNotesNode";
 export function LibraryPageRow({
   page,
   active,
+  shortcut,
   store,
   onOpen,
   onDelete
 }: {
   readonly page: PageSummary;
   readonly active: boolean;
+  /** The keys that open this row, for the readers who are told rather than shown. */
+  readonly shortcut?: string;
   readonly store: NotesStore;
   readonly onOpen: () => void;
   readonly onDelete: () => void;
@@ -29,6 +32,7 @@ export function LibraryPageRow({
         className="notes-library-page"
         type="button"
         aria-current={active ? "page" : undefined}
+        aria-keyshortcuts={shortcut}
         onClick={onOpen}
       >
         <FileText size={16} aria-hidden="true" />

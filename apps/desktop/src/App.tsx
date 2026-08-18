@@ -117,6 +117,9 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     (location: AppNavigationLocation) => Promise<void>
   >(async () => undefined);
   const restoreEpoch = useRef(0);
+  // Where the reader was when the settings screen went up, so Escape can put
+  // them back on the row they were writing in.
+  const settingsReturn = useRef<AppNavigationLocation | null>(null);
   const interactionHistory = useMemo(() => new NotesInteractionHistory(
     store,
     (location: AppNavigationLocation) => applyNavigationRef.current(location)
@@ -168,53 +171,6 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       stop?.();
     };
   }, [store]);
-  useEffect(() => {
-    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
-      // Shares this listener with undo rather than registering a second one:
-      // the window has no menu bar, so the inspector has to be reachable from
-      // anywhere, including inside a row textarea, and the undo guard below
-      // must not apply to it.
-      if (isDevtoolsShortcut(event)) {
-        event.preventDefault();
-        void toggleDevtools();
-        return;
-      }
-      // Purely a paint on the document element, so it needs no React state and
-      // cannot re-render (or re-mount a textarea) out from under a drag test.
-      if (isDragDebugShortcut(event)) {
-        event.preventDefault();
-        document.documentElement.toggleAttribute("data-drag-debug");
-        return;
-      }
-      const modifier = navigator.platform.includes("Mac") ? event.metaKey : event.ctrlKey;
-      // The library search is the window's only find, so Cmd+F reaches it from
-      // anywhere, including from inside a row textarea.
-      if (modifier && event.key.toLowerCase() === "f") {
-        event.preventDefault();
-        setSearchOpen(true);
-        // Already open: the field is mounted, so nothing re-runs its autoFocus
-        // and the caret has to be sent back by hand.
-        searchInput.current?.focus();
-        return;
-      }
-      if (!modifier || event.key.toLowerCase() !== "z") return;
-      // Every other text field on screen -- the library search, the Move To
-      // and Tags filters -- keeps its own native undo. The outline's row and
-      // note textareas deliberately do not, and `data-outline-field` is what
-      // marks them: the choosers render inside `.notes-outline`, so the class
-      // scope cannot tell the two apart.
-      const target = event.target as HTMLElement | null;
-      if (
-        (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") &&
-        !target.hasAttribute("data-outline-field")
-      ) return;
-      event.preventDefault();
-      if (event.shiftKey) void interactionHistory.redo();
-      else void interactionHistory.undo();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [interactionHistory]);
   useEffect(() => {
     const move = (event: PointerEvent) => {
       if (!resizeStart.current) return;
@@ -345,6 +301,150 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   );
   // Home is the root page like any other page, house crumb included.
   const openHome = useCallback(() => void openPage(ROOT_ID), [openPage]);
+  // What the All row does, wherever it is asked for: Home, and the library
+  // back to the view that lists the pages, since that is the list All heads.
+  const openAllPages = useCallback(() => {
+    setSettingsOpen(false);
+    setLibraryView("all");
+    setQuery("");
+    openHome();
+  }, [openHome]);
+  /**
+   * The page at one place in the sidebar's list, by its number. The list is
+   * the store's page order, which is the order the sidebar draws -- a filter
+   * or a search hides rows without renumbering the pages behind them.
+   */
+  const openPageAt = useCallback((place: number) => {
+    const page = state.pages[place];
+    if (!page) return;
+    setSettingsOpen(false);
+    // The number names a place in the list, so the list has to be the one the
+    // reader lands looking at: a filtered view or a search hides those rows.
+    setLibraryView("all");
+    setQuery("");
+    void openPage(page.id);
+  }, [openPage, state.pages]);
+  /**
+   * Leaving the settings screen puts the reader back where they came from --
+   * the page, the zoom, the band and the caret they left. Two things take
+   * that away: a page that is gone (the data deleted or rebuilt from the
+   * vault while the screen was up) and a page opened from the sidebar while
+   * the screen was up, which is a newer answer to where they mean to land.
+   */
+  const closeSettings = useCallback(() => {
+    const back = settingsReturn.current;
+    settingsReturn.current = null;
+    const openPageId = store.getSnapshot().activePageId;
+    // A page nobody has written in yet has no row in the list, which is not
+    // the same as having nowhere to go back to.
+    const live = openPageId !== null && (openPageId === ROOT_ID ||
+      openPageId === state.provisionalPageId ||
+      state.pages.some((page) => page.id === openPageId));
+    if (!live) {
+      openAllPages();
+      return;
+    }
+    setSettingsOpen(false);
+    if (back?.pageId === openPageId) void applyNavigation(back);
+  }, [applyNavigation, openAllPages, state.pages, state.provisionalPageId, store]);
+  /**
+   * Pointer-down rather than the click: the click lands after focus has left
+   * the outline, and the caret is half of what there is to come back to.
+   */
+  const rememberSettingsReturn = useCallback(() => {
+    settingsReturn.current = captureNavigation();
+  }, [captureNavigation]);
+  // The listener below is registered once. What it needs from a render it
+  // reads through here, so a page opened -- or a page renamed, which rebuilds
+  // the page list -- does not tear the window's shortcuts down and put them
+  // back.
+  const shortcuts = useRef({
+    settingsOpen, closeSettings, openAllPages, openPageAt
+  });
+  shortcuts.current = { settingsOpen, closeSettings, openAllPages, openPageAt };
+  useEffect(() => {
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      // Shares this listener with undo rather than registering a second one:
+      // the window has no menu bar, so the inspector has to be reachable from
+      // anywhere, including inside a row textarea, and the undo guard below
+      // must not apply to it.
+      if (isDevtoolsShortcut(event)) {
+        event.preventDefault();
+        void toggleDevtools();
+        return;
+      }
+      // Purely a paint on the document element, so it needs no React state and
+      // cannot re-render (or re-mount a textarea) out from under a drag test.
+      if (isDragDebugShortcut(event)) {
+        event.preventDefault();
+        document.documentElement.toggleAttribute("data-drag-debug");
+        return;
+      }
+      // Nothing inside the settings screen answers Escape today, so this is
+      // the only reader of it there. A component that grows one says so by
+      // preventing the event, and the screen behind it stays where it is.
+      if (
+        event.key === "Escape" && shortcuts.current.settingsOpen &&
+        !event.defaultPrevented
+      ) {
+        event.preventDefault();
+        shortcuts.current.closeSettings();
+        return;
+      }
+      const onMac = navigator.platform.includes("Mac");
+      const modifier = onMac ? event.metaKey : event.ctrlKey;
+      // The other primary modifier is somebody else's chord, the way the
+      // inspector's shortcut reads it.
+      const otherModifier = onMac ? event.ctrlKey : event.metaKey;
+      // The sidebar's list, by number: the backtick heads it the way All does,
+      // and the nine keys after it are the nine pages under All. They reach
+      // from inside a row textarea like the find below, since a digit with the
+      // modifier held is nothing a line of text is asking for.
+      if (
+        modifier && !otherModifier && !event.shiftKey && !event.altKey &&
+        // A key still being composed is the input method's, not a shortcut.
+        !event.isComposing && event.key.length === 1
+      ) {
+        if (event.key === "`") {
+          event.preventDefault();
+          shortcuts.current.openAllPages();
+          return;
+        }
+        const place = "123456789".indexOf(event.key);
+        if (place >= 0) {
+          event.preventDefault();
+          shortcuts.current.openPageAt(place);
+          return;
+        }
+      }
+      // The library search is the window's only find, so Cmd+F reaches it from
+      // anywhere, including from inside a row textarea.
+      if (modifier && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setSearchOpen(true);
+        // Already open: the field is mounted, so nothing re-runs its autoFocus
+        // and the caret has to be sent back by hand.
+        searchInput.current?.focus();
+        return;
+      }
+      if (!modifier || event.key.toLowerCase() !== "z") return;
+      // Every other text field on screen -- the library search, the Move To
+      // and Tags filters -- keeps its own native undo. The outline's row and
+      // note textareas deliberately do not, and `data-outline-field` is what
+      // marks them: the choosers render inside `.notes-outline`, so the class
+      // scope cannot tell the two apart.
+      const target = event.target as HTMLElement | null;
+      if (
+        (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA") &&
+        !target.hasAttribute("data-outline-field")
+      ) return;
+      event.preventDefault();
+      if (event.shiftKey) void interactionHistory.redo();
+      else void interactionHistory.undo();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [interactionHistory]);
   // Opening a new page writes nothing, so this is a move and only a move: the
   // caret goes to the empty title, and Undo brings the view back the way any
   // other navigation does. Trashing a page, below, is the one that replays a
@@ -585,11 +685,8 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                     aria-current={
                       atHome && libraryView === "all" ? "page" : undefined
                     }
-                    onClick={() => {
-                      setLibraryView("all");
-                      setQuery("");
-                      openHome();
-                    }}
+                    aria-keyshortcuts="Meta+` Control+`"
+                    onClick={openAllPages}
                   >
                     <House size={16} aria-hidden="true" />
                     <span>All</span>
@@ -597,10 +694,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                 </div>
                 {libraryView === "all" &&
                   query.trim().length === 0 &&
-                  state.pages.map((page) => (
+                  state.pages.map((page, place) => (
                     <LibraryPageRow
                       key={page.id}
                       page={page}
+                      shortcut={place < 9
+                        ? `Meta+${place + 1} Control+${place + 1}`
+                        : undefined}
                       active={page.id === state.activePageId}
                       store={store}
                       onOpen={() => void openPage(page.id)}
@@ -635,7 +735,19 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             className="nav-item"
             type="button"
             aria-pressed={settingsOpen}
-            onClick={() => setSettingsOpen((open) => !open)}
+            onPointerDown={() => {
+              if (!settingsOpen) rememberSettingsReturn();
+            }}
+            onClick={(event) => {
+              if (settingsOpen) closeSettings();
+              else {
+                // `detail` counts the clicks a pointer made, so zero is the
+                // keyboard: focus was already on this button and no pointer
+                // down ran ahead of it to remember anything.
+                if (event.detail === 0) rememberSettingsReturn();
+                setSettingsOpen(true);
+              }
+            }}
           >
             <Settings size={16} aria-hidden="true" />
             <span>Settings</span>
@@ -680,7 +792,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             onCaretColorChange={theme.setCaretColor}
             onTextFontChange={theme.setTextFont}
             onMarkerStylesChange={markers.setMarkerStyles}
-            onClose={() => setSettingsOpen(false)}
+            onClose={closeSettings}
             unusedAssets={(purge) => api.unusedAssets(purge)}
             deleteAllData={() => api.deleteAllData()}
             rebuildFromVault={rebuildFromVault}
