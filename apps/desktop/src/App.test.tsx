@@ -1683,6 +1683,76 @@ describe("Yonalist v2 desktop shell", () => {
     expect(crumbLabels()).toEqual(["", "Today"]);
   });
 
+  /** A row wearing exactly the children the case under test needs. */
+  function familyApi(...childText: readonly string[]): NotesApi {
+    const notesApi = api();
+    const base = snapshot.viewport!.nodes[0]!;
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: {
+        ...snapshot.viewport!,
+        nodes: [
+          { ...base, id: "parent", text: "Alpha" },
+          ...childText.map((text, place) => ({
+            ...base,
+            id: `child-${place}`,
+            parentId: "parent",
+            sortKey: 2_048 + place * 1_024,
+            text
+          }))
+        ]
+      }
+    });
+    return notesApi;
+  }
+
+  function caretIn(name: string): readonly [HTMLTextAreaElement, number] {
+    const field = screen.getByRole<HTMLTextAreaElement>("textbox", { name });
+    return [field, field.selectionStart];
+  }
+
+  it("ends the zoomed row's own title when nothing is under it", async () => {
+    render(<App api={familyApi()} />);
+    await screen.findByDisplayValue("Alpha");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Zoom to item" })[0]!);
+
+    await waitFor(() => expect(screen.getByDisplayValue("Alpha"))
+      .toHaveAttribute("aria-label", "Page title"));
+    await waitFor(() => {
+      const [field, caret] = caretIn("Page title");
+      expect(field).toHaveFocus();
+      expect(caret).toBe("Alpha".length);
+    });
+  });
+
+  it("ends the one child a zoomed row has", async () => {
+    render(<App api={familyApi("Beta")} />);
+    await screen.findByDisplayValue("Beta");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Zoom to item" })[0]!);
+
+    await waitFor(() => {
+      const field = screen.getByDisplayValue<HTMLTextAreaElement>("Beta");
+      expect(field).toHaveFocus();
+      expect(field.selectionStart).toBe("Beta".length);
+    });
+  });
+
+  it("leads the first child when the zoomed row has several", async () => {
+    render(<App api={familyApi("Beta", "Gamma")} />);
+    await screen.findByDisplayValue("Beta");
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Zoom to item" })[0]!);
+
+    await waitFor(() => {
+      const field = screen.getByDisplayValue<HTMLTextAreaElement>("Beta");
+      expect(field).toHaveFocus();
+      expect(field.selectionStart).toBe(0);
+      expect(field.selectionEnd).toBe(0);
+    });
+  });
+
   it("opens the root outline from the breadcrumb house", async () => {
     render(<App api={homeApi()} />);
     await screen.findByDisplayValue("First thought");

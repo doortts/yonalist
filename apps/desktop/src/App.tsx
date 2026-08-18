@@ -22,6 +22,7 @@ import {
 import {
   capturePane,
   emptyPaneLocation,
+  zoomEntryFocus,
   type AppNavigationLocation,
   type PaneFocusSnapshot
 } from "./appNavigation";
@@ -514,55 +515,76 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     recordMutationNavigation,
     store
   ]);
+  // Coming out of a zoom leaves the caret where the reader put it; going in
+  // places it, since the rows the reader was looking at are gone from the pane.
+  const zoomEntry = useCallback((nodeId: string | null) => {
+    if (!nodeId) return null;
+    const snapshot = store.getSnapshot();
+    return zoomEntryFocus(nodeId, snapshot.nodes, snapshot.drafts);
+  }, [store]);
   const updatePrimaryZoom = useCallback((nodeId: string | null) => {
     if (nodeId === primaryZoomRootId) return;
     const before = captureNavigation();
     afterDraftFlush(() => {
+      const focus = zoomEntry(nodeId);
       setPrimaryZoomRootId(nodeId);
+      setPrimaryRestore({
+        epoch: ++restoreEpoch.current, selectedIds: [], focus
+      });
       recordNavigation(before, {
         ...before,
         primaryZoomRootId: nodeId,
         primarySelectedIds: [],
-        primaryFocus: null
+        primaryFocus: focus
       });
     });
   }, [
     afterDraftFlush,
     captureNavigation,
     primaryZoomRootId,
-    recordNavigation
+    recordNavigation,
+    zoomEntry
   ]);
   const openSplit = useCallback((nodeId: string) => {
     const before = captureNavigation();
     afterDraftFlush(() => {
+      const focus = zoomEntry(nodeId);
       setSplitOpen(true);
       setSecondaryZoomRootId(nodeId);
+      setSecondaryRestore({
+        epoch: ++restoreEpoch.current, selectedIds: [], focus
+      });
       recordNavigation(before, {
         ...before,
         splitOpen: true,
         secondaryZoomRootId: nodeId,
         secondarySelectedIds: [],
-        secondaryFocus: null
+        secondaryFocus: focus
       });
     });
-  }, [afterDraftFlush, captureNavigation, recordNavigation]);
+  }, [afterDraftFlush, captureNavigation, recordNavigation, zoomEntry]);
   const updateSecondaryZoom = useCallback((nodeId: string | null) => {
     if (nodeId === secondaryZoomRootId) return;
     const before = captureNavigation();
     afterDraftFlush(() => {
+      const focus = zoomEntry(nodeId);
       setSecondaryZoomRootId(nodeId);
+      setSecondaryRestore({
+        epoch: ++restoreEpoch.current, selectedIds: [], focus
+      });
       recordNavigation(before, {
         ...before,
         secondaryZoomRootId: nodeId,
         secondarySelectedIds: [],
-        secondaryFocus: null
+        secondaryFocus: focus
       });
     });
   }, [
     afterDraftFlush,
     captureNavigation,
     recordNavigation,
-    secondaryZoomRootId
+    secondaryZoomRootId,
+    zoomEntry
   ]);
   const closeSplit = useCallback(() => {
     if (!splitOpen) return;

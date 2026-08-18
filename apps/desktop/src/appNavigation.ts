@@ -1,3 +1,4 @@
+import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import { outlinePane } from "./outline/outlinePaneRegistry";
 
 export type PaneId = "primary" | "secondary";
@@ -70,6 +71,42 @@ export function capturePane(paneId: PaneId): PaneSnapshot {
       } satisfies PaneFocusSnapshot
     : null;
   return { paneId, selectedIds, focus };
+}
+
+/**
+ * Where the caret lands on the way into a zoomed row. A row with nothing under
+ * it leaves the reader in its own title, at the end, since that line is all
+ * there is to write in. A row with one child puts them at the end of that
+ * child, which is where the writing left off. A row with several puts them in
+ * front of the first, because a list that already has an order is arrived at to
+ * be read, not appended to.
+ */
+export function zoomEntryFocus(
+  nodeId: string,
+  nodes: readonly NoteView[],
+  drafts: Readonly<Record<string, string>>
+): PaneFocusSnapshot {
+  const children = nodes
+    .filter((node) => node.parentId === nodeId)
+    .sort((left, right) => left.sortKey - right.sortKey);
+  if (children.length > 1) {
+    return {
+      nodeId: children[0]!.id,
+      field: "title",
+      selectionStart: 0,
+      selectionEnd: 0
+    };
+  }
+  const target = children[0] ?? nodes.find((node) => node.id === nodeId);
+  const landing = target?.id ?? nodeId;
+  // The draft is what the field is showing, so it is what its end measures.
+  const end = (drafts[landing] ?? target?.text ?? "").length;
+  return {
+    nodeId: landing,
+    field: "title",
+    selectionStart: end,
+    selectionEnd: end
+  };
 }
 
 export function emptyPaneLocation(
