@@ -1183,7 +1183,7 @@ describe("Yonalist v2 desktop shell", () => {
         selectionEnd: 19
       }
     });
-    expect(await screen.findByRole("option", { name: /Change back to bullet/ }))
+    expect(await screen.findByRole("option", { name: /Change to bullet/ }))
       .toBeVisible();
     fireEvent.keyDown(title, { key: "Enter" });
 

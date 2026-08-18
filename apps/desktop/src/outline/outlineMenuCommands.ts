@@ -1,7 +1,7 @@
 import {
-  ArrowDown, ArrowUp, Check, Circle, Copy, CopyPlus, CornerUpRight, ImagePlus,
-  IndentDecrease, IndentIncrease, MessageSquareText, Scissors, SquareCheckBig,
-  Star, Tag, Trash2, type LucideIcon
+  ArrowDown, ArrowUp, Check, Copy, CopyPlus, CornerUpRight, ImagePlus,
+  IndentDecrease, IndentIncrease, MessageSquareText, Minus, Scissors,
+  SquareCheckBig, Star, Tag, Trash2, type LucideIcon
 } from "lucide-react";
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "../notesStore";
@@ -159,9 +159,9 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
   {
     id: "marker",
     icon: (context) =>
-      context.node.marker === "todo" ? Circle : SquareCheckBig,
+      context.node.marker === "todo" ? Minus : SquareCheckBig,
     label: (context) =>
-      context.node.marker === "todo" ? "Change back to bullet" : "To-do",
+      context.node.marker === "todo" ? "Change to bullet" : "To-do",
     eligibility: ALWAYS,
     execute: (context) => {
       const returning = context.node.marker === "todo";

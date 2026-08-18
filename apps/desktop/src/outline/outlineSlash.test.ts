@@ -56,7 +56,7 @@ describe("v2 slash commands", () => {
 
   it("offers a checked row the way back rather than the way it came", () => {
     expect(filterSlashCommands("", "todo").map(({ label }) => label))
-      .toEqual(["Today", "Change back to bullet"]);
+      .toEqual(["Today", "Change to bullet"]);
     // The way back answers to what it is and to what it was: the reader who
     // types the command's name should not have to know it was renamed.
     expect(filterSlashCommands("chan", "todo").map(({ id }) => id))

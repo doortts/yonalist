@@ -1,4 +1,4 @@
-import { CalendarDays, Circle, SquareCheckBig } from "lucide-react";
+import { CalendarDays, Minus, SquareCheckBig } from "lucide-react";
 import {
   useCallback, useLayoutEffect, useRef, useState, type CSSProperties
 } from "react";
@@ -64,7 +64,7 @@ export function SlashCommandMenu({
           {command.icon === "todo"
             ? <SquareCheckBig size={17} aria-hidden="true" />
             : command.icon === "bullet"
-              ? <Circle size={17} aria-hidden="true" />
+              ? <Minus size={17} aria-hidden="true" />
               : <CalendarDays size={17} aria-hidden="true" />}
           <span className="notes-slash-command-label">{command.label}</span>
           <span className="notes-slash-command-description">

@@ -54,7 +54,7 @@ function slashCommandsFor(
   return slashCommands.map((command) => command.id === "todo"
     ? {
         id: command.id,
-        label: "Change back to bullet",
+        label: "Change to bullet",
         description: "Take this To-do back to a plain bullet",
         icon: "bullet",
         // The reader who types the command's name should not have to know it
