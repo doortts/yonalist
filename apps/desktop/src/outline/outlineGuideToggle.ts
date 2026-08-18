@@ -4,12 +4,8 @@
  * which ancestor paints it, and what that ancestor's range should do next.
  */
 
-/**
- * How far off a stripe a pointer still counts as on it. The lit guide is a
- * hairline like the one it replaces, so this reach is the whole of what makes
- * the line easy to hit.
- */
-export const GUIDE_HIT_TOLERANCE = 14;
+/** How far off a stripe's centre a pointer still counts as on it. */
+export const GUIDE_HIT_TOLERANCE = 9;
 
 export interface GuideNode {
   readonly id: string;

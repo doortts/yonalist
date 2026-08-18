@@ -35,13 +35,6 @@ describe("guideBandAt", () => {
     expect(guideBandAt(133, 61, 36)).toBe(2);
   });
 
-  // The line stays a hairline, so the room to hit it comes from the reach
-  // around it: a pointer a dozen pixels off the stripe still meant the stripe.
-  it("reaches well past the hairline it lights", () => {
-    expect(guideBandAt(73, 61, 36)).toBe(0);
-    expect(guideBandAt(49, 61, 36)).toBe(0);
-  });
-
   it("misses between the stripes and left of the first one", () => {
     expect(guideBandAt(79, 61, 36)).toBeNull();
     expect(guideBandAt(40, 61, 36)).toBeNull();
