@@ -26,4 +26,14 @@ describe("outline indentation guides", () => {
     );
     expect(row).toContain("background-size: var(--notes-indent) 100%;");
   });
+
+  // The click target is invisible without this. The lit bar has to land on the
+  // stripe the pointer found, so it is placed off the same two properties the
+  // painted stripe uses, stepped by the index the pane writes onto the row.
+  it("lights the hovered stripe off the geometry that paints it", () => {
+    const lit = rule(notesStyles, '.notes-node[data-guide-hot]::before');
+    expect(lit).toContain("var(--notes-bullet-center-offset) + var(--notes-guide-hot) *");
+    expect(lit).toContain("var(--notes-outline-indent) - 1px");
+    expect(lit).toContain("pointer-events: none;");
+  });
 });

@@ -10,6 +10,7 @@ import {
 import { useOutlineSelection } from "./outline/useOutlineSelection";
 import { widenOutlineSelection } from "./outline/outlineWidenSelection";
 import { useOutlinePointerSelection } from "./outline/useOutlinePointerSelection";
+import { useOutlineGuideToggle } from "./outline/useOutlineGuideToggle";
 import { useOutlineDrag } from "./outline/useOutlineDrag";
 import { OutlineHeader, OutlinePageHeading } from "./outline/OutlineHeader";
 import { OutlineRow, OutlineRowRuntime } from "./outline/OutlineRow";
@@ -188,6 +189,7 @@ export function NotesOutline({
     store
   ]);
   const pointerSelection = useOutlinePointerSelection(selection, bodyNodes);
+  const guideToggle = useOutlineGuideToggle(store, index, outlineRootId);
   const outlineDrag = useOutlineDrag({
     enabled: structuralContextComplete &&
       (selection.selectedIds.length === 0 || selection.forestComplete),
@@ -535,6 +537,7 @@ export function NotesOutline({
             role="list"
             ref={outlineWindow.listRef}
             {...pointerSelection}
+            {...guideToggle}
           >
             {outlineWindow.items.map((item) => {
               if (item.kind === "gap") {
