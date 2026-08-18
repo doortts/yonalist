@@ -1548,9 +1548,16 @@ button.notes-date-token:hover {
   line-height: var(--notes-title-line-height);
 }
 
-.notes-page-title::placeholder,
 .notes-page-note::placeholder {
   color: var(--text-3);
+}
+
+/* The title is set at heading size and heading weight, so the grey a row's
+   placeholder wears carries far more ink up here and reads as a written line.
+   It only has to say what the line is for. */
+.notes-page-title::placeholder {
+  color: var(--text-3);
+  opacity: 0.55;
 }
 
 .notes-page-header[data-completed="true"] .notes-page-title {
