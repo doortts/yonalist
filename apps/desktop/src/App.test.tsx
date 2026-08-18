@@ -1140,6 +1140,58 @@ describe("Yonalist v2 desktop shell", () => {
     });
   });
 
+  it("offers a checked row the way back, and takes it", async () => {
+    const notesApi = api();
+    let current = { ...snapshot.viewport!.nodes[0], marker: "todo" as const };
+    let revision = snapshot.revision;
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: {
+        ...snapshot.viewport!,
+        nodes: [current, snapshot.viewport!.nodes[1]]
+      }
+    });
+    notesApi.execute = vi.fn().mockImplementation(async (envelope) => {
+      revision += 1;
+      if (envelope.command.kind === "updateText") {
+        current = { ...current, text: envelope.command.text };
+      }
+      if (envelope.command.kind === "setMarker") {
+        current = { ...current, marker: envelope.command.marker };
+      }
+      return {
+        revision,
+        changedNodes: [current],
+        deletedIds: [],
+        history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+      };
+    });
+    render(<App api={notesApi} />);
+    const title = await screen.findByDisplayValue<HTMLTextAreaElement>("First thought");
+
+    fireEvent.change(title, {
+      target: {
+        value: "First thought /todo",
+        selectionStart: 19,
+        selectionEnd: 19
+      }
+    });
+    expect(await screen.findByRole("option", { name: /Return to bullet/ }))
+      .toBeVisible();
+    fireEvent.keyDown(title, { key: "ArrowDown" });
+    fireEvent.keyDown(title, { key: "Enter" });
+
+    await waitFor(() => expect(vi.mocked(notesApi.execute).mock.calls.map(
+      ([envelope]) => envelope.command
+    ).at(-1)).toEqual({
+      kind: "setMarker",
+      id: "bullet-1",
+      marker: "bullet"
+    }));
+    // What the row keeps is everything the query was not.
+    await waitFor(() => expect(title).toHaveValue("First thought "));
+  });
+
   // The same seam `/todo` commits through, so the box and the text it strips
   // undo together.
   it("turns a task box typed at a title's start into a check box", async () => {

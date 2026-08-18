@@ -37,6 +37,27 @@ describe("v2 slash commands", () => {
     expect(filterSlashCommands("TODO").map(({ id }) => id)).toEqual(["todo"]);
   });
 
+  it("offers a checked row the way back rather than the way it came", () => {
+    expect(filterSlashCommands("", "todo").map(({ label }) => label))
+      .toEqual(["Today", "Return to bullet"]);
+    // The way back answers to what it is and to what it was: the reader who
+    // types the command's name should not have to know it was renamed.
+    expect(filterSlashCommands("ret", "todo").map(({ id }) => id))
+      .toEqual(["todo"]);
+    expect(filterSlashCommands("todo", "todo").map(({ id }) => id))
+      .toEqual(["todo"]);
+    expect(filterSlashCommands("", "bullet").map(({ label }) => label))
+      .toEqual(["Today", "To-do"]);
+  });
+
+  it("takes the box off a row that already wears one", () => {
+    const query = resolveSlashCommandQuery("/tod", 4, 4)!;
+    expect(applySlashCommand("/tod", query, "todo", "2026-07-28", "todo"))
+      .toEqual({ value: "", caret: 0, marker: "bullet" });
+    expect(applySlashCommand("/tod", query, "todo", "2026-07-28"))
+      .toEqual({ value: "", caret: 0, marker: "todo" });
+  });
+
   it("edits only the query, wherever in the row it stands", () => {
     const query = resolveSlashCommandQuery("Plan /tod later", 9, 9)!;
     expect(applySlashCommand("Plan /tod later", query, "today", "2026-07-28"))

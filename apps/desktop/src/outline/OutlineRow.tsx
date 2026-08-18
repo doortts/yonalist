@@ -168,7 +168,8 @@ export const OutlineRow = memo(function OutlineRow({
       source,
       slashMenu.query,
       commandId,
-      localDateIso()
+      localDateIso(),
+      node.marker === "todo" ? "todo" : undefined
     );
     setSlashMenu(null);
     commitRowEdit(edit, edit.marker);
@@ -394,7 +395,12 @@ export const OutlineRow = memo(function OutlineRow({
                 return;
               }
               store.setDraft(node.id, event.currentTarget.value);
-              const commands = input ? filterSlashCommands(input.query.query) : [];
+              const commands = input
+                ? filterSlashCommands(
+                  input.query.query,
+                  node.marker === "todo" ? "todo" : undefined
+                )
+                : [];
               setSlashMenu(input && commands.length > 0
                 ? { query: input.query, commands, activeIndex: 0 }
                 : null);

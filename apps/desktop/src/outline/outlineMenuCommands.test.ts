@@ -221,7 +221,7 @@ describe("outline menu labels", () => {
     expect(command("marker").label(context({
       mode: "row",
       node: bullet("a", ROOT, 1024, { marker: "todo" })
-    }))).toBe("Change to bullet");
+    }))).toBe("Return to bullet");
   });
 
   it("flips the star label with the node's starred state", () => {

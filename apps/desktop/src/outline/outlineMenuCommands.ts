@@ -160,7 +160,7 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
     icon: (context) =>
       context.node.marker === "todo" ? Circle : SquareCheckBig,
     label: (context) =>
-      context.node.marker === "todo" ? "Change to bullet" : "To-do",
+      context.node.marker === "todo" ? "Return to bullet" : "To-do",
     eligibility: ALWAYS,
     execute: (context) => void context.store.setMarker(
       context.node.id,

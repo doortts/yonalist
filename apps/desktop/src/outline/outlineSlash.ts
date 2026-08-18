@@ -6,6 +6,8 @@ export interface SlashCommandDefinition {
   readonly id: SlashCommandId;
   readonly label: string;
   readonly description: string;
+  /** Other names the query may reach this command by. */
+  readonly aliases?: readonly string[];
 }
 
 export interface SlashCommandQuery {
@@ -18,13 +20,34 @@ export interface SlashCommandQuery {
 export interface SlashCommandEdit {
   readonly value: string;
   readonly caret: number;
-  readonly marker: "todo" | null;
+  readonly marker: "todo" | "bullet" | null;
 }
 
 export const slashCommands = [
   { id: "today", label: "Today", description: "Insert today's date" },
   { id: "todo", label: "To-do", description: "Change this bullet to a To-do" }
 ] as const satisfies readonly SlashCommandDefinition[];
+
+/**
+ * What the menu offers a row wearing this marker. A row that is already a
+ * To-do has nothing to gain from being offered one, so that entry becomes the
+ * way back: same command, opposite direction, named for where it goes.
+ */
+export function slashCommandsFor(
+  marker: string | undefined
+): readonly SlashCommandDefinition[] {
+  if (marker !== "todo") return slashCommands;
+  return slashCommands.map((command) => command.id === "todo"
+    ? {
+        id: command.id,
+        label: "Return to bullet",
+        description: "Take this To-do back to a plain bullet",
+        // The reader who types the command's name should not have to know it
+        // is named for where it goes on a row that already went.
+        aliases: [command.label]
+      }
+    : command);
+}
 
 /**
  * The box a title's start reads as, the bare pair `[]` included: that is what a
@@ -175,14 +198,16 @@ export function resolveSlashCommandQuery(
 }
 
 export function filterSlashCommands(
-  query: string
+  query: string,
+  marker?: string
 ): readonly SlashCommandDefinition[] {
   const normalized = query.toLocaleLowerCase("en-US").replaceAll("-", "");
-  return slashCommands.filter((command) =>
-    command.label
-      .toLocaleLowerCase("en-US")
-      .replaceAll("-", "")
-      .startsWith(normalized)
+  const named = (name: string) => name
+    .toLocaleLowerCase("en-US")
+    .replaceAll("-", "")
+    .startsWith(normalized);
+  return slashCommandsFor(marker).filter((command) =>
+    named(command.label) || (command.aliases ?? []).some(named)
   );
 }
 
@@ -190,7 +215,9 @@ export function applySlashCommand(
   source: string,
   query: SlashCommandQuery,
   command: SlashCommandId,
-  today: string
+  today: string,
+  /** What the row wears now, which is what the To-do command answers to. */
+  marker?: string
 ): SlashCommandEdit {
   if (
     source.slice(query.start, query.end) !== `/${query.query}` ||
@@ -204,7 +231,7 @@ export function applySlashCommand(
     return {
       value: before + after,
       caret: query.start,
-      marker: "todo"
+      marker: marker === "todo" ? "bullet" : "todo"
     };
   }
   return {

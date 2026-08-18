@@ -1568,7 +1568,7 @@ button.notes-date-token:hover {
    It only has to say what the line is for. */
 .notes-page-title::placeholder {
   color: var(--text-3);
-  opacity: 0.55;
+  opacity: 0.15;
 }
 
 .notes-page-header[data-completed="true"] .notes-page-title {
