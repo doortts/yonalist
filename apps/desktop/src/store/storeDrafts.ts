@@ -68,8 +68,11 @@ export class StoreDrafts {
       { nodeIds: [id] }
     );
     this.cancelTitle(id);
+    // Nobody awaits a debounce, and the command choke point has already put
+    // the failure in `state.error`, so a rethrow here could only reach the
+    // window as an unhandled rejection.
     this.titleTimers.set(id, setTimeout(
-      () => void this.flushTitle(id),
+      () => void this.flushTitle(id).catch(() => undefined),
       DRAFT_DEBOUNCE_MS
     ));
   }
@@ -107,7 +110,7 @@ export class StoreDrafts {
     );
     this.cancelNote(id);
     this.noteTimers.set(id, setTimeout(
-      () => void this.flushNote(id),
+      () => void this.flushNote(id).catch(() => undefined),
       DRAFT_DEBOUNCE_MS
     ));
   }
