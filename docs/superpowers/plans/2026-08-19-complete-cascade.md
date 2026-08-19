@@ -1,7 +1,15 @@
 # 상위 완료가 하위를 데려가고, 곧바로 되돌리면 이전 상태로
 
-작성 2026-08-19, 2차 개정(체크리스트가 아닌 블릿도 같은 규칙). 설계는 Fable 5가
-맡는 체제지만 한도 초과로 붙지 못해 Opus 5가 썼다.
+작성 2026-08-19, 3차 개정(구현 반영). 설계는 Fable 5가 맡는 체제지만 한도 초과로
+붙지 못해 Opus 5가 썼다.
+
+구현하면서 계획이 두 군데 바뀌었다.
+- 새 도메인 명령 `RestoreCompleted`는 필요 없었다. 세션이 이미 갖고 있는 undo
+  항목의 inverse가 곧 "완료 직전 값"이라, 그걸 앞으로 가는 패치로 다시 커밋하면
+  된다. 명령도, 저장 창(working set) 처리도, 새 IPC도 늘지 않았다.
+- 조상 자동 완료가 페이지 행까지 올라가는 문제를 막았다. 페이지 행은 kind가
+  Bullet이라 마커 조건을 없애자 그대로 걸렸고, 페이지 제목과 사이드바 이름에
+  취소선이 그려지고 완료 숨김 필터에서 페이지가 사라질 수 있었다.
 
 ## 지금 코드가 이미 하는 일
 
@@ -44,7 +52,7 @@
 | A3 | 하위 행 하나를 다시 열면 조상도 마커와 무관하게 따라 열린다 | 1 |
 | A4 | 명령이 읽는 창이 전파 대상 전체를 담는다 — 저장된 트리에서도 A1~A3이 성립한다 | 2 |
 | A5 | 프리뷰가 A1~A3과 같은 결과를 낸다 | 3 |
-| A6 | 각 행에 서로 다른 완료 값을 그대로 배정하는 명령이 있다(전파 없음) | 4 |
+| A6 | 조상 자동 완료는 페이지 행 아래에서 멈춘다 | 1b |
 | A7 | 완료 직후 같은 행을 해제하면 하위는 완료 직전 값으로 돌아간다 | 5 |
 | A8 | 사이에 다른 변경이 하나라도 끼면 되돌림 창이 닫히고 해제는 아래를 전부 해제한다 | 5 |
 | A9 | 되돌림은 undo 항목 하나를 남긴다 — undo하면 다시 전부 완료 상태로 간다 | 5 |
@@ -75,18 +83,20 @@
    `settles every descendant whatever its marker`
    기존 `ticks every Todo under the one clicked, stopping at a bullet`(:35)을
    새 규칙으로 고친다.
-4. **행마다 값을 배정하는 명령** — `NotesCommand::RestoreCompleted { states }`.
-   전파도 조상 규칙도 돌지 않고 받은 값을 그대로 쓴다.
+1b. **조상 자동 완료는 페이지 행 아래에서 멈춘다** — `live_parent_row`가
+   `is_page_row`(루트 Page이거나 그 직계 자식)에서 멈춘다.
    테스트: `crates/notes-core/tests/tree_commands.rs`
-   `restore_completed_hands_each_row_its_own_value`
-5. **세션이 직전 상태를 기억한다** — 완료 전파가 두 행 이상을 바꿨을 때
-   `NotesService` 세션이 `{ node_id, prior: Vec<(NodeId, bool)> }`를 남긴다.
-   값은 이미 만들어지는 `DomainPatch.inverse`에서 읽으므로 새로 계산하지 않는다.
-   같은 행의 완료 해제가 다음 변경으로 들어오면 `RestoreCompleted`로 갈아끼우고,
-   그 밖의 변경이 들어오면 기억을 버린다.
-   테스트: `crates/notes-application/src/service/tests.rs`
-   `an_uncomplete_right_after_the_cascade_hands_rows_back_their_values`,
-   `an_edit_in_between_closes_the_window`
+   `the_climb_stops_below_the_page_row`
+5. **세션이 직전 상태를 기억한다** — 기억은 undo 스택이다. 완료 명령이 만든 history
+   항목에 그 명령이 지목한 행 목록(`completed_rows`)을 달아 두고, 바로 다음 명령이
+   같은 행들의 완료 해제이면 그 항목의 inverse를 앞으로 가는 패치로 커밋한다.
+   history group으로 합쳐진 항목은 더 이상 한 제스처가 아니므로 표시를 지운다.
+   단일 토글(`SetCompleted`)과 선택 일괄(`SetCompletedMany`) 둘 다 같은 경로다.
+   테스트: `crates/notes-sqlite/tests/completion_restore.rs`
+   `an_uncomplete_right_after_the_tick_hands_the_rows_back_their_own_states`,
+   `taking_back_the_restore_puts_the_whole_branch_back`,
+   `an_edit_in_between_closes_the_window`,
+   `a_later_tick_of_another_row_closes_the_window`
 6. **프리뷰도 같은 기억을 갖는다** — `previewApi`의 세션 상태에 같은 규칙.
    테스트: `apps/desktop/src/preview/previewApi.test.ts`
    `an uncomplete right after the cascade restores the rows`
@@ -103,6 +113,8 @@
    눈에 보이는 결과 하나는 미리 말해 둔다. 일반 bullet 부모도 아래를 전부
    완료하면 따라 완료되어 취소선이 생긴다. 이게 싫으면 조상 규칙만 Todo로 남기면
    되고, 아이템 1의 절반과 A2·A3만 빠진다.
+   페이지 행은 예외다(아이템 1b). 페이지는 아웃라인의 행이 아니라 그 행들이 적힌
+   면이고, 완료 숨김 필터가 페이지째로 감출 수 있다.
 3. **되돌림 창 = 바로 다음 변경 하나** — 완료 전파 뒤 같은 행의 완료 해제가 그
    세션의 다음 변경으로 들어오면 되돌린다. 그 사이 어떤 변경이든(다른 행 편집,
    다른 행 완료, undo, redo) 들어오면 창은 닫힌다. 화면 이동이나 선택 변경처럼
