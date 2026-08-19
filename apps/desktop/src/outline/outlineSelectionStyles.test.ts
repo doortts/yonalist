@@ -33,6 +33,17 @@ describe("native selection across the outline", () => {
       rule(notesStyles, '[data-row-selecting="true"] :is(textarea, input)')
     ).toContain("user-select: none;");
   });
+
+  // The two rules that write the controls' selection carry the same weight, so
+  // the file's order is what settles them. Written the other way round the drag
+  // rule loses and every declaration above still reads right.
+  it("lets the band drag have the last word on those controls", () => {
+    expect(
+      notesStyles.indexOf('[data-row-selecting="true"] :is(textarea, input) {')
+    ).toBeGreaterThan(
+      notesStyles.indexOf(".notes-outline-rows :is(textarea, input) {")
+    );
+  });
 });
 
 describe("native selection across the sidebar", () => {
