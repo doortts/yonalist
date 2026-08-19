@@ -687,29 +687,37 @@ impl NotesTree {
         Ok(())
     }
 
-    /// A row that starts counting against the branch above it -- written into,
-    /// created with something already in it, moved in, brought back from the
-    /// trash -- leaves the rows over it unfinished, so every finished row above
-    /// it opens again. It sits here, after the command
-    /// rather than inside each one, because every command that puts a row
-    /// somewhere would otherwise need the same afterthought of its own.
+    /// Work that *arrives* somewhere -- a row created there with something in it,
+    /// written into where it was blank, moved in, brought back from the trash --
+    /// is news to the rows above it, which cannot go on saying they are finished.
+    /// It sits here, after the command rather than inside each one, because every
+    /// command that puts a row somewhere would otherwise need the same
+    /// afterthought of its own.
+    ///
+    /// A row that merely came open where it stood is not an arrival: nothing new
+    /// turned up, one row changed its mind. That is the completion write's own
+    /// business, and it opens the rows above it one at a time, stopping at the
+    /// first that was already open -- which is what leaves a declaration made
+    /// further up alone.
     pub(super) fn reopen_over_rows_this_command_placed(
         &mut self,
         before: &Self,
     ) -> Result<(), DomainError> {
-        let placed = self
+        let arrived = self
             .nodes
             .values()
             .filter(|node| counts_as_open(node))
             .filter(|node| match before.nodes.get(node.id()) {
                 None => true,
                 Some(previous) => {
-                    !counts_as_open(previous) || previous.parent_id() != node.parent_id()
+                    previous.is_deleted()
+                        || previous.parent_id() != node.parent_id()
+                        || !holds_something(previous)
                 }
             })
             .map(|node| node.id().clone())
             .collect::<Vec<_>>();
-        for id in placed {
+        for id in arrived {
             self.reopen_ancestors(&id, before)?;
         }
         Ok(())
@@ -785,7 +793,7 @@ mod tests {
     /// so a lost guard fails here by name instead of stalling the whole suite
     /// until the job's own timeout ends it.
     #[test]
-    fn a_parent_cycle_ends_the_cascade_instead_of_looping() {
+    fn a_parent_cycle_ends_the_climb_instead_of_looping() {
         let mut tree = NotesTree::default();
         for (id, parent_id) in [("left", "right"), ("right", "left")] {
             let node = NoteNode::from_persisted(
