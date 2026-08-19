@@ -191,6 +191,50 @@ describe("StoreCommands", () => {
   });
 
   /**
+   * `beginCreateNode` hands the create and its marker over together, so a
+   * failed create leaves the marker running against a row nothing made. The
+   * banner names the gesture's own failure, not the last command of it.
+   */
+  it("keeps the first failure of a run in the banner", async () => {
+    let state: NotesState = {
+      ...initialNotesState,
+      status: "ready",
+      sessionId: "session-1",
+      revision: 1
+    };
+    const execute = vi.fn()
+      .mockRejectedValueOnce(new Error("Could not create the row."))
+      .mockRejectedValueOnce(new Error("That row no longer exists."))
+      .mockResolvedValueOnce(receipt(2));
+    const commands = new StoreCommands(api(execute), {
+      read: () => state,
+      write: (patch) => {
+        state = { ...state, ...patch };
+      },
+      applyReceipt: (next) => {
+        state = { ...state, revision: next.revision };
+      },
+      flushDrafts: () => Promise.resolve(),
+      materializePage: () => Promise.resolve(),
+      capturePaneSnapshot: () => null
+    });
+
+    const created = commands.execute({
+      kind: "createNode", id: "a", parent_id: "root", before_id: null, text: ""
+    }, "create:a");
+    const marked = commands.execute(
+      { kind: "setMarker", id: "a", marker: "todo" }, "create:a");
+    await expect(Promise.all([created, marked]))
+      .rejects.toThrow("Could not create the row.");
+
+    expect(state.error).toBe("Could not create the row.");
+
+    await commands.execute({ kind: "setStarred", id: "bullet-1", starred: true });
+
+    expect(state.error).toBeNull();
+  });
+
+  /**
    * The page a New page click opens is written by `materializePage`, and the
    * drafts waiting to be flushed were typed into it. Both entry points have to
    * put the creation first, or the flush names a row nothing has created.
