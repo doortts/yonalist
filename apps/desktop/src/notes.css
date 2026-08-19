@@ -1417,7 +1417,10 @@
   min-width: 0;
 }
 
-.notes-text-field > .notes-token-text[data-placeholder="true"] {
+/* The glyphs a field shows come from its presentation span, which carries the
+   field's own class -- never `.notes-token-text`, which no component emits. The
+   placeholder is drawn there, so it is coloured there. */
+.notes-text-field > [data-placeholder="true"] {
   color: var(--text-3);
 }
 
@@ -1588,9 +1591,10 @@ button.notes-date-token:hover {
 /* The title is set at heading size and heading weight, so the grey a row's
    placeholder wears carries far more ink up here and reads as a written line.
    It only has to say what the line is for. */
-.notes-page-title::placeholder {
+.notes-page-title::placeholder,
+.notes-page-title-field > [data-placeholder="true"] {
   color: var(--text-3);
-  opacity: 0.15;
+  opacity: 0.45;
 }
 
 .notes-page-header[data-completed="true"] .notes-page-title {
