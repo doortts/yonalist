@@ -22,8 +22,15 @@ function todo(id: string, parentId: string, completed = false): NoteView {
   return { ...bullet(id, parentId), marker: "todo", completed };
 }
 
+function home(): NoteView {
+  return { ...bullet(ROOT_ID, ""), kind: "page", parentId: null };
+}
+
 describe("completion cascade", () => {
+  // `page` is a page row -- Home's own child, drawn as a page rather than as a
+  // row of one -- so the rows a tick settles start below it.
   const branch = [
+    home(),
     bullet("page", ROOT_ID),
     todo("top", "page"),
     todo("first", "top"),
@@ -51,21 +58,20 @@ describe("completion cascade", () => {
       .toEqual(new Set(["first", "top"]));
   });
 
-  it("stops the climb at the page the rows are written on", () => {
-    const page = [
-      { ...bullet(ROOT_ID, ""), kind: "page" as const, parentId: null },
-      ...branch.map((node) =>
-        node.id === "top" ? node : { ...node, completed: true })
-    ];
+  it("stops the climb below the page row", () => {
+    const nothingLeft = branch.map((node) =>
+      node.id === "top" || node.kind === "page"
+        ? node
+        : { ...node, completed: true });
 
-    expect(new Set(completionCascade(page, "top", true)))
-      .toEqual(new Set(["top", "page"]));
+    expect(completionCascade(nothingLeft, "top", true)).toEqual(["top"]);
   });
 
   it("leaves the ancestor open while a Todo further down is open", () => {
     // The ticked sibling's own box is done, so a direct-children-only test
     // reads the branch as settled while the row under it is still open.
     const deep = [
+      home(),
       bullet("page", ROOT_ID),
       todo("top", "page"),
       todo("done", "top", true),

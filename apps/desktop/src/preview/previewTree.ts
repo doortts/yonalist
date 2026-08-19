@@ -45,7 +45,7 @@ export function completionCascade(
   let node = byId.get(id);
   while (node?.parentId) {
     const parent = byId.get(node.parentId);
-    if (!parent || parent.deleted || parent.kind === "page") break;
+    if (!parent || parent.deleted || isPageRow(parent, byId)) break;
     if (cascaded.has(parent.id)) break;
     // The whole branch, not the row below: an ancestor with a done child that
     // still carries an open grandchild is not settled.
@@ -59,6 +59,20 @@ export function completionCascade(
   return [...cascaded].filter(
     (cascadedId) => byId.get(cascadedId)?.completed !== completed
   );
+}
+
+/**
+ * The one page and the rows directly under it, which the client draws as pages
+ * of their own rather than as rows of an outline. A tick settles the rows
+ * written on a page, never the page they are written on.
+ */
+function isPageRow(
+  node: NoteView,
+  byId: ReadonlyMap<string, NoteView>
+): boolean {
+  if (node.kind === "page") return true;
+  const parent = node.parentId ? byId.get(node.parentId) : undefined;
+  return parent?.kind === "page";
 }
 
 export function previewDescendants(
