@@ -196,3 +196,20 @@ fn a_conflicted_copy_is_recognised_whatever_wrote_it() {
     ));
     assert!(!is_conflicted_copy("Projects-PrJects00001/README.md"));
 }
+
+/// iCloud answers a collision between its own sync and this app's
+/// temp-file-and-rename write by leaving a numbered duplicate beside the file.
+/// The two names this format ever writes are the whole test: a numbered sibling
+/// of one of them came from somewhere else.
+#[test]
+fn an_icloud_numbered_duplicate_is_a_conflicted_copy() {
+    assert!(is_conflicted_copy("Projects-PrJects00001/README 2.md"));
+    assert!(is_conflicted_copy(".yonalist/trash 12.md"));
+    // The names that only look like it, and the user's own files. iCloud starts
+    // at 2, so a `1` is somebody's own numbering rather than a copy.
+    assert!(!is_conflicted_copy("Projects-PrJects00001/README 1.md"));
+    assert!(!is_conflicted_copy("Projects-PrJects00001/README2.md"));
+    assert!(!is_conflicted_copy("Projects-PrJects00001/README 2x.md"));
+    assert!(!is_conflicted_copy("Projects-PrJects00001/readme 2.md"));
+    assert!(!is_conflicted_copy("Projects-PrJects00001/shot 2.png"));
+}
