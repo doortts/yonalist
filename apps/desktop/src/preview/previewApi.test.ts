@@ -599,6 +599,56 @@ describe("browser-only preview adapter", () => {
     ));
   });
 
+  it("folds commands that share a history group into one undo", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    let revision = boot.revision;
+    const run = async (
+      requestId: string,
+      historyGroup: string | null,
+      command: IpcNotesCommand
+    ) => {
+      const result = await previewNotesApi.execute({
+        sessionId: boot.sessionId,
+        requestId,
+        baseRevision: revision,
+        historyGroup,
+        command
+      });
+      revision = result.revision;
+      return result;
+    };
+    const created = await run("grouped-create", "create:grouped", {
+      kind: "createNode",
+      id: "grouped",
+      parent_id: pageId,
+      before_id: null,
+      text: ""
+    });
+    const marked = await run("grouped-marker", "create:grouped", {
+      kind: "setMarker", id: "grouped", marker: "todo"
+    });
+
+    // The second command adds no entry of its own, the way the server's
+    // coalescer leaves it.
+    expect(marked.history.undoDepth).toBe(created.history.undoDepth);
+    const undone = await previewNotesApi.undo({
+      sessionId: boot.sessionId,
+      baseRevision: revision
+    });
+    revision = undone.revision;
+
+    const page = await previewNotesApi.queryViewport({
+      pageId,
+      anchorId: null,
+      beforeCursor: null,
+      afterCursor: null,
+      limit: 200
+    });
+    // The row is gone, not left behind with its box taken off.
+    expect(page.nodes.map((node) => node.id)).not.toContain("grouped");
+  });
+
   it("opens the finished rows above a newly placed row", async () => {
     const boot = await previewNotesApi.bootstrap();
     const pageId = boot.activePageId!;

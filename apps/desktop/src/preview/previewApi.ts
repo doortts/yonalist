@@ -36,6 +36,13 @@ let revision = 1;
 let activePageId = "preview-page";
 let nodes = createInitialPreviewNodes();
 const undoStack: PreviewHistoryEntry[] = [];
+/**
+ * The state the running history group started from. The server folds commands
+ * that share a group into one undo entry, so the preview recomputes the top
+ * entry from this baseline rather than stacking a second one -- otherwise a
+ * gesture written as two commands takes two undos here and one there.
+ */
+let historyGroupBaseline: { group: string; nodes: NoteView[] } | null = null;
 const redoStack: PreviewHistoryEntry[] = [];
 const receiptsByRequest = new Map<string, MutationReceipt>();
 const completedRequestOrder: string[] = [];
@@ -490,15 +497,31 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
     )
   ];
   const ticked = completionRows(command, true);
+  const group = envelope.historyGroup;
+  const coalescing = group !== null &&
+    historyGroupBaseline?.group === group &&
+    undoStack.length > 0;
+  const baseline = coalescing
+    ? historyGroupBaseline!.nodes
+    : previousNodes;
+  const groupEntry = coalescing
+    ? createPreviewHistoryEntry(baseline, nodes)
+    : generatedEntry;
   const historyEntry: PreviewHistoryEntry = {
-    ...generatedEntry,
+    ...groupEntry,
     forward: {
-      ...generatedEntry.forward,
-      upserts: forwardChangedNodes,
-      receiptDeletedIds: forwardDeletedIds
+      ...groupEntry.forward,
+      // The receipt's own rows, not the group's: the client redraws from this
+      // command, and the entry only has to undo the whole gesture.
+      upserts: coalescing ? groupEntry.forward.upserts : forwardChangedNodes,
+      receiptDeletedIds: coalescing
+        ? groupEntry.forward.receiptDeletedIds
+        : forwardDeletedIds
     },
     ...(ticked ? { completedRows: ticked } : {})
   };
+  if (coalescing) undoStack.pop();
+  else historyGroupBaseline = group === null ? null : { group, nodes: baseline };
   pushBoundedHistory(undoStack, historyEntry);
   revision += 1;
   const nextReceipt = receipt(forwardChangedNodes, forwardDeletedIds);
