@@ -156,11 +156,24 @@
    행 드래그 엔진(`useOutlineDrag.ts`)은 pointer 기반이라 `dragstart`도
    selection도 안 쓴다. `getSelection` 호출처는 range를 지우는 두 파일뿐이다.
 
-4. **무프리픽스 `user-select`로 쓴다** — 저장소의 기존 4곳
-   (`styles.css:677`·`:776`·`:787`, `notes.css:1188`)이 전부 무프리픽스이고,
-   그중 `notes.css:1188`이 a44de1f9에서 이 WKWebView 런타임에 실제로 듣는 것을
-   손으로 확인했다. autoprefixer·postcss 설정은 없다(`apps/desktop`엔
-   `vite.config.ts`뿐). 같은 속성을 같은 방식으로 쓴다.
+4. **`-webkit-user-select`를 무프리픽스와 짝으로 쓴다** — 처음엔 저장소의
+   기존 4곳을 따라 무프리픽스로만 썼고, 근거는 "`notes.css:1188`이 a44de1f9에서
+   이 런타임에 듣는 것을 확인했다"였다. 그 근거가 틀렸다. 수동 확인에서 버그가
+   그대로 재현됐고, 이 Mac의 WKWebView(AppleWebKit/605)로 직접 재 본 결과
+   `CSS.supports('user-select', 'none')`이 false — 무프리픽스 선언은 통째로
+   버려진다. a44de1f9가 동작한 것은 CSS가 아니라 JS 억제(pointermove
+   `preventDefault` + `removeAllRanges` + blur) 덕분이었다. 프리픽스를 붙이면
+   설계대로 동작하는 것도 같은 probe로 확인했다: `none`이 자식 깊이 상속되고,
+   `textarea`/`input` 재개방이 듣고, none 영역 위 programmatic range는
+   `toString()`이 빈 문자열이다. 그래서 이 계약의 rule 여섯 곳은 전부
+   `-webkit-user-select`와 무프리픽스를 짝으로 선언하고, 테스트도 두 줄을 다
+   고정한다(무프리픽스 줄은 프리픽스 줄의 부분 문자열이라 앵커드 매치로 본다).
+   무프리픽스로만 남은 곳은 이제 `styles.css` 세 곳이다 —
+   `body.is-resizing-pane`(`:677`), `.app-titlebar`(`:795`),
+   `.app-content-drag-strip`(`:806`). 넷째였던 `notes.css`의 광역
+   `[data-row-selecting="true"]` rule은 아이템 1이 좁히면서 이 계약 안으로
+   들어와 짝을 이미 받았다. 남은 세 곳도 같은 이유로 WKWebView에서 죽어
+   있으나 이 계약 밖이라 두고, 별도 작업으로 넘긴다.
 
 5. **textarea 재개방은 명시적으로 쓴다** — WebKit이 조상의 `none`을 폼 컨트롤
    안까지 상속시키는지는 버전에 따라 갈리는 것으로 알려져 있다. 상속되면 이
