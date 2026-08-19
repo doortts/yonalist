@@ -677,9 +677,8 @@ body.is-resizing-pane {
   user-select: none;
 }
 
-/* The pane is a list of controls, so the only text a drag could pick up here
-   is a label the reader cannot do anything with -- and the drag that picked it
-   up was one started out in the outline, whose range grew this far across the
+/* The pane is a list of controls, and a drag that reached the labels on them
+   was one that started out in the outline: its range grew this far across the
    document and painted the wordmark, the pages and Settings as selected. */
 .yonalist-navigation-pane {
   display: flex;
@@ -698,6 +697,13 @@ body.is-resizing-pane {
 
 /* The search field is the one place in the pane the reader types. */
 .yonalist-navigation-pane input {
+  user-select: text;
+}
+
+/* The sync badge is the only place a refusal names the file it could not read,
+   and a path is named to be taken somewhere else -- to the file itself, or into
+   a report. */
+.yonalist-navigation-pane .notes-sync-status-badge {
   user-select: text;
 }
 
