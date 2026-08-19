@@ -1,20 +1,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { rule } from "../test/cssRules";
+import { expectsSelection, rule } from "../test/cssRules";
 
 const notesStyles = readFileSync("src/notes.css", "utf8");
 const appStyles = readFileSync("src/styles.css", "utf8");
-
-// The WKWebView the app ships in parses only the prefixed property --
-// CSS.supports('user-select', 'none') is false there, and a bare declaration is
-// dropped whole. The pair is the contract: the prefix for the engine the app
-// runs on, the bare property for the engines that no longer take the prefix.
-// The bare line is matched anchored because it is a substring of the prefixed
-// one, and one line must not pass for both.
-function expectsSelection(declarations: string, value: "none" | "text") {
-  expect(declarations).toContain(`-webkit-user-select: ${value};`);
-  expect(declarations).toMatch(new RegExp(`^user-select: ${value};$`, "m"));
-}
 
 describe("native selection across the outline", () => {
   // The space below the last row belongs to the scroll container itself, and a
