@@ -847,6 +847,7 @@ mod tests {
                 children: Vec::new(),
             }],
             unknown_frontmatter: Vec::new(),
+            writer: None,
         })
     }
 

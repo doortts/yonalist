@@ -62,6 +62,7 @@ fn page(text: &str, hlc: &str) -> VaultFile {
         },
         nodes: vec![node(NODE_ID, hlc, text)],
         unknown_frontmatter: Vec::new(),
+        writer: None,
     })
 }
 
@@ -95,6 +96,7 @@ fn page_with_image(disk_name: &str) -> VaultFile {
         },
         nodes: vec![image],
         unknown_frontmatter: Vec::new(),
+        writer: None,
     })
 }
 
@@ -211,6 +213,7 @@ fn a_merge_leaves_the_derived_paths_correct() {
         },
         nodes: vec![parent],
         unknown_frontmatter: Vec::new(),
+        writer: None,
     });
 
     storage.merge_document(&file, &input()).expect("merge");

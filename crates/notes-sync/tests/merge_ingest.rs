@@ -83,6 +83,7 @@ fn page(nodes: Vec<DocumentNode>, max_hlc: &str) -> PageDocument {
         },
         nodes,
         unknown_frontmatter: Vec::new(),
+        writer: None,
     }
 }
 
@@ -2241,6 +2242,7 @@ fn child_document(hlc: &str, title: &str, starred: bool) -> PageDocument {
         },
         nodes: Vec::new(),
         unknown_frontmatter: Vec::new(),
+        writer: None,
     }
 }
 

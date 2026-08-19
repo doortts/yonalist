@@ -7,7 +7,7 @@
 
 use crate::document::{
     DocumentId, DocumentNode, DocumentRoot, ImageReference, Marker, NodeBody, PageDocument,
-    TrashDocument, VaultFile,
+    TrashDocument, VaultFile, Writer,
 };
 use crate::hlc::Hlc;
 use std::collections::{BTreeMap, HashSet};
@@ -153,6 +153,8 @@ const KNOWN_KEYS: &[&str] = &[
     "root_collapsed",
     "root_completed",
     "root_starred",
+    "device_id",
+    "device_name",
 ];
 
 struct Frontmatter {
@@ -270,7 +272,19 @@ fn parse_page(keys: &Frontmatter, body: &[&str], footer: Footer) -> Result<Vault
         root,
         nodes,
         unknown_frontmatter: keys.unknown.clone(),
+        writer: writer(keys),
     }))
+}
+
+/// Who the file says wrote it. Half a pair names nobody, and neither does an
+/// empty value, so both have to be there for this to be an answer.
+fn writer(keys: &Frontmatter) -> Option<Writer> {
+    let device_id = keys.get("device_id").filter(|value| !value.is_empty())?;
+    let device_name = keys.get("device_name").filter(|value| !value.is_empty())?;
+    Some(Writer {
+        device_id: device_id.clone(),
+        device_name: device_name.clone(),
+    })
 }
 
 fn parse_trash(keys: &Frontmatter, body: &[&str], footer: Footer) -> Result<VaultFile, Quarantine> {

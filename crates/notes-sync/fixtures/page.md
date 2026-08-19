@@ -6,6 +6,8 @@ max_hlc: 0swkd7qz9-00-a3f2
 updated: 2041-10-11T15:19:09+09:00
 root_hlc: 0swkd7qz5-00-a3f2
 root_starred: true
+device_id: a3f2
+device_name: Suwon의 MacBook Pro
 ---
 # Projects
 > 이번 분기에 손대는 것만.

@@ -6,7 +6,7 @@
 
 use crate::document::{
     DocumentId, DocumentNode, DocumentRoot, ImageReference, Marker, NodeBody, PageDocument,
-    TrashDocument, VaultFile,
+    TrashDocument, VaultFile, Writer,
 };
 use crate::hlc::Hlc;
 use chrono::FixedOffset;
@@ -62,6 +62,7 @@ fn render_page(document: &PageDocument, offset: FixedOffset) -> Result<Vec<u8>, 
         required_hlc(&document.root.hlc, "root_hlc")?
     );
     render_root_state(&mut out, &document.root);
+    render_writer(&mut out, document.writer.as_ref())?;
     for line in &document.unknown_frontmatter {
         let _ = writeln!(out, "{line}");
     }
@@ -359,6 +360,26 @@ fn required_hlc(value: &str, field: &str) -> Result<String, String> {
     Hlc::decode(value)
         .map(|hlc| hlc.encode())
         .map_err(|error| format!("A stamped {field} is invalid: {error}"))
+}
+
+/// Who wrote the file, for the reader that has to name a device id it has never
+/// seen. Both keys or neither: half of the pair names nobody.
+///
+/// A name that cannot be stated on one line is not stated at all. It would take
+/// the frontmatter's `키: 값` grammar with it, and the settings screen already
+/// has an answer for a device it cannot name — the id itself.
+fn render_writer(out: &mut String, writer: Option<&Writer>) -> Result<(), String> {
+    let Some(writer) = writer.filter(|writer| {
+        !writer.device_id.is_empty()
+            && !writer.device_name.is_empty()
+            && !writer.device_name.contains(['\n', '\r'])
+    }) else {
+        return Ok(());
+    };
+    field_fits(&writer.device_name, "device name")?;
+    let _ = writeln!(out, "device_id: {}", writer.device_id);
+    let _ = writeln!(out, "device_name: {}", writer.device_name);
+    Ok(())
 }
 
 fn field_fits(value: &str, field: &str) -> Result<(), String> {

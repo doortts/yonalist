@@ -286,6 +286,7 @@ pub fn export_home(
         },
         nodes,
         unknown_frontmatter: Vec::new(),
+        writer: None,
     };
     let outcome = write_checked(
         transaction,
@@ -1043,6 +1044,7 @@ fn load_document(
         },
         nodes,
         unknown_frontmatter: Vec::new(),
+        writer: None,
     })
 }
 
