@@ -47,11 +47,13 @@ Each item is independently committable; order 1 → 2 → 3 (all three touch dis
 
 **Failing test:** new test in `apps/desktop/src/App.test.tsx` — after
 ctrl-pointerDown on "First thought" and "Second thought" (the fixture's two
-top-level rows), `within(screen.getByRole("contentinfo", { name: "Status bar" }))
-.getByText("2 selected")` exists and carries `data-kind="selection"`; and with
-a store error present the same slot shows only the error. Red today because
-`App.tsx:879-882` renders only `state.error` and `Saving...` in
-`.statusbar-feedback` — the count query throws. A4's failing test: new test in
+top-level rows), `.statusbar-actions`' children read
+`["2 selected", "Online"]` and `.statusbar-feedback` is empty. Two more lock
+that the count competes with nothing: with an open write the feedback slot stays
+empty and the count holds; with a failed one the error and the count show
+together. Red today because the count lives in `.statusbar-feedback` behind the
+messages — the order query reads `["Online"]` alone, and either message hides
+the count. A4's failing test: new test in
 `apps/desktop/src/splitPaneIntegration.test.tsx` — open the split
 (shift-click "Zoom to item"), ctrl-select one row in each pane, status bar
 shows `2 selected`; close the split, it shows `1 selected`. Red for the same
@@ -337,15 +339,17 @@ toolbar's height ever changes.
    the toolbar and the rows did not shift; ✕ is the pill's last control and
    Export sits before it; all three highlights share the parent's left edge and
    read as one block through the note line; right edges unchanged; status bar
-   bottom-left shows `3 selected` in accent, `Online` on the right.
+   bottom-right shows `3 selected` in accent, immediately left of `Online`.
 5. Narrow the window under 720px: structural actions fold into `⋯` and stay
    reachable; widen, they return.
 6. Scroll the outline: pill stays pinned below the toolbar.
 7. Shift-click a bullet's zoom control to open the split; band one row in the
    second pane too — status bar shows the sum; close the split — it drops.
-8. Press ✕: selection clears, the count leaves the status bar, and a quick
-   edit shows `Saving...` again. Trigger any error path if convenient to see
-   error > count.
+8. Edit a row while the band is live: no message appears for the write — the
+   bar narrates nothing it finishes on its own — and the pill's buttons dim
+   until it settles. Then press ✕: the selection clears and the count leaves the
+   bar, `Online` staying put. Trigger any error path if convenient: the error
+   takes the left slot while the count keeps its own place at the right.
 
 ## Gates
 

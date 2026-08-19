@@ -1025,8 +1025,9 @@ body.is-resizing-pane {
   gap: 10px;
 }
 
-/* Not a `.statusbar-message` variant: that class carries the left slot's
-   ellipsis, which a count reading right-to-left margin does not want. */
+/* Not a `.statusbar-message` variant: that class ellipsizes a long message
+   inside the growing left slot, and this count is short, right-aligned, and
+   never shortened -- it would have had to override three of its properties. */
 .statusbar-selection {
   flex-shrink: 0;
   color: var(--accent);
