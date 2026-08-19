@@ -238,6 +238,42 @@ fn work_inside_a_finished_arrival_is_that_arrival_s_own_business() {
     assert!(is_completed(&tree, "granny"));
 }
 
+/// A branch out of the trash comes back as it went in, tick and all, and that tick
+/// speaks for the rows it brought back with it -- exactly as a pasted one does.
+#[test]
+fn a_branch_out_of_the_trash_keeps_the_tick_it_went_in_with() {
+    let mut tree = declared_branch();
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::CreateNode {
+            id: id("kept"),
+            parent_id: id("aunt"),
+            position: Position::at_end(),
+            text: "Kept".into(),
+        },
+    );
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::CreateNode {
+            id: id("kept-child"),
+            parent_id: id("kept"),
+            position: Position::at_end(),
+            text: "Kept child".into(),
+        },
+    );
+    set_completed(&mut tree, "kept", true);
+    plan_and_apply(&mut tree, NotesCommand::DeleteSubtree { id: id("kept") });
+    set_completed(&mut tree, "granny", true);
+    assert!(is_completed(&tree, "granny"));
+
+    plan_and_apply(&mut tree, NotesCommand::RestoreSubtree { id: id("kept") });
+
+    // The row says what it said when it was trashed, and it speaks for the open
+    // row it brought back.
+    assert!(is_completed(&tree, "kept"));
+    assert!(is_completed(&tree, "granny"));
+}
+
 /// And the other way: work that arrives where nothing speaks for it opens every
 /// finished row above it, up to the first that was already open.
 #[test]

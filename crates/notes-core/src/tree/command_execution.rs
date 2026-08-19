@@ -726,9 +726,10 @@ impl NotesTree {
     /// Opens the run of finished rows above arrived work, and stops as soon as it
     /// reaches a row the arrival is no news to:
     ///
-    /// - a finished row this same command brought along -- a pasted subtree says
-    ///   what it said when it was cut, and it speaks for everything inside it, so
-    ///   the walk ends there and the rows above it never hear about the paste;
+    /// - a finished row this same command brought along -- a pasted subtree, or one
+    ///   out of the trash, says what it said when it was cut, and it speaks for
+    ///   everything inside it, so the walk ends there and the rows above it never
+    ///   hear about the arrival;
     /// - a row that was already open before the command, because whatever sits
     ///   above it had already accepted an open row underneath.
     ///
@@ -743,7 +744,12 @@ impl NotesTree {
             if !visited.insert(parent_id.clone()) {
                 break;
             }
-            let arrived = !before.nodes.contains_key(&parent_id);
+            // A row out of the trash arrives as surely as one that was never
+            // there: before this command it was a tombstone, not a row.
+            let arrived = before
+                .nodes
+                .get(&parent_id)
+                .is_none_or(NoteNode::is_deleted);
             let finished = self.node(&parent_id).is_some_and(NoteNode::is_completed);
             match (finished, arrived) {
                 (true, true) => break,
