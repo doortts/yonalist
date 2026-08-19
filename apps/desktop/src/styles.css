@@ -692,11 +692,13 @@ body.is-resizing-pane {
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+  -webkit-user-select: none;
   user-select: none;
 }
 
 /* The search field is the one place in the pane the reader types. */
 .yonalist-navigation-pane input {
+  -webkit-user-select: text;
   user-select: text;
 }
 
@@ -704,6 +706,7 @@ body.is-resizing-pane {
    and a path is named to be taken somewhere else -- to the file itself, or into
    a report. */
 .yonalist-navigation-pane .notes-sync-status-badge {
+  -webkit-user-select: text;
   user-select: text;
 }
 

@@ -1185,6 +1185,7 @@
   min-height: 0;
   overflow-x: auto;
   padding: 24px 28px 44px;
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -1192,6 +1193,7 @@
    WebKit carries an ancestor's `none` into the controls under it, so they take
    their own selection back by name. */
 .notes-outline-rows :is(textarea, input) {
+  -webkit-user-select: text;
   user-select: text;
 }
 
@@ -1199,6 +1201,7 @@
    holds everything else off, so what a band drag has left to close is the
    editor it started in. */
 [data-row-selecting="true"] :is(textarea, input) {
+  -webkit-user-select: none;
   user-select: none;
 }
 
