@@ -186,6 +186,61 @@ fn a_press_reads_its_own_page_and_not_the_ones_beside_it() {
     }
 }
 
+/// The rows a press reads are the ones the climb can reach: its own children, and
+/// each row on the path above it with theirs. The path stops below the page row, so
+/// the page's own width is no part of the cost.
+#[test]
+fn a_press_reads_the_path_above_it_and_not_the_page_s_width() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let mut forward = vec![
+        TreeMutation::upsert(NoteNode::child(id("page"), id("root"), 1_024, "Page")),
+        TreeMutation::upsert(NoteNode::child(id("branch"), id("page"), 1_024, "Branch")),
+        TreeMutation::upsert(NoteNode::child(id("leaf"), id("branch"), 1_024, "Leaf")),
+    ];
+    for index in 0..49 {
+        forward.push(TreeMutation::upsert(NoteNode::child(
+            id(&format!("wide-{index}")),
+            id("page"),
+            2_048 + i64::try_from(index).unwrap() * 1_024,
+            "Wide",
+        )));
+    }
+    let inverse = forward
+        .iter()
+        .filter_map(|mutation| match mutation {
+            TreeMutation::Upsert(node) => Some(TreeMutation::Delete {
+                id: node.id().clone(),
+            }),
+            TreeMutation::Delete { .. } => None,
+        })
+        .collect();
+    storage
+        .commit(
+            0,
+            &DomainPatch {
+                forward,
+                inverse,
+                carried_pictures: Vec::new(),
+            },
+        )
+        .unwrap();
+
+    let loaded = storage
+        .load_command_tree(&NotesCommand::CycleCompleted {
+            id: id("leaf"),
+            restore: Vec::new(),
+        })
+        .unwrap();
+
+    for index in 0..49 {
+        let wide = id(&format!("wide-{index}"));
+        assert!(
+            loaded.node(&wide).is_none(),
+            "a row the press never reads rode along with it"
+        );
+    }
+}
+
 #[test]
 fn ticking_the_deepest_row_settles_the_chain_far_past_any_client_window() {
     let storage = stored_chain();

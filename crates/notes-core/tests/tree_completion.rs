@@ -193,6 +193,73 @@ fn opening_a_row_does_not_reach_past_the_first_open_row_above_it() {
     assert!(is_completed(&tree, "granny"));
 }
 
+/// A pasted row arrives saying it is finished, and that statement covers the rows
+/// it brought with it. So the open row inside a pasted subtree is news to nobody
+/// above the row that pasted it -- least of all to a declaration made further up.
+#[test]
+fn work_inside_a_finished_arrival_is_that_arrival_s_own_business() {
+    let mut tree = declared_branch();
+    set_completed(&mut tree, "granny", true);
+    assert!(is_completed(&tree, "granny"));
+
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::ImportNodes {
+            parent_id: id("aunt"),
+            position: Position::at_end(),
+            nodes: vec![
+                ImportNode {
+                    id: id("pasted"),
+                    parent_id: id("aunt"),
+                    text: "Pasted".into(),
+                    note: String::new(),
+                    marker: NoteMarkerKind::Bullet,
+                    completed: true,
+                    collapsed: false,
+                    starred: false,
+                    image: None,
+                },
+                ImportNode {
+                    id: id("pasted-child"),
+                    parent_id: id("pasted"),
+                    text: "Pasted child".into(),
+                    note: String::new(),
+                    marker: NoteMarkerKind::Bullet,
+                    completed: false,
+                    collapsed: false,
+                    starred: false,
+                    image: None,
+                },
+            ],
+        },
+    );
+
+    assert!(is_completed(&tree, "pasted"));
+    assert!(is_completed(&tree, "granny"));
+}
+
+/// And the other way: work that arrives where nothing speaks for it opens every
+/// finished row above it, up to the first that was already open.
+#[test]
+fn work_arriving_under_a_finished_row_opens_the_run_above_it() {
+    let mut tree = declared_branch();
+    set_completed(&mut tree, "aunt", true);
+    set_completed(&mut tree, "granny", true);
+
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::CreateNode {
+            id: id("fresh"),
+            parent_id: id("aunt"),
+            position: Position::at_end(),
+            text: "One more thing".into(),
+        },
+    );
+
+    assert!(!is_completed(&tree, "aunt"));
+    assert!(!is_completed(&tree, "granny"));
+}
+
 #[test]
 fn taking_the_press_back_leaves_a_finished_row_above_it_alone() {
     let mut tree = declared_branch();
