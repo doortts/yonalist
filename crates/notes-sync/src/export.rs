@@ -761,6 +761,16 @@ fn document_path(transaction: &Transaction<'_>, root_id: &str) -> Result<String,
         })
         .map_err(|error| error.to_string())?
     {
+        // A merge of a sync client's copy can leave the copy's name recorded as
+        // this document's own file, and then every export writes into the copy
+        // while the file every device reads goes stale. The recorded folder
+        // stands — a folder rename is not this app's to make — and the name is
+        // put back, which the record that follows the write then keeps.
+        if crate::watcher::is_conflicted_copy(&recorded)
+            && let Some((folder, _)) = recorded.rsplit_once('/')
+        {
+            return Ok(format!("{folder}/README.md"));
+        }
         return Ok(recorded);
     }
     let title: String = transaction

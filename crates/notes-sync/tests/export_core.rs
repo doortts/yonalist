@@ -807,6 +807,50 @@ fn a_new_page_puts_home_in_the_queue() {
     );
 }
 
+/// A merge of a sync client's copy once recorded the copy's name as the
+/// document's own file, and every export after that wrote into the copy while
+/// the real file went stale. The recorded folder stands — a folder rename is not
+/// this app's to make — and only the file name is put back.
+#[test]
+fn an_export_puts_a_hijacked_record_back_on_the_canonical_file() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+    connection
+        .execute(
+            "INSERT INTO sync_documents(root_id, folder_path) VALUES (?1, ?2)",
+            rusqlite::params![PAGE_ID, "Projects-PrJects00001/README 3.md"],
+        )
+        .expect("the hijacked record");
+
+    export(&mut connection, root.path());
+
+    assert!(
+        root.path()
+            .join("Projects-PrJects00001/README.md")
+            .is_file(),
+        "the export lands on the file every device reads"
+    );
+    assert!(
+        !root
+            .path()
+            .join("Projects-PrJects00001/README 3.md")
+            .exists(),
+        "and never on the copy again"
+    );
+    let recorded: String = connection
+        .query_row(
+            "SELECT folder_path FROM sync_documents WHERE root_id = ?1",
+            [PAGE_ID],
+            |row| row.get(0),
+        )
+        .expect("the document");
+    assert_eq!(
+        recorded, "Projects-PrJects00001/README.md",
+        "the record converges on the first export after the repair"
+    );
+}
+
 /// A split document says which node it hangs from. Writing it without that
 /// line makes it a top-level page to any device reading the vault fresh — the
 /// subtree leaves the page it belonged to and turns up beside it.
