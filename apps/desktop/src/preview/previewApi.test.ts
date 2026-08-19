@@ -649,6 +649,74 @@ describe("browser-only preview adapter", () => {
     expect(page.nodes.map((node) => node.id)).not.toContain("grouped");
   });
 
+  it("does not fold into an entry an undo has already taken off", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    let revision = boot.revision;
+    const run = async (
+      requestId: string,
+      historyGroup: string | null,
+      command: IpcNotesCommand
+    ) => {
+      const result = await previewNotesApi.execute({
+        sessionId: boot.sessionId,
+        requestId,
+        baseRevision: revision,
+        historyGroup,
+        command
+      });
+      revision = result.revision;
+      return result;
+    };
+    for (const id of ["stale-keeper", "stale-typed"]) {
+      await run(`${id}-create`, null, {
+        kind: "createNode",
+        id,
+        parent_id: pageId,
+        before_id: null,
+        text: id
+      });
+    }
+    // The entry that must survive: someone else's edit, ungrouped.
+    await run("stale-keeper-edit", null, {
+      kind: "updateText", id: "stale-keeper", text: "keep me"
+    });
+    // A group that recurs by design -- a typing run is `text:<id>`, and a pause
+    // and resume in the same row hands the same string over again.
+    await run("stale-typed-first", "text:stale-typed", {
+      kind: "updateText", id: "stale-typed", text: "first"
+    });
+    const undone = await previewNotesApi.undo({
+      sessionId: boot.sessionId,
+      baseRevision: revision
+    });
+    revision = undone.revision;
+
+    await run("stale-typed-second", "text:stale-typed", {
+      kind: "updateText", id: "stale-typed", text: "second"
+    });
+    // Twice: the resumed run, then the edit that was under it all along.
+    for (const _ of [0, 1]) {
+      const back = await previewNotesApi.undo({
+        sessionId: boot.sessionId,
+        baseRevision: revision
+      });
+      revision = back.revision;
+    }
+
+    const page = await previewNotesApi.queryViewport({
+      pageId,
+      anchorId: null,
+      beforeCursor: null,
+      afterCursor: null,
+      limit: 200
+    });
+    const textById = new Map(page.nodes.map((node) => [node.id, node.text]));
+    expect(textById.get("stale-typed")).toBe("stale-typed");
+    // The other row's edit was never the resumed run's to swallow.
+    expect(textById.get("stale-keeper")).toBe("stale-keeper");
+  });
+
   it("opens the finished rows above a newly placed row", async () => {
     const boot = await previewNotesApi.bootstrap();
     const pageId = boot.activePageId!;

@@ -37,12 +37,22 @@ let activePageId = "preview-page";
 let nodes = createInitialPreviewNodes();
 const undoStack: PreviewHistoryEntry[] = [];
 /**
- * The state the running history group started from. The server folds commands
- * that share a group into one undo entry, so the preview recomputes the top
- * entry from this baseline rather than stacking a second one -- otherwise a
- * gesture written as two commands takes two undos here and one there.
+ * The state the running history group started from, and the entry it produced.
+ * The server folds commands that share a group into one undo entry, so the
+ * preview recomputes that entry from this baseline rather than stacking a second
+ * one -- otherwise a gesture written as two commands takes two undos here and one
+ * there.
+ *
+ * The entry is held by identity because a group string recurs by design: a typing
+ * run is `text:<id>`, so a pause, an undo, and a resumed run hand the same string
+ * over again. Without it, the resumed run would fold into whatever entry happened
+ * to be on top and take someone else's edit off the stack with it.
  */
-let historyGroupBaseline: { group: string; nodes: NoteView[] } | null = null;
+let historyGroupBaseline: {
+  group: string;
+  nodes: NoteView[];
+  entry: PreviewHistoryEntry;
+} | null = null;
 const redoStack: PreviewHistoryEntry[] = [];
 const receiptsByRequest = new Map<string, MutationReceipt>();
 const completedRequestOrder: string[] = [];
@@ -500,7 +510,7 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
   const group = envelope.historyGroup;
   const coalescing = group !== null &&
     historyGroupBaseline?.group === group &&
-    undoStack.length > 0;
+    undoStack.at(-1) === historyGroupBaseline.entry;
   const baseline = coalescing
     ? historyGroupBaseline!.nodes
     : previousNodes;
@@ -521,8 +531,10 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
     ...(ticked ? { completedRows: ticked } : {})
   };
   if (coalescing) undoStack.pop();
-  else historyGroupBaseline = group === null ? null : { group, nodes: baseline };
   pushBoundedHistory(undoStack, historyEntry);
+  historyGroupBaseline = group === null
+    ? null
+    : { group, nodes: baseline, entry: historyEntry };
   revision += 1;
   const nextReceipt = receipt(forwardChangedNodes, forwardDeletedIds);
   recordReceipt(envelope.requestId, nextReceipt);
