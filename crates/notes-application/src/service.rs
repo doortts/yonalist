@@ -27,6 +27,10 @@ pub(crate) struct NotesServiceHistoryEntry {
     /// duplication had to name one in the first place.
     carried_pictures: Vec<(NodeId, NodeId)>,
     group: Option<String>,
+    /// The rows a completing command named, when this entry is that command's
+    /// alone. Clearing those same rows next reads as taking the tick back, and
+    /// this entry's inverse is what they held before it.
+    completed_rows: Option<Vec<NodeId>>,
 }
 
 struct SessionState {
@@ -71,6 +75,9 @@ impl SessionState {
             })
         {
             let previous = self.undo.last_mut().expect("history entry exists");
+            // The entry now covers more than one gesture, so its inverse is no
+            // longer what a single tick found.
+            previous.completed_rows = None;
             previous.forward.extend(entry.forward);
             let mut combined_inverse = entry.inverse;
             combined_inverse.extend(std::mem::take(&mut previous.inverse));
@@ -98,6 +105,21 @@ impl SessionState {
                 self.completed_requests.remove(&expired);
             }
         }
+    }
+}
+
+/// The rows a completion command names when it sets them to `completed`, and
+/// nothing for any other command.
+fn completion_rows(command: &NotesCommand, completed: bool) -> Option<Vec<NodeId>> {
+    match command {
+        NotesCommand::SetCompleted { id, completed: set } if *set == completed => {
+            Some(vec![id.clone()])
+        }
+        NotesCommand::SetCompletedMany {
+            ids,
+            completed: set,
+        } if *set == completed => Some(ids.clone()),
+        _ => None,
     }
 }
 
@@ -345,6 +367,10 @@ impl<S: StoragePort> NotesService<S> {
         history_group: Option<String>,
         command: NotesCommand,
     ) -> Result<MutationReceipt, NotesError> {
+        if let Some(receipt) = self.restore_ticked_rows(session, &request_id, &command)? {
+            return Ok(receipt);
+        }
+        let completed_rows = completion_rows(&command, true);
         let tree = self.storage.load_command_tree(&command)?;
         let patch = tree.plan(command)?;
         let commit = self.storage.commit(session.revision, &patch)?;
@@ -354,11 +380,62 @@ impl<S: StoragePort> NotesService<S> {
             inverse: patch.inverse,
             carried_pictures: patch.carried_pictures,
             group: history_group.clone(),
+            completed_rows,
         };
         session.record_history(entry);
         let receipt = Self::receipt(session, commit);
         session.record_completed(request_id, receipt.clone());
         Ok(receipt)
+    }
+
+    /// Clearing the very rows the last command ticked hands every row the tick
+    /// reached back what it held before, rather than clearing the branch: the
+    /// rows that were already done stay done. The tick's own inverse is that
+    /// memory, so there is nothing else to remember and nothing to keep in step
+    /// -- anything else landing in between leaves this entry no longer on top,
+    /// and the clear is the plain clear it has always been.
+    ///
+    /// It goes forward, not back: the restore takes its own history entry, so
+    /// undo puts the whole branch back the way the tick left it.
+    fn restore_ticked_rows(
+        &self,
+        session: &mut SessionState,
+        request_id: &str,
+        command: &NotesCommand,
+    ) -> Result<Option<MutationReceipt>, NotesError> {
+        let Some(rows) = completion_rows(command, false) else {
+            return Ok(None);
+        };
+        if session.undo.len() <= session.undo_floor {
+            return Ok(None);
+        }
+        let Some(entry) = session
+            .undo
+            .last()
+            .filter(|entry| entry.completed_rows.as_deref() == Some(rows.as_slice()))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let commit = self.storage.commit(
+            session.revision,
+            &DomainPatch {
+                forward: entry.inverse.clone(),
+                inverse: entry.forward.clone(),
+                carried_pictures: Vec::new(),
+            },
+        )?;
+        session.revision = commit.revision;
+        session.record_history(NotesServiceHistoryEntry {
+            forward: entry.inverse,
+            inverse: entry.forward,
+            carried_pictures: Vec::new(),
+            group: None,
+            completed_rows: None,
+        });
+        let receipt = Self::receipt(session, commit);
+        session.record_completed(request_id.to_owned(), receipt.clone());
+        Ok(Some(receipt))
     }
 
     /// Puts a defeated note's text back. It is an ordinary edit and takes the
