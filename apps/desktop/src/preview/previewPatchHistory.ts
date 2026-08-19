@@ -15,6 +15,10 @@ export interface PreviewHistoryEntry {
    * entry is that press alone. The press after it hands them back, and it reads
    * the memory off whichever entry is on top -- so an undo takes it away and a
    * redo brings it back, as the server's does.
+   *
+   * The press never travels in a history group, so this can never sit on an entry
+   * two commands were folded into. A caller that gave it one would have to say
+   * what the memory means then.
    */
   readonly cycledChildren?: {
     readonly rowId: string;
