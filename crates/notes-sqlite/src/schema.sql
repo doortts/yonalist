@@ -316,6 +316,10 @@ CREATE TABLE sync_conflict_log (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     node_id TEXT NOT NULL,
     loser_json TEXT NOT NULL,
+    -- What won, recorded here rather than read off the row when somebody
+    -- looks: the row moves on with the next edit, and then it is no
+    -- longer the version that won this conflict.
+    winner_json TEXT NOT NULL,
     loser_hlc TEXT NOT NULL,
     winner_hlc TEXT NOT NULL,
     recorded_at INTEGER NOT NULL

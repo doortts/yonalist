@@ -122,6 +122,19 @@ fn conflicts_for(connection: &Connection, id: &str) -> i64 {
         .expect("count")
 }
 
+/// What the newest recorded conflict for a node says the two versions were:
+/// what won, then what lost.
+fn sides(connection: &Connection, id: &str) -> (String, String) {
+    connection
+        .query_row(
+            "SELECT json_extract(winner_json, '$.text'), json_extract(loser_json, '$.text')
+             FROM sync_conflict_log WHERE node_id = ?1 ORDER BY seq DESC LIMIT 1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("both sides")
+}
+
 fn device_names(connection: &Connection) -> Vec<(String, String)> {
     let mut statement = connection
         .prepare("SELECT device_id, name FROM sync_devices ORDER BY device_id")
@@ -2933,5 +2946,71 @@ fn a_file_that_names_nobody_leaves_the_names_alone() {
     assert_eq!(
         device_names(&transaction),
         vec![("a3f2".to_owned(), "Studio".to_owned())]
+    );
+}
+
+/// The screen shows both versions, so the record has to hold both. What won is
+/// kept here rather than read off the row when somebody looks: the row moves on
+/// with the next edit, and then it is no longer what won this conflict.
+#[test]
+fn a_conflict_records_the_text_that_won_as_well_as_the_one_that_lost() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(5, "a3f2"), "Next sprint")],
+            &stamp(5, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("seed");
+
+    // A stamp from a broken clock: the file is written, and the row it replaced
+    // is the loss worth keeping.
+    let far = Hlc::new(FAR_FUTURE_MILLIS, 0, "a3f2")
+        .expect("far")
+        .encode();
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(vec![node(NODE_ID, &far, "This week")], &far)),
+        &input(),
+    )
+    .expect("drift");
+
+    assert_eq!(
+        sides(&transaction, NODE_ID),
+        ("This week".to_owned(), "Next sprint".to_owned())
+    );
+
+    // And the other way round: a file older than the row loses, so the winner
+    // is the row this merge left alone.
+    let other = "Nd0000000002";
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(other, &stamp(9, "a3f2"), "Mine")],
+            &stamp(9, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("seed");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(other, &stamp(5, "a3f2"), "Theirs, older")],
+            &stamp(5, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("older");
+
+    assert_eq!(
+        sides(&transaction, other),
+        ("Mine".to_owned(), "Theirs, older".to_owned())
     );
 }

@@ -400,7 +400,7 @@ fn apply(
                     // row, only the file's own stamp was discarded.
                     let (loser, loser_hlc) = match row {
                         Some(row) => (
-                            loser_of_row(
+                            side_of_row(
                                 row,
                                 &order.predecessor(
                                     row.parent_id.as_deref().unwrap_or_default(),
@@ -411,11 +411,20 @@ fn apply(
                             row.hlc.clone(),
                         ),
                         None => (
-                            loser_of_file(entry, trash, reason.as_str()),
+                            side_of_file(entry, trash, reason.as_str()),
                             file_hlc.clone(),
                         ),
                     };
-                    log_conflict(transaction, &entry.id, &loser, &loser_hlc, &stamp)?;
+                    // The file is what this verdict is about to write, so it is
+                    // what won — whatever the row goes on to say later.
+                    log_conflict(
+                        transaction,
+                        &entry.id,
+                        &loser,
+                        &side_of_file(entry, trash, reason.as_str()),
+                        &loser_hlc,
+                        &stamp,
+                    )?;
                     outcome.conflicts_recorded += 1;
                 }
                 write_row(transaction, entry, &stamp, trash, row, place.as_ref())?;
@@ -434,7 +443,14 @@ fn apply(
                 log_conflict(
                     transaction,
                     &entry.id,
-                    &loser_of_file(entry, trash, reason),
+                    &side_of_file(entry, trash, reason),
+                    // The row stood, so it is the winner. Its place is read the
+                    // same way the losing side's is above.
+                    &side_of_row(
+                        row,
+                        &order.predecessor(row.parent_id.as_deref().unwrap_or_default(), &row.id),
+                        reason,
+                    ),
                     &file_hlc,
                     &row.hlc,
                 )?;
@@ -1753,11 +1769,15 @@ pub fn image_state(
     )
 }
 
-/// A defeated state, complete enough that the conflict screen can show it and
-/// re-apply it with nothing else on hand. Re-applying is a new edit, so it
-/// carries everything a new edit would — including where the node sat, which is
-/// a parent *and* the sibling it followed.
-fn loser_of_row(row: &Row, predecessor: &str, reason: &str) -> String {
+/// One side of a conflict, complete enough that the conflict screen can show it
+/// and — for the side that lost — re-apply it with nothing else on hand.
+/// Re-applying is a new edit, so it carries everything a new edit would,
+/// including where the node sat: a parent *and* the sibling it followed.
+///
+/// Both sides carry the same `reason`, which belongs to the conflict rather than
+/// to either version. One shape for both is what lets the reader parse them the
+/// same way.
+fn side_of_row(row: &Row, predecessor: &str, reason: &str) -> String {
     json_object(&[
         ("v", Value::Number(1)),
         ("id", Value::Text(row.id.clone())),
@@ -1793,7 +1813,7 @@ fn loser_of_row(row: &Row, predecessor: &str, reason: &str) -> String {
     ])
 }
 
-fn loser_of_file(entry: &Incoming<'_>, trash: bool, reason: &str) -> String {
+fn side_of_file(entry: &Incoming<'_>, trash: bool, reason: &str) -> String {
     let (kind, text) = match &entry.node.body {
         NodeBody::Text(text) => ("bullet", text.clone()),
         NodeBody::Image(image) => ("image", image.original_name.clone()),
@@ -1933,18 +1953,21 @@ fn log_conflict(
     transaction: &Transaction<'_>,
     node_id: &str,
     loser_json: &str,
+    winner_json: &str,
     loser_hlc: &str,
     winner_hlc: &str,
 ) -> Result<(), MergeError> {
     transaction
         .execute(
-            "INSERT INTO sync_conflict_log(node_id, loser_json, loser_hlc, winner_hlc, recorded_at)
-             SELECT ?1, ?2, ?3, ?4, unixepoch()
+            "INSERT INTO sync_conflict_log(
+                 node_id, loser_json, winner_json, loser_hlc, winner_hlc, recorded_at
+             )
+             SELECT ?1, ?2, ?3, ?4, ?5, unixepoch()
              WHERE NOT EXISTS (
                  SELECT 1 FROM sync_conflict_log
-                 WHERE node_id = ?1 AND loser_hlc = ?3 AND loser_json = ?2
+                 WHERE node_id = ?1 AND loser_hlc = ?4 AND loser_json = ?2
              )",
-            rusqlite::params![node_id, loser_json, loser_hlc, winner_hlc],
+            rusqlite::params![node_id, loser_json, winner_json, loser_hlc, winner_hlc],
         )
         .map_err(|error| error.to_string())?;
     Ok(())
