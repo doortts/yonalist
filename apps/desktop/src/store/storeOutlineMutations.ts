@@ -97,16 +97,24 @@ export class StoreOutlineMutations {
       marker
     }));
     const historyGroup = marker === "bullet" ? null : `create:${id}`;
-    const committed = this.host.execute({
+    // Both commands are handed over now, not one after the other settles: the
+    // queue runs them in this order anyway, and a second row asked for in the
+    // meantime would otherwise slip between a row and its own kind -- which
+    // leaves the coalescer two entries to fold and nothing adjacent to fold.
+    const created = this.host.execute({
       kind: "createNode",
       id,
       parent_id: parentId,
       before_id: beforeId,
       text
-    }, historyGroup).then(async () => {
-      if (marker === "bullet") return;
-      await this.host.execute({ kind: "setMarker", id, marker }, historyGroup);
-    }).then(() => undefined).catch((cause) => {
+    }, historyGroup);
+    const settled = marker === "bullet"
+      ? created
+      : Promise.all([
+        created,
+        this.host.execute({ kind: "setMarker", id, marker }, historyGroup)
+      ]);
+    const committed = settled.then(() => undefined).catch((cause) => {
       const current = this.host.read();
       const removedIds = subtreeIds(current.nodes, [id]);
       this.host.write({
