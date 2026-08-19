@@ -623,7 +623,7 @@ describe("Yonalist v2 desktop shell", () => {
     expect(statusBar.querySelector(".statusbar-feedback")).toBeEmptyDOMElement();
   });
 
-  it("keeps the count beside an open write the band itself started", async () => {
+  it("says nothing in the status bar while a write is in flight", async () => {
     const notesApi = api();
     notesApi.execute = vi.fn().mockImplementation(
       () => new Promise(() => undefined)
@@ -636,8 +636,11 @@ describe("Yonalist v2 desktop shell", () => {
     await within(statusBar).findByText("1 selected");
     fireEvent.click(await screen.findByRole("button", { name: "Complete" }));
 
-    // Sharing one slot forced a precedence that dropped one of these two.
-    expect(await within(statusBar).findByText("Saving...")).toBeVisible();
+    // A write settles in a few hundred milliseconds without the reader doing
+    // anything, so announcing it only makes the bar flicker. The controls that
+    // must wait already say so themselves through aria-busy.
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalled());
+    expect(statusBar.querySelector(".statusbar-feedback")).toBeEmptyDOMElement();
     expect(within(statusBar).getByText("1 selected")).toBeVisible();
   });
 

@@ -15,7 +15,7 @@
 | # | Observable pass/fail | Item |
 | --- | --- | --- |
 | A1 | With N rows selected, the status bar shows `N selected` in the accent color at its right end, immediately before `Online`. | 1 |
-| A2 | The count claims no part of the left message slot: that slot keeps its own error > `Saving...` order, and a live band shows its count beside `Online` at the same time as either message. | 1 |
+| A2 | The count claims no part of the left message slot, and that slot now carries errors only — a settled write announces nothing. A live band shows its count beside `Online` at the same time as an error. | 1 |
 | A3 | The selection action bar no longer renders a visible count (its toolbar `aria-label` keeps the number). | 1 |
 | A4 | In split view the status bar shows the sum of both panes' selected rows; closing the secondary pane (or leaving Notes for Settings) drops its contribution. | 1 |
 | A5 | While a selection is active the breadcrumb toolbar still renders, and the selection actions render in a pill floating over the outline body's top-right that adds no layout height (rows do not shift when it appears). | 2 |
@@ -114,12 +114,15 @@ reason.
   strips `footer`'s implicit `contentinfo` role per HTML-AAM. The accessible
   name is still what the query keys on.
 - The count sits at the right rather than in the left message slot. Sharing the
-  slot forced a precedence, and every ordering lost something real: behind the
-  error the band went unreported exactly when a failed band operation is what
-  the reader is looking at, and ahead of `Saving...` it hid the write the band
-  itself had just started. At the right the two never compete, and the count
-  reads as state — which is what `Online` beside it already is — rather than as
-  one more transient message.
+  slot forced a precedence, and behind the error the band went unreported
+  exactly when a failed band operation is what the reader is looking at. At the
+  right the two never compete, and the count reads as state — which is what
+  `Online` beside it already is — rather than as one more transient message.
+- `Saving...` is gone from the bar entirely. A draft flush is a 300ms debounce
+  and a command settles in about as long, so the message was a flicker nobody
+  could read; the controls that genuinely have to wait already carry their own
+  `aria-busy`. The test that used its disappearance as a settle barrier now
+  waits on that same `aria-busy` instead.
 - Split view shows the **sum** of both panes. Both panes can hold live
   selections at once (each has its own `useOutlineSelection`, and neither
   clears on pane blur), so any single-pane display would lie about one of

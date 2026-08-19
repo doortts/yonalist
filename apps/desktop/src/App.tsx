@@ -890,8 +890,10 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
       )}
       <footer className="app-statusbar" aria-label="Status bar">
         <div className="statusbar-feedback">
+          {/* Errors only. A write settles on its own in a few hundred
+              milliseconds, so a Saving... here just flickered; the controls
+              that actually have to wait carry their own aria-busy. */}
           {state.error && <span className="statusbar-message" data-kind="error">{state.error}</span>}
-          {!state.error && state.pendingWrites > 0 && <span className="statusbar-message">Saving...</span>}
         </div>
         {/* The count is state the band holds for as long as it lives, which is
             what the group at this end is for -- in the message slot it would
