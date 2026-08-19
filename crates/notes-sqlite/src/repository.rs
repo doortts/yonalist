@@ -2,8 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use notes_application::StorageError;
 use notes_core::{
-    NodeId, NoteMarkerKind, NoteNode, NotesCommand, NotesTree, Position, SORT_KEY_STEP,
-    TreeMutation,
+    NodeId, NoteNode, NoteNodeKind, NotesCommand, NotesTree, Position, SORT_KEY_STEP, TreeMutation,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -111,19 +110,19 @@ fn collect_command_context(
             collect_ancestors(connection, id, nodes)?;
         }
         NotesCommand::SetCompleted { id, .. } => {
-            collect_todo_chain(connection, id, nodes)?;
+            collect_cascade_branch(connection, id, nodes)?;
         }
         NotesCommand::SetCompletedMany { ids, .. } => {
             // Every listed row cascades the way a single tick does, so each one
-            // brings its own chain along. A selection usually sits inside one
-            // chain, so the roots are collected first and each subtree is read
+            // brings its own branch along. A selection usually sits inside one
+            // branch, so the roots are collected first and each subtree is read
             // once instead of once per selected row.
             for id in ids {
                 collect_ancestors(connection, id, nodes)?;
             }
             let roots = ids
                 .iter()
-                .map(|id| todo_chain_root(nodes, id))
+                .map(|id| cascade_root(nodes, id))
                 .collect::<BTreeSet<_>>();
             for root in &roots {
                 collect_descendants(connection, root, nodes)?;
@@ -234,20 +233,26 @@ fn collect_command_context(
 /// A tick settles the whole Todo chain the row sits in, so the working set is
 /// that chain and not the row alone. Ancestors load first: the climb to the
 /// chain's top reads their markers.
-fn collect_todo_chain(
+fn collect_cascade_branch(
     connection: &Connection,
     id: &NodeId,
     nodes: &mut BTreeMap<NodeId, NoteNode>,
 ) -> Result<(), StorageError> {
     collect_ancestors(connection, id, nodes)?;
-    let chain_root = todo_chain_root(nodes, id);
-    collect_descendants(connection, &chain_root, nodes)
+    let root = cascade_root(nodes, id);
+    collect_descendants(connection, &root, nodes)
 }
 
-/// The highest Todo an unbroken chain of Todo parents reaches from `id` -- the
-/// row whose descendants a completion cascade may touch. `id` itself when its
-/// parent is not a live Todo. Reads the already-loaded ancestors.
-fn todo_chain_root(nodes: &BTreeMap<NodeId, NoteNode>, id: &NodeId) -> NodeId {
+/// The highest row the completion cascade can reach from `id` -- the topmost row
+/// of the page it sits on, whose whole subtree the cascade may read: an ancestor
+/// only ticks once every row under it is done, and a row the working set never
+/// loaded reads as a row that is not there. `id` itself when it is already that
+/// topmost row. Reads the already-loaded ancestors.
+///
+/// ponytail: one tick therefore reads the page it lands on, which is the whole
+/// set the cascade can consult. If a page ever grows past what that read costs,
+/// stop the climb at the first ancestor the tick cannot settle.
+fn cascade_root(nodes: &BTreeMap<NodeId, NoteNode>, id: &NodeId) -> NodeId {
     let mut root = id.clone();
     let mut visited = BTreeSet::new();
     while visited.insert(root.clone()) {
@@ -258,7 +263,7 @@ fn todo_chain_root(nodes: &BTreeMap<NodeId, NoteNode>, id: &NodeId) -> NodeId {
         else {
             break;
         };
-        if parent.is_deleted() || parent.marker() != NoteMarkerKind::Todo {
+        if parent.is_deleted() || parent.kind() == NoteNodeKind::Page {
             break;
         }
         root = parent.id().clone();

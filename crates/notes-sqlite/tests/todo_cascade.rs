@@ -145,8 +145,9 @@ fn ticking_the_top_settles_a_chain_far_past_any_client_window() {
             "chain row {depth} was left open"
         );
     }
-    // The bullet ends the chain, so the Todo under it keeps its own state.
-    assert!(!is_completed(&storage, &id("beyond")));
+    // A marker ends nothing: the bullet and the row under it go too.
+    assert!(is_completed(&storage, &id("divider")));
+    assert!(is_completed(&storage, &id("beyond")));
 }
 
 /// The selection bulk-complete reaches just as far as a single tick: the
@@ -166,8 +167,8 @@ fn a_bulk_selection_settles_chains_far_past_any_client_window() {
             "chain row {depth} was left open"
         );
     }
-    // The bullet ends that branch in a batch too.
-    assert!(!is_completed(&storage, &id("beyond")));
+    assert!(is_completed(&storage, &id("divider")));
+    assert!(is_completed(&storage, &id("beyond")));
 
     // The client redraws from the receipt, so every row the cascade flipped has
     // to ride back in it -- including the ones no client ever sent.
@@ -183,6 +184,49 @@ fn a_bulk_selection_settles_chains_far_past_any_client_window() {
             "chain row {depth} never reached the receipt"
         );
     }
+}
+
+/// The climb has to read every row under an ancestor before it may tick it, and
+/// the rows it reads can only be the ones the working set loaded. A branch the
+/// window never reached reads as no branch at all, and an ancestor is settled by
+/// rows that are still open.
+#[test]
+fn an_open_row_outside_the_window_keeps_the_rows_above_it_open() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let forward = vec![
+        TreeMutation::upsert(NoteNode::child(id("page"), id("root"), 1_024, "Page")),
+        TreeMutation::upsert(NoteNode::child(id("parent"), id("page"), 1_024, "Parent")),
+        TreeMutation::upsert(NoteNode::child(id("branch-a"), id("parent"), 1_024, "A")),
+        TreeMutation::upsert(todo(id("leaf-a"), id("branch-a"), false)),
+        TreeMutation::upsert(NoteNode::child(id("branch-b"), id("parent"), 2_048, "B")),
+        TreeMutation::upsert(todo(id("leaf-b"), id("branch-b"), false)),
+    ];
+    let inverse = forward
+        .iter()
+        .filter_map(|mutation| match mutation {
+            TreeMutation::Upsert(node) => Some(TreeMutation::Delete {
+                id: node.id().clone(),
+            }),
+            TreeMutation::Delete { .. } => None,
+        })
+        .collect();
+    storage
+        .commit(
+            0,
+            &DomainPatch {
+                forward,
+                inverse,
+                carried_pictures: Vec::new(),
+            },
+        )
+        .unwrap();
+
+    set_completed(&storage, &id("leaf-a"), true);
+
+    assert!(is_completed(&storage, &id("branch-a")));
+    // `leaf-b` is open, so nothing above the branch it sits in may close.
+    assert!(!is_completed(&storage, &id("parent")));
+    assert!(!is_completed(&storage, &id("page")));
 }
 
 #[test]
