@@ -109,23 +109,12 @@ fn collect_command_context(
         | NotesCommand::SetMarker { id, .. } => {
             collect_ancestors(connection, id, nodes)?;
         }
-        NotesCommand::SetCompleted { id, .. } => {
-            collect_cascade_branch(connection, id, nodes)?;
+        NotesCommand::SetCompleted { id, .. } | NotesCommand::CycleCompleted { id, .. } => {
+            collect_completion_context(connection, id, nodes)?;
         }
         NotesCommand::SetCompletedMany { ids, .. } => {
-            // Every listed row cascades the way a single tick does, so each one
-            // brings its own branch along. A selection usually sits inside one
-            // branch, so the roots are collected first and each subtree is read
-            // once instead of once per selected row.
             for id in ids {
-                collect_ancestors(connection, id, nodes)?;
-            }
-            let roots = ids
-                .iter()
-                .map(|id| cascade_root(nodes, id))
-                .collect::<BTreeSet<_>>();
-            for root in &roots {
-                collect_descendants(connection, root, nodes)?;
+                collect_completion_context(connection, id, nodes)?;
             }
         }
         NotesCommand::SplitNode {
@@ -240,55 +229,53 @@ fn collect_command_context(
     Ok(())
 }
 
-/// A tick settles the whole Todo chain the row sits in, so the working set is
-/// that chain and not the row alone. Ancestors load first: the climb to the
-/// chain's top reads their markers.
-fn collect_cascade_branch(
+/// What a press of the completion chord can read or write: the row, its own
+/// children, and the path above it with each of those rows' children. A finished
+/// row stands for its own branch, so nothing here reaches past one level below any
+/// row on that path -- which is why a press costs the same on a page of ten rows
+/// and a page of ten thousand.
+///
+/// The walk ends below the page row, which is where the climb itself ends: a page
+/// row is not a row the climb may tick, so its children are no part of the answer.
+/// Stopping any later reads rows the press never touches -- the page's whole top
+/// level one row further up, and every page in the vault the row after that.
+fn collect_completion_context(
     connection: &Connection,
     id: &NodeId,
     nodes: &mut BTreeMap<NodeId, NoteNode>,
 ) -> Result<(), StorageError> {
     collect_ancestors(connection, id, nodes)?;
-    let root = cascade_root(nodes, id);
-    collect_descendants(connection, &root, nodes)
-}
-
-/// The highest row the completion cascade can reach from `id` -- the topmost row
-/// of the page it sits on, whose whole subtree the cascade may read: an ancestor
-/// only ticks once every row under it is done, and a row the working set never
-/// loaded reads as a row that is not there. `id` itself when it is already that
-/// topmost row. Reads the already-loaded ancestors.
-///
-/// ponytail: one tick therefore reads the page it lands on, which is the whole
-/// set the cascade can consult. If a page ever grows past what that read costs,
-/// stop the climb at the first ancestor the tick cannot settle.
-fn cascade_root(nodes: &BTreeMap<NodeId, NoteNode>, id: &NodeId) -> NodeId {
-    let mut root = id.clone();
-    let mut visited = BTreeSet::new();
-    while visited.insert(root.clone()) {
-        let Some(parent) = nodes
-            .get(&root)
-            .and_then(NoteNode::parent_id)
-            .and_then(|parent_id| nodes.get(parent_id))
-        else {
-            break;
+    let mut row_id = id.clone();
+    loop {
+        collect_children(connection, &row_id, nodes)?;
+        let Some(parent_id) = nodes.get(&row_id).and_then(NoteNode::parent_id).cloned() else {
+            return Ok(());
         };
-        if parent.is_deleted() || parent.kind() == NoteNodeKind::Page {
-            break;
+        if is_page_row(&parent_id, nodes) {
+            return Ok(());
         }
-        root = parent.id().clone();
+        row_id = parent_id;
     }
-    root
 }
 
-/// The branch a row is about to leave. A row taken away leaves the rows above it
+/// The one page and the rows directly under it, which the client draws as pages of
+/// their own. Mirrors `NotesTree`'s own reading, which is what decides where a
+/// climb stops.
+fn is_page_row(id: &NodeId, nodes: &BTreeMap<NodeId, NoteNode>) -> bool {
+    let Some(node) = nodes.get(id) else {
+        return false;
+    };
+    node.kind() == NoteNodeKind::Page
+        || node
+            .parent_id()
+            .and_then(|parent_id| nodes.get(parent_id))
+            .map(NoteNode::kind)
+            == Some(NoteNodeKind::Page)
+}
+
+/// The rows a departure leaves behind. A row taken away leaves the rows above it
 /// with one thing less to do, and whether they are finished can only be read off
-/// the rows that stay -- which means the branch, not the row the command names.
-///
-/// ponytail: this is the same page-wide read a tick pays for, now on the commands
-/// that take a row away as well. Both stop being page-wide the day the settle
-/// question ("is any row under this one still open?") is asked of the
-/// materialised paths in SQL instead of answered from a loaded window.
+/// the rows that stay -- their own children, from where the row used to sit.
 fn collect_departure_context(
     connection: &Connection,
     id: &NodeId,
@@ -298,7 +285,7 @@ fn collect_departure_context(
     let Some(parent_id) = nodes.get(id).and_then(NoteNode::parent_id).cloned() else {
         return Ok(());
     };
-    collect_cascade_branch(connection, &parent_id, nodes)
+    collect_completion_context(connection, &parent_id, nodes)
 }
 
 fn collect_move_context(

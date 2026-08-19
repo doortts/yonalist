@@ -596,8 +596,9 @@ export class NotesStore {
     return subtreeIds(this.state.nodes, newIds);
   }
   /**
-   * One row travels; the server settles the Todo chain around it, which is the
-   * only place the whole chain is known -- the client holds a window of it.
+   * Sets the state this names on this row alone. What follows -- a parent whose
+   * own children are now all done, or one over a row that just came open -- the
+   * server settles, because a client holds only a window of the page.
    */
   async setCompleted(
     id: string,
@@ -607,6 +608,15 @@ export class NotesStore {
     await this.executeCommand(
       { kind: "setCompleted", id, completed }, historyGroup
     );
+  }
+  /**
+   * One press of the completion chord. Which of its three moves this is comes
+   * from the server, which holds the whole tree: the row itself, then its
+   * children, then back again. A client only ever has a window of the page and
+   * cannot see a collapsed row's children to judge it.
+   */
+  async cycleCompleted(id: string): Promise<void> {
+    await this.executeCommand({ kind: "cycleCompleted", id });
   }
   async setCompletedMany(ids: readonly string[], completed: boolean): Promise<void> {
     if (ids.length === 0) return;

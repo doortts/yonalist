@@ -292,6 +292,11 @@ pub enum IpcNotesCommand {
         ids: Vec<String>,
         completed: bool,
     },
+    /// One press of the completion chord. The server decides which of its three
+    /// moves this is; the client only says which row was pressed.
+    CycleCompleted {
+        id: String,
+    },
     SetStarred {
         id: String,
         starred: bool,

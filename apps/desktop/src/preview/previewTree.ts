@@ -2,69 +2,9 @@ import type { NoteView } from "../../../../packages/contracts/generated/NoteView
 import { bySiblingOrder } from "../outline/outlineSortKeys";
 
 /**
- * notes-core's own completion cascade, mirrored so the browser preview settles
- * a branch the way the desktop's server does: every row under the clicked one
- * takes the same state, and an ancestor row follows once nothing below it is
- * left open. Clearing one runs the other way -- an ancestor cannot stay ticked
- * while a row under it is open again. A marker decides nothing, and the climb
- * ends at the page, which is the surface the rows are written on.
- *
- * Rows already holding the target state are dropped, so a plain single-row
- * toggle still writes a single row.
- */
-export function completionCascade(
-  nodes: readonly NoteView[],
-  id: string,
-  completed: boolean
-): readonly string[] {
-  const byId = new Map(nodes.map((node) => [node.id, node]));
-  const children = new Map<string, NoteView[]>();
-  for (const node of nodes) {
-    if (!node.parentId || node.deleted) continue;
-    const siblings = children.get(node.parentId);
-    if (siblings) siblings.push(node);
-    else children.set(node.parentId, [node]);
-  }
-  const subtree = (rootId: string): readonly NoteView[] => {
-    const found: NoteView[] = [];
-    // Seeded with the root so a parent cycle ends the walk instead of
-    // recurring forever.
-    const seen = new Set<string>([rootId]);
-    const descend = (parentId: string) => {
-      for (const child of children.get(parentId) ?? []) {
-        if (seen.has(child.id)) continue;
-        seen.add(child.id);
-        found.push(child);
-        descend(child.id);
-      }
-    };
-    descend(rootId);
-    return found;
-  };
-  const cascaded = new Set<string>([id, ...subtree(id).map((below) => below.id)]);
-  let node = byId.get(id);
-  while (node?.parentId) {
-    const parent = byId.get(node.parentId);
-    if (!parent || parent.deleted || isPageRow(parent, byId)) break;
-    if (cascaded.has(parent.id)) break;
-    // The whole branch, not the row below: an ancestor with a done child that
-    // still carries an open grandchild is not settled.
-    const settled = subtree(parent.id).every(
-      (below) => cascaded.has(below.id) || below.completed
-    );
-    if (completed && !settled) break;
-    cascaded.add(parent.id);
-    node = parent;
-  }
-  return [...cascaded].filter(
-    (cascadedId) => byId.get(cascadedId)?.completed !== completed
-  );
-}
-
-/**
- * The one page and the rows directly under it, which the client draws as pages
- * of their own rather than as rows of an outline. A tick settles the rows
- * written on a page, never the page they are written on.
+ * The one page and the rows directly under it, which the client draws as pages of
+ * their own rather than as rows of an outline. A press settles the rows written
+ * on a page, never the page they are written on.
  */
 function isPageRow(
   node: NoteView,
@@ -73,6 +13,93 @@ function isPageRow(
   if (node.kind === "page") return true;
   const parent = node.parentId ? byId.get(node.parentId) : undefined;
   return parent?.kind === "page";
+}
+
+/** Live children of a row, in the order the outline draws them. */
+function childrenByParent(
+  nodes: readonly NoteView[]
+): ReadonlyMap<string, NoteView[]> {
+  const children = new Map<string, NoteView[]>();
+  for (const node of nodes) {
+    if (!node.parentId || node.deleted) continue;
+    const siblings = children.get(node.parentId);
+    if (siblings) siblings.push(node);
+    else children.set(node.parentId, [node]);
+  }
+  return children;
+}
+
+/**
+ * notes-core's own reading of one completion write, mirrored: the row takes the
+ * state, and two transitions ripple upward from it -- a row whose own children
+ * are now all done follows them, and a row over one that just came open cannot go
+ * on saying it is finished. A finished child stands for its own branch, so the
+ * climb never reads past one level, and it ends at the page row.
+ *
+ * Rows already holding the state they would be given are dropped, so a plain
+ * single-row write still writes a single row.
+ */
+export function completionWrite(
+  nodes: readonly NoteView[],
+  id: string,
+  completed: boolean
+): readonly string[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const children = childrenByParent(nodes);
+  const written = new Set<string>([id]);
+  const done = (node: NoteView) => written.has(node.id) ? completed : node.completed;
+  let node = byId.get(id);
+  while (node?.parentId) {
+    const parent = byId.get(node.parentId);
+    if (!parent || parent.deleted || isPageRow(parent, byId)) break;
+    if (written.has(parent.id)) break;
+    const kids = children.get(parent.id) ?? [];
+    if (completed) {
+      if (kids.length === 0 || !kids.every(done)) break;
+    } else if (!parent.completed) {
+      break;
+    }
+    written.add(parent.id);
+    node = parent;
+  }
+  return [...written].filter((rowId) => byId.get(rowId)?.completed !== completed);
+}
+
+/**
+ * The three presses of the completion chord, read off the rows the way the server
+ * reads them off the stored tree. `restore` is what the row's children held
+ * before the press that finished them, which the caller remembers.
+ */
+export function completionCycle(
+  nodes: readonly NoteView[],
+  id: string,
+  restore: readonly (readonly [string, boolean])[]
+): { readonly stage: "row" | "children" | "back";
+     readonly writes: readonly (readonly [string, boolean])[] } {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const row = byId.get(id);
+  if (!row) return { stage: "row", writes: [] };
+  const kids = childrenByParent(nodes).get(id) ?? [];
+  if (!row.completed) {
+    return {
+      stage: "row",
+      writes: completionWrite(nodes, id, true).map((rowId) => [rowId, true])
+    };
+  }
+  if (kids.some((kid) => !kid.completed)) {
+    return {
+      stage: "children",
+      writes: kids.filter((kid) => !kid.completed).map((kid) => [kid.id, true])
+    };
+  }
+  const handedBack = restore.filter(([rowId, was]) => byId.get(rowId)?.completed !== was);
+  return {
+    stage: "back",
+    writes: [
+      ...handedBack,
+      ...completionWrite(nodes, id, false).map((rowId) => [rowId, false] as const)
+    ]
+  };
 }
 
 /**

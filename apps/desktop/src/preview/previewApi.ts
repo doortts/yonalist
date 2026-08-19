@@ -6,7 +6,8 @@ import { previewForest } from "./previewForest";
 import { previewHistory } from "./previewHistory";
 import { PreviewImages } from "./previewImages";
 import {
-  completionCascade,
+  completionCycle,
+  completionWrite,
   previewDescendants,
   previewSiblings,
   previewVisibleSubtree,
@@ -85,35 +86,6 @@ function recordReceipt(requestId: string, value: MutationReceipt): void {
     if (expiredRequestId) receiptsByRequest.delete(expiredRequestId);
   }
 }
-/**
- * Whether two commands name the same rows. A selection hands its ids over in
- * whatever order it holds them, and the order says nothing about which rows the
- * gesture was.
- */
-function sameRows(left: readonly string[], right: readonly string[]): boolean {
-  if (left.length !== right.length) return false;
-  const sortedLeft = [...left].sort();
-  const sortedRight = [...right].sort();
-  return sortedLeft.every((id, index) => id === sortedRight[index]);
-}
-
-/**
- * The rows a completion command names when it sets them to `completed`, and
- * nothing for any other command. Mirrors the server's own reading.
- */
-function completionRows(
-  command: CommandEnvelope["command"],
-  completed: boolean
-): readonly string[] | null {
-  if (command.kind === "setCompleted" && command.completed === completed) {
-    return [command.id];
-  }
-  if (command.kind === "setCompletedMany" && command.completed === completed) {
-    return command.ids;
-  }
-  return null;
-}
-
 function applyHistoryDelta(delta: PreviewNodeDelta): MutationReceipt {
   nodes = applyPreviewDelta(nodes, delta);
   revision += 1;
@@ -199,23 +171,12 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
     previewImages.holds(contentHash, byteLength));
   const previousNodes = copyNodes();
   redoStack.length = 0;
-  // Clearing the very rows the last command ticked replays that command's own
-  // inverse, so every row it reached is handed back what it held before rather
-  // than cleared with the rest -- the server's own rule, mirrored. It goes
-  // forward as its own history entry, so undo puts the branch back.
-  const cleared = completionRows(envelope.command, false);
-  const tick = undoStack.at(-1);
-  if (cleared && tick?.completedRows && sameRows(tick.completedRows, cleared)) {
-    pushBoundedHistory(undoStack, {
-      forward: tick.inverse,
-      inverse: tick.forward
-    });
-    const restored = applyHistoryDelta(tick.inverse);
-    recordReceipt(envelope.requestId, restored);
-    return restored;
-  }
+  // The memory the third press reads sits on the entry the second press pushed,
+  // so it is live exactly while that entry is the one on top.
+  const remembered = undoStack.at(-1)?.cycledChildren;
   let changed: NoteView[] = [];
   let deletedIds: string[] = [];
+  let cycledByThisPress: PreviewHistoryEntry["cycledChildren"];
   const command = envelope.command;
   switch (command.kind) {
     case "createNode": {
@@ -417,14 +378,36 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
       break;
     }
     case "setCompleted": {
-      // The desktop's server settles the whole Todo chain from one tick, so
-      // the preview does too.
-      const cascade = new Set(
-        completionCascade(nodes, command.id, command.completed)
+      // One row, and whatever the two transitions above it settle or open.
+      const written = new Set(
+        completionWrite(nodes, command.id, command.completed)
       );
-      changed = nodes.filter((node) => cascade.has(node.id));
+      changed = nodes.filter((node) => written.has(node.id));
       changed.forEach((node) => {
         node.completed = command.completed;
+      });
+      break;
+    }
+    case "cycleCompleted": {
+      // The server reads the press off the stored tree; the preview reads it off
+      // the rows it holds, and remembers the same one press.
+      const cycle = completionCycle(
+        nodes,
+        command.id,
+        remembered?.rowId === command.id ? remembered.states : []
+      );
+      // Read before the writes land: afterwards every child says it is done.
+      if (cycle.stage === "children") {
+        cycledByThisPress = {
+          rowId: command.id,
+          states: previewSiblings(nodes, command.id)
+            .map((child) => [child.id, child.completed] as const)
+        };
+      }
+      const written = new Map(cycle.writes);
+      changed = nodes.filter((node) => written.has(node.id));
+      changed.forEach((node) => {
+        node.completed = written.get(node.id)!;
       });
       break;
     }
@@ -437,18 +420,17 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
       break;
     }
     case "setCompletedMany": {
-      // Each listed row settles its own chain, in order and against the rows
-      // the earlier ids already flipped, the way the server's bulk cascade
-      // does.
-      const cascade = new Set<string>();
+      // Each listed row is written the way a single one is, in order and against
+      // the rows the earlier ids already flipped.
+      const written = new Set<string>();
       for (const id of command.ids) {
-        for (const cascadedId of completionCascade(nodes, id, command.completed)) {
-          cascade.add(cascadedId);
-          const node = nodes.find((candidate) => candidate.id === cascadedId);
+        for (const rowId of completionWrite(nodes, id, command.completed)) {
+          written.add(rowId);
+          const node = nodes.find((candidate) => candidate.id === rowId);
           if (node) node.completed = command.completed;
         }
       }
-      changed = nodes.filter((node) => cascade.has(node.id));
+      changed = nodes.filter((node) => written.has(node.id));
       break;
     }
     case "setCollapsed":
@@ -513,7 +495,6 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
       (id) => !explicitlyDeletedIds.has(id)
     )
   ];
-  const ticked = completionRows(command, true);
   const group = envelope.historyGroup;
   const coalescing = group !== null &&
     historyGroupBaseline?.group === group &&
@@ -535,7 +516,7 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
         ? groupEntry.forward.receiptDeletedIds
         : forwardDeletedIds
     },
-    ...(ticked ? { completedRows: ticked } : {})
+    ...(cycledByThisPress ? { cycledChildren: cycledByThisPress } : {})
   };
   if (coalescing) undoStack.pop();
   pushBoundedHistory(undoStack, historyEntry);

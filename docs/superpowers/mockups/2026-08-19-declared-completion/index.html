@@ -1,0 +1,861 @@
+<title>완료 3단계 실험대</title>
+<style>
+  :root {
+    --paper: #fbfaf8;
+    --card: #ffffff;
+    --ink: #1d1b19;
+    --ink-2: #5f5954;
+    --ink-3: #8a827a;
+    --line: #e7e2d9;
+    --line-strong: #d4cdc1;
+    --gold: #a8842c;
+    --gold-soft: #f3ead2;
+    --open: #6b7b8c;
+    --open-soft: #e8edf2;
+    --alarm: #a3452f;
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #161513;
+      --card: #1f1d1a;
+      --ink: #f1ede5;
+      --ink-2: #bdb5a9;
+      --ink-3: #8d857a;
+      --line: #2e2b26;
+      --line-strong: #423d35;
+      --gold: #d8b155;
+      --gold-soft: #33291320;
+      --open: #9db2c6;
+      --open-soft: #232a3120;
+      --alarm: #e08a70;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #161513;
+    --card: #1f1d1a;
+    --ink: #f1ede5;
+    --ink-2: #bdb5a9;
+    --ink-3: #8d857a;
+    --line: #2e2b26;
+    --line-strong: #423d35;
+    --gold: #d8b155;
+    --gold-soft: #33291320;
+    --open: #9db2c6;
+    --open-soft: #232a3120;
+    --alarm: #e08a70;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 1140px;
+    margin: 0 auto;
+    padding: 40px 24px 72px;
+    display: flex;
+    flex-direction: column;
+    gap: 28px;
+  }
+
+  header { display: flex; flex-direction: column; gap: 10px; }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  h1 {
+    margin: 0;
+    font-family: var(--serif);
+    font-size: clamp(28px, 4vw, 40px);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+  header p {
+    margin: 0;
+    max-width: 62ch;
+    font-family: var(--serif);
+    font-size: 17px;
+    color: var(--ink-2);
+  }
+
+  .switchbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    align-items: center;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--card);
+  }
+  .switchbar .label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .seg { display: flex; border: 1px solid var(--line-strong); border-radius: 8px; overflow: hidden; }
+  .seg button {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    color: var(--ink-2);
+    font: inherit;
+    font-size: 13px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  .seg button[aria-pressed="true"] { background: var(--gold); color: #fffdf7; }
+  .seg button + button { border-left: 1px solid var(--line-strong); }
+  .seg button:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
+
+  select {
+    font: inherit;
+    font-size: 13px;
+    padding: 6px 10px;
+    border: 1px solid var(--line-strong);
+    border-radius: 8px;
+    background: var(--card);
+    color: var(--ink);
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+    gap: 24px;
+    align-items: start;
+  }
+  @media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+
+  .panel {
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: var(--card);
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .panel h2 {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    font-weight: 500;
+  }
+
+  /* outline surface */
+  .outline { display: flex; flex-direction: column; gap: 1px; }
+  .row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: 7px;
+    cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .row:hover { background: color-mix(in srgb, var(--gold) 7%, transparent); }
+  .row[aria-selected="true"] {
+    border-color: color-mix(in srgb, var(--gold) 55%, transparent);
+    background: color-mix(in srgb, var(--gold) 10%, transparent);
+  }
+  .row:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+  .box {
+    flex: none;
+    width: 15px; height: 15px;
+    margin-top: 3px;
+    border: 1.5px solid var(--line-strong);
+    border-radius: 4px;
+    background: transparent;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    padding: 0;
+  }
+  .box[data-on="true"] { background: var(--gold); border-color: var(--gold); }
+  .box svg { display: block; opacity: 0; }
+  .box[data-on="true"] svg { opacity: 1; }
+  .rowtext { flex: 1 1 auto; min-width: 0; }
+  .row[data-done="true"] .rowtext { color: var(--ink-3); text-decoration: line-through; }
+  .row[data-blank="true"] .rowtext { color: var(--ink-3); font-style: italic; }
+  .chip {
+    flex: none;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    padding: 2px 6px;
+    border-radius: 999px;
+    border: 1px solid currentColor;
+    margin-top: 2px;
+  }
+  .chip.declared { color: var(--gold); }
+  .chip.open { color: var(--open); }
+
+  .rowtools { display: flex; gap: 4px; opacity: 0; }
+  .row:hover .rowtools, .row[aria-selected="true"] .rowtools { opacity: 1; }
+  .rowtools button {
+    appearance: none;
+    border: 1px solid var(--line-strong);
+    background: var(--card);
+    color: var(--ink-2);
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 1px 5px;
+    cursor: pointer;
+  }
+  .rowtools button:hover { color: var(--ink); border-color: var(--gold); }
+
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .actions button {
+    appearance: none;
+    font: inherit;
+    font-size: 13px;
+    padding: 7px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--line-strong);
+    background: var(--card);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .actions button.primary { background: var(--gold); border-color: var(--gold); color: #fffdf7; font-weight: 500; }
+  .actions button:hover { border-color: var(--gold); }
+  .actions button:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+  kbd {
+    font-family: var(--mono);
+    font-size: 11px;
+    border: 1px solid var(--line-strong);
+    border-bottom-width: 2px;
+    border-radius: 5px;
+    padding: 1px 5px;
+    color: var(--ink-2);
+  }
+
+  .readout { display: flex; flex-direction: column; gap: 10px; }
+  .stage {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: var(--gold-soft);
+    border: 1px solid color-mix(in srgb, var(--gold) 35%, transparent);
+  }
+  .stage .n {
+    font-family: var(--mono);
+    font-size: 26px;
+    font-weight: 600;
+    color: var(--gold);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .stage .what { font-size: 14px; color: var(--ink-2); }
+  .facts { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: 13px; }
+  .facts dt { color: var(--ink-3); }
+  .facts dd { margin: 0; font-family: var(--mono); font-size: 12px; text-align: right; }
+  .facts dd.yes { color: var(--gold); }
+  .facts dd.no { color: var(--ink-3); }
+
+  .memory { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+  .memory .live { color: var(--gold); }
+  .memory .dead { color: var(--ink-3); }
+  .memory ul { margin: 6px 0 0; padding-left: 16px; }
+
+  .log { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+  .log-entry {
+    display: flex;
+    gap: 8px;
+    font-size: 13px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--line);
+  }
+  .log-entry:last-child { border-bottom: 0; }
+  .tag {
+    flex: none;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    height: fit-content;
+    background: var(--open-soft);
+    border: 1px solid color-mix(in srgb, var(--open) 40%, transparent);
+    color: var(--open);
+  }
+  .tag[data-kind="press"] { background: var(--gold-soft); border-color: color-mix(in srgb, var(--gold) 40%, transparent); color: var(--gold); }
+  .tag[data-kind="auto"] { border-color: color-mix(in srgb, var(--ink-3) 40%, transparent); color: var(--ink-3); background: transparent; }
+  .log .none { color: var(--ink-3); font-size: 13px; }
+
+  .rules { display: flex; flex-direction: column; gap: 12px; }
+  .rules table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .rules th, .rules td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .rules th { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; }
+  .rules td:first-child { white-space: nowrap; color: var(--ink-2); }
+  .tablewrap { overflow-x: auto; }
+  footer { color: var(--ink-3); font-size: 13px; }
+  .note { font-family: var(--serif); font-size: 16px; color: var(--ink-2); max-width: 68ch; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Yonalist · 완료 의미 시안</div>
+    <h1>완료 3단계 실험대</h1>
+    <p>행을 고르고 <kbd>⌘</kbd><kbd>↩</kbd>을 누르면 세 칸을 돈다. 오른쪽은 서버가 저장된
+      트리에서 읽는 단계와, 3단계가 되돌릴 때 쓰는 기억이다. 모델을 바꿔 지금 동작과 견줘 볼 수 있다.</p>
+  </header>
+
+  <div class="switchbar">
+    <span class="label">모델</span>
+    <div class="seg" role="group" aria-label="완료 모델">
+      <button type="button" data-model="declare" aria-pressed="true">선언 (제안)</button>
+      <button type="button" data-model="aggregate" aria-pressed="false">집계 (지금)</button>
+    </div>
+    <span class="label">상황</span>
+    <select id="scenario" aria-label="상황 고르기">
+      <option value="abandoned">버려진 자식</option>
+      <option value="deep">완료된 자식 아래 열린 손자</option>
+      <option value="blank">빈 행</option>
+      <option value="departure">마지막 열린 행 지우기</option>
+    </select>
+    <span class="label" id="modelnote"></span>
+  </div>
+
+  <div class="grid">
+    <section class="panel">
+      <h2>아웃라인</h2>
+      <div class="outline" id="outline" role="tree" aria-label="아웃라인"></div>
+      <div class="actions">
+        <button type="button" class="primary" id="press">⌘↩ 누르기</button>
+        <button type="button" id="addwork">내용 있는 자식 추가</button>
+        <button type="button" id="addblank">빈 자식 추가</button>
+        <button type="button" id="write">빈 행에 쓰기</button>
+        <button type="button" id="trash">고른 행 지우기</button>
+        <button type="button" id="elsewhere">다른 행 편집(기억 끊기)</button>
+        <button type="button" id="reset">되돌리기</button>
+      </div>
+      <p class="note" id="hint"></p>
+    </section>
+
+    <div style="display:flex; flex-direction:column; gap:24px;">
+      <section class="panel">
+        <h2>서버가 읽는 단계</h2>
+        <div class="readout">
+          <div class="stage"><span class="n" id="stagen">1</span><span class="what" id="stagewhat"></span></div>
+          <dl class="facts" id="facts"></dl>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>2단계가 남긴 기억</h2>
+        <div class="memory" id="memory"></div>
+      </section>
+
+      <section class="panel">
+        <h2>일어난 일</h2>
+        <div class="log" id="log"></div>
+      </section>
+    </div>
+  </div>
+
+  <section class="panel rules">
+    <h2>자동 규칙은 상태가 아니라 전이에 붙는다</h2>
+    <p class="note">선언 모델에서 “완료된 부모 + 열린 자식”은 정상 상태다. 그래서 규칙이 그 상태를
+      보고 움직이면 선언을 즉시 되돌려 버린다. 무언가 바뀌는 순간에만 움직인다.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>전이</th><th>자동으로 하는 일</th><th>근거</th></tr></thead>
+        <tbody>
+          <tr><td>행이 완료로 바뀜</td><td>부모의 직계 자식이 이제 전부 완료면 부모도 완료, 위로 계속</td><td>마지막 자식을 끝냈으면 부모도 끝난 것</td></tr>
+          <tr><td>완료였던 행이 열림</td><td>부모의 완료를 해제, 위로 계속</td><td>다시 열린 일이 있는데 부모가 끝났다고 할 수 없다</td></tr>
+          <tr><td>내용 있는 행이 새로 놓임</td><td>위의 완료된 행들을 해제</td><td>새로 도착한 일은 선언을 무효로 한다</td></tr>
+          <tr><td>완료 안 된 행이 떠남</td><td>남은 직계 자식이 전부 완료면 부모 완료</td><td>마지막 걸림돌이 사라졌다</td></tr>
+          <tr><td>손으로 열린 채 남긴 자식</td><td>아무 것도 하지 않는다</td><td>전이가 아니다. 못 하게 된 일은 열린 채로 남는다</td></tr>
+          <tr><td>내용 있는 행의 텍스트 수정</td><td>아무 것도 하지 않는다</td><td>빈 행 → 내용만 전이다. 버려둔 행의 오타를 고쳐도 부모는 닫힌 채</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>선언 모델에서는 조상 판정이 직계 자식만 읽는다. 그래서 명령이 읽는 창이
+    페이지 전체에서 조상 경로 + 각 조상의 직계 자식으로 줄고, 5천 행 83ms · 5만 행 985ms로
+    측정된 완료 토글이 페이지 크기와 무관해진다.</footer>
+</div>
+
+<script>
+(() => {
+  const CHECK = '<svg width="9" height="9" viewBox="0 0 9 9" aria-hidden="true"><path d="M1 4.6 3.3 7 8 1.6" fill="none" stroke="#fffdf7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  const SCENARIOS = {
+    abandoned: {
+      hint: "‘가스 해지’는 집주인이 처리해서 이제 내가 할 일이 아니다. 열린 채로 두고 ‘이사 준비’만 닫아 보라.",
+      nodes: [
+        ["move", null, "이사 준비", false],
+        ["fee", "move", "관리비 정산", true],
+        ["gas", "move", "가스 해지", false],
+        ["net", "move", "인터넷 이전", false],
+        ["visit", "net", "기사 방문 예약", false],
+        ["weekend", null, "주말 계획", false],
+        ["shop", "weekend", "장보기", false]
+      ],
+      select: "move"
+    },
+    deep: {
+      hint: "‘답례품 고르기’는 완료됐고 그 아래 ‘업체 비교’는 열려 있다. ‘초대장 보내기’를 닫으면 부모가 어떻게 되는지 두 모델에서 비교해 보라.",
+      nodes: [
+        ["party", null, "집들이 준비", false],
+        ["gift", "party", "답례품 고르기", true],
+        ["vendor", "gift", "업체 비교", false],
+        ["invite", "party", "초대장 보내기", false]
+      ],
+      select: "invite"
+    },
+    blank: {
+      hint: "‘장보기’ 아래는 전부 끝났다. 빈 자식을 추가해도 부모는 닫힌 채다. 그 행에 쓰는 순간 열린다.",
+      nodes: [
+        ["shop", null, "장보기", true],
+        ["milk", "shop", "우유", true],
+        ["bread", "shop", "식빵", true]
+      ],
+      select: "shop"
+    },
+    departure: {
+      hint: "‘영수증 정리’만 남았다. 그 행을 지우면 남은 자식이 전부 완료라 부모가 스스로 닫힌다.",
+      nodes: [
+        ["trip", null, "출장 정산", false],
+        ["ticket", "trip", "항공권 첨부", true],
+        ["hotel", "trip", "숙박 영수증 첨부", true],
+        ["receipt", "trip", "영수증 정리", false]
+      ],
+      select: "receipt"
+    }
+  };
+
+  let model = "declare";
+  let scenario = "abandoned";
+  let nodes = [];
+  let selected = null;
+  let memory = null;   // { rowId, states: [[id, completed]...] }
+  let log = [];
+  let seq = 0;
+
+  const byId = (id) => nodes.find((n) => n.id === id);
+  const childrenOf = (id) => nodes.filter((n) => n.parentId === id);
+  const descendantsOf = (id) => {
+    const out = [];
+    const walk = (pid) => childrenOf(pid).forEach((c) => { out.push(c); walk(c.id); });
+    walk(id);
+    return out;
+  };
+  const depthOf = (node) => {
+    let d = 0, cur = node;
+    while (cur.parentId) { cur = byId(cur.parentId); d += 1; }
+    return d;
+  };
+  const holdsSomething = (node) => node.text.trim().length > 0;
+
+  function load(name) {
+    scenario = name;
+    const preset = SCENARIOS[name];
+    nodes = preset.nodes.map(([id, parentId, text, completed]) => ({ id, parentId, text, completed }));
+    selected = preset.select;
+    memory = null;
+    log = [];
+    seq = 0;
+    note("auto", "상황을 새로 깔았다.");
+    render();
+  }
+
+  function note(kind, text) {
+    log.unshift({ id: (seq += 1), kind, text });
+    log = log.slice(0, 40);
+  }
+
+  const label = (id) => {
+    const node = byId(id);
+    if (!node) return id;
+    return node.text.trim() ? `‘${node.text}’` : "‘빈 행’";
+  };
+
+  /* ---- 자동 규칙: 전이에 붙는다 ---- */
+
+  // 완료로 바뀐 뒤: 부모의 직계 자식이 전부 완료면 부모도. 집계 모델은 가지 전체를 본다.
+  function settleAncestors(fromId) {
+    let cur = byId(fromId);
+    while (cur) {
+      const kids = childrenOf(cur.id);
+      const pool = model === "declare" ? kids : descendantsOf(cur.id);
+      const finished = pool.length > 0 && pool.every((k) => k.completed);
+      if (!finished || cur.completed) break;
+      cur.completed = true;
+      note("auto", `${label(cur.id)}의 ${model === "declare" ? "직계 자식" : "가지"}이 전부 완료라 따라 닫혔다.`);
+      cur = cur.parentId ? byId(cur.parentId) : null;
+    }
+  }
+
+  // 열린 뒤: 완료였던 조상을 해제.
+  function clearAncestors(fromId) {
+    let cur = byId(fromId);
+    while (cur) {
+      if (!cur.completed) break;
+      cur.completed = false;
+      note("auto", `${label(cur.id)}는 아래가 다시 열려서 완료가 풀렸다.`);
+      cur = cur.parentId ? byId(cur.parentId) : null;
+    }
+  }
+
+  function reopenAncestors(fromId) {
+    let cur = byId(fromId) ? byId(byId(fromId).parentId) : null;
+    while (cur) {
+      if (cur.completed) {
+        cur.completed = false;
+        note("auto", `${label(cur.id)}는 새 일이 도착해서 완료가 풀렸다.`);
+      }
+      cur = cur.parentId ? byId(cur.parentId) : null;
+    }
+  }
+
+  /* ---- 단계 읽기 ---- */
+
+  function stageOf(id) {
+    const node = byId(id);
+    if (!node) return null;
+    if (model === "aggregate") return node.completed ? "off" : "on";
+    if (!node.completed) return 1;
+    const kids = childrenOf(id);
+    return kids.some((k) => !k.completed) ? 2 : 3;
+  }
+
+  function press() {
+    const node = byId(selected);
+    if (!node) return;
+    const stage = stageOf(selected);
+
+    if (model === "aggregate") {
+      // 지금 동작: 하위 전체 전파 + 직후 되돌리기 창
+      if (stage === "on") {
+        const prior = descendantsOf(selected).map((n) => [n.id, n.completed]);
+        memory = { rowId: selected, states: prior };
+        node.completed = true;
+        descendantsOf(selected).forEach((n) => { n.completed = true; });
+        note("press", `${label(selected)}와 그 아래 모든 행을 완료로 만들었다.`);
+        if (node.parentId) settleAncestors(node.parentId);
+      } else {
+        const live = memory && memory.rowId === selected;
+        node.completed = false;
+        if (live) {
+          memory.states.forEach(([id, was]) => { const n = byId(id); if (n) n.completed = was; });
+          note("press", `${label(selected)}를 열고, 아래 행들을 완료 직전 값으로 되돌렸다.`);
+        } else {
+          descendantsOf(selected).forEach((n) => { n.completed = false; });
+          note("press", `${label(selected)}와 그 아래 모든 행을 열었다. 되돌릴 기억이 없어 전부 열린다.`);
+        }
+        memory = null;
+        if (node.parentId) clearAncestors(node.parentId);
+      }
+      render();
+      return;
+    }
+
+    if (stage === 1) {
+      node.completed = true;
+      memory = null;
+      note("press", `1단계 · ${label(selected)}만 완료했다. 자식은 그대로다.`);
+      if (node.parentId) settleAncestors(node.parentId);
+    } else if (stage === 2) {
+      const kids = childrenOf(selected);
+      memory = { rowId: selected, states: kids.map((k) => [k.id, k.completed]) };
+      kids.forEach((k) => { k.completed = true; });
+      note("press", `2단계 · 직계 자식 ${kids.length}개의 상태를 기억하고 전부 완료했다. 손자는 손대지 않았다.`);
+    } else {
+      const live = memory && memory.rowId === selected;
+      node.completed = false;
+      if (live) {
+        memory.states.forEach(([id, was]) => { const n = byId(id); if (n) n.completed = was; });
+        note("press", `3단계 · ${label(selected)}를 열고 직계 자식을 2단계 직전 값으로 되돌렸다.`);
+      } else {
+        note("press", `3단계 · ${label(selected)}만 열었다. 기억이 없어 자식은 그대로 둔다.`);
+      }
+      memory = null;
+      if (node.parentId) clearAncestors(node.parentId);
+    }
+    render();
+  }
+
+  function toggleSelf(id) {
+    const node = byId(id);
+    memory = null;
+    node.completed = !node.completed;
+    note("press", `상자를 눌러 ${label(id)}만 ${node.completed ? "완료로" : "열림으로"} 바꿨다.`);
+    if (model === "aggregate") descendantsOf(id).forEach((n) => { n.completed = node.completed; });
+    if (node.parentId) node.completed ? settleAncestors(node.parentId) : clearAncestors(node.parentId);
+    render();
+  }
+
+  function addChild(withText) {
+    const parent = byId(selected);
+    if (!parent) return;
+    const id = `n${(seq += 1)}`;
+    nodes.push({ id, parentId: parent.id, text: withText ? "새로 생긴 일" : "", completed: false });
+    memory = null;
+    note("edit", withText
+      ? `${label(parent.id)} 아래에 내용 있는 행을 놓았다.`
+      : `${label(parent.id)} 아래에 빈 행을 놓았다. 아직 할 일이 아니다.`);
+    if (withText) reopenAncestors(id);
+    selected = id;
+    render();
+  }
+
+  function writeIntoBlank() {
+    const blank = byId(selected) && !holdsSomething(byId(selected))
+      ? byId(selected)
+      : nodes.find((n) => !holdsSomething(n));
+    if (!blank) { note("edit", "빈 행이 없다."); render(); return; }
+    blank.text = "장바구니 채우기";
+    memory = null;
+    note("edit", "빈 행에 글자가 들어왔다. 이제 할 일이다.");
+    selected = blank.id;
+    if (!blank.completed) reopenAncestors(blank.id);
+    render();
+  }
+
+  function trashSelected() {
+    const node = byId(selected);
+    if (!node) return;
+    const parentId = node.parentId;
+    const gone = [node, ...descendantsOf(node.id)].map((n) => n.id);
+    const wasBlocking = !node.completed;
+    nodes = nodes.filter((n) => !gone.includes(n.id));
+    memory = null;
+    note("edit", `${label(node.id) === node.id ? "행" : `‘${node.text || "빈 행"}’`}를 휴지통으로 보냈다.`);
+    selected = parentId ?? (nodes[0] && nodes[0].id) ?? null;
+    if (wasBlocking && parentId) settleAncestors(parentId);
+    render();
+  }
+
+  function editElsewhere() {
+    const other = nodes.find((n) => n.id !== selected && holdsSomething(n));
+    if (!other) return;
+    other.text = other.text + " ✎";
+    memory = null;
+    note("edit", `${label(other.id)}의 글자를 고쳤다. 다른 변경이 끼었으니 3단계의 기억은 끊겼다.`);
+    render();
+  }
+
+  /* ---- 그리기 ---- */
+
+  function render() {
+    const outline = document.getElementById("outline");
+    outline.replaceChildren();
+    const order = [];
+    const walk = (pid) => childrenOf(pid).forEach((n) => { order.push(n); walk(n.id); });
+    walk(null);
+
+    order.forEach((node) => {
+      const kids = childrenOf(node.id);
+      const openKids = kids.filter((k) => !k.completed).length;
+      const row = document.createElement("div");
+      row.className = "row";
+      row.setAttribute("role", "treeitem");
+      row.setAttribute("tabindex", node.id === selected ? "0" : "-1");
+      row.setAttribute("aria-selected", node.id === selected ? "true" : "false");
+      row.dataset.done = String(node.completed);
+      row.dataset.blank = String(!holdsSomething(node));
+      row.style.marginLeft = `${depthOf(node) * 22}px`;
+      row.addEventListener("click", (event) => {
+        if (event.target.closest("button")) return;
+        selected = node.id;
+        render();
+      });
+
+      const box = document.createElement("button");
+      box.type = "button";
+      box.className = "box";
+      box.dataset.on = String(node.completed);
+      box.setAttribute("aria-label", `${node.text || "빈 행"} ${node.completed ? "완료 해제" : "완료"}`);
+      box.innerHTML = CHECK;
+      box.addEventListener("click", () => toggleSelf(node.id));
+      row.append(box);
+
+      const text = document.createElement("span");
+      text.className = "rowtext";
+      text.textContent = node.text.trim() ? node.text : "빈 행";
+      row.append(text);
+
+      if (node.completed && openKids > 0) {
+        const chip = document.createElement("span");
+        chip.className = "chip declared";
+        chip.textContent = `선언 · 열린 자식 ${openKids}`;
+        row.append(chip);
+      } else if (!node.completed && kids.length > 0 && openKids === 0) {
+        const chip = document.createElement("span");
+        chip.className = "chip open";
+        chip.textContent = "자식은 전부 완료";
+        row.append(chip);
+      }
+
+      outline.append(row);
+    });
+
+    const node = byId(selected);
+    const stage = stageOf(selected);
+    const stagen = document.getElementById("stagen");
+    const stagewhat = document.getElementById("stagewhat");
+
+    if (!node) {
+      stagen.textContent = "–";
+      stagewhat.textContent = "고른 행이 없다.";
+    } else if (model === "aggregate") {
+      stagen.textContent = stage === "on" ? "↓" : "↑";
+      stagewhat.textContent = stage === "on"
+        ? `${label(node.id)}와 그 아래 모든 행을 완료로 만든다.`
+        : (memory && memory.rowId === node.id
+          ? "열고, 아래 행들을 완료 직전 값으로 되돌린다."
+          : "열고, 아래 모든 행도 함께 연다.");
+    } else {
+      stagen.textContent = String(stage);
+      stagewhat.textContent = stage === 1
+        ? `${label(node.id)}만 완료한다. 자식은 건드리지 않는다.`
+        : stage === 2
+          ? `직계 자식 ${childrenOf(node.id).length}개의 상태를 기억하고 전부 완료한다.`
+          : (memory && memory.rowId === node.id
+            ? `${label(node.id)}를 열고 자식을 2단계 직전 값으로 되돌린다.`
+            : `${label(node.id)}만 연다. 기억이 없어 자식은 그대로 둔다.`);
+    }
+
+    const facts = document.getElementById("facts");
+    facts.replaceChildren();
+    if (node) {
+      const kids = childrenOf(node.id);
+      const rows = [
+        ["고른 행", node.text.trim() || "빈 행", null],
+        ["자기 완료", node.completed ? "완료" : "열림", node.completed],
+        ["직계 자식", `${kids.length}개`, null],
+        ["직계 자식 전부 완료", kids.length === 0 ? "자식 없음" : (kids.every((k) => k.completed) ? "예" : "아니오"), kids.length > 0 && kids.every((k) => k.completed)],
+        ["가지 전체 완료", (() => { const d = descendantsOf(node.id); return d.length === 0 ? "가지 없음" : (d.every((x) => x.completed) ? "예" : "아니오"); })(), null]
+      ];
+      rows.forEach(([term, value, yes]) => {
+        const dt = document.createElement("dt");
+        dt.textContent = term;
+        const dd = document.createElement("dd");
+        dd.textContent = value;
+        if (yes === true) dd.className = "yes";
+        if (yes === false) dd.className = "no";
+        facts.append(dt, dd);
+      });
+    }
+
+    const mem = document.getElementById("memory");
+    mem.replaceChildren();
+    if (!memory) {
+      const p = document.createElement("div");
+      p.className = "dead";
+      p.textContent = "없음 — 아직 2단계를 누르지 않았거나, 다른 변경이 끼어 끊겼다.";
+      mem.append(p);
+    } else {
+      const head = document.createElement("div");
+      head.className = "live";
+      head.textContent = `살아 있음 · ${label(memory.rowId)}의 직계 자식`;
+      const list = document.createElement("ul");
+      memory.states.forEach(([id, was]) => {
+        const li = document.createElement("li");
+        li.textContent = `${byId(id) ? (byId(id).text || "빈 행") : id} → ${was ? "완료였음" : "열려 있었음"}`;
+        list.append(li);
+      });
+      mem.append(head, list);
+    }
+
+    const logEl = document.getElementById("log");
+    logEl.replaceChildren();
+    if (log.length === 0) {
+      const none = document.createElement("div");
+      none.className = "none";
+      none.textContent = "아직 아무것도 하지 않았다.";
+      logEl.append(none);
+    }
+    log.forEach((entry) => {
+      const line = document.createElement("div");
+      line.className = "log-entry";
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.dataset.kind = entry.kind;
+      tag.textContent = entry.kind === "press" ? "누름" : entry.kind === "auto" ? "자동" : "편집";
+      const text = document.createElement("span");
+      text.textContent = entry.text;
+      line.append(tag, text);
+      logEl.append(line);
+    });
+
+    document.getElementById("hint").textContent = SCENARIOS[scenario].hint;
+    document.getElementById("modelnote").textContent = model === "declare"
+      ? "조상 판정: 직계 자식만"
+      : "조상 판정: 가지 전체 · ⌘↩은 두 칸";
+    const focusRow = outline.querySelector('[aria-selected="true"]');
+    if (focusRow && document.activeElement && document.activeElement.closest(".outline")) focusRow.focus();
+  }
+
+  /* ---- 배선 ---- */
+
+  document.querySelectorAll("[data-model]").forEach((button) => {
+    button.addEventListener("click", () => {
+      model = button.dataset.model;
+      document.querySelectorAll("[data-model]").forEach((other) => {
+        other.setAttribute("aria-pressed", String(other.dataset.model === model));
+      });
+      memory = null;
+      note("auto", model === "declare"
+        ? "선언 모델로 바꿨다. 조상은 직계 자식만 읽는다."
+        : "집계 모델로 바꿨다. 완료가 하위 전체를 덮고 조상은 가지 전체를 읽는다.");
+      render();
+    });
+  });
+  document.getElementById("scenario").addEventListener("change", (event) => load(event.target.value));
+  document.getElementById("press").addEventListener("click", press);
+  document.getElementById("addwork").addEventListener("click", () => addChild(true));
+  document.getElementById("addblank").addEventListener("click", () => addChild(false));
+  document.getElementById("write").addEventListener("click", writeIntoBlank);
+  document.getElementById("trash").addEventListener("click", trashSelected);
+  document.getElementById("elsewhere").addEventListener("click", editElsewhere);
+  document.getElementById("reset").addEventListener("click", () => load(scenario));
+
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      press();
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const order = [];
+    const walk = (pid) => childrenOf(pid).forEach((n) => { order.push(n.id); walk(n.id); });
+    walk(null);
+    const index = order.indexOf(selected);
+    const next = event.key === "ArrowDown"
+      ? Math.min(order.length - 1, index + 1)
+      : Math.max(0, index - 1);
+    if (order[next]) {
+      event.preventDefault();
+      selected = order[next];
+      render();
+    }
+  });
+
+  load("abandoned");
+})();
+</script>

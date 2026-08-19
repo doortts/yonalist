@@ -11,8 +11,8 @@ mod node;
 mod tree;
 
 pub use command::{
-    DomainPatch, ImportImageNode, ImportNode, NodeDuplicate, NodeMove, NotesCommand, Position,
-    TreeMutation,
+    CompletionStage, DomainPatch, ImportImageNode, ImportNode, NodeDuplicate, NodeMove,
+    NotesCommand, Position, TreeMutation,
 };
 pub use error::DomainError;
 pub use id::{HOME_ID, NodeId, YID_LENGTH, encode_yid, is_block_id, is_yid, new_yid};

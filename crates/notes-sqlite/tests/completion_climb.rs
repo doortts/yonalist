@@ -1,11 +1,13 @@
 use notes_application::{
     CommandEnvelope, IpcNotesCommand, MutationReceipt, NotesService, StoragePort,
 };
-use notes_core::{DomainPatch, NodeId, NoteMarkerKind, NoteNode, NoteNodeKind, TreeMutation};
+use notes_core::{
+    DomainPatch, NodeId, NoteMarkerKind, NoteNode, NoteNodeKind, NotesCommand, TreeMutation,
+};
 use notes_sqlite::SqliteStorage;
 
-/// Longer than the desktop's viewport window (80 rows), so the rows the cascade
-/// has to reach are ones no client could have loaded.
+/// Longer than the desktop's viewport window (80 rows), so the rows the climb has
+/// to reach are ones no client could have loaded.
 const CHAIN_DEPTH: usize = 120;
 
 fn id(value: &str) -> NodeId {
@@ -133,33 +135,147 @@ fn is_completed(storage: &SqliteStorage, node_id: &NodeId) -> bool {
         .is_completed()
 }
 
+/// What a press reads is its own page's business. Every page is a child of the
+/// one root, so a climb that walks past the page row reads the whole vault.
 #[test]
-fn ticking_the_top_settles_a_chain_far_past_any_client_window() {
+fn a_press_reads_its_own_page_and_not_the_ones_beside_it() {
+    let storage = stored_chain();
+    let revision = storage.revision().unwrap();
+    let mut forward = Vec::new();
+    for index in 0..40 {
+        forward.push(TreeMutation::upsert(NoteNode::child(
+            id(&format!("other-page-{index}")),
+            id("root"),
+            2_048 + i64::try_from(index).unwrap() * 1_024,
+            "Another page",
+        )));
+    }
+    let inverse = forward
+        .iter()
+        .filter_map(|mutation| match mutation {
+            TreeMutation::Upsert(node) => Some(TreeMutation::Delete {
+                id: node.id().clone(),
+            }),
+            TreeMutation::Delete { .. } => None,
+        })
+        .collect();
+    storage
+        .commit(
+            revision,
+            &DomainPatch {
+                forward,
+                inverse,
+                carried_pictures: Vec::new(),
+            },
+        )
+        .unwrap();
+
+    let loaded = storage
+        .load_command_tree(&NotesCommand::CycleCompleted {
+            id: id("beyond"),
+            restore: Vec::new(),
+        })
+        .unwrap();
+
+    for index in 0..40 {
+        let other = id(&format!("other-page-{index}"));
+        assert!(
+            loaded.node(&other).is_none(),
+            "another page rode along with the press"
+        );
+    }
+}
+
+/// The rows a press reads are the ones the climb can reach: its own children, and
+/// each row on the path above it with theirs. The path stops below the page row, so
+/// the page's own width is no part of the cost.
+#[test]
+fn a_press_reads_the_path_above_it_and_not_the_page_s_width() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let mut forward = vec![
+        TreeMutation::upsert(NoteNode::child(id("page"), id("root"), 1_024, "Page")),
+        TreeMutation::upsert(NoteNode::child(id("branch"), id("page"), 1_024, "Branch")),
+        TreeMutation::upsert(NoteNode::child(id("leaf"), id("branch"), 1_024, "Leaf")),
+    ];
+    for index in 0..49 {
+        forward.push(TreeMutation::upsert(NoteNode::child(
+            id(&format!("wide-{index}")),
+            id("page"),
+            2_048 + i64::try_from(index).unwrap() * 1_024,
+            "Wide",
+        )));
+    }
+    let inverse = forward
+        .iter()
+        .filter_map(|mutation| match mutation {
+            TreeMutation::Upsert(node) => Some(TreeMutation::Delete {
+                id: node.id().clone(),
+            }),
+            TreeMutation::Delete { .. } => None,
+        })
+        .collect();
+    storage
+        .commit(
+            0,
+            &DomainPatch {
+                forward,
+                inverse,
+                carried_pictures: Vec::new(),
+            },
+        )
+        .unwrap();
+
+    let loaded = storage
+        .load_command_tree(&NotesCommand::CycleCompleted {
+            id: id("leaf"),
+            restore: Vec::new(),
+        })
+        .unwrap();
+
+    for index in 0..49 {
+        let wide = id(&format!("wide-{index}"));
+        assert!(
+            loaded.node(&wide).is_none(),
+            "a row the press never reads rode along with it"
+        );
+    }
+}
+
+#[test]
+fn ticking_the_deepest_row_settles_the_chain_far_past_any_client_window() {
+    let storage = stored_chain();
+
+    // Each row on this chain has exactly one child, so finishing the foot
+    // finishes every row above it -- none of which a client could have loaded.
+    set_completed(&storage, &id("beyond"), true);
+
+    assert!(is_completed(&storage, &id("divider")));
+    for depth in 0..CHAIN_DEPTH {
+        assert!(
+            is_completed(&storage, &chain_id(depth)),
+            "chain row {depth} was left open"
+        );
+    }
+}
+
+#[test]
+fn ticking_the_top_speaks_for_the_top_alone() {
     let storage = stored_chain();
 
     set_completed(&storage, &chain_id(0), true);
 
-    for depth in 0..CHAIN_DEPTH {
-        assert!(
-            is_completed(&storage, &chain_id(depth)),
-            "chain row {depth} was left open"
-        );
-    }
-    // A marker ends nothing: the bullet and the row under it go too.
-    assert!(is_completed(&storage, &id("divider")));
-    assert!(is_completed(&storage, &id("beyond")));
+    assert!(is_completed(&storage, &chain_id(0)));
+    assert!(!is_completed(&storage, &chain_id(1)));
+    assert!(!is_completed(&storage, &id("beyond")));
 }
 
-/// The selection bulk-complete reaches just as far as a single tick: the
-/// working set has to load the chain under each listed row, not the row alone.
+/// The selection bulk-complete climbs just as far as a single tick: the working
+/// set has to load the path above each listed row, not the row alone.
 #[test]
-fn a_bulk_selection_settles_chains_far_past_any_client_window() {
+fn a_bulk_selection_settles_the_chain_far_past_any_client_window() {
     let storage = stored_chain();
 
-    // Two overlapping rows near the top. Nothing below them is an ancestor of
-    // anything listed, so the rows the cascade reaches can only come from the
-    // working set widening to each listed row's own chain.
-    let receipt = set_completed_many(&storage, &[chain_id(1), chain_id(0)], true);
+    let receipt = set_completed_many(&storage, &[id("beyond")], true);
 
     for depth in 0..CHAIN_DEPTH {
         assert!(
@@ -167,11 +283,9 @@ fn a_bulk_selection_settles_chains_far_past_any_client_window() {
             "chain row {depth} was left open"
         );
     }
-    assert!(is_completed(&storage, &id("divider")));
-    assert!(is_completed(&storage, &id("beyond")));
 
-    // The client redraws from the receipt, so every row the cascade flipped has
-    // to ride back in it -- including the ones no client ever sent.
+    // The client redraws from the receipt, so every row the climb flipped has to
+    // ride back in it -- including the ones no client ever sent.
     let changed = receipt
         .changed_nodes
         .iter()
@@ -186,10 +300,10 @@ fn a_bulk_selection_settles_chains_far_past_any_client_window() {
     }
 }
 
-/// The climb has to read every row under an ancestor before it may tick it, and
-/// the rows it reads can only be the ones the working set loaded. A branch the
-/// window never reached reads as no branch at all, and an ancestor is settled by
-/// rows that are still open.
+/// The climb reads an ancestor's own children before it may tick it, and the
+/// rows it reads can only be the ones the working set loaded. A sibling the
+/// window never reached reads as no row at all, and an ancestor is settled by a
+/// row that is still open.
 #[test]
 fn an_open_row_outside_the_window_keeps_the_rows_above_it_open() {
     let storage = SqliteStorage::open_in_memory().unwrap();
@@ -224,7 +338,7 @@ fn an_open_row_outside_the_window_keeps_the_rows_above_it_open() {
     set_completed(&storage, &id("leaf-a"), true);
 
     assert!(is_completed(&storage, &id("branch-a")));
-    // `leaf-b` is open, so nothing above the branch it sits in may close.
+    // `branch-b` is open, so nothing above it may close.
     assert!(!is_completed(&storage, &id("parent")));
     assert!(!is_completed(&storage, &id("page")));
 }
@@ -232,7 +346,7 @@ fn an_open_row_outside_the_window_keeps_the_rows_above_it_open() {
 #[test]
 fn reopening_the_deepest_row_clears_every_ancestor_above_the_window() {
     let storage = stored_chain();
-    set_completed(&storage, &chain_id(0), true);
+    set_completed(&storage, &id("beyond"), true);
 
     set_completed(&storage, &chain_id(CHAIN_DEPTH - 1), false);
     for depth in 0..CHAIN_DEPTH {
@@ -242,8 +356,8 @@ fn reopening_the_deepest_row_clears_every_ancestor_above_the_window() {
         );
     }
 
-    // And back the other way: the last open row settles the whole chain above
-    // it, none of which a client could have sent.
-    set_completed(&storage, &chain_id(CHAIN_DEPTH - 1), true);
+    // And back the other way: the last open row settles the whole chain above it,
+    // none of which a client could have sent.
+    set_completed(&storage, &id("beyond"), true);
     assert!(is_completed(&storage, &chain_id(0)));
 }

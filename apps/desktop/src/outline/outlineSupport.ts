@@ -181,7 +181,7 @@ export function handleOutlineKeyDown(options: OutlineRowKeyOptions) {
     if (intent.kind === "indent") return selectionActions.indent();
     if (intent.kind === "outdent") return selectionActions.outdent();
     if (intent.kind === "move") return selectionActions.move(intent.direction);
-    if (intent.kind === "toggleComplete") return selectionActions.toggleComplete();
+    if (intent.kind === "cycleComplete") return selectionActions.toggleComplete();
     if (intent.kind === "duplicate") return selectionActions.duplicate();
     if (intent.kind === "trash") return selectionActions.delete();
     // The note field answers to none of the band's keys, so the band goes
@@ -243,7 +243,7 @@ export function handleImagePrimaryKeyDown(options: ImageRowKeyOptions) {
     if (intent.kind === "indent") return selectionActions.indent();
     if (intent.kind === "outdent") return selectionActions.outdent();
     if (intent.kind === "move") return selectionActions.move(intent.direction);
-    if (intent.kind === "toggleComplete") return selectionActions.toggleComplete();
+    if (intent.kind === "cycleComplete") return selectionActions.toggleComplete();
     if (intent.kind === "duplicate") return selectionActions.duplicate();
     if (intent.kind === "trash") return selectionActions.delete();
     // Same as a bullet: the band goes before the caret leaves the row, whether
@@ -544,8 +544,8 @@ function executeRowIntent(
       void pending.committed.catch(() => undefined);
       return;
     }
-    case "toggleComplete":
-      void store.setCompleted(node.id, !node.completed);
+    case "cycleComplete":
+      void store.cycleCompleted(node.id);
       return;
     case "trash":
       void store.deleteSubtree(node.id);

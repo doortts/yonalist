@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use crate::node::SORT_KEY_STEP;
 use crate::{
-    DomainError, ImportImageNode, ImportNode, NodeId, NoteNode, NoteNodeKind, NotesCommand,
-    Position,
+    CompletionStage, DomainError, ImportImageNode, ImportNode, NodeId, NoteNode, NoteNodeKind,
+    NotesCommand, Position,
 };
 
 use super::NotesTree;
@@ -140,17 +140,18 @@ impl NotesTree {
                 }
                 Ok(())
             }
-            NotesCommand::SetCompleted { id, completed } => self.cascade_completed(&id, completed),
+            NotesCommand::SetCompleted { id, completed } => self.set_completed(&id, completed),
             // The selection bulk-complete settles each listed row exactly as
             // ticking its own box would. In order, and against the tree the
             // earlier ids already left: a later id's ancestor check has to see
             // the sibling branch an earlier id just closed.
             NotesCommand::SetCompletedMany { ids, completed } => {
                 for id in ids {
-                    self.cascade_completed(&id, completed)?;
+                    self.set_completed(&id, completed)?;
                 }
                 Ok(())
             }
+            NotesCommand::CycleCompleted { id, restore } => self.cycle_completed(&id, restore),
             NotesCommand::SetStarred { id, starred } => {
                 self.node_mut(&id)?.set_starred(starred);
                 Ok(())
@@ -540,41 +541,109 @@ impl NotesTree {
         Ok(())
     }
 
-    /// Ticking a row settles the whole branch it heads: every row under it takes
-    /// the same state, and an ancestor row follows once nothing below it is left
-    /// open. Clearing one runs the other way -- an ancestor cannot stay ticked
-    /// while a row under it is open again. A marker decides nothing here: a row
-    /// with a box and a row without one settle alike. It lives here rather than
-    /// in the client because a client only ever holds a window of the page, and
-    /// the branch reaches past it.
-    fn cascade_completed(&mut self, id: &NodeId, completed: bool) -> Result<(), DomainError> {
+    /// A completed row is that row's own statement, not a claim about the rows
+    /// under it: work that can no longer be done is left open and the row above
+    /// it still closes. So a tick writes one row, and what follows are the two
+    /// transitions that ripple upward -- a parent whose own children are now all
+    /// done follows them, and a parent over a row that just came open cannot go
+    /// on saying it is finished.
+    ///
+    /// Reading only the children is what makes this cheap: a completed child
+    /// stands for its own branch, so no command has to load a page to answer
+    /// whether a row is finished. It lives here rather than in the client because
+    /// a client only ever holds a window of the page.
+    fn set_completed(&mut self, id: &NodeId, completed: bool) -> Result<(), DomainError> {
         self.node_mut(id)?.set_completed(completed);
-        for below_id in self.descendant_ids(id) {
-            self.node_mut(&below_id)?.set_completed(completed);
+        let Some(parent_id) = self.live_parent_row(id) else {
+            return Ok(());
+        };
+        if completed {
+            self.settle_ancestors(&parent_id)
+        } else {
+            self.clear_ancestors(&parent_id)
         }
-        let mut current = id.clone();
-        // Seeded with the clicked row so a parent cycle ends the walk instead
-        // of climbing forever.
-        let mut visited = BTreeSet::from([id.clone()]);
-        while let Some(parent_id) = self.live_parent_row(&current) {
-            if !visited.insert(parent_id.clone()) {
+    }
+
+    /// The three presses of the completion chord, read off the tree rather than
+    /// remembered: a row that is not done finishes itself, a finished row with
+    /// something open under it finishes its children, and a finished row with
+    /// nothing open under it comes back open. `restore` carries what those
+    /// children held before the second press, which only the session knows; an
+    /// empty list means that memory is gone and the children stay as they are.
+    fn cycle_completed(
+        &mut self,
+        id: &NodeId,
+        restore: Vec<(NodeId, bool)>,
+    ) -> Result<(), DomainError> {
+        match self.completion_stage(id)? {
+            CompletionStage::Row => self.set_completed(id, true),
+            CompletionStage::Children => {
+                for child_id in self.children_of(id) {
+                    self.node_mut(&child_id)?.set_completed(true);
+                }
+                Ok(())
+            }
+            CompletionStage::Back => {
+                for (child_id, was_completed) in restore {
+                    // A remembered row can have gone since; the press is still
+                    // the press.
+                    if let Some(child) = self.nodes.get_mut(&child_id) {
+                        child.set_completed(was_completed);
+                    }
+                }
+                self.set_completed(id, false)
+            }
+        }
+    }
+
+    /// Ticks the rows above once their own children are all done, and keeps
+    /// climbing while that holds. A row with no children of its own is not a
+    /// finished branch, it is an empty one.
+    fn settle_ancestors(&mut self, from_id: &NodeId) -> Result<(), DomainError> {
+        let mut current = Some(from_id.clone());
+        // Seeded empty; a parent cycle ends the walk instead of climbing forever.
+        let mut visited = BTreeSet::new();
+        while let Some(row_id) = current {
+            if !visited.insert(row_id.clone()) {
                 break;
             }
-            // The whole branch, not the row below: an ancestor with a done
-            // child that still carries an open grandchild is not settled. The
-            // rows this cascade just set are already ticked in the tree, so
-            // reading them back is reading the cascade's own result.
-            let settled = self
-                .descendant_ids(&parent_id)
-                .iter()
-                .all(|below_id| self.node(below_id).is_some_and(NoteNode::is_completed));
-            if completed && !settled {
+            let Some(node) = self.node(&row_id) else {
+                break;
+            };
+            if node.is_deleted() || self.is_page_row(node) || !self.children_are_done(&row_id) {
                 break;
             }
-            self.node_mut(&parent_id)?.set_completed(completed);
-            current = parent_id;
+            self.node_mut(&row_id)?.set_completed(true);
+            current = self.live_parent_row(&row_id);
         }
         Ok(())
+    }
+
+    /// Opens the finished rows above a row that just came open. Stops at the
+    /// first row that was already open: everything above it is open too.
+    fn clear_ancestors(&mut self, from_id: &NodeId) -> Result<(), DomainError> {
+        let mut current = Some(from_id.clone());
+        let mut visited = BTreeSet::new();
+        while let Some(row_id) = current {
+            if !visited.insert(row_id.clone()) {
+                break;
+            }
+            match self.node(&row_id) {
+                Some(node) if node.is_completed() && !node.is_deleted() => {}
+                _ => break,
+            }
+            self.node_mut(&row_id)?.set_completed(false);
+            current = self.live_parent_row(&row_id);
+        }
+        Ok(())
+    }
+
+    fn children_are_done(&self, id: &NodeId) -> bool {
+        let children = self.children_of(id);
+        !children.is_empty()
+            && children
+                .iter()
+                .all(|child_id| self.node(child_id).is_some_and(NoteNode::is_completed))
     }
 
     /// A row this command took away -- trashed, or moved under some other row --
@@ -618,105 +687,79 @@ impl NotesTree {
         Ok(())
     }
 
-    /// Ticks `id` and the rows above it for as long as nothing under them is
-    /// left open. The same reading the cascade climbs on, from the other
-    /// direction: there a tick settles the branch, here the branch settles
-    /// itself once the last open row is gone.
-    fn settle_ancestors(&mut self, id: &NodeId) -> Result<(), DomainError> {
-        let mut current = Some(id.clone());
-        // Seeded with nothing, so a parent cycle ends the walk instead of
-        // climbing forever.
-        let mut visited = BTreeSet::new();
-        while let Some(row_id) = current {
-            if !visited.insert(row_id.clone()) {
-                break;
-            }
-            let Some(node) = self.node(&row_id) else {
-                break;
-            };
-            if node.is_deleted() || self.is_page_row(node) {
-                break;
-            }
-            let below = self.descendant_ids(&row_id);
-            let finished = !below.is_empty()
-                && below
-                    .iter()
-                    .all(|below_id| self.node(below_id).is_some_and(NoteNode::is_completed));
-            if !finished {
-                break;
-            }
-            self.node_mut(&row_id)?.set_completed(true);
-            current = self.live_parent_row(&row_id);
-        }
-        Ok(())
-    }
-
-    /// A row that starts counting against the branch above it -- written into,
-    /// created with something already in it, moved in, brought back from the
-    /// trash -- leaves the rows over it unfinished, so every finished row above
-    /// it opens again. It sits here, after the command
-    /// rather than inside each one, because every command that puts a row
-    /// somewhere would otherwise need the same afterthought of its own.
+    /// Work that *arrives* somewhere -- a row created there with something in it,
+    /// written into where it was blank, moved in, brought back from the trash --
+    /// is news to the rows above it, which cannot go on saying they are finished.
+    /// It sits here, after the command rather than inside each one, because every
+    /// command that puts a row somewhere would otherwise need the same
+    /// afterthought of its own.
+    ///
+    /// A row that merely came open where it stood is not an arrival: nothing new
+    /// turned up, one row changed its mind. That is the completion write's own
+    /// business, and it opens the rows above it one at a time, stopping at the
+    /// first that was already open -- which is what leaves a declaration made
+    /// further up alone.
     pub(super) fn reopen_over_rows_this_command_placed(
         &mut self,
         before: &Self,
     ) -> Result<(), DomainError> {
-        let placed = self
+        let arrived = self
             .nodes
             .values()
             .filter(|node| counts_as_open(node))
             .filter(|node| match before.nodes.get(node.id()) {
                 None => true,
                 Some(previous) => {
-                    !counts_as_open(previous) || previous.parent_id() != node.parent_id()
+                    previous.is_deleted()
+                        || previous.parent_id() != node.parent_id()
+                        || !holds_something(previous)
                 }
             })
             .map(|node| node.id().clone())
             .collect::<Vec<_>>();
-        for id in placed {
+        for id in arrived {
             self.reopen_ancestors(&id, before)?;
         }
         Ok(())
     }
 
-    /// Opens the rows above `id` that were already there. A row this same
-    /// command brought along keeps whatever the command said it was: a pasted
-    /// subtree arrives as it was cut, and the paste is not news to it. The walk
-    /// still climbs through those rows to the ones that were there before, which
-    /// the arrival is news to. Rows already open are left alone, so a tree that
-    /// was already honest about the branch reports no change at all.
+    /// Opens the run of finished rows above arrived work, and stops as soon as it
+    /// reaches a row the arrival is no news to:
+    ///
+    /// - a finished row this same command brought along -- a pasted subtree, or one
+    ///   out of the trash, says what it said when it was cut, and it speaks for
+    ///   everything inside it, so the walk ends there and the rows above it never
+    ///   hear about the arrival;
+    /// - a row that was already open before the command, because whatever sits
+    ///   above it had already accepted an open row underneath.
+    ///
+    /// Everything in between is a finished row that was there before and now has
+    /// work under it that was not, so it opens.
     fn reopen_ancestors(&mut self, id: &NodeId, before: &Self) -> Result<(), DomainError> {
         let mut current = id.clone();
-        // Seeded with the placed row so a parent cycle ends the walk instead of
+        // Seeded with the arrived row so a parent cycle ends the walk instead of
         // climbing forever.
         let mut visited = BTreeSet::from([id.clone()]);
         while let Some(parent_id) = self.live_parent_row(&current) {
             if !visited.insert(parent_id.clone()) {
                 break;
             }
-            if before.nodes.contains_key(&parent_id) {
-                self.node_mut(&parent_id)?.set_completed(false);
+            // A row out of the trash arrives as surely as one that was never
+            // there: before this command it was a tombstone, not a row.
+            let arrived = before
+                .nodes
+                .get(&parent_id)
+                .is_none_or(NoteNode::is_deleted);
+            let finished = self.node(&parent_id).is_some_and(NoteNode::is_completed);
+            match (finished, arrived) {
+                (true, true) => break,
+                (true, false) => self.node_mut(&parent_id)?.set_completed(false),
+                (false, false) => break,
+                (false, true) => {}
             }
             current = parent_id;
         }
         Ok(())
-    }
-
-    /// Every row below `root_id`.
-    fn descendant_ids(&self, root_id: &NodeId) -> Vec<NodeId> {
-        let mut found = Vec::new();
-        let mut seen = BTreeSet::from([root_id.clone()]);
-        let mut pending = vec![root_id.clone()];
-        while let Some(current) = pending.pop() {
-            for child_id in self.children_of(&current) {
-                if !seen.insert(child_id.clone()) {
-                    continue;
-                }
-                found.push(child_id.clone());
-                pending.push(child_id);
-            }
-        }
-        found
     }
 
     /// The row a tick climbs to next. It stops below the page row -- the row an
@@ -766,7 +809,7 @@ mod tests {
     /// so a lost guard fails here by name instead of stalling the whole suite
     /// until the job's own timeout ends it.
     #[test]
-    fn a_parent_cycle_ends_the_cascade_instead_of_looping() {
+    fn a_parent_cycle_ends_the_climb_instead_of_looping() {
         let mut tree = NotesTree::default();
         for (id, parent_id) in [("left", "right"), ("right", "left")] {
             let node = NoteNode::from_persisted(
@@ -788,14 +831,14 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
             let id = NodeId::try_from("left").unwrap();
-            tree.cascade_completed(&id, true).unwrap();
+            tree.set_completed(&id, true).unwrap();
             sender.send(tree.node(&id).unwrap().is_completed()).ok();
         });
 
         assert!(
             receiver
                 .recv_timeout(Duration::from_secs(5))
-                .expect("the cascade never came back off the cycle")
+                .expect("the climb never came back off the cycle")
         );
     }
 }
