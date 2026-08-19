@@ -400,7 +400,9 @@ pub struct ReindexReport {
 /// What is kept, and why: `notes_meta` because the revision only ever moves
 /// forward, `sync_meta` because it is this device's own identity rather than
 /// notes, `sync_conflict_log` because it holds the only copy of text a merge
-/// overwrote, and `sync_quarantine` and `sync_assets` because both describe files
+/// overwrote, `sync_devices` because a name learned from a file is what makes that
+/// log readable and the rebuild only relearns the devices whose files it happens
+/// to read, and `sync_quarantine` and `sync_assets` because both describe files
 /// the rebuild is about to read rather than rows it is replacing.
 pub(crate) fn rebuild_from_vault(
     connection: &mut Connection,

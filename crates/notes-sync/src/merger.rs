@@ -17,7 +17,9 @@
 //! Rebuilding derived columns and advancing the revision belong to whoever owns
 //! the database; this owns the sync semantics.
 
-use crate::document::{DocumentNode, Marker, NodeBody, PageDocument, TrashDocument, VaultFile};
+use crate::document::{
+    DocumentNode, Marker, NodeBody, PageDocument, TrashDocument, VaultFile, Writer,
+};
 use crate::hlc::{Clock, Hlc};
 use rusqlite::{OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
@@ -146,6 +148,7 @@ fn merge_page(
 ) -> Result<MergeOutcome, MergeError> {
     let mut outcome = MergeOutcome::default();
     let root_id = page.id.as_str().to_owned();
+    learn_device_name(transaction, page.writer.as_ref())?;
 
     // The document root is a node like any other; its state lives in the
     // frontmatter because a heading has nowhere to carry a comment.
@@ -1902,6 +1905,26 @@ fn json_string(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// What the file says its writer is called, kept so the settings screen can name
+/// the device behind a stamp. A file naming nobody says nothing — erasing a name
+/// on the word of an older build's file would lose the only copy there is.
+fn learn_device_name(
+    transaction: &Transaction<'_>,
+    writer: Option<&Writer>,
+) -> Result<(), MergeError> {
+    let Some(writer) = writer else {
+        return Ok(());
+    };
+    transaction
+        .execute(
+            "INSERT INTO sync_devices(device_id, name) VALUES (?1, ?2)
+             ON CONFLICT(device_id) DO UPDATE SET name = excluded.name",
+            rusqlite::params![writer.device_id, writer.device_name],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 /// Recorded once per defeat. The winner is deliberately not part of the key:

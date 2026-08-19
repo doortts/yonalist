@@ -302,6 +302,16 @@ CREATE TABLE sync_node_exports (
     exported_hlc TEXT NOT NULL
 ) STRICT;
 
+-- What a device id belongs to. Learned from the files other devices
+-- write, since a stamp calls a device by four hex characters and the
+-- settings screen has to call it something a person recognises. Last
+-- one in wins: a renamed device says so in its next file, and a file
+-- that names nobody says nothing about what is already here.
+CREATE TABLE sync_devices (
+    device_id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL
+) STRICT;
+
 CREATE TABLE sync_conflict_log (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     node_id TEXT NOT NULL,
