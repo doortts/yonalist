@@ -558,7 +558,7 @@ describe("browser-only preview adapter", () => {
     ]));
   });
 
-  it("settles the whole Todo chain from one ticked row", async () => {
+  it("finishes one row and lets the row above it follow", async () => {
     const boot = await previewNotesApi.bootstrap();
     const [parent, child] = boot.viewport!.nodes;
     let revision = boot.revision;
@@ -590,11 +590,12 @@ describe("browser-only preview adapter", () => {
       requestId: "preview-chain-complete",
       baseRevision: nested.revision,
       historyGroup: null,
-      command: { kind: "setCompleted", id: parent.id, completed: true }
+      command: { kind: "setCompleted", id: child.id, completed: true }
     });
 
+    // The child is the parent's only child, so the parent follows it.
     expect(completed.changedNodes).toEqual(expect.arrayContaining(
-      [parent.id, child.id].map((id) =>
+      [child.id, parent.id].map((id) =>
         expect.objectContaining({ id, completed: true }))
     ));
   });
@@ -717,6 +718,68 @@ describe("browser-only preview adapter", () => {
     expect(textById.get("stale-keeper")).toBe("stale-keeper");
   });
 
+  it("turns a row over in three presses", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    let revision = boot.revision;
+    const run = async (requestId: string, command: IpcNotesCommand) => {
+      const result = await previewNotesApi.execute({
+        sessionId: boot.sessionId,
+        requestId,
+        baseRevision: revision,
+        historyGroup: null,
+        command
+      });
+      revision = result.revision;
+      return result;
+    };
+    const read = async () => {
+      const page = await previewNotesApi.queryViewport({
+        pageId,
+        anchorId: null,
+        beforeCursor: null,
+        afterCursor: null,
+        limit: 200
+      });
+      return new Map(page.nodes.map((node) => [node.id, node.completed]));
+    };
+    await run("cycle-parent-create", {
+      kind: "createNode",
+      id: "cycle-parent",
+      parent_id: pageId,
+      before_id: null,
+      text: "Parent"
+    });
+    for (const id of ["cycle-done", "cycle-open"]) {
+      await run(`${id}-create`, {
+        kind: "createNode",
+        id,
+        parent_id: "cycle-parent",
+        before_id: null,
+        text: id
+      });
+    }
+    await run("cycle-done-tick", {
+      kind: "setCompleted", id: "cycle-done", completed: true
+    });
+
+    await run("cycle-press-one", { kind: "cycleCompleted", id: "cycle-parent" });
+    const afterOne = await read();
+    expect(afterOne.get("cycle-parent")).toBe(true);
+    expect(afterOne.get("cycle-open")).toBe(false);
+
+    await run("cycle-press-two", { kind: "cycleCompleted", id: "cycle-parent" });
+    const afterTwo = await read();
+    expect(afterTwo.get("cycle-open")).toBe(true);
+
+    await run("cycle-press-three", { kind: "cycleCompleted", id: "cycle-parent" });
+    const afterThree = await read();
+    expect(afterThree.get("cycle-parent")).toBe(false);
+    expect(afterThree.get("cycle-open")).toBe(false);
+    // Finished before the press that finished the others, so it keeps its tick.
+    expect(afterThree.get("cycle-done")).toBe(true);
+  });
+
   it("opens the finished rows above a newly placed row", async () => {
     const boot = await previewNotesApi.bootstrap();
     const pageId = boot.activePageId!;
@@ -770,8 +833,8 @@ describe("browser-only preview adapter", () => {
       page.nodes.map((node) => [node.id, node.completed])
     );
     expect(completedById.get("reopen-parent")).toBe(false);
-    // The rows the tick had settled keep their own state.
-    expect(completedById.get("reopen-child")).toBe(true);
+    // The press spoke for the parent alone, so the child is as it was.
+    expect(completedById.get("reopen-child")).toBe(false);
   });
 
   it("hands the rows back their own states when a tick is taken back", async () => {
@@ -922,7 +985,7 @@ describe("browser-only preview adapter", () => {
     ));
   });
 
-  it("settles every listed row's Todo chain in one batch", async () => {
+  it("finishes every listed row and lets their parents follow", async () => {
     const boot = await previewNotesApi.bootstrap();
     const pageId = boot.activePageId!;
     let revision = boot.revision;
@@ -959,11 +1022,12 @@ describe("browser-only preview adapter", () => {
       before_id: null
     });
 
-    // Only the two chain heads are listed, so `batch-under` can flip only by
-    // riding the cascade under `batch-top` -- the way the server expands it.
+    // `batch-under` is listed too: a press speaks for the row it names, so a
+    // selection has to name every row it means. `batch-top` then follows its own
+    // child rather than being written twice.
     const completed = await run("preview-batch-complete", {
       kind: "setCompletedMany",
-      ids: ["batch-top", "batch-loose"],
+      ids: ["batch-under", "batch-loose"],
       completed: true
     });
 

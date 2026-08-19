@@ -79,7 +79,7 @@ export type OutlineKeyIntent =
       readonly joinOffset: number;
     }
   | { readonly kind: "mergeIntoParent"; readonly parentId: string }
-  | { readonly kind: "toggleComplete" }
+  | { readonly kind: "cycleComplete" }
   | { readonly kind: "clearMarker" }
   | { readonly kind: "duplicate" }
   | { readonly kind: "trash" }
@@ -335,7 +335,7 @@ export function resolveOutlineKey(
       !input.shiftKey &&
       primaryModifier(input)
     ) {
-      return input.repeat ? { kind: "consume" } : { kind: "toggleComplete" };
+      return input.repeat ? { kind: "consume" } : { kind: "cycleComplete" };
     }
     if (
       input.key === "Backspace" &&

@@ -1424,7 +1424,7 @@ describe("v2 outline keyboard intent resolver", () => {
     expect(resolveOutlineKey(input({
       key: "Enter",
       ctrlKey: true
-    }))).toEqual({ kind: "toggleComplete" });
+    }))).toEqual({ kind: "cycleComplete" });
     expect(resolveOutlineKey(input({
       key: "D",
       altKey: true,
