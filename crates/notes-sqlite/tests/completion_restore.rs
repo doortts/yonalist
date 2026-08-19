@@ -178,6 +178,115 @@ fn trashing_a_row_with_another_still_open_leaves_the_branch_open_in_storage() {
     assert!(!session.is_completed("parent"));
 }
 
+/// A merge takes a row away like any other departure, so it has to bring the
+/// branch it leaves along. A row nobody loaded reads as no row at all, and the
+/// rows above it close over it.
+#[test]
+fn merging_a_row_backward_does_not_close_over_a_row_it_never_loaded() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let forward = vec![
+        TreeMutation::upsert(NoteNode::child(id("page"), id("root"), 1_024, "Page")),
+        TreeMutation::upsert(NoteNode::child(id("parent"), id("page"), 1_024, "Parent")),
+        TreeMutation::upsert(NoteNode::from_persisted(
+            id("target"),
+            Some(id("parent")),
+            2_048,
+            NoteNodeKind::Bullet,
+            "Target".into(),
+            String::new(),
+            NoteMarkerKind::Bullet,
+            false,
+            true,
+            false,
+            false,
+        )),
+        TreeMutation::upsert(NoteNode::child(id("previous"), id("parent"), 1_024, "Text")),
+        TreeMutation::upsert(NoteNode::from_persisted(
+            id("sibling"),
+            Some(id("parent")),
+            3_072,
+            NoteNodeKind::Bullet,
+            "Sibling".into(),
+            String::new(),
+            NoteMarkerKind::Bullet,
+            false,
+            true,
+            false,
+            false,
+        )),
+        // A row the merge's own working set never reaches: the sibling's child.
+        // Blank, so it never opened the branch when it arrived -- and still open,
+        // so the branch is not finished while it is there.
+        TreeMutation::upsert(NoteNode::child(id("hidden"), id("sibling"), 1_024, "")),
+    ];
+    let inverse = forward
+        .iter()
+        .filter_map(|mutation| match mutation {
+            TreeMutation::Upsert(node) => Some(TreeMutation::Delete {
+                id: node.id().clone(),
+            }),
+            TreeMutation::Delete { .. } => None,
+        })
+        .collect();
+    storage
+        .commit(
+            0,
+            &DomainPatch {
+                forward,
+                inverse,
+                carried_pictures: Vec::new(),
+            },
+        )
+        .unwrap();
+    let mut session = Session::open(&storage);
+
+    // Backspace at the head of the finished row: the open row above it goes
+    // away, and the row that stays is already done.
+    session.run(IpcNotesCommand::MergeNodeBackward {
+        id: "target".into(),
+        previous_id: "previous".into(),
+        previous_text: "Text".into(),
+        current_text: "Target".into(),
+    });
+
+    assert!(!session.is_completed("parent"));
+}
+
+/// Backspace on a blank row removes it, and that is a departure like any other:
+/// the branch it was holding open can be finished.
+#[test]
+fn removing_a_blank_row_finishes_the_branch_in_storage() {
+    let storage = stored_page();
+    let mut session = Session::open(&storage);
+    session.set_completed("done", true);
+    session.set_completed("open", true);
+    session.run(IpcNotesCommand::UpdateText {
+        id: "bare".into(),
+        text: String::new(),
+    });
+    assert!(!session.is_completed("parent"));
+
+    session.run(IpcNotesCommand::RemoveEmptyNode { id: "bare".into() });
+
+    assert!(session.is_completed("parent"));
+}
+
+/// The settle rides in the delete's own patch, so one undo takes both back.
+#[test]
+fn undoing_the_delete_reopens_the_branch_it_finished() {
+    let storage = stored_page();
+    let mut session = Session::open(&storage);
+    session.set_completed("done", true);
+    session.set_completed("open", true);
+    session.run(IpcNotesCommand::DeleteSubtree { id: "bare".into() });
+    assert!(session.is_completed("parent"));
+
+    session.undo().unwrap();
+
+    assert!(!session.is_completed("parent"));
+    assert!(session.is_completed("done"));
+}
+
 /// The same three placements the domain covers, but through storage: the rows the
 /// climb reads can only be the ones the working set loaded, and each command
 /// loads its own.

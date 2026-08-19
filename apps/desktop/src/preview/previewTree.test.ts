@@ -224,6 +224,17 @@ describe("settling over a row that left", () => {
     expect(settleOverDepartedRows(branch, moved)).toEqual(["parent"]);
   });
 
+  it("finishes the row above a blank row that left", () => {
+    const blanked = branch.map((node) =>
+      node.id === "open" ? { ...node, text: "" } : node);
+    const trashed = blanked.map((node) =>
+      node.id === "open" ? { ...node, deleted: true } : node);
+
+    // Blank counts for nothing arriving and everything leaving: while it sat
+    // there the branch was not finished.
+    expect(settleOverDepartedRows(blanked, trashed)).toEqual(["parent"]);
+  });
+
   it("settles nothing for a row blanked where it stands", () => {
     const blanked = branch.map((node) =>
       node.id === "open" ? { ...node, text: "" } : node);

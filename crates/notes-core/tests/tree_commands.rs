@@ -1532,6 +1532,26 @@ fn trashing_the_last_open_row_finishes_the_branch_above_it() {
 }
 
 #[test]
+fn trashing_the_last_blank_row_finishes_the_branch_above_it() {
+    let mut tree = page_with_rows();
+    set_completed(&mut tree, "boxed", true);
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::UpdateText {
+            id: id("bare"),
+            text: String::new(),
+        },
+    );
+    // A blank row is not something left to do, but it is not done either, so
+    // while it is there the branch above it is not finished.
+    assert!(!is_completed(&tree, "plain"));
+
+    plan_and_apply(&mut tree, NotesCommand::DeleteSubtree { id: id("bare") });
+
+    assert!(is_completed(&tree, "plain"));
+}
+
+#[test]
 fn trashing_the_last_row_of_all_leaves_the_branch_alone() {
     let mut tree = page_with_rows();
 

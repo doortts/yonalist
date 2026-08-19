@@ -592,7 +592,11 @@ impl NotesTree {
     ) -> Result<(), DomainError> {
         let mut orphaned_parents = BTreeSet::new();
         for (id, previous) in &before.nodes {
-            if !counts_as_open(previous) {
+            // Whatever held the branch open, which is any live row that was not
+            // done -- a blank row among them. A blank counts for nothing when a
+            // row arrives, and for everything when it leaves: while it sat there
+            // the branch was not finished, so its leaving is what finishes it.
+            if previous.is_deleted() || previous.is_completed() {
                 continue;
             }
             let left = match self.nodes.get(id) {
