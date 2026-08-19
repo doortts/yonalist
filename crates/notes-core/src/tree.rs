@@ -102,6 +102,7 @@ impl NotesTree {
         let mut candidate = self.clone();
         let mut carried_pictures = Vec::new();
         candidate.execute(command, &mut carried_pictures)?;
+        candidate.reopen_over_rows_this_command_placed(self)?;
         candidate.validate()?;
         // `diff` compares two trees, and a picture waiting for its bytes is in
         // neither of them — only the duplication itself knows which copy was

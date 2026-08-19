@@ -126,6 +126,29 @@ impl<'a> Session<'a> {
     }
 }
 
+/// The rows a new child has to open sit above it, and the working set has to
+/// have loaded them: a page-deep branch is finished in storage, and only the
+/// stored rows can say so.
+#[test]
+fn a_new_row_opens_the_finished_rows_above_it_in_storage() {
+    let storage = stored_page();
+    let mut session = Session::open(&storage);
+    session.set_completed("parent", true);
+    assert!(session.is_completed("parent"));
+
+    session.run(IpcNotesCommand::CreateNode {
+        id: "fresh".into(),
+        parent_id: "parent".into(),
+        before_id: None,
+        text: String::new(),
+    });
+
+    assert!(!session.is_completed("parent"));
+    // The rows the tick had settled keep their own state.
+    assert!(session.is_completed("done"));
+    assert!(session.is_completed("open"));
+}
+
 #[test]
 fn an_uncomplete_right_after_the_tick_hands_the_rows_back_their_own_states() {
     let storage = stored_page();

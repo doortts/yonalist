@@ -1410,6 +1410,143 @@ fn reopening_a_row_clears_an_ancestor_bullet_too() {
     assert!(is_completed(&tree, "boxed"));
 }
 
+#[test]
+fn a_new_row_under_a_finished_branch_opens_it_again() {
+    let mut tree = page_with_rows();
+    set_completed(&mut tree, "boxed", true);
+    set_completed(&mut tree, "bare", true);
+    assert!(is_completed(&tree, "plain"));
+
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::CreateNode {
+            id: id("fresh"),
+            parent_id: id("plain"),
+            position: Position::at_end(),
+            text: String::new(),
+        },
+    );
+
+    // The branch is no longer finished, so the row heading it cannot say it is.
+    assert!(!is_completed(&tree, "plain"));
+    assert!(is_completed(&tree, "boxed"));
+}
+
+#[test]
+fn a_row_moved_under_a_finished_branch_opens_it_again() {
+    let mut tree = page_with_rows();
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::CreateNode {
+            id: id("elsewhere"),
+            parent_id: id("diary"),
+            position: Position::at_end(),
+            text: "Elsewhere".into(),
+        },
+    );
+    set_completed(&mut tree, "boxed", true);
+    set_completed(&mut tree, "bare", true);
+    assert!(is_completed(&tree, "plain"));
+
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::MoveNode {
+            id: id("elsewhere"),
+            parent_id: id("plain"),
+            position: Position::at_end(),
+        },
+    );
+
+    assert!(!is_completed(&tree, "plain"));
+}
+
+#[test]
+fn a_finished_row_placed_under_a_finished_branch_leaves_it_finished() {
+    let mut tree = page_with_rows();
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::CreateNode {
+            id: id("elsewhere"),
+            parent_id: id("diary"),
+            position: Position::at_end(),
+            text: "Elsewhere".into(),
+        },
+    );
+    set_completed(&mut tree, "elsewhere", true);
+    set_completed(&mut tree, "boxed", true);
+    set_completed(&mut tree, "bare", true);
+
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::MoveNode {
+            id: id("elsewhere"),
+            parent_id: id("plain"),
+            position: Position::at_end(),
+        },
+    );
+
+    assert!(is_completed(&tree, "plain"));
+}
+
+/// A cut subtree comes back the way it was cut: the rows inside it arrive with
+/// their own states, and their arrival is not news to the row they arrived under.
+#[test]
+fn a_pasted_row_keeps_the_tick_it_was_cut_with() {
+    let mut tree = page_with_rows();
+
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::ImportNodes {
+            parent_id: id("plain"),
+            position: Position::at_end(),
+            nodes: vec![
+                ImportNode {
+                    id: id("pasted"),
+                    parent_id: id("plain"),
+                    text: "Pasted".into(),
+                    note: String::new(),
+                    marker: NoteMarkerKind::Todo,
+                    completed: true,
+                    collapsed: false,
+                    starred: false,
+                    image: None,
+                },
+                ImportNode {
+                    id: id("pasted-child"),
+                    parent_id: id("pasted"),
+                    text: "Pasted child".into(),
+                    note: String::new(),
+                    marker: NoteMarkerKind::Bullet,
+                    completed: false,
+                    collapsed: false,
+                    starred: false,
+                    image: None,
+                },
+            ],
+        },
+    );
+
+    assert!(is_completed(&tree, "pasted"));
+}
+
+#[test]
+fn reordering_rows_inside_a_finished_branch_leaves_it_finished() {
+    let mut tree = page_with_rows();
+    set_completed(&mut tree, "boxed", true);
+    set_completed(&mut tree, "bare", true);
+
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::MoveNode {
+            id: id("bare"),
+            parent_id: id("plain"),
+            position: Position::before(id("boxed")),
+        },
+    );
+
+    assert!(is_completed(&tree, "plain"));
+}
+
 /// A page row is not a row of the outline it holds: it is the page's title and
 /// the name in the sidebar, and the filter that hides finished rows would hide
 /// the whole page with it. Finishing everything written on a page says the rows
