@@ -596,8 +596,9 @@ export class NotesStore {
     return subtreeIds(this.state.nodes, newIds);
   }
   /**
-   * One row travels; the server settles the Todo chain around it, which is the
-   * only place the whole chain is known -- the client holds a window of it.
+   * Sets the state this names on this row alone. What follows -- a parent whose
+   * own children are now all done, or one over a row that just came open -- the
+   * server settles, because a client holds only a window of the page.
    */
   async setCompleted(
     id: string,
