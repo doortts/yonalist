@@ -230,6 +230,12 @@ impl TryFrom<IpcNotesCommand> for NotesCommand {
                 ids: ids(values)?,
                 completed,
             }),
+            // The rows to hand back are the session's to know, so the command
+            // leaves here empty and the service fills it in.
+            IpcNotesCommand::CycleCompleted { id: value } => Ok(Self::CycleCompleted {
+                id: id(value)?,
+                restore: Vec::new(),
+            }),
             IpcNotesCommand::SetStarred { id: value, starred } => Ok(Self::SetStarred {
                 id: id(value)?,
                 starred,

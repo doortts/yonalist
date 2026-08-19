@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, PoisonError};
 
 use notes_core::{
-    DomainError, DomainPatch, ImportImageNode, NodeId, NoteImage, NoteNodeKind, NotesCommand,
-    Position, TreeMutation,
+    CompletionStage, DomainError, DomainPatch, ImportImageNode, NodeId, NoteImage, NoteNodeKind,
+    NotesCommand, NotesTree, Position, TreeMutation,
 };
 
 use crate::{
@@ -27,10 +27,17 @@ pub(crate) struct NotesServiceHistoryEntry {
     /// duplication had to name one in the first place.
     carried_pictures: Vec<(NodeId, NodeId)>,
     group: Option<String>,
-    /// The rows a completing command named, when this entry is that command's
-    /// alone. Clearing those same rows next reads as taking the tick back, and
-    /// this entry's inverse is what they held before it.
-    completed_rows: Option<Vec<NodeId>>,
+    /// What the row's children held before this entry finished them, when this
+    /// entry is that press alone. The press after it hands them back.
+    cycled_children: Option<CycledChildren>,
+}
+
+/// The one press the completion chord can take back: the row it finished the
+/// children of, and what those children held before it.
+#[derive(Clone)]
+struct CycledChildren {
+    row_id: NodeId,
+    states: Vec<(NodeId, bool)>,
 }
 
 struct SessionState {
@@ -75,9 +82,9 @@ impl SessionState {
             })
         {
             let previous = self.undo.last_mut().expect("history entry exists");
-            // The entry now covers more than one gesture, so its inverse is no
-            // longer what a single tick found.
-            previous.completed_rows = None;
+            // The entry now covers more than one gesture, so what it remembers is
+            // no longer what a single press found.
+            previous.cycled_children = None;
             previous.forward.extend(entry.forward);
             let mut combined_inverse = entry.inverse;
             combined_inverse.extend(std::mem::take(&mut previous.inverse));
@@ -105,35 +112,6 @@ impl SessionState {
                 self.completed_requests.remove(&expired);
             }
         }
-    }
-}
-
-/// Whether two commands name the same rows. A selection hands its ids over in
-/// whatever order it holds them, and the order says nothing about which rows the
-/// gesture was: the same rows in another order are the same rows.
-fn same_rows(left: &[NodeId], right: &[NodeId]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    let mut left = left.to_vec();
-    let mut right = right.to_vec();
-    left.sort();
-    right.sort();
-    left == right
-}
-
-/// The rows a completion command names when it sets them to `completed`, and
-/// nothing for any other command.
-fn completion_rows(command: &NotesCommand, completed: bool) -> Option<Vec<NodeId>> {
-    match command {
-        NotesCommand::SetCompleted { id, completed: set } if *set == completed => {
-            Some(vec![id.clone()])
-        }
-        NotesCommand::SetCompletedMany {
-            ids,
-            completed: set,
-        } if *set == completed => Some(ids.clone()),
-        _ => None,
     }
 }
 
@@ -381,11 +359,12 @@ impl<S: StoragePort> NotesService<S> {
         history_group: Option<String>,
         command: NotesCommand,
     ) -> Result<MutationReceipt, NotesError> {
-        if let Some(receipt) = self.restore_ticked_rows(session, &request_id, &command)? {
-            return Ok(receipt);
-        }
-        let completed_rows = completion_rows(&command, true);
         let tree = self.storage.load_command_tree(&command)?;
+        // A press that finishes the children has to say what they held first, and
+        // a press that opens the row again has to be handed that back. Only the
+        // session saw the press before this one, so only the session can do it.
+        let (command, cycled_children) =
+            self.stage_the_completion_cycle(session, &tree, command)?;
         let patch = tree.plan(command)?;
         let commit = self.storage.commit(session.revision, &patch)?;
         session.revision = commit.revision;
@@ -394,7 +373,7 @@ impl<S: StoragePort> NotesService<S> {
             inverse: patch.inverse,
             carried_pictures: patch.carried_pictures,
             group: history_group.clone(),
-            completed_rows,
+            cycled_children,
         };
         session.record_history(entry);
         let receipt = Self::receipt(session, commit);
@@ -402,59 +381,56 @@ impl<S: StoragePort> NotesService<S> {
         Ok(receipt)
     }
 
-    /// Clearing the very rows the last command ticked hands every row the tick
-    /// reached back what it held before, rather than clearing the branch: the
-    /// rows that were already done stay done. The tick's own inverse is that
-    /// memory, so there is nothing else to remember and nothing to keep in step
-    /// -- anything else landing in between leaves this entry no longer on top,
-    /// and the clear is the plain clear it has always been.
-    ///
-    /// It goes forward, not back: the restore takes its own history entry, so
-    /// undo puts the whole branch back the way the tick left it.
-    fn restore_ticked_rows(
+    /// Fills in what one press of the completion chord needs from the session,
+    /// and says what this press leaves behind for the next one. Only the press
+    /// that finishes a row's children leaves anything, and only while its own
+    /// history entry is still the one on top -- anything else landing in between
+    /// takes the memory with it, and the press after that simply opens the row.
+    fn stage_the_completion_cycle(
         &self,
-        session: &mut SessionState,
-        request_id: &str,
-        command: &NotesCommand,
-    ) -> Result<Option<MutationReceipt>, NotesError> {
-        let Some(rows) = completion_rows(command, false) else {
-            return Ok(None);
+        session: &SessionState,
+        tree: &NotesTree,
+        command: NotesCommand,
+    ) -> Result<(NotesCommand, Option<CycledChildren>), NotesError> {
+        let NotesCommand::CycleCompleted { id, .. } = &command else {
+            return Ok((command, None));
         };
-        if session.undo.len() <= session.undo_floor {
-            return Ok(None);
+        let row_id = id.clone();
+        match tree.completion_stage(&row_id)? {
+            CompletionStage::Row => Ok((command, None)),
+            CompletionStage::Children => {
+                let states = tree
+                    .children_of(&row_id)
+                    .into_iter()
+                    .filter_map(|child_id| {
+                        tree.node(&child_id)
+                            .map(|child| (child_id, child.is_completed()))
+                    })
+                    .collect();
+                Ok((
+                    command,
+                    Some(CycledChildren {
+                        row_id: row_id.clone(),
+                        states,
+                    }),
+                ))
+            }
+            CompletionStage::Back => {
+                let remembered = session
+                    .undo
+                    .last()
+                    .filter(|_| session.undo.len() > session.undo_floor)
+                    .and_then(|entry| entry.cycled_children.clone())
+                    .filter(|cycled| cycled.row_id == row_id);
+                Ok((
+                    NotesCommand::CycleCompleted {
+                        id: row_id,
+                        restore: remembered.map(|cycled| cycled.states).unwrap_or_default(),
+                    },
+                    None,
+                ))
+            }
         }
-        let Some(entry) = session
-            .undo
-            .last()
-            .filter(|entry| {
-                entry
-                    .completed_rows
-                    .as_deref()
-                    .is_some_and(|ticked| same_rows(ticked, &rows))
-            })
-            .cloned()
-        else {
-            return Ok(None);
-        };
-        let commit = self.storage.commit(
-            session.revision,
-            &DomainPatch {
-                forward: entry.inverse.clone(),
-                inverse: entry.forward.clone(),
-                carried_pictures: Vec::new(),
-            },
-        )?;
-        session.revision = commit.revision;
-        session.record_history(NotesServiceHistoryEntry {
-            forward: entry.inverse,
-            inverse: entry.forward,
-            carried_pictures: Vec::new(),
-            group: None,
-            completed_rows: None,
-        });
-        let receipt = Self::receipt(session, commit);
-        session.record_completed(request_id.to_owned(), receipt.clone());
-        Ok(Some(receipt))
     }
 
     /// Puts a defeated note's text back. It is an ordinary edit and takes the

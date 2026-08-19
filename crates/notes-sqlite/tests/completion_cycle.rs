@@ -112,6 +112,10 @@ impl<'a> Session<'a> {
         });
     }
 
+    fn cycle(&mut self, node_id: &str) {
+        self.run(IpcNotesCommand::CycleCompleted { id: node_id.into() });
+    }
+
     fn undo(&mut self) -> Result<MutationReceipt, NotesError> {
         let receipt = self.service.undo(HistoryRequest {
             session_id: "session".into(),
@@ -145,9 +149,10 @@ fn a_new_row_opens_the_finished_rows_above_it_in_storage() {
     });
 
     assert!(!session.is_completed("parent"));
-    // The rows the tick had settled keep their own state.
-    assert!(session.is_completed("done"));
-    assert!(session.is_completed("open"));
+    // The press only ever spoke for `parent`; the rows under it are as they were.
+    for row in ["done", "open", "bare"] {
+        assert!(!session.is_completed(row), "{row} was touched");
+    }
 }
 
 /// The rows a settle has to read sit beside the row that left, and only the
@@ -178,9 +183,9 @@ fn trashing_a_row_with_another_still_open_leaves_the_branch_open_in_storage() {
     assert!(!session.is_completed("parent"));
 }
 
-/// A merge takes a row away like any other departure, so it has to bring the
-/// branch it leaves along. A row nobody loaded reads as no row at all, and the
-/// rows above it close over it.
+/// A merge takes a row away like any other departure, so it has to bring the rows
+/// that stay along. A row nobody loaded reads as no row at all, and the row above
+/// it closes over it.
 #[test]
 fn merging_a_row_backward_does_not_close_over_a_row_it_never_loaded() {
     let storage = SqliteStorage::open_in_memory().unwrap();
@@ -201,23 +206,14 @@ fn merging_a_row_backward_does_not_close_over_a_row_it_never_loaded() {
             false,
         )),
         TreeMutation::upsert(NoteNode::child(id("previous"), id("parent"), 1_024, "Text")),
-        TreeMutation::upsert(NoteNode::from_persisted(
+        // A row the merge's own working set has to reach: the sibling that stays,
+        // still open, so `parent` is not finished once the merge is done.
+        TreeMutation::upsert(NoteNode::child(
             id("sibling"),
-            Some(id("parent")),
+            id("parent"),
             3_072,
-            NoteNodeKind::Bullet,
-            "Sibling".into(),
-            String::new(),
-            NoteMarkerKind::Bullet,
-            false,
-            true,
-            false,
-            false,
+            "Sibling",
         )),
-        // A row the merge's own working set never reaches: the sibling's child.
-        // Blank, so it never opened the branch when it arrived -- and still open,
-        // so the branch is not finished while it is there.
-        TreeMutation::upsert(NoteNode::child(id("hidden"), id("sibling"), 1_024, "")),
     ];
     let inverse = forward
         .iter()
@@ -367,102 +363,102 @@ fn undoing_the_new_row_puts_the_tick_it_opened_back() {
     assert!(session.is_completed("parent"));
 }
 
+/// The three presses, through storage. `stored_page` holds `parent` over `done`,
+/// `open` and `bare`.
 #[test]
-fn an_uncomplete_right_after_the_tick_hands_the_rows_back_their_own_states() {
+fn the_first_press_finishes_only_the_row_itself() {
     let storage = stored_page();
     let mut session = Session::open(&storage);
     session.set_completed("done", true);
 
-    session.set_completed("parent", true);
-    for row in ["parent", "done", "open", "bare"] {
-        assert!(session.is_completed(row), "{row} was left open by the tick");
-    }
+    session.cycle("parent");
 
-    session.set_completed("parent", false);
+    assert!(session.is_completed("parent"));
+    assert!(session.is_completed("done"));
+    for row in ["open", "bare"] {
+        assert!(!session.is_completed(row), "{row} was touched");
+    }
+}
+
+#[test]
+fn the_second_press_finishes_the_children() {
+    let storage = stored_page();
+    let mut session = Session::open(&storage);
+    session.set_completed("done", true);
+    session.cycle("parent");
+
+    session.cycle("parent");
+
+    for row in ["parent", "done", "open", "bare"] {
+        assert!(session.is_completed(row), "{row} was left open");
+    }
+}
+
+#[test]
+fn the_third_press_hands_the_children_back_their_own_states() {
+    let storage = stored_page();
+    let mut session = Session::open(&storage);
+    session.set_completed("done", true);
+    session.cycle("parent");
+    session.cycle("parent");
+
+    session.cycle("parent");
 
     assert!(!session.is_completed("parent"));
-    // The row that was already ticked before the parent was keeps its tick.
+    // Finished before the press that finished the others, so it keeps its tick.
     assert!(session.is_completed("done"));
-    assert!(!session.is_completed("open"));
+    for row in ["open", "bare"] {
+        assert!(!session.is_completed(row), "{row} was not handed back");
+    }
+}
+
+#[test]
+fn a_row_with_no_children_turns_over_in_two_presses() {
+    let storage = stored_page();
+    let mut session = Session::open(&storage);
+
+    session.cycle("bare");
+    assert!(session.is_completed("bare"));
+
+    session.cycle("bare");
     assert!(!session.is_completed("bare"));
 }
 
 #[test]
-fn taking_back_the_restore_puts_the_whole_branch_back() {
+fn an_edit_in_between_leaves_the_children_alone() {
     let storage = stored_page();
     let mut session = Session::open(&storage);
     session.set_completed("done", true);
-    session.set_completed("parent", true);
-    session.set_completed("parent", false);
-
-    session.undo().unwrap();
-
-    for row in ["parent", "done", "open", "bare"] {
-        assert!(session.is_completed(row), "{row} did not come back");
-    }
-}
-
-/// A selection hands its ids over in whatever order it holds them, and the two
-/// halves of one gesture -- tick, then take it back -- need not hand them over
-/// the same way. The rows are what identifies the gesture, not their order.
-#[test]
-fn a_selection_takes_its_tick_back_whatever_order_the_ids_arrive_in() {
-    let storage = stored_page();
-    let mut session = Session::open(&storage);
-    session.set_completed("done", true);
-
-    session.set_completed_many(&["parent", "open"], true);
-    session.set_completed_many(&["open", "parent"], false);
-
-    assert!(!session.is_completed("parent"));
-    assert!(!session.is_completed("open"));
-    // Ticked before the selection was, so it keeps its tick.
-    assert!(session.is_completed("done"));
-}
-
-#[test]
-fn a_wider_selection_does_not_read_as_the_one_that_was_ticked() {
-    let storage = stored_page();
-    let mut session = Session::open(&storage);
-    session.set_completed("done", true);
-
-    session.set_completed_many(&["parent"], true);
-    // A different set of rows, so there is nothing to hand back: the clear is
-    // the plain clear.
-    session.set_completed_many(&["parent", "open"], false);
-
-    assert!(!session.is_completed("done"));
-}
-
-#[test]
-fn an_edit_in_between_closes_the_window() {
-    let storage = stored_page();
-    let mut session = Session::open(&storage);
-    session.set_completed("done", true);
-    session.set_completed("parent", true);
+    session.cycle("parent");
+    session.cycle("parent");
     session.run(IpcNotesCommand::UpdateText {
         id: "bare".into(),
         text: "Bare, edited".into(),
     });
 
-    session.set_completed("parent", false);
+    session.cycle("parent");
 
-    // Nothing remembers what the rows held before, so an uncomplete is what it
-    // has always been: the branch comes open.
-    for row in ["parent", "done", "open", "bare"] {
-        assert!(!session.is_completed(row), "{row} stayed ticked");
+    assert!(!session.is_completed("parent"));
+    // Nothing remembers what they held, so they stay as the press left them.
+    for row in ["done", "open", "bare"] {
+        assert!(
+            session.is_completed(row),
+            "{row} was changed with no memory"
+        );
     }
 }
 
 #[test]
-fn clearing_another_row_first_closes_the_window() {
+fn undoing_the_press_that_finished_the_children_takes_it_back_whole() {
     let storage = stored_page();
     let mut session = Session::open(&storage);
     session.set_completed("done", true);
-    session.set_completed("parent", true);
-    session.set_completed("open", false);
+    session.cycle("parent");
+    session.cycle("parent");
 
-    session.set_completed("parent", false);
+    session.undo().unwrap();
 
-    assert!(!session.is_completed("done"));
+    assert!(session.is_completed("parent"));
+    assert!(session.is_completed("done"));
+    assert!(!session.is_completed("open"));
 }

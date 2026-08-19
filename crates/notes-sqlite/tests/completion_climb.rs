@@ -134,32 +134,40 @@ fn is_completed(storage: &SqliteStorage, node_id: &NodeId) -> bool {
 }
 
 #[test]
-fn ticking_the_top_settles_a_chain_far_past_any_client_window() {
+fn ticking_the_deepest_row_settles_the_chain_far_past_any_client_window() {
+    let storage = stored_chain();
+
+    // Each row on this chain has exactly one child, so finishing the foot
+    // finishes every row above it -- none of which a client could have loaded.
+    set_completed(&storage, &id("beyond"), true);
+
+    assert!(is_completed(&storage, &id("divider")));
+    for depth in 0..CHAIN_DEPTH {
+        assert!(
+            is_completed(&storage, &chain_id(depth)),
+            "chain row {depth} was left open"
+        );
+    }
+}
+
+#[test]
+fn ticking_the_top_speaks_for_the_top_alone() {
     let storage = stored_chain();
 
     set_completed(&storage, &chain_id(0), true);
 
-    for depth in 0..CHAIN_DEPTH {
-        assert!(
-            is_completed(&storage, &chain_id(depth)),
-            "chain row {depth} was left open"
-        );
-    }
-    // A marker ends nothing: the bullet and the row under it go too.
-    assert!(is_completed(&storage, &id("divider")));
-    assert!(is_completed(&storage, &id("beyond")));
+    assert!(is_completed(&storage, &chain_id(0)));
+    assert!(!is_completed(&storage, &chain_id(1)));
+    assert!(!is_completed(&storage, &id("beyond")));
 }
 
-/// The selection bulk-complete reaches just as far as a single tick: the
-/// working set has to load the chain under each listed row, not the row alone.
+/// The selection bulk-complete climbs just as far as a single tick: the working
+/// set has to load the path above each listed row, not the row alone.
 #[test]
-fn a_bulk_selection_settles_chains_far_past_any_client_window() {
+fn a_bulk_selection_settles_the_chain_far_past_any_client_window() {
     let storage = stored_chain();
 
-    // Two overlapping rows near the top. Nothing below them is an ancestor of
-    // anything listed, so the rows the cascade reaches can only come from the
-    // working set widening to each listed row's own chain.
-    let receipt = set_completed_many(&storage, &[chain_id(1), chain_id(0)], true);
+    let receipt = set_completed_many(&storage, &[id("beyond")], true);
 
     for depth in 0..CHAIN_DEPTH {
         assert!(
@@ -167,11 +175,9 @@ fn a_bulk_selection_settles_chains_far_past_any_client_window() {
             "chain row {depth} was left open"
         );
     }
-    assert!(is_completed(&storage, &id("divider")));
-    assert!(is_completed(&storage, &id("beyond")));
 
-    // The client redraws from the receipt, so every row the cascade flipped has
-    // to ride back in it -- including the ones no client ever sent.
+    // The client redraws from the receipt, so every row the climb flipped has to
+    // ride back in it -- including the ones no client ever sent.
     let changed = receipt
         .changed_nodes
         .iter()
@@ -186,10 +192,10 @@ fn a_bulk_selection_settles_chains_far_past_any_client_window() {
     }
 }
 
-/// The climb has to read every row under an ancestor before it may tick it, and
-/// the rows it reads can only be the ones the working set loaded. A branch the
-/// window never reached reads as no branch at all, and an ancestor is settled by
-/// rows that are still open.
+/// The climb reads an ancestor's own children before it may tick it, and the
+/// rows it reads can only be the ones the working set loaded. A sibling the
+/// window never reached reads as no row at all, and an ancestor is settled by a
+/// row that is still open.
 #[test]
 fn an_open_row_outside_the_window_keeps_the_rows_above_it_open() {
     let storage = SqliteStorage::open_in_memory().unwrap();
@@ -224,7 +230,7 @@ fn an_open_row_outside_the_window_keeps_the_rows_above_it_open() {
     set_completed(&storage, &id("leaf-a"), true);
 
     assert!(is_completed(&storage, &id("branch-a")));
-    // `leaf-b` is open, so nothing above the branch it sits in may close.
+    // `branch-b` is open, so nothing above it may close.
     assert!(!is_completed(&storage, &id("parent")));
     assert!(!is_completed(&storage, &id("page")));
 }
@@ -232,7 +238,7 @@ fn an_open_row_outside_the_window_keeps_the_rows_above_it_open() {
 #[test]
 fn reopening_the_deepest_row_clears_every_ancestor_above_the_window() {
     let storage = stored_chain();
-    set_completed(&storage, &chain_id(0), true);
+    set_completed(&storage, &id("beyond"), true);
 
     set_completed(&storage, &chain_id(CHAIN_DEPTH - 1), false);
     for depth in 0..CHAIN_DEPTH {
@@ -242,8 +248,8 @@ fn reopening_the_deepest_row_clears_every_ancestor_above_the_window() {
         );
     }
 
-    // And back the other way: the last open row settles the whole chain above
-    // it, none of which a client could have sent.
-    set_completed(&storage, &chain_id(CHAIN_DEPTH - 1), true);
+    // And back the other way: the last open row settles the whole chain above it,
+    // none of which a client could have sent.
+    set_completed(&storage, &id("beyond"), true);
     assert!(is_completed(&storage, &chain_id(0)));
 }

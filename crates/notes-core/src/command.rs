@@ -150,6 +150,14 @@ pub enum NotesCommand {
         ids: Vec<NodeId>,
         completed: bool,
     },
+    /// One press of the completion chord. Which of its three moves this is comes
+    /// from the tree, not from the caller. `restore` is what the row's children
+    /// held before the press that finished them, which only the session that saw
+    /// that press knows; empty means there is nothing to hand back.
+    CycleCompleted {
+        id: NodeId,
+        restore: Vec<(NodeId, bool)>,
+    },
     SetStarred {
         id: NodeId,
         starred: bool,
@@ -171,6 +179,18 @@ pub enum NotesCommand {
     RestoreSubtree {
         id: NodeId,
     },
+}
+
+/// The three moves one press of the completion chord can make.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompletionStage {
+    /// The row is not done: finish the row itself and leave its children alone.
+    Row,
+    /// The row is done and something under it is not: finish its children.
+    Children,
+    /// The row is done and its children with it: open the row again, handing the
+    /// children back what they held before.
+    Back,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
