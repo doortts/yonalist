@@ -108,6 +108,20 @@ impl SessionState {
     }
 }
 
+/// Whether two commands name the same rows. A selection hands its ids over in
+/// whatever order it holds them, and the order says nothing about which rows the
+/// gesture was: the same rows in another order are the same rows.
+fn same_rows(left: &[NodeId], right: &[NodeId]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut left = left.to_vec();
+    let mut right = right.to_vec();
+    left.sort();
+    right.sort();
+    left == right
+}
+
 /// The rows a completion command names when it sets them to `completed`, and
 /// nothing for any other command.
 fn completion_rows(command: &NotesCommand, completed: bool) -> Option<Vec<NodeId>> {
@@ -412,7 +426,12 @@ impl<S: StoragePort> NotesService<S> {
         let Some(entry) = session
             .undo
             .last()
-            .filter(|entry| entry.completed_rows.as_deref() == Some(rows.as_slice()))
+            .filter(|entry| {
+                entry
+                    .completed_rows
+                    .as_deref()
+                    .is_some_and(|ticked| same_rows(ticked, &rows))
+            })
             .cloned()
         else {
             return Ok(None);
