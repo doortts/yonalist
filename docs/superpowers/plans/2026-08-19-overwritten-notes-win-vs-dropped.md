@@ -118,6 +118,18 @@ Test: `apps/desktop/src/SettingsView.test.tsx` — with one mocked conflict, bot
 present, both device labels are present with "this device" on the local side, and the two
 buttons sit in one group. Red first: today only the losing text renders.
 
+## Accepted: a drifted stamp on a node with no row shows the same text twice
+
+`Verdict::Write` records a conflict when there is no local row at all — a file
+arriving with a drifted clock. Nothing was overwritten there; only the file's own
+stamp was replaced, so both recorded sides are that file's text and the row shows
+the same sentence in both columns, with different times and devices.
+
+That is what happened, and the footer says why ("The other device's clock
+disagreed"). Not logging it is a change to what the merge records, which is
+outside this contract, and collapsing the two columns in the UI would hide a real
+record behind a special case. Left as is, deliberately.
+
 ## Regression risk
 
 - Everything reading `loser_json`: `conflicts()` and `conflict_loser()` in

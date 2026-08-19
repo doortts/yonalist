@@ -224,6 +224,39 @@ describe("SettingsView", () => {
       .toBeInTheDocument();
   });
 
+  it("says a stamp it could not read is unknown rather than 1970", async () => {
+    const readConflicts = vi.fn().mockResolvedValue([
+      {
+        seq: 8,
+        nodeId: "Nd0000000001",
+        reason: "clock_drift",
+        recordedAt: 1_700_000_100,
+        kept: {
+          text: "the note that won",
+          editedAtMillis: 1_700_000_000_000,
+          deviceId: "a3f1",
+          deviceName: null,
+          isThisDevice: false
+        },
+        // A stamp this build could not read: no time, no device.
+        dropped: {
+          text: "the note that lost",
+          editedAtMillis: 0,
+          deviceId: "",
+          deviceName: null,
+          isThisDevice: false
+        }
+      }
+    ]);
+    renderSettings({ readConflicts });
+
+    await openSection("Overwritten notes");
+
+    expect(await screen.findByText("Unknown device")).toBeInTheDocument();
+    expect(screen.getByText("Time unknown")).toBeInTheDocument();
+    expect(screen.queryByText(/1970/)).not.toBeInTheDocument();
+  });
+
   it("says nothing at all when no note has been overwritten", async () => {
     renderSettings();
 

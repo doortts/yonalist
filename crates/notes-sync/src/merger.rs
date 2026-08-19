@@ -1930,6 +1930,11 @@ fn json_string(value: &str) -> String {
 /// What the file says its writer is called, kept so the settings screen can name
 /// the device behind a stamp. A file naming nobody says nothing — erasing a name
 /// on the word of an older build's file would lose the only copy there is.
+///
+/// What a file cannot say is what *this* device is called. Ids are four hex
+/// characters, so two devices can land on the same one; taking a stranger's word
+/// for our own name would put it in the files this device writes from then on.
+/// This device's name comes from the machine it runs on and from nowhere else.
 fn learn_device_name(
     transaction: &Transaction<'_>,
     writer: Option<&Writer>,
@@ -1937,6 +1942,9 @@ fn learn_device_name(
     let Some(writer) = writer else {
         return Ok(());
     };
+    if writer.device_id == device_id(transaction)? {
+        return Ok(());
+    }
     transaction
         .execute(
             "INSERT INTO sync_devices(device_id, name) VALUES (?1, ?2)

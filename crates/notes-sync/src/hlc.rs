@@ -90,6 +90,13 @@ impl Hlc {
     }
 }
 
+/// Whether a value is a device as this encoding spells one. Asked by the parser
+/// about a device a *file* names: the vault states device ids outside stamps
+/// now, and one that could never have issued a stamp names no device at all.
+pub fn is_device_id(value: &str) -> bool {
+    value.len() == DEVICE_WIDTH && value.bytes().all(is_lowercase_hex)
+}
+
 fn is_lowercase_hex(byte: u8) -> bool {
     byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
 }

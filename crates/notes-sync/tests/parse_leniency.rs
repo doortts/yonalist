@@ -1259,3 +1259,56 @@ fn a_hand_typed_picture_line_is_refused_by_naming_the_footer() {
         "the refusal has to quote the line so a person sees the leftover: {refusal}"
     );
 }
+
+/// The writer keys go into a table keyed by device id, and the file is somebody
+/// else's writing. An id no stamp could ever carry names no device, and taking
+/// it would leave a row nothing ever matches; an over-long name is not a name.
+#[test]
+fn a_writer_a_stamp_could_not_have_names_nobody() {
+    let long = "n".repeat(201);
+    for (device_id, device_name) in [
+        ("A3F2", "Studio"),
+        ("a3f", "Studio"),
+        ("a3f2z", "Studio"),
+        ("../etc", "Studio"),
+        ("a3f2", long.as_str()),
+    ] {
+        let file = document(&format!(
+            "device_id: {device_id}\ndevice_name: {device_name}\n"
+        ));
+
+        let parsed = notes_sync::parse::parse(file.as_bytes()).expect("parse");
+        let notes_sync::document::VaultFile::Page(page) = parsed else {
+            panic!("a page");
+        };
+        assert_eq!(
+            page.writer,
+            None,
+            "`{device_id}` / a {} byte name names nobody",
+            device_name.len()
+        );
+    }
+
+    let file = document("device_id: a3f2\ndevice_name: Studio\n");
+    let notes_sync::document::VaultFile::Page(page) =
+        notes_sync::parse::parse(file.as_bytes()).expect("parse")
+    else {
+        panic!("a page");
+    };
+    assert_eq!(
+        page.writer,
+        Some(notes_sync::document::Writer {
+            device_id: "a3f2".to_owned(),
+            device_name: "Studio".to_owned()
+        })
+    );
+}
+
+/// The frontmatter of a page, with whatever writer keys a case is about.
+fn document(writer: &str) -> String {
+    format!(
+        "---\nkind: yonalist-notes\nformat_version: 1\nid: PrJects00001\n\
+         max_hlc: 0swkd7qz9-00-a3f2\nroot_hlc: 0swkd7qz5-00-a3f2\n{writer}---\n\
+         # Projects\n\n- Thought <!-- yid: Nd0000000001 -->\n"
+    )
+}

@@ -2050,6 +2050,10 @@ body.is-resizing-pane {
   font-size: 12px;
 }
 
+.settings-conflict-when {
+  white-space: nowrap;
+}
+
 .settings-conflict-text {
   margin: 0;
   overflow: hidden;
@@ -2057,8 +2061,13 @@ body.is-resizing-pane {
   white-space: nowrap;
 }
 
+/* Clipped the way the text above it is: a device name arrives from another
+   device's file, and a long one would push its column past the card. */
 .settings-conflict-device {
   margin: 4px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .settings-conflict-actions {

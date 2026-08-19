@@ -391,9 +391,7 @@ function ConflictSide({
         <span className={`settings-conflict-badge settings-conflict-badge-${label.toLowerCase()}`}>
           {label}
         </span>
-        <span className="settings-conflict-when">
-          {new Date(side.editedAtMillis).toLocaleString()}
-        </span>
+        <span className="settings-conflict-when">{whenLabel(side)}</span>
       </div>
       <p className="settings-conflict-text">{side.text}</p>
       <p className="settings-conflict-device">{deviceLabel(side)}</p>
@@ -403,12 +401,25 @@ function ConflictSide({
 
 /**
  * What to call the device this version came from. A name when a file it wrote
- * has said what it is called, and otherwise the four characters the stamp
- * carries — which is a poorer label but the only true one available.
+ * has said what it is called, then the four characters the stamp carries — a
+ * poorer label but a true one — and only past both of those, nothing to go on.
+ * A stamp this build could not read leaves the id empty, and saying so beats an
+ * empty line the reader has to guess at.
  */
 function deviceLabel(side: SyncConflictSide): string {
-  const name = side.deviceName ?? side.deviceId;
+  const name = side.deviceName ?? (side.deviceId || "Unknown device");
   return side.isThisDevice ? `${name} (this device)` : name;
+}
+
+/**
+ * When this version was written. An unreadable stamp carries no time, and the
+ * epoch is not a time anybody edited anything — it would read as a real date
+ * and be wrong, which is worse than admitting the stamp was unreadable.
+ */
+function whenLabel(side: SyncConflictSide): string {
+  return side.editedAtMillis > 0
+    ? new Date(side.editedAtMillis).toLocaleString()
+    : "Time unknown";
 }
 
 /**

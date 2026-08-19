@@ -3014,3 +3014,40 @@ fn a_conflict_records_the_text_that_won_as_well_as_the_one_that_lost() {
         ("Mine".to_owned(), "Theirs, older".to_owned())
     );
 }
+
+/// Ids are four hex characters, so two devices can land on the same one. A file
+/// claiming this device's id must not be able to rename it: the name would then
+/// go out in every file this device writes from then on.
+#[test]
+fn a_file_cannot_rename_this_device() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    transaction
+        .execute(
+            "INSERT INTO sync_devices(device_id, name) VALUES (?1, 'MacBook Pro')",
+            [DEVICE],
+        )
+        .expect("our own name");
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(PageDocument {
+            writer: Some(notes_sync::document::Writer {
+                device_id: DEVICE.to_owned(),
+                device_name: "Somebody else's laptop".to_owned(),
+            }),
+            ..page(
+                vec![node(NODE_ID, &stamp(5, "a3f2"), "Ship it")],
+                &stamp(5, "a3f2"),
+            )
+        }),
+        &input(),
+    )
+    .expect("merge");
+
+    assert_eq!(
+        device_names(&transaction),
+        vec![(DEVICE.to_owned(), "MacBook Pro".to_owned())]
+    );
+}
