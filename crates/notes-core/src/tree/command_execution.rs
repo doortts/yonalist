@@ -577,6 +577,55 @@ impl NotesTree {
         Ok(())
     }
 
+    /// A row that arrives somewhere new -- created there, moved there, brought
+    /// back from the trash there -- is an open row the branch above it had not
+    /// counted. Whatever it lands under cannot go on saying it is finished, so
+    /// every finished row over it opens again. It sits here, after the command
+    /// rather than inside each one, because every command that puts a row
+    /// somewhere would otherwise need the same afterthought of its own.
+    pub(super) fn reopen_over_rows_this_command_placed(
+        &mut self,
+        before: &Self,
+    ) -> Result<(), DomainError> {
+        let placed = self
+            .nodes
+            .values()
+            .filter(|node| !node.is_deleted() && !node.is_completed())
+            .filter(|node| match before.nodes.get(node.id()) {
+                None => true,
+                Some(previous) => previous.is_deleted() || previous.parent_id() != node.parent_id(),
+            })
+            .map(|node| node.id().clone())
+            .collect::<Vec<_>>();
+        for id in placed {
+            self.reopen_ancestors(&id, before)?;
+        }
+        Ok(())
+    }
+
+    /// Opens the rows above `id` that were already there. A row this same
+    /// command brought along keeps whatever the command said it was: a pasted
+    /// subtree arrives as it was cut, and the paste is not news to it. The walk
+    /// still climbs through those rows to the ones that were there before, which
+    /// the arrival is news to. Rows already open are left alone, so a tree that
+    /// was already honest about the branch reports no change at all.
+    fn reopen_ancestors(&mut self, id: &NodeId, before: &Self) -> Result<(), DomainError> {
+        let mut current = id.clone();
+        // Seeded with the placed row so a parent cycle ends the walk instead of
+        // climbing forever.
+        let mut visited = BTreeSet::from([id.clone()]);
+        while let Some(parent_id) = self.live_parent_row(&current) {
+            if !visited.insert(parent_id.clone()) {
+                break;
+            }
+            if before.nodes.contains_key(&parent_id) {
+                self.node_mut(&parent_id)?.set_completed(false);
+            }
+            current = parent_id;
+        }
+        Ok(())
+    }
+
     /// Every row below `root_id`.
     fn descendant_ids(&self, root_id: &NodeId) -> Vec<NodeId> {
         let mut found = Vec::new();
