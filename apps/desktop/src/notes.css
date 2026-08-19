@@ -1806,11 +1806,6 @@ button.notes-date-token:hover {
   content: "";
 }
 
-.notes-node[data-dragging="true"] {
-  z-index: 2;
-  opacity: 0.72;
-}
-
 /* The tint used to replace the band outright -- both were `background` on
    `_main`, and this rule outranked it. The band is a layer on the row now, so
    the row hands it back explicitly; left stacked, the two composite into a
