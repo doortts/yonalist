@@ -85,8 +85,8 @@ describe("image node styles", () => {
   it("paints a lone selected image instead of banding its row", () => {
     expect(rule(
       notesStyles,
-      '.notes-node[data-solo-image-selection="true"] > .notes-node-main'
-    )).toContain("background: transparent;");
+      '.notes-node[data-solo-image-selection="true"]'
+    )).toContain("--notes-band-paint: transparent;");
     expect(rule(
       notesStyles,
       '.notes-node[data-range-selected="true"] ' +

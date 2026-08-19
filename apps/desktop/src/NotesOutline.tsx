@@ -1,6 +1,6 @@
 import {
   lazy, Suspense, useEffect, useMemo, useRef, useState,
-  useSyncExternalStore
+  useSyncExternalStore, type CSSProperties
 } from "react";
 import { NotesStore } from "./notesStore";
 import type { NotesShellSnapshot } from "./store/storeSubscriptions";
@@ -193,6 +193,16 @@ export function NotesOutline({
     state.revision,
     store
   ]);
+  // Where the band's left edge goes, for every row it holds. The roots are the
+  // shallowest rows of their own subtrees already -- a selected root absorbs
+  // its descendants -- so the shallowest root is the shallowest selected row.
+  const bandDepth = useMemo(
+    () => selectedRootIds.length === 0
+      ? null
+      : Math.min(...selectedRootIds.map(
+          (id) => index.depthOf(id, outlineRootId))),
+    [index, outlineRootId, selectedRootIds]
+  );
   const selectedCount = selection.selectedIds.length;
   // The status bar belongs to the shell, which cannot see into a pane. The
   // cleanup is what takes this pane's number back out when the pane goes --
@@ -438,6 +448,9 @@ export function NotesOutline({
       data-outline-root-id={outlineRootId}
       data-outline-pane-id={paneId}
       data-band={selection.selectedIds.length > 0 ? "true" : undefined}
+      style={bandDepth === null
+        ? undefined
+        : { "--notes-band-depth": bandDepth } as CSSProperties}
       onCopy={(event) => {
         // Bytes cannot ride the event's synchronous text payload, so the image
         // branch takes the clipboard over and writes it itself.

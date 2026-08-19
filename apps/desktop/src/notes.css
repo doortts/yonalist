@@ -1744,6 +1744,14 @@ button.notes-date-token:hover {
 .notes-node {
   --notes-depth: 0;
   --notes-indent: calc(var(--notes-depth) * var(--notes-outline-indent));
+  --notes-band-paint: transparent;
+  /* The pane writes `--notes-band-depth` for the whole band, so every row in
+     one band starts its paint at the shallowest selected row's indent instead
+     of its own. Falling back to the row's own depth means a pane that has not
+     written it yet paints a correct row rather than a broken one. */
+  --notes-band-indent: calc(
+    var(--notes-band-depth, var(--notes-depth)) * var(--notes-outline-indent)
+  );
   position: relative;
   min-width: 0;
   /* The guide below is this box's own background, so it reaches exactly as far
@@ -1758,14 +1766,24 @@ button.notes-date-token:hover {
      stripe for itself, so a parent's guide begins at its first child and ends
      where the rows step back out -- no element and no measuring to keep it in
      step with the bullets. */
-  background-image: repeating-linear-gradient(
-    to right,
-    var(--border) 0 1px,
-    transparent 1px var(--notes-outline-indent)
-  );
+  /* The band rides above the guides as the row's own first layer: a
+     pseudo-element would collide with the lit guide's, and a negative z-index
+     needs an isolation that would trap the row's menus under later rows. The
+     tint is translucent, so the hairlines stay legible through it. */
+  background-image:
+    linear-gradient(var(--notes-band-paint), var(--notes-band-paint)),
+    repeating-linear-gradient(
+      to right,
+      var(--border) 0 1px,
+      transparent 1px var(--notes-outline-indent)
+    );
   background-repeat: no-repeat;
-  background-position: var(--notes-bullet-center-offset) 0;
-  background-size: var(--notes-indent) 100%;
+  background-position:
+    var(--notes-band-indent) 0,
+    var(--notes-bullet-center-offset) 0;
+  background-size:
+    calc(100% - var(--notes-band-indent)) 100%,
+    var(--notes-indent) 100%;
 }
 
 /* The lit guide: the same two properties that place the painted stripe and the
@@ -1908,10 +1926,11 @@ button.notes-date-token:hover {
 }
 
 /* Multi-node selection range highlight (Phase 4.1) — a subtle band across the
-   row's title line, in the spirit of Workflowy's range highlight. */
-.notes-node[data-range-selected="true"] > .notes-node-main {
-  background: var(--accent-soft);
-  border-radius: 4px;
+   row's title line, in the spirit of Workflowy's range highlight. Square: the
+   corners are where consecutive rows meet, and a radius there would notch every
+   row boundary and read as one band per row. */
+.notes-node[data-range-selected="true"] {
+  --notes-band-paint: var(--accent-soft);
 }
 
 .notes-node-main {
@@ -3282,8 +3301,8 @@ body.is-outline-dragging * {
 
 /* One image alone in the selection is a selected character, so the band that
    would run the row's whole width behind it gives way to the paint above. */
-.notes-node[data-solo-image-selection="true"] > .notes-node-main {
-  background: transparent;
+.notes-node[data-solo-image-selection="true"] {
+  --notes-band-paint: transparent;
 }
 
 /* The dual-tone cap bar: a dark pill under a light hairline, so it reads

@@ -21,10 +21,32 @@ describe("outline indentation guides", () => {
   it("paints one stripe per level, off the same vars as the bullets", () => {
     const row = rule(notesStyles, ".notes-node");
     expect(row).toContain("background-repeat: no-repeat;");
+    // Second layer of two: the guide's own geometry is unchanged, the band
+    // above it just claims the first slot in each list.
+    expect(row).toContain("var(--notes-bullet-center-offset) 0;");
+    expect(row).toContain("var(--notes-indent) 100%;");
+  });
+
+  // The band is the row's first background layer rather than a box of its own:
+  // as a layer it needs no pseudo-element to fight the lit guide's, and it can
+  // start left of the row's own indent -- which is what lets every row in one
+  // band share the shallowest selected row's left edge.
+  it("paints the band as the row's first layer, from the band's own indent", () => {
+    const row = rule(notesStyles, ".notes-node");
     expect(row).toContain(
-      "background-position: var(--notes-bullet-center-offset) 0;"
+      "linear-gradient(var(--notes-band-paint), var(--notes-band-paint)),"
     );
-    expect(row).toContain("background-size: var(--notes-indent) 100%;");
+    expect(row).toContain(
+      "var(--notes-band-depth, var(--notes-depth)) * var(--notes-outline-indent)"
+    );
+    expect(row).toContain("var(--notes-band-indent) 0,");
+    expect(row).toContain("calc(100% - var(--notes-band-indent)) 100%,");
+    expect(row).toContain("--notes-band-paint: transparent;");
+  });
+
+  it("colours that layer only for a row the band holds", () => {
+    expect(rule(notesStyles, '.notes-node[data-range-selected="true"]'))
+      .toContain("--notes-band-paint: var(--accent-soft);");
   });
 
   // The click target is invisible without this. The lit line has to land on the
