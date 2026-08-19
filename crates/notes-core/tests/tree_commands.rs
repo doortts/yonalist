@@ -1359,30 +1359,42 @@ fn is_completed(tree: &NotesTree, node_id: &str) -> bool {
 }
 
 #[test]
-fn ticking_a_row_settles_every_descendant_whatever_its_marker() {
+fn ticking_a_row_leaves_its_children_as_they_are() {
     let mut tree = todo_branch();
 
     set_completed(&mut tree, "top", true);
 
+    // A completed row is that row's own statement about itself. What is left
+    // open under it is left open -- it may be work nobody can do any more.
     assert!(is_completed(&tree, "top"));
-    assert!(is_completed(&tree, "first"));
-    assert!(is_completed(&tree, "second"));
-    // A marker no longer ends the branch: the whole tree under the row goes.
-    assert!(is_completed(&tree, "divider"));
-    assert!(is_completed(&tree, "beyond"));
+    for row in ["first", "second", "divider", "beyond"] {
+        assert!(!is_completed(&tree, row), "{row} was touched");
+    }
 }
 
 #[test]
-fn an_ancestor_waits_for_the_whole_branch_below_it() {
+fn a_finished_child_stands_for_the_rows_under_it() {
+    let mut tree = todo_branch();
+    // `divider` says it is done; the open row under it is its own business.
+    set_completed(&mut tree, "divider", true);
+    set_completed(&mut tree, "first", true);
+
+    set_completed(&mut tree, "second", true);
+
+    assert!(is_completed(&tree, "top"));
+    assert!(!is_completed(&tree, "beyond"));
+}
+
+#[test]
+fn an_ancestor_waits_for_its_own_children() {
     let mut tree = todo_branch();
 
     set_completed(&mut tree, "first", true);
     set_completed(&mut tree, "second", true);
-    // The rows under the bullet count too, so the head is not settled yet.
+    // `divider` is still open, so its parent is not finished.
     assert!(!is_completed(&tree, "top"));
 
-    set_completed(&mut tree, "beyond", true);
-    assert!(is_completed(&tree, "divider"));
+    set_completed(&mut tree, "divider", true);
     assert!(is_completed(&tree, "top"));
 }
 
@@ -1683,15 +1695,14 @@ fn page_with_rows() -> NotesTree {
 }
 
 #[test]
-fn an_ancestor_todo_stays_open_while_a_todo_further_down_is_open() {
+fn an_ancestor_reads_its_children_and_stops_there() {
     let mut tree = NotesTree::default();
     tree.apply(&[
         TreeMutation::upsert(NoteNode::page(id("root"), "Home")),
         TreeMutation::upsert(NoteNode::child(id("diary"), id("root"), 1_024, "Diary")),
         TreeMutation::upsert(todo("top", "diary", 1_024, false)),
         TreeMutation::upsert(todo("done", "top", 1_024, true)),
-        // The ticked sibling's own box is done, so a direct-children-only test
-        // reads the branch as settled while this row is still open.
+        // `done` says it is done, so the row under it is `done`'s own business.
         TreeMutation::upsert(todo("nested", "done", 1_024, false)),
         TreeMutation::upsert(todo("last", "top", 2_048, false)),
     ])
@@ -1699,13 +1710,17 @@ fn an_ancestor_todo_stays_open_while_a_todo_further_down_is_open() {
 
     set_completed(&mut tree, "last", true);
 
-    assert!(!is_completed(&tree, "top"));
+    assert!(is_completed(&tree, "top"));
+    assert!(!is_completed(&tree, "nested"));
 }
 
 #[test]
-fn reopening_a_nested_todo_clears_every_ancestor_todo() {
+fn reopening_a_row_clears_every_ancestor() {
     let mut tree = todo_branch();
-    set_completed(&mut tree, "top", true);
+    for row in ["first", "second", "divider"] {
+        set_completed(&mut tree, row, true);
+    }
+    assert!(is_completed(&tree, "top"));
 
     set_completed(&mut tree, "first", false);
 
@@ -1742,14 +1757,17 @@ fn set_completed_many(tree: &mut NotesTree, node_ids: &[&str], completed: bool) 
 }
 
 #[test]
-fn completing_a_selection_settles_each_listed_row_s_own_chain() {
+fn completing_a_selection_finishes_the_rows_it_names_and_no_others() {
     let mut tree = todo_branch();
 
-    // `first` already sits under `top`, so the two chains overlap.
+    // `first` already sits under `top`, so the two overlap.
     set_completed_many(&mut tree, &["top", "first"], true);
 
-    for row in ["top", "first", "second", "divider", "beyond"] {
+    for row in ["top", "first"] {
         assert!(is_completed(&tree, row), "{row} was left open");
+    }
+    for row in ["second", "divider", "beyond"] {
+        assert!(!is_completed(&tree, row), "{row} was not in the selection");
     }
 }
 

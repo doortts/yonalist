@@ -4,7 +4,8 @@ mod command_execution;
 
 use crate::node::SORT_KEY_STEP;
 use crate::{
-    DomainError, DomainPatch, NodeId, NoteNode, NoteNodeKind, NotesCommand, Position, TreeMutation,
+    CompletionStage, DomainError, DomainPatch, NodeId, NoteNode, NoteNodeKind, NotesCommand,
+    Position, TreeMutation,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -96,6 +97,27 @@ impl NotesTree {
             .collect::<Vec<_>>();
         children.sort_by_key(|node| (node.sort_key(), node.id()));
         children.into_iter().map(|node| node.id().clone()).collect()
+    }
+
+    /// Which move the completion chord makes on this row, read off the tree so
+    /// every caller reads the same answer.
+    pub fn completion_stage(&self, id: &NodeId) -> Result<CompletionStage, DomainError> {
+        let node = self
+            .nodes
+            .get(id)
+            .ok_or_else(|| DomainError::NodeNotFound(id.clone()))?;
+        if !node.is_completed() {
+            return Ok(CompletionStage::Row);
+        }
+        let any_open = self
+            .children_of(id)
+            .iter()
+            .any(|child_id| self.nodes.get(child_id).is_some_and(|c| !c.is_completed()));
+        Ok(if any_open {
+            CompletionStage::Children
+        } else {
+            CompletionStage::Back
+        })
     }
 
     pub fn plan(&self, command: NotesCommand) -> Result<DomainPatch, DomainError> {
