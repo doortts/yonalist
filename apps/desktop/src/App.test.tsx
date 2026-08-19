@@ -628,6 +628,20 @@ describe("Yonalist v2 desktop shell", () => {
     expect(within(statusBar).queryByText("2 selected")).toBeNull();
   });
 
+  it("keeps the breadcrumb readable while the selection actions float over it", async () => {
+    render(<App api={api()} />);
+    const first = await screen.findByDisplayValue("First thought");
+
+    fireEvent.pointerDown(first, { button: 0, pointerId: 43, ctrlKey: true });
+
+    // The band's actions used to take the toolbar's place, which took the page
+    // path with it -- the one thing a reader needs to know where the band is.
+    expect(await screen.findByRole("toolbar", {
+      name: "Actions for 1 selected notes"
+    })).toBeVisible();
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toBeVisible();
+  });
+
   it("hides a collapsed subtree and restores it through the current arrow slot", async () => {
     const parent = { ...snapshot.viewport!.nodes[0], collapsed: true };
     const child = {

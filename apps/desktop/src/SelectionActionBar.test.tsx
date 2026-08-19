@@ -43,6 +43,10 @@ describe("SelectionActionBar", () => {
     // The count reads from the status bar now; the bar keeps it only in the
     // label that names what the buttons act on.
     expect(screen.queryByText("3 selected")).toBeNull();
+    // Dismissing the band is the last thing you reach for, so it sits at the
+    // pill's far end rather than in front of the actions.
+    expect(screen.getAllByRole("button").at(-1))
+      .toHaveAccessibleName("Clear selection");
     for (const name of ["Complete", "Delete"]) {
       fireEvent.click(screen.getByRole("button", { name }));
     }

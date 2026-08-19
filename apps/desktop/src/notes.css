@@ -824,18 +824,29 @@
   outline-offset: -1px;
 }
 
-.notes-selection-action-bar {
+/* The pill floats: it may not push the rows down when a band starts, and the
+   outline section scrolls with its content, so an absolutely positioned pill
+   would scroll away from under the toolbar. A zero-height sticky box gives it
+   both -- a containing block that stays put and no layout height of its own. */
+.notes-selection-float {
   position: sticky;
-  top: 0;
+  top: calc(48px + 6px);
   z-index: 3;
+  height: 0;
+}
+
+.notes-selection-action-bar {
+  position: absolute;
+  top: 0;
+  inset-inline-end: 16px;
   display: flex;
   align-items: center;
-  gap: 4px;
-  min-width: 0;
-  min-height: 48px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-detail);
+  gap: 2px;
+  padding: 4px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-modal);
   color: var(--text-2);
 }
 
@@ -3067,8 +3078,7 @@ body.is-outline-dragging * {
   }
 
   .notes-selection-action-bar {
-    gap: 3px;
-    padding-inline: 8px;
+    inset-inline-end: 8px;
   }
 
   .notes-selection-wide-actions {

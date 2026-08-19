@@ -21,11 +21,15 @@ function useCompactActions(
   );
 
   useEffect(() => {
-    if (typeof ResizeObserver === "function" && target.current) {
+    // What decides the fold is how wide the pane is, and the pill is only as
+    // wide as the buttons it currently shows -- measuring itself would fold it
+    // once and never unfold it. Its wrapper spans the pane.
+    const measured = target.current?.parentElement ?? target.current;
+    if (typeof ResizeObserver === "function" && measured) {
       const observer = new ResizeObserver(([entry]) => {
         setCompact(entry.contentRect.width <= 720);
       });
-      observer.observe(target.current);
+      observer.observe(measured);
       return () => observer.disconnect();
     }
     if (typeof window.matchMedia !== "function") return;
@@ -179,11 +183,6 @@ export function SelectionActionBar({
       aria-busy={busy}
     >
       {action(
-        "Clear selection",
-        <X size={16} aria-hidden="true" />,
-        onClear
-      )}
-      {action(
         allCompleted ? "Uncomplete" : "Complete",
         <Check size={16} aria-hidden="true" />,
         onComplete,
@@ -263,6 +262,11 @@ export function SelectionActionBar({
         "notes-selection-action-danger"
       )}
       {trailingAction}
+      {action(
+        "Clear selection",
+        <X size={16} aria-hidden="true" />,
+        onClear
+      )}
     </div>
   );
 }

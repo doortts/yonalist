@@ -114,7 +114,7 @@ export function OutlineHeader({
   const atRoot = pageId === ROOT_ID;
   return (
     <>
-      {selectionToolbar ?? <div
+      <div
         className="notes-outline-toolbar"
         data-tauri-drag-region="deep"
       >
@@ -168,7 +168,13 @@ export function OutlineHeader({
             <X size={16} aria-hidden="true" />
           </button>
         )}
-      </div>}
+      </div>
+      {/* A zero-height sticky box: the pill has to stay under the toolbar as
+          the rows scroll past, and it must not push them down when it appears.
+          The box is also what the pill measures the pane's width by. */}
+      {selectionToolbar && (
+        <div className="notes-selection-float">{selectionToolbar}</div>
+      )}
       {error && <div className="notes-inline-error" role="alert">{error}</div>}
     </>
   );
