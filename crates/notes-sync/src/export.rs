@@ -14,7 +14,7 @@
 
 use crate::document::{
     DocumentId, DocumentNode, DocumentRoot, ImageReference, Marker, NodeBody, PageDocument,
-    VaultFile,
+    VaultFile, Writer,
 };
 use crate::file_io::write_atomic;
 use crate::layout::page_folder_name;
@@ -286,7 +286,7 @@ pub fn export_home(
         },
         nodes,
         unknown_frontmatter: Vec::new(),
-        writer: None,
+        writer: this_device(transaction)?,
     };
     let outcome = write_checked(
         transaction,
@@ -1044,7 +1044,7 @@ fn load_document(
         },
         nodes,
         unknown_frontmatter: Vec::new(),
-        writer: None,
+        writer: this_device(transaction)?,
     })
 }
 
@@ -1066,6 +1066,30 @@ struct Loaded {
     prev_hlc: String,
     sort_key: Option<i64>,
     image: Option<ImageReference>,
+}
+
+/// How this device names itself in the files it writes, so another device can put
+/// a name to the four hex characters these stamps carry. No row means nothing to
+/// state — the reader falls back to the id, which the stamps already carry.
+fn this_device(transaction: &Transaction<'_>) -> Result<Option<Writer>, ExportError> {
+    transaction
+        .prepare_cached(
+            "SELECT sync_meta.device_id, sync_devices.name
+             FROM sync_meta
+             JOIN sync_devices ON sync_devices.device_id = sync_meta.device_id
+             WHERE sync_meta.singleton = 1",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_row([], |row| {
+                    Ok(Writer {
+                        device_id: row.get(0)?,
+                        device_name: row.get(1)?,
+                    })
+                })
+                .optional()
+        })
+        .map_err(|error| error.to_string())
 }
 
 fn marker_of(marker: &str, ordered_start: i64) -> Marker {

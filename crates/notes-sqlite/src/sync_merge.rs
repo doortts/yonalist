@@ -77,6 +77,25 @@ fn bump_revision(transaction: &rusqlite::Transaction<'_>) -> Result<(), StorageE
 const MAX_CONFLICTS: usize = 1_000;
 const MAX_CONFLICT_AGE_SECONDS: i64 = 180 * 24 * 60 * 60;
 
+/// This device's own row in the table every other device's name lands in. The
+/// name comes from outside — what a machine is called is the platform's answer,
+/// not this crate's — and it is written again at every startup so a rename in
+/// System Settings lands without anybody resetting anything.
+pub(crate) fn set_device_name(
+    connection: &Connection,
+    device_id: &str,
+    name: &str,
+) -> Result<(), StorageError> {
+    connection
+        .execute(
+            "INSERT INTO sync_devices(device_id, name) VALUES (?1, ?2)
+             ON CONFLICT(device_id) DO UPDATE SET name = excluded.name",
+            [device_id, name],
+        )
+        .map_err(internal)?;
+    Ok(())
+}
+
 pub(crate) fn conflicts(
     connection: &Connection,
     limit: u32,
