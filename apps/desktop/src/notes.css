@@ -1174,17 +1174,31 @@
   border-radius: var(--radius);
 }
 
+/* Rows paint their own selection, and the space around them -- the gaps, the
+   padding, the run below the last row -- is nobody's text. A drag that starts
+   there is a drag the row gesture never claims, so nothing suppresses the
+   engine's own selection and nothing clears the range it leaves behind: it
+   paints a band across the rows and on into the sidebar, and it outlives the
+   drag. The anchor cannot be set on what cannot be selected. */
 .notes-outline-rows {
   flex: 1;
   min-height: 0;
   overflow-x: auto;
   padding: 24px 28px 44px;
+  user-select: none;
 }
 
-/* Set while a pointer drag is selecting whole rows. Rows paint their own
-   selection, so the browser's text selection would only add a stray band
-   across the gaps and the empty note span between them. */
-[data-row-selecting="true"] {
+/* The editors and the fields inside the row menus are the text here, and
+   WebKit carries an ancestor's `none` into the controls under it, so they take
+   their own selection back by name. */
+.notes-outline-rows :is(textarea, input) {
+  user-select: text;
+}
+
+/* Set while a pointer drag is selecting whole rows. The pane above already
+   holds everything else off, so what a band drag has left to close is the
+   editor it started in. */
+[data-row-selecting="true"] :is(textarea, input) {
   user-select: none;
 }
 
