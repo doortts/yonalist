@@ -63,6 +63,17 @@ function shellApi(activePageId: string | null = "page-1"): NotesApi {
   return notesApi;
 }
 
+/**
+ * The settings screen arrives as its own chunk, and whichever test opens it first
+ * pays for compiling it. Under load that bill runs past the patience of the
+ * `findBy` waiting for the screen, and the first settings test in the file fails
+ * before it has pressed a key. Warming the chunk once here spreads that cost
+ * outside every test's own clock.
+ */
+beforeAll(async () => {
+  await import("./SettingsView");
+});
+
 /** Opens the settings screen and waits for its lazy chunk. */
 async function openSettings(): Promise<void> {
   fireEvent.click(screen.getByRole("button", { name: "Settings" }));
