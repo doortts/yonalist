@@ -439,22 +439,33 @@ fn apply(
             }
             Verdict::LocalWins => {
                 let row = row.expect("a local win means a row exists");
-                let reason = if file_hlc == row.hlc { "same_t" } else { "lww" };
-                log_conflict(
-                    transaction,
-                    &entry.id,
-                    &side_of_file(entry, trash, reason),
-                    // The row stood, so it is the winner. Its place is read the
-                    // same way the losing side's is above.
-                    &side_of_row(
-                        row,
-                        &order.predecessor(row.parent_id.as_deref().unwrap_or_default(), &row.id),
-                        reason,
-                    ),
-                    &file_hlc,
-                    &row.hlc,
-                )?;
-                outcome.conflicts_recorded += 1;
+                // A file behind on its stamp but saying exactly what the row
+                // says has lost nothing anybody could want back, and a copy a
+                // sync client left behind is re-read every sweep — each read
+                // logging two sides with identical text. The rewrite below is
+                // still owed: the stamp is what the file is behind on.
+                let lost_something = row_content
+                    .as_deref()
+                    .is_none_or(|row_content| digest(&file_content) != digest(row_content));
+                if lost_something {
+                    let reason = if file_hlc == row.hlc { "same_t" } else { "lww" };
+                    log_conflict(
+                        transaction,
+                        &entry.id,
+                        &side_of_file(entry, trash, reason),
+                        // The row stood, so it is the winner. Its place is read
+                        // the same way the losing side's is above.
+                        &side_of_row(
+                            row,
+                            &order
+                                .predecessor(row.parent_id.as_deref().unwrap_or_default(), &row.id),
+                            reason,
+                        ),
+                        &file_hlc,
+                        &row.hlc,
+                    )?;
+                    outcome.conflicts_recorded += 1;
+                }
                 outcome.needs_write_back = true;
             }
         }

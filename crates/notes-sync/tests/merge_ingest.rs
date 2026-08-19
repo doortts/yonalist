@@ -262,6 +262,81 @@ fn a_newer_file_wins_and_an_older_one_loses() {
     );
 }
 
+/// A copy a sync client leaves behind is re-read every sweep, and each read
+/// used to log this device's own file against a newer snapshot of itself — two
+/// sides with identical text, once a minute. A file that is only behind on its
+/// stamp has lost nothing worth showing anybody; it owes a rewrite, and that is
+/// the whole of it.
+#[test]
+fn an_older_file_saying_the_same_thing_is_not_a_conflict() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(9, "a3f2"), "Same")],
+            &stamp(9, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("seed");
+
+    let outcome = merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(7, "a3f2"), "Same")],
+            &stamp(7, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("older");
+
+    assert_eq!(
+        outcome.conflicts_recorded, 0,
+        "nothing was lost, so there is nothing to show the user"
+    );
+    assert_eq!(conflicts(&transaction), 0);
+    assert!(
+        outcome.needs_write_back,
+        "the file is still behind on its stamp, and the rewrite is what fixes that"
+    );
+}
+
+#[test]
+fn an_older_file_saying_something_else_still_records_the_loss() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(9, "a3f2"), "First")],
+            &stamp(9, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("seed");
+
+    let outcome = merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(7, "a3f2"), "Stale")],
+            &stamp(7, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("older");
+
+    assert_eq!(
+        outcome.conflicts_recorded, 1,
+        "the text the file held exists nowhere else once it is rewritten"
+    );
+    assert_eq!(conflicts_for(&transaction, NODE_ID), 1);
+}
+
 #[test]
 fn a_loser_is_recorded_once_in_the_conflict_log() {
     let mut connection = database();
