@@ -94,7 +94,10 @@ reason.
       : state.pendingWrites > 0 && <span className="statusbar-message">Saving...</span>}
   ```
 - `styles.css`: next to `[data-kind="error"]` (~line 1017):
-  `.statusbar-message[data-kind="selection"] { color: var(--accent); }`.
+  `.statusbar-message[data-kind="selection"] { color: var(--accent); }`, plus
+  `font-weight: 600` — the count span this replaces carried weight 650, and the
+  status bar's default `--text-2` weight would read as one more ambient message
+  rather than the band's own readout.
 - `SelectionActionBar.tsx`: delete the `.notes-selection-count` span
   (lines 186-188). Keep the `count` prop — the toolbar `aria-label`
   (`Actions for ${count} selected notes`) still uses it. `notes.css`: delete
@@ -105,6 +108,10 @@ reason.
   from the bar is now the contract.
 
 **Recorded decisions.**
+- The status bar is located in tests by `getByLabelText("Status bar")`, not the
+  doc's `getByRole("contentinfo")`: the footer sits inside `<main>`, which
+  strips `footer`'s implicit `contentinfo` role per HTML-AAM. The accessible
+  name is still what the query keys on.
 - Precedence error > count > `Saving...`: the error is the only message that
   demands action and would otherwise be lost; the count is the live gesture's
   only feedback once it leaves the action bar; `Saving...` is ambient, resolves

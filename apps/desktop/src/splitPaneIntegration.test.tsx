@@ -101,7 +101,7 @@ describe("split pane integration", () => {
     });
     render(<App api={notesApi} />);
     const first = await screen.findByDisplayValue("First thought");
-    const statusBar = document.querySelector<HTMLElement>(".app-statusbar")!;
+    const statusBar = screen.getByLabelText("Status bar");
 
     fireEvent.click(screen.getAllByRole("button", {
       name: "Zoom to item"

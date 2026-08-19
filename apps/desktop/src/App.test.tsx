@@ -612,7 +612,7 @@ describe("Yonalist v2 desktop shell", () => {
     render(<App api={notesApi} />);
     const first = await screen.findByDisplayValue("First thought");
     const second = screen.getByDisplayValue("Second thought");
-    const statusBar = document.querySelector<HTMLElement>(".app-statusbar")!;
+    const statusBar = screen.getByLabelText("Status bar");
 
     fireEvent.pointerDown(first, { button: 0, pointerId: 41, ctrlKey: true });
     fireEvent.pointerDown(second, { button: 0, pointerId: 42, ctrlKey: true });
@@ -626,6 +626,26 @@ describe("Yonalist v2 desktop shell", () => {
 
     expect(await within(statusBar).findByText("Save refused")).toBeVisible();
     expect(within(statusBar).queryByText("2 selected")).toBeNull();
+  });
+
+  it("holds the count in the slot while the band's own write is still open", async () => {
+    const notesApi = api();
+    notesApi.execute = vi.fn().mockImplementation(
+      () => new Promise(() => undefined)
+    );
+    render(<App api={notesApi} />);
+    const first = await screen.findByDisplayValue("First thought");
+    const statusBar = screen.getByLabelText("Status bar");
+
+    fireEvent.pointerDown(first, { button: 0, pointerId: 44, ctrlKey: true });
+    await within(statusBar).findByText("1 selected");
+    fireEvent.click(await screen.findByRole("button", { name: "Complete" }));
+
+    // Saving... resolves by itself, and the write it reports is the band's own
+    // Complete -- the count is the more useful of the two.
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalled());
+    expect(within(statusBar).getByText("1 selected")).toBeVisible();
+    expect(within(statusBar).queryByText("Saving...")).toBeNull();
   });
 
   it("keeps the breadcrumb readable while the selection actions float over it", async () => {
