@@ -606,10 +606,8 @@ describe("Yonalist v2 desktop shell", () => {
     })).toBeEnabled();
   });
 
-  it("counts the selection in the status bar and yields the slot to an error", async () => {
-    const notesApi = api();
-    notesApi.execute = vi.fn().mockRejectedValue(new Error("Save refused"));
-    render(<App api={notesApi} />);
+  it("counts the selection beside Online, not in the message slot", async () => {
+    render(<App api={api()} />);
     const first = await screen.findByDisplayValue("First thought");
     const second = screen.getByDisplayValue("Second thought");
     const statusBar = screen.getByLabelText("Status bar");
@@ -617,18 +615,15 @@ describe("Yonalist v2 desktop shell", () => {
     fireEvent.pointerDown(first, { button: 0, pointerId: 41, ctrlKey: true });
     fireEvent.pointerDown(second, { button: 0, pointerId: 42, ctrlKey: true });
 
-    expect(await within(statusBar).findByText("2 selected"))
-      .toHaveAttribute("data-kind", "selection");
-
-    // The error is the only message that asks the reader for something, so it
-    // takes the slot from the count the band already shows on screen.
-    fireEvent.click(await screen.findByRole("button", { name: "Complete" }));
-
-    expect(await within(statusBar).findByText("Save refused")).toBeVisible();
-    expect(within(statusBar).queryByText("2 selected")).toBeNull();
+    // The count is state the band holds, so it reads where the bar already
+    // keeps state -- at the right, in front of Online.
+    await within(statusBar).findByText("2 selected");
+    expect([...statusBar.querySelector(".statusbar-actions")!.children]
+      .map((child) => child.textContent)).toEqual(["2 selected", "Online"]);
+    expect(statusBar.querySelector(".statusbar-feedback")).toBeEmptyDOMElement();
   });
 
-  it("holds the count in the slot while the band's own write is still open", async () => {
+  it("keeps the count beside an open write the band itself started", async () => {
     const notesApi = api();
     notesApi.execute = vi.fn().mockImplementation(
       () => new Promise(() => undefined)
@@ -641,11 +636,26 @@ describe("Yonalist v2 desktop shell", () => {
     await within(statusBar).findByText("1 selected");
     fireEvent.click(await screen.findByRole("button", { name: "Complete" }));
 
-    // Saving... resolves by itself, and the write it reports is the band's own
-    // Complete -- the count is the more useful of the two.
-    await waitFor(() => expect(notesApi.execute).toHaveBeenCalled());
+    // Sharing one slot forced a precedence that dropped one of these two.
+    expect(await within(statusBar).findByText("Saving...")).toBeVisible();
     expect(within(statusBar).getByText("1 selected")).toBeVisible();
-    expect(within(statusBar).queryByText("Saving...")).toBeNull();
+  });
+
+  it("keeps the count beside an error the band's own action raised", async () => {
+    const notesApi = api();
+    notesApi.execute = vi.fn().mockRejectedValue(new Error("Save refused"));
+    render(<App api={notesApi} />);
+    const first = await screen.findByDisplayValue("First thought");
+    const statusBar = screen.getByLabelText("Status bar");
+
+    fireEvent.pointerDown(first, { button: 0, pointerId: 45, ctrlKey: true });
+    await within(statusBar).findByText("1 selected");
+    fireEvent.click(await screen.findByRole("button", { name: "Complete" }));
+
+    // The band survives a failed action, so reporting the failure must not cost
+    // the reader the count of what is still selected.
+    expect(await within(statusBar).findByText("Save refused")).toBeVisible();
+    expect(within(statusBar).getByText("1 selected")).toBeVisible();
   });
 
   it("keeps the breadcrumb readable while the selection actions float over it", async () => {

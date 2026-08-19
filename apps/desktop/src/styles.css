@@ -1018,16 +1018,21 @@ body.is-resizing-pane {
   color: var(--danger);
 }
 
-.statusbar-message[data-kind="selection"] {
-  color: var(--accent);
-  font-weight: 600;
-}
-
 .statusbar-actions {
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
   gap: 10px;
+}
+
+/* Not a `.statusbar-message` variant: that class carries the left slot's
+   ellipsis, which a count reading right-to-left margin does not want. */
+.statusbar-selection {
+  flex-shrink: 0;
+  color: var(--accent);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .statusbar-state {

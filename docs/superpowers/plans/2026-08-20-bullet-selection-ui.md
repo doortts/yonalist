@@ -14,8 +14,8 @@
 
 | # | Observable pass/fail | Item |
 | --- | --- | --- |
-| A1 | With N rows selected, the status bar's left feedback slot shows `N selected` in the accent color; `Online` stays on the right. | 1 |
-| A2 | Feedback slot precedence is error > selection count > `Saving...`: with an error and a live selection only the error shows; with a live selection and pending writes only the count shows. | 1 |
+| A1 | With N rows selected, the status bar shows `N selected` in the accent color at its right end, immediately before `Online`. | 1 |
+| A2 | The count claims no part of the left message slot: that slot keeps its own error > `Saving...` order, and a live band shows its count beside `Online` at the same time as either message. | 1 |
 | A3 | The selection action bar no longer renders a visible count (its toolbar `aria-label` keeps the number). | 1 |
 | A4 | In split view the status bar shows the sum of both panes' selected rows; closing the secondary pane (or leaving Notes for Settings) drops its contribution. | 1 |
 | A5 | While a selection is active the breadcrumb toolbar still renders, and the selection actions render in a pill floating over the outline body's top-right that adds no layout height (rows do not shift when it appears). | 2 |
@@ -84,20 +84,21 @@ reason.
     []);
   const selectedCount = paneSelections.primary + paneSelections.secondary;
   ```
-  Status bar slot (replacing lines 880-881's two-way branch with a three-way
-  precedence):
+  The count renders in the status bar's own actions group, before `Online`,
+  leaving the left message slot's existing two-way branch untouched:
   ```tsx
-  {state.error
-    ? <span className="statusbar-message" data-kind="error">{state.error}</span>
-    : selectedCount > 0
-      ? <span className="statusbar-message" data-kind="selection">{selectedCount} selected</span>
-      : state.pendingWrites > 0 && <span className="statusbar-message">Saving...</span>}
+  <div className="statusbar-actions">
+    {selectedCount > 0 &&
+      <span className="statusbar-selection">{selectedCount} selected</span>}
+    <span className="statusbar-state">Online</span>
+  </div>
   ```
-- `styles.css`: next to `[data-kind="error"]` (~line 1017):
-  `.statusbar-message[data-kind="selection"] { color: var(--accent); }`, plus
-  `font-weight: 600` — the count span this replaces carried weight 650, and the
-  status bar's default `--text-2` weight would read as one more ambient message
-  rather than the band's own readout.
+- `styles.css`: a `.statusbar-selection` beside `.statusbar-state`, accent
+  coloured at weight 600 with `tabular-nums` — the count span this replaces
+  carried weight 650, and the bar's ambient `--text-3` state weight would not
+  read as the band's own readout. Not a `.statusbar-message` variant: that class
+  is the left slot's ellipsis behaviour, which a right-aligned count does not
+  want.
 - `SelectionActionBar.tsx`: delete the `.notes-selection-count` span
   (lines 186-188). Keep the `count` prop — the toolbar `aria-label`
   (`Actions for ${count} selected notes`) still uses it. `notes.css`: delete
@@ -112,11 +113,13 @@ reason.
   doc's `getByRole("contentinfo")`: the footer sits inside `<main>`, which
   strips `footer`'s implicit `contentinfo` role per HTML-AAM. The accessible
   name is still what the query keys on.
-- Precedence error > count > `Saving...`: the error is the only message that
-  demands action and would otherwise be lost; the count is the live gesture's
-  only feedback once it leaves the action bar; `Saving...` is ambient, resolves
-  on its own, and while a selection is live most pending writes are the
-  selection's own operations — the count still describes what is happening.
+- The count sits at the right rather than in the left message slot. Sharing the
+  slot forced a precedence, and every ordering lost something real: behind the
+  error the band went unreported exactly when a failed band operation is what
+  the reader is looking at, and ahead of `Saving...` it hid the write the band
+  itself had just started. At the right the two never compete, and the count
+  reads as state — which is what `Online` beside it already is — rather than as
+  one more transient message.
 - Split view shows the **sum** of both panes. Both panes can hold live
   selections at once (each has its own `useOutlineSelection`, and neither
   clears on pane blur), so any single-pane display would lie about one of
