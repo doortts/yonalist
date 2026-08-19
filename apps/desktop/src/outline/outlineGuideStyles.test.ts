@@ -49,6 +49,16 @@ describe("outline indentation guides", () => {
       .toContain("--notes-band-paint: var(--accent-soft);");
   });
 
+  // A carried row already paints the drag tint. The band used to be on the same
+  // element, so the tint replaced it; on its own layer nothing suppresses it and
+  // the two composite into a third colour across a wider area than either.
+  it("gives the band up while the row is being carried", () => {
+    expect(rule(
+      notesStyles,
+      '.notes-outline-item[data-drag-source="true"] > .notes-node'
+    )).toContain("--notes-band-paint: transparent;");
+  });
+
   // The click target is invisible without this. The lit line has to land on the
   // stripe the pointer found, so it is placed off the same two properties the
   // painted stripe uses, stepped by the index the pane writes onto the row.

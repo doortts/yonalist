@@ -1811,6 +1811,14 @@ button.notes-date-token:hover {
   opacity: 0.72;
 }
 
+/* The tint used to replace the band outright -- both were `background` on
+   `_main`, and this rule outranked it. The band is a layer on the row now, so
+   the row hands it back explicitly; left stacked, the two composite into a
+   third colour and spread across the indent the tint never covered. */
+.notes-outline-item[data-drag-source="true"] > .notes-node {
+  --notes-band-paint: transparent;
+}
+
 .notes-outline-item[data-drag-source="true"]
   > .notes-node
   > .notes-node-main {
@@ -1926,7 +1934,7 @@ button.notes-date-token:hover {
 }
 
 /* Multi-node selection range highlight (Phase 4.1) — a subtle band across the
-   row's title line, in the spirit of Workflowy's range highlight. Square: the
+   whole row, note line included, in the spirit of Workflowy's. Square: the
    corners are where consecutive rows meet, and a radius there would notch every
    row boundary and read as one band per row. */
 .notes-node[data-range-selected="true"] {
