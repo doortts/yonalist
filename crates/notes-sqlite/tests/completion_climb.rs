@@ -1,11 +1,13 @@
 use notes_application::{
     CommandEnvelope, IpcNotesCommand, MutationReceipt, NotesService, StoragePort,
 };
-use notes_core::{DomainPatch, NodeId, NoteMarkerKind, NoteNode, NoteNodeKind, TreeMutation};
+use notes_core::{
+    DomainPatch, NodeId, NoteMarkerKind, NoteNode, NoteNodeKind, NotesCommand, TreeMutation,
+};
 use notes_sqlite::SqliteStorage;
 
-/// Longer than the desktop's viewport window (80 rows), so the rows the cascade
-/// has to reach are ones no client could have loaded.
+/// Longer than the desktop's viewport window (80 rows), so the rows the climb has
+/// to reach are ones no client could have loaded.
 const CHAIN_DEPTH: usize = 120;
 
 fn id(value: &str) -> NodeId {
@@ -131,6 +133,57 @@ fn is_completed(storage: &SqliteStorage, node_id: &NodeId) -> bool {
         .unwrap()
         .unwrap()
         .is_completed()
+}
+
+/// What a press reads is its own page's business. Every page is a child of the
+/// one root, so a climb that walks past the page row reads the whole vault.
+#[test]
+fn a_press_reads_its_own_page_and_not_the_ones_beside_it() {
+    let storage = stored_chain();
+    let revision = storage.revision().unwrap();
+    let mut forward = Vec::new();
+    for index in 0..40 {
+        forward.push(TreeMutation::upsert(NoteNode::child(
+            id(&format!("other-page-{index}")),
+            id("root"),
+            2_048 + i64::try_from(index).unwrap() * 1_024,
+            "Another page",
+        )));
+    }
+    let inverse = forward
+        .iter()
+        .filter_map(|mutation| match mutation {
+            TreeMutation::Upsert(node) => Some(TreeMutation::Delete {
+                id: node.id().clone(),
+            }),
+            TreeMutation::Delete { .. } => None,
+        })
+        .collect();
+    storage
+        .commit(
+            revision,
+            &DomainPatch {
+                forward,
+                inverse,
+                carried_pictures: Vec::new(),
+            },
+        )
+        .unwrap();
+
+    let loaded = storage
+        .load_command_tree(&NotesCommand::CycleCompleted {
+            id: id("beyond"),
+            restore: Vec::new(),
+        })
+        .unwrap();
+
+    for index in 0..40 {
+        let other = id(&format!("other-page-{index}"));
+        assert!(
+            loaded.node(&other).is_none(),
+            "another page rode along with the press"
+        );
+    }
 }
 
 #[test]
