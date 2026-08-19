@@ -17,7 +17,9 @@
 //! Rebuilding derived columns and advancing the revision belong to whoever owns
 //! the database; this owns the sync semantics.
 
-use crate::document::{DocumentNode, Marker, NodeBody, PageDocument, TrashDocument, VaultFile};
+use crate::document::{
+    DocumentNode, Marker, NodeBody, PageDocument, TrashDocument, VaultFile, Writer,
+};
 use crate::hlc::{Clock, Hlc};
 use rusqlite::{OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
@@ -146,6 +148,7 @@ fn merge_page(
 ) -> Result<MergeOutcome, MergeError> {
     let mut outcome = MergeOutcome::default();
     let root_id = page.id.as_str().to_owned();
+    learn_device_name(transaction, page.writer.as_ref())?;
 
     // The document root is a node like any other; its state lives in the
     // frontmatter because a heading has nowhere to carry a comment.
@@ -397,7 +400,7 @@ fn apply(
                     // row, only the file's own stamp was discarded.
                     let (loser, loser_hlc) = match row {
                         Some(row) => (
-                            loser_of_row(
+                            side_of_row(
                                 row,
                                 &order.predecessor(
                                     row.parent_id.as_deref().unwrap_or_default(),
@@ -408,11 +411,20 @@ fn apply(
                             row.hlc.clone(),
                         ),
                         None => (
-                            loser_of_file(entry, trash, reason.as_str()),
+                            side_of_file(entry, trash, reason.as_str()),
                             file_hlc.clone(),
                         ),
                     };
-                    log_conflict(transaction, &entry.id, &loser, &loser_hlc, &stamp)?;
+                    // The file is what this verdict is about to write, so it is
+                    // what won — whatever the row goes on to say later.
+                    log_conflict(
+                        transaction,
+                        &entry.id,
+                        &loser,
+                        &side_of_file(entry, trash, reason.as_str()),
+                        &loser_hlc,
+                        &stamp,
+                    )?;
                     outcome.conflicts_recorded += 1;
                 }
                 write_row(transaction, entry, &stamp, trash, row, place.as_ref())?;
@@ -431,7 +443,14 @@ fn apply(
                 log_conflict(
                     transaction,
                     &entry.id,
-                    &loser_of_file(entry, trash, reason),
+                    &side_of_file(entry, trash, reason),
+                    // The row stood, so it is the winner. Its place is read the
+                    // same way the losing side's is above.
+                    &side_of_row(
+                        row,
+                        &order.predecessor(row.parent_id.as_deref().unwrap_or_default(), &row.id),
+                        reason,
+                    ),
                     &file_hlc,
                     &row.hlc,
                 )?;
@@ -1750,11 +1769,15 @@ pub fn image_state(
     )
 }
 
-/// A defeated state, complete enough that the conflict screen can show it and
-/// re-apply it with nothing else on hand. Re-applying is a new edit, so it
-/// carries everything a new edit would — including where the node sat, which is
-/// a parent *and* the sibling it followed.
-fn loser_of_row(row: &Row, predecessor: &str, reason: &str) -> String {
+/// One side of a conflict, complete enough that the conflict screen can show it
+/// and — for the side that lost — re-apply it with nothing else on hand.
+/// Re-applying is a new edit, so it carries everything a new edit would,
+/// including where the node sat: a parent *and* the sibling it followed.
+///
+/// Both sides carry the same `reason`, which belongs to the conflict rather than
+/// to either version. One shape for both is what lets the reader parse them the
+/// same way.
+fn side_of_row(row: &Row, predecessor: &str, reason: &str) -> String {
     json_object(&[
         ("v", Value::Number(1)),
         ("id", Value::Text(row.id.clone())),
@@ -1790,7 +1813,7 @@ fn loser_of_row(row: &Row, predecessor: &str, reason: &str) -> String {
     ])
 }
 
-fn loser_of_file(entry: &Incoming<'_>, trash: bool, reason: &str) -> String {
+fn side_of_file(entry: &Incoming<'_>, trash: bool, reason: &str) -> String {
     let (kind, text) = match &entry.node.body {
         NodeBody::Text(text) => ("bullet", text.clone()),
         NodeBody::Image(image) => ("image", image.original_name.clone()),
@@ -1904,24 +1927,55 @@ fn json_string(value: &str) -> String {
     out
 }
 
+/// What the file says its writer is called, kept so the settings screen can name
+/// the device behind a stamp. A file naming nobody says nothing — erasing a name
+/// on the word of an older build's file would lose the only copy there is.
+///
+/// What a file cannot say is what *this* device is called. Ids are four hex
+/// characters, so two devices can land on the same one; taking a stranger's word
+/// for our own name would put it in the files this device writes from then on.
+/// This device's name comes from the machine it runs on and from nowhere else.
+fn learn_device_name(
+    transaction: &Transaction<'_>,
+    writer: Option<&Writer>,
+) -> Result<(), MergeError> {
+    let Some(writer) = writer else {
+        return Ok(());
+    };
+    if writer.device_id == device_id(transaction)? {
+        return Ok(());
+    }
+    transaction
+        .execute(
+            "INSERT INTO sync_devices(device_id, name) VALUES (?1, ?2)
+             ON CONFLICT(device_id) DO UPDATE SET name = excluded.name",
+            rusqlite::params![writer.device_id, writer.device_name],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 /// Recorded once per defeat. The winner is deliberately not part of the key:
 /// keying on it re-logs the same loser every time the local row moves on.
 fn log_conflict(
     transaction: &Transaction<'_>,
     node_id: &str,
     loser_json: &str,
+    winner_json: &str,
     loser_hlc: &str,
     winner_hlc: &str,
 ) -> Result<(), MergeError> {
     transaction
         .execute(
-            "INSERT INTO sync_conflict_log(node_id, loser_json, loser_hlc, winner_hlc, recorded_at)
-             SELECT ?1, ?2, ?3, ?4, unixepoch()
+            "INSERT INTO sync_conflict_log(
+                 node_id, loser_json, winner_json, loser_hlc, winner_hlc, recorded_at
+             )
+             SELECT ?1, ?2, ?3, ?4, ?5, unixepoch()
              WHERE NOT EXISTS (
                  SELECT 1 FROM sync_conflict_log
-                 WHERE node_id = ?1 AND loser_hlc = ?3 AND loser_json = ?2
+                 WHERE node_id = ?1 AND loser_hlc = ?4 AND loser_json = ?2
              )",
-            rusqlite::params![node_id, loser_json, loser_hlc, winner_hlc],
+            rusqlite::params![node_id, loser_json, winner_json, loser_hlc, winner_hlc],
         )
         .map_err(|error| error.to_string())?;
     Ok(())

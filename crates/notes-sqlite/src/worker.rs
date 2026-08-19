@@ -39,6 +39,13 @@ enum Request {
         input: Box<notes_sync::merger::MergeInput>,
         reply: SyncSender<Result<notes_sync::merger::MergeOutcome, StorageError>>,
     },
+    /// What this device is called, for the files it writes and for the settings
+    /// screen to tell this device's edits from another's. Set at every startup:
+    /// a machine renamed in System Settings says so without a reset.
+    SetDeviceName {
+        name: String,
+        reply: SyncSender<Result<(), StorageError>>,
+    },
     Conflicts {
         limit: u32,
         reply: SyncSender<Result<Vec<notes_application::SyncConflict>, StorageError>>,
@@ -247,6 +254,15 @@ impl SqliteStorage {
     pub fn node_path(&self, id: &str) -> Result<Option<String>, StorageError> {
         self.request(|reply| Request::NodePath {
             id: id.to_owned(),
+            reply,
+        })
+    }
+
+    /// Records what this device is called. The name reaches other devices in the
+    /// files this one writes; they have no other way to name a stamp's device.
+    pub fn set_device_name(&self, name: &str) -> Result<(), StorageError> {
+        self.request(|reply| Request::SetDeviceName {
+            name: name.to_owned(),
             reply,
         })
     }
@@ -600,6 +616,16 @@ impl SqliteStorage {
                                 &file,
                                 &input,
                             ));
+                        }
+                        Request::SetDeviceName { name, reply } => {
+                            let _ =
+                                reply.send(ensure_device_id(&connection).and_then(|device_id| {
+                                    crate::sync_merge::set_device_name(
+                                        &connection,
+                                        &device_id,
+                                        &name,
+                                    )
+                                }));
                         }
                         Request::Conflicts { limit, reply } => {
                             let _ = reply.send(crate::sync_merge::conflicts(&connection, limit));

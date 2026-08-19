@@ -625,12 +625,39 @@ pub struct SyncConflict {
     #[ts(type = "number")]
     pub seq: i64,
     pub node_id: String,
-    /// What the losing side said, for the reader to recognise it by.
-    pub text: String,
     /// `lww`, `same_t`, `clock_drift` or `dirty_overwrite`.
     pub reason: String,
+    /// When the merge noticed the disagreement, which is later than either
+    /// version was edited and can be much later — a file arrives when the sync
+    /// client gets round to it.
     #[ts(type = "number")]
     pub recorded_at: i64,
+    /// The version that stood.
+    pub kept: SyncConflictSide,
+    /// The version that was replaced. This is the one `conflict_loser` puts
+    /// back.
+    pub dropped: SyncConflictSide,
+}
+
+/// One of the two versions a conflict was between. Both sides are described the
+/// same way: the screen shows them beside each other, and a reader comparing
+/// them should not have to compare two shapes as well.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct SyncConflictSide {
+    /// What this side said, for the reader to recognise it by.
+    pub text: String,
+    /// When this version was edited, from the stamp it carried. Zero where the
+    /// stamp cannot be read — the record is still worth showing.
+    #[ts(type = "number")]
+    pub edited_at_millis: i64,
+    /// The four hexadecimal characters the stamp names the device by. Empty
+    /// where the stamp cannot be read.
+    pub device_id: String,
+    /// What that device is called, when some file it wrote has said so.
+    pub device_name: Option<String>,
+    pub is_this_device: bool,
 }
 
 /// What the app found in the folder the user picked. Every state is accepted —

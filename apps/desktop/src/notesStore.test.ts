@@ -50,7 +50,6 @@ function api(queryViewport: NotesApi["queryViewport"]): NotesApi {
       nodes: [],
       complete: true
     }),
-    execute: vi.fn(),
     search: vi.fn()
   };
 }
@@ -109,6 +108,21 @@ describe("NotesStore projection invalidation", () => {
     expect(outline).not.toHaveBeenCalled();
     expect(store.getNodeSnapshot("one").title).toBe("Committed one");
     expect(changed).toHaveBeenCalled();
+  });
+
+  it("flushes an awaited draft against the fixture's own execute", async () => {
+    const notesApi = api(vi.fn());
+    const store = new NotesStore(notesApi);
+    await store.bootstrap();
+
+    store.setDraft("one", "typed");
+    await store.flushDraft("one");
+
+    expect(store.getSnapshot().error).toBeNull();
+    expect(notesApi.execute).toHaveBeenCalledWith(expect.objectContaining({
+      command: { kind: "updateText", id: "one", text: "typed" }
+    }));
+    expect(store.getSnapshot().drafts.one).toBeUndefined();
   });
 });
 

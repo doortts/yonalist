@@ -7,7 +7,7 @@
 
 use crate::document::{
     DocumentId, DocumentNode, DocumentRoot, ImageReference, Marker, NodeBody, PageDocument,
-    TrashDocument, VaultFile,
+    TrashDocument, VaultFile, Writer,
 };
 use crate::hlc::Hlc;
 use std::collections::{BTreeMap, HashSet};
@@ -153,6 +153,8 @@ const KNOWN_KEYS: &[&str] = &[
     "root_collapsed",
     "root_completed",
     "root_starred",
+    "device_id",
+    "device_name",
 ];
 
 struct Frontmatter {
@@ -270,7 +272,33 @@ fn parse_page(keys: &Frontmatter, body: &[&str], footer: Footer) -> Result<Vault
         root,
         nodes,
         unknown_frontmatter: keys.unknown.clone(),
+        writer: writer(keys),
     }))
+}
+
+/// A computer's name, past which this is not one. The values here go into a
+/// table keyed by device id and are read back as a label on a settings row, so
+/// the bound is what a label can be rather than what a field can hold.
+const MAX_DEVICE_NAME_BYTES: usize = 200;
+
+/// Who the file says wrote it. Half a pair names nobody, and neither does an
+/// empty value, so both have to be there for this to be an answer.
+///
+/// The id is held to the shape a stamp's device has, which is what bounds the
+/// table these land in: a file is somebody else's writing, and an id no stamp
+/// could carry would be a row that never matches a stamp and never goes away.
+/// An over-long name is dropped the same way, and the id still names the device.
+fn writer(keys: &Frontmatter) -> Option<Writer> {
+    let device_id = keys
+        .get("device_id")
+        .filter(|value| crate::hlc::is_device_id(value))?;
+    let device_name = keys
+        .get("device_name")
+        .filter(|value| !value.is_empty() && value.len() <= MAX_DEVICE_NAME_BYTES)?;
+    Some(Writer {
+        device_id: device_id.clone(),
+        device_name: device_name.clone(),
+    })
 }
 
 fn parse_trash(keys: &Frontmatter, body: &[&str], footer: Footer) -> Result<VaultFile, Quarantine> {

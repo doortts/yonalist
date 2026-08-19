@@ -52,8 +52,7 @@ function autoLoadApi(): NotesApi {
       revision: 1,
       nodes: [],
       complete: true
-    }),
-    execute: vi.fn()
+    })
   };
 }
 

@@ -68,8 +68,13 @@ export class StoreDrafts {
       { nodeIds: [id] }
     );
     this.cancelTitle(id);
+    // Nobody awaits a debounce, so a rethrow here could only reach the window
+    // as an unhandled rejection. When the command itself fails, the choke
+    // point has already put it in `state.error`; a failure outside the choke
+    // point -- a throw before the enqueue, a subscriber throwing on the
+    // draft-clear write -- has no banner and no other consumer either.
     this.titleTimers.set(id, setTimeout(
-      () => void this.flushTitle(id),
+      () => void this.flushTitle(id).catch(() => undefined),
       DRAFT_DEBOUNCE_MS
     ));
   }
@@ -107,7 +112,7 @@ export class StoreDrafts {
     );
     this.cancelNote(id);
     this.noteTimers.set(id, setTimeout(
-      () => void this.flushNote(id),
+      () => void this.flushNote(id).catch(() => undefined),
       DRAFT_DEBOUNCE_MS
     ));
   }

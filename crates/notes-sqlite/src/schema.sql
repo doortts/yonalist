@@ -302,10 +302,24 @@ CREATE TABLE sync_node_exports (
     exported_hlc TEXT NOT NULL
 ) STRICT;
 
+-- What a device id belongs to. Learned from the files other devices
+-- write, since a stamp calls a device by four hex characters and the
+-- settings screen has to call it something a person recognises. Last
+-- one in wins: a renamed device says so in its next file, and a file
+-- that names nobody says nothing about what is already here.
+CREATE TABLE sync_devices (
+    device_id TEXT PRIMARY KEY NOT NULL,
+    name TEXT NOT NULL
+) STRICT;
+
 CREATE TABLE sync_conflict_log (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     node_id TEXT NOT NULL,
     loser_json TEXT NOT NULL,
+    -- What won, recorded here rather than read off the row when somebody
+    -- looks: the row moves on with the next edit, and then it is no
+    -- longer the version that won this conflict.
+    winner_json TEXT NOT NULL,
     loser_hlc TEXT NOT NULL,
     winner_hlc TEXT NOT NULL,
     recorded_at INTEGER NOT NULL

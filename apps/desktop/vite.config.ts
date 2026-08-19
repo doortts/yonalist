@@ -19,6 +19,9 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
-    setupFiles: ["src/test/setup.ts"]
+    setupFiles: ["src/test/setup.ts"],
+    // Stays above asyncUtilTimeout so a starved wait reports as itself, with its
+    // DOM dump, instead of being killed as an opaque test timeout.
+    testTimeout: 30_000
   }
 });

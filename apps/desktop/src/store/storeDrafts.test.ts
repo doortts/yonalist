@@ -1,6 +1,7 @@
 import type { MutationReceipt } from "../../../../packages/contracts/generated/MutationReceipt";
 import { initialNotesState, type NotesState } from "../notesState";
 import { StoreDrafts } from "./storeDrafts";
+import { DRAFT_DEBOUNCE_MS } from "./storeSupport";
 
 function node(text: string) {
   return {
@@ -111,6 +112,50 @@ describe("StoreDrafts", () => {
     await drafts.flushAll();
 
     expect(order).toEqual(["updateText", "updateNote", "settled"]);
+  });
+  it("keeps a failing debounced flush out of unhandledRejection", async () => {
+    let state: NotesState = {
+      ...initialNotesState,
+      status: "ready",
+      sessionId: "session-1",
+      revision: 1,
+      activePageId: "page-1",
+      nodes: [node("one")]
+    };
+    const escaped: unknown[] = [];
+    const listener = (reason: unknown) => escaped.push(reason);
+    process.on("unhandledRejection", listener);
+    const execute = vi.fn().mockRejectedValue(new Error("boom"));
+    try {
+      const drafts = new StoreDrafts({
+        read: () => state,
+        write: (patch) => {
+          state = { ...state, ...patch };
+        },
+        execute,
+        settled: vi.fn().mockResolvedValue(undefined),
+        breakHistoryGroup: vi.fn()
+      });
+      vi.useFakeTimers();
+      drafts.setTitle("one", "typed");
+      drafts.setNote("one", "noted");
+      await vi.advanceTimersByTimeAsync(DRAFT_DEBOUNCE_MS);
+      vi.useRealTimers();
+      // Node reports an unhandled rejection one turn after the promise
+      // settles, so the assertion has to stand behind that turn.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(escaped).toEqual([]);
+      // Both timers reached their command. Without this the empty `escaped`
+      // above would read the same on a debounce that never fired at all.
+      expect(execute).toHaveBeenCalledTimes(2);
+      // The containment belongs to the timer alone: a caller that awaits the
+      // same flush -- a blur, a batch -- still hears the failure.
+      await expect(drafts.flushTitle("one")).rejects.toThrow("boom");
+    } finally {
+      vi.useRealTimers();
+      process.off("unhandledRejection", listener);
+    }
   });
   it("skips the command when a page note draft matches the page node", async () => {
     const pageNode = {

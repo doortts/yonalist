@@ -145,9 +145,22 @@ describe("SettingsView", () => {
       {
         seq: 7,
         nodeId: "Nd0000000001",
-        text: "the note that lost",
         reason: "lww",
-        recordedAt: 1_700_000_000
+        recordedAt: 1_700_000_000,
+        kept: {
+          text: "the note that won",
+          editedAtMillis: 1_700_000_000_000,
+          deviceId: "a3f1",
+          deviceName: "Studio",
+          isThisDevice: false
+        },
+        dropped: {
+          text: "the note that lost",
+          editedAtMillis: 1_699_999_000_000,
+          deviceId: "cccc",
+          deviceName: "MacBook Pro",
+          isThisDevice: true
+        }
       }
     ]);
     renderSettings({ readConflicts, restoreConflict });
@@ -158,6 +171,90 @@ describe("SettingsView", () => {
 
     await waitFor(() => expect(restoreConflict).toHaveBeenCalledWith(7));
     expect(await screen.findByRole("status")).toHaveTextContent("Put back");
+  });
+
+  it("shows both versions with when and where each was written", async () => {
+    const readConflicts = vi.fn().mockResolvedValue([
+      {
+        seq: 7,
+        nodeId: "Nd0000000001",
+        reason: "lww",
+        recordedAt: 1_700_000_100,
+        kept: {
+          text: "the note that won",
+          editedAtMillis: 1_700_000_000_000,
+          deviceId: "a3f1",
+          deviceName: "Studio",
+          isThisDevice: false
+        },
+        dropped: {
+          text: "the note that lost",
+          editedAtMillis: 1_699_999_000_000,
+          deviceId: "b7d2",
+          deviceName: null,
+          isThisDevice: true
+        }
+      }
+    ]);
+    renderSettings({ readConflicts });
+
+    await openSection("Overwritten notes");
+
+    // Both versions, so the reader can tell what the choice actually cost.
+    expect(await screen.findByText("the note that won")).toBeInTheDocument();
+    expect(screen.getByText("the note that lost")).toBeInTheDocument();
+    // A named device reads as its name; an unnamed one falls back to the four
+    // characters the stamp carries rather than to nothing.
+    expect(screen.getByText("Studio")).toBeInTheDocument();
+    expect(screen.getByText("b7d2 (this device)")).toBeInTheDocument();
+    // Each version's own edit time, and the reason in words rather than in the
+    // merge's vocabulary.
+    expect(
+      screen.getByText(new Date(1_700_000_000_000).toLocaleString())
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(new Date(1_699_999_000_000).toLocaleString())
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Later edit won/)).toBeInTheDocument();
+    // And the two buttons are one pair, not two loose controls.
+    const actions = screen.getByRole("group", { name: "What to do with this record" });
+    expect(within(actions).getByRole("button", { name: "Put this text back" }))
+      .toBeInTheDocument();
+    expect(within(actions).getByRole("button", { name: "Drop this record" }))
+      .toBeInTheDocument();
+  });
+
+  it("says a stamp it could not read is unknown rather than 1970", async () => {
+    const readConflicts = vi.fn().mockResolvedValue([
+      {
+        seq: 8,
+        nodeId: "Nd0000000001",
+        reason: "clock_drift",
+        recordedAt: 1_700_000_100,
+        kept: {
+          text: "the note that won",
+          editedAtMillis: 1_700_000_000_000,
+          deviceId: "a3f1",
+          deviceName: null,
+          isThisDevice: false
+        },
+        // A stamp this build could not read: no time, no device.
+        dropped: {
+          text: "the note that lost",
+          editedAtMillis: 0,
+          deviceId: "",
+          deviceName: null,
+          isThisDevice: false
+        }
+      }
+    ]);
+    renderSettings({ readConflicts });
+
+    await openSection("Overwritten notes");
+
+    expect(await screen.findByText("Unknown device")).toBeInTheDocument();
+    expect(screen.getByText("Time unknown")).toBeInTheDocument();
+    expect(screen.queryByText(/1970/)).not.toBeInTheDocument();
   });
 
   it("says nothing at all when no note has been overwritten", async () => {
@@ -502,9 +599,22 @@ describe("SettingsView: one section at a time", () => {
   const conflict = {
     seq: 7,
     nodeId: "Nd0000000001",
-    text: "the note that lost",
     reason: "lww",
-    recordedAt: 1_700_000_000
+    recordedAt: 1_700_000_000,
+    kept: {
+      text: "the note that won",
+      editedAtMillis: 1_700_000_000_000,
+      deviceId: "a3f1",
+      deviceName: "Studio",
+      isThisDevice: false
+    },
+    dropped: {
+      text: "the note that lost",
+      editedAtMillis: 1_699_999_000_000,
+      deviceId: "cccc",
+      deviceName: "MacBook Pro",
+      isThisDevice: true
+    }
   };
 
   it("opens on Appearance and lists the other sections", async () => {

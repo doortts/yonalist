@@ -712,6 +712,12 @@ impl DesktopRuntime {
         let assets = Arc::new(
             LocalImageAssets::open(&data_directory.join("images")).map_err(NotesError::from)?,
         );
+        // Not fatal, and deliberately not reported: an unnamed device shows as
+        // the four hex characters its stamps already carry, which is a worse
+        // label but not a broken one.
+        if let Some(name) = computer_name() {
+            let _ = storage.set_device_name(&name);
+        }
         let session_id = uuid::Uuid::new_v4().to_string();
         let initial_boot = storage
             .bootstrap(session_id.clone(), 80)
@@ -1002,6 +1008,38 @@ pub fn run() {
 /// discarding nothing at all, so those rows are in the second and never in the
 /// first. Answered together, and in different shapes, so the two cannot be
 /// handed to each other's caller.
+/// What this Mac is called, the way its owner sees it in System Settings —
+/// "Suwon의 MacBook Pro" rather than the dotted hostname a network sees. It
+/// travels out in the vault files, so another device can name the machine that
+/// overwrote a note instead of naming four hexadecimal characters.
+///
+/// A subprocess because there is no API for the friendly name short of linking
+/// SystemConfiguration, and this is asked once per launch. Anything unexpected —
+/// no `scutil`, a non-zero exit, an empty answer — leaves the device unnamed,
+/// which the settings screen already has an answer for.
+#[cfg(target_os = "macos")]
+fn computer_name() -> Option<String> {
+    let output = std::process::Command::new("/usr/sbin/scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let name = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    // A name that is not one line is not statable in the vault's frontmatter,
+    // and the renderer would drop it anyway.
+    if name.is_empty() || name.contains(['\n', '\r']) {
+        return None;
+    }
+    Some(name)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn computer_name() -> Option<String> {
+    None
+}
+
 fn announce(
     outcome: &notes_sync::merger::MergeOutcome,
     revision: u64,

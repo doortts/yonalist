@@ -119,6 +119,44 @@ fn the_written_file_states_the_time_this_device_reads() {
     );
 }
 
+/// So another device can put a name to the four hex characters this device's
+/// stamps carry. The name is this device's own row in `sync_devices`; without
+/// one there is nothing to state and the keys stay off the file.
+#[test]
+fn the_written_file_states_this_device_and_its_name() {
+    let mut connection = database();
+    seed(&connection);
+    connection
+        .execute(
+            "INSERT INTO sync_devices(device_id, name) VALUES (?1, 'Suwon의 MacBook Pro')",
+            [DEVICE],
+        )
+        .expect("name");
+    let root = vault();
+
+    export(&mut connection, root.path());
+
+    let file = written(root.path()).expect("the document");
+    assert!(
+        file.contains(&format!(
+            "device_id: {DEVICE}\ndevice_name: Suwon의 MacBook Pro\n"
+        )),
+        "{file}"
+    );
+}
+
+#[test]
+fn an_unnamed_device_states_nothing_about_itself() {
+    let mut connection = database();
+    seed(&connection);
+    let root = vault();
+
+    export(&mut connection, root.path());
+
+    let file = written(root.path()).expect("the document");
+    assert!(!file.contains("device_id"), "{file}");
+}
+
 #[test]
 fn an_export_clears_only_the_exported_dirty_rows() {
     let mut connection = database();

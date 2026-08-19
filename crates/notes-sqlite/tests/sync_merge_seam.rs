@@ -62,6 +62,7 @@ fn page(text: &str, hlc: &str) -> VaultFile {
         },
         nodes: vec![node(NODE_ID, hlc, text)],
         unknown_frontmatter: Vec::new(),
+        writer: None,
     })
 }
 
@@ -95,6 +96,7 @@ fn page_with_image(disk_name: &str) -> VaultFile {
         },
         nodes: vec![image],
         unknown_frontmatter: Vec::new(),
+        writer: None,
     })
 }
 
@@ -119,6 +121,12 @@ fn input() -> MergeInput {
         file_mtime_ms: Some(1_700_000_000_000),
         file_size: Some(256),
     }
+}
+
+/// A second connection onto the same file, for the few facts a test has to
+/// state or read directly. The worker owns writes; these are the fixture.
+fn beside(directory: &tempfile::TempDir) -> rusqlite::Connection {
+    rusqlite::Connection::open(directory.path().join("notes.sqlite")).expect("beside")
 }
 
 fn stamp(millis: u64) -> String {
@@ -211,6 +219,7 @@ fn a_merge_leaves_the_derived_paths_correct() {
         },
         nodes: vec![parent],
         unknown_frontmatter: Vec::new(),
+        writer: None,
     });
 
     storage.merge_document(&file, &input()).expect("merge");
@@ -305,7 +314,48 @@ fn order_of_children(storage: &SqliteStorage, parent: &str) -> Vec<String> {
 /// it. Everything it needs has to be in the row, because by then the file that
 /// lost is long gone.
 #[test]
-fn conflicts_page_returns_recorded_losers() {
+fn conflicts_page_returns_both_sides_of_each_defeat() {
+    let (directory, storage) = storage();
+    storage
+        .merge_document(&page("Winner", &stamp(9)), &input())
+        .expect("seed");
+    storage
+        .merge_document(&page("Loser", &stamp(5)), &input())
+        .expect("stale");
+    // The name a merge would have learned from the file that lost.
+    beside(&directory)
+        .execute(
+            "INSERT INTO sync_devices(device_id, name) VALUES ('a3f2', 'Studio')",
+            [],
+        )
+        .expect("name");
+
+    let page_of_losers = storage.sync_conflicts(10).expect("conflicts");
+
+    let entry = page_of_losers
+        .iter()
+        .find(|conflict| conflict.node_id == NODE_ID)
+        .expect("the defeat was kept");
+    assert_eq!(entry.reason, "lww");
+    assert!(entry.recorded_at > 0, "the screen shows when it happened");
+    assert_eq!(entry.dropped.text, "Loser");
+    assert_eq!(entry.kept.text, "Winner");
+    // Each side says when its own version was edited, which is the stamp it
+    // carried — not when the merge noticed the disagreement.
+    assert_eq!(entry.dropped.edited_at_millis, 5);
+    assert_eq!(entry.kept.edited_at_millis, 9);
+    assert_eq!(entry.dropped.device_id, "a3f2");
+    assert_eq!(entry.dropped.device_name.as_deref(), Some("Studio"));
+    assert!(
+        !entry.dropped.is_this_device && !entry.kept.is_this_device,
+        "both versions came from the device the stamps name, which is not this one"
+    );
+}
+
+/// A device nobody named is still a device. The screen shows the four hex
+/// characters rather than nothing, so the row has to carry them.
+#[test]
+fn an_unnamed_device_is_reported_by_its_id() {
     let (_directory, storage) = storage();
     storage
         .merge_document(&page("Winner", &stamp(9)), &input())
@@ -314,15 +364,46 @@ fn conflicts_page_returns_recorded_losers() {
         .merge_document(&page("Loser", &stamp(5)), &input())
         .expect("stale");
 
-    let page_of_losers = storage.sync_conflicts(10).expect("conflicts");
+    let entry = storage.sync_conflicts(10).expect("conflicts")[0].clone();
 
-    let entry = page_of_losers
-        .iter()
-        .find(|conflict| conflict.node_id == NODE_ID)
-        .expect("the defeat was kept");
-    assert_eq!(entry.text, "Loser");
-    assert_eq!(entry.reason, "lww");
-    assert!(entry.recorded_at > 0, "the screen shows when it happened");
+    assert_eq!(entry.dropped.device_id, "a3f2");
+    assert_eq!(entry.dropped.device_name, None);
+}
+
+/// Which side is this device's own is the one thing the screen cannot work out
+/// for itself, and it is what tells "my edit lost" from "their edit lost".
+#[test]
+fn the_side_this_device_wrote_says_so() {
+    let (directory, storage) = storage();
+    storage
+        .merge_document(&page("Winner", &stamp(9)), &input())
+        .expect("seed");
+    storage
+        .merge_document(&page("Loser", &stamp(5)), &input())
+        .expect("stale");
+    let beside = beside(&directory);
+    let here: String = beside
+        .query_row(
+            "SELECT device_id FROM sync_meta WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("this device");
+    // As though the version that won had been typed here rather than arriving.
+    beside
+        .execute(
+            "UPDATE sync_conflict_log SET winner_hlc = ?1",
+            [notes_sync::hlc::Hlc::new(9, 0, &here)
+                .expect("hlc")
+                .encode()],
+        )
+        .expect("restamp");
+
+    let entry = storage.sync_conflicts(10).expect("conflicts")[0].clone();
+
+    assert_eq!(entry.kept.device_id, here);
+    assert!(entry.kept.is_this_device);
+    assert!(!entry.dropped.is_this_device);
 }
 
 /// The row keeps everything whoever puts it back will need. Making the write
@@ -373,7 +454,7 @@ fn the_log_is_pruned_past_its_retention_count() {
         "the bound is a thousand — not fewer, or the log forgets more than it was asked to"
     );
     assert_eq!(
-        kept.first().map(|entry| entry.text.as_str()),
+        kept.first().map(|entry| entry.dropped.text.as_str()),
         Some("Loser 1099"),
         "newest first: the screen shows the most recent defeats, not the oldest"
     );
@@ -407,7 +488,7 @@ fn the_log_is_pruned_past_its_retention_age() {
 
     let kept = storage.sync_conflicts(10).expect("conflicts");
     assert!(
-        kept.iter().all(|entry| entry.text != "Loser"),
+        kept.iter().all(|entry| entry.dropped.text != "Loser"),
         "a defeat nobody looked at in six months is not worth keeping"
     );
 }

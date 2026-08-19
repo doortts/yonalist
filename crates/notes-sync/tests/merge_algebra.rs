@@ -205,6 +205,7 @@ fn canonical_document() -> impl Strategy<Value = PageDocument> {
                 },
                 nodes,
                 unknown_frontmatter: Vec::new(),
+                writer: None,
             }
         },
     )

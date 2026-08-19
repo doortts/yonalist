@@ -8,9 +8,9 @@
 //! open session.
 
 use crate::repository::internal;
-use notes_application::{StorageError, SyncConflict};
+use notes_application::{StorageError, SyncConflict, SyncConflictSide};
 use notes_sync::document::VaultFile;
-use notes_sync::hlc::Clock;
+use notes_sync::hlc::{Clock, Hlc};
 use notes_sync::merger::{MergeInput, MergeOutcome, merge_document};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::BTreeSet;
@@ -77,6 +77,25 @@ fn bump_revision(transaction: &rusqlite::Transaction<'_>) -> Result<(), StorageE
 const MAX_CONFLICTS: usize = 1_000;
 const MAX_CONFLICT_AGE_SECONDS: i64 = 180 * 24 * 60 * 60;
 
+/// This device's own row in the table every other device's name lands in. The
+/// name comes from outside — what a machine is called is the platform's answer,
+/// not this crate's — and it is written again at every startup so a rename in
+/// System Settings lands without anybody resetting anything.
+pub(crate) fn set_device_name(
+    connection: &Connection,
+    device_id: &str,
+    name: &str,
+) -> Result<(), StorageError> {
+    connection
+        .execute(
+            "INSERT INTO sync_devices(device_id, name) VALUES (?1, ?2)
+             ON CONFLICT(device_id) DO UPDATE SET name = excluded.name",
+            [device_id, name],
+        )
+        .map_err(internal)?;
+    Ok(())
+}
+
 pub(crate) fn conflicts(
     connection: &Connection,
     limit: u32,
@@ -89,9 +108,14 @@ pub(crate) fn conflicts(
             [MAX_CONFLICT_AGE_SECONDS],
         )
         .map_err(internal)?;
+    // Read once for the whole page rather than joined per row: the names are a
+    // handful of devices, and a join would repeat them for every defeat.
+    let names = device_names(connection)?;
+    let here = this_device(connection)?;
     let mut statement = connection
         .prepare(
-            "SELECT seq, node_id, loser_json, recorded_at FROM sync_conflict_log
+            "SELECT seq, node_id, loser_json, loser_hlc, winner_json, winner_hlc, recorded_at
+             FROM sync_conflict_log
              ORDER BY seq DESC LIMIT ?1",
         )
         .map_err(internal)?;
@@ -101,33 +125,103 @@ pub(crate) fn conflicts(
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
             ))
         })
         .map_err(internal)?;
     let mut out = Vec::new();
     for row in rows {
-        let (seq, node_id, loser_json, recorded_at) = row.map_err(internal)?;
-        let loser: serde_json::Value = serde_json::from_str(&loser_json).map_err(|error| {
-            StorageError::Internal(format!("a recorded defeat is not readable: {error}"))
-        })?;
+        let (seq, node_id, loser_json, loser_hlc, winner_json, winner_hlc, recorded_at) =
+            row.map_err(internal)?;
+        let loser = recorded_side(&loser_json)?;
+        let winner = recorded_side(&winner_json)?;
         out.push(SyncConflict {
             seq,
             node_id,
-            text: loser
-                .get("text")
-                .and_then(|value| value.as_str())
-                .unwrap_or_default()
-                .to_owned(),
-            reason: loser
-                .get("reason")
-                .and_then(|value| value.as_str())
-                .unwrap_or_default()
-                .to_owned(),
+            // Both sides carry the same reason — it belongs to the conflict, not
+            // to either version — so either one answers.
+            reason: text_at(&loser, "reason"),
             recorded_at,
+            kept: side(text_at(&winner, "text"), &winner_hlc, &names, &here),
+            dropped: side(text_at(&loser, "text"), &loser_hlc, &names, &here),
         });
     }
     Ok(out)
+}
+
+fn recorded_side(json: &str) -> Result<serde_json::Value, StorageError> {
+    serde_json::from_str(json).map_err(|error| {
+        StorageError::Internal(format!("a recorded defeat is not readable: {error}"))
+    })
+}
+
+fn text_at(side: &serde_json::Value, key: &str) -> String {
+    side.get(key)
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// One version as the screen shows it: what it said, when it was written, and
+/// which device wrote it.
+///
+/// The when and the where both come out of the stamp, which is the only place
+/// either was ever recorded. A stamp this build cannot read — a hand-edited log,
+/// a device writing something newer — costs the time and the device, not the
+/// row: what the two versions said is the point, and it is still here.
+fn side(
+    text: String,
+    hlc: &str,
+    names: &std::collections::HashMap<String, String>,
+    here: &str,
+) -> SyncConflictSide {
+    let stamp = Hlc::decode(hlc).ok();
+    let device_id = stamp
+        .as_ref()
+        .map(|stamp| stamp.device().to_owned())
+        .unwrap_or_default();
+    SyncConflictSide {
+        text,
+        edited_at_millis: stamp
+            .as_ref()
+            .and_then(|stamp| i64::try_from(stamp.millis()).ok())
+            .unwrap_or_default(),
+        device_name: names.get(&device_id).cloned(),
+        is_this_device: !device_id.is_empty() && device_id == here,
+        device_id,
+    }
+}
+
+fn device_names(
+    connection: &Connection,
+) -> Result<std::collections::HashMap<String, String>, StorageError> {
+    let mut statement = connection
+        .prepare("SELECT device_id, name FROM sync_devices")
+        .map_err(internal)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(internal)?;
+    let mut names = std::collections::HashMap::new();
+    for row in rows {
+        let (device_id, name) = row.map_err(internal)?;
+        names.insert(device_id, name);
+    }
+    Ok(names)
+}
+
+fn this_device(connection: &Connection) -> Result<String, StorageError> {
+    connection
+        .query_row(
+            "SELECT device_id FROM sync_meta WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(internal)
 }
 
 /// What a defeat said, for whoever is putting it back. The write itself is not
@@ -400,7 +494,9 @@ pub struct ReindexReport {
 /// What is kept, and why: `notes_meta` because the revision only ever moves
 /// forward, `sync_meta` because it is this device's own identity rather than
 /// notes, `sync_conflict_log` because it holds the only copy of text a merge
-/// overwrote, and `sync_quarantine` and `sync_assets` because both describe files
+/// overwrote, `sync_devices` because a name learned from a file is what makes that
+/// log readable and the rebuild only relearns the devices whose files it happens
+/// to read, and `sync_quarantine` and `sync_assets` because both describe files
 /// the rebuild is about to read rather than rows it is replacing.
 pub(crate) fn rebuild_from_vault(
     connection: &mut Connection,

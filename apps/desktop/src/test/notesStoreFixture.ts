@@ -43,7 +43,6 @@ export async function readyRealStore(): Promise<NotesStore> {
       nodes: [],
       complete: true
     }),
-    execute: vi.fn(),
     search: vi.fn()
   };
   const store = new NotesStore(api);

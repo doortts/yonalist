@@ -83,6 +83,7 @@ fn page(nodes: Vec<DocumentNode>, max_hlc: &str) -> PageDocument {
         },
         nodes,
         unknown_frontmatter: Vec::new(),
+        writer: None,
     }
 }
 
@@ -119,6 +120,29 @@ fn conflicts_for(connection: &Connection, id: &str) -> i64 {
             |row| row.get(0),
         )
         .expect("count")
+}
+
+/// What the newest recorded conflict for a node says the two versions were:
+/// what won, then what lost.
+fn sides(connection: &Connection, id: &str) -> (String, String) {
+    connection
+        .query_row(
+            "SELECT json_extract(winner_json, '$.text'), json_extract(loser_json, '$.text')
+             FROM sync_conflict_log WHERE node_id = ?1 ORDER BY seq DESC LIMIT 1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("both sides")
+}
+
+fn device_names(connection: &Connection) -> Vec<(String, String)> {
+    let mut statement = connection
+        .prepare("SELECT device_id, name FROM sync_devices ORDER BY device_id")
+        .expect("prepare");
+    let rows = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .expect("query");
+    rows.map(|row| row.expect("row")).collect()
 }
 
 fn conflicts(connection: &Connection) -> i64 {
@@ -2241,6 +2265,7 @@ fn child_document(hlc: &str, title: &str, starred: bool) -> PageDocument {
         },
         nodes: Vec::new(),
         unknown_frontmatter: Vec::new(),
+        writer: None,
     }
 }
 
@@ -2843,5 +2868,186 @@ fn a_pictures_unknown_tokens_reach_the_row_in_the_order_the_file_wrote_them() {
     assert_eq!(
         extras, "nodeside: one pictureside: two",
         "the string the merge hashes has to be the tokens in file order, once"
+    );
+}
+
+/// The stamps only ever call a device by four hex characters. A file that says
+/// what those characters belong to is the one place a name comes from, so a
+/// merge keeps what it read — the settings screen has no other way to name the
+/// device that overwrote a note.
+#[test]
+fn a_merge_learns_the_writing_devices_name() {
+    let mut connection = database();
+    let named = |name: &str| PageDocument {
+        writer: Some(notes_sync::document::Writer {
+            device_id: "a3f2".to_owned(),
+            device_name: name.to_owned(),
+        }),
+        ..page(
+            vec![node(NODE_ID, &stamp(5, "a3f2"), "Ship it")],
+            &stamp(5, "a3f2"),
+        )
+    };
+
+    let transaction = connection.transaction().expect("begin");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(named("Studio")),
+        &input(),
+    )
+    .expect("merge");
+    assert_eq!(
+        device_names(&transaction),
+        vec![("a3f2".to_owned(), "Studio".to_owned())]
+    );
+
+    // A rename reaches every other device the same way every other fact does:
+    // in the next file that device writes. What was learned before is replaced,
+    // not kept beside it.
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(named("Studio 2")),
+        &input(),
+    )
+    .expect("merge");
+    assert_eq!(
+        device_names(&transaction),
+        vec![("a3f2".to_owned(), "Studio 2".to_owned())]
+    );
+}
+
+/// A file that names nobody leaves what is known alone. Otherwise a device
+/// running an older build, or a hand-written file, would erase the name every
+/// other file established.
+#[test]
+fn a_file_that_names_nobody_leaves_the_names_alone() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    transaction
+        .execute(
+            "INSERT INTO sync_devices(device_id, name) VALUES ('a3f2', 'Studio')",
+            [],
+        )
+        .expect("seed");
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(5, "a3f2"), "Ship it")],
+            &stamp(5, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("merge");
+
+    assert_eq!(
+        device_names(&transaction),
+        vec![("a3f2".to_owned(), "Studio".to_owned())]
+    );
+}
+
+/// The screen shows both versions, so the record has to hold both. What won is
+/// kept here rather than read off the row when somebody looks: the row moves on
+/// with the next edit, and then it is no longer what won this conflict.
+#[test]
+fn a_conflict_records_the_text_that_won_as_well_as_the_one_that_lost() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(5, "a3f2"), "Next sprint")],
+            &stamp(5, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("seed");
+
+    // A stamp from a broken clock: the file is written, and the row it replaced
+    // is the loss worth keeping.
+    let far = Hlc::new(FAR_FUTURE_MILLIS, 0, "a3f2")
+        .expect("far")
+        .encode();
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(vec![node(NODE_ID, &far, "This week")], &far)),
+        &input(),
+    )
+    .expect("drift");
+
+    assert_eq!(
+        sides(&transaction, NODE_ID),
+        ("This week".to_owned(), "Next sprint".to_owned())
+    );
+
+    // And the other way round: a file older than the row loses, so the winner
+    // is the row this merge left alone.
+    let other = "Nd0000000002";
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(other, &stamp(9, "a3f2"), "Mine")],
+            &stamp(9, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("seed");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(other, &stamp(5, "a3f2"), "Theirs, older")],
+            &stamp(5, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("older");
+
+    assert_eq!(
+        sides(&transaction, other),
+        ("Mine".to_owned(), "Theirs, older".to_owned())
+    );
+}
+
+/// Ids are four hex characters, so two devices can land on the same one. A file
+/// claiming this device's id must not be able to rename it: the name would then
+/// go out in every file this device writes from then on.
+#[test]
+fn a_file_cannot_rename_this_device() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    transaction
+        .execute(
+            "INSERT INTO sync_devices(device_id, name) VALUES (?1, 'MacBook Pro')",
+            [DEVICE],
+        )
+        .expect("our own name");
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(PageDocument {
+            writer: Some(notes_sync::document::Writer {
+                device_id: DEVICE.to_owned(),
+                device_name: "Somebody else's laptop".to_owned(),
+            }),
+            ..page(
+                vec![node(NODE_ID, &stamp(5, "a3f2"), "Ship it")],
+                &stamp(5, "a3f2"),
+            )
+        }),
+        &input(),
+    )
+    .expect("merge");
+
+    assert_eq!(
+        device_names(&transaction),
+        vec![(DEVICE.to_owned(), "MacBook Pro".to_owned())]
     );
 }

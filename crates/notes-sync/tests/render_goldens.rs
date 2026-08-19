@@ -5,7 +5,7 @@
 use chrono::FixedOffset;
 use notes_sync::document::{
     DocumentId, DocumentNode, DocumentRoot, ImageReference, Marker, NodeBody, PageDocument,
-    TrashDocument, VaultFile,
+    TrashDocument, VaultFile, Writer,
 };
 
 /// The goldens are what a device in Seoul writes. The readable time carries the
@@ -95,6 +95,10 @@ fn page() -> PageDocument {
         },
         nodes: vec![architecture, tidied],
         unknown_frontmatter: Vec::new(),
+        writer: Some(Writer {
+            device_id: "a3f2".to_owned(),
+            device_name: "Suwon의 MacBook Pro".to_owned(),
+        }),
     }
 }
 
@@ -103,6 +107,39 @@ fn a_page_renders_byte_identical_to_its_golden() {
     let rendered = render(&VaultFile::Page(page())).expect("render");
 
     golden("page", rendered, include_str!("../fixtures/page.md"));
+}
+
+/// The writing device is stated so another device can name it in the settings
+/// screen. Both keys or neither: a name with no id names nobody, and an id
+/// alone is what the stamps already carry.
+#[test]
+fn a_page_states_the_device_that_wrote_it_and_a_round_trip_keeps_it() {
+    let rendered = render(&VaultFile::Page(page())).expect("render");
+
+    let text = String::from_utf8(rendered.clone()).expect("utf-8");
+    assert!(
+        text.contains("device_id: a3f2\ndevice_name: Suwon의 MacBook Pro\n"),
+        "the frontmatter states the writer: {text}"
+    );
+
+    let parsed = notes_sync::parse::parse(&rendered).expect("parse");
+    let VaultFile::Page(parsed) = parsed else {
+        panic!("a page parses as a page");
+    };
+    assert_eq!(parsed.writer, page().writer);
+
+    // Neither key is written when there is nobody to name — an empty value
+    // would leave a key ending in a space, which a hand editor trims away.
+    let anonymous = render(&VaultFile::Page(PageDocument {
+        writer: None,
+        ..page()
+    }))
+    .expect("render");
+    let anonymous = String::from_utf8(anonymous).expect("utf-8");
+    assert!(
+        !anonymous.contains("device_id") && !anonymous.contains("device_name"),
+        "an unnamed writer states nothing: {anonymous}"
+    );
 }
 
 #[test]
@@ -148,6 +185,7 @@ fn a_split_document_renders_byte_identical_to_its_golden() {
         },
         nodes: vec![node("Nd0000000008", "0swkd7qze-00-a3f2", "3월 회고")],
         unknown_frontmatter: Vec::new(),
+        writer: None,
     }))
     .expect("render");
 
@@ -181,6 +219,7 @@ fn the_home_document_renders_byte_identical_to_its_golden() {
         },
         nodes: vec![projects, minutes],
         unknown_frontmatter: Vec::new(),
+        writer: None,
     }))
     .expect("render");
 

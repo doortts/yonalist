@@ -38,6 +38,21 @@ pub struct PageDocument {
     /// Frontmatter keys this version does not know, kept verbatim so a newer
     /// device's file survives a round trip through an older one.
     pub unknown_frontmatter: Vec<String>,
+    /// Which device wrote this file, and what that device is called. Stated so
+    /// another device can put a name to the four hex characters its stamps
+    /// carry — nothing else in the format says what a device id belongs to.
+    ///
+    /// `None` where the file came from a device that does not state it, or
+    /// stated only half of it: a name with no id names nobody.
+    pub writer: Option<Writer>,
+}
+
+/// A device as it names itself in the files it writes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Writer {
+    /// The same four lowercase hex characters its HLCs carry.
+    pub device_id: String,
+    pub device_name: String,
 }
 
 impl PageDocument {
