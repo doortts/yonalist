@@ -1,5 +1,9 @@
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
-import { completionCascade, reopenOverPlacedRows } from "./previewTree";
+import {
+  completionCascade,
+  reopenOverPlacedRows,
+  settleOverDepartedRows
+} from "./previewTree";
 import { ROOT_ID } from "../store/storeSupport";
 
 function bullet(id: string, parentId: string): NoteView {
@@ -128,6 +132,18 @@ describe("reopening over a placed row", () => {
     expect(reopenOverPlacedRows(finished, withFresh)).toEqual(["parent"]);
   });
 
+  it("waits for a blank row until something is written in it", () => {
+    const blank = { ...bullet("blank", "parent"), text: "" };
+    const withBlank = [...finished, blank];
+
+    expect(reopenOverPlacedRows(finished, withBlank)).toEqual([]);
+
+    const written = withBlank.map((node) =>
+      node.id === "blank" ? { ...node, text: "something" } : node);
+
+    expect(reopenOverPlacedRows(withBlank, written)).toEqual(["parent"]);
+  });
+
   it("opens the rows above a row that moved in", () => {
     const elsewhere = bullet("elsewhere", "page");
     const before = [...finished, elsewhere];
@@ -165,5 +181,64 @@ describe("reopening over a placed row", () => {
       node.id === "child" ? { ...node, sortKey: 4_096 } : node);
 
     expect(reopenOverPlacedRows(finished, reordered)).toEqual([]);
+  });
+});
+
+describe("settling over a row that left", () => {
+  const branch = [
+    home(),
+    bullet("page", ROOT_ID),
+    bullet("parent", "page"),
+    { ...todo("done", "parent", true) },
+    bullet("open", "parent")
+  ];
+
+  it("finishes the row above the last open row to leave", () => {
+    const trashed = branch.map((node) =>
+      node.id === "open" ? { ...node, deleted: true } : node);
+
+    expect(settleOverDepartedRows(branch, trashed)).toEqual(["parent"]);
+  });
+
+  it("leaves the row above open while another open row stays", () => {
+    const withTwo = [...branch, bullet("also-open", "parent")];
+    const trashed = withTwo.map((node) =>
+      node.id === "open" ? { ...node, deleted: true } : node);
+
+    expect(settleOverDepartedRows(withTwo, trashed)).toEqual([]);
+  });
+
+  it("leaves a branch with no rows left alone", () => {
+    const emptied = branch.map((node) =>
+      node.id === "open" || node.id === "done"
+        ? { ...node, deleted: true }
+        : node);
+
+    expect(settleOverDepartedRows(branch, emptied)).toEqual([]);
+  });
+
+  it("finishes the row a moved-away row left behind", () => {
+    const moved = branch.map((node) =>
+      node.id === "open" ? { ...node, parentId: "page" } : node);
+
+    expect(settleOverDepartedRows(branch, moved)).toEqual(["parent"]);
+  });
+
+  it("finishes the row above a blank row that left", () => {
+    const blanked = branch.map((node) =>
+      node.id === "open" ? { ...node, text: "" } : node);
+    const trashed = blanked.map((node) =>
+      node.id === "open" ? { ...node, deleted: true } : node);
+
+    // Blank counts for nothing arriving and everything leaving: while it sat
+    // there the branch was not finished.
+    expect(settleOverDepartedRows(blanked, trashed)).toEqual(["parent"]);
+  });
+
+  it("settles nothing for a row blanked where it stands", () => {
+    const blanked = branch.map((node) =>
+      node.id === "open" ? { ...node, text: "" } : node);
+
+    expect(settleOverDepartedRows(branch, blanked)).toEqual([]);
   });
 });

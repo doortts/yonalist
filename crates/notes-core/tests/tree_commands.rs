@@ -1423,13 +1423,44 @@ fn a_new_row_under_a_finished_branch_opens_it_again() {
             id: id("fresh"),
             parent_id: id("plain"),
             position: Position::at_end(),
-            text: String::new(),
+            text: "one more thing".into(),
         },
     );
 
     // The branch is no longer finished, so the row heading it cannot say it is.
     assert!(!is_completed(&tree, "plain"));
     assert!(is_completed(&tree, "boxed"));
+}
+
+#[test]
+fn a_blank_row_waits_until_something_is_written_in_it() {
+    let mut tree = page_with_rows();
+    set_completed(&mut tree, "boxed", true);
+    set_completed(&mut tree, "bare", true);
+    assert!(is_completed(&tree, "plain"));
+
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::CreateNode {
+            id: id("fresh"),
+            parent_id: id("plain"),
+            position: Position::at_end(),
+            text: String::new(),
+        },
+    );
+
+    // Enter makes blanks all the time; an empty row is nothing left to do.
+    assert!(is_completed(&tree, "plain"));
+
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::UpdateText {
+            id: id("fresh"),
+            text: "something to do".into(),
+        },
+    );
+
+    assert!(!is_completed(&tree, "plain"));
 }
 
 #[test]
@@ -1481,6 +1512,76 @@ fn a_finished_row_placed_under_a_finished_branch_leaves_it_finished() {
         NotesCommand::MoveNode {
             id: id("elsewhere"),
             parent_id: id("plain"),
+            position: Position::at_end(),
+        },
+    );
+
+    assert!(is_completed(&tree, "plain"));
+}
+
+#[test]
+fn trashing_the_last_open_row_finishes_the_branch_above_it() {
+    let mut tree = page_with_rows();
+    set_completed(&mut tree, "boxed", true);
+    assert!(!is_completed(&tree, "plain"));
+
+    plan_and_apply(&mut tree, NotesCommand::DeleteSubtree { id: id("bare") });
+
+    // Nothing open is left under it, so the row heading the branch is done.
+    assert!(is_completed(&tree, "plain"));
+}
+
+#[test]
+fn trashing_the_last_blank_row_finishes_the_branch_above_it() {
+    let mut tree = page_with_rows();
+    set_completed(&mut tree, "boxed", true);
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::UpdateText {
+            id: id("bare"),
+            text: String::new(),
+        },
+    );
+    // A blank row is not something left to do, but it is not done either, so
+    // while it is there the branch above it is not finished.
+    assert!(!is_completed(&tree, "plain"));
+
+    plan_and_apply(&mut tree, NotesCommand::DeleteSubtree { id: id("bare") });
+
+    assert!(is_completed(&tree, "plain"));
+}
+
+#[test]
+fn trashing_the_last_row_of_all_leaves_the_branch_alone() {
+    let mut tree = page_with_rows();
+
+    for row in ["boxed", "bare"] {
+        plan_and_apply(&mut tree, NotesCommand::DeleteSubtree { id: id(row) });
+    }
+
+    // A row with nothing under it is not a finished branch, it is an empty one.
+    assert!(!is_completed(&tree, "plain"));
+}
+
+#[test]
+fn trashing_one_of_two_open_rows_leaves_the_branch_open() {
+    let mut tree = page_with_rows();
+
+    plan_and_apply(&mut tree, NotesCommand::DeleteSubtree { id: id("bare") });
+
+    assert!(!is_completed(&tree, "plain"));
+}
+
+#[test]
+fn moving_the_last_open_row_away_finishes_the_branch_it_left() {
+    let mut tree = page_with_rows();
+    set_completed(&mut tree, "boxed", true);
+
+    plan_and_apply(
+        &mut tree,
+        NotesCommand::MoveNode {
+            id: id("bare"),
+            parent_id: id("diary"),
             position: Position::at_end(),
         },
     );
