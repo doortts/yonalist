@@ -1327,6 +1327,76 @@ describe("v2 outline keyboard intent resolver", () => {
     }
   });
 
+  it("adds a sibling below the row on the sibling chord", () => {
+    for (const platform of ["mac", "other"] as const) {
+      const modifier = platform === "mac"
+        ? { metaKey: true }
+        : { ctrlKey: true };
+      // Mid-text, and the row has a child. Neither matters: the row keeps its
+      // text and its children, and the blank lands beside it.
+      expect(resolveOutlineKey(input({
+        key: "Enter",
+        shiftKey: true,
+        nodeId: "parent",
+        value: "Parent",
+        selectionStart: 3,
+        selectionEnd: 3,
+        platform,
+        ...modifier
+      }))).toEqual({
+        kind: "createSibling",
+        parentId: "page",
+        beforeId: "next"
+      });
+    }
+  });
+
+  it("adds the sibling at the end of the siblings when the row is the last", () => {
+    expect(resolveOutlineKey(input({
+      key: "Enter",
+      ctrlKey: true,
+      shiftKey: true,
+      nodeId: "next"
+    }))).toEqual({
+      kind: "createSibling",
+      parentId: "page",
+      beforeId: null
+    });
+  });
+
+  it("holds the sibling chord to one row", () => {
+    expect(resolveOutlineKey(input({
+      key: "Enter",
+      ctrlKey: true,
+      shiftKey: true,
+      repeat: true
+    }))).toEqual({ kind: "consume" });
+  });
+
+  it("leaves the sibling chord to the rows, not the page title", () => {
+    expect(resolveOutlineKey(input({
+      key: "Enter",
+      ctrlKey: true,
+      shiftKey: true,
+      target: "page",
+      nodeId: "page"
+    }))).toBeNull();
+  });
+
+  it("adds a sibling below an image row on the sibling chord", () => {
+    expect(handleImageNodeKeyDown(input({
+      key: "Enter",
+      ctrlKey: true,
+      shiftKey: true,
+      nodeId: "shot",
+      visibleNodes: [...visibleNodes, picture("shot", "page", 3_072)]
+    }))).toEqual({
+      kind: "createSibling",
+      parentId: "page",
+      beforeId: null
+    });
+  });
+
   it("maps existing single-row shortcuts per platform", () => {
     expect(resolveOutlineKey(input({
       key: "Enter",

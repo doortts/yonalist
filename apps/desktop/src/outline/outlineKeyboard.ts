@@ -309,6 +309,26 @@ export function resolveOutlineKey(
   }
 
   if (input.target === "row") {
+    // A blank beside the row, whatever the caret is doing and whatever the row
+    // carries: Enter has to read the caret and the children to decide between a
+    // split, a first child and a blank above, and none of that is wanted when
+    // the ask is simply one more row at this level.
+    if (
+      input.key === "Enter" &&
+      input.shiftKey &&
+      !input.altKey &&
+      primaryModifier(input)
+    ) {
+      if (input.repeat) return { kind: "consume" };
+      const node = nodeById(structureNodes, input.nodeId, input.structureIndex);
+      return node
+        ? {
+            kind: "createSibling",
+            parentId: node.parentId ?? input.pageId,
+            beforeId: nextSiblingId(structureNodes, node, input.structureIndex)
+          }
+        : null;
+    }
     if (
       input.key === "Enter" &&
       !input.altKey &&
@@ -716,12 +736,13 @@ export function handleImageNodeKeyDown(
 ): OutlineKeyIntent | null {
   if (input.isComposing || input.key === "Process") return null;
   const structureNodes = input.structureNodes ?? input.visibleNodes;
+  // Plain Enter, because a picture has no text to split, and the chord that
+  // says the same thing from a row with text, so one gesture reaches every row.
   if (
     input.key === "Enter" &&
     !input.altKey &&
-    !input.ctrlKey &&
-    !input.metaKey &&
-    !input.shiftKey
+    ((!input.ctrlKey && !input.metaKey && !input.shiftKey) ||
+      (input.shiftKey && primaryModifier(input)))
   ) {
     const node = nodeById(
       structureNodes,
