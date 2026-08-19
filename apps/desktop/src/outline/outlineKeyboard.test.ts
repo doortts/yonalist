@@ -1397,6 +1397,29 @@ describe("v2 outline keyboard intent resolver", () => {
     });
   });
 
+  it("holds the sibling chord to one row on a picture too", () => {
+    const withPicture = [...visibleNodes, picture("shot", "page", 3_072)];
+    expect(handleImageNodeKeyDown(input({
+      key: "Enter",
+      ctrlKey: true,
+      shiftKey: true,
+      nodeId: "shot",
+      repeat: true,
+      visibleNodes: withPicture
+    }))).toEqual({ kind: "consume" });
+    // A held plain Enter still stacks blanks off a picture, as it always has.
+    expect(handleImageNodeKeyDown(input({
+      key: "Enter",
+      nodeId: "shot",
+      repeat: true,
+      visibleNodes: withPicture
+    }))).toEqual({
+      kind: "createSibling",
+      parentId: "page",
+      beforeId: null
+    });
+  });
+
   it("maps existing single-row shortcuts per platform", () => {
     expect(resolveOutlineKey(input({
       key: "Enter",
