@@ -96,6 +96,16 @@ describe("completion cascade", () => {
       .toEqual(new Set(["first", "top"]));
   });
 
+  it("clears an ancestor bullet when a row under it is reopened", () => {
+    const allDone = branch.map((node) =>
+      node.kind === "page" ? node : { ...node, completed: true });
+
+    // `divider` carries no box, and the row reopened under it is not its own
+    // child, so this is the ancestor rule reading a marker it must not read.
+    expect(new Set(completionCascade(allDone, "beyond", false)))
+      .toEqual(new Set(["beyond", "divider", "top"]));
+  });
+
   it("drops rows already holding the target state", () => {
     const done = branch.map((node) =>
       node.id === "first" ? { ...node, completed: true } : node);

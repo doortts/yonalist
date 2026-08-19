@@ -1397,6 +1397,19 @@ fn an_ancestor_bullet_follows_the_rows_below_it_too() {
     assert!(is_completed(&tree, "plain"));
 }
 
+#[test]
+fn reopening_a_row_clears_an_ancestor_bullet_too() {
+    let mut tree = page_with_rows();
+    set_completed(&mut tree, "boxed", true);
+    set_completed(&mut tree, "bare", true);
+    assert!(is_completed(&tree, "plain"));
+
+    set_completed(&mut tree, "bare", false);
+
+    assert!(!is_completed(&tree, "plain"));
+    assert!(is_completed(&tree, "boxed"));
+}
+
 /// A page row is not a row of the outline it holds: it is the page's title and
 /// the name in the sidebar, and the filter that hides finished rows would hide
 /// the whole page with it. Finishing everything written on a page says the rows

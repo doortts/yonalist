@@ -45,6 +45,45 @@ fn session_history_and_idempotency_cache_are_bounded() {
     );
 }
 
+/// A coalesced entry covers more than one gesture, so its inverse is no longer
+/// what a single tick found: the rows it named must stop reading as a tick that
+/// can be taken back.
+#[test]
+fn coalescing_into_an_entry_forgets_the_rows_a_tick_named() {
+    let mut session = SessionState::new("session-1".into(), 0);
+    let row = NodeId::try_from("row").expect("valid node id");
+    session.record_history(NotesServiceHistoryEntry {
+        forward: Vec::new(),
+        inverse: Vec::new(),
+        carried_pictures: Vec::new(),
+        group: Some("gesture".into()),
+        completed_rows: Some(vec![row.clone()]),
+    });
+    assert_eq!(
+        session
+            .undo
+            .last()
+            .and_then(|entry| entry.completed_rows.clone()),
+        Some(vec![row])
+    );
+
+    session.record_history(NotesServiceHistoryEntry {
+        forward: Vec::new(),
+        inverse: Vec::new(),
+        carried_pictures: Vec::new(),
+        group: Some("gesture".into()),
+        completed_rows: None,
+    });
+
+    assert_eq!(session.undo.len(), 1);
+    assert!(
+        session
+            .undo
+            .last()
+            .is_some_and(|entry| entry.completed_rows.is_none())
+    );
+}
+
 #[test]
 fn a_single_coalesced_history_group_cannot_grow_without_bound() {
     let mut session = SessionState::new("session-1".into(), 0);
