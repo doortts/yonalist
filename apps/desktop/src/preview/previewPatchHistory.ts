@@ -10,9 +10,16 @@ export interface PreviewNodeDelta {
 export interface PreviewHistoryEntry {
   readonly forward: PreviewNodeDelta;
   readonly inverse: PreviewNodeDelta;
-  /** The rows a completing command named, when this entry is that command's
-   * alone -- the memory a clear of those same rows reads. */
-  readonly completedRows?: readonly string[];
+  /**
+   * What the row's children held before the press that finished them, when this
+   * entry is that press alone. The press after it hands them back, and it reads
+   * the memory off whichever entry is on top -- so an undo takes it away and a
+   * redo brings it back, as the server's does.
+   */
+  readonly cycledChildren?: {
+    readonly rowId: string;
+    readonly states: readonly (readonly [string, boolean])[];
+  };
 }
 
 function sameImage(left: ImageView | null, right: ImageView | null): boolean {
