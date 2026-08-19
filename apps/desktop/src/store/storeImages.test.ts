@@ -62,7 +62,6 @@ function api(
     ...appApi(),
     bootstrap: vi.fn().mockResolvedValue(snapshot),
     queryForest: vi.fn(),
-    execute: vi.fn(),
     importImageBytes,
     importImagePaths,
     search: vi.fn()

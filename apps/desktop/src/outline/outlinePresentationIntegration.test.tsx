@@ -40,8 +40,7 @@ function markdownApi(): NotesApi {
       nodes: markdownSnapshot.viewport?.nodes.filter((node) =>
         request.rootIds.includes(node.id)) ?? [],
       complete: true
-    })),
-    execute: vi.fn()
+    }))
   };
 }
 

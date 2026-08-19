@@ -65,7 +65,6 @@ async function outline() {
     queryForest: vi.fn().mockResolvedValue({
       revision: 1, nodes: [...nodes], complete: true
     }),
-    execute: vi.fn(),
     search: vi.fn()
   };
   const store = new NotesStore(api);
