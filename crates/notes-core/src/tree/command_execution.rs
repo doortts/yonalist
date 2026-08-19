@@ -723,23 +723,33 @@ impl NotesTree {
         Ok(())
     }
 
-    /// Opens the rows above `id` that were already there. A row this same
-    /// command brought along keeps whatever the command said it was: a pasted
-    /// subtree arrives as it was cut, and the paste is not news to it. The walk
-    /// still climbs through those rows to the ones that were there before, which
-    /// the arrival is news to. Rows already open are left alone, so a tree that
-    /// was already honest about the branch reports no change at all.
+    /// Opens the run of finished rows above arrived work, and stops as soon as it
+    /// reaches a row the arrival is no news to:
+    ///
+    /// - a finished row this same command brought along -- a pasted subtree says
+    ///   what it said when it was cut, and it speaks for everything inside it, so
+    ///   the walk ends there and the rows above it never hear about the paste;
+    /// - a row that was already open before the command, because whatever sits
+    ///   above it had already accepted an open row underneath.
+    ///
+    /// Everything in between is a finished row that was there before and now has
+    /// work under it that was not, so it opens.
     fn reopen_ancestors(&mut self, id: &NodeId, before: &Self) -> Result<(), DomainError> {
         let mut current = id.clone();
-        // Seeded with the placed row so a parent cycle ends the walk instead of
+        // Seeded with the arrived row so a parent cycle ends the walk instead of
         // climbing forever.
         let mut visited = BTreeSet::from([id.clone()]);
         while let Some(parent_id) = self.live_parent_row(&current) {
             if !visited.insert(parent_id.clone()) {
                 break;
             }
-            if before.nodes.contains_key(&parent_id) {
-                self.node_mut(&parent_id)?.set_completed(false);
+            let arrived = !before.nodes.contains_key(&parent_id);
+            let finished = self.node(&parent_id).is_some_and(NoteNode::is_completed);
+            match (finished, arrived) {
+                (true, true) => break,
+                (true, false) => self.node_mut(&parent_id)?.set_completed(false),
+                (false, false) => break,
+                (false, true) => {}
             }
             current = parent_id;
         }

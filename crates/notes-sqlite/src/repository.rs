@@ -235,9 +235,10 @@ fn collect_command_context(
 /// row on that path -- which is why a press costs the same on a page of ten rows
 /// and a page of ten thousand.
 ///
-/// The walk ends at the page row, where the climb itself ends. Every page is a
-/// child of the one root, so a walk that went one row further would read the whole
-/// vault to answer a question about one page.
+/// The walk ends below the page row, which is where the climb itself ends: a page
+/// row is not a row the climb may tick, so its children are no part of the answer.
+/// Stopping any later reads rows the press never touches -- the page's whole top
+/// level one row further up, and every page in the vault the row after that.
 fn collect_completion_context(
     connection: &Connection,
     id: &NodeId,
@@ -250,11 +251,26 @@ fn collect_completion_context(
         let Some(parent_id) = nodes.get(&row_id).and_then(NoteNode::parent_id).cloned() else {
             return Ok(());
         };
-        if nodes.get(&parent_id).map(NoteNode::kind) == Some(NoteNodeKind::Page) {
+        if is_page_row(&parent_id, nodes) {
             return Ok(());
         }
         row_id = parent_id;
     }
+}
+
+/// The one page and the rows directly under it, which the client draws as pages of
+/// their own. Mirrors `NotesTree`'s own reading, which is what decides where a
+/// climb stops.
+fn is_page_row(id: &NodeId, nodes: &BTreeMap<NodeId, NoteNode>) -> bool {
+    let Some(node) = nodes.get(id) else {
+        return false;
+    };
+    node.kind() == NoteNodeKind::Page
+        || node
+            .parent_id()
+            .and_then(|parent_id| nodes.get(parent_id))
+            .map(NoteNode::kind)
+            == Some(NoteNodeKind::Page)
 }
 
 /// The rows a departure leaves behind. A row taken away leaves the rows above it
