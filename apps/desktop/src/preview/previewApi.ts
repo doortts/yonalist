@@ -7,7 +7,8 @@ import { previewForest } from "./previewForest";
 import { previewHistory } from "./previewHistory";
 import { PreviewImages } from "./previewImages";
 import {
-  completionCascade,
+  completionCycle,
+  completionWrite,
   previewDescendants,
   previewSiblings,
   previewVisibleSubtree,
@@ -50,6 +51,16 @@ const undoStack: PreviewHistoryEntry[] = [];
  * over again. Without it, the resumed run would fold into whatever entry happened
  * to be on top and take someone else's edit off the stack with it.
  */
+/**
+ * What the row's children held before the press that finished them. The press
+ * after it hands them back, and anything else landing in between clears it --
+ * the same one-press memory the server keeps.
+ */
+let cycledChildren: {
+  rowId: string;
+  states: readonly (readonly [string, boolean])[];
+} | null = null;
+
 let historyGroupBaseline: {
   group: string;
   nodes: NoteView[];
@@ -200,6 +211,7 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
     previewImages.holds(contentHash, byteLength));
   const previousNodes = copyNodes();
   redoStack.length = 0;
+  if (envelope.command.kind !== "cycleCompleted") cycledChildren = null;
   // Clearing the very rows the last command ticked replays that command's own
   // inverse, so every row it reached is handed back what it held before rather
   // than cleared with the rest -- the server's own rule, mirrored. It goes
@@ -418,14 +430,38 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
       break;
     }
     case "setCompleted": {
-      // The desktop's server settles the whole Todo chain from one tick, so
-      // the preview does too.
-      const cascade = new Set(
-        completionCascade(nodes, command.id, command.completed)
+      // One row, and whatever the two transitions above it settle or open.
+      const written = new Set(
+        completionWrite(nodes, command.id, command.completed)
       );
-      changed = nodes.filter((node) => cascade.has(node.id));
+      changed = nodes.filter((node) => written.has(node.id));
       changed.forEach((node) => {
         node.completed = command.completed;
+      });
+      break;
+    }
+    case "cycleCompleted": {
+      // The server reads the press off the stored tree; the preview reads it off
+      // the rows it holds, and remembers the same one press.
+      const cycle = completionCycle(
+        nodes,
+        command.id,
+        cycledChildren && cycledChildren.rowId === command.id
+          ? cycledChildren.states
+          : []
+      );
+      // Read before the writes land: afterwards every child says it is done.
+      cycledChildren = cycle.stage === "children"
+        ? {
+          rowId: command.id,
+          states: previewSiblings(nodes, command.id)
+            .map((child) => [child.id, child.completed] as const)
+        }
+        : null;
+      const written = new Map(cycle.writes);
+      changed = nodes.filter((node) => written.has(node.id));
+      changed.forEach((node) => {
+        node.completed = written.get(node.id)!;
       });
       break;
     }
@@ -438,18 +474,17 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
       break;
     }
     case "setCompletedMany": {
-      // Each listed row settles its own chain, in order and against the rows
-      // the earlier ids already flipped, the way the server's bulk cascade
-      // does.
-      const cascade = new Set<string>();
+      // Each listed row is written the way a single one is, in order and against
+      // the rows the earlier ids already flipped.
+      const written = new Set<string>();
       for (const id of command.ids) {
-        for (const cascadedId of completionCascade(nodes, id, command.completed)) {
-          cascade.add(cascadedId);
-          const node = nodes.find((candidate) => candidate.id === cascadedId);
+        for (const rowId of completionWrite(nodes, id, command.completed)) {
+          written.add(rowId);
+          const node = nodes.find((candidate) => candidate.id === rowId);
           if (node) node.completed = command.completed;
         }
       }
-      changed = nodes.filter((node) => cascade.has(node.id));
+      changed = nodes.filter((node) => written.has(node.id));
       break;
     }
     case "setCollapsed":
@@ -675,6 +710,8 @@ export const previewNotesApi: NotesApi = {
   },
   async undo(request) {
     if (request.baseRevision !== revision) throw new Error("Preview revision is stale.");
+    // The memory belongs to the press that is being taken back.
+    cycledChildren = null;
     const entry = undoStack.pop();
     if (!entry) return receipt([]);
     pushBoundedHistory(redoStack, entry);
@@ -682,6 +719,7 @@ export const previewNotesApi: NotesApi = {
   },
   async redo(request) {
     if (request.baseRevision !== revision) throw new Error("Preview revision is stale.");
+    cycledChildren = null;
     const entry = redoStack.pop();
     if (!entry) return receipt([]);
     pushBoundedHistory(undoStack, entry);

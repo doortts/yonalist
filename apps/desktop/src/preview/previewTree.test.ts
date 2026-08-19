@@ -1,6 +1,7 @@
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
 import {
-  completionCascade,
+  completionCycle,
+  completionWrite,
   reopenOverPlacedRows,
   settleOverDepartedRows
 } from "./previewTree";
@@ -30,9 +31,9 @@ function home(): NoteView {
   return { ...bullet(ROOT_ID, ""), kind: "page", parentId: null };
 }
 
-describe("completion cascade", () => {
+describe("one completion write", () => {
   // `page` is a page row -- Home's own child, drawn as a page rather than as a
-  // row of one -- so the rows a tick settles start below it.
+  // row of one -- so the rows a press settles start below it.
   const branch = [
     home(),
     bullet("page", ROOT_ID),
@@ -43,22 +44,23 @@ describe("completion cascade", () => {
     todo("beyond", "divider")
   ];
 
-  it("settles every row under the one clicked, whatever its marker", () => {
-    expect(new Set(completionCascade(branch, "top", true)))
-      .toEqual(new Set(["top", "first", "second", "divider", "beyond"]));
+  it("writes the row it names and nothing under it", () => {
+    expect(completionWrite(branch, "top", true)).toEqual(["top"]);
   });
 
-  it("leaves the ancestor open while a sibling is still open", () => {
-    expect(completionCascade(branch, "first", true)).toEqual(["first"]);
+  it("leaves the parent open while a sibling is still open", () => {
+    expect(completionWrite(branch, "first", true)).toEqual(["first"]);
   });
 
-  it("ticks the ancestor once nothing under it is left open", () => {
+  it("ticks the parent once its own children are done", () => {
     const nearlyDone = branch.map((node) =>
-      ["second", "divider", "beyond"].includes(node.id)
+      ["second", "divider"].includes(node.id)
         ? { ...node, completed: true }
         : node);
 
-    expect(new Set(completionCascade(nearlyDone, "first", true)))
+    // `beyond` is open, but `divider` says it is done and stands for its own
+    // branch, so `top` follows its children.
+    expect(new Set(completionWrite(nearlyDone, "first", true)))
       .toEqual(new Set(["first", "top"]));
   });
 
@@ -68,35 +70,13 @@ describe("completion cascade", () => {
         ? node
         : { ...node, completed: true });
 
-    expect(completionCascade(nothingLeft, "top", true)).toEqual(["top"]);
+    expect(completionWrite(nothingLeft, "top", true)).toEqual(["top"]);
   });
 
-  it("leaves the ancestor open while a Todo further down is open", () => {
-    // The ticked sibling's own box is done, so a direct-children-only test
-    // reads the branch as settled while the row under it is still open.
-    const deep = [
-      home(),
-      bullet("page", ROOT_ID),
-      todo("top", "page"),
-      todo("done", "top", true),
-      todo("nested", "done"),
-      todo("last", "top")
-    ];
-
-    expect(completionCascade(deep, "last", true)).toEqual(["last"]);
-  });
-
-  it("clears every row under the one cleared", () => {
+  it("clears every finished row above the one reopened", () => {
     const allDone = branch.map((node) => ({ ...node, completed: true }));
 
-    expect(new Set(completionCascade(allDone, "top", false)))
-      .toEqual(new Set(["top", "first", "second", "divider", "beyond"]));
-  });
-
-  it("clears every ancestor when a nested row is reopened", () => {
-    const allDone = branch.map((node) => ({ ...node, completed: true }));
-
-    expect(new Set(completionCascade(allDone, "first", false)))
+    expect(new Set(completionWrite(allDone, "first", false)))
       .toEqual(new Set(["first", "top"]));
   });
 
@@ -104,17 +84,78 @@ describe("completion cascade", () => {
     const allDone = branch.map((node) =>
       node.kind === "page" ? node : { ...node, completed: true });
 
-    // `divider` carries no box, and the row reopened under it is not its own
-    // child, so this is the ancestor rule reading a marker it must not read.
-    expect(new Set(completionCascade(allDone, "beyond", false)))
+    expect(new Set(completionWrite(allDone, "beyond", false)))
       .toEqual(new Set(["beyond", "divider", "top"]));
   });
 
-  it("drops rows already holding the target state", () => {
+  it("drops rows already holding the state they would be given", () => {
     const done = branch.map((node) =>
       node.id === "first" ? { ...node, completed: true } : node);
 
-    expect(completionCascade(done, "first", true)).toEqual([]);
+    expect(completionWrite(done, "first", true)).toEqual([]);
+  });
+});
+
+describe("the completion cycle", () => {
+  const branch = () => [
+    home(),
+    bullet("page", ROOT_ID),
+    bullet("parent", "page"),
+    todo("done", "parent", true),
+    todo("open", "parent"),
+    bullet("bare", "parent")
+  ];
+
+  it("finishes only the row on the first press", () => {
+    const cycle = completionCycle(branch(), "parent", []);
+
+    expect(cycle.stage).toBe("row");
+    expect(cycle.writes).toEqual([["parent", true]]);
+  });
+
+  it("finishes the children that are open on the second press", () => {
+    const finished = branch().map((node) =>
+      node.id === "parent" ? { ...node, completed: true } : node);
+
+    const cycle = completionCycle(finished, "parent", []);
+
+    expect(cycle.stage).toBe("children");
+    // `done` is already done, so the press has nothing to say about it.
+    expect(new Set(cycle.writes.map(([id]) => id))).toEqual(new Set(["open", "bare"]));
+  });
+
+  it("hands the children back what they held on the third press", () => {
+    const allDone = branch().map((node) =>
+      node.kind === "page" || node.id === ROOT_ID ? node : { ...node, completed: true });
+
+    const cycle = completionCycle(allDone, "parent", [["open", false], ["bare", false], ["done", true]]);
+
+    expect(cycle.stage).toBe("back");
+    expect(new Set(cycle.writes)).toEqual(new Set([
+      ["open", false], ["bare", false], ["parent", false]
+    ]));
+  });
+
+  it("opens the row alone when nothing is remembered", () => {
+    const allDone = branch().map((node) =>
+      node.kind === "page" || node.id === ROOT_ID ? node : { ...node, completed: true });
+
+    const cycle = completionCycle(allDone, "parent", []);
+
+    expect(cycle.stage).toBe("back");
+    expect(cycle.writes).toEqual([["parent", false]]);
+  });
+
+  it("turns a childless row over in two presses", () => {
+    const rows = branch();
+    const first = completionCycle(rows, "bare", []);
+    expect(first.writes).toEqual([["bare", true]]);
+
+    const finished = rows.map((node) =>
+      node.id === "bare" ? { ...node, completed: true } : node);
+    const second = completionCycle(finished, "bare", []);
+    expect(second.stage).toBe("back");
+    expect(second.writes).toEqual([["bare", false]]);
   });
 });
 

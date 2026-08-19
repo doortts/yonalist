@@ -608,6 +608,15 @@ export class NotesStore {
       { kind: "setCompleted", id, completed }, historyGroup
     );
   }
+  /**
+   * One press of the completion chord. Which of its three moves this is comes
+   * from the server, which holds the whole tree: the row itself, then its
+   * children, then back again. A client only ever has a window of the page and
+   * cannot see a collapsed row's children to judge it.
+   */
+  async cycleCompleted(id: string): Promise<void> {
+    await this.executeCommand({ kind: "cycleCompleted", id });
+  }
   async setCompletedMany(ids: readonly string[], completed: boolean): Promise<void> {
     if (ids.length === 0) return;
     await this.executeCommand({
