@@ -10,7 +10,8 @@ import { NotesStore } from "../notesStore";
 import { markerLevelOfDepth } from "../outlineMarkers";
 import type { OutlineIndex } from "./outlineIndex";
 import {
-  endOutlineEnterGesture, handleImagePrimaryKeyDown, handleOutlineKeyDown,
+  addSiblingRow, endOutlineEnterGesture, handleImagePrimaryKeyDown,
+  handleOutlineKeyDown,
   type OutlineBandState, type SelectionKeyboardActions
 } from "./outlineSupport";
 import { handleOutlinePaste } from "./outlinePasteGesture";
@@ -245,6 +246,17 @@ export const OutlineRow = memo(function OutlineRow({
                   triggerRef={menuTriggerRef}
                   onClose={() => setMenuOpen(false)}
                   onAddNote={openNoteAndFocus}
+                  onAddSibling={() => {
+                    const current = runtime.state;
+                    addSiblingRow({
+                      store,
+                      node,
+                      parentId: node.parentId ?? current.pageId,
+                      beforeId: current.index.nextSiblingId(node.id),
+                      scope: menuTriggerRef.current
+                        ?.closest<HTMLElement>(".notes-outline") ?? null
+                    });
+                  }}
                   onDuplicate={() => {
                     const current = runtime.state;
                     void store.duplicate(

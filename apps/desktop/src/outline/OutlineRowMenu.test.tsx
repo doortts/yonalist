@@ -133,9 +133,9 @@ describe("OutlineRowMenu items", () => {
       const { labels } = await openRowMenu();
 
       expect(labels()).toEqual([
-        "Add note", "To-do", "Duplicate", "Upload image", "Complete", "Star",
-        "Move To...", "Move up", "Move down", "Indent", "Outdent", "Tags",
-        "Copy", "Cut", "Delete"
+        "Add note", "Add sibling", "To-do", "Duplicate", "Upload image",
+        "Complete", "Star", "Move To...", "Move up", "Move down", "Indent",
+        "Outdent", "Tags", "Copy", "Cut", "Delete"
       ]);
     });
 

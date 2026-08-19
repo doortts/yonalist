@@ -44,7 +44,7 @@ import { useMenuDismiss, useMenuPlacement } from "../useMenuDismiss";
  */
 export function OutlineRowMenu({
   node, store, hasNote, mode, runtime, triggerRef, onClose, onAddNote,
-  onDuplicate, onPickImage, onMoveTo, onTags
+  onAddSibling, onDuplicate, onPickImage, onMoveTo, onTags
 }: {
   readonly node: NoteView;
   readonly store: NotesStore;
@@ -54,6 +54,7 @@ export function OutlineRowMenu({
   readonly triggerRef: RefObject<HTMLButtonElement | null>;
   readonly onClose: () => void;
   readonly onAddNote: () => void;
+  readonly onAddSibling: () => void;
   readonly onDuplicate: () => void;
   readonly onPickImage: () => void;
   readonly onMoveTo: () => void;
@@ -90,6 +91,7 @@ export function OutlineRowMenu({
       ),
     row: {
       addNote: onAddNote,
+      addSibling: onAddSibling,
       duplicate: onDuplicate,
       pickImage: onPickImage
     },

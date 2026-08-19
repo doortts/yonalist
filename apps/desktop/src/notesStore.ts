@@ -416,9 +416,12 @@ export class NotesStore {
   beginCreateNode(
     parentId: string,
     text = "",
-    beforeId: string | null = null
+    beforeId: string | null = null,
+    marker: IpcMarkerKind = "bullet"
   ): PendingCreatedNode {
-    return this.outlineMutations.beginCreateNode(parentId, text, beforeId);
+    return this.outlineMutations.beginCreateNode(
+      parentId, text, beforeId, marker
+    );
   }
 
   /**

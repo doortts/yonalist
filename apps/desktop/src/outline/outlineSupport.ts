@@ -14,6 +14,24 @@ import {
 import { measureTextareaCaretLines } from "../textareaCaretLines";
 
 /**
+ * One more row beside this one, of the same kind, with the caret in it. The
+ * keyboard chord and the row menu both mean exactly this, so they say it once.
+ */
+export function addSiblingRow(input: {
+  readonly store: NotesStore;
+  readonly node: NoteView;
+  readonly parentId: string;
+  readonly beforeId: string | null;
+  readonly scope: HTMLElement | null;
+}): void {
+  const pending = input.store.beginCreateNode(
+    input.parentId, "", input.beforeId, input.node.marker
+  );
+  if (input.scope) focusAfterCommit(input.scope, pending.id, "start");
+  void pending.committed.catch(() => undefined);
+}
+
+/**
  * The live row band, named rather than positional: the two ids are the same type,
  * so a swap would compile and invert the growing-or-shrinking decision the
  * resolver makes from them.
@@ -442,7 +460,11 @@ function executeRowIntent(
           : undefined;
         const parentId = activeGesture?.parentId ?? intent.parentId;
         const beforeId = activeGesture?.beforeId ?? intent.beforeId;
-        const pending = store.beginCreateNode(parentId, "", beforeId);
+        // The row beside this one is a row of the same kind: a to-do list makes
+        // to-dos, and a plain list makes plain rows.
+        const pending = store.beginCreateNode(
+          parentId, "", beforeId, node.marker
+        );
         // A blank aimed at the caret's own row goes in above it, so the row --
         // and its text -- is what moved down. The caret goes with the text, the
         // way Enter at the head of a line does in any editor.
