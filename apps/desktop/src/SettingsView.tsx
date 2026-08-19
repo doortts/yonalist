@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { SyncAttachment } from "../../../packages/contracts/generated/SyncAttachment";
 import type { SyncConflict } from "../../../packages/contracts/generated/SyncConflict";
+import type { SyncConflictSide } from "../../../packages/contracts/generated/SyncConflictSide";
 import { AttachmentsSection } from "./AttachmentsSection";
 import type { UnusedAssetsReport } from "../../../packages/contracts/generated/UnusedAssetsReport";
 import type { VaultRebuildReport } from "../../../packages/contracts/generated/VaultRebuildReport";
@@ -318,44 +319,116 @@ function OverwrittenNotesSection({
         <p className="notes-inline-error" role="alert">{failure ?? error}</p>
       )}
       <p className="settings-copy">
-        When two devices changed the same note, one version had to win. The
-        text the other one had is kept here — putting it back writes that text
-        again as a new edit, and it travels to your other devices from there.
-        Dropping a record says you are done with it, and the old text goes.
+        When two devices changed the same note, one version had to win. Both are
+        here, with when each was written and on which device — putting the
+        dropped text back writes it again as a new edit, and it travels to your
+        other devices from there. Dropping a record says you are done with it,
+        and the old text goes.
       </p>
       <ul className="settings-conflict-list">
         {conflicts.map((conflict) => (
           <li key={conflict.seq}>
-            <span className="settings-conflict-text">{conflict.dropped.text}</span>
-            {restored === conflict.seq && (
-              <span role="status" className="settings-copy">Put back</span>
-            )}
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void act(async () => {
-                await restoreConflict(conflict.seq);
-                // The row stays: putting the text back is an edit, not a
-                // reading of the record. So the write has to announce itself.
-                setRestored(conflict.seq);
-              })}
-            >
-              Put this text back
-            </button>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void act(async () => {
-                await forgetConflict(conflict.seq);
-              })}
-            >
-              Drop this record
-            </button>
+            <div className="settings-conflict-sides">
+              <ConflictSide label="Kept" side={conflict.kept} />
+              <ConflictSide label="Dropped" side={conflict.dropped} />
+            </div>
+            <div className="settings-conflict-actions">
+              <span className="settings-conflict-note">
+                {reasonInWords(conflict.reason)} · noticed{" "}
+                {new Date(conflict.recordedAt * 1000).toLocaleString()}
+              </span>
+              {restored === conflict.seq && (
+                <span role="status" className="settings-copy">Put back</span>
+              )}
+              {/* One pair rather than two loose controls: they are the two
+                  answers to the same question, and the shared edge says so. */}
+              <div role="group" aria-label="What to do with this record">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void act(async () => {
+                    await restoreConflict(conflict.seq);
+                    // The row stays: putting the text back is an edit, not a
+                    // reading of the record. So the write has to announce itself.
+                    setRestored(conflict.seq);
+                  })}
+                >
+                  Put this text back
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void act(async () => {
+                    await forgetConflict(conflict.seq);
+                  })}
+                >
+                  Drop this record
+                </button>
+              </div>
+            </div>
           </li>
         ))}
       </ul>
     </section>
   );
+}
+
+/**
+ * One of the two versions, described the way the other one is: what it said,
+ * when it was written, and where. The two columns are the whole point of this
+ * screen — a version on its own says what was lost but not what it lost to.
+ */
+function ConflictSide({
+  label,
+  side
+}: {
+  readonly label: string;
+  readonly side: SyncConflictSide;
+}) {
+  return (
+    <div className="settings-conflict-side">
+      <div className="settings-conflict-side-head">
+        <span className={`settings-conflict-badge settings-conflict-badge-${label.toLowerCase()}`}>
+          {label}
+        </span>
+        <span className="settings-conflict-when">
+          {new Date(side.editedAtMillis).toLocaleString()}
+        </span>
+      </div>
+      <p className="settings-conflict-text">{side.text}</p>
+      <p className="settings-conflict-device">{deviceLabel(side)}</p>
+    </div>
+  );
+}
+
+/**
+ * What to call the device this version came from. A name when a file it wrote
+ * has said what it is called, and otherwise the four characters the stamp
+ * carries — which is a poorer label but the only true one available.
+ */
+function deviceLabel(side: SyncConflictSide): string {
+  const name = side.deviceName ?? side.deviceId;
+  return side.isThisDevice ? `${name} (this device)` : name;
+}
+
+/**
+ * The merge's own vocabulary for why one version lost, in words the reader can
+ * act on. An unknown reason is shown as itself rather than swallowed: a newer
+ * build's record is still a record.
+ */
+function reasonInWords(reason: string): string {
+  switch (reason) {
+    case "lww":
+      return "Later edit won";
+    case "same_t":
+      return "Same timestamp";
+    case "clock_drift":
+      return "The other device's clock disagreed";
+    case "dirty_overwrite":
+      return "An edit here had not been written out yet";
+    default:
+      return reason;
+  }
 }
 
 /**

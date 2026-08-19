@@ -1997,20 +1997,94 @@ body.is-resizing-pane {
 }
 
 .settings-conflict-list li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 10px;
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   font-size: 13px;
 }
 
+/* Two columns of equal weight: which one won is said by its badge, not by
+   giving it more room. `minmax(0, …)` because a long line would otherwise
+   push its column past the card rather than being clipped inside it. */
+.settings-conflict-sides {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.settings-conflict-side + .settings-conflict-side {
+  padding-left: 14px;
+  border-left: 1px solid var(--border);
+}
+
+.settings-conflict-side-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.settings-conflict-badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.settings-conflict-badge-kept {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.settings-conflict-badge-dropped {
+  background: var(--bg-hover);
+  color: var(--text-2);
+}
+
+.settings-conflict-when,
+.settings-conflict-device,
+.settings-conflict-note {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
 .settings-conflict-text {
+  margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.settings-conflict-device {
+  margin: 4px 0 0;
+}
+
+.settings-conflict-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+/* The two answers to one question, so they share an edge — and the shared
+   border is drawn once by pulling the second button onto the first's. */
+.settings-conflict-actions [role="group"] {
+  display: inline-flex;
+}
+
+.settings-conflict-actions [role="group"] button:first-child {
+  margin-right: -1px;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.settings-conflict-actions [role="group"] button:last-child {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
 }
 
 .settings-attachment-list {

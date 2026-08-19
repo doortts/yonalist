@@ -2,6 +2,7 @@ import type { CommandEnvelope } from "../../../../packages/contracts/generated/C
 import type { MutationReceipt } from "../../../../packages/contracts/generated/MutationReceipt";
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
 import type { NotesApi } from "../api";
+import type { SyncConflict } from "../../../../packages/contracts/generated/SyncConflict";
 import { previewForest } from "./previewForest";
 import { previewHistory } from "./previewHistory";
 import { PreviewImages } from "./previewImages";
@@ -480,6 +481,55 @@ const previewImages = new PreviewImages({
   recordReceipt
 });
 
+/**
+ * One conflict this device lost and one it won, so both device labels the
+ * screen can draw — a name, and "this device" — are visible. The preview has no
+ * second device, and this screen is the one place two of them disagreeing is
+ * what there is to see.
+ */
+const previewConflicts: SyncConflict[] = [
+  {
+    seq: 2,
+    nodeId: "Nd0000000001",
+    reason: "lww",
+    recordedAt: 1_755_500_100,
+    kept: {
+      text: "Ship the merge audit log this week",
+      editedAtMillis: 1_755_499_920_000,
+      deviceId: "cccc",
+      deviceName: "MacBook Pro",
+      isThisDevice: true
+    },
+    dropped: {
+      text: "Ship the merge audit log next sprint",
+      editedAtMillis: 1_755_499_740_000,
+      deviceId: "a3f1",
+      deviceName: "Studio",
+      isThisDevice: false
+    }
+  },
+  {
+    seq: 1,
+    nodeId: "Nd0000000002",
+    reason: "same_t",
+    recordedAt: 1_755_413_100,
+    kept: {
+      text: "Call the dentist on Friday",
+      editedAtMillis: 1_755_413_000_000,
+      deviceId: "a3f1",
+      deviceName: null,
+      isThisDevice: false
+    },
+    dropped: {
+      text: "Call the dentist, ask about the crown",
+      editedAtMillis: 1_755_413_000_000,
+      deviceId: "cccc",
+      deviceName: "MacBook Pro",
+      isThisDevice: true
+    }
+  }
+];
+
 export const previewNotesApi: NotesApi = {
   async bootstrap() {
     const pages = nodes
@@ -586,15 +636,17 @@ export const previewNotesApi: NotesApi = {
     // The preview holds nothing on its way to a folder.
   },
   async syncConflicts() {
-    // The preview has no other device to disagree with.
-    return [];
+    // Two fixtures rather than none: this screen is the one place two devices
+    // disagreeing is visible, and a preview that never disagrees cannot show
+    // it. The records are fixed, so dropping one changes nothing here.
+    return previewConflicts;
   },
   async syncForgetConflict() {
-    // Nothing was ever overwritten in a fixture, so there is nothing to drop.
+    // The fixtures are fixed, so the record is still there afterwards.
     return false;
   },
   async syncRestoreConflict() {
-    // Same reason — nothing was ever overwritten.
+    // Nothing to write back to: the preview's rows are fixtures.
   },
   async syncVaultSet() {
     // Same reason — the preview has nowhere to record a choice.

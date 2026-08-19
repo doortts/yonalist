@@ -173,6 +173,57 @@ describe("SettingsView", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("Put back");
   });
 
+  it("shows both versions with when and where each was written", async () => {
+    const readConflicts = vi.fn().mockResolvedValue([
+      {
+        seq: 7,
+        nodeId: "Nd0000000001",
+        reason: "lww",
+        recordedAt: 1_700_000_100,
+        kept: {
+          text: "the note that won",
+          editedAtMillis: 1_700_000_000_000,
+          deviceId: "a3f1",
+          deviceName: "Studio",
+          isThisDevice: false
+        },
+        dropped: {
+          text: "the note that lost",
+          editedAtMillis: 1_699_999_000_000,
+          deviceId: "b7d2",
+          deviceName: null,
+          isThisDevice: true
+        }
+      }
+    ]);
+    renderSettings({ readConflicts });
+
+    await openSection("Overwritten notes");
+
+    // Both versions, so the reader can tell what the choice actually cost.
+    expect(await screen.findByText("the note that won")).toBeInTheDocument();
+    expect(screen.getByText("the note that lost")).toBeInTheDocument();
+    // A named device reads as its name; an unnamed one falls back to the four
+    // characters the stamp carries rather than to nothing.
+    expect(screen.getByText("Studio")).toBeInTheDocument();
+    expect(screen.getByText("b7d2 (this device)")).toBeInTheDocument();
+    // Each version's own edit time, and the reason in words rather than in the
+    // merge's vocabulary.
+    expect(
+      screen.getByText(new Date(1_700_000_000_000).toLocaleString())
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(new Date(1_699_999_000_000).toLocaleString())
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Later edit won/)).toBeInTheDocument();
+    // And the two buttons are one pair, not two loose controls.
+    const actions = screen.getByRole("group", { name: "What to do with this record" });
+    expect(within(actions).getByRole("button", { name: "Put this text back" }))
+      .toBeInTheDocument();
+    expect(within(actions).getByRole("button", { name: "Drop this record" }))
+      .toBeInTheDocument();
+  });
+
   it("says nothing at all when no note has been overwritten", async () => {
     renderSettings();
 
