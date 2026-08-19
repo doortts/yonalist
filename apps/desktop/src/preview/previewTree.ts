@@ -75,6 +75,42 @@ function isPageRow(
   return parent?.kind === "page";
 }
 
+/**
+ * The rows a command put somewhere new -- created there, moved there, brought
+ * back from the trash there -- with the finished rows above them opened again:
+ * an open row the branch above it never counted means the rows over it cannot go
+ * on saying they are finished. A row the same command brought along keeps what
+ * the command said it was, so a pasted subtree arrives as it was cut. Mirrors
+ * notes-core's own pass, which runs after every command.
+ */
+export function reopenOverPlacedRows(
+  before: readonly NoteView[],
+  after: readonly NoteView[]
+): readonly string[] {
+  const beforeById = new Map(before.map((node) => [node.id, node]));
+  const afterById = new Map(after.map((node) => [node.id, node]));
+  const reopened = new Set<string>();
+  const placed = after.filter((node) => {
+    if (node.deleted || node.completed) return false;
+    const previous = beforeById.get(node.id);
+    return !previous || previous.deleted || previous.parentId !== node.parentId;
+  });
+  for (const node of placed) {
+    // Seeded with the placed row so a parent cycle ends the walk.
+    const seen = new Set<string>([node.id]);
+    let current = node;
+    while (current.parentId) {
+      const parent = afterById.get(current.parentId);
+      if (!parent || seen.has(parent.id)) break;
+      seen.add(parent.id);
+      if (parent.deleted || isPageRow(parent, afterById)) break;
+      if (parent.completed && beforeById.has(parent.id)) reopened.add(parent.id);
+      current = parent;
+    }
+  }
+  return [...reopened];
+}
+
 export function previewDescendants(
   nodes: readonly NoteView[],
   id: string
