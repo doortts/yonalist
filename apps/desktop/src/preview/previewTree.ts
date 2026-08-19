@@ -160,7 +160,10 @@ export function settleOverDepartedRows(
   };
   const orphanedParents = new Set<string>();
   for (const previous of before) {
-    if (!countsAsOpen(previous) || !previous.parentId) continue;
+    // Whatever held the branch open, which is any live row that was not done --
+    // a blank row among them. A blank counts for nothing when a row arrives, and
+    // for everything when it leaves.
+    if (previous.deleted || previous.completed || !previous.parentId) continue;
     const current = afterById.get(previous.id);
     const left = !current ||
       current.deleted ||

@@ -149,6 +149,9 @@ fn collect_command_context(
                 collect_children(connection, &parent_id, nodes)?;
             }
             collect_children(connection, previous_id, nodes)?;
+            // The row that goes away is the one above, so the branch it leaves is
+            // read from there.
+            collect_departure_context(connection, previous_id, nodes)?;
         }
         NotesCommand::RemoveEmptyNode { id } => {
             collect_remove_context(connection, id, nodes)?;
