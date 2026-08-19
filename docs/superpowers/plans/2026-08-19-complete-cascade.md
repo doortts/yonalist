@@ -39,7 +39,7 @@
 | 목표 | 마커와 무관하게, 상위 행을 완료하면 그 아래 모든 행이 완료되고, 곧바로 같은 행을 완료 해제하면 아래 행들이 완료 직전 상태로 돌아온다 |
 | 완료 조건 | 아래 인수 조건 표 |
 | 비대상 | 일반 bullet에 체크박스 노출(완료는 ⌘↩·메뉴·선택 바로), 완료 해제를 자식에서 시작할 때의 규칙 변경, 되돌림 창을 앱 재시작 뒤까지 보존, 스키마 변경 |
-| 영향 범위 | Rust `notes-core`(전파 규칙, 새 명령), `notes-application`(세션 기억), `notes-sqlite`(명령이 읽을 창), 프리뷰 미러(TS). IPC 명령 모양과 React 클라이언트는 변경 없음 |
+| 영향 범위 | Rust `notes-core`(전파 규칙), `notes-application`(세션 기억), `notes-sqlite`(명령이 읽을 창), 프리뷰 미러(TS). IPC 명령 모양과 React 클라이언트는 변경 없음 |
 | 데이터·Undo/Redo | 기억은 세션 메모리에만 둔다(스키마 v1 고정, 마이그레이션 없음). 되돌림도 앞으로 가는 변경 하나로 처리해 자기 undo 항목을 남긴다. 되돌린 뒤 undo를 누르면 다시 완료 상태로 간다 |
 | 직접 확인할 사용자 시나리오 | 새 페이지에 상위 일반 bullet 하나와 자식 셋(일반 bullet, 미리 완료해 둔 Todo, 일반 bullet 아래의 Todo 손자)을 만들고 상위 행에서 ⌘↩ → 손자까지 전부 완료. 다시 ⌘↩ → 미리 완료였던 Todo만 완료로 남는다. 같은 순서에서 중간에 다른 행을 편집한 뒤 ⌘↩ → 아래가 전부 해제된다 |
 
@@ -51,8 +51,8 @@
 | A2 | 아래가 전부 완료되면 조상도 마커와 무관하게 따라 완료된다 | 1 |
 | A3 | 하위 행 하나를 다시 열면 조상도 마커와 무관하게 따라 열린다 | 1 |
 | A4 | 명령이 읽는 창이 전파 대상 전체를 담는다 — 저장된 트리에서도 A1~A3이 성립한다 | 2 |
-| A5 | 프리뷰가 A1~A3과 같은 결과를 낸다 | 3 |
-| A6 | 조상 자동 완료는 페이지 행 아래에서 멈춘다 | 1b |
+| A5 | 프리뷰가 A1~A3·A6과 같은 결과를 낸다 | 4 |
+| A6 | 조상 자동 완료는 페이지 행 아래에서 멈춘다 | 3 |
 | A7 | 완료 직후 같은 행을 해제하면 하위는 완료 직전 값으로 돌아간다 | 5 |
 | A8 | 사이에 다른 변경이 하나라도 끼면 되돌림 창이 닫히고 해제는 아래를 전부 해제한다 | 5 |
 | A9 | 되돌림은 undo 항목 하나를 남긴다 — undo하면 다시 전부 완료 상태로 간다 | 5 |
@@ -63,30 +63,31 @@
 각 항목은 커밋 하나, 먼저 빨간 테스트부터.
 
 1. **전파에서 마커 조건을 없앤다** — `command_execution.rs`의 `todo_subtree_ids`가
-   하위 전체를 돌고, `live_todo_parent`가 마커를 보지 않는다. 결과적으로 규칙이
-   하나로 줄어 진짜 트리 규칙이 된다. 마커 조건이 사라지므로 두 함수 이름도
-   체인이 아니라 트리를 말하는 이름으로 바꾼다.
+   `descendant_ids`가 되어 하위 전체를 돌고, `live_todo_parent`는 `live_parent_row`가
+   되어 마커를 보지 않는다. 규칙이 하나로 줄어 트리 자체의 규칙이 된다.
    테스트: `crates/notes-core/tests/tree_commands.rs`
-   `completing_a_row_settles_every_descendant_whatever_its_marker`,
-   `an_ancestor_bullet_follows_once_nothing_below_it_is_open`
-   기존 경계를 잠근 테스트는 새 규칙으로 고친다:
-   `ticking_a_todo_settles_the_chain_below_it_and_stops_at_a_bullet`(:1358).
-2. **명령이 읽는 창을 넓힌다** — `repository.rs`의 `SetCompleted`/
-   `SetCompletedMany`가 Todo 체인 대신 조상 + 조상 아래 전체를 읽는다. 조상이
-   따라 완료될지 판단하려면 그 조상 아래 형제 가지도 창에 있어야 한다.
+   `ticking_a_row_settles_every_descendant_whatever_its_marker`,
+   `an_ancestor_bullet_follows_the_rows_below_it_too`,
+   `an_ancestor_waits_for_the_whole_branch_below_it`
+   기존 경계를 잠근 테스트는 새 규칙으로 고쳤다:
+   `ticking_a_todo_settles_the_chain_below_it_and_stops_at_a_bullet`,
+   `completing_a_selection_settles_each_listed_row_s_own_chain`,
+   `a_selection_settles_an_ancestor_no_single_row_in_it_could_close`.
+2. **명령이 읽는 창을 넓힌다** — `repository.rs`의 `collect_todo_chain`이
+   `collect_cascade_branch`가 되고 `todo_chain_root`가 `cascade_root`가 된다.
+   조상이 따라 완료될지 판단하려면 그 조상 아래 형제 가지도 창에 있어야 한다.
    테스트: `crates/notes-sqlite/tests/todo_cascade.rs`
-   `a_bullet_child_outside_the_todo_chain_still_settles`
-   기존 테스트 두 개의 "bullet에서 끊긴다" 단정을 고친다(:148, :169).
-3. **프리뷰 미러를 맞춘다** — `previewTree.ts`의 `completionCascade`가 같은
-   규칙을 쓴다.
-   테스트: `apps/desktop/src/preview/previewTree.test.ts`
-   `settles every descendant whatever its marker`
-   기존 `ticks every Todo under the one clicked, stopping at a bullet`(:35)을
-   새 규칙으로 고친다.
-1b. **조상 자동 완료는 페이지 행 아래에서 멈춘다** — `live_parent_row`가
+   `an_open_row_outside_the_window_keeps_the_rows_above_it_open`
+   기존 테스트 두 개의 "bullet에서 끊긴다" 단정을 고쳤다.
+3. **조상 자동 완료는 페이지 행 아래에서 멈춘다** — `live_parent_row`가
    `is_page_row`(루트 Page이거나 그 직계 자식)에서 멈춘다.
    테스트: `crates/notes-core/tests/tree_commands.rs`
    `the_climb_stops_below_the_page_row`
+4. **프리뷰 미러를 맞춘다** — `previewTree.ts`의 `completionCascade`가 같은 규칙을
+   쓴다(마커 무관, 페이지 행 경계 포함).
+   테스트: `apps/desktop/src/preview/previewTree.test.ts`
+   `settles every row under the one clicked, whatever its marker`,
+   `stops the climb below the page row`
 5. **세션이 직전 상태를 기억한다** — 기억은 undo 스택이다. 완료 명령이 만든 history
    항목에 그 명령이 지목한 행 목록(`completed_rows`)을 달아 두고, 바로 다음 명령이
    같은 행들의 완료 해제이면 그 항목의 inverse를 앞으로 가는 패치로 커밋한다.
@@ -99,7 +100,7 @@
    `a_later_tick_of_another_row_closes_the_window`
 6. **프리뷰도 같은 기억을 갖는다** — `previewApi`의 세션 상태에 같은 규칙.
    테스트: `apps/desktop/src/preview/previewApi.test.ts`
-   `an uncomplete right after the cascade restores the rows`
+   `hands the rows back their own states when a tick is taken back`
 
 ## 결정과 이유
 
@@ -113,7 +114,7 @@
    눈에 보이는 결과 하나는 미리 말해 둔다. 일반 bullet 부모도 아래를 전부
    완료하면 따라 완료되어 취소선이 생긴다. 이게 싫으면 조상 규칙만 Todo로 남기면
    되고, 아이템 1의 절반과 A2·A3만 빠진다.
-   페이지 행은 예외다(아이템 1b). 페이지는 아웃라인의 행이 아니라 그 행들이 적힌
+   페이지 행은 예외다(아이템 3). 페이지는 아웃라인의 행이 아니라 그 행들이 적힌
    면이고, 완료 숨김 필터가 페이지째로 감출 수 있다.
 3. **되돌림 창 = 바로 다음 변경 하나** — 완료 전파 뒤 같은 행의 완료 해제가 그
    세션의 다음 변경으로 들어오면 되돌린다. 그 사이 어떤 변경이든(다른 행 편집,
