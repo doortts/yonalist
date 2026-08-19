@@ -1,6 +1,18 @@
 # 완료는 선언이다 — ⌘↩ 3단계
 
-작성 2026-08-19. Fable 5 한도 초과로 설계도 Opus 5가 썼다.
+작성 2026-08-19, 구현 반영. Fable 5 한도 초과로 설계도 Opus 5가 썼다.
+눌러 볼 수 있는 시안: `docs/superpowers/mockups/2026-08-19-declared-completion/index.html`.
+
+구현하면서 계획과 달라진 것:
+- 아이템 1·2·3·4를 커밋 하나로 합쳤다(`fd7edb0a`). 같은 함수들을 함께 고쳐야 해서
+  나눌 수 없었다. 5·6은 커밋 하나(`fb9fb4f7`).
+- 3단계의 기억은 도메인 명령이 받는 `restore` 필드로 옮겼다. `CycleCompleted`가
+  `Vec<(NodeId, bool)>`를 받고, 서버가 세션 history 항목에서 채운다. undo 항목의
+  inverse를 그대로 재생하는 이전 방식은 "자기 행도 열어야 한다"를 담지 못했다.
+- 이전의 "방금 누른 틱 되돌리기" 기계(`restore_ticked_rows`, `completed_rows`,
+  `same_rows`, `completion_rows`)는 전부 지웠다. 3단계가 그 동작이다.
+- 테스트 파일 두 개를 이름부터 바꿨다: `todo_cascade.rs` → `completion_climb.rs`,
+  `completion_restore.rs` → `completion_cycle.rs`.
 
 ## 무엇이 바뀌는가
 
