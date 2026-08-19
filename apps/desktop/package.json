@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --config vite.config.ts",
     "build": "tsc -p tsconfig.json && vite build --config vite.config.ts",
-    "test": "vitest run --config vite.config.ts"
+    "test": "NODE_OPTIONS=--disable-warning=ExperimentalWarning vitest run --config vite.config.ts"
   },
   "dependencies": {
     "@tauri-apps/plugin-dialog": "2.7.1"
