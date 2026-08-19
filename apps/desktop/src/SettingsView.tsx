@@ -326,7 +326,7 @@ function OverwrittenNotesSection({
       <ul className="settings-conflict-list">
         {conflicts.map((conflict) => (
           <li key={conflict.seq}>
-            <span className="settings-conflict-text">{conflict.text}</span>
+            <span className="settings-conflict-text">{conflict.dropped.text}</span>
             {restored === conflict.seq && (
               <span role="status" className="settings-copy">Put back</span>
             )}

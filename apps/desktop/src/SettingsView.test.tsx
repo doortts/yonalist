@@ -145,9 +145,22 @@ describe("SettingsView", () => {
       {
         seq: 7,
         nodeId: "Nd0000000001",
-        text: "the note that lost",
         reason: "lww",
-        recordedAt: 1_700_000_000
+        recordedAt: 1_700_000_000,
+        kept: {
+          text: "the note that won",
+          editedAtMillis: 1_700_000_000_000,
+          deviceId: "a3f1",
+          deviceName: "Studio",
+          isThisDevice: false
+        },
+        dropped: {
+          text: "the note that lost",
+          editedAtMillis: 1_699_999_000_000,
+          deviceId: "cccc",
+          deviceName: "MacBook Pro",
+          isThisDevice: true
+        }
       }
     ]);
     renderSettings({ readConflicts, restoreConflict });
@@ -502,9 +515,22 @@ describe("SettingsView: one section at a time", () => {
   const conflict = {
     seq: 7,
     nodeId: "Nd0000000001",
-    text: "the note that lost",
     reason: "lww",
-    recordedAt: 1_700_000_000
+    recordedAt: 1_700_000_000,
+    kept: {
+      text: "the note that won",
+      editedAtMillis: 1_700_000_000_000,
+      deviceId: "a3f1",
+      deviceName: "Studio",
+      isThisDevice: false
+    },
+    dropped: {
+      text: "the note that lost",
+      editedAtMillis: 1_699_999_000_000,
+      deviceId: "cccc",
+      deviceName: "MacBook Pro",
+      isThisDevice: true
+    }
   };
 
   it("opens on Appearance and lists the other sections", async () => {
