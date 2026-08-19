@@ -41,7 +41,9 @@ function storeStub() {
     flushDraft: vi.fn(() => Promise.resolve()),
     beginBackspaceGesture: vi.fn(() => "gesture"),
     endBackspaceGesture: vi.fn(),
-    beginRemoveEmptyNode: vi.fn(() => ({ committed: Promise.resolve() }))
+    beginRemoveEmptyNode: vi.fn(() => ({ committed: Promise.resolve() })),
+    cycleCompleted: vi.fn(() => Promise.resolve()),
+    setCompleted: vi.fn(() => Promise.resolve())
   };
 }
 
@@ -169,6 +171,19 @@ describe("v2 outline row keys reach the collaborator they name", () => {
       }
     }
   );
+
+  it("sends the completion chord to the cycle, and never to a plain toggle", () => {
+    const store = storeStub();
+    const given = options(store);
+
+    // jsdom reports no Mac platform, so the primary modifier here is Control.
+    fireEvent.keyDown(mountRow(given), { key: "Enter", ctrlKey: true });
+
+    expect(store.cycleCompleted).toHaveBeenCalledWith("beta");
+    // The server decides which of the three presses this is, so the client has
+    // no business naming a state.
+    expect(store.setCompleted).not.toHaveBeenCalled();
+  });
 
   it("hands a band key to the selection command, not to the row", () => {
     const given = options(storeStub(), true);
