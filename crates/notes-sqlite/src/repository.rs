@@ -231,9 +231,13 @@ fn collect_command_context(
 
 /// What a press of the completion chord can read or write: the row, its own
 /// children, and the path above it with each of those rows' children. A finished
-/// row stands for its own branch, so nothing here has to reach past one level
-/// below any row on that path -- which is why a press costs the same on a page of
-/// ten rows and a page of ten thousand.
+/// row stands for its own branch, so nothing here reaches past one level below any
+/// row on that path -- which is why a press costs the same on a page of ten rows
+/// and a page of ten thousand.
+///
+/// The walk ends at the page row, where the climb itself ends. Every page is a
+/// child of the one root, so a walk that went one row further would read the whole
+/// vault to answer a question about one page.
 fn collect_completion_context(
     connection: &Connection,
     id: &NodeId,
@@ -246,18 +250,16 @@ fn collect_completion_context(
         let Some(parent_id) = nodes.get(&row_id).and_then(NoteNode::parent_id).cloned() else {
             return Ok(());
         };
+        if nodes.get(&parent_id).map(NoteNode::kind) == Some(NoteNodeKind::Page) {
+            return Ok(());
+        }
         row_id = parent_id;
     }
 }
 
-/// The branch a row is about to leave. A row taken away leaves the rows above it
+/// The rows a departure leaves behind. A row taken away leaves the rows above it
 /// with one thing less to do, and whether they are finished can only be read off
-/// the rows that stay -- which means the branch, not the row the command names.
-///
-/// ponytail: this is the same page-wide read a tick pays for, now on the commands
-/// that take a row away as well. Both stop being page-wide the day the settle
-/// question ("is any row under this one still open?") is asked of the
-/// materialised paths in SQL instead of answered from a loaded window.
+/// the rows that stay -- their own children, from where the row used to sit.
 fn collect_departure_context(
     connection: &Connection,
     id: &NodeId,
