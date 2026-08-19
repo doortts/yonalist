@@ -145,6 +145,9 @@ describe("StoreDrafts", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(escaped).toEqual([]);
+      // The containment belongs to the timer alone: a caller that awaits the
+      // same flush -- a blur, a batch -- still hears the failure.
+      await expect(drafts.flushTitle("one")).rejects.toThrow("boom");
     } finally {
       vi.useRealTimers();
       process.off("unhandledRejection", listener);
