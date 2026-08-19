@@ -149,6 +149,85 @@ fn a_new_row_opens_the_finished_rows_above_it_in_storage() {
     assert!(session.is_completed("open"));
 }
 
+/// The same three placements the domain covers, but through storage: the rows the
+/// climb reads can only be the ones the working set loaded, and each command
+/// loads its own.
+#[test]
+fn a_moved_row_opens_the_finished_rows_above_it_in_storage() {
+    let storage = stored_page();
+    let mut session = Session::open(&storage);
+    session.run(IpcNotesCommand::CreateNode {
+        id: "elsewhere".into(),
+        parent_id: "page".into(),
+        before_id: None,
+        text: "Elsewhere".into(),
+    });
+    session.set_completed("parent", true);
+
+    session.run(IpcNotesCommand::MoveNode {
+        id: "elsewhere".into(),
+        parent_id: "parent".into(),
+        before_id: None,
+    });
+
+    assert!(!session.is_completed("parent"));
+}
+
+#[test]
+fn a_duplicate_opens_the_finished_rows_above_it_in_storage() {
+    let storage = stored_page();
+    let mut session = Session::open(&storage);
+    session.run(IpcNotesCommand::CreateNode {
+        id: "source".into(),
+        parent_id: "page".into(),
+        before_id: None,
+        text: "Source".into(),
+    });
+    session.set_completed("parent", true);
+
+    session.run(IpcNotesCommand::Duplicate {
+        id: "source".into(),
+        new_id: "source-copy".into(),
+        parent_id: "parent".into(),
+        before_id: None,
+    });
+
+    assert!(!session.is_completed("parent"));
+}
+
+#[test]
+fn a_row_out_of_the_trash_opens_the_finished_rows_above_it_in_storage() {
+    let storage = stored_page();
+    let mut session = Session::open(&storage);
+    session.run(IpcNotesCommand::DeleteSubtree { id: "open".into() });
+    session.set_completed("parent", true);
+    assert!(session.is_completed("parent"));
+
+    session.run(IpcNotesCommand::RestoreSubtree { id: "open".into() });
+
+    assert!(!session.is_completed("parent"));
+}
+
+/// The reopening rides in the same patch as the row that caused it, so one undo
+/// takes both back.
+#[test]
+fn undoing_the_new_row_puts_the_tick_it_opened_back() {
+    let storage = stored_page();
+    let mut session = Session::open(&storage);
+    session.set_completed("parent", true);
+    session.run(IpcNotesCommand::CreateNode {
+        id: "fresh".into(),
+        parent_id: "parent".into(),
+        before_id: None,
+        text: String::new(),
+    });
+    assert!(!session.is_completed("parent"));
+
+    session.undo().unwrap();
+
+    assert!(session.is_completed("parent"));
+}
+
 #[test]
 fn an_uncomplete_right_after_the_tick_hands_the_rows_back_their_own_states() {
     let storage = stored_page();

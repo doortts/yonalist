@@ -1,5 +1,5 @@
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
-import { completionCascade } from "./previewTree";
+import { completionCascade, reopenOverPlacedRows } from "./previewTree";
 import { ROOT_ID } from "../store/storeSupport";
 
 function bullet(id: string, parentId: string): NoteView {
@@ -111,5 +111,59 @@ describe("completion cascade", () => {
       node.id === "first" ? { ...node, completed: true } : node);
 
     expect(completionCascade(done, "first", true)).toEqual([]);
+  });
+});
+
+describe("reopening over a placed row", () => {
+  const finished = [
+    home(),
+    bullet("page", ROOT_ID),
+    { ...bullet("parent", "page"), completed: true },
+    { ...todo("child", "parent", true) }
+  ];
+
+  it("opens the rows above a row that was not there before", () => {
+    const withFresh = [...finished, bullet("fresh", "parent")];
+
+    expect(reopenOverPlacedRows(finished, withFresh)).toEqual(["parent"]);
+  });
+
+  it("opens the rows above a row that moved in", () => {
+    const elsewhere = bullet("elsewhere", "page");
+    const before = [...finished, elsewhere];
+    const after = before.map((node) =>
+      node.id === "elsewhere" ? { ...node, parentId: "parent" } : node);
+
+    expect(reopenOverPlacedRows(before, after)).toEqual(["parent"]);
+  });
+
+  it("leaves the rows above a finished row alone", () => {
+    const withFinished = [
+      ...finished,
+      { ...bullet("done-too", "parent"), completed: true }
+    ];
+
+    expect(reopenOverPlacedRows(finished, withFinished)).toEqual([]);
+  });
+
+  it("leaves a row the same command brought along with its own state", () => {
+    // A pasted subtree: the finished row and its open child arrive together, so
+    // the arrival is not news to the row it arrived under.
+    const pasted = [
+      ...finished,
+      { ...bullet("pasted", "parent"), completed: true },
+      bullet("pasted-child", "pasted")
+    ];
+
+    // `parent` was already there and now carries an open row, so it opens.
+    // `pasted` arrived in the same command and keeps the tick it was cut with.
+    expect(reopenOverPlacedRows(finished, pasted)).toEqual(["parent"]);
+  });
+
+  it("reports nothing when rows only change order", () => {
+    const reordered = finished.map((node) =>
+      node.id === "child" ? { ...node, sortKey: 4_096 } : node);
+
+    expect(reopenOverPlacedRows(finished, reordered)).toEqual([]);
   });
 });
