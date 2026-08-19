@@ -738,12 +738,19 @@ export function handleImageNodeKeyDown(
   const structureNodes = input.structureNodes ?? input.visibleNodes;
   // Plain Enter, because a picture has no text to split, and the chord that
   // says the same thing from a row with text, so one gesture reaches every row.
+  const siblingChord = input.key === "Enter" &&
+    !input.altKey &&
+    input.shiftKey &&
+    primaryModifier(input);
   if (
     input.key === "Enter" &&
     !input.altKey &&
-    ((!input.ctrlKey && !input.metaKey && !input.shiftKey) ||
-      (input.shiftKey && primaryModifier(input)))
+    ((!input.ctrlKey && !input.metaKey && !input.shiftKey) || siblingChord)
   ) {
+    // A held plain Enter stacks blanks off a picture the way it does off a row.
+    // The chord asks for one row, and asks for it the same way here as it does
+    // from a row with text.
+    if (siblingChord && input.repeat) return { kind: "consume" };
     const node = nodeById(
       structureNodes,
       input.nodeId,
