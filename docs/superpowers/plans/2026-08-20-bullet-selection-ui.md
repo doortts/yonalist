@@ -147,12 +147,9 @@ because Clear is the first child.
   export test green. The toolbar's Check/✕ buttons shift left while a
   selection is live (its export slot empties); accepted.
 - The pill cannot be literally `position: absolute` against `.notes-outline`:
-  the section scrolls with its content (vertical scroll lives on
-  `.detail-scroll`, or `.notes-detail-pane` in split), so an absolute pill
-  would scroll away — that is why the toolbar and the old bar are sticky. The
-  approved "floats, no layout push" is delivered as a zero-height sticky
-  wrapper with the pill absolute inside it (a sticky box is a containing
-  block for absolute children):
+  it needs a containing block that does not move, and it must add no layout
+  height. Both come from a zero-height sticky wrapper with the pill absolute
+  inside it (a sticky box is a containing block for absolute children):
   ```css
   .notes-selection-float {
     position: sticky;
@@ -281,6 +278,34 @@ each row already knows its own depth, and CSS does the subtraction.
 makes consecutive rows one block; rounding only a run's outer corners needs
 `:has()` run-boundary rules on both edges and is deliberately skipped. The
 band on a noted row now also covers the note's trailing 8px margin.
+
+## Runtime evidence (WKWebView, AppleWebKit/605.1.15)
+
+The browser pane is Chromium and proves nothing about the shipped engine, so
+both CSS-bearing items were measured with a Swift + WKWebView probe loading the
+app's own `styles.css` and `notes.css` over the app's pane nesting.
+
+Item 3 — the two-layer background parses and computes: `CSS.supports` true for
+both a two-layer `background-size` and `calc(100% - var(--x))`; with
+`--notes-band-depth: 0`, selected rows at depth 0, 1 and 2 all resolved to
+`background-position: 0px 0px` and `background-size: 100% 100%` on the band
+layer, with the guide layer keeping its own `76px 0px` / `68px 100%`. Unselected
+and solo-image rows resolved to no tint.
+
+Item 2 — measured identically in split and non-split: toolbar 48px tall, pill
+6px below it, wrapper height 0, first row at 113px against a pill occupying
+63-103px (no overlap), and both toolbar and pill unmoved after scrolling the
+rows to 400px.
+
+That last measurement corrected a wrong premise in this doc: the vertical
+scroller is `.notes-outline-rows`, which sits *below* the wrapper, so the
+wrapper's sticky offset never engages against a scroll. The 6px gap comes from
+the sticky offset resolving against `.notes-detail-pane` instead:
+`gap = 54px - toolbar height`. It degrades safely -- a toolbar taller than 54px
+clamps the offset to 0 and the pill rests flush at the toolbar's bottom edge
+rather than overlapping it -- but `top: calc(48px + 6px)` does duplicate the
+toolbar's own `min-height`, and that coupling is the thing to revisit if the
+toolbar's height ever changes.
 
 ## Known risks
 
