@@ -88,7 +88,12 @@ function context(overrides: {
       rootIds,
       ROOT
     ),
-    row: { addNote: vi.fn(), duplicate: vi.fn(), pickImage: vi.fn() },
+    row: {
+      addNote: vi.fn(),
+      addSibling: vi.fn(),
+      duplicate: vi.fn(),
+      pickImage: vi.fn()
+    },
     selection: {
       indent: vi.fn(),
       outdent: vi.fn(),
@@ -145,10 +150,29 @@ describe("the outline menu command table", () => {
 
   it("keeps today's row items and slots the new ones before Delete", () => {
     expect(outlineMenuCommands("row").map((entry) => entry.id)).toEqual([
-      "addNote", "marker", "duplicate", "uploadImage", "complete", "star",
-      "moveTo", "moveUp", "moveDown", "indent", "outdent", "tags", "copy",
-      "cut", "delete"
+      "addNote", "addSibling", "marker", "duplicate", "uploadImage", "complete",
+      "star", "moveTo", "moveUp", "moveDown", "indent", "outdent", "tags",
+      "copy", "cut", "delete"
     ]);
+  });
+
+  it("prints the sibling chord beside Add sibling", () => {
+    const command = outlineMenuCommands("row")
+      .find((entry) => entry.id === "addSibling");
+
+    expect(command?.binding?.hint).toEqual({
+      mac: "⌘⇧↩",
+      other: "Ctrl+Shift+Enter"
+    });
+    expect(command?.binding?.keys).toEqual({
+      mac: "Meta+Shift+Enter",
+      other: "Control+Shift+Enter"
+    });
+  });
+
+  it("leaves Add sibling out of the selection menu", () => {
+    expect(outlineMenuCommands("selection").map((entry) => entry.id))
+      .not.toContain("addSibling");
   });
 
   it("puts Tags after Duplicate and before Copy in both modes", () => {

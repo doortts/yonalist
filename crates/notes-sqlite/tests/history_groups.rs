@@ -70,6 +70,53 @@ fn seed(
     }
 }
 
+// A row made beside a to-do arrives as two commands -- the row, then its box --
+// because the create command carries no marker. One group, so one undo takes the
+// row away rather than leaving a boxless row behind.
+#[test]
+fn undoing_a_coalesced_create_and_marker_takes_the_whole_row() {
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let service = NotesService::new(&storage, "session", 0);
+    seed(&storage, &service, &[("boxed", "page", "Boxed")]);
+
+    for (request_id, notes_command) in [
+        (
+            "create",
+            IpcNotesCommand::CreateNode {
+                id: "fresh".into(),
+                parent_id: "page".into(),
+                before_id: None,
+                text: String::new(),
+            },
+        ),
+        (
+            "marker",
+            IpcNotesCommand::SetMarker {
+                id: "fresh".into(),
+                marker: notes_application::IpcMarkerKind::Todo,
+            },
+        ),
+    ] {
+        service
+            .execute(command(
+                request_id,
+                storage.revision().unwrap(),
+                Some("create:fresh"),
+                notes_command,
+            ))
+            .unwrap();
+    }
+    assert!(storage.node("fresh").unwrap().is_some());
+
+    let receipt = service
+        .undo(history(storage.revision().unwrap()))
+        .expect("undo the gesture");
+
+    assert!(storage.node("fresh").unwrap().is_none());
+    // Nothing left on the stack from the same gesture.
+    assert_eq!(receipt.history.undo_depth, 2);
+}
+
 // The parent-merge gesture: the parent takes the merged text, the child is
 // blanked, and removeEmptyNode drops it — all under one history group, so the
 // entry replays two upserts of the child on undo.

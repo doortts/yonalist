@@ -1,3 +1,4 @@
+import type { IpcMarkerKind } from "../../../../packages/contracts/generated/IpcMarkerKind";
 import type { NotesState } from "../notesState";
 import type { StoreCommands } from "./storeCommands";
 import {
@@ -74,10 +75,17 @@ export class StoreOutlineMutations {
     return pending.id;
   }
 
+  /**
+   * `marker` makes the row in the kind the caller asks for. The create command
+   * carries no marker, so the kind follows as its own command under a shared
+   * history group: the coalescer folds the two into the one undo step the
+   * gesture reads as, the way the marker menu item already does.
+   */
   beginCreateNode(
     parentId: string,
     text = "",
-    beforeId: string | null = null
+    beforeId: string | null = null,
+    marker: IpcMarkerKind = "bullet"
   ): PendingCreatedNode {
     const id = freshId();
     const state = this.host.read();
@@ -85,14 +93,19 @@ export class StoreOutlineMutations {
       id,
       parentId,
       beforeId,
-      text
+      text,
+      marker
     }));
+    const historyGroup = marker === "bullet" ? null : `create:${id}`;
     const committed = this.host.execute({
       kind: "createNode",
       id,
       parent_id: parentId,
       before_id: beforeId,
       text
+    }, historyGroup).then(async () => {
+      if (marker === "bullet") return;
+      await this.host.execute({ kind: "setMarker", id, marker }, historyGroup);
     }).then(() => undefined).catch((cause) => {
       const current = this.host.read();
       const removedIds = subtreeIds(current.nodes, [id]);
