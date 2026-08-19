@@ -1,6 +1,6 @@
 import {
   ArrowDown, ArrowUp, Check, Copy, CopyPlus, CornerUpRight, ImagePlus,
-  IndentDecrease, IndentIncrease, MessageSquareText, Minus, Scissors,
+  IndentDecrease, IndentIncrease, ListPlus, MessageSquareText, Minus, Scissors,
   SquareCheckBig, Star, Tag, Trash2, type LucideIcon
 } from "lucide-react";
 import type { NoteView } from "../../../../packages/contracts/generated/NoteView";
@@ -19,9 +19,9 @@ export type OutlineMenuMode = "row" | "selection";
 export type OutlinePlatform = "mac" | "other";
 
 export type OutlineMenuCommandId =
-  | "addNote" | "marker" | "duplicate" | "uploadImage" | "complete" | "star"
-  | "delete" | "moveTo" | "moveUp" | "moveDown" | "indent" | "outdent"
-  | "tags" | "copy" | "cut";
+  | "addNote" | "addSibling" | "marker" | "duplicate" | "uploadImage"
+  | "complete" | "star" | "delete" | "moveTo" | "moveUp" | "moveDown"
+  | "indent" | "outdent" | "tags" | "copy" | "cut";
 
 /**
  * What the row menu needs to know to draw and run one command. `plans` is
@@ -61,6 +61,7 @@ export interface OutlineMenuContext {
   readonly plans: SelectionMovePlans;
   readonly row: {
     readonly addNote: () => void;
+    readonly addSibling: () => void;
     readonly duplicate: () => void;
     readonly pickImage: () => void;
   };
@@ -155,6 +156,16 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
     label: () => "Add note",
     eligibility: ALWAYS,
     execute: (context) => context.row.addNote()
+  },
+  {
+    id: "addSibling",
+    icon: () => ListPlus,
+    label: () => "Add sibling",
+    binding: binding(
+      "⌘⇧↩", "Ctrl+Shift+Enter", "Meta+Shift+Enter", "Control+Shift+Enter"
+    ),
+    eligibility: ALWAYS,
+    execute: (context) => context.row.addSibling()
   },
   {
     id: "marker",
@@ -347,7 +358,8 @@ export const OUTLINE_MENU_COMMANDS: readonly OutlineMenuCommand[] = [
 // command here: trailing it keeps a keyboard user roving toward Indent from
 // landing on it when they overshoot.
 const ROW_ORDER: readonly OutlineMenuCommandId[] = [
-  "addNote", "marker", "duplicate", "uploadImage", "complete", "star",
+  "addNote", "addSibling", "marker", "duplicate", "uploadImage", "complete",
+  "star",
   "moveTo", "moveUp", "moveDown", "indent", "outdent", "tags", "copy", "cut",
   "delete"
 ];

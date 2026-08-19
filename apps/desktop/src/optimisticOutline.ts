@@ -55,6 +55,8 @@ export function projectCreateNode(
     readonly parentId: string;
     readonly beforeId: string | null;
     readonly text: string;
+    /** A row made beside another takes that row's own kind. */
+    readonly marker?: NoteView["marker"];
   }
 ): OptimisticOutlineState {
   const allocation = allocateSiblingSortKey(
@@ -66,7 +68,8 @@ export function projectCreateNode(
     input.id,
     input.parentId,
     allocation.sortKey,
-    input.text
+    input.text,
+    input.marker
   );
   return {
     nodes: orderOutline([
