@@ -105,6 +105,13 @@ impl<'a> Session<'a> {
         });
     }
 
+    fn set_completed_many(&mut self, node_ids: &[&str], completed: bool) {
+        self.run(IpcNotesCommand::SetCompletedMany {
+            ids: node_ids.iter().map(|value| (*value).to_owned()).collect(),
+            completed,
+        });
+    }
+
     fn undo(&mut self) -> Result<MutationReceipt, NotesError> {
         let receipt = self.service.undo(HistoryRequest {
             session_id: "session".into(),
@@ -154,6 +161,38 @@ fn taking_back_the_restore_puts_the_whole_branch_back() {
     }
 }
 
+/// A selection hands its ids over in whatever order it holds them, and the two
+/// halves of one gesture -- tick, then take it back -- need not hand them over
+/// the same way. The rows are what identifies the gesture, not their order.
+#[test]
+fn a_selection_takes_its_tick_back_whatever_order_the_ids_arrive_in() {
+    let storage = stored_page();
+    let mut session = Session::open(&storage);
+    session.set_completed("done", true);
+
+    session.set_completed_many(&["parent", "open"], true);
+    session.set_completed_many(&["open", "parent"], false);
+
+    assert!(!session.is_completed("parent"));
+    assert!(!session.is_completed("open"));
+    // Ticked before the selection was, so it keeps its tick.
+    assert!(session.is_completed("done"));
+}
+
+#[test]
+fn a_wider_selection_does_not_read_as_the_one_that_was_ticked() {
+    let storage = stored_page();
+    let mut session = Session::open(&storage);
+    session.set_completed("done", true);
+
+    session.set_completed_many(&["parent"], true);
+    // A different set of rows, so there is nothing to hand back: the clear is
+    // the plain clear.
+    session.set_completed_many(&["parent", "open"], false);
+
+    assert!(!session.is_completed("done"));
+}
+
 #[test]
 fn an_edit_in_between_closes_the_window() {
     let storage = stored_page();
@@ -175,7 +214,7 @@ fn an_edit_in_between_closes_the_window() {
 }
 
 #[test]
-fn a_later_tick_of_another_row_closes_the_window() {
+fn clearing_another_row_first_closes_the_window() {
     let storage = stored_page();
     let mut session = Session::open(&storage);
     session.set_completed("done", true);

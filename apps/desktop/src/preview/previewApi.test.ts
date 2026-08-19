@@ -657,6 +657,58 @@ describe("browser-only preview adapter", () => {
     expect(completedById.get("restore-done")).toBe(true);
   });
 
+  it("takes a selection's tick back whatever order the ids arrive in", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    let revision = boot.revision;
+    const run = async (requestId: string, command: IpcNotesCommand) => {
+      const result = await previewNotesApi.execute({
+        sessionId: boot.sessionId,
+        requestId,
+        baseRevision: revision,
+        historyGroup: null,
+        command
+      });
+      revision = result.revision;
+      return result;
+    };
+    const ids = ["selection-first", "selection-second"];
+    for (const id of ids) {
+      await run(`${id}-create`, {
+        kind: "createNode",
+        id,
+        parent_id: pageId,
+        before_id: null,
+        text: id
+      });
+    }
+    await run("selection-first-tick", {
+      kind: "setCompleted", id: ids[0], completed: true
+    });
+    await run("selection-tick", {
+      kind: "setCompletedMany", ids, completed: true
+    });
+
+    await run("selection-clear", {
+      kind: "setCompletedMany", ids: [...ids].reverse(), completed: false
+    });
+
+    const page = await previewNotesApi.queryViewport({
+      pageId,
+      anchorId: null,
+      beforeCursor: null,
+      afterCursor: null,
+      limit: 200
+    });
+    const completedById = new Map(
+      page.nodes.map((node) => [node.id, node.completed])
+    );
+    // Ticked before the selection was, so the selection's own tick is all that
+    // comes back off it.
+    expect(completedById.get(ids[0])).toBe(true);
+    expect(completedById.get(ids[1])).toBe(false);
+  });
+
   it("completes multiple preview rows with one batch command", async () => {
     const boot = await previewNotesApi.bootstrap();
     const pageId = boot.activePageId!;
