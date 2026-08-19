@@ -62,4 +62,12 @@ describe("native selection across the sidebar", () => {
       "user-select: text;"
     );
   });
+
+  // And the sync badge, which is the only place a refusal names the file it
+  // could not read. That path is there to be taken somewhere else.
+  it("keeps the sync trouble text selectable", () => {
+    expect(
+      rule(appStyles, ".yonalist-navigation-pane .notes-sync-status-badge")
+    ).toContain("user-select: text;");
+  });
 });

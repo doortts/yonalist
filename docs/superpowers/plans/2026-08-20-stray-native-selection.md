@@ -44,9 +44,10 @@
 | 데이터·Undo/Redo | 해당 없음 |
 | 직접 확인할 사용자 시나리오 | 아래 수동 확인 절 |
 
-인수 조건 6은 원 계약에 없던 추가다. 사이드바에 `user-select: none`을 깔면 검색
-필드 안의 선택이 같이 죽을 수 있어서, 이 수정이 새로 깨뜨릴 수 있는 기존 동작을
-고정하는 행이다. 목표를 넓힌 것이 아니다.
+인수 조건 6과 7은 원 계약에 없던 추가다. 사이드바에 `user-select: none`을 깔면
+검색 필드와 동기화 배지 안의 선택이 같이 죽어서, 이 수정이 새로 깨뜨릴 수 있는
+기존 동작을 고정하는 행이다. 목표를 넓힌 것이 아니다. 7은 아이템 2의 리뷰가
+잡아 뒤늦게 더했다.
 
 ### 인수 조건
 
@@ -58,6 +59,7 @@
 | A4 | 비편집 행의 글자 위 드래그가 textarea 선택으로 매핑되는 기존 동작이 유지된다 | 1 |
 | A5 | 행을 가로지르는 드래그가 만드는 다중 선택 밴드가 유지되고, 끝난 뒤 잔상이 없다 | 1 |
 | A6 | 사이드바 검색 필드 안의 텍스트 선택은 유지된다 | 2 |
+| A7 | 사이드바 동기화 배지가 알려 주는 파일 경로와 오류 문구는 선택·복사할 수 있다 | 2 |
 
 ## 아이템
 
@@ -103,9 +105,14 @@
    - 기존 `.yonalist-navigation-pane` 블록(`styles.css:680`)에
      `user-select: none;`을 더한다.
    - `.yonalist-navigation-pane input { user-select: text; }`를 새로 쓴다.
-     사이드바에서 사용자가 글자를 고르는 곳은 검색 필드(`App.tsx:648`
+     사이드바에서 사용자가 글자를 치는 곳은 검색 필드(`App.tsx:648`
      `<input type="search">`) 하나뿐이다. 페이지 제목은 아웃라인의 페이지 제목
      필드로 고치므로 사이드바 목록 자체엔 선택할 이유가 없다.
+   - `.yonalist-navigation-pane .notes-sync-status-badge { user-select: text; }`를
+     새로 쓴다. 리뷰가 잡은 회귀다(A7). 동기화 배지(`SyncStatusBadge.tsx:71`,
+     `App.tsx:778`)는 읽지 못한 파일의 경로와 이유를 알려 주는 유일한 화면이고,
+     경로는 다른 데로 가져가라고 적어 둔 글자다. 상시 `none`이 그걸 같이
+     죽였는데 `input` 재개방은 이 배지를 덮지 않는다.
 
    실패 테스트와 예상 빨간 출력(같은 테스트 파일에 추가):
    - `turns native selection off across the sidebar`:
@@ -114,6 +121,9 @@
    - `keeps the search field selectable`:
      `rule(appStyles, ".yonalist-navigation-pane input")`
      → `Error: missing rule: .yonalist-navigation-pane input`
+   - `keeps the sync trouble text selectable`:
+     `rule(appStyles, ".yonalist-navigation-pane .notes-sync-status-badge")`
+     → `Error: missing rule: .yonalist-navigation-pane .notes-sync-status-badge`
 
 ## 결정과 이유
 
@@ -186,7 +196,8 @@
 5. 비편집 행의 글자 위 드래그 — textarea 선택으로 매핑된다 (A4).
 6. 행을 가로지르는 드래그 — 밴드가 그려지고, pointerup 뒤 잔상이 없다 (A5).
 7. 검색 필드를 열고 입력한 글자를 드래그로 선택 — 선택된다 (A6).
-8. 행 메뉴의 태그 chooser 입력 필드에서 글자 선택 — 선택된다 (A3).
+8. 동기화 배지가 떠 있을 때 파일 경로를 드래그로 선택 — 선택되고 Cmd+C로 복사된다 (A7).
+9. 행 메뉴의 태그 chooser 입력 필드에서 글자 선택 — 선택된다 (A3).
 
 ## 게이트
 
