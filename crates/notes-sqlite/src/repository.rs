@@ -152,11 +152,13 @@ fn collect_command_context(
         }
         NotesCommand::RemoveEmptyNode { id } => {
             collect_remove_context(connection, id, nodes)?;
+            collect_departure_context(connection, id, nodes)?;
         }
         // The same slice the blank-row removal needs -- the row, its ancestors
         // (the parent among them), its children, and the sibling after it.
         NotesCommand::MergeNodeIntoParent { id, .. } => {
             collect_remove_context(connection, id, nodes)?;
+            collect_departure_context(connection, id, nodes)?;
         }
         NotesCommand::MoveNode {
             id,
@@ -164,6 +166,7 @@ fn collect_command_context(
             position,
         } => {
             collect_move_context(connection, id, parent_id, position, nodes)?;
+            collect_departure_context(connection, id, nodes)?;
         }
         NotesCommand::MoveNodes { moves } => {
             let target_parents = moves
@@ -181,9 +184,11 @@ fn collect_command_context(
                     &node_move.position,
                     nodes,
                 )?;
+                collect_departure_context(connection, &node_move.id, nodes)?;
             }
         }
         NotesCommand::IndentNode { id, parent_id } => {
+            collect_departure_context(connection, id, nodes)?;
             collect_ancestors(connection, id, nodes)?;
             collect_ancestors(connection, parent_id, nodes)?;
             collect_descendants(connection, id, nodes)?;
@@ -219,11 +224,13 @@ fn collect_command_context(
         NotesCommand::DeleteSubtree { id } | NotesCommand::RestoreSubtree { id } => {
             collect_ancestors(connection, id, nodes)?;
             collect_descendants(connection, id, nodes)?;
+            collect_departure_context(connection, id, nodes)?;
         }
         NotesCommand::DeleteSubtrees { ids } => {
             for id in ids {
                 collect_ancestors(connection, id, nodes)?;
                 collect_descendants(connection, id, nodes)?;
+                collect_departure_context(connection, id, nodes)?;
             }
         }
     }
@@ -269,6 +276,26 @@ fn cascade_root(nodes: &BTreeMap<NodeId, NoteNode>, id: &NodeId) -> NodeId {
         root = parent.id().clone();
     }
     root
+}
+
+/// The branch a row is about to leave. A row taken away leaves the rows above it
+/// with one thing less to do, and whether they are finished can only be read off
+/// the rows that stay -- which means the branch, not the row the command names.
+///
+/// ponytail: this is the same page-wide read a tick pays for, now on the commands
+/// that take a row away as well. Both stop being page-wide the day the settle
+/// question ("is any row under this one still open?") is asked of the
+/// materialised paths in SQL instead of answered from a loaded window.
+fn collect_departure_context(
+    connection: &Connection,
+    id: &NodeId,
+    nodes: &mut BTreeMap<NodeId, NoteNode>,
+) -> Result<(), StorageError> {
+    collect_ancestors(connection, id, nodes)?;
+    let Some(parent_id) = nodes.get(id).and_then(NoteNode::parent_id).cloned() else {
+        return Ok(());
+    };
+    collect_cascade_branch(connection, &parent_id, nodes)
 }
 
 fn collect_move_context(

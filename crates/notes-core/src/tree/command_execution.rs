@@ -577,10 +577,80 @@ impl NotesTree {
         Ok(())
     }
 
-    /// A row that arrives somewhere new -- created there, moved there, brought
-    /// back from the trash there -- is an open row the branch above it had not
-    /// counted. Whatever it lands under cannot go on saying it is finished, so
-    /// every finished row over it opens again. It sits here, after the command
+    /// A row this command took away -- trashed, or moved under some other row --
+    /// is one thing less left to do where it was. If nothing under that row is
+    /// left open, the row is finished and says so. A branch left with no rows at
+    /// all is not finished, it is empty, and keeps whatever it held.
+    ///
+    /// Only rows that left count here. A row blanked in place does not settle the
+    /// branch above it: the working set a text edit loads is the row and its
+    /// ancestors, so the rows that would have to be read to know the branch is
+    /// finished are not there to read.
+    pub(super) fn settle_over_rows_this_command_took_away(
+        &mut self,
+        before: &Self,
+    ) -> Result<(), DomainError> {
+        let mut orphaned_parents = BTreeSet::new();
+        for (id, previous) in &before.nodes {
+            if !counts_as_open(previous) {
+                continue;
+            }
+            let left = match self.nodes.get(id) {
+                None => true,
+                Some(current) => {
+                    current.is_deleted() || current.parent_id() != previous.parent_id()
+                }
+            };
+            if !left {
+                continue;
+            }
+            if let Some(parent_id) = previous.parent_id() {
+                orphaned_parents.insert(parent_id.clone());
+            }
+        }
+        for parent_id in orphaned_parents {
+            self.settle_ancestors(&parent_id)?;
+        }
+        Ok(())
+    }
+
+    /// Ticks `id` and the rows above it for as long as nothing under them is
+    /// left open. The same reading the cascade climbs on, from the other
+    /// direction: there a tick settles the branch, here the branch settles
+    /// itself once the last open row is gone.
+    fn settle_ancestors(&mut self, id: &NodeId) -> Result<(), DomainError> {
+        let mut current = Some(id.clone());
+        // Seeded with nothing, so a parent cycle ends the walk instead of
+        // climbing forever.
+        let mut visited = BTreeSet::new();
+        while let Some(row_id) = current {
+            if !visited.insert(row_id.clone()) {
+                break;
+            }
+            let Some(node) = self.node(&row_id) else {
+                break;
+            };
+            if node.is_deleted() || self.is_page_row(node) {
+                break;
+            }
+            let below = self.descendant_ids(&row_id);
+            let finished = !below.is_empty()
+                && below
+                    .iter()
+                    .all(|below_id| self.node(below_id).is_some_and(NoteNode::is_completed));
+            if !finished {
+                break;
+            }
+            self.node_mut(&row_id)?.set_completed(true);
+            current = self.live_parent_row(&row_id);
+        }
+        Ok(())
+    }
+
+    /// A row that starts counting against the branch above it -- written into,
+    /// created with something already in it, moved in, brought back from the
+    /// trash -- leaves the rows over it unfinished, so every finished row above
+    /// it opens again. It sits here, after the command
     /// rather than inside each one, because every command that puts a row
     /// somewhere would otherwise need the same afterthought of its own.
     pub(super) fn reopen_over_rows_this_command_placed(
@@ -590,10 +660,12 @@ impl NotesTree {
         let placed = self
             .nodes
             .values()
-            .filter(|node| !node.is_deleted() && !node.is_completed())
+            .filter(|node| counts_as_open(node))
             .filter(|node| match before.nodes.get(node.id()) {
                 None => true,
-                Some(previous) => previous.is_deleted() || previous.parent_id() != node.parent_id(),
+                Some(previous) => {
+                    !counts_as_open(previous) || previous.parent_id() != node.parent_id()
+                }
             })
             .map(|node| node.id().clone())
             .collect::<Vec<_>>();
@@ -662,6 +734,17 @@ impl NotesTree {
                 .and_then(|parent_id| self.node(parent_id))
                 .is_some_and(|parent| parent.kind() == NoteNodeKind::Page)
     }
+}
+
+/// Whether a row is something left to do, as far as the rows above it are
+/// concerned. An empty row is not: Enter makes blanks all the time, and a branch
+/// does not come open because someone made room to type in it.
+fn counts_as_open(node: &NoteNode) -> bool {
+    !node.is_deleted() && !node.is_completed() && holds_something(node)
+}
+
+fn holds_something(node: &NoteNode) -> bool {
+    !node.text().trim().is_empty() || !node.note().trim().is_empty() || node.image().is_some()
 }
 
 #[cfg(test)]

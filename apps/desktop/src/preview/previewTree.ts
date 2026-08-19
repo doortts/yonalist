@@ -76,12 +76,23 @@ function isPageRow(
 }
 
 /**
- * The rows a command put somewhere new -- created there, moved there, brought
- * back from the trash there -- with the finished rows above them opened again:
- * an open row the branch above it never counted means the rows over it cannot go
- * on saying they are finished. A row the same command brought along keeps what
- * the command said it was, so a pasted subtree arrives as it was cut. Mirrors
- * notes-core's own pass, which runs after every command.
+ * Whether a row is something left to do, as far as the rows above it are
+ * concerned. An empty row is not: Enter makes blanks all the time, and a branch
+ * does not come open because someone made room to type in it.
+ */
+function countsAsOpen(node: NoteView): boolean {
+  if (node.deleted || node.completed) return false;
+  return node.text.trim().length > 0 ||
+    node.note.trim().length > 0 ||
+    node.image !== null;
+}
+
+/**
+ * The rows that start counting against the branch above them -- written into,
+ * created with something already in them, moved in, brought back from the trash
+ * -- with the finished rows above them opened again. A row the same command
+ * brought along keeps what the command said it was, so a pasted subtree arrives
+ * as it was cut. Mirrors notes-core's own pass, which runs after every command.
  */
 export function reopenOverPlacedRows(
   before: readonly NoteView[],
@@ -91,9 +102,11 @@ export function reopenOverPlacedRows(
   const afterById = new Map(after.map((node) => [node.id, node]));
   const reopened = new Set<string>();
   const placed = after.filter((node) => {
-    if (node.deleted || node.completed) return false;
+    if (!countsAsOpen(node)) return false;
     const previous = beforeById.get(node.id);
-    return !previous || previous.deleted || previous.parentId !== node.parentId;
+    return !previous ||
+      !countsAsOpen(previous) ||
+      previous.parentId !== node.parentId;
   });
   for (const node of placed) {
     // Seeded with the placed row so a parent cycle ends the walk.
@@ -109,6 +122,67 @@ export function reopenOverPlacedRows(
     }
   }
   return [...reopened];
+}
+
+/**
+ * The rows a command took away -- trashed, or moved under some other row -- leave
+ * the rows above them with one thing less to do, and a row with nothing open left
+ * under it is finished. A branch left with no rows at all is empty, not finished.
+ * Mirrors notes-core's own settle, including its one restraint: a row blanked in
+ * place settles nothing, because the server's working set for a text edit cannot
+ * see the rows that would have to say so.
+ */
+export function settleOverDepartedRows(
+  before: readonly NoteView[],
+  after: readonly NoteView[]
+): readonly string[] {
+  const afterById = new Map(after.map((node) => [node.id, node]));
+  const children = new Map<string, NoteView[]>();
+  for (const node of after) {
+    if (!node.parentId || node.deleted) continue;
+    const siblings = children.get(node.parentId);
+    if (siblings) siblings.push(node);
+    else children.set(node.parentId, [node]);
+  }
+  const subtree = (rootId: string): readonly NoteView[] => {
+    const found: NoteView[] = [];
+    const seen = new Set<string>([rootId]);
+    const descend = (parentId: string) => {
+      for (const child of children.get(parentId) ?? []) {
+        if (seen.has(child.id)) continue;
+        seen.add(child.id);
+        found.push(child);
+        descend(child.id);
+      }
+    };
+    descend(rootId);
+    return found;
+  };
+  const orphanedParents = new Set<string>();
+  for (const previous of before) {
+    if (!countsAsOpen(previous) || !previous.parentId) continue;
+    const current = afterById.get(previous.id);
+    const left = !current ||
+      current.deleted ||
+      current.parentId !== previous.parentId;
+    if (left) orphanedParents.add(previous.parentId);
+  }
+  const settled = new Set<string>();
+  for (const parentId of orphanedParents) {
+    let row = afterById.get(parentId);
+    const seen = new Set<string>();
+    while (row && !seen.has(row.id)) {
+      seen.add(row.id);
+      if (row.deleted || isPageRow(row, afterById)) break;
+      const below = subtree(row.id);
+      const finished = below.length > 0 &&
+        below.every((node) => node.completed || settled.has(node.id));
+      if (!finished) break;
+      settled.add(row.id);
+      row = row.parentId ? afterById.get(row.parentId) : undefined;
+    }
+  }
+  return [...settled].filter((id) => afterById.get(id)?.completed === false);
 }
 
 export function previewDescendants(

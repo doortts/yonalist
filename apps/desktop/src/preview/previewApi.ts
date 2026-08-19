@@ -10,7 +10,8 @@ import {
   previewDescendants,
   previewSiblings,
   previewVisibleSubtree,
-  reopenOverPlacedRows
+  reopenOverPlacedRows,
+  settleOverDepartedRows
 } from "./previewTree";
 import {
   createInitialPreviewNodes,
@@ -483,6 +484,12 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
       changed.forEach((node) => { node.deleted = false; });
       break;
     }
+  }
+  // Settling first and opening second, because an open row that is still there
+  // has the last word over one that left.
+  for (const id of settleOverDepartedRows(previousNodes, nodes)) {
+    const row = nodes.find((node) => node.id === id);
+    if (row) row.completed = true;
   }
   for (const id of reopenOverPlacedRows(previousNodes, nodes)) {
     const row = nodes.find((node) => node.id === id);
