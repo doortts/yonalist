@@ -28,6 +28,7 @@ fn session_history_and_idempotency_cache_are_bounded() {
             inverse: Vec::new(),
             carried_pictures: Vec::new(),
             group: Some(index.to_string()),
+            completed_rows: None,
         });
     }
     for index in 0..=MAX_COMPLETED_REQUESTS {
@@ -56,6 +57,7 @@ fn a_single_coalesced_history_group_cannot_grow_without_bound() {
             inverse: vec![mutation],
             carried_pictures: Vec::new(),
             group: Some("typing:node".into()),
+            completed_rows: None,
         });
     }
 
