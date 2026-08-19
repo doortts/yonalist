@@ -1591,43 +1591,50 @@ fn the_trash_does_not_stand_in_for_a_parent_that_is_already_here() {
 /// reading the same two files, would swap the name back.
 #[test]
 fn a_conflicted_copy_does_not_become_the_documents_own_file() {
-    let mut connection = database();
-    let transaction = connection.transaction().expect("begin");
-    let seeded = stamp(5, "a3f2");
-    let file = notes_sync::document::VaultFile::Page(page(
-        vec![node("Nd0000000001", &seeded, "First")],
-        &seeded,
-    ));
-    merge_document(&transaction, &clock(), &file, &input()).expect("the page");
+    // iCloud's numbered duplicate is the same copy under a name that looks like
+    // a document this app wrote.
+    for copy in [
+        "Projects-PrJects00001/README (conflicted copy 2026-08-16).md",
+        "Projects-PrJects00001/README 2.md",
+    ] {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("begin");
+        let seeded = stamp(5, "a3f2");
+        let file = notes_sync::document::VaultFile::Page(page(
+            vec![node("Nd0000000001", &seeded, "First")],
+            &seeded,
+        ));
+        merge_document(&transaction, &clock(), &file, &input()).expect("the page");
 
-    let outcome = merge_document(
-        &transaction,
-        &clock(),
-        &file,
-        &notes_sync::merger::MergeInput {
-            file_path: "Projects-PrJects00001/README (conflicted copy 2026-08-16).md".to_owned(),
-            file_hash: "b".repeat(64),
-            ..input()
-        },
-    )
-    .expect("the copy");
-
-    let recorded: String = transaction
-        .query_row(
-            "SELECT folder_path FROM sync_documents WHERE root_id = ?1",
-            ["PrJects00001"],
-            |row| row.get(0),
+        let outcome = merge_document(
+            &transaction,
+            &clock(),
+            &file,
+            &notes_sync::merger::MergeInput {
+                file_path: copy.to_owned(),
+                file_hash: "b".repeat(64),
+                ..input()
+            },
         )
-        .expect("the document");
-    assert_eq!(
-        recorded, "Projects-PrJects00001/README.md",
-        "the page keeps its own name"
-    );
-    assert!(
-        outcome.retire_file,
-        "and the copy is handed back to be removed, or every device reads it \
-         again for ever"
-    );
+        .expect("the copy");
+
+        let recorded: String = transaction
+            .query_row(
+                "SELECT folder_path FROM sync_documents WHERE root_id = ?1",
+                ["PrJects00001"],
+                |row| row.get(0),
+            )
+            .expect("the document");
+        assert_eq!(
+            recorded, "Projects-PrJects00001/README.md",
+            "the page keeps its own name against `{copy}`"
+        );
+        assert!(
+            outcome.retire_file,
+            "and `{copy}` is handed back to be removed, or every device reads it \
+             again for ever"
+        );
+    }
 }
 
 /// What was last written for a node is only true until another device's
