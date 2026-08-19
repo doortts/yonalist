@@ -1306,17 +1306,19 @@ fn indenting_under_a_collapsed_sibling_expands_it_atomically() {
     assert_eq!(tree, original);
 }
 
-/// page
-/// └ top (Todo)
-///   ├ first (Todo)
-///   ├ second (Todo)
-///   └ divider (bullet)
-///     └ beyond (Todo)
+/// root (the one page)
+/// └ diary (a page row)
+///   └ top (Todo)
+///     ├ first (Todo)
+///     ├ second (Todo)
+///     └ divider (bullet)
+///       └ beyond (Todo)
 fn todo_branch() -> NotesTree {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::upsert(todo("top", "page", 1_024, false)),
+        TreeMutation::upsert(NoteNode::page(id("root"), "Home")),
+        TreeMutation::upsert(NoteNode::child(id("diary"), id("root"), 1_024, "Diary")),
+        TreeMutation::upsert(todo("top", "diary", 1_024, false)),
         TreeMutation::upsert(todo("first", "top", 1_024, false)),
         TreeMutation::upsert(todo("second", "top", 2_048, false)),
         TreeMutation::upsert(NoteNode::child(id("divider"), id("top"), 3_072, "Divider")),
@@ -1386,30 +1388,56 @@ fn an_ancestor_waits_for_the_whole_branch_below_it() {
 
 #[test]
 fn an_ancestor_bullet_follows_the_rows_below_it_too() {
-    let mut tree = NotesTree::default();
-    tree.apply(&[
-        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::upsert(NoteNode::child(id("plain"), id("page"), 1_024, "Plain")),
-        TreeMutation::upsert(todo("boxed", "plain", 1_024, false)),
-        TreeMutation::upsert(NoteNode::child(id("bare"), id("plain"), 2_048, "Bare")),
-    ])
-    .unwrap();
+    let mut tree = page_with_rows();
 
     set_completed(&mut tree, "boxed", true);
     assert!(!is_completed(&tree, "plain"));
 
     set_completed(&mut tree, "bare", true);
     assert!(is_completed(&tree, "plain"));
-    // The page the rows live on is not a row of its own and keeps its state.
-    assert!(!is_completed(&tree, "page"));
+}
+
+/// A page row is not a row of the outline it holds: it is the page's title and
+/// the name in the sidebar, and the filter that hides finished rows would hide
+/// the whole page with it. Finishing everything written on a page says the rows
+/// are done, not that the page is.
+#[test]
+fn the_climb_stops_below_the_page_row() {
+    let mut tree = page_with_rows();
+
+    set_completed(&mut tree, "boxed", true);
+    set_completed(&mut tree, "bare", true);
+
+    assert!(is_completed(&tree, "plain"));
+    assert!(!is_completed(&tree, "diary"));
+    assert!(!is_completed(&tree, "root"));
+}
+
+/// root (the one page)
+/// └ diary (a page row, which every outline hangs under)
+///   └ plain (bullet)
+///     ├ boxed (Todo)
+///     └ bare (bullet)
+fn page_with_rows() -> NotesTree {
+    let mut tree = NotesTree::default();
+    tree.apply(&[
+        TreeMutation::upsert(NoteNode::page(id("root"), "Home")),
+        TreeMutation::upsert(NoteNode::child(id("diary"), id("root"), 1_024, "Diary")),
+        TreeMutation::upsert(NoteNode::child(id("plain"), id("diary"), 1_024, "Plain")),
+        TreeMutation::upsert(todo("boxed", "plain", 1_024, false)),
+        TreeMutation::upsert(NoteNode::child(id("bare"), id("plain"), 2_048, "Bare")),
+    ])
+    .unwrap();
+    tree
 }
 
 #[test]
 fn an_ancestor_todo_stays_open_while_a_todo_further_down_is_open() {
     let mut tree = NotesTree::default();
     tree.apply(&[
-        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
-        TreeMutation::upsert(todo("top", "page", 1_024, false)),
+        TreeMutation::upsert(NoteNode::page(id("root"), "Home")),
+        TreeMutation::upsert(NoteNode::child(id("diary"), id("root"), 1_024, "Diary")),
+        TreeMutation::upsert(todo("top", "diary", 1_024, false)),
         TreeMutation::upsert(todo("done", "top", 1_024, true)),
         // The ticked sibling's own box is done, so a direct-children-only test
         // reads the branch as settled while this row is still open.

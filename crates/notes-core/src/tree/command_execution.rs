@@ -594,13 +594,24 @@ impl NotesTree {
         found
     }
 
-    /// The row a tick climbs to next. A page is not a row: the branch a tick
-    /// settles ends at the rows of one page, and the page itself is the surface
-    /// they are written on.
+    /// The row a tick climbs to next. It stops below the page row -- the row an
+    /// outline hangs under, which is the page's own title and its name in the
+    /// sidebar. Finishing everything written on a page says the rows are done,
+    /// not that the page is.
     fn live_parent_row(&self, id: &NodeId) -> Option<NodeId> {
         let parent_id = self.node(id)?.parent_id()?;
         let parent = self.node(parent_id)?;
-        (!parent.is_deleted() && parent.kind() != NoteNodeKind::Page).then(|| parent_id.clone())
+        (!parent.is_deleted() && !self.is_page_row(parent)).then(|| parent_id.clone())
+    }
+
+    /// The one page and the rows directly under it, which the client draws as
+    /// pages of their own rather than as rows of an outline.
+    fn is_page_row(&self, node: &NoteNode) -> bool {
+        node.kind() == NoteNodeKind::Page
+            || node
+                .parent_id()
+                .and_then(|parent_id| self.node(parent_id))
+                .is_some_and(|parent| parent.kind() == NoteNodeKind::Page)
     }
 }
 
