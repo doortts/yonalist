@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use crate::node::SORT_KEY_STEP;
 use crate::{
-    DomainError, ImportImageNode, ImportNode, NodeId, NoteMarkerKind, NoteNode, NoteNodeKind,
-    NotesCommand, Position,
+    DomainError, ImportImageNode, ImportNode, NodeId, NoteNode, NoteNodeKind, NotesCommand,
+    Position,
 };
 
 use super::NotesTree;
@@ -540,22 +540,23 @@ impl NotesTree {
         Ok(())
     }
 
-    /// Ticking a Todo settles the whole chain it heads: every Todo under it
-    /// takes the same state, and an ancestor Todo follows once nothing below it
-    /// is left open. Clearing one runs the other way -- an ancestor cannot stay
-    /// ticked while a row under it is open again. It lives here rather than in
-    /// the client because a client only ever holds a window of the page, and
-    /// the chain reaches past it.
+    /// Ticking a row settles the whole branch it heads: every row under it takes
+    /// the same state, and an ancestor row follows once nothing below it is left
+    /// open. Clearing one runs the other way -- an ancestor cannot stay ticked
+    /// while a row under it is open again. A marker decides nothing here: a row
+    /// with a box and a row without one settle alike. It lives here rather than
+    /// in the client because a client only ever holds a window of the page, and
+    /// the branch reaches past it.
     fn cascade_completed(&mut self, id: &NodeId, completed: bool) -> Result<(), DomainError> {
         self.node_mut(id)?.set_completed(completed);
-        for below_id in self.todo_subtree_ids(id) {
+        for below_id in self.descendant_ids(id) {
             self.node_mut(&below_id)?.set_completed(completed);
         }
         let mut current = id.clone();
         // Seeded with the clicked row so a parent cycle ends the walk instead
         // of climbing forever.
         let mut visited = BTreeSet::from([id.clone()]);
-        while let Some(parent_id) = self.live_todo_parent(&current) {
+        while let Some(parent_id) = self.live_parent_row(&current) {
             if !visited.insert(parent_id.clone()) {
                 break;
             }
@@ -564,7 +565,7 @@ impl NotesTree {
             // rows this cascade just set are already ticked in the tree, so
             // reading them back is reading the cascade's own result.
             let settled = self
-                .todo_subtree_ids(&parent_id)
+                .descendant_ids(&parent_id)
                 .iter()
                 .all(|below_id| self.node(below_id).is_some_and(NoteNode::is_completed));
             if completed && !settled {
@@ -576,17 +577,14 @@ impl NotesTree {
         Ok(())
     }
 
-    /// Every live Todo below `root_id`. A child that is not a Todo ends that
-    /// branch: whatever hangs under it starts a chain of its own.
-    fn todo_subtree_ids(&self, root_id: &NodeId) -> Vec<NodeId> {
+    /// Every row below `root_id`.
+    fn descendant_ids(&self, root_id: &NodeId) -> Vec<NodeId> {
         let mut found = Vec::new();
         let mut seen = BTreeSet::from([root_id.clone()]);
         let mut pending = vec![root_id.clone()];
         while let Some(current) = pending.pop() {
             for child_id in self.children_of(&current) {
-                if self.node(&child_id).map(NoteNode::marker) != Some(NoteMarkerKind::Todo)
-                    || !seen.insert(child_id.clone())
-                {
+                if !seen.insert(child_id.clone()) {
                     continue;
                 }
                 found.push(child_id.clone());
@@ -596,10 +594,24 @@ impl NotesTree {
         found
     }
 
-    fn live_todo_parent(&self, id: &NodeId) -> Option<NodeId> {
+    /// The row a tick climbs to next. It stops below the page row -- the row an
+    /// outline hangs under, which is the page's own title and its name in the
+    /// sidebar. Finishing everything written on a page says the rows are done,
+    /// not that the page is.
+    fn live_parent_row(&self, id: &NodeId) -> Option<NodeId> {
         let parent_id = self.node(id)?.parent_id()?;
         let parent = self.node(parent_id)?;
-        (!parent.is_deleted() && parent.marker() == NoteMarkerKind::Todo).then(|| parent_id.clone())
+        (!parent.is_deleted() && !self.is_page_row(parent)).then(|| parent_id.clone())
+    }
+
+    /// The one page and the rows directly under it, which the client draws as
+    /// pages of their own rather than as rows of an outline.
+    fn is_page_row(&self, node: &NoteNode) -> bool {
+        node.kind() == NoteNodeKind::Page
+            || node
+                .parent_id()
+                .and_then(|parent_id| self.node(parent_id))
+                .is_some_and(|parent| parent.kind() == NoteNodeKind::Page)
     }
 }
 

@@ -66,6 +66,35 @@ function recordReceipt(requestId: string, value: MutationReceipt): void {
     if (expiredRequestId) receiptsByRequest.delete(expiredRequestId);
   }
 }
+/**
+ * Whether two commands name the same rows. A selection hands its ids over in
+ * whatever order it holds them, and the order says nothing about which rows the
+ * gesture was.
+ */
+function sameRows(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const sortedLeft = [...left].sort();
+  const sortedRight = [...right].sort();
+  return sortedLeft.every((id, index) => id === sortedRight[index]);
+}
+
+/**
+ * The rows a completion command names when it sets them to `completed`, and
+ * nothing for any other command. Mirrors the server's own reading.
+ */
+function completionRows(
+  command: CommandEnvelope["command"],
+  completed: boolean
+): readonly string[] | null {
+  if (command.kind === "setCompleted" && command.completed === completed) {
+    return [command.id];
+  }
+  if (command.kind === "setCompletedMany" && command.completed === completed) {
+    return command.ids;
+  }
+  return null;
+}
+
 function applyHistoryDelta(delta: PreviewNodeDelta): MutationReceipt {
   nodes = applyPreviewDelta(nodes, delta);
   revision += 1;
@@ -151,6 +180,21 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
     previewImages.holds(contentHash, byteLength));
   const previousNodes = copyNodes();
   redoStack.length = 0;
+  // Clearing the very rows the last command ticked replays that command's own
+  // inverse, so every row it reached is handed back what it held before rather
+  // than cleared with the rest -- the server's own rule, mirrored. It goes
+  // forward as its own history entry, so undo puts the branch back.
+  const cleared = completionRows(envelope.command, false);
+  const tick = undoStack.at(-1);
+  if (cleared && tick?.completedRows && sameRows(tick.completedRows, cleared)) {
+    pushBoundedHistory(undoStack, {
+      forward: tick.inverse,
+      inverse: tick.forward
+    });
+    const restored = applyHistoryDelta(tick.inverse);
+    recordReceipt(envelope.requestId, restored);
+    return restored;
+  }
   let changed: NoteView[] = [];
   let deletedIds: string[] = [];
   const command = envelope.command;
@@ -440,13 +484,15 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
       (id) => !explicitlyDeletedIds.has(id)
     )
   ];
+  const ticked = completionRows(command, true);
   const historyEntry: PreviewHistoryEntry = {
     ...generatedEntry,
     forward: {
       ...generatedEntry.forward,
       upserts: forwardChangedNodes,
       receiptDeletedIds: forwardDeletedIds
-    }
+    },
+    ...(ticked ? { completedRows: ticked } : {})
   };
   pushBoundedHistory(undoStack, historyEntry);
   revision += 1;

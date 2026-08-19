@@ -10,6 +10,9 @@ export interface PreviewNodeDelta {
 export interface PreviewHistoryEntry {
   readonly forward: PreviewNodeDelta;
   readonly inverse: PreviewNodeDelta;
+  /** The rows a completing command named, when this entry is that command's
+   * alone -- the memory a clear of those same rows reads. */
+  readonly completedRows?: readonly string[];
 }
 
 function sameImage(left: ImageView | null, right: ImageView | null): boolean {
