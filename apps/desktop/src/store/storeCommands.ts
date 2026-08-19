@@ -61,6 +61,14 @@ export interface ExternalCommandContext {
 export class StoreCommands {
   private readonly historyEvents = new StoreHistoryEvents();
   private commandQueue: Promise<void> = Promise.resolve();
+  /**
+   * Commands handed over but not finished yet, counted the moment they are
+   * queued rather than when their turn comes -- `pendingWrites` only ever sees
+   * the one command running, so it cannot tell a gesture's follow-up from a
+   * fresh one. Zero means the queue has drained and the next command opens a
+   * run of its own.
+   */
+  private queuedCommands = 0;
 
   constructor(
     private readonly api: NotesApi,
@@ -178,21 +186,30 @@ export class StoreCommands {
   }
 
   private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const opensRun = this.queuedCommands === 0;
+    this.queuedCommands += 1;
     const queued = this.commandQueue.then(async () => {
-      const state = this.host.read();
-      this.host.write({
-        pendingWrites: state.pendingWrites + 1,
-        error: null
-      }, { shell: true });
       try {
+        this.host.write({
+          pendingWrites: this.host.read().pendingWrites + 1,
+          // Only the command that opens a run clears the banner. A gesture
+          // whose first command failed queued the rest of itself against a row
+          // nothing made, and their own failures say nothing the user can act
+          // on. Inside the `try`, so a throwing subscriber cannot leave the
+          // count above zero and every later run unable to clear the banner.
+          ...(opensRun ? { error: null } : {})
+        }, { shell: true });
         return await operation();
       } catch (cause) {
-        this.host.write(
-          { error: messageFrom(cause) },
-          { shell: true }
-        );
+        if (this.host.read().error === null) {
+          this.host.write(
+            { error: messageFrom(cause) },
+            { shell: true }
+          );
+        }
         throw cause;
       } finally {
+        this.queuedCommands -= 1;
         this.host.write({
           pendingWrites: Math.max(0, this.host.read().pendingWrites - 1)
         }, { shell: true });
