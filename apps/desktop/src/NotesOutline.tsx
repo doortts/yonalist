@@ -53,7 +53,8 @@ export interface PaneRestoreRequest {
 
 export function NotesOutline({
   store, status, error, pendingWrites, page, zoomRootId, onZoomRootChange,
-  onHome, onOpenSplit, onTagClick, onClose, paneId, restoreRequest
+  onHome, onOpenSplit, onTagClick, onClose, paneId, restoreRequest,
+  onSelectionCountChange
 }: {
   readonly store: NotesStore;
   readonly status: NotesShellSnapshot["status"];
@@ -68,6 +69,10 @@ export function NotesOutline({
   readonly onClose?: () => void;
   readonly paneId: "primary" | "secondary";
   readonly restoreRequest: PaneRestoreRequest | null;
+  readonly onSelectionCountChange?: (
+    paneId: "primary" | "secondary",
+    count: number
+  ) => void;
 }) {
   const state = useSyncExternalStore(
     store.subscribeOutline,
@@ -188,6 +193,14 @@ export function NotesOutline({
     state.revision,
     store
   ]);
+  const selectedCount = selection.selectedIds.length;
+  // The status bar belongs to the shell, which cannot see into a pane. The
+  // cleanup is what takes this pane's number back out when the pane goes --
+  // a closed split, or Settings taking the panes' place.
+  useEffect(() => {
+    onSelectionCountChange?.(paneId, selectedCount);
+    return () => onSelectionCountChange?.(paneId, 0);
+  }, [onSelectionCountChange, paneId, selectedCount]);
   const pointerSelection = useOutlinePointerSelection(selection, bodyNodes);
   const guideToggle = useOutlineGuideToggle(store, index, outlineRootId);
   const outlineDrag = useOutlineDrag({
@@ -229,7 +242,10 @@ export function NotesOutline({
     if (selectionOperation.current) return;
     selectionOperation.current = true;
     setSelectionOperationBusy(true);
-    void Promise.resolve().then(action).finally(() => {
+    // The store re-throws what it already wrote to `error` so a caller can
+    // react; nobody past this seam does, and an unanswered rejection here is
+    // an unhandled one. The status bar is already showing what failed.
+    void Promise.resolve().then(action).catch(() => undefined).finally(() => {
       selectionOperation.current = false;
       setSelectionOperationBusy(false);
     });

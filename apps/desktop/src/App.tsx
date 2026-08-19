@@ -113,6 +113,8 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     useState<PaneRestoreRequest | null>(null);
   const [secondaryRestore, setSecondaryRestore] =
     useState<PaneRestoreRequest | null>(null);
+  const [paneSelections, setPaneSelections] =
+    useState({ primary: 0, secondary: 0 });
   const resizeStart = useRef<{ x: number; width: number } | null>(null);
   const applyNavigationRef = useRef<
     (location: AppNavigationLocation) => Promise<void>
@@ -599,6 +601,16 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     recordNavigation,
     splitOpen
   ]);
+  // Identity has to hold across renders: the panes are memoized, and a fresh
+  // callback would re-run the effect that reports through it.
+  const reportSelectionCount = useCallback(
+    (paneId: "primary" | "secondary", count: number) =>
+      setPaneSelections((current) => current[paneId] === count
+        ? current
+        : { ...current, [paneId]: count }),
+    []
+  );
+  const selectedCount = paneSelections.primary + paneSelections.secondary;
   const libraryQuery = query.trim() ||
     (libraryView === "starred"
       ? "is:starred"
@@ -873,12 +885,24 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           onOpenSplit={openSplit}
           onCloseSplit={closeSplit}
           onTagClick={handleTagClick}
+          onSelectionCountChange={reportSelectionCount}
         />
       )}
       <footer className="app-statusbar" aria-label="Status bar">
         <div className="statusbar-feedback">
-          {state.error && <span className="statusbar-message" data-kind="error">{state.error}</span>}
-          {!state.error && state.pendingWrites > 0 && <span className="statusbar-message">Saving...</span>}
+          {/* One slot, three claims on it. The error is the only one that asks
+              the reader for something; the count is the band's only readout now
+              that it has left the action bar; Saving... resolves by itself, and
+              while a band is live the writes it describes are usually the
+              band's own. */}
+          {state.error
+            ? <span className="statusbar-message" data-kind="error">{state.error}</span>
+            : selectedCount > 0
+              ? <span className="statusbar-message" data-kind="selection">
+                  {selectedCount} selected
+                </span>
+              : state.pendingWrites > 0 &&
+                <span className="statusbar-message">Saving...</span>}
         </div>
         <div className="statusbar-actions"><span className="statusbar-state">Online</span></div>
       </footer>

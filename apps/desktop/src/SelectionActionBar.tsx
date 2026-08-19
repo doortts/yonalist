@@ -183,9 +183,6 @@ export function SelectionActionBar({
         <X size={16} aria-hidden="true" />,
         onClear
       )}
-      <span className="notes-selection-count" aria-label={`${count} notes selected`}>
-        {count} selected
-      </span>
       {action(
         allCompleted ? "Uncomplete" : "Complete",
         <Check size={16} aria-hidden="true" />,

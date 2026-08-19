@@ -606,6 +606,28 @@ describe("Yonalist v2 desktop shell", () => {
     })).toBeEnabled();
   });
 
+  it("counts the selection in the status bar and yields the slot to an error", async () => {
+    const notesApi = api();
+    notesApi.execute = vi.fn().mockRejectedValue(new Error("Save refused"));
+    render(<App api={notesApi} />);
+    const first = await screen.findByDisplayValue("First thought");
+    const second = screen.getByDisplayValue("Second thought");
+    const statusBar = document.querySelector<HTMLElement>(".app-statusbar")!;
+
+    fireEvent.pointerDown(first, { button: 0, pointerId: 41, ctrlKey: true });
+    fireEvent.pointerDown(second, { button: 0, pointerId: 42, ctrlKey: true });
+
+    expect(await within(statusBar).findByText("2 selected"))
+      .toHaveAttribute("data-kind", "selection");
+
+    // The error is the only message that asks the reader for something, so it
+    // takes the slot from the count the band already shows on screen.
+    fireEvent.click(await screen.findByRole("button", { name: "Complete" }));
+
+    expect(await within(statusBar).findByText("Save refused")).toBeVisible();
+    expect(within(statusBar).queryByText("2 selected")).toBeNull();
+  });
+
   it("hides a collapsed subtree and restores it through the current arrow slot", async () => {
     const parent = { ...snapshot.viewport!.nodes[0], collapsed: true };
     const child = {

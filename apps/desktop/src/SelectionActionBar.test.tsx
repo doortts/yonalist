@@ -40,7 +40,9 @@ describe("SelectionActionBar", () => {
     expect(screen.getByRole("toolbar", {
       name: "Actions for 3 selected notes"
     })).toHaveClass("notes-selection-action-bar");
-    expect(screen.getByLabelText("3 notes selected")).toHaveTextContent("3 selected");
+    // The count reads from the status bar now; the bar keeps it only in the
+    // label that names what the buttons act on.
+    expect(screen.queryByText("3 selected")).toBeNull();
     for (const name of ["Complete", "Delete"]) {
       fireEvent.click(screen.getByRole("button", { name }));
     }

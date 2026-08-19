@@ -839,16 +839,6 @@
   color: var(--text-2);
 }
 
-.notes-selection-count {
-  flex: 0 0 auto;
-  min-width: 62px;
-  color: var(--text-1);
-  font-size: 12px;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
 .notes-selection-action-button {
   display: inline-flex;
   flex: 0 0 auto;

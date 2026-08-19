@@ -1018,6 +1018,11 @@ body.is-resizing-pane {
   color: var(--danger);
 }
 
+.statusbar-message[data-kind="selection"] {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .statusbar-actions {
   display: inline-flex;
   align-items: center;
