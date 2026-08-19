@@ -34,6 +34,7 @@ describe("SelectionActionBar", () => {
         onMoveDown={vi.fn()}
         onDuplicate={vi.fn()}
         onDelete={onDelete}
+        trailingAction={<button type="button">Export</button>}
       />
     );
 
@@ -44,9 +45,11 @@ describe("SelectionActionBar", () => {
     // label that names what the buttons act on.
     expect(screen.queryByText("3 selected")).toBeNull();
     // Dismissing the band is the last thing you reach for, so it sits at the
-    // pill's far end rather than in front of the actions.
-    expect(screen.getAllByRole("button").at(-1))
-      .toHaveAccessibleName("Clear selection");
+    // pill's far end -- behind the actions, and behind Export, which is the
+    // one control the pill borrows from the toolbar it no longer replaces.
+    expect(screen.getAllByRole("button").slice(-2).map(
+      (button) => button.textContent
+    )).toEqual(["Export", "Clear selection"]);
     for (const name of ["Complete", "Delete"]) {
       fireEvent.click(screen.getByRole("button", { name }));
     }
