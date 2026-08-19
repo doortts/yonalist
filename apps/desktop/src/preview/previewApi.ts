@@ -10,7 +10,8 @@ import {
   completionCascade,
   previewDescendants,
   previewSiblings,
-  previewVisibleSubtree
+  previewVisibleSubtree,
+  reopenOverPlacedRows
 } from "./previewTree";
 import {
   createInitialPreviewNodes,
@@ -466,6 +467,10 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
       changed.forEach((node) => { node.deleted = false; });
       break;
     }
+  }
+  for (const id of reopenOverPlacedRows(previousNodes, nodes)) {
+    const row = nodes.find((node) => node.id === id);
+    if (row) row.completed = false;
   }
   const generatedEntry = createPreviewHistoryEntry(previousNodes, nodes);
   const changedById = new Map(

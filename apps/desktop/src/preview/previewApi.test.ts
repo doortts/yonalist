@@ -599,6 +599,62 @@ describe("browser-only preview adapter", () => {
     ));
   });
 
+  it("opens the finished rows above a newly placed row", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    let revision = boot.revision;
+    const run = async (requestId: string, command: IpcNotesCommand) => {
+      const result = await previewNotesApi.execute({
+        sessionId: boot.sessionId,
+        requestId,
+        baseRevision: revision,
+        historyGroup: null,
+        command
+      });
+      revision = result.revision;
+      return result;
+    };
+    await run("reopen-parent-create", {
+      kind: "createNode",
+      id: "reopen-parent",
+      parent_id: pageId,
+      before_id: null,
+      text: "Parent"
+    });
+    await run("reopen-child-create", {
+      kind: "createNode",
+      id: "reopen-child",
+      parent_id: "reopen-parent",
+      before_id: null,
+      text: "Child"
+    });
+    await run("reopen-parent-tick", {
+      kind: "setCompleted", id: "reopen-parent", completed: true
+    });
+
+    await run("reopen-fresh-create", {
+      kind: "createNode",
+      id: "reopen-fresh",
+      parent_id: "reopen-parent",
+      before_id: null,
+      text: ""
+    });
+
+    const page = await previewNotesApi.queryViewport({
+      pageId,
+      anchorId: null,
+      beforeCursor: null,
+      afterCursor: null,
+      limit: 200
+    });
+    const completedById = new Map(
+      page.nodes.map((node) => [node.id, node.completed])
+    );
+    expect(completedById.get("reopen-parent")).toBe(false);
+    // The rows the tick had settled keep their own state.
+    expect(completedById.get("reopen-child")).toBe(true);
+  });
+
   it("hands the rows back their own states when a tick is taken back", async () => {
     const boot = await previewNotesApi.bootstrap();
     const pageId = boot.activePageId!;
