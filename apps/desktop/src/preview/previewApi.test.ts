@@ -780,6 +780,71 @@ describe("browser-only preview adapter", () => {
     expect(afterThree.get("cycle-done")).toBe(true);
   });
 
+  it("keeps what the press remembered across an undo and a redo", async () => {
+    const boot = await previewNotesApi.bootstrap();
+    const pageId = boot.activePageId!;
+    let revision = boot.revision;
+    const run = async (requestId: string, command: IpcNotesCommand) => {
+      const result = await previewNotesApi.execute({
+        sessionId: boot.sessionId,
+        requestId,
+        baseRevision: revision,
+        historyGroup: null,
+        command
+      });
+      revision = result.revision;
+      return result;
+    };
+    await run("across-parent-create", {
+      kind: "createNode",
+      id: "across-parent",
+      parent_id: pageId,
+      before_id: null,
+      text: "Parent"
+    });
+    await run("across-open-create", {
+      kind: "createNode",
+      id: "across-open",
+      parent_id: "across-parent",
+      before_id: null,
+      text: "Open"
+    });
+    await run("across-press-one", {
+      kind: "cycleCompleted", id: "across-parent"
+    });
+    await run("across-press-two", {
+      kind: "cycleCompleted", id: "across-parent"
+    });
+
+    const undone = await previewNotesApi.undo({
+      sessionId: boot.sessionId,
+      baseRevision: revision
+    });
+    revision = undone.revision;
+    const redone = await previewNotesApi.redo({
+      sessionId: boot.sessionId,
+      baseRevision: revision
+    });
+    revision = redone.revision;
+    await run("across-press-three", {
+      kind: "cycleCompleted", id: "across-parent"
+    });
+
+    const page = await previewNotesApi.queryViewport({
+      pageId,
+      anchorId: null,
+      beforeCursor: null,
+      afterCursor: null,
+      limit: 200
+    });
+    const completedById = new Map(
+      page.nodes.map((node) => [node.id, node.completed])
+    );
+    expect(completedById.get("across-parent")).toBe(false);
+    // The redo put that press back on top, so what it remembered is live again.
+    expect(completedById.get("across-open")).toBe(false);
+  });
+
   it("opens the finished rows above a newly placed row", async () => {
     const boot = await previewNotesApi.bootstrap();
     const pageId = boot.activePageId!;
@@ -895,7 +960,7 @@ describe("browser-only preview adapter", () => {
     expect(completedById.get("restore-done")).toBe(true);
   });
 
-  it("takes a selection's tick back whatever order the ids arrive in", async () => {
+  it("writes the rows a selection names, in whatever order they arrive", async () => {
     const boot = await previewNotesApi.bootstrap();
     const pageId = boot.activePageId!;
     let revision = boot.revision;
@@ -941,9 +1006,9 @@ describe("browser-only preview adapter", () => {
     const completedById = new Map(
       page.nodes.map((node) => [node.id, node.completed])
     );
-    // Ticked before the selection was, so the selection's own tick is all that
-    // comes back off it.
-    expect(completedById.get(ids[0])).toBe(true);
+    // A selection speaks for the rows it lists and nothing else: both were
+    // named, so both come open, whichever order the ids arrived in.
+    expect(completedById.get(ids[0])).toBe(false);
     expect(completedById.get(ids[1])).toBe(false);
   });
 

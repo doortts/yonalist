@@ -50,16 +50,6 @@ const undoStack: PreviewHistoryEntry[] = [];
  * over again. Without it, the resumed run would fold into whatever entry happened
  * to be on top and take someone else's edit off the stack with it.
  */
-/**
- * What the row's children held before the press that finished them. The press
- * after it hands them back, and anything else landing in between clears it --
- * the same one-press memory the server keeps.
- */
-let cycledChildren: {
-  rowId: string;
-  states: readonly (readonly [string, boolean])[];
-} | null = null;
-
 let historyGroupBaseline: {
   group: string;
   nodes: NoteView[];
@@ -96,35 +86,6 @@ function recordReceipt(requestId: string, value: MutationReceipt): void {
     if (expiredRequestId) receiptsByRequest.delete(expiredRequestId);
   }
 }
-/**
- * Whether two commands name the same rows. A selection hands its ids over in
- * whatever order it holds them, and the order says nothing about which rows the
- * gesture was.
- */
-function sameRows(left: readonly string[], right: readonly string[]): boolean {
-  if (left.length !== right.length) return false;
-  const sortedLeft = [...left].sort();
-  const sortedRight = [...right].sort();
-  return sortedLeft.every((id, index) => id === sortedRight[index]);
-}
-
-/**
- * The rows a completion command names when it sets them to `completed`, and
- * nothing for any other command. Mirrors the server's own reading.
- */
-function completionRows(
-  command: CommandEnvelope["command"],
-  completed: boolean
-): readonly string[] | null {
-  if (command.kind === "setCompleted" && command.completed === completed) {
-    return [command.id];
-  }
-  if (command.kind === "setCompletedMany" && command.completed === completed) {
-    return command.ids;
-  }
-  return null;
-}
-
 function applyHistoryDelta(delta: PreviewNodeDelta): MutationReceipt {
   nodes = applyPreviewDelta(nodes, delta);
   revision += 1;
@@ -210,24 +171,12 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
     previewImages.holds(contentHash, byteLength));
   const previousNodes = copyNodes();
   redoStack.length = 0;
-  if (envelope.command.kind !== "cycleCompleted") cycledChildren = null;
-  // Clearing the very rows the last command ticked replays that command's own
-  // inverse, so every row it reached is handed back what it held before rather
-  // than cleared with the rest -- the server's own rule, mirrored. It goes
-  // forward as its own history entry, so undo puts the branch back.
-  const cleared = completionRows(envelope.command, false);
-  const tick = undoStack.at(-1);
-  if (cleared && tick?.completedRows && sameRows(tick.completedRows, cleared)) {
-    pushBoundedHistory(undoStack, {
-      forward: tick.inverse,
-      inverse: tick.forward
-    });
-    const restored = applyHistoryDelta(tick.inverse);
-    recordReceipt(envelope.requestId, restored);
-    return restored;
-  }
+  // The memory the third press reads sits on the entry the second press pushed,
+  // so it is live exactly while that entry is the one on top.
+  const remembered = undoStack.at(-1)?.cycledChildren;
   let changed: NoteView[] = [];
   let deletedIds: string[] = [];
+  let cycledByThisPress: PreviewHistoryEntry["cycledChildren"];
   const command = envelope.command;
   switch (command.kind) {
     case "createNode": {
@@ -445,18 +394,16 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
       const cycle = completionCycle(
         nodes,
         command.id,
-        cycledChildren && cycledChildren.rowId === command.id
-          ? cycledChildren.states
-          : []
+        remembered?.rowId === command.id ? remembered.states : []
       );
       // Read before the writes land: afterwards every child says it is done.
-      cycledChildren = cycle.stage === "children"
-        ? {
+      if (cycle.stage === "children") {
+        cycledByThisPress = {
           rowId: command.id,
           states: previewSiblings(nodes, command.id)
             .map((child) => [child.id, child.completed] as const)
-        }
-        : null;
+        };
+      }
       const written = new Map(cycle.writes);
       changed = nodes.filter((node) => written.has(node.id));
       changed.forEach((node) => {
@@ -548,7 +495,6 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
       (id) => !explicitlyDeletedIds.has(id)
     )
   ];
-  const ticked = completionRows(command, true);
   const group = envelope.historyGroup;
   const coalescing = group !== null &&
     historyGroupBaseline?.group === group &&
@@ -570,7 +516,7 @@ async function execute(envelope: CommandEnvelope): Promise<MutationReceipt> {
         ? groupEntry.forward.receiptDeletedIds
         : forwardDeletedIds
     },
-    ...(ticked ? { completedRows: ticked } : {})
+    ...(cycledByThisPress ? { cycledChildren: cycledByThisPress } : {})
   };
   if (coalescing) undoStack.pop();
   pushBoundedHistory(undoStack, historyEntry);
@@ -660,8 +606,6 @@ export const previewNotesApi: NotesApi = {
   },
   async undo(request) {
     if (request.baseRevision !== revision) throw new Error("Preview revision is stale.");
-    // The memory belongs to the press that is being taken back.
-    cycledChildren = null;
     const entry = undoStack.pop();
     if (!entry) return receipt([]);
     pushBoundedHistory(redoStack, entry);
@@ -669,7 +613,6 @@ export const previewNotesApi: NotesApi = {
   },
   async redo(request) {
     if (request.baseRevision !== revision) throw new Error("Preview revision is stale.");
-    cycledChildren = null;
     const entry = redoStack.pop();
     if (!entry) return receipt([]);
     pushBoundedHistory(undoStack, entry);
