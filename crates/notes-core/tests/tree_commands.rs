@@ -1357,7 +1357,7 @@ fn is_completed(tree: &NotesTree, node_id: &str) -> bool {
 }
 
 #[test]
-fn ticking_a_todo_settles_the_chain_below_it_and_stops_at_a_bullet() {
+fn ticking_a_row_settles_every_descendant_whatever_its_marker() {
     let mut tree = todo_branch();
 
     set_completed(&mut tree, "top", true);
@@ -1365,19 +1365,43 @@ fn ticking_a_todo_settles_the_chain_below_it_and_stops_at_a_bullet() {
     assert!(is_completed(&tree, "top"));
     assert!(is_completed(&tree, "first"));
     assert!(is_completed(&tree, "second"));
-    // The bullet ends that branch, so nothing under it is touched.
-    assert!(!is_completed(&tree, "beyond"));
+    // A marker no longer ends the branch: the whole tree under the row goes.
+    assert!(is_completed(&tree, "divider"));
+    assert!(is_completed(&tree, "beyond"));
 }
 
 #[test]
-fn an_ancestor_todo_waits_for_the_whole_branch_below_it() {
+fn an_ancestor_waits_for_the_whole_branch_below_it() {
     let mut tree = todo_branch();
 
     set_completed(&mut tree, "first", true);
+    set_completed(&mut tree, "second", true);
+    // The rows under the bullet count too, so the head is not settled yet.
     assert!(!is_completed(&tree, "top"));
 
-    set_completed(&mut tree, "second", true);
+    set_completed(&mut tree, "beyond", true);
+    assert!(is_completed(&tree, "divider"));
     assert!(is_completed(&tree, "top"));
+}
+
+#[test]
+fn an_ancestor_bullet_follows_the_rows_below_it_too() {
+    let mut tree = NotesTree::default();
+    tree.apply(&[
+        TreeMutation::upsert(NoteNode::page(id("page"), "Page")),
+        TreeMutation::upsert(NoteNode::child(id("plain"), id("page"), 1_024, "Plain")),
+        TreeMutation::upsert(todo("boxed", "plain", 1_024, false)),
+        TreeMutation::upsert(NoteNode::child(id("bare"), id("plain"), 2_048, "Bare")),
+    ])
+    .unwrap();
+
+    set_completed(&mut tree, "boxed", true);
+    assert!(!is_completed(&tree, "plain"));
+
+    set_completed(&mut tree, "bare", true);
+    assert!(is_completed(&tree, "plain"));
+    // The page the rows live on is not a row of its own and keeps its state.
+    assert!(!is_completed(&tree, "page"));
 }
 
 #[test]
@@ -1445,11 +1469,9 @@ fn completing_a_selection_settles_each_listed_row_s_own_chain() {
     // `first` already sits under `top`, so the two chains overlap.
     set_completed_many(&mut tree, &["top", "first"], true);
 
-    for row in ["top", "first", "second"] {
+    for row in ["top", "first", "second", "divider", "beyond"] {
         assert!(is_completed(&tree, row), "{row} was left open");
     }
-    // The bullet ends that branch here exactly as it does for a single tick.
-    assert!(!is_completed(&tree, "beyond"));
 }
 
 #[test]
@@ -1467,9 +1489,9 @@ fn an_overlapping_selection_lands_the_same_way_in_either_order() {
 fn a_selection_settles_an_ancestor_no_single_row_in_it_could_close() {
     let mut tree = todo_branch();
 
-    // Neither row closes `top` on its own -- `first` leaves `second` open and
-    // the other way round. Applying them in order is what settles it.
-    set_completed_many(&mut tree, &["first", "second"], true);
+    // No row in the list closes `top` on its own -- each of the others is left
+    // open. Applying them in order is what settles it.
+    set_completed_many(&mut tree, &["first", "second", "divider"], true);
 
     assert!(is_completed(&tree, "top"));
 }
