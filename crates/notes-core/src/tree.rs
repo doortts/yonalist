@@ -102,6 +102,9 @@ impl NotesTree {
         let mut candidate = self.clone();
         let mut carried_pictures = Vec::new();
         candidate.execute(command, &mut carried_pictures)?;
+        // Settling first and opening second, because an open row that is still
+        // there has the last word over one that left.
+        candidate.settle_over_rows_this_command_took_away(self)?;
         candidate.reopen_over_rows_this_command_placed(self)?;
         candidate.validate()?;
         // `diff` compares two trees, and a picture waiting for its bytes is in

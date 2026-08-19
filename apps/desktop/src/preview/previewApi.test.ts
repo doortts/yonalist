@@ -755,7 +755,8 @@ describe("browser-only preview adapter", () => {
       id: "reopen-fresh",
       parent_id: "reopen-parent",
       before_id: null,
-      text: ""
+      // Something in it: a blank row is room to type, not one thing more to do.
+      text: "one more thing"
     });
 
     const page = await previewNotesApi.queryViewport({

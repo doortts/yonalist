@@ -140,13 +140,42 @@ fn a_new_row_opens_the_finished_rows_above_it_in_storage() {
         id: "fresh".into(),
         parent_id: "parent".into(),
         before_id: None,
-        text: String::new(),
+        // Something in it: a blank row is room to type, not one thing more to do.
+        text: "one more thing".into(),
     });
 
     assert!(!session.is_completed("parent"));
     // The rows the tick had settled keep their own state.
     assert!(session.is_completed("done"));
     assert!(session.is_completed("open"));
+}
+
+/// The rows a settle has to read sit beside the row that left, and only the
+/// working set can bring them: the branch is judged from the stored rows, not
+/// from the one row the command names.
+#[test]
+fn trashing_the_last_open_row_finishes_the_branch_in_storage() {
+    let storage = stored_page();
+    let mut session = Session::open(&storage);
+    session.set_completed("done", true);
+    session.set_completed("open", true);
+    assert!(!session.is_completed("parent"));
+
+    session.run(IpcNotesCommand::DeleteSubtree { id: "bare".into() });
+
+    assert!(session.is_completed("parent"));
+}
+
+#[test]
+fn trashing_a_row_with_another_still_open_leaves_the_branch_open_in_storage() {
+    let storage = stored_page();
+    let mut session = Session::open(&storage);
+    session.set_completed("done", true);
+
+    session.run(IpcNotesCommand::DeleteSubtree { id: "bare".into() });
+
+    // `open` is still open, so nothing above it is finished.
+    assert!(!session.is_completed("parent"));
 }
 
 /// The same three placements the domain covers, but through storage: the rows the
@@ -219,7 +248,8 @@ fn undoing_the_new_row_puts_the_tick_it_opened_back() {
         id: "fresh".into(),
         parent_id: "parent".into(),
         before_id: None,
-        text: String::new(),
+        // Something in it: a blank row is room to type, not one thing more to do.
+        text: "one more thing".into(),
     });
     assert!(!session.is_completed("parent"));
 
