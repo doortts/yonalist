@@ -674,6 +674,7 @@ h2 {
 
 body.is-resizing-pane {
   cursor: col-resize;
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -792,6 +793,7 @@ body.is-resizing-pane {
   z-index: 15;
   height: var(--titlebar-height);
   cursor: default;
+  -webkit-user-select: none;
   user-select: none;
 }
 
@@ -803,6 +805,7 @@ body.is-resizing-pane {
   z-index: 15;
   height: var(--content-drag-height);
   cursor: default;
+  -webkit-user-select: none;
   user-select: none;
 }
 
