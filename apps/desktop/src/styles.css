@@ -677,6 +677,10 @@ body.is-resizing-pane {
   user-select: none;
 }
 
+/* The pane is a list of controls, so the only text a drag could pick up here
+   is a label the reader cannot do anything with -- and the drag that picked it
+   up was one started out in the outline, whose range grew this far across the
+   document and painted the wordmark, the pages and Settings as selected. */
 .yonalist-navigation-pane {
   display: flex;
   flex-direction: column;
@@ -689,6 +693,12 @@ body.is-resizing-pane {
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+  user-select: none;
+}
+
+/* The search field is the one place in the pane the reader types. */
+.yonalist-navigation-pane input {
+  user-select: text;
 }
 
 .yonalist-navigation-header {

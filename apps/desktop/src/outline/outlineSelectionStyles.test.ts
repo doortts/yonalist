@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { rule } from "../test/cssRules";
 
 const notesStyles = readFileSync("src/notes.css", "utf8");
+const appStyles = readFileSync("src/styles.css", "utf8");
 
 describe("native selection across the outline", () => {
   // The space below the last row belongs to the scroll container itself, and a
@@ -31,5 +32,23 @@ describe("native selection across the outline", () => {
     expect(
       rule(notesStyles, '[data-row-selecting="true"] :is(textarea, input)')
     ).toContain("user-select: none;");
+  });
+});
+
+describe("native selection across the sidebar", () => {
+  // The far end of a drag that starts in the outline: a range the engine grew
+  // that way painted the wordmark, every page row and Settings as selected.
+  // The pane is a list of controls, so there is nothing there to select.
+  it("turns native selection off across the sidebar", () => {
+    expect(rule(appStyles, ".yonalist-navigation-pane")).toContain(
+      "user-select: none;"
+    );
+  });
+
+  // Except the search field, the one place in the pane the reader types.
+  it("keeps the search field selectable", () => {
+    expect(rule(appStyles, ".yonalist-navigation-pane input")).toContain(
+      "user-select: text;"
+    );
   });
 });
