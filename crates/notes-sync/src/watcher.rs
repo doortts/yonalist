@@ -89,6 +89,25 @@ pub fn is_conflicted_copy(relative: &str) -> bool {
     name.contains("conflicted copy")
         || name.contains("sync-conflict-")
         || name.contains(".conflict.")
+        || is_numbered_duplicate(name)
+}
+
+/// iCloud leaves `README 2.md` beside `README.md` when its own sync collides
+/// with this app's temp-file-and-rename write, and says nothing else about it.
+/// The two names this format ever writes are the whole test: a numbered sibling
+/// of one of them was written by something other than this app.
+fn is_numbered_duplicate(name: &str) -> bool {
+    let Some((stem, number)) = name
+        .strip_suffix(".md")
+        .and_then(|stem| stem.rsplit_once(' '))
+    else {
+        return false;
+    };
+    matches!(stem, "README" | "trash")
+        // Digits only — `parse` would otherwise take a leading sign — and from
+        // two up, which is where iCloud starts counting.
+        && number.bytes().all(|byte| byte.is_ascii_digit())
+        && number.parse::<u32>().is_ok_and(|number| number >= 2)
 }
 
 fn modified_millis(facts: &std::fs::Metadata) -> Option<i64> {

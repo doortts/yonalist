@@ -262,6 +262,81 @@ fn a_newer_file_wins_and_an_older_one_loses() {
     );
 }
 
+/// A copy a sync client leaves behind is re-read every sweep, and each read
+/// used to log this device's own file against a newer snapshot of itself — two
+/// sides with identical text, once a minute. A file that is only behind on its
+/// stamp has lost nothing worth showing anybody; it owes a rewrite, and that is
+/// the whole of it.
+#[test]
+fn an_older_file_saying_the_same_thing_is_not_a_conflict() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(9, "a3f2"), "Same")],
+            &stamp(9, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("seed");
+
+    let outcome = merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(7, "a3f2"), "Same")],
+            &stamp(7, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("older");
+
+    assert_eq!(
+        outcome.conflicts_recorded, 0,
+        "nothing was lost, so there is nothing to show the user"
+    );
+    assert_eq!(conflicts(&transaction), 0);
+    assert!(
+        outcome.needs_write_back,
+        "the file is still behind on its stamp, and the rewrite is what fixes that"
+    );
+}
+
+#[test]
+fn an_older_file_saying_something_else_still_records_the_loss() {
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(9, "a3f2"), "First")],
+            &stamp(9, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("seed");
+
+    let outcome = merge_document(
+        &transaction,
+        &clock(),
+        &notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &stamp(7, "a3f2"), "Stale")],
+            &stamp(7, "a3f2"),
+        )),
+        &input(),
+    )
+    .expect("older");
+
+    assert_eq!(
+        outcome.conflicts_recorded, 1,
+        "the text the file held exists nowhere else once it is rewritten"
+    );
+    assert_eq!(conflicts_for(&transaction, NODE_ID), 1);
+}
+
 #[test]
 fn a_loser_is_recorded_once_in_the_conflict_log() {
     let mut connection = database();
@@ -1591,43 +1666,50 @@ fn the_trash_does_not_stand_in_for_a_parent_that_is_already_here() {
 /// reading the same two files, would swap the name back.
 #[test]
 fn a_conflicted_copy_does_not_become_the_documents_own_file() {
-    let mut connection = database();
-    let transaction = connection.transaction().expect("begin");
-    let seeded = stamp(5, "a3f2");
-    let file = notes_sync::document::VaultFile::Page(page(
-        vec![node("Nd0000000001", &seeded, "First")],
-        &seeded,
-    ));
-    merge_document(&transaction, &clock(), &file, &input()).expect("the page");
+    // iCloud's numbered duplicate is the same copy under a name that looks like
+    // a document this app wrote.
+    for copy in [
+        "Projects-PrJects00001/README (conflicted copy 2026-08-16).md",
+        "Projects-PrJects00001/README 2.md",
+    ] {
+        let mut connection = database();
+        let transaction = connection.transaction().expect("begin");
+        let seeded = stamp(5, "a3f2");
+        let file = notes_sync::document::VaultFile::Page(page(
+            vec![node("Nd0000000001", &seeded, "First")],
+            &seeded,
+        ));
+        merge_document(&transaction, &clock(), &file, &input()).expect("the page");
 
-    let outcome = merge_document(
-        &transaction,
-        &clock(),
-        &file,
-        &notes_sync::merger::MergeInput {
-            file_path: "Projects-PrJects00001/README (conflicted copy 2026-08-16).md".to_owned(),
-            file_hash: "b".repeat(64),
-            ..input()
-        },
-    )
-    .expect("the copy");
-
-    let recorded: String = transaction
-        .query_row(
-            "SELECT folder_path FROM sync_documents WHERE root_id = ?1",
-            ["PrJects00001"],
-            |row| row.get(0),
+        let outcome = merge_document(
+            &transaction,
+            &clock(),
+            &file,
+            &notes_sync::merger::MergeInput {
+                file_path: copy.to_owned(),
+                file_hash: "b".repeat(64),
+                ..input()
+            },
         )
-        .expect("the document");
-    assert_eq!(
-        recorded, "Projects-PrJects00001/README.md",
-        "the page keeps its own name"
-    );
-    assert!(
-        outcome.retire_file,
-        "and the copy is handed back to be removed, or every device reads it \
-         again for ever"
-    );
+        .expect("the copy");
+
+        let recorded: String = transaction
+            .query_row(
+                "SELECT folder_path FROM sync_documents WHERE root_id = ?1",
+                ["PrJects00001"],
+                |row| row.get(0),
+            )
+            .expect("the document");
+        assert_eq!(
+            recorded, "Projects-PrJects00001/README.md",
+            "the page keeps its own name against `{copy}`"
+        );
+        assert!(
+            outcome.retire_file,
+            "and `{copy}` is handed back to be removed, or every device reads it \
+             again for ever"
+        );
+    }
 }
 
 /// What was last written for a node is only true until another device's
