@@ -7,6 +7,7 @@
 //! desktop adapter owns the lifetimes above that.
 
 pub mod attachments;
+pub mod coordination;
 pub mod debounce;
 pub mod document;
 pub mod export;

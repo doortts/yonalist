@@ -2643,10 +2643,13 @@ dependencies = [
 name = "notes-sync"
 version = "0.2.0"
 dependencies = [
+ "block2",
  "chrono",
  "libc",
  "notes-application",
  "notes-core",
+ "objc2",
+ "objc2-foundation",
  "proptest",
  "rusqlite",
  "sha2 0.10.9",
