@@ -86,6 +86,9 @@ export interface OutlineRowRuntimeState {
   /** Clipboard for an image row with nothing selected around it. */
   readonly onCopyImage: (nodeId: string) => void;
   readonly onCutImage: (nodeId: string) => void;
+  /** Clipboard for a bullet row holding nothing but the caret. */
+  readonly onCopyRow: (nodeId: string) => void;
+  readonly onCutRow: (nodeId: string) => void;
   /** Why a paste landed nothing, for the pane's own status line. */
   readonly onPasteRefused: (message: string) => void;
   readonly selectionActions: SelectionKeyboardActions;
@@ -483,7 +486,9 @@ export const OutlineRow = memo(function OutlineRow({
                 onFocusNote: openNoteAndFocus,
                 onMoveTo: openMoveChooser,
                 supportingNote: visibleNote,
-                selectionActions: current.selectionActions
+                selectionActions: current.selectionActions,
+                onCopyRow: current.onCopyRow,
+                onCutRow: current.onCutRow
               });
             }}
             onKeyUp={(event) => {

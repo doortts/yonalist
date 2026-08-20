@@ -84,7 +84,9 @@ function options(store: ReturnType<typeof storeStub>, hasSelection = false) {
       cut: vi.fn()
     },
     onCopyImage: vi.fn(),
-    onCutImage: vi.fn()
+    onCutImage: vi.fn(),
+    onCopyRow: vi.fn(),
+    onCutRow: vi.fn()
   };
 }
 
@@ -158,6 +160,40 @@ function mountImage(given: ReturnType<typeof options>): HTMLDivElement {
 }
 
 describe("v2 outline row keys reach the collaborator they name", () => {
+  it("routes the caret-only clipboard chords to the row's own callback", () => {
+    const given = options(storeStub());
+
+    fireEvent.keyDown(mountRow(given), { key: "x", ctrlKey: true });
+
+    expect(given.onCutRow).toHaveBeenCalledWith("beta");
+    expect(given.onCopyRow).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(mountRow(given), { key: "c", ctrlKey: true });
+
+    expect(given.onCopyRow).toHaveBeenCalledWith("beta");
+  });
+
+  it("leaves the chords to the band and to swept text", () => {
+    const banded = options(storeStub(), true);
+
+    fireEvent.keyDown(mountRow(banded), { key: "c", ctrlKey: true });
+    fireEvent.keyDown(mountRow(banded), { key: "x", ctrlKey: true });
+
+    expect(banded.onCopyRow).not.toHaveBeenCalled();
+    expect(banded.onCutRow).not.toHaveBeenCalled();
+
+    // Swept text keeps the textarea's own copy: no intent, so no
+    // `preventDefault`, which is what a truthy `fireEvent` return reports.
+    const given = options(storeStub());
+    const field = mountRow(given);
+    field.setSelectionRange(0, 4);
+
+    expect(fireEvent.keyDown(field, { key: "c", ctrlKey: true })).toBe(true);
+    expect(fireEvent.keyDown(field, { key: "x", ctrlKey: true })).toBe(true);
+    expect(given.onCopyRow).not.toHaveBeenCalled();
+    expect(given.onCutRow).not.toHaveBeenCalled();
+  });
+
   it.each(routes)(
     "sends the %s key to its own callback and to no other",
     async (_label, init, expected) => {

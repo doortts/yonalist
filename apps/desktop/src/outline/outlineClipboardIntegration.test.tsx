@@ -308,6 +308,57 @@ describe("outline clipboard integration", () => {
   // A row menu reads the loaded window and deletes what the server holds. The
   // forest behind some other selection says nothing about the row that was
   // right-clicked, so the window itself is what has to be whole.
+  /** A clipboard that takes every format, so only a guard can stop a write. */
+  function workingClipboard() {
+    const write = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("ClipboardItem", class {
+      constructor(readonly data: Record<string, Promise<Blob>>) {}
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      value: { write },
+      configurable: true
+    });
+    return write;
+  }
+
+  it("cuts the caret's own row when nothing is selected", async () => {
+    const notesApi = api();
+    const write = workingClipboard();
+    render(<App api={notesApi} />);
+
+    fireEvent.keyDown(await screen.findByDisplayValue("Second thought"), {
+      key: "x",
+      ctrlKey: true
+    });
+
+    await waitFor(() => expect(write).toHaveBeenCalled());
+    const written = (write.mock.calls[0][0][0] as {
+      data: Record<string, Promise<Blob>>;
+    }).data;
+    await expect((await written["text/plain"]).text())
+      .resolves.toBe("- Second thought");
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: { kind: "deleteSubtrees", ids: ["bullet-2"] }
+      })
+    ));
+  });
+
+  it("copies the caret's own row when nothing is selected", async () => {
+    const notesApi = api();
+    const write = workingClipboard();
+    render(<App api={notesApi} />);
+
+    fireEvent.keyDown(await screen.findByDisplayValue("Second thought"), {
+      key: "c",
+      ctrlKey: true
+    });
+
+    await waitFor(() => expect(write).toHaveBeenCalled());
+    await settled();
+    expect(notesApi.execute).not.toHaveBeenCalled();
+  });
+
   it("refuses a row Cut while the outline is still paginated", async () => {
     const notesApi = api();
     notesApi.bootstrap = vi.fn().mockResolvedValue({
