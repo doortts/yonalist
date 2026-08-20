@@ -165,7 +165,11 @@ describe("carrying unfinished work into the open day", () => {
     const api = carryApi([row("todo-open", "journal-0", { marker: "todo" })]);
     render(<App api={api} />);
     fireEvent.click(await screen.findByRole("button", { name: "Carry over 1" }));
-    await waitFor(() => expect(commands(api)).toHaveLength(1));
+    // Waited for, not assumed: the button has to have actually emptied, or the
+    // one found after the undo is only the one that never left.
+    await waitFor(() => expect(
+      screen.queryByRole("button", { name: /^Carry over/u })
+    ).toBeNull());
 
     fireEvent.keyDown(window, { key: "z", ctrlKey: true });
 

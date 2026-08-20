@@ -1,5 +1,7 @@
 import { ArrowDownToLine, ChevronLeft, ChevronRight } from "lucide-react";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import {
+  useCallback, useEffect, useRef, useState, useSyncExternalStore
+} from "react";
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
 import { journalDays, shiftDay, weekdayOf } from "./journal";
@@ -38,12 +40,11 @@ export function JournalDayBar({
   /** Today, so the day can say when it is the one being lived. */
   readonly today: string;
 }) {
-  // Two pieces of the same state: how many carry-overs have settled, and
-  // whether one is in flight. The button goes quiet while it is, so a second
-  // press cannot move rows that are already on their way here.
-  const [carried, setCarried] = useState(0);
+  // The button is quiet from the press until the count behind it has been read
+  // again, not merely until the move lands: in between, what it says is the
+  // number of rows that have already arrived here.
   const [carrying, setCarrying] = useState(false);
-  const rows = useCarryOverRows(store, date, pageId, carried);
+  const [rows, readAgain] = useCarryOverRows(store, date, pageId);
   const previous = shiftDay(date, -1);
   const next = shiftDay(date, 1);
   return (
@@ -60,10 +61,9 @@ export function JournalDayBar({
           disabled={carrying}
           onClick={() => {
             setCarrying(true);
-            void onCarryRows(pageId, rows.map((node) => node.id)).finally(() => {
-              setCarrying(false);
-              setCarried((count) => count + 1);
-            });
+            void onCarryRows(pageId, rows.map((node) => node.id))
+              .then(readAgain, readAgain)
+              .finally(() => setCarrying(false));
           }}
         >
           <ArrowDownToLine size={13} aria-hidden="true" />
@@ -97,21 +97,24 @@ export function JournalDayBar({
  * than counted from what is on screen: those days are not open, and the count
  * is the whole of what the button can honestly say before it is pressed.
  *
- * Read when the days to read change, and not on every revision: a keystroke on
- * the open day cannot change what an earlier day is still carrying, and reading
- * seven days again for each one would put an IPC round trip inside the typing
- * debounce. A carry-over is the one thing that empties these days without
- * changing which days they are, so it says so itself through `carried` -- the
- * page list looks identical either side of it, and an effect watching only that
- * would go on offering rows that are already on this page.
+ * Read when the days to read change, when the redo stack moves, and when a
+ * carry-over the bar itself ran has settled. Not on every revision: a keystroke
+ * on the open day cannot change what an earlier day is still carrying, and
+ * reading seven days again for each one would put an IPC round trip inside the
+ * typing debounce.
+ *
+ * The redo depth is what catches Undo. A carry-over moves rows between days
+ * without changing which days they are, so the day list looks identical either
+ * side of it and either side of undoing it; the depth does not -- undo raises
+ * it, redo lowers it, and the next command clears it, while a run of typing
+ * leaves it alone. Without it the button that correctly emptied itself would
+ * stay empty after the rows had been put back.
  */
 function useCarryOverRows(
   store: NotesStore,
   date: string,
-  pageId: string,
-  /** Bumped each time a carry-over settles, which is when to look again. */
-  carried: number
-): readonly NoteView[] {
+  pageId: string
+): readonly [readonly NoteView[], () => Promise<void>] {
   const shell = useSyncExternalStore(
     store.subscribeShell,
     store.getShellSnapshot,
@@ -122,26 +125,28 @@ function useCarryOverRows(
     .filter((day) => day.id !== pageId)
     .map((day) => day.id)
     .join(" ");
-  useEffect(() => {
-    if (dayIds.length === 0) {
+  // Which read is the current one. A read that lands after another has started
+  // is answering a question nobody is asking any more.
+  const reading = useRef(0);
+  const read = useCallback(async () => {
+    const epoch = ++reading.current;
+    const ids = dayIds.length === 0 ? [] : dayIds.split(" ");
+    if (ids.length === 0) {
       setRows([]);
-      return () => undefined;
+      return;
     }
-    let active = true;
-    const ids = dayIds.split(" ");
-    void store.queryForest(ids).then(
-      (forest) => {
-        if (active) setRows(carryOverRows(forest.nodes, ids));
-      },
-      () => {
-        // Days that could not be read offer nothing to carry, which is what an
-        // empty list already says.
-        if (active) setRows([]);
-      }
-    );
-    return () => {
-      active = false;
-    };
-  }, [carried, dayIds, store]);
-  return rows;
+    try {
+      const forest = await store.queryForest(ids);
+      if (reading.current === epoch) setRows(carryOverRows(forest.nodes, ids));
+    } catch {
+      // Days that could not be read offer nothing to carry, which is what an
+      // empty list already says.
+      if (reading.current === epoch) setRows([]);
+    }
+  }, [dayIds, store]);
+  const redoDepth = shell.redoDepth;
+  useEffect(() => {
+    void read();
+  }, [read, redoDepth]);
+  return [rows, read];
 }
