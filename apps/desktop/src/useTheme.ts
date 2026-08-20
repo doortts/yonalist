@@ -12,7 +12,7 @@ export type ResolvedTheme = LightTheme | DarkTheme;
 /** "auto" leaves the caret to the theme stylesheet; anything else is a #rrggbb. */
 export type CaretColor = "auto" | string;
 /** What the outline's own text is set in; the rest of the app never changes. */
-export type TextFont = "sans" | "mono";
+export type TextFont = "sans" | "mono" | "hand";
 
 const themeModeStorageKey = "yonalist.themeMode.v1";
 const lightThemeStorageKey = "yonalist.lightTheme.v1";
@@ -75,7 +75,8 @@ function loadCaretColor(): CaretColor {
 }
 
 function loadTextFont(): TextFont {
-  return readStoredValue(textFontStorageKey) === "mono" ? "mono" : "sans";
+  const stored = readStoredValue(textFontStorageKey);
+  return stored === "mono" || stored === "hand" ? stored : "sans";
 }
 
 function systemPrefersDark(): boolean {

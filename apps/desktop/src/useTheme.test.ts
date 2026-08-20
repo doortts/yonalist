@@ -109,4 +109,15 @@ describe("useTheme", () => {
     expect(document.documentElement.dataset.textFont).toBe("mono");
     expect(window.localStorage.getItem("yonalist.textFont.v1")).toBe("mono");
   });
+
+  // The handwriting font is the third value the same key carries, so the
+  // restart path -- read the key, stamp the attribute -- is what this pins.
+  it("restores the stored handwriting font", () => {
+    window.localStorage.setItem("yonalist.textFont.v1", "hand");
+
+    const { result } = renderHook(() => useTheme());
+
+    expect(result.current.textFont).toBe("hand");
+    expect(document.documentElement.dataset.textFont).toBe("hand");
+  });
 });
