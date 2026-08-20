@@ -327,19 +327,27 @@ describe("v2 outline keyboard intent resolver", () => {
       hasSelection: true,
       repeat: true
     }))).toEqual({ kind: "consume" });
-    // A modifier makes it somebody else's key, and the trash chord still
-    // reaches the row rules underneath.
+    // A modifier makes it somebody else's key -- ⌘⌫ deletes to the head of a
+    // line and ⇧⌫ sweeps, neither of which is a picture leaving -- and the
+    // trash chord still reaches the row rules underneath. Deleting forward is
+    // nobody's ask here either: the picture stands behind this caret.
+    for (const overrides of [
+      { altKey: true },
+      { ctrlKey: true },
+      { shiftKey: true },
+      { metaKey: true, platform: "mac" as const }
+    ]) {
+      expect(handleImageNodeKeyDown(input({
+        nodeId: "next",
+        key: "Backspace",
+        imageEdge: "after",
+        ...overrides
+      }))).toBeNull();
+    }
     expect(handleImageNodeKeyDown(input({
       nodeId: "next",
-      key: "Backspace",
-      imageEdge: "after",
-      altKey: true
-    }))).toBeNull();
-    expect(handleImageNodeKeyDown(input({
-      nodeId: "next",
-      key: "Backspace",
-      imageEdge: "after",
-      ctrlKey: true
+      key: "Delete",
+      imageEdge: "after"
     }))).toBeNull();
     expect(handleImageNodeKeyDown(input({
       nodeId: "next",
