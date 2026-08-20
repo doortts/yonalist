@@ -1025,6 +1025,17 @@ body.is-resizing-pane {
   gap: 10px;
 }
 
+/* Not a `.statusbar-message` variant: that class ellipsizes a long message
+   inside the growing left slot, and this count is short, right-aligned, and
+   never shortened -- it would have had to override three of its properties. */
+.statusbar-selection {
+  flex-shrink: 0;
+  color: var(--accent);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .statusbar-state {
   flex-shrink: 0;
   padding-left: 12px;

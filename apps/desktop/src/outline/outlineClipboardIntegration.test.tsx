@@ -220,7 +220,11 @@ describe("outline clipboard integration", () => {
 
     await waitFor(() => expect(notesApi.execute).toHaveBeenCalledOnce());
     release?.();
-    await waitFor(() => expect(screen.queryByText("Saving...")).toBeNull());
+    // The bar's own busy flag is the settle signal -- it reads the same pending
+    // count the status bar used to announce.
+    await waitFor(() => expect(screen.getByRole("toolbar", {
+      name: "Actions for 1 selected notes"
+    })).toHaveAttribute("aria-busy", "false"));
     expect(notesApi.execute).toHaveBeenCalledOnce();
   });
 

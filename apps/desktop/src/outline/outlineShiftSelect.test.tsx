@@ -640,4 +640,29 @@ describe("The modifier with A up a nested outline", () => {
     await press(editor, "a", { ctrlKey: true });
     expect(bandIds(view.container)).toEqual(["a", "a1", "a2", "b"]);
   });
+
+  // Every row in one band shares one left edge, and it is the shallowest
+  // selected row's -- otherwise the band's left side steps in and out with the
+  // depths it happens to cover and reads as several bands.
+  it("publishes the shallowest selected depth for the band to start from", async () => {
+    const { view } = await outline(family);
+    const section = view.container.querySelector<HTMLElement>(
+      "section.notes-outline"
+    )!;
+    const editor = await placeCaret(view.container, "a1", 0);
+
+    await press(editor, "a", { ctrlKey: true });
+    await press(editor, "a", { ctrlKey: true });
+    expect(bandIds(view.container)).toEqual(["a1"]);
+    expect(section.style.getPropertyValue("--notes-band-depth")).toBe("1");
+
+    await press(editor, "a", { ctrlKey: true });
+    await press(editor, "a", { ctrlKey: true });
+    expect(bandIds(view.container)).toEqual(["a", "a1", "a2"]);
+    expect(section.style.getPropertyValue("--notes-band-depth")).toBe("0");
+
+    await press(editor, "Escape");
+    expect(bandIds(view.container)).toEqual([]);
+    expect(section.style.getPropertyValue("--notes-band-depth")).toBe("");
+  });
 });

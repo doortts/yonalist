@@ -2,7 +2,7 @@ import {
   act, fireEvent, render, screen, waitFor, within
 } from "@testing-library/react";
 import { App } from "./App";
-import { appApi, receipt } from "./test/appApiFixture";
+import { appApi, receipt, snapshot } from "./test/appApiFixture";
 
 describe("split pane integration", () => {
   it("opens, resizes, focuses, and closes a second outline pane", async () => {
@@ -80,6 +80,47 @@ describe("split pane integration", () => {
       "Page title"
     );
     expect(notesApi.queryViewport).not.toHaveBeenCalled();
+  });
+
+  it("sums both panes into the status bar count and drops a closed pane", async () => {
+    const notesApi = appApi();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: {
+        ...snapshot.viewport!,
+        nodes: [
+          ...snapshot.viewport!.nodes,
+          {
+            ...snapshot.viewport!.nodes[1]!,
+            id: "bullet-1-child",
+            parentId: "bullet-1",
+            text: "Nested thought"
+          }
+        ]
+      }
+    });
+    render(<App api={notesApi} />);
+    const first = await screen.findByDisplayValue("First thought");
+    const statusBar = screen.getByLabelText("Status bar");
+
+    fireEvent.click(screen.getAllByRole("button", {
+      name: "Zoom to item"
+    })[0], { shiftKey: true });
+    const secondary = screen.getAllByRole("region", { name: "Notes outline" })[1]!;
+
+    // Both panes hold their own band at once, so neither pane's number alone
+    // describes what is selected.
+    fireEvent.pointerDown(first, { button: 0, pointerId: 51, ctrlKey: true });
+    expect(await within(statusBar).findByText("1 selected")).toBeVisible();
+    fireEvent.pointerDown(
+      within(secondary).getByDisplayValue("Nested thought"),
+      { button: 0, pointerId: 52, ctrlKey: true }
+    );
+    expect(await within(statusBar).findByText("2 selected")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close split" }));
+
+    expect(await within(statusBar).findByText("1 selected")).toBeVisible();
   });
 
   it("keeps repeated Enter focus in the right pane while Add child commits", async () => {

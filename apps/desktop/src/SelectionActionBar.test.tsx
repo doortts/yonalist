@@ -34,13 +34,22 @@ describe("SelectionActionBar", () => {
         onMoveDown={vi.fn()}
         onDuplicate={vi.fn()}
         onDelete={onDelete}
+        trailingAction={<button type="button">Export</button>}
       />
     );
 
     expect(screen.getByRole("toolbar", {
       name: "Actions for 3 selected notes"
     })).toHaveClass("notes-selection-action-bar");
-    expect(screen.getByLabelText("3 notes selected")).toHaveTextContent("3 selected");
+    // The count reads from the status bar now; the bar keeps it only in the
+    // label that names what the buttons act on.
+    expect(screen.queryByText("3 selected")).toBeNull();
+    // Dismissing the band is the last thing you reach for, so it sits at the
+    // pill's far end -- behind the actions, and behind Export, which is the
+    // one control the pill borrows from the toolbar it no longer replaces.
+    expect(screen.getAllByRole("button").slice(-2).map(
+      (button) => button.textContent
+    )).toEqual(["Export", "Clear selection"]);
     for (const name of ["Complete", "Delete"]) {
       fireEvent.click(screen.getByRole("button", { name }));
     }

@@ -606,6 +606,75 @@ describe("Yonalist v2 desktop shell", () => {
     })).toBeEnabled();
   });
 
+  it("counts the selection beside Online, not in the message slot", async () => {
+    render(<App api={api()} />);
+    const first = await screen.findByDisplayValue("First thought");
+    const second = screen.getByDisplayValue("Second thought");
+    const statusBar = screen.getByLabelText("Status bar");
+
+    fireEvent.pointerDown(first, { button: 0, pointerId: 41, ctrlKey: true });
+    fireEvent.pointerDown(second, { button: 0, pointerId: 42, ctrlKey: true });
+
+    // The count is state the band holds, so it reads where the bar already
+    // keeps state -- at the right, in front of Online.
+    await within(statusBar).findByText("2 selected");
+    expect([...statusBar.querySelector(".statusbar-actions")!.children]
+      .map((child) => child.textContent)).toEqual(["2 selected", "Online"]);
+    expect(statusBar.querySelector(".statusbar-feedback")).toBeEmptyDOMElement();
+  });
+
+  it("says nothing in the status bar while a write is in flight", async () => {
+    const notesApi = api();
+    notesApi.execute = vi.fn().mockImplementation(
+      () => new Promise(() => undefined)
+    );
+    render(<App api={notesApi} />);
+    const first = await screen.findByDisplayValue("First thought");
+    const statusBar = screen.getByLabelText("Status bar");
+
+    fireEvent.pointerDown(first, { button: 0, pointerId: 44, ctrlKey: true });
+    await within(statusBar).findByText("1 selected");
+    fireEvent.click(await screen.findByRole("button", { name: "Complete" }));
+
+    // A write settles in a few hundred milliseconds without the reader doing
+    // anything, so announcing it only makes the bar flicker. The controls that
+    // must wait already say so themselves through aria-busy.
+    await waitFor(() => expect(notesApi.execute).toHaveBeenCalled());
+    expect(statusBar.querySelector(".statusbar-feedback")).toBeEmptyDOMElement();
+    expect(within(statusBar).getByText("1 selected")).toBeVisible();
+  });
+
+  it("keeps the count beside an error the band's own action raised", async () => {
+    const notesApi = api();
+    notesApi.execute = vi.fn().mockRejectedValue(new Error("Save refused"));
+    render(<App api={notesApi} />);
+    const first = await screen.findByDisplayValue("First thought");
+    const statusBar = screen.getByLabelText("Status bar");
+
+    fireEvent.pointerDown(first, { button: 0, pointerId: 45, ctrlKey: true });
+    await within(statusBar).findByText("1 selected");
+    fireEvent.click(await screen.findByRole("button", { name: "Complete" }));
+
+    // The band survives a failed action, so reporting the failure must not cost
+    // the reader the count of what is still selected.
+    expect(await within(statusBar).findByText("Save refused")).toBeVisible();
+    expect(within(statusBar).getByText("1 selected")).toBeVisible();
+  });
+
+  it("keeps the breadcrumb readable while the selection actions float over it", async () => {
+    render(<App api={api()} />);
+    const first = await screen.findByDisplayValue("First thought");
+
+    fireEvent.pointerDown(first, { button: 0, pointerId: 43, ctrlKey: true });
+
+    // The band's actions used to take the toolbar's place, which took the page
+    // path with it -- the one thing a reader needs to know where the band is.
+    expect(await screen.findByRole("toolbar", {
+      name: "Actions for 1 selected notes"
+    })).toBeVisible();
+    expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toBeVisible();
+  });
+
   it("hides a collapsed subtree and restores it through the current arrow slot", async () => {
     const parent = { ...snapshot.viewport!.nodes[0], collapsed: true };
     const child = {

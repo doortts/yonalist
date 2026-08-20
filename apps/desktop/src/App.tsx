@@ -113,6 +113,8 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     useState<PaneRestoreRequest | null>(null);
   const [secondaryRestore, setSecondaryRestore] =
     useState<PaneRestoreRequest | null>(null);
+  const [paneSelections, setPaneSelections] =
+    useState({ primary: 0, secondary: 0 });
   const resizeStart = useRef<{ x: number; width: number } | null>(null);
   const applyNavigationRef = useRef<
     (location: AppNavigationLocation) => Promise<void>
@@ -599,6 +601,16 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     recordNavigation,
     splitOpen
   ]);
+  // Identity has to hold across renders: the panes are memoized, and a fresh
+  // callback would re-run the effect that reports through it.
+  const reportSelectionCount = useCallback(
+    (paneId: "primary" | "secondary", count: number) =>
+      setPaneSelections((current) => current[paneId] === count
+        ? current
+        : { ...current, [paneId]: count }),
+    []
+  );
+  const selectedCount = paneSelections.primary + paneSelections.secondary;
   const libraryQuery = query.trim() ||
     (libraryView === "starred"
       ? "is:starred"
@@ -873,14 +885,25 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           onOpenSplit={openSplit}
           onCloseSplit={closeSplit}
           onTagClick={handleTagClick}
+          onSelectionCountChange={reportSelectionCount}
         />
       )}
       <footer className="app-statusbar" aria-label="Status bar">
         <div className="statusbar-feedback">
+          {/* Errors only. A write settles on its own in a few hundred
+              milliseconds, so a Saving... here just flickered; the controls
+              that actually have to wait carry their own aria-busy. */}
           {state.error && <span className="statusbar-message" data-kind="error">{state.error}</span>}
-          {!state.error && state.pendingWrites > 0 && <span className="statusbar-message">Saving...</span>}
         </div>
-        <div className="statusbar-actions"><span className="statusbar-state">Online</span></div>
+        {/* The count is state the band holds for as long as it lives, which is
+            what the group at this end is for -- in the message slot it would
+            have had to take turns with messages that come and go. */}
+        <div className="statusbar-actions">
+          {selectedCount > 0 && (
+            <span className="statusbar-selection">{selectedCount} selected</span>
+          )}
+          <span className="statusbar-state">Online</span>
+        </div>
       </footer>
     </main>
   );

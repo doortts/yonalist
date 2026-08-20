@@ -85,8 +85,8 @@ describe("image node styles", () => {
   it("paints a lone selected image instead of banding its row", () => {
     expect(rule(
       notesStyles,
-      '.notes-node[data-solo-image-selection="true"] > .notes-node-main'
-    )).toContain("background: transparent;");
+      '.notes-node[data-solo-image-selection="true"]'
+    )).toContain("--notes-band-paint: transparent;");
     expect(rule(
       notesStyles,
       '.notes-node[data-range-selected="true"] ' +
@@ -94,6 +94,12 @@ describe("image node styles", () => {
     )).toContain(
       "background: color-mix(in srgb, var(--accent) 28%, transparent);"
     );
+    // Equal specificity with the band rule, so only file order decides which
+    // one answers -- and nothing else in the suite would notice a reorder.
+    expect(notesStyles.indexOf('.notes-node[data-range-selected="true"] {'))
+      .toBeLessThan(
+        notesStyles.indexOf('.notes-node[data-solo-image-selection="true"] {')
+      );
   });
 
   // The stage carries the box a turned image occupies, so it takes the centring
