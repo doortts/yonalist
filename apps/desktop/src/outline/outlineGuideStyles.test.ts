@@ -86,6 +86,20 @@ describe("outline indentation guides", () => {
     expect(lit).toContain("width: 1px;");
     expect(lit).not.toContain("border-radius");
   });
+
+  // A range with nothing to fold still lights -- silence there would read as a
+  // dead hit test -- but in the muted text colour, and the hook drops the
+  // pointer cursor to match. Recolour only: the geometry stays in the rule
+  // above, which has to keep matching any value of the attribute.
+  it("dims the lit line where the range has nothing to fold", () => {
+    const inert = rule(
+      notesStyles,
+      '.notes-node[data-guide-hot="inert"]::before'
+    );
+    expect(inert).toContain("background: var(--text-3);");
+    expect(inert).not.toContain("inset");
+    expect(inert).not.toContain("width");
+  });
 });
 
 describe("row menu in the guide channel", () => {

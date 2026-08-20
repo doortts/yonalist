@@ -1798,7 +1798,9 @@ button.notes-date-token:hover {
    rather than laying a thicker one over it. `--notes-guide-hot` is the stripe
    index the pointer is on, written onto every row the guide spans. One segment
    per row, so nothing may round its ends -- a radius would pinch every row
-   boundary and read as a broken line. */
+   boundary and read as a broken line.
+   Selected on the attribute's presence, never on its value: the value carries
+   the hover flavour, and the geometry here belongs to both. */
 .notes-node[data-guide-hot]::before {
   position: absolute;
   z-index: 1;
@@ -1811,6 +1813,16 @@ button.notes-date-token:hover {
   background: var(--accent);
   pointer-events: none;
   content: "";
+}
+
+/* A range with nothing to fold still lights -- the reach is unchanged, and a
+   line that stayed dark would read as a dead hit test rather than an answer --
+   but in the muted text colour, with the hook dropping the pointer cursor to
+   match. Recolour only; the rule above owns where the line goes. `--text-3` is
+   set in all eight themes and no pane override redefines it. `--border-strong`
+   lost the argument: one step off the resting hairline is invisible at 1px. */
+.notes-node[data-guide-hot="inert"]::before {
+  background: var(--text-3);
 }
 
 /* The tint used to replace the band outright -- both were `background` on
