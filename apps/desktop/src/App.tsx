@@ -17,6 +17,7 @@ import { LibraryViewButtons, type LibraryView } from "./LibraryViewButtons";
 import { LibraryPageRow } from "./LibraryPageRow";
 import type { PaneRestoreRequest } from "./NotesOutline";
 import { NotesInteractionHistory } from "./notesInteractionHistory";
+import { nudgePageZoom, pageZoomStep } from "./pageZoom";
 import {
   isDevtoolsShortcut, isDragDebugShortcut, toggleDevtools
 } from "./devtools";
@@ -477,6 +478,15 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           shortcuts.current.openPageAt(place);
           return;
         }
+      }
+      // The page's own size, in the 5% steps the numeric row's other end reads
+      // in. There is no reset chord: Cmd+0 is All pages here, so the way back
+      // is the same key that came out.
+      const zoomStep = pageZoomStep(event);
+      if (zoomStep !== 0) {
+        event.preventDefault();
+        void nudgePageZoom(zoomStep);
+        return;
       }
       // A new page and the settings screen answer from anywhere too: neither
       // chord is something a line of text is asking for.

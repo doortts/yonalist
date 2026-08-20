@@ -194,6 +194,9 @@ const requiredPermissions = [
   "core:default",
   "core:window:allow-destroy",
   "core:window:allow-start-dragging",
+  // Cmd/Ctrl +/- resizes the page through WKWebView's own zoom, and
+  // `core:default` does not carry the setter.
+  "core:webview:allow-set-webview-zoom",
   "dialog:allow-open",
   "dialog:allow-save",
   "main-window-notes-commands"
