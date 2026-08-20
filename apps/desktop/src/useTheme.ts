@@ -13,12 +13,15 @@ export type ResolvedTheme = LightTheme | DarkTheme;
 export type CaretColor = "auto" | string;
 /** What the outline's own text is set in; the rest of the app never changes. */
 export type TextFont = "sans" | "mono" | "hand";
+/** Which hand draws Hangul once the outline text is handwriting. */
+export type HandHangulFont = "xiaolai" | "nanum";
 
 const themeModeStorageKey = "yonalist.themeMode.v1";
 const lightThemeStorageKey = "yonalist.lightTheme.v1";
 const darkThemeStorageKey = "yonalist.darkTheme.v1";
 const caretColorStorageKey = "yonalist.caretColor.v1";
 const textFontStorageKey = "yonalist.textFont.v1";
+const handHangulStorageKey = "yonalist.handHangul.v1";
 
 function readStoredValue(key: string): string | null {
   try {
@@ -79,6 +82,10 @@ function loadTextFont(): TextFont {
   return stored === "mono" || stored === "hand" ? stored : "sans";
 }
 
+function loadHandHangulFont(): HandHangulFont {
+  return readStoredValue(handHangulStorageKey) === "nanum" ? "nanum" : "xiaolai";
+}
+
 function systemPrefersDark(): boolean {
   return (
     typeof window.matchMedia === "function" &&
@@ -93,6 +100,9 @@ export function useTheme() {
   const [systemDark, setSystemDark] = useState(() => systemPrefersDark());
   const [caretColor, setCaretColorState] = useState<CaretColor>(() => loadCaretColor());
   const [textFont, setTextFontState] = useState<TextFont>(() => loadTextFont());
+  const [handHangulFont, setHandHangulFontState] = useState<HandHangulFont>(() =>
+    loadHandHangulFont()
+  );
 
   useEffect(() => {
     if (typeof window.matchMedia !== "function") {
@@ -135,6 +145,10 @@ export function useTheme() {
     document.documentElement.dataset.textFont = textFont;
   }, [textFont]);
 
+  useEffect(() => {
+    document.documentElement.dataset.handHangul = handHangulFont;
+  }, [handHangulFont]);
+
   const setMode = useCallback((next: ThemeMode) => {
     setModeState(next);
     writeStoredValue(themeModeStorageKey, next);
@@ -160,6 +174,11 @@ export function useTheme() {
     writeStoredValue(textFontStorageKey, next);
   }, []);
 
+  const setHandHangulFont = useCallback((next: HandHangulFont) => {
+    setHandHangulFontState(next);
+    writeStoredValue(handHangulStorageKey, next);
+  }, []);
+
   return {
     mode,
     setMode,
@@ -171,6 +190,8 @@ export function useTheme() {
     setCaretColor,
     textFont,
     setTextFont,
+    handHangulFont,
+    setHandHangulFont,
     resolvedTheme
   };
 }

@@ -5,6 +5,7 @@ import {
 } from "react";
 import "./styles.css";
 import "./notes.css";
+import "./handwritingHangul.css";
 import "./formControls.css";
 import type { SyncChanged } from "../../../packages/contracts/generated/SyncChanged";
 import { tauriNotesApi, type NotesApi } from "./api";
@@ -859,12 +860,14 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             darkTheme={theme.darkTheme}
             caretColor={theme.caretColor}
             textFont={theme.textFont}
+            handHangulFont={theme.handHangulFont}
             markerStyles={markers.markerStyles}
             onThemeModeChange={theme.setMode}
             onLightThemeChange={theme.setLightTheme}
             onDarkThemeChange={theme.setDarkTheme}
             onCaretColorChange={theme.setCaretColor}
             onTextFontChange={theme.setTextFont}
+            onHandHangulFontChange={theme.setHandHangulFont}
             onMarkerStylesChange={markers.setMarkerStyles}
             onClose={closeSettings}
             unusedAssets={(purge) => api.unusedAssets(purge)}
