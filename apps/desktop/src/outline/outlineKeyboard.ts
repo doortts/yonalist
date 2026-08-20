@@ -432,10 +432,7 @@ export function resolveOutlineKey(
       const up = input.key === "ArrowUp";
       if (input.hasSelection) {
         const currentId = input.selectionHeadId ?? input.nodeId;
-        const index = input.visibleIndex?.positionOf(currentId) ??
-          input.visibleNodes.findIndex(
-            (candidate) => candidate.id === currentId
-          );
+        const index = visiblePositionOf(input, currentId);
         const target = index >= 0
           ? input.visibleNodes[bandHeadStep(input, index, up ? -1 : 1)]
           : undefined;
