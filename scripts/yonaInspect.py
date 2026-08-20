@@ -169,12 +169,18 @@ def widen_stamp_line(line: str) -> str:
 class State:
     """A snapshot: the copied database plus whatever the vault says."""
 
-    def __init__(self, data_dir: pathlib.Path) -> None:
+    def __init__(self, data_dir: pathlib.Path, needs_db: bool = True) -> None:
         self.data_dir = data_dir
         self._temp = tempfile.mkdtemp(prefix="yona-inspect-")
         live = data_dir / DB_NAME
+        # A repair on the vault has to work when there is no database -- that is
+        # the state the repair exists for.
         if not live.is_file():
-            raise SystemExit(f"No database at {live}")
+            if needs_db:
+                raise SystemExit(f"No database at {live}")
+            self.db = None
+            self.vault = self._vault_path()
+            return
         copy = pathlib.Path(self._temp) / DB_NAME
         # The write-ahead log holds everything written since the last
         # checkpoint, so a copy without it reads minutes or hours stale.
@@ -571,8 +577,10 @@ def command_widen_stamps(state: State, args) -> int:
     `device_id`, and the footer's `t:` / `prev:` tokens.
     """
     if state.vault is None:
-        print("This data directory has no vault recorded.")
+        print(f"No vault recorded at {state.data_dir / 'vault-path'}.")
         return 1
+    if state.db is None:
+        print(f"(no database here -- reading the vault only: {state.vault})")
     files = sorted(state.vault.rglob("*.md"))
     if not files:
         print(f"No documents under {state.vault}")
@@ -695,7 +703,7 @@ def main(argv: list[str]) -> int:
         "widen-stamps": command_widen_stamps,
         "hlc": command_hlc,
     }
-    state = State(args.data_dir)
+    state = State(args.data_dir, needs_db=args.command != "widen-stamps")
     return commands[args.command](state, args)
 
 
