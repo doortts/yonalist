@@ -290,7 +290,7 @@ describe("v2 outline keyboard intent resolver", () => {
   // picture, and behind the caret standing on the picture itself, that is the
   // picture. Behind the station before it stands the previous row, and a bullet
   // there is nobody's to take from a neighbour's station.
-  it("deletes the image on Backspace from behind it, never from ahead", () => {
+  it("deletes the picture behind the caret, never the one ahead", () => {
     expect(handleImageNodeKeyDown(input({
       nodeId: "next",
       key: "Backspace",
@@ -380,6 +380,9 @@ describe("v2 outline keyboard intent resolver", () => {
 
     expect(handleImageNodeKeyDown(before(stacked, "lower")))
       .toEqual({ kind: "trash", nodeId: "upper" });
+    // A text row behind the caret is the commonest thing there, and it is not
+    // this key's to take: the sibling above `upper` is a bullet.
+    expect(handleImageNodeKeyDown(before(stacked, "upper"))).toBeNull();
     // A held key takes one picture off the stack, not the whole stack.
     expect(handleImageNodeKeyDown({
       ...before(stacked, "lower"),

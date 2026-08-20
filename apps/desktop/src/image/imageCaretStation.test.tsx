@@ -120,24 +120,31 @@ async function renderStackedImages() {
   const notesApi = appApi();
   notesApi.bootstrap = vi.fn().mockResolvedValue(stackedBoot());
   notesApi.readImage = vi.fn().mockResolvedValue(Uint8Array.from([1]));
+  // The stock receipt reports nothing deleted, and a row that never leaves the
+  // DOM cannot tell a caret that stayed from a caret nobody moved.
+  notesApi.execute = vi.fn().mockImplementation(async (envelope) => ({
+    revision: 8,
+    changedNodes: [],
+    deletedIds: envelope.command.kind === "deleteSubtree"
+      ? [envelope.command.id]
+      : [],
+    history: { canUndo: true, canRedo: false, undoDepth: 1, redoDepth: 0 }
+  }));
   const view = render(<App api={notesApi} />);
   await screen.findByRole("group", { name: "Image: dog.png" });
   return { notesApi, view };
 }
 
-function stationsOf(
+function stations(
   view: { container: HTMLElement },
-  nodeId: string
+  nodeId?: string
 ): readonly HTMLElement[] {
-  return [...view.container.querySelectorAll<HTMLElement>(
-    `.notes-outline-list .notes-image-caret-stop[data-node-id="${nodeId}"]`
-  )];
-}
-
-function stations(view: { container: HTMLElement }): readonly HTMLElement[] {
-  return [...view.container.querySelectorAll<HTMLElement>(
+  const stops = [...view.container.querySelectorAll<HTMLElement>(
     ".notes-outline-list .notes-image-caret-stop"
   )];
+  return nodeId
+    ? stops.filter((stop) => stop.dataset.nodeId === nodeId)
+    : stops;
 }
 
 describe("image caret station", () => {
@@ -414,11 +421,13 @@ describe("image caret station", () => {
       ).toHaveFocus());
     });
   // The row this key takes is not the row it stands on, so nothing unmounts
-  // under the caret and nothing may move it.
+  // under the caret and nothing may move it. The held reference is the whole
+  // point: the station has to be the same element afterwards, which is what
+  // would break if these rows were ever keyed by position instead of by id.
   it("takes the image above from the before station and stands its ground",
     async () => {
       const { notesApi, view } = await renderStackedImages();
-      const [before] = stationsOf(view, "lower");
+      const [before] = stations(view, "lower");
       before!.focus();
 
       fireEvent.keyDown(before!, { key: "Backspace" });
@@ -431,6 +440,11 @@ describe("image caret station", () => {
           })
         })
       ));
+      await waitFor(() => expect(
+        screen.queryByRole("group", { name: "Image: cat.png" })
+      ).not.toBeInTheDocument());
+      expect(screen.getByRole("group", { name: "Image: dog.png" }))
+        .toBeInTheDocument();
       expect(before).toHaveFocus();
     });
 });
