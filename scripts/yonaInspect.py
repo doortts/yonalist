@@ -31,6 +31,7 @@ import shutil
 import sqlite3
 import sys
 import tempfile
+import unicodedata
 
 SUPPORT = pathlib.Path.home() / "Library" / "Application Support"
 DEFAULT_DATA_DIR = SUPPORT / "com.doortts.yonalist.v2"
@@ -122,8 +123,18 @@ def machine_seed() -> bytes | None:
 DEVICE_WIDTH = 8
 
 
-def derived_device_id(seed: bytes, width: int = DEVICE_WIDTH) -> str:
-    return hashlib.sha256(seed).hexdigest()[:width]
+def derived_device_id(seed: bytes, scope: str, width: int = DEVICE_WIDTH) -> str:
+    """What `hlc.rs::device_seed` would provision here.
+
+    The scope is the database's own place. It is part of the input because the id
+    names a *writer*, not a machine: two databases on one Mac are two writers, and
+    a shared id has the merge read one's files as the other's own authoring.
+    """
+    digest = hashlib.sha256()
+    digest.update(seed)
+    digest.update(b"\x00")
+    digest.update(scope.encode("utf-8"))
+    return digest.hexdigest()[:width]
 
 
 def show_ms(millis: int | None) -> str:
@@ -207,6 +218,18 @@ class State:
     def one(self, sql: str, *args):
         row = self.db.execute(sql, args).fetchone()
         return row[0] if row else None
+
+    def database_scope(self) -> str:
+        """What `device_scope` in the worker builds: the database's own place,
+        resolved and NFC-normalised, so the same file reached two ways is one
+        writer and two spellings of one Korean folder name are too."""
+        live = self.data_dir / DB_NAME
+        parent = live.parent
+        try:
+            parent = parent.resolve(strict=True)
+        except OSError:
+            pass
+        return unicodedata.normalize("NFC", str(parent / live.name))
 
     def device_id(self) -> str:
         return self.one("SELECT device_id FROM sync_meta WHERE singleton = 1") or "?"
@@ -553,15 +576,17 @@ def command_device(state: State, _args) -> int:
         print("\n  A provisioning now would fall back to a random value, which is the")
         print("  design that makes a reinstalled app a second device.")
         return 1
+    scope = state.database_scope()
     print(f"IOPlatformUUID        {seed.hex()}")
+    print(f"this database         {scope}")
     print(
-        f"would provision       {derived_device_id(seed)}   "
-        f"(sha256 of the above, {DEVICE_WIDTH} hex)"
+        f"would provision       {derived_device_id(seed, scope)}   "
+        f"(sha256 of the two above, {DEVICE_WIDTH} hex)"
     )
-    if stored == derived_device_id(seed):
+    if stored == derived_device_id(seed, scope):
         print("\n  Stored and derived agree: this machine is stable across a reinstall.")
         return 0
-    print(f"\n  Stored {stored!r} is not what this machine derives.")
+    print(f"\n  Stored {stored!r} is not what this machine and place derive.")
     print("  Either it predates the derivation, or this data directory came from")
     print("  another Mac -- in which case two machines are stamping as one device.")
     return 1
@@ -640,10 +665,14 @@ def selftest() -> int:
     assert unescape_inline(r"one\ntwo") == "one\ntwo"
     # Derivation is a pure hash: same bytes in, same four characters out,
     # which is the whole property a reinstall depends on.
-    assert derived_device_id(bytes(range(16))) == derived_device_id(bytes(range(16)))
-    assert len(derived_device_id(b"x")) == DEVICE_WIDTH
-    assert len(derived_device_id(b"x", 4)) == 4
-    assert derived_device_id(b"x") != derived_device_id(b"y")
+    assert derived_device_id(bytes(range(16)), "/a") == derived_device_id(bytes(range(16)), "/a")
+    assert len(derived_device_id(b"x", "/a")) == DEVICE_WIDTH
+    assert len(derived_device_id(b"x", "/a", 4)) == 4
+    assert derived_device_id(b"x", "/a") != derived_device_id(b"y", "/a")
+    # Same machine, different place: a different writer.
+    assert derived_device_id(b"x", "/a") != derived_device_id(b"x", "/b")
+    # And the separator keeps a machine-and-place pair from spelling another.
+    assert derived_device_id(b"x", "y") != derived_device_id(b"xy", "")
     # Widening keeps the order the old readings were in, and touches only the
     # lines that carry one.
     assert widen_stamp_line("root_hlc: 0mt195asu-00-52e4") == "root_hlc: 0mt195asu-00-52e40000"

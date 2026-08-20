@@ -193,7 +193,14 @@ fn merge_page(
     }
     flatten(&page.nodes, &root_id, &mut incoming);
 
-    apply(transaction, clock, &incoming, &mut outcome, false)?;
+    apply(
+        transaction,
+        clock,
+        &incoming,
+        &mut outcome,
+        false,
+        &input.file_path,
+    )?;
     repair_structure(transaction, clock, &mut outcome)?;
     outcome.needs_write_back |=
         document_is_missing_nodes(transaction, &root_id, &page.completeness_bound(), &incoming)?;
@@ -230,7 +237,14 @@ fn merge_trash(
     let mut outcome = MergeOutcome::default();
     let mut incoming = Vec::new();
     flatten(&trash.nodes, "", &mut incoming);
-    apply(transaction, clock, &incoming, &mut outcome, true)?;
+    apply(
+        transaction,
+        clock,
+        &incoming,
+        &mut outcome,
+        true,
+        &input.file_path,
+    )?;
     repair_structure(transaction, clock, &mut outcome)?;
     if crate::watcher::is_conflicted_copy(&input.file_path) {
         outcome.retire_file = true;
@@ -296,6 +310,7 @@ fn apply(
     incoming: &[Incoming<'_>],
     outcome: &mut MergeOutcome,
     trash: bool,
+    file_path: &str,
 ) -> Result<(), MergeError> {
     let device = device_id(transaction)?;
     let existing = load_rows(transaction, incoming)?;
@@ -439,6 +454,7 @@ fn apply(
                     log_conflict(
                         transaction,
                         &entry.id,
+                        file_path,
                         &loser,
                         &side_of_file(entry, trash, reason.as_str()),
                         &loser_hlc,
@@ -466,11 +482,31 @@ fn apply(
                 let lost_something = row_content
                     .as_deref()
                     .is_none_or(|row_content| digest(&file_content) != digest(row_content));
-                if lost_something {
+                // Nor has anything been lost when the losing line carries a
+                // reading this device issued before the one the row now holds.
+                // That is this device's own earlier word arriving back: it wrote
+                // the line, edited it since, and the file has not caught up. On a
+                // machine with one user that is most of what the log used to
+                // fill with, and none of it is an edit somebody wants back — the
+                // rewrite below is what settles it.
+                //
+                // Deliberately narrow, because the cost of getting this wrong is
+                // hiding a real defeat. A reading naming another device stays
+                // logged however far behind it is. An equal stamp stays logged —
+                // `same_t` is a hand edit nobody restamped, and which side is
+                // right is exactly what cannot be worked out here. And an absent
+                // or unreadable reading stays logged: a line with no `t:` is a
+                // line somebody may have typed into the file by hand, and this
+                // is the only place that would ever say so.
+                let own_earlier_word = !file_hlc.is_empty()
+                    && file_hlc < row.hlc
+                    && Hlc::decode(&file_hlc).is_ok_and(|reading| reading.device() == device);
+                if lost_something && !own_earlier_word {
                     let reason = if file_hlc == row.hlc { "same_t" } else { "lww" };
                     log_conflict(
                         transaction,
                         &entry.id,
+                        file_path,
                         &side_of_file(entry, trash, reason),
                         // The row stood, so it is the winner. Its place is read
                         // the same way the losing side's is above.
@@ -1987,9 +2023,14 @@ fn learn_device_name(
 
 /// Recorded once per defeat. The winner is deliberately not part of the key:
 /// keying on it re-logs the same loser every time the local row moves on.
+/// The file is recorded with the pair. Without it a row says two versions
+/// disagreed and nothing about where the losing one came from, and the file
+/// generation that carried it is gone by the time anybody looks — which is how
+/// a disagreement becomes unanswerable rather than merely old.
 fn log_conflict(
     transaction: &Transaction<'_>,
     node_id: &str,
+    file_path: &str,
     loser_json: &str,
     winner_json: &str,
     loser_hlc: &str,
@@ -1998,14 +2039,21 @@ fn log_conflict(
     transaction
         .execute(
             "INSERT INTO sync_conflict_log(
-                 node_id, loser_json, winner_json, loser_hlc, winner_hlc, recorded_at
+                 node_id, file_path, loser_json, winner_json, loser_hlc, winner_hlc, recorded_at
              )
-             SELECT ?1, ?2, ?3, ?4, ?5, unixepoch()
+             SELECT ?1, ?6, ?2, ?3, ?4, ?5, unixepoch()
              WHERE NOT EXISTS (
                  SELECT 1 FROM sync_conflict_log
                  WHERE node_id = ?1 AND loser_hlc = ?4 AND loser_json = ?2
              )",
-            rusqlite::params![node_id, loser_json, winner_json, loser_hlc, winner_hlc],
+            rusqlite::params![
+                node_id,
+                loser_json,
+                winner_json,
+                loser_hlc,
+                winner_hlc,
+                file_path
+            ],
         )
         .map_err(|error| error.to_string())?;
     Ok(())

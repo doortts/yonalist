@@ -115,7 +115,8 @@ pub(crate) fn conflicts(
     let here = this_device(connection)?;
     let mut statement = connection
         .prepare(
-            "SELECT seq, node_id, loser_json, loser_hlc, winner_json, winner_hlc, recorded_at
+            "SELECT seq, node_id, loser_json, loser_hlc, winner_json, winner_hlc, recorded_at,
+                    file_path
              FROM sync_conflict_log
              ORDER BY seq DESC LIMIT ?1",
         )
@@ -130,12 +131,13 @@ pub(crate) fn conflicts(
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
                 row.get::<_, i64>(6)?,
+                row.get::<_, String>(7)?,
             ))
         })
         .map_err(internal)?;
     let mut out = Vec::new();
     for row in rows {
-        let (seq, node_id, loser_json, loser_hlc, winner_json, winner_hlc, recorded_at) =
+        let (seq, node_id, loser_json, loser_hlc, winner_json, winner_hlc, recorded_at, file_path) =
             row.map_err(internal)?;
         let loser = recorded_side(&loser_json)?;
         let winner = recorded_side(&winner_json)?;
@@ -145,6 +147,7 @@ pub(crate) fn conflicts(
             // Both sides carry the same reason — it belongs to the conflict, not
             // to either version — so either one answers.
             reason: text_at(&loser, "reason"),
+            file_path,
             recorded_at,
             kept: side(text_at(&winner, "text"), &winner_hlc, &names, &here),
             dropped: side(text_at(&loser, "text"), &loser_hlc, &names, &here),

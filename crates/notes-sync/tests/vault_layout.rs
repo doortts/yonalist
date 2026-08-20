@@ -134,35 +134,48 @@ fn a_uuid_is_no_longer_a_name_a_folder_can_be_built_from() {
 /// every merge was concerned — and the vault's files, which outlive a database,
 /// then held two generations of stamps arguing with each other.
 ///
-/// Derived from the machine, they agree. What the value *is* cannot be asserted
-/// — it differs per machine, and that is the point — so what is pinned is that
-/// it is stable, and that it is a device id the encoding will accept.
+/// Stable and distinct, which are the two things a stamp's device field is for.
 ///
-/// On a target with no machine identifier to derive from there is no answer at
-/// all, and that absence is the contract: nothing here may invent one. So the
-/// test asserts the shape only where an answer is owed.
+/// Stable: the same machine and the same place give the same answer, so a
+/// database rebuilt where the old one sat is this device again rather than a new
+/// one arguing with the stamps its own vault still holds.
+///
+/// Distinct: a different place is a different answer. Two databases on one Mac
+/// are two writers — the app and a build being verified against the same folder —
+/// and `decide` adopts a file's content over a row's on a device match without
+/// recording anything, so a shared id is one writer silently taking the other's
+/// text.
+///
+/// What the value *is* cannot be asserted: it differs per machine, and that is
+/// the point.
 #[test]
-fn one_machine_provisions_one_device_id() {
-    let once = notes_sync::hlc::device_seed();
+fn one_place_on_one_machine_is_one_device() {
+    let here = notes_sync::hlc::device_seed("/Users/someone/Library/notes.sqlite");
+    let elsewhere = notes_sync::hlc::device_seed("/Users/someone/verify/notes.sqlite");
 
     #[cfg(target_os = "macos")]
     {
-        let once = once.clone().expect("a Mac says which machine it is");
+        let here = here.clone().expect("a Mac says which machine it is");
         assert_eq!(
-            Some(&once),
-            notes_sync::hlc::device_seed().as_ref(),
-            "a second database on this Mac has to be the same device"
+            Some(&here),
+            notes_sync::hlc::device_seed("/Users/someone/Library/notes.sqlite").as_ref(),
+            "a database rebuilt in the same place has to be the same device"
+        );
+        assert_ne!(
+            Some(&here),
+            elsewhere.as_ref(),
+            "a database somewhere else is somewhere else, whatever machine it is on"
         );
         assert!(
-            notes_sync::hlc::is_device_id(&once),
-            "`{once}` is not a device id the stamp encoding can carry"
+            notes_sync::hlc::is_device_id(&here),
+            "`{here}` is not a device id the stamp encoding can carry"
         );
-        notes_sync::hlc::Hlc::new(0, 0, &once).expect("a reading can be issued with it");
+        notes_sync::hlc::Hlc::new(0, 0, &here).expect("a reading can be issued with it");
     }
 
     // Whatever the target, an answer that exists is a usable one and an answer
     // that does not is `None` rather than something drawn at random.
-    if let Some(seed) = once {
+    for seed in [here, elsewhere].into_iter().flatten() {
         assert!(
             notes_sync::hlc::is_device_id(&seed),
             "`{seed}` is not a device id"

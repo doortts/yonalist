@@ -627,6 +627,9 @@ pub struct SyncConflict {
     pub node_id: String,
     /// `lww`, `same_t`, `clock_drift` or `dirty_overwrite`.
     pub reason: String,
+    /// The file the dropped version arrived in, relative to the vault. Empty on
+    /// a record written before this was kept.
+    pub file_path: String,
     /// When the merge noticed the disagreement, which is later than either
     /// version was edited and can be much later — a file arrives when the sync
     /// client gets round to it.
