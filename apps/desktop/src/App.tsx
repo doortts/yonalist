@@ -41,6 +41,7 @@ import {
 } from "./appNavigation";
 import { NotesDetailPanes } from "./NotesDetailPanes";
 import { JournalFeed } from "./JournalFeed";
+import { JournalCalendar } from "./JournalCalendar";
 import {
   JournalDateMenu, type JournalDateMenuTarget
 } from "./JournalDateMenu";
@@ -286,9 +287,13 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   // What the feed reads under today. A day that is not older than the one at
   // the top does not belong under it -- a date somebody wrote ahead of today
   // included.
-  const feedDays = useMemo(
-    () => journalDays(state.pages).filter((day) => day.date < localDateIso()),
+  const allJournalDays = useMemo(
+    () => journalDays(state.pages),
     [state.pages]
+  );
+  const feedDays = useMemo(
+    () => allJournalDays.filter((day) => day.date < localDateIso()),
+    [allJournalDays]
   );
   const activePage = atHome
     ? { id: ROOT_ID, title: "" }
@@ -984,6 +989,11 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
                   </button>
                 </div>
               </div>
+              <JournalCalendar
+                days={allJournalDays}
+                today={localDateIso()}
+                onOpenDay={openJournalDay}
+              />
             </section>
             <section
               className="notes-navigation-section notes-navigation-pages"

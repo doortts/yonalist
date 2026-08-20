@@ -87,3 +87,45 @@ export function weekdayOf(date: string): string {
   return new Intl.DateTimeFormat(undefined, { weekday: "long", timeZone: "UTC" })
     .format(new Date(Date.UTC(year, month - 1, day)));
 }
+
+/** The month a day belongs to, as `YYYY-MM`. */
+export function monthOf(date: string): string {
+  return date.slice(0, 7);
+}
+
+/** The month `months` away from this one, as `YYYY-MM`. */
+export function shiftMonth(month: string, months: number): string {
+  const [year, index] = month.split("-").map(Number);
+  const shifted = new Date(Date.UTC(year, index - 1 + months, 1));
+  return [
+    String(shifted.getUTCFullYear()).padStart(4, "0"),
+    String(shifted.getUTCMonth() + 1).padStart(2, "0")
+  ].join("-");
+}
+
+/**
+ * Every day of a month, in order, with the blanks its first week starts with.
+ * A blank is `null` rather than a day from the month before: the grid is one
+ * month's calendar, and a neighbouring day drawn in it is a day a reader can
+ * press by mistake.
+ */
+export function monthGrid(month: string): readonly (string | null)[] {
+  const [year, index] = month.split("-").map(Number);
+  const first = new Date(Date.UTC(year, index - 1, 1));
+  const days = new Date(Date.UTC(year, index, 0)).getUTCDate();
+  return [
+    ...Array.from({ length: first.getUTCDay() }, () => null),
+    ...Array.from(
+      { length: days },
+      (_, day) => `${month}-${String(day + 1).padStart(2, "0")}`
+    )
+  ];
+}
+
+/** What the month is called, for the strip above its grid. */
+export function monthLabel(month: string): string {
+  const [year, index] = month.split("-").map(Number);
+  return new Intl.DateTimeFormat(undefined, {
+    month: "long", year: "numeric", timeZone: "UTC"
+  }).format(new Date(Date.UTC(year, index - 1, 1)));
+}

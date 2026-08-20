@@ -4277,3 +4277,87 @@ body.is-outline-dragging * {
   background: var(--accent);
   color: var(--accent-contrast);
 }
+
+/* The month under the Journals rows. Days that have been written in carry a
+   quiet fill rather than a dot: at this size a dot is a smudge. */
+.notes-journal-calendar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 8px 6px 4px;
+}
+
+.notes-journal-calendar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding-inline: 2px;
+}
+
+.notes-journal-calendar-month {
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.notes-journal-calendar-step {
+  display: inline-flex;
+  padding: 3px;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+}
+
+.notes-journal-calendar-step:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.notes-journal-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.notes-journal-calendar-weekday {
+  display: grid;
+  place-items: center;
+  height: 18px;
+  color: var(--text-3);
+  font-size: 10px;
+}
+
+.notes-journal-calendar-day {
+  display: grid;
+  place-items: center;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.notes-journal-calendar-day:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.notes-journal-calendar-day[data-journal="true"] {
+  background: var(--bg-active);
+  color: var(--text-1);
+  font-weight: 600;
+}
+
+.notes-journal-calendar-day[aria-current="date"] {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 650;
+}
