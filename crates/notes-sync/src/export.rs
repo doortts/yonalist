@@ -107,13 +107,8 @@ fn write_checked(
     let hash = hash_bytes(&bytes);
     let recorded = recorded_hash(transaction, root_id)?;
 
-    if let Ok(existing) =
-        crate::file_io::read_regular_bounded(vault_root, &path, crate::parse::MAX_FILE_BYTES)
-    {
-        let existing_hash = hash_bytes(&existing);
-        if existing_hash == hash {
-            // The same bytes going out again would look like an edit to every
-            // other device.
+    match may_write(&existing_at(vault_root, &path), &hash, recorded.as_deref()) {
+        WriteVerdict::AlreadySaid => {
             record_document(transaction, root_id, &relative, &hash, stat_of(&path))?;
             return Ok(ExportOutcome {
                 written: false,
@@ -121,14 +116,14 @@ fn write_checked(
                 path: relative,
             });
         }
-        if recorded.as_deref() != Some(existing_hash.as_str()) {
-            // Somebody edited it. Not ours to replace.
+        WriteVerdict::TheirEdit => {
             return Ok(ExportOutcome {
                 written: false,
                 needs_merge: true,
                 path: relative,
             });
         }
+        WriteVerdict::Write => {}
     }
 
     if let Some(parent) = path.parent() {
@@ -146,6 +141,63 @@ fn write_checked(
         needs_merge: false,
         path: relative,
     })
+}
+
+/// What is already at a vault path, as far as the decision to replace it cares.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Existing {
+    /// Nothing there, or nothing this app is willing to read.
+    Absent,
+    /// A file whose bytes are not on this machine. It cannot be hashed without
+    /// pulling them down, and it must not be replaced — see `may_write`.
+    NotLocal,
+    /// The hash of what is there.
+    Bytes(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WriteVerdict {
+    Write,
+    /// The file already says this, so writing would be an edit to every other
+    /// device for no change at all.
+    AlreadySaid,
+    /// Not this app's to replace. The merge sees it first.
+    TheirEdit,
+}
+
+/// Whether this app's bytes may replace what is already at a path.
+///
+/// The state that is easy to miss is `NotLocal`. Since macOS 14 iCloud evicts a
+/// file in place rather than leaving a stub — same name, same apparent size, no
+/// bytes — so it reads as an ordinary file that merely disagrees with us.
+/// Writing over it is what has iCloud take the write for a new file, upload it,
+/// bring the stored copy back down, and leave a numbered copy behind. So it is
+/// answered the same way somebody else's edit is: left alone, and the merge
+/// deals with it. Reading it is what brings the bytes down, and the watcher is
+/// what reads.
+pub fn may_write(existing: &Existing, hash: &str, recorded: Option<&str>) -> WriteVerdict {
+    match existing {
+        Existing::Absent => WriteVerdict::Write,
+        Existing::NotLocal => WriteVerdict::TheirEdit,
+        Existing::Bytes(existing) if existing == hash => WriteVerdict::AlreadySaid,
+        Existing::Bytes(existing) if recorded == Some(existing.as_str()) => WriteVerdict::Write,
+        Existing::Bytes(_) => WriteVerdict::TheirEdit,
+    }
+}
+
+/// Asks the folder what is at a path. The stat comes first and the read only
+/// happens if the bytes are here, so an evicted file is recognised instead of
+/// being pulled down by the very act of looking at it.
+fn existing_at(vault_root: &Path, path: &Path) -> Existing {
+    if let Ok(facts) = std::fs::symlink_metadata(path)
+        && crate::intake::is_dataless(&facts)
+    {
+        return Existing::NotLocal;
+    }
+    match crate::file_io::read_regular_bounded(vault_root, path, crate::parse::MAX_FILE_BYTES) {
+        Ok(bytes) => Existing::Bytes(hash_bytes(&bytes)),
+        Err(_) => Existing::Absent,
+    }
 }
 
 /// Which documents the waiting rows belong to.
