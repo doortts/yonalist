@@ -254,14 +254,15 @@ describe("the copy a paste reads back", () => {
   });
 });
 
-/** The comment a copy writes, rebuilt around whatever JSON a test wants inside. */
+/** The wrapper a copy writes, rebuilt around whatever JSON a test wants inside. */
 function carrier(payload: unknown): string {
   const bytes = new TextEncoder().encode(JSON.stringify(payload));
   let binary = "";
   for (let at = 0; at < bytes.length; at += 0x8000) {
     binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
   }
-  return `<!--yonalist-outline-clipboard:${btoa(binary)}--><ul><li>x</li></ul>`;
+  return `<div data-yonalist-outline-clipboard="${btoa(binary)}">`
+    + `<ul><li>x</li></ul></div>`;
 }
 
 const PAYLOAD = {
@@ -292,12 +293,12 @@ describe("extractOutlinePayload", () => {
   });
 
   it("refuses corrupt base64 and truncated JSON without throwing", () => {
-    expect(extractOutlinePayload("<!--yonalist-outline-clipboard:!!!-->"))
+    expect(extractOutlinePayload('<div data-yonalist-outline-clipboard="!!!">'))
       .toBeNull();
-    expect(extractOutlinePayload("<!--yonalist-outline-clipboard:eyJraW-->"))
+    expect(extractOutlinePayload('<div data-yonalist-outline-clipboard="eyJraW">'))
       .toBeNull();
     expect(extractOutlinePayload(
-      `<!--yonalist-outline-clipboard:${btoa('{"kind":"yonalist-outl')}-->`
+      `<div data-yonalist-outline-clipboard="${btoa('{"kind":"yonalist-outl')}">`
     )).toBeNull();
   });
 

@@ -99,7 +99,7 @@ describe("image clipboard writing", () => {
       Uint8Array.from([1, 2, 3]),
       "image/png",
       "cat.png",
-      "<!--yonalist-outline-clipboard:eyJ9--><ul><li>cat.png</li></ul>"
+      '<div data-yonalist-outline-clipboard="eyJ9"><ul><li>cat.png</li></ul></div>'
     );
 
     const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;

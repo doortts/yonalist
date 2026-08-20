@@ -345,3 +345,38 @@ jsdom의 `navigator.platform`은 비어 있어 `outlinePlatform()`이 "other"를
 프론트엔드 전용: `npm test`, `npm run lint`, `npm run test:bundle`,
 `git diff --check`. Rust·IPC·persistence를 건드리지 않으므로 Cargo
 테스트·포맷·Clippy는 건너뛴다.
+
+## 후속 2026-08-21 — 남는 위험이 실제로 터졌다
+
+위 "남는 위험"은 방향만 틀렸다. `writeOutlineClipboard`의 ClipboardItem
+경로는 거절되지 않았다. 거절된 것은 payload를 실어 보낸 **HTML 주석**이다.
+
+실앱에서 캐럿만 둔 불릿에 ⌘C를 누른 직후 macOS pasteboard를 그대로 읽은 결과:
+
+```
+public.utf8-plain-text, public.html, com.apple.WebKit.custom-pasteboard-data
+- USIM 밤도깨비?
+<head><meta charset="UTF-8"></head><ul style="caret-color: …">
+  <li data-wf-layout="bullet">USIM 밤도깨비?</li></ul>
+```
+
+plain text는 행 직렬화(`- ` 접두사)라서 keydown 경로는 제대로 돌았다.
+HTML도 올라갔다. 그런데 `data-wf-layout`은 살아 있고
+`<!--yonalist-outline-clipboard:…-->`는 없다. WebView가 마크업을 다시 파싱해
+내보내면서 주석을 버린 것이다. `com.apple.WebKit.custom-pasteboard-data`는
+152바이트짜리 타입 목록(origin + text/plain·text/markdown·text/html)일 뿐
+원본 값을 들고 있지 않다.
+
+그래서 붙여넣기는 payload를 못 찾고 plain text로 떨어졌다 — 사용자가 본
+"텍스트만 복사"가 이것이다. 비동기 쓰기를 쓰는 모든 호출자(액션 바 Copy·Cut,
+행 메뉴, 캐럿 행)가 같이 걸려 있었다.
+
+고친 곳은 공용 직렬화 한 곳이다. payload는 주석을 떠나 래퍼의 `data-` 속성으로
+간다(`data-yonalist-outline-clipboard`). 같은 pasteboard 덤프가 `data-`
+속성은 살아남는다는 증거다. 읽는 쪽 `extractOutlinePayload`도 속성을 읽는다.
+개발 단계라 주석을 읽는 호환 경로는 남기지 않았다 — 이전 빌드로 복사해 둔
+클립보드는 plain text로 떨어진다.
+
+계약 테스트는 구현이 아니라 이 사실을 붙잡는다: 주석을 지운 마크업에서도
+payload가 돌아와야 한다(`outlineClipboard.test.ts`의
+"round-trips the payload through the markup a WebView writes out").

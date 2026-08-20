@@ -6,6 +6,7 @@ import {
   MAX_CLIPBOARD_DEPTH,
   MAX_CLIPBOARD_NODES,
   MAX_TEXT_UTF8_BYTES,
+  PAYLOAD_ATTRIBUTE,
   PAYLOAD_KIND,
   PAYLOAD_VERSION,
   readTodoBox,
@@ -29,8 +30,8 @@ export interface PastedOutlineNode {
   readonly children: PastedOutlineNode[];
 }
 
-const PAYLOAD_COMMENT = new RegExp(
-  `<!--${PAYLOAD_KIND}:([A-Za-z0-9+/=]*)-->`,
+const PAYLOAD_ATTRIBUTE_VALUE = new RegExp(
+  `${PAYLOAD_ATTRIBUTE}="([A-Za-z0-9+/=]*)"`,
   "u"
 );
 
@@ -125,7 +126,7 @@ function readClipboardNode(
 export function extractOutlinePayload(
   html: string
 ): OutlineClipboardPayload | null {
-  const encoded = PAYLOAD_COMMENT.exec(html)?.[1];
+  const encoded = PAYLOAD_ATTRIBUTE_VALUE.exec(html)?.[1];
   if (encoded === undefined) return null;
   try {
     const parsed: unknown = JSON.parse(new TextDecoder().decode(
