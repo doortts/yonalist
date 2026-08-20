@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { rule } from "../test/cssRules";
+import { atRule, rule } from "../test/cssRules";
 
 const notesStyles = readFileSync("src/notes.css", "utf8");
 
@@ -85,5 +85,33 @@ describe("outline indentation guides", () => {
     const lit = rule(notesStyles, '.notes-node[data-guide-hot]::before');
     expect(lit).toContain("width: 1px;");
     expect(lit).not.toContain("border-radius");
+  });
+});
+
+describe("row menu in the guide channel", () => {
+  // A row without children used to park its menu in the empty chevron column,
+  // 3px right of the stripe its parent paints -- while a row with children sat
+  // 1px left of that same stripe. Neither cleared it, and the two disagreed on
+  // which side to fail on. One column for both rows, in both layouts.
+  it("gives every row the same menu column", () => {
+    expect(notesStyles).not.toContain(":has(> .notes-node-arrow-slot:empty)");
+  });
+
+  // The channel between two stripes is one indent wide and the button is 24px,
+  // so centring it is the only placement that clears both. The nudge is a
+  // margin because the row's menu opens inside this slot: a transform or a
+  // position would make the slot a stacking context or a containing block and
+  // take the popup with it.
+  it("centres the wide button between the stripes either side of it", () => {
+    expect(rule(notesStyles, ".notes-node-menu-slot"))
+      .toContain("margin-inline-start: -5px;");
+  });
+
+  // Narrow steps by 28px with a 28px button, so there is no channel to centre
+  // in and a nudge would only push the button off its own column.
+  it("leaves the narrow button on its column", () => {
+    const narrow = atRule(notesStyles, "@media (max-width: 720px)");
+    expect(rule(narrow, ".notes-node-menu-slot"))
+      .toContain("margin-inline-start: 0;");
   });
 });

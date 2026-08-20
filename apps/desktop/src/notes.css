@@ -2352,6 +2352,15 @@ body.is-outline-dragging * {
   text-decoration: line-through;
 }
 
+/* No z-index, transform, or position here. Any of the three makes a grid item
+   a stacking context or a containing block, and the row menu opens inside this
+   slot: its z-index would be trapped at the slot's, tying with the title and
+   the bullet dot of every row below and losing to them on document order.
+   Which is why the nudge below is a margin.
+   The guides run at the ancestors' bullet centres, so the nearest one sits
+   25px into this row and the one before it 11px behind its start -- an indent
+   apart, with a 24px button to place between them. Centred leaves 6px either
+   side, which is the clearance `GUIDE_HIT_TOLERANCE` has to stay under. */
 .notes-node-menu-slot {
   display: inline-flex;
   grid-column: 1;
@@ -2361,16 +2370,7 @@ body.is-outline-dragging * {
   width: var(--notes-menu-width);
   min-width: var(--notes-menu-width);
   min-height: 28px;
-}
-
-/* No z-index here. A grid item with one is a stacking context even sitting
-   static, and the row menu opens inside this slot: its z-index would be
-   trapped at the slot's, tying with the title and the bullet dot of every row
-   below and losing to them on document order. The slot needs no lift of its
-   own — it sits in the arrow's column, clear of the bullet. */
-.notes-node-main:has(> .notes-node-arrow-slot:empty)
-  > .notes-node-menu-slot {
-  grid-column: 2;
+  margin-inline-start: -5px;
 }
 
 .notes-child-composer {
@@ -3150,9 +3150,11 @@ body.is-outline-dragging * {
       var(--notes-menu-width) 28px 28px 24px minmax(0, 1fr);
   }
 
-  .notes-node-main:has(> .notes-node-arrow-slot:empty)
-    > .notes-node-menu-slot {
-    grid-column: 1;
+  /* The stripes step by 28px here and the button is 28px wide, so there is no
+     channel to centre in -- a nudge would only push the button off its own
+     column. The stripe that runs under it is handled in paint instead. */
+  .notes-node-menu-slot {
+    margin-inline-start: 0;
   }
 
   .notes-node-arrow-slot,
