@@ -4222,3 +4222,37 @@ body.is-outline-dragging * {
   color: var(--text-3);
   font-size: 11.5px;
 }
+
+/* The strip above a day's rows: what day of the week it is, and the way to the
+   days either side. */
+.notes-journal-day-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 28px 0 calc(var(--notes-content-offset, 74px) - 22px);
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.notes-journal-day-bar-spacer {
+  flex: 1;
+}
+
+.notes-journal-day-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm, 7px);
+  background: var(--bg-card);
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.notes-journal-day-step:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
