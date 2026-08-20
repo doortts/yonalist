@@ -291,4 +291,35 @@ describe("NotesExportMenu", () => {
     await waitFor(() => expect(api.exportNotes).toHaveBeenCalledTimes(3));
     expect(vi.mocked(api.exportNotes).mock.calls[2][0].overwrite).toBe(true);
   });
+
+  it("automatically clears success feedback after 3 seconds", async () => {
+    const { api, store } = await readyStore();
+    picker.pickExportPath.mockResolvedValue("C:\\exports\\Today.pdf");
+    vi.mocked(api.exportNotes).mockResolvedValue({
+      revision: 1,
+      rootNodeId: "page-1",
+      format: "pdf",
+      destinationPath: "C:\\exports\\Today.pdf"
+    });
+    render(
+      <NotesExportMenu
+        store={store}
+        currentRoot={{ id: "page-1", title: "Today" }}
+        selectedNode={null}
+      />
+    );
+
+    const menu = await openMenu();
+    fireEvent.click(within(menu).getByRole("menuitem", {
+      name: "Current page as PDF"
+    }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("status")).toHaveTextContent("Exported PDF.");
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("status")).toBeNull();
+    }, { timeout: 4000 });
+  });
 });

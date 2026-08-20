@@ -62,6 +62,14 @@ export function NotesExportMenu({
     return () => document.removeEventListener("pointerdown", dismiss, true);
   }, [menuOpen]);
 
+  useEffect(() => {
+    if (feedback?.kind !== "success") return;
+    const timer = setTimeout(() => {
+      setFeedback(null);
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, [feedback]);
+
   const run = async (
     attempt: ExportAttempt,
     overwrite = false
