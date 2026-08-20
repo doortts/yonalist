@@ -144,3 +144,19 @@ fn clean_title(title: &str) -> String {
     }
     cut
 }
+
+/// The one form a vault path is held in. `readdir` hands back whatever form the
+/// folder stored, and the two forms are different strings: a Korean folder name
+/// that came from an HFS+ disk, an old archive, or another client arrives
+/// decomposed, while the same name built here — `clean_title` composes it —
+/// arrives composed. macOS opens either one, so nothing about a file is wrong;
+/// what breaks is every comparison sync makes by string. The stat gate's key,
+/// the recorded folder, the asset's location, and the folder written into a
+/// link would each stand for the same file under two spellings, so the form is
+/// settled once, where a path off the disk becomes a string.
+pub fn composed_path(path: String) -> String {
+    if path.is_ascii() {
+        return path;
+    }
+    path.nfc().collect()
+}

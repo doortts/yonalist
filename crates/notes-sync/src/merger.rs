@@ -2095,7 +2095,11 @@ fn record_document(
             .prepare_cached("SELECT folder_path FROM sync_documents WHERE root_id = ?1")
             .and_then(|mut statement| statement.query_row([root_id], |row| row.get(0)).optional())
             .map_err(|error| error.to_string())?;
-        if let Some(recorded) = recorded
+        // Compared in the one form, not as the two spellings it can be
+        // written down as: a folder recorded before its path was composed is
+        // the same folder the disk is handing over now, and reading it as
+        // another file would leave that document stuck at the old spelling.
+        if let Some(recorded) = recorded.map(crate::layout::composed_path)
             && recorded != input.file_path
             && vault_root.join(&recorded).is_file()
         {

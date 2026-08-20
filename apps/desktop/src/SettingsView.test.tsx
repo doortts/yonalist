@@ -407,6 +407,15 @@ describe("SettingsView", () => {
     expect(handlers.onTextFontChange).toHaveBeenCalledWith("mono");
   });
 
+  it("moves the outline text to the handwriting font", () => {
+    const handlers = renderSettings();
+
+    fireEvent.click(
+      screen.getByRole("radio", { name: "Handwriting outline text" })
+    );
+    expect(handlers.onTextFontChange).toHaveBeenCalledWith("hand");
+  });
+
   it("checks unused assets and purges only after confirmation", async () => {
     const handlers = renderSettings({
       unusedAssets: vi.fn().mockResolvedValue({

@@ -51,21 +51,33 @@ describe("v2 Todo branch progress", () => {
     const progress = buildTodoProgressMap([
       node("parent", "page", "bullet"),
       node("open", "parent", "todo"),
+      node("second", "parent", "todo"),
       node("divider", "open", "bullet"),
-      node("beyond", "divider", "todo", true)
+      node("beyond", "divider", "todo", true),
+      node("beyond-two", "divider", "todo")
     ]);
 
-    expect(progress.get("parent")).toEqual({ completed: 0, total: 1 });
-    expect(progress.get("divider")).toEqual({ completed: 1, total: 1 });
+    expect(progress.get("parent")).toEqual({ completed: 0, total: 2 });
+    expect(progress.get("divider")).toEqual({ completed: 1, total: 2 });
   });
 
   it("skips deleted Todos", () => {
     const progress = buildTodoProgressMap([
       node("parent", "page", "bullet"),
       { ...node("gone", "parent", "todo"), deleted: true },
-      node("open", "parent", "todo")
+      node("open", "parent", "todo"),
+      node("second", "parent", "todo")
     ]);
 
-    expect(progress.get("parent")).toEqual({ completed: 0, total: 1 });
+    expect(progress.get("parent")).toEqual({ completed: 0, total: 2 });
+  });
+
+  it("draws no bar for a lone Todo under a row", () => {
+    const progress = buildTodoProgressMap([
+      node("parent", "page", "bullet"),
+      node("only", "parent", "todo")
+    ]);
+
+    expect(progress.has("parent")).toBe(false);
   });
 });

@@ -592,11 +592,12 @@ pub(crate) fn reindex_vault(
             report.skipped += 1;
             continue;
         };
-        let relative = path
-            .strip_prefix(vault_root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .into_owned();
+        let relative = notes_sync::layout::composed_path(
+            path.strip_prefix(vault_root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned(),
+        );
         let input = notes_sync::merger::MergeInput {
             file_path: relative,
             file_hash: notes_sync::export::hash_bytes(&bytes),

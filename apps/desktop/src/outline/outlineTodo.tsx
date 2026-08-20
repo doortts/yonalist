@@ -16,6 +16,10 @@ export interface TodoProgress {
  * A Todo nested under another Todo draws no bar of its own -- the topmost
  * Todo of a chain already reports the whole chain, and repeating it on every
  * level below just stacks the same number down the page.
+ *
+ * A single Todo under a row gets no bar either: its own checkbox already says
+ * everything a 0/1 bar would, so the bar only appears once there is a
+ * proportion to read.
  */
 export function buildTodoProgressMap(
   nodes: readonly NoteView[]
@@ -46,7 +50,7 @@ export function buildTodoProgressMap(
     const parent = node.parentId ? byId.get(node.parentId) : undefined;
     if (node.marker === "todo" && parent?.marker === "todo") continue;
     const value = measure(node.id);
-    if (value.total > 0) progress.set(node.id, value);
+    if (value.total > 1) progress.set(node.id, value);
   }
   return progress;
 }
