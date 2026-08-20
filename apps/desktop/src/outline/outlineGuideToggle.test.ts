@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  guideBandAt, guideOwnerId, guideTargets, planGuideToggle,
+  guideBandAt, guideCanFold, guideOwnerId, guideTargets, planGuideToggle,
   type GuideNode, type GuidePending
 } from "./outlineGuideToggle";
 
@@ -139,5 +139,19 @@ describe("planGuideToggle", () => {
 
   it("plans nothing for an empty range", () => {
     expect(planGuideToggle([], null)).toEqual({ changes: [], pending: null });
+  });
+});
+
+describe("guideCanFold", () => {
+  // The hover flavour has to agree with what a click would find, so the cheap
+  // predicate is pinned to guideTargets' emptiness across the whole fixture --
+  // if that walk's skip rule ever changes, this goes red before the hover
+  // colour starts promising a fold the click will not deliver.
+  it("says whether the range holds anything a click could fold", () => {
+    expect(guideCanFold(tree, "a")).toBe(true);
+    expect(guideCanFold(tree, "d")).toBe(false);
+    for (const id of ["a", "b", "c", "d", "e", "leaf"]) {
+      expect(guideCanFold(tree, id)).toBe(guideTargets(tree, id).length > 0);
+    }
   });
 });
