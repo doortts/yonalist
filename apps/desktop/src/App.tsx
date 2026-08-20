@@ -287,6 +287,10 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     void store.flushAllDrafts().then(action);
   }, [store]);
   const openPage = useCallback(async (pageId: string) => {
+    // Asking for a page is asking to read it, so the settings screen goes --
+    // including when the page asked for is the one already open, which is the
+    // way back to where the reader came from.
+    setSettingsOpen(false);
     if (pageId === store.getSnapshot().activePageId) return;
     await store.flushAllDrafts();
     const before = captureNavigation();
