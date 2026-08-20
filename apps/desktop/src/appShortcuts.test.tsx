@@ -134,6 +134,30 @@ describe("leaving the settings screen", () => {
     expect(back).not.toHaveFocus();
   });
 
+  it("goes to the page the sidebar names", async () => {
+    render(<App api={shellApi("page-1")} />);
+    await screen.findByDisplayValue("Today");
+    await openSettings();
+    const sidebar = within(screen.getByRole("navigation", { name: "Navigation" }));
+
+    fireEvent.click(sidebar.getByRole("button", { name: "Ideas" }));
+
+    expect(await screen.findByDisplayValue("Ideas"))
+      .toHaveAttribute("aria-label", "Page title");
+  });
+
+  it("goes back to the page already open when the sidebar names it", async () => {
+    render(<App api={shellApi("page-1")} />);
+    await screen.findByDisplayValue("Today");
+    await openSettings();
+    const sidebar = within(screen.getByRole("navigation", { name: "Navigation" }));
+
+    fireEvent.click(sidebar.getByRole("button", { name: "Today" }));
+
+    expect(await screen.findByDisplayValue("Today"))
+      .toHaveAttribute("aria-label", "Page title");
+  });
+
   it("keeps a page nobody has written in yet", async () => {
     render(<App api={shellApi("page-1")} />);
     await screen.findByDisplayValue("Today");
