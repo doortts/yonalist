@@ -36,6 +36,7 @@ export interface NotesDetailPanesProps {
   readonly onOpenPage: (pageId: string) => void;
   readonly onOpenDay: (date: string) => void;
   readonly onCarryRows: (pageId: string, rowIds: readonly string[]) => void;
+  readonly today: string;
   readonly onSelectionCountChange: (
     paneId: "primary" | "secondary",
     count: number
@@ -63,6 +64,7 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
   onOpenPage,
   onOpenDay,
   onCarryRows,
+  today,
   onSelectionCountChange
 }: NotesDetailPanesProps) {
   const splitResize = useSplitResize(splitOpen);
@@ -98,6 +100,7 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
                   date={journalDate}
                   onOpenDay={onOpenDay}
                   onCarryRows={onCarryRows}
+                  today={today}
                 />
               </Suspense>
             )}

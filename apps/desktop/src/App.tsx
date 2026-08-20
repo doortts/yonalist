@@ -285,12 +285,9 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
   // for any other reason -- a page trashed on another device, a stale history
   // entry -- names a page that is gone, and an editable page over a row the
   // backend does not have would refuse every keystroke.
-  // Which day the open page is, if it is a day at all. The Journals rows read
-  // it to know which of them the reader is standing on.
-  const openJournalDate = useMemo(() => {
-    const page = state.pages.find((entry) => entry.id === currentPageId);
-    return page ? journalDateOf(page.title) : null;
-  }, [currentPageId, state.pages]);
+  // Which day the open page is, if it is a day at all. The Journals rows and
+  // the calendar read it to know where the reader is standing, and the feed
+  // reads it to know it still has a day at the top of it.
   // What the feed reads under today. A day that is not older than the one at
   // the top does not belong under it -- a date somebody wrote ahead of today
   // included.
@@ -314,6 +311,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           title: store.getNodeSnapshot(state.activePageId).title
         }
         : undefined);
+  const openJournalDate = activePage ? journalDateOf(activePage.title) : null;
   const captureNavigation = useCallback((): AppNavigationLocation => {
     const primary = capturePane("primary");
     const secondary = capturePane("secondary");
@@ -1200,7 +1198,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
             openNode={openAttachment}
           />
         </Suspense>
-      ) : feedOpen ? (
+      ) : feedOpen && openJournalDate ? (
         <Suspense fallback={<p className="notes-pane-state">Loading...</p>}>
           <JournalFeed
           store={store}
@@ -1218,6 +1216,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           onOpenPage={(pageId) => void openPage(pageId)}
           onOpenDay={openJournalDay}
           onCarryRows={carryRowsInto}
+          today={localDateIso()}
           onSelectionCountChange={reportSelectionCount}
           />
         </Suspense>
@@ -1243,6 +1242,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           onOpenPage={(pageId) => void openPage(pageId)}
           onOpenDay={openJournalDay}
           onCarryRows={carryRowsInto}
+          today={localDateIso()}
           onSelectionCountChange={reportSelectionCount}
         />
       )}

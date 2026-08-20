@@ -191,6 +191,7 @@ export function JournalFeed({
   onOpenPage,
   onOpenDay,
   onCarryRows,
+  today,
   onSelectionCountChange
 }: {
   readonly store: NotesStore;
@@ -208,6 +209,7 @@ export function JournalFeed({
   readonly onOpenPage: (pageId: string) => void;
   readonly onOpenDay: (date: string) => void;
   readonly onCarryRows: (pageId: string, rowIds: readonly string[]) => void;
+  readonly today: string;
   readonly onSelectionCountChange: (
     paneId: "primary" | "secondary",
     count: number
@@ -229,6 +231,7 @@ export function JournalFeed({
               date={journalDate}
               onOpenDay={onOpenDay}
               onCarryRows={onCarryRows}
+              today={today}
             />
           )}
           <NotesOutline

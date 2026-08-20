@@ -24,13 +24,16 @@ export function JournalDayBar({
   pageId,
   date,
   onOpenDay,
-  onCarryRows
+  onCarryRows,
+  today
 }: {
   readonly store: NotesStore;
   readonly pageId: string;
   readonly date: string;
   readonly onOpenDay: (date: string) => void;
   readonly onCarryRows: (pageId: string, rowIds: readonly string[]) => void;
+  /** Today, so the day can say when it is the one being lived. */
+  readonly today: string;
 }) {
   const carried = useCarryOverRows(store, date, pageId);
   const previous = shiftDay(date, -1);
@@ -38,6 +41,9 @@ export function JournalDayBar({
   return (
     <div className="notes-journal-day-bar" role="group" aria-label={`Day ${date}`}>
       <span className="notes-journal-day-bar-weekday">{weekdayOf(date)}</span>
+      {date === today && (
+        <span className="notes-journal-today-chip">Today</span>
+      )}
       <span className="notes-journal-day-bar-spacer" />
       {carried.length > 0 && (
         <button
