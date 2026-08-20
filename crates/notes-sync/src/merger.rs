@@ -78,11 +78,11 @@ pub fn merge_document(
     clock: &Clock,
     file: &VaultFile,
     input: &MergeInput,
-    _vault_root: Option<&Path>,
+    vault_root: Option<&Path>,
 ) -> Result<MergeOutcome, MergeError> {
     match file {
-        VaultFile::Page(page) => merge_page(transaction, clock, page, input),
-        VaultFile::Trash(trash) => merge_trash(transaction, clock, trash, input),
+        VaultFile::Page(page) => merge_page(transaction, clock, page, input, vault_root),
+        VaultFile::Trash(trash) => merge_trash(transaction, clock, trash, input, vault_root),
     }
 }
 
@@ -150,6 +150,7 @@ fn merge_page(
     clock: &Clock,
     page: &PageDocument,
     input: &MergeInput,
+    vault_root: Option<&Path>,
 ) -> Result<MergeOutcome, MergeError> {
     let mut outcome = MergeOutcome::default();
     let root_id = page.id.as_str().to_owned();
@@ -214,6 +215,7 @@ fn merge_page(
         input,
         page.max_hlc.as_str(),
         page.parent.is_none(),
+        vault_root,
     )?;
     Ok(outcome)
 }
@@ -223,6 +225,7 @@ fn merge_trash(
     clock: &Clock,
     trash: &TrashDocument,
     input: &MergeInput,
+    vault_root: Option<&Path>,
 ) -> Result<MergeOutcome, MergeError> {
     let mut outcome = MergeOutcome::default();
     let mut incoming = Vec::new();
@@ -245,6 +248,7 @@ fn merge_trash(
         input,
         trash.max_hlc.as_str(),
         false,
+        vault_root,
     )?;
     Ok(outcome)
 }
@@ -2063,9 +2067,30 @@ fn record_document(
     input: &MergeInput,
     max_hlc: &str,
     is_page: bool,
+    vault_root: Option<&Path>,
 ) -> Result<(), MergeError> {
     if crate::watcher::is_conflicted_copy(&input.file_path) {
         return Ok(());
+    }
+    // The names only cover the copies this app has met. What a copy really is
+    // is the same document id arriving from somewhere else while the file this
+    // document is recorded at is still standing — and adopting that path would
+    // send every later export into the copy while the file every device reads
+    // went stale. A person moving the folder is the same arrival with nothing
+    // standing at the old path, so it is still adopted. Nothing else here is
+    // touched, the quarantine note included: this file is not the document's
+    // file.
+    if let Some(vault_root) = vault_root {
+        let recorded: Option<String> = transaction
+            .prepare_cached("SELECT folder_path FROM sync_documents WHERE root_id = ?1")
+            .and_then(|mut statement| statement.query_row([root_id], |row| row.get(0)).optional())
+            .map_err(|error| error.to_string())?;
+        if let Some(recorded) = recorded
+            && recorded != input.file_path
+            && vault_root.join(&recorded).is_file()
+        {
+            return Ok(());
+        }
     }
     // Somebody fixed it, or the transport finished delivering it. Either way
     // this file is readable now, and the note saying it was not would keep

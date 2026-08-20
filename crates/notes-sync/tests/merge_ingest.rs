@@ -1760,6 +1760,170 @@ fn a_conflicted_copy_does_not_become_the_documents_own_file() {
     }
 }
 
+/// The name patterns only know the copies this app has met. A duplicate under
+/// any other name — Finder's localised one, somebody's hand copy, a sync client
+/// nobody here has seen — holds the same document id, and adopting its path
+/// sends every later export into the copy while the file every device reads
+/// goes stale. What guards the path is the identity: the recorded file is
+/// standing, so this arrival is a copy of it whatever it is called.
+#[test]
+fn a_copy_under_an_unknown_name_does_not_take_the_documents_path() {
+    let vault = tempfile::tempdir().expect("vault");
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let seeded = stamp(5, "a3f2");
+    let file =
+        notes_sync::document::VaultFile::Page(page(vec![node(NODE_ID, &seeded, "First")], &seeded));
+    merge_document(&transaction, &clock(), &file, &input(), Some(vault.path())).expect("the page");
+    // The question is about the folder, not the row: the record has to point at
+    // a file that is really there.
+    place(vault.path(), &input().file_path);
+
+    let outcome = merge_document(
+        &transaction,
+        &clock(),
+        &file,
+        &MergeInput {
+            file_path: "Projects-PrJects00001/README 복사본.md".to_owned(),
+            file_hash: "b".repeat(64),
+            ..input()
+        },
+        Some(vault.path()),
+    )
+    .expect("the copy");
+
+    assert_eq!(
+        recorded_path(&transaction, PAGE_ID),
+        "Projects-PrJects00001/README.md",
+        "the page keeps its own file against a copy no pattern knows"
+    );
+    assert_eq!(
+        recorded_hash(&transaction, PAGE_ID),
+        "a".repeat(64),
+        "and the export still compares against that file's bytes"
+    );
+    assert!(
+        !outcome.retire_file,
+        "the copy stays: a name no pattern knows might be somebody's own backup, \
+         and removing it would be taking the user's file"
+    );
+}
+
+/// The other side of the same question, and the reason it is asked of the
+/// folder rather than of the name: a person moving a page's folder is an
+/// arrival of the same document at a new path, with nothing standing at the
+/// old one. That has always been adopted and has to stay adopted.
+#[test]
+fn a_move_is_adopted_when_the_recorded_file_is_gone() {
+    let vault = tempfile::tempdir().expect("vault");
+    let mut connection = database();
+    let transaction = connection.transaction().expect("begin");
+    let seeded = stamp(5, "a3f2");
+    let file =
+        notes_sync::document::VaultFile::Page(page(vec![node(NODE_ID, &seeded, "First")], &seeded));
+    merge_document(&transaction, &clock(), &file, &input(), Some(vault.path())).expect("the page");
+    place(vault.path(), &input().file_path);
+    std::fs::remove_file(vault.path().join(input().file_path)).expect("the move");
+
+    merge_document(
+        &transaction,
+        &clock(),
+        &file,
+        &MergeInput {
+            file_path: "Archive/Projects-PrJects00001/README.md".to_owned(),
+            file_hash: "b".repeat(64),
+            ..input()
+        },
+        Some(vault.path()),
+    )
+    .expect("the move");
+
+    assert_eq!(
+        recorded_path(&transaction, PAGE_ID),
+        "Archive/Projects-PrJects00001/README.md",
+        "the document's file is where the person put it"
+    );
+}
+
+/// iCloud's numbered bounce arrives in whichever order the transport delivers
+/// it, and both orders have to end at the document's own file. The copy-first
+/// order converges through the export: `document_path` puts a copy-shaped
+/// basename back to `README.md`, and the record follows the write.
+#[test]
+fn either_order_of_an_icloud_duplicate_ends_on_the_documents_own_file() {
+    for order in [
+        ["Projects-PrJects00001/README 2.md", &input().file_path],
+        [&input().file_path, "Projects-PrJects00001/README 2.md"],
+    ] {
+        let vault = tempfile::tempdir().expect("vault");
+        let mut connection = database();
+        let transaction = connection.transaction().expect("begin");
+        let seeded = stamp(5, "a3f2");
+        let file = notes_sync::document::VaultFile::Page(page(
+            vec![node(NODE_ID, &seeded, "First")],
+            &seeded,
+        ));
+        // The copy is the file the transport left behind; the document's own
+        // file is written by the export below.
+        place(vault.path(), "Projects-PrJects00001/README 2.md");
+        let mut retired = false;
+        for relative in order {
+            let outcome = merge_document(
+                &transaction,
+                &clock(),
+                &file,
+                &MergeInput {
+                    file_path: relative.to_string(),
+                    ..input()
+                },
+                Some(vault.path()),
+            )
+            .expect("the arrival");
+            retired |= outcome.retire_file;
+        }
+
+        notes_sync::export::export_document(&transaction, vault.path(), PAGE_ID).expect("export");
+
+        assert_eq!(
+            recorded_path(&transaction, PAGE_ID),
+            "Projects-PrJects00001/README.md",
+            "whichever of {order:?} arrived first"
+        );
+        assert!(
+            retired,
+            "and the numbered copy is handed back to be removed"
+        );
+    }
+}
+
+/// A file really there under the vault root, which is the whole of what the
+/// guard's question asks about.
+fn place(vault: &std::path::Path, relative: &str) {
+    let path = vault.join(relative);
+    std::fs::create_dir_all(path.parent().expect("a folder")).expect("the folder");
+    std::fs::write(&path, b"placed\n").expect("the file");
+}
+
+fn recorded_path(connection: &Connection, root_id: &str) -> String {
+    connection
+        .query_row(
+            "SELECT folder_path FROM sync_documents WHERE root_id = ?1",
+            [root_id],
+            |row| row.get(0),
+        )
+        .expect("the document")
+}
+
+fn recorded_hash(connection: &Connection, root_id: &str) -> String {
+    connection
+        .query_row(
+            "SELECT exported_hash FROM sync_documents WHERE root_id = ?1",
+            [root_id],
+            |row| row.get(0),
+        )
+        .expect("the document")
+}
+
 /// What was last written for a node is only true until another device's
 /// version wins. Keeping the old record would have the export put that
 /// reading back — onto a row every other device now holds at a different one,
