@@ -1,5 +1,6 @@
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
-import { capturePane, zoomEntryFocus } from "./appNavigation";
+import { capturePane, owningPageId, zoomEntryFocus } from "./appNavigation";
+import { ROOT_ID } from "./store/storeSupport";
 import { registerOutlinePane } from "./outline/outlinePaneRegistry";
 
 function paneFixture(): string {
@@ -141,5 +142,36 @@ describe("the caret on the way into a zoomed row", () => {
       selectionStart: 0,
       selectionEnd: 0
     });
+  });
+});
+
+describe("owning page", () => {
+  const page = child("page-1", ROOT_ID, 1_024, "Today");
+  const bullet = child("bullet-1", "page-1", 1_024, "First thought");
+  const deeper = child("bullet-2", "bullet-1", 1_024, "Second thought");
+
+  it("answers with the page itself when the page is the row", () => {
+    expect(owningPageId("page-1", [page, bullet])).toBe("page-1");
+  });
+
+  it("walks up to the page a nested row belongs to", () => {
+    expect(owningPageId("bullet-2", [page, bullet, deeper])).toBe("page-1");
+  });
+
+  // On a page other than home the page's own row is kept out of the loaded
+  // rows, so the walk runs out and the open page answers instead.
+  it("has no answer when the walk runs past the loaded rows", () => {
+    expect(owningPageId("bullet-2", [bullet, deeper])).toBeNull();
+    expect(owningPageId("nobody", [page, bullet])).toBeNull();
+    expect(owningPageId(null, [page])).toBeNull();
+  });
+
+  it("gives up rather than circling a row that is its own ancestor", () => {
+    const loop = [
+      child("left", "right", 1_024, "Left"),
+      child("right", "left", 2_048, "Right")
+    ];
+
+    expect(owningPageId("left", loop)).toBeNull();
   });
 });
