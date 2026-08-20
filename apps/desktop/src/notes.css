@@ -2358,9 +2358,10 @@ body.is-outline-dragging * {
    the bullet dot of every row below and losing to them on document order.
    Which is why the nudge below is a margin.
    The guides run at the ancestors' bullet centres, so the nearest one sits
-   25px into this row and the one before it 11px behind its start -- an indent
-   apart, with a 24px button to place between them. Centred leaves 6px either
-   side, which is the clearance `GUIDE_HIT_TOLERANCE` has to stay under. */
+   25px into this row's main box and the one before it 11px behind that box's
+   start -- an indent apart, with a 24px button to place between them. Centred
+   leaves 6px either side, which is the clearance `GUIDE_HIT_TOLERANCE` has to
+   stay under. */
 .notes-node-menu-slot {
   display: inline-flex;
   grid-column: 1;
@@ -3163,6 +3164,18 @@ body.is-outline-dragging * {
   .notes-bullet-menu-trigger,
   .notes-child-composer-button {
     width: 28px;
+  }
+
+  /* That stripe runs under the plate, and the hover wash is translucent enough
+     to show it straight through. Compositing the same wash over the pane's own
+     ground gives the colour the eye already reads on plain ground, now opaque:
+     every theme keeps its own hover value and none needs a second one. Two
+     longhands, because the base rule's `background` shorthand would otherwise
+     reset the image back to none. */
+  .notes-bullet-menu-trigger:hover,
+  .notes-bullet-menu-trigger[data-popup-open] {
+    background-color: var(--bg-detail);
+    background-image: linear-gradient(var(--bg-hover), var(--bg-hover));
   }
 
   .notes-page-menu-slot,

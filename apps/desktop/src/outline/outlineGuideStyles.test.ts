@@ -114,4 +114,17 @@ describe("row menu in the guide channel", () => {
     expect(rule(narrow, ".notes-node-menu-slot"))
       .toContain("margin-inline-start: 0;");
   });
+
+  // A stripe therefore always runs under the narrow button, and the hover wash
+  // is translucent enough to show it straight through the plate. Compositing
+  // the same wash over the pane's own ground gives the colour the eye already
+  // reads on plain ground, opaque -- no per-theme value to keep in step.
+  it("makes the narrow plate opaque over the stripe it covers", () => {
+    const narrow = atRule(notesStyles, "@media (max-width: 720px)");
+    const plate = rule(narrow, '.notes-bullet-menu-trigger[data-popup-open]');
+    expect(plate).toContain("background-color: var(--bg-detail);");
+    expect(plate).toContain(
+      "background-image: linear-gradient(var(--bg-hover), var(--bg-hover));"
+    );
+  });
 });
