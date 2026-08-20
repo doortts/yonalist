@@ -19,11 +19,14 @@ function fakeIndex(nodes: readonly FakeNode[]) {
   };
 }
 
+// `d` is closed on purpose: `collapsed` is the only other field a walk over
+// this tree could branch on, so a fixture where every row is open cannot tell a
+// skip rule that reads it from one that does not.
 const tree = fakeIndex([
   { id: "a", parentId: null, collapsed: false },
   { id: "b", parentId: "a", collapsed: false },
   { id: "c", parentId: "b", collapsed: false },
-  { id: "d", parentId: "b", collapsed: false },
+  { id: "d", parentId: "b", collapsed: true },
   { id: "e", parentId: "d", collapsed: false },
   { id: "leaf", parentId: "a", collapsed: false }
 ]);

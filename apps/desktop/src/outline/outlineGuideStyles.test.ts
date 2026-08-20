@@ -96,9 +96,21 @@ describe("outline indentation guides", () => {
       notesStyles,
       '.notes-node[data-guide-hot="inert"]::before'
     );
-    expect(inert).toContain("background: var(--text-3);");
-    expect(inert).not.toContain("inset");
-    expect(inert).not.toContain("width");
+    // The whole body, not a substring: an added declaration here is how the two
+    // flavours would start disagreeing on where the line goes.
+    expect(inert.trim()).toBe("background: var(--text-3);");
+  });
+
+  // Both rules are (0,2,1) -- qualifying the attribute's value adds nothing --
+  // so the recolour wins on source order alone. Reordering them would paint
+  // every inert guide accent with nothing else to notice it.
+  it("keeps the recolour after the rule it overrides", () => {
+    const base = notesStyles.indexOf(".notes-node[data-guide-hot]::before {");
+    const inert = notesStyles.indexOf(
+      '.notes-node[data-guide-hot="inert"]::before {'
+    );
+    expect(base).toBeGreaterThan(-1);
+    expect(inert).toBeGreaterThan(base);
   });
 });
 
