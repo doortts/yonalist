@@ -94,6 +94,13 @@ describe("image node styles", () => {
     )).toContain(
       "background: color-mix(in srgb, var(--accent) 28%, transparent);"
     );
+    // The frame stopped clipping so its menu could hang past a short image, so
+    // the tint takes the frame's own rounding rather than the frame's clip.
+    expect(rule(
+      notesStyles,
+      '.notes-node[data-range-selected="true"] ' +
+      ".notes-image-attachment-frame::after"
+    )).toContain("border-radius: inherit;");
     // Equal specificity with the band rule, so only file order decides which
     // one answers -- and nothing else in the suite would notice a reorder.
     expect(notesStyles.indexOf('.notes-node[data-range-selected="true"] {'))
