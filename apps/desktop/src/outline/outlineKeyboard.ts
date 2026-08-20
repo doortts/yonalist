@@ -646,8 +646,7 @@ export function resolveOutlineKey(
       ? input.selectionStart === 0
       : input.selectionEnd === input.value.length;
     if (!atBoundary) return null;
-    const index = input.visibleIndex?.positionOf(input.nodeId) ??
-      input.visibleNodes.findIndex((node) => node.id === input.nodeId);
+    const index = visiblePositionOf(input, input.nodeId);
     if (index < 0) return null;
     const target = input.visibleNodes[
       index + (input.key === "ArrowLeft" ? -1 : 1)

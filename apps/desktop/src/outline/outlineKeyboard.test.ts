@@ -1219,7 +1219,8 @@ describe("v2 outline keyboard intent resolver", () => {
       nodeId: "child",
       value: "Child",
       selectionStart: 0,
-      selectionEnd: 0
+      selectionEnd: 0,
+      visibleIndex: new OutlineIndex(visibleNodes)
     }))).toEqual({ kind: "focus", nodeId: "parent", edge: "end" });
     expect(resolveOutlineKey(input({
       key: "ArrowRight",
