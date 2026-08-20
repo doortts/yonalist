@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SyncChanged } from "../../../packages/contracts/generated/SyncChanged";
-import { SYNC_CHANGED, listenForVaultChanges, type Unlisten } from "./syncChanged";
+import {
+  SYNC_CHANGED, connectVaultSync, listenForVaultChanges, type Unlisten
+} from "./syncChanged";
 
 function change(over: Partial<SyncChanged> = {}): SyncChanged {
   return {
@@ -162,5 +164,35 @@ describe("듣기: vault 변경 알림", () => {
 
     expect(first.stops).toHaveBeenCalledTimes(1);
     expect(second.stops).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("듣기: 첫 스냅샷과 구독의 순서", () => {
+  it("구독이 자리잡은 뒤에야 첫 스냅샷을 읽는다", async () => {
+    // 사이에 도착한 merge는 아무도 듣지 못한다. 창은 그 merge 이전의
+    // 리비전을 들고 있게 되고, 다음 키 입력이 거부된다.
+    const registrations: Array<(stop: Unlisten) => void> = [];
+    const listen = vi.fn(
+      () => new Promise<Unlisten>((resolve) => { registrations.push(resolve); })
+    );
+    const bootstrap = vi.fn(async () => undefined);
+
+    connectVaultSync(listen, async () => undefined, bootstrap);
+    await vi.waitFor(() => expect(registrations).toHaveLength(1));
+
+    expect(bootstrap).not.toHaveBeenCalled();
+
+    registrations[0](vi.fn());
+    await vi.waitFor(() => expect(bootstrap).toHaveBeenCalledTimes(1));
+  });
+
+  it("들을 수 없는 창도 스냅샷은 읽는다", async () => {
+    // 폴더를 못 듣는 창이 노트도 못 보는 창일 이유는 없다.
+    const listen = vi.fn(async () => { throw new Error("no listener"); });
+    const bootstrap = vi.fn(async () => undefined);
+
+    connectVaultSync(listen, async () => undefined, bootstrap);
+
+    await vi.waitFor(() => expect(bootstrap).toHaveBeenCalledTimes(1));
   });
 });

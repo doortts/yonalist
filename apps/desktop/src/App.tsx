@@ -127,7 +127,12 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     store,
     (location: AppNavigationLocation) => applyNavigationRef.current(location)
   ), [store]);
+  // In the browser only. Under Tauri the first read waits for the vault
+  // listener below: a merge announced before that subscription exists is
+  // announced to nobody, and the window would hold a revision the session has
+  // already left.
   useEffect(() => {
+    if ("__TAURI_INTERNALS__" in window) return;
     void store.bootstrap();
   }, [store]);
   useEffect(() => interactionHistory.connect(), [interactionHistory]);
@@ -161,13 +166,18 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
     void Promise.all([
       import("@tauri-apps/api/event"),
       import("./syncChanged")
-    ]).then(([{ listen }, { listenForVaultChanges }]) => {
+    ]).then(([{ listen }, { connectVaultSync }]) => {
       if (!active) return;
-      stop = listenForVaultChanges(
+      stop = connectVaultSync(
         (event, handler) =>
           listen<SyncChanged>(event, ({ payload }) => handler(payload)),
-        (change) => store.absorbVaultChange(change)
+        (change) => store.absorbVaultChange(change),
+        () => store.bootstrap()
       );
+    }, () => {
+      // The listener is where the first read hangs off now, so a module that
+      // will not load must not leave the window empty as well as deaf.
+      void store.bootstrap();
     });
     return () => {
       active = false;
