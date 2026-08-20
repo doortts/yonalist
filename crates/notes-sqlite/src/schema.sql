@@ -315,6 +315,12 @@ CREATE TABLE sync_devices (
 CREATE TABLE sync_conflict_log (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     node_id TEXT NOT NULL,
+    -- Which file the losing version arrived in, relative to the vault.
+    -- Recorded because the generation of the file that carried it is
+    -- gone by the time anybody reads the row: without this a defeat
+    -- says two versions disagreed and nothing about where either came
+    -- from, which makes it unanswerable rather than merely old.
+    file_path TEXT NOT NULL DEFAULT '',
     loser_json TEXT NOT NULL,
     -- What won, recorded here rather than read off the row when somebody
     -- looks: the row moves on with the next edit, and then it is no

@@ -6,26 +6,26 @@ import type { SyncConflictSide } from "./SyncConflictSide";
  * it back. By the time anyone looks, the file that lost is long gone — so
  * everything the screen needs lives in the row rather than being fetched.
  */
-export type SyncConflict = { seq: number, nodeId: string,
+export type SyncConflict = { seq: number, nodeId: string, 
 /**
  * `lww`, `same_t`, `clock_drift` or `dirty_overwrite`.
  */
-reason: string,
+reason: string, 
 /**
  * The file the dropped version arrived in, relative to the vault. Empty on
  * a record written before this was kept.
  */
-filePath: string,
+filePath: string, 
 /**
  * When the merge noticed the disagreement, which is later than either
  * version was edited and can be much later — a file arrives when the sync
  * client gets round to it.
  */
-recordedAt: number,
+recordedAt: number, 
 /**
  * The version that stood.
  */
-kept: SyncConflictSide,
+kept: SyncConflictSide, 
 /**
  * The version that was replaced. This is the one `conflict_loser` puts
  * back.

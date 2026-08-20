@@ -105,35 +105,54 @@ pub fn is_device_id(value: &str) -> bool {
     value.len() == DEVICE_WIDTH && value.bytes().all(is_lowercase_hex)
 }
 
-/// The characters this machine should stamp with, for whoever is provisioning a
-/// database that has none yet. `None` when the machine will not say which
-/// machine it is.
+/// The characters a database should stamp with, for whoever is provisioning one
+/// that has none yet. `None` when the machine will not say which machine it is.
 ///
-/// Derived rather than drawn at random, because a vault outlives a database. A
-/// database rebuilt on the same Mac used to become a second device, and the
-/// files left in the vault then held two generations of stamps disagreeing with
-/// each other over notes one person wrote.
+/// Two properties, and they pull against each other until you notice that the
+/// answer is not "which machine" but "which writer".
 ///
-/// `None` rather than a random value, for the same reason. A random id looks
-/// like it kept the app running, and it does — as a device nobody has heard of,
-/// stamping over notes the vault already holds under an identity that will be
-/// thrown away and replaced by another the next time this happens. Reinstalling
-/// an app is something people do. So the failure is reported instead: a caller
-/// that cannot name this device must say so rather than invent a name.
+/// **Stable.** Derived rather than drawn at random, because a vault outlives a
+/// database. A database rebuilt on the same Mac used to become a second device,
+/// and the files left in the vault then held two generations of stamps
+/// disagreeing with each other over notes one person wrote. `None` rather than a
+/// random value for the same reason: a random id looks like it kept the app
+/// running, and it does — as a device nobody has heard of, stamping over notes
+/// the vault already holds under an identity that is thrown away and replaced the
+/// next time somebody reinstalls.
+///
+/// **Distinct.** The machine alone is not enough. Two databases on one Mac — the
+/// app and a build being verified against the same folder — would derive the same
+/// id, and then each one's files carry the other's identity. `decide` reads that
+/// field to answer "did I write this?" and on a match adopts the file's content
+/// over the row's without recording anything, so sharing an id is not a
+/// misordering, it is one writer silently taking the other's text. The clock is
+/// per open database and lives in memory besides, so two writers sharing a device
+/// field can mint the same reading in the same millisecond.
+///
+/// So `scope` is what tells one writer from another: the database's own place.
+/// The release app's is fixed by its bundle identifier, so it survives a
+/// reinstall — stability kept — while a verification build under another
+/// identifier lands somewhere else and is honestly a different device.
 ///
 /// Only ever a seed: the id a database already holds is the one it keeps. The
 /// machine's own identifier can change — `man 2 gethostuuid` says as much, and
 /// Apple's TN1103 warns a serial number can vanish after a repair — and a device
 /// that has already stamped rows must not be renamed underneath them.
 ///
-/// Hashed, never carried through: the hardware identifier travels no further
-/// than this function. These characters go into every file in the vault, and a
-/// vault is something people put in a shared folder.
-pub fn device_seed() -> Option<String> {
+/// Hashed, never carried through: neither the hardware identifier nor the path
+/// travels further than this function. These characters go into every file in the
+/// vault, and a vault is something people put in a shared folder.
+pub fn device_seed(scope: &str) -> Option<String> {
     machine_seed().map(|bytes| {
         use sha2::Digest;
-        let digest = sha2::Sha256::digest(bytes);
+        let mut digest = sha2::Sha256::new();
+        digest.update(bytes);
+        // A separator the scope cannot contain a copy of, so no machine-and-scope
+        // pair can spell the same input as another.
+        digest.update([0_u8]);
+        digest.update(scope.as_bytes());
         digest
+            .finalize()
             .iter()
             .take(DEVICE_WIDTH / 2)
             .map(|byte| format!("{byte:02x}"))

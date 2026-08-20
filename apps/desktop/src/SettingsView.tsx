@@ -364,6 +364,14 @@ function OverwrittenNotesSection({
               <span className="settings-conflict-note">
                 {reasonInWords(conflict.reason)} · noticed{" "}
                 {new Date(conflict.recordedAt * 1000).toLocaleString()}
+                {/* Which file the dropped version arrived in. The generation of
+                    that file is gone by the time anybody reads this, so without
+                    the name the record says two versions disagreed and nothing
+                    about where either came from. Older records have no name and
+                    say nothing rather than an empty separator. */}
+                {conflict.filePath !== "" && (
+                  <> · in <code>{conflict.filePath}</code></>
+                )}
               </span>
               {restored === conflict.seq && (
                 <span role="status" className="settings-copy">Put back</span>
