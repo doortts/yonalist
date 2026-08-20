@@ -279,7 +279,7 @@ describe("image node structural parity", () => {
     expect(await (await item.data["text/plain"]!).text())
       .toBe("- cat.png\n- dog.png");
     expect(await (await item.data["text/html"]!).text())
-      .toContain("<!--yonalist-outline-clipboard:");
+      .toContain('<div data-yonalist-outline-clipboard="');
   });
 
   it("multi-selects an image with a bullet and indents one ordered batch", async () => {
@@ -408,9 +408,10 @@ describe("image clipboard chords at the caret station", () => {
     await waitFor(() => expect(write).toHaveBeenCalledOnce());
     const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
     const html = await (await item.data["text/html"]!).text();
-    const marker = "<!--yonalist-outline-clipboard:";
+    const encoded = /^<div data-yonalist-outline-clipboard="([A-Za-z0-9+/=]*)">/u
+      .exec(html)?.[1];
     const payload = JSON.parse(new TextDecoder().decode(Uint8Array.from(
-      atob(html.slice(marker.length, html.indexOf("-->"))),
+      atob(encoded!),
       (character: string) => character.charCodeAt(0)
     )));
     expect(payload.nodes).toEqual([expect.objectContaining({
@@ -464,9 +465,10 @@ describe("image clipboard chords at the caret station", () => {
     expect(write).toHaveBeenCalledOnce();
     const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
     const html = await (await item.data["text/html"]!).text();
-    const marker = "<!--yonalist-outline-clipboard:";
+    const encoded = /^<div data-yonalist-outline-clipboard="([A-Za-z0-9+/=]*)">/u
+      .exec(html)?.[1];
     const payload = JSON.parse(new TextDecoder().decode(Uint8Array.from(
-      atob(html.slice(marker.length, html.indexOf("-->"))),
+      atob(encoded!),
       (character: string) => character.charCodeAt(0)
     )));
     expect(payload.nodes).toEqual([expect.objectContaining({

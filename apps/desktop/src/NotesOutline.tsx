@@ -570,9 +570,6 @@ export function NotesOutline({
               onPickImage={() => void imageIngest.openPicker(header.id)}
             />
           )}
-          {!showCompleted && bodyNodes.length < allBodyNodes.length && (
-            <p className="notes-pane-state">Completed items are hidden.</p>
-          )}
           <ol
             className="notes-outline-list"
             role="list"

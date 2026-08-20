@@ -7,7 +7,7 @@ import {
   writeOutlineClipboardEvent,
   type OutlineClipboardNode
 } from "./outlineClipboard";
-import { parsePastedOutline } from "./outlinePaste";
+import { extractOutlinePayload, parsePastedOutline } from "./outlinePaste";
 
 function node(
   id: string,
@@ -318,19 +318,37 @@ describe("the rich outline clipboard payload", () => {
 });
 
 describe("the outline clipboard HTML carrier", () => {
-  const MARKER = "<!--yonalist-outline-clipboard:";
+  const CARRIER = /^<div data-yonalist-outline-clipboard="([A-Za-z0-9+/=]*)">/u;
+  /** The lists on their own, with the payload's own wrapper taken off. */
+  const listMarkup = (html: string) =>
+    html.replace(CARRIER, "").replace(/<\/div>$/u, "");
   /** Every row carries the bullet layout Workflowy reads off the `<li>`. */
   const LI = '<li data-wf-layout="bullet">';
 
-  it("leads with the payload comment and round-trips it byte for byte", () => {
+  /**
+   * What WKWebView hands the pasteboard, which is not what the copy wrote: it
+   * reparses the markup and drops every comment on the way through, while
+   * `data-` attributes come out the other side intact. Read off a real pasteboard
+   * after one Cmd-C -- `data-wf-layout` was still there and the payload was gone.
+   */
+  const webViewWritten = (html: string) => html.replace(/<!--[\s\S]*?-->/gu, "");
+
+  it("wraps the lists in the payload and round-trips it byte for byte", () => {
     const built = formats(nodes, ["parent", "sibling"])!;
 
-    expect(built.html.startsWith(MARKER)).toBe(true);
-    const encoded = built.html.slice(MARKER.length, built.html.indexOf("-->"));
+    const encoded = CARRIER.exec(built.html)?.[1];
+    expect(encoded).toBeDefined();
     const decoded = new TextDecoder().decode(
-      Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0))
+      Uint8Array.from(atob(encoded!), (character) => character.charCodeAt(0))
     );
     expect(JSON.parse(decoded)).toEqual(built.payload);
+  });
+
+  it("round-trips the payload through the markup a WebView writes out", () => {
+    const built = formats(nodes, ["parent", "sibling"])!;
+
+    expect(extractOutlinePayload(webViewWritten(built.html)))
+      .toEqual(built.payload);
   });
 
   it("renders a readable list with escaped titles beside the payload", () => {
@@ -341,7 +359,7 @@ describe("the outline clipboard HTML carrier", () => {
 
     const built = formats(rows, ["markup"])!;
 
-    expect(built.html.slice(built.html.indexOf("-->") + 3)).toBe(
+    expect(listMarkup(built.html)).toBe(
       `<ul>${LI}[ ] &lt;b&gt;&amp;&lt;/b&gt; 표<ul>${LI}Child</li></ul></li></ul>`
     );
     // The comment carries the title unescaped, so a paste reads it back exact.
@@ -354,7 +372,7 @@ describe("the outline clipboard HTML carrier", () => {
   it("carries the box and the strike-through of every completed row", () => {
     const built = formats(combinations, combinations.map((row) => row.id))!;
 
-    expect(built.html.slice(built.html.indexOf("-->") + 3)).toBe(
+    expect(listMarkup(built.html)).toBe(
       "<ul>" +
       `${LI}Bullet</li>` +
       `${LI}[x] <s>Bullet done</s></li>` +
@@ -380,7 +398,7 @@ describe("the outline clipboard HTML carrier", () => {
 
     const built = formats(rows, ["task"])!;
 
-    expect(built.html.slice(built.html.indexOf("-->") + 3)).toBe(
+    expect(listMarkup(built.html)).toBe(
       `<ul>${LI}[ ] Ship it<ul>` +
       `${LI}[x] <s>Draft</s><blockquote>shipped late</blockquote></li>` +
       `${LI}[x] <s>Plain done</s><ul>${LI}Leaf</li></ul></li>` +
@@ -405,7 +423,7 @@ describe("the outline clipboard HTML carrier", () => {
 
     const built = formats(rows, ["parent"])!;
 
-    expect(built.html.slice(built.html.indexOf("-->") + 3)).toBe(
+    expect(listMarkup(built.html)).toBe(
       `<ul>${LI}Parent<blockquote>first &lt;b&gt;<br>second</blockquote>` +
       `<ul>${LI}Child</li></ul></li></ul>`
     );
@@ -424,7 +442,7 @@ describe("the outline clipboard HTML carrier", () => {
     ];
 
     const built = formats(rows, ["boxed", "bare"])!;
-    const markup = built.html.slice(built.html.indexOf("-->") + 3);
+    const markup = listMarkup(built.html);
 
     expect(markup).toBe(
       `<ul>${LI}[ ] Boxed</li>${LI}Bare<ul>${LI}Kid</li></ul></li></ul>`
@@ -452,7 +470,7 @@ describe("the outline clipboard HTML carrier", () => {
       "- Break",
       "1. Tofu"
     ].join("\n"));
-    const markup = built.html.slice(built.html.indexOf("-->") + 3);
+    const markup = listMarkup(built.html);
     expect(markup).toBe(
       `<ol start="3">${LI}Milk</li>${LI}Onion</li></ol>`
       + `<ul>${LI}Break</li></ul>`

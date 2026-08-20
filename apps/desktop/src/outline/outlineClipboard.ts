@@ -11,6 +11,8 @@ export const MAX_CLIPBOARD_NODES = 2_000;
 export const MAX_CLIPBOARD_DEPTH = 64;
 export const MAX_TEXT_UTF8_BYTES = 100_000;
 export const PAYLOAD_KIND = "yonalist-outline-clipboard";
+/** One name for both halves of the round trip, as `PAYLOAD_KIND` is. */
+export const PAYLOAD_ATTRIBUTE = `data-${PAYLOAD_KIND}`;
 export const PAYLOAD_VERSION = 1;
 
 export function normalizeSelectedRoots(
@@ -300,11 +302,13 @@ function listItems(nodes: readonly OutlineClipboardNode[]): string {
 }
 
 /**
- * The payload as an HTML comment at the very start of the markup: base64 keeps
- * a `--` inside the JSON from closing the comment early and needs no escaping
- * of its own, and a consumer that truncates the markup still keeps the comment.
+ * The payload as one `data-` attribute on a wrapper around the lists. It rode an
+ * HTML comment until a real pasteboard showed what a WebView does to the markup
+ * on its way out: it reparses it, and comments do not survive that pass while
+ * `data-` attributes do -- the same pass that leaves `data-wf-layout` on every
+ * row. base64 needs no attribute escaping of its own.
  */
-function payloadComment(payload: OutlineClipboardPayload): string {
+function payloadAttribute(payload: OutlineClipboardPayload): string {
   const bytes = new TextEncoder().encode(JSON.stringify(payload));
   // btoa reads one byte per code unit, so the UTF-8 bytes go in as a byte
   // string -- chunked, because spreading a whole large payload into one call
@@ -313,7 +317,7 @@ function payloadComment(payload: OutlineClipboardPayload): string {
   for (let at = 0; at < bytes.length; at += 0x8000) {
     binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
   }
-  return `<!--${PAYLOAD_KIND}:${btoa(binary)}-->`;
+  return `${PAYLOAD_ATTRIBUTE}="${btoa(binary)}"`;
 }
 
 function serializeOutlinePayload(payload: OutlineClipboardPayload): string {
@@ -330,7 +334,7 @@ export function buildOutlineClipboardFormats(
   if (!payload) return null;
   return {
     plain: serializeOutlinePayload(payload),
-    html: `${payloadComment(payload)}${htmlList(payload.nodes)}`,
+    html: `<div ${payloadAttribute(payload)}>${htmlList(payload.nodes)}</div>`,
     payload
   };
 }

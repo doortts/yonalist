@@ -658,10 +658,11 @@ describe("outline clipboard integration", () => {
     ].join("\n"));
     const [type, html] = setData.mock.calls[2]!;
     expect(type).toBe("text/html");
-    const marker = "<!--yonalist-outline-clipboard:";
-    expect(html.startsWith(marker)).toBe(true);
+    const encoded = /^<div data-yonalist-outline-clipboard="([A-Za-z0-9+/=]*)">/u
+      .exec(html)?.[1];
+    expect(encoded).toBeDefined();
     const payload = JSON.parse(new TextDecoder().decode(Uint8Array.from(
-      atob(html.slice(marker.length, html.indexOf("-->"))),
+      atob(encoded!),
       (character: string) => character.charCodeAt(0)
     )));
     expect(payload).toEqual({
@@ -798,7 +799,8 @@ describe("outline clipboard integration", () => {
     fireEvent.paste(editor, {
       clipboardData: {
         getData: (type: string) => type === "text/html"
-          ? "<!--yonalist-outline-clipboard:!!!--><ul><li>Alpha</li></ul>"
+          ? '<div data-yonalist-outline-clipboard="!!!">'
+            + "<ul><li>Alpha</li></ul></div>"
           : "- Alpha\n  - Beta"
       }
     });
