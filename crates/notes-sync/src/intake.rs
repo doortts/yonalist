@@ -36,6 +36,33 @@ pub enum Verdict {
     Merge,
 }
 
+/// `SF_DATALESS` as `sys/stat.h` spells it. No crate publishes it, and the
+/// state it marks is the one an evicted iCloud file is in: since macOS 14 such a
+/// file keeps its name and its whole apparent size and holds no bytes, so
+/// nothing about its stat gives it away except this.
+const SF_DATALESS: u32 = 0x4000_0000;
+
+/// Whether the flags a file reports say its bytes live in the cloud rather than
+/// here. Kept apart from the file itself so the one thing a test cannot make —
+/// a really evicted file — is not the same thing as the arithmetic.
+pub fn flags_say_dataless(st_flags: u32) -> bool {
+    st_flags & SF_DATALESS != 0
+}
+
+/// Whether this file's bytes have not been brought down yet. Only worth asking
+/// once a read has already failed: a read that succeeds is what fetches them.
+#[cfg(target_os = "macos")]
+pub(crate) fn is_dataless(facts: &std::fs::Metadata) -> bool {
+    use std::os::macos::fs::MetadataExt;
+    flags_say_dataless(facts.st_flags())
+}
+
+/// Only iCloud leaves a file in this state, and only on Apple's filesystems.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn is_dataless(_facts: &std::fs::Metadata) -> bool {
+    false
+}
+
 /// After a watch event, with the file already hashed.
 pub fn watch_verdict(known: Option<&Known>, file_hash: &str) -> Verdict {
     match known {

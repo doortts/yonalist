@@ -107,13 +107,8 @@ fn write_checked(
     let hash = hash_bytes(&bytes);
     let recorded = recorded_hash(transaction, root_id)?;
 
-    if let Ok(existing) =
-        crate::file_io::read_regular_bounded(vault_root, &path, crate::parse::MAX_FILE_BYTES)
-    {
-        let existing_hash = hash_bytes(&existing);
-        if existing_hash == hash {
-            // The same bytes going out again would look like an edit to every
-            // other device.
+    match may_write(&existing_at(vault_root, &path), &hash, recorded.as_deref()) {
+        WriteVerdict::AlreadySaid => {
             record_document(transaction, root_id, &relative, &hash, stat_of(&path))?;
             return Ok(ExportOutcome {
                 written: false,
@@ -121,14 +116,14 @@ fn write_checked(
                 path: relative,
             });
         }
-        if recorded.as_deref() != Some(existing_hash.as_str()) {
-            // Somebody edited it. Not ours to replace.
+        WriteVerdict::TheirEdit => {
             return Ok(ExportOutcome {
                 written: false,
                 needs_merge: true,
                 path: relative,
             });
         }
+        WriteVerdict::Write => {}
     }
 
     if let Some(parent) = path.parent() {
@@ -146,6 +141,73 @@ fn write_checked(
         needs_merge: false,
         path: relative,
     })
+}
+
+/// What is already at a vault path, as far as the decision to replace it cares.
+#[derive(Debug, Eq, PartialEq)]
+pub enum Existing {
+    /// Nothing there, or nothing this app is willing to read.
+    Absent,
+    /// A file whose bytes are not on this machine. It cannot be hashed without
+    /// pulling them down, and it must not be replaced — see `may_write`.
+    NotLocal,
+    /// The hash of what is there.
+    Bytes(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WriteVerdict {
+    Write,
+    /// The file already says this, so writing would be an edit to every other
+    /// device for no change at all.
+    AlreadySaid,
+    /// Not this app's to replace. The merge sees it first.
+    TheirEdit,
+}
+
+/// Whether this app's bytes may replace what is already at a path.
+///
+/// The state that is easy to miss is `NotLocal`: a file iCloud has evicted and
+/// this device could not fetch. Writing over one is what has iCloud take the
+/// write for a new file, upload it, bring the stored copy back down, and leave a
+/// numbered copy behind. So it is answered the way somebody else's edit is —
+/// left alone, and a later pass writes once the bytes are here. What fetches
+/// them is `existing_at`'s own read, or the watcher's.
+pub fn may_write(existing: &Existing, hash: &str, recorded: Option<&str>) -> WriteVerdict {
+    match existing {
+        Existing::Absent => WriteVerdict::Write,
+        Existing::NotLocal => WriteVerdict::TheirEdit,
+        Existing::Bytes(existing) if existing == hash => WriteVerdict::AlreadySaid,
+        Existing::Bytes(existing) if recorded == Some(existing.as_str()) => WriteVerdict::Write,
+        Existing::Bytes(_) => WriteVerdict::TheirEdit,
+    }
+}
+
+/// Asks the folder what is at a path.
+///
+/// The read comes first, and that order is the contract. Reading an evicted
+/// iCloud file is what brings its bytes down, so a read that succeeds has left
+/// the file materialised — and writing over a materialised file is safe. The
+/// flag is only consulted when the read *failed*: offline, or a fetch that gave
+/// up. That is the one case where the bytes are somewhere else and the file
+/// still stands in the way, and writing then is what has iCloud take the write
+/// for a new file and leave a numbered copy behind.
+///
+/// Asking the other way round — flag first, skip the read — would leave nothing
+/// in the app that ever materialises a document.
+fn existing_at(vault_root: &Path, path: &Path) -> Existing {
+    if let Ok(bytes) =
+        crate::file_io::read_regular_bounded(vault_root, path, crate::parse::MAX_FILE_BYTES)
+    {
+        return Existing::Bytes(hash_bytes(&bytes));
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(facts) if crate::intake::is_dataless(&facts) => Existing::NotLocal,
+        // Nothing there, or something there this app was never willing to
+        // replace by reading it — too large, a link, a fifo. Both answered the
+        // way they always were.
+        _ => Existing::Absent,
+    }
 }
 
 /// Which documents the waiting rows belong to.
