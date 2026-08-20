@@ -1749,8 +1749,15 @@ button.notes-date-token:hover {
      one band starts its paint at the shallowest selected row's indent instead
      of its own. Falling back to the row's own depth means a pane that has not
      written it yet paints a correct row rather than a broken one. */
+  /* The band starts just before that row's bullet, not at its indent origin:
+     the menu and chevron columns are chrome the selection does not own, and
+     painting them read as a band twice as wide as the rows it holds. Measured
+     off the bullets' own offset, so the narrow layout follows from the same
+     term; 10px back from the centre clears the 20px collapsed bullet plate,
+     the widest thing that would otherwise poke out to the left of the band. */
   --notes-band-indent: calc(
-    var(--notes-band-depth, var(--notes-depth)) * var(--notes-outline-indent)
+    var(--notes-band-depth, var(--notes-depth)) * var(--notes-outline-indent) +
+      var(--notes-bullet-center-offset) - 10px
   );
   position: relative;
   min-width: 0;
