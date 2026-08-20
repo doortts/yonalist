@@ -3331,6 +3331,8 @@ body.is-outline-dragging * {
 .notes-node[data-range-selected="true"] .notes-image-attachment-frame::after {
   position: absolute;
   inset: 0;
+  /* The frame no longer clips, so the tint rounds its own corners. */
+  border-radius: inherit;
   background: color-mix(in srgb, var(--accent) 28%, transparent);
   content: "";
   pointer-events: none;

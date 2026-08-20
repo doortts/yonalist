@@ -151,7 +151,9 @@ export function ImageNodeContent({
     width: previewWidth,
     maxWidth: "100%",
     aspectRatio: `${image.pixelWidth} / ${image.pixelHeight}`,
-    overflow: "hidden",
+    // No clip here: the menu opens inside this frame, and a small image made
+    // the frame shorter than the menu, which cut the menu off at the image's
+    // bottom edge. Everything inside carries its own rounding instead.
     borderRadius: 6,
     background: "var(--bg-hover)",
     boxShadow: "inset 0 0 0 1px var(--border)"
@@ -250,7 +252,8 @@ export function ImageNodeContent({
                 display: "block",
                 width: "100%",
                 height: "100%",
-                objectFit: "contain"
+                objectFit: "contain",
+                borderRadius: 6
               }}
             />
           ) : lease.status === "error" || !image ? (
