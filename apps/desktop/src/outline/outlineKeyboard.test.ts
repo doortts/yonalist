@@ -288,8 +288,8 @@ describe("v2 outline keyboard intent resolver", () => {
   });
   // Backspace takes what stands behind the caret. Behind the station past the
   // picture, and behind the caret standing on the picture itself, that is the
-  // picture. From the station before it the picture stands ahead instead, and
-  // the row behind that caret is not this key's to reach for.
+  // picture. Behind the station before it stands the previous row, and a bullet
+  // there is nobody's to take from a neighbour's station.
   it("deletes the image on Backspace from behind it, never from ahead", () => {
     expect(handleImageNodeKeyDown(input({
       nodeId: "next",
@@ -356,6 +356,55 @@ describe("v2 outline keyboard intent resolver", () => {
       ctrlKey: true,
       shiftKey: true
     }))).toEqual({ kind: "trash" });
+  });
+
+  // From the before station the row behind the caret is the previous visible
+  // row, and a picture of the same parent is taken there the way the after
+  // station takes its own -- the same act, one row boundary back. A picture at
+  // another depth, the caret's own parent, and a bullet all stay: the
+  // head-of-line merge draws those same lines, so the two backward keys read as
+  // one caret.
+  it("takes the image sibling standing behind the before station", () => {
+    const stacked = [
+      node("first", "page", "First", 1_024),
+      picture("upper", "page", 2_048),
+      picture("lower", "page", 3_072)
+    ];
+    const before = (nodes: readonly NoteView[], nodeId: string) => input({
+      nodeId,
+      key: "Backspace",
+      imageEdge: "before",
+      visibleNodes: nodes,
+      structureNodes: nodes
+    });
+
+    expect(handleImageNodeKeyDown(before(stacked, "lower")))
+      .toEqual({ kind: "trash", nodeId: "upper" });
+    // A held key takes one picture off the stack, not the whole stack.
+    expect(handleImageNodeKeyDown({
+      ...before(stacked, "lower"),
+      repeat: true
+    })).toEqual({ kind: "consume" });
+
+    const aunt = [
+      node("parent", "page", "Parent", 1_024),
+      picture("aunt", "parent", 1_024),
+      picture("lower", "page", 2_048)
+    ];
+    expect(handleImageNodeKeyDown(before(aunt, "lower"))).toBeNull();
+
+    const nested = [picture("upper", "page", 1_024), picture("lower", "upper", 1_024)];
+    expect(handleImageNodeKeyDown(before(nested, "lower"))).toBeNull();
+
+    const captioned = [
+      picture("upper", "page", 1_024),
+      node("cap", "upper", "Cap", 1_024),
+      picture("lower", "page", 2_048)
+    ];
+    expect(handleImageNodeKeyDown(before(captioned, "lower"))).toBeNull();
+
+    expect(handleImageNodeKeyDown(before([picture("solo", "page")], "solo")))
+      .toBeNull();
   });
 
   it("splits the selected title range into one atomic sibling gesture", () => {

@@ -559,6 +559,7 @@ function executeRowIntent(
       void store.cycleCompleted(node.id);
       return;
     case "trash": {
+      const targetId = intent.nodeId ?? node.id;
       // The surface the key came from unmounts with the row it takes, so the
       // caret would be left on the document body. Its neighbour is read off the
       // rows as they still stand and taken once the command lands -- the same
@@ -568,8 +569,8 @@ function executeRowIntent(
         visibleNodes: context.visibleNodes,
         outlineRootId: context.pageId,
         scopeRef: { current: scope }
-      })([node.id]);
-      void store.deleteSubtree(node.id).then(takeCaret);
+      })([targetId]);
+      void store.deleteSubtree(targetId).then(takeCaret);
       return;
     }
     // The chooser is mounted by the row and already scopes itself to the live

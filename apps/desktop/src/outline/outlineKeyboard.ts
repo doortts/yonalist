@@ -82,7 +82,9 @@ export type OutlineKeyIntent =
   | { readonly kind: "cycleComplete" }
   | { readonly kind: "clearMarker" }
   | { readonly kind: "duplicate" }
-  | { readonly kind: "trash" }
+  /** The row to take, when it is not the caret's own: the station before a
+   * picture names the picture behind it. Absent, the caret's row goes. */
+  | { readonly kind: "trash"; readonly nodeId?: string }
   | { readonly kind: "moveTo" }
   | { readonly kind: "move"; readonly direction: "up" | "down" }
   | { readonly kind: "zoom"; readonly direction: "in" | "out" }
@@ -782,12 +784,17 @@ export function handleImageNodeKeyDown(
       beforeId: nextSiblingId(structureNodes, node, input.structureIndex)
     } : null;
   }
-  // Backspace takes whatever stands behind the caret, which from the station
-  // past the picture -- and from the caret standing on the picture -- is the
-  // picture. Ahead of it the picture is not this key's to reach for, and the
-  // silence there also keeps the station out of the fall-through below, whose
-  // empty value would reach a command written for blank bullets. A band falls
-  // through on purpose: the band rule owns both delete keys.
+  // Backspace takes whatever stands behind the caret. From the station past the
+  // picture -- and from the caret standing on the picture -- that is the
+  // picture; from the station before it, it is the previous visible row, and a
+  // picture of the same parent is taken there the way the other station takes
+  // its own, one row boundary back. Anything else behind the caret stays: a
+  // text row merges on its own surface and never dies to a neighbour's key, a
+  // picture at another depth is the reach the head-of-line merge also refuses,
+  // and the caret's own parent would take the caret's row down with it. That
+  // refusal still keeps the station out of the fall-through below, whose empty
+  // value would reach a command written for blank bullets, and a band still
+  // falls through to the one rule that owns both delete keys.
   if (
     input.key === "Backspace" &&
     !input.altKey &&
@@ -796,7 +803,26 @@ export function handleImageNodeKeyDown(
     !input.shiftKey &&
     !input.hasSelection
   ) {
-    if (input.imageEdge === "before") return null;
+    if (input.imageEdge === "before") {
+      const at = input.visibleIndex?.positionOf(input.nodeId) ??
+        input.visibleNodes.findIndex((row) => row.id === input.nodeId);
+      const previous = at > 0 ? input.visibleNodes[at - 1] : undefined;
+      const current = nodeById(
+        structureNodes,
+        input.nodeId,
+        input.structureIndex
+      );
+      if (
+        previous?.kind !== "image" ||
+        !current ||
+        previous.parentId !== current.parentId
+      ) {
+        return null;
+      }
+      return input.repeat
+        ? { kind: "consume" }
+        : { kind: "trash", nodeId: previous.id };
+    }
     return input.repeat ? { kind: "consume" } : { kind: "trash" };
   }
   // A textarea gets its copy and cut as native clipboard events; WebKit sends
