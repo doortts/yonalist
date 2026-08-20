@@ -97,6 +97,20 @@ export function guideTargets(
 }
 
 /**
+ * Whether the guide's range holds anything a click could fold -- the hover
+ * flavour, so it runs on every mousemove that lands on a stripe. Equivalent to
+ * `guideTargets(tree, ownerId).length > 0`: that walk pushes a child and
+ * recurses only where the child has children, so emptiness is settled among
+ * the owner's direct children alone. Reading it here costs those children and
+ * no array.
+ */
+export function guideCanFold(tree: GuideTree, ownerId: string): boolean {
+  return tree
+    .childrenOf(ownerId)
+    .some((child) => tree.childrenOf(child.id).length > 0);
+}
+
+/**
  * What a click does to the range. The first click writes one value across it
  * and keeps the shape it replaced; the next click hands that shape back, so a
  * deliberately mixed range survives a look at it. The kept shape only stands

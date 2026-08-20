@@ -2,7 +2,8 @@ import { useEffect, useRef, type MouseEvent as ReactMouseEvent } from "react";
 import type { NotesStore } from "../notesStore";
 import type { OutlineIndex } from "./outlineIndex";
 import {
-  guideBandAt, guideOwnerId, guideTargets, planGuideToggle, type GuidePending
+  guideBandAt, guideCanFold, guideOwnerId, guideTargets, planGuideToggle,
+  type GuidePending
 } from "./outlineGuideToggle";
 
 const INTERACTIVE_SELECTOR = "button, a, [role='button'], textarea, input";
@@ -10,6 +11,11 @@ const INTERACTIVE_SELECTOR = "button, a, [role='button'], textarea, input";
 interface GuideHit {
   readonly ownerId: string;
   readonly band: number;
+  /**
+   * Whether a click here would fold anything. The paint and the cursor both
+   * read it: a range with nothing to fold lights dim and drops the pointer.
+   */
+  readonly actionable: boolean;
 }
 
 /**
@@ -63,7 +69,12 @@ export function useOutlineGuideToggle(
     if (band === null) return null;
     const depth = indexRef.current.depthOf(rowId, rootIdRef.current);
     const ownerId = guideOwnerId(indexRef.current, rowId, depth, band);
-    return ownerId === null ? null : { ownerId, band };
+    if (ownerId === null) return null;
+    return {
+      ownerId,
+      band,
+      actionable: guideCanFold(indexRef.current, ownerId)
+    };
   };
 
   const hitAt = (event: ReactMouseEvent<HTMLElement>): GuideHit | null => {
@@ -81,20 +92,34 @@ export function useOutlineGuideToggle(
       delete row.dataset.guideHot;
       row.style.removeProperty("--notes-guide-hot");
     });
-    list.style.cursor = hit ? "pointer" : "";
+    // Only a range that can fold offers a click, so only that one takes the
+    // pointer; the rest keep the plain arrow the rows already show.
+    list.style.cursor = hit?.actionable ? "pointer" : "";
     if (!hit) return;
     list.querySelectorAll<HTMLElement>(".notes-node[data-outline-id]")
       .forEach((row) => {
         const rowId = row.dataset.outlineId!;
         if (!indexRef.current.isDescendant(rowId, hit.ownerId)) return;
-        row.dataset.guideHot = "true";
+        // `true` is the actionable flavour's historical value, kept so that
+        // path writes exactly what it always did; the CSS reads the value only
+        // to recolour, and selects the geometry on the attribute's presence.
+        row.dataset.guideHot = hit.actionable ? "true" : "inert";
         row.style.setProperty("--notes-guide-hot", String(hit.band));
       });
   };
 
   const light = (list: HTMLElement, hit: GuideHit | null) => {
     const lit = hotRef.current;
-    if (lit?.ownerId === hit?.ownerId && lit?.band === hit?.band) return;
+    // The flavour belongs in the key. An edit that empties the range leaves the
+    // stripe and its owner untouched, so a repaint keyed on those alone would
+    // be skipped and the line would keep offering a fold that is gone.
+    if (
+      lit?.ownerId === hit?.ownerId &&
+      lit?.band === hit?.band &&
+      lit?.actionable === hit?.actionable
+    ) {
+      return;
+    }
     hotRef.current = hit;
     paint(list, hit);
   };

@@ -86,6 +86,32 @@ describe("outline indentation guides", () => {
     expect(lit).toContain("width: 1px;");
     expect(lit).not.toContain("border-radius");
   });
+
+  // A range with nothing to fold still lights -- silence there would read as a
+  // dead hit test -- but in the muted text colour, and the hook drops the
+  // pointer cursor to match. Recolour only: the geometry stays in the rule
+  // above, which has to keep matching any value of the attribute.
+  it("dims the lit line where the range has nothing to fold", () => {
+    const inert = rule(
+      notesStyles,
+      '.notes-node[data-guide-hot="inert"]::before'
+    );
+    // The whole body, not a substring: an added declaration here is how the two
+    // flavours would start disagreeing on where the line goes.
+    expect(inert.trim()).toBe("background: var(--text-3);");
+  });
+
+  // Both rules are (0,2,1) -- qualifying the attribute's value adds nothing --
+  // so the recolour wins on source order alone. Reordering them would paint
+  // every inert guide accent with nothing else to notice it.
+  it("keeps the recolour after the rule it overrides", () => {
+    const base = notesStyles.indexOf(".notes-node[data-guide-hot]::before {");
+    const inert = notesStyles.indexOf(
+      '.notes-node[data-guide-hot="inert"]::before {'
+    );
+    expect(base).toBeGreaterThan(-1);
+    expect(inert).toBeGreaterThan(base);
+  });
 });
 
 describe("row menu in the guide channel", () => {
