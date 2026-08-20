@@ -62,12 +62,13 @@ async fn notes_bootstrap(state: State<'_, DesktopState>) -> Result<BootSnapshot,
     let gate = Arc::clone(&state.runtime);
     run_blocking(move || {
         let runtime = gate.wait()?;
-        if let Some(snapshot) = runtime
+        let cached = runtime
             .initial_boot
             .lock()
             .map_err(|_| internal_error("The initial Notes snapshot lock was poisoned."))?
-            .take()
-        {
+            .take();
+        let live_revision = runtime.storage.revision().map_err(NotesError::from)?;
+        if let Some(snapshot) = current_boot(cached, live_revision) {
             return Ok(snapshot);
         }
         runtime
@@ -1064,6 +1065,17 @@ fn announce(
     )
 }
 
+/// The snapshot the runtime opened with, for as long as the database is still
+/// where that snapshot left it. `initialize` reads it before the vault sweep has
+/// merged a single document, and a sweep that merged anything moved the
+/// revision: handing the window rows from before that is handing it a number
+/// the session has already left, which is its next keystroke refused. Taken
+/// either way -- a snapshot the sweep has outrun can never become current
+/// again, so the next ask reads the database rather than this.
+fn current_boot(cached: Option<BootSnapshot>, live_revision: u64) -> Option<BootSnapshot> {
+    cached.filter(|snapshot| snapshot.revision == live_revision)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1103,6 +1115,40 @@ mod tests {
                 deleted_node_ids: vec!["removed".to_owned()],
             },
             "the window redraws the settled row like any other"
+        );
+    }
+
+    /// The snapshot the runtime opens with is read before the vault sweep has
+    /// merged a single document, so a sweep that merged anything has made it a
+    /// lie: the window would be handed rows and a revision the database has
+    /// already left behind, and its first keystroke would be refused against a
+    /// number nobody ever told it.
+    #[test]
+    fn a_boot_snapshot_the_database_has_outgrown_is_not_served() {
+        let cached = BootSnapshot {
+            session_id: "session-1".to_owned(),
+            revision: 0,
+            active_page_id: None,
+            pages: Vec::new(),
+            viewport: None,
+            history: notes_application::HistoryState {
+                can_undo: false,
+                can_redo: false,
+                undo_depth: 0,
+                redo_depth: 0,
+            },
+        };
+
+        assert!(
+            current_boot(Some(cached.clone()), 13).is_none(),
+            "thirteen merged documents later, the snapshot describes notes the \
+             window would never be able to edit"
+        );
+        assert_eq!(
+            current_boot(Some(cached.clone()), 0),
+            Some(cached),
+            "and a database still where the snapshot left it is answered from \
+             the snapshot, which is the whole of what caching it buys"
         );
     }
 
