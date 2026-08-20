@@ -1022,3 +1022,49 @@ fn a_deleted_row_puts_the_trash_in_the_queue() {
         "{pending:?}"
     );
 }
+
+/// Whether this app's bytes may replace what is already at a path, over the
+/// four states a path can be in. Three of them a test can put a real file into;
+/// the fourth cannot be staged at all — the kernel drops `SF_DATALESS` from a
+/// `chflags` call, because only the file provider may set it — so the state is
+/// stated rather than built.
+///
+/// The fourth is the one that matters, and it is narrower than "evicted": it is
+/// a file iCloud evicted that this device then failed to fetch, since reading is
+/// what fetches. Writing over one is what has iCloud take the write for a new
+/// file, upload it, bring the stored copy back down, and leave `README 2.md`
+/// behind (TN2336's bounced file).
+#[test]
+fn bytes_whose_file_is_not_local_are_never_replaced() {
+    use notes_sync::export::{Existing, WriteVerdict, may_write};
+
+    let ours = "a".repeat(64);
+    let theirs = "b".repeat(64);
+
+    assert_eq!(
+        may_write(&Existing::Absent, &ours, None),
+        WriteVerdict::Write,
+        "a page with no file yet has to reach one"
+    );
+    assert_eq!(
+        may_write(&Existing::Bytes(ours.clone()), &ours, Some(&ours)),
+        WriteVerdict::AlreadySaid,
+        "the same bytes going out again would look like an edit to every device"
+    );
+    assert_eq!(
+        may_write(&Existing::Bytes(theirs.clone()), &ours, Some(&ours)),
+        WriteVerdict::TheirEdit,
+        "a file this app did not last write holds somebody's edit"
+    );
+    assert_eq!(
+        may_write(&Existing::Bytes(theirs), &ours, None),
+        WriteVerdict::TheirEdit,
+        "and a document this app has never written is not ours to replace either"
+    );
+    assert_eq!(
+        may_write(&Existing::NotLocal, &ours, Some(&ours)),
+        WriteVerdict::TheirEdit,
+        "writing over bytes that are still in the cloud is what leaves a \
+         numbered copy behind"
+    );
+}

@@ -733,6 +733,38 @@ fn sync_meta_is_seeded_once_with_a_stable_device_id() {
     assert_eq!(first.0.len(), 4);
 }
 
+/// A vault outlives a database. Rebuilding one here used to draw a fresh random
+/// device id, and the files still sitting in the vault then held two generations
+/// of stamps arguing with each other over notes one person wrote — every merge
+/// reading the older generation as somebody else's device.
+///
+/// The vault id is the opposite case and has to keep differing: two databases
+/// are two vaults until one is told to be the other.
+#[cfg(target_os = "macos")]
+#[test]
+fn two_databases_on_one_machine_are_one_device() {
+    let (_first_directory, first_database) = workspace();
+    let (_second_directory, second_database) = workspace();
+    drop(open(&first_database));
+    drop(open(&second_database));
+
+    let read = |database: &std::path::Path| -> (String, String) {
+        inspect(database)
+            .query_row("SELECT device_id, vault_uuid FROM sync_meta", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .expect("sync_meta")
+    };
+    let (first_device, first_vault) = read(&first_database);
+    let (second_device, second_vault) = read(&second_database);
+
+    assert_eq!(
+        first_device, second_device,
+        "a database rebuilt on this machine has to stamp as the same device"
+    );
+    assert_ne!(first_vault, second_vault, "but not as the same vault");
+}
+
 #[test]
 fn the_clock_reseeds_from_stored_hlcs_on_boot() {
     let (_directory, database) = workspace();
