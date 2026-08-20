@@ -159,6 +159,7 @@ export function NotesExportMenu({
         className="notes-export-trigger"
         type="button"
         aria-label="Export"
+        title="Export"
         aria-haspopup="menu"
         aria-expanded={menuOpen}
         data-popup-open={menuOpen ? "true" : undefined}

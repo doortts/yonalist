@@ -41,6 +41,9 @@ describe("NotesExportMenu", () => {
       />
     );
 
+    const exportButton = screen.getByRole("button", { name: "Export" });
+    expect(exportButton).toHaveAttribute("title", "Export");
+
     let menu = await openMenu();
     for (const label of [
       "Selected node as Markdown",

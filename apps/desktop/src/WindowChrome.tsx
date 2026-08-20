@@ -27,6 +27,7 @@ export function WindowChrome({
           className="pane-toggle"
           type="button"
           aria-label="Toggle sidebar"
+          title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           aria-pressed={sidebarCollapsed}
           onClick={onToggleSidebar}
         >
@@ -44,6 +45,7 @@ export function WindowChrome({
           className="pane-toggle"
           type="button"
           aria-label="Maximize detail"
+          title={detailMaximized ? "Restore detail" : "Maximize detail"}
           aria-pressed={detailMaximized}
           onClick={onToggleDetail}
         >

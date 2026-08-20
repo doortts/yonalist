@@ -1535,7 +1535,14 @@ describe("Yonalist v2 desktop shell", () => {
     render(<App api={notesApi} />);
     await screen.findByDisplayValue("First thought");
 
-    fireEvent.click(screen.getByRole("button", { name: "Completed items" }));
+    const completedButton = screen.getByRole("button", { name: "Completed items" });
+    expect(completedButton).toHaveAttribute("title", "Hide completed items");
+    expect(completedButton).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(completedButton);
+
+    expect(completedButton).toHaveAttribute("title", "Show completed items");
+    expect(completedButton).toHaveAttribute("aria-pressed", "false");
 
     expect(screen.queryByDisplayValue("First thought")).toBeNull();
     expect(screen.getAllByRole("group", { name: "Note text" }).some(
@@ -1788,8 +1795,9 @@ describe("Yonalist v2 desktop shell", () => {
     await screen.findByDisplayValue("First thought");
 
     expect(crumbLabels()).toEqual(["", "Today"]);
-    expect(within(breadcrumb()).getByRole("button", { name: "All pages" }))
-      .toBeEnabled();
+    const allPagesButton = within(breadcrumb()).getByRole("button", { name: "All pages" });
+    expect(allPagesButton).toBeEnabled();
+    expect(allPagesButton).toHaveAttribute("title", "All pages");
     const page = within(breadcrumb()).getByRole("button", { name: "Today" });
     expect(page).toHaveAttribute("aria-current", "page");
     expect(page).toBeDisabled();
