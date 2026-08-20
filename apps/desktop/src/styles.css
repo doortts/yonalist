@@ -931,13 +931,20 @@ body.is-resizing-pane {
   }
 
   /* The fixed detail maximize toggle is pinned to the top-right of the titlebar
-     band. Header-less shells keep it there, so their right-aligned actions need
-     room to clear it. The detail header is excluded: it hides the fixed toggle
-     while it is on screen and offers the same action inline in its own actions
-     row, so no reservation is needed. Desktop-only, matching the breakpoint
-     where the toggles are shown. */
+     band, so every right-aligned header underneath it reserves room to clear
+     it. Desktop-only, matching the breakpoint where the toggles are shown. */
   .settings-header {
     padding-right: 56px;
+  }
+
+  /* The toggle ends 40px from the window edge (right: 12px plus a 28px
+     button), and the pane already spends the shell inset and its 1px border
+     of that. The rest, plus the toolbar's own gap, is what the outline toolbar
+     reserves — otherwise its last button sits under the maximize glyph. Only
+     the rightmost pane is under it: in a split the left toolbar keeps its
+     ordinary padding. */
+  .notes-detail-pane:last-child .notes-outline-toolbar {
+    padding-right: calc(40px - var(--shell-inset) - 1px + 8px);
   }
 }
 
