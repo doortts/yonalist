@@ -275,6 +275,36 @@ describe("SettingsView", () => {
     expect(await screen.findByText("/Users/me/Yonalist")).toBeInTheDocument();
   });
 
+  it("asks for an iCloud folder to be kept downloaded", async () => {
+    renderSettings({
+      readVaultPath: vi.fn().mockResolvedValue(
+        "/Users/me/Library/Mobile Documents/com~apple~CloudDocs/Yonalist"
+      )
+    });
+
+    await openSection("Sync folder");
+    const advisory = await screen.findByText(/Keep Downloaded/);
+    expect(advisory).toHaveTextContent("Optimize Mac Storage");
+  });
+
+  it("says nothing about downloads for a folder outside iCloud", async () => {
+    renderSettings({
+      readVaultPath: vi.fn().mockResolvedValue("/Users/me/notes")
+    });
+
+    await openSection("Sync folder");
+    expect(await screen.findByText("/Users/me/notes")).toBeInTheDocument();
+    expect(screen.queryByText(/Keep Downloaded/)).not.toBeInTheDocument();
+  });
+
+  it("says nothing about downloads while no folder is chosen", async () => {
+    renderSettings();
+
+    await openSection("Sync folder");
+    await settle();
+    expect(screen.queryByText(/Keep Downloaded/)).not.toBeInTheDocument();
+  });
+
   it("saves and shows a newly chosen vault folder", async () => {
     vi.mocked(pickVaultFolder).mockResolvedValue("/Users/me/Yonalist");
     const handlers = renderSettings();

@@ -512,6 +512,19 @@ function SyncFolderSection({
           ) : (
             <p className="settings-copy">No folder chosen yet.</p>
           )}
+          {/* No API pins a third-party app's files as downloaded, so the only
+              thing to do about Optimize Mac Storage is to say it here. Every
+              iCloud container is mounted under Mobile Documents, and no local
+              folder is. */}
+          {path?.includes("Mobile Documents") && (
+            <p className="settings-copy">
+              This folder is in iCloud Drive. To keep sync reliable, right-click
+              it in Finder and choose "Keep Downloaded". On macOS 14 or earlier,
+              turn off "Optimize Mac Storage" in iCloud settings instead —
+              otherwise macOS may remove the local copies of your notes and they
+              will have to be re-downloaded before they can sync.
+            </p>
+          )}
           <button type="button" disabled={busy} onClick={() => void choose()}>
             {path ? "Change folder" : "Choose folder"}
           </button>
