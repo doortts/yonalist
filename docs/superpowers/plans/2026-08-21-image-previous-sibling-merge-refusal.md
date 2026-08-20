@@ -26,10 +26,10 @@ records what changed and why.
 backward branches for head-of-line Backspace on a row with text:
 
 - `mergeIntoParent`
-  ([outlineKeyboard.ts:688](../../../apps/desktop/src/outline/outlineKeyboard.ts))
+  ([outlineKeyboard.ts:693](../../../apps/desktop/src/outline/outlineKeyboard.ts))
   guards `previous.kind === "bullet"` — "an image row can never take the text".
 - `mergeBackward`
-  ([outlineKeyboard.ts:703](../../../apps/desktop/src/outline/outlineKeyboard.ts))
+  ([outlineKeyboard.ts:708](../../../apps/desktop/src/outline/outlineKeyboard.ts))
   guards same parent, empty previous note, previous has no children. No kind
   guard.
 
@@ -60,7 +60,7 @@ So the persisted attachment was never lost and never bypassed Trash. The real
 pre-fix symptom was an optimistic drop, an IPC rejection, and a rollback at
 [storeOutlineMutations.ts:343](../../../apps/desktop/src/store/storeOutlineMutations.ts) —
 with the error swallowed by `.catch(() => undefined)` at
-[outlineSupport.ts:537](../../../apps/desktop/src/outline/outlineSupport.ts):
+[outlineSupport.ts:540](../../../apps/desktop/src/outline/outlineSupport.ts):
 a visible flash of `sample.pngbeta`, the caret displaced, and no message.
 
 ### Where the loss was real
@@ -71,43 +71,52 @@ The preview backend has no such refusal.
 directly below it checks both rows — the identical omission the resolver had,
 in the file whose whole job is mirroring notes-core's refusals (it carries
 `// notes-core answers DomainError::NodeNotEmpty here` elsewhere). And
-[previewApi.ts:281](../../../apps/desktop/src/preview/previewApi.ts) executes
+[previewApi.ts:274](../../../apps/desktop/src/preview/previewApi.ts) executes
 the merge with `nodes.filter(...)` plus `deletedIds` — a hard removal, no soft
 delete, no Trash. That is where the demonstrated destruction lived, and it is
 where the browser proof for this change was taken.
 
 ## Decision: inertness, not a trash reach
 
-Candidate A was the one-condition refusal mirroring the sibling branch.
-Candidate B was returning a trash intent naming the image, the way the image
-row's own before-station reaches the picture above it on the unmerged branch
-`claude/image-delete-backspace-270041` (`1f248ba0`).
+Candidate A was the one-condition refusal mirroring the branch above it.
+Candidate B was returning a trash intent naming the image, the way an image
+row's own before-station reaches the picture above it.
 
-A wins, on three counts.
+That before-station behavior was on an unmerged branch when this was decided.
+It has since landed: `claude/image-delete-backspace-270041` merged as
+`fa96e6c6` while this change was in review, so `{ kind: "trash", nodeId }` from
+the `before` station is main's behavior today
+([outlineKeyboard.ts:824](../../../apps/desktop/src/outline/outlineKeyboard.ts)).
+One of the three counts below was about avoiding a conflict with that branch;
+it has expired, and is recorded here as expired rather than quietly dropped.
+The decision does not rest on it.
 
 **The two surfaces are different keys wearing one name.** An image row has no
 text, so Backspace there can only mean "take a row" — trash is its only
-sensible act. Head-of-line Backspace on a *text* row is a merge key. `1f248ba0`
-argues the mirror rule itself: it refuses a bullet above the station because
-"a text row merges on its own surface and never dies to a neighbour's key."
+sensible act. Head-of-line Backspace on a *text* row is a merge key: its whole
+job is joining a line to the one above.
+
+**Together the two rules read as one line, not an inconsistency.** The landed
+branch refuses a *bullet* above the station, because "a text row merges on its
+own surface and never dies to a neighbour's key"; this change refuses a
+*picture* behind a text caret. So Backspace crosses a row boundary to delete
+only where pictures stand on both sides of it. Wherever text is on either side,
+the key stays a text key. That is the rule the two surfaces now share.
 
 **B would make one keystroke disagree with itself.** The branch immediately
 above already answers "image above" with a refusal, and does not fall back to
 trashing the image parent. Under B, an image above at parent depth would do
 nothing while an image above at sibling depth trashed an attachment.
 
-**B collides with live parallel work for no gain.** It would widen the `trash`
-intent to carry a `nodeId` and rewrite `outlineSupport.ts`'s `trash` case — the
-exact lines `1f248ba0` and `98482f3d` ("a trash aimed past the caret leaves the
-caret alone") already rewrote on a branch that has diverged from this base and
-is checked out in another live worktree.
+**Expired:** B would have rewritten the `trash` intent shape and
+`outlineSupport.ts`'s `trash` case in the same lines the unmerged branch had
+already rewritten. That branch has landed, so the conflict argument no longer
+applies. The two counts above are what carry the decision.
 
-**Open for whoever merges that branch.** Once it lands, "Backspace on an image
-station trashes the picture above" is established behavior, and a text row one
-depth over staying silent is an asymmetry worth re-litigating — as is the fact
-that a user holding Backspace up a column now stalls at a picture with no
-feedback at all. This doc does not pre-close that; it decides only that a
-*merge* must not be the thing that reaches an attachment.
+**Still open.** A user holding Backspace up a column stalls at a picture with no
+feedback at all — the key does nothing and says nothing. That is worth solving,
+and it is not solved here; it wants a shared answer for both refusals rather
+than a delete bolted onto the merge key.
 
 ## Predicate: `=== "bullet"`, not `!== "image"`
 
@@ -153,11 +162,12 @@ no backward merge to hole.
 
 **Image surface fall-through — clean.** `handleImageNodeKeyDown` falls through
 to `resolveOutlineKey` with `value: ""`
-([outlineKeyboard.ts:855](../../../apps/desktop/src/outline/outlineKeyboard.ts)),
+([outlineKeyboard.ts:884](../../../apps/desktop/src/outline/outlineKeyboard.ts)),
 and both merge branches require `input.value.trim().length > 0`, so an image
 row can never merge anything into itself. Backspace cannot reach the
 fall-through at all: the `after` and on-image stations return `trash` first, and
-the `before` station returns `null` first.
+the `before` station returns before it, with a trash naming the picture above
+when that row is a same-parent image and `null` otherwise.
 
 **Single producer, confirmed.** `projectMergeNodeBackward` has one caller
 ([storeOutlineMutations.ts:330](../../../apps/desktop/src/store/storeOutlineMutations.ts)),
