@@ -21,5 +21,21 @@ tempfile = "3.27.0"
 unicode-normalization = "0.1.25"
 uuid.workspace = true
 
+# Already in the lock by way of tauri, so this adds edges and no crates. The
+# features are the headers this crate names and nothing else.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+objc2 = "0.6.4"
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "NSArray",
+    "NSError",
+    "NSFileCoordinator",
+    "NSFileVersion",
+    "NSString",
+    "NSURL",
+] }
+
 [dev-dependencies]
 proptest = "1.9.0"
