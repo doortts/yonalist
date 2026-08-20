@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  guideBandAt, guideOwnerId, guideTargets, planGuideToggle,
+  guideBandAt, guideCanFold, guideOwnerId, guideTargets, planGuideToggle,
   type GuideNode, type GuidePending
 } from "./outlineGuideToggle";
 
@@ -19,11 +19,14 @@ function fakeIndex(nodes: readonly FakeNode[]) {
   };
 }
 
+// `d` is closed on purpose: `collapsed` is the only other field a walk over
+// this tree could branch on, so a fixture where every row is open cannot tell a
+// skip rule that reads it from one that does not.
 const tree = fakeIndex([
   { id: "a", parentId: null, collapsed: false },
   { id: "b", parentId: "a", collapsed: false },
   { id: "c", parentId: "b", collapsed: false },
-  { id: "d", parentId: "b", collapsed: false },
+  { id: "d", parentId: "b", collapsed: true },
   { id: "e", parentId: "d", collapsed: false },
   { id: "leaf", parentId: "a", collapsed: false }
 ]);
@@ -42,6 +45,16 @@ describe("guideBandAt", () => {
 
   it("reads the narrow-width geometry off the same arguments", () => {
     expect(guideBandAt(98, 70, 28)).toBe(1);
+  });
+
+  // The row menu's plate clears each neighbouring stripe by 6px, so the band
+  // has to stop short of that or the plate and the lit line come up together
+  // at the boundary. The last two numbers are a depth-2 row's button edges:
+  // the button spans [67, 91] and its stripes sit at 61 and 97.
+  it("stops short of the stripe by less than the menu button's clearance", () => {
+    expect(guideBandAt(66, 61, 36)).toBe(0);
+    expect(guideBandAt(67, 61, 36)).toBeNull();
+    expect(guideBandAt(91, 61, 36)).toBeNull();
   });
 });
 
@@ -129,5 +142,19 @@ describe("planGuideToggle", () => {
 
   it("plans nothing for an empty range", () => {
     expect(planGuideToggle([], null)).toEqual({ changes: [], pending: null });
+  });
+});
+
+describe("guideCanFold", () => {
+  // The hover flavour has to agree with what a click would find, so the cheap
+  // predicate is pinned to guideTargets' emptiness across the whole fixture --
+  // if that walk's skip rule ever changes, this goes red before the hover
+  // colour starts promising a fold the click will not deliver.
+  it("says whether the range holds anything a click could fold", () => {
+    expect(guideCanFold(tree, "a")).toBe(true);
+    expect(guideCanFold(tree, "d")).toBe(false);
+    for (const id of ["a", "b", "c", "d", "e", "leaf"]) {
+      expect(guideCanFold(tree, id)).toBe(guideTargets(tree, id).length > 0);
+    }
   });
 });

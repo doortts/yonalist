@@ -4,8 +4,13 @@
  * which ancestor paints it, and what that ancestor's range should do next.
  */
 
-/** How far off a stripe's centre a pointer still counts as on it. */
-export const GUIDE_HIT_TOLERANCE = 9;
+/**
+ * How far off a stripe's centre a pointer still counts as on it. Must stay
+ * under the row menu's clearance from the stripes either side of it -- 6px,
+ * held by `.notes-node-menu-slot`'s negative start margin in notes.css --
+ * because a wider band lights the guide from under the button's own plate.
+ */
+export const GUIDE_HIT_TOLERANCE = 5;
 
 export interface GuideNode {
   readonly id: string;
@@ -89,6 +94,20 @@ export function guideTargets(
   };
   walk(ownerId);
   return targets;
+}
+
+/**
+ * Whether the guide's range holds anything a click could fold -- the hover
+ * flavour, so it runs on every mousemove that lands on a stripe. Equivalent to
+ * `guideTargets(tree, ownerId).length > 0`: that walk pushes a child and
+ * recurses only where the child has children, so emptiness is settled among
+ * the owner's direct children alone. Reading it here costs those children and
+ * no array.
+ */
+export function guideCanFold(tree: GuideTree, ownerId: string): boolean {
+  return tree
+    .childrenOf(ownerId)
+    .some((child) => tree.childrenOf(child.id).length > 0);
 }
 
 /**
