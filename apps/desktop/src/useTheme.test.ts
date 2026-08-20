@@ -126,6 +126,20 @@ describe("useTheme", () => {
     );
   });
 
+  // Faces come and go as the bundled set changes, so a key left over from a
+  // face that is no longer offered has to read as the default, not as itself.
+  it("restores a stored face and ignores one it no longer offers", () => {
+    window.localStorage.setItem("yonalist.handwritingFace.v1", "gaegu");
+    expect(renderHook(() => useTheme()).result.current.handwritingFace).toBe(
+      "gaegu"
+    );
+
+    window.localStorage.setItem("yonalist.handwritingFace.v1", "sharpie");
+    expect(renderHook(() => useTheme()).result.current.handwritingFace).toBe(
+      "excalidraw"
+    );
+  });
+
   // The handwriting font is the third value the same key carries, so the
   // restart path -- read the key, stamp the attribute -- is what this pins.
   it("restores the stored handwriting font", () => {

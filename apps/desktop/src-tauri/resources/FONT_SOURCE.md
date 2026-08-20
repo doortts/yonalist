@@ -94,3 +94,37 @@ own builds rather than a conversion of our own, and it ships beside them as
 `NanumPenScript-OFL.txt`. Its text matches `NanumGothic-OFL.txt` except for two
 trailing spaces this repository's copy of that file has lost; the recorded
 hash there is the upstream one, not the file's current hash.
+
+## Gaegu, Gamja Flower, Poor Story and Single Day, the readable hands
+
+Retrieved from Google Fonts on 2026-08-21. Nanum Pen Script is drawn thin and
+narrow, which is hard to read at the 16px a row is set in, so the handwriting
+setting also offers four hands that hold their shape at that size.
+
+Each is bundled the same way as Nanum Pen Script: every woff2 chunk Google
+serves, under `apps/desktop/src/assets/<face>/`, renamed only from the served
+hash to the chunk index it carries, with the Latin chunk named for what it
+covers. The chunks and their unicode ranges come from
+`https://fonts.googleapis.com/css2?family=<Family>&display=swap`, read with a
+browser user agent, and each file is a byte-for-byte copy of the
+`https://fonts.gstatic.com/s/...` URL that stylesheet names. Only the regular
+weight of each is bundled.
+
+| Face | Chunks | Bytes | Hangul syllables | size-adjust | License, all SIL OFL 1.1 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Gaegu | 89 | 482,884 | 2,350 | 106% | `Gaegu-OFL.txt`, copyright 2018 The Gaegu Project Authors |
+| Gamja Flower | 93 | 1,050,924 | 11,172 | 108% | `GamjaFlower-OFL.txt`, copyright YoonDesign Inc. |
+| Poor Story | 92 | 474,712 | 11,172 | 101% | `PoorStory-OFL.txt`, copyright YoonDesign Inc. |
+| Single Day | 89 | 595,520 | 11,172 | 107% | `SingleDay-OFL.txt`, copyright 2015 DXKorea Inc. |
+
+None of the four declares a Reserved Font Name, and the bundled files are
+Google's own builds, so nothing here is a Modified Version under the license.
+Their SHA-256 sums are listed per directory in `SHA256SUMS`.
+
+Gaegu covers the 2,350 syllables of KS X 1001 rather than all 11,172. A
+syllable outside that set falls to Xiaolai, which stands behind every chosen
+face, so it still comes out handwritten.
+
+size-adjust holds each face at the size the reader already sees: at 100px the
+ink height of 한 is 84.6 in the sans setting's Korean face, and 79.7, 78.1,
+83.8 and 79.4 in these four, which the percentages above bring back to it.

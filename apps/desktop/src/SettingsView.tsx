@@ -53,11 +53,15 @@ const textFontOptions: Array<{ value: TextFont; label: string }> = [
 
 /*
  * Excalidraw writes in two faces at once -- Excalifont for Latin, Xiaolai for
- * Hangul, which is what excalidraw.com shows. Nanum Pen Script draws both.
+ * Hangul, which is what excalidraw.com shows. The rest each draw both scripts.
  */
 const handwritingFaceOptions: Array<{ value: HandwritingFace; label: string }> = [
   { value: "excalidraw", label: "Excalidraw" },
-  { value: "nanum", label: "Nanum Pen" }
+  { value: "nanum", label: "Nanum Pen" },
+  { value: "gaegu", label: "Gaegu" },
+  { value: "gamja-flower", label: "Gamja Flower" },
+  { value: "poor-story", label: "Poor Story" },
+  { value: "single-day", label: "Single Day" }
 ];
 
 const markerShapeOptions: Array<{ value: OutlineMarkerShape; label: string }> = [
