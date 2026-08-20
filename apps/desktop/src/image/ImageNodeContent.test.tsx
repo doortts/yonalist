@@ -323,6 +323,37 @@ describe("ImageNodeContent", () => {
     expect(read).toHaveBeenCalledOnce();
   });
 
+  // The menu is taller than a small image and opens inside the frame, so a clip
+  // on the frame cut it off at the image's own bottom edge.
+  it("lets the open menu hang past a short image instead of clipping it", async () => {
+    const residency = new ImageResidency(
+      vi.fn().mockResolvedValue(Uint8Array.from([1])),
+      {
+        createObjectURL: vi.fn(() => "blob:cat"),
+        revokeObjectURL: vi.fn()
+      }
+    );
+    const store = {
+      images: { resize: vi.fn() },
+      deleteSubtree: vi.fn()
+    } as unknown as NotesStore;
+    const view = render(
+      <ImageNodeContent node={node()} residency={residency} store={store} />
+    );
+    const image = await screen.findByRole("img", { name: "cat.png" });
+
+    fireEvent.click(screen.getByRole("button", {
+      name: "Image actions for cat.png"
+    }));
+
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    expect(view.container.querySelector(".notes-image-attachment-frame"))
+      .not.toHaveStyle({ overflow: "hidden" });
+    // Nothing clips the image to the frame's rounded corners any more, so it
+    // carries the radius itself.
+    expect(image).toHaveStyle({ borderRadius: "6px" });
+  });
+
   it("supports keyboard menu navigation and routes every file action", async () => {
     imageActionMocks.replace.mockClear();
     imageActionMocks.viewOriginal.mockClear();

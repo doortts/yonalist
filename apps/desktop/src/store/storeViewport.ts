@@ -67,10 +67,15 @@ export class StoreViewport {
    * Reads the page the user is on again, keeping them on it. What a merge
    * changed is anywhere in the page — including rows the window is not
    * showing — so the page is re-read rather than patched row by row.
+   *
+   * Answers whether the rows on screen are the merged ones. The caller has a
+   * revision to claim for them, and claiming it over rows that never arrived
+   * would accept the next edit against text the user never saw.
    */
-  async reload(): Promise<void> {
+  async reload(): Promise<boolean> {
     const { activePageId } = this.getState();
-    if (!activePageId) return;
+    // No page open, so there are no rows that could be out of date.
+    if (!activePageId) return true;
     const sequence = ++this.sequence;
     try {
       const viewport = await this.api.queryViewport({
@@ -80,13 +85,24 @@ export class StoreViewport {
         afterCursor: null,
         limit: VIEWPORT_LIMIT
       });
-      // A page the user left while this was in flight is not the page this
-      // answer describes.
-      if (sequence === this.sequence) this.apply(viewport, false);
+      // Somebody else moved the sequence while this was in flight, and which
+      // one decides whether these rows still matter. A page taken over was
+      // read after the merge committed, so the screen holds the merged rows
+      // and the caller's revision is theirs to claim. Still the same page —
+      // more of it fetched below the fold, or a later re-read that will claim
+      // its own number — and the rows the reader is looking at are the ones
+      // from before the merge: claiming over them would pass their next edit
+      // and overwrite what the other device wrote.
+      if (sequence !== this.sequence) {
+        return this.getState().activePageId !== activePageId;
+      }
+      this.apply(viewport, false);
+      return true;
     } catch (cause) {
       if (sequence === this.sequence) {
         this.update({ error: messageFrom(cause) });
       }
+      return false;
     }
   }
 

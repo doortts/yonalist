@@ -9,18 +9,20 @@ import {
   MAX_OUTLINE_MARKER_LEVELS
 } from "./outlineMarkers";
 import { SettingsView } from "./SettingsView";
-import type { TextFont } from "./useTheme";
+import type { HandHangulFont, TextFont } from "./useTheme";
 
 function renderSettings(overrides: Partial<Parameters<typeof SettingsView>[0]> = {}) {
   const handlers = {
     caretColor: "auto",
     textFont: "sans" as TextFont,
+    handHangulFont: "xiaolai" as HandHangulFont,
     markerStyles: defaultOutlineMarkerStyles(),
     onThemeModeChange: vi.fn(),
     onLightThemeChange: vi.fn(),
     onDarkThemeChange: vi.fn(),
     onCaretColorChange: vi.fn(),
     onTextFontChange: vi.fn(),
+    onHandHangulFontChange: vi.fn(),
     onMarkerStylesChange: vi.fn(),
     onClose: vi.fn(),
     unusedAssets: vi.fn().mockResolvedValue({
@@ -405,6 +407,34 @@ describe("SettingsView", () => {
 
     fireEvent.click(screen.getByRole("radio", { name: "Monospace outline text" }));
     expect(handlers.onTextFontChange).toHaveBeenCalledWith("mono");
+  });
+
+  it("moves the outline text to the handwriting font", () => {
+    const handlers = renderSettings();
+
+    fireEvent.click(
+      screen.getByRole("radio", { name: "Handwriting outline text" })
+    );
+    expect(handlers.onTextFontChange).toHaveBeenCalledWith("hand");
+  });
+
+  // The Hangul face only draws anything while the outline is handwriting, so
+  // offering it under sans or monospace would be a control that does nothing.
+  it("keeps the Hangul face out of sight unless the text is handwriting", () => {
+    renderSettings();
+
+    expect(
+      screen.queryByRole("radio", { name: "Nanum Pen handwriting Hangul" })
+    ).toBeNull();
+  });
+
+  it("switches which face draws handwritten Hangul", () => {
+    const handlers = renderSettings({ textFont: "hand" });
+
+    fireEvent.click(
+      screen.getByRole("radio", { name: "Nanum Pen handwriting Hangul" })
+    );
+    expect(handlers.onHandHangulFontChange).toHaveBeenCalledWith("nanum");
   });
 
   it("checks unused assets and purges only after confirmation", async () => {

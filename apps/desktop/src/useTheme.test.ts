@@ -109,4 +109,29 @@ describe("useTheme", () => {
     expect(document.documentElement.dataset.textFont).toBe("mono");
     expect(window.localStorage.getItem("yonalist.textFont.v1")).toBe("mono");
   });
+
+  // Hangul has no glyphs in the Latin handwriting face, so which face draws
+  // it is its own setting; it has to survive a restart the same way.
+  it("keeps the handwriting Hangul face on the document and in storage", () => {
+    const { result } = renderHook(() => useTheme());
+
+    expect(result.current.handHangulFont).toBe("xiaolai");
+    expect(document.documentElement.dataset.handHangul).toBe("xiaolai");
+
+    act(() => result.current.setHandHangulFont("nanum"));
+
+    expect(document.documentElement.dataset.handHangul).toBe("nanum");
+    expect(window.localStorage.getItem("yonalist.handHangul.v1")).toBe("nanum");
+  });
+
+  // The handwriting font is the third value the same key carries, so the
+  // restart path -- read the key, stamp the attribute -- is what this pins.
+  it("restores the stored handwriting font", () => {
+    window.localStorage.setItem("yonalist.textFont.v1", "hand");
+
+    const { result } = renderHook(() => useTheme());
+
+    expect(result.current.textFont).toBe("hand");
+    expect(document.documentElement.dataset.textFont).toBe("hand");
+  });
 });

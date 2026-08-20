@@ -1120,6 +1120,31 @@ describe("Yonalist v2 desktop shell", () => {
       marker: "todo" as const,
       completed: true
     };
+    const sibling = { ...child, id: "sibling" };
+    const notesApi = api();
+    notesApi.bootstrap = vi.fn().mockResolvedValue({
+      ...snapshot,
+      viewport: { ...snapshot.viewport!, nodes: [parent, child, sibling] }
+    });
+    render(<App api={notesApi} />);
+
+    const bar = await screen.findByRole("progressbar", {
+      name: "2 of 2 To-dos complete"
+    });
+    expect(within(bar).getByText("2")).toBeVisible();
+    expect(within(bar).queryByText("2/2")).toBeNull();
+  });
+
+  // One box under a row already reads as its own state, so a 0/1 bar beside it
+  // says nothing the checkbox has not said.
+  it("draws no bar when a row carries a single Todo", async () => {
+    const parent = { ...snapshot.viewport!.nodes[0], marker: "todo" as const };
+    const child = {
+      ...snapshot.viewport!.nodes[1],
+      id: "child",
+      parentId: parent.id,
+      marker: "todo" as const
+    };
     const notesApi = api();
     notesApi.bootstrap = vi.fn().mockResolvedValue({
       ...snapshot,
@@ -1127,11 +1152,8 @@ describe("Yonalist v2 desktop shell", () => {
     });
     render(<App api={notesApi} />);
 
-    const bar = await screen.findByRole("progressbar", {
-      name: "1 of 1 To-dos complete"
-    });
-    expect(within(bar).getByText("1")).toBeVisible();
-    expect(within(bar).queryByText("1/1")).toBeNull();
+    await screen.findByRole("checkbox", { name: /Second thought/ });
+    expect(screen.queryAllByRole("progressbar")).toHaveLength(0);
   });
 
   // The chain the tick settles reaches past the loaded window, so the row that

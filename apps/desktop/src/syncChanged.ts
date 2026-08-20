@@ -58,6 +58,41 @@ export function listenForEvent(
 }
 
 /**
+ * Listening, and then asking. Every merge the vault sweep announces between the
+ * ask and the subscription is announced to nobody — Tauri drops an emit nothing
+ * is listening for — and the window is left holding the revision it was handed
+ * while the session has moved past it, which is its next keystroke refused.
+ *
+ * The snapshot is read whichever way the registration settles: a window that
+ * cannot hear the folder is still a window with notes in it.
+ */
+export function connectVaultSync(
+  listen: Listen,
+  absorb: (change: VaultChange) => Promise<unknown>,
+  bootstrap: () => Promise<void>,
+  coalesceMillis?: number
+): Unlisten {
+  return listenForVaultChanges(
+    (event, handler) => {
+      const registration = listen(event, handler).catch((cause) => {
+        // Said out loud because nothing else says it: a window that cannot
+        // hear the folder shows another device's edits only when something
+        // else reads the page, and the only other sign is the conflict banner
+        // coming back with nothing to explain it.
+        console.error("Yonalist could not listen for vault changes", cause);
+        // Nothing is listening, so there is nothing for the caller to stop —
+        // and the window still asks for its notes below.
+        return () => undefined;
+      });
+      void registration.then(() => bootstrap());
+      return registration;
+    },
+    absorb,
+    coalesceMillis
+  );
+}
+
+/**
  * Long enough that a folder's worth of documents is one read, short enough
  * that a single arriving edit still feels immediate.
  */

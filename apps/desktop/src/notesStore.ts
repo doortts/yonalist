@@ -139,7 +139,11 @@ export class NotesStore {
   }
 
   async bootstrap(): Promise<void> {
-    if (this.state.status !== "idle") return;
+    // Only a bootstrap already in flight. Reading again is what `writeGuide`
+    // and `rebuildFromVault` are for: the backend moved rows behind this
+    // window's back, and a window left holding the revision it booted on has
+    // its next keystroke refused.
+    if (this.state.status === "loading") return;
     this.update({ status: "loading", error: null });
     try {
       const boot = await this.api.bootstrap();
@@ -218,12 +222,25 @@ export class NotesStore {
       });
     }
     if (change && await this.patchFromVault(change)) return;
-    await Promise.all([
+    const [landed] = await Promise.all([
       // A page the backend has never heard of cannot be read back; there is
       // also nothing in it for another device to have changed.
-      this.state.provisionalPageId === null ? this.viewport.reload() : null,
+      this.state.provisionalPageId === null ? this.viewport.reload() : true,
       this.refreshPages()
     ]);
+    // The re-read carries no revision of its own — a viewport answer never
+    // does — and this is the only place that knows which one it was reading
+    // for. Without it the window keeps the number it booted on while the
+    // session has moved with the merge, and the next keystroke is refused.
+    // Only over rows that arrived: an edit accepted against text the user
+    // never saw overwrites what the other device wrote.
+    // Forward only. A narrow change can land while this re-read is still in
+    // flight and carry the window further on; taking it back to what this one
+    // was reading for would refuse the next keystroke, with nothing left to
+    // arrive that would put it right.
+    if (change && landed && change.revision > this.state.revision) {
+      this.update({ revision: change.revision });
+    }
   }
 
   /** Answers whether the change was applied; `false` asks for the re-read. */

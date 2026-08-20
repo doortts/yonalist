@@ -21,6 +21,9 @@
     "resources": [
       "resources/NanumGothic-Regular.ttf",
       "resources/NanumGothic-OFL.txt",
+      "resources/Excalifont-OFL.txt",
+      "resources/Xiaolai-OFL.txt",
+      "resources/NanumPenScript-OFL.txt",
       "resources/FONT_SOURCE.md"
     ],
     "icon": [

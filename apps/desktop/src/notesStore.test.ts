@@ -1584,6 +1584,40 @@ describe("NotesStore draft flushing before commands", () => {
   });
 });
 
+describe("NotesStore 재부트스트랩", () => {
+  it("가이드를 쓰거나 다시 만든 뒤 새 스냅샷을 받아들인다", async () => {
+    // `writeGuide`와 `rebuildFromVault`가 하는 일이 이것뿐이다: 백엔드가
+    // 창 뒤에서 행을 바꿔 놓았으니 다시 읽어야 한다. 첫 부트스트랩에서
+    // 돌아오지 않으면 창은 아무도 알려주지 않은 리비전을 들고 있고, 다음
+    // 키 입력이 거부된다.
+    const notes = api(async () => boot.viewport as ViewportPage);
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+
+    notes.bootstrap = vi.fn().mockResolvedValue({
+      ...boot,
+      revision: 13,
+      viewport: {
+        ...(boot.viewport as ViewportPage),
+        nodes: [bullet("guide", 1024)]
+      }
+    });
+    await store.bootstrap();
+
+    expect(store.getSnapshot().revision).toBe(13);
+    expect(store.getSnapshot().nodes.map((row) => row.id)).toEqual(["guide"]);
+  });
+
+  it("이미 읽는 중이면 두 번 읽지 않는다", async () => {
+    const notes = api(async () => boot.viewport as ViewportPage);
+    const store = new NotesStore(notes);
+
+    await Promise.all([store.bootstrap(), store.bootstrap()]);
+
+    expect(notes.bootstrap).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("다른 기기의 변경 흡수", () => {
   it("보고 있는 페이지와 페이지 목록을 다시 읽는다", async () => {
     // Home now holds a page this window has never heard of, and the page it
@@ -1681,6 +1715,152 @@ describe("다른 기기의 변경 흡수 — 이름이 온 경우", () => {
 
     expect(notes.queryForest).not.toHaveBeenCalled();
     expect(queryViewport).toHaveBeenCalled();
+  });
+
+  it("한 화면보다 넓은 변경도 그 리비전을 창에 남긴다", async () => {
+    // 페이지를 통째로 다시 읽은 답에는 리비전이 없다. 그래도 창이 보고
+    // 있는 행은 그 리비전의 것이니, 창의 번호도 거기로 가야 한다 --
+    // 그러지 않으면 다음 키 입력이 revision conflict로 거부된다.
+    const queryViewport = vi.fn(async () => boot.viewport as ViewportPage);
+    const notes = api(queryViewport);
+    notes.queryForest = vi.fn();
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+
+    await store.absorbVaultChange({
+      revision: 9,
+      changedNodeIds: Array.from({ length: 200 }, (_, index) => `node-${index}`),
+      deletedNodeIds: []
+    });
+
+    expect(store.getSnapshot().revision).toBe(9);
+  });
+
+  it("페이지를 다시 읽지 못했으면 리비전도 옮기지 않는다", async () => {
+    // 못 본 행 위에서 편집을 받아 주면 다른 기기가 쓴 것을 덮는다. 거부되는
+    // 키 입력이 정직한 답이다.
+    const queryViewport = vi.fn(async () => {
+      throw new Error("페이지를 읽을 수 없다");
+    });
+    const notes = api(queryViewport);
+    notes.queryForest = vi.fn();
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+
+    await store.absorbVaultChange({
+      revision: 9,
+      changedNodeIds: Array.from({ length: 200 }, (_, index) => `node-${index}`),
+      deletedNodeIds: []
+    });
+
+    expect(store.getSnapshot().revision).toBe(boot.revision);
+  });
+
+  it("느린 다시 읽기가 그 뒤에 온 리비전을 뒤로 끌지 않는다", async () => {
+    // 넓은 변경의 다시 읽기가 아직 오지 않은 사이에 좁은 변경이 도착해
+    // 리비전을 더 올려 놓는다. 뒤늦게 도착한 답이 창의 번호를 되돌리면
+    // 다음 키 입력이 거부되고, 이번에는 다른 변경이 오지 않는 한 아무도
+    // 고쳐 주지 않는다.
+    const releases: Array<(page: ViewportPage) => void> = [];
+    const notes = api(async (request) =>
+      request.pageId === "root"
+        ? {
+            pageId: "root",
+            anchorId: null,
+            beforeCursor: null,
+            afterCursor: null,
+            nodes: [page("page-1", "Today")]
+          }
+        : new Promise<ViewportPage>((resolve) => { releases.push(resolve); })
+    );
+    notes.queryForest = vi.fn(async () => ({
+      revision: 16,
+      nodes: [{ ...bullet("one", 1024), text: "그쪽에서 고친 것" }],
+      complete: true
+    }));
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+
+    const wide = store.absorbVaultChange({
+      revision: 14,
+      changedNodeIds: Array.from({ length: 200 }, (_, index) => `node-${index}`),
+      deletedNodeIds: []
+    });
+    await store.absorbVaultChange({
+      revision: 16,
+      changedNodeIds: ["one"],
+      deletedNodeIds: []
+    });
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    releases[0](boot.viewport as ViewportPage);
+    await wide;
+
+    expect(store.getSnapshot().revision).toBe(16);
+  });
+
+  it("스크롤이 다시 읽기를 앞질러도 못 본 행 위로 리비전을 옮기지 않는다", async () => {
+    // 다음 화면을 더 읽어 오는 것은 페이지를 넘겨받는 것이 아니다. 머리쪽
+    // 행은 병합 전 그대로인데 리비전만 옮겨 주면, 그 행에 친 편집이 통과해서
+    // 다른 기기가 쓴 것을 덮는다.
+    const releases: Array<(page: ViewportPage) => void> = [];
+    const notes = api(async (request) => {
+      if (request.pageId === "root") {
+        return {
+          pageId: "root",
+          anchorId: null,
+          beforeCursor: null,
+          afterCursor: null,
+          nodes: [page("page-1", "Today")]
+        };
+      }
+      if (request.afterCursor) {
+        return {
+          pageId: "page-1",
+          anchorId: null,
+          beforeCursor: null,
+          afterCursor: null,
+          nodes: [bullet("three", 3072)]
+        };
+      }
+      return new Promise<ViewportPage>((resolve) => { releases.push(resolve); });
+    });
+    notes.queryForest = vi.fn();
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+
+    const wide = store.absorbVaultChange({
+      revision: 9,
+      changedNodeIds: Array.from({ length: 200 }, (_, index) => `node-${index}`),
+      deletedNodeIds: []
+    });
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    await store.loadMore();
+    releases[0](boot.viewport as ViewportPage);
+    await wide;
+
+    expect(store.getSnapshot().revision).toBe(boot.revision);
+  });
+
+  it("열린 페이지가 없으면 리비전만 옮긴다", async () => {
+    // 화면에 행이 없으니 낡을 것도 없다. 여기서 번호를 붙들면 페이지를 여는
+    // 첫 편집이 거부된다.
+    const notes = api(async () => boot.viewport as ViewportPage);
+    notes.bootstrap = vi.fn().mockResolvedValue({
+      ...boot,
+      activePageId: null,
+      viewport: null
+    });
+    notes.queryForest = vi.fn();
+    const store = new NotesStore(notes);
+    await store.bootstrap();
+
+    await store.absorbVaultChange({
+      revision: 9,
+      changedNodeIds: Array.from({ length: 200 }, (_, index) => `node-${index}`),
+      deletedNodeIds: []
+    });
+
+    expect(store.getSnapshot().revision).toBe(9);
   });
 
   /**

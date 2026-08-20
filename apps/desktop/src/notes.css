@@ -18,6 +18,76 @@
   font-display: swap;
 }
 
+/*
+ * Excalifont Regular -- the hand-drawn face excalidraw.com writes in.
+ * Copyright (c) 2024 by Excalidraw. All rights reserved. Designed by
+ * Ján Filípek / DizajnDesign after Virgil (Your Own Font Foundry), licensed
+ * under the SIL Open Font License 1.1 (http://scripts.sil.org/OFL). The full
+ * text ships with the app as src-tauri/resources/Excalifont-OFL.txt, and
+ * src-tauri/resources/FONT_SOURCE.md records where each subset came from.
+ *
+ * These are the subsets Excalidraw itself ships, renamed from their content
+ * hashes to the range each covers. The ranges keep a reader who never types
+ * Greek or Cyrillic from parsing those faces at all. Hangul is in none of
+ * them -- Excalifont has no Hangul -- so Korean text falls through to the
+ * Hangul face handwritingHangul.css declares.
+ */
+@font-face {
+  font-family: Excalifont;
+  src: url("./assets/excalifont/excalifont-latin.woff2") format("woff2");
+  font-display: swap;
+  unicode-range: U+20-7e, U+a0-a3, U+a5-a6, U+a8-ab, U+ad-b1, U+b4, U+b6-b8,
+    U+ba-ff, U+131, U+152-153, U+2bc, U+2c6, U+2da, U+2dc, U+304, U+308,
+    U+2013-2014, U+2018-201a, U+201c-201e, U+2020, U+2022, U+2024-2026, U+2030,
+    U+2039-203a, U+20ac, U+2122, U+2212;
+}
+
+@font-face {
+  font-family: Excalifont;
+  src: url("./assets/excalifont/excalifont-latin-ext.woff2") format("woff2");
+  font-display: swap;
+  unicode-range: U+100-130, U+132-137, U+139-149, U+14c-151, U+154-17e, U+192,
+    U+1fc-1ff, U+218-21b, U+237, U+1e80-1e85, U+1ef2-1ef3, U+2113;
+}
+
+@font-face {
+  font-family: Excalifont;
+  src: url("./assets/excalifont/excalifont-cyrillic.woff2") format("woff2");
+  font-display: swap;
+  unicode-range: U+400-45f, U+490-491, U+2116;
+}
+
+@font-face {
+  font-family: Excalifont;
+  src: url("./assets/excalifont/excalifont-cyrillic-ext.woff2") format("woff2");
+  font-display: swap;
+  unicode-range: U+462-463, U+472-475, U+4d8-4d9, U+4e2-4e3, U+4e6-4e9,
+    U+4ee-4ef;
+}
+
+@font-face {
+  font-family: Excalifont;
+  src: url("./assets/excalifont/excalifont-greek.woff2") format("woff2");
+  font-display: swap;
+  unicode-range: U+37e, U+384-38a, U+38c, U+38e-393, U+395-3a1, U+3a3-3a8,
+    U+3aa-3cf, U+3d7;
+}
+
+@font-face {
+  font-family: Excalifont;
+  src: url("./assets/excalifont/excalifont-marks.woff2") format("woff2");
+  font-display: swap;
+  unicode-range: U+2c7, U+2d8-2d9, U+2db, U+2dd, U+302, U+306-307, U+30a-30c,
+    U+326-328, U+212e, U+2211, U+fb01-fb02;
+}
+
+@font-face {
+  font-family: Excalifont;
+  src: url("./assets/excalifont/excalifont-combining.woff2") format("woff2");
+  font-display: swap;
+  unicode-range: U+300-301, U+303;
+}
+
 .notes-navigation-content {
   color: var(--text-1);
 }
@@ -1374,6 +1444,47 @@
 :root[data-text-font="mono"] .notes-page-note-field {
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
     "Liberation Mono", monospace;
+}
+
+/*
+ * The handwriting setting is the same scope one font further: Excalifont draws
+ * the Latin, Greek and Cyrillic it covers, and everything else -- Hangul above
+ * all -- keeps falling through the app's own sans stack, so a mixed Korean and
+ * English row reads as handwriting where the font has glyphs and as the
+ * regular text elsewhere.
+ */
+:root[data-text-font="hand"] .notes-node-title-field {
+  font-family: "Yonalist Caret Strut", Excalifont, Xiaolai, Inter,
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+:root[data-text-font="hand"] .notes-node-title-field[data-markdown-level],
+:root[data-text-font="hand"] .notes-node-note-field,
+:root[data-text-font="hand"] .notes-page-title-field,
+:root[data-text-font="hand"] .notes-page-note-field {
+  font-family: Excalifont, Xiaolai, Inter, ui-sans-serif, system-ui,
+    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+/*
+ * Xiaolai leads above; the reader can hand Hangul to Nanum Pen Script instead,
+ * which is drawn by a Korean hand rather than inherited from a Japanese one.
+ * Latin is Excalifont either way, so only the second family in the stack moves.
+ */
+:root[data-text-font="hand"][data-hand-hangul="nanum"] .notes-node-title-field {
+  font-family: "Yonalist Caret Strut", Excalifont, "Nanum Pen Script", Inter,
+    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+:root[data-text-font="hand"][data-hand-hangul="nanum"]
+  .notes-node-title-field[data-markdown-level],
+:root[data-text-font="hand"][data-hand-hangul="nanum"] .notes-node-note-field,
+:root[data-text-font="hand"][data-hand-hangul="nanum"] .notes-page-title-field,
+:root[data-text-font="hand"][data-hand-hangul="nanum"] .notes-page-note-field {
+  font-family: Excalifont, "Nanum Pen Script", Inter, ui-sans-serif, system-ui,
+    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 .notes-node-title-field[data-markdown-level="1"] {
@@ -3331,6 +3442,8 @@ body.is-outline-dragging * {
 .notes-node[data-range-selected="true"] .notes-image-attachment-frame::after {
   position: absolute;
   inset: 0;
+  /* The frame no longer clips, so the tint rounds its own corners. */
+  border-radius: inherit;
   background: color-mix(in srgb, var(--accent) 28%, transparent);
   content: "";
   pointer-events: none;
