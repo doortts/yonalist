@@ -4,8 +4,13 @@
  * which ancestor paints it, and what that ancestor's range should do next.
  */
 
-/** How far off a stripe's centre a pointer still counts as on it. */
-export const GUIDE_HIT_TOLERANCE = 9;
+/**
+ * How far off a stripe's centre a pointer still counts as on it. Must stay
+ * under the row menu's clearance from the stripes either side of it -- 6px,
+ * held by `.notes-node-menu-slot`'s negative start margin in notes.css --
+ * because a wider band lights the guide from under the button's own plate.
+ */
+export const GUIDE_HIT_TOLERANCE = 5;
 
 export interface GuideNode {
   readonly id: string;

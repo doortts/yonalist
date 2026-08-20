@@ -1746,11 +1746,18 @@ button.notes-date-token:hover {
   --notes-indent: calc(var(--notes-depth) * var(--notes-outline-indent));
   --notes-band-paint: transparent;
   /* The pane writes `--notes-band-depth` for the whole band, so every row in
-     one band starts its paint at the shallowest selected row's indent instead
-     of its own. Falling back to the row's own depth means a pane that has not
-     written it yet paints a correct row rather than a broken one. */
+     one band starts its paint from the shallowest selected row instead of its
+     own depth. Falling back to the row's own depth means a pane that has not
+     written it yet paints a correct row rather than a broken one. Where it
+     starts is that row's bullet, not its indent origin: the menu and chevron
+     columns are chrome the selection does not own, and painting them read as a
+     band twice as wide as the rows it holds. Measured off the bullets' own
+     offset, so the narrow layout follows from the same term; 10px back from
+     the centre clears the 20px collapsed bullet plate, the widest thing that
+     would otherwise poke out to the left of the band. */
   --notes-band-indent: calc(
-    var(--notes-band-depth, var(--notes-depth)) * var(--notes-outline-indent)
+    var(--notes-band-depth, var(--notes-depth)) * var(--notes-outline-indent) +
+      var(--notes-bullet-center-offset) - 10px
   );
   position: relative;
   min-width: 0;
@@ -2345,6 +2352,16 @@ body.is-outline-dragging * {
   text-decoration: line-through;
 }
 
+/* No z-index, transform, or position here. Any of the three makes a grid item
+   a stacking context or a containing block, and the row menu opens inside this
+   slot: its z-index would be trapped at the slot's, tying with the title and
+   the bullet dot of every row below and losing to them on document order.
+   Which is why the nudge below is a margin.
+   The guides run at the ancestors' bullet centres, so the nearest one sits
+   25px into this row's main box and the one before it 11px behind that box's
+   start -- an indent apart, with a 24px button to place between them. Centred
+   leaves 6px either side, which is the clearance `GUIDE_HIT_TOLERANCE` has to
+   stay under. */
 .notes-node-menu-slot {
   display: inline-flex;
   grid-column: 1;
@@ -2354,16 +2371,7 @@ body.is-outline-dragging * {
   width: var(--notes-menu-width);
   min-width: var(--notes-menu-width);
   min-height: 28px;
-}
-
-/* No z-index here. A grid item with one is a stacking context even sitting
-   static, and the row menu opens inside this slot: its z-index would be
-   trapped at the slot's, tying with the title and the bullet dot of every row
-   below and losing to them on document order. The slot needs no lift of its
-   own — it sits in the arrow's column, clear of the bullet. */
-.notes-node-main:has(> .notes-node-arrow-slot:empty)
-  > .notes-node-menu-slot {
-  grid-column: 2;
+  margin-inline-start: -5px;
 }
 
 .notes-child-composer {
@@ -3143,9 +3151,11 @@ body.is-outline-dragging * {
       var(--notes-menu-width) 28px 28px 24px minmax(0, 1fr);
   }
 
-  .notes-node-main:has(> .notes-node-arrow-slot:empty)
-    > .notes-node-menu-slot {
-    grid-column: 1;
+  /* The stripes step by 28px here and the button is 28px wide, so there is no
+     channel to centre in -- a nudge would only push the button off its own
+     column. The stripe that runs under it is handled in paint instead. */
+  .notes-node-menu-slot {
+    margin-inline-start: 0;
   }
 
   .notes-node-arrow-slot,
@@ -3154,6 +3164,18 @@ body.is-outline-dragging * {
   .notes-bullet-menu-trigger,
   .notes-child-composer-button {
     width: 28px;
+  }
+
+  /* That stripe runs under the plate, and the hover wash is translucent enough
+     to show it straight through. Compositing the same wash over the pane's own
+     ground gives the colour the eye already reads on plain ground, now opaque:
+     every theme keeps its own hover value and none needs a second one. Two
+     longhands, because the base rule's `background` shorthand would otherwise
+     reset the image back to none. */
+  .notes-bullet-menu-trigger:hover,
+  .notes-bullet-menu-trigger[data-popup-open] {
+    background-color: var(--bg-detail);
+    background-image: linear-gradient(var(--bg-hover), var(--bg-hover));
   }
 
   .notes-page-menu-slot,

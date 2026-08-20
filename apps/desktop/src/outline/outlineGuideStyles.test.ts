@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { rule } from "../test/cssRules";
+import { atRule, rule } from "../test/cssRules";
 
 const notesStyles = readFileSync("src/notes.css", "utf8");
 
@@ -39,6 +39,15 @@ describe("outline indentation guides", () => {
     expect(row).toContain(
       "var(--notes-band-depth, var(--notes-depth)) * var(--notes-outline-indent)"
     );
+    // The band starts just before the bullet rather than at the indent origin,
+    // so the menu and chevron columns stay unpainted. Off the bullets' own
+    // offset, so both layouts follow from the one term. Asserted across the
+    // line break the formatter puts here, since the sign is the whole claim:
+    // subtracting the offset instead would move the edge a bullet column left
+    // of where it was, which is the defect inverted rather than fixed.
+    expect(row).toContain(
+      "var(--notes-outline-indent) +\nvar(--notes-bullet-center-offset) - 10px"
+    );
     expect(row).toContain("var(--notes-band-indent) 0,");
     expect(row).toContain("calc(100% - var(--notes-band-indent)) 100%,");
     expect(row).toContain("--notes-band-paint: transparent;");
@@ -76,5 +85,46 @@ describe("outline indentation guides", () => {
     const lit = rule(notesStyles, '.notes-node[data-guide-hot]::before');
     expect(lit).toContain("width: 1px;");
     expect(lit).not.toContain("border-radius");
+  });
+});
+
+describe("row menu in the guide channel", () => {
+  // A row without children used to park its menu in the empty chevron column,
+  // 3px right of the stripe its parent paints -- while a row with children sat
+  // 1px left of that same stripe. Neither cleared it, and the two disagreed on
+  // which side to fail on. One column for both rows, in both layouts.
+  it("gives every row the same menu column", () => {
+    expect(notesStyles).not.toContain(":has(> .notes-node-arrow-slot:empty)");
+  });
+
+  // The channel between two stripes is one indent wide and the button is 24px,
+  // so centring it is the only placement that clears both. The nudge is a
+  // margin because the row's menu opens inside this slot: a transform or a
+  // position would make the slot a stacking context or a containing block and
+  // take the popup with it.
+  it("centres the wide button between the stripes either side of it", () => {
+    expect(rule(notesStyles, ".notes-node-menu-slot"))
+      .toContain("margin-inline-start: -5px;");
+  });
+
+  // Narrow steps by 28px with a 28px button, so there is no channel to centre
+  // in and a nudge would only push the button off its own column.
+  it("leaves the narrow button on its column", () => {
+    const narrow = atRule(notesStyles, "@media (max-width: 720px)");
+    expect(rule(narrow, ".notes-node-menu-slot"))
+      .toContain("margin-inline-start: 0;");
+  });
+
+  // A stripe therefore always runs under the narrow button, and the hover wash
+  // is translucent enough to show it straight through the plate. Compositing
+  // the same wash over the pane's own ground gives the colour the eye already
+  // reads on plain ground, opaque -- no per-theme value to keep in step.
+  it("makes the narrow plate opaque over the stripe it covers", () => {
+    const narrow = atRule(notesStyles, "@media (max-width: 720px)");
+    const plate = rule(narrow, '.notes-bullet-menu-trigger[data-popup-open]');
+    expect(plate).toContain("background-color: var(--bg-detail);");
+    expect(plate).toContain(
+      "background-image: linear-gradient(var(--bg-hover), var(--bg-hover));"
+    );
   });
 });
