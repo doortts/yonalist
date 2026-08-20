@@ -43,9 +43,13 @@ function bullet(
  * A page's own node never joins `nodes`, so nothing here is ordered against
  * anything: the sort key the backend allocates arrives with the creation, once
  * there is something worth creating the page for.
+ *
+ * A journal day opens with its title already decided, which is what `title` is
+ * for: the date has to be on the page the first keystroke creates, or the page
+ * it creates is not that day's journal.
  */
-export function provisionalPage(id: string): NoteView {
-  return bullet(id, ROOT_ID, SORT_KEY_STEP, "");
+export function provisionalPage(id: string, title = ""): NoteView {
+  return bullet(id, ROOT_ID, SORT_KEY_STEP, title);
 }
 
 export function projectCreateNode(

@@ -13,6 +13,7 @@ import {
   freshId, messageFrom, ROOT_ID, VIEWPORT_LIMIT
 } from "./store/storeSupport";
 import { provisionalPage } from "./optimisticOutline";
+import { findJournalPage } from "./journal";
 import { flattenPastedOutline, type PastedOutlineNode } from "./outline/outlinePaste";
 import {
   omitKeys, receiptState, subtreeIds, viewportState
@@ -364,11 +365,26 @@ export class NotesStore {
    * has to leave nothing behind -- no row in the list, nothing to sync, nothing
    * to undo. `materializePage` below writes it as soon as anything does.
    */
-  async createPage(): Promise<string> {
+  async createPage(title = ""): Promise<string> {
     const id = freshId();
     this.update({ provisionalPageId: id });
-    this.viewport.openLocalPage(id, provisionalPage(id));
+    this.viewport.openLocalPage(id, provisionalPage(id, title));
     return id;
+  }
+
+  /**
+   * The page a day is written on, opened. A day nobody has written in has no
+   * page yet, and opening it does not make one -- the page arrives with the
+   * first keystroke, carrying the date as its title, which is the whole of what
+   * makes it that day's journal.
+   */
+  async openJournal(date: string): Promise<string> {
+    const existing = findJournalPage(this.state.pages, date);
+    if (existing) {
+      await this.openPage(existing.id);
+      return existing.id;
+    }
+    return this.createPage(date);
   }
 
   /**
@@ -403,7 +419,10 @@ export class NotesStore {
       id,
       parent_id: ROOT_ID,
       before_id: null,
-      text: ""
+      // Whatever the page was opened with, which is empty for a New page and
+      // the date for a journal day. A title the reader has typed since is a
+      // draft, and lands as its own update right behind this.
+      text: this.state.pageNode?.id === id ? this.state.pageNode.text : ""
     }, null, false).then(() => {
       this.settleCreation(id);
       // The receipt has already put the row in the page list, so the pane
