@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { BootSnapshot } from "../../../../packages/contracts/generated/BootSnapshot";
 import { App } from "../App";
+import { extractOutlinePayload } from "../outline/outlinePaste";
 import { appApi, snapshot } from "../test/appApiFixture";
 
 const imageNode = {
@@ -279,7 +280,7 @@ describe("image node structural parity", () => {
     expect(await (await item.data["text/plain"]!).text())
       .toBe("- cat.png\n- dog.png");
     expect(await (await item.data["text/html"]!).text())
-      .toContain('<div data-yonalist-outline-clipboard="');
+      .toContain('data-yonalist-outline-clipboard="');
   });
 
   it("multi-selects an image with a bullet and indents one ordered batch", async () => {
@@ -408,13 +409,7 @@ describe("image clipboard chords at the caret station", () => {
     await waitFor(() => expect(write).toHaveBeenCalledOnce());
     const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
     const html = await (await item.data["text/html"]!).text();
-    const encoded = /^<div data-yonalist-outline-clipboard="([A-Za-z0-9+/=]*)">/u
-      .exec(html)?.[1];
-    const payload = JSON.parse(new TextDecoder().decode(Uint8Array.from(
-      atob(encoded!),
-      (character: string) => character.charCodeAt(0)
-    )));
-    expect(payload.nodes).toEqual([expect.objectContaining({
+    expect(extractOutlinePayload(html)?.nodes).toEqual([expect.objectContaining({
       text: "cat.png",
       children: [expect.objectContaining({ text: "Caption thought" })]
     })]);
@@ -465,13 +460,7 @@ describe("image clipboard chords at the caret station", () => {
     expect(write).toHaveBeenCalledOnce();
     const item = write.mock.calls[0]![0]![0] as FakeClipboardItem;
     const html = await (await item.data["text/html"]!).text();
-    const encoded = /^<div data-yonalist-outline-clipboard="([A-Za-z0-9+/=]*)">/u
-      .exec(html)?.[1];
-    const payload = JSON.parse(new TextDecoder().decode(Uint8Array.from(
-      atob(encoded!),
-      (character: string) => character.charCodeAt(0)
-    )));
-    expect(payload.nodes).toEqual([expect.objectContaining({
+    expect(extractOutlinePayload(html)?.nodes).toEqual([expect.objectContaining({
       text: "cat.png",
       children: [expect.objectContaining({ text: "Caption thought" })]
     })]);
