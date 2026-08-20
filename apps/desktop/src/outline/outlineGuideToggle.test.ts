@@ -43,6 +43,16 @@ describe("guideBandAt", () => {
   it("reads the narrow-width geometry off the same arguments", () => {
     expect(guideBandAt(98, 70, 28)).toBe(1);
   });
+
+  // The row menu's plate clears each neighbouring stripe by 6px, so the band
+  // has to stop short of that or the plate and the lit line come up together
+  // at the boundary. The last two numbers are a depth-2 row's button edges:
+  // the button spans [67, 91] and its stripes sit at 61 and 97.
+  it("stops short of the stripe by less than the menu button's clearance", () => {
+    expect(guideBandAt(66, 61, 36)).toBe(0);
+    expect(guideBandAt(67, 61, 36)).toBeNull();
+    expect(guideBandAt(91, 61, 36)).toBeNull();
+  });
 });
 
 describe("guideOwnerId", () => {
