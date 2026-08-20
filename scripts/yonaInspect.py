@@ -119,7 +119,10 @@ def machine_seed() -> bytes | None:
     return bytes(buffer)
 
 
-def derived_device_id(seed: bytes, width: int = 4) -> str:
+DEVICE_WIDTH = 8
+
+
+def derived_device_id(seed: bytes, width: int = DEVICE_WIDTH) -> str:
     return hashlib.sha256(seed).hexdigest()[:width]
 
 
@@ -551,8 +554,10 @@ def command_device(state: State, _args) -> int:
         print("  design that makes a reinstalled app a second device.")
         return 1
     print(f"IOPlatformUUID        {seed.hex()}")
-    print(f"would provision       {derived_device_id(seed)}   (sha256 of the above, 4 hex)")
-    print(f"at 8 hex              {derived_device_id(seed, 8)}")
+    print(
+        f"would provision       {derived_device_id(seed)}   "
+        f"(sha256 of the above, {DEVICE_WIDTH} hex)"
+    )
     if stored == derived_device_id(seed):
         print("\n  Stored and derived agree: this machine is stable across a reinstall.")
         return 0
@@ -636,7 +641,8 @@ def selftest() -> int:
     # Derivation is a pure hash: same bytes in, same four characters out,
     # which is the whole property a reinstall depends on.
     assert derived_device_id(bytes(range(16))) == derived_device_id(bytes(range(16)))
-    assert len(derived_device_id(b"x")) == 4 and len(derived_device_id(b"x", 8)) == 8
+    assert len(derived_device_id(b"x")) == DEVICE_WIDTH
+    assert len(derived_device_id(b"x", 4)) == 4
     assert derived_device_id(b"x") != derived_device_id(b"y")
     # Widening keeps the order the old readings were in, and touches only the
     # lines that carry one.
