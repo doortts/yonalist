@@ -672,9 +672,21 @@ export const previewNotesApi: NotesApi = {
   },
   async search(query) {
     const normalized = query.text.toLocaleLowerCase();
+    // `date:` is a filter rather than a word to find, the way the database
+    // reads it: one day, or a range with `..` between two of them. Without it
+    // the preview answers the journal's own question with nothing.
+    const range = query.text.startsWith("date:")
+      ? query.text.slice("date:".length).split("..")
+      : null;
+    const matches = (node: NoteView) => {
+      if (!range) return node.text.toLocaleLowerCase().includes(normalized);
+      const [from, to = from] = range;
+      return (node.text.match(/\d{4}-\d{2}-\d{2}/gu) ?? [])
+        .some((date) => date >= from && date <= to);
+    };
     return {
       hits: nodes
-        .filter((node) => !node.deleted && node.text.toLocaleLowerCase().includes(normalized))
+        .filter((node) => !node.deleted && matches(node))
         .slice(0, query.limit)
         .map((node) => ({
           node: { ...node },

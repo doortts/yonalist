@@ -1142,6 +1142,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           onHome={openHome}
           onTagClick={handleTagClick}
           onDateClick={handleDateClick}
+          onOpenPage={(pageId) => void openPage(pageId)}
           onOpenDay={openJournalDay}
           onSelectionCountChange={reportSelectionCount}
         />
@@ -1164,6 +1165,7 @@ export function App({ api = tauriNotesApi }: { readonly api?: NotesApi }) {
           onCloseSplit={closeSplit}
           onTagClick={handleTagClick}
           onDateClick={handleDateClick}
+          onOpenPage={(pageId) => void openPage(pageId)}
           onSelectionCountChange={reportSelectionCount}
         />
       )}

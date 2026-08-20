@@ -4,6 +4,7 @@ import {
   NotesOutline,
   type PaneRestoreRequest
 } from "./NotesOutline";
+import { JournalReferences } from "./JournalReferences";
 import type { OutlineTagToken } from "./outline/OutlineTextField";
 import type { NotesShellSnapshot } from "./store/storeSubscriptions";
 import { useSplitResize } from "./useSplitResize";
@@ -26,6 +27,7 @@ export interface NotesDetailPanesProps {
   readonly onCloseSplit: () => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
   readonly onDateClick: (date: string, anchor: DOMRect) => void;
+  readonly onOpenPage: (pageId: string) => void;
   readonly onSelectionCountChange: (
     paneId: "primary" | "secondary",
     count: number
@@ -50,6 +52,7 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
   onCloseSplit,
   onTagClick,
   onDateClick,
+  onOpenPage,
   onSelectionCountChange
 }: NotesDetailPanesProps) {
   const splitResize = useSplitResize(splitOpen);
@@ -88,6 +91,13 @@ export const NotesDetailPanes = memo(function NotesDetailPanes({
               onDateClick={onDateClick}
               onSelectionCountChange={onSelectionCountChange}
             />
+            {page && (
+              <JournalReferences
+                store={store}
+                pageId={page.id}
+                onOpenPage={onOpenPage}
+              />
+            )}
           </div>
           {splitOpen && (
             <>

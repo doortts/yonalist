@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useState, type CSSProperties } from "reac
 import type { NoteView } from "../../../packages/contracts/generated/NoteView";
 import type { NotesStore } from "./notesStore";
 import { NotesOutline, type PaneRestoreRequest } from "./NotesOutline";
+import { JournalReferences } from "./JournalReferences";
 import type { JournalDay } from "./journal";
 import { weekdayOf } from "./journal";
 import { parseOutlinePresentation } from "./outline/outlinePresentation";
@@ -185,6 +186,7 @@ export function JournalFeed({
   onHome,
   onTagClick,
   onDateClick,
+  onOpenPage,
   onOpenDay,
   onSelectionCountChange
 }: {
@@ -200,6 +202,7 @@ export function JournalFeed({
   readonly onHome: () => void;
   readonly onTagClick: (token: OutlineTagToken) => void;
   readonly onDateClick: (date: string, anchor: DOMRect) => void;
+  readonly onOpenPage: (pageId: string) => void;
   readonly onOpenDay: (date: string) => void;
   readonly onSelectionCountChange: (
     paneId: "primary" | "secondary",
@@ -226,6 +229,13 @@ export function JournalFeed({
             restoreRequest={restoreRequest}
             onSelectionCountChange={onSelectionCountChange}
           />
+          {page && (
+            <JournalReferences
+              store={store}
+              pageId={page.id}
+              onOpenPage={onOpenPage}
+            />
+          )}
         </div>
         <JournalEarlierDays
           store={store}

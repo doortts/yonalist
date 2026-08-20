@@ -4155,3 +4155,70 @@ body.is-outline-dragging * {
 .notes-date-menu-item svg {
   color: var(--text-3);
 }
+
+/* The rows elsewhere that name the day this page is. Sits under the outline,
+   outside its scroll of rows, so a long day pushes it down rather than
+   pinning it. */
+.notes-journal-references {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 28px 40px calc(var(--notes-content-offset, 74px) - 22px);
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg, 10px);
+  background: var(--bg-card);
+}
+
+.notes-journal-references-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.notes-journal-references-count {
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--bg-active);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+
+.notes-journal-references-empty {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.notes-journal-reference {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-1);
+  cursor: pointer;
+  font-size: 13.5px;
+  text-align: start;
+}
+
+.notes-journal-reference + .notes-journal-reference {
+  border-top: 1px solid var(--border);
+}
+
+.notes-journal-reference:hover .notes-journal-reference-text {
+  color: var(--accent);
+}
+
+.notes-journal-reference-source {
+  color: var(--text-3);
+  font-size: 11.5px;
+}
