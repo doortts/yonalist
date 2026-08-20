@@ -408,6 +408,11 @@ describe("v2 outline keyboard intent resolver", () => {
 
     expect(handleImageNodeKeyDown(before([picture("solo", "page")], "solo")))
       .toBeNull();
+    // The caret's own row missing from the rows on screen: with no row to
+    // stand on there is no row behind it either, and the lookup that reads
+    // both off the one list says so without asking the structure for a second
+    // opinion.
+    expect(handleImageNodeKeyDown(before(stacked, "ghost"))).toBeNull();
   });
 
   it("splits the selected title range into one atomic sibling gesture", () => {
