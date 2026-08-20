@@ -46,7 +46,8 @@ const darkThemeOptions: Array<{ value: DarkTheme; label: string }> = [
 
 const textFontOptions: Array<{ value: TextFont; label: string }> = [
   { value: "sans", label: "Sans" },
-  { value: "mono", label: "Monospace" }
+  { value: "mono", label: "Monospace" },
+  { value: "hand", label: "Handwriting" }
 ];
 
 const markerShapeOptions: Array<{ value: OutlineMarkerShape; label: string }> = [
