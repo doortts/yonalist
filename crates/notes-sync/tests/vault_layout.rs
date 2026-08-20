@@ -136,13 +136,18 @@ fn a_uuid_is_no_longer_a_name_a_folder_can_be_built_from() {
 /// Derived from the machine, they agree. What the value *is* cannot be asserted
 /// — it differs per machine, and that is the point — so what is pinned is that
 /// it is stable, and that it is a device id the encoding will accept.
+///
+/// Stability is asserted on Apple targets only. Elsewhere there is no machine
+/// identifier to derive from and the fallback is deliberately random, so the
+/// shape is all there is to check.
 #[test]
 fn one_machine_provisions_one_device_id() {
     let once = notes_sync::hlc::device_seed();
-    let again = notes_sync::hlc::device_seed();
 
+    #[cfg(target_os = "macos")]
     assert_eq!(
-        once, again,
+        once,
+        notes_sync::hlc::device_seed(),
         "a second database on this Mac has to be the same device"
     );
     assert!(
