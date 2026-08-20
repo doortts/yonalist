@@ -33,6 +33,7 @@ import { useOutlineWindow } from "./outline/useOutlineWindow";
 import { liveHistorySelection } from "./historyRestore";
 import { registerOutlinePane } from "./outline/outlinePaneRegistry";
 import { ROOT_ID } from "./store/storeSupport";
+import { usePageZoom } from "./pageZoom";
 
 const OutlineSelectionActionBar = lazy(() =>
   import("./outline/OutlineSelectionActionBar").then((module) => ({
@@ -80,6 +81,7 @@ export function NotesOutline({
     store.getOutlineSnapshot
   );
   const scopeRef = useRef<HTMLElement>(null);
+  const pageZoom = usePageZoom();
   // Declared ahead of the registration below, which hands history a way to read
   // the band and to put one back; the selection hook both point at is built
   // further down.
@@ -545,7 +547,11 @@ export function NotesOutline({
           {outlineDrag.announcement}
         </span>
       )}
-      <div className="notes-outline-rows" ref={outlineWindow.scrollRef}>
+      <div
+        className="notes-outline-rows"
+        ref={outlineWindow.scrollRef}
+        style={pageZoom !== 100 ? { zoom: pageZoom / 100 } : undefined}
+      >
         <div className="notes-outline-content" data-zoomed-page="true">
           {/* Home is the root itself, and the root is nobody's title: it gets
               a heading only once a zoom gives it one. */}
